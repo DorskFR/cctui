@@ -36,6 +36,11 @@ async fn main() -> anyhow::Result<()> {
     let api_router = Router::new()
         .route("/sessions/register", post(routes::sessions::register))
         .route("/sessions/{id}/deregister", post(routes::sessions::deregister))
+        .route("/sessions", get(routes::admin::list_sessions))
+        .route("/sessions/{id}", get(routes::admin::get_session))
+        .route("/sessions/{id}/conversation", get(routes::admin::get_conversation))
+        .route("/sessions/{id}/message", post(routes::admin::send_message))
+        .route("/sessions/{id}/kill", post(routes::admin::kill_session))
         .layer(middleware::from_fn(auth::auth_middleware))
         .layer(Extension(auth_config));
 
