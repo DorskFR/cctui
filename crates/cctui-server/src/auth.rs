@@ -4,7 +4,6 @@ use axum::middleware::Next;
 use axum::response::Response;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum TokenRole {
     Agent,
     Admin,
@@ -18,13 +17,11 @@ pub struct AuthContext {
 }
 
 #[derive(Clone)]
-#[allow(dead_code)]
 pub struct AuthConfig {
     pub agent_tokens: Vec<String>,
     pub admin_tokens: Vec<String>,
 }
 
-#[allow(dead_code)]
 impl AuthConfig {
     pub fn validate(&self, token: &str) -> Option<AuthContext> {
         if self.admin_tokens.contains(&token.to_string()) {
@@ -37,7 +34,6 @@ impl AuthConfig {
     }
 }
 
-#[allow(dead_code)]
 pub async fn auth_middleware(request: Request, next: Next) -> Result<Response, StatusCode> {
     let auth_config = request
         .extensions()

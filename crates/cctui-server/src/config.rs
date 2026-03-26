@@ -1,17 +1,17 @@
 use std::env;
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct Config {
     pub host: String,
     pub port: u16,
     pub database_url: String,
     pub external_url: String,
+    #[allow(dead_code)]
     pub heartbeat_timeout_secs: u64,
+    #[allow(dead_code)]
     pub terminated_timeout_secs: u64,
 }
 
-#[allow(dead_code)]
 impl Config {
     pub fn from_env() -> Self {
         Self {

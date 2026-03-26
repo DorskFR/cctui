@@ -9,18 +9,17 @@ use tokio::sync::{RwLock, broadcast};
 use uuid::Uuid;
 
 #[derive(Debug)]
-#[allow(dead_code)]
 pub struct SessionHandle {
     pub session: Session,
+    #[allow(dead_code)]
     pub last_heartbeat: Instant,
+    #[allow(dead_code)]
     pub token_usage: TokenUsage,
     pub stream_tx: broadcast::Sender<AgentEvent>,
 }
 
-#[allow(dead_code)]
 pub type SharedRegistry = Arc<RwLock<Registry>>;
 
-#[allow(dead_code)]
 pub struct Registry {
     sessions: HashMap<Uuid, SessionHandle>,
 }
