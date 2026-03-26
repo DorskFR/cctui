@@ -94,7 +94,7 @@ async fn run(
             key_result = tokio::task::spawn_blocking(poll_key) => {
                 let maybe_key = key_result.context("input task panicked")??;
                 if let Some(code) = maybe_key {
-                    handle_key(&mut app, code, &cmd_tx).await;
+                    handle_key(&mut app, code, &cmd_tx, &server).await;
                 }
             }
         }
@@ -129,14 +129,19 @@ fn poll_key() -> Result<Option<KeyCode>> {
     Ok(None)
 }
 
-async fn handle_key(app: &mut App, code: KeyCode, cmd_tx: &mpsc::Sender<TuiCommand>) {
+async fn handle_key(
+    app: &mut App,
+    code: KeyCode,
+    cmd_tx: &mpsc::Sender<TuiCommand>,
+    server: &ServerClient,
+) {
     // Message input mode captures characters
     if app.message_input.is_some() {
         handle_key_input_mode(app, code, cmd_tx).await;
         return;
     }
 
-    handle_key_normal_mode(app, code, cmd_tx).await;
+    handle_key_normal_mode(app, code, cmd_tx, server).await;
 }
 
 async fn handle_key_input_mode(app: &mut App, code: KeyCode, cmd_tx: &mpsc::Sender<TuiCommand>) {
@@ -167,18 +172,23 @@ async fn handle_key_input_mode(app: &mut App, code: KeyCode, cmd_tx: &mpsc::Send
     }
 }
 
-async fn handle_key_normal_mode(app: &mut App, code: KeyCode, cmd_tx: &mpsc::Sender<TuiCommand>) {
+async fn handle_key_normal_mode(
+    app: &mut App,
+    code: KeyCode,
+    cmd_tx: &mpsc::Sender<TuiCommand>,
+    server: &ServerClient,
+) {
     match code {
         KeyCode::Char('q') => {
             app.should_quit = true;
         }
         KeyCode::Char('j') | KeyCode::Down => {
             app.select_next();
-            subscribe_selected(app, cmd_tx).await;
+            select_session(app, cmd_tx, server).await;
         }
         KeyCode::Char('k') | KeyCode::Up => {
             app.select_prev();
-            subscribe_selected(app, cmd_tx).await;
+            select_session(app, cmd_tx, server).await;
         }
         KeyCode::Tab => {
             app.active_pane = match app.active_pane {
@@ -200,7 +210,7 @@ async fn handle_key_normal_mode(app: &mut App, code: KeyCode, cmd_tx: &mpsc::Sen
         }
         KeyCode::Enter => {
             app.view = View::Conversation;
-            subscribe_selected(app, cmd_tx).await;
+            select_session(app, cmd_tx, server).await;
         }
         KeyCode::Esc => {
             app.view = View::Sessions;
@@ -209,12 +219,26 @@ async fn handle_key_normal_mode(app: &mut App, code: KeyCode, cmd_tx: &mpsc::Sen
     }
 }
 
-async fn subscribe_selected(app: &App, cmd_tx: &mpsc::Sender<TuiCommand>) {
-    // Clone session_id before any await to avoid holding borrow across await point
+async fn select_session(app: &mut App, cmd_tx: &mpsc::Sender<TuiCommand>, server: &ServerClient) {
     let session_id: Option<Uuid> = app.selected_session().map(|s| s.id);
-    if let Some(id) = session_id {
-        let _ = cmd_tx.send(TuiCommand::Subscribe { session_id: id }).await;
+    let Some(id) = session_id else { return };
+
+    // Fetch conversation history from server if we don't have it yet
+    if let std::collections::hash_map::Entry::Vacant(entry) = app.stream_buffer.entry(id)
+        && let Ok(events) = server.get_conversation(id).await
+    {
+        let lines: Vec<String> = events
+            .iter()
+            .filter_map(|v| serde_json::from_value::<cctui_proto::ws::AgentEvent>(v.clone()).ok())
+            .map(|e| views::sessions::agent_event_to_string(&e))
+            .collect();
+        if !lines.is_empty() {
+            entry.insert(lines);
+        }
     }
+
+    // Subscribe to live stream for new events
+    let _ = cmd_tx.send(TuiCommand::Subscribe { session_id: id }).await;
 }
 
 fn handle_server_event(app: &mut App, event: ServerEvent) {
