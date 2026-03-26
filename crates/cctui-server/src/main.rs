@@ -53,10 +53,33 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/stream/{session_id}", get(ws::agent_stream))
         .route("/api/v1/ws", get(ws::tui_ws))
         .nest("/api/v1", api_router)
-        .with_state(state);
+        .with_state(state.clone());
+
+    tokio::spawn(reaper_task(state));
 
     let listener = tokio::net::TcpListener::bind(config.bind_addr()).await?;
     tracing::info!("listening on {}", config.bind_addr());
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+async fn reaper_task(state: AppState) {
+    let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
+    loop {
+        interval.tick().await;
+        let terminated = {
+            let mut registry = state.registry.write().await;
+            registry.mark_stale(
+                state.config.heartbeat_timeout_secs,
+                state.config.terminated_timeout_secs,
+            )
+        };
+        for session_id in &terminated {
+            let _ = sqlx::query("UPDATE sessions SET status = 'terminated' WHERE id = $1")
+                .bind(session_id)
+                .execute(&state.pool)
+                .await;
+            tracing::info!(session_id = %session_id, "session terminated (stale)");
+        }
+    }
 }
