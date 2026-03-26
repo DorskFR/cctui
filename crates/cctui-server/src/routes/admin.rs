@@ -56,7 +56,7 @@ pub async fn get_conversation(
     Path(session_id): Path<Uuid>,
 ) -> Result<Json<Vec<serde_json::Value>>, (StatusCode, Json<ApiError>)> {
     let rows: Vec<(serde_json::Value,)> = sqlx::query_as(
-        "SELECT event_data FROM stream_events WHERE session_id = $1 ORDER BY created_at ASC",
+        "SELECT payload FROM stream_events WHERE session_id = $1 ORDER BY created_at ASC",
     )
     .bind(session_id)
     .fetch_all(&state.pool)

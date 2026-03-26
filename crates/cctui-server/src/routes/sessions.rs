@@ -47,8 +47,11 @@ pub async fn register(
         (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
     })?;
 
-    let ws_url =
-        format!("{}/api/v1/stream/{}", state.config.external_url.replace("http", "ws"), session_id);
+    let ws_url = format!(
+        "{}/api/v1/stream/{}",
+        state.config.external_url.replacen("http://", "ws://", 1).replacen("https://", "wss://", 1),
+        session_id
+    );
     {
         let mut registry = state.registry.write().await;
         registry.register(session.clone());

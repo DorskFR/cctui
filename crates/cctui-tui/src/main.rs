@@ -25,7 +25,7 @@ use uuid::Uuid;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let base_url = std::env::var("CCTUI_URL").unwrap_or_else(|_| "http://localhost:8080".into());
+    let base_url = std::env::var("CCTUI_URL").unwrap_or_else(|_| "http://localhost:8700".into());
     let token = std::env::var("CCTUI_TOKEN").unwrap_or_default();
 
     enable_raw_mode()?;

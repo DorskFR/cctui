@@ -41,11 +41,21 @@ async fn store_and_broadcast(event: AgentEvent, session_id: Uuid, state: &AppSta
         }
     };
 
-    let _ = sqlx::query("INSERT INTO stream_events (session_id, payload) VALUES ($1, $2)")
-        .bind(session_id)
-        .bind(payload)
-        .execute(&state.pool)
-        .await;
+    let event_type = match &event {
+        AgentEvent::Text { .. } => "text",
+        AgentEvent::ToolCall { .. } => "tool_call",
+        AgentEvent::ToolResult { .. } => "tool_result",
+        AgentEvent::Heartbeat { .. } => "heartbeat",
+    };
+
+    let _ = sqlx::query(
+        "INSERT INTO stream_events (session_id, event_type, payload) VALUES ($1, $2, $3)",
+    )
+    .bind(session_id)
+    .bind(event_type)
+    .bind(payload)
+    .execute(&state.pool)
+    .await;
 
     if let Some(tx) = stream_tx {
         let _ = tx.send(event);

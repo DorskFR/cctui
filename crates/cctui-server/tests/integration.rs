@@ -1,6 +1,6 @@
 //! Integration tests — require a running cctui-server and `DATABASE_URL`.
 //!
-//! Run: `TEST_CCTUI_URL=http://localhost:8700 cargo test -p cctui-server --test integration`
+//! Run: `TEST_CCTUI_URL=http://localhost:8700 cargo test -p cctui-server --test integration -- --ignored`
 
 use reqwest::Client;
 use serde_json::json;
@@ -18,6 +18,7 @@ fn admin_token() -> String {
 }
 
 #[tokio::test]
+#[ignore = "requires running server"]
 async fn health_check() {
     let client = Client::new();
     let resp = client.get(format!("{}/health", server_url())).send().await.unwrap();
@@ -26,6 +27,7 @@ async fn health_check() {
 }
 
 #[tokio::test]
+#[ignore = "requires running server"]
 async fn register_and_list_session() {
     let client = Client::new();
     let base = server_url();
@@ -69,6 +71,7 @@ async fn register_and_list_session() {
 }
 
 #[tokio::test]
+#[ignore = "requires running server"]
 async fn auth_rejects_bad_token() {
     let client = Client::new();
     let resp = client
