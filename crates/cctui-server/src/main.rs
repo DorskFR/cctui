@@ -1,6 +1,7 @@
 mod auth;
 mod config;
 mod db;
+mod registry;
 
 use config::Config;
 
