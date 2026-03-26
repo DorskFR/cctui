@@ -41,6 +41,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/sessions/{id}/conversation", get(routes::admin::get_conversation))
         .route("/sessions/{id}/message", post(routes::admin::send_message))
         .route("/sessions/{id}/kill", post(routes::admin::kill_session))
+        .route("/check", post(routes::check::check))
         .layer(middleware::from_fn(auth::auth_middleware))
         .layer(Extension(auth_config));
 
