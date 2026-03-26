@@ -78,24 +78,29 @@ async fn run(
     init_sessions(&server, &mut app).await;
     let (cmd_tx, mut event_rx) = connect_ws_or_dummy(&server).await;
     let mut refresh_interval = time::interval(Duration::from_secs(5));
+    // Skip the first immediate tick so it doesn't starve input on startup
+    refresh_interval.tick().await;
 
     loop {
         terminal.draw(|f| render(f, &app))?;
 
+        // biased ensures key input is checked first every iteration
         tokio::select! {
-            _ = refresh_interval.tick() => {
-                refresh_sessions(&server, &mut app).await;
+            biased;
+
+            key_result = tokio::task::spawn_blocking(poll_key) => {
+                let maybe_key = key_result.context("input task panicked")??;
+                if let Some(code) = maybe_key {
+                    handle_key(&mut app, code, &cmd_tx, &server).await;
+                }
             }
             maybe_event = event_rx.recv() => {
                 if let Some(event) = maybe_event {
                     handle_server_event(&mut app, event);
                 }
             }
-            key_result = tokio::task::spawn_blocking(poll_key) => {
-                let maybe_key = key_result.context("input task panicked")??;
-                if let Some(code) = maybe_key {
-                    handle_key(&mut app, code, &cmd_tx, &server).await;
-                }
+            _ = refresh_interval.tick() => {
+                refresh_sessions(&server, &mut app).await;
             }
         }
 
