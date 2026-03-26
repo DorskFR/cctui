@@ -1,8 +1,9 @@
 use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{Path, State, WebSocketUpgrade};
 use axum::response::IntoResponse;
-use cctui_proto::ws::AgentEvent;
-use futures_util::StreamExt;
+use cctui_proto::ws::{AgentEvent, ServerEvent, TuiCommand};
+use futures_util::{SinkExt, StreamExt};
+use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::state::AppState;
@@ -108,4 +109,119 @@ async fn handle_agent_stream(mut socket: WebSocket, session_id: Uuid, state: App
     run_agent_socket(&mut socket, session_id, &state).await;
 
     tracing::info!(session_id = %session_id, "agent stream disconnected");
+}
+
+// --- TUI WebSocket ---
+
+pub async fn tui_ws(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_tui_ws(socket, state))
+}
+
+fn spawn_send_task(
+    mut sink: futures_util::stream::SplitSink<WebSocket, Message>,
+    mut rx: mpsc::Receiver<ServerEvent>,
+) {
+    tokio::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            let text = match serde_json::to_string(&event) {
+                Ok(t) => t,
+                Err(err) => {
+                    tracing::warn!(%err, "failed to serialize ServerEvent");
+                    continue;
+                }
+            };
+            if sink.send(Message::Text(text.into())).await.is_err() {
+                break;
+            }
+        }
+    });
+}
+
+fn spawn_relay_task(
+    mut receiver: tokio::sync::broadcast::Receiver<AgentEvent>,
+    session_id: Uuid,
+    event_tx: mpsc::Sender<ServerEvent>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            match receiver.recv().await {
+                Ok(agent_event) => {
+                    let server_event = ServerEvent::Stream { session_id, data: agent_event };
+                    if event_tx.send(server_event).await.is_err() {
+                        break;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!(session_id = %session_id, skipped = n, "TUI receiver lagged");
+                }
+            }
+        }
+    })
+}
+
+async fn handle_subscribe(
+    session_id: Uuid,
+    state: &AppState,
+    event_tx: &mpsc::Sender<ServerEvent>,
+    sub_handles: &mut Vec<tokio::task::JoinHandle<()>>,
+) {
+    let receiver = {
+        let registry = state.registry.read().await;
+        registry.subscribe(&session_id)
+    };
+
+    if let Some(receiver) = receiver {
+        let handle = spawn_relay_task(receiver, session_id, event_tx.clone());
+        sub_handles.push(handle);
+    } else {
+        tracing::warn!(session_id = %session_id, "tui_ws: session not found for subscribe");
+    }
+}
+
+async fn run_tui_socket(
+    mut stream: futures_util::stream::SplitStream<WebSocket>,
+    state: AppState,
+    event_tx: mpsc::Sender<ServerEvent>,
+) {
+    let mut sub_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+
+    while let Some(msg) = stream.next().await {
+        let text = match msg {
+            Ok(Message::Text(t)) => t,
+            Ok(Message::Close(_)) | Err(_) => break,
+            _ => continue,
+        };
+
+        let cmd: TuiCommand = match serde_json::from_str(&text) {
+            Ok(c) => c,
+            Err(err) => {
+                tracing::warn!(%err, "failed to parse TuiCommand");
+                continue;
+            }
+        };
+
+        match cmd {
+            TuiCommand::Subscribe { session_id } => {
+                handle_subscribe(session_id, &state, &event_tx, &mut sub_handles).await;
+            }
+            TuiCommand::Unsubscribe { .. } | TuiCommand::Message { .. } => {
+                // no-op for v1
+            }
+        }
+    }
+
+    for handle in sub_handles {
+        handle.abort();
+    }
+}
+
+async fn handle_tui_ws(socket: WebSocket, state: AppState) {
+    let (sink, stream) = socket.split();
+    let (tx, rx) = mpsc::channel::<ServerEvent>(256);
+
+    spawn_send_task(sink, rx);
+    run_tui_socket(stream, state, tx).await;
+
+    tracing::info!("TUI WebSocket disconnected");
 }

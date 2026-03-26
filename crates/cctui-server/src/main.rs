@@ -49,6 +49,7 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/api/v1/stream/{session_id}", get(ws::agent_stream))
+        .route("/api/v1/ws", get(ws::tui_ws))
         .nest("/api/v1", api_router)
         .with_state(state);
 
