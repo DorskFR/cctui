@@ -1,0 +1,23 @@
+[package]
+name = "cctui-tui"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+cctui-proto.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tokio-tungstenite.workspace = true
+futures-util.workspace = true
+anyhow.workspace = true
+ratatui = "0.30"
+crossterm = "0.29"
+reqwest = { version = "0.12", features = ["json"] }

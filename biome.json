@@ -1,0 +1,22 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.4.9/schema.json",
+  "files": {
+    "includes": [
+      "**/*.json",
+      "**/*.yaml",
+      "**/*.yml",
+      "**/*.md",
+      "!**/target/",
+      "!**/.sqlx/",
+      "!**/.superpowers/"
+    ]
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2
+  },
+  "linter": {
+    "enabled": false
+  }
+}

@@ -1,0 +1,17 @@
+pre-commit:
+  parallel: true
+  commands:
+    fmt:
+      glob: "*.rs"
+      run: cargo +nightly fmt --all
+      stage_fixed: true
+    clippy:
+      glob: "*.rs"
+      run: cargo clippy --workspace --all-targets -- -D warnings
+    check:
+      glob: "*.rs"
+      run: cargo check --workspace
+    biome:
+      glob: "*.{json,yaml,yml,md}"
+      run: biome check --write {staged_files}
+      stage_fixed: true
