@@ -13,5 +13,5 @@ pre-commit:
       run: cargo check --workspace
     biome:
       glob: "*.{json,yaml,yml,md}"
-      run: biome check --write {staged_files}
+      run: biome check --write --no-errors-on-unmatched {staged_files}
       stage_fixed: true

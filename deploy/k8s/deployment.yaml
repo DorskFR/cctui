@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cctui-server
+  labels:
+    app: cctui-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cctui-server
+  template:
+    metadata:
+      labels:
+        app: cctui-server
+    spec:
+      containers:
+        - name: cctui-server
+          image: cctui-server:latest
+          ports:
+            - containerPort: 8700
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: cctui-secrets
+                  key: database-url
+            - name: CCTUI_AGENT_TOKENS
+              valueFrom:
+                secretKeyRef:
+                  name: cctui-secrets
+                  key: agent-tokens
+            - name: CCTUI_ADMIN_TOKENS
+              valueFrom:
+                secretKeyRef:
+                  name: cctui-secrets
+                  key: admin-tokens
+            - name: CCTUI_EXTERNAL_URL
+              value: "https://cctui.dorsk.dev"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8700
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8700
+            initialDelaySeconds: 3
+            periodSeconds: 10
