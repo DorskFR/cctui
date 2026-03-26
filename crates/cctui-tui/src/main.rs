@@ -2,6 +2,7 @@
 
 mod app;
 mod client;
+mod views;
 mod widgets;
 
 use std::io;
@@ -15,8 +16,6 @@ use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use ratatui::backend::CrosstermBackend;
-use ratatui::text::Text;
-use ratatui::widgets::Paragraph;
 use ratatui::{Frame, Terminal};
 
 fn main() -> Result<()> {
@@ -121,8 +120,12 @@ fn handle_key(app: &mut App, code: KeyCode) {
     }
 }
 
-fn render(frame: &mut Frame, _app: &App) {
-    let text = Text::raw("Loading sessions...");
-    let paragraph = Paragraph::new(text);
-    frame.render_widget(paragraph, frame.area());
+fn render(frame: &mut Frame, app: &App) {
+    match app.view {
+        View::Sessions | View::Conversation => views::sessions::draw(frame, app),
+        View::Help => {
+            views::sessions::draw(frame, app);
+            views::help::draw(frame);
+        }
+    }
 }
