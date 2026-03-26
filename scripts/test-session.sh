@@ -55,7 +55,7 @@ curl -sf -H "Authorization: Bearer dev-admin" "$URL/api/v1/sessions/$SESSION_ID/
 echo ""
 echo "==> Session is live. Check the TUI!"
 echo "    Press Enter to deregister and clean up..."
-read -r
+read -r _
 
 echo "==> Deregistering..."
 curl -sf -X POST -H "Authorization: Bearer $TOKEN" "$URL/api/v1/sessions/$SESSION_ID/deregister"
