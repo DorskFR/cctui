@@ -1,8 +1,16 @@
 DATABASE_URL ?= postgres://postgres:postgres@localhost:5480/cctui
 TEST_DATABASE_URL ?= postgres://postgres:postgres@localhost:5481/cctui_test
+CCTUI_AGENT_TOKENS ?= dev-agent
+CCTUI_ADMIN_TOKENS ?= dev-admin
+CCTUI_URL ?= http://localhost:8700
+CCTUI_TOKEN ?= dev-admin
 
 export DATABASE_URL
 export TEST_DATABASE_URL
+export CCTUI_AGENT_TOKENS
+export CCTUI_ADMIN_TOKENS
+export CCTUI_URL
+export CCTUI_TOKEN
 
 .PHONY: setup build check test fmt lint clean
 .PHONY: db/up db/down db/reset db/migrate/up db/migrate/down db/migrate/add db/psql db/prepare
@@ -12,7 +20,7 @@ export TEST_DATABASE_URL
 # ── Setup ──────────────────────────────────────────────────
 
 setup: db/up db/migrate/up build  ## Full setup: database + build
-	@echo "Setup complete. Run 'make run/server' to start."
+	@echo "Setup complete. Run 'make run/server' then 'make run/tui'."
 
 # ── Build ──────────────────────────────────────────────────
 
