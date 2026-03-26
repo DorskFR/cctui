@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 mod app;
+mod client;
 
 use std::io;
 use std::time::Duration;
