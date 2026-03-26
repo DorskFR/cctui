@@ -2,6 +2,7 @@
 
 mod app;
 mod client;
+mod widgets;
 
 use std::io;
 use std::time::Duration;
