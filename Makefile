@@ -59,6 +59,12 @@ run/tui:  ## Run the TUI client
 run/shim:  ## Run the shim (pipe stdin to server WS)
 	cargo run -p cctui-shim -- relay --session-id $(SESSION_ID) --ws-url $(WS_URL)
 
+test/session:  ## Simulate a session (register, stream events, deregister)
+	./scripts/test-session.sh $(CCTUI_URL) $(CCTUI_TOKEN)
+
+setup/claude:  ## Configure local Claude Code to auto-register with the server
+	./scripts/setup-claude.sh $(CCTUI_URL) dev-agent
+
 # ── Database ───────────────────────────────────────────────
 
 db/up:  ## Start development database
