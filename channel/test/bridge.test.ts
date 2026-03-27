@@ -114,6 +114,38 @@ describe("ServerBridge", () => {
     expect(result.decision).toBe("allow");
   });
 
+  test("fetchPendingMessages polls with provided session ID (must be server UUID)", async () => {
+    let capturedUrl = "";
+    globalThis.fetch = mock(async (input: string | URL | Request) => {
+      capturedUrl = input.toString();
+      return new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as typeof fetch;
+
+    const bridge = new ServerBridge("http://localhost:8700", "dev-agent");
+    const serverUuid = "550e8400-e29b-41d4-a716-446655440000";
+    await bridge.fetchPendingMessages(serverUuid);
+    expect(capturedUrl).toBe(`http://localhost:8700/api/v1/sessions/${serverUuid}/messages/pending`);
+  });
+
+  test("startPolling calls onPendingMessage with fetched messages", async () => {
+    const messages = [{ id: "msg-1", content: "hello from TUI", created_at: "2026-01-01T00:00:00Z" }];
+    globalThis.fetch = mock(async () => {
+      return new Response(JSON.stringify(messages), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as typeof fetch;
+
+    const bridge = new ServerBridge("http://localhost:8700", "dev-agent");
+    const received: { id: string; content: string }[] = [];
+    bridge.onPendingMessage = (msg) => received.push(msg);
+    bridge.startPolling("server-uuid-123", 50); // 50ms interval for fast test
+
+    // Wait for at least one poll cycle
+    await new Promise((r) => setTimeout(r, 100));
+    bridge.stopPolling();
+
+    expect(received.length).toBeGreaterThanOrEqual(1);
+    expect(received[0].content).toBe("hello from TUI");
+  });
+
   test("registerSession sends auth header", async () => {
     let capturedHeaders: Record<string, string> = {};
     globalThis.fetch = mock(async (_url: string | URL | Request, init?: RequestInit) => {

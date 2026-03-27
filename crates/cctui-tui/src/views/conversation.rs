@@ -6,6 +6,18 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use crate::app::{App, ConversationLine, LineKind};
 use crate::theme;
 
+/// Find the largest byte index <= `max_bytes` that is a char boundary.
+fn truncate_at_char_boundary(s: &str, max_bytes: usize) -> &str {
+    if max_bytes >= s.len() {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 #[allow(clippy::cast_possible_truncation)]
 fn draw_sidebar(frame: &mut Frame, app: &App, area: Rect) {
     let flat = app.flattened_sessions();
@@ -21,7 +33,7 @@ fn draw_sidebar(frame: &mut Frame, app: &App, area: Rect) {
                 .get("project_name")
                 .and_then(|v| v.as_str())
                 .unwrap_or_else(|| s.working_dir.rsplit('/').next().unwrap_or("?"));
-            let truncated = if project.len() > 9 { &project[..9] } else { project };
+            let truncated = truncate_at_char_boundary(project, 9);
 
             let style = if i == app.selected_index {
                 theme::SELECTED
@@ -260,7 +272,7 @@ fn render_line(line: &ConversationLine) -> Line<'static> {
             };
 
             let truncated = if detail.len() > 80 {
-                format!("{}…", &detail[..80])
+                format!("{}…", truncate_at_char_boundary(detail, 80))
             } else {
                 detail.to_string()
             };
@@ -274,8 +286,7 @@ fn render_line(line: &ConversationLine) -> Line<'static> {
             ])
         }
         LineKind::ToolResult => {
-            let result_text =
-                if line.text.starts_with("  → ") { &line.text[4..] } else { &line.text };
+            let result_text = line.text.strip_prefix("  → ").unwrap_or(&line.text);
             Line::from(vec![
                 Span::styled(ts, theme::TIMESTAMP),
                 Span::raw("  "),
