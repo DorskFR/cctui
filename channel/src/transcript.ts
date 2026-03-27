@@ -10,58 +10,65 @@ interface ParsedEvent {
 
 const SKIP_TYPES = new Set(["file-history-snapshot", "queue-operation", "system"]);
 
-export function parseLine(line: string): ParsedEvent | null {
+/**
+ * Parse a single JSONL transcript line into one or more events.
+ * A single line can contain multiple content blocks (e.g. text + tool_use + text),
+ * so we return ALL of them.
+ */
+export function parseLine(line: string): ParsedEvent[] {
   let d: Record<string, unknown>;
   try {
     d = JSON.parse(line);
   } catch {
-    return null;
+    return [];
   }
 
   const msgType = (d.type as string) ?? "";
-  if (SKIP_TYPES.has(msgType)) return null;
+  if (SKIP_TYPES.has(msgType)) return [];
 
   const msg = (d.message as Record<string, unknown>) ?? {};
   const role = (msg.role as string) ?? "";
   const content = msg.content;
 
-  if (role === "system") return null;
+  if (role === "system") return [];
 
   if (role === "user") {
     if (typeof content === "string" && content) {
-      return { type: "user_message", content };
+      return [{ type: "user_message", content }];
     }
     if (Array.isArray(content)) {
+      const events: ParsedEvent[] = [];
       for (const part of content) {
         if (part.type === "tool_result") {
           const raw = String(part.content ?? "");
-          return { type: "tool_result", tool_use_id: part.tool_use_id ?? "", content: raw.slice(0, 500) };
-        }
-        if (part.type === "text") {
-          return { type: "user_message", content: part.text ?? "" };
+          events.push({ type: "tool_result", tool_use_id: part.tool_use_id ?? "", content: raw.slice(0, 500) });
+        } else if (part.type === "text") {
+          events.push({ type: "user_message", content: part.text ?? "" });
         }
       }
+      return events;
     }
-    return null;
+    return [];
   }
 
   if (role === "assistant") {
     if (Array.isArray(content)) {
+      const events: ParsedEvent[] = [];
       for (const part of content) {
         if (part.type === "text") {
-          return { type: "assistant_message", content: part.text ?? "" };
-        }
-        if (part.type === "tool_use") {
-          return { type: "tool_call", tool: part.name ?? "", input: part.input ?? {} };
+          events.push({ type: "assistant_message", content: part.text ?? "" });
+        } else if (part.type === "tool_use") {
+          events.push({ type: "tool_call", tool: part.name ?? "", input: part.input ?? {} });
         }
       }
+      return events;
     } else if (typeof content === "string" && content) {
-      return { type: "assistant_message", content };
+      return [{ type: "assistant_message", content }];
     }
-    return null;
+    return [];
   }
 
-  return null;
+  return [];
 }
 
 interface UsageData {
@@ -122,8 +129,8 @@ export async function tailTranscript(
 
       const ts = Math.floor(Date.now() / 1000);
 
-      const event = parseLine(trimmed);
-      if (event) {
+      const events = parseLine(trimmed);
+      for (const event of events) {
         onEvent({ session_id: sessionId, type: event.type, content: event.content, tool: event.tool, input: event.input, tool_use_id: event.tool_use_id, ts });
       }
 
