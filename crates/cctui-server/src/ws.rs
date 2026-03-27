@@ -1,19 +1,41 @@
 use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{Path, State, WebSocketUpgrade};
+use axum::http::{StatusCode, Uri};
 use axum::response::IntoResponse;
 use cctui_proto::ws::{AgentEvent, ServerEvent, TuiCommand};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
+use crate::auth::TokenRole;
 use crate::state::AppState;
+
+fn extract_token_from_uri(uri: &Uri) -> Option<String> {
+    uri.query().and_then(|q| {
+        q.split('&').find_map(|param| {
+            let mut parts = param.split('=');
+            match (parts.next(), parts.next()) {
+                (Some("token"), Some(token)) => Some(token.to_string()),
+                _ => None,
+            }
+        })
+    })
+}
 
 pub async fn agent_stream(
     ws: WebSocketUpgrade,
     Path(session_id): Path<Uuid>,
     State(state): State<AppState>,
-) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_agent_stream(socket, session_id, state))
+    uri: Uri,
+) -> Result<impl IntoResponse, StatusCode> {
+    let token = extract_token_from_uri(&uri).ok_or(StatusCode::UNAUTHORIZED)?;
+    let auth_ctx = state.auth_config.validate(&token).ok_or(StatusCode::UNAUTHORIZED)?;
+
+    if auth_ctx.role != TokenRole::Agent {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    Ok(ws.on_upgrade(move |socket| handle_agent_stream(socket, session_id, state)))
 }
 
 async fn handle_heartbeat(event: &AgentEvent, session_id: Uuid, state: &AppState) {
@@ -123,8 +145,19 @@ async fn handle_agent_stream(mut socket: WebSocket, session_id: Uuid, state: App
 
 // --- TUI WebSocket ---
 
-pub async fn tui_ws(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_tui_ws(socket, state))
+pub async fn tui_ws(
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+    uri: Uri,
+) -> Result<impl IntoResponse, StatusCode> {
+    let token = extract_token_from_uri(&uri).ok_or(StatusCode::UNAUTHORIZED)?;
+    let auth_ctx = state.auth_config.validate(&token).ok_or(StatusCode::UNAUTHORIZED)?;
+
+    if auth_ctx.role != TokenRole::Admin {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    Ok(ws.on_upgrade(move |socket| handle_tui_ws(socket, state)))
 }
 
 fn spawn_send_task(

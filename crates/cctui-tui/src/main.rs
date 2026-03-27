@@ -277,11 +277,123 @@ fn handle_server_event(app: &mut App, event: ServerEvent) {
     }
 }
 
+fn extract_tag_content(text: &str, tag: &str) -> Option<String> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    if let Some(start) = text.find(&open)
+        && let Some(end) = text[start..].find(&close)
+    {
+        let content_start = start + open.len();
+        return Some(text[content_start..content_start + end].to_string());
+    }
+    None
+}
+
+fn remove_tag_pair(text: &str, tag: &str) -> String {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    if let Some(start) = text.find(&open)
+        && let Some(end) = text[start..].find(&close)
+    {
+        let end_pos = start + end + close.len();
+        let mut result = text[..start].to_string();
+        result.push_str(&text[end_pos..]);
+        return remove_tag_pair(&result, tag);
+    }
+    text.to_string()
+}
+
+fn strip_all_tags(text: &str) -> String {
+    let mut result = String::new();
+    let mut in_tag = false;
+    for ch in text.chars() {
+        if ch == '<' {
+            in_tag = true;
+        } else if ch == '>' {
+            in_tag = false;
+        } else if !in_tag {
+            result.push(ch);
+        }
+    }
+    result
+}
+
+fn strip_ansi_codes(text: &str) -> String {
+    let mut result = String::new();
+    let mut chars = text.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' {
+            while let Some(&c) = chars.peek() {
+                chars.next();
+                if c.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else if ch == '[' {
+            let mut temp = chars.clone();
+            let is_ansi = temp.peek().is_some_and(|&c| c.is_ascii_digit() || c == ';');
+            if is_ansi {
+                while let Some(&c) = chars.peek() {
+                    chars.next();
+                    if c.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            } else {
+                result.push(ch);
+            }
+        } else {
+            result.push(ch);
+        }
+    }
+    result
+}
+
+/// Strip XML tags, ANSI codes, and system noise from user message text.
+/// Returns None if the result is empty or only whitespace.
+fn clean_user_message(text: &str) -> Option<String> {
+    let mut result = remove_tag_pair(text, "system-reminder");
+    result = remove_tag_pair(&result, "local-command-caveat");
+
+    let cmd_name = extract_tag_content(&result, "command-name");
+    let cmd_args = extract_tag_content(&result, "command-args");
+    let cmd_stdout = extract_tag_content(&result, "local-command-stdout");
+
+    result = remove_tag_pair(&result, "command-name");
+    result = remove_tag_pair(&result, "command-args");
+    result = remove_tag_pair(&result, "local-command-stdout");
+    result = strip_all_tags(&result);
+
+    if let Some(ref name) = cmd_name {
+        let mut cmd_line = format!("/{name}");
+        if let Some(ref args) = cmd_args
+            && !args.is_empty()
+        {
+            cmd_line.push(' ');
+            cmd_line.push_str(args);
+        }
+        if let Some(ref stdout) = cmd_stdout {
+            cmd_line.push_str(" → ");
+            cmd_line.push_str(stdout);
+        }
+        result = if result.trim().is_empty() { cmd_line } else { format!("{cmd_line} {result}") };
+    }
+
+    result = strip_ansi_codes(&result);
+    let trimmed = result.trim();
+    if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+}
+
 fn agent_event_to_line(event: &AgentEvent) -> ConversationLine {
     match event {
         AgentEvent::Text { content, ts } => {
             let (kind, text) = if content.starts_with("▷ User:") {
-                (LineKind::User, content.trim_start_matches("▷ User: ").to_string())
+                let user_text = content.trim_start_matches("▷ User: ");
+                clean_user_message(user_text).map_or_else(
+                    || (LineKind::System, String::new()),
+                    |cleaned| (LineKind::User, cleaned),
+                )
             } else {
                 (LineKind::Assistant, content.clone())
             };

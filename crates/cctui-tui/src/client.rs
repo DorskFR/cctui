@@ -70,8 +70,9 @@ impl ServerClient {
         &self,
     ) -> Result<(mpsc::Sender<TuiCommand>, mpsc::Receiver<ServerEvent>)> {
         let ws_url = format!(
-            "{}/api/v1/ws",
-            self.base_url.replacen("http://", "ws://", 1).replacen("https://", "wss://", 1)
+            "{}/api/v1/ws?token={}",
+            self.base_url.replacen("http://", "ws://", 1).replacen("https://", "wss://", 1),
+            self.token
         );
 
         let (ws_stream, _) = connect_async(&ws_url).await.context("connect websocket")?;
