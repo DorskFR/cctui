@@ -4,7 +4,6 @@ members = [
     "crates/cctui-proto",
     "crates/cctui-server",
     "crates/cctui-tui",
-    "crates/cctui-shim",
 ]
 
 [workspace.package]
