@@ -69,7 +69,7 @@ pub async fn setup(
         r#"#!/usr/bin/env python3
 import json, os, sys
 
-settings_path = os.path.expanduser("~/.claude/settings.local.json")
+settings_path = os.path.expanduser("~/.claude/settings.json")
 
 hooks = {{
     "SessionStart": [{{
