@@ -63,8 +63,8 @@ run/channel:  ## Install and run the channel server (for development)
 test/session:  ## Simulate a session (register, stream events, deregister)
 	./scripts/test-session.sh $(CCTUI_URL) $(CCTUI_TOKEN)
 
-setup/claude:  ## Configure local Claude Code to auto-register with the server
-	./scripts/setup-claude.sh $(CCTUI_URL) dev-agent
+setup/claude:  ## Configure local Claude Code to use cctui-channel
+	./scripts/setup-claude.sh $(CCTUI_URL) dev-agent 8701
 
 # ── Database ───────────────────────────────────────────────
 
