@@ -23,14 +23,18 @@ Working end-to-end: Claude sessions register with a central server, tool usage a
 - Scrolling (j/k/g/G), help overlay (?), basic chat input (i)
 - Connects to server via REST + WebSocket
 
-### Shim (`cctui-shim`)
-- stdin-to-WebSocket relay binary (not used in current flow)
+### Channel (`channel/` — Bun/TypeScript)
+- MCP channel server spawned by Claude Code via `.mcp.json`
+- Bidirectional messaging: TUI → Claude via channel notifications, Claude → TUI via reply tool
+- HTTP hook server for SessionStart (session registration) and PreToolUse (policy proxy)
+- Transcript JSONL tailer replaces Python streamer
+- Connects to cctui-server via REST for event posting and pending message polling
 
 ### Agent Integration
-- `SessionStart` hook: runs `~/.cctui/bin/bootstrap.sh` which reads Claude's hook JSON from stdin, registers with server using Claude's session_id
-- `PreToolUse` HTTP hook: server stores tool calls and broadcasts to TUI
-- Transcript streamer: `~/.cctui/bin/streamer.py` tails Claude's JSONL transcript file, POSTs parsed events to server
-- Setup: `make setup/claude` (with server running) installs hooks into `~/.claude/settings.json`
+- `SessionStart` hook: channel HTTP endpoint receives hook, registers session with server, starts transcript tailing
+- `PreToolUse` HTTP hook: channel proxies to server for policy check, caches result
+- Transcript tailer: built-in to channel, reads JSONL file, POSTs parsed events to server
+- Setup: `make setup/claude` (with server running) configures `.mcp.json` and installs hooks into `~/.claude/settings.json`
 
 ### Infrastructure
 - Docker Compose for dev/test PostgreSQL
@@ -42,23 +46,7 @@ Working end-to-end: Claude sessions register with a central server, tool usage a
 
 ## What's Missing / Needs Work
 
-### 1. Agent Sidecar (Replace Python Scripts)
-**Priority: High**
-
-The current bootstrap and transcript streamer are Python scripts injected via the setup endpoint. This is fragile:
-- Shell-in-python-in-shell escaping nightmares
-- Python dependency on every machine
-- No reconnection, no error handling, no graceful shutdown
-
-**Target:** A single `cctui-agent` Rust binary that:
-- Runs as a persistent sidecar process on each machine
-- Handles session registration on startup
-- Tails transcript files and streams events to server over WebSocket
-- Reconnects on server restart
-- Manages its own lifecycle (start on login, stop on shutdown)
-- Installed once per machine, not per-session
-
-### 2. TUI Polish
+### 1. TUI Polish
 **Priority: High**
 
 Current TUI is functional but crude:
@@ -71,15 +59,7 @@ Current TUI is functional but crude:
 - **Better scrolling** — page up/down, mouse scroll support
 - **Terminal resize handling** — test and fix layout at different terminal sizes
 
-### 3. Bidirectional Messaging (Claude Channels)
-**Priority: High**
-
-The `i` key opens input but messages don't reach the Claude session. Needs:
-- Research Claude Code's MCP Channels feature (research preview) for injecting messages into running sessions
-- Or use the Agent SDK to send messages programmatically
-- Server routes messages from TUI → target session via the established WebSocket or hook mechanism
-
-### 4. Policy Engine
+### 2. Policy Engine
 **Priority: Medium**
 
 Evolve from the existing workflow-guard daemon (`infra.dorsk.dev/overlays/ai/claude-worker/files/workflow-guard/daemon.py`):
@@ -87,21 +67,21 @@ Evolve from the existing workflow-guard daemon (`infra.dorsk.dev/overlays/ai/cla
 - Markdown-driven rules with [allowed]/[disallowed]/[transition] blocks
 - The PreToolUse check endpoint already has the hook; just needs policy logic instead of allow-all
 
-### 5. Credential Vault / Account Picker
+### 3. Credential Vault / Account Picker
 **Priority: Medium**
 
 - Store API keys in server (Vault-backed in K8s)
 - Assign accounts per session on registration
 - Support multiple Claude accounts (personal, work, different orgs)
 
-### 6. Prompt & Skill Library
+### 4. Prompt & Skill Library
 **Priority: Medium**
 
 - Central repository of prompts, skills, CLAUDE.md content
 - Push to agents on registration (bootstrap script already has placeholder)
 - Version management
 
-### 7. Token/Cost Dashboard
+### 5. Token/Cost Dashboard
 **Priority: Low**
 
 - The data model supports token tracking (TokenUsage struct) but:
@@ -109,7 +89,7 @@ Evolve from the existing workflow-guard daemon (`infra.dorsk.dev/overlays/ai/cla
   - Need to parse usage data from Claude's stream-json format
   - Aggregate dashboards in TUI (per-session, per-machine, total)
 
-### 8. Multi-Machine Deployment
+### 6. Multi-Machine Deployment
 **Priority: Low**
 
 - Currently tested only on localhost
