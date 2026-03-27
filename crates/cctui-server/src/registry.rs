@@ -243,4 +243,116 @@ mod tests {
             _ => panic!("unexpected event"),
         }
     }
+
+    #[test]
+    fn queue_and_take_pending_messages() {
+        let mut reg = Registry::new();
+        let id = Uuid::new_v4();
+        reg.register(make_session(id, None));
+
+        let msg_id = reg.queue_message(&id, "hello".into());
+        assert!(msg_id.is_some());
+
+        let msg_id2 = reg.queue_message(&id, "world".into());
+        assert!(msg_id2.is_some());
+
+        let messages = reg.take_pending_messages(&id);
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].content, "hello");
+        assert_eq!(messages[1].content, "world");
+
+        // Second take returns empty
+        let messages2 = reg.take_pending_messages(&id);
+        assert!(messages2.is_empty());
+    }
+
+    #[test]
+    fn queue_message_for_nonexistent_session_returns_none() {
+        let mut reg = Registry::new();
+        let result = reg.queue_message(&Uuid::new_v4(), "orphan".into());
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn take_pending_from_nonexistent_session_returns_empty() {
+        let mut reg = Registry::new();
+        let messages = reg.take_pending_messages(&Uuid::new_v4());
+        assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn mark_stale_transitions_active_to_disconnected_then_terminated() {
+        let mut reg = Registry::new();
+        let id = Uuid::new_v4();
+        reg.register(make_session(id, None));
+
+        // Simulate time passing by directly setting last_heartbeat
+        if let Some(handle) = reg.get_mut(&id) {
+            handle.last_heartbeat =
+                std::time::Instant::now().checked_sub(std::time::Duration::from_secs(100)).unwrap();
+        }
+
+        // 90s threshold for disconnected
+        let terminated = reg.mark_stale(90, 300);
+        assert!(terminated.is_empty());
+        assert_eq!(reg.get(&id).unwrap().session.status, SessionStatus::Disconnected);
+
+        // Set heartbeat even further back
+        if let Some(handle) = reg.get_mut(&id) {
+            handle.last_heartbeat =
+                std::time::Instant::now().checked_sub(std::time::Duration::from_secs(400)).unwrap();
+        }
+
+        let terminated = reg.mark_stale(90, 300);
+        assert_eq!(terminated.len(), 1);
+        assert_eq!(terminated[0], id);
+        assert_eq!(reg.get(&id).unwrap().session.status, SessionStatus::Terminated);
+    }
+
+    #[test]
+    fn update_heartbeat_refreshes_session() {
+        let mut reg = Registry::new();
+        let id = Uuid::new_v4();
+        reg.register(make_session(id, None));
+
+        reg.update_heartbeat(&id, 100, 50, 0.01);
+
+        let handle = reg.get(&id).unwrap();
+        assert_eq!(handle.token_usage.tokens_in, 100);
+        assert_eq!(handle.token_usage.tokens_out, 50);
+        assert_eq!(handle.session.status, SessionStatus::Active);
+    }
+
+    #[test]
+    fn update_token_usage_accumulates() {
+        let mut reg = Registry::new();
+        let id = Uuid::new_v4();
+        reg.register(make_session(id, None));
+
+        reg.update_token_usage(&id, 100, 50, 0.01);
+        reg.update_token_usage(&id, 200, 100, 0.02);
+
+        let handle = reg.get(&id).unwrap();
+        assert_eq!(handle.token_usage.tokens_in, 300);
+        assert_eq!(handle.token_usage.tokens_out, 150);
+    }
+
+    #[test]
+    fn set_policy_stores_rules() {
+        let mut reg = Registry::new();
+        let id = Uuid::new_v4();
+        reg.register(make_session(id, None));
+
+        let rules = vec![crate::policy::PolicyRule {
+            tool: "Bash".into(),
+            action: crate::policy::PolicyAction::Deny,
+            pattern: Some("rm -rf".into()),
+            reason: Some("dangerous".into()),
+        }];
+        reg.set_policy(&id, rules);
+
+        let handle = reg.get(&id).unwrap();
+        assert_eq!(handle.policy_rules.len(), 1);
+        assert_eq!(handle.policy_rules[0].tool, "Bash");
+    }
 }
