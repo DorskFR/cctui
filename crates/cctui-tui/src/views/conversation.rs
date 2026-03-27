@@ -134,16 +134,52 @@ fn render_line(line: &ConversationLine) -> Line<'static> {
             Span::raw("  "),
             Span::raw(line.text.clone()),
         ]),
-        LineKind::ToolCall => Line::from(vec![
-            Span::styled(ts, theme::TIMESTAMP),
-            Span::raw("  "),
-            Span::styled(line.text.clone(), theme::TOOL_CALL),
-        ]),
-        LineKind::ToolResult => Line::from(vec![
-            Span::styled(ts, theme::TIMESTAMP),
-            Span::raw("  "),
-            Span::styled(line.text.clone(), theme::TOOL_RESULT),
-        ]),
+        LineKind::ToolCall => {
+            let text = &line.text;
+            let (tool_name, detail) = if text.starts_with('[') {
+                text.find(']')
+                    .map_or(("", text.as_str()), |end| (&text[1..end], text[end + 2..].trim()))
+            } else {
+                ("", text.as_str())
+            };
+
+            let badge_style = match tool_name {
+                "Bash" => theme::TOOL_BADGE_BASH,
+                "Read" | "Write" | "Edit" | "Glob" => theme::TOOL_BADGE_FILE,
+                _ => theme::TOOL_BADGE_FG,
+            };
+
+            let detail_style = match tool_name {
+                "Bash" => theme::TOOL_COMMAND,
+                "Read" | "Write" | "Edit" | "Glob" => theme::TOOL_PATH,
+                _ => theme::TOOL_CALL,
+            };
+
+            let truncated = if detail.len() > 80 {
+                format!("{}…", &detail[..80])
+            } else {
+                detail.to_string()
+            };
+
+            Line::from(vec![
+                Span::styled(ts, theme::TIMESTAMP),
+                Span::raw("  "),
+                Span::styled(format!(" {tool_name} "), badge_style),
+                Span::raw(" "),
+                Span::styled(truncated, detail_style),
+            ])
+        }
+        LineKind::ToolResult => {
+            let result_text =
+                if line.text.starts_with("  → ") { &line.text[4..] } else { &line.text };
+            Line::from(vec![
+                Span::styled(ts, theme::TIMESTAMP),
+                Span::raw("  "),
+                Span::styled("→", theme::TOOL_RESULT_ARROW),
+                Span::raw(" "),
+                Span::styled(result_text.to_string(), theme::TOOL_RESULT),
+            ])
+        }
         LineKind::System => Line::from(vec![
             Span::styled(ts, theme::TIMESTAMP),
             Span::raw("  "),

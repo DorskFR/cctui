@@ -14,6 +14,14 @@ pub const TOOL_CALL: Style = Style::new().fg(Color::Yellow);
 pub const TOOL_RESULT: Style = Style::new().fg(Color::DarkGray);
 pub const TIMESTAMP: Style = Style::new().fg(Color::DarkGray);
 
+// Tool call styles
+pub const TOOL_BADGE_FG: Style = Style::new().fg(Color::Black).bg(Color::Yellow);
+pub const TOOL_BADGE_BASH: Style = Style::new().fg(Color::Black).bg(Color::Cyan);
+pub const TOOL_BADGE_FILE: Style = Style::new().fg(Color::Black).bg(Color::Blue);
+pub const TOOL_PATH: Style = Style::new().fg(Color::Blue);
+pub const TOOL_COMMAND: Style = Style::new().fg(Color::Cyan);
+pub const TOOL_RESULT_ARROW: Style = Style::new().fg(Color::DarkGray);
+
 // UI chrome
 pub const BORDER_FOCUSED: Style = Style::new().fg(Color::Blue);
 pub const BORDER_DIM: Style = Style::new().fg(Color::DarkGray);

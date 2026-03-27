@@ -24,6 +24,12 @@ pub struct StreamerEvent {
     pub tool_use_id: Option<String>,
     #[serde(default)]
     pub ts: i64,
+    #[serde(default)]
+    pub tokens_in: Option<u64>,
+    #[serde(default)]
+    pub tokens_out: Option<u64>,
+    #[serde(default)]
+    pub cost_usd: Option<f64>,
 }
 
 pub async fn ingest(
@@ -31,6 +37,20 @@ pub async fn ingest(
     Path(session_id): Path<Uuid>,
     Json(event): Json<StreamerEvent>,
 ) -> StatusCode {
+    // Handle usage events separately
+    if event.event_type == "usage" {
+        let tokens_in = event.tokens_in.unwrap_or(0);
+        let tokens_out = event.tokens_out.unwrap_or(0);
+        let cost_usd = event.cost_usd.unwrap_or(0.0);
+        state.registry.write().await.update_token_usage(
+            &session_id,
+            tokens_in,
+            tokens_out,
+            cost_usd,
+        );
+        return StatusCode::OK;
+    }
+
     // Map streamer event to AgentEvent for broadcast
     let agent_event = match event.event_type.as_str() {
         "user_message" => Some(AgentEvent::Text {

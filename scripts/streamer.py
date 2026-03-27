@@ -72,6 +72,28 @@ def parse_line(line):
     return None
 
 
+def parse_usage(line):
+    try:
+        d = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    msg = d.get("message", {})
+    usage = msg.get("usage") or d.get("usage")
+    if not usage:
+        return None
+    tokens_in = (usage.get("input_tokens", 0) +
+                 usage.get("cache_creation_input_tokens", 0) +
+                 usage.get("cache_read_input_tokens", 0))
+    tokens_out = usage.get("output_tokens", 0)
+    cost_usd = (tokens_in / 1_000_000) * 3.0 + (tokens_out / 1_000_000) * 15.0
+    return {
+        "type": "usage",
+        "tokens_in": tokens_in,
+        "tokens_out": tokens_out,
+        "cost_usd": cost_usd,
+    }
+
+
 def main():
     if len(sys.argv) < 3:
         print(f"Usage: {sys.argv[0]} <session_id> <transcript_path>", file=sys.stderr)
@@ -99,6 +121,11 @@ def main():
                 event["session_id"] = session_id
                 event["ts"] = int(time.time())
                 post_event(api_url, token, event)
+            usage = parse_usage(line.strip())
+            if usage:
+                usage["session_id"] = session_id
+                usage["ts"] = int(time.time())
+                post_event(api_url, token, usage)
 
         # Then: tail for new content
         while True:
@@ -109,6 +136,11 @@ def main():
                     event["session_id"] = session_id
                     event["ts"] = int(time.time())
                     post_event(api_url, token, event)
+                usage = parse_usage(line.strip())
+                if usage:
+                    usage["session_id"] = session_id
+                    usage["ts"] = int(time.time())
+                    post_event(api_url, token, usage)
             else:
                 # Check if the Claude session is still alive
                 try:

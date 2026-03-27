@@ -76,6 +76,22 @@ impl Registry {
         }
     }
 
+    pub fn update_token_usage(
+        &mut self,
+        id: &Uuid,
+        tokens_in: u64,
+        tokens_out: u64,
+        cost_usd: f64,
+    ) {
+        if let Some(handle) = self.sessions.get_mut(id) {
+            handle.token_usage.tokens_in += tokens_in;
+            handle.token_usage.tokens_out += tokens_out;
+            handle.token_usage.cost_usd += cost_usd;
+            handle.last_heartbeat = Instant::now();
+            handle.session.last_heartbeat = Utc::now();
+        }
+    }
+
     pub fn mark_stale(
         &mut self,
         disconnected_after_secs: u64,
