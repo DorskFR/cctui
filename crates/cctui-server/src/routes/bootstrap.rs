@@ -75,17 +75,22 @@ cat > "$CLAUDE_DIR/managed-settings.json" << 'CCTUI_EOF'
 {{
   "hooks": {{
     "SessionStart": [{{
-      "type": "command",
-      "command": "curl -sf -H 'Authorization: Bearer {token}' {server_url}/api/v1/bootstrap | sh"
+      "hooks": [{{
+        "type": "command",
+        "command": "curl -sf -H 'Authorization: Bearer {token}' {server_url}/api/v1/bootstrap | sh"
+      }}]
     }}],
     "PreToolUse": [{{
-      "type": "http",
-      "url": "{server_url}/api/v1/check",
-      "headers": {{"Authorization": "Bearer {token}"}}
+      "hooks": [{{
+        "type": "http",
+        "url": "{server_url}/api/v1/check"
+      }}]
     }}],
     "Stop": [{{
-      "type": "command",
-      "command": "curl -sf -X POST -H 'Authorization: Bearer {token}' {server_url}/api/v1/sessions/$(cat ~/.cctui/session_id)/deregister"
+      "hooks": [{{
+        "type": "command",
+        "command": "curl -sf -X POST -H 'Authorization: Bearer {token}' {server_url}/api/v1/sessions/$(cat ~/.cctui/session_id)/deregister"
+      }}]
     }}]
   }}
 }}

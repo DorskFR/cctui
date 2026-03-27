@@ -185,7 +185,8 @@ async fn handle_subscribe(
         let handle = spawn_relay_task(receiver, session_id, event_tx.clone());
         sub_handles.push(handle);
     } else {
-        tracing::warn!(session_id = %session_id, "tui_ws: session not found for subscribe");
+        // Historical/terminated sessions won't be in the registry — this is expected
+        tracing::debug!(session_id = %session_id, "tui_ws: session not in registry (historical)");
     }
 }
 
