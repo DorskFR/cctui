@@ -83,12 +83,6 @@ hooks = {{
             "type": "http",
             "url": "{server_url}/api/v1/check"
         }}]
-    }}],
-    "Stop": [{{
-        "hooks": [{{
-            "type": "command",
-            "command": "curl -sf -X POST -H 'Authorization: Bearer {token}' {server_url}/api/v1/sessions/$(cat ~/.cctui/session_id)/deregister"
-        }}]
     }}]
 }}
 
