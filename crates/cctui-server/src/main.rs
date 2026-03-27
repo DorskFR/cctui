@@ -59,7 +59,6 @@ async fn main() -> anyhow::Result<()> {
         .route("/keys/{id}", delete(routes::credentials::delete_api_key))
         .route("/keys/{id}/value", get(routes::credentials::get_api_key_value))
         .route("/machines/{machine_id}/commands/pending", get(routes::spawn::get_machine_commands))
-        .route("/setup", get(routes::bootstrap::setup))
         .layer(middleware::from_fn(auth::auth_middleware))
         .layer(Extension(auth_config));
 
@@ -67,8 +66,6 @@ async fn main() -> anyhow::Result<()> {
         .route("/health", get(|| async { "ok" }))
         .route("/api/v1/check", post(routes::check::check))
         .route("/api/v1/events/{session_id}", post(routes::events::ingest))
-        .route("/api/v1/scripts/streamer.py", get(routes::bootstrap::streamer))
-        .route("/api/v1/scripts/bootstrap.sh", get(routes::bootstrap::bootstrap_script))
         .route("/api/v1/stream/{session_id}", get(ws::agent_stream))
         .route("/api/v1/ws", get(ws::tui_ws))
         .nest("/api/v1", api_router)
