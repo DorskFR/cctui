@@ -2,6 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: cctui-server
+  namespace: cctui
   labels:
     app: cctui-server
 spec:
@@ -15,37 +16,43 @@ spec:
         app: cctui-server
     spec:
       containers:
-        - name: cctui-server
-          image: cctui-server:latest
-          ports:
-            - containerPort: 8700
-          env:
-            - name: DATABASE_URL
-              valueFrom:
-                secretKeyRef:
-                  name: cctui-secrets
-                  key: database-url
-            - name: CCTUI_AGENT_TOKENS
-              valueFrom:
-                secretKeyRef:
-                  name: cctui-secrets
-                  key: agent-tokens
-            - name: CCTUI_ADMIN_TOKENS
-              valueFrom:
-                secretKeyRef:
-                  name: cctui-secrets
-                  key: admin-tokens
-            - name: CCTUI_EXTERNAL_URL
-              value: "https://cctui.dorsk.dev"
-          livenessProbe:
-            httpGet:
-              path: /health
-              port: 8700
-            initialDelaySeconds: 5
-            periodSeconds: 30
-          readinessProbe:
-            httpGet:
-              path: /health
-              port: 8700
-            initialDelaySeconds: 3
-            periodSeconds: 10
+      - name: server
+        image: ghcr.io/dorskfr/cctui-server:latest
+        ports:
+        - containerPort: 8700
+        env:
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: cctui-secrets
+              key: database-url
+        - name: CCTUI_AGENT_TOKENS
+          valueFrom:
+            secretKeyRef:
+              name: cctui-secrets
+              key: agent-tokens
+        - name: CCTUI_ADMIN_TOKENS
+          valueFrom:
+            secretKeyRef:
+              name: cctui-secrets
+              key: admin-tokens
+        - name: CCTUI_URL
+          value: "https://cctui.dorsk.dev"
+        - name: CCTUI_VAULT_KEY
+          valueFrom:
+            secretKeyRef:
+              name: cctui-secrets
+              key: vault-key
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8700
+          initialDelaySeconds: 10
+          periodSeconds: 30
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi

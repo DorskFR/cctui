@@ -5,8 +5,24 @@ use std::time::Instant;
 use cctui_proto::models::{Session, SessionStatus, TokenUsage};
 use cctui_proto::ws::AgentEvent;
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
 use tokio::sync::{RwLock, broadcast};
 use uuid::Uuid;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingMessage {
+    pub id: Uuid,
+    pub content: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MachineCommand {
+    pub id: Uuid,
+    pub command_type: String,
+    pub payload: serde_json::Value,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
 
 #[derive(Debug)]
 pub struct SessionHandle {
@@ -16,18 +32,21 @@ pub struct SessionHandle {
     #[allow(dead_code)]
     pub token_usage: TokenUsage,
     pub stream_tx: broadcast::Sender<AgentEvent>,
+    pub pending_messages: Vec<PendingMessage>,
+    pub policy_rules: Vec<crate::policy::PolicyRule>,
 }
 
 pub type SharedRegistry = Arc<RwLock<Registry>>;
 
 pub struct Registry {
     sessions: HashMap<Uuid, SessionHandle>,
+    machine_commands: HashMap<String, Vec<MachineCommand>>,
 }
 
 #[allow(dead_code)]
 impl Registry {
     pub fn new() -> Self {
-        Self { sessions: HashMap::new() }
+        Self { sessions: HashMap::new(), machine_commands: HashMap::new() }
     }
 
     pub fn shared() -> SharedRegistry {
@@ -44,6 +63,8 @@ impl Registry {
                 last_heartbeat: Instant::now(),
                 token_usage: TokenUsage::default(),
                 stream_tx,
+                pending_messages: Vec::new(),
+                policy_rules: Vec::new(),
             },
         );
         tx
@@ -125,6 +146,48 @@ impl Registry {
 
     pub fn subscribe(&self, id: &Uuid) -> Option<broadcast::Receiver<AgentEvent>> {
         self.sessions.get(id).map(|h| h.stream_tx.subscribe())
+    }
+
+    pub fn queue_message(&mut self, session_id: &Uuid, content: String) -> Option<Uuid> {
+        let handle = self.sessions.get_mut(session_id)?;
+        let msg = PendingMessage { id: Uuid::new_v4(), content, created_at: Utc::now() };
+        let id = msg.id;
+        handle.pending_messages.push(msg);
+        Some(id)
+    }
+
+    pub fn take_pending_messages(&mut self, session_id: &Uuid) -> Vec<PendingMessage> {
+        self.sessions
+            .get_mut(session_id)
+            .map(|h| std::mem::take(&mut h.pending_messages))
+            .unwrap_or_default()
+    }
+
+    pub fn set_policy(&mut self, session_id: &Uuid, rules: Vec<crate::policy::PolicyRule>) {
+        if let Some(handle) = self.sessions.get_mut(session_id) {
+            handle.policy_rules = rules;
+        }
+    }
+
+    pub fn queue_machine_command(
+        &mut self,
+        machine_id: &str,
+        cmd_type: &str,
+        payload: serde_json::Value,
+    ) -> Uuid {
+        let cmd = MachineCommand {
+            id: Uuid::new_v4(),
+            command_type: cmd_type.to_string(),
+            payload,
+            created_at: chrono::Utc::now(),
+        };
+        let id = cmd.id;
+        self.machine_commands.entry(machine_id.to_string()).or_default().push(cmd);
+        id
+    }
+
+    pub fn take_machine_commands(&mut self, machine_id: &str) -> Vec<MachineCommand> {
+        self.machine_commands.remove(machine_id).unwrap_or_default()
     }
 }
 

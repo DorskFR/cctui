@@ -4,6 +4,7 @@ use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
+use crate::registry::PendingMessage;
 use cctui_proto::api::{ApiError, MessageRequest, SessionListItem, SessionListResponse};
 
 use crate::state::AppState;
@@ -119,11 +120,21 @@ pub async fn get_conversation(
 }
 
 pub async fn send_message(
-    State(_state): State<AppState>,
-    Path(_session_id): Path<Uuid>,
-    Json(_req): Json<MessageRequest>,
+    State(state): State<AppState>,
+    Path(session_id): Path<Uuid>,
+    Json(req): Json<MessageRequest>,
 ) -> StatusCode {
+    let mut registry = state.registry.write().await;
+    registry.queue_message(&session_id, req.content);
     StatusCode::ACCEPTED
+}
+
+pub async fn get_pending_messages(
+    State(state): State<AppState>,
+    Path(session_id): Path<Uuid>,
+) -> Json<Vec<PendingMessage>> {
+    let messages = state.registry.write().await.take_pending_messages(&session_id);
+    Json(messages)
 }
 
 pub async fn kill_session(
@@ -144,4 +155,14 @@ pub async fn kill_session(
     }
     tracing::info!(session_id = %session_id, "session killed");
     Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn set_session_policy(
+    State(state): State<AppState>,
+    Path(session_id): Path<Uuid>,
+    Json(rules): Json<Vec<crate::policy::PolicyRule>>,
+) -> StatusCode {
+    let mut registry = state.registry.write().await;
+    registry.set_policy(&session_id, rules);
+    StatusCode::OK
 }

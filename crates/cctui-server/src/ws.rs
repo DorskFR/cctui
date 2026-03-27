@@ -249,8 +249,10 @@ async fn run_tui_socket(
             TuiCommand::Subscribe { session_id } => {
                 handle_subscribe(session_id, &state, &event_tx, &mut sub_handles).await;
             }
-            TuiCommand::Unsubscribe { .. } | TuiCommand::Message { .. } => {
-                // no-op for v1
+            TuiCommand::Unsubscribe { .. } => {}
+            TuiCommand::Message { session_id, content } => {
+                let mut registry = state.registry.write().await;
+                registry.queue_message(&session_id, content);
             }
         }
     }

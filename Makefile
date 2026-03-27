@@ -16,6 +16,7 @@ export CCTUI_TOKEN
 .PHONY: db/up db/down db/reset db/migrate/up db/migrate/down db/migrate/add db/psql db/prepare
 .PHONY: db/test/up db/test/down db/test/migrate/up
 .PHONY: run/server run/tui run/shim
+.PHONY: build/server deploy/server deploy/secrets
 
 # ── Setup ──────────────────────────────────────────────────
 
@@ -109,6 +110,23 @@ db/test/migrate/up:  ## Apply migrations to test database
 
 clean:  ## Remove build artifacts
 	cargo clean
+
+# ── Deploy ──────────────────────────────────────────────────
+
+build/server:  ## Build server docker image
+	docker build -f deploy/Dockerfile -t ghcr.io/dorskfr/cctui-server:latest .
+
+deploy/server:  ## Deploy to K8s cluster
+	kubectl apply -k deploy/k8s/
+
+deploy/secrets:  ## Create K8s secrets (set env vars first)
+	kubectl create secret generic cctui-secrets \
+	  --namespace=cctui \
+	  --from-literal=database-url="$(DATABASE_URL)" \
+	  --from-literal=agent-tokens="$(CCTUI_AGENT_TOKENS)" \
+	  --from-literal=admin-tokens="$(CCTUI_ADMIN_TOKENS)" \
+	  --from-literal=vault-key="$(CCTUI_VAULT_KEY)" \
+	  --dry-run=client -o yaml | kubectl apply -f -
 
 # ── Help ───────────────────────────────────────────────────
 

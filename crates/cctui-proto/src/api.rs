@@ -71,3 +71,17 @@ pub struct MessageRequest {
 pub struct ApiError {
     pub error: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpawnRequest {
+    pub machine_id: String,
+    pub working_dir: String,
+    pub prompt: Option<String>,
+    pub prompt_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpawnResponse {
+    pub command_id: Uuid,
+    pub status: String,
+}

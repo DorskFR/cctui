@@ -26,10 +26,11 @@ pub async fn check(
         "PreToolUse check"
     );
 
+    // Parse session ID
+    let session_id = req.session_id.as_ref().and_then(|sid| Uuid::parse_str(sid).ok());
+
     // Store tool call as a stream event and broadcast to TUI subscribers
-    if let Some(ref sid) = req.session_id
-        && let Ok(session_id) = Uuid::parse_str(sid)
-    {
+    if let Some(sid) = session_id {
         let tool_name = req.tool_name.as_deref().unwrap_or("unknown");
         let tool_input = req.tool_input.clone().unwrap_or_default();
 
@@ -43,7 +44,7 @@ pub async fn check(
         let _ = sqlx::query(
             "INSERT INTO stream_events (session_id, event_type, payload) VALUES ($1, $2, $3)",
         )
-        .bind(session_id)
+        .bind(sid)
         .bind("tool_call")
         .bind(&payload)
         .execute(&state.pool)
@@ -52,7 +53,7 @@ pub async fn check(
         // Broadcast to live TUI subscribers
         {
             let registry = state.registry.read().await;
-            if let Some(handle) = registry.get(&session_id) {
+            if let Some(handle) = registry.get(&sid) {
                 let event = cctui_proto::ws::AgentEvent::ToolCall {
                     tool: tool_name.to_string(),
                     input: tool_input,
@@ -65,19 +66,42 @@ pub async fn check(
         // Update heartbeat to keep session alive
         {
             let mut registry = state.registry.write().await;
-            if let Some(handle) = registry.get_mut(&session_id) {
+            if let Some(handle) = registry.get_mut(&sid) {
                 handle.last_heartbeat = std::time::Instant::now();
                 handle.session.last_heartbeat = chrono::Utc::now();
             }
         }
     }
 
-    // v1: allow everything
-    Json(CheckResponse {
-        hook_specific_output: HookOutput {
-            hook_event_name: "PreToolUse".into(),
-            permission_decision: "allow".into(),
-            permission_decision_reason: None,
-        },
-    })
+    // Evaluate policy
+    let decision = {
+        let registry = state.registry.read().await;
+        session_id.and_then(|sid| registry.get(&sid)).map_or(
+            crate::policy::PolicyDecision::Allow,
+            |handle| {
+                crate::policy::evaluate(
+                    &handle.policy_rules,
+                    req.tool_name.as_deref().unwrap_or("unknown"),
+                    &req.tool_input.clone().unwrap_or_default(),
+                )
+            },
+        )
+    };
+
+    match decision {
+        crate::policy::PolicyDecision::Allow => Json(CheckResponse {
+            hook_specific_output: HookOutput {
+                hook_event_name: "PreToolUse".into(),
+                permission_decision: "allow".into(),
+                permission_decision_reason: None,
+            },
+        }),
+        crate::policy::PolicyDecision::Deny { reason } => Json(CheckResponse {
+            hook_specific_output: HookOutput {
+                hook_event_name: "PreToolUse".into(),
+                permission_decision: "deny".into(),
+                permission_decision_reason: Some(reason),
+            },
+        }),
+    }
 }

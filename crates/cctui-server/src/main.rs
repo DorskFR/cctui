@@ -1,12 +1,14 @@
 mod auth;
 mod config;
+mod crypto;
 mod db;
+mod policy;
 mod registry;
 mod routes;
 mod state;
 mod ws;
 
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Extension, Router, middleware};
 use config::Config;
 use registry::Registry;
@@ -37,11 +39,26 @@ async fn main() -> anyhow::Result<()> {
     let api_router = Router::new()
         .route("/sessions/register", post(routes::sessions::register))
         .route("/sessions/{id}/deregister", post(routes::sessions::deregister))
+        .route("/sessions/spawn", post(routes::spawn::spawn_session))
         .route("/sessions", get(routes::admin::list_sessions))
         .route("/sessions/{id}", get(routes::admin::get_session))
         .route("/sessions/{id}/conversation", get(routes::admin::get_conversation))
         .route("/sessions/{id}/message", post(routes::admin::send_message))
+        .route("/sessions/{id}/messages/pending", get(routes::admin::get_pending_messages))
         .route("/sessions/{id}/kill", post(routes::admin::kill_session))
+        .route("/sessions/{id}/policy", post(routes::admin::set_session_policy))
+        .route("/prompts", get(routes::prompts::list_prompts).post(routes::prompts::create_prompt))
+        .route(
+            "/prompts/{id}",
+            get(routes::prompts::get_prompt).delete(routes::prompts::delete_prompt),
+        )
+        .route(
+            "/keys",
+            get(routes::credentials::list_api_keys).post(routes::credentials::create_api_key),
+        )
+        .route("/keys/{id}", delete(routes::credentials::delete_api_key))
+        .route("/keys/{id}/value", get(routes::credentials::get_api_key_value))
+        .route("/machines/{machine_id}/commands/pending", get(routes::spawn::get_machine_commands))
         .route("/setup", get(routes::bootstrap::setup))
         .layer(middleware::from_fn(auth::auth_middleware))
         .layer(Extension(auth_config));
