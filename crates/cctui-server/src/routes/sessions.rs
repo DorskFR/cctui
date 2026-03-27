@@ -13,7 +13,12 @@ pub async fn register(
     State(state): State<AppState>,
     Json(req): Json<RegisterRequest>,
 ) -> Result<Json<RegisterResponse>, (StatusCode, Json<ApiError>)> {
-    let session_id = Uuid::new_v4();
+    // Use Claude's session_id if provided, otherwise generate one
+    let session_id = req
+        .claude_session_id
+        .as_deref()
+        .and_then(|s| Uuid::parse_str(s).ok())
+        .unwrap_or_else(Uuid::new_v4);
     let now = Utc::now();
     let session = Session {
         id: session_id,
@@ -29,7 +34,8 @@ pub async fn register(
 
     sqlx::query(
         r"INSERT INTO sessions (id, parent_id, account_id, machine_id, working_dir, status, registered_at, last_heartbeat, metadata)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+           ON CONFLICT (id) DO UPDATE SET status = 'active', last_heartbeat = $8, metadata = $9",
     )
     .bind(session.id)
     .bind(session.parent_id)

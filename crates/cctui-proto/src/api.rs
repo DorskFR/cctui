@@ -9,6 +9,7 @@ use crate::models::{SessionStatus, TokenUsage};
 pub struct RegisterRequest {
     pub machine_id: String,
     pub working_dir: String,
+    pub claude_session_id: Option<String>,
     pub parent_session_id: Option<Uuid>,
     pub metadata: Option<serde_json::Value>,
 }

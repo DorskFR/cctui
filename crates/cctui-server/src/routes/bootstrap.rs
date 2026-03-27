@@ -10,6 +10,9 @@ pub async fn bootstrap(
 ) -> String {
     let server_url = &state.config.external_url;
     let token = &ctx.token;
+    // The SessionStart hook receives JSON on stdin with Claude's own session_id.
+    // We read it and pass it to the register endpoint so PreToolUse calls
+    // (which also include Claude's session_id) can be correlated.
     format!(
         r#"#!/bin/sh
 set -e
@@ -17,41 +20,27 @@ set -e
 SERVER_URL="{server_url}"
 TOKEN="{token}"
 CCTUI_DIR="$HOME/.cctui"
-mkdir -p "$CCTUI_DIR/bin"
+mkdir -p "$CCTUI_DIR"
+
+# Read Claude's hook input from stdin to get the session_id
+HOOK_INPUT=$(cat)
+CLAUDE_SESSION_ID=$(echo "$HOOK_INPUT" | grep -o '"session_id":"[^"]*"' | cut -d'"' -f4)
 
 # Collect metadata
 MACHINE_ID=$(hostname)
-WORKING_DIR=$(pwd)
-GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "none")
+WORKING_DIR=$(echo "$HOOK_INPUT" | grep -o '"cwd":"[^"]*"' | cut -d'"' -f4)
+WORKING_DIR="${{WORKING_DIR:-$(pwd)}}"
+GIT_BRANCH=$(git -C "$WORKING_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "none")
 PROJECT_NAME=$(basename "$WORKING_DIR")
+MODEL=$(echo "$HOOK_INPUT" | grep -o '"model":"[^"]*"' | cut -d'"' -f4)
 
-# Register session
-RESPONSE=$(curl -sf -X POST "$SERVER_URL/api/v1/sessions/register" \
+# Register with Claude's session_id so PreToolUse calls can be matched
+curl -sf -X POST "$SERVER_URL/api/v1/sessions/register" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d "{{\"machine_id\":\"$MACHINE_ID\",\"working_dir\":\"$WORKING_DIR\",\"metadata\":{{\"git_branch\":\"$GIT_BRANCH\",\"project_name\":\"$PROJECT_NAME\"}}}}")
+  -d "{{\"claude_session_id\":\"$CLAUDE_SESSION_ID\",\"machine_id\":\"$MACHINE_ID\",\"working_dir\":\"$WORKING_DIR\",\"metadata\":{{\"git_branch\":\"$GIT_BRANCH\",\"project_name\":\"$PROJECT_NAME\",\"model\":\"$MODEL\"}}}}" > /dev/null
 
-SESSION_ID=$(echo "$RESPONSE" | grep -o '"session_id":"[^"]*"' | cut -d'"' -f4)
-echo "$SESSION_ID" > "$CCTUI_DIR/session_id"
-
-# Download shim if not present
-if [ ! -f "$CCTUI_DIR/bin/cctui-shim" ]; then
-    ARCH=$(uname -m)
-    OS=$(uname -s | tr '[:upper:]' '[:lower:]')
-    curl -sf -o "$CCTUI_DIR/bin/cctui-shim" \
-        "$SERVER_URL/api/v1/shim/$OS/$ARCH" && \
-    chmod +x "$CCTUI_DIR/bin/cctui-shim" || true
-fi
-
-# Start shim in background if available
-if [ -x "$CCTUI_DIR/bin/cctui-shim" ]; then
-    WS_URL=$(echo "$RESPONSE" | grep -o '"ws_url":"[^"]*"' | cut -d'"' -f4)
-    "$CCTUI_DIR/bin/cctui-shim" relay \
-        --session-id "$SESSION_ID" \
-        --ws-url "$WS_URL" &
-fi
-
-echo "[cctui] registered as $SESSION_ID on $MACHINE_ID"
+echo "$CLAUDE_SESSION_ID" > "$CCTUI_DIR/session_id"
 "#
     )
 }
