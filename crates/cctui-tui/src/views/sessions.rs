@@ -145,14 +145,36 @@ fn draw_message_input(frame: &mut Frame, input: &str, parent_area: Rect) {
 fn format_agent_event(event: &AgentEvent) -> String {
     match event {
         AgentEvent::Text { content, .. } => content.clone(),
-        AgentEvent::ToolCall { tool, .. } => format!("[tool:{tool}]"),
-        AgentEvent::ToolResult { tool, output_summary, .. } => {
-            format!("[{tool}] {output_summary}")
+        AgentEvent::ToolCall { tool, input, .. } => {
+            let detail = format_tool_input(tool, input);
+            format!("[{tool}] {detail}")
+        }
+        AgentEvent::ToolResult { output_summary, .. } => {
+            format!("  → {output_summary}")
         }
         AgentEvent::Heartbeat { tokens_in, tokens_out, .. } => {
             format!("[heartbeat] in:{tokens_in} out:{tokens_out}")
         }
     }
+}
+
+fn format_tool_input(tool: &str, input: &serde_json::Value) -> String {
+    let key = match tool {
+        "Bash" => "command",
+        "Read" | "Write" | "Edit" => "file_path",
+        "Glob" | "Grep" => "pattern",
+        "WebFetch" => "url",
+        "WebSearch" => "query",
+        "Agent" => "description",
+        _ => "",
+    };
+
+    if !key.is_empty() {
+        return input.get(key).and_then(serde_json::Value::as_str).unwrap_or("").to_string();
+    }
+
+    let s = serde_json::to_string(input).unwrap_or_default();
+    if s.len() > 100 { format!("{}...", &s[..100]) } else { s }
 }
 
 // Used in Task 20 for populating stream_buffer
