@@ -10,6 +10,25 @@ interface ParsedEvent {
 
 const SKIP_TYPES = new Set(["file-history-snapshot", "queue-operation", "system"]);
 
+/** Extract text from a tool_result content field, which can be a string, array of blocks, or object. */
+function extractToolResultContent(content: unknown): string {
+  if (content == null) return "";
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((block: Record<string, unknown>) => {
+        if (block.type === "text" && typeof block.text === "string") return block.text;
+        return "";
+      })
+      .filter(Boolean)
+      .join("\n");
+  }
+  if (typeof content === "object") {
+    try { return JSON.stringify(content); } catch { return ""; }
+  }
+  return String(content);
+}
+
 /**
  * Parse a single JSONL transcript line into one or more events.
  * A single line can contain multiple content blocks (e.g. text + tool_use + text),
@@ -40,7 +59,7 @@ export function parseLine(line: string): ParsedEvent[] {
       const events: ParsedEvent[] = [];
       for (const part of content) {
         if (part.type === "tool_result") {
-          const raw = String(part.content ?? "");
+          const raw = extractToolResultContent(part.content);
           events.push({ type: "tool_result", tool_use_id: part.tool_use_id ?? "", content: raw.slice(0, 500) });
         } else if (part.type === "text") {
           events.push({ type: "user_message", content: part.text ?? "" });

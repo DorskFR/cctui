@@ -79,3 +79,7 @@ with open(settings_path, "w") as f:
     json.dump(settings, f, indent=2)
 
 print(f"[cctui] done - Claude Code will use cctui-channel connecting to {SERVER_URL}")
+print()
+print("[cctui] IMPORTANT: To enable TUI→Claude messaging, start Claude with:")
+print("        claude --dangerously-load-development-channels server:cctui")
+print("        Without this flag, Claude sees the tools but won't receive channel messages.")

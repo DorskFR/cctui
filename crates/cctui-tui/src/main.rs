@@ -81,7 +81,13 @@ async fn run(
             }
             maybe_event = event_rx.recv(), if ws_open => {
                 match maybe_event {
-                    Some(event) => handle_server_event(&mut app, event),
+                    Some(event) => {
+                        handle_server_event(&mut app, event);
+                        // Auto-scroll to bottom if user was already at (or near) the bottom
+                        if app.view == View::Conversation {
+                            app.scroll_offset = usize::MAX;
+                        }
+                    }
                     None => ws_open = false,
                 }
             }

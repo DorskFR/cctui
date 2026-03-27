@@ -189,6 +189,29 @@ describe("parseLine", () => {
     expect(results).toHaveLength(1);
     expect(results[0].content).toBe("");
   });
+
+  test("handles tool_result with array of content blocks (MCP style)", () => {
+    const line = JSON.stringify({
+      type: "human",
+      message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: [
+        { type: "text", text: "first block" },
+        { type: "text", text: "second block" },
+      ] }] },
+    });
+    const results = parseLine(line);
+    expect(results).toHaveLength(1);
+    expect(results[0].content).toBe("first block\nsecond block");
+  });
+
+  test("handles tool_result with object content (not string)", () => {
+    const line = JSON.stringify({
+      type: "human",
+      message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: { key: "value" } }] },
+    });
+    const results = parseLine(line);
+    expect(results).toHaveLength(1);
+    expect(results[0].content).toBe('{"key":"value"}');
+  });
 });
 
 describe("parseUsage", () => {
