@@ -10,6 +10,7 @@ pub enum AgentEvent {
     ToolCall { tool: String, input: serde_json::Value, ts: i64 },
     ToolResult { tool: String, output_summary: String, ts: i64 },
     Heartbeat { tokens_in: u64, tokens_out: u64, cost_usd: f64, ts: i64 },
+    Reply { content: String, ts: i64 },
 }
 
 // --- TUI → Server ---

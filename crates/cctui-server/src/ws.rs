@@ -68,6 +68,7 @@ async fn store_and_broadcast(event: AgentEvent, session_id: Uuid, state: &AppSta
         AgentEvent::ToolCall { .. } => "tool_call",
         AgentEvent::ToolResult { .. } => "tool_result",
         AgentEvent::Heartbeat { .. } => "heartbeat",
+        AgentEvent::Reply { .. } => "reply",
     };
 
     let _ = sqlx::query(

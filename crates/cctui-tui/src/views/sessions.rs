@@ -167,7 +167,7 @@ pub fn format_tool_input(tool: &str, input: &serde_json::Value) -> String {
 
 pub fn agent_event_to_string(event: &AgentEvent) -> String {
     match event {
-        AgentEvent::Text { content, .. } => content.clone(),
+        AgentEvent::Text { content, .. } | AgentEvent::Reply { content, .. } => content.clone(),
         AgentEvent::ToolCall { tool, input, .. } => {
             let detail = format_tool_input(tool, input);
             format!("[{tool}] {detail}")

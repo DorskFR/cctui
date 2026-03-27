@@ -457,6 +457,9 @@ fn agent_event_to_line(event: &AgentEvent) -> ConversationLine {
         AgentEvent::Heartbeat { ts, .. } => {
             ConversationLine { timestamp: *ts, kind: LineKind::System, text: String::new() }
         }
+        AgentEvent::Reply { content, ts } => {
+            ConversationLine { timestamp: *ts, kind: LineKind::Assistant, text: content.clone() }
+        }
     }
 }
 
