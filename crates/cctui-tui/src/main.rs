@@ -77,6 +77,7 @@ async fn run(
 
     init_sessions(&server, &mut app).await;
     let (cmd_tx, mut event_rx) = connect_ws_or_dummy(&server).await;
+    let mut ws_open = true;
     let mut refresh_interval = time::interval(Duration::from_secs(5));
     // Skip the first immediate tick so it doesn't starve input on startup
     refresh_interval.tick().await;
@@ -94,9 +95,10 @@ async fn run(
                     handle_key(&mut app, code, &cmd_tx, &server).await;
                 }
             }
-            maybe_event = event_rx.recv() => {
-                if let Some(event) = maybe_event {
-                    handle_server_event(&mut app, event);
+            maybe_event = event_rx.recv(), if ws_open => {
+                match maybe_event {
+                    Some(event) => handle_server_event(&mut app, event),
+                    None => ws_open = false, // channel closed, stop polling it
                 }
             }
             _ = refresh_interval.tick() => {
