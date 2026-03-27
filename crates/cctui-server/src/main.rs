@@ -92,7 +92,7 @@ async fn reaper_task(state: AppState) {
         };
         for session_id in &terminated {
             let _ = sqlx::query("UPDATE sessions SET status = 'terminated' WHERE id = $1")
-                .bind(session_id)
+                .bind(session_id.as_str())
                 .execute(&state.pool)
                 .await;
             tracing::info!(session_id = %session_id, "session terminated (stale)");

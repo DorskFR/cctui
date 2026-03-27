@@ -1,6 +1,5 @@
 use axum::Json;
 use axum::extract::State;
-use uuid::Uuid;
 
 use cctui_proto::api::{CheckResponse, HookOutput};
 
@@ -26,8 +25,7 @@ pub async fn check(
         "PreToolUse check"
     );
 
-    // Parse session ID
-    let session_id = req.session_id.as_ref().and_then(|sid| Uuid::parse_str(sid).ok());
+    let session_id = req.session_id.as_deref();
 
     // Store tool call as a stream event and broadcast to TUI subscribers
     if let Some(sid) = session_id {
@@ -53,7 +51,7 @@ pub async fn check(
         // Broadcast to live TUI subscribers
         {
             let registry = state.registry.read().await;
-            if let Some(handle) = registry.get(&sid) {
+            if let Some(handle) = registry.get(sid) {
                 let event = cctui_proto::ws::AgentEvent::ToolCall {
                     tool: tool_name.to_string(),
                     input: tool_input,
@@ -66,7 +64,7 @@ pub async fn check(
         // Update heartbeat to keep session alive
         {
             let mut registry = state.registry.write().await;
-            if let Some(handle) = registry.get_mut(&sid) {
+            if let Some(handle) = registry.get_mut(sid) {
                 handle.last_heartbeat = std::time::Instant::now();
                 handle.session.last_heartbeat = chrono::Utc::now();
             }
@@ -76,7 +74,7 @@ pub async fn check(
     // Evaluate policy
     let decision = {
         let registry = state.registry.read().await;
-        session_id.and_then(|sid| registry.get(&sid)).map_or(
+        session_id.and_then(|sid| registry.get(sid)).map_or(
             crate::policy::PolicyDecision::Allow,
             |handle| {
                 crate::policy::evaluate(

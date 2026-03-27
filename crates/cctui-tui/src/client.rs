@@ -6,7 +6,6 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
-use uuid::Uuid;
 
 pub struct ServerClient {
     base_url: String,
@@ -36,7 +35,7 @@ impl ServerClient {
         Ok(resp)
     }
 
-    pub async fn get_conversation(&self, session_id: Uuid) -> Result<Vec<Value>> {
+    pub async fn get_conversation(&self, session_id: &str) -> Result<Vec<Value>> {
         let url = format!("{}/api/v1/sessions/{}/conversation", self.base_url, session_id);
         let resp = self
             .http
@@ -53,7 +52,7 @@ impl ServerClient {
         Ok(resp)
     }
 
-    pub async fn kill_session(&self, session_id: Uuid) -> Result<()> {
+    pub async fn kill_session(&self, session_id: &str) -> Result<()> {
         let url = format!("{}/api/v1/sessions/{}/kill", self.base_url, session_id);
         self.http
             .post(&url)

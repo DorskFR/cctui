@@ -237,7 +237,7 @@ async fn handle_input_mode(app: &mut App, code: KeyCode, cmd_tx: &mpsc::Sender<T
         KeyCode::Enter => {
             let content = std::mem::take(&mut app.message_input);
             if !content.is_empty()
-                && let Some(id) = app.selected_session().map(|s| s.id)
+                && let Some(id) = app.selected_session().map(|s| s.id.clone())
             {
                 let _ = cmd_tx.send(TuiCommand::Message { session_id: id, content }).await;
             }
@@ -260,10 +260,10 @@ async fn load_conversation(
     cmd_tx: &mpsc::Sender<TuiCommand>,
     server: &ServerClient,
 ) {
-    let Some(id) = app.selected_session().map(|s| s.id) else { return };
+    let Some(id) = app.selected_session().map(|s| s.id.clone()) else { return };
 
-    if let std::collections::hash_map::Entry::Vacant(entry) = app.stream_buffer.entry(id)
-        && let Ok(events) = server.get_conversation(id).await
+    if let std::collections::hash_map::Entry::Vacant(entry) = app.stream_buffer.entry(id.clone())
+        && let Ok(events) = server.get_conversation(&id).await
     {
         let lines: Vec<ConversationLine> = events
             .iter()
@@ -275,7 +275,7 @@ async fn load_conversation(
         }
     }
 
-    let _ = cmd_tx.send(TuiCommand::Subscribe { session_id: id }).await;
+    let _ = cmd_tx.send(TuiCommand::Subscribe { session_id: id.clone() }).await;
 }
 
 // --- Server events ---

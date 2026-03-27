@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 // --- Agent → Server (stream events) ---
 
@@ -18,9 +17,9 @@ pub enum AgentEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TuiCommand {
-    Subscribe { session_id: Uuid },
-    Unsubscribe { session_id: Uuid },
-    Message { session_id: Uuid, content: String },
+    Subscribe { session_id: String },
+    Unsubscribe { session_id: String },
+    Message { session_id: String, content: String },
 }
 
 // --- Server → TUI ---
@@ -28,10 +27,10 @@ pub enum TuiCommand {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerEvent {
-    Stream { session_id: Uuid, data: AgentEvent },
-    Status { session_id: Uuid, status: crate::models::SessionStatus },
+    Stream { session_id: String, data: AgentEvent },
+    Status { session_id: String, status: crate::models::SessionStatus },
     SessionRegistered { session: crate::models::Session },
-    SessionDeregistered { session_id: Uuid },
+    SessionDeregistered { session_id: String },
 }
 
 #[cfg(test)]
@@ -48,7 +47,7 @@ mod tests {
 
     #[test]
     fn tui_command_tagged_serialization() {
-        let cmd = TuiCommand::Subscribe { session_id: Uuid::nil() };
+        let cmd = TuiCommand::Subscribe { session_id: "test-session".into() };
         let json = serde_json::to_string(&cmd).unwrap();
         assert!(json.contains(r#""type":"subscribe""#));
     }
@@ -114,7 +113,7 @@ mod tests {
     #[test]
     fn server_event_serialization() {
         let event = ServerEvent::Stream {
-            session_id: Uuid::nil(),
+            session_id: "test-session".into(),
             data: AgentEvent::Text { content: "hi".into(), ts: 1 },
         };
         let json = serde_json::to_string(&event).unwrap();
@@ -123,7 +122,8 @@ mod tests {
 
     #[test]
     fn tui_command_message_serialization() {
-        let cmd = TuiCommand::Message { session_id: Uuid::nil(), content: "hello".into() };
+        let cmd =
+            TuiCommand::Message { session_id: "test-session".into(), content: "hello".into() };
         let json = serde_json::to_string(&cmd).unwrap();
         assert!(json.contains(r#""type":"message""#));
         assert!(json.contains(r#""content":"hello""#));

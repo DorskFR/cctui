@@ -10,19 +10,19 @@ pub struct RegisterRequest {
     pub machine_id: String,
     pub working_dir: String,
     pub claude_session_id: Option<String>,
-    pub parent_session_id: Option<Uuid>,
+    pub parent_session_id: Option<String>,
     pub metadata: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RegisterResponse {
-    pub session_id: Uuid,
+    pub session_id: String,
     pub ws_url: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CheckRequest {
-    pub session_id: Uuid,
+    pub session_id: String,
     pub tool_name: String,
     pub tool_input: serde_json::Value,
 }
@@ -47,8 +47,8 @@ pub struct HookOutput {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionListItem {
-    pub id: Uuid,
-    pub parent_id: Option<Uuid>,
+    pub id: String,
+    pub parent_id: Option<String>,
     pub machine_id: String,
     pub working_dir: String,
     pub status: SessionStatus,

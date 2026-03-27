@@ -2,7 +2,6 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use chrono::Utc;
-use uuid::Uuid;
 
 use cctui_proto::api::{ApiError, RegisterRequest, RegisterResponse};
 use cctui_proto::models::{Session, SessionStatus};
@@ -13,15 +12,11 @@ pub async fn register(
     State(state): State<AppState>,
     Json(req): Json<RegisterRequest>,
 ) -> Result<Json<RegisterResponse>, (StatusCode, Json<ApiError>)> {
-    // Use Claude's session_id if provided, otherwise generate one
-    let session_id = req
-        .claude_session_id
-        .as_deref()
-        .and_then(|s| Uuid::parse_str(s).ok())
-        .unwrap_or_else(Uuid::new_v4);
+    // Use Claude's session_id directly — it's our primary key now
+    let session_id = req.claude_session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let now = Utc::now();
     let session = Session {
-        id: session_id,
+        id: session_id.clone(),
         parent_id: req.parent_session_id,
         account_id: None,
         machine_id: req.machine_id,
@@ -37,9 +32,9 @@ pub async fn register(
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
            ON CONFLICT (id) DO UPDATE SET status = 'active', last_heartbeat = $8, metadata = $9",
     )
-    .bind(session.id)
-    .bind(session.parent_id)
-    .bind(session.account_id)
+    .bind(&session.id)
+    .bind(&session.parent_id)
+    .bind(&session.account_id)
     .bind(&session.machine_id)
     .bind(&session.working_dir)
     .bind("active")
@@ -69,10 +64,10 @@ pub async fn register(
 
 pub async fn deregister(
     State(state): State<AppState>,
-    Path(session_id): Path<Uuid>,
+    Path(session_id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
     sqlx::query("UPDATE sessions SET status = 'terminated' WHERE id = $1")
-        .bind(session_id)
+        .bind(&session_id)
         .execute(&state.pool)
         .await
         .map_err(|e| {

@@ -18,9 +18,9 @@ let tailAbort: AbortController | null = null;
 // --- MCP channel server (stdio) ---
 const { pushMessage, connect } = createChannelServer({
   onReply: async (text) => {
-    if (!session || !session.serverSessionId) return;
-    await bridge.postEvent(session.serverSessionId, {
-      session_id: session.serverSessionId,
+    if (!session) return;
+    await bridge.postEvent(session.sessionId, {
+      session_id: session.sessionId,
       type: "assistant_message",
       content: `[Reply to TUI] ${text}`,
       ts: Math.floor(Date.now() / 1000),
@@ -45,8 +45,7 @@ function onSessionStart(payload: SessionStartPayload, machineId: string) {
   } catch {}
 
   session = {
-    claudeSessionId: payload.session_id,
-    serverSessionId: "", // filled after registration
+    sessionId: payload.session_id,
     transcriptPath: payload.transcript_path ?? null,
     cwd,
     machineId,
@@ -65,25 +64,18 @@ function onSessionStart(payload: SessionStartPayload, machineId: string) {
         transcript_path: payload.transcript_path ?? "",
       },
     })
-    .then((res) => {
-      const serverSessionId = res.session_id;
-      console.error(`[cctui-channel] session registered: claude=${payload.session_id} server=${serverSessionId}`);
+    .then(() => {
+      console.error(`[cctui-channel] session registered: ${payload.session_id}`);
 
-      // Update session state with server-assigned UUID
-      if (session) {
-        session.serverSessionId = serverSessionId;
-      }
+      // Poll using the same session ID — server now uses it as primary key
+      bridge.startPolling(payload.session_id);
 
-      // Poll using the server UUID — the pending messages endpoint expects it
-      bridge.startPolling(serverSessionId);
-
-      // Post events and tail transcript using the server UUID
       if (session?.transcriptPath) {
         tailAbort = new AbortController();
         tailTranscript(
-          serverSessionId,
+          payload.session_id,
           session.transcriptPath,
-          (event) => bridge.postEvent(serverSessionId, event),
+          (event) => bridge.postEvent(payload.session_id, event),
           tailAbort.signal,
         );
       }

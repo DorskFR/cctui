@@ -1,6 +1,5 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -14,9 +13,9 @@ pub enum SessionStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
-    pub id: Uuid,
-    pub parent_id: Option<Uuid>,
-    pub account_id: Option<Uuid>,
+    pub id: String,
+    pub parent_id: Option<String>,
+    pub account_id: Option<String>,
     pub machine_id: String,
     pub working_dir: String,
     pub status: SessionStatus,
@@ -53,7 +52,7 @@ mod tests {
     #[test]
     fn session_roundtrips_json() {
         let session = Session {
-            id: Uuid::nil(),
+            id: "test-session-id".into(),
             parent_id: None,
             account_id: None,
             machine_id: "test-machine".into(),

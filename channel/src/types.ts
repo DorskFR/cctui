@@ -54,10 +54,8 @@ export interface PendingMessage {
 
 /** Session state held by the channel after SessionStart fires. */
 export interface SessionState {
-  /** Claude Code's own session ID (from the hook payload). */
-  claudeSessionId: string;
-  /** Server-assigned UUID returned by POST /sessions/register. */
-  serverSessionId: string;
+  /** Session ID — same as Claude Code's session_id, used as primary key everywhere. */
+  sessionId: string;
   transcriptPath: string | null;
   cwd: string;
   machineId: string;

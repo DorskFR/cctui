@@ -5,7 +5,6 @@ use axum::response::IntoResponse;
 use cctui_proto::ws::{AgentEvent, ServerEvent, TuiCommand};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
-use uuid::Uuid;
 
 use crate::auth::TokenRole;
 use crate::state::AppState;
@@ -24,7 +23,7 @@ fn extract_token_from_uri(uri: &Uri) -> Option<String> {
 
 pub async fn agent_stream(
     ws: WebSocketUpgrade,
-    Path(session_id): Path<Uuid>,
+    Path(session_id): Path<String>,
     State(state): State<AppState>,
     uri: Uri,
 ) -> Result<impl IntoResponse, StatusCode> {
@@ -38,10 +37,10 @@ pub async fn agent_stream(
     Ok(ws.on_upgrade(move |socket| handle_agent_stream(socket, session_id, state)))
 }
 
-async fn handle_heartbeat(event: &AgentEvent, session_id: Uuid, state: &AppState) {
+async fn handle_heartbeat(event: &AgentEvent, session_id: &str, state: &AppState) {
     if let AgentEvent::Heartbeat { tokens_in, tokens_out, cost_usd, .. } = event {
         state.registry.write().await.update_heartbeat(
-            &session_id,
+            session_id,
             *tokens_in,
             *tokens_out,
             *cost_usd,
@@ -49,10 +48,10 @@ async fn handle_heartbeat(event: &AgentEvent, session_id: Uuid, state: &AppState
     }
 }
 
-async fn store_and_broadcast(event: AgentEvent, session_id: Uuid, state: &AppState) {
+async fn store_and_broadcast(event: AgentEvent, session_id: &str, state: &AppState) {
     let stream_tx = {
         let registry = state.registry.read().await;
-        registry.get(&session_id).map(|h| h.stream_tx.clone())
+        registry.get(session_id).map(|h| h.stream_tx.clone())
     };
 
     let payload = match serde_json::to_value(&event) {
@@ -85,7 +84,7 @@ async fn store_and_broadcast(event: AgentEvent, session_id: Uuid, state: &AppSta
     }
 }
 
-async fn dispatch_event(event: AgentEvent, session_id: Uuid, state: &AppState) {
+async fn dispatch_event(event: AgentEvent, session_id: &str, state: &AppState) {
     if matches!(event, AgentEvent::Heartbeat { .. }) {
         handle_heartbeat(&event, session_id, state).await;
     } else {
@@ -106,7 +105,7 @@ fn extract_text(msg: Result<Message, axum::Error>) -> Option<String> {
     if let Ok(Message::Text(t)) = msg { Some(t.to_string()) } else { None }
 }
 
-async fn run_agent_socket(socket: &mut WebSocket, session_id: Uuid, state: &AppState) {
+async fn run_agent_socket(socket: &mut WebSocket, session_id: &str, state: &AppState) {
     while let Some(msg) = socket.next().await {
         match classify_message(&msg) {
             Some(true) => break,
@@ -128,7 +127,7 @@ async fn run_agent_socket(socket: &mut WebSocket, session_id: Uuid, state: &AppS
     }
 }
 
-async fn handle_agent_stream(mut socket: WebSocket, session_id: Uuid, state: AppState) {
+async fn handle_agent_stream(mut socket: WebSocket, session_id: String, state: AppState) {
     let exists = {
         let registry = state.registry.read().await;
         registry.get(&session_id).is_some()
@@ -139,7 +138,7 @@ async fn handle_agent_stream(mut socket: WebSocket, session_id: Uuid, state: App
         return;
     }
 
-    run_agent_socket(&mut socket, session_id, &state).await;
+    run_agent_socket(&mut socket, &session_id, &state).await;
 
     tracing::info!(session_id = %session_id, "agent stream disconnected");
 }
@@ -183,14 +182,15 @@ fn spawn_send_task(
 
 fn spawn_relay_task(
     mut receiver: tokio::sync::broadcast::Receiver<AgentEvent>,
-    session_id: Uuid,
+    session_id: String,
     event_tx: mpsc::Sender<ServerEvent>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
             match receiver.recv().await {
                 Ok(agent_event) => {
-                    let server_event = ServerEvent::Stream { session_id, data: agent_event };
+                    let server_event =
+                        ServerEvent::Stream { session_id: session_id.clone(), data: agent_event };
                     if event_tx.send(server_event).await.is_err() {
                         break;
                     }
@@ -205,7 +205,7 @@ fn spawn_relay_task(
 }
 
 async fn handle_subscribe(
-    session_id: Uuid,
+    session_id: String,
     state: &AppState,
     event_tx: &mpsc::Sender<ServerEvent>,
     sub_handles: &mut Vec<tokio::task::JoinHandle<()>>,

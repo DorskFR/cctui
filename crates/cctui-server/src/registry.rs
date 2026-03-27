@@ -11,14 +11,14 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingMessage {
-    pub id: Uuid,
+    pub id: Uuid, // internal message ID — not a session ID
     pub content: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MachineCommand {
-    pub id: Uuid,
+    pub id: Uuid, // internal command ID — not a session ID
     pub command_type: String,
     pub payload: serde_json::Value,
     pub created_at: chrono::DateTime<chrono::Utc>,
@@ -39,7 +39,7 @@ pub struct SessionHandle {
 pub type SharedRegistry = Arc<RwLock<Registry>>;
 
 pub struct Registry {
-    sessions: HashMap<Uuid, SessionHandle>,
+    sessions: HashMap<String, SessionHandle>,
     machine_commands: HashMap<String, Vec<MachineCommand>>,
 }
 
@@ -57,7 +57,7 @@ impl Registry {
         let (stream_tx, _) = broadcast::channel(256);
         let tx = stream_tx.clone();
         self.sessions.insert(
-            session.id,
+            session.id.clone(),
             SessionHandle {
                 session,
                 last_heartbeat: Instant::now(),
@@ -70,15 +70,15 @@ impl Registry {
         tx
     }
 
-    pub fn deregister(&mut self, id: &Uuid) -> Option<Session> {
+    pub fn deregister(&mut self, id: &str) -> Option<Session> {
         self.sessions.remove(id).map(|h| h.session)
     }
 
-    pub fn get(&self, id: &Uuid) -> Option<&SessionHandle> {
+    pub fn get(&self, id: &str) -> Option<&SessionHandle> {
         self.sessions.get(id)
     }
 
-    pub fn get_mut(&mut self, id: &Uuid) -> Option<&mut SessionHandle> {
+    pub fn get_mut(&mut self, id: &str) -> Option<&mut SessionHandle> {
         self.sessions.get_mut(id)
     }
 
@@ -86,7 +86,7 @@ impl Registry {
         self.sessions.values().collect()
     }
 
-    pub fn update_heartbeat(&mut self, id: &Uuid, tokens_in: u64, tokens_out: u64, cost_usd: f64) {
+    pub fn update_heartbeat(&mut self, id: &str, tokens_in: u64, tokens_out: u64, cost_usd: f64) {
         if let Some(handle) = self.sessions.get_mut(id) {
             handle.last_heartbeat = Instant::now();
             handle.session.last_heartbeat = Utc::now();
@@ -97,13 +97,7 @@ impl Registry {
         }
     }
 
-    pub fn update_token_usage(
-        &mut self,
-        id: &Uuid,
-        tokens_in: u64,
-        tokens_out: u64,
-        cost_usd: f64,
-    ) {
+    pub fn update_token_usage(&mut self, id: &str, tokens_in: u64, tokens_out: u64, cost_usd: f64) {
         if let Some(handle) = self.sessions.get_mut(id) {
             handle.token_usage.tokens_in += tokens_in;
             handle.token_usage.tokens_out += tokens_out;
@@ -117,7 +111,7 @@ impl Registry {
         &mut self,
         disconnected_after_secs: u64,
         terminated_after_secs: u64,
-    ) -> Vec<Uuid> {
+    ) -> Vec<String> {
         let now = Instant::now();
         let mut terminated = Vec::new();
 
@@ -127,7 +121,7 @@ impl Registry {
                 SessionStatus::Active | SessionStatus::Idle | SessionStatus::Registering => {
                     if elapsed > terminated_after_secs {
                         handle.session.status = SessionStatus::Terminated;
-                        terminated.push(handle.session.id);
+                        terminated.push(handle.session.id.clone());
                     } else if elapsed > disconnected_after_secs {
                         handle.session.status = SessionStatus::Disconnected;
                     }
@@ -135,7 +129,7 @@ impl Registry {
                 SessionStatus::Disconnected => {
                     if elapsed > terminated_after_secs {
                         handle.session.status = SessionStatus::Terminated;
-                        terminated.push(handle.session.id);
+                        terminated.push(handle.session.id.clone());
                     }
                 }
                 SessionStatus::Terminated => {}
@@ -144,11 +138,11 @@ impl Registry {
         terminated
     }
 
-    pub fn subscribe(&self, id: &Uuid) -> Option<broadcast::Receiver<AgentEvent>> {
+    pub fn subscribe(&self, id: &str) -> Option<broadcast::Receiver<AgentEvent>> {
         self.sessions.get(id).map(|h| h.stream_tx.subscribe())
     }
 
-    pub fn queue_message(&mut self, session_id: &Uuid, content: String) -> Option<Uuid> {
+    pub fn queue_message(&mut self, session_id: &str, content: String) -> Option<Uuid> {
         let handle = self.sessions.get_mut(session_id)?;
         let msg = PendingMessage { id: Uuid::new_v4(), content, created_at: Utc::now() };
         let id = msg.id;
@@ -156,14 +150,14 @@ impl Registry {
         Some(id)
     }
 
-    pub fn take_pending_messages(&mut self, session_id: &Uuid) -> Vec<PendingMessage> {
+    pub fn take_pending_messages(&mut self, session_id: &str) -> Vec<PendingMessage> {
         self.sessions
             .get_mut(session_id)
             .map(|h| std::mem::take(&mut h.pending_messages))
             .unwrap_or_default()
     }
 
-    pub fn set_policy(&mut self, session_id: &Uuid, rules: Vec<crate::policy::PolicyRule>) {
+    pub fn set_policy(&mut self, session_id: &str, rules: Vec<crate::policy::PolicyRule>) {
         if let Some(handle) = self.sessions.get_mut(session_id) {
             handle.policy_rules = rules;
         }
@@ -195,9 +189,9 @@ impl Registry {
 mod tests {
     use super::*;
 
-    fn make_session(id: Uuid, parent: Option<Uuid>) -> Session {
+    fn make_session(id: &str, parent: Option<String>) -> Session {
         Session {
-            id,
+            id: id.to_string(),
             parent_id: parent,
             account_id: None,
             machine_id: "test".into(),
@@ -212,28 +206,28 @@ mod tests {
     #[test]
     fn register_and_list() {
         let mut reg = Registry::new();
-        let id = Uuid::new_v4();
+        let id = "claude-session-abc";
         reg.register(make_session(id, None));
         assert_eq!(reg.list().len(), 1);
-        assert!(reg.get(&id).is_some());
+        assert!(reg.get(id).is_some());
     }
 
     #[test]
     fn deregister_removes_session() {
         let mut reg = Registry::new();
-        let id = Uuid::new_v4();
+        let id = "claude-session-abc";
         reg.register(make_session(id, None));
-        reg.deregister(&id);
-        assert!(reg.get(&id).is_none());
+        reg.deregister(id);
+        assert!(reg.get(id).is_none());
         assert_eq!(reg.list().len(), 0);
     }
 
     #[test]
     fn subscribe_gets_broadcast_receiver() {
         let mut reg = Registry::new();
-        let id = Uuid::new_v4();
+        let id = "claude-session-abc";
         let tx = reg.register(make_session(id, None));
-        let mut rx = reg.subscribe(&id).unwrap();
+        let mut rx = reg.subscribe(id).unwrap();
 
         tx.send(AgentEvent::Text { content: "hello".into(), ts: 0 }).unwrap();
 
@@ -247,58 +241,55 @@ mod tests {
     #[test]
     fn queue_and_take_pending_messages() {
         let mut reg = Registry::new();
-        let id = Uuid::new_v4();
+        let id = "claude-session-abc";
         reg.register(make_session(id, None));
 
-        let msg_id = reg.queue_message(&id, "hello".into());
+        let msg_id = reg.queue_message(id, "hello".into());
         assert!(msg_id.is_some());
 
-        let msg_id2 = reg.queue_message(&id, "world".into());
+        let msg_id2 = reg.queue_message(id, "world".into());
         assert!(msg_id2.is_some());
 
-        let messages = reg.take_pending_messages(&id);
+        let messages = reg.take_pending_messages(id);
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].content, "hello");
         assert_eq!(messages[1].content, "world");
 
         // Second take returns empty
-        let messages2 = reg.take_pending_messages(&id);
+        let messages2 = reg.take_pending_messages(id);
         assert!(messages2.is_empty());
     }
 
     #[test]
     fn queue_message_for_nonexistent_session_returns_none() {
         let mut reg = Registry::new();
-        let result = reg.queue_message(&Uuid::new_v4(), "orphan".into());
+        let result = reg.queue_message("nonexistent", "orphan".into());
         assert!(result.is_none());
     }
 
     #[test]
     fn take_pending_from_nonexistent_session_returns_empty() {
         let mut reg = Registry::new();
-        let messages = reg.take_pending_messages(&Uuid::new_v4());
+        let messages = reg.take_pending_messages("nonexistent");
         assert!(messages.is_empty());
     }
 
     #[test]
     fn mark_stale_transitions_active_to_disconnected_then_terminated() {
         let mut reg = Registry::new();
-        let id = Uuid::new_v4();
+        let id = "claude-session-abc";
         reg.register(make_session(id, None));
 
-        // Simulate time passing by directly setting last_heartbeat
-        if let Some(handle) = reg.get_mut(&id) {
+        if let Some(handle) = reg.get_mut(id) {
             handle.last_heartbeat =
                 std::time::Instant::now().checked_sub(std::time::Duration::from_secs(100)).unwrap();
         }
 
-        // 90s threshold for disconnected
         let terminated = reg.mark_stale(90, 300);
         assert!(terminated.is_empty());
-        assert_eq!(reg.get(&id).unwrap().session.status, SessionStatus::Disconnected);
+        assert_eq!(reg.get(id).unwrap().session.status, SessionStatus::Disconnected);
 
-        // Set heartbeat even further back
-        if let Some(handle) = reg.get_mut(&id) {
+        if let Some(handle) = reg.get_mut(id) {
             handle.last_heartbeat =
                 std::time::Instant::now().checked_sub(std::time::Duration::from_secs(400)).unwrap();
         }
@@ -306,18 +297,18 @@ mod tests {
         let terminated = reg.mark_stale(90, 300);
         assert_eq!(terminated.len(), 1);
         assert_eq!(terminated[0], id);
-        assert_eq!(reg.get(&id).unwrap().session.status, SessionStatus::Terminated);
+        assert_eq!(reg.get(id).unwrap().session.status, SessionStatus::Terminated);
     }
 
     #[test]
     fn update_heartbeat_refreshes_session() {
         let mut reg = Registry::new();
-        let id = Uuid::new_v4();
+        let id = "claude-session-abc";
         reg.register(make_session(id, None));
 
-        reg.update_heartbeat(&id, 100, 50, 0.01);
+        reg.update_heartbeat(id, 100, 50, 0.01);
 
-        let handle = reg.get(&id).unwrap();
+        let handle = reg.get(id).unwrap();
         assert_eq!(handle.token_usage.tokens_in, 100);
         assert_eq!(handle.token_usage.tokens_out, 50);
         assert_eq!(handle.session.status, SessionStatus::Active);
@@ -326,13 +317,13 @@ mod tests {
     #[test]
     fn update_token_usage_accumulates() {
         let mut reg = Registry::new();
-        let id = Uuid::new_v4();
+        let id = "claude-session-abc";
         reg.register(make_session(id, None));
 
-        reg.update_token_usage(&id, 100, 50, 0.01);
-        reg.update_token_usage(&id, 200, 100, 0.02);
+        reg.update_token_usage(id, 100, 50, 0.01);
+        reg.update_token_usage(id, 200, 100, 0.02);
 
-        let handle = reg.get(&id).unwrap();
+        let handle = reg.get(id).unwrap();
         assert_eq!(handle.token_usage.tokens_in, 300);
         assert_eq!(handle.token_usage.tokens_out, 150);
     }
@@ -340,7 +331,7 @@ mod tests {
     #[test]
     fn set_policy_stores_rules() {
         let mut reg = Registry::new();
-        let id = Uuid::new_v4();
+        let id = "claude-session-abc";
         reg.register(make_session(id, None));
 
         let rules = vec![crate::policy::PolicyRule {
@@ -349,10 +340,25 @@ mod tests {
             pattern: Some("rm -rf".into()),
             reason: Some("dangerous".into()),
         }];
-        reg.set_policy(&id, rules);
+        reg.set_policy(id, rules);
 
-        let handle = reg.get(&id).unwrap();
+        let handle = reg.get(id).unwrap();
         assert_eq!(handle.policy_rules.len(), 1);
         assert_eq!(handle.policy_rules[0].tool, "Bash");
+    }
+
+    #[test]
+    fn re_register_same_session_id_replaces() {
+        let mut reg = Registry::new();
+        let id = "claude-session-abc";
+        reg.register(make_session(id, None));
+        reg.queue_message(id, "old message".into());
+
+        // Re-register with the same ID (simulates server restart + re-registration)
+        reg.register(make_session(id, None));
+        assert_eq!(reg.list().len(), 1);
+        // Pending messages are cleared (fresh handle)
+        let messages = reg.take_pending_messages(id);
+        assert!(messages.is_empty());
     }
 }

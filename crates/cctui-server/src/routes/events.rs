@@ -1,7 +1,6 @@
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use uuid::Uuid;
 
 use cctui_proto::ws::AgentEvent;
 
@@ -34,7 +33,7 @@ pub struct StreamerEvent {
 
 pub async fn ingest(
     State(state): State<AppState>,
-    Path(session_id): Path<Uuid>,
+    Path(session_id): Path<String>,
     Json(event): Json<StreamerEvent>,
 ) -> StatusCode {
     // Handle usage events separately
@@ -80,7 +79,7 @@ pub async fn ingest(
         let _ = sqlx::query(
             "INSERT INTO stream_events (session_id, event_type, payload) VALUES ($1, $2, $3)",
         )
-        .bind(session_id)
+        .bind(&session_id)
         .bind(&event.event_type)
         .bind(&payload)
         .execute(&state.pool)

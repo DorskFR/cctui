@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
 use cctui_proto::api::SessionListItem;
-use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum View {
@@ -31,7 +30,7 @@ pub struct App {
     pub view: View,
     pub sessions: Vec<SessionListItem>,
     pub selected_index: usize,
-    pub stream_buffer: HashMap<Uuid, Vec<ConversationLine>>,
+    pub stream_buffer: HashMap<String, Vec<ConversationLine>>,
     pub message_input: String,
     pub input_active: bool,
     pub should_quit: bool,
@@ -77,20 +76,20 @@ impl App {
             // roots first, then children
             for s in group.iter().filter(|s| s.parent_id.is_none()) {
                 result.push(s);
-                Self::append_children(s.id, group, &mut result);
+                Self::append_children(&s.id, group, &mut result);
             }
         }
         result
     }
 
     fn append_children<'a>(
-        parent_id: Uuid,
+        parent_id: &str,
         group: &[&'a SessionListItem],
         result: &mut Vec<&'a SessionListItem>,
     ) {
-        for s in group.iter().filter(|s| s.parent_id == Some(parent_id)) {
+        for s in group.iter().filter(|s| s.parent_id.as_deref() == Some(parent_id)) {
             result.push(s);
-            Self::append_children(s.id, group, result);
+            Self::append_children(&s.id, group, result);
         }
     }
 

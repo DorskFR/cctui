@@ -2,7 +2,6 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
-use uuid::Uuid;
 
 use crate::registry::PendingMessage;
 use cctui_proto::api::{ApiError, MessageRequest, SessionListItem, SessionListResponse};
@@ -11,8 +10,8 @@ use crate::state::AppState;
 
 #[derive(sqlx::FromRow)]
 struct DbSession {
-    id: Uuid,
-    parent_id: Option<Uuid>,
+    id: String,
+    parent_id: Option<String>,
     machine_id: String,
     working_dir: String,
     status: String,
@@ -30,8 +29,8 @@ pub async fn list_sessions(
             .list()
             .into_iter()
             .map(|handle| SessionListItem {
-                id: handle.session.id,
-                parent_id: handle.session.parent_id,
+                id: handle.session.id.clone(),
+                parent_id: handle.session.parent_id.clone(),
                 machine_id: handle.session.machine_id.clone(),
                 working_dir: handle.session.working_dir.clone(),
                 status: handle.session.status.clone(),
@@ -43,7 +42,7 @@ pub async fn list_sessions(
     };
 
     // Historical sessions from DB (terminated/disconnected, not in registry)
-    let live_ids: Vec<Uuid> = sessions.iter().map(|s| s.id).collect();
+    let live_ids: Vec<String> = sessions.iter().map(|s| s.id.clone()).collect();
     let rows: Vec<DbSession> = sqlx::query_as(
         "SELECT id, parent_id, machine_id, working_dir, status, registered_at, metadata \
          FROM sessions WHERE status IN ('terminated', 'disconnected') \
@@ -82,15 +81,15 @@ pub async fn list_sessions(
 
 pub async fn get_session(
     State(state): State<AppState>,
-    Path(session_id): Path<Uuid>,
+    Path(session_id): Path<String>,
 ) -> Result<Json<SessionListItem>, (StatusCode, Json<ApiError>)> {
     let registry = state.registry.read().await;
     let handle = registry.get(&session_id).ok_or_else(|| {
         (StatusCode::NOT_FOUND, Json(ApiError { error: "session not found".into() }))
     })?;
     let item = SessionListItem {
-        id: handle.session.id,
-        parent_id: handle.session.parent_id,
+        id: handle.session.id.clone(),
+        parent_id: handle.session.parent_id.clone(),
         machine_id: handle.session.machine_id.clone(),
         working_dir: handle.session.working_dir.clone(),
         status: handle.session.status.clone(),
@@ -104,12 +103,12 @@ pub async fn get_session(
 
 pub async fn get_conversation(
     State(state): State<AppState>,
-    Path(session_id): Path<Uuid>,
+    Path(session_id): Path<String>,
 ) -> Result<Json<Vec<serde_json::Value>>, (StatusCode, Json<ApiError>)> {
     let rows: Vec<(serde_json::Value,)> = sqlx::query_as(
         "SELECT payload FROM stream_events WHERE session_id = $1 ORDER BY created_at ASC",
     )
-    .bind(session_id)
+    .bind(&session_id)
     .fetch_all(&state.pool)
     .await
     .map_err(|e| {
@@ -121,7 +120,7 @@ pub async fn get_conversation(
 
 pub async fn send_message(
     State(state): State<AppState>,
-    Path(session_id): Path<Uuid>,
+    Path(session_id): Path<String>,
     Json(req): Json<MessageRequest>,
 ) -> StatusCode {
     let mut registry = state.registry.write().await;
@@ -131,7 +130,7 @@ pub async fn send_message(
 
 pub async fn get_pending_messages(
     State(state): State<AppState>,
-    Path(session_id): Path<Uuid>,
+    Path(session_id): Path<String>,
 ) -> Json<Vec<PendingMessage>> {
     let messages = state.registry.write().await.take_pending_messages(&session_id);
     Json(messages)
@@ -139,10 +138,10 @@ pub async fn get_pending_messages(
 
 pub async fn kill_session(
     State(state): State<AppState>,
-    Path(session_id): Path<Uuid>,
+    Path(session_id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
     sqlx::query("UPDATE sessions SET status = 'terminated' WHERE id = $1")
-        .bind(session_id)
+        .bind(&session_id)
         .execute(&state.pool)
         .await
         .map_err(|e| {
@@ -159,7 +158,7 @@ pub async fn kill_session(
 
 pub async fn set_session_policy(
     State(state): State<AppState>,
-    Path(session_id): Path<Uuid>,
+    Path(session_id): Path<String>,
     Json(rules): Json<Vec<crate::policy::PolicyRule>>,
 ) -> StatusCode {
     let mut registry = state.registry.write().await;
