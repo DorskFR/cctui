@@ -3,18 +3,25 @@ use cctui_proto::ws::AgentEvent;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{List, ListItem, ListState, Paragraph};
 
 use crate::app::App;
 use crate::theme;
 
 pub fn draw(frame: &mut Frame, app: &App) {
-    let [status_area, list_area, hotkeys_area] =
-        Layout::vertical([Constraint::Length(1), Constraint::Fill(1), Constraint::Length(1)])
-            .areas(frame.area());
+    let [status_area, title_area, list_area, hotkeys_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Fill(1),
+        Constraint::Length(1),
+    ])
+    .areas(frame.area());
 
     // Status bar
     draw_status_bar(frame, app, status_area);
+
+    // Title line
+    draw_title(frame, title_area);
 
     // Session list
     draw_session_list(frame, app, list_area);
@@ -36,6 +43,11 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     frame.render_widget(Paragraph::new(line), area);
 }
 
+fn draw_title(frame: &mut Frame, area: ratatui::layout::Rect) {
+    let line = Line::from(vec![Span::styled(" Sessions", theme::SECTION_TITLE)]);
+    frame.render_widget(Paragraph::new(line), area);
+}
+
 fn draw_session_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let flat = app.flattened_sessions();
     let mut items: Vec<ListItem> = Vec::new();
@@ -52,16 +64,10 @@ fn draw_session_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
         items.push(session_line(session));
     }
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(theme::BORDER_FOCUSED)
-        .title(" Sessions ");
-
     // Map selected_index to the actual list index (accounting for headers)
     let list_index = compute_list_index(app);
 
-    let list =
-        List::new(items).block(block).highlight_style(theme::SELECTED).highlight_symbol("▸ ");
+    let list = List::new(items).highlight_style(theme::SELECTED).highlight_symbol("▸ ");
 
     let mut state = ListState::default();
     state.select(Some(list_index));

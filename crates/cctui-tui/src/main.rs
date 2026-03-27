@@ -13,7 +13,9 @@ use anyhow::{Context, Result};
 use app::{App, ConversationLine, LineKind, View};
 use cctui_proto::ws::{AgentEvent, ServerEvent, TuiCommand};
 use client::ServerClient;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseEventKind,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -23,6 +25,14 @@ use ratatui::{Frame, Terminal};
 use tokio::sync::mpsc;
 use tokio::time;
 
+/// Input event from the terminal: either a key press or mouse scroll.
+#[derive(Debug, Clone, Copy)]
+enum InputEvent {
+    Key(KeyCode),
+    ScrollUp,
+    ScrollDown,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let base_url = std::env::var("CCTUI_URL").unwrap_or_else(|_| "http://localhost:8700".into());
@@ -30,14 +40,14 @@ async fn main() -> Result<()> {
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
     let result = run(&mut terminal, base_url, token).await;
 
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(terminal.backend_mut(), DisableMouseCapture, LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
     result
@@ -63,10 +73,10 @@ async fn run(
         tokio::select! {
             biased;
 
-            key_result = tokio::task::spawn_blocking(poll_key) => {
-                let maybe_key = key_result.context("input task panicked")??;
-                if let Some(code) = maybe_key {
-                    handle_key(&mut app, code, &cmd_tx, &server).await;
+            input_result = tokio::task::spawn_blocking(poll_input) => {
+                let maybe_input = input_result.context("input task panicked")??;
+                if let Some(input) = maybe_input {
+                    handle_input(&mut app, input, &cmd_tx, &server).await;
                 }
             }
             maybe_event = event_rx.recv(), if ws_open => {
@@ -111,37 +121,54 @@ async fn refresh_sessions(server: &ServerClient, app: &mut App) {
     }
 }
 
-fn poll_key() -> Result<Option<KeyCode>> {
+fn poll_input() -> Result<Option<InputEvent>> {
     if !event::poll(Duration::from_millis(50))? {
         return Ok(None);
     }
-    if let Event::Key(key) = event::read()?
-        && key.kind == KeyEventKind::Press
-    {
-        return Ok(Some(key.code));
+    match event::read()? {
+        Event::Key(key) if key.kind == KeyEventKind::Press => Ok(Some(InputEvent::Key(key.code))),
+        Event::Mouse(mouse) => match mouse.kind {
+            MouseEventKind::ScrollUp => Ok(Some(InputEvent::ScrollUp)),
+            MouseEventKind::ScrollDown => Ok(Some(InputEvent::ScrollDown)),
+            _ => Ok(None),
+        },
+        _ => Ok(None),
     }
-    Ok(None)
 }
 
-// --- Key handling ---
+// --- Input handling ---
 
-async fn handle_key(
+async fn handle_input(
     app: &mut App,
-    code: KeyCode,
+    input: InputEvent,
     cmd_tx: &mpsc::Sender<TuiCommand>,
     server: &ServerClient,
 ) {
-    if app.input_active {
-        handle_input_mode(app, code, cmd_tx).await;
-        return;
-    }
+    match input {
+        InputEvent::Key(code) => {
+            if app.input_active {
+                handle_input_mode(app, code, cmd_tx).await;
+                return;
+            }
 
-    match app.view {
-        View::SessionList => handle_session_list_keys(app, code, cmd_tx, server).await,
-        View::Conversation => handle_conversation_keys(app, code),
-        View::Help => {
-            if matches!(code, KeyCode::Esc | KeyCode::Char('?' | 'q')) {
-                app.view = View::SessionList;
+            match app.view {
+                View::SessionList => handle_session_list_keys(app, code, cmd_tx, server).await,
+                View::Conversation => handle_conversation_keys(app, code),
+                View::Help => {
+                    if matches!(code, KeyCode::Esc | KeyCode::Char('?' | 'q')) {
+                        app.view = View::SessionList;
+                    }
+                }
+            }
+        }
+        InputEvent::ScrollUp => {
+            if matches!(app.view, View::Conversation) && !app.input_active {
+                app.scroll_offset = app.scroll_offset.saturating_sub(3);
+            }
+        }
+        InputEvent::ScrollDown => {
+            if matches!(app.view, View::Conversation) && !app.input_active {
+                app.scroll_offset = app.scroll_offset.saturating_add(3);
             }
         }
     }
@@ -178,6 +205,12 @@ fn handle_conversation_keys(app: &mut App, code: KeyCode) {
         }
         KeyCode::Char('k') | KeyCode::Up => {
             app.scroll_offset = app.scroll_offset.saturating_sub(1);
+        }
+        KeyCode::PageUp => {
+            app.scroll_offset = app.scroll_offset.saturating_sub(15);
+        }
+        KeyCode::PageDown => {
+            app.scroll_offset = app.scroll_offset.saturating_add(15);
         }
         KeyCode::Char('g') => app.scroll_offset = 0,
         KeyCode::Char('G') => app.scroll_offset = usize::MAX,

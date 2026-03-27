@@ -24,24 +24,50 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let cost = format!("${:.2}", session.token_usage.cost_usd);
     let machine = &session.machine_id;
 
-    let title = if branch.is_empty() {
-        format!(" {project} on {machine} ── {model} ── {cost} ")
-    } else {
-        format!(" {project} ({branch}) on {machine} ── {model} ── {cost} ")
-    };
+    let [header_area, content_area, separator_area, input_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Fill(1),
+        Constraint::Length(1),
+        Constraint::Length(2),
+    ])
+    .areas(frame.area());
 
-    let [main_area, input_area] =
-        Layout::vertical([Constraint::Fill(1), Constraint::Length(3)]).areas(frame.area());
-
-    // Conversation content
-    let block =
-        Block::default().borders(Borders::ALL).border_style(theme::BORDER_FOCUSED).title(title);
-    let inner = block.inner(main_area);
-    frame.render_widget(block, main_area);
-
+    // Header line with scroll position
     let lines = app.stream_buffer.get(&session.id);
+    let header_text = lines.map_or_else(
+        || {
+            if branch.is_empty() {
+                format!(" {project} on {machine} ── {model} ── {cost}")
+            } else {
+                format!(" {project} ({branch}) on {machine} ── {model} ── {cost}")
+            }
+        },
+        |lines| {
+            let visible_height = content_area.height as usize;
+            let total = lines.len();
+            let offset = if app.scroll_offset >= total.saturating_sub(visible_height) {
+                total.saturating_sub(visible_height)
+            } else {
+                app.scroll_offset
+            };
+            let current_line = offset + 1;
+
+            if branch.is_empty() {
+                format!(" {project} on {machine} ── {model} ── {cost} [{current_line}/{total}]")
+            } else {
+                format!(
+                    " {project} ({branch}) on {machine} ── {model} ── {cost} [{current_line}/{total}]"
+                )
+            }
+        },
+    );
+
+    let header_line = Line::from(vec![Span::styled(header_text, theme::HEADER_BG)]);
+    frame.render_widget(Paragraph::new(header_line), header_area);
+
+    // Conversation content (no block, direct render)
     if let Some(lines) = lines {
-        let visible_height = inner.height as usize;
+        let visible_height = content_area.height as usize;
         let total = lines.len();
 
         // Auto-scroll to bottom if offset is at or past the end
@@ -54,21 +80,30 @@ pub fn draw(frame: &mut Frame, app: &App) {
         let display_lines: Vec<Line> =
             lines.iter().skip(offset).take(visible_height).map(render_line).collect();
 
-        frame.render_widget(Paragraph::new(display_lines).wrap(Wrap { trim: false }), inner);
+        frame.render_widget(Paragraph::new(display_lines).wrap(Wrap { trim: false }), content_area);
     } else {
-        frame
-            .render_widget(Paragraph::new(Span::styled("No conversation data", theme::DIM)), inner);
+        frame.render_widget(
+            Paragraph::new(Span::styled("No conversation data", theme::DIM)),
+            content_area,
+        );
     }
 
-    // Input bar
+    // Separator line
+    let separator = Line::from(vec![Span::styled(
+        "─".repeat(separator_area.width as usize),
+        theme::BORDER_FOCUSED,
+    )]);
+    frame.render_widget(Paragraph::new(separator), separator_area);
+
+    // Input bar with top border only
     let input_block = if app.input_active {
         Block::default()
-            .borders(Borders::ALL)
+            .borders(Borders::TOP)
             .border_style(theme::BORDER_FOCUSED)
             .title(" Message (Enter to send, Esc to cancel) ")
     } else {
         Block::default()
-            .borders(Borders::ALL)
+            .borders(Borders::TOP)
             .border_style(theme::BORDER_DIM)
             .title(" Press i to type ")
     };

@@ -30,6 +30,10 @@ pub const MODEL: Style = Style::new().fg(Color::DarkGray);
 pub const COST: Style = Style::new().fg(Color::Yellow);
 pub const BRANCH: Style = Style::new().fg(Color::DarkGray);
 
+// Borderless layout
+pub const HEADER_BG: Style = Style::new().fg(Color::White).bg(Color::DarkGray);
+pub const SECTION_TITLE: Style = Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD);
+
 pub const fn status_style(status: &cctui_proto::models::SessionStatus) -> Style {
     match status {
         cctui_proto::models::SessionStatus::Active => ACTIVE,
