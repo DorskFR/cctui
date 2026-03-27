@@ -20,6 +20,12 @@ pub async fn check(
     State(state): State<AppState>,
     Json(req): Json<PreToolUsePayload>,
 ) -> Json<CheckResponse> {
+    tracing::info!(
+        session_id = ?req.session_id,
+        tool_name = ?req.tool_name,
+        "PreToolUse check"
+    );
+
     // Store tool call as a stream event and broadcast to TUI subscribers
     if let Some(ref sid) = req.session_id
         && let Ok(session_id) = Uuid::parse_str(sid)
