@@ -24,6 +24,7 @@ pub enum LineKind {
     ToolCall,
     ToolResult,
     System,
+    Reply,
 }
 
 pub struct App {

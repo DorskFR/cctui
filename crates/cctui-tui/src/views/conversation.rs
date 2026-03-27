@@ -289,6 +289,12 @@ fn render_line(line: &ConversationLine) -> Line<'static> {
             Span::raw("  "),
             Span::styled(line.text.clone(), theme::DIM),
         ]),
+        LineKind::Reply => Line::from(vec![
+            Span::styled(ts, theme::TIMESTAMP),
+            Span::raw("  "),
+            Span::styled("◁ Reply: ", theme::MACHINE_HEADER),
+            Span::styled(line.text.clone(), theme::ASSISTANT_MSG),
+        ]),
     }
 }
 
