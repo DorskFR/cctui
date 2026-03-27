@@ -42,6 +42,11 @@ pub const BRANCH: Style = Style::new().fg(Color::DarkGray);
 pub const HEADER_BG: Style = Style::new().fg(Color::White).bg(Color::DarkGray);
 pub const SECTION_TITLE: Style = Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD);
 
+// Markdown styles
+pub const MD_CODE: Style = Style::new().fg(Color::Green);
+pub const MD_BOLD: Style = Style::new().add_modifier(Modifier::BOLD);
+pub const MD_ITALIC: Style = Style::new().add_modifier(Modifier::ITALIC);
+
 pub const fn status_style(status: &cctui_proto::models::SessionStatus) -> Style {
     match status {
         cctui_proto::models::SessionStatus::Active => ACTIVE,

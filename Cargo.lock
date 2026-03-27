@@ -300,8 +300,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "cctui-proto",
+ "chrono",
  "clap",
  "futures-util",
+ "reqwest",
  "serde",
  "serde_json",
  "tokio",

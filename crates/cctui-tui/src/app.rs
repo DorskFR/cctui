@@ -36,6 +36,7 @@ pub struct App {
     pub should_quit: bool,
     pub scroll_offset: usize,
     pub active_count: usize,
+    pub show_sidebar: bool,
 }
 
 impl App {
@@ -50,6 +51,7 @@ impl App {
             should_quit: false,
             scroll_offset: 0,
             active_count: 0,
+            show_sidebar: true,
         }
     }
 
@@ -128,6 +130,16 @@ impl App {
             .iter()
             .filter(|s| s.status == cctui_proto::models::SessionStatus::Active)
             .count();
+    }
+
+    pub fn active_sessions(&self) -> Vec<&SessionListItem> {
+        self.sessions
+            .iter()
+            .filter(|s| {
+                s.status == cctui_proto::models::SessionStatus::Active
+                    || s.status == cctui_proto::models::SessionStatus::Idle
+            })
+            .collect()
     }
 
     /// Get the `machine_id` for the session at index, or None if same as previous.
