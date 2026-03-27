@@ -79,4 +79,49 @@ describe("ServerBridge", () => {
     expect(msgs).toHaveLength(1);
     expect(msgs[0].content).toBe("do this");
   });
+
+  test("registerSession throws on non-ok response", async () => {
+    globalThis.fetch = mock(async () => new Response("bad", { status: 500 })) as typeof fetch;
+    const bridge = new ServerBridge("http://localhost:8700", "dev-agent");
+    expect(bridge.registerSession({ claude_session_id: "x", machine_id: "m", working_dir: "/" })).rejects.toThrow("register failed");
+  });
+
+  test("postEvent swallows network errors", async () => {
+    globalThis.fetch = mock(async () => { throw new Error("network down"); }) as typeof fetch;
+    const bridge = new ServerBridge("http://localhost:8700", "dev-agent");
+    // Should not throw
+    await bridge.postEvent("s1", { session_id: "s1", type: "text", content: "hi", ts: 0 });
+  });
+
+  test("checkPolicy returns allow on network error", async () => {
+    globalThis.fetch = mock(async () => { throw new Error("timeout"); }) as typeof fetch;
+    const bridge = new ServerBridge("http://localhost:8700", "dev-agent");
+    const result = await bridge.checkPolicy({ session_id: "s1", tool_name: "Bash", tool_input: {} });
+    expect(result.decision).toBe("allow");
+  });
+
+  test("fetchPendingMessages returns empty on error", async () => {
+    globalThis.fetch = mock(async () => { throw new Error("fail"); }) as typeof fetch;
+    const bridge = new ServerBridge("http://localhost:8700", "dev-agent");
+    const msgs = await bridge.fetchPendingMessages("s1");
+    expect(msgs).toEqual([]);
+  });
+
+  test("checkPolicy returns allow on non-ok status", async () => {
+    globalThis.fetch = mock(async () => new Response("err", { status: 503 })) as typeof fetch;
+    const bridge = new ServerBridge("http://localhost:8700", "dev-agent");
+    const result = await bridge.checkPolicy({ session_id: "s1", tool_name: "Bash", tool_input: {} });
+    expect(result.decision).toBe("allow");
+  });
+
+  test("registerSession sends auth header", async () => {
+    let capturedHeaders: Record<string, string> = {};
+    globalThis.fetch = mock(async (_url: string | URL | Request, init?: RequestInit) => {
+      capturedHeaders = Object.fromEntries(Object.entries(init?.headers ?? {}));
+      return new Response(JSON.stringify({ session_id: "x", ws_url: "ws://x" }));
+    }) as typeof fetch;
+    const bridge = new ServerBridge("http://localhost:8700", "my-token");
+    await bridge.registerSession({ claude_session_id: "x", machine_id: "m", working_dir: "/" });
+    expect(capturedHeaders["Authorization"]).toBe("Bearer my-token");
+  });
 });

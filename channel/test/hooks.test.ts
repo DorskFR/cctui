@@ -59,4 +59,43 @@ describe("hook server", () => {
     expect(res.status).toBe(404);
     server.stop();
   });
+
+  test("POST /hooks/session-start with malformed JSON returns 400", async () => {
+    const server = createHookServer({ port: 0, onSessionStart: () => {}, onPreToolUse: async () => ({ decision: "allow" }) });
+    const res = await fetch(`http://localhost:${server.port}/hooks/session-start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "not json",
+    });
+    expect(res.status).toBe(400);
+    server.stop();
+  });
+
+  test("POST /hooks/pre-tool-use returns allow on callback error", async () => {
+    const onPreToolUse = async () => { throw new Error("boom"); };
+    const server = createHookServer({ port: 0, onSessionStart: () => {}, onPreToolUse });
+    const res = await fetch(`http://localhost:${server.port}/hooks/pre-tool-use`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: "s1", tool_name: "Bash", tool_input: {} }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.decision).toBe("allow");
+    server.stop();
+  });
+
+  test("POST /hooks/pre-tool-use with deny verdict", async () => {
+    const onPreToolUse = async () => ({ decision: "deny" as const, reason: "blocked" });
+    const server = createHookServer({ port: 0, onSessionStart: () => {}, onPreToolUse });
+    const res = await fetch(`http://localhost:${server.port}/hooks/pre-tool-use`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: "s1", tool_name: "Bash", tool_input: {} }),
+    });
+    const body = await res.json();
+    expect(body.decision).toBe("deny");
+    expect(body.reason).toBe("blocked");
+    server.stop();
+  });
 });

@@ -104,6 +104,91 @@ describe("parseLine", () => {
     expect(results[0]).toEqual({ type: "tool_result", tool_use_id: "t1", content: "result 1" });
     expect(results[1]).toEqual({ type: "tool_result", tool_use_id: "t2", content: "result 2" });
   });
+
+  test("handles empty content array", () => {
+    const line = JSON.stringify({ type: "assistant", message: { role: "assistant", content: [] } });
+    expect(parseLine(line)).toEqual([]);
+  });
+
+  test("handles assistant string content", () => {
+    const line = JSON.stringify({ type: "assistant", message: { role: "assistant", content: "direct string" } });
+    expect(parseLine(line)).toEqual([{ type: "assistant_message", content: "direct string" }]);
+  });
+
+  test("handles empty string content", () => {
+    const line = JSON.stringify({ type: "human", message: { role: "user", content: "" } });
+    expect(parseLine(line)).toEqual([]);
+  });
+
+  test("handles missing message field", () => {
+    const line = JSON.stringify({ type: "human" });
+    expect(parseLine(line)).toEqual([]);
+  });
+
+  test("handles missing role field", () => {
+    const line = JSON.stringify({ type: "human", message: { content: "no role" } });
+    expect(parseLine(line)).toEqual([]);
+  });
+
+  test("skips queue-operation type", () => {
+    const line = JSON.stringify({ type: "queue-operation", message: { role: "user", content: "queued" } });
+    expect(parseLine(line)).toEqual([]);
+  });
+
+  test("handles unknown content part types gracefully", () => {
+    const line = JSON.stringify({
+      type: "assistant",
+      message: { role: "assistant", content: [
+        { type: "thinking", text: "internal thought" },
+        { type: "text", text: "visible response" },
+      ]},
+    });
+    const results = parseLine(line);
+    expect(results).toHaveLength(1);
+    expect(results[0]).toEqual({ type: "assistant_message", content: "visible response" });
+  });
+
+  test("handles interleaved tool_results in user message", () => {
+    const line = JSON.stringify({
+      type: "human",
+      message: { role: "user", content: [
+        { type: "tool_result", tool_use_id: "t1", content: "output 1" },
+        { type: "text", text: "follow up question" },
+        { type: "tool_result", tool_use_id: "t2", content: "output 2" },
+      ]},
+    });
+    const results = parseLine(line);
+    expect(results).toHaveLength(3);
+    expect(results[0].type).toBe("tool_result");
+    expect(results[1].type).toBe("user_message");
+    expect(results[2].type).toBe("tool_result");
+  });
+
+  test("handles tool_use with empty input", () => {
+    const line = JSON.stringify({
+      type: "assistant",
+      message: { role: "assistant", content: [{ type: "tool_use", name: "Read", input: {} }] },
+    });
+    expect(parseLine(line)).toEqual([{ type: "tool_call", tool: "Read", input: {} }]);
+  });
+
+  test("handles tool_use with missing name", () => {
+    const line = JSON.stringify({
+      type: "assistant",
+      message: { role: "assistant", content: [{ type: "tool_use", input: { x: 1 } }] },
+    });
+    expect(parseLine(line)).toEqual([{ type: "tool_call", tool: "", input: { x: 1 } }]);
+  });
+
+  test("handles tool_result with null content", () => {
+    const line = JSON.stringify({
+      type: "human",
+      message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: null }] },
+    });
+    const results = parseLine(line);
+    expect(results).toHaveLength(1);
+    expect(results[0].content).toBe("");
+  });
 });
 
 describe("parseUsage", () => {
