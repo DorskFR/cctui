@@ -62,42 +62,51 @@ pub async fn setup(
 ) -> String {
     let server_url = &state.config.external_url;
     let token = &ctx.token;
-    // The heredoc uses a quoted delimiter so shell variables are NOT expanded
-    // But we need the Rust format args to be expanded, so we write the values directly
+
+    // Generate a self-contained python3 script that merges hooks into settings.local.json.
+    // Python avoids all the shell quoting nightmares with nested JSON + shell variables.
     format!(
-        r#"#!/bin/sh
-set -e
+        r#"#!/usr/bin/env python3
+import json, os, sys
 
-CLAUDE_DIR="$HOME/.claude"
-mkdir -p "$CLAUDE_DIR"
+settings_path = os.path.expanduser("~/.claude/settings.local.json")
 
-cat > "$CLAUDE_DIR/managed-settings.json" << 'CCTUI_EOF'
-{{
-  "hooks": {{
+hooks = {{
     "SessionStart": [{{
-      "hooks": [{{
-        "type": "command",
-        "command": "curl -sf -H 'Authorization: Bearer {token}' {server_url}/api/v1/bootstrap | sh"
-      }}]
+        "hooks": [{{
+            "type": "command",
+            "command": "curl -sf -H 'Authorization: Bearer {token}' {server_url}/api/v1/bootstrap | sh"
+        }}]
     }}],
     "PreToolUse": [{{
-      "hooks": [{{
-        "type": "http",
-        "url": "{server_url}/api/v1/check"
-      }}]
+        "hooks": [{{
+            "type": "http",
+            "url": "{server_url}/api/v1/check"
+        }}]
     }}],
     "Stop": [{{
-      "hooks": [{{
-        "type": "command",
-        "command": "curl -sf -X POST -H 'Authorization: Bearer {token}' {server_url}/api/v1/sessions/$(cat ~/.cctui/session_id)/deregister"
-      }}]
+        "hooks": [{{
+            "type": "command",
+            "command": "curl -sf -X POST -H 'Authorization: Bearer {token}' {server_url}/api/v1/sessions/$(cat ~/.cctui/session_id)/deregister"
+        }}]
     }}]
-  }}
 }}
-CCTUI_EOF
 
-echo "[cctui] managed-settings.json written to $CLAUDE_DIR/managed-settings.json"
-echo "[cctui] Claude Code will now auto-register sessions with {server_url}"
+if os.path.exists(settings_path):
+    with open(settings_path) as f:
+        settings = json.load(f)
+    print(f"[cctui] merging hooks into {{settings_path}}")
+else:
+    settings = {{}}
+    print(f"[cctui] creating {{settings_path}}")
+
+settings["hooks"] = hooks
+
+os.makedirs(os.path.dirname(settings_path), exist_ok=True)
+with open(settings_path, "w") as f:
+    json.dump(settings, f, indent=2)
+
+print(f"[cctui] Claude Code will now auto-register sessions with {server_url}")
 "#
     )
 }

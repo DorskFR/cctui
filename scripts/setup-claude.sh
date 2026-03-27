@@ -8,8 +8,8 @@ set -e
 URL="${1:-http://localhost:8700}"
 TOKEN="${2:-dev-agent}"
 
-echo "==> Fetching managed-settings.json from $URL..."
-curl -sf -H "Authorization: Bearer $TOKEN" "$URL/api/v1/setup" | sh
+echo "==> Configuring Claude Code hooks from $URL..."
+curl -sf -H "Authorization: Bearer $TOKEN" "$URL/api/v1/setup" | python3
 
 echo ""
 echo "==> Done! Next time you start Claude Code, it will auto-register."
