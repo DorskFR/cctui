@@ -88,8 +88,9 @@ async function onPreToolUse(payload: PreToolUsePayload) {
 }
 
 // --- Start ---
-await connect();
-
+// HTTP server must start BEFORE MCP connect — the SessionStart hook fires
+// as soon as Claude Code finishes spawning MCP servers, so the HTTP endpoint
+// needs to be listening before the stdio handshake completes.
 const hookServer = createHookServer({
   port: config.hookPort,
   onSessionStart,
@@ -97,6 +98,8 @@ const hookServer = createHookServer({
 });
 
 console.error(`[cctui-channel] hook server listening on :${hookServer.port}`);
+
+await connect();
 console.error(`[cctui-channel] connected to Claude Code, waiting for SessionStart hook...`);
 
 process.on("SIGTERM", () => {
