@@ -42,7 +42,6 @@ async fn main() -> anyhow::Result<()> {
         .route("/sessions/{id}/conversation", get(routes::admin::get_conversation))
         .route("/sessions/{id}/message", post(routes::admin::send_message))
         .route("/sessions/{id}/kill", post(routes::admin::kill_session))
-        .route("/bootstrap", get(routes::bootstrap::bootstrap))
         .route("/setup", get(routes::bootstrap::setup))
         .layer(middleware::from_fn(auth::auth_middleware))
         .layer(Extension(auth_config));
@@ -50,6 +49,9 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/api/v1/check", post(routes::check::check))
+        .route("/api/v1/events/{session_id}", post(routes::events::ingest))
+        .route("/api/v1/scripts/streamer.py", get(routes::bootstrap::streamer))
+        .route("/api/v1/scripts/bootstrap.sh", get(routes::bootstrap::bootstrap_script))
         .route("/api/v1/stream/{session_id}", get(ws::agent_stream))
         .route("/api/v1/ws", get(ws::tui_ws))
         .nest("/api/v1", api_router)
