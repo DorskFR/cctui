@@ -1,36 +1,37 @@
-use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::Frame;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Widget;
+use ratatui::widgets::Paragraph;
 
-const BINDINGS: &[(&str, &str)] = &[
-    ("q", "quit"),
-    ("j/k", "nav"),
-    ("Tab", "pane"),
-    ("Enter", "open"),
-    ("Esc", "back"),
-    ("m", "msg"),
-    ("l/c", "log/conv"),
-    ("?", "help"),
-];
+use crate::theme;
 
-pub struct HotkeysBar;
+pub fn draw_session_hotkeys(frame: &mut Frame, area: ratatui::layout::Rect) {
+    let line = Line::from(vec![
+        Span::styled(" j/k", theme::HOTKEY),
+        Span::styled(":nav  ", theme::HOTKEY_DESC),
+        Span::styled("Enter", theme::HOTKEY),
+        Span::styled(":open  ", theme::HOTKEY_DESC),
+        Span::styled("g/G", theme::HOTKEY),
+        Span::styled(":top/bottom  ", theme::HOTKEY_DESC),
+        Span::styled("?", theme::HOTKEY),
+        Span::styled(":help  ", theme::HOTKEY_DESC),
+        Span::styled("q", theme::HOTKEY),
+        Span::styled(":quit", theme::HOTKEY_DESC),
+    ]);
+    frame.render_widget(Paragraph::new(line), area);
+}
 
-impl Widget for HotkeysBar {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        let key_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
-        let sep_style = Style::default().fg(Color::DarkGray);
-
-        let mut spans: Vec<Span> = Vec::with_capacity(BINDINGS.len() * 3);
-        for (i, (key, desc)) in BINDINGS.iter().enumerate() {
-            if i > 0 {
-                spans.push(Span::styled("  ", sep_style));
-            }
-            spans.push(Span::styled(*key, key_style));
-            spans.push(Span::styled(format!(":{desc}"), sep_style));
-        }
-
-        Line::from(spans).render(area, buf);
-    }
+pub fn draw_conversation_hotkeys(frame: &mut Frame, area: ratatui::layout::Rect) {
+    let line = Line::from(vec![
+        Span::styled(" j/k", theme::HOTKEY),
+        Span::styled(":scroll  ", theme::HOTKEY_DESC),
+        Span::styled("g/G", theme::HOTKEY),
+        Span::styled(":top/bottom  ", theme::HOTKEY_DESC),
+        Span::styled("i", theme::HOTKEY),
+        Span::styled(":message  ", theme::HOTKEY_DESC),
+        Span::styled("Esc", theme::HOTKEY),
+        Span::styled(":back  ", theme::HOTKEY_DESC),
+        Span::styled("?", theme::HOTKEY),
+        Span::styled(":help", theme::HOTKEY_DESC),
+    ]);
+    frame.render_widget(Paragraph::new(line), area);
 }

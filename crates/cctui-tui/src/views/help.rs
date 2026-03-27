@@ -1,57 +1,34 @@
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::layout::Margin;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
-const HELP_TEXT: &[(&str, &str)] = &[
-    ("q", "Quit application"),
-    ("j / ↓", "Select next session"),
-    ("k / ↑", "Select previous session"),
-    ("Tab", "Switch between tree and detail pane"),
-    ("Enter", "Open conversation view"),
-    ("Esc", "Go back to sessions view"),
-    ("l", "Switch detail to Log mode"),
-    ("c", "Switch detail to Conversation mode"),
-    ("m", "Open message input"),
-    ("?", "Show this help overlay"),
+use crate::theme;
+
+const BINDINGS: &[(&str, &str)] = &[
+    ("q", "Quit"),
+    ("j / ↓", "Next session"),
+    ("k / ↑", "Previous session"),
+    ("g / G", "First / last"),
+    ("Enter", "Open conversation"),
+    ("Esc", "Back to sessions"),
+    ("i", "Start typing message"),
+    ("?", "Toggle help"),
 ];
 
 pub fn draw(frame: &mut Frame) {
-    let area = frame.area();
+    let area = frame.area().inner(Margin { horizontal: 10, vertical: 4 });
+    frame.render_widget(Clear, area);
 
-    // Center a 60x(height) overlay
-    let width = area.width.min(60);
-    let height = (HELP_TEXT.len() as u16 + 4).min(area.height);
-    let x = area.x + (area.width.saturating_sub(width)) / 2;
-    let y = area.y + (area.height.saturating_sub(height)) / 2;
-    let overlay_area = Rect::new(x, y, width, height);
+    let block =
+        Block::default().borders(Borders::ALL).border_style(theme::BORDER_FOCUSED).title(" Help ");
 
-    frame.render_widget(Clear, overlay_area);
-
-    let block = Block::default()
-        .title(" Help — press Esc to close ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
-
-    let inner = block.inner(overlay_area);
-    frame.render_widget(block, overlay_area);
-
-    let [_title_area, list_area] =
-        Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(inner);
-
-    let lines: Vec<Line> = HELP_TEXT
+    let lines: Vec<Line> = BINDINGS
         .iter()
         .map(|(key, desc)| {
-            Line::from(vec![
-                Span::styled(
-                    format!("  {key:<10}"),
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(*desc, Style::default().fg(Color::White)),
-            ])
+            Line::from(vec![Span::styled(format!("  {key:<12}"), theme::HOTKEY), Span::raw(*desc)])
         })
         .collect();
 
-    frame.render_widget(Paragraph::new(lines), list_area);
+    frame.render_widget(Paragraph::new(lines).block(block), area);
 }

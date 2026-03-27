@@ -1,164 +1,146 @@
+use cctui_proto::api::SessionListItem;
 use cctui_proto::ws::AgentEvent;
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::layout::{Constraint, Layout};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, ListState, Paragraph, Wrap};
-use uuid::Uuid;
+use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 
-use crate::app::{App, DetailMode, Pane};
-use crate::widgets::hotkeys::HotkeysBar;
-use crate::widgets::status_bar::StatusBar;
-use crate::widgets::tree::SessionTree;
+use crate::app::App;
+use crate::theme;
 
 pub fn draw(frame: &mut Frame, app: &App) {
-    let [status_area, main_area, hotkeys_area] =
+    let [status_area, list_area, hotkeys_area] =
         Layout::vertical([Constraint::Length(1), Constraint::Fill(1), Constraint::Length(1)])
             .areas(frame.area());
 
     // Status bar
-    frame.render_widget(
-        StatusBar::new(
-            app.sessions.len(),
-            app.active_count,
-            app.aggregate_tokens,
-            app.aggregate_cost,
-        ),
-        status_area,
-    );
+    draw_status_bar(frame, app, status_area);
 
-    // Hotkeys bar
-    frame.render_widget(HotkeysBar, hotkeys_area);
+    // Session list
+    draw_session_list(frame, app, list_area);
 
-    // Main area: 30% tree / 70% detail
-    let [tree_area, detail_area] =
-        Layout::horizontal([Constraint::Percentage(30), Constraint::Fill(1)]).areas(main_area);
-
-    draw_tree(frame, app, tree_area);
-    draw_detail(frame, app, detail_area);
-
-    // Message input overlay
-    if let Some(ref input) = app.message_input {
-        draw_message_input(frame, input, main_area);
-    }
+    // Hotkeys
+    crate::widgets::hotkeys::draw_session_hotkeys(frame, hotkeys_area);
 }
 
-fn draw_tree(frame: &mut Frame, app: &App, area: Rect) {
-    let is_active = app.active_pane == Pane::Tree;
-    let border_style = if is_active {
-        Style::default().fg(Color::Cyan)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
+fn draw_status_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let total = app.sessions.len();
+    let active = app.active_count;
+    let line = Line::from(vec![
+        Span::styled(" cctui ", theme::STATUS_BAR_BG),
+        Span::raw("  "),
+        Span::styled(format!("{total} sessions"), theme::DIM),
+        Span::raw("  "),
+        Span::styled(format!("● {active} active"), theme::ACTIVE),
+    ]);
+    frame.render_widget(Paragraph::new(line), area);
+}
 
-    let block =
-        Block::default().title(" Sessions ").borders(Borders::ALL).border_style(border_style);
-
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
+fn draw_session_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let flat = app.flattened_sessions();
-    let tree = SessionTree::new(&flat);
-    let mut list_state = ListState::default();
-    list_state.select(Some(app.selected_index));
+    let mut items: Vec<ListItem> = Vec::new();
 
-    frame.render_stateful_widget(tree, inner, &mut list_state);
-}
-
-fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
-    let is_active = app.active_pane == Pane::Detail;
-    let border_style = if is_active {
-        Style::default().fg(Color::Cyan)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-
-    let title = match app.detail_mode {
-        DetailMode::Conversation => " Conversation ",
-        DetailMode::Log => " Log ",
-    };
-
-    let block = Block::default().title(title).borders(Borders::ALL).border_style(border_style);
-
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    match app.selected_session() {
-        None => {
-            let text =
-                Paragraph::new("No session selected").style(Style::default().fg(Color::DarkGray));
-            frame.render_widget(text, inner);
+    for (i, session) in flat.iter().enumerate() {
+        // Machine group header
+        if let Some(machine) = app.machine_header_at(i) {
+            items.push(ListItem::new(Line::from(vec![
+                Span::raw(" "),
+                Span::styled(machine, theme::MACHINE_HEADER),
+            ])));
         }
-        Some(session) => {
-            draw_session_detail(frame, app, session.id, inner);
-        }
+
+        items.push(session_line(session));
     }
-}
-
-fn draw_session_detail(frame: &mut Frame, app: &App, session_id: Uuid, area: Rect) {
-    let [header_area, content_area] =
-        Layout::vertical([Constraint::Length(2), Constraint::Fill(1)]).areas(area);
-
-    // Header: session id + status hint
-    if let Some(session) = app.sessions.iter().find(|s| s.id == session_id) {
-        let header = Line::from(vec![
-            Span::styled(
-                session.id.to_string(),
-                Style::default().fg(Color::Gray).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("  "),
-            Span::styled(session.working_dir.as_str(), Style::default().fg(Color::DarkGray)),
-        ]);
-        frame.render_widget(Paragraph::new(header), header_area);
-    }
-
-    // Stream content
-    let lines: Vec<Line> = app.stream_buffer.get(&session_id).map_or_else(
-        || vec![Line::from(Span::styled("No stream data", Style::default().fg(Color::DarkGray)))],
-        |entries| entries.iter().map(|s| Line::from(s.as_str())).collect(),
-    );
-
-    let content = Paragraph::new(lines).wrap(Wrap { trim: false });
-    frame.render_widget(content, content_area);
-}
-
-fn draw_message_input(frame: &mut Frame, input: &str, parent_area: Rect) {
-    let width = parent_area.width.saturating_sub(4).min(80);
-    let x = parent_area.x + (parent_area.width.saturating_sub(width)) / 2;
-    let y = parent_area.y + parent_area.height.saturating_sub(4);
-    let overlay_area = Rect::new(x, y, width, 3);
-
-    frame.render_widget(Clear, overlay_area);
 
     let block = Block::default()
-        .title(" Message ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Yellow));
+        .border_style(theme::BORDER_FOCUSED)
+        .title(" Sessions ");
 
-    let inner = block.inner(overlay_area);
-    frame.render_widget(block, overlay_area);
+    // Map selected_index to the actual list index (accounting for headers)
+    let list_index = compute_list_index(app);
 
-    let text = format!("{input}_");
-    frame.render_widget(Paragraph::new(text.as_str()), inner);
+    let list =
+        List::new(items).block(block).highlight_style(theme::SELECTED).highlight_symbol("▸ ");
+
+    let mut state = ListState::default();
+    state.select(Some(list_index));
+    frame.render_stateful_widget(list, area, &mut state);
 }
 
-fn format_agent_event(event: &AgentEvent) -> String {
-    match event {
-        AgentEvent::Text { content, .. } => content.clone(),
-        AgentEvent::ToolCall { tool, input, .. } => {
-            let detail = format_tool_input(tool, input);
-            format!("[{tool}] {detail}")
+fn session_line(s: &SessionListItem) -> ListItem<'static> {
+    let icon = theme::status_icon(&s.status);
+    let icon_style = theme::status_style(&s.status);
+
+    let project = s
+        .metadata
+        .get("project_name")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_else(|| basename(&s.working_dir));
+    let branch = s.metadata.get("git_branch").and_then(serde_json::Value::as_str).unwrap_or("");
+    let model = s.metadata.get("model").and_then(serde_json::Value::as_str).unwrap_or("");
+    let is_child = s.parent_id.is_some();
+
+    let indent = if is_child { "   └─ " } else { "   " };
+    let uptime = format_uptime(s.uptime_secs);
+    let cost = format!("${:.2}", s.token_usage.cost_usd);
+
+    let mut spans = vec![
+        Span::raw(indent.to_string()),
+        Span::styled(format!("{icon} "), icon_style),
+        Span::styled(project.to_string(), theme::BOLD),
+    ];
+
+    if !branch.is_empty() {
+        spans.push(Span::styled(format!(" ({branch})"), theme::BRANCH));
+    }
+
+    if !model.is_empty() {
+        spans.push(Span::styled(format!("  {model}"), theme::MODEL));
+    }
+
+    spans.push(Span::styled(format!("  {uptime}"), theme::DIM));
+    spans.push(Span::styled(format!("  {cost}"), theme::COST));
+
+    ListItem::new(Line::from(spans))
+}
+
+/// Map the app's `selected_index` to the list index that includes machine headers.
+fn compute_list_index(app: &App) -> usize {
+    let flat = app.flattened_sessions();
+    let mut list_idx = 0;
+    for (i, _) in flat.iter().enumerate() {
+        if app.machine_header_at(i).is_some() {
+            list_idx += 1; // header row
         }
-        AgentEvent::ToolResult { output_summary, .. } => {
-            format!("  → {output_summary}")
+        if i == app.selected_index {
+            return list_idx;
         }
-        AgentEvent::Heartbeat { tokens_in, tokens_out, .. } => {
-            format!("[heartbeat] in:{tokens_in} out:{tokens_out}")
-        }
+        list_idx += 1;
+    }
+    list_idx
+}
+
+fn basename(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+fn format_uptime(secs: i64) -> String {
+    if secs < 0 {
+        return "?".to_string();
+    }
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m", secs / 60)
+    } else {
+        format!("{}h{}m", secs / 3600, (secs % 3600) / 60)
     }
 }
 
-fn format_tool_input(tool: &str, input: &serde_json::Value) -> String {
+// --- Event formatting (used by conversation view and main.rs) ---
+
+pub fn format_tool_input(tool: &str, input: &serde_json::Value) -> String {
     let key = match tool {
         "Bash" => "command",
         "Read" | "Write" | "Edit" => "file_path",
@@ -177,7 +159,18 @@ fn format_tool_input(tool: &str, input: &serde_json::Value) -> String {
     if s.len() > 100 { format!("{}...", &s[..100]) } else { s }
 }
 
-// Used in Task 20 for populating stream_buffer
 pub fn agent_event_to_string(event: &AgentEvent) -> String {
-    format_agent_event(event)
+    match event {
+        AgentEvent::Text { content, .. } => content.clone(),
+        AgentEvent::ToolCall { tool, input, .. } => {
+            let detail = format_tool_input(tool, input);
+            format!("[{tool}] {detail}")
+        }
+        AgentEvent::ToolResult { output_summary, .. } => {
+            format!("  → {output_summary}")
+        }
+        AgentEvent::Heartbeat { tokens_in, tokens_out, .. } => {
+            format!("[heartbeat] in:{tokens_in} out:{tokens_out}")
+        }
+    }
 }
