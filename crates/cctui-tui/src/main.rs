@@ -14,7 +14,8 @@ use app::{App, ConversationLine, LineKind, View};
 use cctui_proto::ws::{AgentEvent, ServerEvent, TuiCommand};
 use client::ServerClient;
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseEventKind,
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+    MouseEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -22,13 +23,14 @@ use crossterm::terminal::{
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::{Frame, Terminal};
+use ratatui_textarea::TextArea;
 use tokio::sync::mpsc;
 use tokio::time;
 
 /// Input event from the terminal: either a key press or mouse scroll.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum InputEvent {
-    Key(KeyCode),
+    Key(KeyEvent),
     ScrollUp,
     ScrollDown,
 }
@@ -132,7 +134,7 @@ fn poll_input() -> Result<Option<InputEvent>> {
         return Ok(None);
     }
     match event::read()? {
-        Event::Key(key) if key.kind == KeyEventKind::Press => Ok(Some(InputEvent::Key(key.code))),
+        Event::Key(key) if key.kind == KeyEventKind::Press => Ok(Some(InputEvent::Key(key))),
         Event::Mouse(mouse) => match mouse.kind {
             MouseEventKind::ScrollUp => Ok(Some(InputEvent::ScrollUp)),
             MouseEventKind::ScrollDown => Ok(Some(InputEvent::ScrollDown)),
@@ -151,17 +153,17 @@ async fn handle_input(
     server: &ServerClient,
 ) {
     match input {
-        InputEvent::Key(code) => {
+        InputEvent::Key(key) => {
             if app.input_active {
-                handle_input_mode(app, code, cmd_tx).await;
+                handle_input_mode(app, key, cmd_tx).await;
                 return;
             }
 
             match app.view {
-                View::SessionList => handle_session_list_keys(app, code, cmd_tx, server).await,
-                View::Conversation => handle_conversation_keys(app, code),
+                View::SessionList => handle_session_list_keys(app, key.code, cmd_tx, server).await,
+                View::Conversation => handle_conversation_keys(app, key.code),
                 View::Help => {
-                    if matches!(code, KeyCode::Esc | KeyCode::Char('?' | 'q')) {
+                    if matches!(key.code, KeyCode::Esc | KeyCode::Char('?' | 'q')) {
                         app.view = View::SessionList;
                     }
                 }
@@ -235,27 +237,24 @@ fn handle_conversation_keys(app: &mut App, code: KeyCode) {
     }
 }
 
-async fn handle_input_mode(app: &mut App, code: KeyCode, cmd_tx: &mpsc::Sender<TuiCommand>) {
-    match code {
+async fn handle_input_mode(app: &mut App, key: KeyEvent, cmd_tx: &mpsc::Sender<TuiCommand>) {
+    match key.code {
         KeyCode::Esc => {
             app.input_active = false;
         }
         KeyCode::Enter => {
-            let content = std::mem::take(&mut app.message_input);
-            if !content.is_empty()
+            let content = app.message_input.lines().join("\n");
+            if !content.trim().is_empty()
                 && let Some(id) = app.selected_session().map(|s| s.id.clone())
             {
                 let _ = cmd_tx.send(TuiCommand::Message { session_id: id, content }).await;
             }
+            app.message_input = TextArea::default();
             app.input_active = false;
         }
-        KeyCode::Backspace => {
-            app.message_input.pop();
+        _ => {
+            app.message_input.input(key);
         }
-        KeyCode::Char(c) => {
-            app.message_input.push(c);
-        }
-        _ => {}
     }
 }
 

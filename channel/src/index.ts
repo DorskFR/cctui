@@ -30,8 +30,49 @@ const { pushMessage, connect } = createChannelServer({
 
 // --- Bridge: poll for pending TUI messages, push as MCP notifications ---
 bridge.onPendingMessage = (msg) => {
+  console.error(`[cctui-channel] received pending message: ${msg.content.slice(0, 100)}`);
   pushMessage(msg.content, { message_id: msg.id });
 };
+
+// --- Registration with retry ---
+async function registerWithRetry(sessionId: string, machineId: string, cwd: string, gitBranch: string) {
+  const maxRetries = 30;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      await bridge.registerSession({
+        claude_session_id: sessionId,
+        machine_id: machineId,
+        working_dir: cwd,
+        metadata: {
+          git_branch: gitBranch,
+          project_name: basename(cwd),
+          model: session?.model ?? "",
+          transcript_path: session?.transcriptPath ?? "",
+        },
+      });
+      console.error(`[cctui-channel] session registered: ${sessionId}`);
+
+      bridge.startPolling(sessionId);
+
+      if (session?.transcriptPath) {
+        tailAbort = new AbortController();
+        tailTranscript(
+          sessionId,
+          session.transcriptPath,
+          (event) => bridge.postEvent(sessionId, event),
+          tailAbort.signal,
+        );
+      }
+      return;
+    } catch (err) {
+      console.error(`[cctui-channel] registration attempt ${attempt}/${maxRetries} failed:`, err);
+      if (attempt < maxRetries) {
+        await Bun.sleep(2000);
+      }
+    }
+  }
+  console.error("[cctui-channel] registration failed after all retries");
+}
 
 // --- Hook handlers ---
 function onSessionStart(payload: SessionStartPayload, machineId: string) {
@@ -52,37 +93,7 @@ function onSessionStart(payload: SessionStartPayload, machineId: string) {
     model: payload.model ?? "",
   };
 
-  bridge
-    .registerSession({
-      claude_session_id: payload.session_id,
-      machine_id: machineId,
-      working_dir: cwd,
-      metadata: {
-        git_branch: gitBranch,
-        project_name: basename(cwd),
-        model: payload.model ?? "",
-        transcript_path: payload.transcript_path ?? "",
-      },
-    })
-    .then(() => {
-      console.error(`[cctui-channel] session registered: ${payload.session_id}`);
-
-      // Poll using the same session ID — server now uses it as primary key
-      bridge.startPolling(payload.session_id);
-
-      if (session?.transcriptPath) {
-        tailAbort = new AbortController();
-        tailTranscript(
-          payload.session_id,
-          session.transcriptPath,
-          (event) => bridge.postEvent(payload.session_id, event),
-          tailAbort.signal,
-        );
-      }
-    })
-    .catch((err) => {
-      console.error("[cctui-channel] registration failed:", err);
-    });
+  registerWithRetry(payload.session_id, machineId, cwd, gitBranch);
 }
 
 async function onPreToolUse(payload: PreToolUsePayload) {

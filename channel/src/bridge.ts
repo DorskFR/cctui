@@ -82,6 +82,9 @@ export class ServerBridge {
     this.stopPolling();
     this.pollInterval = setInterval(async () => {
       const msgs = await this.fetchPendingMessages(sessionId);
+      if (msgs.length > 0) {
+        console.error(`[cctui-channel] polled ${msgs.length} pending message(s)`);
+      }
       for (const msg of msgs) {
         this.onPendingMessage?.(msg);
       }

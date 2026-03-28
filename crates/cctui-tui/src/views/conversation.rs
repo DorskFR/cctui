@@ -2,6 +2,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use tui_markdown::from_str as markdown_from_str;
 
 use crate::app::{App, ConversationLine, LineKind};
 use crate::theme;
@@ -83,7 +84,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Constraint::Length(1),
         Constraint::Fill(1),
         Constraint::Length(1),
-        Constraint::Length(2),
+        Constraint::Min(3),
     ])
     .areas(main_area);
 
@@ -163,74 +164,24 @@ pub fn draw(frame: &mut Frame, app: &App) {
             .title(" Press i to type ")
     };
 
-    let input_text = if app.input_active {
-        format!("> {}_", app.message_input)
-    } else if app.message_input.is_empty() {
-        String::new()
-    } else {
-        format!("> {}", app.message_input)
-    };
-
-    frame.render_widget(Paragraph::new(input_text).block(input_block), input_area);
+    let mut textarea_widget = app.message_input.clone();
+    textarea_widget.set_block(input_block);
+    frame.render_widget(&textarea_widget, input_area);
 }
 
-fn render_inline_markdown(text: &str) -> Vec<Span<'static>> {
-    let mut spans = Vec::new();
-    let mut remaining = text;
-
-    while !remaining.is_empty() {
-        if let Some(code_start) = remaining.find('`') {
-            if code_start > 0 {
-                spans.push(Span::styled(remaining[..code_start].to_string(), theme::ASSISTANT_MSG));
-            }
-            let after_backtick = &remaining[code_start + 1..];
-            if let Some(code_end) = after_backtick.find('`') {
-                let code = &after_backtick[..code_end];
-                spans.push(Span::styled(format!("`{code}`"), theme::MD_CODE));
-                remaining = &after_backtick[code_end + 1..];
-            } else {
-                spans.push(Span::styled(remaining.to_string(), theme::ASSISTANT_MSG));
-                break;
-            }
-        } else if let Some(bold_start) = remaining.find("**") {
-            if bold_start > 0 {
-                spans.push(Span::styled(remaining[..bold_start].to_string(), theme::ASSISTANT_MSG));
-            }
-            let after_bold = &remaining[bold_start + 2..];
-            if let Some(bold_end) = after_bold.find("**") {
-                let bold_text = &after_bold[..bold_end];
-                spans.push(Span::styled(bold_text.to_string(), theme::MD_BOLD));
-                remaining = &after_bold[bold_end + 2..];
-            } else {
-                spans.push(Span::styled(remaining.to_string(), theme::ASSISTANT_MSG));
-                break;
-            }
-        } else if let Some(italic_start) = remaining.find('*') {
-            if italic_start > 0 {
-                spans.push(Span::styled(
-                    remaining[..italic_start].to_string(),
-                    theme::ASSISTANT_MSG,
-                ));
-            }
-            let after_italic = &remaining[italic_start + 1..];
-            if let Some(italic_end) = after_italic.find('*') {
-                let italic_text = &after_italic[..italic_end];
-                spans.push(Span::styled(italic_text.to_string(), theme::MD_ITALIC));
-                remaining = &after_italic[italic_end + 1..];
-            } else {
-                spans.push(Span::styled(remaining.to_string(), theme::ASSISTANT_MSG));
-                break;
-            }
-        } else {
-            spans.push(Span::styled(remaining.to_string(), theme::ASSISTANT_MSG));
-            break;
+fn render_markdown_line(text: &str) -> Vec<Span<'static>> {
+    let lines = markdown_from_str(text);
+    let mut result = Vec::new();
+    for line in lines {
+        for span in line.spans {
+            let owned_span = Span::styled(span.content.to_string(), span.style);
+            result.push(owned_span);
         }
     }
-
-    if spans.is_empty() {
-        spans.push(Span::styled(text.to_string(), theme::ASSISTANT_MSG));
+    if result.is_empty() {
+        result.push(Span::styled(text.to_string(), theme::ASSISTANT_MSG));
     }
-    spans
+    result
 }
 
 fn render_line(line: &ConversationLine) -> Line<'static> {
@@ -245,7 +196,7 @@ fn render_line(line: &ConversationLine) -> Line<'static> {
         ]),
         LineKind::Assistant => {
             let ts_span = Span::styled(ts, theme::TIMESTAMP);
-            let rendered_spans = render_inline_markdown(&line.text);
+            let rendered_spans = render_markdown_line(&line.text);
             let mut all_spans = vec![ts_span, Span::raw("  ")];
             all_spans.extend(rendered_spans);
             Line::from(all_spans)

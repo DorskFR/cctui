@@ -51,11 +51,13 @@ export function createChannelServer(options: ChannelServerOptions) {
   });
 
   async function pushMessage(content: string, meta?: Record<string, string>) {
+    console.error(`[cctui-channel] pushing message to Claude: ${content.slice(0, 100)}`);
     try {
       await server.notification({
         method: "notifications/claude/channel",
         params: { content, meta: { sender: "tui", ...meta } },
       });
+      console.error("[cctui-channel] notification sent successfully");
     } catch (err) {
       console.error("[cctui-channel] failed to push notification:", err);
     }
