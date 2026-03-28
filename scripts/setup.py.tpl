@@ -6,7 +6,6 @@ import shutil
 
 SERVER_URL = os.environ.get("__SERVER_URL__", "__SERVER_URL__")
 TOKEN = os.environ.get("__TOKEN__", "__TOKEN__")
-HOOK_PORT = os.environ.get("__HOOK_PORT__", "8701")
 
 # --- Find channel directory ---
 channel_dir = os.environ.get(
@@ -28,7 +27,6 @@ mcp_entry = {
     "env": {
         "CCTUI_URL": SERVER_URL,
         "CCTUI_AGENT_TOKEN": TOKEN,
-        "CCTUI_HOOK_PORT": HOOK_PORT,
     },
 }
 
@@ -49,17 +47,26 @@ print(f"[cctui] wrote MCP server config to {claude_json_path}")
 # --- Merge hooks into settings.json ---
 settings_path = os.path.expanduser("~/.claude/settings.json")
 
+# SessionStart: pipe stdin through jq to inject $PPID and machine hostname, then POST to server
+session_start_cmd = (
+    f'jq -c --arg ppid "$PPID" --arg mid "$(hostname)" '
+    f"'. + {{ppid: ($ppid | tonumber), machine_id: $mid}}' "
+    f'| curl -sf -X POST {SERVER_URL}/api/v1/hooks/session-start '
+    f"-H 'Content-Type: application/json' "
+    f"-H 'Authorization: Bearer {TOKEN}' -d @-"
+)
+
 hooks = {
     "SessionStart": [{
         "hooks": [{
             "type": "command",
-            "command": f"curl -sf -X POST http://localhost:{HOOK_PORT}/hooks/session-start -H 'Content-Type: application/json' -d @-",
+            "command": session_start_cmd,
         }],
     }],
     "PreToolUse": [{
         "hooks": [{
             "type": "http",
-            "url": f"http://localhost:{HOOK_PORT}/hooks/pre-tool-use",
+            "url": f"{SERVER_URL}/api/v1/check",
         }],
     }],
 }
@@ -78,7 +85,7 @@ os.makedirs(os.path.dirname(settings_path), exist_ok=True)
 with open(settings_path, "w") as f:
     json.dump(settings, f, indent=2)
 
-print(f"[cctui] done - Claude Code will use cctui-channel connecting to {SERVER_URL}")
+print(f"[cctui] done - hooks route to {SERVER_URL}")
 print()
 print("[cctui] IMPORTANT: To enable TUI→Claude messaging, start Claude with:")
 print("        claude --dangerously-load-development-channels server:cctui")

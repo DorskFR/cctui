@@ -4,15 +4,12 @@ export interface Config {
   serverUrl: string;
   /** Bearer token for agent auth */
   agentToken: string;
-  /** Port for the local HTTP hook server */
-  hookPort: number;
 }
 
 export function loadConfig(): Config {
   return {
     serverUrl: process.env.CCTUI_URL ?? "http://localhost:8700",
     agentToken: process.env.CCTUI_AGENT_TOKEN ?? "dev-agent",
-    hookPort: Number(process.env.CCTUI_HOOK_PORT ?? "8701"),
   };
 }
 
@@ -52,12 +49,21 @@ export interface PendingMessage {
   created_at: string;
 }
 
-/** Session state held by the channel after SessionStart fires. */
+/** Session state held by the channel after session assignment. */
 export interface SessionState {
-  /** Session ID — same as Claude Code's session_id, used as primary key everywhere. */
   sessionId: string;
   transcriptPath: string | null;
   cwd: string;
   machineId: string;
   model: string;
 }
+
+/** Response from POST /api/v1/channels/register */
+export interface ChannelRegisterResponse {
+  channel_id: string;
+}
+
+/** Response from GET /api/v1/channels/{channel_id}/session */
+export type SessionPollResponse =
+  | { status: "waiting" }
+  | { status: "matched"; session_id: string; transcript_path: string; model: string };

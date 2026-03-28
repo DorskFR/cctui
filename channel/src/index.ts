@@ -1,13 +1,11 @@
 #!/usr/bin/env bun
 import { loadConfig } from "./types";
-import type { SessionStartPayload, PreToolUsePayload, SessionState } from "./types";
+import type { SessionState } from "./types";
 import { createChannelServer } from "./mcp";
-import { createHookServer } from "./hooks";
 import { ServerBridge } from "./bridge";
 import { tailTranscript } from "./transcript";
 import { hostname } from "os";
 import { basename } from "path";
-import { execSync } from "child_process";
 
 const config = loadConfig();
 const bridge = new ServerBridge(config.serverUrl, config.agentToken);
@@ -34,97 +32,106 @@ bridge.onPendingMessage = (msg) => {
   pushMessage(msg.content, { message_id: msg.id });
 };
 
-// --- Registration with retry ---
-async function registerWithRetry(sessionId: string, machineId: string, cwd: string, gitBranch: string) {
-  const maxRetries = 30;
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+// --- Channel registration and session discovery ---
+async function registerAndWaitForSession(): Promise<void> {
+  const machineId = hostname();
+  const cwd = process.cwd();
+  const ppid = process.ppid;
+
+  // Step 1: Register channel with retry
+  let channelId: string | null = null;
+  for (let attempt = 1; attempt <= 60; attempt++) {
     try {
-      await bridge.registerSession({
-        claude_session_id: sessionId,
-        machine_id: machineId,
-        working_dir: cwd,
-        metadata: {
-          git_branch: gitBranch,
-          project_name: basename(cwd),
-          model: session?.model ?? "",
-          transcript_path: session?.transcriptPath ?? "",
-        },
-      });
-      console.error(`[cctui-channel] session registered: ${sessionId}`);
-
-      bridge.startPolling(sessionId);
-
-      if (session?.transcriptPath) {
-        tailAbort = new AbortController();
-        tailTranscript(
-          sessionId,
-          session.transcriptPath,
-          (event) => bridge.postEvent(sessionId, event),
-          tailAbort.signal,
-        );
-      }
-      return;
+      const res = await bridge.registerChannel(machineId, ppid, cwd);
+      channelId = res.channel_id;
+      console.error(`[cctui-channel] channel registered: ${channelId} (machine=${machineId}, ppid=${ppid})`);
+      break;
     } catch (err) {
-      console.error(`[cctui-channel] registration attempt ${attempt}/${maxRetries} failed:`, err);
-      if (attempt < maxRetries) {
-        await Bun.sleep(2000);
-      }
+      console.error(`[cctui-channel] registration attempt ${attempt}/60 failed:`, err);
+      await Bun.sleep(2000);
     }
   }
-  console.error("[cctui-channel] registration failed after all retries");
-}
 
-// --- Hook handlers ---
-function onSessionStart(payload: SessionStartPayload, machineId: string) {
-  const cwd = payload.cwd || process.cwd();
-  let gitBranch = "none";
-  try {
-    gitBranch = execSync(`git -C "${cwd}" rev-parse --abbrev-ref HEAD`, {
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "pipe"],
-    }).trim();
-  } catch {}
+  if (!channelId) {
+    console.error("[cctui-channel] failed to register channel after 60 attempts");
+    return;
+  }
 
-  session = {
-    sessionId: payload.session_id,
-    transcriptPath: payload.transcript_path ?? null,
-    cwd,
-    machineId,
-    model: payload.model ?? "",
-  };
+  // Step 2: Poll for session assignment
+  console.error("[cctui-channel] waiting for SessionStart hook to match...");
+  let matched = false;
+  for (let attempt = 1; !matched; attempt++) {
+    try {
+      const poll = await bridge.pollSession(channelId);
+      if (poll.status === "matched") {
+        console.error(`[cctui-channel] session matched: ${poll.session_id}`);
 
-  registerWithRetry(payload.session_id, machineId, cwd, gitBranch);
-}
+        session = {
+          sessionId: poll.session_id,
+          transcriptPath: poll.transcript_path || null,
+          cwd,
+          machineId,
+          model: poll.model || "",
+        };
 
-async function onPreToolUse(payload: PreToolUsePayload) {
-  return bridge.checkPolicy(payload);
+        // Register the session with the server (upsert)
+        await bridge.registerSession({
+          claude_session_id: poll.session_id,
+          machine_id: machineId,
+          working_dir: cwd,
+          metadata: {
+            project_name: basename(cwd),
+            model: poll.model || "",
+            transcript_path: poll.transcript_path || "",
+          },
+        });
+        console.error(`[cctui-channel] session registered with server: ${poll.session_id}`);
+
+        // Start polling for pending messages
+        bridge.startPolling(poll.session_id);
+
+        // Start tailing transcript
+        if (session.transcriptPath) {
+          tailAbort = new AbortController();
+          tailTranscript(
+            poll.session_id,
+            session.transcriptPath,
+            (event) => bridge.postEvent(poll.session_id, event),
+            tailAbort.signal,
+          );
+        }
+
+        matched = true;
+      }
+    } catch (err) {
+      // Poll failed — server might be down, just retry
+    }
+
+    if (!matched) {
+      if (attempt % 150 === 0) {
+        console.error(`[cctui-channel] still waiting for session match (${attempt * 2}s elapsed)...`);
+      }
+      await Bun.sleep(2000);
+    }
+  }
 }
 
 // --- Start ---
-// HTTP server must start BEFORE MCP connect — the SessionStart hook fires
-// as soon as Claude Code finishes spawning MCP servers, so the HTTP endpoint
-// needs to be listening before the stdio handshake completes.
-const hookServer = createHookServer({
-  port: config.hookPort,
-  onSessionStart,
-  onPreToolUse,
-});
-
-console.error(`[cctui-channel] hook server listening on :${hookServer.port}`);
-
+// Connect MCP first (stdio handshake), then register with server
 await connect();
-console.error(`[cctui-channel] connected to Claude Code, waiting for SessionStart hook...`);
+console.error("[cctui-channel] connected to Claude Code");
+
+// Start registration in the background (don't block MCP)
+registerAndWaitForSession();
 
 process.on("SIGTERM", () => {
   tailAbort?.abort();
   bridge.stopPolling();
-  hookServer.stop();
   process.exit(0);
 });
 
 process.on("SIGINT", () => {
   tailAbort?.abort();
   bridge.stopPolling();
-  hookServer.stop();
   process.exit(0);
 });

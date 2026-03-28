@@ -64,7 +64,7 @@ test/session:  ## Simulate a session (register, stream events, deregister)
 	./scripts/test-session.sh $(CCTUI_URL) $(CCTUI_TOKEN)
 
 setup/claude:  ## Configure local Claude Code to use cctui-channel
-	./scripts/setup-claude.sh $(CCTUI_URL) dev-agent 8701
+	./scripts/setup-claude.sh $(CCTUI_URL) dev-agent
 
 run/claude:  ## Start Claude Code with channel enabled (TUI messaging works)
 	claude --dangerously-load-development-channels server:cctui

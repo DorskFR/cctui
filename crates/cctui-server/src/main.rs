@@ -33,6 +33,7 @@ async fn main() -> anyhow::Result<()> {
         pool,
         config: config.clone(),
         registry: Registry::shared(),
+        channel_store: routes::channels::ChannelStore::shared(),
         auth_config: auth_config.clone(),
     };
 
@@ -65,6 +66,9 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/api/v1/check", post(routes::check::check))
+        .route("/api/v1/channels/register", post(routes::channels::register_channel))
+        .route("/api/v1/channels/{channel_id}/session", get(routes::channels::poll_session))
+        .route("/api/v1/hooks/session-start", post(routes::channels::session_start_hook))
         .route("/api/v1/events/{session_id}", post(routes::events::ingest))
         .route("/api/v1/stream/{session_id}", get(ws::agent_stream))
         .route("/api/v1/ws", get(ws::tui_ws))
@@ -96,6 +100,11 @@ async fn reaper_task(state: AppState) {
                 .execute(&state.pool)
                 .await;
             tracing::info!(session_id = %session_id, "session terminated (stale)");
+        }
+
+        {
+            let mut store = state.channel_store.write().await;
+            store.reap_stale(600); // 10 minutes
         }
     }
 }

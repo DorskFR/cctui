@@ -4,7 +4,6 @@ set -e
 
 URL="${1:-http://localhost:8700}"
 TOKEN="${2:-dev-agent}"
-HOOK_PORT="${3:-8701}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
@@ -16,10 +15,8 @@ echo "==> Configuring Claude Code hooks and MCP server..."
 CCTUI_CHANNEL_DIR="$REPO_DIR/channel" \
   __SERVER_URL__="$URL" \
   __TOKEN__="$TOKEN" \
-  __HOOK_PORT__="$HOOK_PORT" \
   python3 "$SCRIPT_DIR/setup.py.tpl"
 
 echo ""
 echo "==> Done! Next time you start Claude Code, the cctui-channel will activate."
 echo "    Server: $URL"
-echo "    Hook port: $HOOK_PORT"

@@ -156,4 +156,61 @@ describe("ServerBridge", () => {
     await bridge.registerSession({ claude_session_id: "x", machine_id: "m", working_dir: "/" });
     expect(capturedHeaders["Authorization"]).toBe("Bearer my-token");
   });
+
+  test("registerChannel sends correct POST with machine_id and ppid", async () => {
+    let capturedUrl = "";
+    let capturedBody = "";
+    globalThis.fetch = mock(async (input: string | URL | Request, init?: RequestInit) => {
+      capturedUrl = input.toString();
+      capturedBody = init?.body as string;
+      return new Response(
+        JSON.stringify({ channel_id: "ch-123" }),
+        { status: 201, headers: { "Content-Type": "application/json" } },
+      );
+    }) as typeof fetch;
+
+    const bridge = new ServerBridge("http://localhost:8700", "dev-agent");
+    const result = await bridge.registerChannel("my-machine", 1234, "/home/user/project");
+    expect(capturedUrl).toBe("http://localhost:8700/api/v1/channels/register");
+    expect(result.channel_id).toBe("ch-123");
+    const body = JSON.parse(capturedBody);
+    expect(body.machine_id).toBe("my-machine");
+    expect(body.ppid).toBe(1234);
+    expect(body.cwd).toBe("/home/user/project");
+  });
+
+  test("pollSession returns waiting status", async () => {
+    globalThis.fetch = mock(async () => {
+      return new Response(JSON.stringify({ status: "waiting" }), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const bridge = new ServerBridge("http://localhost:8700", "dev-agent");
+    const result = await bridge.pollSession("ch-123");
+    expect(result.status).toBe("waiting");
+  });
+
+  test("pollSession returns matched status with session info", async () => {
+    globalThis.fetch = mock(async () => {
+      return new Response(
+        JSON.stringify({ status: "matched", session_id: "sess-abc", transcript_path: "/tmp/t.jsonl", model: "opus" }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }) as typeof fetch;
+
+    const bridge = new ServerBridge("http://localhost:8700", "dev-agent");
+    const result = await bridge.pollSession("ch-123");
+    expect(result.status).toBe("matched");
+    if (result.status === "matched") {
+      expect(result.session_id).toBe("sess-abc");
+      expect(result.transcript_path).toBe("/tmp/t.jsonl");
+    }
+  });
+
+  test("registerChannel throws on failure", async () => {
+    globalThis.fetch = mock(async () => new Response("error", { status: 500 })) as typeof fetch;
+    const bridge = new ServerBridge("http://localhost:8700", "dev-agent");
+    expect(bridge.registerChannel("m", 1, "/")).rejects.toThrow("channel register failed");
+  });
 });

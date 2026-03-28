@@ -1,5 +1,9 @@
-import type { StreamerEvent, PreToolUsePayload, PendingMessage } from "./types";
-import type { PolicyVerdict } from "./hooks";
+import type { StreamerEvent, PreToolUsePayload, PendingMessage, ChannelRegisterResponse, SessionPollResponse } from "./types";
+
+export interface PolicyVerdict {
+  decision: "allow" | "deny";
+  reason?: string;
+}
 
 interface RegisterRequest {
   claude_session_id: string;
@@ -96,5 +100,27 @@ export class ServerBridge {
       clearInterval(this.pollInterval);
       this.pollInterval = null;
     }
+  }
+
+  async registerChannel(machineId: string, ppid: number, cwd: string): Promise<ChannelRegisterResponse> {
+    const res = await fetch(`${this.baseUrl}/api/v1/channels/register`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ machine_id: machineId, ppid, cwd }),
+    });
+    if (!res.ok) {
+      throw new Error(`channel register failed: ${res.status} ${await res.text()}`);
+    }
+    return res.json();
+  }
+
+  async pollSession(channelId: string): Promise<SessionPollResponse> {
+    const res = await fetch(`${this.baseUrl}/api/v1/channels/${channelId}/session`, {
+      headers: this.headers(),
+    });
+    if (!res.ok) {
+      throw new Error(`poll session failed: ${res.status}`);
+    }
+    return res.json();
   }
 }
