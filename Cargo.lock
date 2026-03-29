@@ -281,11 +281,8 @@ dependencies = [
  "chrono",
  "crossterm",
  "futures-util",
- "rat-markdown",
- "rat-scrolled",
- "rat-text",
- "rat-widget",
  "ratatui",
+ "ratatui-textarea",
  "reqwest",
  "serde",
  "serde_json",
@@ -318,7 +315,6 @@ dependencies = [
  "iana-time-zone",
  "js-sys",
  "num-traits",
- "pure-rust-locales",
  "serde",
  "wasm-bindgen",
  "windows-link",
@@ -616,12 +612,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b"
 
 [[package]]
-name = "dyn-clone"
-version = "1.0.20"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
-
-[[package]]
 name = "either"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -795,17 +785,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "format_num_pattern"
-version = "0.9.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6ab68e50a21353e3677a0b4eace9ee40196300f2a46854f50bce678e4fc6090b"
-dependencies = [
- "log",
- "memchr",
- "pure-rust-locales",
-]
-
-[[package]]
 name = "futures-channel"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -892,15 +871,6 @@ dependencies = [
  "memchr",
  "pin-project-lite",
  "slab",
-]
-
-[[package]]
-name = "fxhash"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c31b6d751ae2c7f11320402d34e41349dd1016f8d5d45e48c4312bc8625af50c"
-dependencies = [
- "byteorder",
 ]
 
 [[package]]
@@ -1367,12 +1337,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "iset"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "855de4169757ca6b92b396d7a0380ef234e9a1ec2ec603c80779453ed0ab45e4"
-
-[[package]]
 name = "itertools"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1529,12 +1493,6 @@ dependencies = [
  "nix",
  "winapi",
 ]
-
-[[package]]
-name = "map_range_int"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7804090190936c22aaab73c1700bfdd191fc7fe0e19a6219ed9fdea48de21d98"
 
 [[package]]
 name = "matchers"
@@ -2112,12 +2070,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "007d8adb5ddab6f8e3f491ac63566a7d5002cc7ed73901f72057943fa71ae1ae"
 
 [[package]]
-name = "pure-rust-locales"
-version = "0.8.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "869675ad2d7541aea90c6d88c81f46a7f4ea9af8cd0395d38f11a95126998a0d"
-
-[[package]]
 name = "quick-xml"
 version = "0.38.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2207,179 +2159,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rat-cursor"
-version = "2.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f5e21530efd080def42674059771a7a9f10066f79bd0b67ed8a6ef9cbef78917"
-
-[[package]]
-name = "rat-event"
-version = "2.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8791fc15b399e958369ce532e9bf2bc3588f364d1e508d0ae122d0fb76a3065"
-dependencies = [
- "log",
- "ratatui-core",
- "ratatui-crossterm",
-]
-
-[[package]]
-name = "rat-focus"
-version = "2.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "de995d0bfa85aa8a716997903487cf250a35159695cf576be220239bbe1e2bfb"
-dependencies = [
- "fxhash",
- "log",
- "rat-event",
- "ratatui-core",
- "ratatui-crossterm",
-]
-
-[[package]]
-name = "rat-ftable"
-version = "2.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "911668e644c6415e2811afa422d4b0873bf54040dd26bd3ca697ed33bc060f9c"
-dependencies = [
- "log",
- "rat-cursor",
- "rat-event",
- "rat-focus",
- "rat-reloc",
- "rat-scrolled",
- "ratatui-core",
- "ratatui-crossterm",
- "ratatui-widgets",
-]
-
-[[package]]
-name = "rat-markdown"
-version = "0.7.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1037539a95b68227cbb31cb71443fecae6daa460d78f7142ceb851f111aa5974"
-dependencies = [
- "log",
- "pulldown-cmark",
- "rat-event",
- "rat-focus",
- "rat-text",
- "ratatui-crossterm",
- "textwrap",
- "unicode-segmentation",
-]
-
-[[package]]
-name = "rat-menu"
-version = "3.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c644bb5dd76f6b3f16dedd38e271ad44d4a68cfcd2b032707d1eeb1a92903cff"
-dependencies = [
- "log",
- "rat-cursor",
- "rat-event",
- "rat-focus",
- "rat-popup",
- "rat-reloc",
- "ratatui-core",
- "ratatui-crossterm",
- "ratatui-widgets",
- "unicode-display-width",
- "unicode-segmentation",
-]
-
-[[package]]
-name = "rat-popup"
-version = "3.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e4e217dd50d20a10739f62d41a81212e5b5e548d56bcdbdf457c91cc236efbf6"
-dependencies = [
- "log",
- "rat-cursor",
- "rat-event",
- "rat-focus",
- "rat-reloc",
- "ratatui-core",
- "ratatui-crossterm",
- "ratatui-widgets",
-]
-
-[[package]]
-name = "rat-reloc"
-version = "2.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb74cb1c265b3a5160001211ed8becbc56ccd8b66855a6b094e097525d98b735"
-dependencies = [
- "ratatui-core",
-]
-
-[[package]]
-name = "rat-scrolled"
-version = "2.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "704022f132ae450adce30adcba41c43503ca3d832611905e6c1e90fe8b94c0c3"
-dependencies = [
- "log",
- "rat-event",
- "rat-reloc",
- "ratatui-core",
- "ratatui-crossterm",
- "ratatui-widgets",
-]
-
-[[package]]
-name = "rat-text"
-version = "3.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e060ccf18e6a44d3d381d748315503a0bffaee52b9cd724fd71d3d791162ac3f"
-dependencies = [
- "chrono",
- "dyn-clone",
- "format_num_pattern",
- "iset",
- "log",
- "pure-rust-locales",
- "rat-cursor",
- "rat-event",
- "rat-focus",
- "rat-reloc",
- "rat-scrolled",
- "ratatui-core",
- "ratatui-crossterm",
- "ratatui-widgets",
- "regex-cursor",
- "ropey",
- "rustc-hash",
- "unicode-display-width",
- "unicode-segmentation",
-]
-
-[[package]]
-name = "rat-widget"
-version = "3.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "029ce6c4198efed2080f97d4c452b877abdc1521f963c4d20cb95a2ba4503c2f"
-dependencies = [
- "chrono",
- "log",
- "map_range_int",
- "rat-cursor",
- "rat-event",
- "rat-focus",
- "rat-ftable",
- "rat-menu",
- "rat-popup",
- "rat-reloc",
- "rat-scrolled",
- "rat-text",
- "ratatui-core",
- "ratatui-crossterm",
- "ratatui-widgets",
- "unicode-display-width",
- "unicode-segmentation",
-]
-
-[[package]]
 name = "ratatui"
 version = "0.30.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2446,6 +2225,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ratatui-textarea"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "de236b7cc74b3f7dea227b3fbad97bf459cddf552b6503d888fb9a106eda59ab"
+dependencies = [
+ "ratatui-core",
+ "ratatui-crossterm",
+ "ratatui-widgets",
+ "unicode-width",
+]
+
+[[package]]
 name = "ratatui-widgets"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2503,19 +2294,6 @@ dependencies = [
  "aho-corasick",
  "memchr",
  "regex-syntax",
-]
-
-[[package]]
-name = "regex-cursor"
-version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0497c781d2f982ae8284d2932aee6a877e58a4541daa5e8fadc18cc75c23a61d"
-dependencies = [
- "log",
- "memchr",
- "regex-automata",
- "regex-syntax",
- "ropey",
 ]
 
 [[package]]
@@ -2585,16 +2363,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ropey"
-version = "1.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "93411e420bcd1a75ddd1dc3caf18c23155eda2c090631a85af21ba19e97093b5"
-dependencies = [
- "smallvec",
- "str_indices",
-]
-
-[[package]]
 name = "rsa"
 version = "0.9.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2642,12 +2410,6 @@ dependencies = [
  "syn 2.0.117",
  "unicode-ident",
 ]
-
-[[package]]
-name = "rustc-hash"
-version = "2.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94300abf3f1ae2e2b8ffb7b58043de3d399c73fa6f4b73826402a5c457614dbe"
 
 [[package]]
 name = "rustc_version"
@@ -2947,12 +2709,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "smawk"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7c388c1b5e93756d0c740965c41e8822f866621d41acbdf6336a6a168f8840c"
-
-[[package]]
 name = "socket2"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3191,12 +2947,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
-name = "str_indices"
-version = "0.4.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d08889ec5408683408db66ad89e0e1f93dff55c73a4ccc71c427d5b277ee47e6"
-
-[[package]]
 name = "stringprep"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3398,17 +3148,6 @@ dependencies = [
  "wezterm-dynamic",
  "wezterm-input-types",
  "winapi",
-]
-
-[[package]]
-name = "textwrap"
-version = "0.16.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c13547615a44dc9c452a8a534638acdf07120d4b6847c8178705da06306a3057"
-dependencies = [
- "smawk",
- "unicode-linebreak",
- "unicode-width",
 ]
 
 [[package]]
@@ -3837,25 +3576,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5c1cb5db39152898a79168971543b1cb5020dff7fe43c8dc468b0885f5e29df5"
 
 [[package]]
-name = "unicode-display-width"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9a43273b656140aa2bb8e65351fe87c255f0eca706b2538a9bd4a590a3490bf3"
-dependencies = [
- "unicode-segmentation",
-]
-
-[[package]]
 name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
-
-[[package]]
-name = "unicode-linebreak"
-version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3b09c83c3c29d37506a3e260c08c03743a6bb66a9cd432c6934ab501a190571f"
 
 [[package]]
 name = "unicode-normalization"

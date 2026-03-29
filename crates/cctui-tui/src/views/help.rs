@@ -7,15 +7,12 @@ use crate::theme;
 
 const BINDINGS: &[(&str, &str)] = &[
     ("q", "Quit"),
-    ("j / ↓", "Next session / scroll down"),
-    ("k / ↑", "Previous session / scroll up"),
+    ("j / ↓", "Next session"),
+    ("k / ↑", "Previous session"),
     ("g / G", "First / last"),
     ("Enter", "Open conversation"),
-    ("Esc", "Back to sessions / exit input"),
-    ("type", "Start composing message"),
-    ("Shift+Enter", "New line in message"),
-    ("t", "Toggle timestamps"),
-    ("f", "Toggle tool details"),
+    ("Esc", "Back to sessions"),
+    ("i", "Start typing message"),
     ("?", "Toggle help"),
 ];
 

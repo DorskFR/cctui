@@ -22,7 +22,4 @@ ratatui = "0.30"
 crossterm = "0.29"
 reqwest = { version = "0.12", features = ["json"] }
 tui-markdown = "0.3.7"
-rat-widget = "3.2.1"
-rat-text = "3.1.0"
-rat-markdown = "0.7.3"
-rat-scrolled = "2.0.2"
+ratatui-textarea = "0.8.0"

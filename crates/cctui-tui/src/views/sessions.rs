@@ -9,14 +9,21 @@ use crate::app::App;
 use crate::theme;
 
 pub fn draw(frame: &mut Frame, app: &App) {
-    let [status_area, list_area, hotkeys_area] =
-        Layout::vertical([Constraint::Length(1), Constraint::Fill(1), Constraint::Length(1)])
-            .areas(frame.area());
+    let [status_area, title_area, list_area, hotkeys_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Fill(1),
+        Constraint::Length(1),
+    ])
+    .areas(frame.area());
 
     // Status bar
     draw_status_bar(frame, app, status_area);
 
-    // Session list (full-width)
+    // Title line
+    draw_title(frame, title_area);
+
+    // Session list
     draw_session_list(frame, app, list_area);
 
     // Hotkeys
@@ -33,6 +40,11 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         Span::raw("  "),
         Span::styled(format!("● {active} active"), theme::ACTIVE),
     ]);
+    frame.render_widget(Paragraph::new(line), area);
+}
+
+fn draw_title(frame: &mut Frame, area: ratatui::layout::Rect) {
+    let line = Line::from(vec![Span::styled(" Sessions", theme::SECTION_TITLE)]);
     frame.render_widget(Paragraph::new(line), area);
 }
 
@@ -68,13 +80,11 @@ fn session_line(s: &SessionListItem) -> ListItem<'static> {
         .get("project_name")
         .and_then(serde_json::Value::as_str)
         .unwrap_or_else(|| basename(&s.working_dir));
+    let branch = s.metadata.get("git_branch").and_then(serde_json::Value::as_str).unwrap_or("");
     let model = s.metadata.get("model").and_then(serde_json::Value::as_str).unwrap_or("");
 
     let uptime = format_uptime(s.uptime_secs);
     let cost = format!("${:.2}", s.token_usage.cost_usd);
-
-    // Shortened model name (just the model identifier, no "claude-" prefix)
-    let model_short = model.strip_prefix("claude-").unwrap_or(model);
 
     let mut spans = vec![
         Span::raw("   "),
@@ -82,8 +92,12 @@ fn session_line(s: &SessionListItem) -> ListItem<'static> {
         Span::styled(project.to_string(), theme::BOLD),
     ];
 
-    if !model_short.is_empty() {
-        spans.push(Span::styled(format!("  {model_short}"), theme::MODEL));
+    if !branch.is_empty() {
+        spans.push(Span::styled(format!(" ({branch})"), theme::BRANCH));
+    }
+
+    if !model.is_empty() {
+        spans.push(Span::styled(format!("  {model}"), theme::MODEL));
     }
 
     spans.push(Span::styled(format!("  {uptime}"), theme::DIM));

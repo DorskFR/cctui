@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use cctui_proto::api::SessionListItem;
+use ratatui_textarea::TextArea;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum View {
@@ -32,14 +33,13 @@ pub struct App {
     pub sessions: Vec<SessionListItem>,
     pub selected_index: usize,
     pub stream_buffer: HashMap<String, Vec<ConversationLine>>,
-    pub message_input: String,
+    pub message_input: TextArea<'static>,
     pub input_active: bool,
     pub should_quit: bool,
     pub scroll_offset: usize,
     pub follow_tail: bool,
     pub active_count: usize,
-    pub show_timestamps: bool,
-    pub show_tool_details: bool,
+    pub show_sidebar: bool,
     pub show_all_sessions: bool,
 }
 
@@ -50,14 +50,13 @@ impl App {
             sessions: Vec::new(),
             selected_index: 0,
             stream_buffer: HashMap::new(),
-            message_input: String::new(),
+            message_input: TextArea::default(),
             input_active: false,
             should_quit: false,
             scroll_offset: 0,
             follow_tail: true,
             active_count: 0,
-            show_timestamps: false,
-            show_tool_details: true,
+            show_sidebar: true,
             show_all_sessions: false,
         }
     }
