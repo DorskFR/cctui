@@ -15,7 +15,7 @@ use cctui_proto::ws::{AgentEvent, ServerEvent, TuiCommand};
 use client::ServerClient;
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-    MouseEventKind,
+    KeyModifiers, MouseEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -23,7 +23,6 @@ use crossterm::terminal::{
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::{Frame, Terminal};
-use ratatui_textarea::TextArea;
 use tokio::sync::mpsc;
 use tokio::time;
 
@@ -232,9 +231,9 @@ fn handle_conversation_keys(app: &mut App, code: KeyCode) {
             app.scroll_offset = usize::MAX;
             app.follow_tail = true;
         }
-        KeyCode::Char('i') => app.input_active = true,
+        KeyCode::Char('t') => app.show_timestamps = !app.show_timestamps,
+        KeyCode::Char('f') => app.show_tool_details = !app.show_tool_details,
         KeyCode::Char('?') => app.view = View::Help,
-        KeyCode::Char('s') => app.show_sidebar = !app.show_sidebar,
         KeyCode::Char(c @ '1'..='9') => {
             let idx = (c as usize) - ('1' as usize);
             let flat = app.flattened_sessions();
@@ -242,6 +241,10 @@ fn handle_conversation_keys(app: &mut App, code: KeyCode) {
                 app.selected_index = idx;
                 app.scroll_offset = usize::MAX;
             }
+        }
+        KeyCode::Char(c) if c.is_ascii_graphic() || c == ' ' => {
+            app.input_active = true;
+            app.message_input.push(c);
         }
         _ => {}
     }
@@ -253,18 +256,26 @@ async fn handle_input_mode(app: &mut App, key: KeyEvent, cmd_tx: &mpsc::Sender<T
             app.input_active = false;
         }
         KeyCode::Enter => {
-            let content = app.message_input.lines().join("\n");
-            if !content.trim().is_empty()
-                && let Some(id) = app.selected_session().map(|s| s.id.clone())
-            {
-                let _ = cmd_tx.send(TuiCommand::Message { session_id: id, content }).await;
+            if key.modifiers.contains(KeyModifiers::SHIFT) {
+                app.message_input.push('\n');
+            } else {
+                let content = app.message_input.trim().to_string();
+                if !content.is_empty()
+                    && let Some(id) = app.selected_session().map(|s| s.id.clone())
+                {
+                    let _ = cmd_tx.send(TuiCommand::Message { session_id: id, content }).await;
+                }
+                app.message_input = String::new();
+                app.input_active = false;
             }
-            app.message_input = TextArea::default();
-            app.input_active = false;
         }
-        _ => {
-            app.message_input.input(key);
+        KeyCode::Backspace => {
+            app.message_input.pop();
         }
+        KeyCode::Char(c) => {
+            app.message_input.push(c);
+        }
+        _ => {}
     }
 }
 
