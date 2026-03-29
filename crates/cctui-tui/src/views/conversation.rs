@@ -143,6 +143,8 @@ fn render_line(line: &ConversationLine, show_timestamps: bool) -> Vec<Line<'stat
 
     match line.kind {
         LineKind::User => {
+            // Two blank lines before user message — clear turn separator
+            result.push(Line::from(""));
             result.push(Line::from(""));
             result.push(Line::from(vec![Span::raw(ts), Span::styled("❯ You", LABEL_YOU)]));
             for text_line in line.text.lines() {
@@ -151,6 +153,7 @@ fn render_line(line: &ConversationLine, show_timestamps: bool) -> Vec<Line<'stat
                     Style::default().fg(Color::Rgb(210, 210, 210)),
                 )));
             }
+            result.push(Line::from("")); // space after user text before assistant's tools
         }
         LineKind::Assistant => {
             result.push(Line::from(""));
