@@ -1,6 +1,6 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
-use ratatui::style::Modifier;
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
@@ -15,7 +15,6 @@ pub fn draw(frame: &mut Frame, app: &App) {
         return;
     };
 
-    // Header info
     let project = session
         .metadata
         .get("project_name")
@@ -27,7 +26,6 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let cost = format!("${:.2}", session.token_usage.cost_usd);
     let machine = &session.machine_id;
 
-    // Full-width layout: header, content, separator, input
     let main_area = frame.area();
 
     let input_lines = app.message_input.lines().len().max(1) + 2;
@@ -43,17 +41,18 @@ pub fn draw(frame: &mut Frame, app: &App) {
     .areas(main_area);
 
     // Header
-    let lines = app.stream_buffer.get(&session.id);
     let header_text = if branch.is_empty() {
         format!(" {project} on {machine} ── {model} ── {cost}")
     } else {
         format!(" {project} ({branch}) on {machine} ── {model} ── {cost}")
     };
-    let header_line = Line::from(vec![Span::styled(header_text, theme::HEADER_BG)]);
-    frame.render_widget(Paragraph::new(header_line), header_area);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(header_text, theme::HEADER_BG))),
+        header_area,
+    );
 
-    // Conversation content
-    if let Some(lines) = lines {
+    // Conversation
+    if let Some(lines) = app.stream_buffer.get(&session.id) {
         let visible_height = content_area.height as usize;
         let all_display_lines: Vec<Line> =
             lines.iter().flat_map(|l| render_line(l, app.show_timestamps)).collect();
@@ -77,11 +76,13 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
 
     // Separator
-    let separator = Line::from(vec![Span::styled(
-        "─".repeat(separator_area.width as usize),
-        theme::BORDER_FOCUSED,
-    )]);
-    frame.render_widget(Paragraph::new(separator), separator_area);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "─".repeat(separator_area.width as usize),
+            theme::BORDER_FOCUSED,
+        ))),
+        separator_area,
+    );
 
     // Input
     let input_block = if app.input_active {
@@ -95,79 +96,61 @@ pub fn draw(frame: &mut Frame, app: &App) {
             .border_style(theme::BORDER_DIM)
             .title(" Press i to type ")
     };
-
     let mut textarea_widget = app.message_input.clone();
     textarea_widget.set_block(input_block);
     frame.render_widget(&textarea_widget, input_area);
 }
 
-/// Render a conversation line into display lines.
-/// Each message type gets a role label, proper spacing, and full content.
+// -- Styles (keep close to rendering for easy tuning) --
+
+const LABEL_YOU: Style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+const LABEL_ASSISTANT: Style =
+    Style::new().fg(Color::Rgb(244, 118, 0)).add_modifier(Modifier::BOLD); // orange like codex
+const TOOL_BADGE: Style = Style::new().fg(Color::DarkGray);
+const TOOL_DETAIL: Style = Style::new().fg(Color::DarkGray);
+const TOOL_RESULT_STYLE: Style = Style::new().fg(Color::DarkGray);
+const ARROW: Style = Style::new().fg(Color::DarkGray);
+
 #[allow(clippy::too_many_lines, clippy::redundant_clone)]
 fn render_line(line: &ConversationLine, show_timestamps: bool) -> Vec<Line<'static>> {
     let mut result = Vec::new();
-    let ts_prefix = if show_timestamps {
-        let ts = format_timestamp(line.timestamp);
-        format!("{ts}  ")
+    let ts = if show_timestamps {
+        format!("{} ", format_timestamp(line.timestamp))
     } else {
         String::new()
     };
 
     match line.kind {
         LineKind::User => {
-            // Blank line before user message for spacing
             result.push(Line::from(""));
-
-            // Role label
-            result.push(Line::from(vec![
-                Span::raw(ts_prefix.clone()),
-                Span::styled(
-                    "You",
-                    ratatui::style::Style::default()
-                        .fg(ratatui::style::Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ]));
-
-            // Message content
+            result.push(Line::from(vec![Span::raw(ts), Span::styled("❯ You", LABEL_YOU)]));
+            // Content flush left — no indent
             for text_line in line.text.lines() {
-                result.push(Line::from(vec![
-                    Span::raw(if show_timestamps { "       " } else { "  " }),
-                    Span::styled(text_line.to_string(), theme::USER_MSG),
-                ]));
+                result.push(Line::from(Span::styled(
+                    text_line.to_string(),
+                    Style::default().fg(Color::White),
+                )));
             }
         }
         LineKind::Assistant => {
-            // Blank line before assistant message
             result.push(Line::from(""));
-
-            // Role label
             result.push(Line::from(vec![
-                Span::raw(ts_prefix.clone()),
-                Span::styled(
-                    "Assistant",
-                    ratatui::style::Style::default()
-                        .fg(ratatui::style::Color::Green)
-                        .add_modifier(Modifier::BOLD),
-                ),
+                Span::raw(ts),
+                Span::styled("● Assistant", LABEL_ASSISTANT),
             ]));
-
-            // Render markdown content
+            // Render markdown flush left
             let md_text = markdown_render::render_markdown_text(&line.text);
-            let indent = if show_timestamps { "       " } else { "  " };
             if md_text.lines.is_empty() {
                 for text_line in line.text.lines() {
-                    result.push(Line::from(vec![
-                        Span::raw(indent),
-                        Span::styled(text_line.to_string(), theme::ASSISTANT_MSG),
-                    ]));
+                    result.push(Line::from(Span::raw(text_line.to_string())));
                 }
             } else {
                 for md_line in &md_text.lines {
-                    let mut spans = vec![Span::raw(indent)];
-                    for span in &md_line.spans {
-                        spans.push(Span::styled(span.content.to_string(), span.style));
-                    }
+                    let spans: Vec<Span<'static>> = md_line
+                        .spans
+                        .iter()
+                        .map(|s| Span::styled(s.content.to_string(), s.style))
+                        .collect();
                     result.push(Line::from(spans));
                 }
             }
@@ -181,64 +164,41 @@ fn render_line(line: &ConversationLine, show_timestamps: bool) -> Vec<Line<'stat
                 ("", text.as_str())
             };
 
-            let badge_style = match tool_name {
-                "Bash" => theme::TOOL_BADGE_BASH,
-                "Read" | "Write" | "Edit" | "Glob" => theme::TOOL_BADGE_FILE,
-                _ => theme::TOOL_BADGE_FG,
-            };
-
-            // Tool call header with badge — full text, no truncation
+            // Single dimmed line: ⚙ ToolName detail (full text, no truncation)
             result.push(Line::from(vec![
-                Span::raw(ts_prefix.clone()),
-                Span::styled(format!(" {tool_name} "), badge_style),
-                Span::raw(" "),
-                Span::styled(detail.to_string(), theme::TOOL_CALL),
+                Span::raw(ts),
+                Span::styled(format!("⚙ {tool_name} "), TOOL_BADGE),
+                Span::styled(detail.to_string(), TOOL_DETAIL),
             ]));
         }
         LineKind::ToolResult => {
             let result_text = line.text.strip_prefix("  → ").unwrap_or(&line.text);
-
-            // Show full result with line breaks
-            let indent = if show_timestamps { "       " } else { "  " };
-            let lines_iter: Vec<&str> = result_text.lines().collect();
-
-            if lines_iter.is_empty() {
-                result.push(Line::from(vec![
-                    Span::raw(ts_prefix.clone()),
-                    Span::styled("→ ", theme::TOOL_RESULT_ARROW),
-                    Span::styled("(empty)", theme::DIM),
-                ]));
+            // Multi-line result, dimmed
+            let lines_vec: Vec<&str> = result_text.lines().collect();
+            if lines_vec.is_empty() {
+                result.push(Line::from(vec![Span::raw(ts), Span::styled("→ (empty)", ARROW)]));
             } else {
-                // First line with arrow
                 result.push(Line::from(vec![
-                    Span::raw(ts_prefix.clone()),
-                    Span::styled("→ ", theme::TOOL_RESULT_ARROW),
-                    Span::styled(lines_iter[0].to_string(), theme::TOOL_RESULT),
+                    Span::raw(ts),
+                    Span::styled("→ ", ARROW),
+                    Span::styled(lines_vec[0].to_string(), TOOL_RESULT_STYLE),
                 ]));
-                // Remaining lines indented
-                for rest in &lines_iter[1..] {
-                    result.push(Line::from(vec![
-                        Span::raw(indent),
-                        Span::styled(format!("  {rest}"), theme::TOOL_RESULT),
-                    ]));
+                for rest in &lines_vec[1..] {
+                    result.push(Line::from(Span::styled(format!("  {rest}"), TOOL_RESULT_STYLE)));
                 }
             }
         }
         LineKind::System => {
-            // Skip system messages (usually empty heartbeats)
             if !line.text.is_empty() {
-                result.push(Line::from(vec![
-                    Span::raw(ts_prefix),
-                    Span::styled(line.text.clone(), theme::DIM),
-                ]));
+                result.push(Line::from(Span::styled(line.text.clone(), theme::DIM)));
             }
         }
         LineKind::Reply => {
             result.push(Line::from(""));
             result.push(Line::from(vec![
-                Span::raw(ts_prefix),
-                Span::styled("◁ Reply ", theme::MACHINE_HEADER),
-                Span::styled(line.text.clone(), theme::ASSISTANT_MSG),
+                Span::raw(ts),
+                Span::styled("◁ Reply ", LABEL_ASSISTANT),
+                Span::raw(line.text.clone()),
             ]));
         }
     }
@@ -250,12 +210,8 @@ fn format_timestamp(ts: i64) -> String {
     if ts == 0 {
         return "     ".to_string();
     }
-    let dt = chrono::DateTime::from_timestamp(ts, 0);
-    dt.map_or_else(
+    chrono::DateTime::from_timestamp(ts, 0).map_or_else(
         || "??:??".to_string(),
-        |dt| {
-            let local = dt.with_timezone(&chrono::Local);
-            local.format("%H:%M").to_string()
-        },
+        |dt| dt.with_timezone(&chrono::Local).format("%H:%M").to_string(),
     )
 }
