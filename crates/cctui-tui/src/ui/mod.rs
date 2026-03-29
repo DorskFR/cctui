@@ -2,7 +2,10 @@
 #![allow(clippy::pedantic, clippy::nursery)]
 
 pub mod color;
+pub mod highlight;
 pub mod line_utils;
 pub mod live_wrap;
+pub mod markdown_render;
 pub mod style;
 pub mod terminal_palette;
+pub mod wrapping;

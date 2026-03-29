@@ -2,10 +2,10 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
-use tui_markdown::from_str as markdown_from_str;
 
 use crate::app::{App, ConversationLine, LineKind};
 use crate::theme;
+use crate::ui::markdown_render;
 
 /// Find the largest byte index <= `max_bytes` that is a char boundary.
 fn truncate_at_char_boundary(s: &str, max_bytes: usize) -> &str {
@@ -193,8 +193,8 @@ fn render_line(line: &ConversationLine) -> Vec<Line<'static>> {
             vec![single_line]
         }
         LineKind::Assistant => {
-            let markdown_text = markdown_from_str(&line.text);
-            if markdown_text.lines.is_empty() {
+            let md_text = markdown_render::render_markdown_text(&line.text);
+            if md_text.lines.is_empty() {
                 let single_line = Line::from(vec![
                     Span::styled(ts, theme::TIMESTAMP),
                     Span::raw("  "),
@@ -204,7 +204,7 @@ fn render_line(line: &ConversationLine) -> Vec<Line<'static>> {
             }
 
             let mut result = Vec::new();
-            for (idx, markdown_line) in markdown_text.lines.iter().enumerate() {
+            for (idx, markdown_line) in md_text.lines.iter().enumerate() {
                 let mut spans = Vec::new();
                 if idx == 0 {
                     spans.push(Span::styled(ts.clone(), theme::TIMESTAMP));
