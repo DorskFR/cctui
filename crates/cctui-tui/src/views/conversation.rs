@@ -27,7 +27,6 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let machine = &session.machine_id;
 
     let main_area = frame.area();
-
     let input_lines = app.message_input.lines().len().max(1) + 2;
     let max_input = (main_area.height as usize / 2).max(3);
     let input_height = input_lines.clamp(3, max_input) as u16;
@@ -101,15 +100,38 @@ pub fn draw(frame: &mut Frame, app: &App) {
     frame.render_widget(&textarea_widget, input_area);
 }
 
-// -- Styles (keep close to rendering for easy tuning) --
+/// Count how many display lines a conversation line produces (for scroll math).
+pub fn count_display_lines(line: &ConversationLine, show_timestamps: bool) -> usize {
+    render_line(line, show_timestamps).len()
+}
+
+// -- Styles --
 
 const LABEL_YOU: Style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+// Orange accent like Codex CLI
 const LABEL_ASSISTANT: Style =
-    Style::new().fg(Color::Rgb(244, 118, 0)).add_modifier(Modifier::BOLD); // orange like codex
-const TOOL_BADGE: Style = Style::new().fg(Color::DarkGray);
+    Style::new().fg(Color::Rgb(244, 118, 0)).add_modifier(Modifier::BOLD);
+
+// Tool categories: read (blue bg), write (yellow bg), mcp (magenta bg)
+const TOOL_READ: Style = Style::new().fg(Color::White).bg(Color::Blue);
+const TOOL_WRITE: Style = Style::new().fg(Color::Black).bg(Color::Yellow);
+const TOOL_MCP: Style = Style::new().fg(Color::White).bg(Color::Magenta);
 const TOOL_DETAIL: Style = Style::new().fg(Color::DarkGray);
 const TOOL_RESULT_STYLE: Style = Style::new().fg(Color::DarkGray);
 const ARROW: Style = Style::new().fg(Color::DarkGray);
+
+fn tool_badge_style(tool_name: &str) -> (Style, &'static str) {
+    match tool_name {
+        // Read tools
+        "Read" | "Glob" | "Grep" | "WebFetch" | "WebSearch" | "LSP" => (TOOL_READ, "read"),
+        // Write tools
+        "Write" | "Edit" | "Bash" | "NotebookEdit" => (TOOL_WRITE, "write"),
+        // MCP tools (prefixed with mcp__)
+        name if name.starts_with("mcp__") => (TOOL_MCP, "mcp"),
+        // Everything else
+        _ => (TOOL_READ, "tool"),
+    }
+}
 
 #[allow(clippy::too_many_lines, clippy::redundant_clone)]
 fn render_line(line: &ConversationLine, show_timestamps: bool) -> Vec<Line<'static>> {
@@ -124,7 +146,6 @@ fn render_line(line: &ConversationLine, show_timestamps: bool) -> Vec<Line<'stat
         LineKind::User => {
             result.push(Line::from(""));
             result.push(Line::from(vec![Span::raw(ts), Span::styled("❯ You", LABEL_YOU)]));
-            // Content flush left — no indent
             for text_line in line.text.lines() {
                 result.push(Line::from(Span::styled(
                     text_line.to_string(),
@@ -138,7 +159,6 @@ fn render_line(line: &ConversationLine, show_timestamps: bool) -> Vec<Line<'stat
                 Span::raw(ts),
                 Span::styled("● Assistant", LABEL_ASSISTANT),
             ]));
-            // Render markdown flush left
             let md_text = markdown_render::render_markdown_text(&line.text);
             if md_text.lines.is_empty() {
                 for text_line in line.text.lines() {
@@ -164,16 +184,24 @@ fn render_line(line: &ConversationLine, show_timestamps: bool) -> Vec<Line<'stat
                 ("", text.as_str())
             };
 
-            // Single dimmed line: ⚙ ToolName detail (full text, no truncation)
+            let (badge_style, _category) = tool_badge_style(tool_name);
+
+            // Shorten MCP tool names: mcp__server__tool → server:tool
+            let display_name = if tool_name.starts_with("mcp__") {
+                tool_name.strip_prefix("mcp__").unwrap_or(tool_name).replacen("__", ":", 1)
+            } else {
+                tool_name.to_string()
+            };
+
             result.push(Line::from(vec![
                 Span::raw(ts),
-                Span::styled(format!("⚙ {tool_name} "), TOOL_BADGE),
+                Span::styled(format!(" {display_name} "), badge_style),
+                Span::raw(" "),
                 Span::styled(detail.to_string(), TOOL_DETAIL),
             ]));
         }
         LineKind::ToolResult => {
             let result_text = line.text.strip_prefix("  → ").unwrap_or(&line.text);
-            // Multi-line result, dimmed
             let lines_vec: Vec<&str> = result_text.lines().collect();
             if lines_vec.is_empty() {
                 result.push(Line::from(vec![Span::raw(ts), Span::styled("→ (empty)", ARROW)]));

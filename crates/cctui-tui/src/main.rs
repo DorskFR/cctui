@@ -171,12 +171,14 @@ async fn handle_input(
         }
         InputEvent::ScrollUp => {
             if matches!(app.view, View::Conversation) && !app.input_active {
+                snap_scroll_if_following(app);
                 app.scroll_offset = app.scroll_offset.saturating_sub(3);
                 app.follow_tail = false;
             }
         }
         InputEvent::ScrollDown => {
             if matches!(app.view, View::Conversation) && !app.input_active {
+                snap_scroll_if_following(app);
                 app.scroll_offset = app.scroll_offset.saturating_add(3);
             }
         }
@@ -206,23 +208,43 @@ async fn handle_session_list_keys(
     }
 }
 
+/// When `scroll_offset` is `usize::MAX` (follow-tail sentinel), resolve it to the
+/// actual bottom position so that relative scroll operations (add/sub) work.
+fn snap_scroll_if_following(app: &mut App) {
+    if app.scroll_offset == usize::MAX
+        && let Some(session) = app.selected_session()
+    {
+        let total: usize = app.stream_buffer.get(&session.id).map_or(0, |lines| {
+            lines
+                .iter()
+                .map(|l| crate::views::conversation::count_display_lines(l, app.show_timestamps))
+                .sum()
+        });
+        app.scroll_offset = total;
+    }
+}
+
 #[allow(clippy::missing_const_for_fn)]
 fn handle_conversation_keys(app: &mut App, code: KeyCode) {
     match code {
         KeyCode::Esc | KeyCode::Char('q') => app.view = View::SessionList,
         KeyCode::Char('j') | KeyCode::Down => {
+            snap_scroll_if_following(app);
             app.scroll_offset = app.scroll_offset.saturating_add(1);
             app.follow_tail = false;
         }
         KeyCode::Char('k') | KeyCode::Up => {
+            snap_scroll_if_following(app);
             app.scroll_offset = app.scroll_offset.saturating_sub(1);
             app.follow_tail = false;
         }
         KeyCode::PageUp => {
+            snap_scroll_if_following(app);
             app.scroll_offset = app.scroll_offset.saturating_sub(15);
             app.follow_tail = false;
         }
         KeyCode::PageDown => {
+            snap_scroll_if_following(app);
             app.scroll_offset = app.scroll_offset.saturating_add(15);
         }
         KeyCode::Char('g') => {
@@ -307,7 +329,13 @@ fn handle_server_event(app: &mut App, event: ServerEvent) {
                 session.token_usage.cost_usd = *cost_usd;
             }
             let line = agent_event_to_line(&data);
-            app.stream_buffer.entry(session_id).or_default().push(line);
+            // Dedup: skip if the last line has identical text and kind
+            let buf = app.stream_buffer.entry(session_id).or_default();
+            let is_dup =
+                buf.last().is_some_and(|last| last.kind == line.kind && last.text == line.text);
+            if !is_dup {
+                buf.push(line);
+            }
         }
         ServerEvent::Status { session_id, status } => {
             if let Some(session) = app.sessions.iter_mut().find(|s| s.id == session_id) {
