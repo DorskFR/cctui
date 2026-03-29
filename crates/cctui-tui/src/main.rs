@@ -3,6 +3,7 @@
 mod app;
 mod client;
 mod theme;
+mod ui;
 mod views;
 mod widgets;
 
