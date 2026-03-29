@@ -8,24 +8,79 @@ interface ParsedEvent {
   tool_use_id?: string;
 }
 
-const SKIP_TYPES = new Set(["file-history-snapshot", "queue-operation", "system"]);
+const SKIP_TYPES = new Set([
+  "file-history-snapshot",
+  "queue-operation",
+  "system",
+  "command",
+  "progress",
+  "metadata",
+  "config_change",
+]);
 
 /** Extract text from a tool_result content field, which can be a string, array of blocks, or object. */
 function extractToolResultContent(content: unknown): string {
   if (content == null) return "";
   if (typeof content === "string") return content;
+
   if (Array.isArray(content)) {
-    return content
-      .map((block: Record<string, unknown>) => {
-        if (block.type === "text" && typeof block.text === "string") return block.text;
-        return "";
-      })
-      .filter(Boolean)
-      .join("\n");
+    const results: string[] = [];
+    for (const block of content) {
+      if (typeof block === "object" && block != null) {
+        const blockObj = block as Record<string, unknown>;
+        if (blockObj.type === "text" && typeof blockObj.text === "string") {
+          results.push(blockObj.text);
+        } else if (blockObj.title && typeof blockObj.title === "string") {
+          // Extract title from nested blocks (WebSearch results, etc)
+          // Include link if present
+          const title = blockObj.title;
+          const link = blockObj.link ? ` (${blockObj.link})` : "";
+          results.push(`${title}${link}`);
+        } else if (blockObj.text && typeof blockObj.text === "string") {
+          results.push(blockObj.text);
+        } else if (typeof blockObj === "object") {
+          // Recursively extract from nested content
+          const nested = extractToolResultContent(blockObj);
+          if (nested) results.push(nested);
+        }
+      }
+    }
+    return results.filter(Boolean).join("\n");
   }
+
   if (typeof content === "object") {
-    try { return JSON.stringify(content); } catch { return ""; }
+    const obj = content as Record<string, unknown>;
+    // Try to extract readable content from common fields
+    if (obj.title && typeof obj.title === "string") return obj.title;
+    if (obj.text && typeof obj.text === "string") return obj.text;
+    if (obj.message && typeof obj.message === "string") return obj.message;
+    if (obj.content && typeof obj.content === "string") return obj.content;
+
+    // If it looks like raw JSON (common object patterns), try to extract useful fields
+    const str = JSON.stringify(obj);
+    if (str.startsWith("[{") || str.startsWith("{")) {
+      // Check if it's a WebSearch-like result with links
+      if (Array.isArray(obj) && obj.length > 0) {
+        const items = obj as Array<Record<string, unknown>>;
+        return items
+          .map((item) => {
+            if (item.title) return `${item.title}${item.link ? ` (${item.link})` : ""}`;
+            if (item.text) return String(item.text);
+            return "";
+          })
+          .filter(Boolean)
+          .join("\n");
+      }
+      // For plain objects, just stringify
+      try {
+        return str;
+      } catch {
+        return "";
+      }
+    }
+    return str;
   }
+
   return String(content);
 }
 
@@ -53,6 +108,10 @@ export function parseLine(line: string): ParsedEvent[] {
 
   if (role === "user") {
     if (typeof content === "string" && content) {
+      // Skip command output artifacts
+      if (content.includes("</command-name>") || content.includes("<command-")) {
+        return [];
+      }
       return [{ type: "user_message", content }];
     }
     if (Array.isArray(content)) {
@@ -60,9 +119,17 @@ export function parseLine(line: string): ParsedEvent[] {
       for (const part of content) {
         if (part.type === "tool_result") {
           const raw = extractToolResultContent(part.content);
+          // Skip if content contains command artifacts
+          if (raw.includes("</command-name>") || raw.includes("<command-")) {
+            continue;
+          }
           events.push({ type: "tool_result", tool_use_id: part.tool_use_id ?? "", content: raw.slice(0, 500) });
         } else if (part.type === "text") {
-          events.push({ type: "user_message", content: part.text ?? "" });
+          const text = part.text ?? "";
+          // Skip command output artifacts
+          if (!text.includes("</command-name>") && !text.includes("<command-")) {
+            events.push({ type: "user_message", content: text });
+          }
         }
       }
       return events;

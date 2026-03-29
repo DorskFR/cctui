@@ -52,20 +52,17 @@ fn draw_session_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
     let flat = app.flattened_sessions();
     let mut items: Vec<ListItem> = Vec::new();
 
-    for (i, session) in flat.iter().enumerate() {
-        // Machine group header
-        if let Some(machine) = app.machine_header_at(i) {
-            items.push(ListItem::new(Line::from(vec![
-                Span::raw(" "),
-                Span::styled(machine, theme::MACHINE_HEADER),
-            ])));
-        }
-
+    for session in &flat {
         items.push(session_line(session));
     }
 
-    // Map selected_index to the actual list index (accounting for headers)
-    let list_index = compute_list_index(app);
+    // Show truncation hint if not showing all sessions
+    if !app.show_all_sessions && app.sessions.len() > 5 {
+        items.push(ListItem::new(Line::from(vec![Span::styled("   [a] show all", theme::DIM)])));
+    }
+
+    // Map selected_index to the actual list index
+    let list_index = if app.selected_index < flat.len() { app.selected_index } else { 0 };
 
     let list = List::new(items).highlight_style(theme::SELECTED).highlight_symbol("▸ ");
 
@@ -85,14 +82,12 @@ fn session_line(s: &SessionListItem) -> ListItem<'static> {
         .unwrap_or_else(|| basename(&s.working_dir));
     let branch = s.metadata.get("git_branch").and_then(serde_json::Value::as_str).unwrap_or("");
     let model = s.metadata.get("model").and_then(serde_json::Value::as_str).unwrap_or("");
-    let is_child = s.parent_id.is_some();
 
-    let indent = if is_child { "   └─ " } else { "   " };
     let uptime = format_uptime(s.uptime_secs);
     let cost = format!("${:.2}", s.token_usage.cost_usd);
 
     let mut spans = vec![
-        Span::raw(indent.to_string()),
+        Span::raw("   "),
         Span::styled(format!("{icon} "), icon_style),
         Span::styled(project.to_string(), theme::BOLD),
     ];
@@ -109,22 +104,6 @@ fn session_line(s: &SessionListItem) -> ListItem<'static> {
     spans.push(Span::styled(format!("  {cost}"), theme::COST));
 
     ListItem::new(Line::from(spans))
-}
-
-/// Map the app's `selected_index` to the list index that includes machine headers.
-fn compute_list_index(app: &App) -> usize {
-    let flat = app.flattened_sessions();
-    let mut list_idx = 0;
-    for (i, _) in flat.iter().enumerate() {
-        if app.machine_header_at(i).is_some() {
-            list_idx += 1; // header row
-        }
-        if i == app.selected_index {
-            return list_idx;
-        }
-        list_idx += 1;
-    }
-    list_idx
 }
 
 fn basename(path: &str) -> &str {

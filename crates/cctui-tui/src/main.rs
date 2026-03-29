@@ -194,6 +194,7 @@ async fn handle_session_list_keys(
         KeyCode::Char('k') | KeyCode::Up => app.select_prev(),
         KeyCode::Char('g') => app.select_first(),
         KeyCode::Char('G') => app.select_last(),
+        KeyCode::Char('a') => app.show_all_sessions = !app.show_all_sessions,
         KeyCode::Char('?') => app.view = View::Help,
         KeyCode::Enter => {
             load_conversation(app, cmd_tx, server).await;
@@ -297,6 +298,13 @@ async fn load_conversation(
 fn handle_server_event(app: &mut App, event: ServerEvent) {
     match event {
         ServerEvent::Stream { session_id, data } => {
+            if let AgentEvent::Heartbeat { tokens_in, tokens_out, cost_usd, .. } = &data
+                && let Some(session) = app.sessions.iter_mut().find(|s| s.id == session_id)
+            {
+                session.token_usage.tokens_in = *tokens_in;
+                session.token_usage.tokens_out = *tokens_out;
+                session.token_usage.cost_usd = *cost_usd;
+            }
             let line = agent_event_to_line(&data);
             app.stream_buffer.entry(session_id).or_default().push(line);
         }

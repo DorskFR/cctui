@@ -212,6 +212,211 @@ describe("parseLine", () => {
     expect(results).toHaveLength(1);
     expect(results[0].content).toBe('{"key":"value"}');
   });
+
+  test("skips command type", () => {
+    const line = JSON.stringify({ type: "command", message: { role: "user", content: "command output" } });
+    expect(parseLine(line)).toEqual([]);
+  });
+
+  test("skips progress type", () => {
+    const line = JSON.stringify({ type: "progress", message: { role: "user", content: "progress update" } });
+    expect(parseLine(line)).toEqual([]);
+  });
+
+  test("skips metadata type", () => {
+    const line = JSON.stringify({ type: "metadata", message: { role: "user", content: "metadata" } });
+    expect(parseLine(line)).toEqual([]);
+  });
+
+  test("skips config_change type", () => {
+    const line = JSON.stringify({ type: "config_change", message: { role: "user", content: "config change" } });
+    expect(parseLine(line)).toEqual([]);
+  });
+
+  test("skips user message with command artifacts", () => {
+    const line = JSON.stringify({
+      type: "human",
+      message: { role: "user", content: "some text </command-name> more text" },
+    });
+    expect(parseLine(line)).toEqual([]);
+  });
+
+  test("skips user message with command tag artifacts", () => {
+    const line = JSON.stringify({
+      type: "human",
+      message: { role: "user", content: "<command-model>claude-opus</command-model>" },
+    });
+    expect(parseLine(line)).toEqual([]);
+  });
+
+  test("skips tool_result with command artifacts in content", () => {
+    const line = JSON.stringify({
+      type: "human",
+      message: {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "t1", content: "output </command-name>" }],
+      },
+    });
+    expect(parseLine(line)).toEqual([]);
+  });
+
+  test("skips text part with command artifacts in content array", () => {
+    const line = JSON.stringify({
+      type: "human",
+      message: {
+        role: "user",
+        content: [
+          { type: "text", text: "normal text" },
+          { type: "text", text: "</command-name>" },
+          { type: "text", text: "more text" },
+        ],
+      },
+    });
+    const results = parseLine(line);
+    expect(results).toHaveLength(2);
+    expect(results[0].content).toBe("normal text");
+    expect(results[1].content).toBe("more text");
+  });
+
+  test("extracts title from nested WebSearch-like results", () => {
+    const line = JSON.stringify({
+      type: "human",
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "search1",
+            content: [
+              { title: "First Result", link: "https://example.com/1" },
+              { title: "Second Result", link: "https://example.com/2" },
+            ],
+          },
+        ],
+      },
+    });
+    const results = parseLine(line);
+    expect(results).toHaveLength(1);
+    expect(results[0].content).toContain("First Result");
+    expect(results[0].content).toContain("https://example.com/1");
+  });
+
+  test("handles tool_result with object containing title field", () => {
+    const line = JSON.stringify({
+      type: "human",
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "search1",
+            content: { title: "Search Result Title", description: "Some description" },
+          },
+        ],
+      },
+    });
+    const results = parseLine(line);
+    expect(results).toHaveLength(1);
+    expect(results[0].content).toBe("Search Result Title");
+  });
+
+  test("handles tool_result with object containing text field", () => {
+    const line = JSON.stringify({
+      type: "human",
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "id1",
+            content: { text: "Extracted text content", meta: "ignored" },
+          },
+        ],
+      },
+    });
+    const results = parseLine(line);
+    expect(results).toHaveLength(1);
+    expect(results[0].content).toBe("Extracted text content");
+  });
+
+  test("handles tool_result with nested content blocks", () => {
+    const line = JSON.stringify({
+      type: "human",
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "t1",
+            content: [
+              { type: "text", text: "First block" },
+              {
+                type: "nested",
+                content: [{ type: "text", text: "Nested text" }],
+              },
+              { type: "text", text: "Last block" },
+            ],
+          },
+        ],
+      },
+    });
+    const results = parseLine(line);
+    expect(results).toHaveLength(1);
+    expect(results[0].content).toContain("First block");
+    expect(results[0].content).toContain("Last block");
+  });
+
+  test("handles array of search results with title and link", () => {
+    const line = JSON.stringify({
+      type: "human",
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "ws1",
+            content: [
+              { title: "Python Docs", link: "https://python.org", snippet: "..." },
+              { title: "Stack Overflow", link: "https://stackoverflow.com", snippet: "..." },
+            ],
+          },
+        ],
+      },
+    });
+    const results = parseLine(line);
+    expect(results).toHaveLength(1);
+    const content = results[0].content;
+    expect(content).toContain("Python Docs");
+    expect(content).toContain("python.org");
+    expect(content).toContain("Stack Overflow");
+    expect(content).toContain("stackoverflow.com");
+  });
+
+  test("handles tool_result with deeply nested object structure", () => {
+    const line = JSON.stringify({
+      type: "human",
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "api1",
+            content: {
+              status: "success",
+              data: {
+                message: "Operation completed",
+                details: { count: 42 },
+              },
+            },
+          },
+        ],
+      },
+    });
+    const results = parseLine(line);
+    expect(results).toHaveLength(1);
+    // Should extract or stringify the object sensibly
+    expect(results[0].content).toBeTruthy();
+  });
 });
 
 describe("parseUsage", () => {

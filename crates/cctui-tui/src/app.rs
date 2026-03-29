@@ -40,6 +40,7 @@ pub struct App {
     pub follow_tail: bool,
     pub active_count: usize,
     pub show_sidebar: bool,
+    pub show_all_sessions: bool,
 }
 
 impl App {
@@ -56,6 +57,7 @@ impl App {
             follow_tail: true,
             active_count: 0,
             show_sidebar: true,
+            show_all_sessions: false,
         }
     }
 
@@ -64,37 +66,13 @@ impl App {
         flat.get(self.selected_index).copied()
     }
 
-    /// Flat list of sessions ordered by machine, then parents before children.
     pub fn flattened_sessions(&self) -> Vec<&SessionListItem> {
-        let mut by_machine: HashMap<&str, Vec<&SessionListItem>> = HashMap::new();
-        for s in &self.sessions {
-            by_machine.entry(s.machine_id.as_str()).or_default().push(s);
+        let mut sorted: Vec<&SessionListItem> = self.sessions.iter().collect();
+        sorted.sort_by_key(|s| s.uptime_secs);
+        if !self.show_all_sessions {
+            sorted.truncate(5);
         }
-
-        let mut machines: Vec<&str> = by_machine.keys().copied().collect();
-        machines.sort_unstable();
-
-        let mut result: Vec<&SessionListItem> = Vec::new();
-        for machine in machines {
-            let group = &by_machine[machine];
-            // roots first, then children
-            for s in group.iter().filter(|s| s.parent_id.is_none()) {
-                result.push(s);
-                Self::append_children(&s.id, group, &mut result);
-            }
-        }
-        result
-    }
-
-    fn append_children<'a>(
-        parent_id: &str,
-        group: &[&'a SessionListItem],
-        result: &mut Vec<&'a SessionListItem>,
-    ) {
-        for s in group.iter().filter(|s| s.parent_id.as_deref() == Some(parent_id)) {
-            result.push(s);
-            Self::append_children(&s.id, group, result);
-        }
+        sorted
     }
 
     pub fn select_next(&mut self) {
@@ -144,18 +122,6 @@ impl App {
                     || s.status == cctui_proto::models::SessionStatus::Idle
             })
             .collect()
-    }
-
-    /// Get the `machine_id` for the session at index, or None if same as previous.
-    /// Used to render machine group headers.
-    pub fn machine_header_at(&self, index: usize) -> Option<&str> {
-        let flat = self.flattened_sessions();
-        let current = flat.get(index)?;
-        if index == 0 {
-            return Some(&current.machine_id);
-        }
-        let prev = flat.get(index - 1)?;
-        if current.machine_id == prev.machine_id { None } else { Some(&current.machine_id) }
     }
 }
 

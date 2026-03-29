@@ -105,7 +105,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         },
         |lines| {
             let visible_height = content_area.height as usize;
-            let total = lines.len();
+            let total = lines.iter().flat_map(render_line).count();
             let offset = if app.scroll_offset >= total.saturating_sub(visible_height) {
                 total.saturating_sub(visible_height)
             } else {
@@ -129,7 +129,11 @@ pub fn draw(frame: &mut Frame, app: &App) {
     // Conversation content (no block, direct render)
     if let Some(lines) = lines {
         let visible_height = content_area.height as usize;
-        let total = lines.len();
+
+        // Pre-compute all display lines (each ConversationLine may expand to multiple display lines)
+        let all_display_lines: Vec<Line> = lines.iter().flat_map(render_line).collect();
+
+        let total = all_display_lines.len();
 
         // Auto-scroll to bottom if offset is at or past the end
         let offset = if app.scroll_offset >= total.saturating_sub(visible_height) {
@@ -139,7 +143,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         };
 
         let display_lines: Vec<Line> =
-            lines.iter().skip(offset).take(visible_height).map(render_line).collect();
+            all_display_lines.iter().skip(offset).take(visible_height).cloned().collect();
 
         frame.render_widget(Paragraph::new(display_lines).wrap(Wrap { trim: false }), content_area);
     } else {
@@ -174,37 +178,51 @@ pub fn draw(frame: &mut Frame, app: &App) {
     frame.render_widget(&textarea_widget, input_area);
 }
 
-fn render_markdown_line(text: &str) -> Vec<Span<'static>> {
-    let lines = markdown_from_str(text);
-    let mut result = Vec::new();
-    for line in lines {
-        for span in line.spans {
-            let owned_span = Span::styled(span.content.to_string(), span.style);
-            result.push(owned_span);
-        }
-    }
-    if result.is_empty() {
-        result.push(Span::styled(text.to_string(), theme::ASSISTANT_MSG));
-    }
-    result
-}
-
-fn render_line(line: &ConversationLine) -> Line<'static> {
+#[allow(clippy::too_many_lines)]
+fn render_line(line: &ConversationLine) -> Vec<Line<'static>> {
     let ts = format_timestamp(line.timestamp);
 
     match line.kind {
-        LineKind::User => Line::from(vec![
-            Span::styled(ts, theme::TIMESTAMP),
-            Span::raw("  "),
-            Span::styled("▷ ", theme::USER_MSG),
-            Span::styled(line.text.clone(), theme::USER_MSG),
-        ]),
+        LineKind::User => {
+            let single_line = Line::from(vec![
+                Span::styled(ts, theme::TIMESTAMP),
+                Span::raw("  "),
+                Span::styled("▷ ", theme::USER_MSG),
+                Span::styled(line.text.clone(), theme::USER_MSG),
+            ]);
+            vec![single_line]
+        }
         LineKind::Assistant => {
-            let ts_span = Span::styled(ts, theme::TIMESTAMP);
-            let rendered_spans = render_markdown_line(&line.text);
-            let mut all_spans = vec![ts_span, Span::raw("  ")];
-            all_spans.extend(rendered_spans);
-            Line::from(all_spans)
+            let markdown_text = markdown_from_str(&line.text);
+            if markdown_text.lines.is_empty() {
+                let single_line = Line::from(vec![
+                    Span::styled(ts, theme::TIMESTAMP),
+                    Span::raw("  "),
+                    Span::styled(line.text.clone(), theme::ASSISTANT_MSG),
+                ]);
+                return vec![single_line];
+            }
+
+            let mut result = Vec::new();
+            for (idx, markdown_line) in markdown_text.lines.iter().enumerate() {
+                let mut spans = Vec::new();
+                if idx == 0 {
+                    spans.push(Span::styled(ts.clone(), theme::TIMESTAMP));
+                    spans.push(Span::raw("  "));
+                } else {
+                    spans.push(Span::raw("       "));
+                }
+
+                let owned_spans: Vec<Span<'static>> = markdown_line
+                    .spans
+                    .iter()
+                    .map(|span| Span::styled(span.content.to_string(), span.style))
+                    .collect();
+                spans.extend(owned_spans);
+
+                result.push(Line::from(spans));
+            }
+            result
         }
         LineKind::ToolCall => {
             let text = &line.text;
@@ -233,35 +251,43 @@ fn render_line(line: &ConversationLine) -> Line<'static> {
                 detail.to_string()
             };
 
-            Line::from(vec![
+            let single_line = Line::from(vec![
                 Span::styled(ts, theme::TIMESTAMP),
                 Span::raw("  "),
                 Span::styled(format!(" {tool_name} "), badge_style),
                 Span::raw(" "),
                 Span::styled(truncated, detail_style),
-            ])
+            ]);
+            vec![single_line]
         }
         LineKind::ToolResult => {
             let result_text = line.text.strip_prefix("  → ").unwrap_or(&line.text);
-            Line::from(vec![
+            let single_line = Line::from(vec![
                 Span::styled(ts, theme::TIMESTAMP),
                 Span::raw("  "),
                 Span::styled("→", theme::TOOL_RESULT_ARROW),
                 Span::raw(" "),
                 Span::styled(result_text.to_string(), theme::TOOL_RESULT),
-            ])
+            ]);
+            vec![single_line]
         }
-        LineKind::System => Line::from(vec![
-            Span::styled(ts, theme::TIMESTAMP),
-            Span::raw("  "),
-            Span::styled(line.text.clone(), theme::DIM),
-        ]),
-        LineKind::Reply => Line::from(vec![
-            Span::styled(ts, theme::TIMESTAMP),
-            Span::raw("  "),
-            Span::styled("◁ Reply: ", theme::MACHINE_HEADER),
-            Span::styled(line.text.clone(), theme::ASSISTANT_MSG),
-        ]),
+        LineKind::System => {
+            let single_line = Line::from(vec![
+                Span::styled(ts, theme::TIMESTAMP),
+                Span::raw("  "),
+                Span::styled(line.text.clone(), theme::DIM),
+            ]);
+            vec![single_line]
+        }
+        LineKind::Reply => {
+            let single_line = Line::from(vec![
+                Span::styled(ts, theme::TIMESTAMP),
+                Span::raw("  "),
+                Span::styled("◁ Reply: ", theme::MACHINE_HEADER),
+                Span::styled(line.text.clone(), theme::ASSISTANT_MSG),
+            ]);
+            vec![single_line]
+        }
     }
 }
 
