@@ -1,6 +1,6 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
@@ -105,20 +105,19 @@ pub fn count_display_lines(line: &ConversationLine, show_timestamps: bool) -> us
     render_line(line, show_timestamps).len()
 }
 
-// -- Styles --
+// -- Styles: muted/subdued palette --
 
-const LABEL_YOU: Style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
-// Orange accent like Codex CLI
-const LABEL_ASSISTANT: Style =
-    Style::new().fg(Color::Rgb(244, 118, 0)).add_modifier(Modifier::BOLD);
+// Role labels: soft, not shouting
+const LABEL_YOU: Style = Style::new().fg(Color::Rgb(130, 170, 200)); // soft blue
+const LABEL_ASSISTANT: Style = Style::new().fg(Color::Rgb(180, 140, 100)); // warm muted orange
 
-// Tool categories: read (blue bg), write (yellow bg), mcp (magenta bg)
-const TOOL_READ: Style = Style::new().fg(Color::White).bg(Color::Blue);
-const TOOL_WRITE: Style = Style::new().fg(Color::Black).bg(Color::Yellow);
-const TOOL_MCP: Style = Style::new().fg(Color::White).bg(Color::Magenta);
-const TOOL_DETAIL: Style = Style::new().fg(Color::DarkGray);
-const TOOL_RESULT_STYLE: Style = Style::new().fg(Color::DarkGray);
-const ARROW: Style = Style::new().fg(Color::DarkGray);
+// Tool badges: dark background tints, light text — subtle not aggressive
+const TOOL_READ: Style = Style::new().fg(Color::Rgb(140, 160, 180)).bg(Color::Rgb(30, 40, 55)); // slate
+const TOOL_WRITE: Style = Style::new().fg(Color::Rgb(200, 180, 130)).bg(Color::Rgb(50, 45, 25)); // dark amber
+const TOOL_MCP: Style = Style::new().fg(Color::Rgb(170, 140, 180)).bg(Color::Rgb(45, 30, 50)); // dark plum
+const TOOL_DETAIL: Style = Style::new().fg(Color::Rgb(100, 100, 100)); // muted gray
+const TOOL_RESULT_STYLE: Style = Style::new().fg(Color::Rgb(90, 90, 90)); // dimmer gray
+const ARROW: Style = Style::new().fg(Color::Rgb(80, 80, 80));
 
 fn tool_badge_style(tool_name: &str) -> (Style, &'static str) {
     match tool_name {
@@ -149,7 +148,7 @@ fn render_line(line: &ConversationLine, show_timestamps: bool) -> Vec<Line<'stat
             for text_line in line.text.lines() {
                 result.push(Line::from(Span::styled(
                     text_line.to_string(),
-                    Style::default().fg(Color::White),
+                    Style::default().fg(Color::Rgb(210, 210, 210)),
                 )));
             }
         }
