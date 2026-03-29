@@ -27,6 +27,7 @@ pub enum LineKind {
     Reply,
 }
 
+#[allow(clippy::struct_excessive_bools)]
 pub struct App {
     pub view: View,
     pub sessions: Vec<SessionListItem>,
@@ -36,6 +37,7 @@ pub struct App {
     pub input_active: bool,
     pub should_quit: bool,
     pub scroll_offset: usize,
+    pub follow_tail: bool,
     pub active_count: usize,
     pub show_sidebar: bool,
 }
@@ -51,6 +53,7 @@ impl App {
             input_active: false,
             should_quit: false,
             scroll_offset: 0,
+            follow_tail: true,
             active_count: 0,
             show_sidebar: true,
         }

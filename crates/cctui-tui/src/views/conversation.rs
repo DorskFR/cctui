@@ -80,11 +80,16 @@ pub fn draw(frame: &mut Frame, app: &App) {
         frame.area()
     };
 
+    // Dynamic input height: grows with content, clamped to [3, half screen]
+    let input_lines = app.message_input.lines().len().max(1) + 2; // +2 for border + padding
+    let max_input = (main_area.height as usize / 2).max(3);
+    let input_height = input_lines.clamp(3, max_input) as u16;
+
     let [header_area, content_area, separator_area, input_area] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Fill(1),
         Constraint::Length(1),
-        Constraint::Min(3),
+        Constraint::Length(input_height),
     ])
     .areas(main_area);
 

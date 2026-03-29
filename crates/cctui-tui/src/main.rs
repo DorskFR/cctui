@@ -85,8 +85,7 @@ async fn run(
                 match maybe_event {
                     Some(event) => {
                         handle_server_event(&mut app, event);
-                        // Auto-scroll to bottom if user was already at (or near) the bottom
-                        if app.view == View::Conversation {
+                        if app.view == View::Conversation && app.follow_tail {
                             app.scroll_offset = usize::MAX;
                         }
                     }
@@ -172,6 +171,7 @@ async fn handle_input(
         InputEvent::ScrollUp => {
             if matches!(app.view, View::Conversation) && !app.input_active {
                 app.scroll_offset = app.scroll_offset.saturating_sub(3);
+                app.follow_tail = false;
             }
         }
         InputEvent::ScrollDown => {
@@ -210,18 +210,27 @@ fn handle_conversation_keys(app: &mut App, code: KeyCode) {
         KeyCode::Esc | KeyCode::Char('q') => app.view = View::SessionList,
         KeyCode::Char('j') | KeyCode::Down => {
             app.scroll_offset = app.scroll_offset.saturating_add(1);
+            app.follow_tail = false;
         }
         KeyCode::Char('k') | KeyCode::Up => {
             app.scroll_offset = app.scroll_offset.saturating_sub(1);
+            app.follow_tail = false;
         }
         KeyCode::PageUp => {
             app.scroll_offset = app.scroll_offset.saturating_sub(15);
+            app.follow_tail = false;
         }
         KeyCode::PageDown => {
             app.scroll_offset = app.scroll_offset.saturating_add(15);
         }
-        KeyCode::Char('g') => app.scroll_offset = 0,
-        KeyCode::Char('G') => app.scroll_offset = usize::MAX,
+        KeyCode::Char('g') => {
+            app.scroll_offset = 0;
+            app.follow_tail = false;
+        }
+        KeyCode::Char('G') => {
+            app.scroll_offset = usize::MAX;
+            app.follow_tail = true;
+        }
         KeyCode::Char('i') => app.input_active = true,
         KeyCode::Char('?') => app.view = View::Help,
         KeyCode::Char('s') => app.show_sidebar = !app.show_sidebar,
