@@ -235,7 +235,7 @@ fn handle_conversation_keys(app: &mut App, code: KeyCode) {
         }
         KeyCode::Char('i') => app.input_active = true,
         KeyCode::Char('?') => app.view = View::Help,
-        KeyCode::Char('s') => app.show_sidebar = !app.show_sidebar,
+        KeyCode::Char('t') => app.show_timestamps = !app.show_timestamps,
         KeyCode::Char(c @ '1'..='9') => {
             let idx = (c as usize) - ('1' as usize);
             let flat = app.flattened_sessions();

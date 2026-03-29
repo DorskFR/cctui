@@ -39,7 +39,7 @@ pub struct App {
     pub scroll_offset: usize,
     pub follow_tail: bool,
     pub active_count: usize,
-    pub show_sidebar: bool,
+    pub show_timestamps: bool,
     pub show_all_sessions: bool,
 }
 
@@ -56,7 +56,7 @@ impl App {
             scroll_offset: 0,
             follow_tail: true,
             active_count: 0,
-            show_sidebar: true,
+            show_timestamps: false,
             show_all_sessions: false,
         }
     }

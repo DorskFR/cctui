@@ -1,5 +1,6 @@
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout};
+use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
@@ -7,59 +8,14 @@ use crate::app::{App, ConversationLine, LineKind};
 use crate::theme;
 use crate::ui::markdown_render;
 
-/// Find the largest byte index <= `max_bytes` that is a char boundary.
-fn truncate_at_char_boundary(s: &str, max_bytes: usize) -> &str {
-    if max_bytes >= s.len() {
-        return s;
-    }
-    let mut end = max_bytes;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    &s[..end]
-}
-
-#[allow(clippy::cast_possible_truncation)]
-fn draw_sidebar(frame: &mut Frame, app: &App, area: Rect) {
-    let flat = app.flattened_sessions();
-    let lines: Vec<Line> = flat
-        .iter()
-        .take(9)
-        .enumerate()
-        .map(|(i, s)| {
-            let num = format!("{} ", i + 1);
-            let icon = theme::status_icon(&s.status);
-            let project = s
-                .metadata
-                .get("project_name")
-                .and_then(|v| v.as_str())
-                .unwrap_or_else(|| s.working_dir.rsplit('/').next().unwrap_or("?"));
-            let truncated = truncate_at_char_boundary(project, 9);
-
-            let style = if i == app.selected_index {
-                theme::SELECTED
-            } else {
-                ratatui::style::Style::default()
-            };
-            Line::from(vec![
-                Span::styled(num, theme::HOTKEY),
-                Span::styled(format!("{icon} "), theme::status_style(&s.status)),
-                Span::styled(truncated.to_string(), style),
-            ])
-        })
-        .collect();
-
-    frame.render_widget(Paragraph::new(lines), area);
-}
-
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::cast_possible_truncation)]
 pub fn draw(frame: &mut Frame, app: &App) {
     let Some(session) = app.selected_session() else {
         frame.render_widget(Paragraph::new("No session selected"), frame.area());
         return;
     };
 
-    // Title bar info
+    // Header info
     let project = session
         .metadata
         .get("project_name")
@@ -71,17 +27,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let cost = format!("${:.2}", session.token_usage.cost_usd);
     let machine = &session.machine_id;
 
-    let main_area = if app.show_sidebar {
-        let [sidebar_area, content_area] =
-            Layout::horizontal([Constraint::Length(14), Constraint::Fill(1)]).areas(frame.area());
-        draw_sidebar(frame, app, sidebar_area);
-        content_area
-    } else {
-        frame.area()
-    };
+    // Full-width layout: header, content, separator, input
+    let main_area = frame.area();
 
-    // Dynamic input height: grows with content, clamped to [3, half screen]
-    let input_lines = app.message_input.lines().len().max(1) + 2; // +2 for border + padding
+    let input_lines = app.message_input.lines().len().max(1) + 2;
     let max_input = (main_area.height as usize / 2).max(3);
     let input_height = input_lines.clamp(3, max_input) as u16;
 
@@ -93,49 +42,23 @@ pub fn draw(frame: &mut Frame, app: &App) {
     ])
     .areas(main_area);
 
-    // Header line with scroll position
+    // Header
     let lines = app.stream_buffer.get(&session.id);
-    let header_text = lines.map_or_else(
-        || {
-            if branch.is_empty() {
-                format!(" {project} on {machine} ── {model} ── {cost}")
-            } else {
-                format!(" {project} ({branch}) on {machine} ── {model} ── {cost}")
-            }
-        },
-        |lines| {
-            let visible_height = content_area.height as usize;
-            let total = lines.iter().flat_map(render_line).count();
-            let offset = if app.scroll_offset >= total.saturating_sub(visible_height) {
-                total.saturating_sub(visible_height)
-            } else {
-                app.scroll_offset
-            };
-            let current_line = offset + 1;
-
-            if branch.is_empty() {
-                format!(" {project} on {machine} ── {model} ── {cost} [{current_line}/{total}]")
-            } else {
-                format!(
-                    " {project} ({branch}) on {machine} ── {model} ── {cost} [{current_line}/{total}]"
-                )
-            }
-        },
-    );
-
+    let header_text = if branch.is_empty() {
+        format!(" {project} on {machine} ── {model} ── {cost}")
+    } else {
+        format!(" {project} ({branch}) on {machine} ── {model} ── {cost}")
+    };
     let header_line = Line::from(vec![Span::styled(header_text, theme::HEADER_BG)]);
     frame.render_widget(Paragraph::new(header_line), header_area);
 
-    // Conversation content (no block, direct render)
+    // Conversation content
     if let Some(lines) = lines {
         let visible_height = content_area.height as usize;
-
-        // Pre-compute all display lines (each ConversationLine may expand to multiple display lines)
-        let all_display_lines: Vec<Line> = lines.iter().flat_map(render_line).collect();
-
+        let all_display_lines: Vec<Line> =
+            lines.iter().flat_map(|l| render_line(l, app.show_timestamps)).collect();
         let total = all_display_lines.len();
 
-        // Auto-scroll to bottom if offset is at or past the end
         let offset = if app.scroll_offset >= total.saturating_sub(visible_height) {
             total.saturating_sub(visible_height)
         } else {
@@ -153,14 +76,14 @@ pub fn draw(frame: &mut Frame, app: &App) {
         );
     }
 
-    // Separator line
+    // Separator
     let separator = Line::from(vec![Span::styled(
         "─".repeat(separator_area.width as usize),
         theme::BORDER_FOCUSED,
     )]);
     frame.render_widget(Paragraph::new(separator), separator_area);
 
-    // Input bar with top border only
+    // Input
     let input_block = if app.input_active {
         Block::default()
             .borders(Borders::TOP)
@@ -178,51 +101,76 @@ pub fn draw(frame: &mut Frame, app: &App) {
     frame.render_widget(&textarea_widget, input_area);
 }
 
-#[allow(clippy::too_many_lines)]
-fn render_line(line: &ConversationLine) -> Vec<Line<'static>> {
-    let ts = format_timestamp(line.timestamp);
+/// Render a conversation line into display lines.
+/// Each message type gets a role label, proper spacing, and full content.
+#[allow(clippy::too_many_lines, clippy::redundant_clone)]
+fn render_line(line: &ConversationLine, show_timestamps: bool) -> Vec<Line<'static>> {
+    let mut result = Vec::new();
+    let ts_prefix = if show_timestamps {
+        let ts = format_timestamp(line.timestamp);
+        format!("{ts}  ")
+    } else {
+        String::new()
+    };
 
     match line.kind {
         LineKind::User => {
-            let single_line = Line::from(vec![
-                Span::styled(ts, theme::TIMESTAMP),
-                Span::raw("  "),
-                Span::styled("▷ ", theme::USER_MSG),
-                Span::styled(line.text.clone(), theme::USER_MSG),
-            ]);
-            vec![single_line]
+            // Blank line before user message for spacing
+            result.push(Line::from(""));
+
+            // Role label
+            result.push(Line::from(vec![
+                Span::raw(ts_prefix.clone()),
+                Span::styled(
+                    "You",
+                    ratatui::style::Style::default()
+                        .fg(ratatui::style::Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]));
+
+            // Message content
+            for text_line in line.text.lines() {
+                result.push(Line::from(vec![
+                    Span::raw(if show_timestamps { "       " } else { "  " }),
+                    Span::styled(text_line.to_string(), theme::USER_MSG),
+                ]));
+            }
         }
         LineKind::Assistant => {
+            // Blank line before assistant message
+            result.push(Line::from(""));
+
+            // Role label
+            result.push(Line::from(vec![
+                Span::raw(ts_prefix.clone()),
+                Span::styled(
+                    "Assistant",
+                    ratatui::style::Style::default()
+                        .fg(ratatui::style::Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]));
+
+            // Render markdown content
             let md_text = markdown_render::render_markdown_text(&line.text);
+            let indent = if show_timestamps { "       " } else { "  " };
             if md_text.lines.is_empty() {
-                let single_line = Line::from(vec![
-                    Span::styled(ts, theme::TIMESTAMP),
-                    Span::raw("  "),
-                    Span::styled(line.text.clone(), theme::ASSISTANT_MSG),
-                ]);
-                return vec![single_line];
-            }
-
-            let mut result = Vec::new();
-            for (idx, markdown_line) in md_text.lines.iter().enumerate() {
-                let mut spans = Vec::new();
-                if idx == 0 {
-                    spans.push(Span::styled(ts.clone(), theme::TIMESTAMP));
-                    spans.push(Span::raw("  "));
-                } else {
-                    spans.push(Span::raw("       "));
+                for text_line in line.text.lines() {
+                    result.push(Line::from(vec![
+                        Span::raw(indent),
+                        Span::styled(text_line.to_string(), theme::ASSISTANT_MSG),
+                    ]));
                 }
-
-                let owned_spans: Vec<Span<'static>> = markdown_line
-                    .spans
-                    .iter()
-                    .map(|span| Span::styled(span.content.to_string(), span.style))
-                    .collect();
-                spans.extend(owned_spans);
-
-                result.push(Line::from(spans));
+            } else {
+                for md_line in &md_text.lines {
+                    let mut spans = vec![Span::raw(indent)];
+                    for span in &md_line.spans {
+                        spans.push(Span::styled(span.content.to_string(), span.style));
+                    }
+                    result.push(Line::from(spans));
+                }
             }
-            result
         }
         LineKind::ToolCall => {
             let text = &line.text;
@@ -239,56 +187,63 @@ fn render_line(line: &ConversationLine) -> Vec<Line<'static>> {
                 _ => theme::TOOL_BADGE_FG,
             };
 
-            let detail_style = match tool_name {
-                "Bash" => theme::TOOL_COMMAND,
-                "Read" | "Write" | "Edit" | "Glob" => theme::TOOL_PATH,
-                _ => theme::TOOL_CALL,
-            };
-
-            let truncated = if detail.len() > 80 {
-                format!("{}…", truncate_at_char_boundary(detail, 80))
-            } else {
-                detail.to_string()
-            };
-
-            let single_line = Line::from(vec![
-                Span::styled(ts, theme::TIMESTAMP),
-                Span::raw("  "),
+            // Tool call header with badge — full text, no truncation
+            result.push(Line::from(vec![
+                Span::raw(ts_prefix.clone()),
                 Span::styled(format!(" {tool_name} "), badge_style),
                 Span::raw(" "),
-                Span::styled(truncated, detail_style),
-            ]);
-            vec![single_line]
+                Span::styled(detail.to_string(), theme::TOOL_CALL),
+            ]));
         }
         LineKind::ToolResult => {
             let result_text = line.text.strip_prefix("  → ").unwrap_or(&line.text);
-            let single_line = Line::from(vec![
-                Span::styled(ts, theme::TIMESTAMP),
-                Span::raw("  "),
-                Span::styled("→", theme::TOOL_RESULT_ARROW),
-                Span::raw(" "),
-                Span::styled(result_text.to_string(), theme::TOOL_RESULT),
-            ]);
-            vec![single_line]
+
+            // Show full result with line breaks
+            let indent = if show_timestamps { "       " } else { "  " };
+            let lines_iter: Vec<&str> = result_text.lines().collect();
+
+            if lines_iter.is_empty() {
+                result.push(Line::from(vec![
+                    Span::raw(ts_prefix.clone()),
+                    Span::styled("→ ", theme::TOOL_RESULT_ARROW),
+                    Span::styled("(empty)", theme::DIM),
+                ]));
+            } else {
+                // First line with arrow
+                result.push(Line::from(vec![
+                    Span::raw(ts_prefix.clone()),
+                    Span::styled("→ ", theme::TOOL_RESULT_ARROW),
+                    Span::styled(lines_iter[0].to_string(), theme::TOOL_RESULT),
+                ]));
+                // Remaining lines indented
+                for rest in &lines_iter[1..] {
+                    result.push(Line::from(vec![
+                        Span::raw(indent),
+                        Span::styled(format!("  {rest}"), theme::TOOL_RESULT),
+                    ]));
+                }
+            }
         }
         LineKind::System => {
-            let single_line = Line::from(vec![
-                Span::styled(ts, theme::TIMESTAMP),
-                Span::raw("  "),
-                Span::styled(line.text.clone(), theme::DIM),
-            ]);
-            vec![single_line]
+            // Skip system messages (usually empty heartbeats)
+            if !line.text.is_empty() {
+                result.push(Line::from(vec![
+                    Span::raw(ts_prefix),
+                    Span::styled(line.text.clone(), theme::DIM),
+                ]));
+            }
         }
         LineKind::Reply => {
-            let single_line = Line::from(vec![
-                Span::styled(ts, theme::TIMESTAMP),
-                Span::raw("  "),
-                Span::styled("◁ Reply: ", theme::MACHINE_HEADER),
+            result.push(Line::from(""));
+            result.push(Line::from(vec![
+                Span::raw(ts_prefix),
+                Span::styled("◁ Reply ", theme::MACHINE_HEADER),
                 Span::styled(line.text.clone(), theme::ASSISTANT_MSG),
-            ]);
-            vec![single_line]
+            ]));
         }
     }
+
+    result
 }
 
 fn format_timestamp(ts: i64) -> String {
