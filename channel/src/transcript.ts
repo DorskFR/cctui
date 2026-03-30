@@ -81,7 +81,7 @@ function extractToolResultContent(content: unknown): string {
     return str;
   }
 
-  return String(content);
+  return typeof content === "object" ? JSON.stringify(content) : String(content);
 }
 
 /**
