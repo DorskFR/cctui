@@ -28,17 +28,12 @@ pub fn deobfuscate(ciphertext: &str, key: &[u8]) -> Option<String> {
 }
 
 pub fn vault_key() -> Vec<u8> {
-    if let Ok(k) = std::env::var("CCTUI_VAULT_KEY") {
-        let mut bytes = Vec::new();
-        for i in (0..k.len()).step_by(2) {
-            if let Ok(b) = u8::from_str_radix(&k[i..i + 2], 16) {
-                bytes.push(b);
-            } else {
-                return b"cctui-default-vault-key-change-me".to_vec();
-            }
-        }
+    let k = std::env::var("CCTUI_VAULT_KEY")
+        .expect("CCTUI_VAULT_KEY must be set (hex-encoded 32-byte key)");
+    let mut bytes = Vec::new();
+    for i in (0..k.len()).step_by(2) {
         bytes
-    } else {
-        b"cctui-default-vault-key-change-me".to_vec()
+            .push(u8::from_str_radix(&k[i..i + 2], 16).expect("CCTUI_VAULT_KEY must be valid hex"));
     }
+    bytes
 }

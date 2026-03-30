@@ -48,8 +48,8 @@ Then start Claude Code with:
 claude --dangerously-load-development-channels server:cctui
 ```
 
-Default dev tokens: `dev-agent` (agent), `dev-admin` (admin).
+Default dev tokens are in the Makefile.
 
 ## License
 
-Private.
+[WTFPL](LICENSE)
