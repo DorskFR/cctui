@@ -18,6 +18,8 @@ cctui-channel (Bun/TS MCP server) <--> Claude Code
 
 ## Status
 
+<img width="1674" height="901" alt="Screenshot 2026-03-30 at 16 32 44" src="https://github.com/user-attachments/assets/2994daa5-9e12-4cf7-818b-3e574357087e" />
+
 Working locally. Not yet deployed to production. See [YouTrack](https://youtrack.dorsk.dev/issues/CCT) for open issues.
 
 What works:
