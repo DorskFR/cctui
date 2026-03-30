@@ -2,6 +2,7 @@
 #![allow(clippy::pedantic, clippy::nursery)]
 
 pub mod color;
+pub mod diff_render;
 pub mod highlight;
 pub mod line_utils;
 pub mod live_wrap;

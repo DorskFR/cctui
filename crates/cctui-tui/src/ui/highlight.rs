@@ -91,6 +91,36 @@ fn convert_style(syn_style: syntect::highlighting::Style) -> Style {
     rt_style
 }
 
+/// Highlight code and return spans per line (for composing with diff styles).
+pub(crate) fn highlight_code_to_spans(code: &str, lang: &str) -> Option<Vec<Vec<Span<'static>>>> {
+    if code.is_empty()
+        || code.len() > MAX_HIGHLIGHT_BYTES
+        || code.lines().count() > MAX_HIGHLIGHT_LINES
+    {
+        return None;
+    }
+    let syntax = find_syntax(lang)?;
+    let theme = default_theme();
+    let mut h = HighlightLines::new(syntax, &theme);
+    let mut result: Vec<Vec<Span<'static>>> = Vec::new();
+
+    for line in LinesWithEndings::from(code) {
+        let Ok(ranges) = h.highlight_line(line, syntax_set()) else {
+            result.push(vec![Span::raw(line.trim_end_matches(['\n', '\r']).to_string())]);
+            continue;
+        };
+        let spans: Vec<Span<'static>> = ranges
+            .into_iter()
+            .map(|(style, text)| {
+                Span::styled(text.trim_end_matches(['\n', '\r']).to_string(), convert_style(style))
+            })
+            .filter(|s| !s.content.is_empty())
+            .collect();
+        result.push(if spans.is_empty() { vec![Span::raw(String::new())] } else { spans });
+    }
+    Some(result)
+}
+
 pub(crate) fn highlight_code_to_lines(code: &str, lang: &str) -> Vec<Line<'static>> {
     if code.is_empty() {
         return vec![Line::from(String::new())];
