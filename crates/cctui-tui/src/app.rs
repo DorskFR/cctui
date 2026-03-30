@@ -15,6 +15,10 @@ pub struct ConversationLine {
     pub timestamp: i64,
     pub kind: LineKind,
     pub text: String,
+    /// Tool name for ToolCall/ToolResult lines (for context-aware rendering).
+    pub tool: Option<String>,
+    /// Raw tool input JSON (kept for Edit/Write to generate diffs).
+    pub tool_input: Option<serde_json::Value>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -41,6 +45,15 @@ pub struct App {
     pub active_count: usize,
     pub show_timestamps: bool,
     pub show_all_sessions: bool,
+    /// Last known content area height (set during render, used for scroll math).
+    pub viewport_height: usize,
+    /// Total display lines in current conversation (set during render).
+    pub total_display_lines: usize,
+    /// Cached rendered display lines for the current conversation.
+    /// Invalidated when `render_cache_len` != `stream_buffer` length for the session.
+    pub render_cache: Vec<ratatui::text::Line<'static>>,
+    pub render_cache_session: String,
+    pub render_cache_len: usize,
 }
 
 impl App {
@@ -58,6 +71,11 @@ impl App {
             active_count: 0,
             show_timestamps: false,
             show_all_sessions: false,
+            viewport_height: 0,
+            total_display_lines: 0,
+            render_cache: Vec::new(),
+            render_cache_session: String::new(),
+            render_cache_len: 0,
         }
     }
 

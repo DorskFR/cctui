@@ -28,7 +28,7 @@ use ratatui_textarea::TextArea;
 use tokio::sync::mpsc;
 use tokio::time;
 
-/// Input event from the terminal: either a key press or mouse scroll.
+///// Input event from the terminal: either a key press or mouse scroll.
 #[derive(Debug, Clone)]
 enum InputEvent {
     Key(KeyEvent),
@@ -71,7 +71,9 @@ async fn run(
     refresh_interval.tick().await;
 
     loop {
-        terminal.draw(|f| render(f, &app))?;
+        // Update scroll metrics before drawing so scroll input works immediately.
+        update_scroll_metrics(&mut app);
+        terminal.draw(|f| render(f, &mut app))?;
 
         tokio::select! {
             biased;
@@ -86,9 +88,11 @@ async fn run(
                 match maybe_event {
                     Some(event) => {
                         handle_server_event(&mut app, event);
-                        if app.view == View::Conversation && app.follow_tail {
-                            app.scroll_offset = usize::MAX;
+                        // Drain any additional queued server events before redrawing
+                        while let Ok(ev) = event_rx.try_recv() {
+                            handle_server_event(&mut app, ev);
                         }
+                        // follow_tail is checked during render — no offset update needed here
                     }
                     None => ws_open = false,
                 }
@@ -129,8 +133,17 @@ async fn refresh_sessions(server: &ServerClient, app: &mut App) {
     }
 }
 
+/// Bootstrap `viewport_height` from terminal size if not yet set by a render pass.
+fn update_scroll_metrics(app: &mut App) {
+    if app.viewport_height == 0
+        && let Ok((_, rows)) = crossterm::terminal::size()
+    {
+        app.viewport_height = (rows as usize).saturating_sub(5);
+    }
+}
+
 fn poll_input() -> Result<Option<InputEvent>> {
-    if !event::poll(Duration::from_millis(50))? {
+    if !event::poll(Duration::from_millis(16))? {
         return Ok(None);
     }
     match event::read()? {
@@ -169,19 +182,23 @@ async fn handle_input(
                 }
             }
         }
-        InputEvent::ScrollUp => {
-            if matches!(app.view, View::Conversation) && !app.input_active {
+        InputEvent::ScrollUp => match app.view {
+            View::Conversation => {
                 snap_scroll_if_following(app);
                 app.scroll_offset = app.scroll_offset.saturating_sub(3);
                 app.follow_tail = false;
             }
-        }
-        InputEvent::ScrollDown => {
-            if matches!(app.view, View::Conversation) && !app.input_active {
+            View::SessionList => app.select_prev(),
+            View::Help => {}
+        },
+        InputEvent::ScrollDown => match app.view {
+            View::Conversation => {
                 snap_scroll_if_following(app);
                 app.scroll_offset = app.scroll_offset.saturating_add(3);
             }
-        }
+            View::SessionList => app.select_next(),
+            View::Help => {}
+        },
     }
 }
 
@@ -201,26 +218,18 @@ async fn handle_session_list_keys(
         KeyCode::Char('?') => app.view = View::Help,
         KeyCode::Enter => {
             load_conversation(app, cmd_tx, server).await;
-            app.scroll_offset = usize::MAX; // auto-scroll to bottom
+            app.follow_tail = true;
             app.view = View::Conversation;
         }
         _ => {}
     }
 }
 
-/// When `scroll_offset` is `usize::MAX` (follow-tail sentinel), resolve it to the
-/// actual bottom position so that relative scroll operations (add/sub) work.
-fn snap_scroll_if_following(app: &mut App) {
-    if app.scroll_offset == usize::MAX
-        && let Some(session) = app.selected_session()
-    {
-        let total: usize = app.stream_buffer.get(&session.id).map_or(0, |lines| {
-            lines
-                .iter()
-                .map(|l| crate::views::conversation::count_display_lines(l, app.show_timestamps))
-                .sum()
-        });
-        app.scroll_offset = total;
+///// When `follow_tail` is active, resolve `scroll_offset` to the actual bottom
+/// position so that relative scroll operations work immediately without a dead zone.
+const fn snap_scroll_if_following(app: &mut App) {
+    if app.follow_tail {
+        app.scroll_offset = app.total_display_lines.saturating_sub(app.viewport_height);
     }
 }
 
@@ -252,7 +261,6 @@ fn handle_conversation_keys(app: &mut App, code: KeyCode) {
             app.follow_tail = false;
         }
         KeyCode::Char('G') => {
-            app.scroll_offset = usize::MAX;
             app.follow_tail = true;
         }
         KeyCode::Char('i') => app.input_active = true,
@@ -263,7 +271,7 @@ fn handle_conversation_keys(app: &mut App, code: KeyCode) {
             let flat = app.flattened_sessions();
             if idx < flat.len() {
                 app.selected_index = idx;
-                app.scroll_offset = usize::MAX;
+                app.follow_tail = true;
             }
         }
         _ => {}
@@ -490,33 +498,47 @@ fn agent_event_to_line(event: &AgentEvent) -> ConversationLine {
             } else {
                 (LineKind::Assistant, content.clone())
             };
-            ConversationLine { timestamp: *ts, kind, text }
+            ConversationLine { timestamp: *ts, kind, text, tool: None, tool_input: None }
         }
         AgentEvent::ToolCall { tool, input, ts } => {
             let detail = views::sessions::format_tool_input(tool, input);
+            // Keep raw input for Edit/Write so we can generate diffs during render
+            let keep_input = matches!(tool.as_str(), "Edit" | "Write");
             ConversationLine {
                 timestamp: *ts,
                 kind: LineKind::ToolCall,
                 text: format!("[{tool}] {detail}"),
+                tool: Some(tool.clone()),
+                tool_input: if keep_input { Some(input.clone()) } else { None },
             }
         }
-        AgentEvent::ToolResult { output_summary, ts, .. } => ConversationLine {
+        AgentEvent::ToolResult { tool, output_summary, ts } => ConversationLine {
             timestamp: *ts,
             kind: LineKind::ToolResult,
             text: format!("  → {output_summary}"),
+            tool: Some(tool.clone()),
+            tool_input: None,
         },
-        AgentEvent::Heartbeat { ts, .. } => {
-            ConversationLine { timestamp: *ts, kind: LineKind::System, text: String::new() }
-        }
-        AgentEvent::Reply { content, ts } => {
-            ConversationLine { timestamp: *ts, kind: LineKind::Reply, text: content.clone() }
-        }
+        AgentEvent::Heartbeat { ts, .. } => ConversationLine {
+            timestamp: *ts,
+            kind: LineKind::System,
+            text: String::new(),
+            tool: None,
+            tool_input: None,
+        },
+        AgentEvent::Reply { content, ts } => ConversationLine {
+            timestamp: *ts,
+            kind: LineKind::Reply,
+            text: content.clone(),
+            tool: None,
+            tool_input: None,
+        },
     }
 }
 
 // --- Rendering ---
 
-fn render(frame: &mut Frame, app: &App) {
+fn render(frame: &mut Frame, app: &mut App) {
     match app.view {
         View::SessionList => views::sessions::draw(frame, app),
         View::Conversation => views::conversation::draw(frame, app),
