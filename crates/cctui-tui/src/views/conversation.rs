@@ -1,16 +1,16 @@
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use crate::app::{App, ConversationLine, LineKind};
 use crate::theme;
-use crate::ui::markdown_render;
+use crate::ui::{diff_render, markdown_render};
 
 #[allow(clippy::too_many_lines, clippy::cast_possible_truncation)]
-pub fn draw(frame: &mut Frame, app: &App) {
-    let Some(session) = app.selected_session() else {
+pub fn draw(frame: &mut Frame, app: &mut App) {
+    let Some(session) = app.selected_session().cloned() else {
         frame.render_widget(Paragraph::new("No session selected"), frame.area());
         return;
     };
@@ -53,20 +53,39 @@ pub fn draw(frame: &mut Frame, app: &App) {
     // Conversation
     if let Some(lines) = app.stream_buffer.get(&session.id) {
         let visible_height = content_area.height as usize;
-        let all_display_lines: Vec<Line> =
-            lines.iter().flat_map(|l| render_line(l, app.show_timestamps)).collect();
-        let total = all_display_lines.len();
 
-        let offset = if app.scroll_offset >= total.saturating_sub(visible_height) {
-            total.saturating_sub(visible_height)
-        } else {
-            app.scroll_offset
-        };
+        // Incremental render cache: only re-render new lines
+        let current_len = lines.len();
+        if app.render_cache_session != session.id || app.render_cache_len > current_len {
+            // Session changed or content shrank — full rebuild
+            app.render_cache.clear();
+            app.render_cache_session.clone_from(&session.id);
+            app.render_cache_len = 0;
+        }
+        if app.render_cache_len < current_len {
+            // Render only new lines and append to cache
+            for line in &lines[app.render_cache_len..] {
+                app.render_cache.extend(render_line(line, app.show_timestamps));
+            }
+            app.render_cache_len = current_len;
+        }
+
+        let total = app.render_cache.len();
+        app.viewport_height = visible_height;
+        app.total_display_lines = total;
+
+        let max_offset = total.saturating_sub(visible_height);
+        let offset = if app.follow_tail { max_offset } else { app.scroll_offset.min(max_offset) };
 
         let display_lines: Vec<Line> =
-            all_display_lines.iter().skip(offset).take(visible_height).cloned().collect();
+            app.render_cache.iter().skip(offset).take(visible_height).cloned().collect();
 
         frame.render_widget(Paragraph::new(display_lines).wrap(Wrap { trim: false }), content_area);
+
+        // Scrollbar overlay on right edge
+        if total > visible_height {
+            render_scrollbar(frame, content_area, offset, total, visible_height);
+        }
     } else {
         frame.render_widget(
             Paragraph::new(Span::styled("No conversation data", theme::DIM)),
@@ -98,11 +117,6 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let mut textarea_widget = app.message_input.clone();
     textarea_widget.set_block(input_block);
     frame.render_widget(&textarea_widget, input_area);
-}
-
-/// Count how many display lines a conversation line produces (for scroll math).
-pub fn count_display_lines(line: &ConversationLine, show_timestamps: bool) -> usize {
-    render_line(line, show_timestamps).len()
 }
 
 // -- Styles: muted/subdued palette --
@@ -201,13 +215,34 @@ fn render_line(line: &ConversationLine, show_timestamps: bool) -> Vec<Line<'stat
                 Span::raw(" "),
                 Span::styled(detail.to_string(), TOOL_DETAIL),
             ]));
+
+            // For Edit tool calls, generate and display a diff from old_string/new_string
+            if tool_name == "Edit"
+                && let Some(diff_lines) = generate_edit_diff(line, detail)
+            {
+                result.extend(diff_lines);
+            }
         }
         LineKind::ToolResult => {
             let result_text = line.text.strip_prefix("  → ").unwrap_or(&line.text);
-            let lines_vec: Vec<&str> = result_text.lines().collect();
-            if lines_vec.is_empty() {
+            if result_text.is_empty() {
                 result.push(Line::from(vec![Span::raw(ts), Span::styled("→ (empty)", ARROW)]));
+            } else if looks_like_diff(result_text) {
+                // Detect file extension from the preceding tool call's detail
+                let lang = detect_diff_lang(result_text);
+                let diff_lines =
+                    diff_render::render_unified_diff(result_text, lang.as_deref(), 120);
+                if diff_lines.is_empty() {
+                    result.push(Line::from(vec![
+                        Span::raw(ts),
+                        Span::styled("→ (empty diff)", ARROW),
+                    ]));
+                } else {
+                    result.push(Line::from(vec![Span::raw(ts), Span::styled("→", ARROW)]));
+                    result.extend(diff_lines);
+                }
             } else {
+                let lines_vec: Vec<&str> = result_text.lines().collect();
                 result.push(Line::from(vec![
                     Span::raw(ts),
                     Span::styled("→ ", ARROW),
@@ -234,6 +269,85 @@ fn render_line(line: &ConversationLine, show_timestamps: bool) -> Vec<Line<'stat
     }
 
     result
+}
+
+/// Render a scrollbar overlay on the right edge of the content area.
+fn render_scrollbar(frame: &mut Frame, area: Rect, offset: usize, total: usize, visible: usize) {
+    if area.height == 0 || total == 0 {
+        return;
+    }
+    let track_height = area.height as usize;
+    let thumb_size = ((visible * track_height) / total).max(1).min(track_height);
+    let max_offset = total.saturating_sub(visible);
+    let thumb_top =
+        if max_offset == 0 { 0 } else { (offset * (track_height - thumb_size)) / max_offset };
+
+    let rail_x = area.right().saturating_sub(1);
+    let buf = frame.buffer_mut();
+    for row in 0..track_height {
+        let y = area.y + row as u16;
+        if y >= area.bottom() || rail_x >= buf.area().right() {
+            continue;
+        }
+        let in_thumb = row >= thumb_top && row < thumb_top + thumb_size;
+        let cell = &mut buf[(rail_x, y)];
+        if in_thumb {
+            cell.set_char('▐');
+            cell.set_style(Style::default().fg(Color::Rgb(80, 80, 90)));
+        } else {
+            cell.set_char('▕');
+            cell.set_style(Style::default().fg(Color::Rgb(40, 40, 45)));
+        }
+    }
+}
+
+/// Generate a diff from an Edit tool call's `old_string`/`new_string` input.
+fn generate_edit_diff(line: &ConversationLine, file_path: &str) -> Option<Vec<Line<'static>>> {
+    let input = line.tool_input.as_ref()?;
+    let old = input.get("old_string")?.as_str()?;
+    let new = input.get("new_string")?.as_str()?;
+    if old == new {
+        return None;
+    }
+
+    let diff = similar::TextDiff::from_lines(old, new);
+    let unified = diff
+        .unified_diff()
+        .context_radius(2)
+        .header(&format!("a/{file_path}"), &format!("b/{file_path}"))
+        .to_string();
+
+    if unified.is_empty() {
+        return None;
+    }
+
+    let lang = file_path.rsplit('.').next();
+    let lines = diff_render::render_unified_diff(&unified, lang, 120);
+    if lines.is_empty() { None } else { Some(lines) }
+}
+
+/// Heuristic: does this text look like a unified diff?
+fn looks_like_diff(text: &str) -> bool {
+    let mut has_marker = false;
+    for line in text.lines().take(10) {
+        if line.starts_with("--- ") || line.starts_with("+++ ") || line.starts_with("@@ ") {
+            has_marker = true;
+            break;
+        }
+    }
+    has_marker
+}
+
+/// Try to detect the language from diff header lines (e.g. `--- a/foo.rs`).
+fn detect_diff_lang(text: &str) -> Option<String> {
+    for line in text.lines().take(5) {
+        if let Some(path) = line.strip_prefix("+++ b/").or_else(|| line.strip_prefix("+++ "))
+            && let Some(dot) = path.rfind('.')
+        {
+            return Some(path[dot + 1..].to_string());
+        }
+    }
+    None
 }
 
 fn format_timestamp(ts: i64) -> String {
