@@ -12,11 +12,13 @@ use super::highlight::highlight_code_to_spans;
 
 const TAB_WIDTH: usize = 4;
 
-// Muted dark-theme palette (consistent with cctui conversation view)
-const ADD_LINE_BG: Color = Color::Rgb(33, 58, 43); // #213A2B — dark green tint
-const DEL_LINE_BG: Color = Color::Rgb(74, 34, 29); // #4A221D — dark red tint
-const ADD_FG: Color = Color::Rgb(100, 180, 100); // muted green
-const DEL_FG: Color = Color::Rgb(200, 100, 90); // muted red
+// Colorblind-friendly palette: blue for additions, red for deletions.
+// Line number + sign are colored; content text is white.
+const ADD_LINE_BG: Color = Color::Rgb(20, 30, 55); // dark blue tint
+const DEL_LINE_BG: Color = Color::Rgb(55, 25, 25); // dark red tint
+const ADD_SIGN_FG: Color = Color::Rgb(80, 140, 220); // muted blue
+const DEL_SIGN_FG: Color = Color::Rgb(200, 90, 80); // muted red
+const CONTENT_FG: Color = Color::Rgb(200, 200, 200); // white-ish for content text
 const GUTTER_DIM: Style = Style::new().fg(Color::Rgb(80, 80, 80));
 const HUNK_SEP: Style = Style::new().fg(Color::Rgb(60, 60, 60));
 
@@ -186,17 +188,19 @@ fn render_diff_line(
     // gutter + space + sign = prefix columns
     let prefix_cols = gutter_w + 2;
 
+    // Sign + line number are colored blue/red; content text is white.
+    // line_bg extends the tinted background across the full row.
     let (sign, sign_style, content_style, line_bg) = match kind {
         DiffLineKind::Insert => (
             '+',
-            Style::default().fg(ADD_FG).bg(ADD_LINE_BG),
-            Style::default().fg(ADD_FG).bg(ADD_LINE_BG),
+            Style::default().fg(ADD_SIGN_FG).bg(ADD_LINE_BG),
+            Style::default().fg(CONTENT_FG).bg(ADD_LINE_BG),
             Style::default().bg(ADD_LINE_BG),
         ),
         DiffLineKind::Delete => (
             '-',
-            Style::default().fg(DEL_FG).bg(DEL_LINE_BG),
-            Style::default().fg(DEL_FG).bg(DEL_LINE_BG),
+            Style::default().fg(DEL_SIGN_FG).bg(DEL_LINE_BG),
+            Style::default().fg(CONTENT_FG).bg(DEL_LINE_BG),
             Style::default().bg(DEL_LINE_BG),
         ),
         DiffLineKind::Context => (' ', Style::default(), Style::default(), Style::default()),
@@ -223,14 +227,21 @@ fn render_diff_line(
     let wrapped = wrap_styled_spans(&styled, available);
     let ln_str = line_number.to_string();
 
+    // Line number uses the same color as the sign (blue/red), dimmed
+    let gutter_style = match kind {
+        DiffLineKind::Insert => Style::default().fg(ADD_SIGN_FG).bg(ADD_LINE_BG),
+        DiffLineKind::Delete => Style::default().fg(DEL_SIGN_FG).bg(DEL_LINE_BG),
+        DiffLineKind::Context => GUTTER_DIM,
+    };
+
     let mut lines: Vec<Line<'static>> = Vec::new();
     for (i, chunk) in wrapped.into_iter().enumerate() {
         let mut row: Vec<Span<'static>> = Vec::new();
         if i == 0 {
-            row.push(Span::styled(format!("{ln_str:>gutter_w$} "), GUTTER_DIM));
+            row.push(Span::styled(format!("{ln_str:>gutter_w$} "), gutter_style));
             row.push(Span::styled(format!("{sign}"), sign_style));
         } else {
-            row.push(Span::styled(format!("{:gutter_w$}  ", ""), GUTTER_DIM));
+            row.push(Span::styled(format!("{:gutter_w$}  ", ""), gutter_style));
         }
         row.extend(chunk);
         lines.push(Line::from(row).style(line_bg));

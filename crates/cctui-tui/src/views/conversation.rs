@@ -217,9 +217,12 @@ fn render_line(line: &ConversationLine, show_timestamps: bool) -> Vec<Line<'stat
             ]));
 
             // For Edit tool calls, generate and display a diff from old_string/new_string
-            if tool_name == "Edit"
-                && let Some(diff_lines) = generate_edit_diff(line, detail)
-            {
+            // For Edit/Write tool calls, show inline diffs
+            if let Some(diff_lines) = match tool_name {
+                "Edit" => generate_edit_diff(line, detail),
+                "Write" => generate_write_diff(line, detail),
+                _ => None,
+            } {
                 result.extend(diff_lines);
             }
         }
@@ -323,6 +326,19 @@ fn generate_edit_diff(line: &ConversationLine, file_path: &str) -> Option<Vec<Li
 
     let lang = file_path.rsplit('.').next();
     let lines = diff_render::render_unified_diff(&unified, lang, 120);
+    if lines.is_empty() { None } else { Some(lines) }
+}
+
+/// Generate an all-add diff for a Write tool call (new file content).
+fn generate_write_diff(line: &ConversationLine, file_path: &str) -> Option<Vec<Line<'static>>> {
+    let input = line.tool_input.as_ref()?;
+    let content = input.get("content")?.as_str()?;
+    if content.is_empty() {
+        return None;
+    }
+    let lang = file_path.rsplit('.').next();
+    let lines =
+        diff_render::render_full_file(content, diff_render::DiffLineKind::Insert, lang, 120);
     if lines.is_empty() { None } else { Some(lines) }
 }
 
