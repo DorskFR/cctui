@@ -16,7 +16,7 @@ pub fn deobfuscate(ciphertext: &str, key: &[u8]) -> Option<String> {
     if key.is_empty() {
         return Some(ciphertext.to_string());
     }
-    if ciphertext.len() % 2 != 0 {
+    if !ciphertext.len().is_multiple_of(2) {
         return None;
     }
     let mut bytes = Vec::new();
