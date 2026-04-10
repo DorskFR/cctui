@@ -10,6 +10,7 @@ pub enum AgentEvent {
     ToolResult { tool: String, output_summary: String, ts: i64 },
     Heartbeat { tokens_in: u64, tokens_out: u64, cost_usd: f64, ts: i64 },
     Reply { content: String, ts: i64 },
+    TurnEnd { ts: i64 },
 }
 
 // --- TUI → Server ---
@@ -101,6 +102,7 @@ mod tests {
             AgentEvent::ToolResult { tool: "Read".into(), output_summary: "ok".into(), ts: 3 },
             AgentEvent::Heartbeat { tokens_in: 10, tokens_out: 5, cost_usd: 0.001, ts: 4 },
             AgentEvent::Reply { content: "done".into(), ts: 5 },
+            AgentEvent::TurnEnd { ts: 6 },
         ];
         for event in variants {
             let json = serde_json::to_string(&event).unwrap();

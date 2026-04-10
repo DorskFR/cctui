@@ -533,6 +533,13 @@ fn agent_event_to_line(event: &AgentEvent) -> ConversationLine {
             tool: None,
             tool_input: None,
         },
+        AgentEvent::TurnEnd { ts } => ConversationLine {
+            timestamp: *ts,
+            kind: LineKind::System,
+            text: String::new(),
+            tool: None,
+            tool_input: None,
+        },
     }
 }
 

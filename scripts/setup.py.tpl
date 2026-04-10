@@ -69,6 +69,18 @@ hooks = {
             "url": f"{SERVER_URL}/api/v1/check",
         }],
     }],
+    "PostToolUse": [{
+        "hooks": [{
+            "type": "http",
+            "url": f"{SERVER_URL}/api/v1/hooks/post-tool-use",
+        }],
+    }],
+    "Stop": [{
+        "hooks": [{
+            "type": "http",
+            "url": f"{SERVER_URL}/api/v1/hooks/stop",
+        }],
+    }],
 }
 
 if os.path.exists(settings_path):
