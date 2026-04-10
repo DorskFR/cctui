@@ -157,5 +157,6 @@ pub fn agent_event_to_string(event: &AgentEvent) -> String {
         AgentEvent::Heartbeat { tokens_in, tokens_out, .. } => {
             format!("[heartbeat] in:{tokens_in} out:{tokens_out}")
         }
+        AgentEvent::TurnEnd { .. } => String::new(),
     }
 }
