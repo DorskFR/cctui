@@ -16,7 +16,7 @@ use cctui_proto::ws::{AgentEvent, ServerEvent, TuiCommand};
 use client::ServerClient;
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-    MouseEventKind,
+    KeyModifiers, MouseEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -24,7 +24,6 @@ use crossterm::terminal::{
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::{Frame, Terminal};
-use ratatui_textarea::TextArea;
 use tokio::sync::mpsc;
 use tokio::time;
 
@@ -174,7 +173,13 @@ async fn handle_input(
 
             match app.view {
                 View::SessionList => handle_session_list_keys(app, key.code, cmd_tx, server).await,
-                View::Conversation => handle_conversation_keys(app, key.code),
+                View::Conversation => {
+                    if !handle_conversation_keys(app, key) {
+                        // Key not consumed by navigation — auto-activate input mode.
+                        app.input_active = true;
+                        handle_input_mode(app, key, cmd_tx).await;
+                    }
+                }
                 View::Help => {
                     if matches!(key.code, KeyCode::Esc | KeyCode::Char('?' | 'q')) {
                         app.view = View::SessionList;
@@ -233,39 +238,54 @@ const fn snap_scroll_if_following(app: &mut App) {
     }
 }
 
-#[allow(clippy::missing_const_for_fn)]
-fn handle_conversation_keys(app: &mut App, code: KeyCode) {
-    match code {
-        KeyCode::Esc | KeyCode::Char('q') => app.view = View::SessionList,
+/// Returns `true` if the key was consumed as a navigation command, `false` if not.
+/// Unhandled keys in conversation view trigger auto-activation of input mode.
+fn handle_conversation_keys(app: &mut App, key: KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.view = View::SessionList;
+            true
+        }
         KeyCode::Char('j') | KeyCode::Down => {
             snap_scroll_if_following(app);
             app.scroll_offset = app.scroll_offset.saturating_add(1);
             app.follow_tail = false;
+            true
         }
         KeyCode::Char('k') | KeyCode::Up => {
             snap_scroll_if_following(app);
             app.scroll_offset = app.scroll_offset.saturating_sub(1);
             app.follow_tail = false;
+            true
         }
         KeyCode::PageUp => {
             snap_scroll_if_following(app);
             app.scroll_offset = app.scroll_offset.saturating_sub(15);
             app.follow_tail = false;
+            true
         }
         KeyCode::PageDown => {
             snap_scroll_if_following(app);
             app.scroll_offset = app.scroll_offset.saturating_add(15);
+            true
         }
         KeyCode::Char('g') => {
             app.scroll_offset = 0;
             app.follow_tail = false;
+            true
         }
         KeyCode::Char('G') => {
             app.follow_tail = true;
+            true
         }
-        KeyCode::Char('i') => app.input_active = true,
-        KeyCode::Char('?') => app.view = View::Help,
-        KeyCode::Char('t') => app.show_timestamps = !app.show_timestamps,
+        KeyCode::Char('?') => {
+            app.view = View::Help;
+            true
+        }
+        KeyCode::Char('t') => {
+            app.show_timestamps = !app.show_timestamps;
+            true
+        }
         KeyCode::Char(c @ '1'..='9') => {
             let idx = (c as usize) - ('1' as usize);
             let flat = app.flattened_sessions();
@@ -273,8 +293,9 @@ fn handle_conversation_keys(app: &mut App, code: KeyCode) {
                 app.selected_index = idx;
                 app.follow_tail = true;
             }
+            true
         }
-        _ => {}
+        _ => false,
     }
 }
 
@@ -283,6 +304,9 @@ async fn handle_input_mode(app: &mut App, key: KeyEvent, cmd_tx: &mpsc::Sender<T
         KeyCode::Esc => {
             app.input_active = false;
         }
+        KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+            app.message_input.insert_newline();
+        }
         KeyCode::Enter => {
             let content = app.message_input.lines().join("\n");
             if !content.trim().is_empty()
@@ -290,7 +314,7 @@ async fn handle_input_mode(app: &mut App, key: KeyEvent, cmd_tx: &mpsc::Sender<T
             {
                 let _ = cmd_tx.send(TuiCommand::Message { session_id: id, content }).await;
             }
-            app.message_input = TextArea::default();
+            app.reset_input();
             app.input_active = false;
         }
         _ => {

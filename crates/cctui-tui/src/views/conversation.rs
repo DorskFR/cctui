@@ -1,8 +1,8 @@
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, Paragraph, Wrap};
 
 use crate::app::{App, ConversationLine, LineKind};
 use crate::theme;
@@ -27,9 +27,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let machine = &session.machine_id;
 
     let main_area = frame.area();
-    let input_lines = app.message_input.lines().len().max(1) + 2;
-    let max_input = (main_area.height as usize / 2).max(3);
-    let input_height = input_lines.clamp(3, max_input) as u16;
+    let input_lines = app.message_input.lines().len().max(1);
+    let max_input = (main_area.height as usize / 2).max(1);
+    let input_height = input_lines.clamp(1, 12_usize.min(max_input)) as u16;
 
     let [header_area, content_area, separator_area, input_area] = Layout::vertical([
         Constraint::Length(1),
@@ -102,21 +102,27 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         separator_area,
     );
 
-    // Input
-    let input_block = if app.input_active {
-        Block::default()
-            .borders(Borders::TOP)
-            .border_style(theme::BORDER_FOCUSED)
-            .title(" Message (Enter to send, Esc to cancel) ")
+    // Input: [❯][textarea]
+    let [prompt_area, textarea_area] = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(2), Constraint::Fill(1)])
+        .areas(input_area);
+
+    let prompt_style = if app.input_active {
+        theme::BORDER_FOCUSED.add_modifier(Modifier::BOLD)
     } else {
-        Block::default()
-            .borders(Borders::TOP)
-            .border_style(theme::BORDER_DIM)
-            .title(" Press i to type ")
+        theme::BORDER_DIM
     };
+    frame.render_widget(Paragraph::new(Span::styled("❯", prompt_style)), prompt_area);
+
     let mut textarea_widget = app.message_input.clone();
-    textarea_widget.set_block(input_block);
-    frame.render_widget(&textarea_widget, input_area);
+    textarea_widget.set_block(Block::default());
+    if !app.input_active {
+        // Hide cursor when not in input mode.
+        textarea_widget.set_cursor_style(Style::default());
+        textarea_widget.set_cursor_line_style(Style::default());
+    }
+    frame.render_widget(&textarea_widget, textarea_area);
 }
 
 // -- Styles: muted/subdued palette --
