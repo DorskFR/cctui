@@ -519,7 +519,7 @@ fn agent_event_to_line(event: &AgentEvent) -> ConversationLine {
             tool: Some(tool.clone()),
             tool_input: None,
         },
-        AgentEvent::Heartbeat { ts, .. } => ConversationLine {
+        AgentEvent::Heartbeat { ts, .. } | AgentEvent::TurnEnd { ts } => ConversationLine {
             timestamp: *ts,
             kind: LineKind::System,
             text: String::new(),
@@ -530,13 +530,6 @@ fn agent_event_to_line(event: &AgentEvent) -> ConversationLine {
             timestamp: *ts,
             kind: LineKind::Reply,
             text: content.clone(),
-            tool: None,
-            tool_input: None,
-        },
-        AgentEvent::TurnEnd { ts } => ConversationLine {
-            timestamp: *ts,
-            kind: LineKind::System,
-            text: String::new(),
             tool: None,
             tool_input: None,
         },

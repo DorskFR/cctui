@@ -39,21 +39,11 @@ pub async fn post_tool_use(
         .tool_response
         .as_ref()
         .and_then(|v| v.as_str())
-        .map(|s| {
-            if s.len() > 500 {
-                format!("{}…", &s[..500])
-            } else {
-                s.to_string()
-            }
-        })
+        .map(|s| if s.len() > 500 { format!("{}…", &s[..500]) } else { s.to_string() })
         .or_else(|| {
             req.tool_response.as_ref().map(|v| {
                 let s = v.to_string();
-                if s.len() > 500 {
-                    format!("{}…", &s[..500])
-                } else {
-                    s
-                }
+                if s.len() > 500 { format!("{}…", &s[..500]) } else { s }
             })
         })
         .unwrap_or_default();
