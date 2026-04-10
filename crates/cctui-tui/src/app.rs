@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use cctui_proto::api::SessionListItem;
+use ratatui::style::{Color, Style};
 use ratatui_textarea::TextArea;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,13 +58,24 @@ pub struct App {
 }
 
 impl App {
+    fn new_input_textarea() -> TextArea<'static> {
+        let mut ta = TextArea::default();
+        ta.set_placeholder_text("Type a message...");
+        ta.set_placeholder_style(Style::new().fg(Color::DarkGray));
+        ta
+    }
+
+    pub fn reset_input(&mut self) {
+        self.message_input = Self::new_input_textarea();
+    }
+
     pub fn new() -> Self {
         Self {
             view: View::SessionList,
             sessions: Vec::new(),
             selected_index: 0,
             stream_buffer: HashMap::new(),
-            message_input: TextArea::default(),
+            message_input: Self::new_input_textarea(),
             input_active: false,
             should_quit: false,
             scroll_offset: 0,
