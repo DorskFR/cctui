@@ -58,6 +58,16 @@ export class ServerBridge {
     } catch {}
   }
 
+  async postTranscriptLine(sessionId: string, line: string): Promise<void> {
+    try {
+      await fetch(`${this.baseUrl}/api/v1/sessions/${sessionId}/transcript`, {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify({ line }),
+      });
+    } catch {}
+  }
+
   async checkPolicy(payload: PreToolUsePayload): Promise<PolicyVerdict> {
     try {
       const res = await fetch(`${this.baseUrl}/api/v1/check`, {

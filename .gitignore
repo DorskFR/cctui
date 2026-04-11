@@ -3,3 +3,5 @@
 *.swp
 .superpowers/
 .sqlx/
+/.cargo/
+/.cargo-home/

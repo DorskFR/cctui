@@ -6,6 +6,7 @@ mod policy;
 mod registry;
 mod routes;
 mod state;
+mod transcript_parser;
 mod ws;
 
 use axum::routing::{delete, get, post};
@@ -72,6 +73,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/channels/register", post(routes::channels::register_channel))
         .route("/api/v1/channels/{channel_id}/session", get(routes::channels::poll_session))
         .route("/api/v1/events/{session_id}", post(routes::events::ingest))
+        .route(
+            "/api/v1/sessions/{session_id}/transcript",
+            post(routes::transcript::ingest).get(routes::transcript::fetch),
+        )
         .route("/api/v1/stream/{session_id}", get(ws::agent_stream))
         .route("/api/v1/ws", get(ws::tui_ws))
         .nest("/api/v1", api_router)
