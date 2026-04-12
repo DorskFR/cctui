@@ -9,6 +9,17 @@ pub enum View {
     SessionList,
     Conversation,
     Help,
+    PermissionDialog,
+}
+
+/// A pending permission request from Claude Code that needs TUI approval.
+#[derive(Debug, Clone)]
+pub struct PendingPermission {
+    pub session_id: String,
+    pub request_id: String,
+    pub tool_name: String,
+    pub description: String,
+    pub input_preview: String,
 }
 
 /// Conversation line with metadata for rendering.
@@ -41,6 +52,10 @@ pub struct App {
     pub message_input: TextArea<'static>,
     pub input_active: bool,
     pub should_quit: bool,
+    /// Queue of pending permission requests; first is shown as dialog.
+    pub permission_queue: std::collections::VecDeque<PendingPermission>,
+    /// View to return to after dismissing a permission dialog.
+    pub pre_permission_view: View,
     pub scroll_offset: usize,
     pub follow_tail: bool,
     pub active_count: usize,
@@ -78,6 +93,8 @@ impl App {
             message_input: Self::new_input_textarea(),
             input_active: false,
             should_quit: false,
+            permission_queue: std::collections::VecDeque::new(),
+            pre_permission_view: View::SessionList,
             scroll_offset: 0,
             follow_tail: true,
             active_count: 0,

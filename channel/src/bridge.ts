@@ -1,4 +1,4 @@
-import type { StreamerEvent, PreToolUsePayload, PendingMessage, ChannelRegisterResponse, SessionPollResponse } from "./types";
+import type { StreamerEvent, PreToolUsePayload, PendingMessage, ChannelRegisterResponse, SessionPollResponse, PermissionRequest } from "./types";
 
 export interface PolicyVerdict {
   decision: "allow" | "deny";
@@ -122,5 +122,42 @@ export class ServerBridge {
       throw new Error(`poll session failed: ${res.status}`);
     }
     return res.json();
+  }
+
+  async submitPermissionRequest(sessionId: string, req: PermissionRequest): Promise<void> {
+    try {
+      await fetch(`${this.baseUrl}/api/v1/sessions/${sessionId}/permission/request`, {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify(req),
+      });
+    } catch (err) {
+      console.error("[cctui-channel] failed to submit permission request:", err);
+    }
+  }
+
+  async pollPermissionDecision(
+    sessionId: string,
+    requestId: string,
+    timeoutMs = 30_000,
+    intervalMs = 500,
+  ): Promise<string | null> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      try {
+        const res = await fetch(
+          `${this.baseUrl}/api/v1/sessions/${sessionId}/permission/decision/${requestId}`,
+          { headers: this.headers() },
+        );
+        if (res.ok) {
+          const body = await res.json() as { status: string; behavior?: string };
+          if (body.status === "decided" && body.behavior) {
+            return body.behavior;
+          }
+        }
+      } catch {}
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+    return null; // timed out
   }
 }

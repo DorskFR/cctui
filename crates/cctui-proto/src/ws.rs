@@ -21,6 +21,7 @@ pub enum TuiCommand {
     Subscribe { session_id: String },
     Unsubscribe { session_id: String },
     Message { session_id: String, content: String },
+    PermissionResponse { session_id: String, request_id: String, behavior: String },
 }
 
 // --- Server → TUI ---
@@ -28,10 +29,27 @@ pub enum TuiCommand {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerEvent {
-    Stream { session_id: String, data: AgentEvent },
-    Status { session_id: String, status: crate::models::SessionStatus },
-    SessionRegistered { session: crate::models::Session },
-    SessionDeregistered { session_id: String },
+    Stream {
+        session_id: String,
+        data: AgentEvent,
+    },
+    Status {
+        session_id: String,
+        status: crate::models::SessionStatus,
+    },
+    SessionRegistered {
+        session: crate::models::Session,
+    },
+    SessionDeregistered {
+        session_id: String,
+    },
+    PermissionRequest {
+        session_id: String,
+        request_id: String,
+        tool_name: String,
+        description: String,
+        input_preview: String,
+    },
 }
 
 #[cfg(test)]

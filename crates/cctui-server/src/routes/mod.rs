@@ -3,6 +3,7 @@ pub mod channels;
 pub mod check;
 pub mod credentials;
 pub mod events;
+pub mod permissions;
 pub mod post_tool_use;
 pub mod prompts;
 pub mod sessions;

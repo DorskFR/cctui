@@ -14,7 +14,7 @@ let session: SessionState | null = null;
 let tailAbort: AbortController | null = null;
 
 // --- MCP channel server (stdio) ---
-const { pushMessage, connect } = createChannelServer({
+const { pushMessage, sendPermissionResponse, connect } = createChannelServer({
   onReply: async (text) => {
     if (!session) return;
     await bridge.postEvent(session.sessionId, {
@@ -23,6 +23,34 @@ const { pushMessage, connect } = createChannelServer({
       content: `[Reply to TUI] ${text}`,
       ts: Math.floor(Date.now() / 1000),
     });
+  },
+  onPermissionRequest: async (requestId, toolName, description, inputPreview) => {
+    if (!session) {
+      console.error("[cctui-channel] permission_request received but no session — allowing");
+      await sendPermissionResponse(requestId, "allow");
+      return;
+    }
+
+    console.error(
+      `[cctui-channel] forwarding permission_request to server: ${requestId} (${toolName})`,
+    );
+
+    await bridge.submitPermissionRequest(session.sessionId, {
+      request_id: requestId,
+      tool_name: toolName,
+      description,
+      input_preview: inputPreview,
+    });
+
+    const behavior = await bridge.pollPermissionDecision(session.sessionId, requestId);
+    if (behavior === "allow" || behavior === "deny") {
+      await sendPermissionResponse(requestId, behavior);
+    } else {
+      console.error(
+        `[cctui-channel] permission decision timed out for ${requestId} — allowing`,
+      );
+      await sendPermissionResponse(requestId, "allow");
+    }
   },
 });
 

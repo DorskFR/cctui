@@ -20,7 +20,7 @@ futures-util.workspace = true
 anyhow.workspace = true
 ratatui = "0.30"
 crossterm = "0.29"
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 ratatui-textarea = "0.8.0"
 unicode-width = "0.2"
 supports-color = "1"
