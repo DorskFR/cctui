@@ -35,12 +35,18 @@ const { pushMessage, sendPermissionResponse, connect } = createChannelServer({
       `[cctui-channel] forwarding permission_request to server: ${requestId} (${toolName})`,
     );
 
-    await bridge.submitPermissionRequest(session.sessionId, {
-      request_id: requestId,
-      tool_name: toolName,
-      description,
-      input_preview: inputPreview,
-    });
+    try {
+      await bridge.submitPermissionRequest(session.sessionId, {
+        request_id: requestId,
+        tool_name: toolName,
+        description,
+        input_preview: inputPreview,
+      });
+    } catch (err) {
+      console.error(`[cctui-channel] failed to submit permission request for ${requestId} — allowing:`, err);
+      await sendPermissionResponse(requestId, "allow");
+      return;
+    }
 
     const behavior = await bridge.pollPermissionDecision(session.sessionId, requestId);
     if (behavior === "allow" || behavior === "deny") {

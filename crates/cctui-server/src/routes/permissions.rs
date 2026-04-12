@@ -28,8 +28,8 @@ pub struct PendingPermission {
 pub struct PermissionStore {
     /// Pending requests waiting for TUI decision: `request_id` → entry
     pending: HashMap<String, PendingPermission>,
-    /// Decisions recorded by TUI: `request_id` → behavior ("allow" | "deny")
-    decisions: HashMap<String, String>,
+    /// Decisions recorded by TUI: `request_id` → (session_id, behavior, decided_at)
+    decisions: HashMap<String, (String, String, DateTime<Utc>)>,
 }
 
 impl PermissionStore {
@@ -46,18 +46,29 @@ impl PermissionStore {
     }
 
     pub fn record_decision(&mut self, request_id: &str, behavior: String) {
-        self.pending.remove(request_id);
-        self.decisions.insert(request_id.to_string(), behavior);
+        let session_id = self
+            .pending
+            .remove(request_id)
+            .map(|p| p.session_id)
+            .unwrap_or_default();
+        self.decisions.insert(request_id.to_string(), (session_id, behavior, Utc::now()));
     }
 
-    pub fn take_decision(&mut self, request_id: &str) -> Option<String> {
-        self.decisions.remove(request_id)
+    /// Consume a decision, validating it belongs to `session_id`.
+    /// Returns `None` if not yet decided or if the session does not match.
+    pub fn take_decision(&mut self, session_id: &str, request_id: &str) -> Option<String> {
+        let entry = self.decisions.get(request_id)?;
+        if entry.0 != session_id {
+            return None;
+        }
+        self.decisions.remove(request_id).map(|(_, behavior, _)| behavior)
     }
 
     /// Remove stale entries older than `max_age_secs`
     pub fn reap_stale(&mut self, max_age_secs: i64) {
         let cutoff = Utc::now() - chrono::Duration::seconds(max_age_secs);
         self.pending.retain(|_, p| p.received_at > cutoff);
+        self.decisions.retain(|_, (_, _, decided_at)| *decided_at > cutoff);
     }
 }
 
@@ -127,7 +138,7 @@ pub async fn poll_decision(
 ) -> Json<PermissionDecisionResponse> {
     let mut store = state.permission_store.write().await;
     #[allow(clippy::option_if_let_else)]
-    match store.take_decision(&request_id) {
+    match store.take_decision(&session_id, &request_id) {
         Some(behavior) => {
             tracing::info!(
                 session_id = %session_id,
@@ -159,10 +170,29 @@ mod tests {
             received_at: Utc::now(),
         };
         store.insert_request(req);
-        assert!(store.take_decision("r1").is_none()); // not decided yet
+        assert!(store.take_decision("s1", "r1").is_none()); // not decided yet
         store.record_decision("r1", "allow".into());
-        assert_eq!(store.take_decision("r1"), Some("allow".into()));
-        assert!(store.take_decision("r1").is_none()); // consumed
+        assert_eq!(store.take_decision("s1", "r1"), Some("allow".into()));
+        assert!(store.take_decision("s1", "r1").is_none()); // consumed
+    }
+
+    #[test]
+    fn take_decision_rejects_wrong_session() {
+        let mut store = PermissionStore::new();
+        let req = PendingPermission {
+            session_id: "s1".into(),
+            request_id: "r1".into(),
+            tool_name: "Bash".into(),
+            description: "run ls".into(),
+            input_preview: "ls".into(),
+            received_at: Utc::now(),
+        };
+        store.insert_request(req);
+        store.record_decision("r1", "allow".into());
+        // Wrong session cannot consume the decision
+        assert!(store.take_decision("s2", "r1").is_none());
+        // Correct session can
+        assert_eq!(store.take_decision("s1", "r1"), Some("allow".into()));
     }
 
     #[test]
@@ -182,5 +212,26 @@ mod tests {
         assert_eq!(store.pending.len(), 1);
         store.reap_stale(60); // 60s max age
         assert_eq!(store.pending.len(), 0);
+    }
+
+    #[test]
+    fn reap_stale_removes_old_decisions() {
+        let mut store = PermissionStore::new();
+        let req = PendingPermission {
+            session_id: "s1".into(),
+            request_id: "r1".into(),
+            tool_name: "Bash".into(),
+            description: "run ls".into(),
+            input_preview: "ls".into(),
+            received_at: Utc::now(),
+        };
+        store.insert_request(req);
+        store.record_decision("r1", "allow".into());
+        // Backdate the decision
+        store.decisions.get_mut("r1").unwrap().2 =
+            Utc::now() - chrono::Duration::seconds(120);
+        assert_eq!(store.decisions.len(), 1);
+        store.reap_stale(60);
+        assert_eq!(store.decisions.len(), 0);
     }
 }

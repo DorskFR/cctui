@@ -125,14 +125,13 @@ export class ServerBridge {
   }
 
   async submitPermissionRequest(sessionId: string, req: PermissionRequest): Promise<void> {
-    try {
-      await fetch(`${this.baseUrl}/api/v1/sessions/${sessionId}/permission/request`, {
-        method: "POST",
-        headers: this.headers(),
-        body: JSON.stringify(req),
-      });
-    } catch (err) {
-      console.error("[cctui-channel] failed to submit permission request:", err);
+    const res = await fetch(`${this.baseUrl}/api/v1/sessions/${sessionId}/permission/request`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify(req),
+    });
+    if (!res.ok) {
+      throw new Error(`submitPermissionRequest failed: ${res.status} ${await res.text()}`);
     }
   }
 
@@ -155,7 +154,9 @@ export class ServerBridge {
             return body.behavior;
           }
         }
-      } catch {}
+      } catch (err) {
+        console.error("[cctui-channel] pollPermissionDecision fetch error:", err);
+      }
       await new Promise((resolve) => setTimeout(resolve, intervalMs));
     }
     return null; // timed out
