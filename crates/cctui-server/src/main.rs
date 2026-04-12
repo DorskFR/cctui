@@ -65,6 +65,9 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/health", get(|| async { "ok" }))
+        // Channel bundle distribution
+        .route("/channel/latest.js", get(routes::channel_bundle::latest_js))
+        .route("/channel/version.json", get(routes::channel_bundle::version_json))
         .route("/api/v1/check", post(routes::check::check))
         .route("/api/v1/hooks/session-start", post(routes::channels::session_start_hook))
         .route("/api/v1/hooks/stop", post(routes::stop::stop))

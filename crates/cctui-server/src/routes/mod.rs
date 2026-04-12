@@ -1,4 +1,5 @@
 pub mod admin;
+pub mod channel_bundle;
 pub mod channels;
 pub mod check;
 pub mod credentials;
