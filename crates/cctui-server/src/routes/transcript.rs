@@ -1,5 +1,5 @@
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 
 use cctui_proto::ws::AgentEvent;
@@ -20,6 +20,12 @@ pub struct RawTranscriptLine {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
+#[derive(Debug, serde::Deserialize)]
+pub struct FetchParams {
+    pub after_id: Option<i64>,
+    pub limit: Option<i64>,
+}
+
 /// Ingest a raw JSONL transcript line from the channel.
 ///
 /// Stores the line losslessly in session_transcript, parses it into AgentEvents
@@ -38,7 +44,8 @@ pub async fn ingest(
         return StatusCode::BAD_REQUEST;
     };
 
-    // Store raw line in session_transcript (lossless archive)
+    // Store raw line in session_transcript (lossless archive).
+    // Return 500 on failure so the channel knows the line was not persisted.
     if let Err(e) = sqlx::query(
         "INSERT INTO session_transcript (session_id, raw_json) VALUES ($1, $2)",
     )
@@ -47,23 +54,32 @@ pub async fn ingest(
     .execute(&state.pool)
     .await
     {
-        tracing::warn!(session_id = %session_id, "failed to store transcript line: {e}");
+        tracing::error!(session_id = %session_id, "failed to store transcript line: {e}");
+        return StatusCode::INTERNAL_SERVER_ERROR;
     }
 
     let ts = chrono::Utc::now().timestamp();
 
+    // Parse once; reuse the value for both usage extraction and event parsing.
+    let parsed: Option<serde_json::Value> = serde_json::from_str(line).ok();
+
     // Handle token usage
-    if let Some(usage) = transcript_parser::parse_usage(line) {
-        state.registry.write().await.update_token_usage(
-            &session_id,
-            usage.tokens_in,
-            usage.tokens_out,
-            usage.cost_usd,
-        );
+    if let Some(ref d) = parsed {
+        if let Some(usage) = transcript_parser::parse_usage_value(d) {
+            state.registry.write().await.update_token_usage(
+                &session_id,
+                usage.tokens_in,
+                usage.tokens_out,
+                usage.cost_usd,
+            );
+        }
     }
 
     // Parse line into AgentEvents
-    let events = transcript_parser::parse_line(line, ts);
+    let events = parsed
+        .as_ref()
+        .map(|d| transcript_parser::parse_line_value(d, ts))
+        .unwrap_or_default();
     if events.is_empty() {
         return StatusCode::OK;
     }
@@ -109,20 +125,31 @@ pub async fn ingest(
     StatusCode::OK
 }
 
-/// Fetch raw transcript lines for a session (for full replay and archival).
+const DEFAULT_FETCH_LIMIT: i64 = 500;
+const MAX_FETCH_LIMIT: i64 = 2000;
+
+/// Fetch raw transcript lines for a session (for replay and archival).
+///
+/// Supports cursor-based pagination via `?after_id=<id>&limit=<n>` (default limit: 500, max: 2000).
 pub async fn fetch(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
+    Query(params): Query<FetchParams>,
 ) -> Result<Json<Vec<RawTranscriptLine>>, StatusCode> {
     let Ok(session_uuid) = Uuid::parse_str(&session_id) else {
         return Err(StatusCode::BAD_REQUEST);
     };
 
+    let limit = params.limit.unwrap_or(DEFAULT_FETCH_LIMIT).min(MAX_FETCH_LIMIT).max(1);
+    let after_id = params.after_id.unwrap_or(0);
+
     let rows: Vec<(i64, String, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
         "SELECT id, raw_json, created_at FROM session_transcript \
-         WHERE session_id = $1 ORDER BY id ASC",
+         WHERE session_id = $1 AND id > $2 ORDER BY id ASC LIMIT $3",
     )
     .bind(session_uuid)
+    .bind(after_id)
+    .bind(limit)
     .fetch_all(&state.pool)
     .await
     .map_err(|e| {

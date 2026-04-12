@@ -60,11 +60,14 @@ export class ServerBridge {
 
   async postTranscriptLine(sessionId: string, line: string): Promise<void> {
     try {
-      await fetch(`${this.baseUrl}/api/v1/sessions/${sessionId}/transcript`, {
+      const res = await fetch(`${this.baseUrl}/api/v1/sessions/${sessionId}/transcript`, {
         method: "POST",
         headers: this.headers(),
         body: JSON.stringify({ line }),
       });
+      if (!res.ok) {
+        console.error(`[cctui-channel] transcript ingest failed (${res.status}): line not persisted`);
+      }
     } catch {}
   }
 

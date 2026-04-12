@@ -64,7 +64,10 @@ pub fn parse_line(line: &str, ts: i64) -> Vec<AgentEvent> {
     let Ok(d) = serde_json::from_str::<serde_json::Value>(line) else {
         return vec![];
     };
+    parse_line_value(&d, ts)
+}
 
+pub fn parse_line_value(d: &serde_json::Value, ts: i64) -> Vec<AgentEvent> {
     let msg_type = d.get("type").and_then(|t| t.as_str()).unwrap_or("");
     if SKIP_TYPES.contains(&msg_type) {
         return vec![];
@@ -168,7 +171,10 @@ pub fn parse_line(line: &str, ts: i64) -> Vec<AgentEvent> {
 /// Parse token usage from a raw JSONL line.
 pub fn parse_usage(line: &str) -> Option<UsageData> {
     let d = serde_json::from_str::<serde_json::Value>(line).ok()?;
+    parse_usage_value(&d)
+}
 
+pub fn parse_usage_value(d: &serde_json::Value) -> Option<UsageData> {
     // Try message.usage first, then top-level usage
     let usage = d
         .get("message")
@@ -186,7 +192,8 @@ pub fn parse_usage(line: &str) -> Option<UsageData> {
         return None;
     }
 
-    // Sonnet 3.7 pricing: $3/M input, $15/M output
+    // Approximate cost using Sonnet 3.7 rates ($3/M input, $15/M output).
+    // TODO: make model-aware once the session's model name is threaded through here.
     let cost_usd = (tokens_in as f64 / 1_000_000.0) * 3.0 + (tokens_out as f64 / 1_000_000.0) * 15.0;
 
     Some(UsageData { tokens_in, tokens_out, cost_usd })
