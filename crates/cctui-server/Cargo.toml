@@ -20,6 +20,8 @@ futures-util.workspace = true
 anyhow.workspace = true
 axum = { version = "0.8", features = ["ws"] }
 tower-http = { version = "0.6", features = ["cors", "trace"] }
+sha2 = "0.10"
+hex = "0.4"
 sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "migrate"] }
 tower = "0.5"
 http = "1"
