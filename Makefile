@@ -16,7 +16,7 @@ export CCTUI_TOKEN
 .PHONY: db/up db/down db/reset db/migrate/up db/migrate/down db/migrate/add db/psql db/prepare
 .PHONY: db/test/up db/test/down db/test/migrate/up
 .PHONY: run/server run/tui run/channel
-.PHONY: build/server deploy/server deploy/secrets
+.PHONY: build/server build/channel deploy/server deploy/secrets
 
 # ── Setup ──────────────────────────────────────────────────
 
@@ -27,6 +27,9 @@ setup: db/up db/migrate/up build  ## Full setup: database + build
 
 build:  ## Build all crates in release mode
 	cargo build --release --workspace
+
+build/channel:  ## Bundle channel TypeScript into channel/dist/channel.js
+	cd channel && bun install && bun run build
 
 check:  ## Type check all crates
 	cargo check --workspace

@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "bun run src/index.ts",
+    "build": "bun build src/index.ts --outfile dist/channel.js --target bun --minify",
     "test": "bun test"
   },
   "dependencies": {
