@@ -256,6 +256,15 @@ async fn run_tui_socket(
                 let mut registry = state.registry.write().await;
                 registry.queue_message(&session_id, content);
             }
+            TuiCommand::PermissionResponse { session_id, request_id, behavior } => {
+                tracing::info!(
+                    session_id = %session_id,
+                    request_id = %request_id,
+                    behavior = %behavior,
+                    "TUI permission response received"
+                );
+                state.permission_store.write().await.record_decision(&request_id, behavior);
+            }
         }
     }
 
@@ -264,9 +273,33 @@ async fn run_tui_socket(
     }
 }
 
+fn spawn_server_event_relay(
+    mut receiver: tokio::sync::broadcast::Receiver<ServerEvent>,
+    event_tx: mpsc::Sender<ServerEvent>,
+) {
+    tokio::spawn(async move {
+        loop {
+            match receiver.recv().await {
+                Ok(event) => {
+                    if event_tx.send(event).await.is_err() {
+                        break;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!(skipped = n, "TUI server-event relay lagged");
+                }
+            }
+        }
+    });
+}
+
 async fn handle_tui_ws(socket: WebSocket, state: AppState) {
     let (sink, stream) = socket.split();
     let (tx, rx) = mpsc::channel::<ServerEvent>(256);
+
+    // Relay server-initiated events (e.g. permission requests) to this TUI client
+    spawn_server_event_relay(state.tui_tx.subscribe(), tx.clone());
 
     spawn_send_task(sink, rx);
     run_tui_socket(stream, state, tx).await;

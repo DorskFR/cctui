@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+#![feature(let_chains)]
 
 mod app;
 mod client;
@@ -11,7 +12,7 @@ use std::io;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use app::{App, ConversationLine, LineKind, View};
+use app::{App, ConversationLine, LineKind, PendingPermission, View};
 use cctui_proto::ws::{AgentEvent, ServerEvent, TuiCommand};
 use client::ServerClient;
 use crossterm::event::{
@@ -185,6 +186,9 @@ async fn handle_input(
                         app.view = View::SessionList;
                     }
                 }
+                View::PermissionDialog => {
+                    handle_permission_dialog_keys(app, key.code, cmd_tx).await;
+                }
             }
         }
         InputEvent::ScrollUp => match app.view {
@@ -194,7 +198,7 @@ async fn handle_input(
                 app.follow_tail = false;
             }
             View::SessionList => app.select_prev(),
-            View::Help => {}
+            View::Help | View::PermissionDialog => {}
         },
         InputEvent::ScrollDown => match app.view {
             View::Conversation => {
@@ -202,7 +206,7 @@ async fn handle_input(
                 app.scroll_offset = app.scroll_offset.saturating_add(3);
             }
             View::SessionList => app.select_next(),
-            View::Help => {}
+            View::Help | View::PermissionDialog => {}
         },
     }
 }
@@ -299,6 +303,34 @@ fn handle_conversation_keys(app: &mut App, key: KeyEvent) -> bool {
     }
 }
 
+async fn handle_permission_dialog_keys(
+    app: &mut App,
+    code: KeyCode,
+    cmd_tx: &mpsc::Sender<TuiCommand>,
+) {
+    let behavior = match code {
+        KeyCode::Char('y') | KeyCode::Enter => "allow",
+        KeyCode::Char('n') | KeyCode::Esc => "deny",
+        _ => return,
+    };
+
+    if let Some(req) = app.permission_queue.pop_front() {
+        let _ = cmd_tx
+            .send(TuiCommand::PermissionResponse {
+                session_id: req.session_id,
+                request_id: req.request_id,
+                behavior: behavior.to_string(),
+            })
+            .await;
+    }
+
+    // Advance to next queued request or restore previous view
+    if app.permission_queue.is_empty() {
+        app.view = app.pre_permission_view.clone();
+    }
+    // else: stay in PermissionDialog, front() now points to the next request
+}
+
 async fn handle_input_mode(app: &mut App, key: KeyEvent, cmd_tx: &mpsc::Sender<TuiCommand>) {
     match key.code {
         KeyCode::Esc => {
@@ -352,6 +384,22 @@ async fn load_conversation(
 
 fn handle_server_event(app: &mut App, event: ServerEvent) {
     match event {
+        ServerEvent::PermissionRequest {
+            session_id,
+            request_id,
+            tool_name,
+            description,
+            input_preview,
+        } => {
+            let req =
+                PendingPermission { session_id, request_id, tool_name, description, input_preview };
+            let was_empty = app.permission_queue.is_empty();
+            app.permission_queue.push_back(req);
+            if was_empty {
+                app.pre_permission_view = app.view.clone();
+                app.view = View::PermissionDialog;
+            }
+        }
         ServerEvent::Stream { session_id, data } => {
             if let AgentEvent::Heartbeat { tokens_in, tokens_out, cost_usd, .. } = &data
                 && let Some(session) = app.sessions.iter_mut().find(|s| s.id == session_id)
@@ -570,6 +618,16 @@ fn render(frame: &mut Frame, app: &mut App) {
             // Show help on top of whatever view was active
             views::sessions::draw(frame, app);
             views::help::draw(frame);
+        }
+        View::PermissionDialog => {
+            // Draw underlying view, then overlay the dialog
+            match app.pre_permission_view {
+                View::Conversation => views::conversation::draw(frame, app),
+                _ => views::sessions::draw(frame, app),
+            }
+            if let Some(req) = app.permission_queue.front() {
+                views::permission::draw(frame, req);
+            }
         }
     }
 }

@@ -67,3 +67,11 @@ export interface ChannelRegisterResponse {
 export type SessionPollResponse =
   | { status: "waiting" }
   | { status: "matched"; session_id: string; transcript_path: string; model: string };
+
+/** Permission request from Claude Code via MCP notification. */
+export interface PermissionRequest {
+  request_id: string;
+  tool_name: string;
+  description: string;
+  input_preview: string;
+}

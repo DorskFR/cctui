@@ -29,11 +29,14 @@ async fn main() -> anyhow::Result<()> {
         agent_tokens: Config::agent_tokens(),
         admin_tokens: Config::admin_tokens(),
     };
+    let (tui_tx, _) = tokio::sync::broadcast::channel(256);
     let state = AppState {
         pool,
         config: config.clone(),
         registry: Registry::shared(),
         channel_store: routes::channels::ChannelStore::shared(),
+        permission_store: routes::permissions::PermissionStore::shared(),
+        tui_tx,
         auth_config: auth_config.clone(),
     };
 
@@ -74,6 +77,14 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/hooks/post-tool-use", post(routes::post_tool_use::post_tool_use))
         .route("/api/v1/channels/register", post(routes::channels::register_channel))
         .route("/api/v1/channels/{channel_id}/session", get(routes::channels::poll_session))
+        .route(
+            "/api/v1/sessions/{session_id}/permission/request",
+            post(routes::permissions::submit_request),
+        )
+        .route(
+            "/api/v1/sessions/{session_id}/permission/decision/{request_id}",
+            get(routes::permissions::poll_decision),
+        )
         .route("/api/v1/events/{session_id}", post(routes::events::ingest))
         .route("/api/v1/stream/{session_id}", get(ws::agent_stream))
         .route("/api/v1/ws", get(ws::tui_ws))
@@ -110,6 +121,11 @@ async fn reaper_task(state: AppState) {
         {
             let mut store = state.channel_store.write().await;
             store.reap_stale(600); // 10 minutes
+        }
+
+        {
+            let mut pstore = state.permission_store.write().await;
+            pstore.reap_stale(300); // 5 minutes
         }
     }
 }

@@ -351,6 +351,7 @@ fn is_domain_label(label: &str) -> bool {
         && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
+#[allow(clippy::needless_lifetimes)]
 pub(crate) fn url_preserving_wrap_options<'a>(opts: RtOptions<'a>) -> RtOptions<'a> {
     opts.word_separator(textwrap::WordSeparator::AsciiSpace)
         .word_splitter(textwrap::WordSplitter::Custom(split_non_url_word))
