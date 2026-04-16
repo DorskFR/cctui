@@ -10,3 +10,4 @@ pub mod prompts;
 pub mod sessions;
 pub mod spawn;
 pub mod stop;
+pub mod transcript;

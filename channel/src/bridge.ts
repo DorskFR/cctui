@@ -58,6 +58,19 @@ export class ServerBridge {
     } catch {}
   }
 
+  async postTranscriptLine(sessionId: string, line: string): Promise<void> {
+    try {
+      const res = await fetch(`${this.baseUrl}/api/v1/sessions/${sessionId}/transcript`, {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify({ line }),
+      });
+      if (!res.ok) {
+        console.error(`[cctui-channel] transcript ingest failed (${res.status}): line not persisted`);
+      }
+    } catch {}
+  }
+
   async checkPolicy(payload: PreToolUsePayload): Promise<PolicyVerdict> {
     try {
       const res = await fetch(`${this.baseUrl}/api/v1/check`, {

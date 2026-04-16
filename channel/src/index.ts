@@ -124,13 +124,12 @@ async function registerAndWaitForSession(): Promise<void> {
         // Start polling for pending messages
         bridge.startPolling(poll.session_id);
 
-        // Start tailing transcript
+        // Start tailing transcript — forward raw lines to server for lossless storage and parsing
         if (session.transcriptPath) {
           tailAbort = new AbortController();
           tailTranscript(
-            poll.session_id,
             session.transcriptPath,
-            (event) => bridge.postEvent(poll.session_id, event),
+            (line) => bridge.postTranscriptLine(poll.session_id, line),
             tailAbort.signal,
           );
         }
