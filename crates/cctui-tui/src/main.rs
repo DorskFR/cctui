@@ -1,5 +1,4 @@
 #![allow(dead_code)]
-#![feature(let_chains)]
 
 mod app;
 mod client;

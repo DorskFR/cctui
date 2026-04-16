@@ -28,7 +28,7 @@ pub struct PendingPermission {
 pub struct PermissionStore {
     /// Pending requests waiting for TUI decision: `request_id` → entry
     pending: HashMap<String, PendingPermission>,
-    /// Decisions recorded by TUI: `request_id` → (session_id, behavior, decided_at)
+    /// Decisions recorded by TUI: `request_id` → (`session_id`, behavior, `decided_at`)
     decisions: HashMap<String, (String, String, DateTime<Utc>)>,
 }
 
@@ -46,11 +46,7 @@ impl PermissionStore {
     }
 
     pub fn record_decision(&mut self, request_id: &str, behavior: String) {
-        let session_id = self
-            .pending
-            .remove(request_id)
-            .map(|p| p.session_id)
-            .unwrap_or_default();
+        let session_id = self.pending.remove(request_id).map(|p| p.session_id).unwrap_or_default();
         self.decisions.insert(request_id.to_string(), (session_id, behavior, Utc::now()));
     }
 
@@ -228,8 +224,7 @@ mod tests {
         store.insert_request(req);
         store.record_decision("r1", "allow".into());
         // Backdate the decision
-        store.decisions.get_mut("r1").unwrap().2 =
-            Utc::now() - chrono::Duration::seconds(120);
+        store.decisions.get_mut("r1").unwrap().2 = Utc::now() - chrono::Duration::seconds(120);
         assert_eq!(store.decisions.len(), 1);
         store.reap_stale(60);
         assert_eq!(store.decisions.len(), 0);

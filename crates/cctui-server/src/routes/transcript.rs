@@ -28,8 +28,9 @@ pub struct FetchParams {
 
 /// Ingest a raw JSONL transcript line from the channel.
 ///
-/// Stores the line losslessly in session_transcript, parses it into AgentEvents
-/// for live WebSocket broadcast, and updates token usage and heartbeat.
+/// Stores the line losslessly in `session_transcript`, parses it into `AgentEvents`
+/// for live `WebSocket` broadcast, and updates token usage and heartbeat.
+#[allow(clippy::significant_drop_tightening)]
 pub async fn ingest(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
@@ -46,13 +47,12 @@ pub async fn ingest(
 
     // Store raw line in session_transcript (lossless archive).
     // Return 500 on failure so the channel knows the line was not persisted.
-    if let Err(e) = sqlx::query(
-        "INSERT INTO session_transcript (session_id, raw_json) VALUES ($1, $2)",
-    )
-    .bind(session_uuid)
-    .bind(line)
-    .execute(&state.pool)
-    .await
+    if let Err(e) =
+        sqlx::query("INSERT INTO session_transcript (session_id, raw_json) VALUES ($1, $2)")
+            .bind(session_uuid)
+            .bind(line)
+            .execute(&state.pool)
+            .await
     {
         tracing::error!(session_id = %session_id, "failed to store transcript line: {e}");
         return StatusCode::INTERNAL_SERVER_ERROR;
@@ -64,22 +64,20 @@ pub async fn ingest(
     let parsed: Option<serde_json::Value> = serde_json::from_str(line).ok();
 
     // Handle token usage
-    if let Some(ref d) = parsed {
-        if let Some(usage) = transcript_parser::parse_usage_value(d) {
-            state.registry.write().await.update_token_usage(
-                &session_id,
-                usage.tokens_in,
-                usage.tokens_out,
-                usage.cost_usd,
-            );
-        }
+    if let Some(ref d) = parsed
+        && let Some(usage) = transcript_parser::parse_usage_value(d)
+    {
+        state.registry.write().await.update_token_usage(
+            &session_id,
+            usage.tokens_in,
+            usage.tokens_out,
+            usage.cost_usd,
+        );
     }
 
     // Parse line into AgentEvents
-    let events = parsed
-        .as_ref()
-        .map(|d| transcript_parser::parse_line_value(d, ts))
-        .unwrap_or_default();
+    let events =
+        parsed.as_ref().map(|d| transcript_parser::parse_line_value(d, ts)).unwrap_or_default();
     if events.is_empty() {
         return StatusCode::OK;
     }
@@ -140,7 +138,7 @@ pub async fn fetch(
         return Err(StatusCode::BAD_REQUEST);
     };
 
-    let limit = params.limit.unwrap_or(DEFAULT_FETCH_LIMIT).min(MAX_FETCH_LIMIT).max(1);
+    let limit = params.limit.unwrap_or(DEFAULT_FETCH_LIMIT).clamp(1, MAX_FETCH_LIMIT);
     let after_id = params.after_id.unwrap_or(0);
 
     let rows: Vec<(i64, String, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(

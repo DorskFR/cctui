@@ -1,4 +1,4 @@
-//! Parses raw JSONL transcript lines (from Claude Code's session.jsonl) into AgentEvents.
+//! Parses raw JSONL transcript lines (from Claude Code's session.jsonl) into `AgentEvents`.
 //!
 //! Ported from channel/src/transcript.ts.
 
@@ -20,7 +20,7 @@ pub struct UsageData {
     pub cost_usd: f64,
 }
 
-/// Extract readable text from a tool_result content value (string, array of blocks, or object).
+/// Extract readable text from a `tool_result` content value (string, array of blocks, or object).
 fn extract_tool_result_content(content: &serde_json::Value) -> String {
     match content {
         serde_json::Value::String(s) => s.clone(),
@@ -59,7 +59,8 @@ fn is_command_artifact(s: &str) -> bool {
     s.contains("</command-name>") || s.contains("<command-")
 }
 
-/// Parse a raw JSONL line into zero or more AgentEvents for live broadcast.
+/// Parse a raw JSONL line into zero or more `AgentEvents` for live broadcast.
+#[allow(dead_code)]
 pub fn parse_line(line: &str, ts: i64) -> Vec<AgentEvent> {
     let Ok(d) = serde_json::from_str::<serde_json::Value>(line) else {
         return vec![];
@@ -97,8 +98,9 @@ pub fn parse_line_value(d: &serde_json::Value, ts: i64) -> Vec<AgentEvent> {
                 let part_type = part.get("type").and_then(|t| t.as_str()).unwrap_or("");
                 match part_type {
                     "tool_result" => {
-                        let raw =
-                            extract_tool_result_content(part.get("content").unwrap_or(&serde_json::Value::Null));
+                        let raw = extract_tool_result_content(
+                            part.get("content").unwrap_or(&serde_json::Value::Null),
+                        );
                         if is_command_artifact(&raw) {
                             continue;
                         }
@@ -108,15 +110,19 @@ pub fn parse_line_value(d: &serde_json::Value, ts: i64) -> Vec<AgentEvent> {
                             .unwrap_or("")
                             .to_owned();
                         let summary: String = raw.chars().take(200).collect();
-                        events.push(AgentEvent::ToolResult { tool: tool_use_id, output_summary: summary, ts });
+                        events.push(AgentEvent::ToolResult {
+                            tool: tool_use_id,
+                            output_summary: summary,
+                            ts,
+                        });
                     }
                     "text" => {
                         let text = part.get("text").and_then(|t| t.as_str()).unwrap_or("");
                         if !text.is_empty() && !is_command_artifact(text) {
-                            events.push(AgentEvent::Text {
-                                content: format!("▷ User: {text}"),
-                                ts,
-                            });
+                            events
+                                .push(AgentEvent::Text {
+                                    content: format!("▷ User: {text}"), ts
+                                });
                         }
                     }
                     _ => {}
@@ -141,15 +147,12 @@ pub fn parse_line_value(d: &serde_json::Value, ts: i64) -> Vec<AgentEvent> {
                         }
                     }
                     "tool_use" => {
-                        let tool = part
-                            .get("name")
-                            .and_then(|n| n.as_str())
-                            .unwrap_or("")
-                            .to_owned();
+                        let tool =
+                            part.get("name").and_then(|n| n.as_str()).unwrap_or("").to_owned();
                         let input = part
                             .get("input")
                             .cloned()
-                            .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+                            .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
                         events.push(AgentEvent::ToolCall { tool, input, ts });
                     }
                     _ => {}
@@ -158,10 +161,10 @@ pub fn parse_line_value(d: &serde_json::Value, ts: i64) -> Vec<AgentEvent> {
             return events;
         }
 
-        if let Some(text) = content.as_str() {
-            if !text.is_empty() {
-                return vec![AgentEvent::Text { content: text.to_owned(), ts }];
-            }
+        if let Some(text) = content.as_str()
+            && !text.is_empty()
+        {
+            return vec![AgentEvent::Text { content: text.to_owned(), ts }];
         }
     }
 
@@ -169,6 +172,7 @@ pub fn parse_line_value(d: &serde_json::Value, ts: i64) -> Vec<AgentEvent> {
 }
 
 /// Parse token usage from a raw JSONL line.
+#[allow(dead_code)]
 pub fn parse_usage(line: &str) -> Option<UsageData> {
     let d = serde_json::from_str::<serde_json::Value>(line).ok()?;
     parse_usage_value(&d)
@@ -176,12 +180,9 @@ pub fn parse_usage(line: &str) -> Option<UsageData> {
 
 pub fn parse_usage_value(d: &serde_json::Value) -> Option<UsageData> {
     // Try message.usage first, then top-level usage
-    let usage = d
-        .get("message")
-        .and_then(|m| m.get("usage"))
-        .or_else(|| d.get("usage"))?;
+    let usage = d.get("message").and_then(|m| m.get("usage")).or_else(|| d.get("usage"))?;
 
-    let get_u64 = |key: &str| usage.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
+    let get_u64 = |key: &str| usage.get(key).and_then(serde_json::Value::as_u64).unwrap_or(0);
 
     let tokens_in = get_u64("input_tokens")
         + get_u64("cache_creation_input_tokens")
@@ -194,7 +195,8 @@ pub fn parse_usage_value(d: &serde_json::Value) -> Option<UsageData> {
 
     // Approximate cost using Sonnet 3.7 rates ($3/M input, $15/M output).
     // TODO: make model-aware once the session's model name is threaded through here.
-    let cost_usd = (tokens_in as f64 / 1_000_000.0) * 3.0 + (tokens_out as f64 / 1_000_000.0) * 15.0;
+    let cost_usd =
+        (tokens_in as f64 / 1_000_000.0).mul_add(3.0, (tokens_out as f64 / 1_000_000.0) * 15.0);
 
     Some(UsageData { tokens_in, tokens_out, cost_usd })
 }
@@ -220,8 +222,7 @@ mod tests {
 
     #[test]
     fn assistant_text_parsed() {
-        let line =
-            r#"{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Hello!"}]}}"#;
+        let line = r#"{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Hello!"}]}}"#;
         let events = parse_line(line, 42);
         assert_eq!(events.len(), 1);
         match &events[0] {
