@@ -144,23 +144,37 @@ try:
 except (FileNotFoundError, ValueError):
     settings = {}
 
-session_start_cmd = (
+# HTTP hooks in Claude Code block private / link-local IPs (SSRF guard).
+# To support homelab servers we shell out to curl instead.
+auth_prelude = (
     'KEY="${CCTUI_AGENT_TOKEN:-$(jq -r .machine_key '
     '"${XDG_CONFIG_HOME:-$HOME/.config}/cctui/machine.json" 2>/dev/null)}"; '
     f'[ -z "$KEY" ] && KEY="{token}"; '
-    'jq -c --arg ppid "$PPID" --arg mid "$(hostname)" '
-    "'. + {ppid: ($ppid | tonumber), machine_id: $mid}' "
-    f'| curl -sf -X POST {server_url}/api/v1/hooks/session-start '
-    "-H 'Content-Type: application/json' "
-    '-H "Authorization: Bearer $KEY" -d @-'
+)
+
+def curl_cmd(path: str, enrich: str = "") -> str:
+    pipe = (
+        f"jq -c {enrich}" if enrich else "cat"
+    )
+    return (
+        auth_prelude
+        + f'{pipe} | curl -sf -X POST {server_url}{path} '
+        "-H 'Content-Type: application/json' "
+        '-H "Authorization: Bearer $KEY" -d @-'
+    )
+
+session_start_cmd = curl_cmd(
+    "/api/v1/hooks/session-start",
+    enrich="--arg ppid \"$PPID\" --arg mid \"$(hostname)\" "
+           "'. + {ppid: ($ppid | tonumber), machine_id: $mid}'",
 )
 
 settings.setdefault("hooks", {})
 settings["hooks"].update({
     "SessionStart": [{"hooks": [{"type": "command", "command": session_start_cmd}]}],
-    "PreToolUse":   [{"hooks": [{"type": "http", "url": f"{server_url}/api/v1/check"}]}],
-    "PostToolUse":  [{"hooks": [{"type": "http", "url": f"{server_url}/api/v1/hooks/post-tool-use"}]}],
-    "Stop":         [{"hooks": [{"type": "http", "url": f"{server_url}/api/v1/hooks/stop"}]}],
+    "PreToolUse":   [{"hooks": [{"type": "command", "command": curl_cmd("/api/v1/check")}]}],
+    "PostToolUse":  [{"hooks": [{"type": "command", "command": curl_cmd("/api/v1/hooks/post-tool-use")}]}],
+    "Stop":         [{"hooks": [{"type": "command", "command": curl_cmd("/api/v1/hooks/stop")}]}],
 })
 
 with open(settings_path, "w") as f:
