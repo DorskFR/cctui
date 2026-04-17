@@ -1,18 +1,10 @@
-FROM oven/bun:1 AS channel-builder
-
-WORKDIR /app/channel
-COPY channel/package.json channel/bun.lock* ./
-RUN bun install --frozen-lockfile
-COPY channel/src/ src/
-RUN bun run build
-
 FROM rust:1.90-slim AS builder
 
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 COPY migrations/ migrations/
-COPY --from=channel-builder /app/channel/dist/ channel/dist/
+COPY scripts/ scripts/
 
 RUN cargo build --release -p cctui-server
 
