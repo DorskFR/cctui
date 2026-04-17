@@ -6,6 +6,7 @@ mod db;
 mod policy;
 mod registry;
 mod routes;
+mod skill_store;
 mod state;
 mod transcript_parser;
 mod ws;
@@ -21,6 +22,7 @@ use registry::Registry;
 use state::AppState;
 
 #[tokio::main]
+#[allow(clippy::too_many_lines)]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -36,6 +38,7 @@ async fn main() -> anyhow::Result<()> {
     let (tui_tx, _) = tokio::sync::broadcast::channel(256);
 
     let archive = init_archive_store().await;
+    let skills = init_skill_store().await;
 
     let state = AppState {
         pool,
@@ -46,6 +49,7 @@ async fn main() -> anyhow::Result<()> {
         tui_tx,
         auth_config: auth_config.clone(),
         archive,
+        skills,
     };
 
     let api_router = Router::new()
@@ -88,6 +92,13 @@ async fn main() -> anyhow::Result<()> {
                 .head(routes::archive::head)
                 .get(routes::archive::get)
                 .layer(DefaultBodyLimit::max(100 * 1024 * 1024)),
+        )
+        .route("/skills/index", get(routes::skills::index))
+        .route(
+            "/skills/{name}",
+            put(routes::skills::put)
+                .get(routes::skills::get)
+                .layer(DefaultBodyLimit::max(50 * 1024 * 1024)),
         )
         .layer(middleware::from_fn(auth::auth_middleware))
         .layer(Extension(auth_config));
@@ -135,6 +146,16 @@ async fn init_archive_store() -> Arc<archive_store::ArchiveStore> {
     let store = Arc::new(archive_store::ArchiveStore::new(root.clone()));
     if let Err(e) = store.ensure_root().await {
         tracing::warn!(path = %root.display(), "archive root ensure_root failed: {e}");
+    }
+    store
+}
+
+async fn init_skill_store() -> Arc<skill_store::SkillStore> {
+    let root: PathBuf =
+        std::env::var("CCTUI_SKILLS_PATH").unwrap_or_else(|_| "/skills".into()).into();
+    let store = Arc::new(skill_store::SkillStore::new(root.clone()));
+    if let Err(e) = store.ensure_root().await {
+        tracing::warn!(path = %root.display(), "skill root ensure_root failed: {e}");
     }
     store
 }

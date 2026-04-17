@@ -1,4 +1,5 @@
 import type { StreamerEvent, PreToolUsePayload, PendingMessage, ChannelRegisterResponse, SessionPollResponse, PermissionRequest } from "./types";
+import type { SkillIndexEntry } from "./skills";
 
 export interface PolicyVerdict {
   decision: "allow" | "deny";
@@ -183,6 +184,24 @@ export class ServerBridge {
     if (!res.ok) {
       throw new Error(`PUT archive failed: ${res.status} ${await res.text()}`);
     }
+  }
+
+  async getSkillIndex(): Promise<SkillIndexEntry[]> {
+    const res = await fetch(`${this.baseUrl}/api/v1/skills/index`, { headers: this.headers() });
+    if (!res.ok) {
+      throw new Error(`skill index failed: ${res.status} ${await res.text()}`);
+    }
+    return res.json() as Promise<SkillIndexEntry[]>;
+  }
+
+  async getSkillBundle(name: string): Promise<Uint8Array> {
+    const res = await fetch(`${this.baseUrl}/api/v1/skills/${encodeURIComponent(name)}`, {
+      headers: { Authorization: `Bearer ${this.token}` },
+    });
+    if (!res.ok) {
+      throw new Error(`skill get failed: ${res.status} ${await res.text()}`);
+    }
+    return new Uint8Array(await res.arrayBuffer());
   }
 
   async pollPermissionDecision(

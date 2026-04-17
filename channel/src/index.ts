@@ -5,6 +5,7 @@ import { createChannelServer } from "./mcp";
 import { ServerBridge } from "./bridge";
 import { tailTranscript } from "./transcript";
 import { walkProjectDirs, uploadIfChanged, type ProjectFile } from "./archive";
+import { syncSkills } from "./skills";
 import { hostname, homedir } from "os";
 import { basename, dirname, join as pathJoin } from "path";
 
@@ -195,6 +196,11 @@ console.error("[cctui-channel] connected to Claude Code");
 
 // Start registration in the background (don't block MCP)
 registerAndWaitForSession();
+
+// Skills sync is independent of session match — kick it off on startup.
+syncSkills(bridge).catch((err) =>
+  console.error("[cctui-channel] skill sync failed:", err),
+);
 
 async function finalFlush(): Promise<void> {
   tailAbort?.abort();
