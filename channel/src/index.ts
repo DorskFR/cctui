@@ -4,14 +4,26 @@ import type { SessionState } from "./types";
 import { createChannelServer } from "./mcp";
 import { ServerBridge } from "./bridge";
 import { tailTranscript } from "./transcript";
-import { hostname } from "os";
-import { basename } from "path";
+import { walkProjectDirs, uploadIfChanged, type ProjectFile } from "./archive";
+import { hostname, homedir } from "os";
+import { basename, dirname, join as pathJoin } from "path";
 
 const config = loadConfig();
 const bridge = new ServerBridge(config.serverUrl, config.agentToken);
 
 let session: SessionState | null = null;
 let tailAbort: AbortController | null = null;
+let archiveInterval: ReturnType<typeof setInterval> | null = null;
+let currentTranscriptAbs: string | null = null;
+
+function currentProjectFile(): ProjectFile | null {
+  if (!currentTranscriptAbs) return null;
+  return {
+    absPath: currentTranscriptAbs,
+    projectDir: basename(dirname(currentTranscriptAbs)),
+    sessionId: basename(currentTranscriptAbs, ".jsonl"),
+  };
+}
 
 // --- MCP channel server (stdio) ---
 const { pushMessage, sendPermissionResponse, connect } = createChannelServer({
@@ -134,6 +146,33 @@ async function registerAndWaitForSession(): Promise<void> {
           );
         }
 
+        // --- Archive pipeline ---
+        currentTranscriptAbs = session.transcriptPath;
+        const projectsRoot =
+          process.env.CLAUDE_PROJECTS_DIR ?? pathJoin(homedir(), ".claude", "projects");
+
+        // Startup scan: fire-and-forget, skip current session (periodic covers it).
+        (async () => {
+          const files = walkProjectDirs(projectsRoot);
+          for (const f of files) {
+            if (currentTranscriptAbs && f.absPath === currentTranscriptAbs) continue;
+            await uploadIfChanged(bridge, f);
+          }
+        })().catch((err) =>
+          console.error("[cctui-channel] startup archive scan failed:", err),
+        );
+
+        // Periodic flush for live session.
+        const intervalMin = Number(process.env.CCTUI_ARCHIVE_INTERVAL_MINUTES ?? 15);
+        const intervalMs = Math.max(1, intervalMin) * 60_000;
+        archiveInterval = setInterval(async () => {
+          const f = currentProjectFile();
+          if (!f) return;
+          await uploadIfChanged(bridge, f).catch((err) =>
+            console.error("[cctui-channel] periodic archive failed:", err),
+          );
+        }, intervalMs);
+
         matched = true;
       }
     } catch (err) {
@@ -157,14 +196,27 @@ console.error("[cctui-channel] connected to Claude Code");
 // Start registration in the background (don't block MCP)
 registerAndWaitForSession();
 
-process.on("SIGTERM", () => {
+async function finalFlush(): Promise<void> {
   tailAbort?.abort();
   bridge.stopPolling();
+  if (archiveInterval) {
+    clearInterval(archiveInterval);
+    archiveInterval = null;
+  }
+  const f = currentProjectFile();
+  if (f) {
+    await uploadIfChanged(bridge, f).catch((err) =>
+      console.error("[cctui-channel] final archive flush failed:", err),
+    );
+  }
+}
+
+process.on("SIGTERM", async () => {
+  await finalFlush();
   process.exit(0);
 });
 
-process.on("SIGINT", () => {
-  tailAbort?.abort();
-  bridge.stopPolling();
+process.on("SIGINT", async () => {
+  await finalFlush();
   process.exit(0);
 });

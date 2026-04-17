@@ -1,7 +1,10 @@
+use std::sync::Arc;
+
 use cctui_proto::ws::ServerEvent;
 use sqlx::PgPool;
 use tokio::sync::broadcast;
 
+use crate::archive_store::ArchiveStore;
 use crate::auth::AuthConfig;
 use crate::config::Config;
 use crate::registry::SharedRegistry;
@@ -19,4 +22,5 @@ pub struct AppState {
     pub tui_tx: broadcast::Sender<ServerEvent>,
     #[allow(dead_code)]
     pub auth_config: AuthConfig,
+    pub archive: Arc<ArchiveStore>,
 }

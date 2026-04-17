@@ -36,6 +36,14 @@ Working end-to-end: Claude sessions register with a central server, tool usage a
 - Transcript tailer: built-in to channel, reads JSONL file, POSTs parsed events to server
 - Setup: `make setup/claude` (with server running) configures `.mcp.json` and installs hooks into `~/.claude/settings.json`
 
+### JSONL Archive
+- Per-machine backup of `~/.claude/projects/**/*.jsonl` to server PVC
+- `archive_index` table tracks sha256 + size + line_count per (machine, session)
+- `HEAD /api/v1/archive/{project_dir}/{session_id}?sha256=<hex>` → 204 present / 404 absent
+- `PUT /api/v1/archive/{project_dir}/{session_id}` streams to `.partial` + atomic rename, optional `X-CCTUI-SHA256` verify, 100 MiB cap
+- Channel triggers: startup scan, periodic while session live (`CCTUI_ARCHIVE_INTERVAL_MINUTES`, default 15), flush on SIGTERM/SIGINT
+- Restore = `rsync <pvc>/<machine_uuid>/projects/ ~/.claude/projects/`
+
 ### Infrastructure
 - Docker Compose for dev/test PostgreSQL
 - Makefile with all common targets

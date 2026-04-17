@@ -225,3 +225,124 @@ fn uuid_like() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos().to_string()
 }
+
+fn sha256_hex_bytes(b: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(b))
+}
+
+async fn enrol_machine(client: &Client, base: &str) -> String {
+    let u: serde_json::Value = client
+        .post(format!("{base}/api/v1/admin/users"))
+        .bearer_auth(admin_token())
+        .json(&json!({"name": format!("arch-{}", uuid_like())}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let user_key = u["key"].as_str().unwrap().to_string();
+
+    let m: serde_json::Value = client
+        .post(format!("{base}/api/v1/enroll"))
+        .bearer_auth(&user_key)
+        .json(&json!({"hostname": format!("arch-host-{}", uuid_like())}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    m["machine_key"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+#[ignore = "requires running server"]
+async fn archive_head_404_put_200_head_204() {
+    let client = Client::new();
+    let base = server_url();
+    let machine_key = enrol_machine(&client, &base).await;
+    let body: &[u8] = b"{\"a\":1}\n{\"b\":2}\n";
+    let sha = sha256_hex_bytes(body);
+    let session = format!("sess-{}", uuid_like());
+
+    // HEAD → 404
+    let head = client
+        .head(format!("{base}/api/v1/archive/-home-user-proj/{session}?sha256={sha}"))
+        .bearer_auth(&machine_key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(head.status(), 404);
+
+    // PUT → 200
+    let put = client
+        .put(format!("{base}/api/v1/archive/-home-user-proj/{session}"))
+        .bearer_auth(&machine_key)
+        .header("X-CCTUI-SHA256", &sha)
+        .body(body.to_vec())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(put.status(), 200);
+    let j: serde_json::Value = put.json().await.unwrap();
+    assert_eq!(j["sha256"].as_str().unwrap(), sha);
+    assert_eq!(j["size_bytes"].as_u64().unwrap(), body.len() as u64);
+    assert_eq!(j["line_count"].as_u64().unwrap(), 2);
+
+    // HEAD → 204
+    let head2 = client
+        .head(format!("{base}/api/v1/archive/-home-user-proj/{session}?sha256={sha}"))
+        .bearer_auth(&machine_key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(head2.status(), 204);
+}
+
+#[tokio::test]
+#[ignore = "requires running server"]
+async fn archive_put_rejects_hash_mismatch() {
+    let client = Client::new();
+    let base = server_url();
+    let machine_key = enrol_machine(&client, &base).await;
+    let session = format!("sess-{}", uuid_like());
+
+    let put = client
+        .put(format!("{base}/api/v1/archive/-home-x/{session}"))
+        .bearer_auth(&machine_key)
+        .header("X-CCTUI-SHA256", "0".repeat(64))
+        .body(b"hello".to_vec())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(put.status(), 409);
+}
+
+#[tokio::test]
+#[ignore = "requires running server"]
+async fn archive_requires_machine_role() {
+    let client = Client::new();
+    let base = server_url();
+
+    // Admin token is not a Machine role.
+    let res = client
+        .put(format!("{base}/api/v1/archive/-home-foo/abc-1"))
+        .bearer_auth(admin_token())
+        .body(b"x".to_vec())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 403);
+
+    // Env-based agent token is also not Machine.
+    let res = client
+        .put(format!("{base}/api/v1/archive/-home-foo/abc-1"))
+        .bearer_auth(agent_token())
+        .body(b"x".to_vec())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 403);
+}
