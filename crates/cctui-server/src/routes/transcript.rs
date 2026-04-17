@@ -113,11 +113,12 @@ pub async fn ingest(
         }
     }
 
-    // Update heartbeat
-    let mut registry = state.registry.write().await;
-    if let Some(handle) = registry.get_mut(&session_id) {
-        handle.last_heartbeat = std::time::Instant::now();
-        handle.session.last_heartbeat = chrono::Utc::now();
+    // Update heartbeat and resurrect the session if it was disconnected.
+    let resurrected = state.registry.write().await.touch(&session_id);
+    if let Some(status) = resurrected {
+        let _ = state
+            .tui_tx
+            .send(cctui_proto::ws::ServerEvent::Status { session_id: session_id.clone(), status });
     }
 
     StatusCode::OK
