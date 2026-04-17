@@ -5,15 +5,15 @@ Centralized server + TUI for managing Claude Code sessions across machines.
 ## Architecture
 
 ```
-cctui-server (Axum, PostgreSQL)  ←→  cctui-tui (Ratatui)
+cctui-server (Axum, PostgreSQL)  ←→  cctui (TUI, default subcommand)
      ↑
-cctui-channel (Bun/TS MCP server) ←→ Claude Code
+cctui channel (Rust MCP server, same binary) ←→ Claude Code
 ```
 
 - **cctui-server**: Session registry, event storage, WebSocket hub, policy check endpoint
-- **cctui-tui**: Terminal UI — session list, conversation viewer, chat input
+- **cctui-tui**: Ratatui TUI — produces the `cctui` binary (default = TUI, `cctui channel` = MCP server)
 - **cctui-proto**: Shared types (models, API, WebSocket messages)
-- **cctui-channel**: MCP channel server for bidirectional Claude ↔ TUI messaging
+- **cctui-channel**: Library crate for the MCP channel, re-exposed as the `cctui channel` subcommand
 
 ## Workspace
 
@@ -21,22 +21,22 @@ cctui-channel (Bun/TS MCP server) ←→ Claude Code
 crates/
   cctui-proto/     # Shared types: Session, SessionStatus, AgentEvent, TuiCommand, etc.
   cctui-server/    # Axum server: routes/, ws.rs, registry.rs, auth.rs, config.rs, db.rs
-  cctui-tui/       # Ratatui TUI: views/, widgets/, app.rs, client.rs, theme.rs
-channel/
-  src/             # MCP channel server: index.ts, mcp.ts, hooks.ts, bridge.ts, transcript.ts
+  cctui-tui/       # Ratatui TUI; produces the `cctui` binary (bin name `cctui`)
+  cctui-channel/   # MCP channel lib (invoked via `cctui channel`): mcp.rs, bridge.rs, transcript.rs, ...
+  cctui-admin/     # Admin CLI (enroll, user management)
 migrations/        # PostgreSQL schema (sessions, stream_events)
 deploy/            # Dockerfile, K8s manifests
 ```
 
 ## How It Works
 
-1. `make setup/claude` (with server running) configures `.mcp.json` + installs hooks into `~/.claude/settings.json`
-2. Claude starts → spawns cctui-channel as MCP subprocess via `.mcp.json`
-3. SessionStart hook → channel HTTP endpoint → registers session with server, starts transcript tailing
-4. PreToolUse hook → channel HTTP endpoint → proxied to server for policy check
-5. Transcript events streamed to server via channel bridge → broadcast to TUI
+1. `make setup/claude` (with server running) writes `~/.claude.json` to invoke `cctui channel` as an MCP server + installs hooks into `~/.claude/settings.json`
+2. Claude starts → spawns `cctui channel` as an MCP stdio subprocess
+3. SessionStart hook POSTs to `cctui-server` (`/api/v1/hooks/session-start`); the channel polls and matches the session by `(machine_id, ppid)`
+4. PreToolUse hook → `cctui-server` `/api/v1/check` for policy
+5. Channel tails the transcript JSONL and forwards raw lines via `POST /api/v1/sessions/{sid}/transcript`
 6. TUI messages queued on server → polled by channel → pushed as MCP notifications
-7. Claude replies via `cctui_reply` tool → posted to server → broadcast to TUI
+7. Claude replies via the `cctui_reply` MCP tool → channel posts event → server broadcasts to TUI
 
 ## Key Files
 
@@ -48,10 +48,9 @@ deploy/            # Dockerfile, K8s manifests
 - **TUI app state**: `crates/cctui-tui/src/app.rs`
 - **TUI views**: `crates/cctui-tui/src/views/sessions.rs`, `conversation.rs`
 - **Proto types**: `crates/cctui-proto/src/models.rs`, `api.rs`, `ws.rs`
-- **Channel entry**: `channel/src/index.ts` — MCP channel server entry point
-- **Channel MCP**: `channel/src/mcp.ts` — channel capability + reply tool
-- **Channel hooks**: `channel/src/hooks.ts` — HTTP hook receiver
-- **Channel bridge**: `channel/src/bridge.ts` — REST client to cctui-server
+- **Channel entry**: `crates/cctui-channel/src/lib.rs` — `pub async fn run()`, invoked by `cctui channel`
+- **Channel MCP**: `crates/cctui-channel/src/mcp.rs` — stdio JSON-RPC, `cctui_reply` tool, capability handshake
+- **Channel bridge**: `crates/cctui-channel/src/bridge.rs` — REST client to cctui-server
 - **Project status & gaps**: `STATUS.md`
 
 ## Development

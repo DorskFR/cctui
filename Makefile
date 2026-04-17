@@ -33,9 +33,6 @@ setup: db/up db/migrate/up build  ## Full setup: database + build
 build:  ## Build all crates in release mode
 	cargo build --release --workspace
 
-build/channel:  ## Bundle channel TypeScript into channel/dist/channel.js
-	cd channel && bun install && bun run build
-
 check:  ## Type check all crates
 	cargo check --workspace
 
@@ -68,13 +65,13 @@ run/tui:  ## Run the TUI client
 run/admin:  ## Run cctui-admin (e.g. `make run/admin ARGS="user list"`)
 	cargo run -p cctui-admin -- $(ARGS)
 
-run/channel:  ## Install and run the channel server (for development)
-	cd channel && bun install && bun run src/index.ts
+run/channel:  ## Run the MCP channel subcommand (for development)
+	cargo run -p cctui-tui -- channel
 
 test/session:  ## Simulate a session (register, stream events, deregister)
 	./scripts/test-session.sh $(CCTUI_URL) $(CCTUI_TOKEN)
 
-setup/claude:  ## Configure local Claude Code to use cctui-channel
+setup/claude:  ## Configure local Claude Code to use the cctui channel
 	./scripts/setup-claude.sh $(CCTUI_URL) dev-agent
 
 run/claude:  ## Start Claude Code with channel enabled (TUI messaging works)

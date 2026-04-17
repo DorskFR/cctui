@@ -6,8 +6,14 @@ edition.workspace = true
 [lints]
 workspace = true
 
+[[bin]]
+name = "cctui"
+path = "src/main.rs"
+
 [dependencies]
 cctui-proto.workspace = true
+cctui-channel = { path = "../cctui-channel" }
+clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true

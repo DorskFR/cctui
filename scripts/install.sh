@@ -71,21 +71,6 @@ if [ -z "${CCTUI_TOKEN:-}" ]; then
 fi
 [ -n "$CCTUI_TOKEN" ] || die "CCTUI_TOKEN is empty"
 
-# ── Check for bun (runtime for the channel) ───────────────────────────────────
-if ! command -v bun >/dev/null 2>&1 && [ ! -x "$HOME/.bun/bin/bun" ]; then
-  warn "bun not found. The channel requires bun at runtime."
-  if [ -t 0 ] && [ -t 1 ]; then
-    printf 'Install bun now via https://bun.sh/install? [Y/n] '
-    read -r ans
-    case "${ans:-Y}" in
-      [nN]*) warn "skipping bun install; install manually before starting Claude" ;;
-      *)     curl -fsSL https://bun.sh/install | bash ;;
-    esac
-  else
-    warn "run: curl -fsSL https://bun.sh/install | bash"
-  fi
-fi
-
 # ── Download the cctui binary ─────────────────────────────────────────────────
 BIN_NAME="cctui-${OS}-${ARCH}"
 if [ "$CCTUI_TAG" = "latest" ]; then
@@ -103,18 +88,6 @@ fi
 chmod +x "$tmpbin"
 mv "$tmpbin" "$BIN_DEST"
 log "installed binary -> $BIN_DEST"
-
-# ── Download the channel bundle ───────────────────────────────────────────────
-CHANNEL_DEST="$CCTUI_HOME/channel.js"
-CHANNEL_URL="$CCTUI_URL/channel/latest.js"
-log "downloading channel bundle from $CHANNEL_URL"
-tmpch="$(mktemp)"
-if ! curl -fsSL -o "$tmpch" "$CHANNEL_URL"; then
-  rm -f "$tmpch"
-  die "failed to download channel bundle from $CHANNEL_URL"
-fi
-mv "$tmpch" "$CHANNEL_DEST"
-log "installed channel -> $CHANNEL_DEST"
 
 # ── Write machine config (token) ──────────────────────────────────────────────
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/cctui"
@@ -137,15 +110,13 @@ PY
 log "wrote machine config -> $MACHINE_JSON"
 
 # ── Configure Claude Code (~/.claude.json + ~/.claude/settings.json) ──────────
-CCTUI_URL="$CCTUI_URL" CCTUI_TOKEN="$CCTUI_TOKEN" CHANNEL_DEST="$CHANNEL_DEST" "$PY" - <<'PY'
-import json, os, shutil
+CCTUI_URL="$CCTUI_URL" CCTUI_TOKEN="$CCTUI_TOKEN" BIN_DEST="$BIN_DEST" "$PY" - <<'PY'
+import json, os
 
 server_url = os.environ["CCTUI_URL"]
 token      = os.environ["CCTUI_TOKEN"]
-channel    = os.environ["CHANNEL_DEST"]
+bin_path   = os.environ["BIN_DEST"]
 home       = os.path.expanduser("~")
-
-bun = shutil.which("bun") or os.path.join(home, ".bun/bin/bun")
 
 # MCP server entry in ~/.claude.json
 claude_json = os.path.join(home, ".claude.json")
@@ -156,8 +127,8 @@ except (FileNotFoundError, ValueError):
     cfg = {}
 cfg.setdefault("mcpServers", {})
 cfg["mcpServers"]["cctui"] = {
-    "command": bun,
-    "args": ["run", channel],
+    "command": bin_path,
+    "args": ["channel"],
     "env": {"CCTUI_URL": server_url},
 }
 with open(claude_json, "w") as f:
@@ -197,7 +168,7 @@ with open(settings_path, "w") as f:
 print(f"[cctui] updated {settings_path}")
 PY
 
-log "done. binary: $BIN_DEST  channel: $CHANNEL_DEST  server: $CCTUI_URL"
+log "done. binary: $BIN_DEST  server: $CCTUI_URL"
 case ":$PATH:" in
   *":$PREFIX:"*) : ;;
   *) warn "$PREFIX is not in \$PATH — add it to your shell profile" ;;

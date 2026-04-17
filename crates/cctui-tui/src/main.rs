@@ -48,8 +48,29 @@ fn resolve_identity() -> (String, String) {
     (base_url, token)
 }
 
+#[derive(clap::Parser)]
+#[command(name = "cctui", version, about = "Claude Code Control TUI")]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(clap::Subcommand)]
+enum Command {
+    /// Run the MCP channel server (invoked by Claude Code over stdio).
+    Channel,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    use clap::Parser;
+    match Cli::parse().command {
+        Some(Command::Channel) => cctui_channel::run().await,
+        None => run_tui().await,
+    }
+}
+
+async fn run_tui() -> Result<()> {
     let (base_url, token) = resolve_identity();
 
     enable_raw_mode()?;
