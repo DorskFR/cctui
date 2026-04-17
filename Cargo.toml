@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/cctui-admin",
     "crates/cctui-proto",
     "crates/cctui-server",
     "crates/cctui-tui",
