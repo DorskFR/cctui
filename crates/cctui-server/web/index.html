@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>cctui admin</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --border: #30363d;
+    --fg: #c9d1d9; --muted: #8b949e; --accent: #58a6ff; --danger: #f85149;
+    --ok: #3fb950; --warn: #d29922; --mono: ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  * { box-sizing: border-box }
+  body { margin:0; font:14px/1.5 system-ui,sans-serif; color:var(--fg); background:var(--bg) }
+  header { display:flex; align-items:center; justify-content:space-between; padding:10px 18px; border-bottom:1px solid var(--border); background:var(--panel) }
+  header h1 { font-size:15px; margin:0; font-family:var(--mono) }
+  header .right { display:flex; gap:8px; align-items:center; font-size:12px; color:var(--muted) }
+  nav { display:flex; border-bottom:1px solid var(--border); background:var(--panel) }
+  nav button { background:none; border:none; color:var(--muted); padding:10px 18px; cursor:pointer; font:inherit; border-bottom:2px solid transparent }
+  nav button.active { color:var(--fg); border-bottom-color:var(--accent) }
+  main { padding:18px; max-width:1200px; margin:0 auto }
+  .login { max-width:380px; margin:12vh auto; padding:24px; background:var(--panel); border:1px solid var(--border); border-radius:8px }
+  .login h2 { margin:0 0 16px; font-size:16px }
+  input, button.btn, select { background:var(--bg); color:var(--fg); border:1px solid var(--border); padding:8px 10px; border-radius:6px; font:inherit; font-family:var(--mono) }
+  input { width:100% }
+  button.btn { cursor:pointer; background:var(--panel) }
+  button.btn:hover { border-color:var(--accent) }
+  button.btn.primary { background:var(--accent); color:#0d1117; border-color:var(--accent); font-weight:600 }
+  button.btn.danger { color:var(--danger); border-color:var(--danger) }
+  button.btn.danger:hover { background:var(--danger); color:#fff }
+  table { width:100%; border-collapse:collapse; font-family:var(--mono); font-size:12.5px }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--border); vertical-align:top }
+  th { color:var(--muted); font-weight:500; font-size:11px; text-transform:uppercase; letter-spacing:.5px }
+  tr.expand td { background:#0b0f14; padding:0 10px 10px 26px }
+  .status { display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:500 }
+  .status.active, .status.Active { background:rgba(63,185,80,.15); color:var(--ok) }
+  .status.disconnected, .status.Disconnected, .status.terminated, .status.Terminated { background:rgba(139,148,158,.15); color:var(--muted) }
+  .toolbar { display:flex; gap:8px; margin-bottom:14px; align-items:center }
+  .toolbar .grow { flex:1 }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:18px; margin-bottom:14px }
+  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:14px }
+  .stat { padding:14px; background:var(--panel); border:1px solid var(--border); border-radius:8px }
+  .stat .n { font-size:28px; font-family:var(--mono); color:var(--accent) }
+  .stat .l { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.5px }
+  .token-reveal { background:#0b0f14; border:1px solid var(--warn); padding:10px; border-radius:6px; margin-top:10px; font-family:var(--mono); word-break:break-all }
+  .muted { color:var(--muted) }
+  dialog { background:var(--panel); color:var(--fg); border:1px solid var(--border); border-radius:8px; padding:20px; min-width:380px }
+  dialog::backdrop { background:rgba(0,0,0,.6) }
+  .err { color:var(--danger); margin:8px 0 }
+  .hide { display:none }
+  code { font-family:var(--mono); background:#0b0f14; padding:1px 5px; border-radius:3px; font-size:12px }
+</style>
+</head>
+<body>
+
+<div id="login" class="login">
+  <h2>cctui admin</h2>
+  <p class="muted">Paste your admin bearer token to continue.</p>
+  <input id="token" type="password" placeholder="admin token" autofocus>
+  <div class="err" id="loginErr"></div>
+  <button class="btn primary" style="width:100%;margin-top:10px" onclick="doLogin()">Sign in</button>
+</div>
+
+<div id="app" class="hide">
+  <header>
+    <h1>cctui admin</h1>
+    <div class="right">
+      <span id="serverInfo"></span>
+      <button class="btn" onclick="logout()">Sign out</button>
+    </div>
+  </header>
+  <nav>
+    <button data-tab="overview" class="active" onclick="showTab('overview')">Overview</button>
+    <button data-tab="users" onclick="showTab('users')">Users</button>
+    <button data-tab="sessions" onclick="showTab('sessions')">Sessions</button>
+  </nav>
+  <main>
+    <section id="tab-overview">
+      <div class="stats" id="stats"></div>
+      <div class="card" style="margin-top:14px">
+        <h3 style="margin-top:0">Install a machine</h3>
+        <p class="muted" style="margin-top:0">On the target machine, create a user first (Users tab), copy the user key, then run:</p>
+        <pre style="background:#0b0f14;border:1px solid var(--border);border-radius:6px;padding:12px;overflow:auto"><code>curl -fsSL <span id="installHost"></span>/install.sh | CCTUI_URL=<span id="installUrl"></span> CCTUI_TOKEN=&lt;user-key&gt; sh</code></pre>
+      </div>
+    </section>
+
+    <section id="tab-users" class="hide">
+      <div class="toolbar">
+        <div class="grow"><strong>Users</strong> <span class="muted">— one key per human; they enroll machines from there.</span></div>
+        <button class="btn primary" onclick="openCreateUser()">+ New user</button>
+      </div>
+      <div class="card" style="padding:0">
+        <table>
+          <thead><tr><th></th><th>Name</th><th>Created</th><th>Status</th><th>ID</th><th></th></tr></thead>
+          <tbody id="usersBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="tab-sessions" class="hide">
+      <div class="toolbar">
+        <div class="grow"><strong>Sessions</strong> <span class="muted">— live + last 50 historical.</span></div>
+        <button class="btn" onclick="loadSessions()">Refresh</button>
+      </div>
+      <div class="card" style="padding:0">
+        <table>
+          <thead><tr><th>Status</th><th>Working dir</th><th>Machine</th><th>Uptime</th><th>Tokens</th><th>ID</th></tr></thead>
+          <tbody id="sessionsBody"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+</div>
+
+<dialog id="createUserDlg">
+  <h3 style="margin-top:0">Create user</h3>
+  <input id="newUserName" placeholder="Display name" autofocus>
+  <div class="err" id="createErr"></div>
+  <div style="margin-top:14px;text-align:right">
+    <button class="btn" onclick="createUserDlg.close()">Cancel</button>
+    <button class="btn primary" onclick="submitCreateUser()">Create</button>
+  </div>
+</dialog>
+
+<dialog id="tokenDlg">
+  <h3 style="margin-top:0">Key created</h3>
+  <p class="muted">Copy this now. It will not be shown again.</p>
+  <div class="token-reveal" id="tokenReveal"></div>
+  <div style="margin-top:14px;text-align:right">
+    <button class="btn" onclick="copyToken()">Copy</button>
+    <button class="btn primary" onclick="tokenDlg.close()">Done</button>
+  </div>
+</dialog>
+
+<script>
+const API = '/api/v1';
+let token = localStorage.getItem('cctui_admin_token') || '';
+
+async function api(path, opts = {}) {
+  const res = await fetch(API + path, {
+    ...opts,
+    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json', ...(opts.headers||{}) },
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(res.status + ' ' + (body || res.statusText));
+  }
+  const ct = res.headers.get('content-type') || '';
+  return ct.includes('json') ? res.json() : res.text();
+}
+
+async function doLogin() {
+  const t = document.getElementById('token').value.trim();
+  if (!t) return;
+  token = t;
+  try {
+    await api('/admin/users');
+    localStorage.setItem('cctui_admin_token', token);
+    showApp();
+  } catch (e) {
+    document.getElementById('loginErr').textContent = 'Auth failed: ' + e.message;
+    token = '';
+  }
+}
+
+function logout() {
+  localStorage.removeItem('cctui_admin_token');
+  token = '';
+  location.reload();
+}
+
+function showApp() {
+  document.getElementById('login').classList.add('hide');
+  document.getElementById('app').classList.remove('hide');
+  document.getElementById('installHost').textContent = location.origin;
+  document.getElementById('installUrl').textContent = location.origin;
+  document.getElementById('serverInfo').textContent = location.host;
+  showTab('overview');
+}
+
+function showTab(name) {
+  for (const el of document.querySelectorAll('nav button')) el.classList.toggle('active', el.dataset.tab === name);
+  for (const el of document.querySelectorAll('main > section')) el.classList.toggle('hide', el.id !== 'tab-' + name);
+  if (name === 'overview') loadOverview();
+  if (name === 'users') loadUsers();
+  if (name === 'sessions') loadSessions();
+}
+
+async function loadOverview() {
+  const stats = document.getElementById('stats');
+  stats.innerHTML = '<div class="stat"><div class="l">loading…</div></div>';
+  try {
+    const [users, sessions] = await Promise.all([api('/admin/users'), api('/sessions')]);
+    const activeUsers = users.filter(u => !u.revoked_at).length;
+    const liveSess = sessions.sessions.filter(s => s.status === 'Active' || s.status === 'active').length;
+    const histSess = sessions.sessions.length - liveSess;
+    stats.innerHTML = `
+      <div class="stat"><div class="n">${activeUsers}</div><div class="l">Active users</div></div>
+      <div class="stat"><div class="n">${users.length - activeUsers}</div><div class="l">Revoked users</div></div>
+      <div class="stat"><div class="n">${liveSess}</div><div class="l">Live sessions</div></div>
+      <div class="stat"><div class="n">${histSess}</div><div class="l">Recent history</div></div>
+    `;
+  } catch (e) {
+    stats.innerHTML = `<div class="stat"><div class="l err">${e.message}</div></div>`;
+  }
+}
+
+async function loadUsers() {
+  const body = document.getElementById('usersBody');
+  body.innerHTML = '<tr><td colspan="6" class="muted">loading…</td></tr>';
+  try {
+    const users = await api('/admin/users');
+    body.innerHTML = '';
+    if (!users.length) { body.innerHTML = '<tr><td colspan="6" class="muted">No users yet.</td></tr>'; return; }
+    for (const u of users) {
+      const tr = document.createElement('tr');
+      const revoked = !!u.revoked_at;
+      tr.innerHTML = `
+        <td><button class="btn" style="padding:2px 8px" onclick="toggleMachines('${u.id}', this)">▸</button></td>
+        <td>${escapeHtml(u.name)}${revoked ? ' <span class="muted">(revoked)</span>' : ''}</td>
+        <td class="muted">${fmtDate(u.created_at)}</td>
+        <td><span class="status ${revoked ? 'disconnected' : 'active'}">${revoked ? 'revoked' : 'active'}</span></td>
+        <td class="muted">${u.id}</td>
+        <td style="text-align:right">
+          <button class="btn" onclick="rotateUser('${u.id}')" ${revoked?'disabled':''}>Rotate</button>
+          <button class="btn danger" onclick="revokeUser('${u.id}')" ${revoked?'disabled':''}>Revoke</button>
+        </td>`;
+      body.appendChild(tr);
+    }
+  } catch (e) {
+    body.innerHTML = `<tr><td colspan="6" class="err">${e.message}</td></tr>`;
+  }
+}
+
+async function toggleMachines(userId, btn) {
+  const tr = btn.closest('tr');
+  const next = tr.nextElementSibling;
+  if (next && next.classList.contains('expand') && next.dataset.user === userId) {
+    next.remove(); btn.textContent = '▸'; return;
+  }
+  btn.textContent = '▾';
+  const row = document.createElement('tr');
+  row.className = 'expand'; row.dataset.user = userId;
+  row.innerHTML = `<td colspan="6" class="muted">loading machines…</td>`;
+  tr.after(row);
+  try {
+    const machines = await api(`/admin/users/${userId}/machines`);
+    if (!machines.length) { row.innerHTML = `<td colspan="6" class="muted">No machines enrolled.</td>`; return; }
+    let html = `<td colspan="6"><table style="width:100%"><thead><tr><th>Name</th><th>First seen</th><th>Last seen</th><th>Status</th><th>ID</th><th></th></tr></thead><tbody>`;
+    for (const m of machines) {
+      const rev = !!m.revoked_at;
+      html += `<tr><td>${escapeHtml(m.name)}</td><td class="muted">${fmtDate(m.first_seen_at)}</td><td class="muted">${fmtDate(m.last_seen_at)}</td><td><span class="status ${rev?'disconnected':'active'}">${rev?'revoked':'active'}</span></td><td class="muted">${m.id}</td><td style="text-align:right"><button class="btn" onclick="rotateMachine('${m.id}')" ${rev?'disabled':''}>Rotate</button> <button class="btn danger" onclick="revokeMachine('${m.id}','${userId}')" ${rev?'disabled':''}>Revoke</button></td></tr>`;
+    }
+    html += '</tbody></table></td>';
+    row.innerHTML = html;
+  } catch (e) {
+    row.innerHTML = `<td colspan="6" class="err">${e.message}</td>`;
+  }
+}
+
+function openCreateUser() { document.getElementById('newUserName').value = ''; document.getElementById('createErr').textContent = ''; createUserDlg.showModal(); }
+async function submitCreateUser() {
+  const name = document.getElementById('newUserName').value.trim();
+  if (!name) return;
+  try {
+    const res = await api('/admin/users', { method: 'POST', body: JSON.stringify({ name }) });
+    createUserDlg.close();
+    revealToken(res.key);
+    loadUsers();
+  } catch (e) { document.getElementById('createErr').textContent = e.message; }
+}
+
+async function revokeUser(id) {
+  if (!confirm('Revoke this user? All their machine keys will also be invalidated.')) return;
+  try { await api('/admin/users/' + id, { method: 'DELETE' }); loadUsers(); }
+  catch (e) { alert(e.message); }
+}
+async function rotateUser(id) {
+  if (!confirm('Rotate user key? The current key stops working immediately.')) return;
+  try { const res = await api('/admin/users/' + id + '/rotate', { method: 'POST' }); revealToken(res.key); loadUsers(); }
+  catch (e) { alert(e.message); }
+}
+async function revokeMachine(id, userId) {
+  if (!confirm('Revoke this machine?')) return;
+  try { await api('/admin/machines/' + id, { method: 'DELETE' }); loadUsers(); }
+  catch (e) { alert(e.message); }
+}
+async function rotateMachine(id) {
+  if (!confirm('Rotate machine key?')) return;
+  try { const res = await api('/admin/machines/' + id + '/rotate', { method: 'POST' }); revealToken(res.key); }
+  catch (e) { alert(e.message); }
+}
+
+function revealToken(t) {
+  document.getElementById('tokenReveal').textContent = t;
+  tokenDlg.showModal();
+}
+function copyToken() { navigator.clipboard.writeText(document.getElementById('tokenReveal').textContent); }
+
+async function loadSessions() {
+  const body = document.getElementById('sessionsBody');
+  body.innerHTML = '<tr><td colspan="6" class="muted">loading…</td></tr>';
+  try {
+    const res = await api('/sessions');
+    if (!res.sessions.length) { body.innerHTML = '<tr><td colspan="6" class="muted">No sessions.</td></tr>'; return; }
+    body.innerHTML = '';
+    for (const s of res.sessions) {
+      const tr = document.createElement('tr');
+      const tu = s.token_usage || {};
+      const total = (tu.input_tokens||0) + (tu.output_tokens||0);
+      tr.innerHTML = `
+        <td><span class="status ${s.status}">${s.status}</span></td>
+        <td>${escapeHtml(s.working_dir)}</td>
+        <td class="muted">${s.machine_id.slice(0,8)}…</td>
+        <td class="muted">${fmtDuration(s.uptime_secs)}</td>
+        <td class="muted">${total.toLocaleString()}</td>
+        <td class="muted">${s.id}</td>`;
+      body.appendChild(tr);
+    }
+  } catch (e) {
+    body.innerHTML = `<tr><td colspan="6" class="err">${e.message}</td></tr>`;
+  }
+}
+
+function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
+function fmtDate(s) { if (!s) return ''; const d = new Date(s); return d.toLocaleString(); }
+function fmtDuration(sec) {
+  if (sec < 60) return sec + 's';
+  if (sec < 3600) return Math.floor(sec/60) + 'm';
+  if (sec < 86400) return Math.floor(sec/3600) + 'h';
+  return Math.floor(sec/86400) + 'd';
+}
+
+if (token) {
+  api('/admin/users').then(showApp).catch(() => { token = ''; localStorage.removeItem('cctui_admin_token'); });
+}
+</script>
+</body>
+</html>

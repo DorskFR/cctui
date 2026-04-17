@@ -15,3 +15,4 @@ pub mod skills;
 pub mod spawn;
 pub mod stop;
 pub mod transcript;
+pub mod web;
