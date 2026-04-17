@@ -35,10 +35,22 @@ enum InputEvent {
     ScrollDown,
 }
 
+/// Prefer `~/.config/cctui/user.json`; env vars still override so local dev
+/// (e.g. `CCTUI_TOKEN=dev-admin`) keeps working.
+fn resolve_identity() -> (String, String) {
+    let identity = cctui_proto::identity::load_user();
+    let default_url = identity
+        .as_ref()
+        .map_or_else(|| "http://localhost:8700".to_string(), |i| i.server_url.clone());
+    let default_token = identity.map(|i| i.user_key).unwrap_or_default();
+    let base_url = std::env::var("CCTUI_URL").unwrap_or(default_url);
+    let token = std::env::var("CCTUI_TOKEN").unwrap_or(default_token);
+    (base_url, token)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    let base_url = std::env::var("CCTUI_URL").unwrap_or_else(|_| "http://localhost:8700".into());
-    let token = std::env::var("CCTUI_TOKEN").unwrap_or_default();
+    let (base_url, token) = resolve_identity();
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
