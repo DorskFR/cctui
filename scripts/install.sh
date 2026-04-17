@@ -89,25 +89,67 @@ chmod +x "$tmpbin"
 mv "$tmpbin" "$BIN_DEST"
 log "installed binary -> $BIN_DEST"
 
-# ── Write machine config (token) ──────────────────────────────────────────────
+# ── Write identity config ─────────────────────────────────────────────────────
+# A user key (cctui_u_…) is exchanged at /api/v1/enroll for a machine key and
+# written to both user.json (consumed by the TUI) and machine.json (consumed
+# by the MCP channel). Anything else is treated as a raw machine key
+# (back-compat for older enrollment flows / dev tokens).
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/cctui"
 mkdir -p "$CONFIG_DIR"
 MACHINE_JSON="$CONFIG_DIR/machine.json"
-CCTUI_TOKEN="$CCTUI_TOKEN" CCTUI_URL="$CCTUI_URL" MACHINE_JSON="$MACHINE_JSON" "$PY" - <<'PY'
-import json, os
-path = os.environ["MACHINE_JSON"]
-try:
-    with open(path) as f:
-        data = json.load(f)
-except (FileNotFoundError, ValueError):
-    data = {}
-data["machine_key"] = os.environ["CCTUI_TOKEN"]
-data["server_url"] = os.environ["CCTUI_URL"]
-with open(path, "w") as f:
-    json.dump(data, f, indent=2)
-os.chmod(path, 0o600)
+USER_JSON="$CONFIG_DIR/user.json"
+HOSTNAME_VAL="$(hostname 2>/dev/null || echo unknown)"
+
+CCTUI_TOKEN="$CCTUI_TOKEN" \
+CCTUI_URL="$CCTUI_URL" \
+MACHINE_JSON="$MACHINE_JSON" \
+USER_JSON="$USER_JSON" \
+HOSTNAME_VAL="$HOSTNAME_VAL" \
+"$PY" - <<'PY'
+import json, os, sys
+from urllib import request, error
+
+token     = os.environ["CCTUI_TOKEN"]
+server    = os.environ["CCTUI_URL"].rstrip("/")
+hostname  = os.environ["HOSTNAME_VAL"]
+machine_p = os.environ["MACHINE_JSON"]
+user_p    = os.environ["USER_JSON"]
+
+def write_json(path, data):
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
+    os.chmod(path, 0o600)
+
+if token.startswith("cctui_u_"):
+    # Enroll with the user token to mint a machine key for this host.
+    req = request.Request(
+        f"{server}/api/v1/enroll",
+        data=json.dumps({"hostname": hostname}).encode(),
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
+        method="POST",
+    )
+    try:
+        with request.urlopen(req, timeout=15) as resp:
+            body = json.loads(resp.read())
+    except error.HTTPError as e:
+        sys.exit(f"[cctui] enroll failed: HTTP {e.code}: {e.read().decode(errors='replace')}")
+    except error.URLError as e:
+        sys.exit(f"[cctui] enroll failed: {e.reason}")
+
+    write_json(user_p, {"server_url": server, "user_key": token})
+    write_json(machine_p, {
+        "server_url":  server,
+        "machine_key": body["machine_key"],
+        "machine_id":  body["machine_id"],
+        "hostname":    hostname,
+    })
+    print(f"[cctui] wrote user config    -> {user_p}")
+    print(f"[cctui] wrote machine config -> {machine_p}  (machine_id={body['machine_id']})")
+else:
+    # Legacy / raw machine key: just persist it.
+    write_json(machine_p, {"server_url": server, "machine_key": token, "hostname": hostname})
+    print(f"[cctui] wrote machine config -> {machine_p}")
 PY
-log "wrote machine config -> $MACHINE_JSON"
 
 # ── Configure Claude Code (~/.claude.json + ~/.claude/settings.json) ──────────
 CCTUI_URL="$CCTUI_URL" CCTUI_TOKEN="$CCTUI_TOKEN" BIN_DEST="$BIN_DEST" "$PY" - <<'PY'
