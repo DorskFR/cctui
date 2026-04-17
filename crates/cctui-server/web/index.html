@@ -19,6 +19,8 @@
   nav button { background:none; border:none; color:var(--muted); padding:10px 18px; cursor:pointer; font:inherit; border-bottom:2px solid transparent }
   nav button.active { color:var(--fg); border-bottom-color:var(--accent) }
   main { padding:18px; max-width:1200px; margin:0 auto }
+  header a { color:var(--muted); text-decoration:none }
+  header a:hover { color:var(--accent) }
   .login { max-width:380px; margin:12vh auto; padding:24px; background:var(--panel); border:1px solid var(--border); border-radius:8px }
   .login h2 { margin:0 0 16px; font-size:16px }
   input, button.btn, select { background:var(--bg); color:var(--fg); border:1px solid var(--border); padding:8px 10px; border-radius:6px; font:inherit; font-family:var(--mono) }
@@ -65,6 +67,7 @@
   <header>
     <h1>cctui admin</h1>
     <div class="right">
+      <span id="versionInfo"></span>
       <span id="serverInfo"></span>
       <button class="btn" onclick="logout()">Sign out</button>
     </div>
@@ -175,7 +178,17 @@ function showApp() {
   document.getElementById('installHost').textContent = location.origin;
   document.getElementById('installUrl').textContent = location.origin;
   document.getElementById('serverInfo').textContent = location.host;
+  loadVersion();
   showTab('overview');
+}
+
+async function loadVersion() {
+  try {
+    const res = await fetch('/api/v1/version');
+    const v = await res.json();
+    const el = document.getElementById('versionInfo');
+    el.innerHTML = `<a href="${v.commit_url}" target="_blank" rel="noopener">v${v.version} · ${v.git_hash}</a>`;
+  } catch (_) {}
 }
 
 function showTab(name) {

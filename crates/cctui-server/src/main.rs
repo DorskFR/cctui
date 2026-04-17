@@ -108,6 +108,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/install.sh", get(routes::install::install_sh))
         .route("/admin", get(routes::web::index))
         .route("/admin/", get(routes::web::index))
+        .route("/api/v1/version", get(routes::web::version))
         .route("/api/v1/check", post(routes::check::check))
         .route("/api/v1/hooks/session-start", post(routes::channels::session_start_hook))
         .route("/api/v1/hooks/stop", post(routes::stop::stop))
