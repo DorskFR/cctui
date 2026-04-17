@@ -106,6 +106,7 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/health", get(|| async { "ok" }))
         // Channel bundle distribution
+        .route("/install.sh", get(routes::install::install_sh))
         .route("/channel/latest.js", get(routes::channel_bundle::latest_js))
         .route("/channel/version.json", get(routes::channel_bundle::version_json))
         .route("/api/v1/check", post(routes::check::check))

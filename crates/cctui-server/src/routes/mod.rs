@@ -7,6 +7,7 @@ pub mod check;
 pub mod credentials;
 pub mod enroll;
 pub mod events;
+pub mod install;
 pub mod permissions;
 pub mod post_tool_use;
 pub mod prompts;
