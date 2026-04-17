@@ -1,10 +1,12 @@
 use axum::body::Body;
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, StatusCode, header};
+use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
+use cctui_proto::api::ArchiveIndexEntry;
 use futures_util::TryStreamExt;
 use serde::{Deserialize, Serialize};
-use tokio_util::io::StreamReader;
+use tokio_util::io::{ReaderStream, StreamReader};
 use uuid::Uuid;
 
 use crate::archive_store::ArchiveError;
@@ -28,6 +30,26 @@ const fn require_machine(ctx: &AuthContext) -> Result<Uuid, StatusCode> {
         (TokenRole::Machine, Some(mid)) => Ok(mid),
         _ => Err(StatusCode::FORBIDDEN),
     }
+}
+
+/// Read access: a Machine token can read any archive belonging to the same
+/// user (so `cctui-admin pull` from host B can fetch archives uploaded by
+/// host A). Users/admins are not accepted — pulls happen on enrolled hosts.
+const fn require_user_scope(ctx: &AuthContext) -> Result<Uuid, StatusCode> {
+    match (ctx.role, ctx.user_id) {
+        (TokenRole::Machine | TokenRole::User, Some(uid)) => Ok(uid),
+        _ => Err(StatusCode::FORBIDDEN),
+    }
+}
+
+type IndexRow = (Uuid, String, String, String, i64, Option<i32>, chrono::DateTime<chrono::Utc>);
+
+#[derive(Deserialize)]
+pub struct GetQuery {
+    /// Disambiguate when the same `session_id` exists on multiple machines of
+    /// the same user. Optional: if omitted and only one match exists under
+    /// this `user_id`, that one is served.
+    pub machine_id: Option<Uuid>,
 }
 
 fn valid_name(s: &str) -> bool {
@@ -142,4 +164,115 @@ pub async fn put(
         size_bytes: stats.size_bytes,
         line_count: stats.line_count,
     }))
+}
+
+/// List all archives owned by the caller's user (across all their machines).
+pub async fn index(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+) -> Result<Json<Vec<ArchiveIndexEntry>>, StatusCode> {
+    let user_id = require_user_scope(&ctx)?;
+    let rows: Vec<IndexRow> = sqlx::query_as(
+        "SELECT a.machine_id, a.project_dir, a.session_id, a.sha256, a.size_bytes, \
+                    a.line_count, a.uploaded_at \
+             FROM archive_index a \
+             JOIN machines m ON m.id = a.machine_id \
+             WHERE m.user_id = $1 \
+             ORDER BY a.uploaded_at DESC",
+    )
+    .bind(user_id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("archive index db error: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let entries = rows
+        .into_iter()
+        .map(
+            |(machine_id, project_dir, session_id, sha256, size_bytes, line_count, uploaded_at)| {
+                ArchiveIndexEntry {
+                    machine_id,
+                    project_dir,
+                    session_id,
+                    sha256,
+                    size_bytes,
+                    line_count,
+                    uploaded_at,
+                }
+            },
+        )
+        .collect();
+    Ok(Json(entries))
+}
+
+/// Stream the raw JSONL bytes for one archived session back to the caller.
+pub async fn get(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path((project_dir, session_id)): Path<(String, String)>,
+    Query(q): Query<GetQuery>,
+) -> Result<Response, StatusCode> {
+    let user_id = require_user_scope(&ctx)?;
+    if !valid_name(&project_dir) || !valid_name(&session_id) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    // Resolve to a specific (machine_id, sha256, size) owned by this user.
+    // When machine_id is omitted and more than one machine has this session
+    // under this user, return 409 so the caller must disambiguate.
+    let rows: Vec<(Uuid, String, i64)> = match q.machine_id {
+        Some(mid) => {
+            sqlx::query_as(
+                "SELECT a.machine_id, a.sha256, a.size_bytes FROM archive_index a \
+             JOIN machines m ON m.id = a.machine_id \
+             WHERE m.user_id = $1 AND a.machine_id = $2 \
+               AND a.project_dir = $3 AND a.session_id = $4",
+            )
+            .bind(user_id)
+            .bind(mid)
+            .bind(&project_dir)
+            .bind(&session_id)
+            .fetch_all(&state.pool)
+            .await
+        }
+        None => {
+            sqlx::query_as(
+                "SELECT a.machine_id, a.sha256, a.size_bytes FROM archive_index a \
+             JOIN machines m ON m.id = a.machine_id \
+             WHERE m.user_id = $1 AND a.project_dir = $2 AND a.session_id = $3 \
+             LIMIT 2",
+            )
+            .bind(user_id)
+            .bind(&project_dir)
+            .bind(&session_id)
+            .fetch_all(&state.pool)
+            .await
+        }
+    }
+    .map_err(|e| {
+        tracing::error!("archive get db error: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let (machine_id, sha256, size_bytes) = match rows.len() {
+        0 => return Err(StatusCode::NOT_FOUND),
+        1 => rows.into_iter().next().unwrap(),
+        _ => return Err(StatusCode::CONFLICT),
+    };
+
+    let path = state.archive.path_of(machine_id, &project_dir, &session_id);
+    let file = tokio::fs::File::open(&path).await.map_err(|e| {
+        tracing::error!(path = %path.display(), "archive get open error: {e}");
+        StatusCode::NOT_FOUND
+    })?;
+    let stream = ReaderStream::new(file);
+    let body = Body::from_stream(stream);
+    let mut resp = Response::new(body);
+    resp.headers_mut().insert(header::CONTENT_TYPE, "application/x-ndjson".parse().unwrap());
+    resp.headers_mut().insert(header::CONTENT_LENGTH, size_bytes.to_string().parse().unwrap());
+    resp.headers_mut().insert("X-CCTUI-SHA256", sha256.parse().unwrap());
+    resp.headers_mut().insert("X-CCTUI-Machine-Id", machine_id.to_string().parse().unwrap());
+    Ok(resp.into_response())
 }

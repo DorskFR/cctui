@@ -81,10 +81,12 @@ async fn main() -> anyhow::Result<()> {
         .route("/admin/users/{id}/machines", get(routes::admin_auth::list_user_machines))
         .route("/admin/machines/{id}", delete(routes::admin_auth::revoke_machine))
         .route("/admin/machines/{id}/rotate", post(routes::admin_auth::rotate_machine))
+        .route("/archive/index", get(routes::archive::index))
         .route(
             "/archive/{project_dir}/{session_id}",
             put(routes::archive::put)
                 .head(routes::archive::head)
+                .get(routes::archive::get)
                 .layer(DefaultBodyLimit::max(100 * 1024 * 1024)),
         )
         .layer(middleware::from_fn(auth::auth_middleware))
