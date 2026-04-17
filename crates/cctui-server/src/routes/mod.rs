@@ -1,7 +1,6 @@
 pub mod admin;
 pub mod admin_auth;
 pub mod archive;
-pub mod channel_bundle;
 pub mod channels;
 pub mod check;
 pub mod credentials;

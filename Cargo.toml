@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/cctui-admin",
+    "crates/cctui-channel",
     "crates/cctui-proto",
     "crates/cctui-server",
     "crates/cctui-tui",
@@ -39,4 +40,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
 futures-util = "0.3"
 anyhow = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+sha2 = "0.10"
+hex = "0.4"
+clap = { version = "4", features = ["derive", "env"] }
+thiserror = "2"
+tempfile = "3"
+tokio-util = "0.7"
 
