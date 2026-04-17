@@ -1,8 +1,10 @@
 pub mod admin;
+pub mod admin_auth;
 pub mod channel_bundle;
 pub mod channels;
 pub mod check;
 pub mod credentials;
+pub mod enroll;
 pub mod events;
 pub mod permissions;
 pub mod post_tool_use;

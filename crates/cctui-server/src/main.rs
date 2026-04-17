@@ -26,10 +26,8 @@ async fn main() -> anyhow::Result<()> {
 
     let config = Config::from_env();
     let pool = db::connect(&config.database_url).await?;
-    let auth_config = auth::AuthConfig {
-        agent_tokens: Config::agent_tokens(),
-        admin_tokens: Config::admin_tokens(),
-    };
+    let auth_config =
+        auth::AuthConfig::new(Config::admin_tokens(), Config::agent_tokens(), pool.clone());
     let (tui_tx, _) = tokio::sync::broadcast::channel(256);
     let state = AppState {
         pool,
@@ -64,6 +62,16 @@ async fn main() -> anyhow::Result<()> {
         .route("/keys/{id}", delete(routes::credentials::delete_api_key))
         .route("/keys/{id}/value", get(routes::credentials::get_api_key_value))
         .route("/machines/{machine_id}/commands/pending", get(routes::spawn::get_machine_commands))
+        .route("/enroll", post(routes::enroll::enroll))
+        .route(
+            "/admin/users",
+            post(routes::admin_auth::create_user).get(routes::admin_auth::list_users),
+        )
+        .route("/admin/users/{id}", delete(routes::admin_auth::revoke_user))
+        .route("/admin/users/{id}/rotate", post(routes::admin_auth::rotate_user))
+        .route("/admin/users/{id}/machines", get(routes::admin_auth::list_user_machines))
+        .route("/admin/machines/{id}", delete(routes::admin_auth::revoke_machine))
+        .route("/admin/machines/{id}/rotate", post(routes::admin_auth::rotate_machine))
         .layer(middleware::from_fn(auth::auth_middleware))
         .layer(Extension(auth_config));
 

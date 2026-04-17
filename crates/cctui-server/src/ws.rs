@@ -28,7 +28,7 @@ pub async fn agent_stream(
     uri: Uri,
 ) -> Result<impl IntoResponse, StatusCode> {
     let token = extract_token_from_uri(&uri).ok_or(StatusCode::UNAUTHORIZED)?;
-    let auth_ctx = state.auth_config.validate(&token).ok_or(StatusCode::UNAUTHORIZED)?;
+    let auth_ctx = state.auth_config.validate(&token).await.ok_or(StatusCode::UNAUTHORIZED)?;
 
     if auth_ctx.role != TokenRole::Agent {
         return Err(StatusCode::FORBIDDEN);
@@ -152,7 +152,7 @@ pub async fn tui_ws(
     uri: Uri,
 ) -> Result<impl IntoResponse, StatusCode> {
     let token = extract_token_from_uri(&uri).ok_or(StatusCode::UNAUTHORIZED)?;
-    let auth_ctx = state.auth_config.validate(&token).ok_or(StatusCode::UNAUTHORIZED)?;
+    let auth_ctx = state.auth_config.validate(&token).await.ok_or(StatusCode::UNAUTHORIZED)?;
 
     if auth_ctx.role != TokenRole::Admin {
         return Err(StatusCode::FORBIDDEN);
