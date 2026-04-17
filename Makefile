@@ -16,7 +16,12 @@ export CCTUI_TOKEN
 .PHONY: db/up db/down db/reset db/migrate/up db/migrate/down db/migrate/add db/psql db/prepare
 .PHONY: db/test/up db/test/down db/test/migrate/up
 .PHONY: run/server run/tui run/channel run/admin
-.PHONY: build/server build/channel deploy/server deploy/secrets
+.PHONY: build/server build/channel deploy/server deploy/secrets image/build image/push image/release
+
+IMAGE_REGISTRY ?= harbor.dorsk.dev
+IMAGE_REPO     ?= cyberia/cctui
+IMAGE_VERSION  ?= $(shell awk -F'"' '/^\[workspace.package\]/{f=1} f && /^version/{print $$2; exit}' Cargo.toml)
+IMAGE          ?= $(IMAGE_REGISTRY)/$(IMAGE_REPO)
 
 # ── Setup ──────────────────────────────────────────────────
 
@@ -124,6 +129,17 @@ clean:  ## Remove build artifacts
 
 build/server:  ## Build server docker image
 	docker build -f deploy/Dockerfile -t ghcr.io/dorskfr/cctui-server:latest .
+
+image/build:  ## Build harbor image ($(IMAGE):$(IMAGE_VERSION) + :latest)
+	docker build -f deploy/Dockerfile \
+	  -t $(IMAGE):$(IMAGE_VERSION) \
+	  -t $(IMAGE):latest .
+
+image/push:  ## Push harbor image tags
+	docker push $(IMAGE):$(IMAGE_VERSION)
+	docker push $(IMAGE):latest
+
+image/release: image/build image/push  ## Build + push harbor image
 
 deploy/server:  ## Deploy to K8s cluster
 	kubectl apply -k deploy/k8s/
