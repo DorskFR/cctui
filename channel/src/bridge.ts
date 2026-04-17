@@ -148,6 +148,43 @@ export class ServerBridge {
     }
   }
 
+  async headArchive(
+    projectDir: string,
+    sessionId: string,
+    sha256: string,
+  ): Promise<"present" | "absent"> {
+    const url = `${this.baseUrl}/api/v1/archive/${encodeURIComponent(projectDir)}/${encodeURIComponent(sessionId)}?sha256=${sha256}`;
+    const res = await fetch(url, {
+      method: "HEAD",
+      headers: { Authorization: `Bearer ${this.token}` },
+    });
+    if (res.status === 204) return "present";
+    if (res.status === 404) return "absent";
+    throw new Error(`HEAD archive: unexpected ${res.status}`);
+  }
+
+  async putArchive(
+    projectDir: string,
+    sessionId: string,
+    absPath: string,
+    sha256: string,
+  ): Promise<void> {
+    const url = `${this.baseUrl}/api/v1/archive/${encodeURIComponent(projectDir)}/${encodeURIComponent(sessionId)}`;
+    const file = Bun.file(absPath);
+    const res = await fetch(url, {
+      method: "PUT",
+      headers: {
+        Authorization: `Bearer ${this.token}`,
+        "X-CCTUI-SHA256": sha256,
+        "Content-Type": "application/octet-stream",
+      },
+      body: file.stream(),
+    });
+    if (!res.ok) {
+      throw new Error(`PUT archive failed: ${res.status} ${await res.text()}`);
+    }
+  }
+
   async pollPermissionDecision(
     sessionId: string,
     requestId: string,

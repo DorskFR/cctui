@@ -1,3 +1,4 @@
+mod archive_store;
 mod auth;
 mod config;
 mod crypto;
@@ -9,7 +10,11 @@ mod state;
 mod transcript_parser;
 mod ws;
 
-use axum::routing::{delete, get, post};
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use axum::extract::DefaultBodyLimit;
+use axum::routing::{delete, get, post, put};
 use axum::{Extension, Router, middleware};
 use config::Config;
 use registry::Registry;
@@ -29,6 +34,9 @@ async fn main() -> anyhow::Result<()> {
     let auth_config =
         auth::AuthConfig::new(Config::admin_tokens(), Config::agent_tokens(), pool.clone());
     let (tui_tx, _) = tokio::sync::broadcast::channel(256);
+
+    let archive = init_archive_store().await;
+
     let state = AppState {
         pool,
         config: config.clone(),
@@ -37,6 +45,7 @@ async fn main() -> anyhow::Result<()> {
         permission_store: routes::permissions::PermissionStore::shared(),
         tui_tx,
         auth_config: auth_config.clone(),
+        archive,
     };
 
     let api_router = Router::new()
@@ -72,6 +81,12 @@ async fn main() -> anyhow::Result<()> {
         .route("/admin/users/{id}/machines", get(routes::admin_auth::list_user_machines))
         .route("/admin/machines/{id}", delete(routes::admin_auth::revoke_machine))
         .route("/admin/machines/{id}/rotate", post(routes::admin_auth::rotate_machine))
+        .route(
+            "/archive/{project_dir}/{session_id}",
+            put(routes::archive::put)
+                .head(routes::archive::head)
+                .layer(DefaultBodyLimit::max(100 * 1024 * 1024)),
+        )
         .layer(middleware::from_fn(auth::auth_middleware))
         .layer(Extension(auth_config));
 
@@ -110,6 +125,16 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("listening on {}", config.bind_addr());
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+async fn init_archive_store() -> Arc<archive_store::ArchiveStore> {
+    let root: PathBuf =
+        std::env::var("CCTUI_ARCHIVE_PATH").unwrap_or_else(|_| "/archive".into()).into();
+    let store = Arc::new(archive_store::ArchiveStore::new(root.clone()));
+    if let Err(e) = store.ensure_root().await {
+        tracing::warn!(path = %root.display(), "archive root ensure_root failed: {e}");
+    }
+    store
 }
 
 async fn reaper_task(state: AppState) {
