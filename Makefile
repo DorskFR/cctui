@@ -15,7 +15,7 @@ export CCTUI_TOKEN
 .PHONY: setup build check test fmt lint clean
 .PHONY: db/up db/down db/reset db/migrate/up db/migrate/down db/migrate/add db/psql db/prepare
 .PHONY: db/test/up db/test/down db/test/migrate/up
-.PHONY: run/server run/tui run/channel
+.PHONY: run/server run/tui run/channel run/admin
 .PHONY: build/server build/channel deploy/server deploy/secrets
 
 # ── Setup ──────────────────────────────────────────────────
@@ -59,6 +59,9 @@ run/server:  ## Run the server locally
 
 run/tui:  ## Run the TUI client
 	cargo run -p cctui-tui
+
+run/admin:  ## Run cctui-admin (e.g. `make run/admin ARGS="user list"`)
+	cargo run -p cctui-admin -- $(ARGS)
 
 run/channel:  ## Install and run the channel server (for development)
 	cd channel && bun install && bun run src/index.ts

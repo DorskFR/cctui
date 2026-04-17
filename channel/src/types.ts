@@ -1,12 +1,44 @@
-/** Configuration from environment variables. */
+import { readFileSync } from "fs";
+import { join } from "path";
+import { homedir } from "os";
+
+/** Configuration — prefers ~/.config/cctui/machine.json, falls back to env. */
 export interface Config {
   /** cctui-server base URL, e.g. "http://localhost:8700" */
   serverUrl: string;
-  /** Bearer token for agent auth */
+  /** Bearer token — machine key (preferred) or legacy agent token. */
   agentToken: string;
 }
 
+interface MachineIdentity {
+  server_url: string;
+  machine_key: string;
+}
+
+function loadMachineIdentity(): MachineIdentity | null {
+  const base = process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config");
+  const path = join(base, "cctui", "machine.json");
+  try {
+    const raw = readFileSync(path, "utf8");
+    const parsed = JSON.parse(raw) as MachineIdentity;
+    if (parsed.server_url && parsed.machine_key) {
+      return parsed;
+    }
+  } catch {
+    // missing / malformed — fall through to env
+  }
+  return null;
+}
+
 export function loadConfig(): Config {
+  const identity = loadMachineIdentity();
+  if (identity) {
+    // Env vars may still override (useful for local dev / CI).
+    return {
+      serverUrl: process.env.CCTUI_URL ?? identity.server_url,
+      agentToken: process.env.CCTUI_AGENT_TOKEN ?? identity.machine_key,
+    };
+  }
   return {
     serverUrl: process.env.CCTUI_URL ?? "http://localhost:8700",
     agentToken: process.env.CCTUI_AGENT_TOKEN ?? "dev-agent",

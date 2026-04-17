@@ -5,6 +5,8 @@ import os
 import shutil
 
 SERVER_URL = os.environ.get("__SERVER_URL__", "__SERVER_URL__")
+# TOKEN is used only for hook curl lines (SessionStart). The channel itself
+# reads its key from ~/.config/cctui/machine.json.
 TOKEN = os.environ.get("__TOKEN__", "__TOKEN__")
 
 # --- Find channel directory ---
@@ -25,8 +27,10 @@ mcp_entry = {
     "command": shutil.which("bun") or os.path.expanduser("~/.bun/bin/bun"),
     "args": ["run", os.path.join(channel_dir, "src", "index.ts")],
     "env": {
+        # Server URL is safe to embed; token is loaded by the channel from
+        # ~/.config/cctui/machine.json (created by `cctui-admin enroll`).
+        # CCTUI_AGENT_TOKEN is still honored as an env override for local dev.
         "CCTUI_URL": SERVER_URL,
-        "CCTUI_AGENT_TOKEN": TOKEN,
     },
 }
 
@@ -47,13 +51,19 @@ print(f"[cctui] wrote MCP server config to {claude_json_path}")
 # --- Merge hooks into settings.json ---
 settings_path = os.path.expanduser("~/.claude/settings.json")
 
-# SessionStart: pipe stdin through jq to inject $PPID and machine hostname, then POST to server
+# SessionStart: pipe stdin through jq to inject $PPID and machine hostname, then POST to server.
+# The bearer is read from ~/.config/cctui/machine.json (written by `cctui-admin enroll`);
+# CCTUI_AGENT_TOKEN env var still overrides, and the hard-coded TOKEN is the last-resort
+# fallback for dev / pre-enrolment environments.
 session_start_cmd = (
+    'KEY="${CCTUI_AGENT_TOKEN:-$(jq -r .machine_key '
+    f'"${{XDG_CONFIG_HOME:-$HOME/.config}}/cctui/machine.json" 2>/dev/null)}"; '
+    f'[ -z "$KEY" ] && KEY="{TOKEN}"; '
     f'jq -c --arg ppid "$PPID" --arg mid "$(hostname)" '
     f"'. + {{ppid: ($ppid | tonumber), machine_id: $mid}}' "
     f'| curl -sf -X POST {SERVER_URL}/api/v1/hooks/session-start '
     f"-H 'Content-Type: application/json' "
-    f"-H 'Authorization: Bearer {TOKEN}' -d @-"
+    f'-H "Authorization: Bearer $KEY" -d @-'
 )
 
 hooks = {
