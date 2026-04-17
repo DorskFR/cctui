@@ -30,15 +30,11 @@ jobs:
             runner: ubuntu-latest
             target: aarch64-unknown-linux-gnu
           - os: darwin
-            arch: amd64
-            runner: macos-13
-            target: x86_64-apple-darwin
-          - os: darwin
             arch: arm64
             runner: macos-14
             target: aarch64-apple-darwin
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -66,7 +62,7 @@ jobs:
           mkdir -p dist
           cp "target/${{ matrix.target }}/release/cctui" "dist/cctui-${{ matrix.os }}-${{ matrix.arch }}"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: cctui-${{ matrix.os }}-${{ matrix.arch }}
           path: dist/cctui-${{ matrix.os }}-${{ matrix.arch }}
@@ -75,8 +71,8 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
