@@ -107,6 +107,22 @@ impl Registry {
         }
     }
 
+    /// Update heartbeat for `id`. If the session had been marked
+    /// `Disconnected`, flip it back to `Active` and return the new status so
+    /// the caller can broadcast a status change. Returns `None` if the session
+    /// is unknown or the status didn't change.
+    pub fn touch(&mut self, id: &str) -> Option<SessionStatus> {
+        let handle = self.sessions.get_mut(id)?;
+        handle.last_heartbeat = Instant::now();
+        handle.session.last_heartbeat = Utc::now();
+        if handle.session.status == SessionStatus::Disconnected {
+            handle.session.status = SessionStatus::Active;
+            Some(SessionStatus::Active)
+        } else {
+            None
+        }
+    }
+
     pub fn mark_stale(
         &mut self,
         disconnected_after_secs: u64,

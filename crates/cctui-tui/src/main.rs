@@ -97,13 +97,14 @@ async fn run(
     let mut app = App::new();
 
     init_sessions(&server, &mut app).await;
-    let (cmd_tx, mut event_rx) = connect_ws_or_dummy(&server).await;
-    let mut ws_open = true;
+    let (mut cmd_tx, mut event_rx) = connect_ws_or_dummy(&server).await;
     let mut refresh_interval = time::interval(Duration::from_secs(5));
     refresh_interval.tick().await;
+    // Backoff for WS reconnect attempts after the stream drops.
+    let mut reconnect_backoff_secs: u64 = 1;
+    let mut reconnect_timer: Option<std::pin::Pin<Box<time::Sleep>>> = None;
 
     loop {
-        // Update scroll metrics before drawing so scroll input works immediately.
         update_scroll_metrics(&mut app);
         terminal.draw(|f| render(f, &mut app))?;
 
@@ -116,17 +117,38 @@ async fn run(
                     handle_input(&mut app, input, &cmd_tx, &server).await;
                 }
             }
-            maybe_event = event_rx.recv(), if ws_open => {
+            maybe_event = event_rx.recv() => {
                 match maybe_event {
                     Some(event) => {
                         handle_server_event(&mut app, event);
-                        // Drain any additional queued server events before redrawing
                         while let Ok(ev) = event_rx.try_recv() {
                             handle_server_event(&mut app, ev);
                         }
-                        // follow_tail is checked during render — no offset update needed here
                     }
-                    None => ws_open = false,
+                    None if reconnect_timer.is_none() => {
+                        // Stream dropped — schedule a reconnect attempt.
+                        reconnect_timer = Some(Box::pin(time::sleep(Duration::from_secs(reconnect_backoff_secs))));
+                    }
+                    None => {
+                        // Already waiting; yield so the timer branch can fire.
+                        tokio::task::yield_now().await;
+                    }
+                }
+            }
+            () = async { reconnect_timer.as_mut().unwrap().await }, if reconnect_timer.is_some() => {
+                reconnect_timer = None;
+                if let Ok((new_tx, new_rx)) = server.connect_ws().await {
+                    cmd_tx = new_tx;
+                    event_rx = new_rx;
+                    reconnect_backoff_secs = 1;
+                    if matches!(app.view, View::Conversation)
+                        && let Some(id) = app.selected_session().map(|s| s.id.clone()) {
+                        let _ = cmd_tx.send(TuiCommand::Subscribe { session_id: id }).await;
+                    }
+                    refresh_sessions(&server, &mut app).await;
+                } else {
+                    reconnect_backoff_secs = (reconnect_backoff_secs * 2).min(30);
+                    reconnect_timer = Some(Box::pin(time::sleep(Duration::from_secs(reconnect_backoff_secs))));
                 }
             }
             _ = refresh_interval.tick() => {

@@ -44,13 +44,12 @@ pub async fn stop(State(state): State<AppState>, Json(req): Json<StopPayload>) -
         }
     }
 
-    // Update heartbeat to keep session alive
-    {
-        let mut registry = state.registry.write().await;
-        if let Some(handle) = registry.get_mut(sid) {
-            handle.last_heartbeat = std::time::Instant::now();
-            handle.session.last_heartbeat = chrono::Utc::now();
-        }
+    // Update heartbeat and resurrect the session if it was disconnected.
+    let resurrected = state.registry.write().await.touch(sid);
+    if let Some(status) = resurrected {
+        let _ = state
+            .tui_tx
+            .send(cctui_proto::ws::ServerEvent::Status { session_id: sid.to_string(), status });
     }
 
     StatusCode::OK
