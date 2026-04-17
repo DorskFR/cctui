@@ -127,8 +127,11 @@ clean:  ## Remove build artifacts
 build/server:  ## Build server docker image
 	docker build -f deploy/Dockerfile -t ghcr.io/dorskfr/cctui-server:latest .
 
+IMAGE_GIT_HASH ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
+
 image/build:  ## Build harbor image ($(IMAGE):$(IMAGE_VERSION) + :latest)
 	docker build -f deploy/Dockerfile \
+	  --build-arg CCTUI_GIT_HASH=$(IMAGE_GIT_HASH) \
 	  -t $(IMAGE):$(IMAGE_VERSION) \
 	  -t $(IMAGE):latest .
 

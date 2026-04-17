@@ -1,5 +1,8 @@
 FROM rust:1.90-slim AS builder
 
+ARG CCTUI_GIT_HASH=unknown
+ENV CCTUI_GIT_HASH=${CCTUI_GIT_HASH}
+
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
