@@ -85,3 +85,16 @@ pub struct SpawnResponse {
     pub command_id: Uuid,
     pub status: String,
 }
+
+/// One row of the per-user archive index (all archives reachable via the
+/// caller's `user_id`, across all of that user's machines).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArchiveIndexEntry {
+    pub machine_id: Uuid,
+    pub project_dir: String,
+    pub session_id: String,
+    pub sha256: String,
+    pub size_bytes: i64,
+    pub line_count: Option<i32>,
+    pub uploaded_at: chrono::DateTime<chrono::Utc>,
+}
