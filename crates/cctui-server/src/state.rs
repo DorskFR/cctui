@@ -10,6 +10,7 @@ use crate::config::Config;
 use crate::registry::SharedRegistry;
 use crate::routes::channels::SharedChannelStore;
 use crate::routes::permissions::SharedPermissionStore;
+use crate::skill_store::SkillStore;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -23,4 +24,5 @@ pub struct AppState {
     #[allow(dead_code)]
     pub auth_config: AuthConfig,
     pub archive: Arc<ArchiveStore>,
+    pub skills: Arc<SkillStore>,
 }

@@ -98,3 +98,15 @@ pub struct ArchiveIndexEntry {
     pub line_count: Option<i32>,
     pub uploaded_at: chrono::DateTime<chrono::Utc>,
 }
+
+/// One row of the skill registry (one per skill name — last-write-wins).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillIndexEntry {
+    pub name: String,
+    pub version: String,
+    pub sha256: String,
+    pub size_bytes: i64,
+    pub uploaded_by_machine: Option<Uuid>,
+    pub uploaded_at: chrono::DateTime<chrono::Utc>,
+    pub content_type: String,
+}

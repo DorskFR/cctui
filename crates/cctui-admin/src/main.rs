@@ -9,7 +9,7 @@
 mod path_remap;
 
 use anyhow::{Context, Result, bail};
-use cctui_proto::api::ArchiveIndexEntry;
+use cctui_proto::api::{ArchiveIndexEntry, SkillIndexEntry};
 use cctui_proto::identity::{
     MachineIdentity, UserIdentity, load_machine, load_user, save_machine, save_user,
 };
@@ -61,6 +61,11 @@ enum Command {
         #[command(subcommand)]
         cmd: ArchiveCmd,
     },
+    /// Sync `~/.claude/skills/<name>/` bundles with the server.
+    Skills {
+        #[command(subcommand)]
+        cmd: SkillsCmd,
+    },
     /// Pull an archived session's raw JSONL onto this host so Claude can
     /// resume it. Auth uses the local machine.json (fallback: --token as a
     /// user token).
@@ -91,6 +96,21 @@ enum Command {
 enum ArchiveCmd {
     /// List everything visible to this user across all their machines.
     List,
+}
+
+#[derive(Subcommand)]
+enum SkillsCmd {
+    /// List skills registered for this user.
+    List,
+    /// Upload a local skill directory (`~/.claude/skills/<name>/` by default)
+    /// to the server as a tar+zstd bundle.
+    Push {
+        /// Skill name (directory basename).
+        name: String,
+        /// Root containing `<name>/`. Defaults to `~/.claude/skills`.
+        #[arg(long)]
+        root: Option<std::path::PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -172,6 +192,9 @@ async fn main() -> Result<()> {
         }
         Command::Archive { cmd } => {
             archive_cmd(&client, &cli.server, cli.token.as_deref(), cmd).await
+        }
+        Command::Skills { cmd } => {
+            skills_cmd(&client, &cli.server, cli.token.as_deref(), cmd).await
         }
         Command::Pull { session_id, machine, remap, out_root, force } => {
             pull_cmd(
@@ -417,6 +440,129 @@ async fn pull_cmd(
     println!("wrote:       {}", out_path.display());
     println!("size:        {} bytes", rewritten.len());
     Ok(())
+}
+
+async fn skills_cmd(
+    client: &Client,
+    server: &str,
+    token: Option<&str>,
+    cmd: SkillsCmd,
+) -> Result<()> {
+    let (server_url, tok) = resolve_read_auth(server, token)?;
+    match cmd {
+        SkillsCmd::List => {
+            let url = format!("{server_url}/api/v1/skills/index");
+            let rows: Vec<SkillIndexEntry> = get_json(client, &url, &tok).await?;
+            print_skills(&rows);
+        }
+        SkillsCmd::Push { name, root } => {
+            skills_push(client, &server_url, &tok, &name, root).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn skills_push(
+    client: &Client,
+    server_url: &str,
+    token: &str,
+    name: &str,
+    root: Option<std::path::PathBuf>,
+) -> Result<()> {
+    validate_skill_name(name)?;
+    let root = if let Some(p) = root {
+        p
+    } else {
+        let home = std::env::var("HOME").context("HOME not set")?;
+        std::path::PathBuf::from(home).join(".claude").join("skills")
+    };
+    let skill_dir = root.join(name);
+    if !skill_dir.is_dir() {
+        bail!("{} is not a directory", skill_dir.display());
+    }
+
+    let tmp = tempfile_path(name);
+    let status = std::process::Command::new("tar")
+        .arg("--zstd")
+        .arg("-C")
+        .arg(&root)
+        .arg("-cf")
+        .arg(&tmp)
+        .arg(name)
+        .status()
+        .with_context(|| "spawn tar (is tar+zstd available?)")?;
+    if !status.success() {
+        let _ = std::fs::remove_file(&tmp);
+        bail!("tar failed with status {status}");
+    }
+
+    let bytes = std::fs::read(&tmp).with_context(|| format!("read {}", tmp.display()))?;
+    let _ = std::fs::remove_file(&tmp);
+    let sha = sha256_hex_bytes(&bytes);
+
+    let url = format!("{server_url}/api/v1/skills/{name}");
+    let resp = client
+        .put(&url)
+        .bearer_auth(token)
+        .header("X-CCTUI-SHA256", &sha)
+        .header("Content-Type", "application/zstd")
+        .body(bytes.clone())
+        .send()
+        .await?;
+    let entry: SkillIndexEntry = decode(resp).await?;
+
+    println!("name:       {}", entry.name);
+    println!("sha256:     {}", entry.sha256);
+    println!("size:       {} bytes", entry.size_bytes);
+    println!("uploaded:   {}", entry.uploaded_at.format("%Y-%m-%d %H:%M:%S"));
+    Ok(())
+}
+
+fn validate_skill_name(s: &str) -> Result<()> {
+    if s.is_empty() || s.len() > 128 || s.starts_with('.') {
+        bail!("invalid skill name: {s}");
+    }
+    for c in s.chars() {
+        if !(c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.') {
+            bail!("invalid skill name: {s}");
+        }
+    }
+    Ok(())
+}
+
+fn tempfile_path(name: &str) -> std::path::PathBuf {
+    let pid = std::process::id();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    std::env::temp_dir().join(format!("cctui-skill-{name}-{pid}-{nanos}.tar.zst"))
+}
+
+fn sha256_hex_bytes(data: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(data);
+    let out = h.finalize();
+    let mut s = String::with_capacity(64);
+    for b in out {
+        use std::fmt::Write;
+        write!(&mut s, "{b:02x}").unwrap();
+    }
+    s
+}
+
+fn print_skills(rows: &[SkillIndexEntry]) {
+    println!("{:<32}  {:<64}  {:>10}  uploaded", "name", "sha256", "bytes");
+    for r in rows {
+        println!(
+            "{:<32}  {:<64}  {:>10}  {}",
+            truncate(&r.name, 32),
+            r.sha256,
+            r.size_bytes,
+            r.uploaded_at.format("%Y-%m-%d %H:%M:%S"),
+        );
+    }
 }
 
 fn print_archives(rows: &[ArchiveIndexEntry]) {
