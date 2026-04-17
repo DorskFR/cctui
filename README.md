@@ -31,8 +31,20 @@ What works:
 What doesn't yet:
 - Production deployment (CCT-36)
 - Multi-user auth / session scoping
-- One-line install for remote machines (CCT-39)
 - Raw JSONL archival (CCT-37)
+
+## Install (remote machine)
+
+Once a release is published, a one-line installer is available:
+
+```sh
+curl -fsSL https://cctui.dorsk.dev/install.sh | CCTUI_TOKEN=... sh
+```
+
+The script detects OS/arch, downloads the `cctui` binary from GitHub Releases
+and the channel bundle from the server, writes the MCP entry to `~/.claude.json`,
+and wires hooks into `~/.claude/settings.json`. Set `CCTUI_URL` to point at a
+different server. See `scripts/install.sh`.
 
 ## Local Development
 
