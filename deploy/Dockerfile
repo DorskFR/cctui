@@ -6,7 +6,7 @@ RUN bun install --frozen-lockfile
 COPY channel/src/ src/
 RUN bun run build
 
-FROM rust:1.85-slim AS builder
+FROM rust:1.90-slim AS builder
 
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
