@@ -36,7 +36,6 @@ pub const fn asset_for(os: &str, arch: &str) -> Option<&'static str> {
     match (os.as_bytes(), arch.as_bytes()) {
         (b"linux", b"x86_64") => Some("cctui-linux-amd64"),
         (b"linux", b"aarch64") => Some("cctui-linux-arm64"),
-        (b"macos", b"x86_64") => Some("cctui-darwin-amd64"),
         (b"macos", b"aarch64") => Some("cctui-darwin-arm64"),
         _ => None,
     }
@@ -219,8 +218,8 @@ mod tests {
     fn asset_names() {
         assert_eq!(asset_for("linux", "x86_64"), Some("cctui-linux-amd64"));
         assert_eq!(asset_for("linux", "aarch64"), Some("cctui-linux-arm64"));
-        assert_eq!(asset_for("macos", "x86_64"), Some("cctui-darwin-amd64"));
         assert_eq!(asset_for("macos", "aarch64"), Some("cctui-darwin-arm64"));
+        assert_eq!(asset_for("macos", "x86_64"), None);
         assert_eq!(asset_for("windows", "x86_64"), None);
     }
 

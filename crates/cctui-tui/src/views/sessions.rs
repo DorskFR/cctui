@@ -35,6 +35,8 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let active = app.active_count;
     let line = Line::from(vec![
         Span::styled(" cctui ", theme::STATUS_BAR_BG),
+        Span::raw(" "),
+        Span::styled(format!("v{}", env!("CARGO_PKG_VERSION")), theme::DIM),
         Span::raw("  "),
         Span::styled(format!("{total} sessions"), theme::DIM),
         Span::raw("  "),
