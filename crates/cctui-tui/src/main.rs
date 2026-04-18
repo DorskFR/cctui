@@ -2,6 +2,8 @@
 
 mod app;
 mod client;
+mod install;
+mod selfupdate;
 mod theme;
 mod ui;
 mod views;
@@ -59,6 +61,8 @@ struct Cli {
 enum Command {
     /// Run the MCP channel server (invoked by Claude Code over stdio).
     Channel,
+    /// Force re-download of the latest cctui release and re-apply settings.
+    Update,
 }
 
 #[tokio::main]
@@ -66,7 +70,15 @@ async fn main() -> Result<()> {
     use clap::Parser;
     match Cli::parse().command {
         Some(Command::Channel) => cctui_channel::run().await,
-        None => run_tui().await,
+        Some(Command::Update) => {
+            let (base_url, _) = resolve_identity();
+            selfupdate::force_update(&base_url).await
+        }
+        None => {
+            let (base_url, _) = resolve_identity();
+            selfupdate::maybe_update(&base_url).await;
+            run_tui().await
+        }
     }
 }
 
