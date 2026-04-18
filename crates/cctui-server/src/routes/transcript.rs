@@ -2,11 +2,63 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 
+use cctui_proto::models::{Session, SessionStatus};
 use cctui_proto::ws::AgentEvent;
 use uuid::Uuid;
 
 use crate::state::AppState;
 use crate::transcript_parser;
+
+#[derive(sqlx::FromRow)]
+struct RehydrateRow {
+    id: String,
+    parent_id: Option<String>,
+    machine_id: String,
+    working_dir: String,
+    registered_at: chrono::DateTime<chrono::Utc>,
+    metadata: serde_json::Value,
+}
+
+/// If `session_id` is missing from the in-memory registry (typically after a
+/// server restart while the channel kept running), rehydrate it from the DB so
+/// subsequent broadcasts and TUI-queued messages have somewhere to land.
+async fn ensure_registered(state: &AppState, session_id: &str) {
+    {
+        if state.registry.read().await.get(session_id).is_some() {
+            return;
+        }
+    }
+    let row: Option<RehydrateRow> = sqlx::query_as(
+        "SELECT id, parent_id, machine_id, working_dir, registered_at, metadata \
+         FROM sessions WHERE id = $1",
+    )
+    .bind(session_id)
+    .fetch_optional(&state.pool)
+    .await
+    .ok()
+    .flatten();
+    let Some(row) = row else {
+        return;
+    };
+    let session = Session {
+        id: row.id,
+        parent_id: row.parent_id,
+        account_id: None,
+        machine_id: row.machine_id,
+        working_dir: row.working_dir,
+        status: SessionStatus::Active,
+        registered_at: row.registered_at,
+        last_heartbeat: chrono::Utc::now(),
+        metadata: row.metadata,
+    };
+    state.registry.write().await.register(session);
+    let _ =
+        sqlx::query("UPDATE sessions SET status = 'active', last_heartbeat = now() WHERE id = $1")
+            .bind(session_id)
+            .execute(&state.pool)
+            .await;
+    tracing::info!(session_id = %session_id, "session rehydrated into registry from DB");
+}
 
 #[derive(Debug, serde::Deserialize)]
 pub struct TranscriptLine {
@@ -59,6 +111,10 @@ pub async fn ingest(
     }
 
     let ts = chrono::Utc::now().timestamp();
+
+    // Rehydrate the registry entry if the channel outlived a server restart,
+    // so broadcasts and TUI-queued messages have a handle to land on.
+    ensure_registered(&state, &session_id).await;
 
     // Parse once; reuse the value for both usage extraction and event parsing.
     let parsed: Option<serde_json::Value> = serde_json::from_str(line).ok();

@@ -100,14 +100,33 @@ MACHINE_JSON="$CONFIG_DIR/machine.json"
 USER_JSON="$CONFIG_DIR/user.json"
 HOSTNAME_VAL="$(hostname 2>/dev/null || echo unknown)"
 
+# Enroll via curl (not urllib) so we use the system cert store — avoids
+# macOS python.org installers that ship without a CA bundle.
+ENROLL_BODY=""
+if [ "${CCTUI_TOKEN#cctui_u_}" != "$CCTUI_TOKEN" ]; then
+  enroll_tmp="$(mktemp)"
+  http_code="$(curl -sS -o "$enroll_tmp" -w '%{http_code}' \
+    -X POST "$CCTUI_URL/api/v1/enroll" \
+    -H 'Content-Type: application/json' \
+    -H "Authorization: Bearer $CCTUI_TOKEN" \
+    -d "{\"hostname\":\"$HOSTNAME_VAL\"}" || echo "000")"
+  if [ "$http_code" != "200" ]; then
+    body="$(cat "$enroll_tmp" 2>/dev/null || true)"
+    rm -f "$enroll_tmp"
+    die "enroll failed: HTTP $http_code: $body"
+  fi
+  ENROLL_BODY="$(cat "$enroll_tmp")"
+  rm -f "$enroll_tmp"
+fi
+
 CCTUI_TOKEN="$CCTUI_TOKEN" \
 CCTUI_URL="$CCTUI_URL" \
 MACHINE_JSON="$MACHINE_JSON" \
 USER_JSON="$USER_JSON" \
 HOSTNAME_VAL="$HOSTNAME_VAL" \
+ENROLL_BODY="$ENROLL_BODY" \
 "$PY" - <<'PY'
-import json, os, sys
-from urllib import request, error
+import json, os
 
 token     = os.environ["CCTUI_TOKEN"]
 server    = os.environ["CCTUI_URL"].rstrip("/")
@@ -121,21 +140,7 @@ def write_json(path, data):
     os.chmod(path, 0o600)
 
 if token.startswith("cctui_u_"):
-    # Enroll with the user token to mint a machine key for this host.
-    req = request.Request(
-        f"{server}/api/v1/enroll",
-        data=json.dumps({"hostname": hostname}).encode(),
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
-        method="POST",
-    )
-    try:
-        with request.urlopen(req, timeout=15) as resp:
-            body = json.loads(resp.read())
-    except error.HTTPError as e:
-        sys.exit(f"[cctui] enroll failed: HTTP {e.code}: {e.read().decode(errors='replace')}")
-    except error.URLError as e:
-        sys.exit(f"[cctui] enroll failed: {e.reason}")
-
+    body = json.loads(os.environ["ENROLL_BODY"])
     write_json(user_p, {"server_url": server, "user_key": token})
     write_json(machine_p, {
         "server_url":  server,
