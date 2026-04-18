@@ -72,7 +72,7 @@ Env defaults in Makefile: `DATABASE_URL`, `CCTUI_AGENT_TOKENS=dev-agent`, `CCTUI
 - Rust 2024 edition, clippy pedantic + nursery (workspace lints in root Cargo.toml)
 - `cargo +nightly fmt --all` for formatting (rustfmt.toml: 100 width, module imports)
 - Lefthook pre-commit: fmt, clippy, check, biome
-- Commits: `--no-gpg-sign`, conventional commits (`feat:`, `fix:`, `chore:`)
+- Commits: conventional commits (`feat:`, `fix:`, `chore:`)
 - Hooks go in `~/.claude/settings.json` (NOT settings.local.json, NOT managed-settings.json)
 - Claude's Stop hook fires per-turn — don't use for session cleanup (reaper handles it)
 
