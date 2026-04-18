@@ -54,7 +54,13 @@ impl Registry {
     }
 
     pub fn register(&mut self, session: Session) -> broadcast::Sender<AgentEvent> {
-        let (stream_tx, _) = broadcast::channel(256);
+        // Reuse an existing stream_tx on re-registration so current WS
+        // subscribers don't see the broadcast channel close and lose their
+        // stream until they manually reopen the pane.
+        let stream_tx = self
+            .sessions
+            .get(&session.id)
+            .map_or_else(|| broadcast::channel(256).0, |h| h.stream_tx.clone());
         let tx = stream_tx.clone();
         self.sessions.insert(
             session.id.clone(),
