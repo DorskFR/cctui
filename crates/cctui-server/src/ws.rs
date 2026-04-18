@@ -154,7 +154,7 @@ pub async fn tui_ws(
     let token = extract_token_from_uri(&uri).ok_or(StatusCode::UNAUTHORIZED)?;
     let auth_ctx = state.auth_config.validate(&token).await.ok_or(StatusCode::UNAUTHORIZED)?;
 
-    if auth_ctx.role != TokenRole::Admin {
+    if !matches!(auth_ctx.role, TokenRole::Admin | TokenRole::User) {
         return Err(StatusCode::FORBIDDEN);
     }
 
