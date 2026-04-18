@@ -51,6 +51,30 @@
   .err { color:var(--danger); margin:8px 0 }
   .hide { display:none }
   code { font-family:var(--mono); background:#0b0f14; padding:1px 5px; border-radius:3px; font-size:12px }
+  tr.session-row { cursor:pointer }
+  tr.session-row:hover { background:#1c2128 }
+  /* Conversation drawer */
+  #drawer { position:fixed; top:0; right:0; bottom:0; width:min(900px,100vw); background:var(--panel); border-left:1px solid var(--border); display:flex; flex-direction:column; transform:translateX(100%); transition:transform .2s ease; z-index:10; box-shadow:-4px 0 24px rgba(0,0,0,.4) }
+  #drawer.open { transform:translateX(0) }
+  #drawer header { display:flex; align-items:center; justify-content:space-between; padding:12px 18px; border-bottom:1px solid var(--border); background:var(--panel) }
+  #drawer header .meta { display:flex; flex-direction:column; gap:2px; font-size:12px }
+  #drawer header .meta .title { font-family:var(--mono); font-size:13px }
+  #drawer header .meta .sub { color:var(--muted) }
+  #drawer .conv { flex:1; overflow-y:auto; padding:14px 18px; font-size:13px }
+  .conv .line { padding:4px 0; border-left:3px solid transparent; padding-left:10px; margin-left:-10px }
+  .conv .line.user { border-left-color:var(--accent); color:#d0d7de }
+  .conv .line.assistant { color:var(--fg) }
+  .conv .line.tool { color:var(--muted); font-family:var(--mono); font-size:12px }
+  .conv .line.result { color:var(--muted); font-family:var(--mono); font-size:12px; padding-left:24px }
+  .conv .line.system { color:var(--muted); font-style:italic; font-size:12px }
+  .conv .line.reply { color:var(--warn); font-family:var(--mono); font-size:12px }
+  .conv .role { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.5px; margin-right:8px }
+  .conv pre { background:#0b0f14; border:1px solid var(--border); border-radius:6px; padding:10px; overflow-x:auto; font-family:var(--mono); font-size:12px; margin:6px 0 }
+  .conv code.inline { background:#0b0f14; padding:1px 5px; border-radius:3px; font-family:var(--mono); font-size:12px }
+  .conv .ts { color:var(--muted); font-size:11px; margin-right:8px; font-family:var(--mono) }
+  .conv .empty { color:var(--muted); padding:40px; text-align:center }
+  .conv .live-dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--ok); margin-left:6px; vertical-align:middle }
+  .conv .live-dot.off { background:var(--muted) }
 </style>
 </head>
 <body>
@@ -114,6 +138,17 @@
     </section>
   </main>
 </div>
+
+<aside id="drawer" aria-hidden="true">
+  <header>
+    <div class="meta">
+      <div class="title" id="drawerTitle">—</div>
+      <div class="sub"><span id="drawerStatus"></span> <span id="drawerLive" class="live-dot off" title="disconnected"></span></div>
+    </div>
+    <button class="btn" onclick="closeDrawer()">Close</button>
+  </header>
+  <div class="conv" id="drawerConv"><div class="empty">loading…</div></div>
+</aside>
 
 <dialog id="createUserDlg">
   <h3 style="margin-top:0">Create user</h3>
@@ -319,6 +354,8 @@ async function loadSessions() {
     body.innerHTML = '';
     for (const s of res.sessions) {
       const tr = document.createElement('tr');
+      tr.className = 'session-row';
+      tr.onclick = () => openDrawer(s);
       const tu = s.token_usage || {};
       const total = (tu.input_tokens||0) + (tu.output_tokens||0);
       tr.innerHTML = `
@@ -343,6 +380,222 @@ function fmtDuration(sec) {
   if (sec < 86400) return Math.floor(sec/3600) + 'h';
   return Math.floor(sec/86400) + 'd';
 }
+
+// --- Conversation drawer ------------------------------------------------
+let drawerWs = null;
+let drawerSessionId = null;
+let drawerLastLine = null; // { kind, text } for dedup
+
+function setLive(on) {
+  const d = document.getElementById('drawerLive');
+  d.classList.toggle('off', !on);
+  d.title = on ? 'live' : 'disconnected';
+}
+
+async function openDrawer(session) {
+  closeDrawer();
+  drawerSessionId = session.id;
+  const drawer = document.getElementById('drawer');
+  drawer.classList.add('open');
+  drawer.setAttribute('aria-hidden', 'false');
+  document.getElementById('drawerTitle').textContent = session.working_dir;
+  document.getElementById('drawerStatus').innerHTML = `<span class="status ${session.status}">${session.status}</span> <span class="muted">${session.machine_id.slice(0,8)}… · ${session.id}</span>`;
+  const conv = document.getElementById('drawerConv');
+  conv.innerHTML = '<div class="empty">loading…</div>';
+
+  try {
+    const events = await api(`/sessions/${session.id}/conversation`);
+    conv.innerHTML = '';
+    drawerLastLine = null;
+    for (const ev of events) appendEvent(conv, ev);
+    if (!conv.childElementCount) conv.innerHTML = '<div class="empty">No events yet.</div>';
+    scrollToBottom(conv);
+  } catch (e) {
+    conv.innerHTML = `<div class="empty err">${escapeHtml(e.message)}</div>`;
+  }
+
+  openDrawerWs(session.id);
+}
+
+function closeDrawer() {
+  const drawer = document.getElementById('drawer');
+  drawer.classList.remove('open');
+  drawer.setAttribute('aria-hidden', 'true');
+  if (drawerWs) { try { drawerWs.close(); } catch {} drawerWs = null; }
+  drawerSessionId = null;
+  setLive(false);
+}
+
+function openDrawerWs(sid) {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const url = `${proto}://${location.host}/api/v1/ws?token=${encodeURIComponent(token)}`;
+  const ws = new WebSocket(url);
+  drawerWs = ws;
+  ws.onopen = () => { setLive(true); ws.send(JSON.stringify({ type: 'subscribe', session_id: sid })); };
+  ws.onclose = () => { if (drawerWs === ws) { setLive(false); drawerWs = null; } };
+  ws.onerror = () => setLive(false);
+  ws.onmessage = (msg) => {
+    let m; try { m = JSON.parse(msg.data); } catch { return; }
+    if (m.type !== 'stream' || m.session_id !== drawerSessionId) return;
+    const conv = document.getElementById('drawerConv');
+    // Replace the "No events yet." placeholder on first live event.
+    const empty = conv.querySelector('.empty');
+    if (empty) empty.remove();
+    const wasAtBottom = isAtBottom(conv);
+    appendEvent(conv, m.data);
+    if (wasAtBottom) scrollToBottom(conv);
+  };
+}
+
+function appendEvent(container, ev) {
+  const line = eventToLine(ev);
+  if (!line) return;
+  // Dedup identical consecutive lines (TUI does this too).
+  if (drawerLastLine && drawerLastLine.kind === line.kind && drawerLastLine.text === line.text) return;
+  drawerLastLine = line;
+
+  const div = document.createElement('div');
+  div.className = `line ${line.kind}`;
+  const ts = line.ts ? `<span class="ts">${fmtTs(line.ts)}</span>` : '';
+  const role = line.role ? `<span class="role">${line.role}</span>` : '';
+  div.innerHTML = ts + role + line.html;
+  container.appendChild(div);
+}
+
+function eventToLine(ev) {
+  if (!ev || !ev.type) return null;
+  switch (ev.type) {
+    case 'text': {
+      const content = ev.content || '';
+      if (content.startsWith('▷ User:')) {
+        const cleaned = cleanUserMessage(content.replace(/^▷ User:\s*/, ''));
+        if (!cleaned) return null;
+        return { kind: 'user', role: 'User', ts: ev.ts, text: cleaned, html: renderMarkdown(cleaned) };
+      }
+      return { kind: 'assistant', role: 'Assistant', ts: ev.ts, text: content, html: renderMarkdown(content) };
+    }
+    case 'tool_call': {
+      const detail = formatToolInput(ev.tool, ev.input);
+      const text = `[${ev.tool}] ${detail}`;
+      return { kind: 'tool', ts: ev.ts, text, html: escapeHtml(text) };
+    }
+    case 'tool_result': {
+      const text = `  → ${ev.output_summary || ''}`;
+      return { kind: 'result', ts: ev.ts, text, html: escapeHtml(text) };
+    }
+    case 'reply': {
+      const text = `⟵ ${ev.content}`;
+      return { kind: 'reply', ts: ev.ts, text, html: escapeHtml(text) };
+    }
+    case 'heartbeat':
+    case 'turn_end':
+    default:
+      return null;
+  }
+}
+
+function formatToolInput(tool, input) {
+  if (!input) return '';
+  // Mirror the TUI's sessions::format_tool_input heuristic: pick the most
+  // useful field per tool, fall back to a short JSON blob.
+  const pick = (k) => (input && input[k] != null ? String(input[k]) : null);
+  switch (tool) {
+    case 'Bash':    return pick('command') || '';
+    case 'Edit':    return pick('file_path') || '';
+    case 'Write':   return pick('file_path') || '';
+    case 'Read':    return pick('file_path') || '';
+    case 'Glob':    return pick('pattern') || '';
+    case 'Grep':    return pick('pattern') || '';
+    case 'WebFetch':return pick('url') || '';
+    case 'WebSearch':return pick('query') || '';
+    case 'Task':    return pick('description') || pick('subagent_type') || '';
+    default: {
+      const s = JSON.stringify(input);
+      return s.length > 200 ? s.slice(0, 200) + '…' : s;
+    }
+  }
+}
+
+function cleanUserMessage(text) {
+  // Strip <system-reminder>…</system-reminder> and <local-command-caveat>…
+  let out = stripTagPair(text, 'system-reminder');
+  out = stripTagPair(out, 'local-command-caveat');
+
+  const cmdName   = extractTagContent(out, 'command-name');
+  const cmdArgs   = extractTagContent(out, 'command-args');
+  const cmdStdout = extractTagContent(out, 'local-command-stdout');
+
+  out = stripTagPair(out, 'command-name');
+  out = stripTagPair(out, 'command-args');
+  out = stripTagPair(out, 'local-command-stdout');
+  out = stripAllTags(out);
+
+  if (cmdName) {
+    let cmdLine = '/' + cmdName;
+    if (cmdArgs) cmdLine += ' ' + cmdArgs;
+    if (cmdStdout) cmdLine += ' → ' + cmdStdout;
+    out = out.trim() ? cmdLine + ' ' + out : cmdLine;
+  }
+  return out.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '').trim();
+}
+
+function extractTagContent(s, tag) {
+  const open = `<${tag}>`, close = `</${tag}>`;
+  const i = s.indexOf(open);
+  if (i < 0) return null;
+  const j = s.indexOf(close, i + open.length);
+  if (j < 0) return null;
+  return s.slice(i + open.length, j);
+}
+function stripTagPair(s, tag) {
+  const open = `<${tag}>`, close = `</${tag}>`;
+  let out = s;
+  while (true) {
+    const i = out.indexOf(open);
+    if (i < 0) break;
+    const j = out.indexOf(close, i + open.length);
+    if (j < 0) break;
+    out = out.slice(0, i) + out.slice(j + close.length);
+  }
+  return out;
+}
+function stripAllTags(s) { return s.replace(/<[^>]*>/g, ''); }
+
+// --- Tiny markdown renderer (headings skipped; focus on code + inline) ---
+function renderMarkdown(src) {
+  const safe = escapeHtml(src);
+  // Fenced code blocks first.
+  let out = safe.replace(/```([a-zA-Z0-9_+-]*)\n([\s\S]*?)```/g, (_, _lang, code) => {
+    return `<pre>${code}</pre>`;
+  });
+  // Inline code.
+  out = out.replace(/`([^`\n]+)`/g, '<code class="inline">$1</code>');
+  // Bold **x** and italic *x*.
+  out = out.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+  out = out.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+  // Links [text](url).
+  out = out.replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  // Line breaks: preserve paragraph spacing with <br> on single newlines
+  // (keep <pre> contents intact — crude but adequate).
+  out = out.replace(/(<pre>[\s\S]*?<\/pre>)|\n/g, (m, pre) => pre ? pre : '<br>');
+  return out;
+}
+
+function isAtBottom(el) { return el.scrollHeight - el.scrollTop - el.clientHeight < 40; }
+function scrollToBottom(el) { el.scrollTop = el.scrollHeight; }
+function fmtTs(ts) {
+  if (!ts) return '';
+  // AgentEvent.ts is unix seconds.
+  const d = new Date(ts * 1000);
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const ss = String(d.getSeconds()).padStart(2, '0');
+  return `${hh}:${mm}:${ss}`;
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && drawerSessionId) closeDrawer();
+});
 
 if (token) {
   api('/admin/users').then(showApp).catch(() => { token = ''; localStorage.removeItem('cctui_admin_token'); });
