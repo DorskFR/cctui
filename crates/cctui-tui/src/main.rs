@@ -12,7 +12,7 @@ mod widgets;
 use std::io;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use app::{App, ConversationLine, LineKind, PendingPermission, View};
 use cctui_proto::ws::{AgentEvent, ServerEvent, TuiCommand};
 use client::ServerClient;
@@ -112,6 +112,7 @@ async fn run(
     let (mut cmd_tx, mut event_rx) = connect_ws_or_dummy(&server).await;
     let mut refresh_interval = time::interval(Duration::from_secs(5));
     refresh_interval.tick().await;
+    let mut input_rx = spawn_input_task();
     // Backoff for WS reconnect attempts after the stream drops.
     let mut reconnect_backoff_secs: u64 = 1;
     let mut reconnect_timer: Option<std::pin::Pin<Box<time::Sleep>>> = None;
@@ -123,8 +124,7 @@ async fn run(
         tokio::select! {
             biased;
 
-            input_result = tokio::task::spawn_blocking(poll_input) => {
-                let maybe_input = input_result.context("input task panicked")??;
+            maybe_input = input_rx.recv() => {
                 if let Some(input) = maybe_input {
                     handle_input(&mut app, input, &cmd_tx, &server).await;
                 }
@@ -208,19 +208,38 @@ fn update_scroll_metrics(app: &mut App) {
     }
 }
 
-fn poll_input() -> Result<Option<InputEvent>> {
-    if !event::poll(Duration::from_millis(16))? {
-        return Ok(None);
-    }
-    match event::read()? {
-        Event::Key(key) if key.kind == KeyEventKind::Press => Ok(Some(InputEvent::Key(key))),
-        Event::Mouse(mouse) => match mouse.kind {
-            MouseEventKind::ScrollUp => Ok(Some(InputEvent::ScrollUp)),
-            MouseEventKind::ScrollDown => Ok(Some(InputEvent::ScrollDown)),
-            _ => Ok(None),
-        },
-        _ => Ok(None),
-    }
+/// Spawns a dedicated blocking thread that reads terminal events and forwards
+/// them to the main loop via a channel. Using a persistent task (rather than
+/// `spawn_blocking` per iteration inside `tokio::select!`) prevents input
+/// starvation when the WS event stream keeps the select loop busy — the
+/// channel retains pending keypresses across iterations.
+fn spawn_input_task() -> mpsc::Receiver<InputEvent> {
+    let (tx, rx) = mpsc::channel::<InputEvent>(64);
+    std::thread::spawn(move || {
+        loop {
+            match event::poll(Duration::from_millis(100)) {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(_) => return,
+            }
+            let Ok(ev) = event::read() else { return };
+            let mapped = match ev {
+                Event::Key(key) if key.kind == KeyEventKind::Press => Some(InputEvent::Key(key)),
+                Event::Mouse(mouse) => match mouse.kind {
+                    MouseEventKind::ScrollUp => Some(InputEvent::ScrollUp),
+                    MouseEventKind::ScrollDown => Some(InputEvent::ScrollDown),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(input) = mapped
+                && tx.blocking_send(input).is_err()
+            {
+                return;
+            }
+        }
+    });
+    rx
 }
 
 // --- Input handling ---
