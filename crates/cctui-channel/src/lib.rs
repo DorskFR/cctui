@@ -10,6 +10,7 @@
 pub mod archive;
 pub mod bridge;
 pub mod config;
+pub mod manifest;
 pub mod mcp;
 pub mod skills;
 pub mod transcript;
@@ -333,13 +334,18 @@ fn spawn_archive_pipeline(
     let current_transcript_abs = session.transcript_path.clone().map(PathBuf::from);
     let cache = Arc::new(archive::ArchiveCache::new());
 
-    // Startup scan (skip current session).
+    // Startup: manifest first (so the server knows what to expect), then walk.
     {
         let bridge_a = bridge.clone();
         let cache_a = cache.clone();
         let projects_root_a = projects_root.clone();
         let current = current_transcript_abs.clone();
         tokio::spawn(async move {
+            let entries = manifest::build(&projects_root_a);
+            tracing::info!(count = entries.len(), "posting archive manifest");
+            if let Err(err) = bridge_a.post_manifest(&entries).await {
+                tracing::warn!(%err, "archive manifest post failed");
+            }
             let files = archive::walk_project_dirs(&projects_root_a);
             for f in files {
                 if Some(&f.abs_path) == current.as_ref() {
@@ -368,6 +374,7 @@ fn spawn_archive_pipeline(
             project_dir,
             session_id: session.session_id.clone(),
         };
+        let projects_root_t = projects_root.clone();
         tokio::spawn(async move {
             loop {
                 tokio::select! {
@@ -376,6 +383,10 @@ fn spawn_archive_pipeline(
                 }
                 if *cancel.borrow() {
                     return;
+                }
+                let entries = manifest::build(&projects_root_t);
+                if let Err(err) = bridge.post_manifest(&entries).await {
+                    tracing::warn!(%err, "periodic archive manifest post failed");
                 }
                 let _ = archive::upload_if_changed(&bridge, &cache, &current_file).await;
             }

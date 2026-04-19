@@ -99,6 +99,53 @@ pub struct ArchiveIndexEntry {
     pub uploaded_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// One entry of a machine's expected-files manifest. Uploaded on channel
+/// startup and every 15 min; lets the server diff "expected" vs `archive_index`
+/// to compute per-session sync state (CCT-68).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManifestEntry {
+    pub project_dir: String,
+    pub session_id: String,
+    pub size_bytes: i64,
+    pub mtime: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManifestPostRequest {
+    pub entries: Vec<ManifestEntry>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ArchiveSyncState {
+    /// Server has a matching upload: `uploaded_size` >= `expected_size`.
+    Synced,
+    /// Manifest entry has no corresponding `archive_index` row.
+    Missing,
+    /// Uploaded row exists but is smaller than the local file or older than mtime.
+    Stale,
+}
+
+/// One row of the per-machine / per-session sync status, computed by joining
+/// `archive_manifest` (expected) with `archive_index` (uploaded).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArchiveStatusEntry {
+    pub machine_id: Uuid,
+    pub project_dir: String,
+    pub session_id: String,
+    pub expected_size: i64,
+    pub expected_mtime: chrono::DateTime<chrono::Utc>,
+    pub uploaded_size: Option<i64>,
+    pub uploaded_sha256: Option<String>,
+    pub uploaded_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub state: ArchiveSyncState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArchiveStatusResponse {
+    pub entries: Vec<ArchiveStatusEntry>,
+}
+
 /// One row of the skill registry (one per skill name — last-write-wins).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillIndexEntry {
