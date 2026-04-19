@@ -29,7 +29,7 @@ async fn reads_existing_lines_and_trims_blanks() {
     std::fs::write(&path, "a\n\nb\n").unwrap();
     let (tx, rx) = mpsc::channel(16);
     let (_ctx, crx) = watch::channel(false);
-    tokio::spawn(transcript::tail(path, tx, crx));
+    tokio::spawn(transcript::tail(path, None, tx, crx));
     let lines = collect(rx, Duration::from_millis(1200)).await;
     assert!(lines.contains(&"a".to_string()));
     assert!(lines.contains(&"b".to_string()));
@@ -44,7 +44,7 @@ async fn picks_up_appends() {
     let (tx, rx) = mpsc::channel(16);
     let (_ctx, crx) = watch::channel(false);
     let path_c = path.clone();
-    tokio::spawn(transcript::tail(path_c, tx, crx));
+    tokio::spawn(transcript::tail(path_c, None, tx, crx));
     tokio::time::sleep(Duration::from_millis(500)).await;
     {
         use std::io::Write;
@@ -63,7 +63,7 @@ async fn rereads_after_truncation() {
     std::fs::write(&path, "old1\nold2\n").unwrap();
     let (tx, rx) = mpsc::channel(16);
     let (_ctx, crx) = watch::channel(false);
-    tokio::spawn(transcript::tail(path.clone(), tx, crx));
+    tokio::spawn(transcript::tail(path.clone(), None, tx, crx));
     tokio::time::sleep(Duration::from_millis(500)).await;
     std::fs::write(&path, "brand\n").unwrap();
     let lines = collect(rx, Duration::from_millis(1500)).await;
