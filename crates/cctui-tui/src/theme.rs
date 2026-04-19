@@ -2,10 +2,8 @@ use ratatui::style::{Color, Modifier, Style};
 
 // Status colors
 pub const ACTIVE: Style = Style::new().fg(Color::Green);
-pub const IDLE: Style = Style::new().fg(Color::Yellow);
-pub const TERMINATED: Style = Style::new().fg(Color::DarkGray);
-pub const DISCONNECTED: Style = Style::new().fg(Color::Red);
-pub const REGISTERING: Style = Style::new().fg(Color::Cyan);
+pub const NEW: Style = Style::new().fg(Color::Cyan);
+pub const INACTIVE: Style = Style::new().fg(Color::DarkGray);
 
 // Message roles
 pub const USER_MSG: Style = Style::new().fg(Color::Cyan);
@@ -47,22 +45,18 @@ pub const MD_CODE: Style = Style::new().fg(Color::Green);
 pub const MD_BOLD: Style = Style::new().add_modifier(Modifier::BOLD);
 pub const MD_ITALIC: Style = Style::new().add_modifier(Modifier::ITALIC);
 
-pub const fn status_style(status: &cctui_proto::models::SessionStatus) -> Style {
+pub const fn status_style(status: cctui_proto::models::SessionStatus) -> Style {
     match status {
         cctui_proto::models::SessionStatus::Active => ACTIVE,
-        cctui_proto::models::SessionStatus::Idle => IDLE,
-        cctui_proto::models::SessionStatus::Terminated => TERMINATED,
-        cctui_proto::models::SessionStatus::Disconnected => DISCONNECTED,
-        cctui_proto::models::SessionStatus::Registering => REGISTERING,
+        cctui_proto::models::SessionStatus::New => NEW,
+        cctui_proto::models::SessionStatus::Inactive => INACTIVE,
     }
 }
 
-pub const fn status_icon(status: &cctui_proto::models::SessionStatus) -> &'static str {
+pub const fn status_icon(status: cctui_proto::models::SessionStatus) -> &'static str {
     match status {
         cctui_proto::models::SessionStatus::Active => "●",
-        cctui_proto::models::SessionStatus::Idle => "○",
-        cctui_proto::models::SessionStatus::Terminated => "✕",
-        cctui_proto::models::SessionStatus::Disconnected => "◌",
-        cctui_proto::models::SessionStatus::Registering => "◎",
+        cctui_proto::models::SessionStatus::New => "◎",
+        cctui_proto::models::SessionStatus::Inactive => "○",
     }
 }

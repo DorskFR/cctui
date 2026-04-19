@@ -164,10 +164,7 @@ impl App {
     pub fn active_sessions(&self) -> Vec<&SessionListItem> {
         self.sessions
             .iter()
-            .filter(|s| {
-                s.status == cctui_proto::models::SessionStatus::Active
-                    || s.status == cctui_proto::models::SessionStatus::Idle
-            })
+            .filter(|s| s.status == cctui_proto::models::SessionStatus::Active)
             .collect()
     }
 }

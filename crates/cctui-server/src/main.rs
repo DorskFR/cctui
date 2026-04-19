@@ -166,19 +166,16 @@ async fn reaper_task(state: AppState) {
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
     loop {
         interval.tick().await;
-        let terminated = {
+        let demoted = {
             let mut registry = state.registry.write().await;
-            registry.mark_stale(
-                state.config.heartbeat_timeout_secs,
-                state.config.terminated_timeout_secs,
-            )
+            registry.mark_stale(state.config.inactive_after_secs)
         };
-        for session_id in &terminated {
-            let _ = sqlx::query("UPDATE sessions SET status = 'terminated' WHERE id = $1")
+        for session_id in &demoted {
+            let _ = sqlx::query("UPDATE sessions SET status = 'inactive' WHERE id = $1")
                 .bind(session_id.as_str())
                 .execute(&state.pool)
                 .await;
-            tracing::info!(session_id = %session_id, "session terminated (stale)");
+            tracing::info!(session_id = %session_id, "session demoted to inactive");
         }
 
         {

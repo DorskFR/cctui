@@ -1,14 +1,19 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Lifecycle state for a session. Three non-terminal states driven by the
+/// timestamp of the most recent activity, not by a heartbeat liveness probe:
+///
+/// - `New`: session registered, no assistant turn has arrived yet.
+/// - `Active`: most recent activity within the active window.
+/// - `Inactive`: no recent activity, but the session is not archived — a
+///   new message or turn revives it back to `Active`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionStatus {
-    Registering,
+    New,
     Active,
-    Idle,
-    Disconnected,
-    Terminated,
+    Inactive,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,8 +50,10 @@ mod tests {
     fn session_status_serializes_to_snake_case() {
         let json = serde_json::to_string(&SessionStatus::Active).unwrap();
         assert_eq!(json, r#""active""#);
-        let json = serde_json::to_string(&SessionStatus::Disconnected).unwrap();
-        assert_eq!(json, r#""disconnected""#);
+        let json = serde_json::to_string(&SessionStatus::Inactive).unwrap();
+        assert_eq!(json, r#""inactive""#);
+        let json = serde_json::to_string(&SessionStatus::New).unwrap();
+        assert_eq!(json, r#""new""#);
     }
 
     #[test]

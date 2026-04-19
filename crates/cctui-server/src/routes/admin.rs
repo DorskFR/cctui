@@ -33,7 +33,7 @@ pub async fn list_sessions(
                 parent_id: handle.session.parent_id.clone(),
                 machine_id: handle.session.machine_id.clone(),
                 working_dir: handle.session.working_dir.clone(),
-                status: handle.session.status.clone(),
+                status: handle.session.status,
                 uptime_secs: (Utc::now() - handle.session.registered_at).num_seconds(),
                 token_usage: handle.token_usage.clone(),
                 metadata: handle.session.metadata.clone(),
@@ -41,11 +41,11 @@ pub async fn list_sessions(
             .collect()
     };
 
-    // Historical sessions from DB (terminated/disconnected, not in registry)
+    // Historical inactive sessions from DB (not currently in the live registry).
     let live_ids: Vec<String> = sessions.iter().map(|s| s.id.clone()).collect();
     let rows: Vec<DbSession> = sqlx::query_as(
         "SELECT id, parent_id, machine_id, working_dir, status, registered_at, metadata \
-         FROM sessions WHERE status IN ('terminated', 'disconnected') \
+         FROM sessions WHERE status = 'inactive' \
          ORDER BY registered_at DESC LIMIT 50",
     )
     .fetch_all(&state.pool)
@@ -59,10 +59,10 @@ pub async fn list_sessions(
         if live_ids.contains(&row.id) {
             continue;
         }
-        let status = if row.status == "disconnected" {
-            cctui_proto::models::SessionStatus::Disconnected
-        } else {
-            cctui_proto::models::SessionStatus::Terminated
+        let status = match row.status.as_str() {
+            "new" => cctui_proto::models::SessionStatus::New,
+            "active" => cctui_proto::models::SessionStatus::Active,
+            _ => cctui_proto::models::SessionStatus::Inactive,
         };
         sessions.push(SessionListItem {
             id: row.id,
@@ -92,7 +92,7 @@ pub async fn get_session(
         parent_id: handle.session.parent_id.clone(),
         machine_id: handle.session.machine_id.clone(),
         working_dir: handle.session.working_dir.clone(),
-        status: handle.session.status.clone(),
+        status: handle.session.status,
         uptime_secs: (Utc::now() - handle.session.registered_at).num_seconds(),
         token_usage: handle.token_usage.clone(),
         metadata: handle.session.metadata.clone(),
@@ -140,7 +140,9 @@ pub async fn kill_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    sqlx::query("UPDATE sessions SET status = 'terminated' WHERE id = $1")
+    // Kill drops the in-memory handle and marks the DB row inactive. The
+    // session isn't archived — activity on the channel can revive it.
+    sqlx::query("UPDATE sessions SET status = 'inactive' WHERE id = $1")
         .bind(&session_id)
         .execute(&state.pool)
         .await

@@ -36,7 +36,10 @@
   tr.expand td { background:#0b0f14; padding:0 10px 10px 26px }
   .status { display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:500 }
   .status.active, .status.Active { background:rgba(63,185,80,.15); color:var(--ok) }
-  .status.disconnected, .status.Disconnected, .status.terminated, .status.Terminated { background:rgba(139,148,158,.15); color:var(--muted) }
+  .status.new, .status.New { background:rgba(56,139,253,.15); color:var(--accent) }
+  .status.inactive, .status.Inactive { background:rgba(139,148,158,.15); color:var(--muted) }
+  /* Legacy values still occasionally arriving from older server builds. */
+  .status.disconnected, .status.Disconnected, .status.terminated, .status.Terminated, .status.idle, .status.Idle, .status.registering, .status.Registering { background:rgba(139,148,158,.15); color:var(--muted) }
   .toolbar { display:flex; gap:8px; margin-bottom:14px; align-items:center }
   .toolbar .grow { flex:1 }
   .card { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:18px; margin-bottom:14px }
