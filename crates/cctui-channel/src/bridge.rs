@@ -17,7 +17,9 @@ use crate::types::{
     ChannelRegisterResponse, PendingMessage, PermissionRequest, PreToolUsePayload,
     SessionPollResponse, StreamerEvent,
 };
-use cctui_proto::api::{RegisterRequest, RegisterResponse, SkillIndexEntry};
+use cctui_proto::api::{
+    ManifestEntry, ManifestPostRequest, RegisterRequest, RegisterResponse, SkillIndexEntry,
+};
 
 #[derive(Debug, Clone, Copy)]
 pub enum ArchiveState {
@@ -289,6 +291,25 @@ impl Bridge {
             let status = res.status();
             let text = res.text().await.unwrap_or_default();
             anyhow::bail!("PUT archive failed: {status} {text}");
+        }
+        Ok(())
+    }
+
+    /// POST the machine's current expected-files manifest (CCT-68).
+    pub async fn post_manifest(&self, entries: &[ManifestEntry]) -> anyhow::Result<()> {
+        let body = ManifestPostRequest { entries: entries.to_vec() };
+        let res = self
+            .inner
+            .http
+            .post(self.url("/api/v1/archive/manifest"))
+            .header("Authorization", self.auth())
+            .json(&body)
+            .send()
+            .await?;
+        if !res.status().is_success() {
+            let status = res.status();
+            let text = res.text().await.unwrap_or_default();
+            anyhow::bail!("POST manifest failed: {status} {text}");
         }
         Ok(())
     }

@@ -532,6 +532,9 @@ fn handle_server_event(app: &mut App, event: ServerEvent) {
             }
             app.update_aggregates();
         }
+        ServerEvent::ArchiveManifest { .. } | ServerEvent::ArchiveUploaded { .. } => {
+            // TUI doesn't surface archive coverage yet (web UI only, CCT-68).
+        }
     }
 }
 

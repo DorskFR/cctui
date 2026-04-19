@@ -87,6 +87,11 @@ async fn main() -> anyhow::Result<()> {
         .route("/admin/machines/{id}/rotate", post(routes::admin_auth::rotate_machine))
         .route("/admin/machines/{id}/purge", delete(routes::admin_auth::delete_machine))
         .route("/archive/index", get(routes::archive::index))
+        .route("/archive/status", get(routes::archive::get_status))
+        .route(
+            "/archive/manifest",
+            post(routes::archive::post_manifest).layer(DefaultBodyLimit::max(8 * 1024 * 1024)),
+        )
         .route(
             "/archive/{project_dir}/{session_id}",
             put(routes::archive::put)

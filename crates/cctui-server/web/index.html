@@ -84,6 +84,25 @@
   .composer textarea:disabled { opacity:.5; cursor:not-allowed }
   .composer-foot { display:flex; justify-content:space-between; align-items:center; gap:8px }
   .composer-foot .muted { font-size:11px }
+  /* Archive tab */
+  .arch-machine { border-top:1px solid var(--border); padding:10px 14px }
+  .arch-machine:first-child { border-top:none }
+  .arch-machine summary { cursor:pointer; user-select:none; display:flex; gap:8px; align-items:center; list-style:none }
+  .arch-machine summary::-webkit-details-marker { display:none }
+  .arch-machine summary::before { content:'▸'; color:var(--muted); font-size:10px; width:12px; display:inline-block }
+  .arch-machine[open] summary::before { content:'▾' }
+  .arch-machine .mtitle { font-family:var(--mono); font-size:13px }
+  .arch-summary { color:var(--muted); font-size:12px; margin-left:auto; font-family:var(--mono) }
+  .arch-list { margin:8px 0 2px; border-collapse:collapse; width:100%; font-family:var(--mono); font-size:12px }
+  .arch-list td { padding:4px 10px; border-bottom:1px solid var(--border) }
+  .arch-list td:first-child { color:var(--muted); width:340px; word-break:break-all }
+  .arch-list td.size { text-align:right; color:var(--muted); width:90px }
+  .arch-list td.time { color:var(--muted); width:170px }
+  .arch-list td.pill { width:90px }
+  .pill { display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:500 }
+  .pill.synced  { background:rgba(63,185,80,.15);  color:var(--ok) }
+  .pill.missing { background:rgba(248,81,73,.15); color:var(--danger) }
+  .pill.stale   { background:rgba(210,153,34,.15); color:var(--warn) }
 </style>
 </head>
 <body>
@@ -109,6 +128,7 @@
     <button data-tab="overview" class="active" onclick="showTab('overview')">Overview</button>
     <button data-tab="users" onclick="showTab('users')">Users</button>
     <button data-tab="sessions" onclick="showTab('sessions')">Sessions</button>
+    <button data-tab="archive" onclick="showTab('archive')">Archive</button>
   </nav>
   <main>
     <section id="tab-overview">
@@ -143,6 +163,17 @@
           <thead><tr><th>Status</th><th>Working dir</th><th>Machine</th><th>Uptime</th><th>Tokens</th><th>ID</th></tr></thead>
           <tbody id="sessionsBody"></tbody>
         </table>
+      </div>
+    </section>
+
+    <section id="tab-archive" class="hide">
+      <div class="toolbar">
+        <div class="grow"><strong>Archive</strong> <span class="muted">— expected transcript files per machine vs what's been uploaded. Pills flip live as uploads land.</span></div>
+        <span class="muted" id="archiveLive">disconnected</span>
+        <button class="btn" onclick="loadArchive()">Refresh</button>
+      </div>
+      <div class="card" style="padding:0" id="archiveBody">
+        <div style="padding:14px" class="muted">loading…</div>
       </div>
     </section>
   </main>
@@ -262,6 +293,7 @@ function showTab(name) {
   if (name === 'overview') loadOverview();
   if (name === 'users') loadUsers();
   if (name === 'sessions') loadSessions();
+  if (name === 'archive') { loadArchive(); openArchiveWs(); }
 }
 
 async function loadOverview() {
@@ -382,6 +414,109 @@ function revealToken(t) {
   tokenDlg.showModal();
 }
 function copyToken() { navigator.clipboard.writeText(document.getElementById('tokenReveal').textContent); }
+
+// --- Archive tab ---------------------------------------------------------
+let archiveEntries = [];            // array of ArchiveStatusEntry
+let archiveWs = null;
+
+async function loadArchive() {
+  const body = document.getElementById('archiveBody');
+  body.innerHTML = '<div style="padding:14px" class="muted">loading…</div>';
+  try {
+    const res = await api('/archive/status');
+    archiveEntries = res.entries || [];
+    renderArchive();
+  } catch (e) {
+    body.innerHTML = `<div style="padding:14px" class="err">${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function renderArchive() {
+  const body = document.getElementById('archiveBody');
+  if (!archiveEntries.length) {
+    body.innerHTML = '<div style="padding:14px" class="muted">No manifest reported yet. Start Claude on an enrolled machine with <code>--dangerously-load-development-channels server:cctui</code> and an Archive row will appear here within a few seconds.</div>';
+    return;
+  }
+  // Group by machine_id.
+  const byMachine = new Map();
+  for (const e of archiveEntries) {
+    if (!byMachine.has(e.machine_id)) byMachine.set(e.machine_id, []);
+    byMachine.get(e.machine_id).push(e);
+  }
+  const machineIds = Array.from(byMachine.keys()).sort();
+  let html = '';
+  for (const mid of machineIds) {
+    const rows = byMachine.get(mid);
+    rows.sort((a, b) => (a.project_dir + a.session_id).localeCompare(b.project_dir + b.session_id));
+    const counts = { synced: 0, missing: 0, stale: 0 };
+    let totalSize = 0;
+    for (const r of rows) { counts[r.state] = (counts[r.state] || 0) + 1; totalSize += r.expected_size; }
+    html += `<details class="arch-machine" open>
+      <summary>
+        <span class="mtitle">${mid.slice(0, 8)}…</span>
+        <span class="arch-summary">${rows.length} file(s) · ${fmtSize(totalSize)} · <span class="pill synced">${counts.synced} synced</span> <span class="pill missing">${counts.missing} missing</span> <span class="pill stale">${counts.stale} stale</span></span>
+      </summary>
+      <table class="arch-list"><tbody>`;
+    for (const r of rows) {
+      html += `<tr data-machine="${escapeHtml(r.machine_id)}" data-session="${escapeHtml(r.session_id)}">
+        <td>${escapeHtml(r.project_dir)} / ${escapeHtml(r.session_id.slice(0,8))}…</td>
+        <td class="size">${fmtSize(r.expected_size)}</td>
+        <td class="time">${fmtDate(r.expected_mtime)}</td>
+        <td class="pill"><span class="pill ${r.state}">${r.state}</span></td>
+      </tr>`;
+    }
+    html += '</tbody></table></details>';
+  }
+  body.innerHTML = html;
+}
+
+function fmtSize(n) {
+  if (n == null) return '';
+  const units = ['B','K','M','G'];
+  let v = n, i = 0;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return (i === 0 ? v : v.toFixed(v < 10 ? 1 : 0)) + units[i];
+}
+
+function openArchiveWs() {
+  if (archiveWs && archiveWs.readyState <= 1) return;
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const url = `${proto}://${location.host}/api/v1/ws?token=${encodeURIComponent(token)}`;
+  const ws = new WebSocket(url);
+  archiveWs = ws;
+  const live = document.getElementById('archiveLive');
+  ws.onopen = () => { if (live) live.textContent = 'live'; };
+  ws.onclose = () => { if (archiveWs === ws) { archiveWs = null; } if (live) live.textContent = 'disconnected'; };
+  ws.onerror = () => { if (live) live.textContent = 'disconnected'; };
+  ws.onmessage = (msg) => {
+    let m; try { m = JSON.parse(msg.data); } catch { return; }
+    if (m.type === 'archive_manifest') {
+      // Re-pull the full status — manifests replace, so per-entry patching isn't enough.
+      loadArchive();
+    } else if (m.type === 'archive_uploaded') {
+      patchArchiveUploaded(m);
+    }
+  };
+}
+
+function patchArchiveUploaded(ev) {
+  const idx = archiveEntries.findIndex(e =>
+    e.machine_id === ev.machine_id && e.session_id === ev.session_id);
+  if (idx < 0) return; // manifest not yet reported for this file; wait for next refresh
+  const e = archiveEntries[idx];
+  e.uploaded_size = ev.size_bytes;
+  e.uploaded_sha256 = ev.sha256;
+  e.uploaded_at = new Date().toISOString();
+  e.state = (ev.size_bytes < e.expected_size) ? 'stale' : 'synced';
+  // Surgical row update so we don't blow away details-open state.
+  const row = document.querySelector(`tr[data-machine="${ev.machine_id}"][data-session="${ev.session_id}"]`);
+  if (row) {
+    const pillCell = row.querySelector('td.pill');
+    if (pillCell) pillCell.innerHTML = `<span class="pill ${e.state}">${e.state}</span>`;
+  } else {
+    renderArchive();
+  }
+}
 
 async function loadSessions() {
   const body = document.getElementById('sessionsBody');

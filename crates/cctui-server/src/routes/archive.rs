@@ -3,7 +3,11 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
-use cctui_proto::api::ArchiveIndexEntry;
+use cctui_proto::api::{
+    ArchiveIndexEntry, ArchiveStatusEntry, ArchiveStatusResponse, ArchiveSyncState,
+    ManifestPostRequest,
+};
+use cctui_proto::ws::ServerEvent;
 use futures_util::TryStreamExt;
 use serde::{Deserialize, Serialize};
 use tokio_util::io::{ReaderStream, StreamReader};
@@ -159,11 +163,160 @@ pub async fn put(
         "archive upload"
     );
 
+    // Broadcast so open web-UI clients can flip the pill to `synced` live (CCT-68).
+    let _ = state.tui_tx.send(ServerEvent::ArchiveUploaded {
+        machine_id,
+        project_dir: project_dir.clone(),
+        session_id: session_id.clone(),
+        size_bytes: i64::try_from(stats.size_bytes).unwrap_or(i64::MAX),
+        sha256: stats.sha256.clone(),
+    });
+
     Ok(Json(PutResponse {
         sha256: stats.sha256,
         size_bytes: stats.size_bytes,
         line_count: stats.line_count,
     }))
+}
+
+/// Replace this machine's manifest of expected archive files (CCT-68).
+///
+/// Transactional: delete all prior rows for this machine and insert the new set
+/// atomically so a consumer never sees a half-applied manifest.
+pub async fn post_manifest(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Json(body): Json<ManifestPostRequest>,
+) -> Result<StatusCode, StatusCode> {
+    let machine_id = require_machine(&ctx)?;
+
+    // Validate every entry before touching the DB.
+    for e in &body.entries {
+        if !valid_name(&e.project_dir) || !valid_name(&e.session_id) {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+    }
+
+    let mut tx = state.pool.begin().await.map_err(|e| {
+        tracing::error!("manifest begin tx: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    sqlx::query("DELETE FROM archive_manifest WHERE machine_id = $1")
+        .bind(machine_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| {
+            tracing::error!("manifest delete: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    for e in &body.entries {
+        sqlx::query(
+            "INSERT INTO archive_manifest \
+             (machine_id, project_dir, session_id, size_bytes, mtime) \
+             VALUES ($1,$2,$3,$4,$5)",
+        )
+        .bind(machine_id)
+        .bind(&e.project_dir)
+        .bind(&e.session_id)
+        .bind(e.size_bytes)
+        .bind(e.mtime)
+        .execute(&mut *tx)
+        .await
+        .map_err(|err| {
+            tracing::error!("manifest insert: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    }
+
+    tx.commit().await.map_err(|e| {
+        tracing::error!("manifest commit: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let count = i64::try_from(body.entries.len()).unwrap_or(i64::MAX);
+    tracing::info!(machine_id = %machine_id, count, "archive manifest posted");
+    let _ = state.tui_tx.send(ServerEvent::ArchiveManifest { machine_id, count });
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+type StatusRow = (
+    uuid::Uuid,
+    String,
+    String,
+    i64,
+    chrono::DateTime<chrono::Utc>,
+    Option<i64>,
+    Option<String>,
+    Option<chrono::DateTime<chrono::Utc>>,
+);
+
+/// Compute per-(machine, session) sync status by left-joining `archive_manifest`
+/// (expected) with `archive_index` (uploaded).
+pub async fn get_status(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+) -> Result<Json<ArchiveStatusResponse>, StatusCode> {
+    let user_id = require_user_scope(&ctx)?;
+
+    let rows: Vec<StatusRow> = sqlx::query_as(
+        "SELECT m.machine_id, m.project_dir, m.session_id, \
+                m.size_bytes, m.mtime, \
+                a.size_bytes, a.sha256, a.uploaded_at \
+         FROM archive_manifest m \
+         JOIN machines mx ON mx.id = m.machine_id \
+         LEFT JOIN archive_index a \
+                ON a.machine_id = m.machine_id AND a.session_id = m.session_id \
+         WHERE mx.user_id = $1 \
+         ORDER BY m.machine_id, m.project_dir, m.session_id",
+    )
+    .bind(user_id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("archive status db error: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let entries = rows
+        .into_iter()
+        .map(
+            |(
+                machine_id,
+                project_dir,
+                session_id,
+                expected_size,
+                expected_mtime,
+                uploaded_size,
+                uploaded_sha256,
+                uploaded_at,
+            )| {
+                let state = match uploaded_size {
+                    None => ArchiveSyncState::Missing,
+                    Some(us) if us < expected_size => ArchiveSyncState::Stale,
+                    Some(_) => match uploaded_at {
+                        Some(ua) if ua < expected_mtime => ArchiveSyncState::Stale,
+                        _ => ArchiveSyncState::Synced,
+                    },
+                };
+                ArchiveStatusEntry {
+                    machine_id,
+                    project_dir,
+                    session_id,
+                    expected_size,
+                    expected_mtime,
+                    uploaded_size,
+                    uploaded_sha256,
+                    uploaded_at,
+                    state,
+                }
+            },
+        )
+        .collect();
+
+    Ok(Json(ArchiveStatusResponse { entries }))
 }
 
 /// List all archives owned by the caller's user (across all their machines).

@@ -50,6 +50,19 @@ pub enum ServerEvent {
         description: String,
         input_preview: String,
     },
+    /// A machine has just reported a fresh expected-files manifest (CCT-68).
+    ArchiveManifest {
+        machine_id: uuid::Uuid,
+        count: i64,
+    },
+    /// A single archive file has just finished uploading (CCT-68).
+    ArchiveUploaded {
+        machine_id: uuid::Uuid,
+        project_dir: String,
+        session_id: String,
+        size_bytes: i64,
+        sha256: String,
+    },
 }
 
 #[cfg(test)]
