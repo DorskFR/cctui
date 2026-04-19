@@ -297,7 +297,10 @@ async function toggleMachines(userId, btn) {
     let html = `<td colspan="6"><table style="width:100%"><thead><tr><th>Name</th><th>First seen</th><th>Last seen</th><th>Status</th><th>ID</th><th></th></tr></thead><tbody>`;
     for (const m of machines) {
       const rev = !!m.revoked_at;
-      html += `<tr><td>${escapeHtml(m.name)}</td><td class="muted">${fmtDate(m.first_seen_at)}</td><td class="muted">${fmtDate(m.last_seen_at)}</td><td><span class="status ${rev?'disconnected':'active'}">${rev?'revoked':'active'}</span></td><td class="muted">${m.id}</td><td style="text-align:right"><button class="btn" onclick="rotateMachine('${m.id}')" ${rev?'disabled':''}>Rotate</button> <button class="btn danger" onclick="revokeMachine('${m.id}','${userId}')" ${rev?'disabled':''}>Revoke</button></td></tr>`;
+      const actions = rev
+        ? `<button class="btn danger" onclick="deleteMachine('${m.id}','${userId}')">Delete</button>`
+        : `<button class="btn" onclick="rotateMachine('${m.id}')">Rotate</button> <button class="btn danger" onclick="revokeMachine('${m.id}','${userId}')">Revoke</button>`;
+      html += `<tr><td>${escapeHtml(m.name)}</td><td class="muted">${fmtDate(m.first_seen_at)}</td><td class="muted">${fmtDate(m.last_seen_at)}</td><td><span class="status ${rev?'disconnected':'active'}">${rev?'revoked':'active'}</span></td><td class="muted">${m.id}</td><td style="text-align:right">${actions}</td></tr>`;
     }
     html += '</tbody></table></td>';
     row.innerHTML = html;
@@ -331,6 +334,11 @@ async function rotateUser(id) {
 async function revokeMachine(id, userId) {
   if (!confirm('Revoke this machine?')) return;
   try { await api('/admin/machines/' + id, { method: 'DELETE' }); loadUsers(); }
+  catch (e) { alert(e.message); }
+}
+async function deleteMachine(id, userId) {
+  if (!confirm('Permanently delete this revoked machine? Historical sessions and archive entries for it will remain, but the row will be removed from this list.')) return;
+  try { await api('/admin/machines/' + id + '/purge', { method: 'DELETE' }); loadUsers(); }
   catch (e) { alert(e.message); }
 }
 async function rotateMachine(id) {

@@ -157,13 +157,40 @@ pub async fn list_user_machines(
     forbid_or(&ctx)?;
     let rows: Vec<MachineRow> = sqlx::query_as(
         "SELECT id, user_id, name, first_seen_at, last_seen_at, revoked_at \
-         FROM machines WHERE user_id = $1 ORDER BY first_seen_at",
+         FROM machines WHERE user_id = $1 AND deleted_at IS NULL ORDER BY first_seen_at",
     )
     .bind(user_id)
     .fetch_all(&state.pool)
     .await
     .map_err(|e| db_err(&e))?;
     Ok(Json(rows))
+}
+
+/// Soft-delete a machine row. Only allowed once the machine is already
+/// revoked — we preserve the row itself so historical FK references
+/// (sessions, archive entries) don't break, but hide it from the admin UI.
+pub async fn delete_machine(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    forbid_or(&ctx)?;
+    let res = sqlx::query(
+        "UPDATE machines SET deleted_at = now() \
+         WHERE id = $1 AND revoked_at IS NOT NULL AND deleted_at IS NULL",
+    )
+    .bind(id)
+    .execute(&state.pool)
+    .await
+    .map_err(|e| db_err(&e))?;
+    if res.rows_affected() == 0 {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(ApiError { error: "machine must be revoked before delete".into() }),
+        ));
+    }
+    tracing::info!(machine_id = %id, "machine deleted (soft)");
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn revoke_machine(
