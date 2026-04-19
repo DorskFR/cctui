@@ -21,7 +21,9 @@ pub enum PolicyAction {
 }
 
 /// Evaluate a set of rules against a tool call.
-/// Rules are evaluated in order; first match wins. Default is allow.
+/// Rules are evaluated in order; first match wins. Default is `Ask` — no
+/// silent allow, so Claude Code's normal permission prompt runs unless a
+/// rule explicitly allows or denies the call.
 pub fn evaluate(rules: &[PolicyRule], tool: &str, input: &serde_json::Value) -> PolicyDecision {
     let input_str = input.to_string();
 
@@ -46,11 +48,12 @@ pub fn evaluate(rules: &[PolicyRule], tool: &str, input: &serde_json::Value) -> 
         }
     }
 
-    PolicyDecision::Allow // default: allow all
+    PolicyDecision::Ask // default: defer to Claude Code's permission UI
 }
 
 #[derive(Debug)]
 pub enum PolicyDecision {
     Allow,
+    Ask,
     Deny { reason: String },
 }

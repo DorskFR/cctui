@@ -70,11 +70,13 @@ pub async fn check(
         }
     }
 
-    // Evaluate policy
+    // Evaluate policy. With no session or no matching rule we fall through to
+    // `Ask`, which hands the decision back to Claude Code's built-in prompt —
+    // the user's configured permission mode is preserved.
     let decision = {
         let registry = state.registry.read().await;
         session_id.and_then(|sid| registry.get(sid)).map_or(
-            crate::policy::PolicyDecision::Allow,
+            crate::policy::PolicyDecision::Ask,
             |handle| {
                 crate::policy::evaluate(
                     &handle.policy_rules,
@@ -90,6 +92,13 @@ pub async fn check(
             hook_specific_output: HookOutput {
                 hook_event_name: "PreToolUse".into(),
                 permission_decision: "allow".into(),
+                permission_decision_reason: None,
+            },
+        }),
+        crate::policy::PolicyDecision::Ask => Json(CheckResponse {
+            hook_specific_output: HookOutput {
+                hook_event_name: "PreToolUse".into(),
+                permission_decision: "ask".into(),
                 permission_decision_reason: None,
             },
         }),
