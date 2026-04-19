@@ -78,6 +78,12 @@
   .conv .empty { color:var(--muted); padding:40px; text-align:center }
   .conv .live-dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--ok); margin-left:6px; vertical-align:middle }
   .conv .live-dot.off { background:var(--muted) }
+  .composer { border-top:1px solid var(--border); padding:10px 14px; background:var(--panel); display:flex; flex-direction:column; gap:6px }
+  .composer textarea { width:100%; box-sizing:border-box; resize:vertical; font-family:var(--mono); font-size:12.5px; background:#0b0f14; color:var(--fg); border:1px solid var(--border); border-radius:6px; padding:8px 10px; min-height:42px; max-height:200px }
+  .composer textarea:focus { outline:none; border-color:var(--accent) }
+  .composer textarea:disabled { opacity:.5; cursor:not-allowed }
+  .composer-foot { display:flex; justify-content:space-between; align-items:center; gap:8px }
+  .composer-foot .muted { font-size:11px }
 </style>
 </head>
 <body>
@@ -151,6 +157,14 @@
     <button class="btn" onclick="closeDrawer()">Close</button>
   </header>
   <div class="conv" id="drawerConv"><div class="empty">loading…</div></div>
+  <div id="drawerComposer" class="composer">
+    <textarea id="drawerInput" rows="2" placeholder="Message this session… (Enter to send, Shift+Enter for newline)"
+              onkeydown="onComposerKey(event)"></textarea>
+    <div class="composer-foot">
+      <span class="muted" id="composerHint">Connecting…</span>
+      <button class="btn primary" id="composerSend" onclick="sendComposer()" disabled>Send</button>
+    </div>
+  </div>
 </aside>
 
 <dialog id="createUserDlg">
@@ -395,17 +409,77 @@ function fmtDuration(sec) {
 // --- Conversation drawer ------------------------------------------------
 let drawerWs = null;
 let drawerSessionId = null;
+let drawerSessionStatus = null;
 let drawerLastLine = null; // { kind, text } for dedup
 
 function setLive(on) {
   const d = document.getElementById('drawerLive');
   d.classList.toggle('off', !on);
   d.title = on ? 'live' : 'disconnected';
+  updateComposerState();
+}
+
+// Composer enable rule: live WS + session isn't archived. All three lifecycle
+// states from CCT-61 (new / active / inactive) are revivable — a queued message
+// resurrects an inactive session — so only `archived` (future state) disables.
+function updateComposerState() {
+  const input = document.getElementById('drawerInput');
+  const btn   = document.getElementById('composerSend');
+  const hint  = document.getElementById('composerHint');
+  if (!input || !btn || !hint) return;
+  const live = drawerWs && drawerWs.readyState === 1;
+  const archived = drawerSessionStatus === 'archived';
+  const ok = live && !archived && !!drawerSessionId;
+  input.disabled = !ok;
+  btn.disabled = !ok || !input.value.trim();
+  if (archived) hint.textContent = 'session is archived — read only';
+  else if (!live) hint.textContent = 'connecting…';
+  else hint.textContent = 'Enter to send · Shift+Enter for newline';
+}
+
+function onComposerKey(ev) {
+  if (ev.key === 'Enter' && !ev.shiftKey) {
+    ev.preventDefault();
+    sendComposer();
+  } else {
+    // Re-eval enabled state on input so the Send button tracks content.
+    queueMicrotask(updateComposerState);
+  }
+}
+
+function sendComposer() {
+  const input = document.getElementById('drawerInput');
+  if (!input || !drawerSessionId) return;
+  const content = input.value.trim();
+  if (!content) return;
+  if (!drawerWs || drawerWs.readyState !== 1) return;
+  try {
+    drawerWs.send(JSON.stringify({ type: 'message', session_id: drawerSessionId, content }));
+  } catch (e) {
+    // Surface the error to the user by re-enabling input.
+    input.disabled = false;
+    return;
+  }
+  // Optimistic echo so the sender sees their message immediately. The real
+  // transcript line from the agent will dedup against drawerLastLine when
+  // it arrives.
+  const conv = document.getElementById('drawerConv');
+  const empty = conv.querySelector('.empty');
+  if (empty) empty.remove();
+  const div = document.createElement('div');
+  div.className = 'line user';
+  div.innerHTML = `<span class="role">You</span>${renderMarkdown(content)}`;
+  conv.appendChild(div);
+  drawerLastLine = { kind: 'user', text: content };
+  scrollToBottom(conv);
+  input.value = '';
+  updateComposerState();
 }
 
 async function openDrawer(session) {
   closeDrawer();
   drawerSessionId = session.id;
+  drawerSessionStatus = session.status;
   const drawer = document.getElementById('drawer');
   drawer.classList.add('open');
   drawer.setAttribute('aria-hidden', 'false');
@@ -434,6 +508,9 @@ function closeDrawer() {
   drawer.setAttribute('aria-hidden', 'true');
   if (drawerWs) { try { drawerWs.close(); } catch {} drawerWs = null; }
   drawerSessionId = null;
+  drawerSessionStatus = null;
+  const input = document.getElementById('drawerInput');
+  if (input) input.value = '';
   setLive(false);
 }
 
