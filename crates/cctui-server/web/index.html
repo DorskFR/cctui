@@ -167,6 +167,19 @@
   </div>
 </aside>
 
+<dialog id="permissionDlg">
+  <h3 style="margin-top:0">Tool Approval Required</h3>
+  <div style="margin-bottom:8px"><span class="muted">Tool:</span> <strong id="permTool"></strong></div>
+  <div style="margin-bottom:8px"><span class="muted">Description:</span> <span id="permDesc"></span></div>
+  <div class="muted" style="margin-bottom:4px">Input preview:</div>
+  <pre id="permPreview" style="background:#0b0f14;border:1px solid var(--border);border-radius:6px;padding:10px;max-height:260px;overflow:auto;font-family:var(--mono);font-size:12px;margin:0 0 10px"></pre>
+  <div id="permQueueHint" class="muted" style="font-size:11px;margin-bottom:8px"></div>
+  <div style="text-align:right;display:flex;gap:8px;justify-content:flex-end">
+    <button class="btn danger" onclick="respondPermission('deny')">Deny (n)</button>
+    <button class="btn primary" onclick="respondPermission('allow')">Allow (y)</button>
+  </div>
+</dialog>
+
 <dialog id="createUserDlg">
   <h3 style="margin-top:0">Create user</h3>
   <input id="newUserName" placeholder="Display name" autofocus>
@@ -524,7 +537,12 @@ function openDrawerWs(sid) {
   ws.onerror = () => setLive(false);
   ws.onmessage = (msg) => {
     let m; try { m = JSON.parse(msg.data); } catch { return; }
-    if (m.type !== 'stream' || m.session_id !== drawerSessionId) return;
+    if (m.session_id && m.session_id !== drawerSessionId) return;
+    if (m.type === 'permission_request') {
+      enqueuePermission(m);
+      return;
+    }
+    if (m.type !== 'stream') return;
     const conv = document.getElementById('drawerConv');
     // Replace the "No events yet." placeholder on first live event.
     const empty = conv.querySelector('.empty');
@@ -534,6 +552,53 @@ function openDrawerWs(sid) {
     if (wasAtBottom) scrollToBottom(conv);
   };
 }
+
+// --- Permission dialog ---
+let permissionQueue = [];
+
+function enqueuePermission(req) {
+  permissionQueue.push(req);
+  if (permissionQueue.length === 1) showNextPermission();
+}
+
+function showNextPermission() {
+  const dlg = document.getElementById('permissionDlg');
+  if (!permissionQueue.length) {
+    if (dlg.open) dlg.close();
+    return;
+  }
+  const req = permissionQueue[0];
+  document.getElementById('permTool').textContent = req.tool_name || '';
+  document.getElementById('permDesc').textContent = req.description || '';
+  document.getElementById('permPreview').textContent = req.input_preview || '';
+  const hint = document.getElementById('permQueueHint');
+  hint.textContent = permissionQueue.length > 1 ? `+${permissionQueue.length - 1} more queued` : '';
+  if (!dlg.open) dlg.showModal();
+}
+
+function respondPermission(behavior) {
+  const req = permissionQueue.shift();
+  if (req && drawerWs && drawerWs.readyState === WebSocket.OPEN) {
+    drawerWs.send(JSON.stringify({
+      type: 'permission_response',
+      session_id: req.session_id,
+      request_id: req.request_id,
+      behavior,
+    }));
+  }
+  showNextPermission();
+}
+
+(function wirePermissionDialog() {
+  const dlg = document.getElementById('permissionDlg');
+  if (!dlg) return;
+  // Intercept native Escape-to-close so it counts as "deny".
+  dlg.addEventListener('cancel', (e) => { e.preventDefault(); respondPermission('deny'); });
+  dlg.addEventListener('keydown', (e) => {
+    if (e.key === 'y' || e.key === 'Y') { e.preventDefault(); respondPermission('allow'); }
+    else if (e.key === 'n' || e.key === 'N') { e.preventDefault(); respondPermission('deny'); }
+  });
+})();
 
 function appendEvent(container, ev) {
   const line = eventToLine(ev);
@@ -682,7 +747,10 @@ function fmtTs(ts) {
 }
 
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && drawerSessionId) closeDrawer();
+  if (e.key !== 'Escape' || !drawerSessionId) return;
+  const permDlg = document.getElementById('permissionDlg');
+  if (permDlg && permDlg.open) return;
+  closeDrawer();
 });
 
 if (token) {
