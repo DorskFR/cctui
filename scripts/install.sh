@@ -234,3 +234,16 @@ case ":$PATH:" in
   *":$PREFIX:"*) : ;;
   *) warn "$PREFIX is not in \$PATH — add it to your shell profile" ;;
 esac
+
+cat >&2 <<EOF
+
+[cctui] IMPORTANT: to enable TUI↔Claude messaging, launch Claude Code with:
+
+            claude --dangerously-load-development-channels server:cctui
+
+        Without this flag the cctui MCP channel is registered but its tools
+        are never exposed, so messages queued by the TUI go nowhere. Consider
+        aliasing in your shell profile, e.g.:
+
+            alias claude='claude --dangerously-load-development-channels server:cctui'
+EOF
