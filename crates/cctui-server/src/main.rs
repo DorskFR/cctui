@@ -99,6 +99,7 @@ async fn main() -> anyhow::Result<()> {
                 .get(routes::archive::get)
                 .layer(DefaultBodyLimit::max(100 * 1024 * 1024)),
         )
+        .route("/permissions/pending", get(routes::permissions::list_pending))
         .route("/skills/index", get(routes::skills::index))
         .route(
             "/skills/{name}",

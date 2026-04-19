@@ -263,7 +263,16 @@ async fn run_tui_socket(
                     behavior = %behavior,
                     "TUI permission response received"
                 );
-                state.permission_store.write().await.record_decision(&request_id, behavior);
+                let stored_session_id =
+                    state.permission_store.write().await.record_decision(&request_id, behavior);
+                // Prefer the id attached at submission; fall back to the one
+                // the client sent (stale / unknown request_id cases).
+                let resolved_session_id =
+                    if stored_session_id.is_empty() { session_id } else { stored_session_id };
+                let _ = state.tui_tx.send(ServerEvent::PermissionResolved {
+                    session_id: resolved_session_id,
+                    request_id,
+                });
             }
         }
     }

@@ -15,7 +15,6 @@ use crate::state::AppState;
 // --- Permission store (in-memory) ---
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct PendingPermission {
     pub session_id: String,
     pub request_id: String,
@@ -45,9 +44,17 @@ impl PermissionStore {
         self.pending.insert(req.request_id.clone(), req);
     }
 
-    pub fn record_decision(&mut self, request_id: &str, behavior: String) {
+    /// Record a decision and return the `session_id` it belonged to (empty
+    /// string if the `request_id` was unknown — already consumed or never
+    /// submitted). Callers use the `session_id` to broadcast a resolution event.
+    pub fn record_decision(&mut self, request_id: &str, behavior: String) -> String {
         let session_id = self.pending.remove(request_id).map(|p| p.session_id).unwrap_or_default();
-        self.decisions.insert(request_id.to_string(), (session_id, behavior, Utc::now()));
+        self.decisions.insert(request_id.to_string(), (session_id.clone(), behavior, Utc::now()));
+        session_id
+    }
+
+    pub fn list_pending(&self) -> Vec<PendingPermission> {
+        self.pending.values().cloned().collect()
     }
 
     /// Consume a decision, validating it belongs to `session_id`.
@@ -85,6 +92,34 @@ pub struct PermissionRequestPayload {
 pub enum PermissionDecisionResponse {
     Pending,
     Decided { behavior: String },
+}
+
+#[derive(Debug, Serialize)]
+pub struct PendingPermissionView {
+    pub session_id: String,
+    pub request_id: String,
+    pub tool_name: String,
+    pub description: String,
+    pub input_preview: String,
+}
+
+/// List all currently-pending permission requests (for web client
+/// reconciliation on (re)connect).
+pub async fn list_pending(State(state): State<AppState>) -> Json<Vec<PendingPermissionView>> {
+    let store = state.permission_store.read().await;
+    Json(
+        store
+            .list_pending()
+            .into_iter()
+            .map(|p| PendingPermissionView {
+                session_id: p.session_id,
+                request_id: p.request_id,
+                tool_name: p.tool_name,
+                description: p.description,
+                input_preview: p.input_preview,
+            })
+            .collect(),
+    )
 }
 
 // --- Handlers ---
