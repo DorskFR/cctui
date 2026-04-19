@@ -85,6 +85,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/admin/users/{id}/machines", get(routes::admin_auth::list_user_machines))
         .route("/admin/machines/{id}", delete(routes::admin_auth::revoke_machine))
         .route("/admin/machines/{id}/rotate", post(routes::admin_auth::rotate_machine))
+        .route("/admin/machines/{id}/purge", delete(routes::admin_auth::delete_machine))
         .route("/archive/index", get(routes::archive::index))
         .route(
             "/archive/{project_dir}/{session_id}",
