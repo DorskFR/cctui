@@ -6,10 +6,11 @@ pub struct Config {
     pub port: u16,
     pub database_url: String,
     pub external_url: String,
-    #[allow(dead_code)]
-    pub heartbeat_timeout_secs: u64,
-    #[allow(dead_code)]
-    pub terminated_timeout_secs: u64,
+    /// How long a session may sit without activity before the reaper
+    /// demotes it from `Active` to `Inactive`. The old
+    /// `CCTUI_HEARTBEAT_TIMEOUT` env var is still accepted for
+    /// back-compat with existing deployments.
+    pub inactive_after_secs: u64,
 }
 
 impl Config {
@@ -20,14 +21,11 @@ impl Config {
             database_url: env::var("DATABASE_URL").expect("DATABASE_URL must be set"),
             external_url: env::var("CCTUI_EXTERNAL_URL")
                 .unwrap_or_else(|_| "http://localhost:8700".into()),
-            heartbeat_timeout_secs: env::var("CCTUI_HEARTBEAT_TIMEOUT")
+            inactive_after_secs: env::var("CCTUI_INACTIVE_AFTER")
+                .or_else(|_| env::var("CCTUI_HEARTBEAT_TIMEOUT"))
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(90),
-            terminated_timeout_secs: env::var("CCTUI_TERMINATED_TIMEOUT")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(300),
         }
     }
 

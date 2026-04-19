@@ -21,23 +21,27 @@ pub async fn register(
         account_id: None,
         machine_id: req.machine_id,
         working_dir: req.working_dir,
-        status: SessionStatus::Active,
+        status: SessionStatus::New,
         registered_at: now,
         last_heartbeat: now,
         metadata: req.metadata.unwrap_or_else(|| serde_json::json!({})),
     };
 
+    // A fresh registration is `new` — it becomes `active` on the first
+    // transcript line / turn. Re-registration of an already-known session
+    // (e.g. Claude restart) is treated the same way: status=new, let the
+    // first activity promote it.
     sqlx::query(
         r"INSERT INTO sessions (id, parent_id, account_id, machine_id, working_dir, status, registered_at, last_heartbeat, metadata)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-           ON CONFLICT (id) DO UPDATE SET status = 'active', last_heartbeat = $8, metadata = $9",
+           ON CONFLICT (id) DO UPDATE SET status = 'new', last_heartbeat = $8, metadata = $9",
     )
     .bind(&session.id)
     .bind(&session.parent_id)
     .bind(&session.account_id)
     .bind(&session.machine_id)
     .bind(&session.working_dir)
-    .bind("active")
+    .bind("new")
     .bind(session.registered_at)
     .bind(session.last_heartbeat)
     .bind(&session.metadata)
@@ -66,7 +70,9 @@ pub async fn deregister(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    sqlx::query("UPDATE sessions SET status = 'terminated' WHERE id = $1")
+    // Deregister just drops the live handle; the session stays in DB as
+    // `inactive` and can be revived by a future turn/message.
+    sqlx::query("UPDATE sessions SET status = 'inactive' WHERE id = $1")
         .bind(&session_id)
         .execute(&state.pool)
         .await

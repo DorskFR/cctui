@@ -46,7 +46,7 @@ async fn ensure_registered(state: &AppState, session_id: &str) {
         account_id: None,
         machine_id: row.machine_id,
         working_dir: row.working_dir,
-        status: SessionStatus::Active,
+        status: SessionStatus::New,
         registered_at: row.registered_at,
         last_heartbeat: chrono::Utc::now(),
         metadata: row.metadata,

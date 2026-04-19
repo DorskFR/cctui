@@ -113,52 +113,40 @@ impl Registry {
         }
     }
 
-    /// Update heartbeat for `id`. If the session was previously marked
-    /// `Disconnected` or `Terminated`, flip it back to `Active` and return the
-    /// new status so the caller can broadcast a status change. Returns `None`
-    /// if the session is unknown or the status didn't change.
+    /// Record activity for `id` — refresh the heartbeat and flip the session
+    /// to `Active` if it was `New` or `Inactive`. Returns the new status if
+    /// it changed, so the caller can broadcast a status change. Returns
+    /// `None` if the session is unknown or was already `Active`.
     pub fn touch(&mut self, id: &str) -> Option<SessionStatus> {
         let handle = self.sessions.get_mut(id)?;
         handle.last_heartbeat = Instant::now();
         handle.session.last_heartbeat = Utc::now();
-        if matches!(handle.session.status, SessionStatus::Disconnected | SessionStatus::Terminated)
-        {
+        if handle.session.status == SessionStatus::Active {
+            None
+        } else {
             handle.session.status = SessionStatus::Active;
             Some(SessionStatus::Active)
-        } else {
-            None
         }
     }
 
-    pub fn mark_stale(
-        &mut self,
-        disconnected_after_secs: u64,
-        terminated_after_secs: u64,
-    ) -> Vec<String> {
+    /// Demote `Active` sessions whose last activity is older than
+    /// `inactive_after_secs` to `Inactive`. `New` sessions stay `New` until
+    /// the first turn arrives; `Inactive` stays `Inactive` until revived.
+    /// Returns the list of session ids that were just demoted.
+    pub fn mark_stale(&mut self, inactive_after_secs: u64) -> Vec<String> {
         let now = Instant::now();
-        let mut terminated = Vec::new();
-
+        let mut demoted = Vec::new();
         for handle in self.sessions.values_mut() {
+            if handle.session.status != SessionStatus::Active {
+                continue;
+            }
             let elapsed = now.duration_since(handle.last_heartbeat).as_secs();
-            match handle.session.status {
-                SessionStatus::Active | SessionStatus::Idle | SessionStatus::Registering => {
-                    if elapsed > terminated_after_secs {
-                        handle.session.status = SessionStatus::Terminated;
-                        terminated.push(handle.session.id.clone());
-                    } else if elapsed > disconnected_after_secs {
-                        handle.session.status = SessionStatus::Disconnected;
-                    }
-                }
-                SessionStatus::Disconnected => {
-                    if elapsed > terminated_after_secs {
-                        handle.session.status = SessionStatus::Terminated;
-                        terminated.push(handle.session.id.clone());
-                    }
-                }
-                SessionStatus::Terminated => {}
+            if elapsed > inactive_after_secs {
+                handle.session.status = SessionStatus::Inactive;
+                demoted.push(handle.session.id.clone());
             }
         }
-        terminated
+        demoted
     }
 
     pub fn subscribe(&self, id: &str) -> Option<broadcast::Receiver<AgentEvent>> {
@@ -298,29 +286,57 @@ mod tests {
     }
 
     #[test]
-    fn mark_stale_transitions_active_to_disconnected_then_terminated() {
+    fn mark_stale_demotes_active_to_inactive() {
         let mut reg = Registry::new();
         let id = "claude-session-abc";
         reg.register(make_session(id, None));
 
+        // Fresh session — stays Active.
+        let demoted = reg.mark_stale(90);
+        assert!(demoted.is_empty());
+        assert_eq!(reg.get(id).unwrap().session.status, SessionStatus::Active);
+
+        // Backdate the heartbeat past the inactive window.
         if let Some(handle) = reg.get_mut(id) {
             handle.last_heartbeat =
                 std::time::Instant::now().checked_sub(std::time::Duration::from_secs(100)).unwrap();
         }
+        let demoted = reg.mark_stale(90);
+        assert_eq!(demoted, vec![id.to_string()]);
+        assert_eq!(reg.get(id).unwrap().session.status, SessionStatus::Inactive);
 
-        let terminated = reg.mark_stale(90, 300);
-        assert!(terminated.is_empty());
-        assert_eq!(reg.get(id).unwrap().session.status, SessionStatus::Disconnected);
+        // Inactive stays inactive; mark_stale is idempotent.
+        let demoted = reg.mark_stale(90);
+        assert!(demoted.is_empty());
+        assert_eq!(reg.get(id).unwrap().session.status, SessionStatus::Inactive);
+    }
 
-        if let Some(handle) = reg.get_mut(id) {
-            handle.last_heartbeat =
-                std::time::Instant::now().checked_sub(std::time::Duration::from_secs(400)).unwrap();
-        }
+    #[test]
+    fn touch_revives_inactive_session() {
+        let mut reg = Registry::new();
+        let id = "claude-session-abc";
+        let mut s = make_session(id, None);
+        s.status = SessionStatus::Inactive;
+        reg.register(s);
 
-        let terminated = reg.mark_stale(90, 300);
-        assert_eq!(terminated.len(), 1);
-        assert_eq!(terminated[0], id);
-        assert_eq!(reg.get(id).unwrap().session.status, SessionStatus::Terminated);
+        let changed = reg.touch(id);
+        assert_eq!(changed, Some(SessionStatus::Active));
+        assert_eq!(reg.get(id).unwrap().session.status, SessionStatus::Active);
+
+        // Touching an already-active session is a no-op for status.
+        assert!(reg.touch(id).is_none());
+    }
+
+    #[test]
+    fn touch_promotes_new_to_active() {
+        let mut reg = Registry::new();
+        let id = "claude-session-abc";
+        let mut s = make_session(id, None);
+        s.status = SessionStatus::New;
+        reg.register(s);
+
+        let changed = reg.touch(id);
+        assert_eq!(changed, Some(SessionStatus::Active));
     }
 
     #[test]

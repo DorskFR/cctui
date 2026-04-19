@@ -74,8 +74,8 @@ fn draw_session_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
 }
 
 fn session_line(s: &SessionListItem) -> ListItem<'static> {
-    let icon = theme::status_icon(&s.status);
-    let icon_style = theme::status_style(&s.status);
+    let icon = theme::status_icon(s.status);
+    let icon_style = theme::status_style(s.status);
 
     let project = s
         .metadata
