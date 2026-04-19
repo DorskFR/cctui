@@ -50,6 +50,12 @@ pub enum ServerEvent {
         description: String,
         input_preview: String,
     },
+    /// A previously-broadcast permission request has been resolved (by TUI
+    /// or a web client). Clients should dismiss any inline prompt UI.
+    PermissionResolved {
+        session_id: String,
+        request_id: String,
+    },
     /// A machine has just reported a fresh expected-files manifest (CCT-68).
     ArchiveManifest {
         machine_id: uuid::Uuid,

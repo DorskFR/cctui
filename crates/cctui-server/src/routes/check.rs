@@ -91,21 +91,24 @@ pub async fn check(
         crate::policy::PolicyDecision::Allow => Json(CheckResponse {
             hook_specific_output: HookOutput {
                 hook_event_name: "PreToolUse".into(),
-                permission_decision: "allow".into(),
+                permission_decision: Some("allow".into()),
                 permission_decision_reason: None,
             },
         }),
+        // No permissionDecision → Claude falls through to its normal flow
+        // (bypass mode, allow/deny rules, MCP canUseTool — whichever applies).
+        // Setting "ask" here would override bypass mode and force a prompt.
         crate::policy::PolicyDecision::Ask => Json(CheckResponse {
             hook_specific_output: HookOutput {
                 hook_event_name: "PreToolUse".into(),
-                permission_decision: "ask".into(),
+                permission_decision: None,
                 permission_decision_reason: None,
             },
         }),
         crate::policy::PolicyDecision::Deny { reason } => Json(CheckResponse {
             hook_specific_output: HookOutput {
                 hook_event_name: "PreToolUse".into(),
-                permission_decision: "deny".into(),
+                permission_decision: Some("deny".into()),
                 permission_decision_reason: Some(reason),
             },
         }),

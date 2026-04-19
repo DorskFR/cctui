@@ -535,6 +535,22 @@ fn handle_server_event(app: &mut App, event: ServerEvent) {
         ServerEvent::ArchiveManifest { .. } | ServerEvent::ArchiveUploaded { .. } => {
             // TUI doesn't surface archive coverage yet (web UI only, CCT-68).
         }
+        ServerEvent::PermissionResolved { session_id, request_id } => {
+            // Drop any queued entry that matches; if it's the head and the
+            // dialog is currently showing, restore the pre-dialog view.
+            let was_head_matching = app
+                .permission_queue
+                .front()
+                .is_some_and(|p| p.session_id == session_id && p.request_id == request_id);
+            app.permission_queue
+                .retain(|p| !(p.session_id == session_id && p.request_id == request_id));
+            if was_head_matching
+                && app.permission_queue.is_empty()
+                && matches!(app.view, View::PermissionDialog)
+            {
+                app.view = app.pre_permission_view.clone();
+            }
+        }
     }
 }
 

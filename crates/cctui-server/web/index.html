@@ -103,6 +103,15 @@
   .pill.synced  { background:rgba(63,185,80,.15);  color:var(--ok) }
   .pill.missing { background:rgba(248,81,73,.15); color:var(--danger) }
   .pill.stale   { background:rgba(210,153,34,.15); color:var(--warn) }
+  .pill.pending { background:rgba(210,153,34,.15); color:var(--warn); margin-left:6px }
+  /* Inline permission prompts (in-conversation) */
+  #drawerPerms { border-top:1px solid var(--border); padding:8px 14px; background:#0b0f14; max-height:40vh; overflow-y:auto }
+  #drawerPerms:empty { display:none }
+  .perm-card { border:1px solid var(--warn); background:rgba(210,153,34,.08); border-radius:6px; padding:10px 12px; margin:6px 0; font-family:var(--mono); font-size:12px }
+  .perm-card h4 { margin:0 0 6px; font-size:12px; color:var(--warn); text-transform:uppercase; letter-spacing:.5px }
+  .perm-card .perm-meta { color:var(--muted); font-size:12px; margin-bottom:6px }
+  .perm-card pre { margin:0 0 8px; max-height:240px; overflow:auto; background:#0b0f14; border:1px solid var(--border); border-radius:4px; padding:8px 10px; font-size:12px }
+  .perm-card .perm-actions { display:flex; gap:8px; justify-content:flex-end }
 </style>
 </head>
 <body>
@@ -188,6 +197,7 @@
     <button class="btn" onclick="closeDrawer()">Close</button>
   </header>
   <div class="conv" id="drawerConv"><div class="empty">loading…</div></div>
+  <div id="drawerPerms"></div>
   <div id="drawerComposer" class="composer">
     <textarea id="drawerInput" rows="2" placeholder="Message this session… (Enter to send, Shift+Enter for newline)"
               onkeydown="onComposerKey(event)"></textarea>
@@ -197,19 +207,6 @@
     </div>
   </div>
 </aside>
-
-<dialog id="permissionDlg">
-  <h3 style="margin-top:0">Tool Approval Required</h3>
-  <div style="margin-bottom:8px"><span class="muted">Tool:</span> <strong id="permTool"></strong></div>
-  <div style="margin-bottom:8px"><span class="muted">Description:</span> <span id="permDesc"></span></div>
-  <div class="muted" style="margin-bottom:4px">Input preview:</div>
-  <pre id="permPreview" style="background:#0b0f14;border:1px solid var(--border);border-radius:6px;padding:10px;max-height:260px;overflow:auto;font-family:var(--mono);font-size:12px;margin:0 0 10px"></pre>
-  <div id="permQueueHint" class="muted" style="font-size:11px;margin-bottom:8px"></div>
-  <div style="text-align:right;display:flex;gap:8px;justify-content:flex-end">
-    <button class="btn danger" onclick="respondPermission('deny')">Deny (n)</button>
-    <button class="btn primary" onclick="respondPermission('allow')">Allow (y)</button>
-  </div>
-</dialog>
 
 <dialog id="createUserDlg">
   <h3 style="margin-top:0">Create user</h3>
@@ -275,6 +272,8 @@ function showApp() {
   document.getElementById('installUrl').textContent = location.origin;
   document.getElementById('serverInfo').textContent = location.host;
   loadVersion();
+  loadPendingPermissions();
+  openGlobalWs();
   showTab('overview');
 }
 
@@ -531,8 +530,9 @@ async function loadSessions() {
       tr.onclick = () => openDrawer(s);
       const tu = s.token_usage || {};
       const total = (tu.input_tokens||0) + (tu.output_tokens||0);
+      tr.dataset.session = s.id;
       tr.innerHTML = `
-        <td><span class="status ${s.status}">${s.status}</span></td>
+        <td><span class="status ${s.status}">${s.status}</span><span class="pending-slot"></span></td>
         <td>${escapeHtml(s.working_dir)}</td>
         <td class="muted">${s.machine_id.slice(0,8)}…</td>
         <td class="muted">${fmtDuration(s.uptime_secs)}</td>
@@ -540,6 +540,7 @@ async function loadSessions() {
         <td class="muted">${s.id}</td>`;
       body.appendChild(tr);
     }
+    refreshSessionBadges();
   } catch (e) {
     body.innerHTML = `<tr><td colspan="6" class="err">${e.message}</td></tr>`;
   }
@@ -648,6 +649,7 @@ async function openDrawer(session) {
   }
 
   openDrawerWs(session.id);
+  renderDrawerPerms();
 }
 
 function closeDrawer() {
@@ -659,6 +661,8 @@ function closeDrawer() {
   drawerSessionStatus = null;
   const input = document.getElementById('drawerInput');
   if (input) input.value = '';
+  const perms = document.getElementById('drawerPerms');
+  if (perms) perms.innerHTML = '';
   setLive(false);
 }
 
@@ -672,11 +676,11 @@ function openDrawerWs(sid) {
   ws.onerror = () => setLive(false);
   ws.onmessage = (msg) => {
     let m; try { m = JSON.parse(msg.data); } catch { return; }
+    // Permission events are session-global — route to the inline card handler
+    // so they stay in sync if this drawer's session matches.
+    if (m.type === 'permission_request') { handlePermissionRequest(m); return; }
+    if (m.type === 'permission_resolved') { handlePermissionResolved(m); return; }
     if (m.session_id && m.session_id !== drawerSessionId) return;
-    if (m.type === 'permission_request') {
-      enqueuePermission(m);
-      return;
-    }
     if (m.type !== 'stream') return;
     const conv = document.getElementById('drawerConv');
     // Replace the "No events yet." placeholder on first live event.
@@ -688,52 +692,150 @@ function openDrawerWs(sid) {
   };
 }
 
-// --- Permission dialog ---
-let permissionQueue = [];
+// --- Permission prompts (inline, per-session) ---
+// pendingPerms: session_id -> [ {request_id, tool_name, description, input_preview} ]
+const pendingPerms = new Map();
+let globalWs = null;
+let globalWsRetryTimer = null;
 
-function enqueuePermission(req) {
-  permissionQueue.push(req);
-  if (permissionQueue.length === 1) showNextPermission();
+async function loadPendingPermissions() {
+  try {
+    const list = await api('/permissions/pending');
+    pendingPerms.clear();
+    for (const p of list) addPending(p);
+    refreshSessionBadges();
+    renderDrawerPerms();
+  } catch (_) { /* non-fatal — WS will catch up */ }
 }
 
-function showNextPermission() {
-  const dlg = document.getElementById('permissionDlg');
-  if (!permissionQueue.length) {
-    if (dlg.open) dlg.close();
-    return;
-  }
-  const req = permissionQueue[0];
-  document.getElementById('permTool').textContent = req.tool_name || '';
-  document.getElementById('permDesc').textContent = req.description || '';
-  document.getElementById('permPreview').textContent = req.input_preview || '';
-  const hint = document.getElementById('permQueueHint');
-  hint.textContent = permissionQueue.length > 1 ? `+${permissionQueue.length - 1} more queued` : '';
-  if (!dlg.open) dlg.showModal();
-}
-
-function respondPermission(behavior) {
-  const req = permissionQueue.shift();
-  if (req && drawerWs && drawerWs.readyState === WebSocket.OPEN) {
-    drawerWs.send(JSON.stringify({
-      type: 'permission_response',
-      session_id: req.session_id,
-      request_id: req.request_id,
-      behavior,
-    }));
-  }
-  showNextPermission();
-}
-
-(function wirePermissionDialog() {
-  const dlg = document.getElementById('permissionDlg');
-  if (!dlg) return;
-  // Intercept native Escape-to-close so it counts as "deny".
-  dlg.addEventListener('cancel', (e) => { e.preventDefault(); respondPermission('deny'); });
-  dlg.addEventListener('keydown', (e) => {
-    if (e.key === 'y' || e.key === 'Y') { e.preventDefault(); respondPermission('allow'); }
-    else if (e.key === 'n' || e.key === 'N') { e.preventDefault(); respondPermission('deny'); }
+function addPending(req) {
+  const arr = pendingPerms.get(req.session_id) || [];
+  if (arr.find(p => p.request_id === req.request_id)) return false;
+  arr.push({
+    request_id: req.request_id,
+    tool_name: req.tool_name,
+    description: req.description,
+    input_preview: req.input_preview,
   });
-})();
+  pendingPerms.set(req.session_id, arr);
+  return true;
+}
+
+function removePending(session_id, request_id) {
+  const arr = pendingPerms.get(session_id);
+  if (!arr) return false;
+  const i = arr.findIndex(p => p.request_id === request_id);
+  if (i < 0) return false;
+  arr.splice(i, 1);
+  if (!arr.length) pendingPerms.delete(session_id);
+  return true;
+}
+
+function handlePermissionRequest(msg) {
+  if (!addPending(msg)) return;
+  updateSessionBadge(msg.session_id);
+  if (drawerSessionId === msg.session_id) renderDrawerPerms();
+}
+
+function handlePermissionResolved(msg) {
+  if (!removePending(msg.session_id, msg.request_id)) return;
+  updateSessionBadge(msg.session_id);
+  if (drawerSessionId === msg.session_id) renderDrawerPerms();
+}
+
+function respondPermission(session_id, request_id, behavior) {
+  // Optimistically drop the card; the server broadcast will idempotently
+  // confirm for other tabs.
+  removePending(session_id, request_id);
+  updateSessionBadge(session_id);
+  if (drawerSessionId === session_id) renderDrawerPerms();
+
+  // Prefer the drawer's session-scoped WS if it's up; fall back to global.
+  const msg = JSON.stringify({ type: 'permission_response', session_id, request_id, behavior });
+  let sent = false;
+  if (drawerWs && drawerWs.readyState === WebSocket.OPEN && drawerSessionId === session_id) {
+    try { drawerWs.send(msg); sent = true; } catch (_) {}
+  }
+  if (!sent && globalWs && globalWs.readyState === WebSocket.OPEN) {
+    try { globalWs.send(msg); } catch (_) {}
+  }
+}
+
+function renderDrawerPerms() {
+  const host = document.getElementById('drawerPerms');
+  if (!host) return;
+  host.innerHTML = '';
+  if (!drawerSessionId) return;
+  const arr = pendingPerms.get(drawerSessionId) || [];
+  for (const p of arr) {
+    const card = document.createElement('div');
+    card.className = 'perm-card';
+    card.dataset.request = p.request_id;
+    const pre = document.createElement('pre');
+    pre.textContent = p.input_preview || '';
+    const header = document.createElement('h4');
+    header.textContent = `Tool approval required · ${p.tool_name || '?'}`;
+    const meta = document.createElement('div');
+    meta.className = 'perm-meta';
+    meta.textContent = p.description || '';
+    const actions = document.createElement('div');
+    actions.className = 'perm-actions';
+    const deny = document.createElement('button');
+    deny.className = 'btn danger';
+    deny.textContent = 'Deny';
+    deny.onclick = () => respondPermission(drawerSessionId, p.request_id, 'deny');
+    const allow = document.createElement('button');
+    allow.className = 'btn primary';
+    allow.textContent = 'Allow';
+    allow.onclick = () => respondPermission(drawerSessionId, p.request_id, 'allow');
+    actions.append(deny, allow);
+    card.append(header, meta, pre, actions);
+    host.appendChild(card);
+  }
+}
+
+function refreshSessionBadges() {
+  for (const row of document.querySelectorAll('tr.session-row[data-session]')) {
+    updateSessionBadgeRow(row);
+  }
+}
+
+function updateSessionBadge(session_id) {
+  const row = document.querySelector(`tr.session-row[data-session="${CSS.escape(session_id)}"]`);
+  if (row) updateSessionBadgeRow(row);
+}
+
+function updateSessionBadgeRow(row) {
+  const slot = row.querySelector('.pending-slot');
+  if (!slot) return;
+  const n = (pendingPerms.get(row.dataset.session) || []).length;
+  slot.innerHTML = n > 0 ? `<span class="pill pending" title="Pending tool approval">⚠ ${n} pending</span>` : '';
+}
+
+function openGlobalWs() {
+  if (globalWs && globalWs.readyState <= 1) return;
+  if (globalWsRetryTimer) { clearTimeout(globalWsRetryTimer); globalWsRetryTimer = null; }
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const url = `${proto}://${location.host}/api/v1/ws?token=${encodeURIComponent(token)}`;
+  const ws = new WebSocket(url);
+  globalWs = ws;
+  ws.onmessage = (ev) => {
+    let m; try { m = JSON.parse(ev.data); } catch { return; }
+    if (m.type === 'permission_request') handlePermissionRequest(m);
+    else if (m.type === 'permission_resolved') handlePermissionResolved(m);
+  };
+  ws.onclose = () => {
+    if (globalWs === ws) globalWs = null;
+    // Reconnect with a small backoff. On reconnect, refetch the pending
+    // list since we may have missed events while disconnected.
+    globalWsRetryTimer = setTimeout(() => {
+      if (!token) return;
+      loadPendingPermissions();
+      openGlobalWs();
+    }, 3000);
+  };
+  ws.onerror = () => { try { ws.close(); } catch (_) {} };
+}
 
 function appendEvent(container, ev) {
   const line = eventToLine(ev);
@@ -883,8 +985,6 @@ function fmtTs(ts) {
 
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape' || !drawerSessionId) return;
-  const permDlg = document.getElementById('permissionDlg');
-  if (permDlg && permDlg.open) return;
   closeDrawer();
 });
 

@@ -37,8 +37,8 @@ pub struct CheckResponse {
 pub struct HookOutput {
     #[serde(rename = "hookEventName")]
     pub hook_event_name: String,
-    #[serde(rename = "permissionDecision")]
-    pub permission_decision: String,
+    #[serde(rename = "permissionDecision", skip_serializing_if = "Option::is_none")]
+    pub permission_decision: Option<String>,
     #[serde(rename = "permissionDecisionReason", skip_serializing_if = "Option::is_none")]
     pub permission_decision_reason: Option<String>,
 }
