@@ -289,13 +289,32 @@ fn spawn_transcript_tailer(
     path: PathBuf,
     cancel: watch::Receiver<bool>,
 ) {
+    let offset_path = transcript_offset_path(&session_id);
     tokio::spawn(async move {
         let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(256);
-        tokio::spawn(transcript::tail(path, tx, cancel));
+        tokio::spawn(transcript::tail(path, offset_path, tx, cancel));
         while let Some(line) = rx.recv().await {
             bridge.post_transcript_line(&session_id, &line).await;
         }
     });
+}
+
+/// `~/.cctui/offsets/{session_id}.offset` — persistent byte offset so a
+/// channel restart doesn't replay the whole transcript. Returns `None` only
+/// when `$HOME` is unset, in which case we fall back to in-memory tracking
+/// (replay-on-restart is still better than no tailing at all).
+fn transcript_offset_path(session_id: &str) -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    // Strip path separators from the session id for safety — Claude session
+    // ids are UUIDs so this is defensive.
+    let sanitized: String = session_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    if sanitized.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(home).join(".cctui").join("offsets").join(format!("{sanitized}.offset")))
 }
 
 fn spawn_archive_pipeline(
