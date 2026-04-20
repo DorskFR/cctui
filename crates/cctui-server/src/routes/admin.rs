@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -47,7 +49,7 @@ pub async fn list_sessions(
     };
 
     // Historical inactive sessions from DB (not currently in the live registry).
-    let live_ids: Vec<String> = with_ts.iter().map(|(_, s)| s.id.clone()).collect();
+    let live_ids: HashSet<String> = with_ts.iter().map(|(_, s)| s.id.clone()).collect();
     let rows: Vec<DbSession> = sqlx::query_as(
         "SELECT id, parent_id, machine_id, working_dir, status, registered_at, metadata \
          FROM sessions WHERE status = 'inactive' \

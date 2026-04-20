@@ -90,20 +90,7 @@ impl SkillStore {
 }
 
 pub fn validate_name(s: &str) -> Result<(), SkillError> {
-    if s.is_empty() || s.len() > 128 {
-        return Err(SkillError::InvalidName);
-    }
-    // Allow letters, digits, underscore, dash, dot — but not a leading dot
-    // (keeps things safe from hidden-name tricks) and no path separators.
-    if s.starts_with('.') {
-        return Err(SkillError::InvalidName);
-    }
-    for c in s.chars() {
-        if !(c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.') {
-            return Err(SkillError::InvalidName);
-        }
-    }
-    Ok(())
+    if cctui_proto::util::is_valid_skill_name(s) { Ok(()) } else { Err(SkillError::InvalidName) }
 }
 
 #[cfg(test)]

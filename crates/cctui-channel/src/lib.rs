@@ -151,7 +151,7 @@ async fn run_session(
     session: Arc<RwLock<Option<SessionState>>>,
     mut cancel: watch::Receiver<bool>,
 ) {
-    let machine_id = hostname();
+    let machine_id = cctui_proto::util::hostname();
     let cwd = std::env::current_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
     let ppid = parent_pid();
 
@@ -402,19 +402,6 @@ fn init_tracing() {
                 .unwrap_or_else(|_| "cctui_channel=info".into()),
         )
         .try_init();
-}
-
-fn hostname() -> String {
-    std::env::var("HOSTNAME")
-        .ok()
-        .or_else(|| {
-            std::process::Command::new("hostname")
-                .output()
-                .ok()
-                .and_then(|o| String::from_utf8(o.stdout).ok())
-                .map(|s| s.trim().to_string())
-        })
-        .unwrap_or_else(|| "unknown".to_string())
 }
 
 fn parent_pid() -> u32 {

@@ -297,7 +297,7 @@ async fn enroll_cmd(
     hostname: Option<String>,
 ) -> Result<()> {
     let (server_url, token) = resolve_user_auth(server, user_token)?;
-    let hostname = hostname.unwrap_or_else(system_hostname);
+    let hostname = hostname.unwrap_or_else(cctui_proto::util::hostname);
 
     let url = format!("{server_url}/api/v1/enroll");
     let res: EnrollResponse = post_json(
@@ -498,7 +498,7 @@ async fn skills_push(
 
     let bytes = std::fs::read(&tmp).with_context(|| format!("read {}", tmp.display()))?;
     let _ = std::fs::remove_file(&tmp);
-    let sha = sha256_hex_bytes(&bytes);
+    let sha = cctui_proto::util::sha256_hex(&bytes);
 
     let url = format!("{server_url}/api/v1/skills/{name}");
     let resp = client
@@ -519,15 +519,11 @@ async fn skills_push(
 }
 
 fn validate_skill_name(s: &str) -> Result<()> {
-    if s.is_empty() || s.len() > 128 || s.starts_with('.') {
-        bail!("invalid skill name: {s}");
+    if cctui_proto::util::is_valid_skill_name(s) {
+        Ok(())
+    } else {
+        bail!("invalid skill name: {s}")
     }
-    for c in s.chars() {
-        if !(c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.') {
-            bail!("invalid skill name: {s}");
-        }
-    }
-    Ok(())
 }
 
 fn tempfile_path(name: &str) -> std::path::PathBuf {
@@ -537,19 +533,6 @@ fn tempfile_path(name: &str) -> std::path::PathBuf {
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     std::env::temp_dir().join(format!("cctui-skill-{name}-{pid}-{nanos}.tar.zst"))
-}
-
-fn sha256_hex_bytes(data: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
-    let mut h = Sha256::new();
-    h.update(data);
-    let out = h.finalize();
-    let mut s = String::with_capacity(64);
-    for b in out {
-        use std::fmt::Write;
-        write!(&mut s, "{b:02x}").unwrap();
-    }
-    s
 }
 
 fn print_skills(rows: &[SkillIndexEntry]) {
@@ -596,19 +579,6 @@ fn resolve_user_auth(server_flag: &str, token: Option<String>) -> Result<(String
         "user token required — pass --user-token, set CCTUI_USER_TOKEN, or create \
          ~/.config/cctui/user.json via `cctui-admin user create --save`"
     )
-}
-
-fn system_hostname() -> String {
-    std::env::var("HOSTNAME")
-        .ok()
-        .or_else(|| {
-            std::process::Command::new("hostname")
-                .output()
-                .ok()
-                .and_then(|o| String::from_utf8(o.stdout).ok())
-                .map(|s| s.trim().to_string())
-        })
-        .unwrap_or_else(|| "unknown".into())
 }
 
 async fn post_json<T: for<'de> Deserialize<'de>>(

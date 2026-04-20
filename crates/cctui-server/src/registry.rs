@@ -160,10 +160,16 @@ impl Registry {
     }
 
     pub fn queue_message(&mut self, session_id: &str, content: String) -> Option<Uuid> {
+        const MAX_PENDING_MESSAGES: usize = 256;
         let handle = self.sessions.get_mut(session_id)?;
         let msg = PendingMessage { id: Uuid::new_v4(), content, created_at: Utc::now() };
         let id = msg.id;
         handle.pending_messages.push(msg);
+        // Drop oldest if the queue grows unbounded (channel never fetches).
+        if handle.pending_messages.len() > MAX_PENDING_MESSAGES {
+            let drop = handle.pending_messages.len() - MAX_PENDING_MESSAGES;
+            handle.pending_messages.drain(..drop);
+        }
         Some(id)
     }
 
