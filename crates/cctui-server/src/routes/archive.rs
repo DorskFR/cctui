@@ -259,22 +259,28 @@ pub async fn get_status(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
 ) -> Result<Json<ArchiveStatusResponse>, StatusCode> {
-    let user_id = require_user_scope(&ctx)?;
+    let is_admin = ctx.role == TokenRole::Admin;
+    let user_id = if is_admin { None } else { Some(require_user_scope(&ctx)?) };
 
-    let rows: Vec<StatusRow> = sqlx::query_as(
-        "SELECT m.machine_id, m.project_dir, m.session_id, \
+    let base = "SELECT m.machine_id, m.project_dir, m.session_id, \
                 m.size_bytes, m.mtime, \
                 a.size_bytes, a.sha256, a.uploaded_at \
          FROM archive_manifest m \
          JOIN machines mx ON mx.id = m.machine_id \
          LEFT JOIN archive_index a \
-                ON a.machine_id = m.machine_id AND a.session_id = m.session_id \
-         WHERE mx.user_id = $1 \
-         ORDER BY m.machine_id, m.project_dir, m.session_id",
-    )
-    .bind(user_id)
-    .fetch_all(&state.pool)
-    .await
+                ON a.machine_id = m.machine_id AND a.session_id = m.session_id";
+    let rows: Vec<StatusRow> = if let Some(uid) = user_id {
+        sqlx::query_as(&format!(
+            "{base} WHERE mx.user_id = $1 ORDER BY m.machine_id, m.project_dir, m.session_id"
+        ))
+        .bind(uid)
+        .fetch_all(&state.pool)
+        .await
+    } else {
+        sqlx::query_as(&format!("{base} ORDER BY m.machine_id, m.project_dir, m.session_id"))
+            .fetch_all(&state.pool)
+            .await
+    }
     .map_err(|e| {
         tracing::error!("archive status db error: {e}");
         StatusCode::INTERNAL_SERVER_ERROR
@@ -324,18 +330,30 @@ pub async fn index(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
 ) -> Result<Json<Vec<ArchiveIndexEntry>>, StatusCode> {
-    let user_id = require_user_scope(&ctx)?;
-    let rows: Vec<IndexRow> = sqlx::query_as(
-        "SELECT a.machine_id, a.project_dir, a.session_id, a.sha256, a.size_bytes, \
-                    a.line_count, a.uploaded_at \
-             FROM archive_index a \
-             JOIN machines m ON m.id = a.machine_id \
-             WHERE m.user_id = $1 \
-             ORDER BY a.uploaded_at DESC",
-    )
-    .bind(user_id)
-    .fetch_all(&state.pool)
-    .await
+    let is_admin = ctx.role == TokenRole::Admin;
+    let user_id = if is_admin { None } else { Some(require_user_scope(&ctx)?) };
+    let rows: Vec<IndexRow> = if let Some(uid) = user_id {
+        sqlx::query_as(
+            "SELECT a.machine_id, a.project_dir, a.session_id, a.sha256, a.size_bytes, \
+                        a.line_count, a.uploaded_at \
+                 FROM archive_index a \
+                 JOIN machines m ON m.id = a.machine_id \
+                 WHERE m.user_id = $1 \
+                 ORDER BY a.uploaded_at DESC",
+        )
+        .bind(uid)
+        .fetch_all(&state.pool)
+        .await
+    } else {
+        sqlx::query_as(
+            "SELECT a.machine_id, a.project_dir, a.session_id, a.sha256, a.size_bytes, \
+                        a.line_count, a.uploaded_at \
+                 FROM archive_index a \
+                 ORDER BY a.uploaded_at DESC",
+        )
+        .fetch_all(&state.pool)
+        .await
+    }
     .map_err(|e| {
         tracing::error!("archive index db error: {e}");
         StatusCode::INTERNAL_SERVER_ERROR
