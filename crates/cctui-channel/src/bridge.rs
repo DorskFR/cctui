@@ -10,7 +10,6 @@ use std::time::Duration;
 use reqwest::{Client, StatusCode};
 use serde::Deserialize;
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use tokio::io::AsyncReadExt;
 
 use crate::types::{
@@ -63,22 +62,27 @@ impl Bridge {
         format!("{}{}", self.inner.base_url, path)
     }
 
-    fn auth(&self) -> String {
-        format!("Bearer {}", self.inner.token)
+    fn get(&self, path: &str) -> reqwest::RequestBuilder {
+        self.inner.http.get(self.url(path)).bearer_auth(&self.inner.token)
+    }
+
+    fn post(&self, path: &str) -> reqwest::RequestBuilder {
+        self.inner.http.post(self.url(path)).bearer_auth(&self.inner.token)
+    }
+
+    fn put(&self, path: &str) -> reqwest::RequestBuilder {
+        self.inner.http.put(self.url(path)).bearer_auth(&self.inner.token)
+    }
+
+    fn head(&self, path: &str) -> reqwest::RequestBuilder {
+        self.inner.http.head(self.url(path)).bearer_auth(&self.inner.token)
     }
 
     pub async fn register_session(
         &self,
         req: &RegisterRequest,
     ) -> anyhow::Result<RegisterResponse> {
-        let res = self
-            .inner
-            .http
-            .post(self.url("/api/v1/sessions/register"))
-            .header("Authorization", self.auth())
-            .json(req)
-            .send()
-            .await?;
+        let res = self.post("/api/v1/sessions/register").json(req).send().await?;
         if !res.status().is_success() {
             let status = res.status();
             let text = res.text().await.unwrap_or_default();
@@ -88,22 +92,12 @@ impl Bridge {
     }
 
     pub async fn post_event(&self, session_id: &str, event: &StreamerEvent) {
-        let _ = self
-            .inner
-            .http
-            .post(self.url(&format!("/api/v1/events/{session_id}")))
-            .header("Authorization", self.auth())
-            .json(event)
-            .send()
-            .await;
+        let _ = self.post(&format!("/api/v1/events/{session_id}")).json(event).send().await;
     }
 
     pub async fn post_transcript_line(&self, session_id: &str, line: &str) {
         let res = self
-            .inner
-            .http
-            .post(self.url(&format!("/api/v1/sessions/{session_id}/transcript")))
-            .header("Authorization", self.auth())
+            .post(&format!("/api/v1/sessions/{session_id}/transcript"))
             .json(&json!({ "line": line }))
             .send()
             .await;
@@ -115,14 +109,7 @@ impl Bridge {
     }
 
     pub async fn check_policy(&self, payload: &PreToolUsePayload) -> PolicyVerdict {
-        let res = self
-            .inner
-            .http
-            .post(self.url("/api/v1/check"))
-            .header("Authorization", self.auth())
-            .json(payload)
-            .send()
-            .await;
+        let res = self.post("/api/v1/check").json(payload).send().await;
         let Ok(res) = res else {
             return PolicyVerdict { decision: Decision::Allow };
         };
@@ -140,13 +127,7 @@ impl Bridge {
     }
 
     pub async fn fetch_pending_messages(&self, session_id: &str) -> Vec<PendingMessage> {
-        let res = self
-            .inner
-            .http
-            .get(self.url(&format!("/api/v1/sessions/{session_id}/messages/pending")))
-            .header("Authorization", self.auth())
-            .send()
-            .await;
+        let res = self.get(&format!("/api/v1/sessions/{session_id}/messages/pending")).send().await;
         let Ok(res) = res else { return Vec::new() };
         if !res.status().is_success() {
             return Vec::new();
@@ -161,10 +142,7 @@ impl Bridge {
         cwd: &str,
     ) -> anyhow::Result<ChannelRegisterResponse> {
         let res = self
-            .inner
-            .http
-            .post(self.url("/api/v1/channels/register"))
-            .header("Authorization", self.auth())
+            .post("/api/v1/channels/register")
             .json(&json!({ "machine_id": machine_id, "ppid": ppid, "cwd": cwd }))
             .send()
             .await?;
@@ -177,13 +155,7 @@ impl Bridge {
     }
 
     pub async fn poll_session(&self, channel_id: &str) -> anyhow::Result<SessionPollResponse> {
-        let res = self
-            .inner
-            .http
-            .get(self.url(&format!("/api/v1/channels/{channel_id}/session")))
-            .header("Authorization", self.auth())
-            .send()
-            .await?;
+        let res = self.get(&format!("/api/v1/channels/{channel_id}/session")).send().await?;
         if !res.status().is_success() {
             anyhow::bail!("poll session failed: {}", res.status());
         }
@@ -196,10 +168,7 @@ impl Bridge {
         req: &PermissionRequest,
     ) -> anyhow::Result<()> {
         let res = self
-            .inner
-            .http
-            .post(self.url(&format!("/api/v1/sessions/{session_id}/permission/request")))
-            .header("Authorization", self.auth())
+            .post(&format!("/api/v1/sessions/{session_id}/permission/request"))
             .json(req)
             .send()
             .await?;
@@ -222,9 +191,8 @@ impl Bridge {
     ) -> Option<String> {
         let deadline = tokio::time::Instant::now() + timeout;
         while tokio::time::Instant::now() < deadline {
-            let url = self
-                .url(&format!("/api/v1/sessions/{session_id}/permission/decision/{request_id}"));
-            let res = self.inner.http.get(&url).header("Authorization", self.auth()).send().await;
+            let path = format!("/api/v1/sessions/{session_id}/permission/decision/{request_id}");
+            let res = self.get(&path).send().await;
             #[derive(Deserialize)]
             struct Body {
                 status: String,
@@ -249,12 +217,12 @@ impl Bridge {
         session_id: &str,
         sha256: &str,
     ) -> anyhow::Result<ArchiveState> {
-        let url = self.url(&format!(
+        let path = format!(
             "/api/v1/archive/{}/{}?sha256={sha256}",
             urlencode(project_dir),
             urlencode(session_id)
-        ));
-        let res = self.inner.http.head(&url).header("Authorization", self.auth()).send().await?;
+        );
+        let res = self.head(&path).send().await?;
         match res.status() {
             StatusCode::NO_CONTENT => Ok(ArchiveState::Present),
             StatusCode::NOT_FOUND => Ok(ArchiveState::Absent),
@@ -272,16 +240,9 @@ impl Bridge {
         let mut file = tokio::fs::File::open(abs_path).await?;
         let mut buf = Vec::new();
         file.read_to_end(&mut buf).await?;
-        let url = self.url(&format!(
-            "/api/v1/archive/{}/{}",
-            urlencode(project_dir),
-            urlencode(session_id)
-        ));
+        let path = format!("/api/v1/archive/{}/{}", urlencode(project_dir), urlencode(session_id));
         let res = self
-            .inner
-            .http
-            .put(&url)
-            .header("Authorization", self.auth())
+            .put(&path)
             .header("X-CCTUI-SHA256", sha256)
             .header("Content-Type", "application/octet-stream")
             .body(buf)
@@ -298,14 +259,7 @@ impl Bridge {
     /// POST the machine's current expected-files manifest (CCT-68).
     pub async fn post_manifest(&self, entries: &[ManifestEntry]) -> anyhow::Result<()> {
         let body = ManifestPostRequest { entries: entries.to_vec() };
-        let res = self
-            .inner
-            .http
-            .post(self.url("/api/v1/archive/manifest"))
-            .header("Authorization", self.auth())
-            .json(&body)
-            .send()
-            .await?;
+        let res = self.post("/api/v1/archive/manifest").json(&body).send().await?;
         if !res.status().is_success() {
             let status = res.status();
             let text = res.text().await.unwrap_or_default();
@@ -315,13 +269,7 @@ impl Bridge {
     }
 
     pub async fn get_skill_index(&self) -> anyhow::Result<Vec<SkillIndexEntry>> {
-        let res = self
-            .inner
-            .http
-            .get(self.url("/api/v1/skills/index"))
-            .header("Authorization", self.auth())
-            .send()
-            .await?;
+        let res = self.get("/api/v1/skills/index").send().await?;
         if !res.status().is_success() {
             let status = res.status();
             let text = res.text().await.unwrap_or_default();
@@ -331,13 +279,7 @@ impl Bridge {
     }
 
     pub async fn get_skill_bundle(&self, name: &str) -> anyhow::Result<Vec<u8>> {
-        let res = self
-            .inner
-            .http
-            .get(self.url(&format!("/api/v1/skills/{}", urlencode(name))))
-            .header("Authorization", self.auth())
-            .send()
-            .await?;
+        let res = self.get(&format!("/api/v1/skills/{}", urlencode(name))).send().await?;
         if !res.status().is_success() {
             let status = res.status();
             let text = res.text().await.unwrap_or_default();
@@ -359,11 +301,4 @@ fn urlencode(s: &str) -> String {
         }
     }
     out
-}
-
-#[must_use]
-pub fn sha256_hex(bytes: &[u8]) -> String {
-    let mut h = Sha256::new();
-    h.update(bytes);
-    hex::encode(h.finalize())
 }

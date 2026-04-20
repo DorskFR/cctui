@@ -6,7 +6,6 @@ use axum::extract::Request;
 use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::Response;
-use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -193,9 +192,7 @@ pub fn machine_token(secret: &str) -> String {
 
 #[must_use]
 pub fn sha256_hex(input: &str) -> String {
-    let mut h = Sha256::new();
-    h.update(input.as_bytes());
-    hex::encode(h.finalize())
+    cctui_proto::util::sha256_hex(input.as_bytes())
 }
 
 #[cfg(test)]

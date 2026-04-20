@@ -323,7 +323,6 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "sha2",
  "tokio",
  "uuid",
 ]
@@ -356,8 +355,10 @@ name = "cctui-proto"
 version = "0.1.17"
 dependencies = [
  "chrono",
+ "hex",
  "serde",
  "serde_json",
+ "sha2",
  "uuid",
 ]
 

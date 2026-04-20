@@ -20,4 +20,3 @@ clap = { version = "4", features = ["derive", "env"] }
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 uuid.workspace = true
 chrono.workspace = true
-sha2 = "0.10"
