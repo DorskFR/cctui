@@ -22,27 +22,32 @@ struct DbSession {
 pub async fn list_sessions(
     State(state): State<AppState>,
 ) -> Result<Json<SessionListResponse>, (StatusCode, Json<ApiError>)> {
-    // Live sessions from in-memory registry
-    let mut sessions: Vec<SessionListItem> = {
+    // Live sessions from in-memory registry — keep registered_at for sorting.
+    let mut with_ts: Vec<(DateTime<Utc>, SessionListItem)> = {
         let registry = state.registry.read().await;
         registry
             .list()
             .into_iter()
-            .map(|handle| SessionListItem {
-                id: handle.session.id.clone(),
-                parent_id: handle.session.parent_id.clone(),
-                machine_id: handle.session.machine_id.clone(),
-                working_dir: handle.session.working_dir.clone(),
-                status: handle.session.status,
-                uptime_secs: (Utc::now() - handle.session.registered_at).num_seconds(),
-                token_usage: handle.token_usage.clone(),
-                metadata: handle.session.metadata.clone(),
+            .map(|handle| {
+                (
+                    handle.session.registered_at,
+                    SessionListItem {
+                        id: handle.session.id.clone(),
+                        parent_id: handle.session.parent_id.clone(),
+                        machine_id: handle.session.machine_id.clone(),
+                        working_dir: handle.session.working_dir.clone(),
+                        status: handle.session.status,
+                        uptime_secs: (Utc::now() - handle.session.registered_at).num_seconds(),
+                        token_usage: handle.token_usage.clone(),
+                        metadata: handle.session.metadata.clone(),
+                    },
+                )
             })
             .collect()
     };
 
     // Historical inactive sessions from DB (not currently in the live registry).
-    let live_ids: Vec<String> = sessions.iter().map(|s| s.id.clone()).collect();
+    let live_ids: Vec<String> = with_ts.iter().map(|(_, s)| s.id.clone()).collect();
     let rows: Vec<DbSession> = sqlx::query_as(
         "SELECT id, parent_id, machine_id, working_dir, status, registered_at, metadata \
          FROM sessions WHERE status = 'inactive' \
@@ -64,18 +69,23 @@ pub async fn list_sessions(
             "active" => cctui_proto::models::SessionStatus::Active,
             _ => cctui_proto::models::SessionStatus::Inactive,
         };
-        sessions.push(SessionListItem {
-            id: row.id,
-            parent_id: row.parent_id,
-            machine_id: row.machine_id,
-            working_dir: row.working_dir,
-            status,
-            uptime_secs: (Utc::now() - row.registered_at).num_seconds(),
-            token_usage: cctui_proto::models::TokenUsage::default(),
-            metadata: row.metadata,
-        });
+        with_ts.push((
+            row.registered_at,
+            SessionListItem {
+                id: row.id,
+                parent_id: row.parent_id,
+                machine_id: row.machine_id,
+                working_dir: row.working_dir,
+                status,
+                uptime_secs: (Utc::now() - row.registered_at).num_seconds(),
+                token_usage: cctui_proto::models::TokenUsage::default(),
+                metadata: row.metadata,
+            },
+        ));
     }
 
+    with_ts.sort_by(|a, b| b.0.cmp(&a.0));
+    let sessions = with_ts.into_iter().map(|(_, s)| s).collect();
     Ok(Json(SessionListResponse { sessions }))
 }
 

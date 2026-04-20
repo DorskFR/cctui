@@ -129,19 +129,25 @@ impl Registry {
         }
     }
 
-    /// Demote `Active` sessions whose last activity is older than
-    /// `inactive_after_secs` to `Inactive`. `New` sessions stay `New` until
-    /// the first turn arrives; `Inactive` stays `Inactive` until revived.
+    /// Demote stale sessions to `Inactive`:
+    /// - `Active` when idle longer than `inactive_after_secs`.
+    /// - `New` when no turn arrives within `NEW_TTL_SECS` of registration
+    ///   (prevents the "new" pill from lingering on sessions that never
+    ///   produced activity). `Inactive` stays `Inactive` until revived.
+    ///
     /// Returns the list of session ids that were just demoted.
     pub fn mark_stale(&mut self, inactive_after_secs: u64) -> Vec<String> {
+        const NEW_TTL_SECS: u64 = 60;
         let now = Instant::now();
         let mut demoted = Vec::new();
         for handle in self.sessions.values_mut() {
-            if handle.session.status != SessionStatus::Active {
-                continue;
-            }
             let elapsed = now.duration_since(handle.last_heartbeat).as_secs();
-            if elapsed > inactive_after_secs {
+            let should_demote = match handle.session.status {
+                SessionStatus::Active => elapsed > inactive_after_secs,
+                SessionStatus::New => elapsed > NEW_TTL_SECS,
+                SessionStatus::Inactive => false,
+            };
+            if should_demote {
                 handle.session.status = SessionStatus::Inactive;
                 demoted.push(handle.session.id.clone());
             }
