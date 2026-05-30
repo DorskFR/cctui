@@ -627,7 +627,18 @@ impl Driver {
             // worse: archive is worker-scoped (`claude rm <short>`), so a single
             // archive would wipe both conversations at once. Instead we inject a
             // `context_reset` boundary marker so the cut is visible in the UI.
-            if let (Some(cwd), Some(sess)) = (job.cwd.as_deref(), job.session_id()) {
+            // CCT-160: `/clear` rotates the live session into a new transcript
+            // file but the control socket's `list` keeps reporting the stale
+            // spawn `sessionId` (it's the immutable `--session-id` launch arg in
+            // `roster.json`). The rotated id only surfaces in `state.json`'s
+            // `resumeSessionId`, so prefer that; fall back to the snapshot id
+            // when no reset has happened. Without this the rotation check below
+            // never fires for `/clear` and the message stream silently stops.
+            let live_session = on_disk
+                .as_ref()
+                .and_then(|s| s.resume_session_id.as_deref())
+                .or_else(|| job.session_id());
+            if let (Some(cwd), Some(sess)) = (job.cwd.as_deref(), live_session) {
                 let rotated = self
                     .transcript_locations
                     .get(&job.short)

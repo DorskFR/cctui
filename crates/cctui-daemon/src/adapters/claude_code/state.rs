@@ -25,6 +25,13 @@ pub struct StateJson {
     /// Reasoning effort, parsed from `respawnFlags` (`--effort`).
     #[serde(default)]
     pub effort: Option<String>,
+    /// The post-reset session id. `/clear` (and `/compact`) rotate the live
+    /// session into a NEW transcript file; the claude binary records the new
+    /// id here while leaving `sessionId` pinned to the immutable spawn id.
+    /// This is the only place the rotated id surfaces — the control socket's
+    /// `list` op keeps reporting the stale spawn `sessionId` (CCT-160).
+    #[serde(default)]
+    pub resume_session_id: Option<String>,
     #[serde(default)]
     pub children: Vec<StateChild>,
 }
@@ -83,6 +90,7 @@ impl StateJson {
             activity: get_str("activity"),
             model: flag_val("--model"),
             effort: flag_val("--effort"),
+            resume_session_id: get_str("resumeSessionId"),
             children,
         }
     }
@@ -155,6 +163,31 @@ mod tests {
         assert_eq!(s.intent.as_deref(), Some("/work CCT-1"));
         assert_eq!(s.children.len(), 1);
         assert_eq!(s.proto_children()[0].kind, "pr");
+        // No reset has happened, so the post-reset id is absent (CCT-160).
+        assert_eq!(s.resume_session_id, None);
+    }
+
+    #[test]
+    fn reads_resume_session_id_after_reset() {
+        // After `/clear`, the claude binary leaves `sessionId` pinned to the
+        // immutable spawn id and records the rotated id in `resumeSessionId`.
+        // The daemon must follow the latter to keep tailing the live transcript
+        // (CCT-160).
+        let tmp = tempfile::tempdir().unwrap();
+        let short = "deadbeef";
+        let job_dir = tmp.path().join(short);
+        std::fs::create_dir(&job_dir).unwrap();
+        std::fs::write(
+            job_dir.join("state.json"),
+            br#"{
+                "sessionId": "0995ecd5-62a9-4333-bbc4-9e62f44578ad",
+                "resumeSessionId": "c2337470-90a0-4f85-b3db-4e5b25ffeea7",
+                "cwd": "/home/me/repo"
+            }"#,
+        )
+        .unwrap();
+        let s = StateJson::read(tmp.path(), short).unwrap();
+        assert_eq!(s.resume_session_id.as_deref(), Some("c2337470-90a0-4f85-b3db-4e5b25ffeea7"));
     }
 
     #[test]
