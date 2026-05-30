@@ -13,6 +13,12 @@ on:
 permissions:
   contents: write
 
+# mlugg/setup-zig still ships as a node20 action; opt into the node24 runtime
+# now so we don't emit the deprecation warning (GitHub forces node24 from
+# 2026-06-16 anyway). Drop this once the action migrates to node24.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   build:
     name: build ${{ matrix.os }}-${{ matrix.arch }}
@@ -48,7 +54,7 @@ jobs:
       # compiler for the rustls native deps. (CCT-117)
       - name: Set up zig + cargo-zigbuild (linux)
         if: matrix.os == 'linux'
-        uses: mlugg/setup-zig@v2
+        uses: mlugg/setup-zig@v2.2.1
       - name: Install cargo-zigbuild (linux)
         if: matrix.os == 'linux'
         uses: taiki-e/install-action@v2
