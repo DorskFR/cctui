@@ -42,6 +42,9 @@ pub fn to_agent_event(adapter_id: &str, event_type: &str, payload: &Value) -> Op
                     Some(AgentEvent::Text { content: text.to_owned(), meta: false, ts })
                 }
                 "context_reset" => Some(AgentEvent::ContextReset { ts }),
+                "compact_summary" => {
+                    Some(AgentEvent::CompactSummary { content: text.to_owned(), ts })
+                }
                 _ => None,
             }
         }
@@ -220,6 +223,7 @@ fn map_daemon_message(payload: &Value) -> Option<Value> {
             }
         }
         "context_reset" => Some(json!({ "type": "context_reset" })),
+        "compact_summary" => Some(json!({ "type": "compact_summary", "content": text })),
         _ => None,
     }
 }
@@ -418,5 +422,19 @@ mod tests {
         }
         let n = for_client("claude-code", "message", p).unwrap();
         assert_eq!(n.get("type").and_then(|v| v.as_str()), Some("context_reset"));
+    }
+
+    #[test]
+    fn compact_summary_maps_on_both_paths() {
+        // CCT-159: a /compact summary carries text and surfaces as a dedicated
+        // compact event on both the live and historical read paths.
+        let p = json!({ "role": "compact_summary", "text": "the summary" });
+        match to_agent_event("claude-code", "message", &p) {
+            Some(AgentEvent::CompactSummary { content, .. }) => assert_eq!(content, "the summary"),
+            other => panic!("expected CompactSummary, got {other:?}"),
+        }
+        let n = for_client("claude-code", "message", p).unwrap();
+        assert_eq!(n.get("type").and_then(|v| v.as_str()), Some("compact_summary"));
+        assert_eq!(n.get("content").and_then(|v| v.as_str()), Some("the summary"));
     }
 }

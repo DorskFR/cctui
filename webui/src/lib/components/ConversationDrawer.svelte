@@ -128,7 +128,7 @@
 		options: { label: string; description?: string; preview?: string }[];
 	}
 	interface Line {
-		role: 'assistant' | 'user' | 'system' | 'tool' | 'result' | 'reset';
+		role: 'assistant' | 'user' | 'system' | 'tool' | 'result' | 'reset' | 'compact';
 		ts: number;
 		html?: string;
 		text?: string;
@@ -206,9 +206,15 @@
 				if (!view.showResult) return null;
 				return { role: 'result', ts: Number(e.ts), tool: e.tool, text: e.output_summary };
 			case 'context_reset':
-				// /clear or /compact: the session id rotated under the same
-				// worker (CCT-158). Render as a distinct full-width boundary.
+				// /clear: the session id rotated under the same worker (CCT-158).
+				// Render as a distinct full-width boundary.
 				return { role: 'reset', ts: Number(e.ts), text: 'context reset · /clear or /compact' };
+			case 'compact_summary':
+				// /compact appends a summary in place (no session-id rotation),
+				// so it arrives with its text (CCT-159). Render as a distinct
+				// "context compacted" block rather than a user bubble.
+				if (!e.content.trim()) return null;
+				return { role: 'compact', ts: Number(e.ts), html: renderMarkdown(e.content), text: e.content };
 			default:
 				return null; // heartbeat, turn_end
 		}
@@ -241,8 +247,8 @@
 			// Reset markers are keyed by ts so two back-to-back resets aren't
 			// collapsed by the consecutive-duplicate guard.
 			const key =
-				ln.role === 'reset'
-					? `reset|${ln.ts}`
+				ln.role === 'reset' || ln.role === 'compact'
+					? `${ln.role}|${ln.ts}`
 					: `${ln.role}|${ln.tool ?? ''}|${ln.text ?? ln.html ?? ''}`;
 			if (key === prevKey) continue;
 			prevKey = key;
@@ -470,6 +476,11 @@
 			{:else if ln.role === 'reset'}
 				<div class="reset-divider" role="separator">
 					<span class="reset-chip">⟳ {ln.text}</span>
+				</div>
+			{:else if ln.role === 'compact'}
+				<div class="compact-block">
+					<div class="compact-head">⟳ context compacted · /compact</div>
+					{#if ln.html}<div class="compact-body">{@html ln.html}</div>{/if}
 				</div>
 			{:else}
 			<div class="line {ln.role}" class:pending={ln.pending}>
@@ -753,6 +764,29 @@
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
 		white-space: nowrap;
+	}
+	/* Compact-summary block (/compact, CCT-159) — its own blue hue, distinct
+	   from the green user, violet system, and amber pending bubbles. A filled
+	   left-bordered block (not the thin reset divider) so the two boundary
+	   kinds read differently. */
+	.compact-block {
+		margin: var(--sp-3) 0;
+		padding: var(--sp-2) var(--sp-3);
+		border-left: 3px solid var(--info);
+		border-radius: var(--r-2, 6px);
+		background: color-mix(in srgb, var(--info) 10%, var(--bg-elevated));
+	}
+	.compact-head {
+		color: var(--info);
+		font-size: var(--fs-xs);
+		font-weight: var(--fw-medium);
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		margin-bottom: var(--sp-1);
+	}
+	.compact-body {
+		font-size: var(--fs-sm);
+		opacity: 0.9;
 	}
 	.code {
 		white-space: pre-wrap;

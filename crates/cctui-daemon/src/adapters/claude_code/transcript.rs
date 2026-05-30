@@ -127,6 +127,18 @@ pub fn tail_once(
 
 fn parse_line(local_id: &str, line: &Value, out: &mut Vec<AdapterEvent>) {
     let kind = line.get("type").and_then(Value::as_str).unwrap_or_default();
+    // CCT-159: `/compact` appends an `isCompactSummary` line (a `type:"user"`
+    // entry whose content is the auto-generated summary) into the SAME
+    // transcript — no session-id rotation, so the CCT-158 rotation marker never
+    // fires. Surface it as a dedicated compact event instead of letting it
+    // render as a giant user-typed bubble.
+    if line.get("isCompactSummary").and_then(Value::as_bool).unwrap_or(false) {
+        out.push(AdapterEvent::Message {
+            local_id: local_id.to_owned(),
+            payload: json!({ "role": "compact_summary", "text": compact_summary_text(line) }),
+        });
+        return;
+    }
     match kind {
         "assistant" => parse_assistant(local_id, line, out),
         "user" => parse_user(local_id, line, out),
@@ -239,6 +251,25 @@ fn user_text_is_meta(is_meta_line: bool, text: &str) -> bool {
         let t = text.trim_start();
         META_TAGS.iter().any(|tag| t.starts_with(tag))
     }
+}
+
+/// Extract the summary text from a `/compact` line. The content lives under
+/// `message.content`, which is either a plain string or an array of `text`
+/// blocks (same shape as a normal user message) — join the latter.
+fn compact_summary_text(line: &Value) -> String {
+    let Some(content) = line.get("message").and_then(|m| m.get("content")) else {
+        return String::new();
+    };
+    if let Some(s) = content.as_str() {
+        return s.to_owned();
+    }
+    let Some(blocks) = content.as_array() else { return String::new() };
+    blocks
+        .iter()
+        .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
+        .filter_map(|b| b.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn parse_user(local_id: &str, line: &Value, out: &mut Vec<AdapterEvent>) {
@@ -525,6 +556,51 @@ mod tests {
             })
             .collect();
         assert_eq!(metas, vec![false, true, true]);
+    }
+
+    #[test]
+    fn compact_summary_emits_compact_role_not_user() {
+        // CCT-159: /compact appends an `isCompactSummary` user line in place
+        // (no rotation). It must surface as a `compact_summary` message, not a
+        // plain user bubble.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("t.jsonl");
+        write_lines(
+            &path,
+            &[
+                r#"{"type":"user","isCompactSummary":true,"message":{"role":"user","content":[{"type":"text","text":"summary of the conversation"}]}}"#,
+            ],
+        );
+        let (events, _) = tail_once(&path, "s", 0).unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            AdapterEvent::Message { payload, .. } => {
+                assert_eq!(payload.get("role").and_then(Value::as_str), Some("compact_summary"));
+                assert_eq!(
+                    payload.get("text").and_then(Value::as_str),
+                    Some("summary of the conversation")
+                );
+            }
+            other => panic!("expected compact_summary Message, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn compact_summary_string_content() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("t.jsonl");
+        write_lines(
+            &path,
+            &[r#"{"type":"user","isCompactSummary":true,"message":{"role":"user","content":"plain string summary"}}"#],
+        );
+        let (events, _) = tail_once(&path, "s", 0).unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            AdapterEvent::Message { payload, .. } => {
+                assert_eq!(payload.get("text").and_then(Value::as_str), Some("plain string summary"));
+            }
+            other => panic!("expected compact_summary Message, got {other:?}"),
+        }
     }
 
     #[test]

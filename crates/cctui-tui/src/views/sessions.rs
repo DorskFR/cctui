@@ -186,5 +186,6 @@ pub fn agent_event_to_string(event: &AgentEvent) -> String {
         }
         AgentEvent::TurnEnd { .. } => String::new(),
         AgentEvent::ContextReset { .. } => "⟳ context reset (/clear · /compact)".to_owned(),
+        AgentEvent::CompactSummary { content, .. } => format!("⟳ context compacted\n{content}"),
     }
 }

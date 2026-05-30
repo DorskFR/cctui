@@ -90,6 +90,15 @@ pub enum AgentEvent {
     ContextReset {
         ts: i64,
     },
+    /// A `/compact` boundary. Unlike `/clear`, `/compact` does NOT rotate the
+    /// session id — it appends an `isCompactSummary` line to the same
+    /// transcript — so it surfaces as its own event carrying the summary text,
+    /// rendered as a distinct "context compacted" block rather than a user
+    /// message (CCT-159).
+    CompactSummary {
+        content: String,
+        ts: i64,
+    },
     TurnEnd {
         ts: i64,
     },

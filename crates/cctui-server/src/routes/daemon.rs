@@ -182,8 +182,14 @@ async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: U
         }
     }
 
-    // Cleanup.
-    state.daemon_connections.remove(&machine_id);
+    // Cleanup. Only drop the entry if it is STILL OURS. During a reconnect
+    // race the daemon's new connection may have already overwritten the map
+    // with its own `tx` (line ~110, "newest wins"); an unconditional remove
+    // here would delete that live channel, so every command would silently
+    // fail `NoDaemon` while events kept flowing (they go through
+    // `process_frame`, which never touches `daemon_connections`). Compare the
+    // stored sender against ours and only remove a match (CCT-159).
+    state.daemon_connections.remove_if(&machine_id, |_, current| current.same_channel(&tx));
     outbound.abort();
 }
 
