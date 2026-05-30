@@ -1,0 +1,27 @@
+[Unit]
+Description=cctui per-machine daemon
+Documentation=https://github.com/DorskFR/cctui
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/cctui-daemon run
+Restart=on-failure
+RestartSec=5s
+
+# The daemon talks to the user's claude daemon control socket and reads
+# ~/.claude — must run as the user, not root.
+NoNewPrivileges=true
+PrivateTmp=false
+
+# Limit blast radius. The daemon needs:
+#   - ~/.claude/jobs and ~/.claude/projects (read)
+#   - ~/.config/cctui (read/write — config + cursors)
+#   - /tmp (read/write — claude daemon sockets live here)
+#   - network egress (HTTPS to the cctui server)
+ProtectSystem=strict
+ReadWritePaths=%h/.config/cctui /tmp
+
+[Install]
+WantedBy=default.target

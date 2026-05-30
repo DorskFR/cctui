@@ -1,0 +1,38 @@
+services:
+  cctui-postgres:
+    image: postgres:17
+    container_name: cctui-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: cctui
+    ports:
+      - "5480:5432"
+    volumes:
+      - cctui-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  cctui-postgres-test:
+    image: postgres:17
+    container_name: cctui-postgres-test
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: cctui_test
+    ports:
+      - "5481:5432"
+    volumes:
+      - cctui-test-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  cctui-data:
+  cctui-test-data:

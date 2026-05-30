@@ -1,0 +1,717 @@
+//! `cctui-admin` — CLI for user/machine provisioning.
+//!
+//! Two auth modes:
+//!   - Admin ops (`user create/list/revoke/rotate`, `machine list/revoke/rotate`)
+//!     use `--token` / `CCTUI_ADMIN_TOKEN`.
+//!   - `enroll` uses a user token (`--token` / `CCTUI_USER_TOKEN` or
+//!     `~/.config/cctui/user.json`) and writes a new `machine.json`.
+
+mod path_remap;
+
+use anyhow::{Context, Result, bail};
+use cctui_proto::api::{ArchiveIndexEntry, SkillIndexEntry};
+use cctui_proto::identity::{
+    MachineIdentity, UserIdentity, load_machine, load_user, save_machine, save_user,
+};
+use chrono::{DateTime, Utc};
+use clap::{Parser, Subcommand};
+use path_remap::Rules;
+use reqwest::{Client, StatusCode};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use uuid::Uuid;
+
+#[derive(Parser)]
+#[command(name = "cctui-admin", about = "Provision users and machines for cctui-server", version)]
+struct Cli {
+    /// Server URL (default: <http://localhost:8700>, or `CCTUI_URL` env).
+    #[arg(long, global = true, env = "CCTUI_URL", default_value = "http://localhost:8700")]
+    server: String,
+
+    /// Bearer token. For admin ops, an admin token (`CCTUI_ADMIN_TOKEN`).
+    /// For `enroll`, a user token (`CCTUI_USER_TOKEN`); if unset, read from
+    /// `~/.config/cctui/user.json`.
+    #[arg(long, global = true, env = "CCTUI_ADMIN_TOKEN")]
+    token: Option<String>,
+
+    #[command(subcommand)]
+    cmd: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// User management (admin token required).
+    #[command(subcommand)]
+    User(UserCmd),
+    /// Machine management (admin token required).
+    #[command(subcommand)]
+    Machine(MachineCmd),
+    /// Enroll *this* host: mints a machine key using a user token and
+    /// writes `~/.config/cctui/machine.json`.
+    Enroll {
+        /// Hostname to register (defaults to system hostname).
+        #[arg(long)]
+        hostname: Option<String>,
+        /// User token. Falls back to `CCTUI_USER_TOKEN`, then user.json.
+        #[arg(long, env = "CCTUI_USER_TOKEN")]
+        user_token: Option<String>,
+    },
+    /// List archived sessions reachable via the caller's user.
+    Archive {
+        #[command(subcommand)]
+        cmd: ArchiveCmd,
+    },
+    /// Sync `~/.claude/skills/<name>/` bundles with the server.
+    Skills {
+        #[command(subcommand)]
+        cmd: SkillsCmd,
+    },
+    /// Pull an archived session's raw JSONL onto this host so Claude can
+    /// resume it. Auth uses the local machine.json (fallback: --token as a
+    /// user token).
+    Pull {
+        /// Claude session UUID (the `.jsonl` filename stem).
+        session_id: String,
+        /// Source machine UUID. Required if the same `session_id` exists on
+        /// multiple machines; optional otherwise (server returns 409 if
+        /// ambiguous).
+        #[arg(long)]
+        machine: Option<Uuid>,
+        /// Comma-separated path remaps in `from=to` form (prefix match,
+        /// first-match-wins). Example:
+        /// `--remap /Users/user=/home/user,/Users/user/work=/srv/work`
+        #[arg(long, default_value = "")]
+        remap: String,
+        /// Root under which to write `<encoded-cwd>/<session-id>.jsonl`.
+        /// Defaults to `~/.claude/projects`.
+        #[arg(long)]
+        out_root: Option<std::path::PathBuf>,
+        /// Overwrite an existing local JSONL.
+        #[arg(long)]
+        force: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum ArchiveCmd {
+    /// List everything visible to this user across all their machines.
+    List,
+}
+
+#[derive(Subcommand)]
+enum SkillsCmd {
+    /// List skills registered for this user.
+    List,
+    /// Upload a local skill directory (`~/.claude/skills/<name>/` by default)
+    /// to the server as a tar+zstd bundle.
+    Push {
+        /// Skill name (directory basename).
+        name: String,
+        /// Root containing `<name>/`. Defaults to `~/.claude/skills`.
+        #[arg(long)]
+        root: Option<std::path::PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum UserCmd {
+    /// Create a new user and print (and optionally save) the key.
+    Create {
+        name: String,
+        /// Also write the key to `~/.config/cctui/user.json`.
+        #[arg(long)]
+        save: bool,
+    },
+    List,
+    Revoke {
+        id: Uuid,
+    },
+    Rotate {
+        id: Uuid,
+    },
+    Machines {
+        id: Uuid,
+    },
+}
+
+#[derive(Subcommand)]
+enum MachineCmd {
+    Revoke {
+        id: Uuid,
+    },
+    Rotate {
+        id: Uuid,
+    },
+    /// Set a friendly display name for the machine (overrides the hostname
+    /// in the admin UI). Pass `--clear` to remove the override.
+    Rename {
+        id: Uuid,
+        #[arg(required_unless_present = "clear")]
+        name: Option<String>,
+        #[arg(long)]
+        clear: bool,
+    },
+}
+
+#[derive(Deserialize, Serialize)]
+struct CreateUserResponse {
+    id: Uuid,
+    name: String,
+    key: String,
+}
+
+#[derive(Deserialize, Serialize)]
+struct UserRow {
+    id: Uuid,
+    name: String,
+    created_at: DateTime<Utc>,
+    revoked_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct MachineRow {
+    id: Uuid,
+    user_id: Uuid,
+    name: String,
+    #[serde(default)]
+    display_name: Option<String>,
+    first_seen_at: DateTime<Utc>,
+    last_seen_at: DateTime<Utc>,
+    revoked_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct RotateResponse {
+    id: Uuid,
+    key: String,
+}
+
+#[derive(Deserialize)]
+struct EnrollResponse {
+    machine_id: Uuid,
+    machine_key: String,
+    #[allow(dead_code)]
+    server_version: String,
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let cli = Cli::parse();
+    let client = Client::builder().build()?;
+
+    match cli.cmd {
+        Command::User(cmd) => user_cmd(&client, &cli.server, cli.token.as_deref(), cmd).await,
+        Command::Machine(cmd) => machine_cmd(&client, &cli.server, cli.token.as_deref(), cmd).await,
+        Command::Enroll { hostname, user_token } => {
+            enroll_cmd(&client, &cli.server, user_token, hostname).await
+        }
+        Command::Archive { cmd } => {
+            archive_cmd(&client, &cli.server, cli.token.as_deref(), cmd).await
+        }
+        Command::Skills { cmd } => {
+            skills_cmd(&client, &cli.server, cli.token.as_deref(), cmd).await
+        }
+        Command::Pull { session_id, machine, remap, out_root, force } => {
+            pull_cmd(
+                &client,
+                &cli.server,
+                cli.token.as_deref(),
+                session_id,
+                machine,
+                remap,
+                out_root,
+                force,
+            )
+            .await
+        }
+    }
+}
+
+fn require_token(token: Option<&str>) -> Result<&str> {
+    token
+        .filter(|t| !t.is_empty())
+        .context("admin token required (pass --token or set CCTUI_ADMIN_TOKEN)")
+}
+
+async fn user_cmd(client: &Client, server: &str, token: Option<&str>, cmd: UserCmd) -> Result<()> {
+    let token = require_token(token)?;
+    match cmd {
+        UserCmd::Create { name, save } => {
+            let url = format!("{server}/api/v1/admin/users");
+            let res: CreateUserResponse = post_json(client, &url, token, json!({"name": name}))
+                .await
+                .context("create user")?;
+            println!("id:   {}", res.id);
+            println!("name: {}", res.name);
+            println!("key:  {}", res.key);
+            if save {
+                let id = UserIdentity {
+                    server_url: server.to_string(),
+                    user_key: res.key.clone(),
+                    user_id: Some(res.id.to_string()),
+                    name: Some(res.name),
+                };
+                let path = save_user(&id)?;
+                println!("saved: {}", path.display());
+            } else {
+                eprintln!("\n⚠  key shown once — store it now (or rerun with --save).");
+            }
+        }
+        UserCmd::List => {
+            let url = format!("{server}/api/v1/admin/users");
+            let rows: Vec<UserRow> = get_json(client, &url, token).await?;
+            print_users(&rows);
+        }
+        UserCmd::Revoke { id } => {
+            let url = format!("{server}/api/v1/admin/users/{id}");
+            delete(client, &url, token).await?;
+            println!("revoked user {id}");
+        }
+        UserCmd::Rotate { id } => {
+            let url = format!("{server}/api/v1/admin/users/{id}/rotate");
+            let res: RotateResponse = post_json(client, &url, token, json!({})).await?;
+            println!("id:  {}", res.id);
+            println!("key: {}", res.key);
+        }
+        UserCmd::Machines { id } => {
+            let url = format!("{server}/api/v1/admin/users/{id}/machines");
+            let rows: Vec<MachineRow> = get_json(client, &url, token).await?;
+            print_machines(&rows);
+        }
+    }
+    Ok(())
+}
+
+async fn machine_cmd(
+    client: &Client,
+    server: &str,
+    token: Option<&str>,
+    cmd: MachineCmd,
+) -> Result<()> {
+    let token = require_token(token)?;
+    match cmd {
+        MachineCmd::Revoke { id } => {
+            let url = format!("{server}/api/v1/admin/machines/{id}");
+            delete(client, &url, token).await?;
+            println!("revoked machine {id}");
+        }
+        MachineCmd::Rotate { id } => {
+            let url = format!("{server}/api/v1/admin/machines/{id}/rotate");
+            let res: RotateResponse = post_json(client, &url, token, json!({})).await?;
+            println!("id:  {}", res.id);
+            println!("key: {}", res.key);
+        }
+        MachineCmd::Rename { id, name, clear } => {
+            let url = format!("{server}/api/v1/admin/machines/{id}");
+            let display_name = if clear { None } else { name };
+            patch_json(client, &url, token, json!({ "display_name": &display_name })).await?;
+            match display_name {
+                Some(n) => println!("renamed machine {id} → {n}"),
+                None => println!("cleared display name for machine {id}"),
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn enroll_cmd(
+    client: &Client,
+    server: &str,
+    user_token: Option<String>,
+    hostname: Option<String>,
+) -> Result<()> {
+    let (server_url, token) = resolve_user_auth(server, user_token)?;
+    let hostname = hostname.unwrap_or_else(cctui_proto::util::hostname);
+
+    let url = format!("{server_url}/api/v1/enroll");
+    let res: EnrollResponse = post_json(
+        client,
+        &url,
+        &token,
+        json!({"hostname": hostname, "os": std::env::consts::OS, "arch": std::env::consts::ARCH}),
+    )
+    .await
+    .context("enroll")?;
+
+    let id = MachineIdentity {
+        server_url: server_url.clone(),
+        machine_key: res.machine_key.clone(),
+        machine_id: Some(res.machine_id.to_string()),
+        hostname: Some(hostname.clone()),
+    };
+    let path = save_machine(&id)?;
+    println!("machine_id: {}", res.machine_id);
+    println!("hostname:   {hostname}");
+    println!("saved:      {}", path.display());
+    Ok(())
+}
+
+/// Resolve (`server_url`, `token`) for archive read ops (list/pull).
+/// Precedence: CLI `--token` > machine.json > user.json. Pull requires a
+/// Machine or User role server-side.
+fn resolve_read_auth(server_flag: &str, token: Option<&str>) -> Result<(String, String)> {
+    if let Some(t) = token.filter(|t| !t.is_empty()) {
+        return Ok((server_flag.to_string(), t.to_string()));
+    }
+    if let Some(m) = load_machine() {
+        return Ok((m.server_url, m.machine_key));
+    }
+    if let Some(u) = load_user() {
+        return Ok((u.server_url, u.user_key));
+    }
+    bail!(
+        "no credentials — enrol this host (`cctui-admin enroll`) or pass --token / \
+         CCTUI_USER_TOKEN"
+    )
+}
+
+async fn archive_cmd(
+    client: &Client,
+    server: &str,
+    token: Option<&str>,
+    cmd: ArchiveCmd,
+) -> Result<()> {
+    let (server_url, tok) = resolve_read_auth(server, token)?;
+    match cmd {
+        ArchiveCmd::List => {
+            let url = format!("{server_url}/api/v1/archive/index");
+            let rows: Vec<ArchiveIndexEntry> = get_json(client, &url, &tok).await?;
+            print_archives(&rows);
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn pull_cmd(
+    client: &Client,
+    server: &str,
+    token: Option<&str>,
+    session_id: String,
+    machine: Option<Uuid>,
+    remap_spec: String,
+    out_root: Option<std::path::PathBuf>,
+    force: bool,
+) -> Result<()> {
+    let (server_url, tok) = resolve_read_auth(server, token)?;
+    let rules = Rules::parse(&remap_spec).context("parse --remap")?;
+
+    // The archive is keyed by (machine_id, session_id) server-side, but the
+    // client only knows session_id — resolve via index first so we can learn
+    // the project_dir (needed for the GET path) and catch ambiguity early.
+    let url = format!("{server_url}/api/v1/archive/index");
+    let rows: Vec<ArchiveIndexEntry> = get_json(client, &url, &tok).await?;
+    let matches: Vec<&ArchiveIndexEntry> = rows
+        .iter()
+        .filter(|e| e.session_id == session_id)
+        .filter(|e| machine.is_none_or(|m| e.machine_id == m))
+        .collect();
+
+    let entry = match matches.as_slice() {
+        [] => bail!(
+            "no archive found for session {session_id}{}",
+            machine.map(|m| format!(" on machine {m}")).unwrap_or_default()
+        ),
+        [one] => *one,
+        many => {
+            eprintln!("ambiguous — session {session_id} exists on {} machines:", many.len());
+            for e in many {
+                eprintln!("  --machine {}  (project_dir={})", e.machine_id, e.project_dir);
+            }
+            bail!("pass --machine <uuid> to disambiguate");
+        }
+    };
+
+    // Fetch raw bytes.
+    let get_url = format!(
+        "{server_url}/api/v1/archive/{}/{}?machine_id={}",
+        entry.project_dir, entry.session_id, entry.machine_id
+    );
+    let resp = client.get(&get_url).bearer_auth(&tok).send().await?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        bail!("{status}: {body}");
+    }
+    let bytes = resp.bytes().await.context("read archive body")?;
+    let text = std::str::from_utf8(&bytes).context("archive is not utf-8")?;
+
+    // Apply remaps to both the file contents and the target project_dir name.
+    let rewritten = rules.apply_jsonl(text);
+    let source_cwd = path_remap::decode_project_dir(&entry.project_dir);
+    let target_cwd = rules.apply_str(&source_cwd);
+    let target_dir_name = path_remap::encode_project_dir(&target_cwd);
+
+    let root = if let Some(p) = out_root {
+        p
+    } else {
+        let home = std::env::var("HOME").context("HOME not set")?;
+        std::path::PathBuf::from(home).join(".claude").join("projects")
+    };
+    let out_dir = root.join(&target_dir_name);
+    let out_path = out_dir.join(format!("{}.jsonl", entry.session_id));
+    if out_path.exists() && !force {
+        bail!("{} already exists — pass --force to overwrite", out_path.display());
+    }
+    std::fs::create_dir_all(&out_dir).with_context(|| format!("mkdir {}", out_dir.display()))?;
+    std::fs::write(&out_path, rewritten.as_bytes())
+        .with_context(|| format!("write {}", out_path.display()))?;
+
+    println!("session:     {}", entry.session_id);
+    println!("machine:     {}", entry.machine_id);
+    println!("source cwd:  {source_cwd}");
+    println!("target cwd:  {target_cwd}");
+    println!("wrote:       {}", out_path.display());
+    println!("size:        {} bytes", rewritten.len());
+    Ok(())
+}
+
+async fn skills_cmd(
+    client: &Client,
+    server: &str,
+    token: Option<&str>,
+    cmd: SkillsCmd,
+) -> Result<()> {
+    let (server_url, tok) = resolve_read_auth(server, token)?;
+    match cmd {
+        SkillsCmd::List => {
+            let url = format!("{server_url}/api/v1/skills/index");
+            let rows: Vec<SkillIndexEntry> = get_json(client, &url, &tok).await?;
+            print_skills(&rows);
+        }
+        SkillsCmd::Push { name, root } => {
+            skills_push(client, &server_url, &tok, &name, root).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn skills_push(
+    client: &Client,
+    server_url: &str,
+    token: &str,
+    name: &str,
+    root: Option<std::path::PathBuf>,
+) -> Result<()> {
+    validate_skill_name(name)?;
+    let root = if let Some(p) = root {
+        p
+    } else {
+        let home = std::env::var("HOME").context("HOME not set")?;
+        std::path::PathBuf::from(home).join(".claude").join("skills")
+    };
+    let skill_dir = root.join(name);
+    if !skill_dir.is_dir() {
+        bail!("{} is not a directory", skill_dir.display());
+    }
+
+    let tmp = tempfile_path(name);
+    let status = std::process::Command::new("tar")
+        .arg("--zstd")
+        .arg("-C")
+        .arg(&root)
+        .arg("-cf")
+        .arg(&tmp)
+        .arg(name)
+        .status()
+        .with_context(|| "spawn tar (is tar+zstd available?)")?;
+    if !status.success() {
+        let _ = std::fs::remove_file(&tmp);
+        bail!("tar failed with status {status}");
+    }
+
+    let bytes = std::fs::read(&tmp).with_context(|| format!("read {}", tmp.display()))?;
+    let _ = std::fs::remove_file(&tmp);
+    let sha = cctui_proto::util::sha256_hex(&bytes);
+
+    let url = format!("{server_url}/api/v1/skills/{name}");
+    let resp = client
+        .put(&url)
+        .bearer_auth(token)
+        .header("X-CCTUI-SHA256", &sha)
+        .header("Content-Type", "application/zstd")
+        .body(bytes.clone())
+        .send()
+        .await?;
+    let entry: SkillIndexEntry = decode(resp).await?;
+
+    println!("name:       {}", entry.name);
+    println!("sha256:     {}", entry.sha256);
+    println!("size:       {} bytes", entry.size_bytes);
+    println!("uploaded:   {}", entry.uploaded_at.format("%Y-%m-%d %H:%M:%S"));
+    Ok(())
+}
+
+fn validate_skill_name(s: &str) -> Result<()> {
+    if cctui_proto::util::is_valid_skill_name(s) {
+        Ok(())
+    } else {
+        bail!("invalid skill name: {s}")
+    }
+}
+
+fn tempfile_path(name: &str) -> std::path::PathBuf {
+    let pid = std::process::id();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    std::env::temp_dir().join(format!("cctui-skill-{name}-{pid}-{nanos}.tar.zst"))
+}
+
+fn print_skills(rows: &[SkillIndexEntry]) {
+    println!("{:<32}  {:<64}  {:>10}  uploaded", "name", "sha256", "bytes");
+    for r in rows {
+        println!(
+            "{:<32}  {:<64}  {:>10}  {}",
+            truncate(&r.name, 32),
+            r.sha256,
+            r.size_bytes,
+            r.uploaded_at.format("%Y-%m-%d %H:%M:%S"),
+        );
+    }
+}
+
+fn print_archives(rows: &[ArchiveIndexEntry]) {
+    println!(
+        "{:<38}  {:<38}  {:<40}  {:>10}  uploaded",
+        "machine_id", "session_id", "project_dir", "bytes"
+    );
+    for r in rows {
+        println!(
+            "{:<38}  {:<38}  {:<40}  {:>10}  {}",
+            r.machine_id,
+            r.session_id,
+            truncate(&r.project_dir, 40),
+            r.size_bytes,
+            r.uploaded_at.format("%Y-%m-%d %H:%M:%S"),
+        );
+    }
+}
+
+/// Resolve (`server_url`, `user_token`) for enrol. Precedence:
+///  1. CLI flag / `CCTUI_USER_TOKEN`
+///  2. user.json (takes its `server_url` too)
+fn resolve_user_auth(server_flag: &str, token: Option<String>) -> Result<(String, String)> {
+    if let Some(t) = token.filter(|t| !t.is_empty()) {
+        return Ok((server_flag.to_string(), t));
+    }
+    if let Some(u) = load_user() {
+        return Ok((u.server_url, u.user_key));
+    }
+    bail!(
+        "user token required — pass --user-token, set CCTUI_USER_TOKEN, or create \
+         ~/.config/cctui/user.json via `cctui-admin user create --save`"
+    )
+}
+
+async fn post_json<T: for<'de> Deserialize<'de>>(
+    client: &Client,
+    url: &str,
+    token: &str,
+    body: serde_json::Value,
+) -> Result<T> {
+    let resp = client.post(url).bearer_auth(token).json(&body).send().await?;
+    decode(resp).await
+}
+
+async fn get_json<T: for<'de> Deserialize<'de>>(
+    client: &Client,
+    url: &str,
+    token: &str,
+) -> Result<T> {
+    let resp = client.get(url).bearer_auth(token).send().await?;
+    decode(resp).await
+}
+
+async fn patch_json(
+    client: &Client,
+    url: &str,
+    token: &str,
+    body: serde_json::Value,
+) -> Result<()> {
+    let resp = client.patch(url).bearer_auth(token).json(&body).send().await?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        bail!("{status}: {body}");
+    }
+    Ok(())
+}
+
+async fn delete(client: &Client, url: &str, token: &str) -> Result<()> {
+    let resp = client.delete(url).bearer_auth(token).send().await?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        bail!("{status}: {body}");
+    }
+    Ok(())
+}
+
+async fn decode<T: for<'de> Deserialize<'de>>(resp: reqwest::Response) -> Result<T> {
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        if status == StatusCode::UNAUTHORIZED {
+            bail!("401 unauthorized — token rejected by server");
+        }
+        bail!("{status}: {body}");
+    }
+    resp.json::<T>().await.context("decode response")
+}
+
+fn print_users(rows: &[UserRow]) {
+    println!("{:<38}  {:<24}  {:<20}  status", "id", "name", "created_at");
+    for r in rows {
+        let status = r.revoked_at.map_or("active", |_| "REVOKED");
+        println!(
+            "{:<38}  {:<24}  {:<20}  {}",
+            r.id,
+            truncate(&r.name, 24),
+            r.created_at.format("%Y-%m-%d %H:%M:%S"),
+            status
+        );
+    }
+}
+
+fn print_machines(rows: &[MachineRow]) {
+    println!(
+        "{:<38}  {:<24}  {:<24}  {:<20}  {:<20}  status",
+        "id", "hostname", "display_name", "first_seen", "last_seen"
+    );
+    for r in rows {
+        let status = r.revoked_at.map_or("active", |_| "REVOKED");
+        println!(
+            "{:<38}  {:<24}  {:<24}  {:<20}  {:<20}  {}",
+            r.id,
+            truncate(&r.name, 24),
+            truncate(r.display_name.as_deref().unwrap_or("—"), 24),
+            r.first_seen_at.format("%Y-%m-%d %H:%M:%S"),
+            r.last_seen_at.format("%Y-%m-%d %H:%M:%S"),
+            status
+        );
+    }
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.len() <= max { s.to_string() } else { format!("{}…", &s[..max - 1]) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn cli_parses() {
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn require_token_errors_when_empty() {
+        assert!(require_token(None).is_err());
+        assert!(require_token(Some("")).is_err());
+        assert!(require_token(Some("tok")).is_ok());
+    }
+}

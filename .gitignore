@@ -1,0 +1,11 @@
+/target
+.env
+*.swp
+.superpowers/
+docs/superpowers/
+.sqlx/
+/.cargo/
+/.cargo-home/
+
+# ts-rs test export artifacts (real bindings live in webui/src/lib/bindings)
+/crates/*/bindings/

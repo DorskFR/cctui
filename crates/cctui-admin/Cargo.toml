@@ -1,0 +1,22 @@
+[package]
+name = "cctui-admin"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "cctui-admin"
+path = "src/main.rs"
+
+[dependencies]
+cctui-proto.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+anyhow.workspace = true
+clap = { version = "4", features = ["derive", "env"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+uuid.workspace = true
+chrono.workspace = true

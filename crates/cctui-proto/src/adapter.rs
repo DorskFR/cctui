@@ -1,0 +1,500 @@
+//! Adapter contract surface.
+//!
+//! Wire types shared between the daemon and the server (and inspected by
+//! clients via the WS frames in [`crate::ws`]). The runtime `Adapter` trait
+//! itself lives in `cctui-daemon` so that this crate stays free of async
+//! runtime dependencies; consumers that only need to read or transport
+//! `AdapterEvent`/`AdapterCommand` values do not pay for tokio.
+
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
+use uuid::Uuid;
+
+/// Stable identifier for an adapter implementation (e.g. `"claude-code"`,
+/// `"codex"`).
+///
+/// Adapters compiled into the daemon return their id from `Adapter::id()`;
+/// the server uses this string in `sessions.adapter_id` and
+/// `adapters_enabled.adapter_id`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(transparent)]
+pub struct AdapterId(pub String);
+
+impl AdapterId {
+    #[must_use]
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&str> for AdapterId {
+    fn from(s: &str) -> Self {
+        Self(s.to_string())
+    }
+}
+
+impl From<String> for AdapterId {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
+impl std::fmt::Display for AdapterId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Adapter-specific session metadata.
+///
+/// Payload shape is left to the adapter (e.g. `claude-code` may include
+/// `claude_session_id`, `working_dir`, project dir; `codex` may include the
+/// log path). The server stores this as JSONB alongside the normalised
+/// session row.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionMeta {
+    pub working_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_local_id: Option<String>,
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub extra: serde_json::Value,
+}
+
+impl Default for SessionMeta {
+    fn default() -> Self {
+        Self { working_dir: None, parent_local_id: None, extra: serde_json::Value::Null }
+    }
+}
+
+/// 8-hex worker shortcode used by the `claude daemon` control socket.
+///
+/// Matches `^[0-9a-f]{8}$`. Surfaced opaquely as the adapter's `local_id`
+/// for claude-code sessions; this newtype is offered for callers that
+/// want validation at the boundary.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct JobShort(String);
+
+impl JobShort {
+    /// Construct from an arbitrary string after lowercase + length + hex-class
+    /// validation. Returns `None` if the input is not exactly 8 ASCII
+    /// hex-digits.
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        if s.len() == 8 && s.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
+            Some(Self(s.to_string()))
+        } else {
+            None
+        }
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for JobShort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Why a session ended. Free-form `Other(String)` reserved for adapter-specific
+/// reasons we do not want to enumerate centrally.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum EndReason {
+    Completed,
+    Killed,
+    Crashed { detail: String },
+    Other { detail: String },
+}
+
+/// Events emitted by an adapter and forwarded by the daemon to the server.
+///
+/// `local_id` is the adapter's own session identifier (claude session id,
+/// codex log basename, …). The server resolves it to a stable
+/// `server_session_id` via the unique `(machine_id, adapter_id, local_id)`
+/// index on `sessions`.
+///
+/// Payloads are deliberately opaque `serde_json::Value` so the wire stays
+/// stable while each adapter keeps its native shape.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum AdapterEvent {
+    SessionStarted {
+        local_id: String,
+        meta: SessionMeta,
+    },
+    Message {
+        local_id: String,
+        payload: serde_json::Value,
+    },
+    ToolUse {
+        local_id: String,
+        payload: serde_json::Value,
+    },
+    SessionEnded {
+        local_id: String,
+        reason: EndReason,
+    },
+    /// A snapshot of the session's runtime status. Mirrors the
+    /// `LiveSnapshot` shape from the `claude daemon` `list` op plus the
+    /// identity fields read from `~/.claude/jobs/<short>/state.json`.
+    /// Adapters that don't have this signal can omit it. All fields except
+    /// `local_id` are optional so partial updates round-trip cleanly.
+    Status {
+        local_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tempo: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        state: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        activity: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        intent: Option<String>,
+        /// Model the session runs on (e.g. `"opus[1m]"`, `"claude-opus-4-8"`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        /// Reasoning/effort level (e.g. `"low"`, `"high"`), when set.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effort: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        children: Vec<SessionChild>,
+    },
+    /// Per-assistant-message token usage extracted from the transcript's
+    /// `message.usage` block. Idempotent on the server side via
+    /// `UNIQUE (session_id, message_id)`. Cache fields are `0` when the
+    /// underlying adapter doesn't report prefix-cache stats.
+    TokenUsage {
+        local_id: String,
+        message_id: String,
+        input_tokens: u64,
+        output_tokens: u64,
+        #[serde(default)]
+        cache_read_tokens: u64,
+        #[serde(default)]
+        cache_creation_tokens: u64,
+    },
+    /// The agent is blocked awaiting a tool-permission decision. The
+    /// `request_id` is what the client must echo back via
+    /// `AdapterCommand::PermissionResponse`. Carrier is adapter-specific
+    /// (see the v1 spec for the claude-code investigation).
+    PermissionRequest {
+        local_id: String,
+        request_id: String,
+        tool: String,
+        #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+        input: serde_json::Value,
+    },
+    /// Outcome of a server-initiated command (currently `Spawn`). Not tied to
+    /// a session — `command_id` correlates it with the HTTP spawn response so
+    /// the server can rebroadcast it to the originating client (CCT-131).
+    CommandResult {
+        command_id: Uuid,
+        ok: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+}
+
+/// Child reference attached to a session — typically a linked PR. Drives the
+/// TUI's "Ready for review" classifier bucket.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionChild {
+    pub id: String,
+    pub href: String,
+    pub kind: String,
+}
+
+/// Commands sent from the daemon to an adapter (and ultimately to the
+/// underlying agent process). v0 defines the shapes; the write path is
+/// implemented incrementally per adapter.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum AdapterCommand {
+    SendMessage {
+        local_id: String,
+        text: String,
+    },
+    Kill {
+        local_id: String,
+        /// POSIX signal number. `None` means default (SIGTERM for the
+        /// `claude daemon` `kill` op).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signal: Option<i32>,
+    },
+    Spawn {
+        spec: SessionSpec,
+        /// Correlation id minted by the server's spawn route. Echoed back in
+        /// an [`AdapterEvent::CommandResult`] so the originating client can be
+        /// told whether the spawn actually succeeded (CCT-131). `None` for
+        /// commands not initiated via the HTTP spawn route.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        command_id: Option<Uuid>,
+    },
+    /// Claude-code-specific: inject `text` directly into the worker PTY
+    /// via the `reply` op. Distinct from `SendMessage` (which v0 routed
+    /// through MCP notifications) so that adapters with both paths can
+    /// disambiguate.
+    Reply {
+        local_id: String,
+        text: String,
+    },
+    /// Answer a previously-emitted `AdapterEvent::PermissionRequest`.
+    PermissionResponse {
+        local_id: String,
+        request_id: String,
+        allow: bool,
+    },
+    /// Rename a session after creation. The adapter is expected to persist
+    /// the name to its source of truth (claude-code: `state.json.name`) so it
+    /// survives the next status poll, rather than being clobbered by the
+    /// on-disk value. Propagates from `PATCH /api/v1/sessions/{id}` (CCT-133).
+    Rename {
+        local_id: String,
+        name: String,
+    },
+    /// Remove a session entirely — the equivalent of Claude Code's agent-view
+    /// Ctrl+X (`claude rm <id>`): stop the worker if it is still live, then
+    /// delete its on-disk job metadata (and any Claude-created worktree) so it
+    /// disappears from Claude Code's native `claude agents` view as well as
+    /// cctui's discovery. The conversation transcript is preserved and stays
+    /// resumable. There is no control-socket op for this (CCT-132), so the
+    /// claude-code adapter shells out to `claude rm`; adapters without an
+    /// external agent view (codex) treat this as a plain kill. Propagates from
+    /// the archive route.
+    Remove {
+        local_id: String,
+    },
+}
+
+/// Per-spawn permission posture (CCT-149, supersedes the CCT-139
+/// `full_access: bool`). Adapters map it to their own vocabulary; `None`
+/// on a [`SessionSpec`] defers to the daemon's per-host default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "lowercase")]
+pub enum PermissionMode {
+    /// Skip every prompt and the sandbox. claude `--permission-mode
+    /// bypassPermissions`; codex `sandbox_mode=danger-full-access` +
+    /// `approval_policy=never`.
+    Yolo,
+    /// Auto-apply edits/commands but keep the workspace sandbox — no
+    /// prompts. claude `--permission-mode acceptEdits`; codex
+    /// `sandbox_mode=workspace-write` + `approval_policy=never`.
+    Auto,
+    /// Prompt on every action. claude `--permission-mode default`; codex
+    /// `sandbox_mode=workspace-write` + `approval_policy=untrusted`.
+    Ask,
+}
+
+/// Parameters for spawning a brand-new session. Used by `AdapterCommand::Spawn`
+/// (post-v0; the spawn route currently returns 501).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionSpec {
+    pub adapter_id: AdapterId,
+    pub working_dir: Option<String>,
+    pub prompt: Option<String>,
+    /// Optional display name to launch the session with (claude `--name`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Per-spawn permission posture (CCT-149). `None` defers to the
+    /// daemon's per-host default. Adapters map it to their own vocabulary
+    /// (codex `sandbox_mode` + `approval_policy`, claude `--permission-mode`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<PermissionMode>,
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub bootstrap: serde_json::Value,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn adapter_id_roundtrips() {
+        let id = AdapterId::new("claude-code");
+        let json = serde_json::to_string(&id).unwrap();
+        assert_eq!(json, r#""claude-code""#);
+        let back: AdapterId = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.as_str(), "claude-code");
+    }
+
+    #[test]
+    fn adapter_event_session_started_roundtrips() {
+        let evt = AdapterEvent::SessionStarted {
+            local_id: "abc".into(),
+            meta: SessionMeta { working_dir: Some("/tmp".into()), ..SessionMeta::default() },
+        };
+        let json = serde_json::to_string(&evt).unwrap();
+        assert!(json.contains(r#""kind":"session_started""#));
+        let back: AdapterEvent = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, AdapterEvent::SessionStarted { .. }));
+    }
+
+    #[test]
+    fn adapter_event_all_variants_roundtrip() {
+        let cases = vec![
+            AdapterEvent::SessionStarted { local_id: "s1".into(), meta: SessionMeta::default() },
+            AdapterEvent::Message {
+                local_id: "s1".into(),
+                payload: serde_json::json!({"role": "assistant", "text": "hi"}),
+            },
+            AdapterEvent::ToolUse {
+                local_id: "s1".into(),
+                payload: serde_json::json!({"tool": "Bash", "input": {}}),
+            },
+            AdapterEvent::SessionEnded { local_id: "s1".into(), reason: EndReason::Completed },
+        ];
+        for evt in cases {
+            let json = serde_json::to_string(&evt).unwrap();
+            let _back: AdapterEvent = serde_json::from_str(&json).expect(&json);
+        }
+    }
+
+    #[test]
+    fn adapter_command_roundtrips() {
+        let cmd = AdapterCommand::SendMessage { local_id: "s1".into(), text: "hello".into() };
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert!(json.contains(r#""kind":"send_message""#));
+        let back: AdapterCommand = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, AdapterCommand::SendMessage { .. }));
+    }
+
+    #[test]
+    fn end_reason_crashed_roundtrips() {
+        let r = EndReason::Crashed { detail: "oom".into() };
+        let json = serde_json::to_string(&r).unwrap();
+        let back: EndReason = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, r);
+    }
+
+    #[test]
+    fn job_short_parses_and_rejects() {
+        assert!(JobShort::parse("6e189420").is_some());
+        assert!(JobShort::parse("6E189420").is_none(), "must be lowercase");
+        assert!(JobShort::parse("6e18942").is_none(), "must be 8 chars");
+        assert!(JobShort::parse("6e189420x").is_none(), "non-hex rejected");
+        let s = JobShort::parse("6e189420").unwrap();
+        let json = serde_json::to_string(&s).unwrap();
+        assert_eq!(json, r#""6e189420""#);
+        let back: JobShort = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, s);
+    }
+
+    #[test]
+    fn adapter_event_status_roundtrips() {
+        let evt = AdapterEvent::Status {
+            local_id: "s1".into(),
+            tempo: Some("active".into()),
+            state: Some("working".into()),
+            detail: Some("running tests".into()),
+            activity: None,
+            name: Some("DEFI-1317".into()),
+            intent: None,
+            model: Some("opus[1m]".into()),
+            effort: Some("low".into()),
+            children: vec![SessionChild {
+                id: "1972".into(),
+                href: "https://github.com/o/r/pull/1972".into(),
+                kind: "pr".into(),
+            }],
+        };
+        let json = serde_json::to_string(&evt).unwrap();
+        assert!(json.contains(r#""kind":"status""#));
+        let back: AdapterEvent = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, AdapterEvent::Status { .. }));
+    }
+
+    #[test]
+    fn adapter_event_status_minimal_roundtrips() {
+        let evt = AdapterEvent::Status {
+            local_id: "s1".into(),
+            tempo: None,
+            state: None,
+            detail: None,
+            activity: None,
+            name: None,
+            intent: None,
+            model: None,
+            effort: None,
+            children: vec![],
+        };
+        let json = serde_json::to_string(&evt).unwrap();
+        // Optional fields with `skip_serializing_if` drop out cleanly.
+        assert!(!json.contains("tempo"));
+        assert!(!json.contains("children"));
+        let _back: AdapterEvent = serde_json::from_str(&json).unwrap();
+    }
+
+    #[test]
+    fn adapter_event_permission_request_roundtrips() {
+        let evt = AdapterEvent::PermissionRequest {
+            local_id: "s1".into(),
+            request_id: "req-123".into(),
+            tool: "Bash".into(),
+            input: serde_json::json!({"command": "ls"}),
+        };
+        let json = serde_json::to_string(&evt).unwrap();
+        assert!(json.contains(r#""kind":"permission_request""#));
+        let _back: AdapterEvent = serde_json::from_str(&json).unwrap();
+    }
+
+    #[test]
+    fn adapter_command_reply_kill_perm_roundtrip() {
+        let cases = vec![
+            AdapterCommand::Reply { local_id: "s1".into(), text: "go on".into() },
+            AdapterCommand::Kill { local_id: "s1".into(), signal: Some(15) },
+            AdapterCommand::Kill { local_id: "s1".into(), signal: None },
+            AdapterCommand::PermissionResponse {
+                local_id: "s1".into(),
+                request_id: "req-123".into(),
+                allow: true,
+            },
+        ];
+        for cmd in cases {
+            let json = serde_json::to_string(&cmd).unwrap();
+            let _back: AdapterCommand = serde_json::from_str(&json).expect(&json);
+        }
+    }
+
+    #[test]
+    fn adapter_command_kill_signal_omitted_by_default() {
+        let cmd = AdapterCommand::Kill { local_id: "s1".into(), signal: None };
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert!(!json.contains("signal"), "signal:None must not serialize");
+        // And deserialising without the field still works (back-compat).
+        let back: AdapterCommand =
+            serde_json::from_str(r#"{"kind":"kill","local_id":"s1"}"#).unwrap();
+        assert!(matches!(back, AdapterCommand::Kill { signal: None, .. }));
+    }
+
+    #[test]
+    fn session_spec_minimal_roundtrips() {
+        let spec = SessionSpec {
+            adapter_id: AdapterId::new("claude-code"),
+            working_dir: None,
+            prompt: None,
+            name: None,
+            permission_mode: None,
+            bootstrap: serde_json::Value::Null,
+        };
+        let json = serde_json::to_string(&spec).unwrap();
+        let _back: SessionSpec = serde_json::from_str(&json).unwrap();
+    }
+}

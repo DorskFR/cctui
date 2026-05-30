@@ -1,0 +1,45 @@
+[package]
+name = "cctui-tui"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "cctui"
+path = "src/main.rs"
+
+[dependencies]
+cctui-proto.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tokio-tungstenite.workspace = true
+futures-util.workspace = true
+anyhow.workspace = true
+ratatui = "0.30"
+crossterm = "0.29"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+ratatui-textarea = "0.8.0"
+unicode-width = "0.2"
+supports-color = "1"
+pulldown-cmark = "0.13"
+syntect = { version = "5", default-features = false, features = ["default-fancy"] }
+two-face = "0.5"
+regex-lite = "0.1"
+textwrap = "0.16"
+url = "2"
+dirs = "5"
+diffy = "0.4.2"
+similar = "2.7.0"
+semver = "1"
+tempfile.workspace = true
+
+[dev-dependencies]
+pretty_assertions = "1.4.1"

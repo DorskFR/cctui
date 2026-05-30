@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<link rel="icon" href="%sveltekit.assets%/favicon.svg" />
+		<!-- viewport-fit=cover so env(safe-area-inset-*) is honoured on phones
+		     with a notch / bottom gesture bar / browser address bar. -->
+		<meta
+			name="viewport"
+			content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=5"
+		/>
+		<meta name="theme-color" content="#0f1115" />
+		<meta name="color-scheme" content="dark light" />
+		<title>cctui</title>
+		<!-- Runtime config: deploy can override window.CCTUI_CONFIG (api base /
+		     ws base) without rebuilding. Served as a static asset. -->
+		<script src="%sveltekit.assets%/config.js"></script>
+		%sveltekit.head%
+	</head>
+	<body data-sveltekit-preload-data="hover">
+		<div style="display: contents">%sveltekit.body%</div>
+	</body>
+</html>

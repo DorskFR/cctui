@@ -1,0 +1,150 @@
+/*
+ * THEME — single source of truth.
+ *
+ * Swapping the theme = replacing THIS ONE FILE. Every color, space, radius,
+ * font and size used anywhere in the app is a `var(--…)` defined here. No
+ * component hard-codes a color or pixel value.
+ *
+ * Default is dark; a `[data-theme="light"]` block at the bottom flips the
+ * palette tokens only (everything downstream is unchanged).
+ */
+
+:root {
+	/* ---- Palette (raw) ---- */
+	--c-bg: #0f1115;
+	--c-bg-elev: #171a21;
+	--c-bg-elev-2: #1f232c;
+	--c-surface: #21262f;
+	--c-border: #2c323d;
+	--c-border-strong: #3a414e;
+	--c-text: #e6e9ef;
+	--c-text-muted: #9aa3b2;
+	--c-text-faint: #6b7384;
+
+	--c-accent: #5ad6a0;
+	--c-accent-ink: #04130c;
+	--c-accent-dim: #2a6e54;
+
+	--c-blue: #5aa9ff;
+	--c-amber: #f0b454;
+	--c-red: #f0716b;
+	--c-green: #5ad6a0;
+	--c-violet: #b48ef0;
+
+	/* ---- Semantic ---- */
+	--bg: var(--c-bg);
+	--bg-elevated: var(--c-bg-elev);
+	--bg-elevated-2: var(--c-bg-elev-2);
+	--surface: var(--c-surface);
+	--border: var(--c-border);
+	--border-strong: var(--c-border-strong);
+
+	--text: var(--c-text);
+	--text-muted: var(--c-text-muted);
+	--text-faint: var(--c-text-faint);
+	--text-on-accent: var(--c-accent-ink);
+
+	--accent: var(--c-accent);
+	--accent-dim: var(--c-accent-dim);
+	--link: var(--c-blue);
+
+	--ok: var(--c-green);
+	--warn: var(--c-amber);
+	--danger: var(--c-red);
+	--info: var(--c-blue);
+
+	/* status dots */
+	--dot-active: var(--c-green);
+	--dot-stale: var(--c-amber);
+	--dot-dead: var(--c-text-faint);
+
+	/* attention highlight (needs-input row) */
+	--attention-bg: color-mix(in srgb, var(--c-amber) 12%, transparent);
+	--attention-bar: var(--c-amber);
+
+	/* ---- Typography ---- */
+	--font-sans:
+		ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
+		sans-serif;
+	--font-mono:
+		ui-monospace, 'SF Mono', 'JetBrains Mono', 'Fira Code', Menlo, Consolas, monospace;
+
+	--fs-xs: 0.75rem; /* 12 */
+	--fs-sm: 0.8125rem; /* 13 */
+	--fs-base: 0.9375rem; /* 15 */
+	--fs-md: 1rem; /* 16 */
+	--fs-lg: 1.125rem; /* 18 */
+	--fs-xl: 1.375rem; /* 22 */
+	--fs-2xl: 1.75rem; /* 28 */
+
+	--fw-normal: 400;
+	--fw-medium: 500;
+	--fw-semibold: 600;
+	--fw-bold: 700;
+
+	--lh-tight: 1.25;
+	--lh-normal: 1.5;
+
+	/* ---- Spacing (4px base) ---- */
+	--sp-0: 0;
+	--sp-1: 0.25rem;
+	--sp-2: 0.5rem;
+	--sp-3: 0.75rem;
+	--sp-4: 1rem;
+	--sp-5: 1.25rem;
+	--sp-6: 1.5rem;
+	--sp-8: 2rem;
+	--sp-10: 2.5rem;
+	--sp-12: 3rem;
+
+	/* ---- Radii ---- */
+	--r-sm: 6px;
+	--r-md: 10px;
+	--r-lg: 14px;
+	--r-pill: 999px;
+
+	/* ---- Elevation ---- */
+	--shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+	--shadow-md: 0 6px 20px rgba(0, 0, 0, 0.45);
+	--shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.55);
+
+	/* ---- Layout ---- */
+	--header-h: 3.25rem;
+	--nav-h: 3.5rem;
+	--content-max: 56rem;
+	--z-header: 50;
+	--z-nav: 50;
+	--z-drawer: 100;
+	--z-modal: 200;
+	--z-toast: 300;
+
+	/* safe-area insets (phones with notch / gesture bar / bottom address bar) */
+	--safe-top: env(safe-area-inset-top, 0px);
+	--safe-bottom: env(safe-area-inset-bottom, 0px);
+	--safe-left: env(safe-area-inset-left, 0px);
+	--safe-right: env(safe-area-inset-right, 0px);
+
+	--ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+[data-theme='light'] {
+	--c-bg: #f6f7f9;
+	--c-bg-elev: #ffffff;
+	--c-bg-elev-2: #eef0f3;
+	--c-surface: #ffffff;
+	--c-border: #d9dde3;
+	--c-border-strong: #c2c8d1;
+	--c-text: #1a1d23;
+	--c-text-muted: #5b6472;
+	--c-text-faint: #8a93a3;
+	--c-accent: #1f9d6b;
+	--c-accent-ink: #ffffff;
+	--c-accent-dim: #9bd9c2;
+	--c-blue: #2f7ddb;
+	--c-amber: #c98a1d;
+	--c-red: #d6463f;
+	--c-green: #1f9d6b;
+	--shadow-sm: 0 1px 2px rgba(20, 24, 31, 0.08);
+	--shadow-md: 0 6px 20px rgba(20, 24, 31, 0.12);
+	--shadow-lg: 0 12px 40px rgba(20, 24, 31, 0.18);
+}
