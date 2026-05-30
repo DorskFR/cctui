@@ -82,6 +82,14 @@ pub enum AgentEvent {
         content: String,
         ts: i64,
     },
+    /// A context reset boundary (`/clear` or `/compact`). The session id rotates
+    /// in place under the same worker; rather than splitting into a second
+    /// session (archive is worker-scoped, so one `claude rm` would wipe both),
+    /// we keep one session and emit this marker so clients can render the cut
+    /// distinctly (CCT-158).
+    ContextReset {
+        ts: i64,
+    },
     TurnEnd {
         ts: i64,
     },

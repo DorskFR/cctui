@@ -41,6 +41,7 @@ pub fn to_agent_event(adapter_id: &str, event_type: &str, payload: &Value) -> Op
                 "assistant" | "assistant_thinking" => {
                     Some(AgentEvent::Text { content: text.to_owned(), meta: false, ts })
                 }
+                "context_reset" => Some(AgentEvent::ContextReset { ts }),
                 _ => None,
             }
         }
@@ -218,6 +219,7 @@ fn map_daemon_message(payload: &Value) -> Option<Value> {
                 Some(json!({ "type": "text", "content": format!("· {detail}") }))
             }
         }
+        "context_reset" => Some(json!({ "type": "context_reset" })),
         _ => None,
     }
 }
@@ -403,5 +405,18 @@ mod tests {
             Some(AgentEvent::Text { content, .. }) => assert_eq!(content, "hello"),
             other => panic!("expected Text, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn context_reset_maps_on_both_paths() {
+        // CCT-158: a /clear or /compact boundary surfaces as a dedicated event
+        // on both the live broadcast and the historical read paths.
+        let p = json!({ "role": "context_reset", "text": "x", "session_id": "sess-2" });
+        match to_agent_event("claude-code", "message", &p) {
+            Some(AgentEvent::ContextReset { .. }) => {}
+            other => panic!("expected ContextReset, got {other:?}"),
+        }
+        let n = for_client("claude-code", "message", p).unwrap();
+        assert_eq!(n.get("type").and_then(|v| v.as_str()), Some("context_reset"));
     }
 }

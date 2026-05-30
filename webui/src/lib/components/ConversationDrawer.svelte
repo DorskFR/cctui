@@ -128,7 +128,7 @@
 		options: { label: string; description?: string; preview?: string }[];
 	}
 	interface Line {
-		role: 'assistant' | 'user' | 'system' | 'tool' | 'result';
+		role: 'assistant' | 'user' | 'system' | 'tool' | 'result' | 'reset';
 		ts: number;
 		html?: string;
 		text?: string;
@@ -205,6 +205,10 @@
 			case 'tool_result':
 				if (!view.showResult) return null;
 				return { role: 'result', ts: Number(e.ts), tool: e.tool, text: e.output_summary };
+			case 'context_reset':
+				// /clear or /compact: the session id rotated under the same
+				// worker (CCT-158). Render as a distinct full-width boundary.
+				return { role: 'reset', ts: Number(e.ts), text: 'context reset · /clear or /compact' };
 			default:
 				return null; // heartbeat, turn_end
 		}
@@ -234,7 +238,12 @@
 		for (const e of events) {
 			const ln = toLine(e);
 			if (!ln) continue;
-			const key = `${ln.role}|${ln.tool ?? ''}|${ln.text ?? ln.html ?? ''}`;
+			// Reset markers are keyed by ts so two back-to-back resets aren't
+			// collapsed by the consecutive-duplicate guard.
+			const key =
+				ln.role === 'reset'
+					? `reset|${ln.ts}`
+					: `${ln.role}|${ln.tool ?? ''}|${ln.text ?? ln.html ?? ''}`;
 			if (key === prevKey) continue;
 			prevKey = key;
 			if (ln.role === 'user' && pendingTs.has(ln.ts)) ln.pending = true;
@@ -458,6 +467,10 @@
 					interactive={i === lines.length - 1 && !archived}
 					onsubmit={answerQuestion}
 				/>
+			{:else if ln.role === 'reset'}
+				<div class="reset-divider" role="separator">
+					<span class="reset-chip">⟳ {ln.text}</span>
+				</div>
 			{:else}
 			<div class="line {ln.role}" class:pending={ln.pending}>
 				<div class="lmeta row">
@@ -712,6 +725,34 @@
 	.line.tool .bubble,
 	.line.result .bubble {
 		background: var(--bg-elevated-2);
+	}
+	/* Context-reset boundary (/clear or /compact, CCT-158) — a full-width rule
+	   with a centered chip in its own blue hue, distinct from the green user,
+	   violet system, and amber pending tints. */
+	.reset-divider {
+		display: flex;
+		align-items: center;
+		gap: var(--sp-3);
+		margin: var(--sp-3) 0;
+		color: var(--info);
+	}
+	.reset-divider::before,
+	.reset-divider::after {
+		content: '';
+		flex: 1;
+		height: 1px;
+		background: color-mix(in srgb, var(--info) 40%, transparent);
+	}
+	.reset-chip {
+		padding: 2px var(--sp-3);
+		border-radius: var(--r-pill, 999px);
+		border: 1px solid color-mix(in srgb, var(--info) 45%, transparent);
+		background: color-mix(in srgb, var(--info) 12%, var(--bg-elevated));
+		font-size: var(--fs-xs);
+		font-weight: var(--fw-medium);
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		white-space: nowrap;
 	}
 	.code {
 		white-space: pre-wrap;

@@ -597,26 +597,44 @@ impl Driver {
 
         // Status updates (live snapshot + on-disk state.json reconciliation).
         for job in &visible {
-            let local_id = job.session_id().map_or_else(|| job.short.clone(), str::to_owned);
+            // The emitted `local_id` is STABLE for a worker's whole life. Once a
+            // transcript is pinned we keep reusing its `local_id` even when the
+            // session id rotates in place (`/clear`, `/compact`), so every
+            // message lands in the one session the server already knows. Only
+            // the very first pin derives the id from the live `session_id`.
+            let local_id = self
+                .transcript_locations
+                .get(&job.short)
+                .map(|loc| loc.local_id.clone())
+                .or_else(|| job.session_id().map(str::to_owned))
+                .unwrap_or_else(|| job.short.clone());
             let on_disk = StateJson::read(&self.cfg.jobs_root, &job.short);
 
-            // Pin (or re-pin) the transcript location. A resume changes the
-            // session's `sessionId` and starts a NEW transcript file
-            // (`<newId>.jsonl`); if we kept tailing the original file the
-            // message stream would silently stop while `list`/Status polls
-            // kept the heartbeat fresh (CCT-128). So re-pin whenever the live
-            // `session_id` differs from the one we have cached, following the
-            // transcript to the new file.
+            // Pin (or re-pin) the transcript location. A resume or an in-process
+            // reset (`/clear`, `/compact`) changes the session's `sessionId` and
+            // starts a NEW transcript file (`<newId>.jsonl`); if we kept tailing
+            // the original file the message stream would silently stop while
+            // `list`/Status polls kept the heartbeat fresh (CCT-128). So re-pin
+            // whenever the live `session_id` differs from the one we cached,
+            // following the transcript to the new file.
+            //
+            // CCT-158: a reset keeps the same worker `short`, so the "Newly
+            // started" branch never fires for the new id. We deliberately keep
+            // emitting under the ORIGINAL `local_id` (set on the first pin, kept
+            // in `loc.local_id`) and only move `path`/`offset_key` to the new
+            // file — so the post-reset transcript appends to the one session the
+            // server already knows. Splitting it into a second session would be
+            // worse: archive is worker-scoped (`claude rm <short>`), so a single
+            // archive would wipe both conversations at once. Instead we inject a
+            // `context_reset` boundary marker so the cut is visible in the UI.
             if let (Some(cwd), Some(sess)) = (job.cwd.as_deref(), job.session_id()) {
-                let stale = self
+                let rotated = self
                     .transcript_locations
                     .get(&job.short)
-                    .is_none_or(|loc| loc.offset_key != sess);
-                if stale {
-                    if let Some(old) = self.transcript_locations.get(&job.short) {
-                        self.short_by_session.remove(&old.local_id);
-                    }
-                    let path = transcript::transcript_path(&self.cfg.projects_root, cwd, sess);
+                    .is_some_and(|loc| loc.offset_key != sess);
+                let first_pin = !self.transcript_locations.contains_key(&job.short);
+                let path = transcript::transcript_path(&self.cfg.projects_root, cwd, sess);
+                if first_pin {
                     self.short_by_session.insert(sess.to_owned(), job.short.clone());
                     self.transcript_locations.insert(
                         job.short.clone(),
@@ -627,6 +645,29 @@ impl Driver {
                             offset_key: sess.to_owned(),
                         },
                     );
+                } else if rotated {
+                    // Follow the file, keep the stable `local_id`. The new
+                    // `sess` is mapped to the same `short` too so command
+                    // dispatch keeps working if a snapshot ever reports the new
+                    // id directly.
+                    self.short_by_session.insert(sess.to_owned(), job.short.clone());
+                    if let Some(loc) = self.transcript_locations.get_mut(&job.short) {
+                        loc.path = path;
+                        sess.clone_into(&mut loc.offset_key);
+                    }
+                    self.emit(AdapterEvent::Message {
+                        local_id: local_id.clone(),
+                        payload: json!({
+                            "role": "context_reset",
+                            "text": "context reset (/clear · /compact)",
+                            // The new session id keys this marker uniquely so a
+                            // second reset isn't collapsed by the server's
+                            // content-hash dedup (identical text would hash the
+                            // same).
+                            "session_id": sess,
+                        }),
+                    })
+                    .await;
                 }
             }
 
@@ -928,16 +969,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn transcript_repins_when_session_id_changes_on_resume() {
-        // CCT-128: a resume keeps the same `short` but gets a new `sessionId`
-        // (and a new transcript file). We must follow it, not keep tailing
-        // the dead original transcript.
+    async fn transcript_repins_when_session_id_changes_on_reset() {
+        // CCT-128 + CCT-158: an in-process reset (`/clear`, `/compact`) or a
+        // resume keeps the same `short` but gets a new `sessionId` (and a new
+        // transcript file). We must follow the file to the new id, but keep
+        // emitting under the ORIGINAL `local_id` so the post-reset transcript
+        // appends to the one session the server already knows (splitting it
+        // would let a worker-scoped `claude rm` archive wipe both at once).
         let (mut d, _rx) = driver();
         let mut s1 = snap("deadbeef", "working", None);
         s1.session_id = Some("sess-1".into());
         d.apply_snapshot(vec![s1]).await;
         let loc1 = d.transcript_locations.get("deadbeef").expect("pinned");
         assert_eq!(loc1.offset_key, "sess-1");
+        assert_eq!(loc1.local_id, "sess-1");
         let path1 = loc1.path.clone();
         assert_eq!(d.short_by_session.get("sess-1").map(String::as_str), Some("deadbeef"));
 
@@ -945,10 +990,48 @@ mod tests {
         s2.session_id = Some("sess-2".into());
         d.apply_snapshot(vec![s2]).await;
         let loc2 = d.transcript_locations.get("deadbeef").expect("re-pinned");
-        assert_eq!(loc2.offset_key, "sess-2", "should follow the resumed transcript");
+        assert_eq!(loc2.offset_key, "sess-2", "should follow the reset transcript");
         assert_ne!(loc2.path, path1, "transcript path should move to the new session id");
+        assert_eq!(loc2.local_id, "sess-1", "local_id stays stable across the reset");
+        // Both ids resolve to the worker for command dispatch.
         assert_eq!(d.short_by_session.get("sess-2").map(String::as_str), Some("deadbeef"));
-        assert!(!d.short_by_session.contains_key("sess-1"), "stale reverse map cleared");
+        assert_eq!(d.short_by_session.get("sess-1").map(String::as_str), Some("deadbeef"));
+    }
+
+    #[tokio::test]
+    async fn reset_emits_boundary_marker_under_original_session() {
+        // CCT-158: a reset must not start/end a session — it injects a single
+        // `context_reset` marker under the original `local_id` so the cut is
+        // visible while the stream stays in one session.
+        let (mut d, mut rx) = driver();
+        let mut s1 = snap("deadbeef", "working", None);
+        s1.session_id = Some("sess-1".into());
+        d.apply_snapshot(vec![s1]).await;
+        // Drain the first SessionStarted + Status.
+        while rx.try_recv().is_ok() {}
+
+        let mut s2 = snap("deadbeef", "working", None);
+        s2.session_id = Some("sess-2".into());
+        d.apply_snapshot(vec![s2]).await;
+
+        let mut marker: Option<serde_json::Value> = None;
+        while let Ok(evt) = rx.try_recv() {
+            match evt {
+                AdapterEvent::SessionStarted { .. } | AdapterEvent::SessionEnded { .. } => {
+                    panic!("a reset must not start or end a session");
+                }
+                AdapterEvent::Message { local_id, payload }
+                    if payload.get("role").and_then(|r| r.as_str()) == Some("context_reset") =>
+                {
+                    assert_eq!(local_id, "sess-1", "marker rides the original session");
+                    marker = Some(payload);
+                }
+                _ => {}
+            }
+        }
+        let payload = marker.expect("a context_reset marker should be emitted");
+        // The new session id keys the marker so a second reset isn't deduped.
+        assert_eq!(payload.get("session_id").and_then(|s| s.as_str()), Some("sess-2"));
     }
 
     /// Write a subagent transcript under the parent's `subagents/` dir so a
