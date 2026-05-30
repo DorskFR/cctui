@@ -213,15 +213,44 @@ fn parse_assistant(local_id: &str, line: &Value, out: &mut Vec<AdapterEvent>) {
     }
 }
 
+/// Harness tags that wrap content injected *to* the agent (not typed by the
+/// human): background-task notifications, slash-command expansions, bash
+/// passthrough, injected reminders. Claude's top-level `isMeta` flag covers
+/// some of these (system-reminder, autonomous-loop wake-ups) but not all
+/// (task-notification, `<command-name>` are `isMeta:false`), so we OR the two
+/// signals together. These tokens are fixed strings Claude Code emits, so the
+/// match is exact, not a fuzzy guess.
+const META_TAGS: [&str; 8] = [
+    "<task-notification",
+    "<system-reminder",
+    "<command-name",
+    "<command-message",
+    "<local-command",
+    "<bash-input",
+    "<bash-stdout",
+    "<bash-stderr",
+];
+
+/// Whether a user-role transcript message is really a system/agent-directed
+/// message rather than human input. `is_meta_line` is Claude's top-level
+/// `isMeta`; `text` is the message body.
+fn user_text_is_meta(is_meta_line: bool, text: &str) -> bool {
+    is_meta_line || {
+        let t = text.trim_start();
+        META_TAGS.iter().any(|tag| t.starts_with(tag))
+    }
+}
+
 fn parse_user(local_id: &str, line: &Value, out: &mut Vec<AdapterEvent>) {
     // User lines can be plain text or carry tool_result blocks.
     let Some(content) = line.get("message").and_then(|m| m.get("content")) else {
         return;
     };
+    let is_meta_line = line.get("isMeta").and_then(Value::as_bool).unwrap_or(false);
     if let Some(text) = content.as_str() {
         out.push(AdapterEvent::Message {
             local_id: local_id.to_owned(),
-            payload: json!({"role": "user", "text": text}),
+            payload: json!({"role": "user", "text": text, "meta": user_text_is_meta(is_meta_line, text)}),
         });
         return;
     }
@@ -229,9 +258,10 @@ fn parse_user(local_id: &str, line: &Value, out: &mut Vec<AdapterEvent>) {
     for block in blocks {
         match block.get("type").and_then(Value::as_str) {
             Some("text") => {
+                let text = block.get("text").and_then(Value::as_str).unwrap_or_default();
                 out.push(AdapterEvent::Message {
                     local_id: local_id.to_owned(),
-                    payload: json!({"role": "user", "text": block.get("text")}),
+                    payload: json!({"role": "user", "text": text, "meta": user_text_is_meta(is_meta_line, text)}),
                 });
             }
             Some("tool_result") => {
@@ -467,6 +497,34 @@ mod tests {
         let (events, _) = tail_once(&path, "s", 0).unwrap();
         assert_eq!(events.len(), 1);
         assert!(matches!(&events[0], AdapterEvent::ToolUse { .. }));
+    }
+
+    #[test]
+    fn user_meta_detection() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("t.jsonl");
+        write_lines(
+            &path,
+            &[
+                // genuine human input → not meta
+                r#"{"type":"user","message":{"content":"do the thing"}}"#,
+                // harness tag, isMeta absent → meta via tag match
+                r#"{"type":"user","message":{"content":"<task-notification><status>completed</status></task-notification>"}}"#,
+                // injected reminder marked by Claude's isMeta, no tag
+                r##"{"type":"user","isMeta":true,"message":{"content":[{"type":"text","text":"# Autonomous loop check"}]}}"##,
+            ],
+        );
+        let (events, _) = tail_once(&path, "s", 0).unwrap();
+        let metas: Vec<bool> = events
+            .iter()
+            .filter_map(|e| match e {
+                AdapterEvent::Message { payload, .. } => {
+                    Some(payload.get("meta").and_then(Value::as_bool).unwrap_or(false))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(metas, vec![false, true, true]);
     }
 
     #[test]

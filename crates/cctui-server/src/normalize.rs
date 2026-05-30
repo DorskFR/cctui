@@ -34,9 +34,12 @@ pub fn to_agent_event(adapter_id: &str, event_type: &str, payload: &Value) -> Op
             let role = payload.get("role").and_then(Value::as_str)?;
             let text = payload.get("text").and_then(Value::as_str).unwrap_or_default();
             match role {
-                "user" => Some(AgentEvent::Text { content: format!("▷ User: {text}"), ts }),
+                "user" => {
+                    let meta = payload.get("meta").and_then(Value::as_bool).unwrap_or(false);
+                    Some(AgentEvent::Text { content: format!("▷ User: {text}"), meta, ts })
+                }
                 "assistant" | "assistant_thinking" => {
-                    Some(AgentEvent::Text { content: text.to_owned(), ts })
+                    Some(AgentEvent::Text { content: text.to_owned(), meta: false, ts })
                 }
                 _ => None,
             }
@@ -78,6 +81,7 @@ fn agent_event_from_canonical(v: &Value, ts: i64) -> Option<AgentEvent> {
     match v.get("type").and_then(Value::as_str)? {
         "text" => Some(AgentEvent::Text {
             content: v.get("content").and_then(Value::as_str).unwrap_or_default().to_owned(),
+            meta: v.get("meta").and_then(Value::as_bool).unwrap_or(false),
             ts,
         }),
         "tool_call" => Some(AgentEvent::ToolCall {
@@ -195,7 +199,10 @@ fn map_daemon_message(payload: &Value) -> Option<Value> {
     let role = payload.get("role").and_then(Value::as_str)?;
     let text = payload.get("text").and_then(Value::as_str).unwrap_or_default();
     match role {
-        "user" => Some(json!({ "type": "text", "content": format!("▷ User: {text}") })),
+        "user" => {
+            let meta = payload.get("meta").and_then(Value::as_bool).unwrap_or(false);
+            Some(json!({ "type": "text", "content": format!("▷ User: {text}"), "meta": meta }))
+        }
         "assistant" | "assistant_thinking" => Some(json!({
             "type": "text",
             "content": text,
@@ -257,6 +264,27 @@ mod tests {
         let p = json!({ "role": "user", "text": "hi" });
         let n = for_client("claude-code", "message", p).unwrap();
         assert_eq!(n["content"], "▷ User: hi");
+        assert_eq!(n["meta"], false);
+    }
+
+    #[test]
+    fn daemon_user_meta_flag_flows_through() {
+        // Read path preserves the adapter-set `meta` flag.
+        let p = json!({ "role": "user", "text": "<task-notification/>", "meta": true });
+        let n = for_client("claude-code", "message", p).unwrap();
+        assert_eq!(n["meta"], true);
+
+        // Live path lifts the same flag onto AgentEvent::Text.
+        let ev = to_agent_event(
+            "claude-code",
+            "message",
+            &json!({ "role": "user", "text": "x", "meta": true }),
+        )
+        .unwrap();
+        match ev {
+            AgentEvent::Text { meta, .. } => assert!(meta),
+            other => panic!("expected Text, got {other:?}"),
+        }
     }
 
     #[test]

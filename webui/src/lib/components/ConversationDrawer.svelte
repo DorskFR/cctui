@@ -9,7 +9,10 @@
 	import { autoresize } from '$lib/autoresize';
 	import { toasts } from '$lib/toast.svelte';
 	import { useQueryClient } from '@tanstack/svelte-query';
-	import BrandLogo from './BrandLogo.svelte';
+	import { qk } from '$lib/queries';
+	import AdapterIcon from './AdapterIcon.svelte';
+	import MachineBadge from './MachineBadge.svelte';
+	import TokenUsage from './TokenUsage.svelte';
 	import PermissionCard from './PermissionCard.svelte';
 	import AskQuestionCard from './AskQuestionCard.svelte';
 
@@ -59,9 +62,15 @@
 	// Timestamps of optimistic replies not yet acknowledged → "sending…" tint.
 	let pendingReplies = $state<Set<number>>(new Set());
 
-	// (Re)subscribe + register listeners when the open session changes.
+	// Bumped to force a full re-subscribe + history refetch (e.g. when the tab
+	// regains focus after the ws may have gone half-open while backgrounded).
+	let resubTick = $state(0);
+
+	// (Re)subscribe + register listeners when the open session changes (or on a
+	// forced resubscribe).
 	$effect(() => {
 		const sid = id;
+		void resubTick;
 		live = ws.bufferedEvents(sid);
 		pendingReplies = new Set();
 		ws.subscribe(sid);
@@ -88,6 +97,27 @@
 		};
 	});
 
+	// When the tab is backgrounded the ws can go half-open and miss events; on
+	// return we force a fresh history refetch + re-subscribe so the chat catches
+	// up automatically (previously the user had to close + reopen the drawer).
+	$effect(() => {
+		const refresh = () => {
+			if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+			ws.connect();
+			qc.invalidateQueries({ queryKey: qk.conversation(id) });
+			resubTick++;
+		};
+		const onVis = () => {
+			if (document.visibilityState === 'visible') refresh();
+		};
+		document.addEventListener('visibilitychange', onVis);
+		window.addEventListener('focus', refresh);
+		return () => {
+			document.removeEventListener('visibilitychange', onVis);
+			window.removeEventListener('focus', refresh);
+		};
+	});
+
 	// History (fetched) + live (ws) events, merged in order.
 	const events = $derived([...($history.data ?? []), ...live]);
 
@@ -98,7 +128,7 @@
 		options: { label: string; description?: string; preview?: string }[];
 	}
 	interface Line {
-		role: 'assistant' | 'user' | 'tool' | 'result';
+		role: 'assistant' | 'user' | 'system' | 'tool' | 'result';
 		ts: number;
 		html?: string;
 		text?: string;
@@ -128,6 +158,23 @@
 	// messages render as user bubbles instead of blending into assistant text.
 	const USER_PREFIX = '▷ User:';
 
+	// Some "user" turns are really harness/system messages directed at the
+	// agent (timer wake-ups, task-completion notifications, injected reminders)
+	// rather than something the human typed. The adapter layer marks these
+	// authoritatively via `meta` (Claude's `isMeta` OR known harness tags) — see
+	// cctui-daemon transcript parsing — so they render in a distinct hue instead
+	// of masquerading as the user's own green bubbles. The tag fallback below
+	// only covers events stored before `meta` existed.
+	const META_TAGS = ['<task-notification', '<system-reminder', '<command-name', '<command-message', '<local-command', '<bash-input', '<bash-stdout', '<bash-stderr'];
+	function looksMeta(text: string): boolean {
+		const t = text.trimStart();
+		return META_TAGS.some((m) => t.startsWith(m));
+	}
+	function userOrSystem(content: string, ts: number, meta: boolean): Line {
+		const role = meta ? 'system' : 'user';
+		return { role, ts, html: renderMarkdown(content), text: content };
+	}
+
 	function toLine(e: AgentEvent): Line | null {
 		switch (e.type) {
 			case 'text': {
@@ -136,13 +183,14 @@
 				if (!e.content.trim()) return null;
 				if (e.content.startsWith(USER_PREFIX)) {
 					const content = e.content.slice(USER_PREFIX.length).trimStart();
-					return { role: 'user', ts: Number(e.ts), html: renderMarkdown(content), text: content };
+					return userOrSystem(content, Number(e.ts), e.meta || looksMeta(content));
 				}
 				return { role: 'assistant', ts: Number(e.ts), html: renderMarkdown(e.content), text: e.content };
 			}
 			case 'reply':
+				// `reply` is only ever our own optimistic echo of typed input.
 				if (!e.content.trim()) return null;
-				return { role: 'user', ts: Number(e.ts), html: renderMarkdown(e.content), text: e.content };
+				return userOrSystem(e.content, Number(e.ts), false);
 			case 'tool_call': {
 				// AskUserQuestion (CCT-146): render as interactive cards, not raw JSON.
 				if (e.tool === 'AskUserQuestion') {
@@ -217,8 +265,22 @@
 		// waiting for the next poll.
 		qc.invalidateQueries({ queryKey: ['sessions'] });
 	}
+	// On touch/mobile, a bare Enter should insert a newline (the on-screen
+	// keyboard's return key is easy to hit by accident) — send only via the
+	// Send button or Ctrl/Cmd+Enter. On desktop, Enter still sends and
+	// Shift+Enter inserts a newline.
+	const coarsePointer =
+		typeof window !== 'undefined' &&
+		typeof window.matchMedia === 'function' &&
+		window.matchMedia('(pointer: coarse)').matches;
 	function onKey(e: KeyboardEvent) {
-		if (e.key === 'Enter' && !e.shiftKey) {
+		if (e.key !== 'Enter') return;
+		if (e.ctrlKey || e.metaKey) {
+			e.preventDefault();
+			send();
+			return;
+		}
+		if (!coarsePointer && !e.shiftKey) {
 			e.preventDefault();
 			send();
 		}
@@ -297,13 +359,25 @@
 	});
 </script>
 
+<svelte:window onkeydown={(e) => e.key === 'Escape' && !renaming && onclose()} />
+
+<!-- Desktop side-pane: a scrim over the rest of the viewport so clicking
+     outside the pane (or Escape) closes it, instead of hunting for the ‹ icon.
+     Hidden on mobile where the drawer is full-width. -->
+<div
+	class="scrim"
+	role="button"
+	tabindex="-1"
+	aria-label="Close conversation"
+	onclick={onclose}
+	onkeydown={(e) => e.key === 'Escape' && onclose()}
+></div>
+
 <div class="drawer">
 	<div class="dhead">
 		<div class="hrow">
 			<button class="tapbtn back" aria-label="Back" onclick={onclose}>‹</button>
-			<span class="hlogo" class:codex={String(session.adapter_id ?? '').startsWith('codex')}>
-				<BrandLogo adapter={session.adapter_id} size={20} />
-			</span>
+			<AdapterIcon adapter={session.adapter_id} size={20} />
 			<div class="dtitle">
 				{#if renaming}
 					<input
@@ -345,8 +419,13 @@
 		<div class="hmeta row row-wrap">
 			<span class="badge {statusBadgeClass(session.status)}">{session.status}</span>
 			{#if session.model}<span class="chip">{session.model}{session.effort ? ` · ${session.effort}` : ''}</span>{/if}
-			<span class="chip mono">{session.machine_name ?? session.machine_id.slice(0, 8)}</span>
-			<span class="chip mono cwd truncate" title={session.working_dir}>📁 {session.working_dir}</span>
+			<MachineBadge name={session.machine_name} id={session.machine_id} mono />
+			<button
+				class="chip mono cwd truncate"
+				title="Click to copy — {session.working_dir}"
+				onclick={() => copyLine(session.working_dir)}
+			>📁 {session.working_dir} ⧉</button>
+			<TokenUsage usage={session.token_usage} />
 		</div>
 	</div>
 
@@ -419,6 +498,25 @@
 </div>
 
 <style>
+	/* No scrim on mobile — the drawer is full-width, nothing behind to click. */
+	.scrim {
+		display: none;
+	}
+	@media (min-width: 960px) {
+		.scrim {
+			display: block;
+			position: fixed;
+			inset: 0;
+			z-index: var(--z-drawer);
+			background: rgba(0, 0, 0, 0.35);
+			animation: fade 0.18s var(--ease);
+		}
+	}
+	@keyframes fade {
+		from {
+			opacity: 0;
+		}
+	}
 	.drawer {
 		position: fixed;
 		inset: 0;
@@ -470,15 +568,6 @@
 		font-weight: var(--fw-semibold);
 		font-size: var(--fs-md);
 	}
-	.hlogo {
-		display: inline-flex;
-		align-items: center;
-		color: var(--c-amber);
-		flex: none;
-	}
-	.hlogo.codex {
-		color: var(--c-blue);
-	}
 	/* Bigger, easy-to-tap icon buttons with a tinted, outlined chip look. */
 	.tapbtn {
 		flex: none;
@@ -523,9 +612,19 @@
 		padding: 0.1rem var(--sp-2);
 		max-width: 100%;
 	}
+	/* cwd is a click-to-copy button styled as a chip. */
+	button.chip {
+		cursor: pointer;
+		font-family: var(--font-mono);
+	}
+	button.chip:hover {
+		border-color: var(--border-strong);
+		color: var(--text);
+	}
 	.chip.cwd {
 		flex: 1;
 		min-width: 6rem;
+		text-align: left;
 	}
 	.sm {
 		font-size: var(--fs-xs);
@@ -588,6 +687,16 @@
 	.line.user .bubble {
 		background: color-mix(in srgb, var(--accent) 14%, var(--bg-elevated));
 		border-color: var(--accent-dim);
+	}
+	/* System/agent-directed messages (harness wake-ups, task notifications,
+	   injected reminders) — violet, distinct from the green user bubbles so
+	   they don't read as something the human typed. */
+	.line.system .bubble {
+		background: color-mix(in srgb, var(--c-violet) 12%, var(--bg-elevated));
+		border-color: color-mix(in srgb, var(--c-violet) 40%, transparent);
+	}
+	.line.system .who {
+		color: var(--c-violet);
 	}
 	/* Optimistic reply: muted/amber until the agent acknowledges, then it
 	   settles into the regular green user tint above. */

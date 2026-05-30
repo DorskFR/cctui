@@ -124,9 +124,9 @@
 
 <style>
 	.ask {
-		border: 1px solid var(--accent, #88c0d0);
+		border: 1px solid var(--c-violet);
 		border-radius: var(--r-md);
-		background: color-mix(in srgb, var(--accent, #88c0d0) 6%, var(--bg-elevated));
+		background: color-mix(in srgb, var(--c-violet) 6%, var(--bg-elevated));
 		padding: var(--sp-3);
 		margin: var(--sp-2) 0;
 		display: flex;
@@ -181,11 +181,11 @@
 		width: 100%;
 	}
 	.opt:hover:not(:disabled) {
-		border-color: var(--accent, #88c0d0);
+		border-color: var(--c-violet);
 	}
 	.opt.sel {
-		border-color: var(--accent, #88c0d0);
-		background: color-mix(in srgb, var(--accent, #88c0d0) 14%, var(--bg-elevated-2));
+		border-color: var(--c-violet);
+		background: color-mix(in srgb, var(--c-violet) 14%, var(--bg-elevated-2));
 	}
 	.opt:disabled {
 		cursor: default;

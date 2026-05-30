@@ -225,7 +225,7 @@ mod tests {
         let tx = reg.register(make_session(id, None));
         let mut rx = reg.subscribe(id).unwrap();
 
-        tx.send(AgentEvent::Text { content: "hello".into(), ts: 0 }).unwrap();
+        tx.send(AgentEvent::Text { content: "hello".into(), meta: false, ts: 0 }).unwrap();
 
         let event = rx.try_recv().unwrap();
         match event {

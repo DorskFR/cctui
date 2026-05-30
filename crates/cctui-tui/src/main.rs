@@ -732,13 +732,20 @@ fn clean_user_message(text: &str) -> Option<String> {
 
 fn agent_event_to_line(event: &AgentEvent) -> ConversationLine {
     match event {
-        AgentEvent::Text { content, ts } => {
+        AgentEvent::Text { content, meta, ts } => {
             let (kind, text) = if content.starts_with("▷ User:") {
                 let user_text = content.trim_start_matches("▷ User: ");
-                clean_user_message(user_text).map_or_else(
-                    || (LineKind::System, String::new()),
-                    |cleaned| (LineKind::User, cleaned),
-                )
+                // `meta` (set authoritatively at the adapter layer) marks a
+                // system/agent-directed message — render it as System, not a
+                // user line. Fall back to the local text-cleaning heuristic.
+                if *meta {
+                    (LineKind::System, user_text.to_owned())
+                } else {
+                    clean_user_message(user_text).map_or_else(
+                        || (LineKind::System, String::new()),
+                        |cleaned| (LineKind::User, cleaned),
+                    )
+                }
             } else {
                 (LineKind::Assistant, content.clone())
             };

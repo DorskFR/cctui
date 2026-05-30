@@ -50,12 +50,41 @@ pub enum DaemonFrameDown {
 #[ts(export)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentEvent {
-    Text { content: String, ts: i64 },
-    ToolCall { tool: String, input: serde_json::Value, ts: i64 },
-    ToolResult { tool: String, output_summary: String, ts: i64 },
-    Heartbeat { tokens_in: u64, tokens_out: u64, cost_usd: f64, ts: i64 },
-    Reply { content: String, ts: i64 },
-    TurnEnd { ts: i64 },
+    /// Free-form text. `meta` marks a message that was injected *to* the agent
+    /// rather than typed by the human (harness wake-ups, `<task-notification>`,
+    /// `<system-reminder>`, slash-command expansions). Set authoritatively at
+    /// the adapter layer (Claude's `isMeta` + known harness tags) so clients
+    /// can render it distinctly without re-sniffing strings. `#[serde(default)]`
+    /// keeps older stored payloads (no field) decoding as non-meta.
+    Text {
+        content: String,
+        #[serde(default)]
+        meta: bool,
+        ts: i64,
+    },
+    ToolCall {
+        tool: String,
+        input: serde_json::Value,
+        ts: i64,
+    },
+    ToolResult {
+        tool: String,
+        output_summary: String,
+        ts: i64,
+    },
+    Heartbeat {
+        tokens_in: u64,
+        tokens_out: u64,
+        cost_usd: f64,
+        ts: i64,
+    },
+    Reply {
+        content: String,
+        ts: i64,
+    },
+    TurnEnd {
+        ts: i64,
+    },
 }
 
 // --- TUI → Server ---
@@ -134,7 +163,7 @@ mod tests {
 
     #[test]
     fn agent_event_tagged_serialization() {
-        let event = AgentEvent::Text { content: "hello".into(), ts: 1_234_567_890 };
+        let event = AgentEvent::Text { content: "hello".into(), meta: false, ts: 1_234_567_890 };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains(r#""type":"text""#));
         assert!(json.contains(r#""content":"hello""#));
@@ -191,7 +220,7 @@ mod tests {
     #[test]
     fn agent_event_roundtrip_all_variants() {
         let variants = vec![
-            AgentEvent::Text { content: "hello".into(), ts: 1 },
+            AgentEvent::Text { content: "hello".into(), meta: false, ts: 1 },
             AgentEvent::ToolCall { tool: "Read".into(), input: serde_json::json!({}), ts: 2 },
             AgentEvent::ToolResult { tool: "Read".into(), output_summary: "ok".into(), ts: 3 },
             AgentEvent::Heartbeat { tokens_in: 10, tokens_out: 5, cost_usd: 0.001, ts: 4 },
@@ -210,7 +239,7 @@ mod tests {
     fn server_event_serialization() {
         let event = ServerEvent::Stream {
             session_id: "test-session".into(),
-            data: AgentEvent::Text { content: "hi".into(), ts: 1 },
+            data: AgentEvent::Text { content: "hi".into(), meta: false, ts: 1 },
         };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains(r#""type":"stream""#));

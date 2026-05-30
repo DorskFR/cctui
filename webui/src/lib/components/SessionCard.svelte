@@ -1,7 +1,9 @@
 <script lang="ts">
 	import type { SessionListItem } from '@bindings/SessionListItem';
-	import { compact, relativeTime, uptime, hashHue, statusBadgeClass } from '$lib/format';
-	import BrandLogo from './BrandLogo.svelte';
+	import { relativeTime, uptime, statusBadgeClass } from '$lib/format';
+	import MachineBadge from './MachineBadge.svelte';
+	import TokenUsage from './TokenUsage.svelte';
+	import AdapterIcon from './AdapterIcon.svelte';
 
 	let {
 		session,
@@ -20,13 +22,10 @@
 	const s = $derived(session);
 	const dirName = $derived(s.working_dir.split('/').filter(Boolean).pop() || '');
 	// Subagents inherit the parent's working dir, so the dir-basename fallback
-	// makes every child read the same ("cctui"). Give nameless subagents a
-	// clearer label so siblings are distinguishable.
-	const title = $derived(
-		s.name || (child ? `subagent · ${s.id.slice(0, 6)}` : dirName || s.id)
-	);
-	const machineLabel = $derived(s.machine_name || s.machine_id.slice(0, 8));
-	const isCodex = $derived((s.adapter_id ?? 'claude-code').toString().startsWith('codex'));
+	// makes every child read the same ("cctui"). Give nameless subagents the
+	// short id (the adjacent "subagent" badge already labels the kind), so
+	// siblings are distinguishable without a redundant "subagent ·" prefix.
+	const title = $derived(s.name || (child ? s.id.slice(0, 6) : dirName || s.id));
 	const needsInput = $derived(s.attention === 'needs_input' && s.status !== 'archived');
 	const livenessClass = $derived(
 		s.liveness === 'active' ? 'dot-active' : s.liveness === 'stale' ? 'dot-stale' : 'dot-dead'
@@ -39,7 +38,6 @@
 	class:child
 	class:dense
 	class:attn={needsInput}
-	style={`--mh:${hashHue(machineLabel)}`}
 	onclick={() => onopen(s)}
 >
 	<div class="row top">
@@ -54,14 +52,12 @@
 			<span class="badge {statusBadgeClass(s.status)} tag">{s.status}</span>
 			{#if s.last_message_at}<span class="faint sm">{relativeTime(s.last_message_at)}</span>{/if}
 		{/if}
-		<span class="adapter" class:codex={isCodex} title={String(s.adapter_id ?? 'claude-code')}>
-			<BrandLogo adapter={s.adapter_id} size={16} />
-		</span>
+		<AdapterIcon adapter={s.adapter_id} size={16} />
 	</div>
 
 	{#if !dense}
 		<div class="row meta row-wrap">
-			<span class="badge mach">{machineLabel}</span>
+			<MachineBadge name={s.machine_name} id={s.machine_id} />
 			<span class="badge {statusBadgeClass(s.status)}">{s.status}</span>
 			{#if s.model}<span class="muted sm">{s.model}{s.effort ? ` · ${s.effort}` : ''}</span>{/if}
 			<span class="muted sm">up {uptime(Number(s.uptime_secs))}</span>
@@ -72,10 +68,7 @@
 		{/if}
 
 		<div class="row foot">
-			<span class="tokens mono faint">
-				↑{compact(Number(u.tokens_in))} ↓{compact(Number(u.tokens_out))}
-				{#if Number(u.cache_read_tokens) > 0}⚡{compact(Number(u.cache_read_tokens))}{/if}
-			</span>
+			<TokenUsage usage={u} />
 			<div class="spacer"></div>
 			{#if s.last_message_at}<span class="faint sm">{relativeTime(s.last_message_at)}</span>{/if}
 		</div>
@@ -128,30 +121,13 @@
 	.hand {
 		font-size: var(--fs-sm);
 	}
-	.adapter {
-		display: inline-flex;
-		align-items: center;
-		/* Anthropic = warm/orange, Codex = teal-blue, matching brand hues. */
-		color: var(--c-amber);
-	}
-	.adapter.codex {
-		color: var(--c-blue);
-	}
 	.meta {
 		gap: var(--sp-2);
 	}
 	.sm {
 		font-size: var(--fs-xs);
 	}
-	.mach {
-		background: hsl(var(--mh) 45% 22%);
-		color: hsl(var(--mh) 70% 80%);
-		border-color: hsl(var(--mh) 45% 35%);
-	}
 	.last {
 		font-size: var(--fs-sm);
-	}
-	.foot .tokens {
-		font-size: var(--fs-xs);
 	}
 </style>
