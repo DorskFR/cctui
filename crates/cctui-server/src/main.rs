@@ -41,7 +41,7 @@ async fn main() -> anyhow::Result<()> {
 
     let archive = init_archive_store().await;
     let skills = init_skill_store().await;
-    let dispatchers = init_dispatchers(&config).await;
+    let dispatchers = init_dispatchers(&config);
 
     let state = AppState {
         pool,
@@ -185,33 +185,16 @@ async fn init_skill_store() -> Arc<skill_store::SkillStore> {
     store
 }
 
-/// Construct the [`dispatchers::Registry`] from env. K8s dispatcher is
-/// registered when `CCTUI_DISPATCHER_K8S=1`; absent → not registered
-/// (e.g. local dev, CI). Failure to obtain a kube client is logged and
-/// dropped — the registry still serves `/sessions/dispatch` for other
-/// dispatchers and returns 404 for the missing one.
-async fn init_dispatchers(config: &Config) -> Arc<dispatchers::Registry> {
+/// Construct the [`dispatchers::Registry`] from `config.http_dispatchers`.
+fn init_dispatchers(config: &Config) -> Arc<dispatchers::Registry> {
     let mut registry = dispatchers::Registry::new();
-    if std::env::var("CCTUI_DISPATCHER_K8S").as_deref() == Ok("1") {
-        let ns = std::env::var("CCTUI_K8S_NAMESPACE").unwrap_or_else(|_| "default".into());
-        let src = std::env::var("CCTUI_K8S_CRONJOB").unwrap_or_else(|_| "cctui-worker".into());
-        match dispatchers::k8s_job::K8sJobDispatcher::try_new(
-            ns.clone(),
-            src.clone(),
-            config.external_url.clone(),
-        )
-        .await
-        {
-            Ok(d) => {
-                tracing::info!(ns = %ns, source = %src, "k8s_job dispatcher registered");
-                registry = registry.with(Arc::new(d));
-            }
-            Err(e) => {
-                tracing::error!("k8s_job dispatcher unavailable: {e}");
-            }
-        }
-    } else {
-        tracing::info!("CCTUI_DISPATCHER_K8S not set; k8s_job dispatcher disabled");
+    for d in &config.http_dispatchers {
+        tracing::info!(id = %d.id, url = %d.url, "http dispatcher registered");
+        registry = registry.with(Arc::new(dispatchers::http::HttpDispatcher::new(
+            &d.id,
+            &d.url,
+            d.token.clone(),
+        )));
     }
     Arc::new(registry)
 }

@@ -1,11 +1,5 @@
-//! Pluggable [`Dispatcher`]s: server-mediated entry points that turn a
-//! runtime-agnostic [`DispatchSpec`] into a concrete launched session.
-//!
-//! Today's only impl is [`k8s_job::K8sJobDispatcher`] which materializes a
-//! one-shot `batch/v1` Job from a worker `CronJob` in a configurable
-//! namespace. Future impls (codex-cloud, ssh-remote, daemon-spawn
-//! wrapping the existing `/sessions/spawn` flow) plug in through the same
-//! trait without route changes.
+//! Pluggable [`Dispatcher`]s that turn a [`DispatchSpec`] into a launched
+//! session. Only impl is [`http::HttpDispatcher`].
 //!
 //! Lifecycle: the route ([`crate::routes::dispatch`]) mints a session id,
 //! inserts a row in `sessions` (`origin = '<dispatcher_id>'`, status
@@ -17,7 +11,7 @@
 
 use async_trait::async_trait;
 
-pub mod k8s_job;
+pub mod http;
 
 #[derive(Debug, Clone)]
 pub struct DispatchHandle {
@@ -51,8 +45,9 @@ pub enum DispatchError {
 
 #[async_trait]
 pub trait Dispatcher: Send + Sync {
-    /// Stable identifier matching `DispatchRequest::dispatcher`.
-    fn id(&self) -> &'static str;
+    /// Stable identifier matching `DispatchRequest::dispatcher`. Borrowed
+    /// (not `&'static`) so config-driven dispatchers can own their id.
+    fn id(&self) -> &str;
 
     /// Materialize the request for the pre-minted `session_id`. The
     /// returned handle is opaque per-dispatcher (e.g. `"jobs/foo-…"`)
@@ -63,7 +58,7 @@ pub trait Dispatcher: Send + Sync {
 /// Resolves dispatcher id strings to concrete impls. Built once at
 /// startup and shared through `AppState`.
 pub struct Registry {
-    dispatchers: std::collections::HashMap<&'static str, std::sync::Arc<dyn Dispatcher>>,
+    dispatchers: std::collections::HashMap<String, std::sync::Arc<dyn Dispatcher>>,
 }
 
 impl Registry {
@@ -72,7 +67,7 @@ impl Registry {
     }
 
     pub fn with(mut self, d: std::sync::Arc<dyn Dispatcher>) -> Self {
-        self.dispatchers.insert(d.id(), d);
+        self.dispatchers.insert(d.id().to_owned(), d);
         self
     }
 
@@ -83,8 +78,8 @@ impl Registry {
             .ok_or_else(|| DispatchError::UnknownDispatcher(id.to_owned()))
     }
 
-    pub fn ids(&self) -> Vec<&'static str> {
-        self.dispatchers.keys().copied().collect()
+    pub fn ids(&self) -> Vec<String> {
+        self.dispatchers.keys().cloned().collect()
     }
 }
 

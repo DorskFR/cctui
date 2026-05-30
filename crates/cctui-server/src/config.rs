@@ -1,5 +1,15 @@
 use std::env;
 
+/// One external dispatcher registration, parsed from `CCTUI_HTTP_DISPATCHERS`
+/// (a JSON array of these). `token`, when set, is sent as a bearer secret.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct HttpDispatcherConfig {
+    pub id: String,
+    pub url: String,
+    #[serde(default)]
+    pub token: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub host: String,
@@ -24,6 +34,8 @@ pub struct Config {
     /// 302-redirects there — letting selfupdate degrade gracefully (it fails
     /// for a private repo, which is the intended no-op until a token is set).
     pub github_token: Option<String>,
+    /// External dispatcher registrations, parsed from `CCTUI_HTTP_DISPATCHERS`.
+    pub http_dispatchers: Vec<HttpDispatcherConfig>,
 }
 
 impl Config {
@@ -47,6 +59,13 @@ impl Config {
                 .or_else(|_| env::var("GH_TOKEN"))
                 .ok()
                 .filter(|s| !s.trim().is_empty()),
+            http_dispatchers: env::var("CCTUI_HTTP_DISPATCHERS")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+                .map(|s| {
+                    serde_json::from_str(&s).expect("CCTUI_HTTP_DISPATCHERS must be a JSON array")
+                })
+                .unwrap_or_default(),
         }
     }
 

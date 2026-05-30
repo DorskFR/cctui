@@ -207,9 +207,8 @@ pub struct SpawnResponse {
 /// the runtime, sets the per-flow `timeout`, and forwards `payload` verbatim.
 ///
 /// `payload` is **opaque to cctui** — never typed or inspected here. It is
-/// threaded into the runtime (for the K8s dispatcher: env + the worker
-/// unpacks it), so the caller↔worker contract (CCT-119/120) can evolve with
-/// zero cctui changes.
+/// forwarded verbatim to the dispatcher, so the caller↔runtime contract can
+/// evolve with zero cctui changes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DispatchRequest {
     pub dispatcher: String,
