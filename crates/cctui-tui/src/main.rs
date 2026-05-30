@@ -777,6 +777,14 @@ fn agent_event_to_line(event: &AgentEvent) -> ConversationLine {
             tool: None,
             tool_input: None,
         },
+        // CCT-158: /clear or /compact boundary within one session.
+        AgentEvent::ContextReset { ts } => ConversationLine {
+            timestamp: *ts,
+            kind: LineKind::System,
+            text: "⟳ context reset (/clear · /compact)".to_owned(),
+            tool: None,
+            tool_input: None,
+        },
         AgentEvent::Reply { content, ts } => ConversationLine {
             timestamp: *ts,
             kind: LineKind::Reply,

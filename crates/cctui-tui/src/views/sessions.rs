@@ -185,5 +185,6 @@ pub fn agent_event_to_string(event: &AgentEvent) -> String {
             format!("[heartbeat] in:{tokens_in} out:{tokens_out}")
         }
         AgentEvent::TurnEnd { .. } => String::new(),
+        AgentEvent::ContextReset { .. } => "⟳ context reset (/clear · /compact)".to_owned(),
     }
 }
