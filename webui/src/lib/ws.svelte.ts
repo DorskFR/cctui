@@ -90,10 +90,15 @@ class WsClient {
 		this.status = 'closed';
 	}
 
-	private send(frame: Record<string, unknown>) {
+	/** Write a frame to the socket. Returns true if it actually went out, false
+	 * if the socket wasn't OPEN (frame dropped — callers must NOT treat a drop
+	 * as a successful send). */
+	private send(frame: Record<string, unknown>): boolean {
 		if (this.socket?.readyState === WebSocket.OPEN) {
 			this.socket.send(JSON.stringify(frame));
+			return true;
 		}
+		return false;
 	}
 
 	private onFrame(raw: string) {
@@ -223,8 +228,10 @@ class WsClient {
 		return () => set!.delete(cb);
 	}
 
-	sendMessage(id: string, content: string) {
-		this.send({ type: 'message', session_id: id, content });
+	/** Send a typed message. Returns true if the frame went out, false if the
+	 * socket wasn't OPEN (caller should keep the draft + surface a notice). */
+	sendMessage(id: string, content: string): boolean {
+		return this.send({ type: 'message', session_id: id, content });
 	}
 
 	respondPermission(sessionId: string, requestId: string, allow: boolean) {

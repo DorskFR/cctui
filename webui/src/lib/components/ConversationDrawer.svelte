@@ -5,7 +5,7 @@
 	import { useConversation, useSessionActions } from '$lib/queries';
 	import { renderMarkdown, prettyJson } from '$lib/markdown';
 	import { clockTime, statusBadgeClass } from '$lib/format';
-	import { drafts, composerKey, VIEW_OPTS } from '$lib/drafts';
+	import { drafts, composerKey, history as msgHistory, clearSessionStorage, VIEW_OPTS } from '$lib/drafts';
 	import { autoresize } from '$lib/autoresize';
 	import { toasts } from '$lib/toast.svelte';
 	import { useQueryClient } from '@tanstack/svelte-query';
@@ -73,6 +73,9 @@
 		void resubTick;
 		live = ws.bufferedEvents(sid);
 		pendingReplies = new Set();
+		notSent = false;
+		histIndex = -1;
+		draftStash = '';
 		ws.subscribe(sid);
 		const offStream = ws.onStream(sid, (ev) => {
 			// Skip a server-echoed reply that duplicates our optimistic one.
@@ -266,15 +269,40 @@
 		drafts.set(composerKey(session.id), input);
 	});
 
+	// Set when a send was dropped because the socket wasn't OPEN — shown inline
+	// near the composer so the user knows their (still-present) text wasn't sent.
+	let notSent = $state(false);
+
+	// ── Sent-message history recall (ArrowUp/ArrowDown) ─────────────────────
+	// histIndex: -1 = editing the live draft; 0..n-1 = browsing history
+	// (newest-first as you press Up). draftStash holds the in-progress text so
+	// returning past the newest entry restores it.
+	let histIndex = $state(-1);
+	let draftStash = '';
+	function resetHistoryNav() {
+		histIndex = -1;
+	}
+
 	function send() {
 		const text = input.trim();
 		if (!text || archived) return;
-		ws.sendMessage(id, text);
+		const ok = ws.sendMessage(id, text);
+		if (!ok) {
+			// Socket wasn't OPEN: the frame was dropped. Keep the draft, show no
+			// phantom echo, and surface a "not sent — reconnecting" notice. Nudge
+			// a reconnect so the user can retry once it's back.
+			notSent = true;
+			ws.connect();
+			return;
+		}
+		notSent = false;
 		// Optimistic echo into local state (+ pending tint until the agent replies).
 		const ts = Date.now();
 		live = [...live, { type: 'reply', content: text, ts }];
 		pendingReplies = new Set([...pendingReplies, ts]);
+		msgHistory.push(session.id, text);
 		input = '';
+		resetHistoryNav();
 		drafts.clear(composerKey(session.id));
 		// Reflect the new turn in the list (last-message / ordering) without
 		// waiting for the next poll.
@@ -288,7 +316,54 @@
 		typeof window !== 'undefined' &&
 		typeof window.matchMedia === 'function' &&
 		window.matchMedia('(pointer: coarse)').matches;
+	let textarea = $state<HTMLTextAreaElement>();
+
+	// True when the caret is at the very start of the textarea (so ArrowUp can
+	// recall history without fighting normal multiline cursor movement). Up only
+	// recalls from the first line; Down only advances when on the last line.
+	function caretAtStart(): boolean {
+		const el = textarea;
+		if (!el) return false;
+		return el.selectionStart === 0 && el.selectionEnd === 0;
+	}
+	function caretAtEnd(): boolean {
+		const el = textarea;
+		if (!el) return false;
+		return el.selectionStart === input.length && el.selectionEnd === input.length;
+	}
+
+	function historyBack() {
+		const list = msgHistory.get(session.id);
+		if (list.length === 0) return;
+		if (histIndex === -1) draftStash = input; // stash live draft before browsing
+		const next = Math.min(histIndex + 1, list.length - 1);
+		histIndex = next;
+		input = list[list.length - 1 - next]; // newest-first
+	}
+	function historyForward() {
+		const list = msgHistory.get(session.id);
+		if (histIndex === -1) return;
+		const next = histIndex - 1;
+		if (next < 0) {
+			histIndex = -1;
+			input = draftStash; // restored the in-progress draft
+		} else {
+			histIndex = next;
+			input = list[list.length - 1 - next];
+		}
+	}
+
 	function onKey(e: KeyboardEvent) {
+		if (e.key === 'ArrowUp' && (histIndex !== -1 || caretAtStart())) {
+			e.preventDefault();
+			historyBack();
+			return;
+		}
+		if (e.key === 'ArrowDown' && histIndex !== -1 && caretAtEnd()) {
+			e.preventDefault();
+			historyForward();
+			return;
+		}
 		if (e.key !== 'Enter') return;
 		if (e.ctrlKey || e.metaKey) {
 			e.preventDefault();
@@ -306,7 +381,13 @@
 	// socket's `reply` op advances the turn, which is how the agent continues.
 	function answerQuestion(text: string) {
 		if (archived) return;
-		ws.sendMessage(id, text);
+		const ok = ws.sendMessage(id, text);
+		if (!ok) {
+			notSent = true;
+			ws.connect();
+			return;
+		}
+		notSent = false;
 		const ts = Date.now();
 		live = [...live, { type: 'reply', content: text, ts }];
 		pendingReplies = new Set([...pendingReplies, ts]);
@@ -339,6 +420,9 @@
 	async function doArchive() {
 		try {
 			await actions.archive(id);
+			// Wipe this session's local composer state (draft + sent-message
+			// history) — it's gone once archived (CCT-162).
+			clearSessionStorage(session.id);
 			toasts.ok('Archived');
 			onclose();
 		} catch (e) {
@@ -508,12 +592,20 @@
 		{#if archived}
 			<div class="hint muted">Session archived — unarchive to send messages.</div>
 		{:else}
+			{#if notSent}
+				<div class="notsent" role="status">⚠ Not sent — reconnecting. Your message is kept; press Send to retry.</div>
+			{/if}
 			<textarea
 				class="textarea grow"
 				rows="1"
 				placeholder="Message… (Enter to send, Shift+Enter for newline)"
 				bind:value={input}
+				bind:this={textarea}
 				onkeydown={onKey}
+				oninput={() => {
+					resetHistoryNav();
+					if (notSent) notSent = false;
+				}}
 				use:autoresize={input}
 			></textarea>
 			<button class="btn btn-primary send" disabled={!input.trim()} onclick={send}>Send</button>
@@ -796,6 +888,7 @@
 	}
 	.composer {
 		display: flex;
+		flex-wrap: wrap;
 		gap: var(--sp-2);
 		align-items: flex-end;
 		padding: var(--sp-3);
@@ -825,6 +918,17 @@
 		font-size: var(--fs-sm);
 		text-align: center;
 		width: 100%;
+	}
+	/* Inline notice when a send was dropped (socket not OPEN). Full-width so it
+	   sits on its own line above the textarea (CCT-162). */
+	.notsent {
+		width: 100%;
+		font-size: var(--fs-xs);
+		color: var(--warn);
+		background: color-mix(in srgb, var(--warn) 12%, var(--bg-elevated));
+		border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent);
+		border-radius: var(--r-sm);
+		padding: var(--sp-1) var(--sp-2);
 	}
 	:global(.bubble .md-pre) {
 		background: var(--bg);
