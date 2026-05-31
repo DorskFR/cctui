@@ -590,11 +590,14 @@ pub async fn kill_session(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `POST /api/v1/sessions/{id}/interrupt` — interrupt the in-flight turn
-/// without tearing the session down (CCT-151). Dispatches a graceful
-/// `Kill { signal: 15 }`, which the daemon maps to codex `turn/interrupt` /
-/// the claude control-socket interrupt. Unlike `kill_session`, the row stays
-/// active and in the registry so the session keeps running.
+/// `POST /api/v1/sessions/{id}/interrupt` — stop the in-flight turn without
+/// tearing the session down (CCT-151). Dispatches a graceful
+/// `Kill { signal: 15 }`. For codex the daemon maps this to `turn/interrupt`
+/// (a true in-place interrupt). Claude's control socket exposes no
+/// turn-interrupt op, so the daemon sends `SIGTERM` to the headless worker
+/// (CCT-169 — the numeric signal used to be rejected by claude's enum, making
+/// interrupt a no-op). Unlike `kill_session`, the row stays active and in the
+/// registry so the session can be resumed.
 pub async fn interrupt_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,

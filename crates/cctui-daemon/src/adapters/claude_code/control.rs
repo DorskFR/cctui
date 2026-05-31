@@ -339,7 +339,16 @@ impl Driver {
                 let short = self.resolve_short(&local_id)?;
                 let mut req = json!({"proto":1,"op":"kill","short":short});
                 if let Some(s) = signal {
-                    req["signal"] = serde_json::Value::Number(s.into());
+                    // Claude's control-socket `kill` op validates `signal`
+                    // against the string enum ["SIGTERM","SIGKILL"] (zod). A
+                    // numeric signal (e.g. the interrupt route's `15`) fails
+                    // that validation and the whole op is rejected, so the
+                    // request silently no-op'd — this was why "interrupt" never
+                    // actually interrupted a claude session (CCT-169). The
+                    // control socket exposes no in-place turn-interrupt op, so
+                    // the best we can do for a headless worker is terminate it;
+                    // map to the enum name the daemon accepts.
+                    req["signal"] = serde_json::Value::String(kill_signal_name(s).to_owned());
                 }
                 let resp = socket::one_shot(&sock, &req).await?;
                 tracing::debug!(?resp, %short, "kill ack");
@@ -946,6 +955,19 @@ impl Driver {
 
 /// Path of the managed hook settings file: `$XDG_CONFIG_HOME/cctui/
 /// ask-hook-settings.json` (falling back to `~/.config`).
+/// Map a numeric kill signal to the string name Claude's control-socket `kill`
+/// op accepts. The op validates `signal` against the zod enum
+/// `["SIGTERM","SIGKILL"]`, so a numeric value is rejected outright (CCT-169).
+/// Only `SIGKILL` (9) maps to a hard kill; everything else (notably the
+/// interrupt route's `15`) maps to the graceful `SIGTERM`.
+const fn kill_signal_name(signal: i32) -> &'static str {
+    if signal == 9 {
+        "SIGKILL"
+    } else {
+        "SIGTERM"
+    }
+}
+
 fn hook_settings_path() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
@@ -995,6 +1017,17 @@ fn ensure_hook_settings(sock: &std::path::Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kill_signal_name_maps_to_claude_enum() {
+        // The interrupt route sends 15; kill_session sends None (handled at the
+        // call site). Anything that is not SIGKILL must map to SIGTERM so it
+        // satisfies claude's `["SIGTERM","SIGKILL"]` enum (CCT-169 regression:
+        // a numeric signal was rejected, making interrupt a silent no-op).
+        assert_eq!(kill_signal_name(15), "SIGTERM");
+        assert_eq!(kill_signal_name(9), "SIGKILL");
+        assert_eq!(kill_signal_name(2), "SIGTERM");
+    }
 
     fn snap(short: &str, state: &str, name: Option<&str>) -> LiveSnapshot {
         LiveSnapshot {
