@@ -20,12 +20,11 @@ use serde_json::json;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use super::SessionMap;
 use super::backfill::{self, BackfillConfig, CursorFile, default_cursor_path};
 use super::discovery::Discovery;
-use super::socket;
 use super::state::{StateJson, default_jobs_root};
 use super::transcript::{self, OffsetStore, default_projects_root};
+use super::{SessionMap, socket};
 
 /// Config knobs read from `adapters_enabled.config`.
 #[derive(Debug, Clone)]
@@ -961,11 +960,7 @@ impl Driver {
 /// Only `SIGKILL` (9) maps to a hard kill; everything else (notably the
 /// interrupt route's `15`) maps to the graceful `SIGTERM`.
 const fn kill_signal_name(signal: i32) -> &'static str {
-    if signal == 9 {
-        "SIGKILL"
-    } else {
-        "SIGTERM"
-    }
+    if signal == 9 { "SIGKILL" } else { "SIGTERM" }
 }
 
 fn hook_settings_path() -> Option<PathBuf> {

@@ -61,6 +61,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/sessions/{id}/deregister", post(routes::sessions::deregister))
         .route("/sessions/spawn", post(routes::spawn::spawn_session))
         .route("/sessions/dispatch", post(routes::dispatch::dispatch))
+        .route("/sessions/archive", post(routes::admin::archive_sessions))
+        .route("/sessions/unarchive", post(routes::admin::unarchive_sessions))
         .route("/sessions", get(routes::admin::list_sessions))
         .route("/sessions/recent-dirs", get(routes::admin::recent_dirs))
         .route("/sessions/{id}", get(routes::admin::get_session))

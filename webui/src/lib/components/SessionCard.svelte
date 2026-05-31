@@ -10,13 +10,21 @@
 		child = false,
 		compact: dense = false,
 		pendingCount = 0,
-		onopen
+		onopen,
+		selectable = false,
+		selected = false,
+		onToggleSelect
 	}: {
 		session: SessionListItem;
 		child?: boolean;
 		compact?: boolean;
 		pendingCount?: number;
 		onopen: (s: SessionListItem) => void;
+		// Multi-select mode (CCT-172): when `selectable`, a tap toggles selection
+		// instead of opening the drawer, and a checkbox is shown.
+		selectable?: boolean;
+		selected?: boolean;
+		onToggleSelect?: (s: SessionListItem) => void;
 	} = $props();
 
 	const s = $derived(session);
@@ -38,9 +46,14 @@
 	class:child
 	class:dense
 	class:attn={needsInput}
-	onclick={() => onopen(s)}
+	class:selectable
+	class:selected
+	onclick={() => (selectable ? onToggleSelect?.(s) : onopen(s))}
 >
 	<div class="row top">
+		{#if selectable}
+			<span class="check" class:on={selected} aria-hidden="true">{selected ? '✓' : ''}</span>
+		{/if}
 		{#if child}<span class="sub" title="subagent">↳</span>{/if}
 		<span class="dot {livenessClass}"></span>
 		<span class="title truncate">{title}</span>
@@ -111,6 +124,30 @@
 	.sc.attn {
 		background: var(--attention-bg);
 		border-left: 3px solid var(--attention-bar);
+	}
+	/* Multi-select (CCT-172) */
+	.sc.selected {
+		background: color-mix(in srgb, var(--accent) 12%, var(--bg-elevated));
+		border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+	}
+	.check {
+		flex: none;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 1.15rem;
+		height: 1.15rem;
+		border-radius: var(--r-sm);
+		border: 1.5px solid var(--border-strong);
+		background: var(--bg);
+		color: var(--bg);
+		font-size: 0.8rem;
+		line-height: 1;
+	}
+	.check.on {
+		background: var(--accent);
+		border-color: var(--accent);
+		color: var(--bg);
 	}
 	.top {
 		gap: var(--sp-2);

@@ -446,10 +446,8 @@ async fn handle_event(
     if let Some(id) = local_id_for_bump {
         bump_heartbeat(state, &id).await;
     }
-    if newly_inserted {
-        if let Some((session_id, data)) = broadcast_pair {
-            let _ = state.tui_tx.send(cctui_proto::ws::ServerEvent::Stream { session_id, data });
-        }
+    if newly_inserted && let Some((session_id, data)) = broadcast_pair {
+        let _ = state.tui_tx.send(cctui_proto::ws::ServerEvent::Stream { session_id, data });
     }
     Ok(())
 }

@@ -1,7 +1,8 @@
 <script lang="ts">
 	import type { SessionListItem } from '@bindings/SessionListItem';
-	import { useSessions } from '$lib/queries';
+	import { useSessions, useSessionActions } from '$lib/queries';
 	import { useQueryClient } from '@tanstack/svelte-query';
+	import { toasts } from '$lib/toast.svelte';
 	import { ws } from '$lib/ws.svelte';
 	import SessionCard from '$lib/components/SessionCard.svelte';
 	import ConversationDrawer from '$lib/components/ConversationDrawer.svelte';
@@ -20,6 +21,43 @@
 
 	const sessions = useSessions(() => showArchived);
 	const qc = useQueryClient();
+	const actions = useSessionActions();
+
+	// ── Multi-select / batch archive (CCT-172) ─────────────────────────────
+	let selecting = $state(false);
+	let selected = $state(new Set<string>());
+	let archiving = $state(false);
+
+	function toggleSelect(s: SessionListItem) {
+		const next = new Set(selected);
+		if (next.has(s.id)) next.delete(s.id);
+		else next.add(s.id);
+		selected = next;
+	}
+	function exitSelect() {
+		selecting = false;
+		selected = new Set();
+	}
+	function selectAll() {
+		// Every currently-visible session (top-level + their shown subagents).
+		selected = new Set(items.map((s) => s.id));
+	}
+	async function archiveSelected() {
+		const ids = [...selected];
+		if (ids.length === 0) return;
+		if (ids.length > 1 && !confirm(`Archive ${ids.length} sessions?`)) return;
+		archiving = true;
+		try {
+			if (showArchived) await actions.unarchiveMany(ids);
+			else await actions.archiveMany(ids);
+			toasts.ok(`${showArchived ? 'Unarchived' : 'Archived'} ${ids.length}`);
+			exitSelect();
+		} catch (e) {
+			toasts.err((e as Error).message);
+		} finally {
+			archiving = false;
+		}
+	}
 
 	// live status changes from the websocket → refetch the list
 	$effect(() => {
@@ -96,8 +134,32 @@
 		title="Toggle compact / detailed rows"
 		onclick={() => (dense = !dense)}>{dense ? '☰ Compact' : '▤ Detailed'}</button
 	>
+	{#if selecting}
+		<button class="btn btn-sm" onclick={exitSelect}>Cancel</button>
+	{:else}
+		<button class="btn btn-sm" title="Select multiple to archive" onclick={() => (selecting = true)}
+			>☑ Select</button
+		>
+	{/if}
 	<button class="btn btn-primary btn-sm" onclick={() => (showSpawn = true)}>+ New</button>
 </div>
+
+{#if selecting}
+	<div class="bulkbar row">
+		<span class="count">{selected.size} selected</span>
+		<button class="btn btn-sm" onclick={selectAll}>Select all</button>
+		<div class="spacer"></div>
+		<button
+			class="btn btn-sm btn-danger"
+			disabled={selected.size === 0 || archiving}
+			onclick={archiveSelected}
+		>
+			{#if archiving}<span class="spin"></span>{/if}
+			{showArchived ? 'Unarchive' : 'Archive'}
+			{selected.size || ''}
+		</button>
+	</div>
+{/if}
 
 {#if $sessions.isLoading}
 	<div class="empty"><span class="spin"></span></div>
@@ -115,6 +177,9 @@
 					compact={dense}
 					pendingCount={pending(s.id)}
 					onopen={(x) => (openSession = x)}
+					selectable={selecting}
+					selected={selected.has(s.id)}
+					onToggleSelect={toggleSelect}
 				/>
 				{#each childrenOf.get(s.id) ?? [] as c (c.id)}
 					<SessionCard
@@ -123,6 +188,9 @@
 						compact={dense}
 						pendingCount={pending(c.id)}
 						onopen={(x) => (openSession = x)}
+						selectable={selecting}
+						selected={selected.has(c.id)}
+						onToggleSelect={toggleSelect}
 					/>
 				{/each}
 			{/each}
@@ -153,6 +221,25 @@
 		font-size: var(--fs-sm);
 		color: var(--text-muted);
 		gap: var(--sp-1);
+	}
+	/* Sticky bulk-action bar (CCT-172) shown while in select mode. */
+	.bulkbar {
+		position: sticky;
+		top: 0;
+		z-index: 5;
+		gap: var(--sp-2);
+		align-items: center;
+		margin-bottom: var(--sp-3);
+		padding: var(--sp-2) var(--sp-3);
+		border: 1px solid var(--border-strong);
+		border-radius: var(--r-md);
+		background: var(--bg-elevated);
+		box-shadow: var(--shadow-md);
+	}
+	.bulkbar .count {
+		font-size: var(--fs-sm);
+		font-weight: var(--fw-semibold);
+		color: var(--text-muted);
 	}
 	.stack.tight {
 		gap: var(--sp-1);

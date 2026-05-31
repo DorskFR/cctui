@@ -137,6 +137,17 @@ export function useSessionActions() {
 			await api.post<void>(`/sessions/${id}/unarchive`);
 			inval();
 		},
+		// Batch archive/unarchive (CCT-172). One request, one invalidation.
+		archiveMany: async (ids: string[]) => {
+			if (ids.length === 0) return;
+			await api.post<void>('/sessions/archive', { ids });
+			inval();
+		},
+		unarchiveMany: async (ids: string[]) => {
+			if (ids.length === 0) return;
+			await api.post<void>('/sessions/unarchive', { ids });
+			inval();
+		},
 		kill: async (id: string) => {
 			await api.post<void>(`/sessions/${id}/kill`);
 			inval();

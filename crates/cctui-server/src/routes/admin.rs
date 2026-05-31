@@ -639,10 +639,21 @@ pub async fn archive_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    archive_one(&state, &session_id).await.map_err(|e| {
+        tracing::error!("db error: {e}");
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+    })?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Archive a single session (+ its subagents) — the reusable core shared by the
+/// single-session route and the batch route. Dispatches `Remove`, marks the row
+/// `archived`, clears classifier signals, and drops it from the live registry.
+async fn archive_one(state: &AppState, session_id: &str) -> Result<(), sqlx::Error> {
     let _ = crate::daemon_dispatch::dispatch(
-        &state,
-        &session_id,
-        cctui_proto::adapter::AdapterCommand::Remove { local_id: session_id.clone() },
+        state,
+        session_id,
+        cctui_proto::adapter::AdapterCommand::Remove { local_id: session_id.to_string() },
     )
     .await;
     // Archive the session AND any Task-tool subagents nested under it
@@ -651,7 +662,7 @@ pub async fn archive_session(
     // only the parent does, handled by the dispatch above. Archiving a
     // *child* does not touch the parent (no `parent_id` cascade upward).
     let children: Vec<String> = sqlx::query_scalar("SELECT id FROM sessions WHERE parent_id = $1")
-        .bind(&session_id)
+        .bind(session_id)
         .fetch_all(&state.pool)
         .await
         .unwrap_or_default();
@@ -662,22 +673,18 @@ pub async fn archive_session(
         "UPDATE sessions SET status = 'archived', tempo = NULL, agent_state = NULL, activity = NULL \
          WHERE id = $1 OR parent_id = $1",
     )
-    .bind(&session_id)
-        .execute(&state.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("db error: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-        })?;
+    .bind(session_id)
+    .execute(&state.pool)
+    .await?;
     {
         let mut registry = state.registry.write().await;
-        registry.deregister(&session_id);
+        registry.deregister(session_id);
         for child in &children {
             registry.deregister(child);
         }
     }
     tracing::info!(session_id = %session_id, children = children.len(), "session archived");
-    Ok(StatusCode::NO_CONTENT)
+    Ok(())
 }
 
 /// Un-archive a session: clear the sticky `archived` state back to
@@ -687,16 +694,61 @@ pub async fn unarchive_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    sqlx::query("UPDATE sessions SET status = 'inactive' WHERE id = $1 AND status = 'archived'")
-        .bind(&session_id)
-        .execute(&state.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("db error: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-        })?;
-    tracing::info!(session_id = %session_id, "session unarchived");
+    unarchive_one(&state, &session_id).await.map_err(|e| {
+        tracing::error!("db error: {e}");
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+    })?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn unarchive_one(state: &AppState, session_id: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE sessions SET status = 'inactive' WHERE id = $1 AND status = 'archived'")
+        .bind(session_id)
+        .execute(&state.pool)
+        .await?;
+    tracing::info!(session_id = %session_id, "session unarchived");
+    Ok(())
+}
+
+/// Body for the batch archive/unarchive routes.
+#[derive(Deserialize)]
+pub struct BatchIds {
+    pub ids: Vec<String>,
+}
+
+/// `POST /api/v1/sessions/archive` — archive many sessions in one request
+/// (CCT-172, multi-select). Each id is processed via [`archive_one`]; a per-id
+/// failure is logged but does not abort the rest of the batch. Idempotent:
+/// re-archiving an already-archived id is a no-op.
+pub async fn archive_sessions(
+    State(state): State<AppState>,
+    Json(req): Json<BatchIds>,
+) -> StatusCode {
+    let mut ok = 0usize;
+    for id in &req.ids {
+        match archive_one(&state, id).await {
+            Ok(()) => ok += 1,
+            Err(e) => tracing::error!(session_id = %id, "batch archive db error: {e}"),
+        }
+    }
+    tracing::info!(archived = ok, requested = req.ids.len(), "batch archive");
+    StatusCode::NO_CONTENT
+}
+
+/// `POST /api/v1/sessions/unarchive` — the batch mirror of `unarchive_session`.
+pub async fn unarchive_sessions(
+    State(state): State<AppState>,
+    Json(req): Json<BatchIds>,
+) -> StatusCode {
+    let mut ok = 0usize;
+    for id in &req.ids {
+        match unarchive_one(&state, id).await {
+            Ok(()) => ok += 1,
+            Err(e) => tracing::error!(session_id = %id, "batch unarchive db error: {e}"),
+        }
+    }
+    tracing::info!(unarchived = ok, requested = req.ids.len(), "batch unarchive");
+    StatusCode::NO_CONTENT
 }
 
 pub async fn set_session_policy(
