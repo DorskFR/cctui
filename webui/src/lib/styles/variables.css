@@ -30,6 +30,34 @@
 	--c-red: #f0716b;
 	--c-green: #5ad6a0;
 	--c-violet: #b48ef0;
+	--c-gold: #f0b454;
+	--c-teal: #4fd6cf;
+
+	/* ---- Role colors (CCT-161) — uniform message theming, all derived from
+	   palette tokens so each theme adapts. Used for role badges + bubble tints. */
+	--role-user: var(--c-green);
+	--role-assistant: var(--c-blue);
+	--role-system: var(--c-violet);
+	--role-tool: var(--c-gold);
+	--role-mcp: var(--c-teal);
+	/* compact/clear boundary — neutral "paper white" so it reads as structure */
+	--role-boundary: var(--c-text-muted);
+
+	/* ---- Markdown / syntax-highlight tokens (CCT-161) — themeable ---- */
+	--md-text: var(--c-text-muted); /* base prose: grayish */
+	--md-strong: var(--c-text); /* bold: bright white-ish */
+	--md-code: var(--c-blue); /* inline code: bold blue */
+	--md-code-bg: color-mix(in srgb, var(--c-blue) 14%, var(--c-bg));
+	--md-heading: var(--c-text);
+	--syn-keyword: var(--c-violet);
+	--syn-string: var(--c-green);
+	--syn-number: var(--c-amber);
+	--syn-comment: var(--c-text-faint);
+	--syn-function: var(--c-blue);
+	--syn-punct: var(--c-text-muted);
+
+	/* chat font scale (CCT-161 item 4) — overridden inline by the slider */
+	--chat-font-size: var(--fs-sm);
 
 	/* ---- Semantic ---- */
 	--bg: var(--c-bg);
@@ -145,7 +173,38 @@
 	--c-red: #d6463f;
 	--c-green: #1f9d6b;
 	--c-violet: #7c3aed;
+	--c-gold: #c98a1d;
+	--c-teal: #0d9488;
+	--md-code-bg: color-mix(in srgb, var(--c-blue) 12%, var(--c-bg));
 	--shadow-sm: 0 1px 2px rgba(20, 24, 31, 0.08);
 	--shadow-md: 0 6px 20px rgba(20, 24, 31, 0.12);
 	--shadow-lg: 0 12px 40px rgba(20, 24, 31, 0.18);
+}
+
+/* ---- Sepia / "Claude paper" theme (CCT-161 item 3) — warm cream paper,
+   brown ink, solarized-ish accents. Same variable contract as light/dark. */
+[data-theme='sepia'] {
+	--c-bg: #f4ecd8;
+	--c-bg-elev: #faf3e3;
+	--c-bg-elev-2: #ece1c6;
+	--c-surface: #faf3e3;
+	--c-border: #ddccab;
+	--c-border-strong: #c8b48c;
+	--c-text: #3b2f1e;
+	--c-text-muted: #6f5d42;
+	--c-text-faint: #9a8868;
+	--c-accent: #5a8250;
+	--c-accent-ink: #faf3e3;
+	--c-accent-dim: #aec79f;
+	--c-blue: #2c6f9b;
+	--c-amber: #b07a18;
+	--c-red: #b5403a;
+	--c-green: #5a8250;
+	--c-violet: #8a5fa8;
+	--c-gold: #a87d1f;
+	--c-teal: #2a8f86;
+	--md-code-bg: color-mix(in srgb, var(--c-blue) 14%, var(--c-bg));
+	--shadow-sm: 0 1px 2px rgba(80, 60, 30, 0.1);
+	--shadow-md: 0 6px 20px rgba(80, 60, 30, 0.14);
+	--shadow-lg: 0 12px 40px rgba(80, 60, 30, 0.2);
 }

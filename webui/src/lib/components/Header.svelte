@@ -24,8 +24,8 @@
 				srv v{$version.data.version} · ui v{__CLIENT_VERSION__}
 			</a>
 		{/if}
-		<button class="btn btn-ghost btn-icon" title="Toggle theme" onclick={() => theme.toggle()}>
-			{theme.current === 'dark' ? '☀' : '☾'}
+		<button class="btn btn-ghost btn-icon" title="Toggle theme ({theme.current})" onclick={() => theme.toggle()}>
+			{theme.icon}
 		</button>
 	</div>
 </header>

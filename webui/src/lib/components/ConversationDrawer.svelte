@@ -3,7 +3,7 @@
 	import type { AgentEvent } from '@bindings/AgentEvent';
 	import { ws, type PermReq } from '$lib/ws.svelte';
 	import { useConversation, useSessionActions } from '$lib/queries';
-	import { renderMarkdown, prettyJson } from '$lib/markdown';
+	import { renderMarkdown, prettyJson, highlightBlock } from '$lib/markdown';
 	import { clockTime, statusBadgeClass } from '$lib/format';
 	import { drafts, composerKey, history as msgHistory, clearSessionStorage, VIEW_OPTS } from '$lib/drafts';
 	import { autoresize } from '$lib/autoresize';
@@ -26,17 +26,24 @@
 	interface ViewOpts {
 		showTool: boolean;
 		showMcp: boolean;
+		showSystem: boolean;
 		showResult: boolean;
 		prettyJson: boolean;
 		prettyDiff: boolean;
+		// Chat message font scale in rem (CCT-161 item 4); applied via --chat-font-size.
+		fontSize: number;
 	}
 	const defaults: ViewOpts = {
 		showTool: true,
 		showMcp: false,
+		showSystem: true,
 		showResult: true,
 		prettyJson: true,
-		prettyDiff: true
+		prettyDiff: true,
+		fontSize: 0.8125
 	};
+	const FONT_MIN = 0.75;
+	const FONT_MAX: number = 1.25;
 	let view = $state<ViewOpts>(loadView());
 	function loadView(): ViewOpts {
 		try {
@@ -134,8 +141,12 @@
 		role: 'assistant' | 'user' | 'system' | 'tool' | 'result' | 'reset' | 'compact';
 		ts: number;
 		html?: string;
+		// Pre-highlighted code HTML for the <pre> bubble (tool/result), {@html}.
+		htmlCode?: string;
 		text?: string;
 		tool?: string;
+		// Tool calls under the mcp__ prefix get the distinct MCP role hue.
+		mcp?: boolean;
 		pending?: boolean;
 		// Parsed AskUserQuestion payload (CCT-146) — rendered as interactive cards.
 		ask?: AskQuestion[];
@@ -173,8 +184,9 @@
 		const t = text.trimStart();
 		return META_TAGS.some((m) => t.startsWith(m));
 	}
-	function userOrSystem(content: string, ts: number, meta: boolean): Line {
+	function userOrSystem(content: string, ts: number, meta: boolean): Line | null {
 		const role = meta ? 'system' : 'user';
+		if (role === 'system' && !view.showSystem) return null;
 		return { role, ts, html: renderMarkdown(content), text: content };
 	}
 
@@ -203,11 +215,25 @@
 				const isMcp = e.tool.startsWith('mcp__');
 				if (!view.showTool) return null;
 				if (isMcp && !view.showMcp) return null;
-				return { role: 'tool', ts: Number(e.ts), tool: e.tool, text: formatToolInput(e.tool, e.input) };
+				const { text, lang } = formatToolInput(e.tool, e.input);
+				return {
+					role: 'tool',
+					ts: Number(e.ts),
+					tool: e.tool,
+					mcp: isMcp,
+					text,
+					htmlCode: highlightBlock(text, lang)
+				};
 			}
 			case 'tool_result':
 				if (!view.showResult) return null;
-				return { role: 'result', ts: Number(e.ts), tool: e.tool, text: e.output_summary };
+				return {
+					role: 'result',
+					ts: Number(e.ts),
+					tool: e.tool,
+					text: e.output_summary,
+					htmlCode: highlightBlock(e.output_summary, '')
+				};
 			case 'context_reset':
 				// /clear: the session id rotated under the same worker (CCT-158).
 				// Render as a distinct full-width boundary.
@@ -223,7 +249,7 @@
 		}
 	}
 
-	function formatToolInput(tool: string, input: unknown): string {
+	function formatToolInput(tool: string, input: unknown): { text: string; lang: string } {
 		const obj = input as Record<string, unknown> | null;
 		if (view.prettyDiff && obj && typeof obj === 'object' && 'old_string' in obj && 'new_string' in obj) {
 			const minus = String(obj.old_string ?? '')
@@ -234,9 +260,9 @@
 				.split('\n')
 				.map((l) => `+ ${l}`)
 				.join('\n');
-			return `${obj.file_path ?? ''}\n${minus}\n${plus}`.trim();
+			return { text: `${obj.file_path ?? ''}\n${minus}\n${plus}`.trim(), lang: '' };
 		}
-		return view.prettyJson ? prettyJson(input) : JSON.stringify(input);
+		return { text: view.prettyJson ? prettyJson(input) : JSON.stringify(input), lang: 'json' };
 	}
 
 	// Build lines with consecutive-duplicate dedup.
@@ -450,11 +476,39 @@
 
 	const headTitle = $derived(session.name || session.working_dir);
 
-	// auto-scroll to bottom on new lines
+	// ── Sticky-bottom scroll (CCT-161 item 7) ──────────────────────────────
+	// If the user is at the bottom, auto-scroll with new content (sticky). If
+	// scrolled up, don't yank them down — show a "jump to bottom" pill instead.
 	let scroller = $state<HTMLElement>();
+	let stuck = $state(true); // currently pinned to the bottom
+	const STICK_SLOP = 48; // px from bottom still counts as "at bottom"
+
+	function atBottom(): boolean {
+		const el = scroller;
+		if (!el) return true;
+		return el.scrollHeight - el.scrollTop - el.clientHeight <= STICK_SLOP;
+	}
+	function onScroll() {
+		stuck = atBottom();
+	}
+	function jumpToBottom() {
+		if (scroller) scroller.scrollTop = scroller.scrollHeight;
+		stuck = true;
+	}
 	$effect(() => {
 		void lines.length;
-		if (scroller) scroller.scrollTop = scroller.scrollHeight;
+		void perms.length;
+		// Only follow new content when the user is pinned to the bottom.
+		if (stuck && scroller) {
+			requestAnimationFrame(() => {
+				if (scroller) scroller.scrollTop = scroller.scrollHeight;
+			});
+		}
+	});
+	// Reset to bottom + sticky when switching sessions.
+	$effect(() => {
+		void id;
+		stuck = true;
 	});
 </script>
 
@@ -531,9 +585,21 @@
 	<div class="toggles row row-wrap">
 		<label class="tg"><input type="checkbox" bind:checked={view.showTool} /> Tools</label>
 		<label class="tg"><input type="checkbox" bind:checked={view.showMcp} /> MCP</label>
+		<label class="tg"><input type="checkbox" bind:checked={view.showSystem} /> System</label>
 		<label class="tg"><input type="checkbox" bind:checked={view.showResult} /> Results</label>
 		<label class="tg"><input type="checkbox" bind:checked={view.prettyJson} /> JSON</label>
 		<label class="tg"><input type="checkbox" bind:checked={view.prettyDiff} /> Diff</label>
+		<label class="tg font" title="Chat font size">
+			<span aria-hidden="true">A</span>
+			<input
+				type="range"
+				min={FONT_MIN}
+				max={FONT_MAX}
+				step="0.0625"
+				bind:value={view.fontSize}
+				aria-label="Chat font size"
+			/>
+		</label>
 		<label class="tg auto" title="Auto-approve permission requests for this session">
 			<input type="checkbox" checked={session.auto_approve} onchange={toggleAutoApprove} /> Auto-approve
 		</label>
@@ -543,7 +609,12 @@
 		<div class="attn-banner">✋ Waiting for your input</div>
 	{/if}
 
-	<div class="conv" bind:this={scroller}>
+	<div
+		class="conv"
+		bind:this={scroller}
+		onscroll={onScroll}
+		style="--chat-font-size: {view.fontSize}rem"
+	>
 		{#if $history.isLoading}
 			<div class="empty"><span class="spin"></span></div>
 		{:else if lines.length === 0 && perms.length === 0}
@@ -567,15 +638,22 @@
 					{#if ln.html}<div class="compact-body">{@html ln.html}</div>{/if}
 				</div>
 			{:else}
-			<div class="line {ln.role}" class:pending={ln.pending}>
+			<div class="line {ln.role}" class:mcp={ln.mcp} class:pending={ln.pending}>
 				<div class="lmeta row">
-					<span class="who">{ln.role === 'tool' ? (ln.tool ?? 'tool') : ln.role === 'result' ? `↳ ${ln.tool ?? ''}` : ln.role}</span>
+					<span class="badge-role" class:mcp={ln.mcp}
+						>{ln.mcp ? 'mcp' : ln.role === 'result' ? 'result' : ln.role}</span
+					>
+					{#if ln.role === 'tool' || ln.role === 'result'}
+						<span class="who tool-name">{ln.role === 'result' ? '↳ ' : ''}{ln.tool ?? 'tool'}</span>
+					{/if}
 					<span class="faint sm">{clockTime(ln.ts)}</span>
 					{#if ln.pending}<span class="faint sm sending">sending…</span>{/if}
 					<button class="btn btn-ghost copy" aria-label="Copy" onclick={() => copyLine(ln.text ?? '')}>⧉</button>
 				</div>
 				{#if ln.html}
 					<div class="bubble">{@html ln.html}</div>
+				{:else if ln.htmlCode}
+					<pre class="bubble mono code">{@html ln.htmlCode}</pre>
 				{:else}
 					<pre class="bubble mono code">{ln.text}</pre>
 				{/if}
@@ -587,6 +665,12 @@
 			<PermissionCard req={p} onrespond={(rid, allow) => ws.respondPermission(id, rid, allow)} />
 		{/each}
 	</div>
+
+	{#if !stuck}
+		<button class="jump-pill" onclick={jumpToBottom} aria-label="Jump to bottom">
+			↓ Jump to latest
+		</button>
+	{/if}
 
 	<div class="composer">
 		{#if archived}
@@ -784,6 +868,51 @@
 		letter-spacing: 0.04em;
 		font-weight: var(--fw-medium);
 	}
+	.tool-name {
+		font-family: var(--font-mono);
+		color: var(--text-muted);
+		text-transform: none;
+		letter-spacing: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		max-width: 60%;
+	}
+	/* Role badge pill (CCT-161 item 2) — colored per role via --role-* tokens. */
+	.badge-role {
+		--bc: var(--text-muted);
+		display: inline-flex;
+		align-items: center;
+		padding: 1px var(--sp-2);
+		border-radius: var(--r-pill);
+		font-size: 0.6875rem;
+		font-weight: var(--fw-semibold);
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--bc);
+		background: color-mix(in srgb, var(--bc) 14%, transparent);
+		border: 1px solid color-mix(in srgb, var(--bc) 40%, transparent);
+		white-space: nowrap;
+	}
+	.line.user .badge-role {
+		--bc: var(--role-user);
+	}
+	.line.assistant .badge-role {
+		--bc: var(--role-assistant);
+	}
+	.line.system .badge-role {
+		--bc: var(--role-system);
+	}
+	.line.tool .badge-role {
+		--bc: var(--role-tool);
+	}
+	.line.result .badge-role {
+		--bc: var(--role-tool);
+	}
+	.line.tool.mcp .badge-role,
+	.badge-role.mcp {
+		--bc: var(--role-mcp);
+	}
 	.copy {
 		margin-left: auto;
 		padding: 0 var(--sp-2);
@@ -798,21 +927,23 @@
 		border: 1px solid var(--border);
 		overflow-wrap: anywhere;
 		word-break: break-word;
-		font-size: var(--fs-sm);
+		/* CCT-161 item 4 — slider-driven, falls back to --fs-sm. */
+		font-size: var(--chat-font-size, var(--fs-sm));
 	}
+	/* Uniform role tints (CCT-161 item 1) — all via --role-* tokens. */
 	.line.user .bubble {
-		background: color-mix(in srgb, var(--accent) 14%, var(--bg-elevated));
-		border-color: var(--accent-dim);
+		background: color-mix(in srgb, var(--role-user) 14%, var(--bg-elevated));
+		border-color: color-mix(in srgb, var(--role-user) 45%, transparent);
+	}
+	.line.assistant .bubble {
+		border-left: 2px solid color-mix(in srgb, var(--role-assistant) 55%, transparent);
 	}
 	/* System/agent-directed messages (harness wake-ups, task notifications,
-	   injected reminders) — violet, distinct from the green user bubbles so
+	   injected reminders) — purple, distinct from the green user bubbles so
 	   they don't read as something the human typed. */
 	.line.system .bubble {
-		background: color-mix(in srgb, var(--c-violet) 12%, var(--bg-elevated));
-		border-color: color-mix(in srgb, var(--c-violet) 40%, transparent);
-	}
-	.line.system .who {
-		color: var(--c-violet);
+		background: color-mix(in srgb, var(--role-system) 12%, var(--bg-elevated));
+		border-color: color-mix(in srgb, var(--role-system) 40%, transparent);
 	}
 	/* Optimistic reply: muted/amber until the agent acknowledges, then it
 	   settles into the regular green user tint above. */
@@ -828,6 +959,10 @@
 	.line.tool .bubble,
 	.line.result .bubble {
 		background: var(--bg-elevated-2);
+		border-left: 2px solid color-mix(in srgb, var(--role-tool) 55%, transparent);
+	}
+	.line.tool.mcp .bubble {
+		border-left-color: color-mix(in srgb, var(--role-mcp) 60%, transparent);
 	}
 	/* Context-reset boundary (/clear or /compact, CCT-158) — a full-width rule
 	   with a centered chip in its own blue hue, distinct from the green user,
@@ -837,20 +972,20 @@
 		align-items: center;
 		gap: var(--sp-3);
 		margin: var(--sp-3) 0;
-		color: var(--info);
+		color: var(--role-boundary);
 	}
 	.reset-divider::before,
 	.reset-divider::after {
 		content: '';
 		flex: 1;
 		height: 1px;
-		background: color-mix(in srgb, var(--info) 40%, transparent);
+		background: color-mix(in srgb, var(--role-boundary) 40%, transparent);
 	}
 	.reset-chip {
 		padding: 2px var(--sp-3);
 		border-radius: var(--r-pill, 999px);
-		border: 1px solid color-mix(in srgb, var(--info) 45%, transparent);
-		background: color-mix(in srgb, var(--info) 12%, var(--bg-elevated));
+		border: 1px solid color-mix(in srgb, var(--role-boundary) 45%, transparent);
+		background: color-mix(in srgb, var(--role-boundary) 12%, var(--bg-elevated));
 		font-size: var(--fs-xs);
 		font-weight: var(--fw-medium);
 		text-transform: uppercase;
@@ -864,12 +999,12 @@
 	.compact-block {
 		margin: var(--sp-3) 0;
 		padding: var(--sp-2) var(--sp-3);
-		border-left: 3px solid var(--info);
+		border-left: 3px solid var(--role-boundary);
 		border-radius: var(--r-2, 6px);
-		background: color-mix(in srgb, var(--info) 10%, var(--bg-elevated));
+		background: color-mix(in srgb, var(--role-boundary) 10%, var(--bg-elevated));
 	}
 	.compact-head {
-		color: var(--info);
+		color: var(--role-boundary);
 		font-size: var(--fs-xs);
 		font-weight: var(--fw-medium);
 		text-transform: uppercase;
@@ -884,7 +1019,38 @@
 		white-space: pre-wrap;
 		max-height: 22rem;
 		overflow: auto;
+		font-size: calc(var(--chat-font-size, var(--fs-sm)) - 0.0625rem);
+	}
+	.tg.font {
+		gap: var(--sp-2);
+	}
+	.tg.font input[type='range'] {
+		width: 5rem;
+		accent-color: var(--accent);
+	}
+	.tg.font span {
+		font-weight: var(--fw-bold);
+	}
+	/* Jump-to-bottom pill (CCT-161 item 7) — floats above the composer. */
+	.jump-pill {
+		position: absolute;
+		left: 50%;
+		transform: translateX(-50%);
+		bottom: calc(var(--sp-8) + var(--safe-bottom) + 4.5rem);
+		z-index: 3;
+		padding: var(--sp-1) var(--sp-3);
+		border-radius: var(--r-pill);
+		border: 1px solid var(--border-strong);
+		background: var(--bg-elevated-2);
+		color: var(--text);
 		font-size: var(--fs-xs);
+		font-weight: var(--fw-medium);
+		box-shadow: var(--shadow-md);
+		cursor: pointer;
+	}
+	.jump-pill:hover {
+		border-color: var(--accent);
+		color: var(--accent);
 	}
 	.composer {
 		display: flex;
@@ -930,16 +1096,68 @@
 		border-radius: var(--r-sm);
 		padding: var(--sp-1) var(--sp-2);
 	}
+	/* Base prose: grayish (Claude-Code terminal feel, CCT-161 item 5). */
+	.bubble {
+		color: var(--md-text);
+	}
+	:global(.bubble strong) {
+		color: var(--md-strong);
+		font-weight: var(--fw-bold);
+	}
+	:global(.bubble .md-h) {
+		display: inline-block;
+		color: var(--md-heading);
+		font-weight: var(--fw-bold);
+	}
+	:global(.bubble .md-quote) {
+		display: inline-block;
+		border-left: 2px solid var(--border-strong);
+		padding-left: var(--sp-2);
+		color: var(--text-faint);
+	}
+	:global(.bubble .md-li) {
+		display: inline-block;
+	}
+	/* Leaked harness pseudo-tags rendered as a muted inline chip. */
+	:global(.bubble .md-meta-tag) {
+		font-family: var(--font-mono);
+		font-size: 0.9em;
+		color: var(--text-faint);
+		background: var(--bg-elevated-2);
+		border-radius: 4px;
+		padding: 0 3px;
+	}
 	:global(.bubble .md-pre) {
 		background: var(--bg);
 		padding: var(--sp-2);
 		border-radius: var(--r-sm);
 		overflow-x: auto;
 		white-space: pre-wrap;
+		color: var(--text);
+		margin: var(--sp-1) 0;
 	}
 	:global(.bubble .md-code) {
-		background: var(--bg);
+		color: var(--md-code);
+		font-weight: var(--fw-semibold);
+		background: var(--md-code-bg);
 		padding: 1px 4px;
 		border-radius: 4px;
+	}
+	/* Syntax-highlight token colors (CCT-161 item 5) — all themeable. */
+	:global(.syn-keyword) {
+		color: var(--syn-keyword);
+	}
+	:global(.syn-string) {
+		color: var(--syn-string);
+	}
+	:global(.syn-number) {
+		color: var(--syn-number);
+	}
+	:global(.syn-comment) {
+		color: var(--syn-comment);
+		font-style: italic;
+	}
+	:global(.syn-function) {
+		color: var(--syn-function);
 	}
 </style>
