@@ -32,6 +32,9 @@
 		prettyDiff: boolean;
 		// Chat message font scale in rem (CCT-161 item 4); applied via --chat-font-size.
 		fontSize: number;
+		// Desktop drawer width in px (drag-to-resize the left border). Null → the
+		// default min(900px, 100vw). Persisted with the other view opts.
+		paneWidth: number | null;
 	}
 	const defaults: ViewOpts = {
 		showTool: true,
@@ -40,10 +43,12 @@
 		showResult: true,
 		prettyJson: true,
 		prettyDiff: true,
-		fontSize: 0.8125
+		fontSize: 0.8125,
+		paneWidth: null
 	};
 	const FONT_MIN = 0.75;
 	const FONT_MAX: number = 1.25;
+	const PANE_MIN = 360; // px — narrowest the drawer can be dragged
 	let view = $state<ViewOpts>(loadView());
 	function loadView(): ViewOpts {
 		try {
@@ -270,7 +275,28 @@
 				.join('\n');
 			return { text: `${obj.file_path ?? ''}\n${minus}\n${plus}`.trim(), lang: '' };
 		}
-		return { text: view.prettyJson ? prettyJson(input) : JSON.stringify(input), lang: 'json' };
+		// Shell-ish tools (Bash, BashOutput, …): render the command itself as a
+		// shell block with the description as a leading comment, instead of a
+		// one-line JSON blob full of literal "\n" escapes — those escapes were the
+		// "weird artifacts" / un-prettified commands (CCT-161 cleanup).
+		if (view.prettyJson && obj && typeof obj === 'object' && typeof obj.command === 'string') {
+			const desc =
+				typeof obj.description === 'string' && obj.description.trim()
+					? `# ${obj.description.trim()}\n`
+					: '';
+			return { text: `${desc}${obj.command}`, lang: 'sh' };
+		}
+		if (!view.prettyJson) return { text: JSON.stringify(input), lang: 'json' };
+		// Expand escaped newlines/tabs inside string values so multiline payloads
+		// (scripts, file contents, heredocs) read as real lines rather than one
+		// long "…\n…" run before the highlighter sees them.
+		return { text: expandJsonEscapes(prettyJson(input)), lang: 'json' };
+	}
+
+	// JSON.stringify only emits \n / \t inside string literals, so expanding them
+	// for display is safe (display-only — the text is never parsed back).
+	function expandJsonEscapes(s: string): string {
+		return s.replace(/\\n/g, '\n').replace(/\\t/g, '\t');
 	}
 
 	// Build lines with consecutive-duplicate dedup.
@@ -526,6 +552,45 @@
 		void id;
 		stuck = true;
 	});
+
+	// Keep pinned to the bottom while the composer grows (CCT-161). When the user
+	// is at the bottom and types a long message, the auto-resizing textarea steals
+	// vertical space from the chat; without this the latest lines scroll out of
+	// view. Observe the textarea and re-pin on each resize while stuck.
+	$effect(() => {
+		const el = textarea;
+		if (!el || typeof ResizeObserver === 'undefined') return;
+		const ro = new ResizeObserver(() => {
+			if (stuck && scroller) scroller.scrollTop = scroller.scrollHeight;
+		});
+		ro.observe(el);
+		return () => ro.disconnect();
+	});
+
+	// ── Drag-to-resize the desktop drawer (left border) ─────────────────────
+	let resizing = $state(false);
+	function startResize(e: PointerEvent) {
+		resizing = true;
+		(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+		e.preventDefault();
+	}
+	function onResize(e: PointerEvent) {
+		if (!resizing) return;
+		const w = window.innerWidth - e.clientX;
+		view.paneWidth = Math.round(Math.max(PANE_MIN, Math.min(w, window.innerWidth)));
+	}
+	function endResize(e: PointerEvent) {
+		if (!resizing) return;
+		resizing = false;
+		try {
+			(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+		} catch {
+			/* pointer already released */
+		}
+	}
+	const drawerWidth = $derived(
+		view.paneWidth ? `min(${view.paneWidth}px, 100vw)` : 'min(900px, 100vw)'
+	);
 </script>
 
 <svelte:window onkeydown={(e) => e.key === 'Escape' && !renaming && onclose()} />
@@ -542,7 +607,18 @@
 	onkeydown={(e) => e.key === 'Escape' && onclose()}
 ></div>
 
-<div class="drawer">
+<div class="drawer" class:resizing style="--drawer-width: {drawerWidth}">
+	<!-- Drag the left border to resize the desktop side-pane (CCT-161). -->
+	<div
+		class="resize-handle"
+		role="separator"
+		aria-label="Resize panel"
+		aria-orientation="vertical"
+		onpointerdown={startResize}
+		onpointermove={onResize}
+		onpointerup={endResize}
+		onpointercancel={endResize}
+	></div>
 	<div class="dhead">
 		<div class="hrow">
 			<button class="tapbtn back" aria-label="Back" onclick={onclose}>‹</button>
@@ -625,6 +701,7 @@
 		<div class="attn-banner">✋ Waiting for your input</div>
 	{/if}
 
+	<div class="conv-wrap">
 	<div
 		class="conv"
 		bind:this={scroller}
@@ -693,11 +770,12 @@
 		{/each}
 	</div>
 
-	{#if !stuck}
-		<button class="jump-pill" onclick={jumpToBottom} aria-label="Jump to bottom">
-			↓ Jump to latest
-		</button>
-	{/if}
+		{#if !stuck}
+			<button class="jump-pill" onclick={jumpToBottom} aria-label="Jump to bottom">
+				↓ Jump to latest
+			</button>
+		{/if}
+	</div>
 
 	<div class="composer">
 		{#if archived}
@@ -760,9 +838,46 @@
 		.drawer {
 			left: auto;
 			right: 0;
-			width: min(900px, 100vw);
+			width: var(--drawer-width, min(900px, 100vw));
 			border-left: 1px solid var(--border);
 			box-shadow: -4px 0 24px rgba(0, 0, 0, 0.4);
+		}
+	}
+	/* While dragging the resize handle, suppress text selection / the slide-in
+	   animation so the pane tracks the pointer cleanly. */
+	.drawer.resizing {
+		user-select: none;
+		animation: none;
+	}
+	/* Drag handle on the left border — desktop only (mobile is full-width). */
+	.resize-handle {
+		display: none;
+	}
+	@media (min-width: 960px) {
+		.resize-handle {
+			display: block;
+			position: absolute;
+			top: 0;
+			bottom: 0;
+			left: 0;
+			width: 10px;
+			margin-left: -5px;
+			z-index: 4;
+			cursor: col-resize;
+			touch-action: none;
+		}
+		.resize-handle::after {
+			content: '';
+			position: absolute;
+			inset: 0 auto 0 5px;
+			width: 1px;
+			background: transparent;
+			transition: background 0.12s var(--ease);
+		}
+		.resize-handle:hover::after,
+		.drawer.resizing .resize-handle::after {
+			background: var(--accent);
+			box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent);
 		}
 	}
 	@keyframes slide {
@@ -869,6 +984,15 @@
 		gap: 4px;
 		white-space: nowrap;
 		color: var(--text-muted);
+	}
+	/* Positioning context for the jump-pill so it anchors to the bottom of the
+	   chat display area, never overlapping the (growable) composer (CCT-161). */
+	.conv-wrap {
+		position: relative;
+		flex: 1;
+		display: flex;
+		flex-direction: column;
+		min-height: 0;
 	}
 	.conv {
 		flex: 1;
@@ -1058,12 +1182,14 @@
 	.tg.font span {
 		font-weight: var(--fw-bold);
 	}
-	/* Jump-to-bottom pill (CCT-161 item 7) — floats above the composer. */
+	/* Jump-to-bottom pill (CCT-161 item 7) — anchored to the bottom of the chat
+	   display area (inside .conv-wrap), so it never collides with the composer
+	   as the textarea grows when typing a long message. */
 	.jump-pill {
 		position: absolute;
 		left: 50%;
 		transform: translateX(-50%);
-		bottom: calc(var(--sp-8) + var(--safe-bottom) + 4.5rem);
+		bottom: var(--sp-3);
 		z-index: 3;
 		padding: var(--sp-1) var(--sp-3);
 		border-radius: var(--r-pill);
