@@ -47,7 +47,11 @@
 		{#if child}<span class="badge badge-info tag">subagent</span>{/if}
 		{#if needsInput}<span class="hand" title="needs input">✋</span>{/if}
 		{#if pendingCount > 0}<span class="badge badge-warn">{pendingCount} perm</span>{/if}
-		<div class="spacer"></div>
+		{#if dense && s.last_message_text}
+			<span class="preview muted">{s.last_message_text}</span>
+		{:else}
+			<div class="spacer"></div>
+		{/if}
 		{#if dense}
 			<span class="badge {statusBadgeClass(s.status)} tag">{s.status}</span>
 			{#if s.last_message_at}<span class="faint sm">{relativeTime(s.last_message_at)}</span>{/if}
@@ -129,5 +133,15 @@
 	}
 	.last {
 		font-size: var(--fs-sm);
+	}
+	/* Dense-mode last-message preview: fills the space between the title and the
+	   status badge, single line, ellipsis — never wraps or grows the row. */
+	.preview {
+		flex: 1;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		font-size: var(--fs-xs);
 	}
 </style>
