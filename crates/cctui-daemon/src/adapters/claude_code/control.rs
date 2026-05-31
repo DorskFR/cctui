@@ -498,6 +498,11 @@ impl Driver {
             anyhow::bail!("spawn: working_dir does not exist or is not a directory: {cwd}");
         }
 
+        // Pre-trust the spawn dir so the interactive worker doesn't hang on the
+        // unsurfaced workspace trust dialog at startup (CCT-177). Best-effort:
+        // never aborts the spawn — the worst case is the pre-existing hang.
+        ensure_trusted_dir(cwd);
+
         let agent = "claude";
         let session_id = uuid::Uuid::new_v4().to_string();
         // `short` is the first uuid group (8 hex chars); `nonce` is 8 fresh
@@ -1009,6 +1014,84 @@ fn ensure_hook_settings(sock: &std::path::Path) -> Option<PathBuf> {
     }
 }
 
+/// Ensure the spawn `cwd` is marked trusted in `~/.claude.json` so a
+/// fleet-dispatched interactive worker doesn't block on the workspace trust
+/// dialog at startup (CCT-177). Headless `--print` runs skip the dialog, but
+/// fleet workers run interactive PTYs, and a session spawned in an untrusted
+/// directory — notably `$HOME`, which Claude never auto-trusts — hangs on the
+/// unsurfaced "Do you trust the files in this folder?" prompt.
+///
+/// We write exactly what Claude itself writes when the user accepts the dialog:
+/// `projects.<cwd>.hasTrustDialogAccepted = true`. Best-effort: any failure here
+/// is logged and ignored so the spawn proceeds (the worst case is the
+/// pre-existing hang, not a new regression). The write is atomic (temp +
+/// rename) so a concurrent reader never sees a truncated file; last-writer-wins
+/// against a live interactive `claude` is the same race Claude tolerates
+/// between its own instances.
+fn ensure_trusted_dir(cwd: &str) {
+    let Some(home) = std::env::var_os("HOME") else {
+        tracing::warn!("trust: HOME unset, cannot pre-trust spawn dir");
+        return;
+    };
+    let path = PathBuf::from(home).join(".claude.json");
+    let mut root = match std::fs::read(&path) {
+        Ok(bytes) => match serde_json::from_slice(&bytes) {
+            Ok(v) => v,
+            Err(err) => {
+                tracing::warn!(%err, "trust: ~/.claude.json is not valid JSON; skipping pre-trust");
+                return;
+            }
+        },
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => json!({}),
+        Err(err) => {
+            tracing::warn!(%err, "trust: cannot read ~/.claude.json");
+            return;
+        }
+    };
+    if !mark_trusted(&mut root, cwd) {
+        return; // already trusted, or the file shape isn't what we expect
+    }
+    let Ok(bytes) = serde_json::to_vec(&root) else { return };
+    let tmp = path.with_extension("json.cctui-tmp");
+    if let Err(err) = std::fs::write(&tmp, &bytes) {
+        tracing::warn!(%err, "trust: cannot write temp ~/.claude.json");
+        return;
+    }
+    if let Err(err) = std::fs::rename(&tmp, &path) {
+        tracing::warn!(%err, "trust: cannot replace ~/.claude.json");
+        let _ = std::fs::remove_file(&tmp);
+    } else {
+        tracing::info!(%cwd, "trust: marked spawn dir trusted in ~/.claude.json");
+    }
+}
+
+/// Set `projects.<cwd>.hasTrustDialogAccepted = true` on an in-memory
+/// `~/.claude.json` value, creating the `projects` map and the per-dir entry as
+/// needed. Returns `true` if the value changed (caller should persist), `false`
+/// if it was already trusted or `root`/`projects`/the entry isn't an object (in
+/// which case we refuse to clobber an unexpected shape).
+fn mark_trusted(root: &mut serde_json::Value, cwd: &str) -> bool {
+    let Some(obj) = root.as_object_mut() else { return false };
+    let already = obj
+        .get("projects")
+        .and_then(|p| p.get(cwd))
+        .and_then(|e| e.get("hasTrustDialogAccepted"))
+        .and_then(serde_json::Value::as_bool)
+        == Some(true);
+    if already {
+        return false;
+    }
+    let Some(projects) = obj.entry("projects").or_insert_with(|| json!({})).as_object_mut() else {
+        return false;
+    };
+    let Some(entry) = projects.entry(cwd.to_owned()).or_insert_with(|| json!({})).as_object_mut()
+    else {
+        return false;
+    };
+    entry.insert("hasTrustDialogAccepted".to_owned(), json!(true));
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1022,6 +1105,42 @@ mod tests {
         assert_eq!(kill_signal_name(15), "SIGTERM");
         assert_eq!(kill_signal_name(9), "SIGKILL");
         assert_eq!(kill_signal_name(2), "SIGTERM");
+    }
+
+    #[test]
+    fn mark_trusted_adds_entry_on_empty_config() {
+        let mut root = json!({});
+        assert!(mark_trusted(&mut root, "/home/dorsk"));
+        assert_eq!(root["projects"]["/home/dorsk"]["hasTrustDialogAccepted"], json!(true));
+    }
+
+    #[test]
+    fn mark_trusted_flips_false_and_preserves_siblings() {
+        let mut root = json!({
+            "numStartups": 7,
+            "projects": {
+                "/home/dorsk": { "hasTrustDialogAccepted": false, "lastCost": 1.5 },
+                "/other": { "hasTrustDialogAccepted": true }
+            }
+        });
+        assert!(mark_trusted(&mut root, "/home/dorsk"));
+        assert_eq!(root["projects"]["/home/dorsk"]["hasTrustDialogAccepted"], json!(true));
+        // Unrelated keys and other projects are left untouched.
+        assert_eq!(root["numStartups"], json!(7));
+        assert_eq!(root["projects"]["/home/dorsk"]["lastCost"], json!(1.5));
+        assert_eq!(root["projects"]["/other"]["hasTrustDialogAccepted"], json!(true));
+    }
+
+    #[test]
+    fn mark_trusted_noop_when_already_trusted() {
+        let mut root = json!({ "projects": { "/x": { "hasTrustDialogAccepted": true } } });
+        assert!(!mark_trusted(&mut root, "/x"));
+    }
+
+    #[test]
+    fn mark_trusted_refuses_non_object_root() {
+        let mut root = json!("garbage");
+        assert!(!mark_trusted(&mut root, "/x"));
     }
 
     fn snap(short: &str, state: &str, name: Option<&str>) -> LiveSnapshot {
