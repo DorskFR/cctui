@@ -595,64 +595,6 @@
 	const drawerWidth = $derived(
 		view.paneWidth ? `min(${view.paneWidth}px, 100vw)` : 'min(900px, 100vw)'
 	);
-
-	// ── Swipe-to-archive (CCT-172, mobile only) ─────────────────────────────
-	// An intentional horizontal left-swipe of the chat body (≥ 1/3 of the
-	// viewport width) fast-archives the session. Gated to touch + narrow
-	// screens so it never fights the desktop drag-resize handle or text
-	// selection, and disabled for already-archived sessions. Vertical scrolling
-	// is preserved by only "arming" once the gesture is dominantly horizontal.
-	let swipeX = $state(0); // current horizontal offset (≤ 0; left only)
-	let swiping = $state(false); // armed → tracking a horizontal swipe
-	let swipeArmed = false; // committed to horizontal (vs vertical scroll)
-	let sx = 0;
-	let sy = 0;
-	let vw = $state(0); // viewport width captured at gesture start
-	const swipeThreshold = $derived(vw ? vw / 3 : Infinity);
-	const swipeProgress = $derived(Math.min(1, -swipeX / swipeThreshold));
-
-	function swipeStart(e: PointerEvent) {
-		if (archived || e.pointerType !== 'touch') return;
-		if (window.innerWidth >= 960) return; // desktop uses the resize handle
-		sx = e.clientX;
-		sy = e.clientY;
-		vw = window.innerWidth;
-		swipeArmed = false;
-	}
-	function swipeMove(e: PointerEvent) {
-		if (archived || e.pointerType !== 'touch' || !vw) return;
-		const dx = e.clientX - sx;
-		const dy = e.clientY - sy;
-		if (!swipeArmed) {
-			if (Math.abs(dx) < 12) return; // below the deadzone — undecided
-			// Dominantly vertical → it's a scroll, bail out of swipe handling.
-			if (Math.abs(dx) <= Math.abs(dy) * 1.5) {
-				vw = 0;
-				return;
-			}
-			swipeArmed = true;
-			swiping = true;
-		}
-		swipeX = Math.min(0, dx); // left only
-	}
-	function swipeEnd() {
-		if (!swiping) {
-			vw = 0;
-			swipeArmed = false;
-			return;
-		}
-		const commit = -swipeX >= swipeThreshold;
-		swiping = false;
-		swipeArmed = false;
-		if (commit) {
-			if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(20);
-			swipeX = -vw; // slide the rest of the way out, then archive
-			doArchive();
-		} else {
-			swipeX = 0; // spring back
-		}
-		vw = 0;
-	}
 </script>
 
 <svelte:window onkeydown={(e) => e.key === 'Escape' && !renaming && onclose()} />
@@ -669,26 +611,10 @@
 	onkeydown={(e) => e.key === 'Escape' && onclose()}
 ></div>
 
-<!-- Swipe-to-archive reveal (CCT-172): a colored layer behind the drawer that
-     becomes visible as the card slides left under a touch swipe. -->
-{#if swipeX < 0}
-	<div class="swipe-reveal" style="opacity: {0.25 + 0.75 * swipeProgress}" aria-hidden="true">
-		<div class="swipe-reveal-inner" class:armed={swipeProgress >= 1}>
-			<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-				<rect x="3" y="4" width="18" height="4" rx="1" />
-				<path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8" />
-				<path d="M9 12h6" />
-			</svg>
-			<span>{swipeProgress >= 1 ? 'Release to archive' : 'Archive'}</span>
-		</div>
-	</div>
-{/if}
-
 <div
 	class="drawer"
 	class:resizing
-	class:swiping
-	style="--drawer-width: {drawerWidth}; transform: translateX({swipeX}px)"
+	style="--drawer-width: {drawerWidth}"
 >
 	<!-- Drag the left border to resize the desktop side-pane (CCT-161). -->
 	<div
@@ -783,16 +709,7 @@
 		<div class="attn-banner">✋ Waiting for your input</div>
 	{/if}
 
-	<!-- Swipe-to-archive is a touch-only convenience; the header Archive button is
-	     the keyboard/desktop-accessible equivalent (CCT-172). -->
-	<!-- svelte-ignore a11y_no_static_element_interactions -->
-	<div
-		class="conv-wrap"
-		onpointerdown={swipeStart}
-		onpointermove={swipeMove}
-		onpointerup={swipeEnd}
-		onpointercancel={swipeEnd}
-	>
+	<div class="conv-wrap">
 	<div
 		class="conv"
 		bind:this={scroller}
@@ -939,40 +856,6 @@
 	.drawer.resizing {
 		user-select: none;
 		animation: none;
-	}
-	/* Swipe-to-archive (CCT-172): track the finger with no transition while
-	   actively swiping; ease back (spring) or off-screen (commit) when released. */
-	.drawer {
-		transition: transform 0.2s var(--ease);
-	}
-	.drawer.swiping {
-		transition: none;
-		animation: none;
-		user-select: none;
-	}
-	/* Colored layer revealed behind the drawer as it slides left. */
-	.swipe-reveal {
-		position: fixed;
-		inset: 0;
-		z-index: var(--z-drawer);
-		display: flex;
-		align-items: center;
-		justify-content: flex-end;
-		padding-right: var(--sp-4);
-		background: color-mix(in srgb, var(--warn) 22%, var(--bg));
-		color: var(--warn);
-	}
-	.swipe-reveal-inner {
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		gap: var(--sp-1);
-		font-size: var(--fs-sm);
-		font-weight: var(--fw-semibold);
-		transition: transform 0.12s var(--ease);
-	}
-	.swipe-reveal-inner.armed {
-		transform: scale(1.15);
 	}
 	/* Drag handle on the left border — desktop only (mobile is full-width). */
 	.resize-handle {

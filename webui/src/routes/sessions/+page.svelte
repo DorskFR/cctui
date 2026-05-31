@@ -59,6 +59,19 @@
 		}
 	}
 
+	// Swipe-to-archive a single row (CCT-172): the email-style left-swipe on a
+	// SessionCard archives it (or unarchives in the archived view). Disabled
+	// while in multi-select mode (handled in SessionCard).
+	async function swipeArchive(s: SessionListItem) {
+		try {
+			if (showArchived) await actions.unarchive(s.id);
+			else await actions.archive(s.id);
+			toasts.ok(showArchived ? 'Unarchived' : 'Archived');
+		} catch (e) {
+			toasts.err((e as Error).message);
+		}
+	}
+
 	// live status changes from the websocket → refetch the list
 	$effect(() => {
 		void ws.changeTick;
@@ -180,6 +193,9 @@
 					selectable={selecting}
 					selected={selected.has(s.id)}
 					onToggleSelect={toggleSelect}
+					swipeable
+					swipeLabel={showArchived ? 'Unarchive' : 'Archive'}
+					onSwipe={swipeArchive}
 				/>
 				{#each childrenOf.get(s.id) ?? [] as c (c.id)}
 					<SessionCard
@@ -191,6 +207,9 @@
 						selectable={selecting}
 						selected={selected.has(c.id)}
 						onToggleSelect={toggleSelect}
+						swipeable
+						swipeLabel={showArchived ? 'Unarchive' : 'Archive'}
+						onSwipe={swipeArchive}
 					/>
 				{/each}
 			{/each}
