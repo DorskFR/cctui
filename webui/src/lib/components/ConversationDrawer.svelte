@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import type { AgentEvent } from '@bindings/AgentEvent';
-	import { ws, userMsgKey, USER_PREFIX, type PermReq } from '$lib/ws.svelte';
+	import { ws, userMsgKey, USER_PREFIX, type PermReq, type LiveAsk } from '$lib/ws.svelte';
 	import { useConversation, useSessionActions } from '$lib/queries';
 	import { renderMarkdown, prettyJson, highlightBlock } from '$lib/markdown';
 	import { clockTime, statusBadgeClass } from '$lib/format';
@@ -71,10 +71,13 @@
 	// singleton's keyed state from this module did not re-run on mutation.
 	let live = $state<AgentEvent[]>([]);
 	let perms = $state<PermReq[]>([]);
-	// Live AskUserQuestion text (CCT-164): surfaced from the daemon's `blocked`
-	// status before the transcript flushes the full tool call. Null when none
-	// is pending.
-	let ask = $state<string | null>(null);
+	// Live AskUserQuestion (CCT-164/179): delivered by the daemon's PreToolUse
+	// hook the instant the form renders — before the transcript flushes the full
+	// tool call. Carries the structured `questions` (options/multiSelect) so we
+	// render the interactive form live, not just text. Null when none pending.
+	let ask = $state<LiveAsk | null>(null);
+	// Parsed structured questions for the live prompt, or null → text fallback.
+	const liveAskQuestions = $derived(ask?.questions ? parseAsk({ questions: ask.questions }) : null);
 	// Timestamps of optimistic replies not yet acknowledged → "sending…" tint.
 	let pendingReplies = $state<Set<number>>(new Set());
 
@@ -805,11 +808,12 @@
 		{/each}
 
 		{#if ask}
-			<!-- Live AskUserQuestion (CCT-164): the structured options aren't
-			     available until the transcript flushes, so render the question
-			     text with a free-text answer. Answering sends a reply. -->
+			<!-- Live AskUserQuestion (CCT-181): the daemon's hook forwards the
+			     structured options, so render the interactive option-card form
+			     live. Older deliveries (no structured payload) fall back to the
+			     question text with a free-text answer. Answering sends a reply. -->
 			<AskQuestionCard
-				questions={[{ question: ask, options: [] }]}
+				questions={liveAskQuestions ?? [{ question: ask.question, options: [] }]}
 				interactive={!archived}
 				onsubmit={answerQuestion}
 			/>

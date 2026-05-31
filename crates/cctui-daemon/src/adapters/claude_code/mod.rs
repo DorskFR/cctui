@@ -219,7 +219,11 @@ fn hook_line_to_event(line: &str, session_map: &SessionMap) -> Option<AdapterEve
         Some("ask") => {
             let question =
                 v.get("question").and_then(|q| q.as_str()).unwrap_or_default().to_owned();
-            Some(AdapterEvent::AskQuestion { local_id, question })
+            // Pass the structured `questions` array through (CCT-181) so the
+            // webui renders interactive option cards live. `null`/absent →
+            // `None`, leaving clients to fall back to the text form.
+            let questions = v.get("questions").filter(|q| !q.is_null()).cloned();
+            Some(AdapterEvent::AskQuestion { local_id, question, questions })
         }
         Some("resolved") => Some(AdapterEvent::AskResolved { local_id }),
         other => {
@@ -264,5 +268,35 @@ mod tests {
     #[test]
     fn flag_via_config_mode_other_value() {
         assert!(!use_claude_daemon_path(&serde_json::json!({"mode": "legacy"})));
+    }
+
+    #[test]
+    fn ask_hook_line_carries_structured_questions() {
+        // CCT-181: the hook forwards the raw `questions` array so the webui can
+        // render the interactive form live, not just the flattened text.
+        let map: SessionMap = Default::default();
+        let line = r#"{"kind":"ask","session_id":"s1","question":"Color: pick","questions":[{"question":"Color?","options":[{"label":"Red"}]}]}"#;
+        match hook_line_to_event(line, &map) {
+            Some(AdapterEvent::AskQuestion { local_id, question, questions }) => {
+                assert_eq!(local_id, "s1");
+                assert_eq!(question, "Color: pick");
+                let qs = questions.expect("structured questions present");
+                assert_eq!(qs[0]["question"], "Color?");
+                assert_eq!(qs[0]["options"][0]["label"], "Red");
+            }
+            other => panic!("expected AskQuestion with questions, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ask_hook_line_without_questions_is_none() {
+        // A legacy/text-only delivery (no `questions`) still yields an event,
+        // with `questions: None` so clients fall back to the text form.
+        let map: SessionMap = Default::default();
+        let line = r#"{"kind":"ask","session_id":"s1","question":"hi"}"#;
+        match hook_line_to_event(line, &map) {
+            Some(AdapterEvent::AskQuestion { questions, .. }) => assert!(questions.is_none()),
+            other => panic!("expected AskQuestion, got {other:?}"),
+        }
     }
 }

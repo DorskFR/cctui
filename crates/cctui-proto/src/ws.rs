@@ -151,10 +151,14 @@ pub enum ServerEvent {
     },
     /// The agent is blocked on an `AskUserQuestion`; carries the question text
     /// so clients render a live prompt before the transcript flushes the full
-    /// tool call (CCT-164).
+    /// tool call (CCT-164). `questions` carries the raw `tool_input.questions`
+    /// array so clients render the interactive option-card form live rather
+    /// than just the flattened text (CCT-181).
     AskQuestion {
         session_id: String,
         question: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        questions: Option<serde_json::Value>,
     },
     /// A previously-broadcast `AskQuestion` is resolved; clients dismiss the
     /// live prompt (CCT-164).

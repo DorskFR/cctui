@@ -30,8 +30,18 @@ export function userMsgKey(ev: AgentEvent): string | null {
 type Status = 'connecting' | 'open' | 'closed';
 type StreamCb = (ev: AgentEvent) => void;
 type PermCb = (list: PermReq[]) => void;
-/** Live AskUserQuestion text for a session, or null when none is pending. */
-type AskCb = (question: string | null) => void;
+/**
+ * A live AskUserQuestion. `question` is the flattened text (always present);
+ * `questions` is the raw `tool_input.questions` array (header/options/
+ * multiSelect) when the daemon's hook forwarded it (CCT-181), letting the
+ * client render the interactive option-card form live instead of plain text.
+ */
+export interface LiveAsk {
+	question: string;
+	questions: unknown | null;
+}
+/** Live AskUserQuestion for a session, or null when none is pending. */
+type AskCb = (ask: LiveAsk | null) => void;
 
 /**
  * Single shared TUI websocket. Streams live AgentEvents for subscribed
@@ -66,8 +76,8 @@ class WsClient {
 	private optimistic = new Map<string, AgentEvent[]>();
 	/** pending permission prompts, keyed by session id; not reactive */
 	private perms = new Map<string, PermReq[]>();
-	/** pending AskUserQuestion text, keyed by session id; not reactive (CCT-164) */
-	private asks = new Map<string, string>();
+	/** pending AskUserQuestion, keyed by session id; not reactive (CCT-164) */
+	private asks = new Map<string, LiveAsk>();
 	private streamCbs = new Map<string, Set<StreamCb>>();
 	private permCbs = new Map<string, Set<PermCb>>();
 	private askCbs = new Map<string, Set<AskCb>>();
@@ -169,7 +179,10 @@ class WsClient {
 			}
 			case 'ask_question': {
 				const sid = msg.session_id as string;
-				this.setAsk(sid, msg.question as string);
+				this.setAsk(sid, {
+					question: msg.question as string,
+					questions: (msg.questions as unknown) ?? null
+				});
 				break;
 			}
 			case 'ask_resolved': {
@@ -233,12 +246,12 @@ class WsClient {
 		if (set) for (const cb of set) cb(list);
 	}
 
-	private setAsk(id: string, question: string | null) {
-		if (question === null) this.asks.delete(id);
-		else this.asks.set(id, question);
+	private setAsk(id: string, ask: LiveAsk | null) {
+		if (ask === null) this.asks.delete(id);
+		else this.asks.set(id, ask);
 		this.changeTick++;
 		const set = this.askCbs.get(id);
-		if (set) for (const cb of set) cb(question);
+		if (set) for (const cb of set) cb(ask);
 	}
 
 	subscribe(id: string) {

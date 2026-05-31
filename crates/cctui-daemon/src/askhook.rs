@@ -48,8 +48,19 @@ pub fn run(event: &str, sock: &Path) -> anyhow::Result<()> {
     let line = if event == "post" {
         json!({ "kind": "resolved", "session_id": session_id })
     } else {
-        let question = format_questions(payload.get("tool_input"));
-        json!({ "kind": "ask", "session_id": session_id, "question": question })
+        let tool_input = payload.get("tool_input");
+        let question = format_questions(tool_input);
+        // Forward the raw `questions` array too (header/options/multiSelect) so
+        // the webui can render the interactive form live, not just the
+        // flattened `question` text (CCT-181). Falls back to text alone if the
+        // payload shape is unexpected.
+        let questions = tool_input.and_then(|t| t.get("questions")).cloned();
+        json!({
+            "kind": "ask",
+            "session_id": session_id,
+            "question": question,
+            "questions": questions,
+        })
     };
 
     if let Err(err) = send(sock, &line.to_string()) {

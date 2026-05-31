@@ -209,9 +209,16 @@ pub enum AdapterEvent {
     /// `AskUserQuestion` `PreToolUse` hook delivers the question text the
     /// instant the form renders (CCT-167). Answered via a normal
     /// [`AdapterCommand::Reply`].
+    ///
+    /// `questions` carries the raw `tool_input.questions` array (header,
+    /// question, options, multiSelect) the hook also has, so clients can render
+    /// the interactive option-card form live instead of only the flattened
+    /// `question` text. `None` for pre-CCT-181 deliveries (CCT-181).
     AskQuestion {
         local_id: String,
         question: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        questions: Option<serde_json::Value>,
     },
     /// A previously-emitted [`AdapterEvent::AskQuestion`] is no longer pending
     /// (the `AskUserQuestion` `PostToolUse` hook fired). Clients dismiss the
