@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import type { AgentEvent } from '@bindings/AgentEvent';
-	import { ws, type PermReq } from '$lib/ws.svelte';
+	import { ws, userMsgKey, USER_PREFIX, type PermReq } from '$lib/ws.svelte';
 	import { useConversation, useSessionActions } from '$lib/queries';
 	import { renderMarkdown, prettyJson, highlightBlock } from '$lib/markdown';
 	import { clockTime, statusBadgeClass } from '$lib/format';
@@ -94,13 +94,10 @@
 		draftStash = '';
 		ws.subscribe(sid);
 		const offStream = ws.onStream(sid, (ev) => {
-			// Skip a server-echoed reply that duplicates our optimistic one.
-			if (
-				ev.type === 'reply' &&
-				live.some((e) => e.type === 'reply' && e.content === ev.content)
-			) {
-				return;
-			}
+			// Skip a server-echoed user message (reply echo or persisted `▷ User:`
+			// text) that duplicates our optimistic one already in `live`.
+			const key = userMsgKey(ev);
+			if (key !== null && live.some((e) => userMsgKey(e) === key)) return;
 			live = [...live, ev];
 			// Any real agent event means our queued replies were received.
 			if (ev.type !== 'reply' && pendingReplies.size) pendingReplies = new Set();
@@ -141,8 +138,46 @@
 		};
 	});
 
-	// History (fetched) + live (ws) events, merged in order.
-	const events = $derived([...($history.data ?? []), ...live]);
+	// Content signature of an event, used to dedup the live stream against
+	// fetched history (the same logical event has a DIFFERENT `ts` in each
+	// source — history stamps DB `created_at`, live carries the daemon ts — so
+	// ts can't be the key). User messages collapse across their three shapes via
+	// `userMsgKey`. Markers (reset/turn_end/heartbeat) key on ts so distinct ones
+	// aren't over-collapsed. NB: we dedup live-against-history only, never
+	// live-vs-live, so legitimately-repeated identical tool calls within a turn
+	// still each render. Content-based dedup is safe because the server persists
+	// with an `ON CONFLICT DO NOTHING` content-hash, so history never holds two.
+	function eventSig(e: AgentEvent): string {
+		const u = userMsgKey(e);
+		if (u !== null) return `u:${u}`;
+		switch (e.type) {
+			case 'text':
+				return `a:${e.content.trim()}`;
+			case 'tool_call':
+				return `tc:${e.tool}:${JSON.stringify(e.input)}`;
+			case 'tool_result':
+				return `tr:${e.tool}:${e.output_summary}`;
+			case 'compact_summary':
+				return `cs:${e.content.trim()}`;
+			default:
+				return `${e.type}:${e.ts}`;
+		}
+	}
+
+	// History (fetched) + live (ws) events, merged in order, with live events
+	// already present in history dropped so a reconnect/focus refetch (which
+	// overlaps the live buffer) and the persisted form of an optimistic reply
+	// don't render twice.
+	const events = $derived.by(() => {
+		const hist = $history.data ?? [];
+		const seen = new Set(hist.map(eventSig));
+		const merged = [...hist];
+		for (const e of live) {
+			if (seen.has(eventSig(e))) continue;
+			merged.push(e);
+		}
+		return merged;
+	});
 
 	interface AskQuestion {
 		header?: string;
@@ -181,9 +216,9 @@
 	}
 
 	// History stores user turns as a `text` event prefixed with "▷ User:"
-	// (there is no `reply` row on read). Detect that marker so the user's own
-	// messages render as user bubbles instead of blending into assistant text.
-	const USER_PREFIX = '▷ User:';
+	// (there is no `reply` row on read). The marker (imported from ws.svelte) is
+	// detected so the user's own messages render as user bubbles instead of
+	// blending into assistant text.
 
 	// Some "user" turns are really harness/system messages directed at the
 	// agent (timer wake-ups, task-completion notifications, injected reminders)
@@ -364,10 +399,9 @@
 		// even if the user had scrolled up — re-pin so the sticky-bottom $effect
 		// follows the optimistic echo down.
 		stuck = true;
-		// Optimistic echo into local state (+ pending tint until the agent replies).
-		const ts = Date.now();
-		live = [...live, { type: 'reply', content: text, ts }];
-		pendingReplies = new Set([...pendingReplies, ts]);
+		// Optimistic echo (+ pending tint until the agent replies). Recorded in
+		// the ws singleton so it survives a resubscribe until the server echoes.
+		pushOptimisticReply(text);
 		msgHistory.push(session.id, text);
 		input = '';
 		resetHistoryNav();
@@ -460,10 +494,18 @@
 		// a poll later (CCT-164).
 		ask = null;
 		ws.clearAsk(id);
-		const ts = Date.now();
-		live = [...live, { type: 'reply', content: text, ts }];
-		pendingReplies = new Set([...pendingReplies, ts]);
+		pushOptimisticReply(text);
 		qc.invalidateQueries({ queryKey: ['sessions'] });
+	}
+
+	// Optimistic echo of a user-typed message. Kept in the ws singleton (not
+	// just local `live`) so a resubscribe/reconnect that rebuilds `live` from
+	// `bufferedEvents()` doesn't drop a message claude already received.
+	function pushOptimisticReply(text: string) {
+		const ev: AgentEvent = { type: 'reply', content: text, ts: Date.now() };
+		ws.recordOptimistic(id, ev);
+		live = [...live, ev];
+		pendingReplies = new Set([...pendingReplies, ev.ts]);
 	}
 
 	async function copyLine(text: string) {

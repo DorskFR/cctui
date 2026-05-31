@@ -11,6 +11,22 @@ export interface PermReq {
 	input_preview: string;
 }
 
+/** History stores the user's own turns as a `text` event prefixed with this
+ * marker (there is no `reply` row on read); live optimistic echoes are `reply`
+ * events. Shared so both shapes reconcile to one identity. */
+export const USER_PREFIX = '▷ User:';
+
+/** Stable identity of a user-typed message across its three shapes (optimistic
+ * `reply`, server `reply` echo, persisted `▷ User:` text), or null if `ev`
+ * isn't a user message. Used to reconcile optimistic echoes and to dedup the
+ * live stream against fetched history. */
+export function userMsgKey(ev: AgentEvent): string | null {
+	if (ev.type === 'reply') return ev.content.trim();
+	if (ev.type === 'text' && ev.content.startsWith(USER_PREFIX))
+		return ev.content.slice(USER_PREFIX.length).trim();
+	return null;
+}
+
 type Status = 'connecting' | 'open' | 'closed';
 type StreamCb = (ev: AgentEvent) => void;
 type PermCb = (list: PermReq[]) => void;
@@ -38,6 +54,16 @@ class WsClient {
 
 	/** per-session event buffer (seed for late subscribers); not reactive */
 	private buffer = new Map<string, AgentEvent[]>();
+	/**
+	 * Optimistic `reply` echoes the user just sent, kept here (NOT only in the
+	 * component) so they survive a resubscribe/reconnect that rebuilds the
+	 * drawer's local `live` from `bufferedEvents()`. Previously these lived only
+	 * in component `$state` and a focus/reconnect-driven resub wiped them before
+	 * the server echo arrived — the message claude received vanished from view.
+	 * Reconciled (dropped) once the server echoes the reply or the persisted
+	 * `▷ User:` text form arrives. Not reactive.
+	 */
+	private optimistic = new Map<string, AgentEvent[]>();
 	/** pending permission prompts, keyed by session id; not reactive */
 	private perms = new Map<string, PermReq[]>();
 	/** pending AskUserQuestion text, keyed by session id; not reactive (CCT-164) */
@@ -178,9 +204,26 @@ class WsClient {
 	}
 
 	private appendEvent(id: string, ev: AgentEvent) {
+		// An incoming user-message event (server reply echo or the persisted
+		// `▷ User:` text form) confirms an optimistic reply — drop it from the
+		// pending store so it isn't re-seeded as a stale duplicate on resub.
+		const key = userMsgKey(ev);
+		if (key !== null) {
+			const opt = this.optimistic.get(id);
+			if (opt) {
+				const next = opt.filter((o) => userMsgKey(o) !== key);
+				if (next.length !== opt.length) this.optimistic.set(id, next);
+			}
+		}
 		this.buffer.set(id, [...(this.buffer.get(id) ?? []), ev]);
 		const set = this.streamCbs.get(id);
 		if (set) for (const cb of set) cb(ev);
+	}
+
+	/** Record an optimistic reply the user just sent. Survives resubscribe and
+	 * is reconciled away once the server echoes it back. */
+	recordOptimistic(id: string, ev: AgentEvent) {
+		this.optimistic.set(id, [...(this.optimistic.get(id) ?? []), ev]);
 	}
 
 	private setPerms(id: string, list: PermReq[]) {
@@ -216,9 +259,11 @@ class WsClient {
 		this.buffer.set(id, []);
 	}
 
-	/** Snapshot of buffered events for a session (seed for a freshly-opened view). */
+	/** Snapshot of buffered events for a session (seed for a freshly-opened
+	 * view), with any still-pending optimistic replies appended so a sent
+	 * message survives a resubscribe until the server echoes it. */
 	bufferedEvents(id: string): AgentEvent[] {
-		return [...(this.buffer.get(id) ?? [])];
+		return [...(this.buffer.get(id) ?? []), ...(this.optimistic.get(id) ?? [])];
 	}
 
 	/** Current pending permission count for a session (read in list templates;
