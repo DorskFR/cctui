@@ -7,6 +7,7 @@
 	import ConversationDrawer from '$lib/components/ConversationDrawer.svelte';
 	import SpawnModal from '$lib/components/SpawnModal.svelte';
 	import { drafts, LIST_DENSITY } from '$lib/drafts';
+	import { notify } from '$lib/notify.svelte';
 
 	let dense = $state(drafts.get(LIST_DENSITY) === 'compact');
 	$effect(() => {
@@ -24,6 +25,25 @@
 	$effect(() => {
 		void ws.changeTick;
 		qc.invalidateQueries({ queryKey: ['sessions'] });
+	});
+
+	// Tell the notifier which drawer is open so it won't notify for it.
+	$effect(() => {
+		notify.openSessionId = openSession?.id ?? null;
+		return () => {
+			notify.openSessionId = null;
+		};
+	});
+
+	// A clicked notification asks us to open its session's drawer.
+	$effect(() => {
+		const id = notify.pendingOpen;
+		if (!id) return;
+		const target = items.find((s) => s.id === id);
+		if (target) {
+			openSession = target;
+			notify.pendingOpen = null;
+		}
 	});
 
 	const items = $derived($sessions.data?.sessions ?? []);
