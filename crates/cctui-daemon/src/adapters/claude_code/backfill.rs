@@ -36,6 +36,13 @@ pub struct BackfillConfig {
 struct JobState {
     #[serde(default, alias = "sessionId")]
     session_id: Option<String>,
+    // CCT-160/165: `/clear` rotates the live session into a NEW transcript file
+    // and records the rotated id here, leaving the immutable spawn `sessionId`
+    // untouched. Backfill must follow it or the post-`/clear` continuation of a
+    // now-terminal session (recovered only via backfill on daemon restart) is
+    // never tailed and stays invisible in the UI.
+    #[serde(default, alias = "resumeSessionId")]
+    resume_session_id: Option<String>,
     #[serde(default)]
     cwd: Option<String>,
     #[serde(default)]
@@ -44,6 +51,19 @@ struct JobState {
     activity: Option<String>,
     #[serde(default, alias = "firstTerminalAt")]
     first_terminal_at: Option<String>,
+}
+
+impl JobState {
+    /// The "tip" transcript id — the rotated `resumeSessionId` after a `/clear`,
+    /// else the immutable spawn id. Keying the cursor on this (rather than the
+    /// immutable id) means a `/clear` that happens between daemon runs is seen
+    /// as new work and the rotated transcript gets backfilled.
+    fn tip<'a>(&'a self, session_id: &'a str) -> &'a str {
+        self.resume_session_id
+            .as_deref()
+            .filter(|r| !r.is_empty() && *r != session_id)
+            .unwrap_or(session_id)
+    }
 }
 
 impl JobState {
@@ -129,12 +149,17 @@ pub async fn run_once(
         let Ok(bytes) = std::fs::read(&state_path) else { continue };
         let Ok(job) = serde_json::from_slice::<JobState>(&bytes) else { continue };
         let Some(session_id) = job.session_id.clone() else { continue };
-        if cursor.contains(&session_id) {
+        // Gate on the tip (rotated id after `/clear`) so a clear between runs
+        // re-triggers backfill for the new transcript. The immutable spawn id's
+        // pre-clear content is deduped by the persistent offset store on the
+        // re-tail, so this doesn't replay it.
+        let tip = job.tip(&session_id).to_owned();
+        if cursor.contains(&tip) {
             continue;
         }
 
         backfill_one(&short, &job, &session_id, cfg, events, offsets).await;
-        cursor.mark(session_id);
+        cursor.mark(tip);
         count += 1;
     }
     if count > 0 {
@@ -167,7 +192,9 @@ async fn backfill_one(
         })
         .await;
 
-    // Tail the entire transcript (offset 0 → end).
+    // Tail the entire transcript (offset 0 → end). All events are tagged with
+    // the immutable `session_id` as `local_id` so they land on the one server
+    // session, even across a `/clear` rotation (below).
     if let Some(cwd) = job.cwd.as_deref() {
         let path = transcript::transcript_path(&cfg.projects_root, cwd, session_id);
         let off = offsets.get(session_id);
@@ -177,6 +204,36 @@ async fn backfill_one(
             }
             for evt in evts {
                 let _ = events.send(evt).await;
+            }
+        }
+
+        // CCT-165: follow a `/clear` rotation into the new transcript, emitting
+        // the same `context_reset` boundary the live path uses (control.rs) so
+        // the cut renders, then tail the post-clear continuation under the SAME
+        // `local_id`. The boundary payload matches the live one (incl. the
+        // rotated id) so the server's content-hash dedup collapses the two if
+        // the live path already emitted it.
+        let resume = job.resume_session_id.as_deref().filter(|r| !r.is_empty() && *r != session_id);
+        if let Some(resume) = resume {
+            let _ = events
+                .send(AdapterEvent::Message {
+                    local_id: session_id.to_owned(),
+                    payload: json!({
+                        "role": "context_reset",
+                        "text": "context reset (/clear · /compact)",
+                        "session_id": resume,
+                    }),
+                })
+                .await;
+            let path = transcript::transcript_path(&cfg.projects_root, cwd, resume);
+            let off = offsets.get(resume);
+            if let Ok((evts, new_off)) = transcript::tail_once(&path, session_id, off) {
+                if new_off != off {
+                    offsets.set(resume.to_owned(), new_off);
+                }
+                for evt in evts {
+                    let _ = events.send(evt).await;
+                }
             }
         }
     }
@@ -240,6 +297,73 @@ mod tests {
         }
         assert_eq!(started, 2);
         assert_eq!(ended, 1);
+    }
+
+    #[tokio::test]
+    async fn backfill_follows_clear_rotation_into_resume_transcript() {
+        // A `/clear`d, now-terminal session: state.json keeps the immutable
+        // `sessionId` and records the rotated id in `resumeSessionId`. Backfill
+        // must tail BOTH transcripts under the immutable local_id, with a
+        // context_reset boundary between them (CCT-165).
+        let tmp = tempfile::tempdir().unwrap();
+        let jobs = tmp.path().join("jobs");
+        let projects = tmp.path().join("projects");
+        write_state(
+            &jobs,
+            "abcd1234",
+            r#"{"sessionId":"old-1","resumeSessionId":"new-2","cwd":"/tmp","state":"done","firstTerminalAt":"x"}"#,
+        );
+        let old_path = transcript::transcript_path(&projects, "/tmp", "old-1");
+        let new_path = transcript::transcript_path(&projects, "/tmp", "new-2");
+        std::fs::create_dir_all(old_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &old_path,
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"before clear\"}]}}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &new_path,
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"after clear\"}]}}\n",
+        )
+        .unwrap();
+
+        let (tx, mut rx) = mpsc::channel(64);
+        let cfg = BackfillConfig {
+            jobs_root: jobs,
+            projects_root: projects,
+            cursor_path: Some(tmp.path().join("cursor.json")),
+        };
+        let mut cursor = CursorFile::open(cfg.cursor_path.clone());
+        let mut offsets = OffsetStore::open(Some(tmp.path().join("offsets.json")));
+        let n = run_once(&cfg, &tx, &mut cursor, &mut offsets).await.unwrap();
+        assert_eq!(n, 1);
+
+        let mut texts = Vec::new();
+        let mut saw_reset = false;
+        while let Ok(evt) = rx.try_recv() {
+            if let AdapterEvent::Message { local_id, payload } = &evt {
+                // Everything lands on the immutable local_id, not the rotated id.
+                assert_eq!(local_id, "old-1");
+                let role = payload.get("role").and_then(|r| r.as_str()).unwrap_or("");
+                if role == "context_reset" {
+                    saw_reset = true;
+                    assert_eq!(payload.get("session_id").and_then(|s| s.as_str()), Some("new-2"));
+                } else if let Some(t) = payload.get("text").and_then(|t| t.as_str()) {
+                    texts.push(t.to_owned());
+                }
+            }
+        }
+        assert!(saw_reset, "expected a context_reset boundary between transcripts");
+        assert!(texts.contains(&"before clear".to_owned()), "pre-clear content missing: {texts:?}");
+        assert!(
+            texts.contains(&"after clear".to_owned()),
+            "post-clear continuation missing: {texts:?}"
+        );
+
+        // Cursor is keyed on the tip — a re-run replays nothing.
+        let mut cursor2 = CursorFile::open(cfg.cursor_path.clone());
+        let n2 = run_once(&cfg, &tx, &mut cursor2, &mut offsets).await.unwrap();
+        assert_eq!(n2, 0, "tip already backfilled; must not replay");
     }
 
     #[tokio::test]
