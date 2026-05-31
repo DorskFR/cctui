@@ -200,6 +200,25 @@ pub enum AdapterEvent {
         #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
         input: serde_json::Value,
     },
+    /// The agent is blocked awaiting a free-form answer to an `AskUserQuestion`
+    /// tool call. Unlike [`AdapterEvent::PermissionRequest`], the structured
+    /// option set is NOT available live: claude-code only flushes the
+    /// `tool_use` block to the transcript once the turn advances (i.e. after
+    /// the question is answered), so the question would otherwise appear only
+    /// retroactively. We carry just the question text — lifted from the
+    /// `blocked` status `detail` the daemon already polls — so the prompt
+    /// surfaces immediately. Answered via a normal [`AdapterCommand::Reply`]
+    /// (CCT-164).
+    AskQuestion {
+        local_id: String,
+        question: String,
+    },
+    /// A previously-emitted [`AdapterEvent::AskQuestion`] is no longer pending
+    /// (the session left the `blocked` state). Clients dismiss the live prompt
+    /// (CCT-164).
+    AskResolved {
+        local_id: String,
+    },
     /// Outcome of a server-initiated command (currently `Spawn`). Not tied to
     /// a session — `command_id` correlates it with the HTTP spawn response so
     /// the server can rebroadcast it to the originating client (CCT-131).

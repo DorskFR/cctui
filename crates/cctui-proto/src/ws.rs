@@ -149,6 +149,18 @@ pub enum ServerEvent {
         session_id: String,
         request_id: String,
     },
+    /// The agent is blocked on an `AskUserQuestion`; carries the question text
+    /// so clients render a live prompt before the transcript flushes the full
+    /// tool call (CCT-164).
+    AskQuestion {
+        session_id: String,
+        question: String,
+    },
+    /// A previously-broadcast `AskQuestion` is resolved; clients dismiss the
+    /// live prompt (CCT-164).
+    AskResolved {
+        session_id: String,
+    },
     /// Outcome of a client-initiated command (currently `POST /sessions/spawn`).
     /// `command_id` matches the value returned by the spawn route so the
     /// originating client can surface success/failure instead of silently

@@ -14,6 +14,8 @@ export interface PermReq {
 type Status = 'connecting' | 'open' | 'closed';
 type StreamCb = (ev: AgentEvent) => void;
 type PermCb = (list: PermReq[]) => void;
+/** Live AskUserQuestion text for a session, or null when none is pending. */
+type AskCb = (question: string | null) => void;
 
 /**
  * Single shared TUI websocket. Streams live AgentEvents for subscribed
@@ -38,8 +40,11 @@ class WsClient {
 	private buffer = new Map<string, AgentEvent[]>();
 	/** pending permission prompts, keyed by session id; not reactive */
 	private perms = new Map<string, PermReq[]>();
+	/** pending AskUserQuestion text, keyed by session id; not reactive (CCT-164) */
+	private asks = new Map<string, string>();
 	private streamCbs = new Map<string, Set<StreamCb>>();
 	private permCbs = new Map<string, Set<PermCb>>();
+	private askCbs = new Map<string, Set<AskCb>>();
 
 	private socket: WebSocket | null = null;
 	private subscribed = new Set<string>();
@@ -136,6 +141,16 @@ class WsClient {
 				);
 				break;
 			}
+			case 'ask_question': {
+				const sid = msg.session_id as string;
+				this.setAsk(sid, msg.question as string);
+				break;
+			}
+			case 'ask_resolved': {
+				const sid = msg.session_id as string;
+				this.setAsk(sid, null);
+				break;
+			}
 			case 'command_result': {
 				const cid = msg.command_id as string;
 				const w = this.waiters.get(cid);
@@ -173,6 +188,14 @@ class WsClient {
 		this.changeTick++; // list badge re-derives on changeTick-driven refetch
 		const set = this.permCbs.get(id);
 		if (set) for (const cb of set) cb(list);
+	}
+
+	private setAsk(id: string, question: string | null) {
+		if (question === null) this.asks.delete(id);
+		else this.asks.set(id, question);
+		this.changeTick++;
+		const set = this.askCbs.get(id);
+		if (set) for (const cb of set) cb(question);
 	}
 
 	subscribe(id: string) {
@@ -226,6 +249,26 @@ class WsClient {
 		set.add(cb);
 		cb(this.perms.get(id) ?? []);
 		return () => set!.delete(cb);
+	}
+
+	/** Register a live AskUserQuestion listener for a session. Fires with the
+	 * current pending question (or null) immediately and on every change.
+	 * Returns an unsubscribe fn (CCT-164). */
+	onAsk(id: string, cb: AskCb): () => void {
+		let set = this.askCbs.get(id);
+		if (!set) {
+			set = new Set();
+			this.askCbs.set(id, set);
+		}
+		set.add(cb);
+		cb(this.asks.get(id) ?? null);
+		return () => set!.delete(cb);
+	}
+
+	/** Clear any live pending question for a session (e.g. after the user
+	 * answers, before the daemon's resolution event arrives) (CCT-164). */
+	clearAsk(id: string) {
+		if (this.asks.has(id)) this.setAsk(id, null);
 	}
 
 	/** Send a typed message. Returns true if the frame went out, false if the

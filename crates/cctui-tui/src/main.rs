@@ -598,10 +598,14 @@ fn handle_server_event(app: &mut App, event: ServerEvent) {
         }
         ServerEvent::ArchiveManifest { .. }
         | ServerEvent::ArchiveUploaded { .. }
-        | ServerEvent::CommandResult { .. } => {
+        | ServerEvent::CommandResult { .. }
+        | ServerEvent::AskQuestion { .. }
+        | ServerEvent::AskResolved { .. } => {
             // Archive coverage is web-only (CCT-68); spawn feedback
             // (CommandResult, CCT-131) is surfaced in the web client and the
-            // TUI doesn't drive the spawn flow, so nothing to render here.
+            // TUI doesn't drive the spawn flow. Live AskUserQuestion prompts
+            // (CCT-164) render in the web client; the TUI shows the question
+            // from the transcript, so nothing to render here.
         }
         ServerEvent::PermissionResolved { session_id, request_id } => {
             // Drop any queued entry that matches; if it's the head and the

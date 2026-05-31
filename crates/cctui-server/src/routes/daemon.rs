@@ -388,6 +388,23 @@ async fn handle_event(
             });
             bump_heartbeat(state, &local_id).await;
         }
+        AdapterEvent::AskQuestion { local_id, question } => {
+            // Live AskUserQuestion (CCT-164): broadcast the pending question so
+            // clients render an inline prompt immediately. Ephemeral — not
+            // persisted as a stream_event; the full structured tool call still
+            // lands in history via the transcript once the turn advances.
+            let _ = state.tui_tx.send(cctui_proto::ws::ServerEvent::AskQuestion {
+                session_id: local_id.clone(),
+                question,
+            });
+            bump_heartbeat(state, &local_id).await;
+        }
+        AdapterEvent::AskResolved { local_id } => {
+            let _ = state
+                .tui_tx
+                .send(cctui_proto::ws::ServerEvent::AskResolved { session_id: local_id.clone() });
+            bump_heartbeat(state, &local_id).await;
+        }
         AdapterEvent::Status {
             local_id,
             tempo,

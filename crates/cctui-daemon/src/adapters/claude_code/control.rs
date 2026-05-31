@@ -145,6 +145,12 @@ pub struct Driver {
     shutdown: CancellationToken,
     roster: HashSet<String>,
     last_status: HashMap<String, StatusSnapshot>,
+    /// Per-session pending `AskUserQuestion` text (keyed by stable `local_id`).
+    /// Tracks the `blocked` status `detail` so we emit an `AskQuestion` event
+    /// the moment a question appears and an `AskResolved` when it clears —
+    /// surfacing the prompt live instead of waiting for the late transcript
+    /// flush (CCT-164).
+    last_ask: HashMap<String, String>,
     /// Reverse lookup: `local_id` (`session_id`) → worker `short`. Built
     /// from list snapshots so command dispatch can target the right
     /// worker even though the server identifies sessions by their
@@ -229,6 +235,7 @@ impl Driver {
             shutdown,
             roster: HashSet::new(),
             last_status: HashMap::new(),
+            last_ask: HashMap::new(),
             offsets,
             transcript_locations: HashMap::new(),
             short_by_session: HashMap::new(),
@@ -690,6 +697,32 @@ impl Driver {
             let effort = on_disk.as_ref().and_then(|s| s.effort.clone());
             let children = on_disk.as_ref().map(StateJson::proto_children).unwrap_or_default();
 
+            // Live AskUserQuestion surfacing (CCT-164): when the session is
+            // `blocked`, the status `detail` carries the pending question text.
+            // Emit it the moment it appears (and a resolution when it clears)
+            // so the prompt renders live, rather than waiting for claude-code
+            // to flush the `tool_use` block to the transcript (which only
+            // happens once the turn advances, i.e. after it's answered).
+            let current_ask = if job.state.as_deref() == Some("blocked") {
+                job.detail.as_deref().map(str::trim).filter(|d| !d.is_empty()).map(str::to_owned)
+            } else {
+                None
+            };
+            let prev_ask = self.last_ask.get(&local_id).cloned();
+            match current_ask {
+                Some(q) if prev_ask.as_deref() != Some(q.as_str()) => {
+                    self.last_ask.insert(local_id.clone(), q.clone());
+                    self.emit(AdapterEvent::AskQuestion { local_id: local_id.clone(), question: q })
+                        .await;
+                }
+                None if prev_ask.is_some() => {
+                    self.last_ask.remove(&local_id);
+                    self.emit(AdapterEvent::AskResolved { local_id: local_id.clone() }).await;
+                }
+                // Unchanged (still the same question, or still no question).
+                _ => {}
+            }
+
             let snap = StatusSnapshot {
                 tempo: job.tempo.clone(),
                 state: job.state.clone(),
@@ -756,6 +789,7 @@ impl Driver {
             self.last_status.remove(short);
             if let Some(loc) = self.transcript_locations.remove(short) {
                 self.short_by_session.remove(&loc.local_id);
+                self.last_ask.remove(&loc.local_id);
                 self.end_subagents_of(&loc.local_id).await;
             }
             // We don't retain the session_id mapping after roster removal,
@@ -1164,6 +1198,48 @@ mod tests {
             }
         }
         assert!(child_ended, "subagent should end when its parent leaves the roster");
+    }
+
+    #[tokio::test]
+    async fn blocked_state_emits_ask_question_then_resolves() {
+        // CCT-164: when a session is `blocked`, the status `detail` carries the
+        // pending AskUserQuestion text. We surface it live as an AskQuestion
+        // event the moment it appears, and an AskResolved when the session
+        // leaves the blocked state — rather than waiting for the (late)
+        // transcript flush.
+        let (mut d, mut rx) = driver();
+        let mut blocked = snap("abcd1234", "blocked", None);
+        blocked.detail = Some("Which approach do you prefer?".into());
+        d.apply_snapshot(vec![blocked]).await;
+
+        let mut got_ask = None;
+        while let Ok(evt) = rx.try_recv() {
+            if let AdapterEvent::AskQuestion { question, .. } = evt {
+                got_ask = Some(question);
+            }
+        }
+        assert_eq!(got_ask.as_deref(), Some("Which approach do you prefer?"));
+
+        // Same blocked detail on the next poll must NOT re-emit (deduped).
+        let mut still = snap("abcd1234", "blocked", None);
+        still.detail = Some("Which approach do you prefer?".into());
+        d.apply_snapshot(vec![still]).await;
+        while let Ok(evt) = rx.try_recv() {
+            assert!(
+                !matches!(evt, AdapterEvent::AskQuestion { .. }),
+                "unchanged blocked detail must not re-emit AskQuestion"
+            );
+        }
+
+        // Leaving the blocked state emits AskResolved.
+        d.apply_snapshot(vec![snap("abcd1234", "working", None)]).await;
+        let mut resolved = false;
+        while let Ok(evt) = rx.try_recv() {
+            if matches!(evt, AdapterEvent::AskResolved { .. }) {
+                resolved = true;
+            }
+        }
+        assert!(resolved, "leaving blocked state should emit AskResolved");
     }
 
     #[tokio::test]

@@ -249,7 +249,9 @@ fn event_local_id(event: &AdapterEvent) -> &str {
         | AdapterEvent::ToolUse { local_id, .. }
         | AdapterEvent::SessionEnded { local_id, .. }
         | AdapterEvent::Status { local_id, .. }
-        | AdapterEvent::PermissionRequest { local_id, .. } => local_id,
+        | AdapterEvent::PermissionRequest { local_id, .. }
+        | AdapterEvent::AskQuestion { local_id, .. }
+        | AdapterEvent::AskResolved { local_id } => local_id,
         _ => "",
     }
 }
@@ -261,6 +263,8 @@ const fn event_kind(event: &AdapterEvent) -> &'static str {
         AdapterEvent::ToolUse { .. } => "tool_use",
         AdapterEvent::SessionEnded { .. } => "session_ended",
         AdapterEvent::Status { .. } => "status",
+        AdapterEvent::AskQuestion { .. } => "ask_question",
+        AdapterEvent::AskResolved { .. } => "ask_resolved",
         _ => "other",
     }
 }

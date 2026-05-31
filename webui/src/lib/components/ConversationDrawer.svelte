@@ -66,6 +66,10 @@
 	// singleton's keyed state from this module did not re-run on mutation.
 	let live = $state<AgentEvent[]>([]);
 	let perms = $state<PermReq[]>([]);
+	// Live AskUserQuestion text (CCT-164): surfaced from the daemon's `blocked`
+	// status before the transcript flushes the full tool call. Null when none
+	// is pending.
+	let ask = $state<string | null>(null);
 	// Timestamps of optimistic replies not yet acknowledged → "sending…" tint.
 	let pendingReplies = $state<Set<number>>(new Set());
 
@@ -99,9 +103,13 @@
 		const offPerms = ws.onPerms(sid, (list) => {
 			perms = list;
 		});
+		const offAsk = ws.onAsk(sid, (q) => {
+			ask = q;
+		});
 		return () => {
 			offStream();
 			offPerms();
+			offAsk();
 			ws.unsubscribe(sid);
 			ws.clearStream(sid);
 		};
@@ -322,6 +330,10 @@
 			return;
 		}
 		notSent = false;
+		// Sending any message also answers a pending live question (CCT-164) —
+		// dismiss the prompt now; the daemon's AskResolved lands a poll later.
+		ask = null;
+		ws.clearAsk(id);
 		// Optimistic echo into local state (+ pending tint until the agent replies).
 		const ts = Date.now();
 		live = [...live, { type: 'reply', content: text, ts }];
@@ -414,6 +426,10 @@
 			return;
 		}
 		notSent = false;
+		// Dismiss the live prompt immediately — the daemon's AskResolved arrives
+		// a poll later (CCT-164).
+		ask = null;
+		ws.clearAsk(id);
 		const ts = Date.now();
 		live = [...live, { type: 'reply', content: text, ts }];
 		pendingReplies = new Set([...pendingReplies, ts]);
@@ -617,7 +633,7 @@
 	>
 		{#if $history.isLoading}
 			<div class="empty"><span class="spin"></span></div>
-		{:else if lines.length === 0 && perms.length === 0}
+		{:else if lines.length === 0 && perms.length === 0 && !ask}
 			<div class="empty">No events yet.</div>
 		{/if}
 
@@ -660,6 +676,17 @@
 			</div>
 			{/if}
 		{/each}
+
+		{#if ask}
+			<!-- Live AskUserQuestion (CCT-164): the structured options aren't
+			     available until the transcript flushes, so render the question
+			     text with a free-text answer. Answering sends a reply. -->
+			<AskQuestionCard
+				questions={[{ question: ask, options: [] }]}
+				interactive={!archived}
+				onsubmit={answerQuestion}
+			/>
+		{/if}
 
 		{#each perms as p (p.request_id)}
 			<PermissionCard req={p} onrespond={(rid, allow) => ws.respondPermission(id, rid, allow)} />
