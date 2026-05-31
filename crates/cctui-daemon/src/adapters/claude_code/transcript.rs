@@ -591,13 +591,18 @@ mod tests {
         let path = tmp.path().join("t.jsonl");
         write_lines(
             &path,
-            &[r#"{"type":"user","isCompactSummary":true,"message":{"role":"user","content":"plain string summary"}}"#],
+            &[
+                r#"{"type":"user","isCompactSummary":true,"message":{"role":"user","content":"plain string summary"}}"#,
+            ],
         );
         let (events, _) = tail_once(&path, "s", 0).unwrap();
         assert_eq!(events.len(), 1);
         match &events[0] {
             AdapterEvent::Message { payload, .. } => {
-                assert_eq!(payload.get("text").and_then(Value::as_str), Some("plain string summary"));
+                assert_eq!(
+                    payload.get("text").and_then(Value::as_str),
+                    Some("plain string summary")
+                );
             }
             other => panic!("expected compact_summary Message, got {other:?}"),
         }

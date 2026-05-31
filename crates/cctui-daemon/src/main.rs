@@ -38,6 +38,18 @@ enum Cmd {
     },
     /// Print the resolved configuration (`machine_key` redacted).
     Status,
+    /// Internal: the Claude Code `AskUserQuestion` PreToolUse/PostToolUse hook
+    /// command (CCT-167). Reads the hook JSON on stdin and forwards the pending
+    /// question (or its resolution) to the running daemon over `--sock`.
+    /// Observe-only: prints nothing and always exits 0.
+    AskHook {
+        /// Hook phase: `pre` (question appeared) or `post` (answered).
+        #[arg(long)]
+        event: String,
+        /// Daemon socket to deliver to.
+        #[arg(long)]
+        sock: PathBuf,
+    },
     /// Check for a newer release, swap the binary in place, and restart
     /// the daemon service (if one is running) so it picks up the new binary.
     Update,
@@ -201,5 +213,6 @@ async fn main() -> anyhow::Result<()> {
             }
         },
         Cmd::Status => print_status(&path),
+        Cmd::AskHook { event, sock } => cctui_daemon::askhook::run(&event, &sock),
     }
 }

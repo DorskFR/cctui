@@ -10,6 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Context;
@@ -19,6 +20,7 @@ use serde_json::json;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use super::SessionMap;
 use super::backfill::{self, BackfillConfig, CursorFile, default_cursor_path};
 use super::discovery::Discovery;
 use super::socket;
@@ -44,6 +46,11 @@ pub struct DriverConfig {
     /// Binary used for the `claude rm <short>` removal invoked by
     /// [`AdapterCommand::Remove`]. Defaults to `claude` (resolved on `PATH`).
     pub claude_bin: String,
+    /// Local socket the `AskUserQuestion` hook (CCT-167) delivers to. Shared
+    /// with the listener spawned in [`super::ClaudeCodeAdapter::start`] so the
+    /// injected `--settings` hook command targets the same path the daemon
+    /// binds.
+    pub hook_socket_path: PathBuf,
 }
 
 impl Default for DriverConfig {
@@ -57,6 +64,7 @@ impl Default for DriverConfig {
             backfill_cursor_path: None,
             skip_backfill: false,
             claude_bin: "claude".to_string(),
+            hook_socket_path: super::resolve_legacy_socket_path(&serde_json::Value::Null),
         }
     }
 }
@@ -88,6 +96,7 @@ impl DriverConfig {
         if let Some(s) = v.get("claude_bin").and_then(serde_json::Value::as_str) {
             cfg.claude_bin = s.to_string();
         }
+        cfg.hook_socket_path = super::resolve_legacy_socket_path(v);
         cfg
     }
 }
@@ -145,12 +154,11 @@ pub struct Driver {
     shutdown: CancellationToken,
     roster: HashSet<String>,
     last_status: HashMap<String, StatusSnapshot>,
-    /// Per-session pending `AskUserQuestion` text (keyed by stable `local_id`).
-    /// Tracks the `blocked` status `detail` so we emit an `AskQuestion` event
-    /// the moment a question appears and an `AskResolved` when it clears —
-    /// surfacing the prompt live instead of waiting for the late transcript
-    /// flush (CCT-164).
-    last_ask: HashMap<String, String>,
+    /// Shared `session_id → stable local_id` map. Populated as transcripts are
+    /// pinned (incl. across `/clear` rotations) and read by the ask-hook
+    /// listener so a hook's live `session_id` resolves to the `local_id` the
+    /// server keys on (CCT-167).
+    session_to_local: SessionMap,
     /// Reverse lookup: `local_id` (`session_id`) → worker `short`. Built
     /// from list snapshots so command dispatch can target the right
     /// worker even though the server identifies sessions by their
@@ -235,13 +243,19 @@ impl Driver {
             shutdown,
             roster: HashSet::new(),
             last_status: HashMap::new(),
-            last_ask: HashMap::new(),
+            session_to_local: Arc::new(Mutex::new(HashMap::new())),
             offsets,
             transcript_locations: HashMap::new(),
             short_by_session: HashMap::new(),
             subagents: HashMap::new(),
             ended_subagents: HashSet::new(),
         }
+    }
+
+    /// Clone handle to the shared `session_id → local_id` map, for the
+    /// ask-hook listener to translate live `session_id`s (CCT-167).
+    pub fn session_map(&self) -> SessionMap {
+        self.session_to_local.clone()
     }
 
     #[allow(clippy::cognitive_complexity)]
@@ -514,6 +528,19 @@ impl Driver {
             args.push("--permission-mode".to_owned());
             args.push(claude_mode.to_owned());
         }
+        // Inject the managed `AskUserQuestion` hook settings (CCT-167), scoped
+        // to this fleet-spawned worker only — the user's hand-run `claude` is
+        // untouched. `--settings` merges over the resolved hierarchy, so it
+        // only ADDS the hook. Goes into `respawnFlags` too so it survives the
+        // `/clear`/`/compact` relaunch the claude daemon drives off them.
+        let mut respawn_flags = vec!["--agent".to_owned(), agent.to_owned()];
+        if let Some(settings) = ensure_hook_settings(&self.cfg.hook_socket_path) {
+            let settings = settings.to_string_lossy().into_owned();
+            args.push("--settings".to_owned());
+            args.push(settings.clone());
+            respawn_flags.push("--settings".to_owned());
+            respawn_flags.push(settings);
+        }
         if let Some(prompt) = &spec.prompt {
             args.push("--".to_owned());
             args.push(prompt.clone());
@@ -547,7 +574,7 @@ impl Driver {
                 "launch": { "mode": "prompt", "args": args },
                 "env": {},
                 "isolation": "none",
-                "respawnFlags": ["--agent", agent],
+                "respawnFlags": respawn_flags,
                 "agent": agent,
                 "seed": seed,
                 "cols": 120,
@@ -654,6 +681,7 @@ impl Driver {
                 let path = transcript::transcript_path(&self.cfg.projects_root, cwd, sess);
                 if first_pin {
                     self.short_by_session.insert(sess.to_owned(), job.short.clone());
+                    self.map_session(sess, &local_id);
                     self.transcript_locations.insert(
                         job.short.clone(),
                         TranscriptLocation {
@@ -667,8 +695,11 @@ impl Driver {
                     // Follow the file, keep the stable `local_id`. The new
                     // `sess` is mapped to the same `short` too so command
                     // dispatch keeps working if a snapshot ever reports the new
-                    // id directly.
+                    // id directly. The rotated id maps to the unchanged stable
+                    // `local_id` so a hook firing post-`/clear` still resolves
+                    // to the session the server knows (CCT-167).
                     self.short_by_session.insert(sess.to_owned(), job.short.clone());
+                    self.map_session(sess, &local_id);
                     if let Some(loc) = self.transcript_locations.get_mut(&job.short) {
                         loc.path = path;
                         sess.clone_into(&mut loc.offset_key);
@@ -697,31 +728,13 @@ impl Driver {
             let effort = on_disk.as_ref().and_then(|s| s.effort.clone());
             let children = on_disk.as_ref().map(StateJson::proto_children).unwrap_or_default();
 
-            // Live AskUserQuestion surfacing (CCT-164): when the session is
-            // `blocked`, the status `detail` carries the pending question text.
-            // Emit it the moment it appears (and a resolution when it clears)
-            // so the prompt renders live, rather than waiting for claude-code
-            // to flush the `tool_use` block to the transcript (which only
-            // happens once the turn advances, i.e. after it's answered).
-            let current_ask = if job.state.as_deref() == Some("blocked") {
-                job.detail.as_deref().map(str::trim).filter(|d| !d.is_empty()).map(str::to_owned)
-            } else {
-                None
-            };
-            let prev_ask = self.last_ask.get(&local_id).cloned();
-            match current_ask {
-                Some(q) if prev_ask.as_deref() != Some(q.as_str()) => {
-                    self.last_ask.insert(local_id.clone(), q.clone());
-                    self.emit(AdapterEvent::AskQuestion { local_id: local_id.clone(), question: q })
-                        .await;
-                }
-                None if prev_ask.is_some() => {
-                    self.last_ask.remove(&local_id);
-                    self.emit(AdapterEvent::AskResolved { local_id: local_id.clone() }).await;
-                }
-                // Unchanged (still the same question, or still no question).
-                _ => {}
-            }
+            // NB: live `AskUserQuestion` surfacing is NOT derived from status
+            // here. The earlier `blocked`+`detail` heuristic (CCT-164) was wrong
+            // in both directions — it missed real questions (which report
+            // `state:"done"`, not `blocked`) and fired on any other `blocked`
+            // state (e.g. a background "needs input" status, whose `detail` is a
+            // headline, not a question). The `AskUserQuestion` PreToolUse hook
+            // delivers the real prompt over the daemon socket instead (CCT-167).
 
             let snap = StatusSnapshot {
                 tempo: job.tempo.clone(),
@@ -789,7 +802,10 @@ impl Driver {
             self.last_status.remove(short);
             if let Some(loc) = self.transcript_locations.remove(short) {
                 self.short_by_session.remove(&loc.local_id);
-                self.last_ask.remove(&loc.local_id);
+                self.session_to_local
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .retain(|_, v| v != &loc.local_id);
                 self.end_subagents_of(&loc.local_id).await;
             }
             // We don't retain the session_id mapping after roster removal,
@@ -914,8 +930,65 @@ impl Driver {
         }
     }
 
+    /// Record `session_id → local_id` in the shared map the ask-hook listener
+    /// reads. Lock poisoning is non-fatal here (the map is best-effort routing
+    /// metadata), so we recover the guard rather than panic (CCT-167).
+    fn map_session(&self, session_id: &str, local_id: &str) {
+        let mut guard =
+            self.session_to_local.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.insert(session_id.to_owned(), local_id.to_owned());
+    }
+
     async fn emit(&self, evt: AdapterEvent) {
         let _ = self.events.send(evt).await;
+    }
+}
+
+/// Path of the managed hook settings file: `$XDG_CONFIG_HOME/cctui/
+/// ask-hook-settings.json` (falling back to `~/.config`).
+fn hook_settings_path() -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+    Some(base.join("cctui").join("ask-hook-settings.json"))
+}
+
+/// Write (idempotently, on every spawn so it tracks binary upgrades) the
+/// managed Claude Code settings file that registers the `AskUserQuestion`
+/// PreToolUse/PostToolUse hooks, pointing at this daemon binary and the given
+/// delivery socket (CCT-167). Returns the file path to inject via `--settings`,
+/// or `None` if we can't locate the binary / config dir (in which case spawning
+/// proceeds without the hook rather than failing).
+fn ensure_hook_settings(sock: &std::path::Path) -> Option<PathBuf> {
+    let path = hook_settings_path()?;
+    let exe = std::env::current_exe()
+        .map_err(|err| tracing::warn!(%err, "ask-hook: cannot resolve current_exe"))
+        .ok()?;
+    let exe = exe.to_string_lossy();
+    let sock = sock.to_string_lossy();
+    let hook = |event: &str| {
+        json!([{
+            "matcher": "AskUserQuestion",
+            "hooks": [{
+                "type": "command",
+                "command": format!("{exe} ask-hook --event {event} --sock {sock}"),
+                "timeout": 5,
+            }],
+        }])
+    };
+    let settings = json!({
+        "hooks": { "PreToolUse": hook("pre"), "PostToolUse": hook("post") },
+    });
+    if let Some(Err(err)) = path.parent().map(std::fs::create_dir_all) {
+        tracing::warn!(%err, "ask-hook: cannot create settings dir");
+        return None;
+    }
+    match std::fs::write(&path, serde_json::to_vec_pretty(&settings).ok()?) {
+        Ok(()) => Some(path),
+        Err(err) => {
+            tracing::warn!(%err, path = %path.display(), "ask-hook: cannot write settings");
+            None
+        }
     }
 }
 
@@ -953,6 +1026,7 @@ mod tests {
             backfill_cursor_path: Some(tmp.join("backfill.json")),
             skip_backfill: true,
             claude_bin: "claude".to_string(),
+            hook_socket_path: tmp.join("hook.sock"),
         };
         (Driver::new(cfg, tx, cmd_rx, CancellationToken::new()), rx)
     }
@@ -1201,45 +1275,48 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn blocked_state_emits_ask_question_then_resolves() {
-        // CCT-164: when a session is `blocked`, the status `detail` carries the
-        // pending AskUserQuestion text. We surface it live as an AskQuestion
-        // event the moment it appears, and an AskResolved when the session
-        // leaves the blocked state — rather than waiting for the (late)
-        // transcript flush.
+    async fn blocked_state_does_not_emit_phantom_ask_question() {
+        // CCT-167: the old `blocked`+`detail` heuristic (CCT-164) broadcast any
+        // blocked session's status `detail` as an AskQuestion — firing phantom
+        // prompts for non-question states (e.g. a background "needs input"
+        // status). Status no longer drives AskQuestion at all; the real prompt
+        // arrives via the PreToolUse hook. A blocked snapshot must emit Status,
+        // never AskQuestion.
         let (mut d, mut rx) = driver();
         let mut blocked = snap("abcd1234", "blocked", None);
-        blocked.detail = Some("Which approach do you prefer?".into());
+        blocked.detail = Some("needs go-ahead to build & ship".into());
         d.apply_snapshot(vec![blocked]).await;
 
-        let mut got_ask = None;
-        while let Ok(evt) = rx.try_recv() {
-            if let AdapterEvent::AskQuestion { question, .. } = evt {
-                got_ask = Some(question);
-            }
-        }
-        assert_eq!(got_ask.as_deref(), Some("Which approach do you prefer?"));
-
-        // Same blocked detail on the next poll must NOT re-emit (deduped).
-        let mut still = snap("abcd1234", "blocked", None);
-        still.detail = Some("Which approach do you prefer?".into());
-        d.apply_snapshot(vec![still]).await;
         while let Ok(evt) = rx.try_recv() {
             assert!(
-                !matches!(evt, AdapterEvent::AskQuestion { .. }),
-                "unchanged blocked detail must not re-emit AskQuestion"
+                !matches!(evt, AdapterEvent::AskQuestion { .. } | AdapterEvent::AskResolved { .. }),
+                "blocked status must not synthesize an Ask event"
             );
         }
+    }
 
-        // Leaving the blocked state emits AskResolved.
-        d.apply_snapshot(vec![snap("abcd1234", "working", None)]).await;
-        let mut resolved = false;
-        while let Ok(evt) = rx.try_recv() {
-            if matches!(evt, AdapterEvent::AskResolved { .. }) {
-                resolved = true;
-            }
-        }
-        assert!(resolved, "leaving blocked state should emit AskResolved");
+    #[tokio::test]
+    async fn pinning_records_session_to_local_map() {
+        // CCT-167: the ask-hook listener resolves a hook's live `session_id`
+        // through this map. First pin maps the id to itself; a `/clear`
+        // rotation maps the NEW id to the stable original `local_id`.
+        let (mut d, _rx) = driver();
+        let mut s1 = snap("deadbeef", "working", None);
+        s1.session_id = Some("sess-1".into());
+        d.apply_snapshot(vec![s1]).await;
+        assert_eq!(
+            d.session_map().lock().unwrap().get("sess-1").map(String::as_str),
+            Some("sess-1")
+        );
+
+        let mut s2 = snap("deadbeef", "working", None);
+        s2.session_id = Some("sess-2".into());
+        d.apply_snapshot(vec![s2]).await;
+        assert_eq!(
+            d.session_map().lock().unwrap().get("sess-2").map(String::as_str),
+            Some("sess-1"),
+            "rotated id resolves to the stable local_id"
+        );
     }
 
     #[tokio::test]

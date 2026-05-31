@@ -19,13 +19,21 @@ mod socket;
 mod state;
 mod transcript;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use cctui_proto::adapter::AdapterEvent;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::net::UnixListener;
+use tokio_util::sync::CancellationToken;
 
 use crate::adapter_runtime::{Adapter, AdapterCtx, AdapterFactory};
+
+/// Shared `session_id → stable local_id` map, populated by the control driver
+/// as it pins transcripts and read by the ask-hook listener to translate the
+/// live `session_id` a hook reports into the `local_id` the server keys on.
+pub(crate) type SessionMap = Arc<Mutex<HashMap<String, String>>>;
 
 pub struct ClaudeCodeAdapter;
 
@@ -39,7 +47,24 @@ impl Adapter for ClaudeCodeAdapter {
         if use_claude_daemon_path(&ctx.config) {
             tracing::info!("claude-code adapter starting in claude-daemon mode");
             let cfg = control::DriverConfig::from_value(&ctx.config);
-            let driver = control::Driver::new(cfg, ctx.events, ctx.commands, ctx.shutdown);
+            let driver =
+                control::Driver::new(cfg, ctx.events.clone(), ctx.commands, ctx.shutdown.clone());
+            // The `AskUserQuestion` PreToolUse hook (CCT-167) delivers the
+            // pending question here over the daemon's local socket. The hook
+            // reports claude's live `session_id`; the driver's shared map
+            // translates it to the stable `local_id` the rest of the pipeline
+            // (and the server) keys on.
+            let hook_sock = resolve_legacy_socket_path(&ctx.config);
+            let hook_events = ctx.events;
+            let hook_shutdown = ctx.shutdown;
+            let session_map = driver.session_map();
+            tokio::spawn(async move {
+                if let Err(err) =
+                    run_hook_listener(hook_sock, hook_events, hook_shutdown, session_map).await
+                {
+                    tracing::warn!(%err, "claude-code ask-hook listener exited");
+                }
+            });
             return driver.run().await;
         }
         run_legacy_uds(ctx).await
@@ -114,7 +139,97 @@ async fn handle_legacy_connection(
     Ok(())
 }
 
-fn resolve_legacy_socket_path(config: &serde_json::Value) -> PathBuf {
+/// Listen on the daemon's local socket for `AskUserQuestion` hook deliveries
+/// (CCT-167). Each line is a `{kind, session_id, question?}` message from the
+/// `cctui-daemon ask-hook` command; we translate `session_id → local_id` via
+/// the shared map and emit the existing `AskQuestion` / `AskResolved` events.
+async fn run_hook_listener(
+    path: PathBuf,
+    events: tokio::sync::mpsc::Sender<AdapterEvent>,
+    shutdown: CancellationToken,
+    session_map: SessionMap,
+) -> anyhow::Result<()> {
+    let _ = std::fs::remove_file(&path);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let listener = UnixListener::bind(&path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+    tracing::info!(socket = %path.display(), "claude-code ask-hook listener ready");
+
+    loop {
+        tokio::select! {
+            () = shutdown.cancelled() => {
+                let _ = std::fs::remove_file(&path);
+                return Ok(());
+            }
+            accept = listener.accept() => {
+                let (stream, _) = accept?;
+                let events = events.clone();
+                let session_map = session_map.clone();
+                tokio::spawn(async move {
+                    if let Err(err) = handle_hook_connection(stream, events, session_map).await {
+                        tracing::debug!(%err, "ask-hook connection error");
+                    }
+                });
+            }
+        }
+    }
+}
+
+async fn handle_hook_connection(
+    stream: tokio::net::UnixStream,
+    events: tokio::sync::mpsc::Sender<AdapterEvent>,
+    session_map: SessionMap,
+) -> anyhow::Result<()> {
+    let mut lines = BufReader::new(stream).lines();
+    while let Some(line) = lines.next_line().await? {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Some(evt) = hook_line_to_event(line, &session_map) else {
+            continue;
+        };
+        if events.send(evt).await.is_err() {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// Parse one hook line and resolve it to an `AdapterEvent`. The hook reports
+/// claude's live `session_id`; we map it to the stable `local_id` (falling
+/// back to the `session_id` itself before the driver has pinned the session).
+fn hook_line_to_event(line: &str, session_map: &SessionMap) -> Option<AdapterEvent> {
+    let v: serde_json::Value = serde_json::from_str(line)
+        .map_err(|err| tracing::warn!(%err, ?line, "ignoring malformed ask-hook line"))
+        .ok()?;
+    let session_id = v.get("session_id").and_then(|s| s.as_str())?;
+    let local_id = session_map
+        .lock()
+        .ok()
+        .and_then(|m| m.get(session_id).cloned())
+        .unwrap_or_else(|| session_id.to_owned());
+    match v.get("kind").and_then(|k| k.as_str()) {
+        Some("ask") => {
+            let question =
+                v.get("question").and_then(|q| q.as_str()).unwrap_or_default().to_owned();
+            Some(AdapterEvent::AskQuestion { local_id, question })
+        }
+        Some("resolved") => Some(AdapterEvent::AskResolved { local_id }),
+        other => {
+            tracing::warn!(?other, "ignoring ask-hook line with unknown kind");
+            None
+        }
+    }
+}
+
+pub(crate) fn resolve_legacy_socket_path(config: &serde_json::Value) -> PathBuf {
     if let Some(p) = config.get("socket_path").and_then(|v| v.as_str()) {
         return PathBuf::from(p);
     }
