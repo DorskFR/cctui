@@ -285,6 +285,14 @@ async fn handle_event(
         }
         _ => None,
     };
+    // Whether the broadcast below should actually fire. For Message/ToolUse we
+    // only stream to the webui if the event was *newly* inserted — a daemon
+    // that replays a session's full history on reconnect (e.g. after a
+    // self-update) would otherwise re-stream every message, forcing clients to
+    // replay the whole conversation with a long visible lag (CCT-171). The
+    // `ON CONFLICT DO NOTHING` dedup already drops the duplicate rows; gating
+    // the broadcast on a real insert extends that dedup to the live stream.
+    let mut newly_inserted = true;
     match event {
         AdapterEvent::SessionStarted { local_id, meta } => {
             let working_dir = meta.working_dir.clone();
@@ -300,10 +308,10 @@ async fn handle_event(
             .await?;
         }
         AdapterEvent::Message { local_id, payload } => {
-            insert_event(state, &local_id, "message", payload).await?;
+            newly_inserted = insert_event(state, &local_id, "message", payload).await?;
         }
         AdapterEvent::ToolUse { local_id, payload } => {
-            insert_event(state, &local_id, "tool_use", payload).await?;
+            newly_inserted = insert_event(state, &local_id, "tool_use", payload).await?;
         }
         AdapterEvent::SessionEnded { local_id, reason } => {
             mark_session_ended(state, &local_id, &reason).await?;
@@ -438,8 +446,10 @@ async fn handle_event(
     if let Some(id) = local_id_for_bump {
         bump_heartbeat(state, &id).await;
     }
-    if let Some((session_id, data)) = broadcast_pair {
-        let _ = state.tui_tx.send(cctui_proto::ws::ServerEvent::Stream { session_id, data });
+    if newly_inserted {
+        if let Some((session_id, data)) = broadcast_pair {
+            let _ = state.tui_tx.send(cctui_proto::ws::ServerEvent::Stream { session_id, data });
+        }
     }
     Ok(())
 }
@@ -533,18 +543,22 @@ async fn upsert_session(
     Ok(())
 }
 
+/// Insert a stream event, returning `true` if a new row was written and
+/// `false` if it was a duplicate suppressed by the dedup constraint. Callers
+/// use the return value to decide whether to broadcast the event live, so a
+/// replayed session history doesn't re-stream to clients (CCT-171).
 async fn insert_event(
     state: &AppState,
     local_id: &str,
     event_type: &str,
     mut payload: serde_json::Value,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
     // Postgres jsonb/text cannot store the NUL code point (` `); a
     // payload carrying one (e.g. binary-ish tool output) fails the INSERT and
     // the event is silently lost (CCT-136). Strip NULs from every string so
     // the rest of the payload survives.
     strip_nul(&mut payload);
-    sqlx::query(
+    let result = sqlx::query(
         "INSERT INTO stream_events (session_id, event_type, payload) VALUES ($1, $2, $3) \
          ON CONFLICT (session_id, event_type, content_hash) DO NOTHING",
     )
@@ -553,7 +567,7 @@ async fn insert_event(
     .bind(payload)
     .execute(&state.pool)
     .await?;
-    Ok(())
+    Ok(result.rows_affected() > 0)
 }
 
 /// Recursively strip NUL (` `) from every string in a JSON value.

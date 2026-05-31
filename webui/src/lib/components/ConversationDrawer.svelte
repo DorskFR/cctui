@@ -360,6 +360,10 @@
 		// dismiss the prompt now; the daemon's AskResolved lands a poll later.
 		ask = null;
 		ws.clearAsk(id);
+		// Sending should always jump to the latest message (classic chat UX),
+		// even if the user had scrolled up — re-pin so the sticky-bottom $effect
+		// follows the optimistic echo down.
+		stuck = true;
 		// Optimistic echo into local state (+ pending tint until the agent replies).
 		const ts = Date.now();
 		live = [...live, { type: 'reply', content: text, ts }];
