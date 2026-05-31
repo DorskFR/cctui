@@ -20,12 +20,29 @@ export function escapeHtml(s: string): string {
 		.replace(/"/g, '&quot;');
 }
 
+// Terminal output (diffs, tool stdout) often carries ANSI escape sequences. They
+// aren't HTML-escaped by escapeHtml, so left in place they leak into the DOM as
+// raw control bytes — visible as garbled `28→29`-style artifacts that turn
+// pink/red when copied into a terminal. Strip the SGR/CSI/OSC sequences and any
+// stray C0 control chars (keeping \t and \n) before rendering. The ANSI pattern
+// is the well-worn `ansi-regex` one (ESC / CSI introducers + parameter bytes).
+// eslint-disable-next-line no-control-regex
+const ANSI_RE =
+	/[\x1B\x9B][[\]()#;?]*(?:(?:(?:(?:;[-a-zA-Z\d/#&.:=?%@~_]+)*|[a-zA-Z\d]+(?:;[-a-zA-Z\d/#&.:=?%@~_]*)*)?\x07)|(?:(?:\d{1,4}(?:;\d{0,4})*)?[\dA-PR-TZcf-ntqry=><~]))/g;
+// C0 control chars except tab (\x09) and newline (\x0A), plus DEL (\x7F).
+// eslint-disable-next-line no-control-regex
+const C0_RE = /[\x00-\x08\x0B-\x1F\x7F]/g;
+
+export function stripAnsi(s: string): string {
+	return s.replace(ANSI_RE, '').replace(C0_RE, '');
+}
+
 // Sentinels for placeholder protection — characters that never appear in source
 // text or in our escaped HTML, so restore passes can't collide with content.
-const SLOT_L = '';
-const SLOT_R = '';
-const BLOCK_L = '';
-const BLOCK_R = '';
+const SLOT_L = '';
+const SLOT_R = '';
+const BLOCK_L = '';
+const BLOCK_R = '';
 
 // Harness / system pseudo-tags that sometimes leak into model text as literal
 // markup. We render them as a muted inline chip rather than dropping them.
@@ -64,7 +81,7 @@ function highlightCode(rawCode: string, lang: string): string {
 
 	const kw = KEYWORDS[norm];
 	// Work against escaped text so we never emit unescaped markup.
-	let s = escapeHtml(rawCode);
+	let s = escapeHtml(stripAnsi(rawCode));
 
 	// Placeholder protection for strings/comments so later passes don't touch them.
 	const slots: string[] = [];
@@ -99,7 +116,7 @@ function highlightCode(rawCode: string, lang: string): string {
 }
 
 function highlightJson(raw: string): string {
-	let s = escapeHtml(raw);
+	let s = escapeHtml(stripAnsi(raw));
 	// keys "..." :
 	s = s.replace(/(&quot;(?:\\.|[^&]|&(?!quot;))*?&quot;)(\s*:)/g, '<span class="syn-function">$1</span>$2');
 	// remaining strings
@@ -114,6 +131,8 @@ function highlightJson(raw: string): string {
 // ── Markdown ────────────────────────────────────────────────────────────────
 
 export function renderMarkdown(src: string): string {
+	// Strip terminal control sequences before any structural parsing.
+	src = stripAnsi(src);
 	// Protect fenced code blocks before escaping the rest.
 	const blocks: string[] = [];
 	let s = src.replace(/```([^\n`]*)\n?([\s\S]*?)```/g, (_m, info: string, code: string) => {
