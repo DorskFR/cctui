@@ -228,7 +228,15 @@ class WsClient {
 				if (next.length !== opt.length) this.optimistic.set(id, next);
 			}
 		}
-		this.buffer.set(id, [...(this.buffer.get(id) ?? []), ev]);
+		// Defense-in-depth against duplicate live delivery (CCT-182): drop an
+		// event whose full identity — including the daemon `ts` — already sits
+		// in the buffer. A leaked/replayed duplicate carries the SAME daemon ts,
+		// whereas a legitimately-repeated identical tool call within a turn gets
+		// a DIFFERENT ts, so within-turn repeats are preserved.
+		const buf = this.buffer.get(id) ?? [];
+		const sig = JSON.stringify(ev);
+		if (buf.some((e) => JSON.stringify(e) === sig)) return;
+		this.buffer.set(id, [...buf, ev]);
 		const set = this.streamCbs.get(id);
 		if (set) for (const cb of set) cb(ev);
 	}

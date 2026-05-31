@@ -86,7 +86,7 @@ async fn handle_subscribe(
     session_id: String,
     state: &AppState,
     event_tx: &mpsc::Sender<ServerEvent>,
-    sub_handles: &mut Vec<tokio::task::JoinHandle<()>>,
+    sub_handles: &mut std::collections::HashMap<String, tokio::task::JoinHandle<()>>,
 ) {
     let receiver = {
         let registry = state.registry.read().await;
@@ -94,8 +94,14 @@ async fn handle_subscribe(
     };
 
     if let Some(receiver) = receiver {
-        let handle = spawn_relay_task(receiver, session_id, event_tx.clone());
-        sub_handles.push(handle);
+        let handle = spawn_relay_task(receiver, session_id.clone(), event_tx.clone());
+        // Abort any prior relay task for this session on this socket before
+        // replacing it. The client re-subscribes on every tab focus/visibility
+        // change (CCT-182); without this, each resubscribe leaked an extra
+        // relay task that re-delivered every event, duplicating chat messages.
+        if let Some(old) = sub_handles.insert(session_id, handle) {
+            old.abort();
+        }
     } else {
         // Historical/terminated sessions won't be in the registry — this is expected
         tracing::debug!(session_id = %session_id, "tui_ws: session not in registry (historical)");
@@ -108,7 +114,10 @@ async fn run_tui_socket(
     state: AppState,
     event_tx: mpsc::Sender<ServerEvent>,
 ) {
-    let mut sub_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+    // Relay tasks keyed by session id, so a resubscribe replaces (not stacks)
+    // the per-session relay and an unsubscribe can tear it down (CCT-182).
+    let mut sub_handles: std::collections::HashMap<String, tokio::task::JoinHandle<()>> =
+        std::collections::HashMap::new();
 
     while let Some(msg) = stream.next().await {
         let text = match msg {
@@ -129,7 +138,13 @@ async fn run_tui_socket(
             TuiCommand::Subscribe { session_id } => {
                 handle_subscribe(session_id, &state, &event_tx, &mut sub_handles).await;
             }
-            TuiCommand::Unsubscribe { .. } => {}
+            TuiCommand::Unsubscribe { session_id } => {
+                // Tear down this session's relay task so it stops delivering
+                // events to this socket (CCT-182).
+                if let Some(handle) = sub_handles.remove(&session_id) {
+                    handle.abort();
+                }
+            }
             TuiCommand::Message { session_id, content } => {
                 // Dispatch to the per-machine daemon WS so the
                 // claude-daemon adapter forwards via `reply` on the
@@ -203,7 +218,7 @@ async fn run_tui_socket(
         }
     }
 
-    for handle in sub_handles {
+    for (_, handle) in sub_handles {
         handle.abort();
     }
 }
