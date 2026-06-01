@@ -136,6 +136,10 @@ pub struct SessionListItem {
     /// In-memory server state, reflected so clients can show the toggle.
     #[serde(default)]
     pub auto_approve: bool,
+    /// Transcript snippet around a keyword match (CCT-184). Only populated by
+    /// the search endpoint to show *why* a session matched; `None` otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub match_snippet: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, TS)]

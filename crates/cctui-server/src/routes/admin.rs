@@ -173,6 +173,7 @@ pub async fn list_sessions(
                         model: None,
                         effort: None,
                         auto_approve: false,
+                        match_snippet: None,
                     },
                 )
             })
@@ -230,10 +231,24 @@ pub async fn list_sessions(
                 model: None,
                 effort: None,
                 auto_approve: false,
+                match_snippet: None,
             },
         ));
     }
 
+    let sessions = enrich_and_sort(&state, with_ts).await?;
+    Ok(Json(SessionListResponse { sessions }))
+}
+
+/// Shared enrichment for both the sessions list and search: resolve machine
+/// names, aggregate token usage, attach last-message text, apply classifier
+/// signals + display metadata + the in-memory auto-approve flag, then sort
+/// most-recent-first. Returns the finished items ready to serialize.
+#[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
+async fn enrich_and_sort(
+    state: &AppState,
+    mut with_ts: Vec<(DateTime<Utc>, SessionListItem)>,
+) -> Result<Vec<SessionListItem>, (StatusCode, Json<ApiError>)> {
     // Resolve machine names in one query. Historical sessions for purged
     // machines simply get `None`.
     let machine_ids: Vec<String> = with_ts
@@ -410,7 +425,164 @@ pub async fn list_sessions(
         let key = |s: &SessionListItem, reg: DateTime<Utc>| s.last_message_at.unwrap_or(reg);
         key(&b.1, b.0).cmp(&key(&a.1, a.0))
     });
-    let sessions = with_ts.into_iter().map(|(_, s)| s).collect();
+    Ok(with_ts.into_iter().map(|(_, s)| s).collect())
+}
+
+/// Query params for `GET /sessions/search` (CCT-184). `q` is a substring
+/// matched (case-insensitively, trgm-accelerated) against every session's full
+/// transcript plus its id/name/working-dir. Scope is *all* sessions — live and
+/// archived — with offset pagination instead of the list's hard 25-row cap.
+#[derive(Debug, Default, Deserialize)]
+pub struct SearchParams {
+    #[serde(default)]
+    pub q: String,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
+const SEARCH_DEFAULT_LIMIT: i64 = 100;
+const SEARCH_MAX_LIMIT: i64 = 500;
+
+/// Escape LIKE/ILIKE wildcards so a user's literal `%`/`_` aren't treated as
+/// pattern metacharacters, then wrap in `%…%` for a substring match. `\` is
+/// the default ILIKE escape char.
+fn ilike_contains(q: &str) -> String {
+    let escaped = q.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+    format!("%{escaped}%")
+}
+
+/// Build a ~200-char snippet of `text` centered on the first case-insensitive
+/// occurrence of `needle`, so the UI can show why a session matched.
+fn make_snippet(text: &str, needle: &str) -> String {
+    const WINDOW: usize = 200;
+    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let hay = collapsed.to_lowercase();
+    let pat = needle.to_lowercase();
+    let chars: Vec<char> = collapsed.chars().collect();
+    // Char-index of the match (map the byte hit onto a char offset).
+    let match_char = hay.find(&pat).map_or(0, |byte| collapsed[..byte].chars().count());
+    let start = match_char.saturating_sub(WINDOW / 2);
+    let end = (start + WINDOW).min(chars.len());
+    let mut out = String::new();
+    if start > 0 {
+        out.push('…');
+    }
+    out.extend(&chars[start..end]);
+    if end < chars.len() {
+        out.push('…');
+    }
+    out
+}
+
+/// `GET /sessions/search?q=…&limit=…&offset=…` — full-transcript substring
+/// search across all sessions (CCT-184). Returns the same `SessionListItem`
+/// shape as the list (so clients reuse `SessionCard`), each carrying a
+/// `match_snippet` when the hit was in the transcript. Clients split the
+/// results into Live vs Archived by `status`.
+pub async fn search_sessions(
+    State(state): State<AppState>,
+    Query(params): Query<SearchParams>,
+) -> Result<Json<SessionListResponse>, (StatusCode, Json<ApiError>)> {
+    let q = params.q.trim();
+    if q.is_empty() {
+        return Ok(Json(SessionListResponse { sessions: vec![] }));
+    }
+    let pattern = ilike_contains(q);
+    let limit = params.limit.unwrap_or(SEARCH_DEFAULT_LIMIT).clamp(1, SEARCH_MAX_LIMIT);
+    let offset = params.offset.unwrap_or(0).max(0);
+
+    // Matched sessions: hit in the transcript (trgm-accelerated EXISTS) or in
+    // the session's own id / name / working dir. No archived filter, no 25-cap.
+    let rows: Vec<DbSession> = sqlx::query_as(
+        "SELECT s.id, s.parent_id, s.machine_id, s.working_dir, s.status, \
+                s.registered_at, s.last_heartbeat, s.metadata, s.adapter_id, \
+                COALESCE(m.display_name, m.name) AS resolved_machine_name \
+         FROM sessions s \
+         LEFT JOIN machines m ON m.id = s.machine_uuid \
+         WHERE s.id ILIKE $1 \
+            OR COALESCE(s.session_name, '') ILIKE $1 \
+            OR s.working_dir ILIKE $1 \
+            OR EXISTS ( \
+                 SELECT 1 FROM stream_events e \
+                 WHERE e.session_id::text = s.id AND e.search_text ILIKE $1 \
+               ) \
+         ORDER BY s.registered_at DESC \
+         LIMIT $2 OFFSET $3",
+    )
+    .bind(&pattern)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("db error (session search): {e}");
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+    })?;
+
+    let with_ts: Vec<(DateTime<Utc>, SessionListItem)> = rows
+        .into_iter()
+        .map(|row| {
+            let status = if row.status == "archived" {
+                SessionStatus::Archived
+            } else {
+                derive_status(row.registered_at, row.last_heartbeat)
+            };
+            (
+                row.registered_at,
+                SessionListItem {
+                    id: row.id,
+                    parent_id: row.parent_id,
+                    machine_id: row.machine_id,
+                    working_dir: row.working_dir,
+                    status,
+                    liveness: derive_liveness(row.last_heartbeat),
+                    attention: None,
+                    bucket: Bucket::Working,
+                    uptime_secs: (Utc::now() - row.registered_at).num_seconds(),
+                    token_usage: cctui_proto::models::TokenUsage::default(),
+                    metadata: row.metadata,
+                    adapter_id: row.adapter_id.map(cctui_proto::adapter::AdapterId::new),
+                    machine_name: row.resolved_machine_name,
+                    last_message_text: None,
+                    last_message_at: None,
+                    name: None,
+                    model: None,
+                    effort: None,
+                    auto_approve: false,
+                    match_snippet: None,
+                },
+            )
+        })
+        .collect();
+
+    let mut sessions = enrich_and_sort(&state, with_ts).await?;
+
+    // Attach a transcript snippet per session: the most recent matching event's
+    // searchable text, windowed around the keyword. Sessions matched only by
+    // id/name/dir have no transcript hit and keep `match_snippet = None`.
+    let ids: Vec<String> = sessions.iter().map(|s| s.id.clone()).collect();
+    if !ids.is_empty() {
+        let snippet_rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT DISTINCT ON (session_id) session_id::text, search_text \
+             FROM stream_events \
+             WHERE session_id::text = ANY($1) AND search_text ILIKE $2 \
+             ORDER BY session_id, created_at DESC",
+        )
+        .bind(&ids)
+        .bind(&pattern)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("db error (search snippets): {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+        })?;
+        let mut by_session: std::collections::HashMap<String, String> =
+            snippet_rows.into_iter().map(|(id, text)| (id, make_snippet(&text, q))).collect();
+        for s in &mut sessions {
+            s.match_snippet = by_session.remove(&s.id);
+        }
+    }
+
     Ok(Json(SessionListResponse { sessions }))
 }
 
@@ -442,6 +614,7 @@ pub async fn get_session(
         model: None,
         effort: None,
         auto_approve: state.permission_store.read().await.is_auto_approve(&handle.session.id),
+        match_snippet: None,
     };
     drop(registry);
     Ok(Json(item))

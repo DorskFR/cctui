@@ -170,8 +170,8 @@
 		{#if child}<span class="badge badge-info tag">subagent</span>{/if}
 		{#if needsInput}<span class="hand" title="needs input">✋</span>{/if}
 		{#if pendingCount > 0}<span class="badge badge-warn">{pendingCount} perm</span>{/if}
-		{#if dense && s.last_message_text}
-			<span class="preview muted">{s.last_message_text}</span>
+		{#if dense && (s.match_snippet || s.last_message_text)}
+			<span class="preview muted">{s.match_snippet ?? s.last_message_text}</span>
 		{:else}
 			<div class="spacer"></div>
 		{/if}
@@ -190,7 +190,9 @@
 			<span class="muted sm">up {uptime(Number(s.uptime_secs))}</span>
 		</div>
 
-		{#if s.last_message_text}
+		{#if s.match_snippet}
+			<div class="match">🔍 {s.match_snippet}</div>
+		{:else if s.last_message_text}
 			<div class="last truncate muted">{s.last_message_text}</div>
 		{/if}
 
@@ -327,6 +329,19 @@
 	}
 	.last {
 		font-size: var(--fs-sm);
+	}
+	/* Search match snippet (CCT-184): full transcript context around the hit,
+	   allowed to wrap a couple of lines so the keyword is readable. */
+	.match {
+		font-size: var(--fs-sm);
+		color: var(--text);
+		border-left: 2px solid var(--accent, #88c0d0);
+		padding-left: var(--sp-2);
+		display: -webkit-box;
+		-webkit-line-clamp: 3;
+		line-clamp: 3;
+		-webkit-box-orient: vertical;
+		overflow: hidden;
 	}
 	/* Dense-mode last-message preview: fills the space between the title and the
 	   status badge, single line, ellipsis — never wraps or grows the row. */

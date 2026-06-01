@@ -58,4 +58,9 @@ effort: string | null,
  * Whether cctui-side auto-approve is on for this session (CCT-151).
  * In-memory server state, reflected so clients can show the toggle.
  */
-auto_approve: boolean, };
+auto_approve: boolean, 
+/**
+ * Transcript snippet around a keyword match (CCT-184). Only populated by
+ * the search endpoint to show *why* a session matched; `None` otherwise.
+ */
+match_snippet: string | null, };

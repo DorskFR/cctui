@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { SessionListItem } from '@bindings/SessionListItem';
-	import { useSessions, useSessionActions } from '$lib/queries';
+	import { useSessions, useSessionSearch, useSessionActions } from '$lib/queries';
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { toasts } from '$lib/toast.svelte';
 	import { ws } from '$lib/ws.svelte';
@@ -20,6 +20,24 @@
 	let showSpawn = $state(false);
 
 	const sessions = useSessions(() => showArchived);
+
+	// ── Full-transcript search (CCT-184) ──────────────────────────────────
+	// Debounce keystrokes into `query`; a non-empty query flips the page into
+	// search mode (results split into Live / Archived), bypassing the bucketed
+	// live list and its 25-row cap.
+	let rawQuery = $state('');
+	let query = $state('');
+	$effect(() => {
+		const v = rawQuery.trim();
+		const t = setTimeout(() => (query = v), 200);
+		return () => clearTimeout(t);
+	});
+	const searching = $derived(query.length > 0);
+	const search = useSessionSearch(() => query);
+	const searchResults = $derived($search.data?.sessions ?? []);
+	const liveResults = $derived(searchResults.filter((s) => s.status !== 'archived'));
+	const archivedResults = $derived(searchResults.filter((s) => s.status === 'archived'));
+
 	const qc = useQueryClient();
 	const actions = useSessionActions();
 
@@ -63,10 +81,13 @@
 	// SessionCard archives it (or unarchives in the archived view). Disabled
 	// while in multi-select mode (handled in SessionCard).
 	async function swipeArchive(s: SessionListItem) {
+		// Decide from the row's own status, not the view: search results mix
+		// live + archived sessions in one list.
+		const isArchived = s.status === 'archived';
 		try {
-			if (showArchived) await actions.unarchive(s.id);
+			if (isArchived) await actions.unarchive(s.id);
 			else await actions.archive(s.id);
-			toasts.ok(showArchived ? 'Unarchived' : 'Archived');
+			toasts.ok(isArchived ? 'Unarchived' : 'Archived');
 		} catch (e) {
 			toasts.err((e as Error).message);
 		}
@@ -138,26 +159,38 @@
 
 <div class="bar row">
 	<h1 class="page-title">Sessions</h1>
+	<input
+		class="search"
+		type="search"
+		placeholder="Search all chats…"
+		bind:value={rawQuery}
+	/>
 	<div class="spacer"></div>
-	<label class="arch row">
-		<input type="checkbox" bind:checked={showArchived} /> Archived
-	</label>
+	{#if !searching}
+		<label class="arch row">
+			<input type="checkbox" bind:checked={showArchived} /> Archived
+		</label>
+	{/if}
 	<button
 		class="btn btn-sm"
 		title="Toggle compact / detailed rows"
 		onclick={() => (dense = !dense)}>{dense ? '☰ Compact' : '▤ Detailed'}</button
 	>
-	{#if selecting}
-		<button class="btn btn-sm" onclick={exitSelect}>Cancel</button>
-	{:else}
-		<button class="btn btn-sm" title="Select multiple to archive" onclick={() => (selecting = true)}
-			>☑ Select</button
-		>
+	{#if !searching}
+		{#if selecting}
+			<button class="btn btn-sm" onclick={exitSelect}>Cancel</button>
+		{:else}
+			<button
+				class="btn btn-sm"
+				title="Select multiple to archive"
+				onclick={() => (selecting = true)}>☑ Select</button
+			>
+		{/if}
 	{/if}
 	<button class="btn btn-primary btn-sm" onclick={() => (showSpawn = true)}>+ New</button>
 </div>
 
-{#if selecting}
+{#if selecting && !searching}
 	<div class="bulkbar row">
 		<span class="count">{selected.size} selected</span>
 		<button class="btn btn-sm" onclick={selectAll}>Select all</button>
@@ -174,7 +207,34 @@
 	</div>
 {/if}
 
-{#if $sessions.isLoading}
+{#if searching}
+	{#if $search.isLoading}
+		<div class="empty"><span class="spin"></span></div>
+	{:else if searchResults.length === 0}
+		<div class="empty">No chats match “{query}”.</div>
+	{:else}
+		<div class="stack" class:tight={dense}>
+			{#each [{ label: 'Live', rows: liveResults }, { label: 'Archived', rows: archivedResults }] as sec (sec.label)}
+				{#if sec.rows.length > 0}
+					<div class="group-header">
+						{sec.label} <span class="count">{sec.rows.length}</span>
+					</div>
+					{#each sec.rows as s (s.id)}
+						<SessionCard
+							session={s}
+							compact={dense}
+							pendingCount={pending(s.id)}
+							onopen={(x) => (openSession = x)}
+							swipeable
+							swipeLabel={s.status === 'archived' ? 'Unarchive' : 'Archive'}
+							onSwipe={swipeArchive}
+						/>
+					{/each}
+				{/if}
+			{/each}
+		</div>
+	{/if}
+{:else if $sessions.isLoading}
 	<div class="empty"><span class="spin"></span></div>
 {:else if topLevel.length === 0}
 	<div class="empty">No sessions{showArchived ? '' : ' — toggle Archived or start one'}.</div>
@@ -240,6 +300,17 @@
 		font-size: var(--fs-sm);
 		color: var(--text-muted);
 		gap: var(--sp-1);
+	}
+	.search {
+		flex: 1;
+		min-width: 0;
+		max-width: 22rem;
+		padding: var(--sp-1) var(--sp-2);
+		font-size: var(--fs-sm);
+		border: 1px solid var(--border-strong);
+		border-radius: var(--r-md);
+		background: var(--bg-elevated);
+		color: var(--text);
 	}
 	/* Sticky bulk-action bar (CCT-172) shown while in select mode. */
 	.bulkbar {

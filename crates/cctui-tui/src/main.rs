@@ -583,6 +583,7 @@ fn handle_server_event(app: &mut App, event: ServerEvent) {
                     model: None,
                     effort: None,
                     auto_approve: false,
+                    match_snippet: None,
                 });
                 app.update_aggregates();
             }
