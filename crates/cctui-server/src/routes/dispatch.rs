@@ -36,15 +36,24 @@ async fn caller_label(state: &AppState, user_id: Option<uuid::Uuid>) -> String {
         .map_or_else(|| uid.to_string(), |name| format!("{name} ({uid})"))
 }
 
-/// Best-effort extract of the human prompt from the opaque payload. Checks the
-/// common top-level keys workers read; returns `(none)` when absent.
-fn extract_prompt(payload: &serde_json::Value) -> String {
-    for key in ["prompt", "message", "task", "text"] {
+/// Best-effort one-line summary of what's being run, pulled from the opaque
+/// payload. The dispatch payload carries no literal prompt — the actual prompt
+/// lives in a named template (`prompt_file`) resolved worker-side — so we
+/// surface the keys that identify the run: flow, prompt file, model, etc. The
+/// full payload is shown separately; this is just a glanceable header. Returns
+/// `(no recognized fields)` when none of the known keys are present.
+fn summarize(payload: &serde_json::Value) -> String {
+    let mut parts = Vec::new();
+    for key in ["flow", "prompt_file", "model", "effort", "repo"] {
         if let Some(s) = payload.get(key).and_then(|v| v.as_str()) {
-            return s.to_string();
+            parts.push(format!("{key}={s}"));
         }
     }
-    "(none)".into()
+    // Common nested location for the target project/repo context.
+    if let Some(proj) = payload.pointer("/context/project").and_then(|v| v.as_str()) {
+        parts.push(format!("project={proj}"));
+    }
+    if parts.is_empty() { "(no recognized fields)".into() } else { parts.join("  ") }
 }
 
 /// Render the payload for a notification with the injected machine key redacted
@@ -164,13 +173,13 @@ pub async fn dispatch(
     // Alert that a dispatch arrived (CCT-198). Built from the *original* payload
     // (before the machine key is injected) and no-ops unless ntfy is configured.
     let caller = caller_label(&state, ctx.user_id).await;
-    let prompt = extract_prompt(&req.payload);
+    let summary = summarize(&req.payload);
     ntfy::notify(
         &state.config,
         Notification {
             title: format!("Dispatch received → {}", req.dispatcher),
             message: format!(
-                "user: {caller}\nsession: {session_id}\ndispatcher: {}\n\nprompt:\n{prompt}\n\npayload:\n{}",
+                "user: {caller}\nsession: {session_id}\ndispatcher: {}\n\n{summary}\n\npayload:\n{}",
                 req.dispatcher,
                 payload_for_notify(&req.payload),
             ),
