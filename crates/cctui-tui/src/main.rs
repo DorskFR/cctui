@@ -584,6 +584,9 @@ fn handle_server_event(app: &mut App, event: ServerEvent) {
                     effort: None,
                     auto_approve: false,
                     match_snippet: None,
+                    last_activity_at: None,
+                    cache_cold: false,
+                    estimated_burst_tokens: None,
                 });
                 app.update_aggregates();
             }
