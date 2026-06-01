@@ -140,6 +140,26 @@ pub struct SessionListItem {
     /// the search endpoint to show *why* a session matched; `None` otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub match_snippet: Option<String>,
+    /// Cold-cache surfacing (CCT-189). Timestamp of the most recent
+    /// assistant turn (the last `session_token_usage` row). Lets the client
+    /// predict prompt-cache expiry — Anthropic's cache is a ~5-minute sliding
+    /// window — before the next send, independent of `cache_cold` (which is
+    /// only known *after* a turn). `None` when no usage has been recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_activity_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// *Confirmed* cold cache (CCT-189): the most recent assistant turn
+    /// re-billed the full context (`cache_creation_tokens > 0` and
+    /// `cache_read_tokens == 0`), i.e. the prompt cache had gone cold and that
+    /// turn paid to rewrite it. Drives the ❄️ glyph on the session list.
+    #[serde(default)]
+    pub cache_cold: bool,
+    /// Approximate number of tokens that get re-written to cache on the next
+    /// send when the cache is cold (CCT-189) — the cached-context size from
+    /// the last turn (`cache_read_tokens + cache_creation_tokens`). A rough
+    /// estimate, shown on the composer's burst-cost indicator. `None` when no
+    /// usage has been recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_burst_tokens: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, TS)]

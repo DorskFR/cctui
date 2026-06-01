@@ -181,7 +181,10 @@ function optimisticDispatchCard(id: string, body: DispatchRequest): SessionListI
 		model: p.model ?? null,
 		effort: p.effort ?? null,
 		auto_approve: false,
-		match_snippet: null
+		match_snippet: null,
+		last_activity_at: null,
+		cache_cold: false,
+		estimated_burst_tokens: null
 	};
 }
 

@@ -207,6 +207,9 @@ pub async fn list_sessions(
                         effort: None,
                         auto_approve: false,
                         match_snippet: None,
+                        last_activity_at: None,
+                        cache_cold: false,
+                        estimated_burst_tokens: None,
                     },
                 )
             })
@@ -263,6 +266,9 @@ pub async fn list_sessions(
                 effort: None,
                 auto_approve: false,
                 match_snippet: None,
+                last_activity_at: None,
+                cache_cold: false,
+                estimated_burst_tokens: None,
             },
         ));
     }
@@ -450,6 +456,52 @@ async fn enrich_and_sort(
         }
     }
 
+    // Cold-cache surfacing (CCT-189). The per-message cache split lives in
+    // `session_token_usage`; the SUM() aggregate above flattens it, so here we
+    // pull only the *most recent* row per session to derive:
+    //   - `cache_cold`     — that turn re-billed the full context
+    //                        (cache_creation > 0 && cache_read == 0).
+    //   - `last_activity_at` — its timestamp, so the client can predict cache
+    //                        expiry (Anthropic's ~5-min sliding window) before
+    //                        the next send.
+    //   - `estimated_burst_tokens` — the cached-context size from the last
+    //                        turn (≈ cache_read + cache_creation), i.e. how
+    //                        many tokens get re-written on the next send.
+    if !session_ids.is_empty() {
+        type LastRow = (String, i64, i64, DateTime<Utc>);
+        let rows: Vec<LastRow> = sqlx::query_as(
+            "SELECT DISTINCT ON (session_id) session_id, \
+                    cache_read_tokens, cache_creation_tokens, created_at \
+             FROM session_token_usage \
+             WHERE session_id = ANY($1) \
+             ORDER BY session_id, created_at DESC",
+        )
+        .bind(&session_ids)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("db error (last token usage lookup): {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+        })?;
+        let mut by_session: std::collections::HashMap<String, (i64, i64, DateTime<Utc>)> =
+            std::collections::HashMap::new();
+        for (sid, cr, cc, ts) in rows {
+            by_session.insert(sid, (cr, cc, ts));
+        }
+        for (_, s) in &mut with_ts {
+            if let Some((cr, cc, ts)) = by_session.remove(&s.id) {
+                s.last_activity_at = Some(ts);
+                s.cache_cold = cc > 0 && cr == 0;
+                // Context size that would be re-written to cache on the next
+                // send (≈ the full cached prefix from the last turn).
+                let burst_tokens = u64::try_from(cr.saturating_add(cc)).unwrap_or(0);
+                if burst_tokens > 0 {
+                    s.estimated_burst_tokens = Some(burst_tokens);
+                }
+            }
+        }
+    }
+
     // Sort by most recent message so active sessions float to the top;
     // fall back to registration time when a session has no messages yet.
     with_ts.sort_by(|a, b| {
@@ -633,6 +685,9 @@ pub async fn search_sessions(
                     effort: None,
                     auto_approve: false,
                     match_snippet: None,
+                    last_activity_at: None,
+                    cache_cold: false,
+                    estimated_burst_tokens: None,
                 },
             )
         })
@@ -704,6 +759,9 @@ pub async fn get_session(
         effort: None,
         auto_approve: state.permission_store.read().await.is_auto_approve(&handle.session.id),
         match_snippet: None,
+        last_activity_at: None,
+        cache_cold: false,
+        estimated_burst_tokens: None,
     };
     drop(registry);
     Ok(Json(item))

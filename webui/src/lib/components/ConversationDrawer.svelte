@@ -5,7 +5,7 @@
 	import { useConversation, useSessionActions } from '$lib/queries';
 	import { renderMarkdown, prettyJson, highlightBlock } from '$lib/markdown';
 	import { highlightTerms } from '$lib/search';
-	import { clockTime, statusBadgeClass } from '$lib/format';
+	import { clockTime, statusBadgeClass, compact } from '$lib/format';
 	import { drafts, composerKey, history as msgHistory, clearSessionStorage, VIEW_OPTS } from '$lib/drafts';
 	import { autoresize } from '$lib/autoresize';
 	import { toasts } from '$lib/toast.svelte';
@@ -384,6 +384,27 @@
 	// Set when a send was dropped because the socket wasn't OPEN — shown inline
 	// near the composer so the user knows their (still-present) text wasn't sent.
 	let notSent = $state(false);
+
+	// ── Cold-cache Send button (CCT-189) ───────────────────────────────────
+	// Anthropic's prompt cache is a ~5-min sliding window; once it lapses the
+	// next send re-writes the whole context to cache (an expensive "burst").
+	// The button's "cold now" is purely time-based: a turn that just completed
+	// leaves the cache warm for ~5 min (even a first-turn creation burst), so
+	// we flip blue only once the window has elapsed since the last turn — this
+	// avoids a false "cold" on a freshly-active session. (The server's
+	// backward-looking `cache_cold` flag drives the ❄️ list glyph instead.)
+	// A timer re-evaluates so the button flips blue while the drawer sits open.
+	const CACHE_TTL_MS = 5 * 60 * 1000;
+	let now = $state(Date.now());
+	$effect(() => {
+		const t = setInterval(() => (now = Date.now()), 15_000);
+		return () => clearInterval(t);
+	});
+	const lastActivityMs = $derived(
+		session.last_activity_at ? new Date(session.last_activity_at).getTime() : null
+	);
+	const cacheCold = $derived(lastActivityMs !== null && now - lastActivityMs > CACHE_TTL_MS);
+	const burstTokens = $derived(session.estimated_burst_tokens ?? null);
 
 	// ── Sent-message history recall (ArrowUp/ArrowDown) ─────────────────────
 	// histIndex: -1 = editing the live draft; 0..n-1 = browsing history
@@ -887,7 +908,19 @@
 				}}
 				use:autoresize={input}
 			></textarea>
-			<button class="btn btn-primary send" disabled={!input.trim()} onclick={send}>Send</button>
+			<button
+				class="btn btn-primary send"
+				class:cold={cacheCold}
+				disabled={!input.trim()}
+				onclick={send}
+				title={cacheCold
+					? burstTokens
+						? `Prompt cache is cold — the next send re-writes ~${compact(burstTokens)} tokens to cache`
+						: 'Prompt cache is cold — the next send re-bills the full context'
+					: undefined}
+			>
+				{#if cacheCold && burstTokens}Send ❄️ ~{compact(burstTokens)}{:else if cacheCold}Send ❄️{:else}Send{/if}
+			</button>
 		{/if}
 	</div>
 </div>
@@ -1324,6 +1357,13 @@
 	}
 	.send {
 		flex: none;
+	}
+	/* Cold-cache burst (CCT-189): the next send re-writes the whole context to
+	   cache, so the normally-green Send button goes blue to flag the cost. */
+	.send.cold {
+		background: var(--c-blue);
+		box-shadow: 0 0 0 1px color-mix(in srgb, var(--c-blue) 40%, transparent);
+		color: #fff;
 	}
 	.hint {
 		font-size: var(--fs-sm);

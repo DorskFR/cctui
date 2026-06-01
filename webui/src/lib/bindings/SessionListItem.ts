@@ -63,4 +63,27 @@ auto_approve: boolean,
  * Transcript snippet around a keyword match (CCT-184). Only populated by
  * the search endpoint to show *why* a session matched; `None` otherwise.
  */
-match_snippet: string | null, };
+match_snippet: string | null, 
+/**
+ * Cold-cache surfacing (CCT-189). Timestamp of the most recent
+ * assistant turn (the last `session_token_usage` row). Lets the client
+ * predict prompt-cache expiry — Anthropic's cache is a ~5-minute sliding
+ * window — before the next send, independent of `cache_cold` (which is
+ * only known *after* a turn). `None` when no usage has been recorded.
+ */
+last_activity_at: string | null, 
+/**
+ * *Confirmed* cold cache (CCT-189): the most recent assistant turn
+ * re-billed the full context (`cache_creation_tokens > 0` and
+ * `cache_read_tokens == 0`), i.e. the prompt cache had gone cold and that
+ * turn paid to rewrite it. Drives the ❄️ glyph on the session list.
+ */
+cache_cold: boolean, 
+/**
+ * Approximate number of tokens that get re-written to cache on the next
+ * send when the cache is cold (CCT-189) — the cached-context size from
+ * the last turn (`cache_read_tokens + cache_creation_tokens`). A rough
+ * estimate, shown on the composer's burst-cost indicator. `None` when no
+ * usage has been recorded.
+ */
+estimated_burst_tokens: number | null, };

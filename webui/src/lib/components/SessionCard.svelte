@@ -217,7 +217,7 @@
 		{/if}
 
 		<div class="row foot">
-			<TokenUsage usage={u} />
+			<TokenUsage usage={u} cold={s.cache_cold} />
 			<div class="spacer"></div>
 			{#if s.last_message_at}<span class="faint sm">{relativeTime(s.last_message_at)}</span>{/if}
 		</div>
