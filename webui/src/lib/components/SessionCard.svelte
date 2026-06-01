@@ -176,6 +176,7 @@
 			<span class="check" class:on={selected} aria-hidden="true">{selected ? '✓' : ''}</span>
 		{/if}
 		{#if child}<span class="sub" title="subagent">↳</span>{/if}
+		{#if dense && !child}<MachineBadge name={s.machine_name} id={s.machine_id} mono />{/if}
 		<span class="dot {livenessClass}"></span>
 		<span class="title truncate">{title}</span>
 		{#if child}<span class="badge badge-info tag">subagent</span>{/if}
@@ -193,6 +194,7 @@
 			<span class="badge {statusBadgeClass(s.status)} tag">{s.status}</span>
 			{#if s.last_message_at}<span class="faint sm">{relativeTime(s.last_message_at)}</span>{/if}
 		{/if}
+		{#if s.model}<span class="muted sm model">{s.model}{s.effort ? ` · ${s.effort}` : ''}</span>{/if}
 		<AdapterIcon adapter={s.adapter_id} size={16} />
 	</div>
 
@@ -200,8 +202,12 @@
 		<div class="row meta row-wrap">
 			<MachineBadge name={s.machine_name} id={s.machine_id} />
 			<span class="badge {statusBadgeClass(s.status)}">{s.status}</span>
-			{#if s.model}<span class="muted sm">{s.model}{s.effort ? ` · ${s.effort}` : ''}</span>{/if}
 			<span class="muted sm">up {uptime(Number(s.uptime_secs))}</span>
+		</div>
+
+		<div class="row dir" title={s.working_dir}>
+			<span class="faint sm">📁</span>
+			<span class="path sm">{s.working_dir}</span>
 		</div>
 
 		{#if s.match_snippet}
@@ -343,6 +349,25 @@
 	}
 	.last {
 		font-size: var(--fs-sm);
+	}
+	/* Model label sits just before the adapter logo in the top row; keep it from
+	   eating the row when names are long. */
+	.model {
+		flex: none;
+		max-width: 14rem;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	/* Full working dir (detailed view) — break long paths rather than truncating,
+	   since seeing the whole path is the point. */
+	.dir {
+		gap: var(--sp-1);
+		align-items: baseline;
+	}
+	.path {
+		color: var(--text-muted);
+		word-break: break-all;
 	}
 	/* Search match snippet (CCT-184): full transcript context around the hit,
 	   allowed to wrap a couple of lines so the keyword is readable. */
