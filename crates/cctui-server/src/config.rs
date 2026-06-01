@@ -36,6 +36,12 @@ pub struct Config {
     pub github_token: Option<String>,
     /// External dispatcher registrations, parsed from `CCTUI_HTTP_DISPATCHERS`.
     pub http_dispatchers: Vec<HttpDispatcherConfig>,
+    /// How long an `ephemeral` (dispatch/worker) machine may go without being
+    /// seen before the reaper soft-deletes it — covers pods that die before
+    /// self-deenroll (CCT-183). Configured in hours via
+    /// `CCTUI_EPHEMERAL_MACHINE_TTL_HOURS`; stored as seconds. `0` disables the
+    /// sweep. Persistent machines are never reaped.
+    pub ephemeral_machine_ttl_secs: u64,
 }
 
 impl Config {
@@ -66,6 +72,10 @@ impl Config {
                     serde_json::from_str(&s).expect("CCTUI_HTTP_DISPATCHERS must be a JSON array")
                 })
                 .unwrap_or_default(),
+            ephemeral_machine_ttl_secs: env::var("CCTUI_EPHEMERAL_MACHINE_TTL_HOURS")
+                .ok()
+                .and_then(|s| s.parse::<u64>().ok())
+                .map_or(2 * 60 * 60, |hours| hours * 60 * 60),
         }
     }
 

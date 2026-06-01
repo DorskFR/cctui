@@ -56,13 +56,15 @@ export const endpoints = {
 	dispatch: (body: DispatchRequest) => api.post<DispatchResponse>('/sessions/dispatch', body),
 	/** Configured dispatcher ids (e.g. `["claude-worker"]`); empty when none. */
 	dispatchers: () => api.get<string[]>('/sessions/dispatchers'),
-	/** Every active machine across all active users — for the spawn picker. */
+	/** Every spawnable machine across all active users — for the spawn picker.
+	 * Excludes `ephemeral` (dispatch/worker) machines: those are one-shot pods,
+	 * not somewhere you'd start an interactive session (CCT-183). */
 	allMachines: async (): Promise<MachineRow[]> => {
 		const users = (await api.get<UserRow[]>('/admin/users')).filter((u) => !u.revoked_at);
 		const lists = await Promise.all(
 			users.map((u) => api.get<MachineRow[]>(`/admin/users/${u.id}/machines`))
 		);
-		return lists.flat().filter((m) => !m.revoked_at);
+		return lists.flat().filter((m) => !m.revoked_at && m.kind !== 'ephemeral');
 	}
 };
 

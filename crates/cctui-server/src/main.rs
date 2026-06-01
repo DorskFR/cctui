@@ -243,6 +243,31 @@ async fn reaper_task(state: AppState) {
             }
         }
 
+        // Soft-delete ephemeral (dispatch/worker) machines that have gone
+        // quiet past the TTL — pods that died before self-deenroll (CCT-183).
+        // Mirrors the self-deenroll write (revoked_at + deleted_at) so the row
+        // survives for historical session FKs but drops out of every listing.
+        if state.config.ephemeral_machine_ttl_secs > 0 {
+            let cutoff = chrono::Utc::now()
+                - chrono::Duration::seconds(
+                    i64::try_from(state.config.ephemeral_machine_ttl_secs).unwrap_or(i64::MAX),
+                );
+            match sqlx::query(
+                "UPDATE machines SET revoked_at = COALESCE(revoked_at, now()), deleted_at = now() \
+                 WHERE kind = 'ephemeral' AND deleted_at IS NULL AND last_seen_at < $1",
+            )
+            .bind(cutoff)
+            .execute(&state.pool)
+            .await
+            {
+                Ok(res) if res.rows_affected() > 0 => {
+                    tracing::info!(count = res.rows_affected(), "reaped stale ephemeral machines");
+                }
+                Ok(_) => {}
+                Err(err) => tracing::warn!(%err, "ephemeral machine reap failed"),
+            }
+        }
+
         {
             let mut pstore = state.permission_store.write().await;
             pstore.reap_stale(300); // 5 minutes

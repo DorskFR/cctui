@@ -61,6 +61,9 @@ pub struct MachineRow {
     pub first_seen_at: DateTime<Utc>,
     pub last_seen_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,
+    /// `persistent` (a real daemon) or `ephemeral` (a dispatch/worker pod).
+    /// The New-session picker hides `ephemeral` machines (CCT-183).
+    pub kind: String,
 }
 
 #[derive(Deserialize, TS)]
@@ -193,7 +196,7 @@ pub async fn list_user_machines(
 ) -> Result<Json<Vec<MachineRow>>, (StatusCode, Json<ApiError>)> {
     forbid_or(&ctx)?;
     let rows: Vec<MachineRow> = sqlx::query_as(
-        "SELECT id, user_id, name, display_name, first_seen_at, last_seen_at, revoked_at \
+        "SELECT id, user_id, name, display_name, first_seen_at, last_seen_at, revoked_at, kind \
          FROM machines WHERE user_id = $1 AND deleted_at IS NULL ORDER BY first_seen_at",
     )
     .bind(user_id)

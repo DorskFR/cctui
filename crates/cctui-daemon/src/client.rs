@@ -13,6 +13,10 @@ pub struct ServerClient {
 #[derive(Debug, Serialize)]
 struct EnrollBody<'a> {
     hostname: &'a str,
+    /// Machine kind (CCT-183). Omitted for `persistent` so older servers that
+    /// don't know the field are unaffected; sent as `ephemeral` for worker pods.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kind: Option<&'a str>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -27,13 +31,18 @@ impl ServerClient {
         Self { base_url: base_url.into(), http: reqwest::Client::new() }
     }
 
-    pub async fn enroll(&self, user_token: &str, hostname: &str) -> anyhow::Result<EnrollResponse> {
+    pub async fn enroll(
+        &self,
+        user_token: &str,
+        hostname: &str,
+        kind: Option<&str>,
+    ) -> anyhow::Result<EnrollResponse> {
         let url = format!("{}/api/v1/enroll", self.base_url.trim_end_matches('/'));
         let resp = self
             .http
             .post(&url)
             .bearer_auth(user_token)
-            .json(&EnrollBody { hostname })
+            .json(&EnrollBody { hostname, kind })
             .send()
             .await?;
         let status = resp.status();

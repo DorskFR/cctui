@@ -28,6 +28,11 @@ enum Cmd {
         token: String,
         #[arg(long)]
         name: String,
+        /// Machine kind: `persistent` (default, a real dev machine) or
+        /// `ephemeral` (a dispatch/worker pod — hidden from the New-session
+        /// picker and reaped once stale; CCT-183).
+        #[arg(long, default_value = "persistent")]
+        kind: String,
     },
     /// Connect to the configured server and supervise adapters.
     Run {
@@ -128,9 +133,11 @@ async fn main() -> anyhow::Result<()> {
     let path = cli.config.unwrap_or_else(Config::default_path);
 
     match cli.cmd {
-        Cmd::Enroll { server_url, token, name } => {
+        Cmd::Enroll { server_url, token, name, kind } => {
             let client = ServerClient::new(&server_url);
-            let resp = client.enroll(&token, &name).await?;
+            // Send `kind` only when non-default so older servers are unaffected.
+            let kind_arg = (kind != "persistent").then_some(kind.as_str());
+            let resp = client.enroll(&token, &name, kind_arg).await?;
             let cfg = Config {
                 server_url,
                 machine_key: resp.machine_key,

@@ -16,6 +16,13 @@ pub struct EnrollRequest {
     pub _os: Option<String>,
     #[serde(default, rename = "arch")]
     pub _arch: Option<String>,
+    /// Machine kind (CCT-183): `persistent` (a real dev-machine daemon, the
+    /// default) or `ephemeral` (a dispatch/worker pod — one machine per
+    /// dispatched session). Ephemeral machines are hidden from the New-session
+    /// picker and reaped once they go stale. Unknown values fall back to
+    /// `persistent`.
+    #[serde(default)]
+    pub kind: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -45,17 +52,27 @@ pub async fn enroll(
     let token = machine_token(&secret);
     let key_hash = sha256_hex(&token);
 
-    sqlx::query("INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, $3, $4)")
-        .bind(machine_id)
-        .bind(user_id)
-        .bind(&req.hostname)
-        .bind(&key_hash)
-        .execute(&state.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("db error: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-        })?;
+    // Only `ephemeral` is honoured as a non-default; anything else (including a
+    // missing field, for older daemons) stays `persistent`.
+    let kind = match req.kind.as_deref() {
+        Some("ephemeral") => "ephemeral",
+        _ => "persistent",
+    };
+
+    sqlx::query(
+        "INSERT INTO machines (id, user_id, name, key_hash, kind) VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(machine_id)
+    .bind(user_id)
+    .bind(&req.hostname)
+    .bind(&key_hash)
+    .bind(kind)
+    .execute(&state.pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("db error: {e}");
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+    })?;
 
     // Default the new machine to the claude-code adapter so the daemon
     // gets a meaningful Reconcile out of the box and either harness can be
@@ -79,6 +96,7 @@ pub async fn enroll(
         user_id = %user_id,
         machine_id = %machine_id,
         hostname = %req.hostname,
+        kind,
         "machine enrolled"
     );
 
