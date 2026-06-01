@@ -17,7 +17,52 @@ use cctui_proto::api::{ApiError, DispatchRequest, DispatchResponse};
 
 use crate::auth::{AuthContext, machine_token, mint_secret, sha256_hex};
 use crate::dispatchers::{DispatchError, DispatchSpec};
+use crate::ntfy::{self, Notification};
 use crate::state::AppState;
+
+/// Resolve a user's display name for notifications. Falls back to the raw uuid
+/// (or `anonymous` for tokenless callers) so a notification always identifies
+/// the caller even if the lookup misses.
+async fn caller_label(state: &AppState, user_id: Option<uuid::Uuid>) -> String {
+    let Some(uid) = user_id else {
+        return "anonymous (agent/admin token)".into();
+    };
+    sqlx::query_scalar::<_, String>("SELECT name FROM users WHERE id = $1")
+        .bind(uid)
+        .fetch_optional(&state.pool)
+        .await
+        .ok()
+        .flatten()
+        .map_or_else(|| uid.to_string(), |name| format!("{name} ({uid})"))
+}
+
+/// Best-effort extract of the human prompt from the opaque payload. Checks the
+/// common top-level keys workers read; returns `(none)` when absent.
+fn extract_prompt(payload: &serde_json::Value) -> String {
+    for key in ["prompt", "message", "task", "text"] {
+        if let Some(s) = payload.get(key).and_then(|v| v.as_str()) {
+            return s.to_string();
+        }
+    }
+    "(none)".into()
+}
+
+/// Render the payload for a notification with the injected machine key redacted
+/// (it's a bearer secret) and truncated so a huge payload doesn't blow up the
+/// push body.
+fn payload_for_notify(payload: &serde_json::Value) -> String {
+    const MAX: usize = 1500;
+    let mut p = payload.clone();
+    if let Some(obj) = p.as_object_mut().filter(|o| o.contains_key("cctui_machine_key")) {
+        obj.insert("cctui_machine_key".into(), serde_json::Value::String("<redacted>".into()));
+    }
+    let mut s = serde_json::to_string_pretty(&p).unwrap_or_else(|_| p.to_string());
+    if s.len() > MAX {
+        s.truncate(MAX);
+        s.push_str("\n… (truncated)");
+    }
+    s
+}
 
 /// Lazily fetch (or create) the caller's single persistent "dispatch" machine
 /// and return its `(machine_id, machine_key)` (CCT-191).
@@ -116,6 +161,24 @@ pub async fn dispatch(
     let session_id = req.session_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let origin = dispatcher.id();
 
+    // Alert that a dispatch arrived (CCT-198). Built from the *original* payload
+    // (before the machine key is injected) and no-ops unless ntfy is configured.
+    let caller = caller_label(&state, ctx.user_id).await;
+    let prompt = extract_prompt(&req.payload);
+    ntfy::notify(
+        &state.config,
+        Notification {
+            title: format!("Dispatch received → {}", req.dispatcher),
+            message: format!(
+                "user: {caller}\nsession: {session_id}\ndispatcher: {}\n\nprompt:\n{prompt}\n\npayload:\n{}",
+                req.dispatcher,
+                payload_for_notify(&req.payload),
+            ),
+            tags: "inbox_tray".into(),
+            priority: 3,
+        },
+    );
+
     // We do NOT pre-create a session row (CCT-191): `claude --bg` mints its own
     // session id and ignores `--session-id`, so a pre-minted row can never be
     // adopted by the worker's real session — it would just linger as an empty
@@ -152,14 +215,41 @@ pub async fn dispatch(
         payload: &forwarded_payload,
     };
 
-    let handle = dispatcher.dispatch(&spec).await.map_err(|e| {
-        let (code, msg) = match &e {
-            DispatchError::InvalidIntent(_) => (StatusCode::BAD_REQUEST, e.to_string()),
-            DispatchError::UnknownDispatcher(_) => (StatusCode::NOT_FOUND, e.to_string()),
-            DispatchError::Backend(_) => (StatusCode::BAD_GATEWAY, e.to_string()),
-        };
-        (code, Json(ApiError { error: msg }))
-    })?;
+    let handle = match dispatcher.dispatch(&spec).await {
+        Ok(h) => {
+            ntfy::notify(
+                &state.config,
+                Notification {
+                    title: format!("Dispatch forwarded → {}", req.dispatcher),
+                    message: format!(
+                        "user: {caller}\nsession: {session_id}\nhandle: {}\nnamespace: {}",
+                        h.handle,
+                        h.namespace.as_deref().unwrap_or("-"),
+                    ),
+                    tags: "white_check_mark".into(),
+                    priority: 3,
+                },
+            );
+            h
+        }
+        Err(e) => {
+            ntfy::notify(
+                &state.config,
+                Notification {
+                    title: format!("Dispatch FAILED → {}", req.dispatcher),
+                    message: format!("user: {caller}\nsession: {session_id}\nerror: {e}"),
+                    tags: "rotating_light".into(),
+                    priority: 5,
+                },
+            );
+            let (code, msg) = match &e {
+                DispatchError::InvalidIntent(_) => (StatusCode::BAD_REQUEST, e.to_string()),
+                DispatchError::UnknownDispatcher(_) => (StatusCode::NOT_FOUND, e.to_string()),
+                DispatchError::Backend(_) => (StatusCode::BAD_GATEWAY, e.to_string()),
+            };
+            return Err((code, Json(ApiError { error: msg })));
+        }
+    };
 
     Ok((
         StatusCode::ACCEPTED,

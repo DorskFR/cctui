@@ -6,6 +6,7 @@ mod daemon_dispatch;
 mod db;
 mod dispatchers;
 mod normalize;
+mod ntfy;
 mod policy;
 mod registry;
 mod routes;
