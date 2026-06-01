@@ -12,6 +12,7 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 # mlugg/setup-zig still ships as a node20 action; opt into the node24 runtime
 # now so we don't emit the deprecation warning (GitHub forces node24 from
@@ -114,3 +115,60 @@ jobs:
             dist/cctui-*
             dist/cctui-daemon-*
             dist/SHA256SUMS
+
+  # Build + push the server and webui container images to ghcr, tag-driven.
+  # Replaces the manual `make image/release` / `make ui/image/release` registry
+  # push (which needs a local docker daemon bg agents can't reach). The build
+  # is self-contained: public base images, crates.io deps, runtime-checked
+  # sqlx (no DB at build), no secrets baked in. (CCT-199)
+  images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Resolve version
+        id: ver
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            tag="${{ inputs.tag }}"
+          else
+            tag="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ghcr
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # linux/amd64 only — matches the single-arch local builds the cluster
+      # runs today; rust-via-QEMU arm64 is too slow to justify here.
+      - name: Build + push server image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            CCTUI_GIT_HASH=${{ github.sha }}
+          tags: |
+            ghcr.io/dorskfr/cctui:${{ steps.ver.outputs.version }}
+            ghcr.io/dorskfr/cctui:latest
+
+      - name: Build + push webui image
+        uses: docker/build-push-action@v6
+        with:
+          context: webui
+          file: webui/Dockerfile
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            CLIENT_VERSION=${{ steps.ver.outputs.version }}
+          tags: |
+            ghcr.io/dorskfr/cctui-ui:${{ steps.ver.outputs.version }}
+            ghcr.io/dorskfr/cctui-ui:latest

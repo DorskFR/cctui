@@ -19,7 +19,10 @@ export CCTUI_TOKEN
 .PHONY: image/build image/push image/release
 .PHONY: bindings webui/install webui/dev webui/build
 
-IMAGE_REGISTRY ?= registry.example.com
+# CI publishes images on tag push (.github/workflows/release.yml → ghcr). These
+# `make image/*` targets are a local fallback; they default to the same ghcr
+# namespace so a manual push lands where the cluster pulls from. (CCT-199)
+IMAGE_REGISTRY ?= ghcr.io/dorskfr
 IMAGE_REPO     ?= cctui
 IMAGE_VERSION  ?= $(shell awk -F'"' '/^\[workspace.package\]/{f=1} f && /^version/{print $$2; exit}' Cargo.toml)
 IMAGE          ?= $(IMAGE_REGISTRY)/$(IMAGE_REPO)
