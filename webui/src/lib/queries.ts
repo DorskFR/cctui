@@ -177,7 +177,7 @@ function optimisticDispatchCard(id: string, body: DispatchRequest): SessionListI
 		machine_name: 'dispatch',
 		last_message_text: 'Dispatching…',
 		last_message_at: null,
-		name: p.prompt_file || (p.prompt ? p.prompt.slice(0, 40) : null) || id.slice(0, 6),
+		name: p.name || p.prompt_file || (p.prompt ? p.prompt.slice(0, 40) : null) || id.slice(0, 6),
 		model: p.model ?? null,
 		effort: p.effort ?? null,
 		auto_approve: false,

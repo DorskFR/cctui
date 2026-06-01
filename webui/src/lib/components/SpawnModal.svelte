@@ -129,6 +129,7 @@
 		// Build the opaque payload the dispatcher unpacks into TASK_* env. Omit
 		// empty fields so the worker's own defaults apply.
 		const payload: Record<string, string> = {};
+		if (form.name.trim()) payload.name = form.name.trim();
 		if (form.repo.trim()) payload.repo = form.repo.trim();
 		if (form.prompt.trim()) payload.prompt = form.prompt.trim();
 		if (form.prompt_file.trim()) payload.prompt_file = form.prompt_file.trim();
@@ -219,6 +220,17 @@
 						</select>
 					</div>
 				{/if}
+
+				<div class="field">
+					<label class="label" for="sp-name-d">Name (optional)</label>
+					<input
+						id="sp-name-d"
+						class="input"
+						placeholder="session label"
+						bind:value={form.name}
+					/>
+					<span class="faint sm">Passed to the worker as <code>--name</code>.</span>
+				</div>
 
 				<div class="field">
 					<label class="label" for="sp-repo">Repo</label>

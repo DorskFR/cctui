@@ -570,6 +570,15 @@
 		}
 	}
 
+	async function doUnarchive() {
+		try {
+			await actions.unarchive(id);
+			toasts.ok('Unarchived');
+		} catch (e) {
+			toasts.err((e as Error).message);
+		}
+	}
+
 	async function doInterrupt() {
 		try {
 			await actions.interrupt(id);
@@ -856,7 +865,11 @@
 
 	<div class="composer">
 		{#if archived}
-			<div class="hint muted">Session archived — unarchive to send messages.</div>
+			<div class="hint muted">
+				Session archived —
+				<button type="button" class="link" onclick={doUnarchive}>unarchive</button>
+				to send messages.
+			</div>
 		{:else}
 			{#if notSent}
 				<div class="notsent" role="status">⚠ Not sent — reconnecting. Your message is kept; press Send to retry.</div>
@@ -1316,6 +1329,12 @@
 		font-size: var(--fs-sm);
 		text-align: center;
 		width: 100%;
+	}
+	.hint .link {
+		color: var(--c-blue);
+		font: inherit;
+		text-decoration: underline;
+		cursor: pointer;
 	}
 	/* Inline notice when a send was dropped (socket not OPEN). Full-width so it
 	   sits on its own line above the textarea (CCT-162). */
