@@ -61,6 +61,7 @@ pub async fn spawn_session(
         prompt: req.prompt.clone(),
         name: req.name.clone(),
         permission_mode: req.permission_mode,
+        effort: req.effort.clone().filter(|e| !e.trim().is_empty()),
         bootstrap: serde_json::Value::Null,
     };
     // Mint the correlation id up front so it travels with the command and

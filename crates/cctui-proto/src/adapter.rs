@@ -344,6 +344,10 @@ pub struct SessionSpec {
     /// (codex `sandbox_mode` + `approval_policy`, claude `--permission-mode`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode: Option<PermissionMode>,
+    /// Reasoning/effort level (claude `--effort`, codex
+    /// `model_reasoning_effort`). `None` defers to the adapter default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
     #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
     pub bootstrap: serde_json::Value,
 }
@@ -518,6 +522,7 @@ mod tests {
             prompt: None,
             name: None,
             permission_mode: None,
+            effort: None,
             bootstrap: serde_json::Value::Null,
         };
         let json = serde_json::to_string(&spec).unwrap();

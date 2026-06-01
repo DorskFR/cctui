@@ -16,4 +16,11 @@ adapter_id: string | null,
  * `ask` prompts on every action. `None` → the daemon's per-host
  * default. See [`cctui_proto::adapter::PermissionMode`].
  */
-permission_mode: PermissionMode | null, };
+permission_mode: PermissionMode | null, 
+/**
+ * Reasoning/effort level to launch the session with (claude `--effort`,
+ * codex `model_reasoning_effort`). Valid values differ per adapter
+ * (claude: `low`/`medium`/`high`/`xhigh`/`max`; codex:
+ * `minimal`/`low`/`medium`/`high`). `None` → the adapter's default.
+ */
+effort: string | null, };

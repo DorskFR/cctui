@@ -214,6 +214,12 @@ pub struct SpawnRequest {
     /// default. See [`cctui_proto::adapter::PermissionMode`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode: Option<crate::adapter::PermissionMode>,
+    /// Reasoning/effort level to launch the session with (claude `--effort`,
+    /// codex `model_reasoning_effort`). Valid values differ per adapter
+    /// (claude: `low`/`medium`/`high`/`xhigh`/`max`; codex:
+    /// `minimal`/`low`/`medium`/`high`). `None` → the adapter's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

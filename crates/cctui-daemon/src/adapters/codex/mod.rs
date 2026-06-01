@@ -171,6 +171,12 @@ async fn command_pump(
                             sandbox.clone_into(&mut cfg.sandbox_mode);
                             approval.clone_into(&mut cfg.approval_policy);
                         }
+                        // Per-spawn reasoning effort (codex: minimal/low/medium/high).
+                        if let Some(effort) =
+                            spec.effort.as_deref().map(str::trim).filter(|e| !e.is_empty())
+                        {
+                            cfg.reasoning_effort = Some(effort.to_owned());
+                        }
                         let session = CodexSession::new(
                             cfg,
                             working_dir,

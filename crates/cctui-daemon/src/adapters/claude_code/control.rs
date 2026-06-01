@@ -551,6 +551,15 @@ impl Driver {
         // only ADDS the hook. Goes into `respawnFlags` too so it survives the
         // `/clear`/`/compact` relaunch the claude daemon drives off them.
         let mut respawn_flags = vec!["--agent".to_owned(), agent.to_owned()];
+        // Reasoning effort (claude `--effort`: low/medium/high/xhigh/max).
+        // Goes into `respawnFlags` too so it survives the `/clear`/`/compact`
+        // relaunch and round-trips through `state.json` for display.
+        if let Some(effort) = spec.effort.as_deref().map(str::trim).filter(|e| !e.is_empty()) {
+            args.push("--effort".to_owned());
+            args.push(effort.to_owned());
+            respawn_flags.push("--effort".to_owned());
+            respawn_flags.push(effort.to_owned());
+        }
         if let Some(settings) = ensure_hook_settings(&self.cfg.hook_socket_path) {
             let settings = settings.to_string_lossy().into_owned();
             args.push("--settings".to_owned());

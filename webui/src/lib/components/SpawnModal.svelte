@@ -34,7 +34,11 @@
 		repo: string;
 		prompt_file: string;
 		model: string;
-		effort: string;
+		// Effort is per-adapter (claude and codex have different level sets), so
+		// each gets its own slider + form field and they're preserved across an
+		// adapter switch. Dispatch (k8s) runs a claude worker → uses effort_claude.
+		effort_claude: string;
+		effort_codex: string;
 		timeout: string;
 	}
 	const blank: Form = {
@@ -48,7 +52,8 @@
 		repo: '',
 		prompt_file: '',
 		model: '',
-		effort: '',
+		effort_claude: '',
+		effort_codex: '',
 		timeout: ''
 	};
 	let form = $state<Form>(load());
@@ -103,7 +108,8 @@
 			name: form.name.trim() || null,
 			prompt: form.prompt.trim() || null,
 			prompt_name: null,
-			permission_mode: form.permission_mode
+			permission_mode: form.permission_mode,
+			effort: (form.adapter_id === 'codex' ? form.effort_codex : form.effort_claude) || null
 		};
 		const res = await actions.spawn(body);
 		drafts.set(LAST_MACHINE, form.machine_id);
@@ -134,7 +140,7 @@
 		if (form.prompt.trim()) payload.prompt = form.prompt.trim();
 		if (form.prompt_file.trim()) payload.prompt_file = form.prompt_file.trim();
 		if (form.model.trim()) payload.model = form.model.trim();
-		if (form.effort.trim()) payload.effort = form.effort.trim();
+		if (form.effort_claude.trim()) payload.effort = form.effort_claude.trim();
 		const timeout = form.timeout.trim() ? Number(form.timeout.trim()) : null;
 		// Client-minted id doubles as the idempotency key (CCT-107); held stable
 		// across retries (CCT-193) so a re-submit dedups to the same session.
@@ -179,8 +185,40 @@
 		{ v: 'yolo', label: 'Yolo', hint: 'No prompts, full access' }
 	];
 
-	const efforts = ['', 'low', 'medium', 'high'];
+	// Per-adapter effort levels, index 0 = "" (adapter default). Claude and
+	// codex expose different reasoning-effort vocabularies.
+	const claudeEfforts = ['', 'low', 'medium', 'high', 'xhigh', 'max'];
+	const codexEfforts = ['', 'minimal', 'low', 'medium', 'high'];
 </script>
+
+<!-- A discrete effort slider. `levels[0]` is "" (adapter default); the track
+     snaps to each named level and the active label is highlighted. -->
+{#snippet effortSlider(id: string, levels: string[], current: string, onset: (v: string) => void)}
+	{@const idx = Math.max(0, levels.indexOf(current))}
+	<div class="field">
+		<label class="label" for={id}>Effort</label>
+		<input
+			{id}
+			class="slider"
+			type="range"
+			min="0"
+			max={levels.length - 1}
+			step="1"
+			value={idx}
+			oninput={(e) => onset(levels[Number((e.currentTarget as HTMLInputElement).value)])}
+		/>
+		<div class="ticks">
+			{#each levels as lv, i (lv)}
+				<button
+					type="button"
+					class="tick"
+					class:on={i === idx}
+					onclick={() => onset(lv)}>{lv || 'default'}</button
+				>
+			{/each}
+		</div>
+	</div>
+{/snippet}
 
 <Modal title="New session" {onclose}>
 	{#snippet body()}
@@ -271,12 +309,6 @@
 						<input id="sp-model" class="input mono" placeholder="opus" bind:value={form.model} />
 					</div>
 					<div class="field grow">
-						<label class="label" for="sp-effort">Effort (optional)</label>
-						<select id="sp-effort" class="select" bind:value={form.effort}>
-							{#each efforts as e (e)}<option value={e}>{e || 'default'}</option>{/each}
-						</select>
-					</div>
-					<div class="field grow">
 						<label class="label" for="sp-timeout">Timeout min</label>
 						<input
 							id="sp-timeout"
@@ -287,6 +319,14 @@
 						/>
 					</div>
 				</div>
+
+				<!-- Dispatch runs a claude worker → claude effort levels. -->
+				{@render effortSlider(
+					'sp-effort-d',
+					claudeEfforts,
+					form.effort_claude,
+					(v) => (form.effort_claude = v)
+				)}
 			{:else}
 			<div class="field">
 				<label class="label" for="sp-machine">Machine</label>
@@ -298,30 +338,6 @@
 						<option value={mc.id}>{mc.display_name || mc.name}</option>
 					{/each}
 				</select>
-			</div>
-
-			<div class="field">
-				<span class="label">Adapter</span>
-				<div class="adapters">
-					<button
-						type="button"
-						class="adapter-opt claude"
-						class:sel={form.adapter_id === 'claude-code'}
-						onclick={() => (form.adapter_id = 'claude-code')}
-					>
-						<BrandLogo adapter="claude-code" size={18} />
-						<span>Claude Code</span>
-					</button>
-					<button
-						type="button"
-						class="adapter-opt codex"
-						class:sel={form.adapter_id === 'codex'}
-						onclick={() => (form.adapter_id = 'codex')}
-					>
-						<BrandLogo adapter="codex" size={18} />
-						<span>Codex</span>
-					</button>
-				</div>
 			</div>
 
 			<div class="field">
@@ -360,6 +376,48 @@
 					use:autoresize={form.prompt}
 				></textarea>
 			</div>
+
+			<div class="field">
+				<span class="label">Adapter</span>
+				<div class="adapters">
+					<button
+						type="button"
+						class="adapter-opt claude"
+						class:sel={form.adapter_id === 'claude-code'}
+						onclick={() => (form.adapter_id = 'claude-code')}
+					>
+						<BrandLogo adapter="claude-code" size={18} />
+						<span>Claude Code</span>
+					</button>
+					<button
+						type="button"
+						class="adapter-opt codex"
+						class:sel={form.adapter_id === 'codex'}
+						onclick={() => (form.adapter_id = 'codex')}
+					>
+						<BrandLogo adapter="codex" size={18} />
+						<span>Codex</span>
+					</button>
+				</div>
+			</div>
+
+			<!-- Per-adapter effort: each adapter has its own level set and its own
+			     form field, so switching adapters preserves both. -->
+			{#if form.adapter_id === 'codex'}
+				{@render effortSlider(
+					'sp-effort-codex',
+					codexEfforts,
+					form.effort_codex,
+					(v) => (form.effort_codex = v)
+				)}
+			{:else}
+				{@render effortSlider(
+					'sp-effort-claude',
+					claudeEfforts,
+					form.effort_claude,
+					(v) => (form.effort_claude = v)
+				)}
+			{/if}
 
 			<div class="field">
 				<span class="label">Permission mode</span>
@@ -423,6 +481,30 @@
 	.row.gap {
 		display: flex;
 		gap: var(--sp-2);
+	}
+	.slider {
+		width: 100%;
+		accent-color: var(--c-blue);
+		margin: 2px 0;
+	}
+	.ticks {
+		display: flex;
+		justify-content: space-between;
+		gap: var(--sp-1);
+	}
+	.tick {
+		flex: 1;
+		padding: 2px 0;
+		background: none;
+		border: none;
+		text-align: center;
+		font-size: var(--fs-xs);
+		color: var(--text-muted);
+		cursor: pointer;
+	}
+	.tick.on {
+		color: var(--c-blue);
+		font-weight: var(--fw-medium);
 	}
 	.grow {
 		flex: 1;

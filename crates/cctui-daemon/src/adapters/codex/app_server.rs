@@ -328,6 +328,10 @@ pub struct AppServerConfig {
     /// per-host default of `"danger-full-access"` (no sandbox) is required
     /// there. Overridable per-spawn via the full-access toggle.
     pub sandbox_mode: String,
+    /// Reasoning effort passed via `-c model_reasoning_effort=...`
+    /// (codex: `minimal`/`low`/`medium`/`high`). `None` keeps the codex
+    /// default. Set per-spawn from the spawn request.
+    pub reasoning_effort: Option<String>,
 }
 
 impl Default for AppServerConfig {
@@ -336,6 +340,7 @@ impl Default for AppServerConfig {
             bin: "codex".to_string(),
             approval_policy: "untrusted".to_string(),
             sandbox_mode: "workspace-write".to_string(),
+            reasoning_effort: None,
         }
     }
 }
@@ -351,6 +356,9 @@ impl AppServerConfig {
         }
         if let Some(s) = v.get("sandbox_mode").and_then(Value::as_str) {
             cfg.sandbox_mode = s.to_string();
+        }
+        if let Some(e) = v.get("model_reasoning_effort").and_then(Value::as_str) {
+            cfg.reasoning_effort = Some(e.to_string());
         }
         cfg
     }
@@ -388,12 +396,16 @@ impl CodexSession {
             anyhow::bail!("spawn: working_dir does not exist or is not a directory: {}", self.cwd);
         }
 
-        let mut child = Command::new(&self.cfg.bin)
-            .arg("app-server")
+        let mut cmd = Command::new(&self.cfg.bin);
+        cmd.arg("app-server")
             .arg("-c")
             .arg(format!("approval_policy=\"{}\"", self.cfg.approval_policy))
             .arg("-c")
-            .arg(format!("sandbox_mode=\"{}\"", self.cfg.sandbox_mode))
+            .arg(format!("sandbox_mode=\"{}\"", self.cfg.sandbox_mode));
+        if let Some(effort) = self.cfg.reasoning_effort.as_deref() {
+            cmd.arg("-c").arg(format!("model_reasoning_effort=\"{effort}\""));
+        }
+        let mut child = cmd
             .current_dir(cwd_path)
             // launchd strips `PATH` down to a minimal set that omits
             // `/opt/homebrew/bin`, so a bare `codex` fails ENOENT (CCT-138).
@@ -532,6 +544,26 @@ impl CodexSession {
                                 .ok();
                             self.registry.lock().await.insert(local_id.clone(), cmd_tx.clone());
                             registered = true;
+                            // Surface the configured reasoning effort so the
+                            // session list shows it (claude gets this for free
+                            // via state.json; codex has no equivalent feed).
+                            if let Some(effort) = self.cfg.reasoning_effort.clone() {
+                                self.events
+                                    .send(AdapterEvent::Status {
+                                        local_id: local_id.clone(),
+                                        tempo: None,
+                                        state: None,
+                                        detail: None,
+                                        activity: None,
+                                        name: None,
+                                        intent: None,
+                                        model: None,
+                                        effort: Some(effort),
+                                        children: vec![],
+                                    })
+                                    .await
+                                    .ok();
+                            }
                             if let Some(prompt) = &self.prompt {
                                 let req = turn_start_req(next_id, &local_id, prompt);
                                 next_id += 1;
