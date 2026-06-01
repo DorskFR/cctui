@@ -9,6 +9,7 @@
 	import SpawnModal from '$lib/components/SpawnModal.svelte';
 	import { drafts, LIST_DENSITY } from '$lib/drafts';
 	import { notify } from '$lib/notify.svelte';
+	import { tokenizeQuery } from '$lib/search';
 
 	let dense = $state(drafts.get(LIST_DENSITY) === 'compact');
 	$effect(() => {
@@ -42,6 +43,8 @@
 	});
 	const searching = $derived(query.length > 0);
 	const pagerActive = $derived(searching || showArchived);
+	// Parsed terms to highlight in result snippets + the opened chat (CCT-187).
+	const searchTerms = $derived(tokenizeQuery(query));
 
 	let pageRows = $state<SessionListItem[]>([]);
 	let pageOffset = $state(0);
@@ -256,6 +259,7 @@
 			swipeable
 			swipeLabel={s.status === 'archived' ? 'Unarchive' : 'Archive'}
 			onSwipe={swipeArchive}
+			highlight={searchTerms}
 		/>
 	{/each}
 {/snippet}
@@ -351,7 +355,11 @@
 {/if}
 
 {#if liveOpen}
-	<ConversationDrawer session={liveOpen} onclose={() => (openSession = null)} />
+	<ConversationDrawer
+		session={liveOpen}
+		onclose={() => (openSession = null)}
+		highlight={searchTerms}
+	/>
 {/if}
 
 {#if showSpawn}

@@ -4,6 +4,7 @@
 	import { ws, userMsgKey, USER_PREFIX, type PermReq, type LiveAsk } from '$lib/ws.svelte';
 	import { useConversation, useSessionActions } from '$lib/queries';
 	import { renderMarkdown, prettyJson, highlightBlock } from '$lib/markdown';
+	import { highlightTerms } from '$lib/search';
 	import { clockTime, statusBadgeClass } from '$lib/format';
 	import { drafts, composerKey, history as msgHistory, clearSessionStorage, VIEW_OPTS } from '$lib/drafts';
 	import { autoresize } from '$lib/autoresize';
@@ -16,7 +17,14 @@
 	import PermissionCard from './PermissionCard.svelte';
 	import AskQuestionCard from './AskQuestionCard.svelte';
 
-	let { session, onclose }: { session: SessionListItem; onclose: () => void } = $props();
+	let {
+		session,
+		onclose,
+		highlight = []
+	}: { session: SessionListItem; onclose: () => void; highlight?: string[] } = $props();
+
+	// Search terms to highlight inline (CCT-187), set when opened from a search.
+	const hl = (html: string) => (highlight.length ? highlightTerms(html, highlight) : html);
 
 	const id = $derived(session.id);
 	const archived = $derived(session.status === 'archived');
@@ -244,7 +252,7 @@
 	function userOrSystem(content: string, ts: number, meta: boolean): Line | null {
 		const role = meta ? 'system' : 'user';
 		if (role === 'system' && !view.showSystem) return null;
-		return { role, ts, html: renderMarkdown(content), text: content };
+		return { role, ts, html: hl(renderMarkdown(content)), text: content };
 	}
 
 	function toLine(e: AgentEvent): Line | null {
@@ -257,7 +265,7 @@
 					const content = e.content.slice(USER_PREFIX.length).trimStart();
 					return userOrSystem(content, Number(e.ts), e.meta || looksMeta(content));
 				}
-				return { role: 'assistant', ts: Number(e.ts), html: renderMarkdown(e.content), text: e.content };
+				return { role: 'assistant', ts: Number(e.ts), html: hl(renderMarkdown(e.content)), text: e.content };
 			}
 			case 'reply':
 				// `reply` is only ever our own optimistic echo of typed input.
@@ -279,7 +287,7 @@
 					tool: e.tool,
 					mcp: isMcp,
 					text,
-					htmlCode: highlightBlock(text, lang)
+					htmlCode: hl(highlightBlock(text, lang))
 				};
 			}
 			case 'tool_result':
@@ -289,7 +297,7 @@
 					ts: Number(e.ts),
 					tool: e.tool,
 					text: e.output_summary,
-					htmlCode: highlightBlock(e.output_summary, '')
+					htmlCode: hl(highlightBlock(e.output_summary, ''))
 				};
 			case 'context_reset':
 				// /clear: the session id rotated under the same worker (CCT-158).
@@ -300,7 +308,7 @@
 				// so it arrives with its text (CCT-159). Render as a distinct
 				// "context compacted" block rather than a user bubble.
 				if (!e.content.trim()) return null;
-				return { role: 'compact', ts: Number(e.ts), html: renderMarkdown(e.content), text: e.content };
+				return { role: 'compact', ts: Number(e.ts), html: hl(renderMarkdown(e.content)), text: e.content };
 			default:
 				return null; // heartbeat, turn_end
 		}

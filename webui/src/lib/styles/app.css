@@ -448,3 +448,12 @@ pre {
 		transition-duration: 0.01ms !important;
 	}
 }
+
+/* Search-term highlight (CCT-187). Used inside {@html} content (chat window +
+   snippets), so it must be global — Svelte scoped styles don't reach {@html}. */
+.search-hit {
+	background: var(--warn, #d08770);
+	color: #1a1a1a;
+	border-radius: 2px;
+	padding: 0 1px;
+}

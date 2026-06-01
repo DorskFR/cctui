@@ -4,6 +4,8 @@
 	import MachineBadge from './MachineBadge.svelte';
 	import TokenUsage from './TokenUsage.svelte';
 	import AdapterIcon from './AdapterIcon.svelte';
+	import { escapeHtml } from '$lib/markdown';
+	import { highlightTerms } from '$lib/search';
 
 	let {
 		session,
@@ -16,13 +18,16 @@
 		onToggleSelect,
 		swipeable = false,
 		swipeLabel = 'Archive',
-		onSwipe
+		onSwipe,
+		highlight = []
 	}: {
 		session: SessionListItem;
 		child?: boolean;
 		compact?: boolean;
 		pendingCount?: number;
 		onopen: (s: SessionListItem) => void;
+		// Search terms to highlight in the match snippet (CCT-187).
+		highlight?: string[];
 		// Multi-select mode (CCT-172): when `selectable`, a tap toggles selection
 		// instead of opening the drawer, and a checkbox is shown.
 		selectable?: boolean;
@@ -38,6 +43,12 @@
 	} = $props();
 
 	const s = $derived(session);
+	// Match snippet with search terms wrapped in <mark> (escape first → safe HTML).
+	const snippetHtml = $derived(
+		s.match_snippet && highlight.length
+			? highlightTerms(escapeHtml(s.match_snippet), highlight)
+			: null
+	);
 	const dirName = $derived(s.working_dir.split('/').filter(Boolean).pop() || '');
 	// Subagents inherit the parent's working dir, so the dir-basename fallback
 	// makes every child read the same ("cctui"). Give nameless subagents the
@@ -171,7 +182,10 @@
 		{#if needsInput}<span class="hand" title="needs input">✋</span>{/if}
 		{#if pendingCount > 0}<span class="badge badge-warn">{pendingCount} perm</span>{/if}
 		{#if dense && (s.match_snippet || s.last_message_text)}
-			<span class="preview muted">{s.match_snippet ?? s.last_message_text}</span>
+			<span class="preview muted"
+				>{#if snippetHtml}{@html snippetHtml}{:else}{s.match_snippet ??
+						s.last_message_text}{/if}</span
+			>
 		{:else}
 			<div class="spacer"></div>
 		{/if}
@@ -191,7 +205,7 @@
 		</div>
 
 		{#if s.match_snippet}
-			<div class="match">🔍 {s.match_snippet}</div>
+			<div class="match">🔍 {#if snippetHtml}{@html snippetHtml}{:else}{s.match_snippet}{/if}</div>
 		{:else if s.last_message_text}
 			<div class="last truncate muted">{s.last_message_text}</div>
 		{/if}

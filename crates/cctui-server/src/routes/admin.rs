@@ -444,6 +444,13 @@ pub struct SearchParams {
     pub offset: Option<i64>,
 }
 
+/// Shared SELECT + machine-name join for the session-search queries.
+const SEARCH_SELECT: &str = "SELECT s.id, s.parent_id, s.machine_id, s.working_dir, s.status, \
+            s.registered_at, s.last_heartbeat, s.metadata, s.adapter_id, \
+            COALESCE(m.display_name, m.name) AS resolved_machine_name \
+     FROM sessions s \
+     LEFT JOIN machines m ON m.id = s.machine_uuid";
+
 const SEARCH_DEFAULT_LIMIT: i64 = 100;
 const SEARCH_MAX_LIMIT: i64 = 500;
 
@@ -455,16 +462,46 @@ fn ilike_contains(q: &str) -> String {
     format!("%{escaped}%")
 }
 
-/// Build a ~200-char snippet of `text` centered on the first case-insensitive
-/// occurrence of `needle`, so the UI can show why a session matched.
-fn make_snippet(text: &str, needle: &str) -> String {
+/// Split a query into terms (CCT-187): whitespace-separated, but a `"…"`-quoted
+/// span is one exact term (spaces preserved). Capped at 8 terms. Terms are
+/// AND-matched; the webui uses the same split to highlight every term.
+fn tokenize_query(q: &str) -> Vec<String> {
+    let mut terms = Vec::new();
+    let mut cur = String::new();
+    let mut in_quote = false;
+    for c in q.chars() {
+        match c {
+            '"' => {
+                if !cur.is_empty() {
+                    terms.push(std::mem::take(&mut cur));
+                }
+                in_quote = !in_quote;
+            }
+            c if c.is_whitespace() && !in_quote => {
+                if !cur.is_empty() {
+                    terms.push(std::mem::take(&mut cur));
+                }
+            }
+            c => cur.push(c),
+        }
+    }
+    if !cur.is_empty() {
+        terms.push(cur);
+    }
+    terms.truncate(8);
+    terms
+}
+
+/// Build a ~200-char snippet of `text` centered on the earliest case-insensitive
+/// occurrence of any `needle`, so the UI can show why a session matched.
+fn make_snippet(text: &str, needles: &[String]) -> String {
     const WINDOW: usize = 200;
     let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let hay = collapsed.to_lowercase();
-    let pat = needle.to_lowercase();
     let chars: Vec<char> = collapsed.chars().collect();
-    // Char-index of the match (map the byte hit onto a char offset).
-    let match_char = hay.find(&pat).map_or(0, |byte| collapsed[..byte].chars().count());
+    // Earliest byte hit among all needles → char offset to center on.
+    let match_byte = needles.iter().filter_map(|n| hay.find(&n.to_lowercase())).min().unwrap_or(0);
+    let match_char = collapsed[..match_byte].chars().count();
     let start = match_char.saturating_sub(WINDOW / 2);
     let end = (start + WINDOW).min(chars.len());
     let mut out = String::new();
@@ -488,57 +525,49 @@ pub async fn search_sessions(
     State(state): State<AppState>,
     Query(params): Query<SearchParams>,
 ) -> Result<Json<SessionListResponse>, (StatusCode, Json<ApiError>)> {
-    let q = params.q.trim();
-    let browse = q.is_empty();
-    // Empty query, live-only scope: nothing to do — the bucketed list owns the
-    // live view. Empty query + archived scope means "browse the archive".
+    let terms = tokenize_query(params.q.trim());
+    let browse = terms.is_empty();
+    // No terms + live-only scope: nothing to do — the bucketed list owns the
+    // live view. No terms + archived scope means "browse the archive".
     if browse && !params.include_archived {
         return Ok(Json(SessionListResponse { sessions: vec![] }));
     }
-    let pattern = if browse { String::new() } else { ilike_contains(q) };
+    let patterns: Vec<String> = terms.iter().map(|t| ilike_contains(t)).collect();
     let limit = params.limit.unwrap_or(SEARCH_DEFAULT_LIMIT).clamp(1, SEARCH_MAX_LIMIT);
     let offset = params.offset.unwrap_or(0).max(0);
 
     let rows: Vec<DbSession> = if browse {
         // Browse the archive: archived sessions only, newest first, paginated.
-        sqlx::query_as(
-            "SELECT s.id, s.parent_id, s.machine_id, s.working_dir, s.status, \
-                    s.registered_at, s.last_heartbeat, s.metadata, s.adapter_id, \
-                    COALESCE(m.display_name, m.name) AS resolved_machine_name \
-             FROM sessions s \
-             LEFT JOIN machines m ON m.id = s.machine_uuid \
-             WHERE s.status = 'archived' \
-             ORDER BY s.registered_at DESC \
-             LIMIT $1 OFFSET $2",
-        )
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(&state.pool)
-        .await
-    } else {
-        // Matched sessions: hit in the transcript (trgm-accelerated EXISTS) or
-        // in the session's own id / name / working dir. The scope clause keeps
-        // archived rows out unless the caller asked to include them.
-        let scope = if params.include_archived { "TRUE" } else { "s.status <> 'archived'" };
         let sql = format!(
-            "SELECT s.id, s.parent_id, s.machine_id, s.working_dir, s.status, \
-                    s.registered_at, s.last_heartbeat, s.metadata, s.adapter_id, \
-                    COALESCE(m.display_name, m.name) AS resolved_machine_name \
-             FROM sessions s \
-             LEFT JOIN machines m ON m.id = s.machine_uuid \
-             WHERE ({scope}) AND ( \
-                    s.id ILIKE $1 \
-                    OR COALESCE(s.session_name, '') ILIKE $1 \
-                    OR s.working_dir ILIKE $1 \
-                    OR EXISTS ( \
-                         SELECT 1 FROM stream_events e \
-                         WHERE e.session_id::text = s.id AND e.search_text ILIKE $1 \
-                       ) \
-                  ) \
-             ORDER BY s.registered_at DESC \
-             LIMIT $2 OFFSET $3",
+            "{SEARCH_SELECT} WHERE s.status = 'archived' ORDER BY s.registered_at DESC LIMIT $1 OFFSET $2"
         );
-        sqlx::query_as(&sql).bind(&pattern).bind(limit).bind(offset).fetch_all(&state.pool).await
+        sqlx::query_as(&sql).bind(limit).bind(offset).fetch_all(&state.pool).await
+    } else {
+        // AND across terms: a session matches only if EVERY term hits somewhere
+        // — its transcript (trgm-accelerated EXISTS) or its id / name / dir.
+        // Terms may hit in different events; that's the "convo contains all the
+        // words" model. The scope clause keeps archived rows out unless asked.
+        let scope = if params.include_archived { "TRUE" } else { "s.status <> 'archived'" };
+        let clauses: Vec<String> = (1..=patterns.len())
+            .map(|i| {
+                format!(
+                    "(s.id ILIKE ${i} OR COALESCE(s.session_name, '') ILIKE ${i} \
+                      OR s.working_dir ILIKE ${i} \
+                      OR EXISTS (SELECT 1 FROM stream_events e \
+                                 WHERE e.session_id::text = s.id AND e.search_text ILIKE ${i}))"
+                )
+            })
+            .collect();
+        let (li, oi) = (patterns.len() + 1, patterns.len() + 2);
+        let sql = format!(
+            "{SEARCH_SELECT} WHERE ({scope}) AND {} ORDER BY s.registered_at DESC LIMIT ${li} OFFSET ${oi}",
+            clauses.join(" AND "),
+        );
+        let mut query = sqlx::query_as::<_, DbSession>(&sql);
+        for p in &patterns {
+            query = query.bind(p);
+        }
+        query.bind(limit).bind(offset).fetch_all(&state.pool).await
     }
     .map_err(|e| {
         tracing::error!("db error (session search): {e}");
@@ -588,22 +617,28 @@ pub async fn search_sessions(
     // id/name/dir have no transcript hit and keep `match_snippet = None`.
     let ids: Vec<String> = sessions.iter().map(|s| s.id.clone()).collect();
     if !browse && !ids.is_empty() {
-        let snippet_rows: Vec<(String, String)> = sqlx::query_as(
+        // Snippet from the most recent event matching ANY term ($1 = ids,
+        // $2.. = patterns); windowed around the earliest term in that text.
+        let or = (2..=patterns.len() + 1)
+            .map(|i| format!("search_text ILIKE ${i}"))
+            .collect::<Vec<_>>()
+            .join(" OR ");
+        let sql = format!(
             "SELECT DISTINCT ON (session_id) session_id::text, search_text \
              FROM stream_events \
-             WHERE session_id::text = ANY($1) AND search_text ILIKE $2 \
-             ORDER BY session_id, created_at DESC",
-        )
-        .bind(&ids)
-        .bind(&pattern)
-        .fetch_all(&state.pool)
-        .await
-        .map_err(|e| {
+             WHERE session_id::text = ANY($1) AND ({or}) \
+             ORDER BY session_id, created_at DESC"
+        );
+        let mut query = sqlx::query_as::<_, (String, String)>(&sql).bind(&ids);
+        for p in &patterns {
+            query = query.bind(p);
+        }
+        let snippet_rows = query.fetch_all(&state.pool).await.map_err(|e| {
             tracing::error!("db error (search snippets): {e}");
             (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
         })?;
         let mut by_session: std::collections::HashMap<String, String> =
-            snippet_rows.into_iter().map(|(id, text)| (id, make_snippet(&text, q))).collect();
+            snippet_rows.into_iter().map(|(id, text)| (id, make_snippet(&text, &terms))).collect();
         for s in &mut sessions {
             s.match_snippet = by_session.remove(&s.id);
         }
