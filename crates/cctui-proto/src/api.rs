@@ -213,7 +213,8 @@ pub struct SpawnResponse {
 /// `payload` is **opaque to cctui** — never typed or inspected here. It is
 /// forwarded verbatim to the dispatcher, so the caller↔runtime contract can
 /// evolve with zero cctui changes.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct DispatchRequest {
     pub dispatcher: String,
     /// Optional pre-minted session id. When absent the server mints one.
@@ -236,7 +237,8 @@ pub struct DispatchRequest {
     pub payload: serde_json::Value,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct DispatchResponse {
     pub session_id: String,
     pub dispatcher: String,

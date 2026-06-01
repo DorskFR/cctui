@@ -1,7 +1,8 @@
 <script lang="ts">
 	import type { SpawnRequest } from '@bindings/SpawnRequest';
+	import type { DispatchRequest } from '@bindings/DispatchRequest';
 	import type { PermissionMode } from '@bindings/PermissionMode';
-	import { useAllMachines, useSessionActions, useRecentDirs } from '$lib/queries';
+	import { useAllMachines, useDispatchers, useSessionActions, useRecentDirs } from '$lib/queries';
 	import { ws } from '$lib/ws.svelte';
 	import { toasts } from '$lib/toast.svelte';
 	import { drafts, SPAWN_DRAFT, LAST_MACHINE } from '$lib/drafts';
@@ -12,6 +13,14 @@
 	let { onclose, onspawned }: { onclose: () => void; onspawned: () => void } = $props();
 
 	const machines = useAllMachines(() => true);
+	const dispatchers = useDispatchers(() => true);
+	const dispatcherIds = $derived($dispatchers.data ?? []);
+	const canDispatch = $derived(dispatcherIds.length > 0);
+
+	// "machine" = spawn on an enrolled daemon; "dispatch" = hand off to a k8s
+	// dispatcher (claude-worker) that runs the session in an ephemeral pod.
+	type Target = 'machine' | 'dispatch';
+	let target = $state<Target>('machine');
 
 	interface Form {
 		machine_id: string;
@@ -20,6 +29,13 @@
 		name: string;
 		prompt: string;
 		permission_mode: PermissionMode;
+		// dispatch-only fields (forwarded to the dispatcher as `payload`).
+		dispatcher: string;
+		repo: string;
+		prompt_file: string;
+		model: string;
+		effort: string;
+		timeout: string;
 	}
 	const blank: Form = {
 		machine_id: '',
@@ -27,7 +43,13 @@
 		working_dir: '',
 		name: '',
 		prompt: '',
-		permission_mode: 'yolo'
+		permission_mode: 'yolo',
+		dispatcher: '',
+		repo: '',
+		prompt_file: '',
+		model: '',
+		effort: '',
+		timeout: ''
 	};
 	let form = $state<Form>(load());
 	function load(): Form {
@@ -49,6 +71,14 @@
 		form.machine_id = list.some((m) => m.id === last) ? last : list[0].id;
 	});
 
+	// default the dispatcher to the first configured one once loaded
+	$effect(() => {
+		if (form.dispatcher || !dispatcherIds.length) return;
+		form.dispatcher = dispatcherIds.includes(form.dispatcher)
+			? form.dispatcher
+			: dispatcherIds[0];
+	});
+
 	// recent working dirs on the selected machine, from the server (last 5).
 	const dirsQuery = useRecentDirs(() => form.machine_id);
 	const recentDirs = $derived([...new Set($dirsQuery.data ?? [])]);
@@ -56,9 +86,16 @@
 	const actions = useSessionActions();
 	let busy = $state(false);
 
-	async function submit() {
-		if (!form.machine_id || !form.working_dir.trim() || busy) return;
-		busy = true;
+	const spawnValid = $derived(!!form.machine_id && !!form.working_dir.trim());
+	// A dispatched worker needs a dispatcher and something to run (inline prompt
+	// or a server-side prompt file). The repo is optional (the worker falls back
+	// to its default cwd), but in practice you'll want one.
+	const dispatchValid = $derived(
+		!!form.dispatcher && (!!form.prompt.trim() || !!form.prompt_file.trim())
+	);
+	const valid = $derived(target === 'machine' ? spawnValid : dispatchValid);
+
+	async function spawnOnMachine() {
 		const body: SpawnRequest = {
 			machine_id: form.machine_id,
 			working_dir: form.working_dir.trim(),
@@ -68,29 +105,62 @@
 			prompt_name: null,
 			permission_mode: form.permission_mode
 		};
+		const res = await actions.spawn(body);
+		drafts.set(LAST_MACHINE, form.machine_id);
+		toasts.push('Spawning…', 'info');
+		const result = await ws.awaitCommand(res.command_id);
+		if (result.ok) {
+			toasts.ok('Session spawned');
+			drafts.clear(SPAWN_DRAFT);
+			form = { ...blank, machine_id: form.machine_id, dispatcher: form.dispatcher };
+			onspawned();
+			onclose();
+		} else {
+			toasts.err(`Spawn failed: ${result.error ?? 'unknown error'}`);
+		}
+	}
+
+	async function dispatchToK8s() {
+		// Build the opaque payload the dispatcher unpacks into TASK_* env. Omit
+		// empty fields so the worker's own defaults apply.
+		const payload: Record<string, string> = {};
+		if (form.repo.trim()) payload.repo = form.repo.trim();
+		if (form.prompt.trim()) payload.prompt = form.prompt.trim();
+		if (form.prompt_file.trim()) payload.prompt_file = form.prompt_file.trim();
+		if (form.model.trim()) payload.model = form.model.trim();
+		if (form.effort.trim()) payload.effort = form.effort.trim();
+		const timeout = form.timeout.trim() ? Number(form.timeout.trim()) : null;
+		const body: DispatchRequest = {
+			dispatcher: form.dispatcher,
+			// Client-minted id doubles as the idempotency key (CCT-107).
+			session_id: crypto.randomUUID(),
+			timeout: Number.isFinite(timeout) ? timeout : null,
+			reply_url: null,
+			payload
+		};
+		const res = await actions.dispatch(body);
+		toasts.ok(`Dispatched to ${res.dispatcher} (${res.handle})`);
+		drafts.clear(SPAWN_DRAFT);
+		form = { ...blank, machine_id: form.machine_id, dispatcher: form.dispatcher };
+		onspawned();
+		onclose();
+	}
+
+	async function submit() {
+		if (!valid || busy) return;
+		busy = true;
 		try {
-			const res = await actions.spawn(body);
-			drafts.set(LAST_MACHINE, form.machine_id);
-			toasts.push('Spawning…', 'info');
-			const result = await ws.awaitCommand(res.command_id);
-			if (result.ok) {
-				toasts.ok('Session spawned');
-				drafts.clear(SPAWN_DRAFT);
-				form = { ...blank, machine_id: form.machine_id };
-				onspawned();
-				onclose();
-			} else {
-				toasts.err(`Spawn failed: ${result.error ?? 'unknown error'}`);
-			}
+			if (target === 'machine') await spawnOnMachine();
+			else await dispatchToK8s();
 		} catch (e) {
-			toasts.err(`Spawn failed: ${(e as Error).message}`);
+			toasts.err(`${target === 'machine' ? 'Spawn' : 'Dispatch'} failed: ${(e as Error).message}`);
 		} finally {
 			busy = false;
 		}
 	}
 
 	function clearForm() {
-		form = { ...blank, machine_id: form.machine_id };
+		form = { ...blank, machine_id: form.machine_id, dispatcher: form.dispatcher };
 		drafts.clear(SPAWN_DRAFT);
 	}
 
@@ -99,11 +169,105 @@
 		{ v: 'auto', label: 'Auto', hint: 'Auto-apply, sandbox on' },
 		{ v: 'yolo', label: 'Yolo', hint: 'No prompts, full access' }
 	];
+
+	const efforts = ['', 'low', 'medium', 'high'];
 </script>
 
 <Modal title="New session" {onclose}>
 	{#snippet body()}
 		<div class="stack">
+			{#if canDispatch}
+				<div class="field">
+					<span class="label">Run on</span>
+					<div class="targets">
+						<button
+							type="button"
+							class="target"
+							class:sel={target === 'machine'}
+							onclick={() => (target = 'machine')}
+						>
+							<strong>Machine</strong>
+							<span class="faint sm">An enrolled daemon</span>
+						</button>
+						<button
+							type="button"
+							class="target"
+							class:sel={target === 'dispatch'}
+							onclick={() => (target = 'dispatch')}
+						>
+							<strong>Dispatch (k8s)</strong>
+							<span class="faint sm">Ephemeral worker pod</span>
+						</button>
+					</div>
+				</div>
+			{/if}
+
+			{#if target === 'dispatch'}
+				{#if dispatcherIds.length > 1}
+					<div class="field">
+						<label class="label" for="sp-dispatcher">Dispatcher</label>
+						<select id="sp-dispatcher" class="select" bind:value={form.dispatcher}>
+							{#each dispatcherIds as d (d)}<option value={d}>{d}</option>{/each}
+						</select>
+					</div>
+				{/if}
+
+				<div class="field">
+					<label class="label" for="sp-repo">Repo</label>
+					<input
+						id="sp-repo"
+						class="input mono"
+						placeholder="cctui"
+						bind:value={form.repo}
+					/>
+					<span class="faint sm">Checked out under the worker's /workspace (optional).</span>
+				</div>
+
+				<div class="field">
+					<label class="label" for="sp-prompt-d">Prompt</label>
+					<textarea
+						id="sp-prompt-d"
+						class="textarea prompt"
+						placeholder="What should the worker do? (e.g. work on CCT-123 / a PR)"
+						bind:value={form.prompt}
+						use:autoresize={form.prompt}
+					></textarea>
+				</div>
+
+				<div class="field">
+					<label class="label" for="sp-prompt-file">Prompt file (optional)</label>
+					<input
+						id="sp-prompt-file"
+						class="input mono"
+						placeholder="implement-from-ticket.md"
+						bind:value={form.prompt_file}
+					/>
+					<span class="faint sm">A file under the worker's /prompts. Overrides the inline prompt.</span>
+				</div>
+
+				<div class="row gap">
+					<div class="field grow">
+						<label class="label" for="sp-model">Model (optional)</label>
+						<input id="sp-model" class="input mono" placeholder="opus" bind:value={form.model} />
+					</div>
+					<div class="field grow">
+						<label class="label" for="sp-effort">Effort (optional)</label>
+						<select id="sp-effort" class="select" bind:value={form.effort}>
+							{#each efforts as e (e)}<option value={e}>{e || 'default'}</option>{/each}
+						</select>
+					</div>
+					<div class="field grow">
+						<label class="label" for="sp-timeout">Timeout min</label>
+						<input
+							id="sp-timeout"
+							class="input mono"
+							inputmode="numeric"
+							placeholder="default"
+							bind:value={form.timeout}
+						/>
+					</div>
+				</div>
+			{:else}
 			<div class="field">
 				<label class="label" for="sp-machine">Machine</label>
 				<select id="sp-machine" class="select" bind:value={form.machine_id}>
@@ -193,16 +357,13 @@
 					{/each}
 				</div>
 			</div>
+			{/if}
 		</div>
 	{/snippet}
 	{#snippet footer()}
 		<button class="btn" onclick={clearForm}>Clear</button>
-		<button
-			class="btn btn-primary btn-block"
-			disabled={busy || !form.machine_id || !form.working_dir.trim()}
-			onclick={submit}
-		>
-			{#if busy}<span class="spin"></span>{:else}Spawn{/if}
+		<button class="btn btn-primary btn-block" disabled={busy || !valid} onclick={submit}>
+			{#if busy}<span class="spin"></span>{:else}{target === 'machine' ? 'Spawn' : 'Dispatch'}{/if}
 		</button>
 	{/snippet}
 </Modal>
@@ -215,6 +376,37 @@
 		display: grid;
 		grid-template-columns: 1fr 1fr 1fr;
 		gap: var(--sp-2);
+	}
+	.targets {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: var(--sp-2);
+	}
+	.target {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		padding: var(--sp-2);
+		background: var(--bg);
+		border: 1px solid var(--border-strong);
+		border-radius: var(--r-md);
+		text-align: left;
+	}
+	.target.sel {
+		border-color: var(--c-blue);
+		background: color-mix(in srgb, var(--c-blue) 14%, var(--bg));
+		color: var(--c-blue);
+	}
+	.target.sel .faint {
+		color: color-mix(in srgb, var(--c-blue) 70%, var(--text-muted));
+	}
+	.row.gap {
+		display: flex;
+		gap: var(--sp-2);
+	}
+	.grow {
+		flex: 1;
+		min-width: 0;
 	}
 	.mode {
 		display: flex;

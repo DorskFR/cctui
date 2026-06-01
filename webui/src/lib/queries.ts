@@ -6,6 +6,8 @@ import type { SessionListItem } from '@bindings/SessionListItem';
 import type { AgentEvent } from '@bindings/AgentEvent';
 import type { SpawnRequest } from '@bindings/SpawnRequest';
 import type { SpawnResponse } from '@bindings/SpawnResponse';
+import type { DispatchRequest } from '@bindings/DispatchRequest';
+import type { DispatchResponse } from '@bindings/DispatchResponse';
 import type { UserRow } from '@bindings/UserRow';
 import type { MachineRow } from '@bindings/MachineRow';
 import type { UserTokenRow } from '@bindings/UserTokenRow';
@@ -51,6 +53,9 @@ export const endpoints = {
 	machines: (userId: string) => api.get<MachineRow[]>(`/admin/users/${userId}/machines`),
 	tokens: (userId: string) => api.get<UserTokenRow[]>(`/admin/users/${userId}/tokens`),
 	spawn: (body: SpawnRequest) => api.post<SpawnResponse>('/sessions/spawn', body),
+	dispatch: (body: DispatchRequest) => api.post<DispatchResponse>('/sessions/dispatch', body),
+	/** Configured dispatcher ids (e.g. `["claude-worker"]`); empty when none. */
+	dispatchers: () => api.get<string[]>('/sessions/dispatchers'),
 	/** Every active machine across all active users — for the spawn picker. */
 	allMachines: async (): Promise<MachineRow[]> => {
 		const users = (await api.get<UserRow[]>('/admin/users')).filter((u) => !u.revoked_at);
@@ -98,6 +103,16 @@ export const useRecentDirs = (machineId: () => string) =>
 	);
 
 export const useUsers = () => createQuery({ queryKey: qk.users, queryFn: endpoints.users });
+
+export const useDispatchers = (enabled: () => boolean) =>
+	createQuery(
+		toStore(() => ({
+			queryKey: ['dispatchers'],
+			queryFn: endpoints.dispatchers,
+			enabled: enabled(),
+			staleTime: 60_000
+		}))
+	);
 
 export const useAllMachines = (enabled: () => boolean) =>
 	createQuery(
@@ -169,7 +184,15 @@ export function useSessionActions() {
 			await api.post<void>(`/sessions/${id}/auto-approve`, { enabled });
 			inval();
 		},
-		spawn: (body: SpawnRequest) => endpoints.spawn(body)
+		spawn: (body: SpawnRequest) => endpoints.spawn(body),
+		// Dispatch returns synchronously (no daemon ACK / command_id), so unlike
+		// spawn there's nothing to await on the ws — the worker pod registers the
+		// pre-minted session_id later. Invalidate so the `new` session shows up.
+		dispatch: async (body: DispatchRequest) => {
+			const res = await endpoints.dispatch(body);
+			inval();
+			return res;
+		}
 	};
 }
 

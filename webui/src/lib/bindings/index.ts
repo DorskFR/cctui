@@ -7,6 +7,8 @@ export type * from './AutoApproveRequest';
 export type * from './Bucket';
 export type * from './CreateUserRequest';
 export type * from './CreateUserResponse';
+export type * from './DispatchRequest';
+export type * from './DispatchResponse';
 export type * from './Liveness';
 export type * from './MachineRow';
 export type * from './MessageRequest';

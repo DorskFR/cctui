@@ -19,6 +19,20 @@ use crate::auth::AuthContext;
 use crate::dispatchers::{DispatchError, DispatchSpec};
 use crate::state::AppState;
 
+/// `GET /api/v1/sessions/dispatchers` — the ids of every configured
+/// dispatcher (e.g. `["claude-worker"]`). The web UI uses this to decide
+/// whether to offer the "Dispatch to k8s" mode and which dispatcher to target.
+/// Any authenticated caller may read it (no role gate, matching dispatch
+/// itself — see CCT-185 for per-user gating).
+pub async fn list_dispatchers(
+    State(state): State<AppState>,
+    Extension(_ctx): Extension<AuthContext>,
+) -> Json<Vec<String>> {
+    let mut ids = state.dispatchers.ids();
+    ids.sort();
+    Json(ids)
+}
+
 pub async fn dispatch(
     State(state): State<AppState>,
     Extension(_ctx): Extension<AuthContext>,
