@@ -22,9 +22,19 @@ use serde_json::{Value, json};
 /// Encode a working directory into the path-segment Claude uses under
 /// `~/.claude/projects/`. Per protocol §6.1: replace every `/` AND every
 /// `.` with `-`. Empirically `/.` collapses to `--`.
+///
+/// Claude normalizes the cwd before deriving this segment: a trailing slash
+/// is dropped, so `/a/b/` and `/a/b` map to the SAME `<encoded>` dir. We must
+/// match that. A cctui-dispatched session whose `working_dir` carried a
+/// trailing slash (the UI sends `/home/you/proj/`) otherwise encodes to
+/// `-home-you-proj-` (an extra trailing dash) — a directory that never exists.
+/// `tail_once` then treats the missing file as silent success (NotFound →
+/// empty), so the session shows live status but "No events yet" forever
+/// (CCT-196).
 #[must_use]
 pub fn encode_cwd(cwd: &str) -> String {
-    cwd.chars()
+    cwd.trim_end_matches('/')
+        .chars()
         .map(|c| match c {
             '/' | '.' => '-',
             other => other,
@@ -387,6 +397,18 @@ mod tests {
         assert_eq!(encode_cwd("/Users/me/.claude/feedbacks"), "-Users-me--claude-feedbacks");
         assert_eq!(encode_cwd("/tmp/test"), "-tmp-test");
         assert_eq!(encode_cwd("/a.b/c"), "-a-b-c");
+    }
+
+    #[test]
+    fn encode_cwd_drops_trailing_slash() {
+        // CCT-196: a dispatched session's working_dir often carries a trailing
+        // slash (`/home/you/proj/`). Claude normalizes it away before deriving
+        // the projects-dir segment, so we must too — otherwise the encoded dir
+        // gets a spurious trailing dash and the transcript is never found.
+        assert_eq!(encode_cwd("/home/gtax/dev/gtax/"), "-home-gtax-dev-gtax");
+        assert_eq!(encode_cwd("/home/gtax/dev/gtax"), "-home-gtax-dev-gtax");
+        // Multiple trailing slashes collapse the same way.
+        assert_eq!(encode_cwd("/tmp/test//"), "-tmp-test");
     }
 
     #[test]
