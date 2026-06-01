@@ -429,13 +429,17 @@ async fn enrich_and_sort(
 }
 
 /// Query params for `GET /sessions/search` (CCT-184). `q` is a substring
-/// matched (case-insensitively, trgm-accelerated) against every session's full
-/// transcript plus its id/name/working-dir. Scope is *all* sessions — live and
-/// archived — with offset pagination instead of the list's hard 25-row cap.
+/// matched (case-insensitively, trgm-accelerated) against a session's full
+/// transcript plus its id/name/working-dir. `include_archived` sets the scope:
+/// `false` searches live (non-archived) sessions only, `true` searches all.
+/// With an empty `q` and `include_archived=true` this becomes "browse the
+/// archive" — archived sessions, newest first. Offset pagination throughout.
 #[derive(Debug, Default, Deserialize)]
 pub struct SearchParams {
     #[serde(default)]
     pub q: String,
+    #[serde(default)]
+    pub include_archived: bool,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
 }
@@ -474,46 +478,68 @@ fn make_snippet(text: &str, needle: &str) -> String {
     out
 }
 
-/// `GET /sessions/search?q=…&limit=…&offset=…` — full-transcript substring
-/// search across all sessions (CCT-184). Returns the same `SessionListItem`
-/// shape as the list (so clients reuse `SessionCard`), each carrying a
-/// `match_snippet` when the hit was in the transcript. Clients split the
-/// results into Live vs Archived by `status`.
+/// `GET /sessions/search?q=…&include_archived=…&limit=…&offset=…` (CCT-184).
+/// Full-transcript substring search, scoped to live or all sessions; with an
+/// empty `q` and `include_archived=true` it browses the archive. Returns the
+/// same `SessionListItem` shape as the list (so clients reuse `SessionCard`),
+/// each carrying a `match_snippet` when the hit was in the transcript.
+#[allow(clippy::too_many_lines)]
 pub async fn search_sessions(
     State(state): State<AppState>,
     Query(params): Query<SearchParams>,
 ) -> Result<Json<SessionListResponse>, (StatusCode, Json<ApiError>)> {
     let q = params.q.trim();
-    if q.is_empty() {
+    let browse = q.is_empty();
+    // Empty query, live-only scope: nothing to do — the bucketed list owns the
+    // live view. Empty query + archived scope means "browse the archive".
+    if browse && !params.include_archived {
         return Ok(Json(SessionListResponse { sessions: vec![] }));
     }
-    let pattern = ilike_contains(q);
+    let pattern = if browse { String::new() } else { ilike_contains(q) };
     let limit = params.limit.unwrap_or(SEARCH_DEFAULT_LIMIT).clamp(1, SEARCH_MAX_LIMIT);
     let offset = params.offset.unwrap_or(0).max(0);
 
-    // Matched sessions: hit in the transcript (trgm-accelerated EXISTS) or in
-    // the session's own id / name / working dir. No archived filter, no 25-cap.
-    let rows: Vec<DbSession> = sqlx::query_as(
-        "SELECT s.id, s.parent_id, s.machine_id, s.working_dir, s.status, \
-                s.registered_at, s.last_heartbeat, s.metadata, s.adapter_id, \
-                COALESCE(m.display_name, m.name) AS resolved_machine_name \
-         FROM sessions s \
-         LEFT JOIN machines m ON m.id = s.machine_uuid \
-         WHERE s.id ILIKE $1 \
-            OR COALESCE(s.session_name, '') ILIKE $1 \
-            OR s.working_dir ILIKE $1 \
-            OR EXISTS ( \
-                 SELECT 1 FROM stream_events e \
-                 WHERE e.session_id::text = s.id AND e.search_text ILIKE $1 \
-               ) \
-         ORDER BY s.registered_at DESC \
-         LIMIT $2 OFFSET $3",
-    )
-    .bind(&pattern)
-    .bind(limit)
-    .bind(offset)
-    .fetch_all(&state.pool)
-    .await
+    let rows: Vec<DbSession> = if browse {
+        // Browse the archive: archived sessions only, newest first, paginated.
+        sqlx::query_as(
+            "SELECT s.id, s.parent_id, s.machine_id, s.working_dir, s.status, \
+                    s.registered_at, s.last_heartbeat, s.metadata, s.adapter_id, \
+                    COALESCE(m.display_name, m.name) AS resolved_machine_name \
+             FROM sessions s \
+             LEFT JOIN machines m ON m.id = s.machine_uuid \
+             WHERE s.status = 'archived' \
+             ORDER BY s.registered_at DESC \
+             LIMIT $1 OFFSET $2",
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&state.pool)
+        .await
+    } else {
+        // Matched sessions: hit in the transcript (trgm-accelerated EXISTS) or
+        // in the session's own id / name / working dir. The scope clause keeps
+        // archived rows out unless the caller asked to include them.
+        let scope = if params.include_archived { "TRUE" } else { "s.status <> 'archived'" };
+        let sql = format!(
+            "SELECT s.id, s.parent_id, s.machine_id, s.working_dir, s.status, \
+                    s.registered_at, s.last_heartbeat, s.metadata, s.adapter_id, \
+                    COALESCE(m.display_name, m.name) AS resolved_machine_name \
+             FROM sessions s \
+             LEFT JOIN machines m ON m.id = s.machine_uuid \
+             WHERE ({scope}) AND ( \
+                    s.id ILIKE $1 \
+                    OR COALESCE(s.session_name, '') ILIKE $1 \
+                    OR s.working_dir ILIKE $1 \
+                    OR EXISTS ( \
+                         SELECT 1 FROM stream_events e \
+                         WHERE e.session_id::text = s.id AND e.search_text ILIKE $1 \
+                       ) \
+                  ) \
+             ORDER BY s.registered_at DESC \
+             LIMIT $2 OFFSET $3",
+        );
+        sqlx::query_as(&sql).bind(&pattern).bind(limit).bind(offset).fetch_all(&state.pool).await
+    }
     .map_err(|e| {
         tracing::error!("db error (session search): {e}");
         (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
@@ -561,7 +587,7 @@ pub async fn search_sessions(
     // searchable text, windowed around the keyword. Sessions matched only by
     // id/name/dir have no transcript hit and keep `match_snippet = None`.
     let ids: Vec<String> = sessions.iter().map(|s| s.id.clone()).collect();
-    if !ids.is_empty() {
+    if !browse && !ids.is_empty() {
         let snippet_rows: Vec<(String, String)> = sqlx::query_as(
             "SELECT DISTINCT ON (session_id) session_id::text, search_text \
              FROM stream_events \

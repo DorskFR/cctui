@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { SessionListItem } from '@bindings/SessionListItem';
-	import { useSessions, useSessionSearch, useSessionActions } from '$lib/queries';
+	import { useSessions, useSessionActions, endpoints } from '$lib/queries';
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { toasts } from '$lib/toast.svelte';
 	import { ws } from '$lib/ws.svelte';
@@ -19,12 +19,20 @@
 	let openSession = $state<SessionListItem | null>(null);
 	let showSpawn = $state(false);
 
-	const sessions = useSessions(() => showArchived);
+	// Live buckets always show non-archived sessions; the archive is a separate
+	// paginated section below (CCT-184).
+	const sessions = useSessions(() => false);
 
-	// ── Full-transcript search (CCT-184) ──────────────────────────────────
-	// Debounce keystrokes into `query`; a non-empty query flips the page into
-	// search mode (results split into Live / Archived), bypassing the bucketed
-	// live list and its 25-row cap.
+	const qc = useQueryClient();
+	const actions = useSessionActions();
+
+	// ── Search + archive browse (CCT-184) ──────────────────────────────────
+	// One paginated "pager" feeds two views, never both at once:
+	//   • searching (q non-empty) → search results, scoped by `showArchived`
+	//     (unticked = live only, ticked = all). Split into Live / Archived.
+	//   • not searching + showArchived → browse the archive (empty q), paged.
+	// Live-only with no query needs no pager — the bucketed list owns it.
+	const PAGE = 50;
 	let rawQuery = $state('');
 	let query = $state('');
 	$effect(() => {
@@ -33,15 +41,60 @@
 		return () => clearTimeout(t);
 	});
 	const searching = $derived(query.length > 0);
-	const search = useSessionSearch(() => query);
-	const searchResults = $derived($search.data?.sessions ?? []);
-	const liveResults = $derived(searchResults.filter((s) => s.status !== 'archived'));
-	const archivedResults = $derived(searchResults.filter((s) => s.status === 'archived'));
+	const pagerActive = $derived(searching || showArchived);
 
-	const qc = useQueryClient();
-	const actions = useSessionActions();
+	let pageRows = $state<SessionListItem[]>([]);
+	let pageOffset = $state(0);
+	let pageDone = $state(false);
+	let pageLoading = $state(false);
+	let pageError = $state('');
+	let pageReqId = 0; // discard out-of-order/superseded responses
+	let refreshTick = $state(0); // bump to reload the pager after archive ops
+
+	async function loadPage(reset: boolean) {
+		if (!pagerActive) return;
+		const offset = reset ? 0 : pageOffset;
+		const req = ++pageReqId;
+		pageLoading = true;
+		pageError = '';
+		try {
+			// not searching ⇒ browse archive (empty q, archived scope).
+			const res = await endpoints.searchSessions(
+				query,
+				searching ? showArchived : true,
+				PAGE,
+				offset
+			);
+			if (req !== pageReqId) return;
+			const rows = res.sessions;
+			pageRows = reset ? rows : [...pageRows, ...rows];
+			pageOffset = offset + rows.length;
+			pageDone = rows.length < PAGE;
+		} catch (e) {
+			if (req === pageReqId) pageError = (e as Error).message;
+		} finally {
+			if (req === pageReqId) pageLoading = false;
+		}
+	}
+
+	// Reset + reload page 0 whenever the mode (query / scope) changes, or an
+	// archive action bumps refreshTick.
+	const pagerKey = $derived(`${searching ? `q:${query}` : 'browse'}|${showArchived}`);
+	$effect(() => {
+		void pagerKey;
+		void refreshTick;
+		pageRows = [];
+		pageOffset = 0;
+		pageDone = false;
+		pageError = '';
+		if (pagerActive) loadPage(true);
+	});
+
+	const liveResults = $derived(pageRows.filter((s) => s.status !== 'archived'));
+	const archivedResults = $derived(pageRows.filter((s) => s.status === 'archived'));
 
 	// ── Multi-select / batch archive (CCT-172) ─────────────────────────────
+	// Applies to the live buckets only (always non-archived → always archives).
 	let selecting = $state(false);
 	let selected = $state(new Set<string>());
 	let archiving = $state(false);
@@ -57,7 +110,6 @@
 		selected = new Set();
 	}
 	function selectAll() {
-		// Every currently-visible session (top-level + their shown subagents).
 		selected = new Set(items.map((s) => s.id));
 	}
 	async function archiveSelected() {
@@ -66,10 +118,10 @@
 		if (ids.length > 1 && !confirm(`Archive ${ids.length} sessions?`)) return;
 		archiving = true;
 		try {
-			if (showArchived) await actions.unarchiveMany(ids);
-			else await actions.archiveMany(ids);
-			toasts.ok(`${showArchived ? 'Unarchived' : 'Archived'} ${ids.length}`);
+			await actions.archiveMany(ids);
+			toasts.ok(`Archived ${ids.length}`);
 			exitSelect();
+			refreshTick++;
 		} catch (e) {
 			toasts.err((e as Error).message);
 		} finally {
@@ -77,17 +129,15 @@
 		}
 	}
 
-	// Swipe-to-archive a single row (CCT-172): the email-style left-swipe on a
-	// SessionCard archives it (or unarchives in the archived view). Disabled
-	// while in multi-select mode (handled in SessionCard).
+	// Swipe-to-archive a single row (CCT-172). Status-aware so it works for both
+	// live (archive) and archived (unarchive) rows.
 	async function swipeArchive(s: SessionListItem) {
-		// Decide from the row's own status, not the view: search results mix
-		// live + archived sessions in one list.
 		const isArchived = s.status === 'archived';
 		try {
 			if (isArchived) await actions.unarchive(s.id);
 			else await actions.archive(s.id);
 			toasts.ok(isArchived ? 'Unarchived' : 'Archived');
+			refreshTick++;
 		} catch (e) {
 			toasts.err((e as Error).message);
 		}
@@ -111,7 +161,7 @@
 	$effect(() => {
 		const id = notify.pendingOpen;
 		if (!id) return;
-		const target = items.find((s) => s.id === id);
+		const target = [...items, ...pageRows].find((s) => s.id === id);
 		if (target) {
 			openSession = target;
 			notify.pendingOpen = null;
@@ -153,37 +203,27 @@
 
 	// keep the open drawer's session object fresh as the list refetches
 	const liveOpen = $derived(
-		openSession ? (items.find((s) => s.id === openSession!.id) ?? openSession) : null
+		openSession
+			? ([...items, ...pageRows].find((s) => s.id === openSession!.id) ?? openSession)
+			: null
 	);
 </script>
 
 <div class="bar row">
 	<h1 class="page-title">Sessions</h1>
-	<input
-		class="search"
-		type="search"
-		placeholder="Search all chats…"
-		bind:value={rawQuery}
-	/>
-	<div class="spacer"></div>
-	{#if !searching}
-		<label class="arch row">
-			<input type="checkbox" bind:checked={showArchived} /> Archived
-		</label>
-	{/if}
-	<button
-		class="btn btn-sm"
-		title="Toggle compact / detailed rows"
-		onclick={() => (dense = !dense)}>{dense ? '☰ Compact' : '▤ Detailed'}</button
+	<input class="search" type="search" placeholder="Search all chats…" bind:value={rawQuery} />
+	<label class="arch row">
+		<input type="checkbox" bind:checked={showArchived} /> Archived
+	</label>
+	<button class="btn btn-sm" title="Toggle compact / detailed rows" onclick={() => (dense = !dense)}
+		>{dense ? '☰ Compact' : '▤ Detailed'}</button
 	>
 	{#if !searching}
 		{#if selecting}
 			<button class="btn btn-sm" onclick={exitSelect}>Cancel</button>
 		{:else}
-			<button
-				class="btn btn-sm"
-				title="Select multiple to archive"
-				onclick={() => (selecting = true)}>☑ Select</button
+			<button class="btn btn-sm" title="Select multiple to archive" onclick={() => (selecting = true)}
+				>☑ Select</button
 			>
 		{/if}
 	{/if}
@@ -201,80 +241,113 @@
 			onclick={archiveSelected}
 		>
 			{#if archiving}<span class="spin"></span>{/if}
-			{showArchived ? 'Unarchive' : 'Archive'}
-			{selected.size || ''}
+			Archive {selected.size || ''}
 		</button>
 	</div>
 {/if}
 
+{#snippet pager(rows: SessionListItem[])}
+	{#each rows as s (s.id)}
+		<SessionCard
+			session={s}
+			compact={dense}
+			pendingCount={pending(s.id)}
+			onopen={(x) => (openSession = x)}
+			swipeable
+			swipeLabel={s.status === 'archived' ? 'Unarchive' : 'Archive'}
+			onSwipe={swipeArchive}
+		/>
+	{/each}
+{/snippet}
+
+{#snippet loadMore()}
+	{#if pageError}
+		<div class="empty err">Search failed: {pageError}</div>
+	{:else if pageLoading}
+		<div class="loadmore"><span class="spin"></span></div>
+	{:else if !pageDone && pageRows.length > 0}
+		<div class="loadmore">
+			<button class="btn btn-sm" onclick={() => loadPage(false)}>Load more</button>
+		</div>
+	{/if}
+{/snippet}
+
 {#if searching}
-	{#if $search.isLoading}
+	<!-- Search results, scoped by the Archived checkbox; split Live / Archived. -->
+	{#if pageLoading && pageRows.length === 0}
 		<div class="empty"><span class="spin"></span></div>
-	{:else if searchResults.length === 0}
-		<div class="empty">No chats match “{query}”.</div>
+	{:else if pageRows.length === 0}
+		<div class="empty">No chats match “{query}”{showArchived ? '' : ' (live only — tick Archived to search all)'}.</div>
 	{:else}
 		<div class="stack" class:tight={dense}>
-			{#each [{ label: 'Live', rows: liveResults }, { label: 'Archived', rows: archivedResults }] as sec (sec.label)}
-				{#if sec.rows.length > 0}
-					<div class="group-header">
-						{sec.label} <span class="count">{sec.rows.length}</span>
-					</div>
-					{#each sec.rows as s (s.id)}
+			{#if liveResults.length > 0}
+				<div class="group-header">Live <span class="count">{liveResults.length}</span></div>
+				{@render pager(liveResults)}
+			{/if}
+			{#if archivedResults.length > 0}
+				<div class="group-header">Archived <span class="count">{archivedResults.length}</span></div>
+				{@render pager(archivedResults)}
+			{/if}
+			{@render loadMore()}
+		</div>
+	{/if}
+{:else}
+	<!-- Live buckets first… -->
+	{#if $sessions.isLoading}
+		<div class="empty"><span class="spin"></span></div>
+	{:else if topLevel.length === 0 && !showArchived}
+		<div class="empty">No sessions — tick Archived or start one.</div>
+	{:else}
+		<div class="stack" class:tight={dense}>
+			{#each groups as g (g.key)}
+				<div class="group-header" data-bucket={g.key}>
+					{g.label} <span class="count">{g.sessions.length}</span>
+				</div>
+				{#each g.sessions as s (s.id)}
+					<SessionCard
+						session={s}
+						compact={dense}
+						pendingCount={pending(s.id)}
+						onopen={(x) => (openSession = x)}
+						selectable={selecting}
+						selected={selected.has(s.id)}
+						onToggleSelect={toggleSelect}
+						swipeable
+						swipeLabel="Archive"
+						onSwipe={swipeArchive}
+					/>
+					{#each childrenOf.get(s.id) ?? [] as c (c.id)}
 						<SessionCard
-							session={s}
+							session={c}
+							child
 							compact={dense}
-							pendingCount={pending(s.id)}
+							pendingCount={pending(c.id)}
 							onopen={(x) => (openSession = x)}
+							selectable={selecting}
+							selected={selected.has(c.id)}
+							onToggleSelect={toggleSelect}
 							swipeable
-							swipeLabel={s.status === 'archived' ? 'Unarchive' : 'Archive'}
+							swipeLabel="Archive"
 							onSwipe={swipeArchive}
 						/>
 					{/each}
-				{/if}
+				{/each}
 			{/each}
 		</div>
 	{/if}
-{:else if $sessions.isLoading}
-	<div class="empty"><span class="spin"></span></div>
-{:else if topLevel.length === 0}
-	<div class="empty">No sessions{showArchived ? '' : ' — toggle Archived or start one'}.</div>
-{:else}
-	<div class="stack" class:tight={dense}>
-		{#each groups as g (g.key)}
-			<div class="group-header" data-bucket={g.key}>
-				{g.label} <span class="count">{g.sessions.length}</span>
-			</div>
-			{#each g.sessions as s (s.id)}
-				<SessionCard
-					session={s}
-					compact={dense}
-					pendingCount={pending(s.id)}
-					onopen={(x) => (openSession = x)}
-					selectable={selecting}
-					selected={selected.has(s.id)}
-					onToggleSelect={toggleSelect}
-					swipeable
-					swipeLabel={showArchived ? 'Unarchive' : 'Archive'}
-					onSwipe={swipeArchive}
-				/>
-				{#each childrenOf.get(s.id) ?? [] as c (c.id)}
-					<SessionCard
-						session={c}
-						child
-						compact={dense}
-						pendingCount={pending(c.id)}
-						onopen={(x) => (openSession = x)}
-						selectable={selecting}
-						selected={selected.has(c.id)}
-						onToggleSelect={toggleSelect}
-						swipeable
-						swipeLabel={showArchived ? 'Unarchive' : 'Archive'}
-						onSwipe={swipeArchive}
-					/>
-				{/each}
-			{/each}
-		{/each}
-	</div>
+
+	<!-- …then the paginated archive when requested. -->
+	{#if showArchived}
+		<div class="stack" class:tight={dense}>
+			<div class="group-header">Archived <span class="count">{pageRows.length}</span></div>
+			{#if pageRows.length === 0 && !pageLoading}
+				<div class="empty">No archived sessions.</div>
+			{:else}
+				{@render pager(pageRows)}
+				{@render loadMore()}
+			{/if}
+		</div>
+	{/if}
 {/if}
 
 {#if liveOpen}
@@ -292,20 +365,24 @@
 	.bar {
 		margin-bottom: var(--sp-4);
 		gap: var(--sp-2);
+		align-items: stretch;
 	}
 	.page-title {
 		font-size: var(--fs-2xl);
+		align-self: center;
 	}
 	.arch {
 		font-size: var(--fs-sm);
 		color: var(--text-muted);
 		gap: var(--sp-1);
+		align-self: center;
+		white-space: nowrap;
 	}
+	/* Fill all the space between the title and the Archived checkbox. */
 	.search {
 		flex: 1;
 		min-width: 0;
-		max-width: 22rem;
-		padding: var(--sp-1) var(--sp-2);
+		padding: var(--sp-1) var(--sp-3);
 		font-size: var(--fs-sm);
 		border: 1px solid var(--border-strong);
 		border-radius: var(--r-md);
@@ -333,6 +410,14 @@
 	}
 	.stack.tight {
 		gap: var(--sp-1);
+	}
+	.loadmore {
+		display: flex;
+		justify-content: center;
+		padding: var(--sp-3) 0;
+	}
+	.empty.err {
+		color: var(--danger, #bf616a);
 	}
 	.group-header {
 		display: flex;

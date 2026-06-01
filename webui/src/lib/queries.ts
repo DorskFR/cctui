@@ -33,9 +33,16 @@ export const endpoints = {
 	version: () => api.get<VersionInfo>('/version'),
 	sessions: (archived: boolean) =>
 		api.get<SessionListResponse>('/sessions', { include_archived: archived || undefined }),
-	// Full-transcript substring search across ALL sessions (CCT-184).
-	searchSessions: (q: string) =>
-		api.get<SessionListResponse>('/sessions/search', { q: q || undefined }),
+	// Full-transcript substring search (CCT-184). `includeArchived` sets scope
+	// (live-only vs all); an empty `q` with `includeArchived` browses the
+	// archive. Offset-paginated.
+	searchSessions: (q: string, includeArchived: boolean, limit: number, offset: number) =>
+		api.get<SessionListResponse>('/sessions/search', {
+			q: q || undefined,
+			include_archived: includeArchived || undefined,
+			limit,
+			offset
+		}),
 	session: (id: string) => api.get<SessionListItem>(`/sessions/${id}`),
 	conversation: (id: string) => api.get<AgentEvent[]>(`/sessions/${id}/conversation`),
 	recentDirs: (machineId: string) =>
@@ -68,17 +75,6 @@ export const useSessions = (archived: () => boolean) =>
 			queryKey: qk.sessions(archived()),
 			queryFn: () => endpoints.sessions(archived()),
 			refetchInterval: 15_000
-		}))
-	);
-
-// Search is keyed outside ['sessions'] so the list's ~2s ws-driven
-// invalidations don't refetch (and visibly churn) the results on every tick.
-export const useSessionSearch = (q: () => string) =>
-	createQuery(
-		toStore(() => ({
-			queryKey: ['session-search', q()],
-			queryFn: () => endpoints.searchSessions(q()),
-			enabled: q().length > 0
 		}))
 	);
 
