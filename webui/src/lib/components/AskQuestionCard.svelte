@@ -28,9 +28,16 @@
 	let other = $state<string[]>(questions.map(() => ''));
 	// Which option's preview is shown per question (last hovered/selected).
 	let focused = $state<number[]>(questions.map(() => 0));
+	// Optimistic local lock (CCT-190): the card is fully prop-driven, so without
+	// this it stays editable/"Send answer" until the server round-trip flips
+	// `interactive` to false — a multi-second lag. Setting `submitted` on click
+	// flips the card to its in-flight state instantly, independent of the server.
+	let submitted = $state(false);
+	// Editable only while interactive AND not yet submitted.
+	const live = $derived(interactive && !submitted);
 
 	function pick(qi: number, oi: number) {
-		if (!interactive) return;
+		if (!live) return;
 		const q = questions[qi];
 		const set = new Set(chosen[qi]);
 		if (q.multiSelect) {
@@ -60,12 +67,13 @@
 	}
 
 	function submit() {
-		if (!interactive || !answeredAll) return;
+		if (!live || !answeredAll) return;
+		submitted = true; // optimistic flip — show "Answering…" immediately
 		onsubmit(buildAnswer());
 	}
 </script>
 
-<div class="ask" class:done={!interactive}>
+<div class="ask" class:done={!live}>
 	<div class="ask-head">❓ Question{questions.length > 1 ? 's' : ''}</div>
 	{#each questions as q, qi (qi)}
 		{@const hasPreview = q.options.some((o) => o.preview)}
@@ -82,7 +90,7 @@
 							type="button"
 							class="opt"
 							class:sel={chosen[qi].has(oi)}
-							disabled={!interactive}
+							disabled={!live}
 							onclick={() => pick(qi, oi)}
 							onmouseenter={() => (focused[qi] = oi)}
 						>
@@ -99,7 +107,7 @@
 							class="other-in"
 							placeholder="Other…"
 							bind:value={other[qi]}
-							disabled={!interactive}
+							disabled={!live}
 						/>
 					</label>
 				</div>
@@ -115,8 +123,10 @@
 			</div>
 		</div>
 	{/each}
-	{#if interactive}
+	{#if live}
 		<button class="btn btn-primary submit" disabled={!answeredAll} onclick={submit}>Send answer</button>
+	{:else if submitted && interactive}
+		<div class="muted sm answered">Answering…</div>
 	{:else}
 		<div class="muted sm answered">Answered.</div>
 	{/if}

@@ -88,6 +88,14 @@
 	const liveAskQuestions = $derived(ask?.questions ? parseAsk({ questions: ask.questions }) : null);
 	// Timestamps of optimistic replies not yet acknowledged → "sending…" tint.
 	let pendingReplies = $state<Set<number>>(new Set());
+	// Optimistic answer lock (CCT-190): the live ask card and the persisted ask
+	// line are two independent render sites; the clicked one may unmount (live
+	// card) and be replaced by the other (persisted line) before the server
+	// round-trip lands. This session-scoped flag locks BOTH sites to their
+	// answered state on click, so the card never pops back to "asking" while the
+	// reply is in flight. Cleared on resolution (onAsk), a new ask, or session
+	// switch.
+	let answering = $state(false);
 
 	// Bumped to force a full re-subscribe + history refetch (e.g. when the tab
 	// regains focus after the ws may have gone half-open while backgrounded).
@@ -100,6 +108,7 @@
 		void resubTick;
 		live = ws.bufferedEvents(sid);
 		pendingReplies = new Set();
+		answering = false;
 		notSent = false;
 		histIndex = -1;
 		draftStash = '';
@@ -118,6 +127,8 @@
 		});
 		const offAsk = ws.onAsk(sid, (q) => {
 			ask = q;
+			// A fresh ask (or a resolution) supersedes any in-flight answer lock.
+			answering = false;
 		});
 		return () => {
 			offStream();
@@ -528,6 +539,8 @@
 			return;
 		}
 		notSent = false;
+		// Lock both ask render sites to their answered state immediately (CCT-190).
+		answering = true;
 		// Dismiss the live prompt immediately — the daemon's AskResolved arrives
 		// a poll later (CCT-164).
 		ask = null;
@@ -824,7 +837,7 @@
 			{#if ln.ask}
 				<AskQuestionCard
 					questions={ln.ask}
-					interactive={i === lines.length - 1 && !archived}
+					interactive={i === lines.length - 1 && !archived && !answering}
 					onsubmit={answerQuestion}
 				/>
 			{:else if ln.role === 'reset'}
@@ -867,7 +880,7 @@
 			     question text with a free-text answer. Answering sends a reply. -->
 			<AskQuestionCard
 				questions={liveAskQuestions ?? [{ question: ask.question, options: [] }]}
-				interactive={!archived}
+				interactive={!archived && !answering}
 				onsubmit={answerQuestion}
 			/>
 		{/if}
