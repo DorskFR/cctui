@@ -163,7 +163,10 @@ pub async fn dispatch(
     .bind(&session_id)
     .bind(&machine_id_str)
     .bind(machine_uuid)
-    .bind(format!("dispatch:{origin}"))
+    // working_dir is unknown until the worker pod registers its real cwd —
+    // leave it blank (the canonical "no dir" value) rather than showing a
+    // `dispatch:<origin>` placeholder on the card (CCT-191 follow-up).
+    .bind("")
     .bind(now)
     .bind(&metadata)
     .bind(origin)

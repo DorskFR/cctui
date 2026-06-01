@@ -157,7 +157,9 @@ function optimisticDispatchCard(id: string, body: DispatchRequest): SessionListI
 		id,
 		parent_id: null,
 		machine_id: 'dispatch',
-		working_dir: p.repo ? `dispatch:${body.dispatcher}/${p.repo}` : `dispatch:${body.dispatcher}`,
+		// Real cwd is unknown until the worker registers; show the target repo if
+		// the payload carries one, else nothing (no `dispatch:<origin>` noise).
+		working_dir: p.repo ?? '',
 		status: 'new',
 		liveness: 'stale',
 		attention: null,
