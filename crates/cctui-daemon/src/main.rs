@@ -148,7 +148,7 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Cmd::Run { no_auto_update } => {
-            let cfg = Config::load_from(&path)?;
+            let cfg = Config::load_or_env(&path)?;
             // Record this process as the running service so `status` /
             // `service status` can report the version actually serving.
             runtime::record();

@@ -148,6 +148,41 @@ export const useTokens = (userId: () => string, enabled: () => boolean) =>
  * can await + toast, and they invalidate the relevant queries directly. Must
  * be called during component init (they read the query-client context). */
 
+/** Build a placeholder card for an in-flight dispatch (CCT-193). Mirrors the
+ * fields the worker will report once its daemon registers, so the optimistic
+ * card looks like the real one until the refetch reconciles it by id. */
+function optimisticDispatchCard(id: string, body: DispatchRequest): SessionListItem {
+	const p = (body.payload ?? {}) as Record<string, string>;
+	return {
+		id,
+		parent_id: null,
+		machine_id: 'dispatch',
+		working_dir: p.repo ? `dispatch:${body.dispatcher}/${p.repo}` : `dispatch:${body.dispatcher}`,
+		status: 'new',
+		liveness: 'stale',
+		attention: null,
+		bucket: 'working',
+		uptime_secs: 0,
+		token_usage: {
+			tokens_in: 0,
+			tokens_out: 0,
+			cost_usd: 0,
+			cache_read_tokens: 0,
+			cache_creation_tokens: 0
+		},
+		metadata: null,
+		adapter_id: 'claude-code',
+		machine_name: 'dispatch',
+		last_message_text: 'Dispatching…',
+		last_message_at: null,
+		name: p.prompt_file || (p.prompt ? p.prompt.slice(0, 40) : null) || id.slice(0, 6),
+		model: p.model ?? null,
+		effort: p.effort ?? null,
+		auto_approve: false,
+		match_snippet: null
+	};
+}
+
 export function useSessionActions() {
 	const qc = useQueryClient();
 	const inval = () => qc.invalidateQueries({ queryKey: ['sessions'] });
@@ -189,11 +224,28 @@ export function useSessionActions() {
 		spawn: (body: SpawnRequest) => endpoints.spawn(body),
 		// Dispatch returns synchronously (no daemon ACK / command_id), so unlike
 		// spawn there's nothing to await on the ws — the worker pod registers the
-		// pre-minted session_id later. Invalidate so the `new` session shows up.
+		// pre-minted session_id later. We optimistically insert a placeholder card
+		// keyed by the client-minted session_id so the list updates IMMEDIATELY
+		// (CCT-193); the eventual refetch reconciles it by id (the worker pod, or
+		// the server's `failed` row on a backend error, both carry the same id).
 		dispatch: async (body: DispatchRequest) => {
-			const res = await endpoints.dispatch(body);
-			inval();
-			return res;
+			const key = qk.sessions(false);
+			const id = body.session_id ?? crypto.randomUUID();
+			if (body.session_id == null) body = { ...body, session_id: id };
+			const placeholder = optimisticDispatchCard(id, body);
+			qc.setQueryData<SessionListResponse>(key, (prev) => ({
+				sessions: [placeholder, ...(prev?.sessions ?? []).filter((s) => s.id !== id)]
+			}));
+			try {
+				const res = await endpoints.dispatch(body);
+				inval();
+				return res;
+			} catch (e) {
+				// Reconcile to server truth (the row exists as `failed`); the card
+				// stays visible so the user can see + retry the failed dispatch.
+				inval();
+				throw e;
+			}
 		}
 	};
 }

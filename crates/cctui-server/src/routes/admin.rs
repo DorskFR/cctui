@@ -71,6 +71,39 @@ fn derive_liveness(last_heartbeat: DateTime<Utc>) -> Liveness {
     }
 }
 
+/// Sticky terminal statuses (CCT-192): persisted states that must NOT be
+/// re-derived from heartbeat age. `ended` (`SessionEnded` received) and `failed`
+/// (dispatch never launched) both mean "this session is over" — without this
+/// they showed Active/green for ~5 min until the heartbeat aged out, masking
+/// the end of unattended/dispatched jobs.
+fn sticky_status(row_status: &str) -> Option<SessionStatus> {
+    match row_status {
+        "archived" => Some(SessionStatus::Archived),
+        "ended" | "failed" => Some(SessionStatus::Inactive),
+        _ => None,
+    }
+}
+
+/// Resolve the row's status + liveness, honouring sticky terminal states.
+fn resolve_status_liveness(
+    row_status: &str,
+    registered_at: DateTime<Utc>,
+    last_heartbeat: DateTime<Utc>,
+) -> (SessionStatus, Liveness) {
+    sticky_status(row_status).map_or_else(
+        || (derive_status(registered_at, last_heartbeat), derive_liveness(last_heartbeat)),
+        |s| {
+            // Archived keeps its real liveness dot; ended/failed are terminal → Dead.
+            let liveness = if matches!(s, SessionStatus::Archived) {
+                derive_liveness(last_heartbeat)
+            } else {
+                Liveness::Dead
+            };
+            (s, liveness)
+        },
+    )
+}
+
 /// Classify a session into its bucket from the persisted signals. PR-children
 /// ("Ready for review") are not wired server-side yet, so `children` is empty
 /// and the PR cache unused — the `Review` bucket therefore cannot arise today.
@@ -203,12 +236,10 @@ pub async fn list_sessions(
         if live_ids.contains(&row.id) {
             continue;
         }
-        // Archived is sticky/stored; every other state is derived from time.
-        let status = if row.status == "archived" {
-            SessionStatus::Archived
-        } else {
-            derive_status(row.registered_at, row.last_heartbeat)
-        };
+        // Sticky terminal states (archived/ended/failed) are NOT re-derived
+        // from heartbeat; everything else is time-based.
+        let (status, liveness) =
+            resolve_status_liveness(&row.status, row.registered_at, row.last_heartbeat);
         with_ts.push((
             row.registered_at,
             SessionListItem {
@@ -217,7 +248,7 @@ pub async fn list_sessions(
                 machine_id: row.machine_id,
                 working_dir: row.working_dir,
                 status,
-                liveness: derive_liveness(row.last_heartbeat),
+                liveness,
                 attention: None,
                 bucket: Bucket::Working,
                 uptime_secs: (Utc::now() - row.registered_at).num_seconds(),
@@ -577,11 +608,8 @@ pub async fn search_sessions(
     let with_ts: Vec<(DateTime<Utc>, SessionListItem)> = rows
         .into_iter()
         .map(|row| {
-            let status = if row.status == "archived" {
-                SessionStatus::Archived
-            } else {
-                derive_status(row.registered_at, row.last_heartbeat)
-            };
+            let (status, liveness) =
+                resolve_status_liveness(&row.status, row.registered_at, row.last_heartbeat);
             (
                 row.registered_at,
                 SessionListItem {
@@ -590,7 +618,7 @@ pub async fn search_sessions(
                     machine_id: row.machine_id,
                     working_dir: row.working_dir,
                     status,
-                    liveness: derive_liveness(row.last_heartbeat),
+                    liveness,
                     attention: None,
                     bucket: Bucket::Working,
                     uptime_secs: (Utc::now() - row.registered_at).num_seconds(),

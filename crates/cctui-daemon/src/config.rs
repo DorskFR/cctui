@@ -36,6 +36,32 @@ impl Config {
         Ok(toml::from_str(&raw)?)
     }
 
+    /// Build a config purely from environment variables, for dispatched
+    /// worker pods that are handed a shared machine key and never run `enroll`
+    /// (CCT-191). `CCTUI_MACHINE_KEY` + (`CCTUI_SERVER_URL` or `CCTUI_URL`) are
+    /// required; `machine_id` is unknown here (the server returns it from
+    /// `daemon_auth`). Returns `None` when the key isn't set so the caller can
+    /// fall back to the on-disk config.
+    #[must_use]
+    pub fn from_env() -> Option<Self> {
+        let machine_key = std::env::var("CCTUI_MACHINE_KEY").ok().filter(|s| !s.is_empty())?;
+        let server_url = std::env::var("CCTUI_SERVER_URL")
+            .or_else(|_| std::env::var("CCTUI_URL"))
+            .ok()
+            .filter(|s| !s.is_empty())?;
+        Some(Self { server_url, machine_key, machine_id: None })
+    }
+
+    /// Resolve config for `run`: prefer the env-provided shared key (dispatch
+    /// pods), otherwise the on-disk config written by `enroll`.
+    pub fn load_or_env(path: &PathBuf) -> anyhow::Result<Self> {
+        if let Some(cfg) = Self::from_env() {
+            tracing::info!("using machine key from environment (CCTUI_MACHINE_KEY)");
+            return Ok(cfg);
+        }
+        Self::load_from(path)
+    }
+
     /// Whether a config file exists at `path`. Used by `status` to report
     /// enrolment state without surfacing a raw I/O error.
     #[must_use]

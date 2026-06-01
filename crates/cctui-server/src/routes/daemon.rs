@@ -636,9 +636,14 @@ async fn mark_session_ended(
     .bind(&payload)
     .execute(&state.pool)
     .await?;
-    // Flip status to inactive so clients render the terminal state. We do
-    // not delete the row — archival remains the persistence story.
-    sqlx::query("UPDATE sessions SET status = 'inactive' WHERE id = $1")
+    // Flip to the sticky terminal status `ended` so clients render the
+    // terminal state IMMEDIATELY. Plain `inactive` was re-derived back to
+    // Active for ~5 min from the still-recent heartbeat (admin::derive_status
+    // is time-based) — masking the end of unattended/dispatched jobs. `ended`
+    // is honoured as terminal by the list/search read paths regardless of
+    // heartbeat age (CCT-192). We do not delete the row — archival remains the
+    // persistence story; un-archive/resume can revive it.
+    sqlx::query("UPDATE sessions SET status = 'ended' WHERE id = $1 AND status <> 'archived'")
         .bind(local_id)
         .execute(&state.pool)
         .await?;

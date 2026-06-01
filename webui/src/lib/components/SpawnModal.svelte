@@ -120,6 +120,11 @@
 		}
 	}
 
+	// Stable across retries: on a dispatch failure the modal stays open, and
+	// re-submitting reuses the same session_id so the server's idempotency
+	// dedup makes it a genuine retry (not a second pod). Cleared on success.
+	let pendingDispatchId = $state<string | null>(null);
+
 	async function dispatchToK8s() {
 		// Build the opaque payload the dispatcher unpacks into TASK_* env. Omit
 		// empty fields so the worker's own defaults apply.
@@ -130,16 +135,19 @@
 		if (form.model.trim()) payload.model = form.model.trim();
 		if (form.effort.trim()) payload.effort = form.effort.trim();
 		const timeout = form.timeout.trim() ? Number(form.timeout.trim()) : null;
+		// Client-minted id doubles as the idempotency key (CCT-107); held stable
+		// across retries (CCT-193) so a re-submit dedups to the same session.
+		pendingDispatchId ??= crypto.randomUUID();
 		const body: DispatchRequest = {
 			dispatcher: form.dispatcher,
-			// Client-minted id doubles as the idempotency key (CCT-107).
-			session_id: crypto.randomUUID(),
+			session_id: pendingDispatchId,
 			timeout: Number.isFinite(timeout) ? timeout : null,
 			reply_url: null,
 			payload
 		};
 		const res = await actions.dispatch(body);
 		toasts.ok(`Dispatched to ${res.dispatcher} (${res.handle})`);
+		pendingDispatchId = null;
 		drafts.clear(SPAWN_DRAFT);
 		form = { ...blank, machine_id: form.machine_id, dispatcher: form.dispatcher };
 		onspawned();
