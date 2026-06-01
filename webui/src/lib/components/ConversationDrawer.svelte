@@ -191,20 +191,23 @@
 	// overlaps the live buffer) and the persisted form of an optimistic reply
 	// don't render twice.
 	//
-	// Ordering (CCT-186): history is already monotonic (DB `created_at ASC`) and
-	// stays the ordered prefix. Live events were previously appended in pure
-	// arrival order, which could render a message out of timestamp order. We now
-	// sort the deduped live *tail* by `ts` before appending. Array.sort is stable,
-	// so events with equal `ts` keep arrival order as the tiebreaker. We sort the
-	// tail among itself rather than the whole list because history's `created_at`
-	// (server clock) and live `ts` (daemon clock) are different clocks — a global
-	// `ts` sort would interleave the two unsafely (see the dual-clock note above).
+	// Ordering (CCT-186 → fixed here): history is monotonic (DB `created_at ASC`)
+	// and live events were appended after it. CCT-186 sorted the deduped live
+	// *tail* among itself but still pinned it after ALL history (`[...hist,
+	// ...tail]`) on the assumption that every surviving live event is newer than
+	// history's last row. That assumption breaks for an optimistic reply that
+	// survives a focus/reconnect refetch (its persisted form didn't dedup out):
+	// it carries an OLDER `ts` than the assistant rows the refetch pulled in, yet
+	// the tail-after-history merge stranded it at the very bottom (the "old user
+	// message stuck at the bottom" bug). We now order the WHOLE merged list by
+	// `ts` with a stable sort, so such an event lands in its correct chronological
+	// place. Array.sort is stable, so equal-`ts` ties keep their original order —
+	// history (built first) stays ahead of a live event sharing its `ts`.
 	const events = $derived.by(() => {
 		const hist = $history.data ?? [];
 		const seen = new Set(hist.map(eventSig));
 		const tail = live.filter((e) => !seen.has(eventSig(e)));
-		tail.sort((a, b) => a.ts - b.ts);
-		return [...hist, ...tail];
+		return [...hist, ...tail].sort((a, b) => a.ts - b.ts);
 	});
 
 	interface AskQuestion {
