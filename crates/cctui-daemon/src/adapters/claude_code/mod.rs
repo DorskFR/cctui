@@ -15,6 +15,7 @@
 mod backfill;
 mod control;
 mod discovery;
+mod kickstart;
 mod socket;
 mod state;
 mod transcript;

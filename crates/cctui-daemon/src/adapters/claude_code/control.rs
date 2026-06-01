@@ -22,6 +22,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::backfill::{self, BackfillConfig, CursorFile, default_cursor_path};
 use super::discovery::Discovery;
+use super::kickstart::Kickstarter;
 use super::state::{StateJson, default_jobs_root};
 use super::transcript::{self, OffsetStore, default_projects_root};
 use super::{SessionMap, socket};
@@ -177,6 +178,11 @@ pub struct Driver {
     /// subagent's still-present transcript from being rediscovered and
     /// re-announced on the next poll.
     ended_subagents: HashSet<String>,
+    /// Self-heals the on-demand `claude daemon`: when the control socket is
+    /// missing (idle shutdown, sleep, teardown) this boots it via `claude
+    /// agents --json` so polling/dispatch stop failing with "no claude daemon
+    /// socket present" (CCT-194).
+    kickstarter: Kickstarter,
 }
 
 /// How many consecutive idle polls mark a subagent's transcript as done.
@@ -235,6 +241,7 @@ impl Driver {
             .offsets_path
             .clone()
             .map_or_else(|| OffsetStore::open(None), |p| OffsetStore::open(Some(p)));
+        let kickstarter = Kickstarter::new(cfg.claude_bin.clone());
         Self {
             cfg,
             events,
@@ -248,6 +255,7 @@ impl Driver {
             short_by_session: HashMap::new(),
             subagents: HashMap::new(),
             ended_subagents: HashSet::new(),
+            kickstarter,
         }
     }
 
@@ -320,9 +328,10 @@ impl Driver {
 
     #[allow(clippy::cognitive_complexity)]
     async fn handle_command(&self, cmd: AdapterCommand) -> anyhow::Result<()> {
-        let Some(sock) = self.cfg.discovery.locate() else {
-            anyhow::bail!("no claude daemon socket present");
-        };
+        // A command (spawn/reply/kill/…) needs a live control socket. If the
+        // on-demand claude daemon has shut down, boot it and wait briefly for
+        // the socket rather than failing the command outright (CCT-194).
+        let sock = self.ensure_socket().await?;
         match cmd {
             AdapterCommand::SendMessage { local_id, text }
             | AdapterCommand::Reply { local_id, text } => {
@@ -598,10 +607,30 @@ impl Driver {
         Ok(())
     }
 
+    /// Locate the control socket, booting the on-demand claude daemon if it's
+    /// missing and waiting (up to ~5s) for the socket to appear. Used on the
+    /// command path, where failing to find a socket means a dropped spawn/
+    /// reply rather than just a skipped poll (CCT-194).
+    async fn ensure_socket(&self) -> anyhow::Result<PathBuf> {
+        if let Some(sock) = self.cfg.discovery.locate() {
+            return Ok(sock);
+        }
+        self.kickstarter.kick(true).await;
+        for _ in 0..50 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            if let Some(sock) = self.cfg.discovery.locate() {
+                return Ok(sock);
+            }
+        }
+        anyhow::bail!("no claude daemon socket present (kickstart did not bring it up in time)");
+    }
+
     async fn poll_once(&mut self) -> anyhow::Result<()> {
         let Some(sock) = self.cfg.discovery.locate() else {
-            // Daemon isn't running. Treat any sessions we previously knew
-            // about as ended.
+            // Daemon isn't running. Boot it (rate-limited) so it self-heals
+            // before the next dispatch (CCT-194), and treat any sessions we
+            // previously knew about as ended.
+            self.kickstarter.kick(false).await;
             self.flush_roster(EndReason::Other { detail: "daemon gone".into() }).await;
             return Ok(());
         };
