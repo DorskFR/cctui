@@ -85,9 +85,14 @@ function highlightCode(rawCode: string, lang: string): string {
 
 	// Placeholder protection for strings/comments so later passes don't touch them.
 	const slots: string[] = [];
+	// The index is prefixed with a word char ('s') so the later number pass
+	// (/\b\d+\b/) can't match the bare digit wedged between the control-char
+	// sentinels — a sentinel→digit junction is a word boundary, so without the
+	// prefix the index got wrapped in a <span> and the restore below failed,
+	// leaking the slot index as a stray number and dropping the stashed string.
 	const stash = (html: string) => {
 		const i = slots.push(html) - 1;
-		return `${SLOT_L}${i}${SLOT_R}`;
+		return `${SLOT_L}s${i}${SLOT_R}`;
 	};
 
 	// comments (/* block */, // line, # line)
@@ -99,19 +104,25 @@ function highlightCode(rawCode: string, lang: string): string {
 	// strings (", ', `) — escaped double-quotes are &quot;
 	s = s.replace(/(&quot;|['`])(?:\\.|(?!\1)[\s\S])*?\1/g, (m) => stash(`<span class="syn-string">${m}</span>`));
 
-	// numbers
-	s = s.replace(/\b(0x[0-9a-fA-F]+|\d+\.?\d*(?:[eE][+-]?\d+)?)\b/g, '<span class="syn-number">$1</span>');
+	// numbers, keywords and function names are stashed too (not emitted inline):
+	// otherwise a later pass would re-scan the markup we just emitted — e.g. the
+	// keyword pass matching the word `class` inside a `<span class="syn-number">`
+	// — and produce malformed nested tags that the browser renders as garbled
+	// text. Stashing each emission keeps every pass operating on plain source.
+	s = s.replace(/\b(0x[0-9a-fA-F]+|\d+\.?\d*(?:[eE][+-]?\d+)?)\b/g, (m) =>
+		stash(`<span class="syn-number">${m}</span>`)
+	);
 
 	// keywords
 	if (kw) {
 		const re = new RegExp(`\\b(${kw})\\b`, 'g');
-		s = s.replace(re, '<span class="syn-keyword">$1</span>');
+		s = s.replace(re, (m) => stash(`<span class="syn-keyword">${m}</span>`));
 	}
 	// function-call names: ident immediately before "("
-	s = s.replace(/\b([A-Za-z_]\w*)(\s*\()/g, '<span class="syn-function">$1</span>$2');
+	s = s.replace(/\b([A-Za-z_]\w*)(\s*\()/g, (_m, name, paren) => stash(`<span class="syn-function">${name}</span>`) + paren);
 
 	// restore stashed comment/string slots
-	s = s.replace(new RegExp(`${SLOT_L}(\\d+)${SLOT_R}`, 'g'), (_m, i) => slots[Number(i)]);
+	s = s.replace(new RegExp(`${SLOT_L}s(\\d+)${SLOT_R}`, 'g'), (_m, i) => slots[Number(i)]);
 	return s;
 }
 
@@ -140,7 +151,9 @@ export function renderMarkdown(src: string): string {
 		const body = highlightCode(code.replace(/\n$/, ''), lang);
 		const cls = lang ? ` data-lang="${escapeHtml(lang)}"` : '';
 		const i = blocks.push(`<pre class="md-pre"${cls}><code>${body}</code></pre>`) - 1;
-		return `${BLOCK_L}${i}${BLOCK_R}`;
+		// 's'-prefixed for the same reason as the slot placeholders in
+		// highlightCode: keep the bare index out of reach of digit-matching passes.
+		return `${BLOCK_L}s${i}${BLOCK_R}`;
 	});
 
 	s = escapeHtml(s);
@@ -169,7 +182,7 @@ export function renderMarkdown(src: string): string {
 	s = s.replace(/\n/g, '<br />');
 
 	// restore code blocks
-	s = s.replace(new RegExp(`${BLOCK_L}(\\d+)${BLOCK_R}`, 'g'), (_m, i) => blocks[Number(i)]);
+	s = s.replace(new RegExp(`${BLOCK_L}s(\\d+)${BLOCK_R}`, 'g'), (_m, i) => blocks[Number(i)]);
 	return s;
 }
 
