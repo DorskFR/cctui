@@ -171,15 +171,21 @@
 	// already present in history dropped so a reconnect/focus refetch (which
 	// overlaps the live buffer) and the persisted form of an optimistic reply
 	// don't render twice.
+	//
+	// Ordering (CCT-186): history is already monotonic (DB `created_at ASC`) and
+	// stays the ordered prefix. Live events were previously appended in pure
+	// arrival order, which could render a message out of timestamp order. We now
+	// sort the deduped live *tail* by `ts` before appending. Array.sort is stable,
+	// so events with equal `ts` keep arrival order as the tiebreaker. We sort the
+	// tail among itself rather than the whole list because history's `created_at`
+	// (server clock) and live `ts` (daemon clock) are different clocks — a global
+	// `ts` sort would interleave the two unsafely (see the dual-clock note above).
 	const events = $derived.by(() => {
 		const hist = $history.data ?? [];
 		const seen = new Set(hist.map(eventSig));
-		const merged = [...hist];
-		for (const e of live) {
-			if (seen.has(eventSig(e))) continue;
-			merged.push(e);
-		}
-		return merged;
+		const tail = live.filter((e) => !seen.has(eventSig(e)));
+		tail.sort((a, b) => a.ts - b.ts);
+		return [...hist, ...tail];
 	});
 
 	interface AskQuestion {
@@ -505,7 +511,16 @@
 	// just local `live`) so a resubscribe/reconnect that rebuilds `live` from
 	// `bufferedEvents()` doesn't drop a message claude already received.
 	function pushOptimisticReply(text: string) {
-		const ev: AgentEvent = { type: 'reply', content: text, ts: Date.now() };
+		// Stamp the optimistic echo just past the newest known event rather than
+		// with the browser clock (CCT-186): a user message is logically the latest
+		// thing in the conversation at send time, but `Date.now()` is a third clock
+		// that can sit behind the daemon-stamped `ts` of surrounding events and so
+		// sort the message into the wrong place. Deriving `ts` from the current max
+		// keeps it ordered last until history catches up and replaces it.
+		const known = [...($history.data ?? []), ...live];
+		const maxTs = known.reduce((m, e) => Math.max(m, e.ts), 0);
+		const ts = Math.max(Date.now(), maxTs + 1);
+		const ev: AgentEvent = { type: 'reply', content: text, ts };
 		ws.recordOptimistic(id, ev);
 		live = [...live, ev];
 		pendingReplies = new Set([...pendingReplies, ev.ts]);
