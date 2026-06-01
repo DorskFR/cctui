@@ -608,15 +608,17 @@ impl Driver {
     }
 
     /// Locate the control socket, booting the on-demand claude daemon if it's
-    /// missing and waiting (up to ~5s) for the socket to appear. Used on the
+    /// missing and waiting (up to ~12s) for the socket to appear. Used on the
     /// command path, where failing to find a socket means a dropped spawn/
-    /// reply rather than just a skipped poll (CCT-194).
+    /// reply rather than just a skipped poll (CCT-194). `claude daemon run`
+    /// needs a few seconds to start the supervisor and bind the socket, so the
+    /// window is generous.
     async fn ensure_socket(&self) -> anyhow::Result<PathBuf> {
         if let Some(sock) = self.cfg.discovery.locate() {
             return Ok(sock);
         }
-        self.kickstarter.kick(true).await;
-        for _ in 0..50 {
+        self.kickstarter.kick(true);
+        for _ in 0..120 {
             tokio::time::sleep(Duration::from_millis(100)).await;
             if let Some(sock) = self.cfg.discovery.locate() {
                 return Ok(sock);
@@ -630,7 +632,7 @@ impl Driver {
             // Daemon isn't running. Boot it (rate-limited) so it self-heals
             // before the next dispatch (CCT-194), and treat any sessions we
             // previously knew about as ended.
-            self.kickstarter.kick(false).await;
+            self.kickstarter.kick(false);
             self.flush_roster(EndReason::Other { detail: "daemon gone".into() }).await;
             return Ok(());
         };
