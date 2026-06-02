@@ -17,6 +17,13 @@ pub mod http;
 pub struct DispatchHandle {
     pub handle: String,
     pub namespace: Option<String>,
+    /// Outcome reported by the dispatcher, surfaced to the caller verbatim
+    /// (CCT-207). `None` when the dispatcher predates the field; the route then
+    /// falls back to `"dispatched"`. Known values: `dispatched` (fresh run),
+    /// `deduplicated` (in-flight Job — the original run still calls back),
+    /// `redispatched` (a terminal Job was deleted + recreated so a fresh run
+    /// calls back, instead of the caller parking on a dead Job).
+    pub status: Option<String>,
 }
 
 /// Everything a [`Dispatcher`] needs to materialize a session. Built by the

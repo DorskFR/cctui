@@ -272,6 +272,11 @@ pub struct DispatchResponse {
     pub handle: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub namespace: Option<String>,
+    /// Dispatch outcome (CCT-207): `dispatched` (a fresh run was launched),
+    /// `deduplicated` (an in-flight Job already owns the one callback the caller
+    /// is waiting on), or `redispatched` (a *terminal* Job was deleted and a
+    /// fresh run launched — so the caller's wait resolves on the new callback
+    /// instead of parking on a Job that already ran and will never call back).
     pub status: String,
 }
 

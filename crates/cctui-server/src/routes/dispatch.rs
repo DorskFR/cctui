@@ -231,9 +231,10 @@ pub async fn dispatch(
                 Notification {
                     title: format!("Dispatch forwarded → {}", req.dispatcher),
                     message: format!(
-                        "user: {caller}\nsession: {session_id}\nhandle: {}\nnamespace: {}",
+                        "user: {caller}\nsession: {session_id}\nhandle: {}\nnamespace: {}\nstatus: {}",
                         h.handle,
                         h.namespace.as_deref().unwrap_or("-"),
+                        h.status.as_deref().unwrap_or("dispatched"),
                     ),
                     tags: "white_check_mark".into(),
                     priority: 3,
@@ -267,7 +268,11 @@ pub async fn dispatch(
             dispatcher: origin.to_string(),
             handle: handle.handle,
             namespace: handle.namespace,
-            status: "dispatched".into(),
+            // Surface the dispatcher's outcome verbatim so a re-dispatch onto a
+            // terminal Job reads as `redispatched` (a fresh run) rather than a
+            // misleading `dispatched` (CCT-207). Older dispatchers omit it →
+            // preserve the historical `dispatched`.
+            status: handle.status.unwrap_or_else(|| "dispatched".into()),
         }),
     ))
 }

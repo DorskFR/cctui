@@ -27,6 +27,11 @@ struct DispatchReply {
     handle: String,
     #[serde(default)]
     namespace: Option<String>,
+    /// Dispatch outcome (`dispatched` / `deduplicated` / `redispatched`).
+    /// Absent from older dispatchers, so default to `None` and let the route
+    /// fall back (CCT-207).
+    #[serde(default)]
+    status: Option<String>,
 }
 
 impl HttpDispatcher {
@@ -74,6 +79,10 @@ impl Dispatcher for HttpDispatcher {
             .await
             .map_err(|e| DispatchError::Backend(format!("decoding dispatcher reply: {e}")))?;
 
-        Ok(DispatchHandle { handle: reply.handle, namespace: reply.namespace })
+        Ok(DispatchHandle {
+            handle: reply.handle,
+            namespace: reply.namespace,
+            status: reply.status,
+        })
     }
 }
