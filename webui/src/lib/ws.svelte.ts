@@ -247,6 +247,14 @@ class WsClient {
 		this.optimistic.set(id, [...(this.optimistic.get(id) ?? []), ev]);
 	}
 
+	/** Drop a still-pending optimistic reply by its `ts` (CCT-208): used when
+	 * the user edits a message that hasn't been acknowledged yet — the echo is
+	 * pulled back into the composer, so it must stop being re-seeded on resub. */
+	dropOptimistic(id: string, ts: number) {
+		const opt = this.optimistic.get(id);
+		if (opt) this.optimistic.set(id, opt.filter((o) => o.ts !== ts));
+	}
+
 	private setPerms(id: string, list: PermReq[]) {
 		this.perms.set(id, list);
 		this.changeTick++; // list badge re-derives on changeTick-driven refetch

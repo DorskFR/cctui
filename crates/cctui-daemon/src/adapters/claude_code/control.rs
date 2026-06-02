@@ -623,13 +623,13 @@ impl Driver {
     /// needs a few seconds to start the supervisor and bind the socket, so the
     /// window is generous.
     async fn ensure_socket(&self) -> anyhow::Result<PathBuf> {
-        if let Some(sock) = self.cfg.discovery.locate() {
+        if let Some(sock) = self.cfg.discovery.locate_live().await {
             return Ok(sock);
         }
         self.kickstarter.kick(true);
         for _ in 0..120 {
             tokio::time::sleep(Duration::from_millis(100)).await;
-            if let Some(sock) = self.cfg.discovery.locate() {
+            if let Some(sock) = self.cfg.discovery.locate_live().await {
                 return Ok(sock);
             }
         }
@@ -637,7 +637,7 @@ impl Driver {
     }
 
     async fn poll_once(&mut self) -> anyhow::Result<()> {
-        let Some(sock) = self.cfg.discovery.locate() else {
+        let Some(sock) = self.cfg.discovery.locate_live().await else {
             // Daemon isn't running. Boot it (rate-limited) so it self-heals
             // before the next dispatch (CCT-194), and treat any sessions we
             // previously knew about as ended.

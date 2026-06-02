@@ -88,6 +88,13 @@
 	const liveAskQuestions = $derived(ask?.questions ? parseAsk({ questions: ask.questions }) : null);
 	// Timestamps of optimistic replies not yet acknowledged → "sending…" tint.
 	let pendingReplies = $state<Set<number>>(new Set());
+	// Activity indicator (CCT-208): true while claude is processing this turn —
+	// the equivalent of the TUI's "Running…" spinner, proving the request is
+	// being worked on. Set when we send input or see agent/tool/text/reply
+	// events stream in; cleared on `turn_end` and whenever claude blocks on the
+	// user (a permission prompt or an AskUserQuestion arrives). Stream-derived
+	// rather than read off the status poll so it reacts instantly.
+	let working = $state(false);
 	// Optimistic answer lock (CCT-190): the live ask card and the persisted ask
 	// line are two independent render sites; the clicked one may unmount (live
 	// card) and be replaced by the other (persisted line) before the server
@@ -109,6 +116,7 @@
 		live = ws.bufferedEvents(sid);
 		pendingReplies = new Set();
 		answering = false;
+		working = false;
 		notSent = false;
 		histIndex = -1;
 		draftStash = '';
@@ -121,14 +129,23 @@
 			live = [...live, ev];
 			// Any real agent event means our queued replies were received.
 			if (ev.type !== 'reply' && pendingReplies.size) pendingReplies = new Set();
+			// Drive the activity indicator (CCT-208): a turn ends on `turn_end`;
+			// any substantive agent/tool/user event means work is in progress.
+			// Heartbeats keep an active turn alive but never start one.
+			if (ev.type === 'turn_end') working = false;
+			else if (ev.type !== 'heartbeat') working = true;
 		});
 		const offPerms = ws.onPerms(sid, (list) => {
 			perms = list;
+			// A permission prompt means claude is blocked on the user, not working.
+			if (list.length) working = false;
 		});
 		const offAsk = ws.onAsk(sid, (q) => {
 			ask = q;
 			// A fresh ask (or a resolution) supersedes any in-flight answer lock.
 			answering = false;
+			// A pending question means claude is waiting on the user, not working.
+			if (q) working = false;
 		});
 		return () => {
 			offStream();
@@ -443,10 +460,14 @@
 			return;
 		}
 		notSent = false;
-		// Sending any message also answers a pending live question (CCT-164) —
-		// dismiss the prompt now; the daemon's AskResolved lands a poll later.
-		ask = null;
-		ws.clearAsk(id);
+		// NB: a free-typed send does NOT dismiss a pending AskUserQuestion
+		// (CCT-208). The old code cleared `ask` on every send, which hid the
+		// question whenever the user had a message in flight — but the question
+		// is still genuinely pending until the daemon emits `ask_resolved`
+		// (which arrives a poll later and clears it via onAsk). Only an explicit
+		// option-click (`answerQuestion`) optimistically dismisses the card.
+		// We're now processing the user's input, so flag the working indicator.
+		working = true;
 		// Sending should always jump to the latest message (classic chat UX),
 		// even if the user had scrolled up — re-pin so the sticky-bottom $effect
 		// follows the optimistic echo down.
@@ -544,12 +565,29 @@
 		notSent = false;
 		// Lock both ask render sites to their answered state immediately (CCT-190).
 		answering = true;
+		// Answering hands control back to claude — show the working indicator.
+		working = true;
 		// Dismiss the live prompt immediately — the daemon's AskResolved arrives
 		// a poll later (CCT-164).
 		ask = null;
 		ws.clearAsk(id);
 		pushOptimisticReply(text);
 		qc.invalidateQueries({ queryKey: ['sessions'] });
+	}
+
+	// Edit a still-pending message (CCT-208). A pending optimistic reply may not
+	// have been delivered (e.g. the daemon was offline), so let the user pull it
+	// back into the composer to fix and resend: drop the echo from both the local
+	// buffer and the ws optimistic store, clear its pending tint, and focus the
+	// textarea with the recovered text.
+	function editPending(text: string, ts: number) {
+		if (archived) return;
+		input = text;
+		ws.dropOptimistic(id, ts);
+		live = live.filter((e) => !(e.type === 'reply' && e.ts === ts));
+		pendingReplies = new Set([...pendingReplies].filter((t) => t !== ts));
+		resetHistoryNav();
+		textarea?.focus();
 	}
 
 	// Optimistic echo of a user-typed message. Kept in the ws singleton (not
@@ -658,6 +696,7 @@
 	$effect(() => {
 		void lines.length;
 		void perms.length;
+		void working;
 		// Only follow new content when the user is pinned to the bottom.
 		if (stuck && scroller) {
 			requestAnimationFrame(() => {
@@ -862,7 +901,17 @@
 						<span class="who tool-name">{ln.role === 'result' ? '↳ ' : ''}{ln.tool ?? 'tool'}</span>
 					{/if}
 					<span class="faint sm">{clockTime(ln.ts)}</span>
-					{#if ln.pending}<span class="faint sm sending">sending…</span>{/if}
+					{#if ln.pending}
+						<span class="faint sm sending">sending…</span>
+						{#if !archived}
+							<button
+								class="btn btn-ghost edit-pending"
+								aria-label="Edit pending message"
+								title="Pull this still-pending message back into the composer to edit and resend"
+								onclick={() => editPending(ln.text ?? '', ln.ts)}>✎</button
+							>
+						{/if}
+					{/if}
 					<button class="btn btn-ghost copy" aria-label="Copy" onclick={() => copyLine(ln.text ?? '')}>⧉</button>
 				</div>
 				{#if ln.html}
@@ -891,6 +940,15 @@
 		{#each perms as p (p.request_id)}
 			<PermissionCard req={p} onrespond={(rid, allow) => ws.respondPermission(id, rid, allow)} />
 		{/each}
+
+		{#if working && !archived && !ask && perms.length === 0}
+			<!-- Activity indicator (CCT-208): proves the request is being processed,
+			     the equivalent of the TUI's "Running…" spinner. -->
+			<div class="working" role="status" aria-live="polite">
+				<span class="working-dots" aria-hidden="true"><span></span><span></span><span></span></span>
+				<span class="working-label">Working…</span>
+			</div>
+		{/if}
 	</div>
 
 		{#if !stuck}
@@ -1247,6 +1305,66 @@
 	.sending {
 		color: var(--warn);
 		margin-left: auto;
+	}
+	/* Edit-pending button (CCT-208): sits next to "sending…" on a pending line. */
+	.edit-pending {
+		padding: 0 var(--sp-1);
+		min-height: auto;
+		font-size: var(--fs-sm);
+		line-height: 1;
+		color: var(--text-faint);
+	}
+	.edit-pending:hover {
+		color: var(--accent);
+	}
+	/* Working indicator (CCT-208) — animated dots + label proving claude is
+	   processing the turn, styled like a muted assistant-side status line. */
+	.working {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--sp-2);
+		padding: var(--sp-1) var(--sp-3);
+		color: var(--text-muted);
+		font-size: var(--fs-xs);
+		font-weight: var(--fw-medium);
+	}
+	.working-label {
+		letter-spacing: 0.02em;
+	}
+	.working-dots {
+		display: inline-flex;
+		gap: 3px;
+	}
+	.working-dots span {
+		width: 5px;
+		height: 5px;
+		border-radius: 50%;
+		background: var(--role-assistant, var(--accent));
+		animation: working-bounce 1.2s var(--ease) infinite;
+	}
+	.working-dots span:nth-child(2) {
+		animation-delay: 0.18s;
+	}
+	.working-dots span:nth-child(3) {
+		animation-delay: 0.36s;
+	}
+	@keyframes working-bounce {
+		0%,
+		60%,
+		100% {
+			opacity: 0.3;
+			transform: translateY(0);
+		}
+		30% {
+			opacity: 1;
+			transform: translateY(-3px);
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.working-dots span {
+			animation: none;
+			opacity: 0.6;
+		}
 	}
 	.line.tool .bubble,
 	.line.result .bubble {
