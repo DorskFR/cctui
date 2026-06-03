@@ -31,7 +31,9 @@
 		permission_mode: PermissionMode;
 		// dispatch-only fields (forwarded to the dispatcher as `payload`).
 		dispatcher: string;
+		identity: string;
 		repo: string;
+		ticket: string;
 		prompt_file: string;
 		model: string;
 		// Effort is per-adapter (claude and codex have different level sets), so
@@ -49,7 +51,9 @@
 		prompt: '',
 		permission_mode: 'yolo',
 		dispatcher: '',
+		identity: '',
 		repo: '',
+		ticket: '',
 		prompt_file: '',
 		model: '',
 		effort_claude: '',
@@ -197,7 +201,11 @@
 		// empty fields so the worker's own defaults apply.
 		const payload: Record<string, unknown> = {};
 		if (form.name.trim()) payload.name = form.name.trim();
+		if (form.identity.trim()) payload.identity = form.identity.trim();
 		if (form.repo.trim()) payload.repo = form.repo.trim();
+		// A ticket id becomes the flow's context — the worker exports `context` as
+		// TASK_CONTEXT_JSON and the prompt reads `issue_id` from it.
+		if (form.ticket.trim()) payload.context = { issue_id: form.ticket.trim() };
 		if (form.prompt.trim()) payload.prompt = form.prompt.trim();
 		if (form.prompt_file.trim()) payload.prompt_file = form.prompt_file.trim();
 		if (form.model.trim()) payload.model = form.model.trim();
@@ -343,6 +351,17 @@
 				</div>
 
 				<div class="field">
+					<label class="label" for="sp-identity">Identity (optional)</label>
+					<input
+						id="sp-identity"
+						class="input mono"
+						placeholder="dorsk"
+						bind:value={form.identity}
+					/>
+					<span class="faint sm">Which account the worker acts as. Empty = worker default.</span>
+				</div>
+
+				<div class="field">
 					<label class="label" for="sp-repo">Repo</label>
 					<input
 						id="sp-repo"
@@ -351,6 +370,17 @@
 						bind:value={form.repo}
 					/>
 					<span class="faint sm">Checked out under the worker's /workspace (optional).</span>
+				</div>
+
+				<div class="field">
+					<label class="label" for="sp-ticket">Ticket (optional)</label>
+					<input
+						id="sp-ticket"
+						class="input mono"
+						placeholder="PROJ-1234"
+						bind:value={form.ticket}
+					/>
+					<span class="faint sm">Issue id for the flow's context (e.g. an implement prompt).</span>
 				</div>
 
 				<div class="field">
