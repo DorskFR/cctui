@@ -217,6 +217,21 @@ pub fn sha256_hex(input: &str) -> String {
     cctui_proto::util::sha256_hex(input.as_bytes())
 }
 
+/// A non-secret, recognisable fragment of a token for display in the admin UI
+/// (CCT-185). Keeps the typed prefix (`cctui_u_`) plus a few leading and
+/// trailing chars so an operator can tell tokens apart, while the bulk of the
+/// 256-bit secret stays hidden — `cctui_u_ab1234…ef34`.
+#[must_use]
+pub fn token_preview(token: &str) -> String {
+    // Tokens are `cctui_u_` (8) + 64 hex; if something shorter slips through,
+    // just mask all but the last 4 rather than panicking on the slice.
+    if token.len() <= 16 {
+        return "•".repeat(token.len().saturating_sub(4))
+            + token.get(token.len().saturating_sub(4)..).unwrap_or("");
+    }
+    format!("{}…{}", &token[..14], &token[token.len() - 4..])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,6 +270,18 @@ mod tests {
         assert_eq!(s.len(), 64);
         assert!(user_token(&s).starts_with("cctui_u_"));
         assert!(machine_token(&s).starts_with("cctui_m_"));
+    }
+
+    #[test]
+    fn token_preview_keeps_prefix_and_tail() {
+        let token = user_token(&mint_secret());
+        let preview = token_preview(&token);
+        assert!(preview.starts_with("cctui_u_"));
+        assert!(preview.contains('…'));
+        assert!(token.ends_with(&preview[preview.len() - 4..]));
+        // The full secret must never be recoverable from the preview.
+        assert!(preview.len() < token.len());
+        assert!(!token.contains(&preview));
     }
 
     #[tokio::test]

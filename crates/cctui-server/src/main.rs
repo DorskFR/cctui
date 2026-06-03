@@ -106,8 +106,9 @@ async fn main() -> anyhow::Result<()> {
         )
         .route(
             "/admin/users/{id}",
-            delete(routes::admin_auth::revoke_user).patch(routes::admin_auth::rename_user),
+            delete(routes::admin_auth::revoke_user).patch(routes::admin_auth::update_user),
         )
+        .route("/admin/users/{id}/purge", delete(routes::admin_auth::purge_user))
         .route("/admin/users/{id}/rotate", post(routes::admin_auth::rotate_user))
         .route("/admin/users/{id}/machines", get(routes::admin_auth::list_user_machines))
         .route("/admin/users/{id}/tokens", get(routes::admin_auth::list_user_tokens))
@@ -115,6 +116,10 @@ async fn main() -> anyhow::Result<()> {
             "/admin/users/{id}/tokens/{token_id}",
             patch(routes::admin_auth::relabel_user_token)
                 .delete(routes::admin_auth::revoke_user_token),
+        )
+        .route(
+            "/admin/users/{id}/tokens/{token_id}/purge",
+            delete(routes::admin_auth::delete_user_token),
         )
         .route(
             "/admin/machines/{id}",

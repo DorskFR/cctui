@@ -723,13 +723,16 @@ pub async fn mint_user_token(
 
     let token = user_token(&mint_secret());
     let hash = sha256_hex(&token);
+    let preview = crate::auth::token_preview(&token);
     sqlx::query(
-        "INSERT INTO user_tokens (user_id, token_hash, label, expires_at) VALUES ($1, $2, $3, $4)",
+        "INSERT INTO user_tokens (user_id, token_hash, label, expires_at, token_preview) \
+         VALUES ($1, $2, $3, $4, $5)",
     )
     .bind(user_id)
     .bind(&hash)
     .bind(req.label.as_deref())
     .bind(req.expires_at)
+    .bind(&preview)
     .execute(&state.pool)
     .await
     .map_err(|e| {

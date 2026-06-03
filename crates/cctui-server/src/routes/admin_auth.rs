@@ -49,6 +49,9 @@ pub struct UserRow {
     pub name: String,
     pub created_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,
+    /// Per-user dispatch permission (CCT-185). Enforced on `POST
+    /// /sessions/dispatch`; defaults TRUE.
+    pub can_dispatch: bool,
 }
 
 #[derive(Serialize, sqlx::FromRow, TS)]
@@ -73,10 +76,14 @@ pub struct RenameMachineRequest {
     pub display_name: Option<String>,
 }
 
+/// Partial update of a user (CCT-185). Any field left `None` is unchanged, so
+/// the same endpoint serves both rename and the dispatch-permission toggle.
 #[derive(Deserialize, TS)]
 #[ts(export)]
-pub struct RenameUserRequest {
-    pub name: String,
+pub struct UpdateUserRequest {
+    /// Blank/whitespace is rejected (name is `NOT NULL`); `None` leaves it.
+    pub name: Option<String>,
+    pub can_dispatch: Option<bool>,
 }
 
 #[derive(Deserialize, TS)]
@@ -94,6 +101,9 @@ pub struct UserTokenRow {
     pub created_at: DateTime<Utc>,
     pub expires_at: Option<DateTime<Utc>>,
     pub revoked_at: Option<DateTime<Utc>>,
+    /// Non-secret fragment for display (CCT-185), e.g. `cctui_u_ab12…ef34`.
+    /// `None` for tokens minted before the preview column existed.
+    pub token_preview: Option<String>,
 }
 
 #[derive(Serialize, TS)]
@@ -132,11 +142,12 @@ pub async fn list_users(
     Extension(ctx): Extension<AuthContext>,
 ) -> Result<Json<Vec<UserRow>>, (StatusCode, Json<ApiError>)> {
     forbid_or(&ctx)?;
-    let rows: Vec<UserRow> =
-        sqlx::query_as("SELECT id, name, created_at, revoked_at FROM users ORDER BY created_at")
-            .fetch_all(&state.pool)
-            .await
-            .map_err(|e| db_err(&e))?;
+    let rows: Vec<UserRow> = sqlx::query_as(
+        "SELECT id, name, created_at, revoked_at, can_dispatch FROM users ORDER BY created_at",
+    )
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| db_err(&e))?;
     Ok(Json(rows))
 }
 
@@ -279,30 +290,109 @@ pub async fn rename_machine(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Rename a user's display name (CCT-150). Mirrors `rename_machine` but
-/// `name` is `NOT NULL`, so an empty/blank name is rejected rather than
-/// cleared.
-pub async fn rename_user(
+/// Update a user's mutable fields (CCT-150 rename + CCT-185 dispatch toggle).
+/// `name` is `NOT NULL`, so a blank name is rejected rather than cleared;
+/// `can_dispatch` flips the per-user dispatch permission. Fields left `None`
+/// are untouched, so the UI can PATCH just the field it changed.
+pub async fn update_user(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
-    Json(req): Json<RenameUserRequest>,
+    Json(req): Json<UpdateUserRequest>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
     forbid_or(&ctx)?;
-    let name = req.name.trim();
-    if name.is_empty() {
-        return Err((StatusCode::BAD_REQUEST, Json(ApiError { error: "name required".into() })));
+    let name = match req.name.as_deref().map(str::trim) {
+        Some("") => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ApiError { error: "name required".into() }),
+            ));
+        }
+        other => other,
+    };
+    if name.is_none() && req.can_dispatch.is_none() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ApiError { error: "nothing to update".into() }),
+        ));
     }
-    let outcome = sqlx::query("UPDATE users SET name = $1 WHERE id = $2")
-        .bind(name)
+    // COALESCE keeps the existing value when a field is NULL (not supplied).
+    let outcome = sqlx::query(
+        "UPDATE users SET \
+            name = COALESCE($1, name), \
+            can_dispatch = COALESCE($2, can_dispatch) \
+         WHERE id = $3",
+    )
+    .bind(name)
+    .bind(req.can_dispatch)
+    .bind(id)
+    .execute(&state.pool)
+    .await
+    .map_err(|e| db_err(&e))?;
+    if outcome.rows_affected() == 0 {
+        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "user not found".into() })));
+    }
+    tracing::info!(user_id = %id, name, can_dispatch = ?req.can_dispatch, "user updated");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Permanently delete a revoked user and everything owned by it (CCT-185).
+/// Mirrors `delete_machine`'s "must be revoked first" guard so a live user is
+/// never destroyed by a mis-click. `machines`, `user_tokens`, `triggers` and
+/// uploaded skills cascade on the FK; `sessions` reference the user/machine
+/// WITHOUT cascade, so we null those references first (history is preserved,
+/// just disowned). All in one transaction so a partial failure rolls back.
+pub async fn purge_user(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    forbid_or(&ctx)?;
+    // Gather hashes up-front so we can evict them from the auth cache after the
+    // row is gone (the rows themselves are about to be deleted).
+    purge_user_cache(&state.auth_config, id, &state.pool).await;
+
+    let mut tx = state.pool.begin().await.map_err(|e| db_err(&e))?;
+    let revoked: Option<(Option<DateTime<Utc>>,)> =
+        sqlx::query_as("SELECT revoked_at FROM users WHERE id = $1 FOR UPDATE")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| db_err(&e))?;
+    let Some((revoked_at,)) = revoked else {
+        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "user not found".into() })));
+    };
+    if revoked_at.is_none() {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(ApiError { error: "user must be revoked before delete".into() }),
+        ));
+    }
+    // Disown sessions that reference this user or any of its machines (no FK
+    // cascade there — preserve the transcript rows, just drop ownership).
+    sqlx::query(
+        "UPDATE sessions SET machine_uuid = NULL \
+         WHERE machine_uuid IN (SELECT id FROM machines WHERE user_id = $1)",
+    )
+    .bind(id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| db_err(&e))?;
+    sqlx::query("UPDATE sessions SET user_id = NULL WHERE user_id = $1")
         .bind(id)
-        .execute(&state.pool)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| db_err(&e))?;
+    let outcome = sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(id)
+        .execute(&mut *tx)
         .await
         .map_err(|e| db_err(&e))?;
     if outcome.rows_affected() == 0 {
         return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "user not found".into() })));
     }
-    tracing::info!(user_id = %id, name, "user renamed");
+    tx.commit().await.map_err(|e| db_err(&e))?;
+    tracing::info!(user_id = %id, "user purged");
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -315,7 +405,7 @@ pub async fn list_user_tokens(
 ) -> Result<Json<Vec<UserTokenRow>>, (StatusCode, Json<ApiError>)> {
     forbid_or(&ctx)?;
     let rows: Vec<UserTokenRow> = sqlx::query_as(
-        "SELECT id, label, created_at, expires_at, revoked_at \
+        "SELECT id, label, created_at, expires_at, revoked_at, token_preview \
          FROM user_tokens WHERE user_id = $1 ORDER BY created_at",
     )
     .bind(id)
@@ -370,6 +460,31 @@ pub async fn revoke_user_token(
     }
     purge_user_cache(&state.auth_config, user_id, &state.pool).await;
     tracing::info!(%user_id, %token_id, "token revoked");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Hard-delete a token row — "revoke + purge" in one go (CCT-185). Unlike
+/// `revoke_user_token` (which keeps the row around showing `revoked`), this
+/// removes it entirely. A token is pure auth surface with no historical FK, so
+/// deleting the row is safe and equivalent to revoking from a security view.
+/// The auth cache is purged so the secret stops working immediately.
+pub async fn delete_user_token(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path((user_id, token_id)): Path<(Uuid, Uuid)>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    forbid_or(&ctx)?;
+    let outcome = sqlx::query("DELETE FROM user_tokens WHERE id = $1 AND user_id = $2")
+        .bind(token_id)
+        .bind(user_id)
+        .execute(&state.pool)
+        .await
+        .map_err(|e| db_err(&e))?;
+    if outcome.rows_affected() == 0 {
+        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "token not found".into() })));
+    }
+    purge_user_cache(&state.auth_config, user_id, &state.pool).await;
+    tracing::info!(%user_id, %token_id, "token purged");
     Ok(StatusCode::NO_CONTENT)
 }
 

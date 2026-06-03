@@ -16,6 +16,11 @@ import type { RotateResponse } from '@bindings/RotateResponse';
 import type { MintTokenResponse } from '@bindings/MintTokenResponse';
 import type { VersionInfo } from '@bindings/VersionInfo';
 
+/** Machine kinds the server manages itself — the per-user `dispatch` machine
+ * and one-shot `ephemeral` worker pods. They are never spawn targets and are
+ * hidden from the "new machines" list in the UI (CCT-183 / CCT-185). */
+export const SYSTEM_MACHINE_KINDS = new Set(['dispatch', 'ephemeral']);
+
 /** Centralised query keys so invalidation stays consistent. */
 export const qk = {
 	version: ['version'] as const,
@@ -65,14 +70,15 @@ export const endpoints = {
 	/** Configured dispatcher ids (e.g. `["claude-worker"]`); empty when none. */
 	dispatchers: () => api.get<string[]>('/sessions/dispatchers'),
 	/** Every spawnable machine across all active users — for the spawn picker.
-	 * Excludes `ephemeral` (dispatch/worker) machines: those are one-shot pods,
-	 * not somewhere you'd start an interactive session (CCT-183). */
+	 * Excludes server-managed machines (`ephemeral` worker pods and the per-user
+	 * `dispatch` machine): those aren't somewhere you'd start an interactive
+	 * session, only real enrolled daemons are (CCT-183 / CCT-185). */
 	allMachines: async (): Promise<MachineRow[]> => {
 		const users = (await api.get<UserRow[]>('/admin/users')).filter((u) => !u.revoked_at);
 		const lists = await Promise.all(
 			users.map((u) => api.get<MachineRow[]>(`/admin/users/${u.id}/machines`))
 		);
-		return lists.flat().filter((m) => !m.revoked_at && m.kind !== 'ephemeral');
+		return lists.flat().filter((m) => !m.revoked_at && !SYSTEM_MACHINE_KINDS.has(m.kind));
 	}
 };
 
@@ -277,6 +283,10 @@ export function useUserActions() {
 			await api.patch<void>(`/admin/users/${id}`, { name });
 			invalUsers();
 		},
+		setCanDispatch: async (id: string, canDispatch: boolean) => {
+			await api.patch<void>(`/admin/users/${id}`, { can_dispatch: canDispatch });
+			invalUsers();
+		},
 		rotate: async (id: string): Promise<RotateResponse> => {
 			const r = await api.post<RotateResponse>(`/admin/users/${id}/rotate`);
 			invalUsers();
@@ -284,6 +294,10 @@ export function useUserActions() {
 		},
 		revoke: async (id: string) => {
 			await api.del<void>(`/admin/users/${id}`);
+			invalUsers();
+		},
+		purgeUser: async (id: string) => {
+			await api.del<void>(`/admin/users/${id}/purge`);
 			invalUsers();
 		},
 		mintToken: async (userId: string, label: string | null): Promise<MintTokenResponse> => {
@@ -297,6 +311,10 @@ export function useUserActions() {
 		},
 		revokeToken: async (userId: string, tokenId: string) => {
 			await api.del<void>(`/admin/users/${userId}/tokens/${tokenId}`);
+			invalUser(userId);
+		},
+		purgeToken: async (userId: string, tokenId: string) => {
+			await api.del<void>(`/admin/users/${userId}/tokens/${tokenId}/purge`);
 			invalUser(userId);
 		},
 		rotateMachine: async (userId: string, id: string): Promise<RotateResponse> => {

@@ -169,6 +169,7 @@ pub async fn list_dispatchers(
     Json(ids)
 }
 
+#[allow(clippy::too_many_lines)]
 pub async fn dispatch(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -218,6 +219,32 @@ pub async fn dispatch(
     // (no owning user) dispatch without the shared identity.
     let mut forwarded_payload = req.payload.clone();
     if let Some(uid) = ctx.user_id {
+        // Per-user dispatch permission (CCT-185). Applies to any caller that
+        // owns a user (User token or worker Machine key inheriting its owner);
+        // admin/agent env tokens have no `user_id` and skip the gate. The flag
+        // defaults TRUE, so this only blocks users an admin has explicitly
+        // toggled off. Missing row (deleted mid-request) → treat as denied.
+        let can_dispatch = sqlx::query_scalar::<_, bool>(
+            "SELECT can_dispatch FROM users WHERE id = $1 AND revoked_at IS NULL",
+        )
+        .bind(uid)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("can_dispatch lookup failed: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError { error: "could not check dispatch permission".into() }),
+            )
+        })?
+        .unwrap_or(false);
+        if !can_dispatch {
+            tracing::warn!(%uid, "dispatch denied: user lacks dispatch permission");
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(ApiError { error: "dispatch is disabled for this user".into() }),
+            ));
+        }
         let (_, key) = ensure_dispatch_machine(&state, uid).await.map_err(|e| {
             tracing::error!("ensure_dispatch_machine failed: {e}");
             (
