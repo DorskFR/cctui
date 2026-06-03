@@ -200,6 +200,16 @@ pub enum AdapterEvent {
         #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
         input: serde_json::Value,
     },
+    /// A previously-emitted [`AdapterEvent::PermissionRequest`] is no longer
+    /// pending — the underlying agent's tool-permission prompt was answered
+    /// (from any surface) or dismissed. Clients drop the inline prompt. The
+    /// claude-code adapter emits this when the control-socket record's
+    /// `tempo:"blocked"`/`needs` signal clears, so a prompt answered in the
+    /// native TUI (or timed out) doesn't leave a stale card in the webui.
+    PermissionResolved {
+        local_id: String,
+        request_id: String,
+    },
     /// The agent is awaiting a free-form answer to an `AskUserQuestion` tool
     /// call. Unlike [`AdapterEvent::PermissionRequest`], the structured option
     /// set is NOT available from the transcript live: claude-code flushes the

@@ -63,6 +63,30 @@ pub async fn call<T: DeserializeOwned>(socket: &Path, request: &Value) -> Result
 /// input parser resolves it as the Escape key rather than waiting for the
 /// continuation byte of an escape sequence (the classic terminal ESC-timeout).
 pub async fn attach_interrupt(socket: &Path, short: &str) -> Result<()> {
+    // Raw ESC byte → PTY → the TUI aborts the in-flight turn.
+    attach_send_keys(socket, short, b"\x1b").await
+}
+
+/// Answer a pending tool-permission prompt over the PTY (CCT-211). The control
+/// socket's `permission-response` op is a no-op stub in current claude (it acks
+/// `ok:true` but never resolves the prompt), so — exactly as the interrupt path
+/// does for ESC — we attach and inject the keystroke a human would press:
+/// `1`+Enter to approve (the highlighted "Yes" option), ESC to deny. Verified
+/// against claude 2.1.161: approve runs the gated tool, deny skips it and the
+/// worker returns to `tempo:"idle"`.
+pub async fn attach_permission_response(socket: &Path, short: &str, allow: bool) -> Result<()> {
+    if allow {
+        attach_send_keys(socket, short, b"1\r").await
+    } else {
+        attach_send_keys(socket, short, b"\x1b").await
+    }
+}
+
+/// Attach to a worker's PTY mirror, inject `keys` as raw keystroke bytes, hold
+/// briefly so the worker's input parser settles (notably so a lone ESC resolves
+/// as Escape rather than the lead-in of an escape sequence), then detach. The
+/// attach ack is read first so we never fire keys at a dead/unattachable worker.
+async fn attach_send_keys(socket: &Path, short: &str, keys: &[u8]) -> Result<()> {
     let stream = UnixStream::connect(socket)
         .await
         .with_context(|| format!("connecting to {}", socket.display()))?;
@@ -75,7 +99,6 @@ pub async fn attach_interrupt(socket: &Path, short: &str) -> Result<()> {
     write_half.write_all(line.as_bytes()).await?;
     write_half.flush().await?;
 
-    // Read the attach ack so we don't fire ESC at a dead/unattachable worker.
     let mut reader = BufReader::new(read_half);
     let mut buf = String::new();
     if reader.read_line(&mut buf).await? == 0 {
@@ -89,11 +112,10 @@ pub async fn attach_interrupt(socket: &Path, short: &str) -> Result<()> {
         bail!("attach failed: {code}: {err}");
     }
 
-    // Raw ESC byte → PTY → the TUI aborts the in-flight turn.
-    write_half.write_all(b"\x1b").await?;
+    write_half.write_all(keys).await?;
     write_half.flush().await?;
-    // Hold the connection so the lone ESC is parsed as Escape, then detach
-    // (dropping the stream fires the worker's attacher-close cleanup).
+    // Hold the connection so the keystroke is parsed before detach (dropping
+    // the stream fires the worker's attacher-close cleanup).
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     Ok(())
 }

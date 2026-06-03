@@ -217,6 +217,7 @@ fn event_local_id(event: &AdapterEvent) -> &str {
         | AdapterEvent::SessionEnded { local_id, .. }
         | AdapterEvent::Status { local_id, .. }
         | AdapterEvent::PermissionRequest { local_id, .. }
+        | AdapterEvent::PermissionResolved { local_id, .. }
         | AdapterEvent::TokenUsage { local_id, .. } => local_id,
         _ => "",
     }
@@ -231,6 +232,7 @@ const fn event_kind(event: &AdapterEvent) -> &'static str {
         AdapterEvent::Status { .. } => "status",
         AdapterEvent::TokenUsage { .. } => "token_usage",
         AdapterEvent::PermissionRequest { .. } => "permission_request",
+        AdapterEvent::PermissionResolved { .. } => "permission_resolved",
         _ => "other",
     }
 }
@@ -393,6 +395,19 @@ async fn handle_event(
                 tool_name: tool.clone(),
                 description: tool,
                 input_preview,
+            });
+            bump_heartbeat(state, &local_id).await;
+        }
+        AdapterEvent::PermissionResolved { local_id, request_id } => {
+            // The adapter observed the agent's permission prompt clear (answered
+            // natively, dispatched by us, or timed out). Drop the parked request
+            // and tell clients to dismiss the inline prompt. Idempotent: a
+            // request answered via cctui already broadcast PermissionResolved on
+            // the client path, so a second clear here is a harmless no-op.
+            state.permission_store.write().await.record_decision(&request_id, "resolved".into());
+            let _ = state.tui_tx.send(cctui_proto::ws::ServerEvent::PermissionResolved {
+                session_id: local_id.clone(),
+                request_id,
             });
             bump_heartbeat(state, &local_id).await;
         }

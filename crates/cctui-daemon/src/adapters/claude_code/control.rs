@@ -123,6 +123,11 @@ pub(super) struct LiveSnapshot {
     pub state: Option<String>,
     #[serde(default)]
     pub detail: Option<String>,
+    /// Set by the claude daemon when the worker is awaiting a decision; for a
+    /// tool-permission prompt it reads e.g. `"approve Bash: touch /tmp/x"`
+    /// (CCT-211). Empty/absent when nothing is pending.
+    #[serde(default)]
+    pub needs: Option<String>,
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
@@ -188,6 +193,28 @@ pub struct Driver {
     /// 60s idle-retire path. Without this, dispatched/replied sessions sit in
     /// limbo until a human opens them in `claude agents` (CCT-209).
     attach: super::attach::AttachManager,
+    /// Tool-permission prompts currently pending, keyed by worker `short`
+    /// (CCT-211). Derived from the snapshot's `tempo:"blocked"`/`needs` signal:
+    /// a fresh/changed `needs` emits a `PermissionRequest`, and clearing it
+    /// emits `PermissionResolved`. Dedups so a still-pending prompt isn't
+    /// re-emitted on every poll.
+    pending_perms: HashMap<String, PendingPerm>,
+    /// Monotonic counter minting synthesized permission `request_id`s. Claude's
+    /// control socket exposes no id for an interactive prompt (the `needs`
+    /// string is all we get), so we mint our own purely as a correlation token
+    /// the server/clients echo back; the answer is keyed on the worker `short`.
+    perm_seq: u64,
+}
+
+#[derive(Debug, Clone)]
+struct PendingPerm {
+    /// Synthesized id echoed back via `AdapterCommand::PermissionResponse`.
+    request_id: String,
+    /// Stable session `local_id` the request was emitted under.
+    local_id: String,
+    /// The raw `needs` string this request was emitted for. A change means a
+    /// new prompt (the previous one resolved), so we re-emit.
+    needs: String,
 }
 
 /// How many consecutive idle polls mark a subagent's transcript as done.
@@ -263,6 +290,8 @@ impl Driver {
             ended_subagents: HashSet::new(),
             kickstarter,
             attach,
+            pending_perms: HashMap::new(),
+            perm_seq: 0,
         }
     }
 
@@ -378,16 +407,14 @@ impl Driver {
                 tracing::info!(%short, "interrupted in-flight turn via attach+ESC");
             }
             AdapterCommand::PermissionResponse { local_id, request_id, allow } => {
+                // The control socket's `permission-response` op is a no-op stub
+                // in current claude (acks ok:true but never resolves the
+                // prompt). Answer the way a human does instead: attach to the
+                // PTY and inject `1`+Enter (approve) or ESC (deny) — the same
+                // mechanism the interrupt path uses (CCT-210/CCT-211).
                 let short = self.resolve_short(&local_id)?;
-                let resp = socket::one_shot(
-                    &sock,
-                    &json!({
-                        "proto":1,"op":"permission-response",
-                        "short":short,"requestId":request_id,"allow":allow,
-                    }),
-                )
-                .await?;
-                tracing::debug!(?resp, %short, "permission-response ack");
+                socket::attach_permission_response(&sock, &short, allow).await?;
+                tracing::info!(%short, %request_id, allow, "answered permission prompt via attach");
             }
             AdapterCommand::Remove { local_id } => {
                 let short = self.resolve_short_for_removal(&local_id)?;
@@ -708,6 +735,16 @@ impl Driver {
                 .unwrap_or_else(|| job.short.clone());
             let on_disk = StateJson::read(&self.cfg.jobs_root, &job.short);
 
+            // Surface (or clear) a tool-permission prompt from the live
+            // `tempo`/`needs` signal (CCT-211), before the Status emit below.
+            self.reconcile_permission(
+                &job.short,
+                &local_id,
+                job.tempo.as_deref(),
+                job.needs.as_deref(),
+            )
+            .await;
+
             // Pin (or re-pin) the transcript location. A resume or an in-process
             // reset (`/clear`, `/compact`) changes the session's `sessionId` and
             // starts a NEW transcript file (`<newId>.jsonl`); if we kept tailing
@@ -864,6 +901,7 @@ impl Driver {
         let gone: Vec<String> = self.roster.difference(&now_shorts).cloned().collect();
         for short in &gone {
             self.last_status.remove(short);
+            self.clear_permission(short).await;
             if let Some(loc) = self.transcript_locations.remove(short) {
                 self.short_by_session.remove(&loc.local_id);
                 self.session_to_local
@@ -996,6 +1034,7 @@ impl Driver {
         let shorts: Vec<String> = self.roster.drain().collect();
         self.last_status.clear();
         for short in shorts {
+            self.clear_permission(&short).await;
             self.emit(AdapterEvent::SessionEnded { local_id: short, reason: reason.clone() }).await;
         }
     }
@@ -1009,8 +1048,98 @@ impl Driver {
         guard.insert(session_id.to_owned(), local_id.to_owned());
     }
 
+    /// Reconcile the pending tool-permission prompt for one worker against the
+    /// live snapshot (CCT-211). A `needs` of `"approve <Tool>: <detail>"` (set
+    /// while the worker is `tempo:"blocked"`) is a permission prompt; a fresh or
+    /// changed one emits `PermissionRequest`, and clearing it emits
+    /// `PermissionResolved`. Deduped so an unchanged prompt isn't re-emitted on
+    /// every 2s poll.
+    async fn reconcile_permission(
+        &mut self,
+        short: &str,
+        local_id: &str,
+        tempo: Option<&str>,
+        needs: Option<&str>,
+    ) {
+        let pending_needs = match needs.map(str::trim) {
+            // `tempo:"blocked"` + an `approve …` need is the interactive
+            // tool-permission prompt. Other `needs`/blocked states (e.g. a
+            // background "needs input") are not permission prompts.
+            Some(n) if tempo == Some("blocked") && n.starts_with("approve ") => Some(n.to_owned()),
+            _ => None,
+        };
+
+        match pending_needs {
+            Some(n) => {
+                // Already surfaced this exact prompt? Nothing to do.
+                if self.pending_perms.get(short).is_some_and(|p| p.needs == n) {
+                    return;
+                }
+                // A changed `needs` means the prior prompt was superseded —
+                // resolve it before emitting the new one so no stale card lingers.
+                if let Some(prev) = self.pending_perms.remove(short) {
+                    self.emit(AdapterEvent::PermissionResolved {
+                        local_id: prev.local_id,
+                        request_id: prev.request_id,
+                    })
+                    .await;
+                }
+                self.perm_seq += 1;
+                let request_id = format!("{short}#perm{}", self.perm_seq);
+                let (tool, description) = parse_permission_needs(&n);
+                self.pending_perms.insert(
+                    short.to_owned(),
+                    PendingPerm {
+                        request_id: request_id.clone(),
+                        local_id: local_id.to_owned(),
+                        needs: n.clone(),
+                    },
+                );
+                self.emit(AdapterEvent::PermissionRequest {
+                    local_id: local_id.to_owned(),
+                    request_id,
+                    tool,
+                    input: json!({ "description": description, "needs": n }),
+                })
+                .await;
+            }
+            None => {
+                if let Some(prev) = self.pending_perms.remove(short) {
+                    self.emit(AdapterEvent::PermissionResolved {
+                        local_id: prev.local_id,
+                        request_id: prev.request_id,
+                    })
+                    .await;
+                }
+            }
+        }
+    }
+
+    /// Drop any pending permission for a worker that left the roster, emitting a
+    /// `PermissionResolved` so clients dismiss a prompt whose session is gone.
+    async fn clear_permission(&mut self, short: &str) {
+        if let Some(prev) = self.pending_perms.remove(short) {
+            self.emit(AdapterEvent::PermissionResolved {
+                local_id: prev.local_id,
+                request_id: prev.request_id,
+            })
+            .await;
+        }
+    }
+
     async fn emit(&self, evt: AdapterEvent) {
         let _ = self.events.send(evt).await;
+    }
+}
+
+/// Parse a permission `needs` string (`"approve <Tool>: <detail>"`) into a
+/// `(tool, description)` pair. Falls back to the whole remainder as both tool
+/// and description when there's no `": "` separator.
+fn parse_permission_needs(needs: &str) -> (String, String) {
+    let rest = needs.strip_prefix("approve ").unwrap_or(needs).trim();
+    match rest.split_once(": ") {
+        Some((tool, detail)) => (tool.trim().to_owned(), detail.trim().to_owned()),
+        None => (rest.to_owned(), rest.to_owned()),
     }
 }
 
@@ -1095,6 +1224,7 @@ mod tests {
             tempo: Some("active".into()),
             state: Some(state.into()),
             detail: None,
+            needs: None,
             name: name.map(String::from),
             intent: None,
             source: Some("shell".into()),
@@ -1383,6 +1513,85 @@ mod tests {
                 "blocked status must not synthesize an Ask event"
             );
         }
+    }
+
+    #[test]
+    fn parse_permission_needs_splits_tool_and_detail() {
+        assert_eq!(
+            parse_permission_needs("approve Bash: touch /tmp/x"),
+            ("Bash".to_owned(), "touch /tmp/x".to_owned())
+        );
+        // No "approve " prefix, no separator → whole string as both.
+        assert_eq!(parse_permission_needs("Edit"), ("Edit".to_owned(), "Edit".to_owned()));
+        // Prefix but no separator.
+        assert_eq!(
+            parse_permission_needs("approve WebFetch"),
+            ("WebFetch".to_owned(), "WebFetch".to_owned())
+        );
+    }
+
+    #[tokio::test]
+    async fn blocked_approve_emits_permission_request_then_resolves() {
+        // CCT-211: a `tempo:"blocked"` snapshot whose `needs` reads
+        // "approve <Tool>: <detail>" surfaces a PermissionRequest; clearing the
+        // block (next poll) emits PermissionResolved exactly once.
+        let (mut d, mut rx) = driver();
+        let mut blocked = snap("abcd1234", "running", None);
+        blocked.tempo = Some("blocked".into());
+        blocked.needs = Some("approve Bash: touch /tmp/x".into());
+        d.apply_snapshot(vec![blocked]).await;
+
+        let mut request: Option<(String, String, String)> = None;
+        while let Ok(evt) = rx.try_recv() {
+            if let AdapterEvent::PermissionRequest { local_id, request_id, tool, input } = evt {
+                assert_eq!(tool, "Bash");
+                assert_eq!(input.get("description").and_then(|d| d.as_str()), Some("touch /tmp/x"));
+                request = Some((local_id, request_id, tool));
+            }
+        }
+        let (_, request_id, _) = request.expect("PermissionRequest expected for blocked+approve");
+
+        // Re-poll while still blocked on the SAME prompt: no duplicate emit.
+        let mut still = snap("abcd1234", "running", None);
+        still.tempo = Some("blocked".into());
+        still.needs = Some("approve Bash: touch /tmp/x".into());
+        d.apply_snapshot(vec![still]).await;
+        while let Ok(evt) = rx.try_recv() {
+            assert!(
+                !matches!(evt, AdapterEvent::PermissionRequest { .. }),
+                "an unchanged prompt must not re-emit PermissionRequest"
+            );
+        }
+
+        // Prompt clears (answered / tempo back to active) → resolve once.
+        d.apply_snapshot(vec![snap("abcd1234", "working", None)]).await;
+        let mut resolved = 0;
+        while let Ok(evt) = rx.try_recv() {
+            if let AdapterEvent::PermissionResolved { request_id: rid, .. } = evt {
+                assert_eq!(rid, request_id, "resolved id matches the emitted request");
+                resolved += 1;
+            }
+        }
+        assert_eq!(resolved, 1, "clearing the prompt resolves it exactly once");
+    }
+
+    #[tokio::test]
+    async fn permission_resolved_when_session_ends_while_blocked() {
+        // A worker that disappears mid-prompt must not leave a stale card.
+        let (mut d, mut rx) = driver();
+        let mut blocked = snap("abcd1234", "running", None);
+        blocked.tempo = Some("blocked".into());
+        blocked.needs = Some("approve Bash: rm -rf /tmp/x".into());
+        d.apply_snapshot(vec![blocked]).await;
+        while rx.try_recv().is_ok() {}
+        d.apply_snapshot(vec![]).await;
+        let mut resolved = false;
+        while let Ok(evt) = rx.try_recv() {
+            if matches!(evt, AdapterEvent::PermissionResolved { .. }) {
+                resolved = true;
+            }
+        }
+        assert!(resolved, "a vanished blocked session emits PermissionResolved");
     }
 
     #[tokio::test]
