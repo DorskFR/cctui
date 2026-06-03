@@ -911,13 +911,13 @@ pub async fn kill_session(
 }
 
 /// `POST /api/v1/sessions/{id}/interrupt` — stop the in-flight turn without
-/// tearing the session down (CCT-151). Dispatches a graceful
-/// `Kill { signal: 15 }`. For codex the daemon maps this to `turn/interrupt`
-/// (a true in-place interrupt). Claude's control socket exposes no
-/// turn-interrupt op, so the daemon sends `SIGTERM` to the headless worker
-/// (CCT-169 — the numeric signal used to be rejected by claude's enum, making
-/// interrupt a no-op). Unlike `kill_session`, the row stays active and in the
-/// registry so the session can be resumed.
+/// tearing the session down (CCT-151, CCT-210). Dispatches `Interrupt`, NOT a
+/// kill: the earlier `Kill { signal: 15 }` terminated the worker on both
+/// adapters (claude `kill`-op'd the PTY worker; codex sent `turn/interrupt`
+/// *and then* `terminate_child`). `Interrupt` keeps the session alive — the
+/// claude adapter injects an ESC keystroke into the worker PTY via `attach`,
+/// the codex adapter sends `turn/interrupt` without terminating. The DB row
+/// stays active and in the registry so the session keeps going.
 pub async fn interrupt_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
@@ -925,10 +925,7 @@ pub async fn interrupt_session(
     let _ = crate::daemon_dispatch::dispatch(
         &state,
         &session_id,
-        cctui_proto::adapter::AdapterCommand::Kill {
-            local_id: session_id.clone(),
-            signal: Some(15),
-        },
+        cctui_proto::adapter::AdapterCommand::Interrupt { local_id: session_id.clone() },
     )
     .await;
     tracing::info!(session_id = %session_id, "session interrupted");

@@ -51,6 +51,53 @@ pub async fn call<T: DeserializeOwned>(socket: &Path, request: &Value) -> Result
     Ok(serde_json::from_value(resp)?)
 }
 
+/// Interrupt the in-flight turn of a claude worker WITHOUT killing it
+/// (CCT-210). The control socket has no turn-interrupt op, but the `attach`
+/// op opens a live PTY mirror: after the attach ack the supervisor pipes any
+/// raw bytes written on this connection straight into the worker's PTY as
+/// keystrokes (`Y.on("data", o => L.write(i.write(o)))`). So we do exactly
+/// what a human does to abort a turn — attach, send a bare ESC, then detach.
+/// The worker, session, and transcript all stay live and resumable.
+///
+/// The lone ESC is held briefly before we drop the connection so claude's
+/// input parser resolves it as the Escape key rather than waiting for the
+/// continuation byte of an escape sequence (the classic terminal ESC-timeout).
+pub async fn attach_interrupt(socket: &Path, short: &str) -> Result<()> {
+    let stream = UnixStream::connect(socket)
+        .await
+        .with_context(|| format!("connecting to {}", socket.display()))?;
+    let (read_half, mut write_half) = stream.into_split();
+
+    let mut line = serde_json::to_string(
+        &serde_json::json!({"proto":1,"op":"attach","short":short,"cols":120,"rows":40}),
+    )?;
+    line.push('\n');
+    write_half.write_all(line.as_bytes()).await?;
+    write_half.flush().await?;
+
+    // Read the attach ack so we don't fire ESC at a dead/unattachable worker.
+    let mut reader = BufReader::new(read_half);
+    let mut buf = String::new();
+    if reader.read_line(&mut buf).await? == 0 {
+        bail!("daemon closed connection before attach ack");
+    }
+    let ack: Value = serde_json::from_str(buf.trim())
+        .with_context(|| format!("decoding attach ack: {}", buf.trim()))?;
+    if ack.get("ok") == Some(&Value::Bool(false)) {
+        let code = ack.get("code").and_then(Value::as_str).unwrap_or("?");
+        let err = ack.get("error").and_then(Value::as_str).unwrap_or("?");
+        bail!("attach failed: {code}: {err}");
+    }
+
+    // Raw ESC byte → PTY → the TUI aborts the in-flight turn.
+    write_half.write_all(b"\x1b").await?;
+    write_half.flush().await?;
+    // Hold the connection so the lone ESC is parsed as Escape, then detach
+    // (dropping the stream fires the worker's attacher-close cleanup).
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    Ok(())
+}
+
 /// Health check — `{"op":"ping"}` (no `proto` field per §4.2 of the
 /// protocol doc). Currently used only in integration tests / manual
 /// probing; the `list` op double-serves as a liveness check.

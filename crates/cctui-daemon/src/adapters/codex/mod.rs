@@ -202,6 +202,9 @@ async fn command_pump(
                     AdapterCommand::Kill { local_id, signal } => {
                         forward(&registry, &local_id, SessionCommand::Kill { signal }).await;
                     }
+                    AdapterCommand::Interrupt { local_id } => {
+                        forward(&registry, &local_id, SessionCommand::Interrupt).await;
+                    }
                     AdapterCommand::Remove { local_id } => {
                         // Codex sessions have no external agent-view (no
                         // ~/.claude/jobs entry) to purge, so removal is just

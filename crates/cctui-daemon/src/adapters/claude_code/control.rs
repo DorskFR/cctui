@@ -361,6 +361,15 @@ impl Driver {
                 let resp = socket::one_shot(&sock, &req).await?;
                 tracing::debug!(?resp, %short, "kill ack");
             }
+            AdapterCommand::Interrupt { local_id } => {
+                // Keep-alive turn interrupt (CCT-210): the control socket has
+                // no turn-interrupt op, so attach to the worker PTY and inject
+                // an ESC keystroke — the same key that aborts a turn in the
+                // TUI. Unlike `Kill`, the worker stays live and resumable.
+                let short = self.resolve_short(&local_id)?;
+                socket::attach_interrupt(&sock, &short).await?;
+                tracing::info!(%short, "interrupted in-flight turn via attach+ESC");
+            }
             AdapterCommand::PermissionResponse { local_id, request_id, allow } => {
                 let short = self.resolve_short(&local_id)?;
                 let resp = socket::one_shot(

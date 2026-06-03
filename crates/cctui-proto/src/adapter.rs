@@ -281,6 +281,16 @@ pub enum AdapterCommand {
         local_id: String,
         text: String,
     },
+    /// Interrupt the in-flight turn WITHOUT tearing the session down — the
+    /// keep-alive equivalent of pressing Esc in the TUI (CCT-210). Distinct
+    /// from `Kill`: the worker, session, and transcript stay live and
+    /// resumable. The claude-code adapter has no control-socket turn-interrupt
+    /// op, so it attaches to the worker PTY and injects a bare ESC keystroke;
+    /// the codex adapter sends `turn/interrupt` without terminating the
+    /// app-server.
+    Interrupt {
+        local_id: String,
+    },
     /// Answer a previously-emitted `AdapterEvent::PermissionRequest`.
     PermissionResponse {
         local_id: String,

@@ -306,6 +306,11 @@ pub enum SessionCommand {
     /// that lets codex flush its rollout file; anything else (incl. `None`)
     /// falls back to an immediate SIGKILL.
     Kill { signal: Option<i32> },
+    /// Interrupt the in-flight turn but KEEP the session alive (CCT-210):
+    /// sends `turn/interrupt` WITHOUT terminating the app-server, so the
+    /// thread stays resumable. Distinct from `Kill`, which interrupts *and*
+    /// terminates the child.
+    Interrupt,
 }
 
 /// Shared registry: `local_id` → command sender for the owning session task.
@@ -494,6 +499,17 @@ impl CodexSession {
                             terminate_child(&mut child, signal);
                             killed = true;
                             break;
+                        }
+                        Some(SessionCommand::Interrupt) => {
+                            // Keep-alive interrupt (CCT-210): abort the turn but
+                            // leave the app-server running so the session keeps
+                            // going — unlike Kill, we do NOT terminate the child.
+                            let req = turn_interrupt_req(next_id, &local_id);
+                            next_id += 1;
+                            if let Err(e) = write_json(&mut stdin, &req).await {
+                                tracing::warn!(%e, "codex: turn/interrupt write failed; ending session");
+                                break;
+                            }
                         }
                         None => break,
                     }
