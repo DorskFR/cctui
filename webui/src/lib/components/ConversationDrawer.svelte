@@ -86,6 +86,9 @@
 	let ask = $state<LiveAsk | null>(null);
 	// Parsed structured questions for the live prompt, or null → text fallback.
 	const liveAskQuestions = $derived(ask?.questions ? parseAsk({ questions: ask.questions }) : null);
+	// The assistant prose preceding the live question (CCT-213), rendered as
+	// markdown above the card so the user answers with context, not blind.
+	const askPreambleHtml = $derived(ask?.preamble ? hl(renderMarkdown(ask.preamble)) : null);
 	// Per-message delivery state (CCT-212), keyed by the optimistic reply's local
 	// `ts`. `pendingReplies` = still "sending…" (awaiting the server ack, possibly
 	// mid auto-retry); `failedReplies` maps ts → an error reason for sends that
@@ -1001,6 +1004,13 @@
 			     structured options, so render the interactive option-card form
 			     live. Older deliveries (no structured payload) fall back to the
 			     question text with a free-text answer. Answering sends a reply. -->
+			{#if askPreambleHtml}
+				<!-- The assistant prose preceding the question (CCT-213): the
+				     reasoning the choice depends on, so the user isn't blind. -->
+				<div class="line assistant ask-preamble">
+					<div class="bubble">{@html askPreambleHtml}</div>
+				</div>
+			{/if}
 			<AskQuestionCard
 				questions={liveAskQuestions ?? [{ question: ask.question, options: [] }]}
 				interactive={!archived && !answering}

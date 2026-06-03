@@ -411,7 +411,7 @@ async fn handle_event(
             });
             bump_heartbeat(state, &local_id).await;
         }
-        AdapterEvent::AskQuestion { local_id, question, questions } => {
+        AdapterEvent::AskQuestion { local_id, question, questions, preamble } => {
             // Live AskUserQuestion (CCT-164): broadcast the pending question so
             // clients render an inline prompt immediately. Ephemeral — not
             // persisted as a stream_event; the full structured tool call still
@@ -422,6 +422,7 @@ async fn handle_event(
                 session_id: local_id.clone(),
                 question,
                 questions,
+                preamble,
             });
             bump_heartbeat(state, &local_id).await;
         }

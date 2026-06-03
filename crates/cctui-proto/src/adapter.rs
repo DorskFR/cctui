@@ -229,6 +229,14 @@ pub enum AdapterEvent {
         question: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         questions: Option<serde_json::Value>,
+        /// The assistant prose that preceded the `AskUserQuestion` tool call in
+        /// the same turn (the research summary / recommendation the question
+        /// depends on). Read from the transcript by the `ask-hook` subcommand,
+        /// which already gets `transcript_path` on stdin, so the live question
+        /// card can show its context instead of being answered blind (CCT-213).
+        /// `None` when the model called the tool with no preceding text.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        preamble: Option<String>,
     },
     /// A previously-emitted [`AdapterEvent::AskQuestion`] is no longer pending
     /// (the `AskUserQuestion` `PostToolUse` hook fired). Clients dismiss the

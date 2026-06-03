@@ -181,6 +181,11 @@ pub enum ServerEvent {
         question: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         questions: Option<serde_json::Value>,
+        /// Assistant prose preceding the question in the same turn, so clients
+        /// render the reasoning above the live prompt instead of leaving the
+        /// user to answer blind (CCT-213). `None` when there was none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        preamble: Option<String>,
     },
     /// A previously-broadcast `AskQuestion` is resolved; clients dismiss the
     /// live prompt (CCT-164).

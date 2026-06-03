@@ -39,6 +39,9 @@ type PermCb = (list: PermReq[]) => void;
 export interface LiveAsk {
 	question: string;
 	questions: unknown | null;
+	/** Assistant prose preceding the question in the same turn, rendered above
+	 * the card so the user has context instead of answering blind (CCT-213). */
+	preamble?: string | null;
 }
 /** Live AskUserQuestion for a session, or null when none is pending. */
 type AskCb = (ask: LiveAsk | null) => void;
@@ -258,7 +261,8 @@ class WsClient {
 				const sid = msg.session_id as string;
 				this.setAsk(sid, {
 					question: msg.question as string,
-					questions: (msg.questions as unknown) ?? null
+					questions: (msg.questions as unknown) ?? null,
+					preamble: (msg.preamble as string | undefined) ?? null
 				});
 				break;
 			}

@@ -225,7 +225,15 @@ fn hook_line_to_event(line: &str, session_map: &SessionMap) -> Option<AdapterEve
             // webui renders interactive option cards live. `null`/absent →
             // `None`, leaving clients to fall back to the text form.
             let questions = v.get("questions").filter(|q| !q.is_null()).cloned();
-            Some(AdapterEvent::AskQuestion { local_id, question, questions })
+            // The assistant prose preceding the question in the same turn, read
+            // from the transcript by the `ask-hook` subcommand so the live card
+            // carries its context (CCT-213). Absent/empty → `None`.
+            let preamble = v
+                .get("preamble")
+                .and_then(|p| p.as_str())
+                .filter(|s| !s.trim().is_empty())
+                .map(str::to_owned);
+            Some(AdapterEvent::AskQuestion { local_id, question, questions, preamble })
         }
         Some("resolved") => Some(AdapterEvent::AskResolved { local_id }),
         other => {
@@ -279,7 +287,7 @@ mod tests {
         let map: SessionMap = Arc::default();
         let line = r#"{"kind":"ask","session_id":"s1","question":"Color: pick","questions":[{"question":"Color?","options":[{"label":"Red"}]}]}"#;
         match hook_line_to_event(line, &map) {
-            Some(AdapterEvent::AskQuestion { local_id, question, questions }) => {
+            Some(AdapterEvent::AskQuestion { local_id, question, questions, .. }) => {
                 assert_eq!(local_id, "s1");
                 assert_eq!(question, "Color: pick");
                 let qs = questions.expect("structured questions present");
@@ -291,13 +299,36 @@ mod tests {
     }
 
     #[test]
+    fn ask_hook_line_carries_preamble() {
+        // CCT-213: the hook forwards the assistant prose preceding the question
+        // (read from the transcript) so the live card isn't answered blind.
+        let map: SessionMap = Arc::default();
+        let line = r#"{"kind":"ask","session_id":"s1","question":"Pick","preamble":"Here is the analysis."}"#;
+        match hook_line_to_event(line, &map) {
+            Some(AdapterEvent::AskQuestion { preamble, .. }) => {
+                assert_eq!(preamble.as_deref(), Some("Here is the analysis."));
+            }
+            other => panic!("expected AskQuestion with preamble, got {other:?}"),
+        }
+        // Blank/absent preamble → None so clients render the question alone.
+        let blank = r#"{"kind":"ask","session_id":"s1","question":"Pick","preamble":"   "}"#;
+        match hook_line_to_event(blank, &map) {
+            Some(AdapterEvent::AskQuestion { preamble, .. }) => assert!(preamble.is_none()),
+            other => panic!("expected AskQuestion, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn ask_hook_line_without_questions_is_none() {
         // A legacy/text-only delivery (no `questions`) still yields an event,
         // with `questions: None` so clients fall back to the text form.
         let map: SessionMap = Arc::default();
         let line = r#"{"kind":"ask","session_id":"s1","question":"hi"}"#;
         match hook_line_to_event(line, &map) {
-            Some(AdapterEvent::AskQuestion { questions, .. }) => assert!(questions.is_none()),
+            Some(AdapterEvent::AskQuestion { questions, preamble, .. }) => {
+                assert!(questions.is_none());
+                assert!(preamble.is_none());
+            }
             other => panic!("expected AskQuestion, got {other:?}"),
         }
     }
