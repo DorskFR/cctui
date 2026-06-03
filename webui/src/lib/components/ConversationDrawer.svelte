@@ -87,21 +87,20 @@
 	// Parsed structured questions for the live prompt, or null → text fallback.
 	const liveAskQuestions = $derived(ask?.questions ? parseAsk({ questions: ask.questions }) : null);
 	// Per-message delivery state (CCT-212), keyed by the optimistic reply's local
-	// `ts`. `pendingReplies` = still "sending…" (awaiting the server ack or the
-	// echo); `failedReplies` maps ts → an error reason for messages the server
-	// could not dispatch (or that timed out) — rendered red with a Retry. These
-	// survive a resubscribe (only reset on a genuine session switch) so a failed
-	// send no longer silently vanishes on the next refocus.
+	// `ts`. `pendingReplies` = still "sending…" (awaiting the server ack, possibly
+	// mid auto-retry); `failedReplies` maps ts → an error reason for sends that
+	// exhausted auto-retry — rendered red with a Retry; `retryingReplies` carries
+	// the auto-retry progress for a "retrying (n/m)" hint.
+	// Local MIRRORS of the ws singleton's per-session delivery state (CCT-214).
+	// The source of truth lives on the singleton, so a failed/in-flight send and
+	// its auto-retry loop survive the drawer being closed and reopened (the bug:
+	// previously these were the source of truth and a full unmount wiped them, so
+	// a failed bubble came back plain with no Retry). We mirror into local $state
+	// via `ws.onDelivery` — reading the singleton's keyed state from a $derived
+	// does NOT re-render (see ws.svelte.ts header).
 	let pendingReplies = $state<Set<number>>(new Set());
 	let failedReplies = $state<Map<number, string>>(new Map());
-	// clientMsgId → optimistic reply ts, to correlate an incoming ack to its bubble.
-	const msgTsById = new Map<string, number>();
-	// ts → ack-timeout handle, so a delivered/acked message cancels its timeout.
-	const ackTimers = new Map<number, ReturnType<typeof setTimeout>>();
-	const ACK_TIMEOUT_MS = 8000;
-	// Session the delivery-state maps above belong to; guards the reset so we
-	// only clear them on a real session switch, not a resubscribe.
-	let statusSid = '';
+	let retryingReplies = $state<Map<number, { attempt: number; max: number }>>(new Map());
 	// Activity indicator (CCT-208): true while claude is processing this turn —
 	// the equivalent of the TUI's "Running…" spinner, proving the request is
 	// being worked on. Set when we send input or see agent/tool/text/reply
@@ -128,18 +127,6 @@
 		const sid = id;
 		void resubTick;
 		live = ws.bufferedEvents(sid);
-		// Reset per-message delivery state only on a genuine session switch — NOT
-		// on a resubscribe/refocus (CCT-212): the drawer updates its `session` prop
-		// in place rather than remounting, and wiping `pendingReplies` on every
-		// resub is exactly what made a failed/in-flight send vanish.
-		if (sid !== statusSid) {
-			statusSid = sid;
-			pendingReplies = new Set();
-			failedReplies = new Map();
-			msgTsById.clear();
-			for (const t of ackTimers.values()) clearTimeout(t);
-			ackTimers.clear();
-		}
 		answering = false;
 		working = false;
 		histIndex = -1;
@@ -151,8 +138,6 @@
 			const key = userMsgKey(ev);
 			if (key !== null && live.some((e) => userMsgKey(e) === key)) return;
 			live = [...live, ev];
-			// Any real agent event means our queued replies were received.
-			if (ev.type !== 'reply' && pendingReplies.size) pendingReplies = new Set();
 			// Drive the activity indicator (CCT-208): a turn ends on `turn_end`;
 			// any substantive agent/tool/user event means work is in progress.
 			// Heartbeats keep an active turn alive but never start one.
@@ -171,20 +156,20 @@
 			// A pending question means claude is waiting on the user, not working.
 			if (q) working = false;
 		});
-		// Precise per-message delivery (CCT-212): the server acks each tagged send
-		// with its dispatch outcome. ok → delivered (clear the tint); !ok → failed
-		// (render red + Retry).
-		const offAck = ws.onMessageAck(sid, (ack) => {
-			const ts = msgTsById.get(ack.client_msg_id);
-			if (ts === undefined) return;
-			if (ack.ok) markDelivered(ts);
-			else markFailed(ts, ack.error ?? 'could not deliver to the agent');
+		// Mirror the singleton's per-session delivery state (CCT-214). Fires
+		// immediately with the current snapshot — so reopening the drawer restores
+		// a failed send's red+Retry and any in-flight "retrying" tint — and on
+		// every subsequent ack / auto-retry transition.
+		const offDelivery = ws.onDelivery(sid, (snap) => {
+			pendingReplies = snap.pending;
+			failedReplies = snap.failed;
+			retryingReplies = snap.retrying;
 		});
 		return () => {
 			offStream();
 			offPerms();
 			offAsk();
-			offAck();
+			offDelivery();
 			ws.unsubscribe(sid);
 			ws.clearStream(sid);
 		};
@@ -278,6 +263,9 @@
 		// Tool calls under the mcp__ prefix get the distinct MCP role hue.
 		mcp?: boolean;
 		pending?: boolean;
+		// Set on a pending user line that auto-retry is currently re-attempting
+		// (CCT-214): shows a "retrying (n/m)" hint instead of plain "sending…".
+		retrying?: { attempt: number; max: number };
 		// Set on a user line whose send failed (CCT-212): the error reason, shown
 		// red with a Retry control.
 		failed?: string;
@@ -422,6 +410,7 @@
 	// Build lines with consecutive-duplicate dedup.
 	const pendingTs = $derived(pendingReplies);
 	const failedTs = $derived(failedReplies);
+	const retryingTs = $derived(retryingReplies);
 	const lines = $derived.by(() => {
 		const out: Line[] = [];
 		let prevKey = '';
@@ -438,6 +427,8 @@
 			prevKey = key;
 			if (ln.role === 'user') {
 				if (pendingTs.has(ln.ts)) ln.pending = true;
+				const retry = retryingTs.get(ln.ts);
+				if (retry !== undefined) ln.retrying = retry;
 				const reason = failedTs.get(ln.ts);
 				if (reason !== undefined) ln.failed = reason;
 			}
@@ -454,61 +445,24 @@
 		drafts.set(composerKey(session.id), input);
 	});
 
-	// ── Message delivery tracking (CCT-212) ────────────────────────────────
-	function clearAck(ts: number) {
-		const t = ackTimers.get(ts);
-		if (t) {
-			clearTimeout(t);
-			ackTimers.delete(ts);
-		}
-	}
-	function markFailed(ts: number, reason: string) {
-		clearAck(ts);
-		pendingReplies = new Set([...pendingReplies].filter((t) => t !== ts));
-		failedReplies = new Map(failedReplies).set(ts, reason);
-	}
-	function markDelivered(ts: number) {
-		clearAck(ts);
-		pendingReplies = new Set([...pendingReplies].filter((t) => t !== ts));
-		if (failedReplies.has(ts)) {
-			const m = new Map(failedReplies);
-			m.delete(ts);
-			failedReplies = m;
-		}
-	}
-	// Push an optimistic echo, wire it to a server ack, and arm a timeout so a
-	// silently-dropped send (no ack — e.g. a half-open socket) still surfaces as
-	// failed. Returns true if the frame left the socket.
+	// ── Message delivery tracking (CCT-212 → CCT-214) ───────────────────────
+	// We create the optimistic echo (we own `live` + the `ts` ordering) and hand
+	// the send off to the ws singleton, which owns the dispatch + ack timeout +
+	// auto-retry-with-backoff loop. Keeping that state on the singleton is what
+	// lets a failed/in-flight send survive the drawer being closed and reopened.
+	// Returns true if the first frame left the socket (used only for the
+	// optimistic working/ask UX — delivery is driven by acks + retries).
 	function sendTracked(text: string): boolean {
-		const clientMsgId = crypto.randomUUID();
 		const ts = pushOptimisticReply(text);
-		msgTsById.set(clientMsgId, ts);
-		const ok = ws.sendMessage(id, text, clientMsgId);
-		if (!ok) {
-			// Socket wasn't OPEN — the frame was dropped locally. Mark failed
-			// immediately and nudge a reconnect so Retry can succeed once it's back.
-			markFailed(ts, 'not connected — reconnecting');
-			ws.connect();
-			return false;
-		}
-		ackTimers.set(
-			ts,
-			setTimeout(() => {
-				ackTimers.delete(ts);
-				if (pendingReplies.has(ts)) markFailed(ts, 'no response from server');
-			}, ACK_TIMEOUT_MS)
-		);
-		return true;
+		return ws.trackedSend(id, text, ts);
 	}
-	// Re-send a failed message: drop the failed echo, then send fresh (new id).
-	function retryFailed(text: string, ts: number) {
+	// Re-send a failed message manually (resets the auto-retry counter). The
+	// optimistic echo keeps its `ts`, so the bubble stays put.
+	function retryFailed(ts: number) {
 		if (archived) return;
-		ws.dropOptimistic(id, ts);
-		live = live.filter((e) => !(e.type === 'reply' && e.ts === ts));
-		markDelivered(ts); // clears the failed entry + any timer
 		working = true;
 		stuck = true;
-		sendTracked(text);
+		ws.retryNow(id, ts);
 	}
 
 	// ── Cold-cache Send button (CCT-189) ───────────────────────────────────
@@ -666,10 +620,11 @@
 	function editPending(text: string, ts: number) {
 		if (archived) return;
 		input = text;
+		// Stop tracking/retrying this send and drop its echo from both the local
+		// buffer and the ws optimistic store (CCT-214 / CCT-208).
+		ws.cancelSend(id, ts);
 		ws.dropOptimistic(id, ts);
 		live = live.filter((e) => !(e.type === 'reply' && e.ts === ts));
-		// Clear both the pending tint and any failed state + ack timer (CCT-212).
-		markDelivered(ts);
 		resetHistoryNav();
 		textarea?.focus();
 	}
@@ -690,7 +645,9 @@
 		const ev: AgentEvent = { type: 'reply', content: text, ts };
 		ws.recordOptimistic(id, ev);
 		live = [...live, ev];
-		pendingReplies = new Set([...pendingReplies, ev.ts]);
+		// `pendingReplies` is no longer set here — the caller hands this `ts` to
+		// `ws.trackedSend`, which marks it pending and pushes that via onDelivery
+		// (CCT-214). Single source of truth on the singleton.
 		return ts;
 	}
 
@@ -721,8 +678,10 @@
 		try {
 			await actions.archive(id);
 			// Wipe this session's local composer state (draft + sent-message
-			// history) — it's gone once archived (CCT-162).
+			// history) — it's gone once archived (CCT-162) — and stop tracking any
+			// in-flight/failed sends so auto-retry doesn't run on a dead session.
 			clearSessionStorage(session.id);
+			ws.clearDelivery(session.id);
 			toasts.ok('Archived');
 			onclose();
 		} catch (e) {
@@ -998,7 +957,7 @@
 								class="btn btn-ghost retry-failed"
 								aria-label="Retry sending this message"
 								title="Resend this message ({ln.failed})"
-								onclick={() => retryFailed(ln.text ?? '', ln.ts)}>↻ Retry</button
+								onclick={() => retryFailed(ln.ts)}>↻ Retry</button
 							>
 							<button
 								class="btn btn-ghost edit-pending"
@@ -1008,7 +967,13 @@
 							>
 						{/if}
 					{:else if ln.pending}
-						<span class="faint sm sending">sending…</span>
+						{#if ln.retrying}
+							<span class="faint sm sending" title="Delivery failed — retrying with backoff"
+								>retrying… ({ln.retrying.attempt}/{ln.retrying.max})</span
+							>
+						{:else}
+							<span class="faint sm sending">sending…</span>
+						{/if}
 						{#if !archived}
 							<button
 								class="btn btn-ghost edit-pending"
