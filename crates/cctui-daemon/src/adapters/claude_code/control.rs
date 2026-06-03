@@ -183,6 +183,11 @@ pub struct Driver {
     /// agents --json` so polling/dispatch stop failing with "no claude daemon
     /// socket present" (CCT-194).
     kickstarter: Kickstarter,
+    /// Holds a persistent headless `attach` open per live session so the
+    /// dispatched worker actually wakes (focus-in seed) and is kept off the
+    /// 60s idle-retire path. Without this, dispatched/replied sessions sit in
+    /// limbo until a human opens them in `claude agents` (CCT-209).
+    attach: super::attach::AttachManager,
 }
 
 /// How many consecutive idle polls mark a subagent's transcript as done.
@@ -242,6 +247,7 @@ impl Driver {
             .clone()
             .map_or_else(|| OffsetStore::open(None), |p| OffsetStore::open(Some(p)));
         let kickstarter = Kickstarter::new(cfg.claude_bin.clone());
+        let attach = super::attach::AttachManager::new(cfg.discovery.clone(), shutdown.clone());
         Self {
             cfg,
             events,
@@ -256,6 +262,7 @@ impl Driver {
             subagents: HashMap::new(),
             ended_subagents: HashSet::new(),
             kickstarter,
+            attach,
         }
     }
 
@@ -877,6 +884,10 @@ impl Driver {
             .await;
         }
 
+        // Keep a headless `attach` open for every live session so the worker
+        // stays focused/awake and `reply` actually drives its PTY (CCT-209).
+        self.attach.reconcile(now_shorts.iter().map(String::as_str));
+
         self.roster = now_shorts;
     }
 
@@ -980,6 +991,8 @@ impl Driver {
     }
 
     async fn flush_roster(&mut self, reason: EndReason) {
+        // The daemon/socket is gone — stop dialing it from every attach task.
+        self.attach.cancel_all();
         let shorts: Vec<String> = self.roster.drain().collect();
         self.last_status.clear();
         for short in shorts {

@@ -12,6 +12,7 @@
 //!   `CCTUI_ADAPTER_CLAUDE_DAEMON=0` or `config.mode = "legacy"`. Kept
 //!   until CCT-87 retires it.
 
+mod attach;
 mod backfill;
 mod control;
 mod discovery;
