@@ -91,6 +91,64 @@
 	const actions = useSessionActions();
 	let busy = $state(false);
 
+	// --- Environment secrets (CCT-202) & file uploads (CCT-203) ---
+	// Deliberately kept OUT of `form` (which is persisted to localStorage drafts)
+	// so secret values and file handles are never written to disk — they live for
+	// the modal's lifetime only and are fixed for the session once spawned.
+	interface EnvRow {
+		key: string;
+		value: string;
+	}
+	let envRows = $state<EnvRow[]>([]);
+	let files = $state<File[]>([]);
+	let showSecrets = $state(false);
+
+	const ENV_KEY_RE = /^[A-Z_][A-Z0-9_]*$/;
+	// Mirror the server caps (spawn.rs) so we reject before uploading.
+	const MAX_FILE_BYTES = 5 * 1024 * 1024;
+	const MAX_TOTAL_BYTES = 20 * 1024 * 1024;
+	const MAX_FILES = 10;
+
+	// Rows with a non-empty key whose key fails the shell-var pattern.
+	const badEnvKeys = $derived(
+		envRows.filter((r) => r.key.trim() && !ENV_KEY_RE.test(r.key.trim()))
+	);
+	const totalFileBytes = $derived(files.reduce((n, f) => n + f.size, 0));
+	const fileError = $derived(
+		files.some((f) => f.size > MAX_FILE_BYTES)
+			? `A file exceeds the ${MAX_FILE_BYTES / 1024 / 1024} MB per-file cap`
+			: files.length > MAX_FILES
+				? `Too many files (max ${MAX_FILES})`
+				: totalFileBytes > MAX_TOTAL_BYTES
+					? `Attachments exceed the ${MAX_TOTAL_BYTES / 1024 / 1024} MB total cap`
+					: ''
+	);
+	const secretsValid = $derived(badEnvKeys.length === 0 && !fileError);
+
+	/** Collected env map: complete rows only (both key and value set). */
+	function envMap(): Record<string, string> {
+		const out: Record<string, string> = {};
+		for (const r of envRows) {
+			const k = r.key.trim();
+			if (k && r.value) out[k] = r.value;
+		}
+		return out;
+	}
+	const addEnvRow = () => (envRows = [...envRows, { key: '', value: '' }]);
+	const removeEnvRow = (i: number) => (envRows = envRows.filter((_, idx) => idx !== i));
+
+	function onPickFiles(e: Event) {
+		const picked = Array.from((e.currentTarget as HTMLInputElement).files ?? []);
+		// Merge + de-dup by name so re-picking doesn't double-add.
+		const byName = new Map(files.map((f) => [f.name, f]));
+		for (const f of picked) byName.set(f.name, f);
+		files = [...byName.values()];
+	}
+	const removeFile = (name: string) => (files = files.filter((f) => f.name !== name));
+	function fmtSize(n: number): string {
+		return n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(0)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`;
+	}
+
 	const spawnValid = $derived(!!form.machine_id && !!form.working_dir.trim());
 	// A dispatched worker needs a dispatcher and something to run (inline prompt
 	// or a server-side prompt file). The repo is optional (the worker falls back
@@ -98,7 +156,7 @@
 	const dispatchValid = $derived(
 		!!form.dispatcher && (!!form.prompt.trim() || !!form.prompt_file.trim())
 	);
-	const valid = $derived(target === 'machine' ? spawnValid : dispatchValid);
+	const valid = $derived((target === 'machine' ? spawnValid : dispatchValid) && secretsValid);
 
 	async function spawnOnMachine() {
 		const body: SpawnRequest = {
@@ -109,9 +167,10 @@
 			prompt: form.prompt.trim() || null,
 			prompt_name: null,
 			permission_mode: form.permission_mode,
-			effort: (form.adapter_id === 'codex' ? form.effort_codex : form.effort_claude) || null
+			effort: (form.adapter_id === 'codex' ? form.effort_codex : form.effort_claude) || null,
+			env: envMap()
 		};
-		const res = await actions.spawn(body);
+		const res = await actions.spawn(body, files);
 		drafts.set(LAST_MACHINE, form.machine_id);
 		toasts.push('Spawning…', 'info');
 		const result = await ws.awaitCommand(res.command_id);
@@ -119,6 +178,8 @@
 			toasts.ok('Session spawned');
 			drafts.clear(SPAWN_DRAFT);
 			form = { ...blank, machine_id: form.machine_id, dispatcher: form.dispatcher };
+			envRows = [];
+			files = [];
 			onspawned();
 			onclose();
 		} else {
@@ -134,13 +195,18 @@
 	async function dispatchToK8s() {
 		// Build the opaque payload the dispatcher unpacks into TASK_* env. Omit
 		// empty fields so the worker's own defaults apply.
-		const payload: Record<string, string> = {};
+		const payload: Record<string, unknown> = {};
 		if (form.name.trim()) payload.name = form.name.trim();
 		if (form.repo.trim()) payload.repo = form.repo.trim();
 		if (form.prompt.trim()) payload.prompt = form.prompt.trim();
 		if (form.prompt_file.trim()) payload.prompt_file = form.prompt_file.trim();
 		if (form.model.trim()) payload.model = form.model.trim();
 		if (form.effort_claude.trim()) payload.effort = form.effort_claude.trim();
+		// Environment secrets (CCT-202): the external dispatcher turns `env` into
+		// pod env / an ephemeral Secret. The server redacts these from its dispatch
+		// notifications and never persists them.
+		const env = envMap();
+		if (Object.keys(env).length) payload.env = env;
 		const timeout = form.timeout.trim() ? Number(form.timeout.trim()) : null;
 		// Client-minted id doubles as the idempotency key (CCT-107); held stable
 		// across retries (CCT-193) so a re-submit dedups to the same session.
@@ -150,13 +216,17 @@
 			session_id: pendingDispatchId,
 			timeout: Number.isFinite(timeout) ? timeout : null,
 			reply_url: null,
-			payload
+			// `payload` is opaque (JsonValue) server-side; our local shape carries a
+			// nested `env` object, so cast at the boundary.
+			payload: payload as DispatchRequest['payload']
 		};
 		const res = await actions.dispatch(body);
 		toasts.ok(`Dispatched to ${res.dispatcher} (${res.handle})`);
 		pendingDispatchId = null;
 		drafts.clear(SPAWN_DRAFT);
 		form = { ...blank, machine_id: form.machine_id, dispatcher: form.dispatcher };
+		envRows = [];
+		files = [];
 		onspawned();
 		onclose();
 	}
@@ -176,6 +246,8 @@
 
 	function clearForm() {
 		form = { ...blank, machine_id: form.machine_id, dispatcher: form.dispatcher };
+		envRows = [];
+		files = [];
 		drafts.clear(SPAWN_DRAFT);
 	}
 
@@ -435,7 +507,76 @@
 					{/each}
 				</div>
 			</div>
+
+			<!-- File uploads (CCT-203), machine target only. Staged under
+			     /tmp/cctui-uploads/<session>/ on the daemon and referenced in
+			     the prompt so the worker can read them. -->
+			<div class="field">
+				<span class="label">Attachments (optional)</span>
+				<input
+					id="sp-files"
+					class="file"
+					type="file"
+					multiple
+					onchange={onPickFiles}
+				/>
+				<span class="faint sm">
+					Up to {MAX_FILES} files, {MAX_FILE_BYTES / 1024 / 1024} MB each /
+					{MAX_TOTAL_BYTES / 1024 / 1024} MB total. Staged on the machine and
+					referenced in the prompt.
+				</span>
+				{#if files.length}
+					<ul class="files">
+						{#each files as f (f.name)}
+							<li>
+								<code class="grow">{f.name}</code>
+								<span class="faint sm">{fmtSize(f.size)}</span>
+								<button type="button" class="x" onclick={() => removeFile(f.name)}>✕</button>
+							</li>
+						{/each}
+					</ul>
+				{/if}
+				{#if fileError}<span class="err sm">{fileError}</span>{/if}
+			</div>
 			{/if}
+
+			<!-- Environment secrets (CCT-202), both targets. Values are injected as
+			     env vars in the worker process, never shown in the conversation,
+			     and fixed for the session's lifetime. -->
+			<div class="field">
+				<button type="button" class="disclose" onclick={() => (showSecrets = !showSecrets)}>
+					<span class="label">Environment secrets</span>
+					<span class="faint sm">{showSecrets ? '▾' : '▸'} {envRows.length || ''}</span>
+				</button>
+				{#if showSecrets}
+					<span class="faint sm">
+						Injected as env vars in the worker — not visible in the conversation,
+						logs, or transcript, and fixed for the session's lifetime.
+					</span>
+					{#each envRows as row, i (i)}
+						<div class="row gap">
+							<input
+								class="input mono grow"
+								placeholder="API_KEY"
+								aria-label="Secret name"
+								bind:value={row.key}
+							/>
+							<input
+								class="input mono grow"
+								type="password"
+								placeholder="value"
+								aria-label="Secret value"
+								bind:value={row.value}
+							/>
+							<button type="button" class="x" onclick={() => removeEnvRow(i)}>✕</button>
+						</div>
+					{/each}
+					<button type="button" class="btn btn-sm" onclick={addEnvRow}>+ Add secret</button>
+					{#if badEnvKeys.length}
+						<span class="err sm">Keys must match <code>^[A-Z_][A-Z0-9_]*$</code></span>
+					{/if}
+				{/if}
+			</div>
 		</div>
 	{/snippet}
 	{#snippet footer()}
@@ -509,6 +650,53 @@
 	.grow {
 		flex: 1;
 		min-width: 0;
+	}
+	.disclose {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--sp-2);
+		padding: 0;
+		background: none;
+		border: none;
+		cursor: pointer;
+		text-align: left;
+	}
+	.file {
+		font-size: var(--fs-xs);
+		color: var(--text-muted);
+	}
+	.files {
+		list-style: none;
+		margin: var(--sp-1) 0 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: var(--sp-1);
+	}
+	.files li {
+		display: flex;
+		align-items: center;
+		gap: var(--sp-2);
+	}
+	.x {
+		background: none;
+		border: none;
+		color: var(--text-muted);
+		cursor: pointer;
+		padding: 0 var(--sp-1);
+		font-size: var(--fs-sm);
+	}
+	.x:hover {
+		color: var(--c-red);
+	}
+	.btn-sm {
+		align-self: flex-start;
+		font-size: var(--fs-xs);
+		padding: 2px var(--sp-2);
+	}
+	.err {
+		color: var(--c-red);
 	}
 	.mode {
 		display: flex;

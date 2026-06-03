@@ -31,6 +31,7 @@ dirs = "5"
 rustix = { version = "0.38", features = ["process"] }
 notify = "6"
 sha2 = "0.10"
+base64.workspace = true
 
 [dev-dependencies]
 tempfile = { workspace = true }

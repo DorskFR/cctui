@@ -45,6 +45,8 @@ pub async fn dispatch(
     let Some(tx) = state.daemon_connections.get(&machine_uuid) else {
         return Err(Error::NoDaemon(machine_uuid));
     };
-    tx.send(DaemonFrameDown::Command { adapter_id, command }).await.map_err(|_| Error::Closed)?;
+    tx.send(DaemonFrameDown::Command { adapter_id, command: Box::new(command) })
+        .await
+        .map_err(|_| Error::Closed)?;
     Ok(())
 }

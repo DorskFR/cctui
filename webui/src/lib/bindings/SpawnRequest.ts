@@ -23,4 +23,11 @@ permission_mode: PermissionMode | null,
  * (claude: `low`/`medium`/`high`/`xhigh`/`max`; codex:
  * `minimal`/`low`/`medium`/`high`). `None` → the adapter's default.
  */
-effort: string | null, };
+effort: string | null, 
+/**
+ * Environment secrets to inject into the worker process env at spawn time
+ * (CCT-202). Keys must match `^[A-Z_][A-Z0-9_]*$`. Carried to the runtime
+ * like a bearer capability: NEVER persisted, NEVER logged, NEVER written to
+ * the transcript/timeline. `Debug` redacts the values.
+ */
+env: { [key in string]?: string }, };

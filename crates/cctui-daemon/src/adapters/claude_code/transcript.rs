@@ -28,7 +28,7 @@ use serde_json::{Value, json};
 /// match that. A cctui-dispatched session whose `working_dir` carried a
 /// trailing slash (the UI sends `/home/you/proj/`) otherwise encodes to
 /// `-home-you-proj-` (an extra trailing dash) — a directory that never exists.
-/// `tail_once` then treats the missing file as silent success (NotFound →
+/// `tail_once` then treats the missing file as silent success (`NotFound` →
 /// empty), so the session shows live status but "No events yet" forever
 /// (CCT-196).
 #[must_use]

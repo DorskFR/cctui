@@ -38,7 +38,9 @@ pub enum DaemonFrameDown {
     /// server mutates `adapters_enabled` for this machine.
     Reconcile { adapters: Vec<DaemonAdapterConfig> },
     /// A command for a specific adapter (and ultimately a specific session).
-    Command { adapter_id: String, command: AdapterCommand },
+    /// `command` is boxed so this large variant (a `Spawn` carries a full
+    /// `SessionSpec` with env + bootstrap) doesn't bloat every `DaemonFrameDown`.
+    Command { adapter_id: String, command: Box<AdapterCommand> },
     /// Acknowledge that an event with the given monotonic `seq` has been
     /// durably stored. Lets the daemon trim its on-disk spool.
     Ack { seq: u64 },
@@ -339,7 +341,7 @@ mod tests {
     fn daemon_frame_down_command_roundtrips() {
         let f = DaemonFrameDown::Command {
             adapter_id: "claude-code".into(),
-            command: AdapterCommand::Kill { local_id: "abc".into(), signal: None },
+            command: Box::new(AdapterCommand::Kill { local_id: "abc".into(), signal: None }),
         };
         let json = serde_json::to_string(&f).unwrap();
         assert!(json.contains(r#""type":"command""#));

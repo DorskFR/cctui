@@ -52,7 +52,15 @@ export const endpoints = {
 	users: () => api.get<UserRow[]>('/admin/users'),
 	machines: (userId: string) => api.get<MachineRow[]>(`/admin/users/${userId}/machines`),
 	tokens: (userId: string) => api.get<UserTokenRow[]>(`/admin/users/${userId}/tokens`),
-	spawn: (body: SpawnRequest) => api.post<SpawnResponse>('/sessions/spawn', body),
+	/** Spawn on a machine. Always `multipart/form-data` (CCT-203): the JSON
+	 *  `SpawnRequest` rides in the `request` part and any attached files ride as
+	 *  file parts the daemon stages under /tmp/cctui-uploads. */
+	spawn: (body: SpawnRequest, files: File[] = []) => {
+		const form = new FormData();
+		form.append('request', JSON.stringify(body));
+		for (const f of files) form.append('files', f, f.name);
+		return api.postForm<SpawnResponse>('/sessions/spawn', form);
+	},
 	dispatch: (body: DispatchRequest) => api.post<DispatchResponse>('/sessions/dispatch', body),
 	/** Configured dispatcher ids (e.g. `["claude-worker"]`); empty when none. */
 	dispatchers: () => api.get<string[]>('/sessions/dispatchers'),
@@ -226,7 +234,7 @@ export function useSessionActions() {
 			await api.post<void>(`/sessions/${id}/auto-approve`, { enabled });
 			inval();
 		},
-		spawn: (body: SpawnRequest) => endpoints.spawn(body),
+		spawn: (body: SpawnRequest, files: File[] = []) => endpoints.spawn(body, files),
 		// Dispatch returns synchronously (no daemon ACK / command_id), so unlike
 		// spawn there's nothing to await on the ws — the worker pod registers the
 		// pre-minted session_id later. We optimistically insert a placeholder card

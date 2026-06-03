@@ -62,9 +62,39 @@ async function request<T>({ method = 'GET', path, body, query }: RequestOpts): P
 	return JSON.parse(text) as T;
 }
 
+/** POST a `multipart/form-data` body (CCT-203 file uploads). The browser sets
+ *  the `Content-Type` boundary itself, so we must NOT set it here. Shares the
+ *  auth + error handling of {@link request}. */
+async function postForm<T>(path: string, form: FormData): Promise<T> {
+	const headers = new Headers();
+	if (auth.token) headers.set('Authorization', `Bearer ${auth.token}`);
+
+	const res = await fetch(buildUrl(path), { method: 'POST', headers, body: form });
+
+	if (res.status === 401) {
+		auth.clear();
+		throw new ApiError(401, 'Unauthorized');
+	}
+	if (!res.ok) {
+		let msg = `${res.status} ${res.statusText}`;
+		try {
+			const j = await res.json();
+			if (j?.error) msg = j.error;
+		} catch {
+			/* non-JSON error body */
+		}
+		throw new ApiError(res.status, msg);
+	}
+	if (res.status === 204) return undefined as T;
+	const text = await res.text();
+	if (!text) return undefined as T;
+	return JSON.parse(text) as T;
+}
+
 export const api = {
 	get: <T>(path: string, query?: RequestOpts['query']) => request<T>({ path, query }),
 	post: <T>(path: string, body?: unknown) => request<T>({ method: 'POST', path, body }),
+	postForm,
 	patch: <T>(path: string, body?: unknown) => request<T>({ method: 'PATCH', path, body }),
 	put: <T>(path: string, body?: unknown) => request<T>({ method: 'PUT', path, body }),
 	del: <T>(path: string) => request<T>({ method: 'DELETE', path })

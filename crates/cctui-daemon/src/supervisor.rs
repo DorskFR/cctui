@@ -157,7 +157,7 @@ impl Supervisor {
             }
             DaemonFrameDown::Command { adapter_id, command } => {
                 if let Some(running) = running.get(&adapter_id) {
-                    let _ = running.channels.commands_tx.send(command).await;
+                    let _ = running.channels.commands_tx.send(*command).await;
                 } else {
                     tracing::warn!(%adapter_id, "command for unknown adapter; dropping");
                 }

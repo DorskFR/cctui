@@ -56,14 +56,27 @@ fn summarize(payload: &serde_json::Value) -> String {
     if parts.is_empty() { "(no recognized fields)".into() } else { parts.join("  ") }
 }
 
-/// Render the payload for a notification with the injected machine key redacted
-/// (it's a bearer secret) and truncated so a huge payload doesn't blow up the
-/// push body.
+/// Render the payload for a notification with secrets redacted — the injected
+/// machine key (a bearer secret) and any `env` map (user-supplied environment
+/// secrets, CCT-202) — and truncated so a huge payload doesn't blow up the push
+/// body.
 fn payload_for_notify(payload: &serde_json::Value) -> String {
     const MAX: usize = 1500;
     let mut p = payload.clone();
-    if let Some(obj) = p.as_object_mut().filter(|o| o.contains_key("cctui_machine_key")) {
-        obj.insert("cctui_machine_key".into(), serde_json::Value::String("<redacted>".into()));
+    if let Some(obj) = p.as_object_mut() {
+        if obj.contains_key("cctui_machine_key") {
+            obj.insert("cctui_machine_key".into(), serde_json::Value::String("<redacted>".into()));
+        }
+        // `payload.env` carries environment secrets for the k8s worker (the
+        // external dispatcher turns them into pod env / an ephemeral Secret).
+        // Redact the values — they must never land in a notification.
+        if let Some(env) = obj.get("env").and_then(serde_json::Value::as_object) {
+            let redacted: serde_json::Map<String, serde_json::Value> = env
+                .keys()
+                .map(|k| (k.clone(), serde_json::Value::String("<redacted>".into())))
+                .collect();
+            obj.insert("env".into(), serde_json::Value::Object(redacted));
+        }
     }
     let mut s = serde_json::to_string_pretty(&p).unwrap_or_else(|_| p.to_string());
     if s.len() > MAX {

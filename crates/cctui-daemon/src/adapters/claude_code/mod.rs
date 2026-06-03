@@ -276,7 +276,7 @@ mod tests {
     fn ask_hook_line_carries_structured_questions() {
         // CCT-181: the hook forwards the raw `questions` array so the webui can
         // render the interactive form live, not just the flattened text.
-        let map: SessionMap = Default::default();
+        let map: SessionMap = Arc::default();
         let line = r#"{"kind":"ask","session_id":"s1","question":"Color: pick","questions":[{"question":"Color?","options":[{"label":"Red"}]}]}"#;
         match hook_line_to_event(line, &map) {
             Some(AdapterEvent::AskQuestion { local_id, question, questions }) => {
@@ -294,7 +294,7 @@ mod tests {
     fn ask_hook_line_without_questions_is_none() {
         // A legacy/text-only delivery (no `questions`) still yields an event,
         // with `questions: None` so clients fall back to the text form.
-        let map: SessionMap = Default::default();
+        let map: SessionMap = Arc::default();
         let line = r#"{"kind":"ask","session_id":"s1","question":"hi"}"#;
         match hook_line_to_event(line, &map) {
             Some(AdapterEvent::AskQuestion { questions, .. }) => assert!(questions.is_none()),

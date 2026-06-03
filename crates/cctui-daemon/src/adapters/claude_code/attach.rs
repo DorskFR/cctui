@@ -157,6 +157,7 @@ impl AttachTask {
         }
     }
 
+    #[allow(clippy::cognitive_complexity)]
     async fn dial_and_hold(&self, sock: &Path) -> anyhow::Result<AttachOutcome> {
         let stream = UnixStream::connect(sock).await?;
         let (read_half, mut write_half) = stream.into_split();

@@ -195,7 +195,7 @@ pub struct ApiError {
     pub error: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct SpawnRequest {
     pub machine_id: String,
@@ -220,6 +220,28 @@ pub struct SpawnRequest {
     /// `minimal`/`low`/`medium`/`high`). `None` → the adapter's default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    /// Environment secrets to inject into the worker process env at spawn time
+    /// (CCT-202). Keys must match `^[A-Z_][A-Z0-9_]*$`. Carried to the runtime
+    /// like a bearer capability: NEVER persisted, NEVER logged, NEVER written to
+    /// the transcript/timeline. `Debug` redacts the values.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub env: std::collections::BTreeMap<String, String>,
+}
+
+impl std::fmt::Debug for SpawnRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SpawnRequest")
+            .field("machine_id", &self.machine_id)
+            .field("working_dir", &self.working_dir)
+            .field("prompt", &self.prompt)
+            .field("prompt_name", &self.prompt_name)
+            .field("name", &self.name)
+            .field("adapter_id", &self.adapter_id)
+            .field("permission_mode", &self.permission_mode)
+            .field("effort", &self.effort)
+            .field("env", &format_args!("<{} secret(s) redacted>", self.env.len()))
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

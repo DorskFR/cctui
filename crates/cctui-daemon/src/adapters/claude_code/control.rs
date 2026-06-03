@@ -536,6 +536,7 @@ impl Driver {
     /// producing a silent no-op (CCT-131). We mint the session id / short /
     /// nonce client-side exactly as claude does and hand the worker its
     /// launch argv.
+    #[allow(clippy::too_many_lines)]
     async fn spawn(
         &self,
         sock: &std::path::Path,
@@ -610,10 +611,31 @@ impl Driver {
             respawn_flags.push("--settings".to_owned());
             respawn_flags.push(settings);
         }
-        if let Some(prompt) = &spec.prompt {
+        // Stage any uploaded files under /tmp/cctui-uploads/<session-id>/ and
+        // prepend their absolute paths to the prompt so the worker reads them
+        // (CCT-203). A staging failure is fatal to the spawn — silently dropping
+        // an attachment the user expects the worker to read would be worse.
+        let staged = stage_uploads(&session_id, &spec.bootstrap)?;
+        let launch_prompt = if staged.is_empty() {
+            spec.prompt.clone()
+        } else {
+            let mut header = String::from("Attached files:\n");
+            for p in &staged {
+                header.push_str("- ");
+                header.push_str(p);
+                header.push('\n');
+            }
+            Some(match spec.prompt.as_deref().map(str::trim) {
+                Some(b) if !b.is_empty() => format!("{header}\n{b}"),
+                _ => header,
+            })
+        };
+        if let Some(prompt) = &launch_prompt {
             args.push("--".to_owned());
             args.push(prompt.clone());
         }
+        // Keep the display intent the user's original prompt/name — the staged
+        // paths live in the launch arg, not the session label.
         let intent = spec.prompt.clone().or_else(|| spec.name.clone()).unwrap_or_default();
 
         // The daemon's seed schema is `{intent, name?, nameSource?, …}` and
@@ -628,6 +650,14 @@ impl Driver {
             seed.insert("nameSource".to_owned(), json!("user"));
         }
 
+        // Environment secrets (CCT-202): merged on top of the spare's baseline
+        // env in the worker process. Mirror into `reattachEnv` so they survive
+        // the respawn/reattach the claude daemon drives after a CLI upgrade.
+        // These values are NOT placed in `seed`/`intent`/`launch.args`, so they
+        // never reach the transcript, timeline, or `state.json`.
+        let env_json: serde_json::Map<String, serde_json::Value> =
+            spec.env.iter().map(|(k, v)| (k.clone(), json!(v))).collect();
+
         let req = json!({
             "proto": 1,
             "op": "dispatch",
@@ -641,7 +671,8 @@ impl Driver {
                 "source": "fleet",
                 "cwd": cwd,
                 "launch": { "mode": "prompt", "args": args },
-                "env": {},
+                "env": env_json,
+                "reattachEnv": env_json,
                 "isolation": "none",
                 "respawnFlags": respawn_flags,
                 "agent": agent,
@@ -1154,6 +1185,53 @@ const fn kill_signal_name(signal: i32) -> &'static str {
     if signal == 9 { "SIGKILL" } else { "SIGTERM" }
 }
 
+/// Decode + stage `bootstrap` file uploads (CCT-203) under
+/// `/tmp/cctui-uploads/<session-id>/`, returning their absolute paths in upload
+/// order. Files are written 0600 with sanitized bare names; an empty/null
+/// bootstrap yields an empty vec. Errors (bad base64, unwritable dir) abort the
+/// spawn so the user learns the attachment didn't land rather than the worker
+/// silently starting without it.
+fn stage_uploads(session_id: &str, bootstrap: &serde_json::Value) -> anyhow::Result<Vec<String>> {
+    use base64::Engine;
+
+    if bootstrap.is_null() {
+        return Ok(Vec::new());
+    }
+    let parsed: cctui_proto::adapter::BootstrapUploads =
+        serde_json::from_value(bootstrap.clone()).context("decoding bootstrap uploads")?;
+    if parsed.uploads.is_empty() {
+        return Ok(Vec::new());
+    }
+    let dir = std::path::Path::new("/tmp/cctui-uploads").join(session_id);
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("creating upload dir {}", dir.display()))?;
+    let mut paths = Vec::with_capacity(parsed.uploads.len());
+    for file in &parsed.uploads {
+        // Defensive re-sanitize: the server already strips path separators, but
+        // never trust a wire-supplied name when it becomes a filesystem path.
+        let name = std::path::Path::new(&file.name)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .filter(|n| !n.is_empty() && *n != ".." && *n != ".")
+            .ok_or_else(|| anyhow::anyhow!("unsafe upload filename: {:?}", file.name))?;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(file.content_b64.as_bytes())
+            .with_context(|| format!("base64-decoding upload {name}"))?;
+        let path = dir.join(name);
+        std::fs::write(&path, &bytes)
+            .with_context(|| format!("writing upload {}", path.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+                .with_context(|| format!("chmod 0600 {}", path.display()))?;
+        }
+        paths.push(path.to_string_lossy().into_owned());
+    }
+    tracing::info!(%session_id, count = paths.len(), "staged uploaded files for spawn");
+    Ok(paths)
+}
+
 fn hook_settings_path() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
@@ -1231,6 +1309,44 @@ mod tests {
             dying: false,
             cli_version: Some("2.1.145".into()),
         }
+    }
+
+    #[test]
+    fn stage_uploads_writes_sanitized_0600_files() {
+        use base64::Engine;
+        use std::os::unix::fs::PermissionsExt;
+
+        let session_id = format!("test-{}", uuid::Uuid::new_v4());
+        let b64 = |s: &str| base64::engine::general_purpose::STANDARD.encode(s.as_bytes());
+        // A normal name and a traversal attempt that must collapse to its basename.
+        let bootstrap = json!({
+            "uploads": [
+                { "name": "notes.txt", "content_b64": b64("hello world") },
+                { "name": "../../etc/evil", "content_b64": b64("nope") },
+            ]
+        });
+
+        let paths = stage_uploads(&session_id, &bootstrap).expect("stage ok");
+        assert_eq!(paths.len(), 2);
+        let dir = std::path::Path::new("/tmp/cctui-uploads").join(&session_id);
+
+        let notes = dir.join("notes.txt");
+        assert!(paths.contains(&notes.to_string_lossy().into_owned()));
+        assert_eq!(std::fs::read_to_string(&notes).unwrap(), "hello world");
+        let mode = std::fs::metadata(&notes).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "uploaded file must be 0600");
+
+        // Traversal collapsed to the bare basename inside the staging dir.
+        let evil = dir.join("evil");
+        assert!(evil.exists(), "traversal name must be reduced to a basename in-dir");
+        assert!(!std::path::Path::new("/tmp/cctui-uploads").join("../../etc/evil").exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stage_uploads_null_bootstrap_is_empty() {
+        assert!(stage_uploads("sid", &serde_json::Value::Null).unwrap().is_empty());
     }
 
     fn driver() -> (Driver, mpsc::Receiver<AdapterEvent>) {

@@ -60,7 +60,13 @@ async fn main() -> anyhow::Result<()> {
     let api_router = Router::new()
         .route("/sessions/register", post(routes::sessions::register))
         .route("/sessions/{id}/deregister", post(routes::sessions::deregister))
-        .route("/sessions/spawn", post(routes::spawn::spawn_session))
+        .route(
+            "/sessions/spawn",
+            // Multipart spawn with file uploads (CCT-203): the route enforces a
+            // 20 MB total cap itself; allow a little headroom over it for
+            // multipart framing + base64 isn't applied until after parsing.
+            post(routes::spawn::spawn_session).layer(DefaultBodyLimit::max(24 * 1024 * 1024)),
+        )
         .route("/sessions/dispatch", post(routes::dispatch::dispatch))
         .route("/sessions/dispatchers", get(routes::dispatch::list_dispatchers))
         .route("/sessions/archive", post(routes::admin::archive_sessions))

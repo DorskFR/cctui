@@ -351,7 +351,11 @@ pub enum PermissionMode {
 
 /// Parameters for spawning a brand-new session. Used by `AdapterCommand::Spawn`
 /// (post-v0; the spawn route currently returns 501).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// `Debug` is implemented by hand to redact `env` (secret values, CCT-202) and
+/// `bootstrap` (base64 file bytes, CCT-203) so neither leaks into logs if a
+/// `DaemonFrameDown` carrying this spec is ever debug-printed.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct SessionSpec {
     pub adapter_id: AdapterId,
     pub working_dir: Option<String>,
@@ -368,8 +372,60 @@ pub struct SessionSpec {
     /// `model_reasoning_effort`). `None` defers to the adapter default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    /// Environment secrets injected into the worker process env at spawn time
+    /// (CCT-202). Merged on top of the pre-forked spare's baseline env and
+    /// mirrored into `reattachEnv` so they survive a respawn/reattach. NEVER
+    /// persisted (DB / `state.json` / `seed`) and NEVER logged.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub env: std::collections::BTreeMap<String, String>,
+    /// Opaque bootstrap payload carried to the daemon at spawn (CCT-203). When
+    /// present it deserializes into [`BootstrapUploads`]: small files the
+    /// daemon stages under `/tmp/cctui-uploads/<session-id>/` and references in
+    /// the prompt so the worker can read them.
     #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
     pub bootstrap: serde_json::Value,
+}
+
+impl std::fmt::Debug for SessionSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionSpec")
+            .field("adapter_id", &self.adapter_id)
+            .field("working_dir", &self.working_dir)
+            .field("prompt", &self.prompt)
+            .field("name", &self.name)
+            .field("permission_mode", &self.permission_mode)
+            .field("effort", &self.effort)
+            // Redacted: secret values / file bytes must never reach a log.
+            .field("env", &format_args!("<{} secret(s) redacted>", self.env.len()))
+            .field("bootstrap", &format_args!("<redacted>"))
+            .finish()
+    }
+}
+
+/// Bootstrap payload shape for file uploads (CCT-203). Carried in
+/// [`SessionSpec::bootstrap`] as JSON; the server base64-encodes the bytes and
+/// the daemon decodes + stages them before dispatch.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BootstrapUploads {
+    pub uploads: Vec<BootstrapFile>,
+}
+
+/// One uploaded file. `name` is a bare filename (no path separators — the
+/// server strips/rejects traversal); `content_b64` is the standard-base64 file
+/// content. `Debug` redacts the bytes.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct BootstrapFile {
+    pub name: String,
+    pub content_b64: String,
+}
+
+impl std::fmt::Debug for BootstrapFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BootstrapFile")
+            .field("name", &self.name)
+            .field("content_b64", &format_args!("<{} b64 bytes>", self.content_b64.len()))
+            .finish()
+    }
 }
 
 #[cfg(test)]
@@ -543,6 +599,7 @@ mod tests {
             name: None,
             permission_mode: None,
             effort: None,
+            env: std::collections::BTreeMap::new(),
             bootstrap: serde_json::Value::Null,
         };
         let json = serde_json::to_string(&spec).unwrap();
