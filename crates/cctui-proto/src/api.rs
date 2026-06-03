@@ -168,6 +168,22 @@ pub struct SessionListResponse {
     pub sessions: Vec<SessionListItem>,
 }
 
+/// Aggregate session counts for the Overview page (`GET /api/v1/sessions/stats`).
+/// Computed from full SQL aggregates + the live registry rather than the capped
+/// session list, so the numbers stay correct past the list's display limit.
+#[derive(Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionStats {
+    /// All sessions, including archived.
+    pub total: i64,
+    /// Sessions currently live in the registry (active or new).
+    pub live: i64,
+    /// Sessions whose classifier bucket is `Blocked` (✋ needs input).
+    pub needs_input: i64,
+    /// Sessions in the sticky `archived` state.
+    pub archived: i64,
+}
+
 #[derive(Debug, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct MessageRequest {

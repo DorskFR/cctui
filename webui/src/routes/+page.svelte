@@ -1,18 +1,20 @@
 <script lang="ts">
-	import { useUsers, useSessions } from '$lib/queries';
+	import { useUsers, useSessionStats } from '$lib/queries';
 	import { apiOrigin } from '$lib/config';
 	import { toasts } from '$lib/toast.svelte';
 	import { auth } from '$lib/auth.svelte';
 
 	const users = useUsers();
-	const sessions = useSessions(() => true);
+	// Aggregate counts from the server, not the capped session list — the list
+	// tops out at 25 rows so counting it client-side undercounts (CCT).
+	const stats = useSessionStats();
 
 	const activeUsers = $derived(($users.data ?? []).filter((u) => !u.revoked_at).length);
 	const revokedUsers = $derived(($users.data ?? []).filter((u) => u.revoked_at).length);
-	const all = $derived($sessions.data?.sessions ?? []);
-	const live = $derived(all.filter((s) => s.status === 'active' || s.status === 'new').length);
-	const archived = $derived(all.filter((s) => s.status === 'archived').length);
-	const needs = $derived(all.filter((s) => s.attention === 'needs_input').length);
+	const live = $derived($stats.data?.live ?? 0);
+	const archived = $derived($stats.data?.archived ?? 0);
+	const needs = $derived($stats.data?.needs_input ?? 0);
+	const total = $derived($stats.data?.total ?? 0);
 
 	const enrollCmd = $derived(
 		`cctui-daemon enroll --server-url ${apiOrigin()} --token <user-token> --name "$(hostname)"`
@@ -47,7 +49,7 @@
 		<span class="num">{revokedUsers}</span><span class="lbl">Revoked users</span>
 	</div>
 	<div class="card stat">
-		<span class="num">{all.length}</span><span class="lbl">Total sessions</span>
+		<span class="num">{total}</span><span class="lbl">Total sessions</span>
 	</div>
 </div>
 

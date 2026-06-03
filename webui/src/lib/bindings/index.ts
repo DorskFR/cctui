@@ -22,6 +22,7 @@ export type * from './RotateResponse';
 export type * from './ServerEvent';
 export type * from './SessionListItem';
 export type * from './SessionListResponse';
+export type * from './SessionStats';
 export type * from './SessionStatus';
 export type * from './Session';
 export type * from './SpawnRequest';

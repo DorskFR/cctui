@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
 use cctui_proto::api::{
-    ApiError, MessageRequest, RenameRequest, SessionListItem, SessionListResponse,
+    ApiError, MessageRequest, RenameRequest, SessionListItem, SessionListResponse, SessionStats,
 };
 use cctui_proto::classifier::{Bucket, ClassifyInput, PrStatus, classify};
 use cctui_proto::models::{Attention, Liveness, SessionStatus};
@@ -275,6 +275,67 @@ pub async fn list_sessions(
 
     let sessions = enrich_and_sort(&state, with_ts).await?;
     Ok(Json(SessionListResponse { sessions }))
+}
+
+/// `GET /sessions/stats` — aggregate session counts for the Overview page.
+///
+/// The session list is capped (`LIMIT 25`), so counting client-side over it
+/// undercounts once there are more than 25 sessions. This computes the totals
+/// straight from SQL aggregates (`total`, `archived`) and the live registry
+/// (`live`), and counts `needs_input` by running the classifier over every
+/// non-archived session's persisted signals.
+pub async fn session_stats(
+    State(state): State<AppState>,
+) -> Result<Json<SessionStats>, (StatusCode, Json<ApiError>)> {
+    let db_err = |e: sqlx::Error| {
+        tracing::error!("db error (session stats): {e}");
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+    };
+
+    let (total, archived): (i64, i64) = sqlx::query_as(
+        "SELECT COUNT(*), COUNT(*) FILTER (WHERE status = 'archived') FROM sessions",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .map_err(db_err)?;
+
+    // Live = sessions currently in the registry whose derived status is
+    // active/new (matches how the list surfaces "live").
+    let live: i64 = {
+        let registry = state.registry.read().await;
+        registry
+            .list()
+            .into_iter()
+            .filter(|h| {
+                matches!(
+                    derive_status(h.session.registered_at, h.session.last_heartbeat),
+                    SessionStatus::Active | SessionStatus::New
+                )
+            })
+            .count() as i64
+    };
+
+    // needs_input: classify every non-archived session from its persisted
+    // signals and count the Blocked bucket.
+    let signal_rows: Vec<(Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT tempo, agent_state, activity FROM sessions WHERE status != 'archived'",
+    )
+    .fetch_all(&state.pool)
+    .await
+    .map_err(db_err)?;
+    let needs_input = signal_rows
+        .into_iter()
+        .filter(|(tempo, agent_state, activity)| {
+            attention_from_bucket(bucket_from_signals(
+                tempo.as_deref(),
+                agent_state.as_deref(),
+                activity.as_deref(),
+            ))
+            .is_some()
+        })
+        .count() as i64;
+
+    Ok(Json(SessionStats { total, live, needs_input, archived }))
 }
 
 /// Shared enrichment for both the sessions list and search: resolve machine

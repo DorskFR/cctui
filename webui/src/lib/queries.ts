@@ -2,6 +2,7 @@ import { createQuery, useQueryClient } from '@tanstack/svelte-query';
 import { toStore } from 'svelte/store';
 import { api } from './api';
 import type { SessionListResponse } from '@bindings/SessionListResponse';
+import type { SessionStats } from '@bindings/SessionStats';
 import type { SessionListItem } from '@bindings/SessionListItem';
 import type { AgentEvent } from '@bindings/AgentEvent';
 import type { SpawnRequest } from '@bindings/SpawnRequest';
@@ -25,6 +26,7 @@ export const SYSTEM_MACHINE_KINDS = new Set(['dispatch', 'ephemeral']);
 export const qk = {
 	version: ['version'] as const,
 	sessions: (archived: boolean) => ['sessions', { archived }] as const,
+	sessionStats: ['session-stats'] as const,
 	// NOT under ['sessions'] on purpose: list invalidations (`['sessions']`,
 	// bumped ~every 2s while streaming) must NOT refetch the conversation —
 	// a refetched history that overlaps the live ws events produced duplicate
@@ -40,6 +42,9 @@ export const endpoints = {
 	version: () => api.get<VersionInfo>('/version'),
 	sessions: (archived: boolean) =>
 		api.get<SessionListResponse>('/sessions', { include_archived: archived || undefined }),
+	/** Aggregate session counts for the Overview — correct past the list's
+	 * 25-row display cap (the list-derived counts are not). */
+	sessionStats: () => api.get<SessionStats>('/sessions/stats'),
 	// Full-transcript substring search (CCT-184). `includeArchived` sets scope
 	// (live-only vs all); an empty `q` with `includeArchived` browses the
 	// archive. Offset-paginated.
@@ -98,6 +103,13 @@ export const useSessions = (archived: () => boolean) =>
 			refetchInterval: 15_000
 		}))
 	);
+
+export const useSessionStats = () =>
+	createQuery({
+		queryKey: qk.sessionStats,
+		queryFn: endpoints.sessionStats,
+		refetchInterval: 15_000
+	});
 
 export const useConversation = (id: () => string, enabled: () => boolean = () => true) =>
 	createQuery(
