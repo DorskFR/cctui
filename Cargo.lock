@@ -316,7 +316,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-admin"
-version = "0.3.109"
+version = "0.3.110"
 dependencies = [
  "anyhow",
  "cctui-proto",
@@ -331,7 +331,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-daemon"
-version = "0.3.109"
+version = "0.3.110"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -359,7 +359,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-proto"
-version = "0.3.109"
+version = "0.3.110"
 dependencies = [
  "chrono",
  "hex",
@@ -372,7 +372,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-server"
-version = "0.3.109"
+version = "0.3.110"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -404,7 +404,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-tui"
-version = "0.3.109"
+version = "0.3.110"
 dependencies = [
  "anyhow",
  "cctui-proto",
