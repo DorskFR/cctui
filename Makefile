@@ -17,6 +17,7 @@ export CCTUI_TOKEN
 .PHONY: db/test/up db/test/down db/test/migrate/up
 .PHONY: run/server run/tui run/admin
 .PHONY: image/build image/push image/release
+.PHONY: local/up local/down local/logs local/pull local/ps
 .PHONY: bindings webui/install webui/dev webui/build
 
 # CI publishes images on tag push (.github/workflows/release.yml → ghcr). These
@@ -113,6 +114,29 @@ db/test/migrate/up:  ## Apply migrations to test database
 
 clean:  ## Remove build artifacts
 	cargo clean
+
+# ── Local stack (published images, no build) ───────────────
+# Self-contained: postgres + cctui-server + cctui-ui pulled from ghcr and wired
+# together. UI on :8088, server API on :8700. See deploy/local/.
+LOCAL_COMPOSE ?= deploy/local/docker-compose.yaml
+
+.PHONY: local/up local/down local/logs local/pull local/ps
+
+local/up:  ## Start the full local stack (postgres + server + UI) from published images
+	docker compose -f $(LOCAL_COMPOSE) up -d
+	@echo "cctui up — UI: http://localhost:8088  ·  API: http://localhost:8700  (admin token: dev-admin)"
+
+local/down:  ## Stop the local stack (keeps the postgres volume)
+	docker compose -f $(LOCAL_COMPOSE) down
+
+local/pull:  ## Pull the latest published images for the local stack
+	docker compose -f $(LOCAL_COMPOSE) pull
+
+local/logs:  ## Tail logs from the local stack
+	docker compose -f $(LOCAL_COMPOSE) logs -f
+
+local/ps:  ## Show local stack status
+	docker compose -f $(LOCAL_COMPOSE) ps
 
 # ── Deploy ──────────────────────────────────────────────────
 

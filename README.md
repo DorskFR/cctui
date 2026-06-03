@@ -49,6 +49,39 @@ enrolled, the daemon connects to the server and the machine's sessions show up
 in the UI. cctui does **not** modify your Claude Code configuration — the daemon
 observes and spawns sessions directly.
 
+## Run cctui locally
+
+The quickest way to try cctui — no source build. A self-contained Docker Compose
+stack pulls the published images (server + web UI) plus PostgreSQL, fully wired.
+Works on Linux and macOS.
+
+```sh
+make local/up      # pulls ghcr images + postgres, starts the stack
+```
+
+- **Web UI** → http://localhost:8088 (log in with the admin token `dev-admin`)
+- **Server API** → http://localhost:8700
+
+The server migrates its database on start; nothing else to set up. Other targets:
+`make local/pull` (update images), `make local/logs`, `make local/ps`,
+`make local/down`. Configuration (ports, tokens, image tags) lives in
+[`deploy/local/docker-compose.yaml`](deploy/local/docker-compose.yaml) — override
+via env vars (`CCTUI_ADMIN_TOKENS`, `CCTUI_UI_PORT`, …).
+
+### Connect a machine
+
+The **daemon is not containerised** — it runs on your host so it can see your real
+`claude`/`codex` binaries and working directories. Download `cctui-daemon` from
+[Releases](https://github.com/DorskFR/cctui/releases), then enroll it against the
+local server (use the admin token, or a user token created from the UI's Users page):
+
+```sh
+cctui-daemon enroll --server-url http://localhost:8700 --token dev-admin --name "$(hostname)"
+cctui-daemon service install   # run it as a systemd user service (Linux)
+```
+
+The machine and its sessions then show up in the UI.
+
 ## Local development
 
 Prerequisites: Rust (nightly for fmt), Docker, PostgreSQL.

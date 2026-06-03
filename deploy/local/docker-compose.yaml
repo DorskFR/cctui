@@ -1,0 +1,64 @@
+# Self-contained local cctui stack — pulls the published images and wires them
+# together. No source build required. Works on Linux and macOS (Docker Desktop /
+# OrbStack / colima).
+#
+#   cd deploy/local && docker compose up -d      # or: make local/up
+#
+# Then open http://localhost:8088 and log in with the admin token below
+# (default `dev-admin`). The server API is on http://localhost:8700.
+#
+# The cctui-daemon is NOT containerised — it runs on your host so it can see your
+# real `claude`/`codex` binaries and working directories. See the README
+# ("Run cctui locally") for enrollment against this stack.
+
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: cctui
+    volumes:
+      - cctui-local-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d cctui"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  cctui-server:
+    image: ${CCTUI_SERVER_IMAGE:-ghcr.io/dorskfr/cctui:latest}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Migrations run automatically on start (compiled into the binary).
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/cctui
+      CCTUI_HOST: 0.0.0.0
+      CCTUI_PORT: "8700"
+      # Tokens you log in / enroll with. Change these for anything non-local.
+      CCTUI_ADMIN_TOKENS: ${CCTUI_ADMIN_TOKENS:-dev-admin}
+      CCTUI_AGENT_TOKENS: ${CCTUI_AGENT_TOKENS:-dev-agent}
+      # Origin the daemon/clients reach this server at, from the host.
+      CCTUI_EXTERNAL_URL: ${CCTUI_EXTERNAL_URL:-http://localhost:8700}
+    ports:
+      - "${CCTUI_SERVER_PORT:-8700}:8700"
+    restart: unless-stopped
+
+  cctui-ui:
+    image: ${CCTUI_UI_IMAGE:-ghcr.io/dorskfr/cctui-ui:latest}
+    depends_on:
+      - cctui-server
+    # The SPA runs in your browser, so it must reach the server at the host
+    # origin (not the compose-internal hostname). CORS on the server is
+    # permissive, so this cross-origin call just works. config.js is read at
+    # runtime, so we override it without rebuilding the image.
+    volumes:
+      - ./config.js:/usr/share/nginx/html/config.js:ro
+    ports:
+      - "${CCTUI_UI_PORT:-8088}:8080"
+    restart: unless-stopped
+
+volumes:
+  cctui-local-data:
