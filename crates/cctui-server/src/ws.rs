@@ -82,6 +82,47 @@ fn spawn_relay_task(
     })
 }
 
+/// Dispatch a client-typed reply to the session's daemon and, when the client
+/// opted in with a `client_msg_id`, ack the outcome back to this socket so the
+/// UI can show a precise delivery state (sending → delivered / failed) instead
+/// of optimistically assuming a sent frame was delivered (CCT-212).
+async fn handle_message(
+    state: &AppState,
+    event_tx: &mpsc::Sender<ServerEvent>,
+    session_id: String,
+    content: String,
+    client_msg_id: Option<String>,
+) {
+    // NoDaemon / NoAdapter are expected for sessions whose daemon is momentarily
+    // offline — that is exactly the case the ack lets the client recover from.
+    let dispatch = crate::daemon_dispatch::dispatch(
+        state,
+        &session_id,
+        cctui_proto::adapter::AdapterCommand::Reply { local_id: session_id.clone(), text: content },
+    )
+    .await;
+    let err_reason = dispatch.as_ref().err().map(|err| {
+        use crate::daemon_dispatch::Error;
+        match err {
+            Error::NoDaemon(_) | Error::NoAdapter | Error::NotFound => {
+                tracing::debug!(%session_id, ?err, "daemon dispatch skipped");
+            }
+            _ => tracing::warn!(%session_id, %err, "daemon dispatch failed"),
+        }
+        err.to_string()
+    });
+    if let Some(client_msg_id) = client_msg_id {
+        let _ = event_tx
+            .send(ServerEvent::MessageAck {
+                session_id,
+                client_msg_id,
+                ok: err_reason.is_none(),
+                error: err_reason,
+            })
+            .await;
+    }
+}
+
 async fn handle_subscribe(
     session_id: String,
     state: &AppState,
@@ -145,29 +186,8 @@ async fn run_tui_socket(
                     handle.abort();
                 }
             }
-            TuiCommand::Message { session_id, content } => {
-                // Dispatch to the per-machine daemon WS so the
-                // claude-daemon adapter forwards via `reply` on the
-                // control socket. Best-effort: NoDaemon / NoAdapter are
-                // expected for sessions whose daemon is offline.
-                let dispatch = crate::daemon_dispatch::dispatch(
-                    &state,
-                    &session_id,
-                    cctui_proto::adapter::AdapterCommand::Reply {
-                        local_id: session_id.clone(),
-                        text: content,
-                    },
-                )
-                .await;
-                if let Err(err) = dispatch {
-                    use crate::daemon_dispatch::Error;
-                    match err {
-                        Error::NoDaemon(_) | Error::NoAdapter | Error::NotFound => {
-                            tracing::debug!(%session_id, ?err, "daemon dispatch skipped");
-                        }
-                        _ => tracing::warn!(%session_id, %err, "daemon dispatch failed"),
-                    }
-                }
+            TuiCommand::Message { session_id, content, client_msg_id } => {
+                handle_message(&state, &event_tx, session_id, content, client_msg_id).await;
             }
             TuiCommand::PermissionResponse { session_id, request_id, behavior } => {
                 tracing::info!(

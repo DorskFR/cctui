@@ -480,7 +480,9 @@ async fn handle_input_mode(app: &mut App, key: KeyEvent, cmd_tx: &mpsc::Sender<T
             if !content.trim().is_empty()
                 && let Some(id) = app.selected_session().map(|s| s.id.clone())
             {
-                let _ = cmd_tx.send(TuiCommand::Message { session_id: id, content }).await;
+                let _ = cmd_tx
+                    .send(TuiCommand::Message { session_id: id, content, client_msg_id: None })
+                    .await;
             }
             app.reset_input();
             app.input_active = false;
@@ -604,12 +606,15 @@ fn handle_server_event(app: &mut App, event: ServerEvent) {
         | ServerEvent::ArchiveUploaded { .. }
         | ServerEvent::CommandResult { .. }
         | ServerEvent::AskQuestion { .. }
+        | ServerEvent::MessageAck { .. }
         | ServerEvent::AskResolved { .. } => {
             // Archive coverage is web-only (CCT-68); spawn feedback
             // (CommandResult, CCT-131) is surfaced in the web client and the
             // TUI doesn't drive the spawn flow. Live AskUserQuestion prompts
             // (CCT-164) render in the web client; the TUI shows the question
-            // from the transcript, so nothing to render here.
+            // from the transcript, so nothing to render here. MessageAck
+            // (CCT-212) is opt-in via `client_msg_id`, which the TUI never
+            // sends, so the server won't emit one to it.
         }
         ServerEvent::PermissionResolved { session_id, request_id } => {
             // Drop any queued entry that matches; if it's the head and the

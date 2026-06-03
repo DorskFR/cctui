@@ -42,6 +42,15 @@ export interface LiveAsk {
 }
 /** Live AskUserQuestion for a session, or null when none is pending. */
 type AskCb = (ask: LiveAsk | null) => void;
+/** Server ack for a client-sent message (CCT-212). `ok=false` means the server
+ * could not dispatch the reply to the session's daemon, so the client should
+ * mark the message failed and offer a retry. */
+export interface MessageAck {
+	client_msg_id: string;
+	ok: boolean;
+	error?: string;
+}
+type MessageAckCb = (ack: MessageAck) => void;
 
 /**
  * Single shared TUI websocket. Streams live AgentEvents for subscribed
@@ -81,6 +90,7 @@ class WsClient {
 	private streamCbs = new Map<string, Set<StreamCb>>();
 	private permCbs = new Map<string, Set<PermCb>>();
 	private askCbs = new Map<string, Set<AskCb>>();
+	private msgAckCbs = new Map<string, Set<MessageAckCb>>();
 
 	private socket: WebSocket | null = null;
 	private subscribed = new Set<string>();
@@ -188,6 +198,17 @@ class WsClient {
 			case 'ask_resolved': {
 				const sid = msg.session_id as string;
 				this.setAsk(sid, null);
+				break;
+			}
+			case 'message_ack': {
+				const sid = msg.session_id as string;
+				const ack: MessageAck = {
+					client_msg_id: msg.client_msg_id as string,
+					ok: msg.ok as boolean,
+					error: msg.error as string | undefined
+				};
+				const set = this.msgAckCbs.get(sid);
+				if (set) for (const cb of set) cb(ack);
 				break;
 			}
 			case 'command_result': {
@@ -346,9 +367,28 @@ class WsClient {
 	}
 
 	/** Send a typed message. Returns true if the frame went out, false if the
-	 * socket wasn't OPEN (caller should keep the draft + surface a notice). */
-	sendMessage(id: string, content: string): boolean {
-		return this.send({ type: 'message', session_id: id, content });
+	 * socket wasn't OPEN (caller should keep the draft + surface a notice).
+	 * `clientMsgId` (CCT-212) opts into a server `message_ack` so the caller can
+	 * track delivery (sending → delivered / failed). */
+	sendMessage(id: string, content: string, clientMsgId?: string): boolean {
+		return this.send({
+			type: 'message',
+			session_id: id,
+			content,
+			...(clientMsgId ? { client_msg_id: clientMsgId } : {})
+		});
+	}
+
+	/** Register a message-ack listener for a session (CCT-212). Returns an
+	 * unsubscribe fn. */
+	onMessageAck(id: string, cb: MessageAckCb): () => void {
+		let set = this.msgAckCbs.get(id);
+		if (!set) {
+			set = new Set();
+			this.msgAckCbs.set(id, set);
+		}
+		set.add(cb);
+		return () => set!.delete(cb);
 	}
 
 	respondPermission(sessionId: string, requestId: string, allow: boolean) {

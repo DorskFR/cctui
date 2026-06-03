@@ -86,8 +86,22 @@
 	let ask = $state<LiveAsk | null>(null);
 	// Parsed structured questions for the live prompt, or null → text fallback.
 	const liveAskQuestions = $derived(ask?.questions ? parseAsk({ questions: ask.questions }) : null);
-	// Timestamps of optimistic replies not yet acknowledged → "sending…" tint.
+	// Per-message delivery state (CCT-212), keyed by the optimistic reply's local
+	// `ts`. `pendingReplies` = still "sending…" (awaiting the server ack or the
+	// echo); `failedReplies` maps ts → an error reason for messages the server
+	// could not dispatch (or that timed out) — rendered red with a Retry. These
+	// survive a resubscribe (only reset on a genuine session switch) so a failed
+	// send no longer silently vanishes on the next refocus.
 	let pendingReplies = $state<Set<number>>(new Set());
+	let failedReplies = $state<Map<number, string>>(new Map());
+	// clientMsgId → optimistic reply ts, to correlate an incoming ack to its bubble.
+	const msgTsById = new Map<string, number>();
+	// ts → ack-timeout handle, so a delivered/acked message cancels its timeout.
+	const ackTimers = new Map<number, ReturnType<typeof setTimeout>>();
+	const ACK_TIMEOUT_MS = 8000;
+	// Session the delivery-state maps above belong to; guards the reset so we
+	// only clear them on a real session switch, not a resubscribe.
+	let statusSid = '';
 	// Activity indicator (CCT-208): true while claude is processing this turn —
 	// the equivalent of the TUI's "Running…" spinner, proving the request is
 	// being worked on. Set when we send input or see agent/tool/text/reply
@@ -114,10 +128,20 @@
 		const sid = id;
 		void resubTick;
 		live = ws.bufferedEvents(sid);
-		pendingReplies = new Set();
+		// Reset per-message delivery state only on a genuine session switch — NOT
+		// on a resubscribe/refocus (CCT-212): the drawer updates its `session` prop
+		// in place rather than remounting, and wiping `pendingReplies` on every
+		// resub is exactly what made a failed/in-flight send vanish.
+		if (sid !== statusSid) {
+			statusSid = sid;
+			pendingReplies = new Set();
+			failedReplies = new Map();
+			msgTsById.clear();
+			for (const t of ackTimers.values()) clearTimeout(t);
+			ackTimers.clear();
+		}
 		answering = false;
 		working = false;
-		notSent = false;
 		histIndex = -1;
 		draftStash = '';
 		ws.subscribe(sid);
@@ -147,10 +171,20 @@
 			// A pending question means claude is waiting on the user, not working.
 			if (q) working = false;
 		});
+		// Precise per-message delivery (CCT-212): the server acks each tagged send
+		// with its dispatch outcome. ok → delivered (clear the tint); !ok → failed
+		// (render red + Retry).
+		const offAck = ws.onMessageAck(sid, (ack) => {
+			const ts = msgTsById.get(ack.client_msg_id);
+			if (ts === undefined) return;
+			if (ack.ok) markDelivered(ts);
+			else markFailed(ts, ack.error ?? 'could not deliver to the agent');
+		});
 		return () => {
 			offStream();
 			offPerms();
 			offAsk();
+			offAck();
 			ws.unsubscribe(sid);
 			ws.clearStream(sid);
 		};
@@ -244,6 +278,9 @@
 		// Tool calls under the mcp__ prefix get the distinct MCP role hue.
 		mcp?: boolean;
 		pending?: boolean;
+		// Set on a user line whose send failed (CCT-212): the error reason, shown
+		// red with a Retry control.
+		failed?: string;
 		// Parsed AskUserQuestion payload (CCT-146) — rendered as interactive cards.
 		ask?: AskQuestion[];
 	}
@@ -384,6 +421,7 @@
 
 	// Build lines with consecutive-duplicate dedup.
 	const pendingTs = $derived(pendingReplies);
+	const failedTs = $derived(failedReplies);
 	const lines = $derived.by(() => {
 		const out: Line[] = [];
 		let prevKey = '';
@@ -398,7 +436,11 @@
 					: `${ln.role}|${ln.tool ?? ''}|${ln.text ?? ln.html ?? ''}`;
 			if (key === prevKey) continue;
 			prevKey = key;
-			if (ln.role === 'user' && pendingTs.has(ln.ts)) ln.pending = true;
+			if (ln.role === 'user') {
+				if (pendingTs.has(ln.ts)) ln.pending = true;
+				const reason = failedTs.get(ln.ts);
+				if (reason !== undefined) ln.failed = reason;
+			}
 			out.push(ln);
 		}
 		return out;
@@ -412,9 +454,62 @@
 		drafts.set(composerKey(session.id), input);
 	});
 
-	// Set when a send was dropped because the socket wasn't OPEN — shown inline
-	// near the composer so the user knows their (still-present) text wasn't sent.
-	let notSent = $state(false);
+	// ── Message delivery tracking (CCT-212) ────────────────────────────────
+	function clearAck(ts: number) {
+		const t = ackTimers.get(ts);
+		if (t) {
+			clearTimeout(t);
+			ackTimers.delete(ts);
+		}
+	}
+	function markFailed(ts: number, reason: string) {
+		clearAck(ts);
+		pendingReplies = new Set([...pendingReplies].filter((t) => t !== ts));
+		failedReplies = new Map(failedReplies).set(ts, reason);
+	}
+	function markDelivered(ts: number) {
+		clearAck(ts);
+		pendingReplies = new Set([...pendingReplies].filter((t) => t !== ts));
+		if (failedReplies.has(ts)) {
+			const m = new Map(failedReplies);
+			m.delete(ts);
+			failedReplies = m;
+		}
+	}
+	// Push an optimistic echo, wire it to a server ack, and arm a timeout so a
+	// silently-dropped send (no ack — e.g. a half-open socket) still surfaces as
+	// failed. Returns true if the frame left the socket.
+	function sendTracked(text: string): boolean {
+		const clientMsgId = crypto.randomUUID();
+		const ts = pushOptimisticReply(text);
+		msgTsById.set(clientMsgId, ts);
+		const ok = ws.sendMessage(id, text, clientMsgId);
+		if (!ok) {
+			// Socket wasn't OPEN — the frame was dropped locally. Mark failed
+			// immediately and nudge a reconnect so Retry can succeed once it's back.
+			markFailed(ts, 'not connected — reconnecting');
+			ws.connect();
+			return false;
+		}
+		ackTimers.set(
+			ts,
+			setTimeout(() => {
+				ackTimers.delete(ts);
+				if (pendingReplies.has(ts)) markFailed(ts, 'no response from server');
+			}, ACK_TIMEOUT_MS)
+		);
+		return true;
+	}
+	// Re-send a failed message: drop the failed echo, then send fresh (new id).
+	function retryFailed(text: string, ts: number) {
+		if (archived) return;
+		ws.dropOptimistic(id, ts);
+		live = live.filter((e) => !(e.type === 'reply' && e.ts === ts));
+		markDelivered(ts); // clears the failed entry + any timer
+		working = true;
+		stuck = true;
+		sendTracked(text);
+	}
 
 	// ── Cold-cache Send button (CCT-189) ───────────────────────────────────
 	// Anthropic's prompt cache is a ~5-min sliding window; once it lapses the
@@ -450,31 +545,22 @@
 	function send() {
 		const text = input.trim();
 		if (!text || archived) return;
-		const ok = ws.sendMessage(id, text);
-		if (!ok) {
-			// Socket wasn't OPEN: the frame was dropped. Keep the draft, show no
-			// phantom echo, and surface a "not sent — reconnecting" notice. Nudge
-			// a reconnect so the user can retry once it's back.
-			notSent = true;
-			ws.connect();
-			return;
-		}
-		notSent = false;
 		// NB: a free-typed send does NOT dismiss a pending AskUserQuestion
 		// (CCT-208). The old code cleared `ask` on every send, which hid the
 		// question whenever the user had a message in flight — but the question
 		// is still genuinely pending until the daemon emits `ask_resolved`
 		// (which arrives a poll later and clears it via onAsk). Only an explicit
 		// option-click (`answerQuestion`) optimistically dismisses the card.
-		// We're now processing the user's input, so flag the working indicator.
-		working = true;
 		// Sending should always jump to the latest message (classic chat UX),
 		// even if the user had scrolled up — re-pin so the sticky-bottom $effect
 		// follows the optimistic echo down.
 		stuck = true;
-		// Optimistic echo (+ pending tint until the agent replies). Recorded in
-		// the ws singleton so it survives a resubscribe until the server echoes.
-		pushOptimisticReply(text);
+		// Optimistic echo with delivery tracking (CCT-212): the bubble shows
+		// "sending…" until the server acks, then goes red+Retry on failure. A
+		// dropped frame no longer vanishes silently. We're now processing the
+		// user's input, so flag the working indicator only if the frame went out.
+		const ok = sendTracked(text);
+		if (ok) working = true;
 		msgHistory.push(session.id, text);
 		input = '';
 		resetHistoryNav();
@@ -556,13 +642,11 @@
 	// socket's `reply` op advances the turn, which is how the agent continues.
 	function answerQuestion(text: string) {
 		if (archived) return;
-		const ok = ws.sendMessage(id, text);
-		if (!ok) {
-			notSent = true;
-			ws.connect();
-			return;
-		}
-		notSent = false;
+		// Track delivery like any reply (CCT-212). If the frame can't go out, the
+		// optimistic bubble shows failed+Retry and we keep the question on screen
+		// rather than dismissing it for a send that never left.
+		const ok = sendTracked(text);
+		if (!ok) return;
 		// Lock both ask render sites to their answered state immediately (CCT-190).
 		answering = true;
 		// Answering hands control back to claude — show the working indicator.
@@ -571,7 +655,6 @@
 		// a poll later (CCT-164).
 		ask = null;
 		ws.clearAsk(id);
-		pushOptimisticReply(text);
 		qc.invalidateQueries({ queryKey: ['sessions'] });
 	}
 
@@ -585,7 +668,8 @@
 		input = text;
 		ws.dropOptimistic(id, ts);
 		live = live.filter((e) => !(e.type === 'reply' && e.ts === ts));
-		pendingReplies = new Set([...pendingReplies].filter((t) => t !== ts));
+		// Clear both the pending tint and any failed state + ack timer (CCT-212).
+		markDelivered(ts);
 		resetHistoryNav();
 		textarea?.focus();
 	}
@@ -593,7 +677,7 @@
 	// Optimistic echo of a user-typed message. Kept in the ws singleton (not
 	// just local `live`) so a resubscribe/reconnect that rebuilds `live` from
 	// `bufferedEvents()` doesn't drop a message claude already received.
-	function pushOptimisticReply(text: string) {
+	function pushOptimisticReply(text: string): number {
 		// Stamp the optimistic echo just past the newest known event rather than
 		// with the browser clock (CCT-186): a user message is logically the latest
 		// thing in the conversation at send time, but `Date.now()` is a third clock
@@ -607,6 +691,7 @@
 		ws.recordOptimistic(id, ev);
 		live = [...live, ev];
 		pendingReplies = new Set([...pendingReplies, ev.ts]);
+		return ts;
 	}
 
 	async function copyLine(text: string) {
@@ -892,7 +977,12 @@
 					{#if ln.html}<div class="compact-body">{@html ln.html}</div>{/if}
 				</div>
 			{:else}
-			<div class="line {ln.role}" class:mcp={ln.mcp} class:pending={ln.pending}>
+			<div
+				class="line {ln.role}"
+				class:mcp={ln.mcp}
+				class:pending={ln.pending}
+				class:failed={!!ln.failed}
+			>
 				<div class="lmeta row">
 					<span class="badge-role" class:mcp={ln.mcp}
 						>{ln.mcp ? 'mcp' : ln.role === 'result' ? 'result' : ln.role}</span
@@ -901,7 +991,23 @@
 						<span class="who tool-name">{ln.role === 'result' ? '↳ ' : ''}{ln.tool ?? 'tool'}</span>
 					{/if}
 					<span class="faint sm">{clockTime(ln.ts)}</span>
-					{#if ln.pending}
+					{#if ln.failed}
+						<span class="sm not-delivered" title={ln.failed}>⚠ Not delivered</span>
+						{#if !archived}
+							<button
+								class="btn btn-ghost retry-failed"
+								aria-label="Retry sending this message"
+								title="Resend this message ({ln.failed})"
+								onclick={() => retryFailed(ln.text ?? '', ln.ts)}>↻ Retry</button
+							>
+							<button
+								class="btn btn-ghost edit-pending"
+								aria-label="Edit message"
+								title="Pull this message back into the composer to edit and resend"
+								onclick={() => editPending(ln.text ?? '', ln.ts)}>✎</button
+							>
+						{/if}
+					{:else if ln.pending}
 						<span class="faint sm sending">sending…</span>
 						{#if !archived}
 							<button
@@ -966,9 +1072,8 @@
 				to send messages.
 			</div>
 		{:else}
-			{#if notSent}
-				<div class="notsent" role="status">⚠ Not sent — reconnecting. Your message is kept; press Send to retry.</div>
-			{/if}
+			<!-- Failed sends now surface inline on the message bubble itself
+			     (red + Retry, CCT-212), so there's no separate composer banner. -->
 			<textarea
 				class="textarea grow"
 				rows="1"
@@ -976,10 +1081,7 @@
 				bind:value={input}
 				bind:this={textarea}
 				onkeydown={onKey}
-				oninput={() => {
-					resetHistoryNav();
-					if (notSent) notSent = false;
-				}}
+				oninput={() => resetHistoryNav()}
 				use:autoresize={input}
 			></textarea>
 			<button
@@ -1317,6 +1419,27 @@
 	.edit-pending:hover {
 		color: var(--accent);
 	}
+	/* Failed send (CCT-212): the bubble goes red and a Retry control appears. */
+	.line.user.failed .bubble {
+		background: color-mix(in srgb, var(--danger) 12%, var(--bg-elevated));
+		border-color: color-mix(in srgb, var(--danger) 50%, transparent);
+	}
+	.not-delivered {
+		color: var(--danger);
+		margin-left: auto;
+		white-space: nowrap;
+	}
+	.retry-failed {
+		padding: 0 var(--sp-1);
+		min-height: auto;
+		font-size: var(--fs-sm);
+		line-height: 1;
+		color: var(--danger);
+		font-weight: 600;
+	}
+	.retry-failed:hover {
+		color: color-mix(in srgb, var(--danger) 70%, var(--text));
+	}
 	/* Working indicator (CCT-208) — animated dots + label proving claude is
 	   processing the turn, styled like a muted assistant-side status line. */
 	.working {
@@ -1509,17 +1632,6 @@
 		font: inherit;
 		text-decoration: underline;
 		cursor: pointer;
-	}
-	/* Inline notice when a send was dropped (socket not OPEN). Full-width so it
-	   sits on its own line above the textarea (CCT-162). */
-	.notsent {
-		width: 100%;
-		font-size: var(--fs-xs);
-		color: var(--warn);
-		background: color-mix(in srgb, var(--warn) 12%, var(--bg-elevated));
-		border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent);
-		border-radius: var(--r-sm);
-		padding: var(--sp-1) var(--sp-2);
 	}
 	/* Base prose: grayish (Claude-Code terminal feel, CCT-161 item 5). */
 	.bubble {

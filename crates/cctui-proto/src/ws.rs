@@ -110,10 +110,30 @@ pub enum AgentEvent {
 #[ts(export)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TuiCommand {
-    Subscribe { session_id: String },
-    Unsubscribe { session_id: String },
-    Message { session_id: String, content: String },
-    PermissionResponse { session_id: String, request_id: String, behavior: String },
+    Subscribe {
+        session_id: String,
+    },
+    Unsubscribe {
+        session_id: String,
+    },
+    /// A typed reply from a client. `client_msg_id` (when present) lets the
+    /// server ack the send back to the originating socket via
+    /// [`ServerEvent::MessageAck`], so the client can render a precise
+    /// per-message delivery state (sending → delivered / failed) instead of
+    /// optimistically assuming a frame that left the socket was delivered
+    /// (CCT-212). `#[serde(default)]` keeps older clients (no field) working —
+    /// they simply receive no ack.
+    Message {
+        session_id: String,
+        content: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client_msg_id: Option<String>,
+    },
+    PermissionResponse {
+        session_id: String,
+        request_id: String,
+        behavior: String,
+    },
 }
 
 // --- Server → TUI ---
@@ -171,6 +191,20 @@ pub enum ServerEvent {
     /// polling (CCT-131).
     CommandResult {
         command_id: String,
+        ok: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    /// Outcome of a client-sent [`TuiCommand::Message`] carrying a
+    /// `client_msg_id`. Sent only to the originating socket. `ok=false` means
+    /// the server could not dispatch the reply to the session's daemon (e.g.
+    /// the daemon was momentarily offline — `NoDaemon`/`Closed`), so the client
+    /// should mark the message failed and offer a retry rather than leaving it
+    /// stuck "sending…" until it silently vanishes on the next resubscribe
+    /// (CCT-212).
+    MessageAck {
+        session_id: String,
+        client_msg_id: String,
         ok: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
@@ -314,8 +348,11 @@ mod tests {
 
     #[test]
     fn tui_command_message_serialization() {
-        let cmd =
-            TuiCommand::Message { session_id: "test-session".into(), content: "hello".into() };
+        let cmd = TuiCommand::Message {
+            session_id: "test-session".into(),
+            content: "hello".into(),
+            client_msg_id: None,
+        };
         let json = serde_json::to_string(&cmd).unwrap();
         assert!(json.contains(r#""type":"message""#));
         assert!(json.contains(r#""content":"hello""#));
@@ -324,5 +361,74 @@ mod tests {
             TuiCommand::Message { content, .. } => assert_eq!(content, "hello"),
             _ => panic!("wrong variant"),
         }
+    }
+
+    #[test]
+    fn tui_command_message_omits_client_msg_id_when_none() {
+        // Old clients send no `client_msg_id`; the field is skipped on the wire
+        // so the payload stays byte-compatible with pre-CCT-212 readers.
+        let cmd = TuiCommand::Message {
+            session_id: "s".into(),
+            content: "hi".into(),
+            client_msg_id: None,
+        };
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert!(!json.contains("client_msg_id"), "None must be skipped: {json}");
+    }
+
+    #[test]
+    fn tui_command_message_accepts_legacy_payload_without_client_msg_id() {
+        // A frame from an older client (no field) must still decode (serde default).
+        let legacy = r#"{"type":"message","session_id":"s","content":"hi"}"#;
+        let cmd: TuiCommand = serde_json::from_str(legacy).unwrap();
+        match cmd {
+            TuiCommand::Message { client_msg_id, .. } => assert_eq!(client_msg_id, None),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn tui_command_message_carries_client_msg_id_when_set() {
+        let cmd = TuiCommand::Message {
+            session_id: "s".into(),
+            content: "hi".into(),
+            client_msg_id: Some("abc-123".into()),
+        };
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert!(json.contains(r#""client_msg_id":"abc-123""#));
+        let back: TuiCommand = serde_json::from_str(&json).unwrap();
+        match back {
+            TuiCommand::Message { client_msg_id, .. } => {
+                assert_eq!(client_msg_id.as_deref(), Some("abc-123"));
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn server_event_message_ack_roundtrips() {
+        let ev = ServerEvent::MessageAck {
+            session_id: "s".into(),
+            client_msg_id: "abc-123".into(),
+            ok: false,
+            error: Some("no daemon connected for machine …".into()),
+        };
+        let json = serde_json::to_string(&ev).unwrap();
+        assert!(json.contains(r#""type":"message_ack""#));
+        assert!(json.contains(r#""ok":false"#));
+        assert!(json.contains(r#""client_msg_id":"abc-123""#));
+        let _back: ServerEvent = serde_json::from_str(&json).unwrap();
+    }
+
+    #[test]
+    fn server_event_message_ack_omits_error_when_ok() {
+        let ev = ServerEvent::MessageAck {
+            session_id: "s".into(),
+            client_msg_id: "abc-123".into(),
+            ok: true,
+            error: None,
+        };
+        let json = serde_json::to_string(&ev).unwrap();
+        assert!(!json.contains("error"), "None error must be skipped: {json}");
     }
 }
