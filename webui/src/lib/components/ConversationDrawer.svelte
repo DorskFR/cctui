@@ -96,13 +96,29 @@
 	// question; once resolved the live card vanishes and the transcript card
 	// remains as history.
 	function isDupeOfLiveAsk(a: AskQuestion[]): boolean {
-		if (!ask) return false;
 		const q = a[0]?.question;
 		if (!q) return false;
+		// Already answered/resolved this session (CCT-230): the ask tool_use
+		// flushes to the transcript AFTER the answer, so without this the late
+		// line pops in below the user's reply as a fresh interactive form (and
+		// flickers active once `answering` clears). The reply bubble already
+		// carries the Q→A text, so suppress the late duplicate outright.
+		if (resolvedAsks.has(askKey(q))) return true;
+		if (!ask) return false;
 		const liveQ = liveAskQuestions?.[0]?.question;
 		if (liveQ !== undefined) return q === liveQ;
 		// Text-only fallback delivery: the flattened `question` embeds the text.
 		return ask.question.includes(q);
+	}
+	// Question texts answered (by us) or resolved (by the daemon) this visit,
+	// keyed per session so switching sessions can't cross-suppress (CCT-230).
+	let resolvedAsks = $state<Set<string>>(new Set());
+	const askKey = (q: string) => `${id}|${q}`;
+	function markAsksResolved(qs: { question: string }[] | null, fallback?: string) {
+		const next = new Set(resolvedAsks);
+		for (const q of qs ?? []) next.add(askKey(q.question));
+		if (!qs?.length && fallback) next.add(askKey(fallback));
+		resolvedAsks = next;
 	}
 	// The assistant prose preceding the live question (CCT-213), rendered as
 	// markdown above the card so the user answers with context, not blind.
@@ -171,6 +187,9 @@
 			if (list.length) working = false;
 		});
 		const offAsk = ws.onAsk(sid, (q) => {
+			// A pending ask resolving (answered here, from the TUI, or timed out)
+			// means its late transcript line must stay suppressed (CCT-230).
+			if (!q && ask) markAsksResolved(liveAskQuestions, ask.question);
 			ask = q;
 			// A fresh ask (or a resolution) supersedes any in-flight answer lock.
 			answering = false;
@@ -623,7 +642,7 @@
 	// genuine tool_result with the selected labels; the flattened text rides
 	// along as the carrier for the free-text/fallback path (dismiss the form,
 	// reply the text — which claude records as a declined ask + user turn).
-	function answerQuestion(text: string, picks: number[][] | null) {
+	function answerQuestion(text: string, picks: number[][] | null, qs?: AskQuestion[] | null) {
 		if (archived) return;
 		// Track delivery like any reply (CCT-212). If the frame can't go out, the
 		// optimistic bubble shows failed+Retry and we keep the question on screen
@@ -631,7 +650,10 @@
 		const ts = pushOptimisticReply(text);
 		const ok = ws.trackedSend(id, text, ts, picks ?? undefined);
 		if (!ok) return;
-		// Lock both ask render sites to their answered state immediately (CCT-190).
+		// Lock both ask render sites to their answered state immediately (CCT-190),
+		// and remember the answered questions so the late-flushing transcript line
+		// never resurfaces as a fresh form (CCT-230).
+		markAsksResolved(qs ?? liveAskQuestions, ask?.question);
 		answering = true;
 		// Answering hands control back to claude — show the working indicator.
 		working = true;
@@ -979,8 +1001,8 @@
 			{:else if ln.ask}
 				<AskQuestionCard
 					questions={ln.ask}
-					interactive={i === lines.length - 1 && !archived && !answering}
-					onsubmit={answerQuestion}
+					interactive={i === lines.length - 1 && !archived && !answering && !ask}
+					onsubmit={(t, p) => answerQuestion(t, p, ln.ask)}
 				/>
 			{:else if ln.role === 'reset'}
 				<div class="reset-divider" role="separator">
@@ -1067,7 +1089,7 @@
 			<AskQuestionCard
 				questions={liveAskQuestions ?? [{ question: ask.question, options: [] }]}
 				interactive={!archived && !answering}
-				onsubmit={answerQuestion}
+				onsubmit={(t, p) => answerQuestion(t, p, liveAskQuestions)}
 			/>
 		{/if}
 
