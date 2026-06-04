@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.3.116"
+version = "0.3.117"
 edition = "2024"
 license = "MIT"
 authors = ["DorskFR"]
@@ -52,4 +52,3 @@ async-trait = "0.1"
 kube = { version = "0.96", default-features = false, features = ["client", "rustls-tls", "runtime"] }
 k8s-openapi = { version = "0.23", features = ["latest"] }
 ts-rs = { version = "10", features = ["chrono-impl", "serde-json-impl", "uuid-impl"] }
-
