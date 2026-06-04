@@ -8,6 +8,7 @@
 	import { clockTime, statusBadgeClass, compact } from '$lib/format';
 	import { drafts, composerKey, history as msgHistory, clearSessionStorage, VIEW_OPTS } from '$lib/drafts';
 	import { autoresize } from '$lib/autoresize';
+	import { downloadConversationHtml } from '$lib/export';
 	import { toasts } from '$lib/toast.svelte';
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { qk } from '$lib/queries';
@@ -724,6 +725,18 @@
 		}
 	}
 
+	// Export the full transcript as a self-contained HTML file (CCT-227).
+	// Built from `events` (history + live), NOT `lines`, so the export always
+	// carries everything regardless of the view toggles.
+	function doExport() {
+		try {
+			downloadConversationHtml(session, events);
+			toasts.ok('Transcript downloaded');
+		} catch (e) {
+			toasts.err((e as Error).message);
+		}
+	}
+
 	async function doInterrupt() {
 		try {
 			await actions.interrupt(id);
@@ -877,6 +890,18 @@
 					}}>✎</button
 				>
 			{/if}
+			<button
+				class="tapbtn"
+				aria-label="Export conversation"
+				title="Download transcript as HTML (print it for a PDF)"
+				onclick={doExport}
+			>
+				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+					<path d="M12 3v12" />
+					<path d="m7 10 5 5 5-5" />
+					<path d="M4 19h16" />
+				</svg>
+			</button>
 			{#if !archived}
 				<button class="tapbtn interrupt" aria-label="Interrupt turn" title="Interrupt the in-flight turn" onclick={doInterrupt}>
 					<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
