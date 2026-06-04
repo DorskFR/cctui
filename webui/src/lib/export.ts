@@ -2,19 +2,33 @@
  * Export a conversation as a single self-contained HTML document (CCT-227).
  *
  * Built entirely client-side from the merged event list the drawer already
- * holds — no server round-trip. The file embeds all CSS (dark theme on screen,
- * light palette + page setup under `@media print`) so the browser's
+ * holds — no server round-trip. The file embeds all CSS so the browser's
  * Print → "Save as PDF" yields a clean PDF: that IS the PDF path; we don't
  * ship a PDF generator.
  *
- * Unlike the drawer's `lines` (gated by the view toggles), the export always
- * includes everything — tools, MCP, system, results — it's the archival copy.
+ * The export mirrors the live view (follow-up to the first cut):
+ *  - THEME: the active theme's palette tokens (dark/light/sepia) are read
+ *    from the document's computed styles at export time and baked into the
+ *    file, so a sepia screen exports a sepia transcript.
+ *  - FILTERS: the drawer's view toggles (Tools / MCP / System / Results,
+ *    JSON / Diff prettification) gate the export the same way they gate the
+ *    on-screen lines — what you see is what you save.
  */
 
 import type { AgentEvent } from '@bindings/AgentEvent';
 import type { SessionListItem } from '@bindings/SessionListItem';
 import { renderMarkdown, highlightBlock, prettyJson, escapeHtml } from '$lib/markdown';
 import { USER_PREFIX } from '$lib/ws.svelte';
+
+/** The subset of the drawer's ViewOpts the export honors. */
+export interface ExportOpts {
+	showTool: boolean;
+	showMcp: boolean;
+	showSystem: boolean;
+	showResult: boolean;
+	prettyJson: boolean;
+	prettyDiff: boolean;
+}
 
 interface Block {
 	role: 'assistant' | 'user' | 'system' | 'tool' | 'result' | 'reset' | 'compact' | 'ask';
@@ -26,19 +40,20 @@ interface Block {
 const META_TAGS = ['<task-notification', '<system-reminder', '<command-name', '<command-message', '<local-command', '<bash-input', '<bash-stdout', '<bash-stderr'];
 const looksMeta = (t: string) => META_TAGS.some((m) => t.trimStart().startsWith(m));
 
-// Mirror the drawer's tool-input prettification (diff / shell / JSON) so the
-// export reads like the live view, without depending on its view state.
-function formatToolInput(tool: string, input: unknown): string {
+// Mirror the drawer's tool-input prettification (diff / shell / JSON),
+// honoring the same prettyDiff/prettyJson toggles.
+function formatToolInput(tool: string, input: unknown, opts: ExportOpts): string {
 	const obj = input as Record<string, unknown> | null;
-	if (obj && typeof obj === 'object' && 'old_string' in obj && 'new_string' in obj) {
+	if (opts.prettyDiff && obj && typeof obj === 'object' && 'old_string' in obj && 'new_string' in obj) {
 		const minus = String(obj.old_string ?? '').split('\n').map((l) => `- ${l}`).join('\n');
 		const plus = String(obj.new_string ?? '').split('\n').map((l) => `+ ${l}`).join('\n');
 		return highlightBlock(`${obj.file_path ?? ''}\n${minus}\n${plus}`.trim(), '');
 	}
-	if (obj && typeof obj === 'object' && typeof obj.command === 'string') {
+	if (opts.prettyJson && obj && typeof obj === 'object' && typeof obj.command === 'string') {
 		const desc = typeof obj.description === 'string' && obj.description.trim() ? `# ${obj.description.trim()}\n` : '';
 		return highlightBlock(`${desc}${obj.command}`, 'sh');
 	}
+	if (!opts.prettyJson) return highlightBlock(JSON.stringify(input), 'json');
 	return highlightBlock(prettyJson(input).replace(/\\n/g, '\n').replace(/\\t/g, '\t'), 'json');
 }
 
@@ -57,14 +72,15 @@ function formatAsk(input: unknown): string | null {
 	return parts.length ? parts.join('') : null;
 }
 
-function toBlock(e: AgentEvent): Block | null {
+function toBlock(e: AgentEvent, opts: ExportOpts): Block | null {
 	switch (e.type) {
 		case 'text': {
 			if (!e.content.trim()) return null;
 			if (e.content.startsWith(USER_PREFIX)) {
 				const content = e.content.slice(USER_PREFIX.length).trimStart();
-				const role = e.meta || looksMeta(content) ? 'system' : 'user';
-				return { role, ts: Number(e.ts), html: renderMarkdown(content) };
+				const system = e.meta || looksMeta(content);
+				if (system && !opts.showSystem) return null;
+				return { role: system ? 'system' : 'user', ts: Number(e.ts), html: renderMarkdown(content) };
 			}
 			return { role: 'assistant', ts: Number(e.ts), html: renderMarkdown(e.content) };
 		}
@@ -76,9 +92,13 @@ function toBlock(e: AgentEvent): Block | null {
 				const ask = formatAsk(e.input);
 				if (ask) return { role: 'ask', ts: Number(e.ts), label: 'AskUserQuestion', html: ask };
 			}
-			return { role: 'tool', ts: Number(e.ts), label: e.tool, html: `<pre><code>${formatToolInput(e.tool, e.input)}</code></pre>` };
+			const isMcp = e.tool.startsWith('mcp__');
+			if (!opts.showTool) return null;
+			if (isMcp && !opts.showMcp) return null;
+			return { role: 'tool', ts: Number(e.ts), label: e.tool, html: `<pre><code>${formatToolInput(e.tool, e.input, opts)}</code></pre>` };
 		}
 		case 'tool_result':
+			if (!opts.showResult) return null;
 			return { role: 'result', ts: Number(e.ts), label: e.tool, html: `<pre><code>${highlightBlock(e.output_summary, '')}</code></pre>` };
 		case 'context_reset':
 			return { role: 'reset', ts: Number(e.ts), html: '⟳ context reset · /clear or /compact' };
@@ -106,59 +126,92 @@ function fmtTs(ts: number): string {
 	return isNaN(d.getTime()) ? '' : d.toLocaleString();
 }
 
-// One fixed palette (matches the app's dark theme feel) + a light print
-// palette. Kept literal — the export must not depend on the app's stylesheets.
+// ── Theme capture ────────────────────────────────────────────────────────────
+// The app's themes (dark/light/sepia) live as `--c-*` / `--md-*` / `--syn-*`
+// custom properties on <html> (variables.css, switched by [data-theme]). Read
+// the ACTIVE theme's computed values at export time and bake them into the
+// file's :root so the export matches what's on screen. `var()` references are
+// substituted in computed values; a remaining `color-mix(...)` expression is
+// still valid CSS in the standalone file. Fallbacks = the dark palette, for
+// safety if a token is ever missing.
+const TOKEN_FALLBACKS: Record<string, string> = {
+	'--c-bg': '#0f1115',
+	'--c-bg-elev': '#171a21',
+	'--c-border': '#2c323d',
+	'--c-text': '#e6e9ef',
+	'--c-text-muted': '#9aa3b2',
+	'--c-text-faint': '#6b7384',
+	'--c-blue': '#5aa9ff',
+	'--c-green': '#5ad6a0',
+	'--c-amber': '#f0b454',
+	'--c-red': '#f0716b',
+	'--c-violet': '#b48ef0',
+	'--md-text': '#9aa3b2',
+	'--md-strong': '#e6e9ef',
+	'--md-code': '#5aa9ff',
+	'--md-code-bg': 'rgba(90,169,255,.12)',
+	'--md-heading': '#e6e9ef',
+	'--syn-keyword': '#b48ef0',
+	'--syn-string': '#5ad6a0',
+	'--syn-number': '#f0b454',
+	'--syn-comment': '#6b7384',
+	'--syn-function': '#5aa9ff'
+};
+
+function themeVarsCss(): string {
+	const cs = typeof document !== 'undefined' ? getComputedStyle(document.documentElement) : null;
+	return Object.entries(TOKEN_FALLBACKS)
+		.map(([name, fb]) => `${name}:${(cs?.getPropertyValue(name) || '').trim() || fb}`)
+		.join(';');
+}
+
+// Layout/structure CSS. Colors come exclusively from the captured theme tokens
+// above. Print keeps the same palette (the export matches the screen theme —
+// a sepia screen prints sepia); it only adds page setup + break rules.
 const CSS = `
-:root{--bg:#101418;--panel:#171c22;--border:#2a3138;--text:#e6e9ec;--muted:#aab2ba;--faint:#6b747d;
---blue:#6cb6ff;--green:#7ee08a;--amber:#f0c674;--violet:#c89bf0;--red:#ff8a8a;
---md-text:var(--muted);--md-strong:var(--text);--md-code:var(--blue);--md-code-bg:rgba(108,182,255,.12);--md-heading:var(--text);
---syn-keyword:var(--violet);--syn-string:var(--green);--syn-number:var(--amber);--syn-comment:var(--faint);--syn-function:var(--blue)}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+body{margin:0;background:var(--c-bg);color:var(--c-text);font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;print-color-adjust:exact;-webkit-print-color-adjust:exact}
 .page{max-width:900px;margin:0 auto;padding:24px 20px 48px}
-header{border-bottom:1px solid var(--border);padding-bottom:14px;margin-bottom:18px}
+header{border-bottom:1px solid var(--c-border);padding-bottom:14px;margin-bottom:18px}
 header h1{font-size:18px;margin:0 0 8px;word-break:break-word}
-.meta{display:flex;flex-wrap:wrap;gap:6px 14px;color:var(--muted);font-size:12px}
-.meta b{color:var(--text);font-weight:600}
-.msg{margin:10px 0;border-left:3px solid var(--border);padding:6px 12px;border-radius:4px;background:var(--panel)}
-.msg .who{display:flex;gap:8px;align-items:baseline;font-size:11px;color:var(--faint);margin-bottom:4px}
+.meta{display:flex;flex-wrap:wrap;gap:6px 14px;color:var(--c-text-muted);font-size:12px}
+.meta b{color:var(--c-text);font-weight:600}
+.msg{margin:10px 0;border-left:3px solid var(--c-border);padding:6px 12px;border-radius:4px;background:var(--c-bg-elev)}
+.msg .who{display:flex;gap:8px;align-items:baseline;font-size:11px;color:var(--c-text-faint);margin-bottom:4px}
 .msg .who .r{font-weight:700;text-transform:uppercase;letter-spacing:.04em}
 .msg .body{color:var(--md-text);word-break:break-word;overflow-wrap:anywhere;white-space:normal}
-.user{border-left-color:var(--green)}.user .who .r{color:var(--green)}
-.assistant{border-left-color:var(--blue)}.assistant .who .r{color:var(--blue)}
-.system{border-left-color:var(--faint);opacity:.85}.system .who .r{color:var(--faint)}
-.tool{border-left-color:var(--violet)}.tool .who .r{color:var(--violet)}
-.result{border-left-color:var(--amber)}.result .who .r{color:var(--amber)}
-.ask{border-left-color:var(--red)}.ask .who .r{color:var(--red)}
-.compact{border-left-color:var(--amber)}
-.reset{border-left:none;background:none;text-align:center;color:var(--faint);font-size:12px;margin:18px 0}
-pre{margin:4px 0;padding:8px 10px;background:rgba(0,0,0,.25);border:1px solid var(--border);border-radius:4px;overflow-x:auto;white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.45}
+.user{border-left-color:var(--c-green)}.user .who .r{color:var(--c-green)}
+.assistant{border-left-color:var(--c-blue)}.assistant .who .r{color:var(--c-blue)}
+.system{border-left-color:var(--c-text-faint);opacity:.85}.system .who .r{color:var(--c-text-faint)}
+.tool{border-left-color:var(--c-violet)}.tool .who .r{color:var(--c-violet)}
+.result{border-left-color:var(--c-amber)}.result .who .r{color:var(--c-amber)}
+.ask{border-left-color:var(--c-red)}.ask .who .r{color:var(--c-red)}
+.compact{border-left-color:var(--c-amber)}
+.reset{border-left:none;background:none;text-align:center;color:var(--c-text-faint);font-size:12px;margin:18px 0}
+pre{margin:4px 0;padding:8px 10px;background:color-mix(in srgb,var(--c-text) 5%,var(--c-bg));border:1px solid var(--c-border);border-radius:4px;overflow-x:auto;white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.45}
 code{font-family:inherit}
 .md-pre{margin:6px 0}
 .md-code{color:var(--md-code);background:var(--md-code-bg);padding:0 4px;border-radius:3px}
 .md-h{display:block;font-weight:700;color:var(--md-heading);margin-top:6px}
-.md-quote{display:block;border-left:2px solid var(--border);padding-left:8px;color:var(--faint)}
+.md-quote{display:block;border-left:2px solid var(--c-border);padding-left:8px;color:var(--c-text-faint)}
 .md-li{display:block;padding-left:8px}
-.md-meta-tag{color:var(--faint);font-style:italic}
+.md-meta-tag{color:var(--c-text-faint);font-style:italic}
 strong{color:var(--md-strong)}
-a{color:var(--blue)}
+a{color:var(--c-blue)}
 .syn-keyword{color:var(--syn-keyword)}.syn-string{color:var(--syn-string)}.syn-number{color:var(--syn-number)}
 .syn-comment{color:var(--syn-comment);font-style:italic}.syn-function{color:var(--syn-function)}
-.ask-q{margin:2px 0;color:var(--text);font-weight:600}
+.ask-q{margin:2px 0;color:var(--c-text);font-weight:600}
 .ask-opts{margin:4px 0 2px;padding-left:18px}
-footer{margin-top:28px;color:var(--faint);font-size:11px;text-align:center}
+footer{margin-top:28px;color:var(--c-text-faint);font-size:11px;text-align:center}
 @media print{
-:root{--bg:#fff;--panel:#f6f7f8;--border:#d5dade;--text:#1c2228;--muted:#3a434b;--faint:#7a838b;
---blue:#0b62c4;--green:#1a7f37;--amber:#9a6700;--violet:#7a3fc0;--red:#c4302b;--md-code-bg:rgba(11,98,196,.08)}
 body{font-size:11px}
-pre{background:#f0f2f4;white-space:pre-wrap}
 .msg{break-inside:avoid-page}
-a{color:var(--blue);text-decoration:none}
+a{text-decoration:none}
 @page{margin:14mm}}
 `;
 
-export function buildConversationHtml(session: SessionListItem, events: AgentEvent[]): string {
-	const blocks = events.map(toBlock).filter((b): b is Block => b !== null);
+export function buildConversationHtml(session: SessionListItem, events: AgentEvent[], opts: ExportOpts): string {
+	const blocks = events.map((e) => toBlock(e, opts)).filter((b): b is Block => b !== null);
 	const title = session.name || session.working_dir || session.id;
 	const first = blocks[0]?.ts;
 	const last = blocks[blocks.length - 1]?.ts;
@@ -186,7 +239,7 @@ export function buildConversationHtml(session: SessionListItem, events: AgentEve
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>${escapeHtml(title)} — cctui transcript</title>
-<style>${CSS}</style>
+<style>:root{${themeVarsCss()}}${CSS}</style>
 </head>
 <body>
 <div class="page">
@@ -200,8 +253,8 @@ ${body}
 }
 
 /** Trigger a client-side download of the built HTML transcript. */
-export function downloadConversationHtml(session: SessionListItem, events: AgentEvent[]) {
-	const html = buildConversationHtml(session, events);
+export function downloadConversationHtml(session: SessionListItem, events: AgentEvent[], opts: ExportOpts) {
+	const html = buildConversationHtml(session, events, opts);
 	const stamp = new Date().toISOString().slice(0, 10);
 	const base = (session.name || session.id).replace(/[^\w.-]+/g, '_').slice(0, 60) || 'conversation';
 	const blob = new Blob([html], { type: 'text/html;charset=utf-8' });

@@ -725,12 +725,12 @@
 		}
 	}
 
-	// Export the full transcript as a self-contained HTML file (CCT-227).
-	// Built from `events` (history + live), NOT `lines`, so the export always
-	// carries everything regardless of the view toggles.
+	// Export the transcript as a self-contained HTML file (CCT-227). Built from
+	// `events` (history + live) but gated by the current view toggles and themed
+	// with the active palette — the export matches what's on screen.
 	function doExport() {
 		try {
-			downloadConversationHtml(session, events);
+			downloadConversationHtml(session, events, view);
 			toasts.ok('Transcript downloaded');
 		} catch (e) {
 			toasts.err((e as Error).message);
