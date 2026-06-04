@@ -37,13 +37,16 @@ use crate::adapter_runtime::{Adapter, AdapterCtx, AdapterFactory};
 /// live `session_id` a hook reports into the `local_id` the server keys on.
 pub(crate) type SessionMap = Arc<Mutex<HashMap<String, String>>>;
 
-/// Shared set of `local_id`s with an `AskUserQuestion` form currently up in
-/// the worker's PTY (CCT-219). Maintained by the ask-hook listener (insert on
-/// `kind:"ask"`, remove on `kind:"resolved"`) and consulted by the driver's
-/// reply path: a `reply` op injected while the form is up just confirms the
-/// highlighted option (the swallowed-text / phantom-"Proceed" bug), so the
-/// driver must dismiss the form first.
-pub(crate) type PendingAsks = Arc<Mutex<std::collections::HashSet<String>>>;
+/// Shared map of `local_id`s with an `AskUserQuestion` form currently up in
+/// the worker's PTY (CCT-219), each carrying the raw `questions` array the
+/// hook delivered (`None` for deliveries without it). Maintained by the
+/// ask-hook listener (insert on `kind:"ask"`, remove on `kind:"resolved"`)
+/// and consulted by the driver's reply path: a `reply` op injected while the
+/// form is up just confirms the highlighted option (the swallowed-text /
+/// phantom-"Proceed" bug). With the questions in hand the reply path can
+/// instead drive the real form via keystrokes — a native answer claude records
+/// as a genuine tool_result (CCT-226) — falling back to dismiss-then-reply.
+pub(crate) type PendingAsks = Arc<Mutex<HashMap<String, Option<serde_json::Value>>>>;
 
 pub struct ClaudeCodeAdapter;
 
@@ -217,15 +220,16 @@ async fn handle_hook_connection(
         let Some(evt) = hook_line_to_event(line, &session_map) else {
             continue;
         };
-        // Track which sessions have the ask form up (CCT-219) so the driver's
-        // reply path can dismiss it before injecting text.
-        if let Ok(mut set) = pending_asks.lock() {
+        // Track which sessions have the ask form up (CCT-219), keeping the
+        // questions payload so the driver's reply path can answer the form
+        // natively via keystrokes (CCT-226) or dismiss it before injecting text.
+        if let Ok(mut map) = pending_asks.lock() {
             match &evt {
-                AdapterEvent::AskQuestion { local_id, .. } => {
-                    set.insert(local_id.clone());
+                AdapterEvent::AskQuestion { local_id, questions, .. } => {
+                    map.insert(local_id.clone(), questions.clone());
                 }
                 AdapterEvent::AskResolved { local_id } => {
-                    set.remove(local_id);
+                    map.remove(local_id);
                 }
                 _ => {}
             }

@@ -375,6 +375,85 @@ impl Driver {
         }
     }
 
+    /// Deliver a user message to a worker, handling a pending `AskUserQuestion`
+    /// form. With structured `ask_picks` and the hook-captured questions we
+    /// answer the form *natively* — keystrokes on the real form, so claude
+    /// records a genuine tool_result with the selected labels (CCT-226).
+    /// Otherwise (free-text answer, missing questions, keystroke failure) fall
+    /// back to dismiss-then-reply: attach+ESC the form away, then `reply` the
+    /// text (CCT-219; claude records the ask as declined and reads the text as
+    /// a new user turn).
+    async fn deliver_reply(
+        &self,
+        sock: &std::path::Path,
+        local_id: &str,
+        text: &str,
+        ask_picks: Option<Vec<Vec<usize>>>,
+    ) -> anyhow::Result<()> {
+        // Hibernated sessions (worker exited, job state still on disk)
+        // have left `short_by_session`, so fall back to deriving the
+        // short from the session id — same as the removal path.
+        let short = self
+            .resolve_short(local_id)
+            .or_else(|_| self.resolve_short_for_removal(local_id))?;
+        // Resume-on-reply (CCT-228): a reply to an exited worker is
+        // ENOJOB'd by the claude daemon and silently lost. Revive it
+        // first via a resume `dispatch`, then deliver as normal. Live
+        // workers take the existing path with zero extra ops.
+        self.resume_if_hibernated(sock, &short).await?;
+        // If an AskUserQuestion form is up in the worker's PTY, a bare
+        // `reply` just presses Enter on the highlighted option — claude
+        // records option 1 ("Proceed"-style) and the user's text is
+        // swallowed (CCT-219).
+        let pending_ask = self.pending_asks.lock().ok().and_then(|mut m| m.remove(local_id));
+        if let Some(questions) = pending_ask {
+            // Native answer first (CCT-226): drive the real form.
+            if let Some(picks) = ask_picks
+                && let Some(chunks) = questions.as_ref().and_then(|q| ask_keystrokes(q, &picks))
+            {
+                match socket::attach_answer_keys(sock, &short, &chunks).await {
+                    Ok(()) => {
+                        tracing::info!(%short, "answered ask form natively via keystrokes");
+                        // PostToolUse fires for the real answer and emits
+                        // `resolved`, but synthesize one too so the live card
+                        // drops immediately (it's idempotent client-side).
+                        let _ = self
+                            .events
+                            .send(AdapterEvent::AskResolved { local_id: local_id.to_owned() })
+                            .await;
+                        return Ok(());
+                    }
+                    Err(err) => {
+                        tracing::warn!(%err, %short, "native ask answer failed; falling back to dismiss+reply");
+                    }
+                }
+            }
+            // Fallback: dismiss the form (attach+ESC, the same mechanism as
+            // interrupt/permission-deny), then deliver the text so claude
+            // reads the user's actual answer.
+            if let Err(err) = socket::attach_interrupt(sock, &short).await {
+                tracing::warn!(%err, %short, "failed to dismiss pending ask form");
+            } else {
+                tracing::info!(%short, "dismissed pending ask form before reply");
+                // PostToolUse never fires for a cancelled ask, so the
+                // hook won't emit `resolved` — synthesize it so the
+                // server/clients drop the live question card.
+                let _ = self
+                    .events
+                    .send(AdapterEvent::AskResolved { local_id: local_id.to_owned() })
+                    .await;
+                // Give the TUI a beat to settle after the ESC before
+                // the reply lands.
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            }
+        }
+        let resp =
+            socket::one_shot(sock, &json!({"proto":1,"op":"reply","short":short,"text":text}))
+                .await?;
+        tracing::debug!(?resp, %short, "reply ack");
+        Ok(())
+    }
+
     #[allow(clippy::cognitive_complexity)]
     async fn handle_command(&self, cmd: AdapterCommand) -> anyhow::Result<()> {
         // A command (spawn/reply/kill/…) needs a live control socket. If the
@@ -382,50 +461,11 @@ impl Driver {
         // the socket rather than failing the command outright (CCT-194).
         let sock = self.ensure_socket().await?;
         match cmd {
-            AdapterCommand::SendMessage { local_id, text }
-            | AdapterCommand::Reply { local_id, text } => {
-                // Hibernated sessions (worker exited, job state still on disk)
-                // have left `short_by_session`, so fall back to deriving the
-                // short from the session id — same as the removal path.
-                let short = self
-                    .resolve_short(&local_id)
-                    .or_else(|_| self.resolve_short_for_removal(&local_id))?;
-                // Resume-on-reply (CCT-228): a reply to an exited worker is
-                // ENOJOB'd by the claude daemon and silently lost. Revive it
-                // first via a resume `dispatch`, then deliver as normal. Live
-                // workers take the existing path with zero extra ops.
-                self.resume_if_hibernated(&sock, &short).await?;
-                // If an AskUserQuestion form is up in the worker's PTY, a bare
-                // `reply` just presses Enter on the highlighted option — claude
-                // records option 1 ("Proceed"-style) and the user's text is
-                // swallowed (CCT-219). Dismiss the form first (attach+ESC, the
-                // same mechanism as interrupt/permission-deny), then deliver
-                // the text so claude reads the user's actual answer.
-                let ask_pending =
-                    self.pending_asks.lock().is_ok_and(|mut s| s.remove(&local_id));
-                if ask_pending {
-                    if let Err(err) = socket::attach_interrupt(&sock, &short).await {
-                        tracing::warn!(%err, %short, "failed to dismiss pending ask form");
-                    } else {
-                        tracing::info!(%short, "dismissed pending ask form before reply");
-                        // PostToolUse never fires for a cancelled ask, so the
-                        // hook won't emit `resolved` — synthesize it so the
-                        // server/clients drop the live question card.
-                        let _ = self
-                            .events
-                            .send(AdapterEvent::AskResolved { local_id: local_id.clone() })
-                            .await;
-                        // Give the TUI a beat to settle after the ESC before
-                        // the reply lands.
-                        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-                    }
-                }
-                let resp = socket::one_shot(
-                    &sock,
-                    &json!({"proto":1,"op":"reply","short":short,"text":text}),
-                )
-                .await?;
-                tracing::debug!(?resp, %short, "reply ack");
+            AdapterCommand::SendMessage { local_id, text } => {
+                self.deliver_reply(&sock, &local_id, &text, None).await?;
+            }
+            AdapterCommand::Reply { local_id, text, ask_picks } => {
+                self.deliver_reply(&sock, &local_id, &text, ask_picks).await?;
             }
             AdapterCommand::Kill { local_id, signal } => {
                 let short = self.resolve_short(&local_id)?;
@@ -1442,9 +1482,119 @@ fn ensure_hook_settings(sock: &std::path::Path) -> Option<PathBuf> {
     }
 }
 
+/// Translate a structured ask answer into the keystroke chunks that drive the
+/// real `AskUserQuestion` form (CCT-226). `questions` is the raw
+/// `tool_input.questions` array captured by the ask-hook; `picks` is one list
+/// of 0-based option indices per question, in question order.
+///
+/// Form grammar (verified live against claude 2.1.162):
+///   - single-select: the option digit (`1`-`9`) selects and auto-advances
+///   - multiSelect: digits toggle options; `Tab` advances to the next question
+///   - every form except a lone single-select question ends on a "Review your
+///     answers" screen whose option 1 is "Submit answers" → final `1` submits
+///
+/// Returns `None` when the answer can't be expressed as form keystrokes
+/// (count mismatch, out-of-range/duplicate picks, empty pick on a question,
+/// several picks on a single-select) — the caller then falls back to the
+/// dismiss-then-reply path, which handles free-text answers too.
+fn ask_keystrokes(questions: &serde_json::Value, picks: &[Vec<usize>]) -> Option<Vec<Vec<u8>>> {
+    let qs = questions.as_array()?;
+    if qs.is_empty() || qs.len() != picks.len() {
+        return None;
+    }
+    let mut chunks: Vec<Vec<u8>> = Vec::new();
+    let mut any_multi = false;
+    for (q, p) in qs.iter().zip(picks) {
+        let n_opts = q.get("options").and_then(serde_json::Value::as_array)?.len();
+        // Digits only address rows 1-9; real forms have ≤4 options, so >9 means
+        // we're misreading the payload — bail to the fallback.
+        if n_opts == 0 || n_opts > 9 || p.is_empty() || p.iter().any(|&i| i >= n_opts) {
+            return None;
+        }
+        if q.get("multiSelect").and_then(serde_json::Value::as_bool).unwrap_or(false) {
+            any_multi = true;
+            let mut sorted = p.clone();
+            sorted.sort_unstable();
+            sorted.dedup();
+            if sorted.len() != p.len() {
+                return None; // duplicate picks — toggling twice would deselect
+            }
+            for &i in &sorted {
+                chunks.push(vec![b'1' + u8::try_from(i).ok()?]);
+            }
+            chunks.push(vec![b'\t']); // advance to the next question / review
+        } else {
+            if p.len() != 1 {
+                return None;
+            }
+            chunks.push(vec![b'1' + u8::try_from(p[0]).ok()?]);
+        }
+    }
+    // The review screen ("1. Submit answers") shows for every form except a
+    // lone single-select question, which submits straight from its digit.
+    if qs.len() > 1 || any_multi {
+        chunks.push(vec![b'1']);
+    }
+    Some(chunks)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ask_keystrokes_single_question_single_select() {
+        // One single-select question: the digit submits directly, no review.
+        let qs = json!([{ "question": "Red or blue?", "options": [{"label":"Red"},{"label":"Blue"}] }]);
+        assert_eq!(ask_keystrokes(&qs, &[vec![1]]), Some(vec![b"2".to_vec()]));
+    }
+
+    #[test]
+    fn ask_keystrokes_multiselect_tabs_then_submits() {
+        // One multiSelect question: toggle digits, Tab to review, 1 submits.
+        let qs = json!([{ "question": "Which?", "multiSelect": true,
+            "options": [{"label":"A"},{"label":"B"},{"label":"C"}] }]);
+        assert_eq!(
+            ask_keystrokes(&qs, &[vec![2, 0]]), // unsorted on purpose
+            Some(vec![b"1".to_vec(), b"3".to_vec(), b"\t".to_vec(), b"1".to_vec()])
+        );
+    }
+
+    #[test]
+    fn ask_keystrokes_multi_question_ends_on_review() {
+        // multiSelect then single-select: toggles+Tab, digit, then review `1`.
+        let qs = json!([
+            { "question": "Fruits?", "multiSelect": true,
+              "options": [{"label":"Apple"},{"label":"Banana"},{"label":"Cherry"}] },
+            { "question": "Drink?", "options": [{"label":"Tea"},{"label":"Coffee"}] },
+        ]);
+        assert_eq!(
+            ask_keystrokes(&qs, &[vec![0, 2], vec![1]]),
+            Some(vec![
+                b"1".to_vec(),
+                b"3".to_vec(),
+                b"\t".to_vec(),
+                b"2".to_vec(),
+                b"1".to_vec()
+            ])
+        );
+    }
+
+    #[test]
+    fn ask_keystrokes_rejects_unanswerable_shapes() {
+        let qs = json!([{ "question": "Q", "options": [{"label":"A"},{"label":"B"}] }]);
+        // count mismatch / empty pick / out of range / multi-pick on single-select
+        assert_eq!(ask_keystrokes(&qs, &[]), None);
+        assert_eq!(ask_keystrokes(&qs, &[vec![]]), None);
+        assert_eq!(ask_keystrokes(&qs, &[vec![2]]), None);
+        assert_eq!(ask_keystrokes(&qs, &[vec![0, 1]]), None);
+        // duplicate toggles on multiSelect would cancel out
+        let mq = json!([{ "question": "Q", "multiSelect": true,
+            "options": [{"label":"A"},{"label":"B"}] }]);
+        assert_eq!(ask_keystrokes(&mq, &[vec![0, 0]]), None);
+        // not an array at all
+        assert_eq!(ask_keystrokes(&json!({}), &[vec![0]]), None);
+    }
 
     #[test]
     fn kill_signal_name_maps_to_claude_enum() {

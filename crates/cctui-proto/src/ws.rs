@@ -130,6 +130,15 @@ pub enum TuiCommand {
         content: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         client_msg_id: Option<String>,
+        /// Structured `AskUserQuestion` answer: per-question 0-based option
+        /// indices, in question order (CCT-226). Present only when the client
+        /// is answering a live ask with pure option picks (no free text) —
+        /// lets the daemon drive the actual form via PTY keystrokes so claude
+        /// records a genuine tool_result instead of "User declined to answer
+        /// questions" (the ESC-dismiss fallback). `content` still carries the
+        /// flattened text so older daemons (and the fallback path) work.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ask_picks: Option<Vec<Vec<usize>>>,
     },
     PermissionResponse {
         session_id: String,
@@ -359,6 +368,7 @@ mod tests {
             session_id: "test-session".into(),
             content: "hello".into(),
             client_msg_id: None,
+            ask_picks: None,
         };
         let json = serde_json::to_string(&cmd).unwrap();
         assert!(json.contains(r#""type":"message""#));
@@ -378,6 +388,7 @@ mod tests {
             session_id: "s".into(),
             content: "hi".into(),
             client_msg_id: None,
+            ask_picks: None,
         };
         let json = serde_json::to_string(&cmd).unwrap();
         assert!(!json.contains("client_msg_id"), "None must be skipped: {json}");
@@ -400,6 +411,7 @@ mod tests {
             session_id: "s".into(),
             content: "hi".into(),
             client_msg_id: Some("abc-123".into()),
+            ask_picks: None,
         };
         let json = serde_json::to_string(&cmd).unwrap();
         assert!(json.contains(r#""client_msg_id":"abc-123""#));

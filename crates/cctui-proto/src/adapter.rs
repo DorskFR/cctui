@@ -298,6 +298,12 @@ pub enum AdapterCommand {
     Reply {
         local_id: String,
         text: String,
+        /// Structured ask answer (CCT-226): per-question 0-based option picks
+        /// for a pending `AskUserQuestion`. When present and a form is up, the
+        /// adapter answers natively (PTY keystrokes on the real form) so claude
+        /// records a genuine tool_result; `text` remains the fallback carrier.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ask_picks: Option<Vec<Vec<usize>>>,
     },
     /// Interrupt the in-flight turn WITHOUT tearing the session down — the
     /// keep-alive equivalent of pressing Esc in the TUI (CCT-210). Distinct
@@ -572,7 +578,7 @@ mod tests {
     #[test]
     fn adapter_command_reply_kill_perm_roundtrip() {
         let cases = vec![
-            AdapterCommand::Reply { local_id: "s1".into(), text: "go on".into() },
+            AdapterCommand::Reply { local_id: "s1".into(), text: "go on".into(), ask_picks: None },
             AdapterCommand::Kill { local_id: "s1".into(), signal: Some(15) },
             AdapterCommand::Kill { local_id: "s1".into(), signal: None },
             AdapterCommand::PermissionResponse {

@@ -78,6 +78,10 @@ interface TrackedSend {
 	/** the optimistic echo's `ts` — stable identity of the bubble in a session */
 	ts: number;
 	text: string;
+	/** structured AskUserQuestion answer — per-question 0-based option picks
+	 * (CCT-226). Carried on every retry so the daemon can drive the real form
+	 * natively instead of dismissing it (which claude records as declined). */
+	askPicks?: number[][];
 	/** correlation id of the CURRENT attempt (rotates each retry) */
 	clientMsgId: string;
 	/** attempts dispatched so far (0 before the first dispatch) */
@@ -440,12 +444,13 @@ class WsClient {
 	 * socket wasn't OPEN (caller should keep the draft + surface a notice).
 	 * `clientMsgId` (CCT-212) opts into a server `message_ack` so the caller can
 	 * track delivery (sending → delivered / failed). */
-	sendMessage(id: string, content: string, clientMsgId?: string): boolean {
+	sendMessage(id: string, content: string, clientMsgId?: string, askPicks?: number[][]): boolean {
 		return this.send({
 			type: 'message',
 			session_id: id,
 			content,
-			...(clientMsgId ? { client_msg_id: clientMsgId } : {})
+			...(clientMsgId ? { client_msg_id: clientMsgId } : {}),
+			...(askPicks ? { ask_picks: askPicks } : {})
 		});
 	}
 
@@ -456,13 +461,13 @@ class WsClient {
 	/** Begin tracking + dispatching a send. Returns whether the first frame
 	 * actually left the socket (the caller uses this only for its optimistic
 	 * working/ask UX — delivery itself is driven by acks + retries). */
-	trackedSend(sid: string, text: string, ts: number): boolean {
+	trackedSend(sid: string, text: string, ts: number, askPicks?: number[][]): boolean {
 		let m = this.sends.get(sid);
 		if (!m) {
 			m = new Map();
 			this.sends.set(sid, m);
 		}
-		const send: TrackedSend = { sid, ts, text, clientMsgId: '', attempt: 0, phase: 'pending' };
+		const send: TrackedSend = { sid, ts, text, askPicks, clientMsgId: '', attempt: 0, phase: 'pending' };
 		m.set(ts, send);
 		return this.dispatch(send);
 	}
@@ -546,7 +551,7 @@ class WsClient {
 		if (send.clientMsgId) this.ackIndex.delete(send.clientMsgId);
 		send.clientMsgId = cid;
 		this.ackIndex.set(cid, { sid: send.sid, ts: send.ts });
-		const ok = this.sendMessage(send.sid, send.text, cid);
+		const ok = this.sendMessage(send.sid, send.text, cid, send.askPicks);
 		if (!ok) {
 			// Socket wasn't OPEN — nudge a reconnect and park in backoff (onopen
 			// re-dispatches) rather than burning straight to a hard failure.

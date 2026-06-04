@@ -481,7 +481,12 @@ async fn handle_input_mode(app: &mut App, key: KeyEvent, cmd_tx: &mpsc::Sender<T
                 && let Some(id) = app.selected_session().map(|s| s.id.clone())
             {
                 let _ = cmd_tx
-                    .send(TuiCommand::Message { session_id: id, content, client_msg_id: None })
+                    .send(TuiCommand::Message {
+                        session_id: id,
+                        content,
+                        client_msg_id: None,
+                        ask_picks: None,
+                    })
                     .await;
             }
             app.reset_input();

@@ -92,13 +92,18 @@ async fn handle_message(
     session_id: String,
     content: String,
     client_msg_id: Option<String>,
+    ask_picks: Option<Vec<Vec<usize>>>,
 ) {
     // NoDaemon / NoAdapter are expected for sessions whose daemon is momentarily
     // offline — that is exactly the case the ack lets the client recover from.
     let dispatch = crate::daemon_dispatch::dispatch(
         state,
         &session_id,
-        cctui_proto::adapter::AdapterCommand::Reply { local_id: session_id.clone(), text: content },
+        cctui_proto::adapter::AdapterCommand::Reply {
+            local_id: session_id.clone(),
+            text: content,
+            ask_picks,
+        },
     )
     .await;
     let err_reason = dispatch.as_ref().err().map(|err| {
@@ -186,8 +191,9 @@ async fn run_tui_socket(
                     handle.abort();
                 }
             }
-            TuiCommand::Message { session_id, content, client_msg_id } => {
-                handle_message(&state, &event_tx, session_id, content, client_msg_id).await;
+            TuiCommand::Message { session_id, content, client_msg_id, ask_picks } => {
+                handle_message(&state, &event_tx, session_id, content, client_msg_id, ask_picks)
+                    .await;
             }
             TuiCommand::PermissionResponse { session_id, request_id, behavior } => {
                 tracing::info!(

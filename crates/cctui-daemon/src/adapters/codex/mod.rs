@@ -196,7 +196,7 @@ async fn command_pump(
                             .await;
                     }
                     AdapterCommand::SendMessage { local_id, text }
-                    | AdapterCommand::Reply { local_id, text } => {
+                    | AdapterCommand::Reply { local_id, text, .. } => {
                         forward(&registry, &local_id, SessionCommand::Send { text }).await;
                     }
                     AdapterCommand::Kill { local_id, signal } => {

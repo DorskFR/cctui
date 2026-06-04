@@ -82,11 +82,35 @@ pub async fn attach_permission_response(socket: &Path, short: &str, allow: bool)
     }
 }
 
+/// Answer a pending `AskUserQuestion` form natively (CCT-226): inject the
+/// keystroke sequence a human would press, one chunk per UI step, paced so the
+/// form's renderer keeps up between steps. The grammar (verified live against
+/// claude 2.1.162):
+///   - single-select question: the option digit selects AND auto-advances
+///   - multiSelect question: digits toggle each option, Tab advances
+///   - multi-question forms and any multiSelect end on a "Review your answers"
+///     screen whose first option is "Submit answers" → a final `1` submits;
+///     a lone single-select question submits straight from the digit.
+/// Claude then records a genuine tool_result with the selected labels — no
+/// "User declined to answer questions", no extra user turn.
+pub async fn attach_answer_keys(socket: &Path, short: &str, chunks: &[Vec<u8>]) -> Result<()> {
+    attach_send_chunks(socket, short, chunks).await
+}
+
 /// Attach to a worker's PTY mirror, inject `keys` as raw keystroke bytes, hold
 /// briefly so the worker's input parser settles (notably so a lone ESC resolves
 /// as Escape rather than the lead-in of an escape sequence), then detach. The
 /// attach ack is read first so we never fire keys at a dead/unattachable worker.
 async fn attach_send_keys(socket: &Path, short: &str, keys: &[u8]) -> Result<()> {
+    attach_send_chunks(socket, short, std::slice::from_ref(&keys.to_vec())).await
+}
+
+/// Shared attach-and-type core: one PTY attach, then each chunk of `chunks`
+/// written 350ms apart so the TUI processes every step (a digit that selects,
+/// a Tab that switches question, the submit confirm) before the next arrives.
+/// The trailing hold doubles as the ESC-disambiguation delay attach_send_keys
+/// has always needed.
+async fn attach_send_chunks(socket: &Path, short: &str, chunks: &[Vec<u8>]) -> Result<()> {
     let stream = UnixStream::connect(socket)
         .await
         .with_context(|| format!("connecting to {}", socket.display()))?;
@@ -112,8 +136,16 @@ async fn attach_send_keys(socket: &Path, short: &str, keys: &[u8]) -> Result<()>
         bail!("attach failed: {code}: {err}");
     }
 
-    write_half.write_all(keys).await?;
-    write_half.flush().await?;
+    for (i, keys) in chunks.iter().enumerate() {
+        if i > 0 {
+            // Pace successive steps so the form renderer keeps up (verified
+            // stable at 350ms against claude 2.1.162; digits/Tab dropped when
+            // fired back-to-back).
+            tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+        }
+        write_half.write_all(keys).await?;
+        write_half.flush().await?;
+    }
     // Hold the connection so the keystroke is parsed before detach (dropping
     // the stream fires the worker's attacher-close cleanup).
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;

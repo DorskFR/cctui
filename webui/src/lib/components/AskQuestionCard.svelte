@@ -20,7 +20,12 @@
 	}: {
 		questions: Question[];
 		interactive: boolean;
-		onsubmit: (text: string) => void;
+		/** `picks` is the structured per-question option selection (0-based
+		 * indices) when every answer is a pure option pick, or `null` when any
+		 * question used the free-text "Other…" field — the daemon answers the
+		 * real form natively from picks (CCT-226) and only falls back to
+		 * dismiss-then-reply for free text. */
+		onsubmit: (text: string, picks: number[][] | null) => void;
 	} = $props();
 
 	// Per-question chosen option indices + free-text "Other".
@@ -66,10 +71,18 @@
 			.join('\n\n');
 	}
 
+	/** Structured selection for the native answer path (CCT-226): one sorted
+	 * list of 0-based option indices per question, or `null` if any question
+	 * was answered (even partially) via the free-text "Other…" field. */
+	function buildPicks(): number[][] | null {
+		if (other.some((t) => t.trim().length > 0)) return null;
+		return questions.map((_, qi) => [...chosen[qi]].sort((a, b) => a - b));
+	}
+
 	function submit() {
 		if (!live || !answeredAll) return;
 		submitted = true; // optimistic flip — show "Answering…" immediately
-		onsubmit(buildAnswer());
+		onsubmit(buildAnswer(), buildPicks());
 	}
 </script>
 

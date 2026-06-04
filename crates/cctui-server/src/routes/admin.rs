@@ -910,6 +910,7 @@ pub async fn send_message(
         cctui_proto::adapter::AdapterCommand::Reply {
             local_id: session_id.clone(),
             text: req.content,
+            ask_picks: None,
         },
     )
     .await;

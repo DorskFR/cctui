@@ -618,15 +618,18 @@
 		}
 	}
 
-	// Answer an AskUserQuestion (CCT-146). cctui has no structured tool-result
-	// channel, so the selection is sent as a reply message — the claude control
-	// socket's `reply` op advances the turn, which is how the agent continues.
-	function answerQuestion(text: string) {
+	// Answer an AskUserQuestion (CCT-146). With pure option picks the daemon
+	// drives the real form via PTY keystrokes (CCT-226) so claude records a
+	// genuine tool_result with the selected labels; the flattened text rides
+	// along as the carrier for the free-text/fallback path (dismiss the form,
+	// reply the text — which claude records as a declined ask + user turn).
+	function answerQuestion(text: string, picks: number[][] | null) {
 		if (archived) return;
 		// Track delivery like any reply (CCT-212). If the frame can't go out, the
 		// optimistic bubble shows failed+Retry and we keep the question on screen
 		// rather than dismissing it for a send that never left.
-		const ok = sendTracked(text);
+		const ts = pushOptimisticReply(text);
+		const ok = ws.trackedSend(id, text, ts, picks ?? undefined);
 		if (!ok) return;
 		// Lock both ask render sites to their answered state immediately (CCT-190).
 		answering = true;
