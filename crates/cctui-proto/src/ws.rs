@@ -134,7 +134,7 @@ pub enum TuiCommand {
         /// indices, in question order (CCT-226). Present only when the client
         /// is answering a live ask with pure option picks (no free text) —
         /// lets the daemon drive the actual form via PTY keystrokes so claude
-        /// records a genuine tool_result instead of "User declined to answer
+        /// records a genuine `tool_result` instead of "User declined to answer
         /// questions" (the ESC-dismiss fallback). `content` still carries the
         /// flattened text so older daemons (and the fallback path) work.
         #[serde(default, skip_serializing_if = "Option::is_none")]

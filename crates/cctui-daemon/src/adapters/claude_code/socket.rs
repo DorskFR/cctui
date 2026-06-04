@@ -91,7 +91,8 @@ pub async fn attach_permission_response(socket: &Path, short: &str, allow: bool)
 ///   - multi-question forms and any multiSelect end on a "Review your answers"
 ///     screen whose first option is "Submit answers" → a final `1` submits;
 ///     a lone single-select question submits straight from the digit.
-/// Claude then records a genuine tool_result with the selected labels — no
+///
+/// Claude then records a genuine `tool_result` with the selected labels — no
 /// "User declined to answer questions", no extra user turn.
 pub async fn attach_answer_keys(socket: &Path, short: &str, chunks: &[Vec<u8>]) -> Result<()> {
     attach_send_chunks(socket, short, chunks).await
@@ -108,7 +109,7 @@ async fn attach_send_keys(socket: &Path, short: &str, keys: &[u8]) -> Result<()>
 /// Shared attach-and-type core: one PTY attach, then each chunk of `chunks`
 /// written 350ms apart so the TUI processes every step (a digit that selects,
 /// a Tab that switches question, the submit confirm) before the next arrives.
-/// The trailing hold doubles as the ESC-disambiguation delay attach_send_keys
+/// The trailing hold doubles as the ESC-disambiguation delay `attach_send_keys`
 /// has always needed.
 async fn attach_send_chunks(socket: &Path, short: &str, chunks: &[Vec<u8>]) -> Result<()> {
     let stream = UnixStream::connect(socket)

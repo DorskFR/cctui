@@ -8,7 +8,9 @@
 //!
 //! `codex app-server` speaks newline-delimited JSON-RPC 2.0 over stdio
 //! (stderr is logs). The handshake is `initialize` → `thread/start { cwd }`
-//! → `turn/start { threadId, input }`. Streaming arrives as id-less
+//! → `turn/start { threadId, input }`. A stale cctui-owned thread is revived
+//! with `thread/resume { threadId }` before the next `turn/start` (CCT-229).
+//! Streaming arrives as id-less
 //! notifications (`item/completed`, `turn/completed`, …); tool approvals
 //! arrive as server→client *requests* (they carry both `method` and `id`)
 //! that block until we reply with a `decision`.
@@ -270,6 +272,24 @@ fn thread_start_req(cwd: &str) -> Value {
     json!({"jsonrpc": "2.0", "id": ID_THREAD_START, "method": "thread/start", "params": {"cwd": cwd}})
 }
 
+fn thread_resume_req(thread_id: &str, cwd: &str) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": ID_THREAD_START,
+        "method": "thread/resume",
+        "params": {"threadId": thread_id, "cwd": cwd},
+    })
+}
+
+fn thread_name_set_req(id: i64, thread_id: &str, name: &str) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "thread/name/set",
+        "params": {"threadId": thread_id, "name": name},
+    })
+}
+
 fn turn_start_req(id: i64, thread_id: &str, text: &str) -> Value {
     json!({
         "jsonrpc": "2.0",
@@ -294,13 +314,15 @@ fn approval_reply(rpc_id: &Value, kind: ApprovalKind, allow: bool) -> Value {
 // ---------------------------------------------------------------------------
 
 /// Per-session commands routed from the adapter-level command pump.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum SessionCommand {
     /// Answer a pending approval (`request_id` came from the emitted
     /// `PermissionRequest`).
     Permission { request_id: String, allow: bool },
     /// Start a new turn with user text.
     Send { text: String },
+    /// Persist the display name into Codex's thread metadata.
+    Rename { name: String },
     /// Interrupt the in-flight turn and terminate the session. `signal` is
     /// the requested POSIX signal: `Some(15)` (SIGTERM) for a graceful stop
     /// that lets codex flush its rollout file; anything else (incl. `None`)
@@ -313,10 +335,64 @@ pub enum SessionCommand {
     Interrupt,
 }
 
-/// Shared registry: `local_id` → command sender for the owning session task.
-/// The adapter-level pump uses this to route `PermissionResponse` /
-/// `SendMessage` / `Kill` to the right session.
-pub type SessionRegistry = Arc<Mutex<HashMap<String, mpsc::Sender<SessionCommand>>>>;
+impl SessionCommand {
+    #[must_use]
+    pub const fn is_resumable(&self) -> bool {
+        matches!(self, Self::Send { .. } | Self::Rename { .. })
+    }
+}
+
+/// Live command registry: `local_id` → command sender for the owning app-server
+/// task. Senders disappear when the app-server exits; the durable
+/// [`SessionRegistry`] below stays so a later reply can revive the thread.
+pub type LiveSessionRegistry = Arc<Mutex<HashMap<String, mpsc::Sender<SessionCommand>>>>;
+
+/// Durable-in-daemon metadata for cctui-owned Codex threads. This is not a
+/// process handle; it is the minimum launch context needed to call
+/// `thread/resume` after a clean app-server exit (CCT-229). The log-tail also
+/// uses this map as the ownership set so it does not double-ingest these
+/// rollout files while they are hibernated.
+#[derive(Debug, Clone)]
+pub struct SessionRecord {
+    pub cfg: AppServerConfig,
+    pub cwd: String,
+    pub name: Option<String>,
+}
+
+/// `local_id` → cctui-owned Codex thread metadata.
+pub type SessionRegistry = Arc<Mutex<HashMap<String, SessionRecord>>>;
+
+#[derive(Debug)]
+pub enum RouteAction {
+    Delivered,
+    Resume { record: SessionRecord, command: SessionCommand },
+    Missing,
+}
+
+/// Try the live sender first. If it is gone or closed, fall back to the
+/// durable Codex thread record so the caller can spawn a resume driver.
+pub async fn route_or_prepare_resume(
+    live: &LiveSessionRegistry,
+    sessions: &SessionRegistry,
+    local_id: &str,
+    command: SessionCommand,
+) -> RouteAction {
+    let sender = live.lock().await.get(local_id).cloned();
+    if let Some(tx) = sender {
+        if tx.send(command.clone()).await.is_ok() {
+            return RouteAction::Delivered;
+        }
+        live.lock().await.remove(local_id);
+        tracing::warn!(%local_id, "codex: live session command channel closed");
+    }
+
+    sessions
+        .lock()
+        .await
+        .get(local_id)
+        .cloned()
+        .map_or(RouteAction::Missing, |record| RouteAction::Resume { record, command })
+}
 
 /// Configuration for spawning the `codex app-server` subprocess.
 #[derive(Debug, Clone)]
@@ -369,27 +445,67 @@ impl AppServerConfig {
     }
 }
 
+#[derive(Debug, Clone)]
+enum SessionLaunch {
+    Fresh { prompt: Option<String>, name: Option<String> },
+    Resume { thread_id: String, initial_commands: Vec<SessionCommand> },
+}
+
 /// One spawned Codex session: owns a `codex app-server` subprocess and a
 /// single thread within it.
 pub struct CodexSession {
     cfg: AppServerConfig,
     cwd: String,
-    prompt: Option<String>,
+    launch: SessionLaunch,
     events: mpsc::Sender<AdapterEvent>,
+    live: LiveSessionRegistry,
     registry: SessionRegistry,
     shutdown: CancellationToken,
 }
 
 impl CodexSession {
-    pub const fn new(
+    #[allow(clippy::too_many_arguments)]
+    pub const fn new_fresh(
         cfg: AppServerConfig,
         cwd: String,
         prompt: Option<String>,
+        name: Option<String>,
         events: mpsc::Sender<AdapterEvent>,
+        live: LiveSessionRegistry,
         registry: SessionRegistry,
         shutdown: CancellationToken,
     ) -> Self {
-        Self { cfg, cwd, prompt, events, registry, shutdown }
+        Self {
+            cfg,
+            cwd,
+            launch: SessionLaunch::Fresh { prompt, name },
+            events,
+            live,
+            registry,
+            shutdown,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub const fn new_resume(
+        cfg: AppServerConfig,
+        cwd: String,
+        thread_id: String,
+        initial_commands: Vec<SessionCommand>,
+        events: mpsc::Sender<AdapterEvent>,
+        live: LiveSessionRegistry,
+        registry: SessionRegistry,
+        shutdown: CancellationToken,
+    ) -> Self {
+        Self {
+            cfg,
+            cwd,
+            launch: SessionLaunch::Resume { thread_id, initial_commands },
+            events,
+            live,
+            registry,
+            shutdown,
+        }
     }
 
     /// Spawn the subprocess, complete the handshake, then pump IO until the
@@ -448,7 +564,7 @@ impl CodexSession {
             });
         }
 
-        // Handshake: initialize → thread/start.
+        // Handshake: initialize → thread/start or thread/resume.
         write_json(&mut stdin, &initialize_req()).await?;
         let mut local_id = String::new();
         let mut next_id = RUN_BASE;
@@ -460,6 +576,7 @@ impl CodexSession {
         // Kill command) so the epilogue reports `Killed` rather than treating
         // the non-zero exit as a crash.
         let mut killed = false;
+        let mut retry_after_hibernate: Option<SessionCommand> = None;
 
         loop {
             tokio::select! {
@@ -486,10 +603,27 @@ impl CodexSession {
                             let req = turn_start_req(next_id, &local_id, &text);
                             next_id += 1;
                             // A write failure here means the app-server is gone
-                            // — break so the epilogue reports the crash instead
-                            // of `?`-returning and skipping `SessionEnded`.
+                            // — remember the turn and let the epilogue revive
+                            // the thread if this was a clean hibernation exit.
                             if let Err(e) = write_json(&mut stdin, &req).await {
                                 tracing::warn!(%e, "codex: turn/start write failed; ending session");
+                                retry_after_hibernate = Some(SessionCommand::Send { text });
+                                break;
+                            }
+                        }
+                        Some(SessionCommand::Rename { name }) => {
+                            if let Err(e) = set_thread_name(
+                                &mut stdin,
+                                &mut next_id,
+                                &local_id,
+                                &name,
+                                &self.events,
+                                &self.registry,
+                            )
+                            .await
+                            {
+                                tracing::warn!(%e, "codex: thread/name/set write failed; ending session");
+                                retry_after_hibernate = Some(SessionCommand::Rename { name });
                                 break;
                             }
                         }
@@ -536,7 +670,15 @@ impl CodexSession {
                     match classify(&local_id, &value) {
                         Incoming::Response { id, value } if id == ID_INITIALIZE => {
                             let _ = value;
-                            write_json(&mut stdin, &thread_start_req(&self.cwd)).await?;
+                            match &self.launch {
+                                SessionLaunch::Fresh { .. } => {
+                                    write_json(&mut stdin, &thread_start_req(&self.cwd)).await?;
+                                }
+                                SessionLaunch::Resume { thread_id, .. } => {
+                                    write_json(&mut stdin, &thread_resume_req(thread_id, &self.cwd))
+                                        .await?;
+                                }
+                            }
                         }
                         Incoming::Response { id, value } if id == ID_THREAD_START => {
                             let result = value.get("result").cloned().unwrap_or(Value::Null);
@@ -558,7 +700,24 @@ impl CodexSession {
                                 })
                                 .await
                                 .ok();
-                            self.registry.lock().await.insert(local_id.clone(), cmd_tx.clone());
+                            let remembered_name = match &self.launch {
+                                SessionLaunch::Fresh { name, .. } => name.clone(),
+                                SessionLaunch::Resume { .. } => self
+                                    .registry
+                                    .lock()
+                                    .await
+                                    .get(&local_id)
+                                    .and_then(|r| r.name.clone()),
+                            };
+                            self.registry.lock().await.insert(
+                                local_id.clone(),
+                                SessionRecord {
+                                    cfg: self.cfg.clone(),
+                                    cwd: self.cwd.clone(),
+                                    name: remembered_name.clone(),
+                                },
+                            );
+                            self.live.lock().await.insert(local_id.clone(), cmd_tx.clone());
                             registered = true;
                             // Surface the configured reasoning effort so the
                             // session list shows it (claude gets this for free
@@ -580,13 +739,81 @@ impl CodexSession {
                                     .await
                                     .ok();
                             }
-                            if let Some(prompt) = &self.prompt {
-                                let req = turn_start_req(next_id, &local_id, prompt);
-                                next_id += 1;
-                                if let Err(e) = write_json(&mut stdin, &req).await {
-                                    tracing::warn!(%e, "codex: initial prompt write failed; ending session");
-                                    break;
+
+                            let mut end_after_initial = false;
+                            match &self.launch {
+                                SessionLaunch::Fresh { name, prompt } => {
+                                    if let Some(name) = name.as_deref() {
+                                        let result = set_thread_name(
+                                            &mut stdin,
+                                            &mut next_id,
+                                            &local_id,
+                                            name,
+                                            &self.events,
+                                            &self.registry,
+                                        )
+                                        .await;
+                                        if let Err(e) = result {
+                                            tracing::warn!(%e, "codex: initial thread/name/set failed");
+                                            retry_after_hibernate =
+                                                Some(SessionCommand::Rename { name: name.to_owned() });
+                                            end_after_initial = true;
+                                        }
+                                    }
+                                    if !end_after_initial
+                                        && let Some(prompt) = prompt.as_deref()
+                                    {
+                                        let req = turn_start_req(next_id, &local_id, prompt);
+                                        next_id += 1;
+                                        if let Err(e) = write_json(&mut stdin, &req).await {
+                                            tracing::warn!(%e, "codex: initial prompt write failed; ending session");
+                                            retry_after_hibernate =
+                                                Some(SessionCommand::Send { text: prompt.to_owned() });
+                                            end_after_initial = true;
+                                        }
+                                    }
                                 }
+                                SessionLaunch::Resume { initial_commands, .. } => {
+                                    for command in initial_commands.clone() {
+                                        match command {
+                                            SessionCommand::Send { text } => {
+                                                let req = turn_start_req(next_id, &local_id, &text);
+                                                next_id += 1;
+                                                if let Err(e) = write_json(&mut stdin, &req).await {
+                                                    tracing::warn!(%e, "codex: resumed turn/start write failed");
+                                                    retry_after_hibernate =
+                                                        Some(SessionCommand::Send { text });
+                                                    end_after_initial = true;
+                                                    break;
+                                                }
+                                            }
+                                            SessionCommand::Rename { name } => {
+                                                if let Err(e) = set_thread_name(
+                                                    &mut stdin,
+                                                    &mut next_id,
+                                                    &local_id,
+                                                    &name,
+                                                    &self.events,
+                                                    &self.registry,
+                                                )
+                                                .await
+                                                {
+                                                    tracing::warn!(%e, "codex: resumed thread/name/set write failed");
+                                                    retry_after_hibernate =
+                                                        Some(SessionCommand::Rename { name });
+                                                    end_after_initial = true;
+                                                    break;
+                                                }
+                                            }
+                                            other => {
+                                                tracing::warn!(?other, "codex: ignoring non-resumable initial command");
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if end_after_initial {
+                                break;
                             }
                         }
                         Incoming::Approval { rpc_id, request_id, tool, kind, input } => {
@@ -614,35 +841,131 @@ impl CodexSession {
         // that we did not request is surfaced as `Crashed` with the captured
         // stderr tail — the diagnostic for the macOS "randomly dies" report.
         let status = child.wait().await;
-        let reason = if killed {
-            EndReason::Killed
-        } else {
-            match status {
-                Ok(s) if s.success() => EndReason::Completed,
-                Ok(s) => EndReason::Crashed {
-                    detail: format!(
-                        "codex app-server exited ({s}){}",
-                        stderr_tail(&stderr_ring).await
-                    ),
-                },
-                Err(e) => {
-                    EndReason::Crashed { detail: format!("codex app-server wait failed: {e}") }
+        if !local_id.is_empty() {
+            self.live.lock().await.remove(&local_id);
+            let reason = if killed {
+                Some(EndReason::Killed)
+            } else {
+                match status {
+                    Ok(s) if s.success() => None,
+                    Ok(s) => Some(EndReason::Crashed {
+                        detail: format!(
+                            "codex app-server exited ({s}){}",
+                            stderr_tail(&stderr_ring).await
+                        ),
+                    }),
+                    Err(e) => Some(EndReason::Crashed {
+                        detail: format!("codex app-server wait failed: {e}"),
+                    }),
+                }
+            };
+            if let Some(reason) = reason {
+                if let EndReason::Crashed { detail } = &reason {
+                    tracing::error!(%detail, "codex app-server session crashed");
+                }
+                self.registry.lock().await.remove(&local_id);
+                self.events
+                    .send(AdapterEvent::SessionEnded { local_id: local_id.clone(), reason })
+                    .await
+                    .ok();
+            } else {
+                self.events
+                    .send(AdapterEvent::Status {
+                        local_id: local_id.clone(),
+                        tempo: Some("hibernated".to_owned()),
+                        state: None,
+                        detail: None,
+                        activity: None,
+                        name: None,
+                        intent: None,
+                        model: None,
+                        effort: None,
+                        children: Vec::new(),
+                    })
+                    .await
+                    .ok();
+                let retry = if let Some(command) = retry_after_hibernate {
+                    let record = self.registry.lock().await.get(&local_id).cloned();
+                    record.map(|record| (record, command))
+                } else {
+                    None
+                };
+                if let Some((record, command)) = retry {
+                    spawn_resumed_session(
+                        record,
+                        local_id.clone(),
+                        command,
+                        self.events.clone(),
+                        self.live.clone(),
+                        self.registry.clone(),
+                        self.shutdown.clone(),
+                    );
                 }
             }
-        };
-        if let EndReason::Crashed { detail } = &reason {
-            tracing::error!(%detail, "codex app-server session crashed");
-        }
-
-        if !local_id.is_empty() {
-            self.registry.lock().await.remove(&local_id);
-            self.events
-                .send(AdapterEvent::SessionEnded { local_id: local_id.clone(), reason })
-                .await
-                .ok();
         }
         Ok(())
     }
+}
+
+async fn set_thread_name<W: AsyncWriteExt + Unpin>(
+    stdin: &mut W,
+    next_id: &mut i64,
+    thread_id: &str,
+    name: &str,
+    events: &mpsc::Sender<AdapterEvent>,
+    registry: &SessionRegistry,
+) -> Result<()> {
+    write_json(stdin, &thread_name_set_req(*next_id, thread_id, name)).await?;
+    *next_id += 1;
+    if let Some(record) = registry.lock().await.get_mut(thread_id) {
+        record.name = Some(name.to_owned());
+    }
+    events
+        .send(AdapterEvent::Status {
+            local_id: thread_id.to_owned(),
+            tempo: None,
+            state: None,
+            detail: None,
+            activity: None,
+            name: Some(name.to_owned()),
+            intent: None,
+            model: None,
+            effort: None,
+            children: Vec::new(),
+        })
+        .await
+        .ok();
+    Ok(())
+}
+
+pub fn spawn_resumed_session(
+    record: SessionRecord,
+    thread_id: String,
+    command: SessionCommand,
+    events: mpsc::Sender<AdapterEvent>,
+    live: LiveSessionRegistry,
+    registry: SessionRegistry,
+    shutdown: CancellationToken,
+) {
+    if !command.is_resumable() {
+        tracing::warn!(%thread_id, ?command, "codex: command is not resumable");
+        return;
+    }
+    let session = CodexSession::new_resume(
+        record.cfg,
+        record.cwd,
+        thread_id,
+        vec![command],
+        events,
+        live,
+        registry,
+        shutdown,
+    );
+    tokio::spawn(async move {
+        if let Err(err) = session.run().await {
+            tracing::error!(%err, "codex resumed app-server session ended in error");
+        }
+    });
 }
 
 /// Format the retained stderr tail for inclusion in a crash detail. Empty
@@ -842,22 +1165,108 @@ mod tests {
     fn request_builders_shape() {
         assert_eq!(initialize_req()["method"], "initialize");
         assert_eq!(thread_start_req("/tmp")["params"]["cwd"], "/tmp");
+        let resume = thread_resume_req("tid", "/repo");
+        assert_eq!(resume["method"], "thread/resume");
+        assert_eq!(resume["params"]["threadId"], "tid");
+        assert_eq!(resume["params"]["cwd"], "/repo");
+        let rename = thread_name_set_req(101, "tid", "build fix");
+        assert_eq!(rename["method"], "thread/name/set");
+        assert_eq!(rename["id"], 101);
+        assert_eq!(rename["params"]["threadId"], "tid");
+        assert_eq!(rename["params"]["name"], "build fix");
         let turn = turn_start_req(100, "tid", "hello");
         assert_eq!(turn["params"]["threadId"], "tid");
         assert_eq!(turn["params"]["input"][0]["text"], "hello");
     }
 
     #[tokio::test]
+    async fn route_delivers_to_live_sender() {
+        let live = LiveSessionRegistry::default();
+        let registry = SessionRegistry::default();
+        let (tx, mut rx) = mpsc::channel(1);
+        live.lock().await.insert("tid".to_owned(), tx);
+        registry.lock().await.insert(
+            "tid".to_owned(),
+            SessionRecord {
+                cfg: AppServerConfig::default(),
+                cwd: "/tmp".to_owned(),
+                name: Some("n".to_owned()),
+            },
+        );
+
+        let action = route_or_prepare_resume(
+            &live,
+            &registry,
+            "tid",
+            SessionCommand::Send { text: "hi".to_owned() },
+        )
+        .await;
+        assert!(matches!(action, RouteAction::Delivered));
+        assert!(matches!(rx.recv().await, Some(SessionCommand::Send { text }) if text == "hi"));
+    }
+
+    #[tokio::test]
+    async fn route_prepares_resume_when_live_sender_is_closed() {
+        let live = LiveSessionRegistry::default();
+        let registry = SessionRegistry::default();
+        let (tx, rx) = mpsc::channel(1);
+        drop(rx);
+        live.lock().await.insert("tid".to_owned(), tx);
+        registry.lock().await.insert(
+            "tid".to_owned(),
+            SessionRecord {
+                cfg: AppServerConfig::default(),
+                cwd: "/repo".to_owned(),
+                name: Some("stale".to_owned()),
+            },
+        );
+
+        let action = route_or_prepare_resume(
+            &live,
+            &registry,
+            "tid",
+            SessionCommand::Rename { name: "new".to_owned() },
+        )
+        .await;
+        match action {
+            RouteAction::Resume { record, command: SessionCommand::Rename { name } } => {
+                assert_eq!(record.cwd, "/repo");
+                assert_eq!(record.name.as_deref(), Some("stale"));
+                assert_eq!(name, "new");
+            }
+            other => panic!("expected resume action, got {other:?}"),
+        }
+        assert!(!live.lock().await.contains_key("tid"));
+    }
+
+    #[tokio::test]
+    async fn route_missing_without_durable_record() {
+        let live = LiveSessionRegistry::default();
+        let registry = SessionRegistry::default();
+        let action = route_or_prepare_resume(
+            &live,
+            &registry,
+            "missing",
+            SessionCommand::Send { text: "hi".to_owned() },
+        )
+        .await;
+        assert!(matches!(action, RouteAction::Missing));
+    }
+
+    #[tokio::test]
     #[ignore = "requires `codex` installed locally; run with `--ignored`"]
     async fn real_codex_handshake_emits_session_started() {
         let (tx, mut rx) = mpsc::channel(64);
+        let live = LiveSessionRegistry::default();
         let registry = SessionRegistry::default();
         let shutdown = CancellationToken::new();
-        let session = CodexSession::new(
+        let session = CodexSession::new_fresh(
             AppServerConfig::default(),
             "/tmp".to_string(),
             None, // no prompt → no turn/start, so no model auth needed
+            None,
             tx,
+            live,
             registry.clone(),
             shutdown.clone(),
         );

@@ -45,7 +45,7 @@ pub(crate) type SessionMap = Arc<Mutex<HashMap<String, String>>>;
 /// form is up just confirms the highlighted option (the swallowed-text /
 /// phantom-"Proceed" bug). With the questions in hand the reply path can
 /// instead drive the real form via keystrokes — a native answer claude records
-/// as a genuine tool_result (CCT-226) — falling back to dismiss-then-reply.
+/// as a genuine `tool_result` (CCT-226) — falling back to dismiss-then-reply.
 pub(crate) type PendingAsks = Arc<Mutex<HashMap<String, Option<serde_json::Value>>>>;
 
 pub struct ClaudeCodeAdapter;

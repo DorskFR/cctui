@@ -301,7 +301,7 @@ pub enum AdapterCommand {
         /// Structured ask answer (CCT-226): per-question 0-based option picks
         /// for a pending `AskUserQuestion`. When present and a form is up, the
         /// adapter answers natively (PTY keystrokes on the real form) so claude
-        /// records a genuine tool_result; `text` remains the fallback carrier.
+        /// records a genuine `tool_result`; `text` remains the fallback carrier.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ask_picks: Option<Vec<Vec<usize>>>,
     },

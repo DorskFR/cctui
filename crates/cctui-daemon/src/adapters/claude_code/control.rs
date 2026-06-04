@@ -378,7 +378,7 @@ impl Driver {
     /// Deliver a user message to a worker, handling a pending `AskUserQuestion`
     /// form. With structured `ask_picks` and the hook-captured questions we
     /// answer the form *natively* — keystrokes on the real form, so claude
-    /// records a genuine tool_result with the selected labels (CCT-226).
+    /// records a genuine `tool_result` with the selected labels (CCT-226).
     /// Otherwise (free-text answer, missing questions, keystroke failure) fall
     /// back to dismiss-then-reply: attach+ESC the form away, then `reply` the
     /// text (CCT-219; claude records the ask as declined and reads the text as
@@ -393,9 +393,8 @@ impl Driver {
         // Hibernated sessions (worker exited, job state still on disk)
         // have left `short_by_session`, so fall back to deriving the
         // short from the session id — same as the removal path.
-        let short = self
-            .resolve_short(local_id)
-            .or_else(|_| self.resolve_short_for_removal(local_id))?;
+        let short =
+            self.resolve_short(local_id).or_else(|_| self.resolve_short_for_removal(local_id))?;
         // Resume-on-reply (CCT-228): a reply to an exited worker is
         // ENOJOB'd by the claude daemon and silently lost. Revive it
         // first via a resume `dispatch`, then deliver as normal. Live
@@ -608,8 +607,11 @@ impl Driver {
             return Ok(());
         }
 
-        let st = StateJson::read(&self.cfg.jobs_root, short)
-            .ok_or_else(|| anyhow::anyhow!("session {short} has exited and no job state remains on disk to resume from"))?;
+        let st = StateJson::read(&self.cfg.jobs_root, short).ok_or_else(|| {
+            anyhow::anyhow!(
+                "session {short} has exited and no job state remains on disk to resume from"
+            )
+        })?;
         // `/clear`/`/compact` rotate the live conversation into the id recorded
         // in `resumeSessionId`; resuming the stale spawn id would fork the
         // conversation back at the pre-reset state (CCT-160).
@@ -618,10 +620,8 @@ impl Driver {
             .clone()
             .or_else(|| st.session_id.clone())
             .ok_or_else(|| anyhow::anyhow!("state.json for {short} has no session id"))?;
-        let cwd = st
-            .cwd
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("state.json for {short} has no cwd"))?;
+        let cwd =
+            st.cwd.clone().ok_or_else(|| anyhow::anyhow!("state.json for {short} has no cwd"))?;
 
         let agent = "claude";
         let nonce: String = uuid::Uuid::new_v4().simple().to_string().chars().take(8).collect();
@@ -1545,7 +1545,8 @@ mod tests {
     #[test]
     fn ask_keystrokes_single_question_single_select() {
         // One single-select question: the digit submits directly, no review.
-        let qs = json!([{ "question": "Red or blue?", "options": [{"label":"Red"},{"label":"Blue"}] }]);
+        let qs =
+            json!([{ "question": "Red or blue?", "options": [{"label":"Red"},{"label":"Blue"}] }]);
         assert_eq!(ask_keystrokes(&qs, &[vec![1]]), Some(vec![b"2".to_vec()]));
     }
 
@@ -1570,13 +1571,7 @@ mod tests {
         ]);
         assert_eq!(
             ask_keystrokes(&qs, &[vec![0, 2], vec![1]]),
-            Some(vec![
-                b"1".to_vec(),
-                b"3".to_vec(),
-                b"\t".to_vec(),
-                b"2".to_vec(),
-                b"1".to_vec()
-            ])
+            Some(vec![b"1".to_vec(), b"3".to_vec(), b"\t".to_vec(), b"2".to_vec(), b"1".to_vec()])
         );
     }
 

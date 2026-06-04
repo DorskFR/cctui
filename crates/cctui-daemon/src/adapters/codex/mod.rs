@@ -38,7 +38,10 @@ use tokio::net::UnixListener;
 use tokio::sync::mpsc;
 
 use crate::adapter_runtime::{Adapter, AdapterCtx, AdapterFactory};
-use app_server::{AppServerConfig, CodexSession, SessionCommand, SessionRegistry};
+use app_server::{
+    AppServerConfig, CodexSession, LiveSessionRegistry, RouteAction, SessionCommand,
+    SessionRegistry, route_or_prepare_resume, spawn_resumed_session,
+};
 
 fn uses_uds_mode(config: &serde_json::Value) -> bool {
     config.get("mode").and_then(|v| v.as_str()) == Some("uds")
@@ -97,6 +100,7 @@ impl Adapter for CodexAdapter {
 async fn run_default(ctx: AdapterCtx) -> anyhow::Result<()> {
     let app_cfg = AppServerConfig::from_value(&ctx.config);
     let registry: SessionRegistry = SessionRegistry::default();
+    let live: LiveSessionRegistry = LiveSessionRegistry::default();
 
     let mut log = log_tail::LogTail::new(
         log_tail::LogTailConfig::from_value(&ctx.config),
@@ -106,7 +110,8 @@ async fn run_default(ctx: AdapterCtx) -> anyhow::Result<()> {
     log.set_owned(registry.clone());
     let log_handle = tokio::spawn(log.run());
 
-    let pump = command_pump(ctx.commands, ctx.events.clone(), registry, app_cfg, ctx.shutdown);
+    let pump =
+        command_pump(ctx.commands, ctx.events.clone(), live, registry, app_cfg, ctx.shutdown);
     pump.await;
     log_handle.abort();
     Ok(())
@@ -115,10 +120,11 @@ async fn run_default(ctx: AdapterCtx) -> anyhow::Result<()> {
 /// Route adapter commands. `Spawn` launches a new `codex app-server`-driven
 /// session; the rest are forwarded to the owning session task by `local_id`
 /// via the shared registry.
-#[allow(clippy::cognitive_complexity)]
+#[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
 async fn command_pump(
     mut commands: mpsc::Receiver<AdapterCommand>,
     events: mpsc::Sender<AdapterEvent>,
+    live: LiveSessionRegistry,
     registry: SessionRegistry,
     app_cfg: AppServerConfig,
     shutdown: tokio_util::sync::CancellationToken,
@@ -177,11 +183,13 @@ async fn command_pump(
                         {
                             cfg.reasoning_effort = Some(effort.to_owned());
                         }
-                        let session = CodexSession::new(
+                        let session = CodexSession::new_fresh(
                             cfg,
                             working_dir,
                             spec.prompt.clone(),
+                            spec.name.clone(),
                             events.clone(),
+                            live.clone(),
                             registry.clone(),
                             shutdown.clone(),
                         );
@@ -192,18 +200,60 @@ async fn command_pump(
                         });
                     }
                     AdapterCommand::PermissionResponse { local_id, request_id, allow } => {
-                        forward(&registry, &local_id, SessionCommand::Permission { request_id, allow })
+                        forward(
+                            &live,
+                            &registry,
+                            &events,
+                            &shutdown,
+                            &local_id,
+                            SessionCommand::Permission { request_id, allow },
+                        )
                             .await;
                     }
                     AdapterCommand::SendMessage { local_id, text }
                     | AdapterCommand::Reply { local_id, text, .. } => {
-                        forward(&registry, &local_id, SessionCommand::Send { text }).await;
+                        forward(
+                            &live,
+                            &registry,
+                            &events,
+                            &shutdown,
+                            &local_id,
+                            SessionCommand::Send { text },
+                        )
+                        .await;
                     }
                     AdapterCommand::Kill { local_id, signal } => {
-                        forward(&registry, &local_id, SessionCommand::Kill { signal }).await;
+                        forward(
+                            &live,
+                            &registry,
+                            &events,
+                            &shutdown,
+                            &local_id,
+                            SessionCommand::Kill { signal },
+                        )
+                        .await;
                     }
                     AdapterCommand::Interrupt { local_id } => {
-                        forward(&registry, &local_id, SessionCommand::Interrupt).await;
+                        forward(
+                            &live,
+                            &registry,
+                            &events,
+                            &shutdown,
+                            &local_id,
+                            SessionCommand::Interrupt,
+                        )
+                        .await;
+                    }
+                    AdapterCommand::Rename { local_id, name } => {
+                        forward(
+                            &live,
+                            &registry,
+                            &events,
+                            &shutdown,
+                            &local_id,
+                            SessionCommand::Rename { name },
+                        )
+                        .await;
                     }
                     AdapterCommand::Remove { local_id } => {
                         // Codex sessions have no external agent-view (no
@@ -211,7 +261,16 @@ async fn command_pump(
                         // terminating the worker; cctui's own archived state
                         // hides it from the list. The app-server session
                         // already cleans up its temp transcript on exit.
-                        forward(&registry, &local_id, SessionCommand::Kill { signal: None }).await;
+                        forward(
+                            &live,
+                            &registry,
+                            &events,
+                            &shutdown,
+                            &local_id,
+                            SessionCommand::Kill { signal: None },
+                        )
+                        .await;
+                        registry.lock().await.remove(&local_id);
                     }
                     _ => tracing::warn!("codex: unhandled AdapterCommand variant"),
                 }
@@ -220,14 +279,43 @@ async fn command_pump(
     }
 }
 
-async fn forward(registry: &SessionRegistry, local_id: &str, cmd: SessionCommand) {
-    let sender = registry.lock().await.get(local_id).cloned();
-    if let Some(tx) = sender {
-        if tx.send(cmd).await.is_err() {
-            tracing::warn!(%local_id, "codex: session command channel closed");
+async fn forward(
+    live: &LiveSessionRegistry,
+    registry: &SessionRegistry,
+    events: &mpsc::Sender<AdapterEvent>,
+    shutdown: &tokio_util::sync::CancellationToken,
+    local_id: &str,
+    cmd: SessionCommand,
+) {
+    match route_or_prepare_resume(live, registry, local_id, cmd).await {
+        RouteAction::Delivered => {}
+        RouteAction::Resume { record, command } if command.is_resumable() => {
+            tracing::info!(%local_id, ?command, "codex: resuming hibernated app-server session");
+            spawn_resumed_session(
+                record,
+                local_id.to_owned(),
+                command,
+                events.clone(),
+                live.clone(),
+                registry.clone(),
+                shutdown.clone(),
+            );
         }
-    } else {
-        tracing::warn!(%local_id, "codex: no app-server session for command");
+        RouteAction::Resume { command, .. } => {
+            tracing::warn!(%local_id, ?command, "codex: command cannot be applied to hibernated session");
+            if matches!(command, SessionCommand::Kill { .. }) {
+                registry.lock().await.remove(local_id);
+                let _ = events
+                    .send(AdapterEvent::SessionEnded {
+                        local_id: local_id.to_owned(),
+                        reason: cctui_proto::adapter::EndReason::Killed,
+                    })
+                    .await;
+            }
+        }
+        RouteAction::Missing => {
+            tracing::warn!(%local_id, "codex: no app-server session for command");
+        }
     }
 }
 
