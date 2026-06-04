@@ -2,6 +2,7 @@
 
 /**
  * Aggregate session counts for the Overview page (`GET /api/v1/sessions/stats`).
+ *
  * Computed from full SQL aggregates + the live registry rather than the capped
  * session list, so the numbers stay correct past the list's display limit.
  */

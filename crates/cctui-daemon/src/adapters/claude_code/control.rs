@@ -384,7 +384,17 @@ impl Driver {
         match cmd {
             AdapterCommand::SendMessage { local_id, text }
             | AdapterCommand::Reply { local_id, text } => {
-                let short = self.resolve_short(&local_id)?;
+                // Hibernated sessions (worker exited, job state still on disk)
+                // have left `short_by_session`, so fall back to deriving the
+                // short from the session id — same as the removal path.
+                let short = self
+                    .resolve_short(&local_id)
+                    .or_else(|_| self.resolve_short_for_removal(&local_id))?;
+                // Resume-on-reply (CCT-228): a reply to an exited worker is
+                // ENOJOB'd by the claude daemon and silently lost. Revive it
+                // first via a resume `dispatch`, then deliver as normal. Live
+                // workers take the existing path with zero extra ops.
+                self.resume_if_hibernated(&sock, &short).await?;
                 // If an AskUserQuestion form is up in the worker's PTY, a bare
                 // `reply` just presses Enter on the highlighted option — claude
                 // records option 1 ("Proceed"-style) and the user's text is
@@ -533,6 +543,99 @@ impl Driver {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         tracing::warn!(%short, "worker still live 2s after kill; proceeding to `claude rm`");
+    }
+
+    /// Resume-on-reply (CCT-228): if `short` has no live worker, revive it
+    /// before a reply is delivered. The claude control socket cannot wake an
+    /// exited job itself — `attach`/`reply` both return ENOJOB; the picker's
+    /// "enter to resume" is client-side. What does work (probed against
+    /// claude v2.1.162) is a `dispatch` that reuses the dead job's identity:
+    /// same `short`, the `resumeSessionId` from its on-disk `state.json`, and
+    /// `--resume <id>` as the launch argv — the daemon spawns a fresh worker
+    /// bound to the saved conversation, original transcript re-pinned.
+    ///
+    /// No-op (one cheap `has` round-trip) when the worker is alive.
+    async fn resume_if_hibernated(
+        &self,
+        sock: &std::path::Path,
+        short: &str,
+    ) -> anyhow::Result<()> {
+        let alive = |resp: &serde_json::Value| {
+            resp.get("alive").and_then(serde_json::Value::as_bool).unwrap_or(false)
+        };
+        let has = socket::one_shot(sock, &json!({"proto":1,"op":"has","short":short})).await?;
+        if alive(&has) {
+            return Ok(());
+        }
+
+        let st = StateJson::read(&self.cfg.jobs_root, short)
+            .ok_or_else(|| anyhow::anyhow!("session {short} has exited and no job state remains on disk to resume from"))?;
+        // `/clear`/`/compact` rotate the live conversation into the id recorded
+        // in `resumeSessionId`; resuming the stale spawn id would fork the
+        // conversation back at the pre-reset state (CCT-160).
+        let session_id = st
+            .resume_session_id
+            .clone()
+            .or_else(|| st.session_id.clone())
+            .ok_or_else(|| anyhow::anyhow!("state.json for {short} has no session id"))?;
+        let cwd = st
+            .cwd
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("state.json for {short} has no cwd"))?;
+
+        let agent = "claude";
+        let nonce: String = uuid::Uuid::new_v4().simple().to_string().chars().take(8).collect();
+        let created_at = u64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0),
+        )
+        .unwrap_or(0);
+        let req = json!({
+            "proto": 1,
+            "op": "dispatch",
+            "timeoutMs": 15000,
+            "d": {
+                "proto": 1,
+                "short": short,
+                "nonce": nonce,
+                "sessionId": session_id,
+                "createdAt": created_at,
+                "source": "fleet",
+                "cwd": cwd,
+                "launch": { "mode": "prompt", "args": ["--resume", &session_id, "--agent", agent] },
+                "env": {},
+                "isolation": "none",
+                "respawnFlags": ["--agent", agent],
+                "agent": agent,
+                // `state.json` already exists for this short; the daemon keeps
+                // its identity fields, so the seed is just protocol filler.
+                "seed": { "intent": st.intent.clone().unwrap_or_default() },
+                "cols": 120,
+                "rows": 40,
+            }
+        });
+        let resp: serde_json::Value = socket::call(sock, &req)
+            .await
+            .with_context(|| format!("resume dispatch for hibernated session {short}"))?;
+        tracing::info!(?resp, %short, %session_id, "resumed hibernated session via dispatch");
+
+        // Wait (bounded) for the revived worker to report alive, then give the
+        // PTY a moment to finish booting so the reply isn't swallowed by a
+        // half-started claude. The next poll tick re-adds the short to the
+        // roster and the AttachManager's persistent attach keeps it awake.
+        for _ in 0..40 {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            if let Ok(resp) =
+                socket::one_shot(sock, &json!({"proto":1,"op":"has","short":short})).await
+                && alive(&resp)
+            {
+                tokio::time::sleep(Duration::from_millis(1500)).await;
+                return Ok(());
+            }
+        }
+        anyhow::bail!("resumed session {short} did not come alive within 10s");
     }
 
     /// Run `claude rm <short>` to delete the job metadata + Claude-created
@@ -972,6 +1075,29 @@ impl Driver {
             self.last_status.remove(short);
             self.clear_permission(short).await;
             if let Some(loc) = self.transcript_locations.remove(short) {
+                // Hibernated, not gone (CCT-228): the worker process exited but
+                // its job state survives on disk, so a reply will revive it
+                // (resume-on-reply above). Mark the session so the UI can show
+                // the claude-style "exited, will resume on reply" red dot
+                // instead of a plain dead one. Carried in `tempo` (not
+                // `agent_state`) so the bucket classifier still sees the final
+                // state (`done` → Completed); a revived worker's next live
+                // snapshot overwrites it.
+                if StateJson::read(&self.cfg.jobs_root, short).is_some() {
+                    self.emit(AdapterEvent::Status {
+                        local_id: loc.local_id.clone(),
+                        tempo: Some("hibernated".to_owned()),
+                        state: None,
+                        detail: None,
+                        activity: None,
+                        name: None,
+                        intent: None,
+                        model: None,
+                        effort: None,
+                        children: Vec::new(),
+                    })
+                    .await;
+                }
                 self.short_by_session.remove(&loc.local_id);
                 self.session_to_local
                     .lock()

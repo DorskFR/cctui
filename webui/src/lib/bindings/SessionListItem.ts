@@ -91,4 +91,11 @@ cache_cold: boolean,
  * estimate, shown on the composer's burst-cost indicator. `None` when no
  * usage has been recorded.
  */
-estimated_burst_tokens: number | null, };
+estimated_burst_tokens: number | null, 
+/**
+ * Hibernated (CCT-228): the worker process has exited but its job state
+ * survives on disk, so a reply revives it (daemon resume-on-reply).
+ * Derived from the adapter's final `tempo:"hibernated"` Status. Drives
+ * the claude-style red "exited, will resume on reply" dot.
+ */
+hibernated: boolean, };

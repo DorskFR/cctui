@@ -520,6 +520,7 @@ async fn load_conversation(
 
 // --- Server events ---
 
+#[allow(clippy::too_many_lines)]
 fn handle_server_event(app: &mut App, event: ServerEvent) {
     match event {
         ServerEvent::PermissionRequest {
@@ -590,6 +591,7 @@ fn handle_server_event(app: &mut App, event: ServerEvent) {
                     last_activity_at: None,
                     cache_cold: false,
                     estimated_burst_tokens: None,
+                    hibernated: false,
                 });
                 app.update_aggregates();
             }

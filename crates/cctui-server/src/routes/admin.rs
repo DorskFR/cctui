@@ -212,6 +212,7 @@ pub async fn list_sessions(
                         last_activity_at: None,
                         cache_cold: false,
                         estimated_burst_tokens: None,
+                        hibernated: false,
                     },
                 )
             })
@@ -273,6 +274,7 @@ pub async fn list_sessions(
                 last_activity_at: None,
                 cache_cold: false,
                 estimated_burst_tokens: None,
+                hibernated: false,
             },
         ));
     }
@@ -316,7 +318,9 @@ pub async fn session_stats(
                     SessionStatus::Active | SessionStatus::New
                 )
             })
-            .count() as i64
+            .count()
+            .try_into()
+            .unwrap_or(i64::MAX)
     };
 
     // needs_input: classify every non-archived session from its persisted
@@ -327,7 +331,7 @@ pub async fn session_stats(
     .fetch_all(&state.pool)
     .await
     .map_err(db_err)?;
-    let needs_input = signal_rows
+    let needs_input: i64 = signal_rows
         .into_iter()
         .filter(|(tempo, agent_state, activity)| {
             attention_from_bucket(bucket_from_signals(
@@ -337,7 +341,9 @@ pub async fn session_stats(
             ))
             .is_some()
         })
-        .count() as i64;
+        .count()
+        .try_into()
+        .unwrap_or(i64::MAX);
 
     Ok(Json(SessionStats { total, live, needs_input, archived }))
 }
@@ -508,6 +514,10 @@ async fn enrich_and_sort(
                 );
                 s.bucket = bucket;
                 s.attention = attention_from_bucket(bucket);
+                // Worker exited but resumable on reply (CCT-228). The adapter
+                // parks the marker in `tempo`; the next live snapshot after a
+                // resume overwrites it.
+                s.hibernated = tempo.as_deref() == Some("hibernated");
                 s.name = name;
                 s.model = model;
                 s.effort = effort;
@@ -758,6 +768,7 @@ pub async fn search_sessions(
                     last_activity_at: None,
                     cache_cold: false,
                     estimated_burst_tokens: None,
+                    hibernated: false,
                 },
             )
         })
@@ -833,6 +844,7 @@ pub async fn get_session(
         last_activity_at: None,
         cache_cold: false,
         estimated_burst_tokens: None,
+        hibernated: false,
     };
     drop(registry);
     Ok(Json(item))

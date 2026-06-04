@@ -85,6 +85,7 @@
 	--dot-active: var(--c-green);
 	--dot-stale: var(--c-amber);
 	--dot-dead: var(--c-text-faint);
+	--dot-hibernated: var(--c-red);
 
 	/* attention highlight (needs-input row) */
 	--attention-bg: color-mix(in srgb, var(--c-amber) 12%, transparent);

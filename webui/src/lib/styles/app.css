@@ -273,6 +273,10 @@ pre {
 .dot-dead {
 	background: var(--dot-dead);
 }
+/* Worker exited but resumable on reply (CCT-228) — claude-style red dot. */
+.dot-hibernated {
+	background: var(--dot-hibernated);
+}
 
 /* ---------- forms ---------- */
 .field {

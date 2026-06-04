@@ -32,6 +32,15 @@ pub struct StateJson {
     /// `list` op keeps reporting the stale spawn `sessionId` (CCT-160).
     #[serde(default)]
     pub resume_session_id: Option<String>,
+    /// The immutable spawn session id (`sessionId`). Together with
+    /// `resume_session_id` and `cwd` this is everything a hibernated worker
+    /// needs to be revived via a resume `dispatch` (CCT-228).
+    #[serde(default)]
+    pub session_id: Option<String>,
+    /// Working directory the worker ran in — required by the resume
+    /// `dispatch` payload (CCT-228).
+    #[serde(default)]
+    pub cwd: Option<String>,
     #[serde(default)]
     pub children: Vec<StateChild>,
 }
@@ -91,6 +100,8 @@ impl StateJson {
             model: flag_val("--model"),
             effort: flag_val("--effort"),
             resume_session_id: get_str("resumeSessionId"),
+            session_id: get_str("sessionId"),
+            cwd: get_str("cwd"),
             children,
         }
     }

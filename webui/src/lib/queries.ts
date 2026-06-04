@@ -211,7 +211,8 @@ function optimisticDispatchCard(id: string, body: DispatchRequest): SessionListI
 		match_snippet: null,
 		last_activity_at: null,
 		cache_cold: false,
-		estimated_burst_tokens: null
+		estimated_burst_tokens: null,
+		hibernated: false
 	};
 }
 

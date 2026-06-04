@@ -56,8 +56,16 @@
 	// siblings are distinguishable without a redundant "subagent ·" prefix.
 	const title = $derived(s.name || (child ? s.id.slice(0, 6) : dirName || s.id));
 	const needsInput = $derived(s.attention === 'needs_input' && s.status !== 'archived');
+	// Hibernated (CCT-228): worker exited but resumable — a reply revives it
+	// (daemon resume-on-reply). Red dot, mirroring claude's own agents view.
 	const livenessClass = $derived(
-		s.liveness === 'active' ? 'dot-active' : s.liveness === 'stale' ? 'dot-stale' : 'dot-dead'
+		s.hibernated
+			? 'dot-hibernated'
+			: s.liveness === 'active'
+				? 'dot-active'
+				: s.liveness === 'stale'
+					? 'dot-stale'
+					: 'dot-dead'
 	);
 	const u = $derived(s.token_usage);
 

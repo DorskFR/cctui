@@ -164,6 +164,12 @@ pub struct SessionListItem {
     /// usage has been recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub estimated_burst_tokens: Option<u64>,
+    /// Hibernated (CCT-228): the worker process has exited but its job state
+    /// survives on disk, so a reply revives it (daemon resume-on-reply).
+    /// Derived from the adapter's final `tempo:"hibernated"` Status. Drives
+    /// the claude-style red "exited, will resume on reply" dot.
+    #[serde(default)]
+    pub hibernated: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, TS)]
@@ -173,6 +179,7 @@ pub struct SessionListResponse {
 }
 
 /// Aggregate session counts for the Overview page (`GET /api/v1/sessions/stats`).
+///
 /// Computed from full SQL aggregates + the live registry rather than the capped
 /// session list, so the numbers stay correct past the list's display limit.
 #[derive(Debug, Serialize, Deserialize, TS)]
