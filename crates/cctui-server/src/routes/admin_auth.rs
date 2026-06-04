@@ -67,6 +67,8 @@ pub struct MachineRow {
     /// `persistent` (a real daemon) or `ephemeral` (a dispatch/worker pod).
     /// The New-session picker hides `ephemeral` machines (CCT-183).
     pub kind: String,
+    /// Operator-set badge hue (0-359, CCT-222). `None` = hash of the name.
+    pub hue: Option<i16>,
 }
 
 #[derive(Deserialize, TS)]
@@ -74,6 +76,10 @@ pub struct MachineRow {
 pub struct RenameMachineRequest {
     /// `None` clears the override so the UI falls back to `name`.
     pub display_name: Option<String>,
+    /// Badge hue override (0-359, CCT-222). `None` clears it (hash fallback).
+    /// The PATCH replaces both fields, so callers send the full pair.
+    #[serde(default)]
+    pub hue: Option<i16>,
 }
 
 /// Partial update of a user (CCT-185). Any field left `None` is unchanged, so
@@ -207,7 +213,7 @@ pub async fn list_user_machines(
 ) -> Result<Json<Vec<MachineRow>>, (StatusCode, Json<ApiError>)> {
     forbid_or(&ctx)?;
     let rows: Vec<MachineRow> = sqlx::query_as(
-        "SELECT id, user_id, name, display_name, first_seen_at, last_seen_at, revoked_at, kind \
+        "SELECT id, user_id, name, display_name, first_seen_at, last_seen_at, revoked_at, kind, hue \
          FROM machines WHERE user_id = $1 AND deleted_at IS NULL ORDER BY first_seen_at",
     )
     .bind(user_id)
@@ -277,8 +283,17 @@ pub async fn rename_machine(
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
     forbid_or(&ctx)?;
     let trimmed = req.display_name.as_ref().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-    let outcome = sqlx::query("UPDATE machines SET display_name = $1 WHERE id = $2")
+    if let Some(h) = req.hue
+        && !(0..360).contains(&h)
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ApiError { error: "hue must be in 0..360".into() }),
+        ));
+    }
+    let outcome = sqlx::query("UPDATE machines SET display_name = $1, hue = $2 WHERE id = $3")
         .bind(&trimmed)
+        .bind(req.hue)
         .bind(id)
         .execute(&state.pool)
         .await

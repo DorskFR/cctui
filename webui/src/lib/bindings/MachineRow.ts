@@ -5,4 +5,8 @@ export type MachineRow = { id: string, user_id: string, name: string, display_na
  * `persistent` (a real daemon) or `ephemeral` (a dispatch/worker pod).
  * The New-session picker hides `ephemeral` machines (CCT-183).
  */
-kind: string, };
+kind: string, 
+/**
+ * Operator-set badge hue (0-359, CCT-222). `None` = hash of the name.
+ */
+hue: number | null, };

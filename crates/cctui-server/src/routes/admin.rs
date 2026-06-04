@@ -46,6 +46,7 @@ struct DbSession {
     metadata: serde_json::Value,
     adapter_id: Option<String>,
     resolved_machine_name: Option<String>,
+    resolved_machine_hue: Option<i16>,
 }
 
 fn derive_status(registered_at: DateTime<Utc>, last_heartbeat: DateTime<Utc>) -> SessionStatus {
@@ -200,6 +201,7 @@ pub async fn list_sessions(
                         metadata: handle.session.metadata.clone(),
                         adapter_id: handle.session.adapter_id.clone(),
                         machine_name: None,
+    machine_hue: None,
                         last_message_text: None,
                         last_message_at: None,
                         name: None,
@@ -223,7 +225,8 @@ pub async fn list_sessions(
     let query = format!(
         "SELECT s.id, s.parent_id, s.machine_id, s.working_dir, s.status, \
                 s.registered_at, s.last_heartbeat, s.metadata, s.adapter_id, \
-                COALESCE(m.display_name, m.name) AS resolved_machine_name \
+                COALESCE(m.display_name, m.name) AS resolved_machine_name, \
+                m.hue AS resolved_machine_hue \
          FROM sessions s \
          LEFT JOIN machines m ON m.id = s.machine_uuid \
          {archived_filter} \
@@ -259,6 +262,7 @@ pub async fn list_sessions(
                 metadata: row.metadata,
                 adapter_id: row.adapter_id.map(cctui_proto::adapter::AdapterId::new),
                 machine_name: row.resolved_machine_name,
+                machine_hue: row.resolved_machine_hue,
                 last_message_text: None,
                 last_message_at: None,
                 name: None,
@@ -360,8 +364,8 @@ async fn enrich_and_sort(
         // machine UUID, but legacy `/register` callers carry the OS hostname.
         // Match on either `id` or `name`, and prefer `display_name` (operator
         // override) over `name` for the resolved label.
-        let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
-            "SELECT id::text, name, display_name FROM machines \
+        let rows: Vec<(String, String, Option<String>, Option<i16>)> = sqlx::query_as(
+            "SELECT id::text, name, display_name, hue FROM machines \
              WHERE id::text = ANY($1) OR name = ANY($1)",
         )
         .bind(&machine_ids)
@@ -371,16 +375,19 @@ async fn enrich_and_sort(
             tracing::error!("db error (machines lookup): {e}");
             (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
         })?;
-        let mut by_key: std::collections::HashMap<String, String> =
+        let mut by_key: std::collections::HashMap<String, (String, Option<i16>)> =
             std::collections::HashMap::with_capacity(rows.len() * 2);
-        for (id, name, display_name) in rows {
+        for (id, name, display_name, hue) in rows {
             let resolved = display_name.unwrap_or_else(|| name.clone());
-            by_key.insert(id, resolved.clone());
-            by_key.insert(name, resolved);
+            by_key.insert(id, (resolved.clone(), hue));
+            by_key.insert(name, (resolved, hue));
         }
         for (_, s) in &mut with_ts {
-            if s.machine_name.is_none() {
-                s.machine_name = by_key.get(&s.machine_id).cloned();
+            if s.machine_name.is_none()
+                && let Some((name, hue)) = by_key.get(&s.machine_id)
+            {
+                s.machine_name = Some(name.clone());
+                s.machine_hue = *hue;
             }
         }
     }
@@ -591,7 +598,8 @@ pub struct SearchParams {
 /// Shared SELECT + machine-name join for the session-search queries.
 const SEARCH_SELECT: &str = "SELECT s.id, s.parent_id, s.machine_id, s.working_dir, s.status, \
             s.registered_at, s.last_heartbeat, s.metadata, s.adapter_id, \
-            COALESCE(m.display_name, m.name) AS resolved_machine_name \
+            COALESCE(m.display_name, m.name) AS resolved_machine_name, \
+            m.hue AS resolved_machine_hue \
      FROM sessions s \
      LEFT JOIN machines m ON m.id = s.machine_uuid";
 
@@ -739,6 +747,7 @@ pub async fn search_sessions(
                     metadata: row.metadata,
                     adapter_id: row.adapter_id.map(cctui_proto::adapter::AdapterId::new),
                     machine_name: row.resolved_machine_name,
+                machine_hue: row.resolved_machine_hue,
                     last_message_text: None,
                     last_message_at: None,
                     name: None,
@@ -813,6 +822,7 @@ pub async fn get_session(
         metadata: handle.session.metadata.clone(),
         adapter_id: handle.session.adapter_id.clone(),
         machine_name: None,
+    machine_hue: None,
         last_message_text: None,
         last_message_at: None,
         name: None,

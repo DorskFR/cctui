@@ -35,6 +35,11 @@ adapter_id: AdapterId | null,
  */
 machine_name: string | null, 
 /**
+ * Operator-set badge hue for the machine (0-359, CCT-222). `None` =
+ * client derives the hue from the machine name hash.
+ */
+machine_hue: number | null, 
+/**
  * Last message text seen on this session, truncated to ~120 chars.
  */
 last_message_text: string | null, 

@@ -6,17 +6,20 @@
 	let {
 		name,
 		id,
+		hue,
 		mono = false
 	}: {
 		name?: string | null;
 		id: string;
+		/** Operator-set hue override (CCT-222); falls back to the name hash. */
+		hue?: number | null;
 		mono?: boolean;
 	} = $props();
 
 	const label = $derived(name || id.slice(0, 8));
 </script>
 
-<span class="badge mach" class:mono style={`--mh:${hashHue(label)}`}>{label}</span>
+<span class="badge mach" class:mono style={`--mh:${hue ?? hashHue(label)}`}>{label}</span>
 
 <style>
 	.mach {

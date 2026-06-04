@@ -117,6 +117,10 @@ pub struct SessionListItem {
     /// has been deleted but historical sessions still reference it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub machine_name: Option<String>,
+    /// Operator-set badge hue for the machine (0-359, CCT-222). `None` =
+    /// client derives the hue from the machine name hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine_hue: Option<i16>,
     /// Last message text seen on this session, truncated to ~120 chars.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_message_text: Option<String>,

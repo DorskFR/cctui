@@ -579,6 +579,7 @@ fn handle_server_event(app: &mut App, event: ServerEvent) {
                     metadata: session.metadata,
                     adapter_id: session.adapter_id,
                     machine_name: None,
+                    machine_hue: None,
                     last_message_text: None,
                     last_message_at: None,
                     name: None,

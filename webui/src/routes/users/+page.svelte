@@ -1,20 +1,26 @@
 <script lang="ts">
-	import type { UserRow } from '@bindings/UserRow';
 	import { useUsers, useUserActions } from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
 	import { dateOnly } from '$lib/format';
-	import UserDetail from '$lib/components/UserDetail.svelte';
+	import UserExpand from '$lib/components/UserExpand.svelte';
 	import SecretReveal from '$lib/components/SecretReveal.svelte';
+	import { SvelteSet } from 'svelte/reactivity';
 
 	const users = useUsers();
 	const actions = useUserActions();
+	const guard = (p: Promise<unknown>) => p.catch((e: Error) => toasts.err(e.message));
 
 	let secret = $state<{ title: string; value: string } | null>(null);
-	let selectedId = $state<string | null>(null);
+	// Tree state: which user rows are expanded inline (CCT-222 — no modals).
+	const expanded = new SvelteSet<string>();
 	let filter = $state('');
 
 	function showSecret(title: string, value: string) {
 		secret = { title, value };
+	}
+	function toggle(id: string) {
+		if (expanded.has(id)) expanded.delete(id);
+		else expanded.add(id);
 	}
 
 	async function createUser() {
@@ -27,6 +33,31 @@
 			toasts.err((e as Error).message);
 		}
 	}
+	function rename(id: string, current: string) {
+		const name = prompt('New user name', current)?.trim();
+		if (name) guard(actions.rename(id, name).then(() => toasts.ok('Renamed')));
+	}
+	function rotate(id: string, name: string) {
+		if (!confirm(`Rotate key for ${name}? The old key stops working.`)) return;
+		guard(actions.rotate(id).then((r) => showSecret(`New key — ${name}`, r.key)));
+	}
+	function revoke(id: string, name: string) {
+		if (!confirm(`Revoke ${name}? All their machine keys are invalidated.`)) return;
+		guard(actions.revoke(id).then(() => toasts.ok('Revoked')));
+	}
+	function purgeUser(id: string, name: string) {
+		if (!confirm(`Permanently delete ${name}? This cannot be undone.`)) return;
+		guard(
+			actions.purgeUser(id).then(() => {
+				toasts.ok('User deleted');
+				expanded.delete(id);
+			})
+		);
+	}
+	function mint(id: string, name: string) {
+		const label = prompt('Token label (optional)', '')?.trim() || null;
+		guard(actions.mintToken(id, label).then((r) => showSecret(`Token — ${name}`, r.token)));
+	}
 
 	// Active first, then revoked; within each, by creation order (stable).
 	const sorted = $derived(
@@ -36,11 +67,6 @@
 		filter.trim()
 			? sorted.filter((u) => u.name.toLowerCase().includes(filter.trim().toLowerCase()))
 			: sorted
-	);
-	// Re-resolve the selected user from fresh query data so the open sheet
-	// reflects edits (rename, dispatch toggle) without being reopened.
-	const selected = $derived<UserRow | null>(
-		selectedId ? (($users.data ?? []).find((u) => u.id === selectedId) ?? null) : null
 	);
 </script>
 
@@ -59,32 +85,61 @@
 {:else if shown.length === 0}
 	<div class="empty">{filter.trim() ? 'No matching users.' : 'No users yet.'}</div>
 {:else}
-	<div class="stack">
-		{#each shown as u (u.id)}
-			<button class="card card-tap row item" onclick={() => (selectedId = u.id)}>
-				<div class="stack who">
-					<span class="name truncate">{u.name}</span>
-					<span class="faint sm">created {dateOnly(u.created_at)}</span>
-				</div>
-				<div class="spacer"></div>
-				<div class="row row-wrap chips">
-					{#if u.revoked_at}
-						<span class="badge badge-danger">revoked</span>
-					{:else}
-						<span class="badge badge-ok">active</span>
-						{#if !u.can_dispatch}
-							<span class="badge badge-warn">no dispatch</span>
-						{/if}
+	<div class="card table-card">
+		<table class="users">
+			<thead>
+				<tr>
+					<th class="col-name">User</th>
+					<th class="col-status">Status</th>
+					<th class="col-created">Created</th>
+					<th class="col-actions">Actions</th>
+				</tr>
+			</thead>
+			<tbody>
+				{#each shown as u (u.id)}
+					{@const open = expanded.has(u.id)}
+					<tr class="user-row" class:open>
+						<td class="col-name">
+							<button class="name-btn row" onclick={() => toggle(u.id)} aria-expanded={open}>
+								<span class="caret" class:open>›</span>
+								<span class="name truncate">{u.name}</span>
+							</button>
+						</td>
+						<td class="col-status">
+							{#if u.revoked_at}
+								<span class="badge badge-danger">revoked</span>
+							{:else}
+								<span class="badge badge-ok">active</span>
+								{#if !u.can_dispatch}
+									<span class="badge badge-warn">no dispatch</span>
+								{/if}
+							{/if}
+						</td>
+						<td class="col-created faint">{dateOnly(u.created_at)}</td>
+						<td class="col-actions">
+							<div class="row row-wrap acts">
+								{#if u.revoked_at}
+									<button class="btn btn-sm btn-danger" onclick={() => purgeUser(u.id, u.name)}>Delete</button>
+								{:else}
+									<button class="btn btn-sm" onclick={() => rename(u.id, u.name)}>Rename</button>
+									<button class="btn btn-sm" onclick={() => mint(u.id, u.name)}>Token</button>
+									<button class="btn btn-sm" onclick={() => rotate(u.id, u.name)}>Rotate</button>
+									<button class="btn btn-sm btn-danger" onclick={() => revoke(u.id, u.name)}>Revoke</button>
+								{/if}
+							</div>
+						</td>
+					</tr>
+					{#if open}
+						<tr class="expand-row">
+							<td colspan="4">
+								<UserExpand user={u} onsecret={showSecret} />
+							</td>
+						</tr>
 					{/if}
-				</div>
-				<span class="faint chev">›</span>
-			</button>
-		{/each}
+				{/each}
+			</tbody>
+		</table>
 	</div>
-{/if}
-
-{#if selected}
-	<UserDetail user={selected} onclose={() => (selectedId = null)} onsecret={showSecret} />
 {/if}
 
 {#if secret}
@@ -101,27 +156,88 @@
 	.filter {
 		margin-bottom: var(--sp-3);
 	}
-	.item {
-		width: 100%;
-		text-align: left;
-		gap: var(--sp-3);
+	.table-card {
+		padding: 0;
+		overflow-x: auto;
 	}
-	.who {
-		gap: 0;
-		min-width: 0;
+	table.users {
+		width: 100%;
+		border-collapse: collapse;
+		/* Fixed layout: column widths never shift when rows expand (no CLS). */
+		table-layout: fixed;
+	}
+	th {
+		text-align: left;
+		font-size: var(--fs-xs);
+		color: var(--text-muted);
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		font-weight: var(--fw-semibold);
+		padding: var(--sp-2) var(--sp-3);
+		border-bottom: 1px solid var(--border);
+	}
+	td {
+		padding: var(--sp-2) var(--sp-3);
+		vertical-align: middle;
+	}
+	.user-row td {
+		border-top: 1px solid var(--border);
+	}
+	tbody tr:first-child td {
+		border-top: none;
+	}
+	.col-status {
+		width: 11rem;
+	}
+	.col-created {
+		width: 8rem;
+	}
+	.col-actions {
+		width: 18rem;
+	}
+	.name-btn {
+		background: none;
+		border: none;
+		padding: 0;
+		gap: var(--sp-2);
+		cursor: pointer;
+		color: var(--text);
+		font: inherit;
+		max-width: 100%;
 	}
 	.name {
 		font-weight: var(--fw-semibold);
 	}
-	.sm {
-		font-size: var(--fs-xs);
-	}
-	.chips {
-		gap: var(--sp-1);
+	.caret {
 		flex: none;
-	}
-	.chev {
-		flex: none;
+		color: var(--text-muted);
 		font-size: var(--fs-lg);
+		transition: transform 0.12s var(--ease);
+	}
+	.caret.open {
+		transform: rotate(90deg);
+	}
+	.col-status .badge + .badge {
+		margin-left: var(--sp-1);
+	}
+	.acts {
+		gap: var(--sp-1);
+	}
+	.expand-row td {
+		padding: 0;
+		background: var(--bg-elevated);
+		border-top: 1px solid var(--border);
+	}
+
+	@media (max-width: 720px) {
+		.col-created {
+			display: none;
+		}
+		.col-status {
+			width: 7rem;
+		}
+		.col-actions {
+			width: 12rem;
+		}
 	}
 </style>

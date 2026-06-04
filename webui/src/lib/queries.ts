@@ -201,6 +201,7 @@ function optimisticDispatchCard(id: string, body: DispatchRequest): SessionListI
 		metadata: null,
 		adapter_id: 'claude-code',
 		machine_name: 'dispatch',
+		machine_hue: null,
 		last_message_text: 'Dispatching…',
 		last_message_at: null,
 		name: p.name || p.prompt_file || (p.prompt ? p.prompt.slice(0, 40) : null) || id.slice(0, 6),
@@ -334,8 +335,15 @@ export function useUserActions() {
 			invalUser(userId);
 			return r;
 		},
-		renameMachine: async (userId: string, id: string, displayName: string | null) => {
-			await api.patch<void>(`/admin/machines/${id}`, { display_name: displayName });
+		// The PATCH replaces both fields (display_name + hue), so callers pass
+		// the full pair — send the current value for the field they didn't touch.
+		updateMachine: async (
+			userId: string,
+			id: string,
+			displayName: string | null,
+			hue: number | null
+		) => {
+			await api.patch<void>(`/admin/machines/${id}`, { display_name: displayName, hue });
 			invalUser(userId);
 		},
 		revokeMachine: async (userId: string, id: string) => {

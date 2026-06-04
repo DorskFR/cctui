@@ -176,7 +176,7 @@
 			<span class="check" class:on={selected} aria-hidden="true">{selected ? '✓' : ''}</span>
 		{/if}
 		{#if child}<span class="sub" title="subagent">↳</span>{/if}
-		{#if dense && !child}<MachineBadge name={s.machine_name} id={s.machine_id} mono />{/if}
+		{#if dense && !child}<MachineBadge name={s.machine_name} id={s.machine_id} hue={s.machine_hue} mono />{/if}
 		<span class="dot {livenessClass}"></span>
 		<span class="title truncate">{title}</span>
 		{#if child}<span class="badge badge-info tag">subagent</span>{/if}
@@ -200,7 +200,7 @@
 
 	{#if !dense}
 		<div class="row meta row-wrap">
-			<MachineBadge name={s.machine_name} id={s.machine_id} />
+			<MachineBadge name={s.machine_name} id={s.machine_id} hue={s.machine_hue} />
 			<span class="badge {statusBadgeClass(s.status)}">{s.status}</span>
 			<span class="muted sm">up {uptime(Number(s.uptime_secs))}</span>
 		</div>

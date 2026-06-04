@@ -895,7 +895,7 @@
 		<div class="hmeta row row-wrap">
 			<span class="badge {statusBadgeClass(session.status)}">{session.status}</span>
 			{#if session.model}<span class="chip">{session.model}{session.effort ? ` · ${session.effort}` : ''}</span>{/if}
-			<MachineBadge name={session.machine_name} id={session.machine_id} mono />
+			<MachineBadge name={session.machine_name} id={session.machine_id} hue={session.machine_hue} mono />
 			<button
 				class="chip mono cwd truncate"
 				title="Click to copy — {session.working_dir}"
