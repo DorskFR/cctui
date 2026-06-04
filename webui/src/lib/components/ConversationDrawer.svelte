@@ -86,6 +86,23 @@
 	let ask = $state<LiveAsk | null>(null);
 	// Parsed structured questions for the live prompt, or null → text fallback.
 	const liveAskQuestions = $derived(ask?.questions ? parseAsk({ questions: ask.questions }) : null);
+	// Dedupe the two ask render sites (CCT-218): the hook-driven live card and
+	// the transcript-derived `ln.ask` card used to never coexist (the tool_use
+	// flushed to the transcript only after answering), but since the daemon
+	// holds a headless attach (CCT-209) the transcript line streams in while
+	// the question is still pending — showing the same question twice. While a
+	// live ask is pending, suppress transcript ask lines that carry the same
+	// question; once resolved the live card vanishes and the transcript card
+	// remains as history.
+	function isDupeOfLiveAsk(a: AskQuestion[]): boolean {
+		if (!ask) return false;
+		const q = a[0]?.question;
+		if (!q) return false;
+		const liveQ = liveAskQuestions?.[0]?.question;
+		if (liveQ !== undefined) return q === liveQ;
+		// Text-only fallback delivery: the flattened `question` embeds the text.
+		return ask.question.includes(q);
+	}
 	// The assistant prose preceding the live question (CCT-213), rendered as
 	// markdown above the card so the user answers with context, not blind.
 	const askPreambleHtml = $derived(ask?.preamble ? hl(renderMarkdown(ask.preamble)) : null);
@@ -439,6 +456,12 @@
 		}
 		return out;
 	});
+
+	// Suppress the live preamble block when the same assistant prose has
+	// already streamed into the transcript (CCT-218).
+	const preambleInLines = $derived(
+		!!ask?.preamble && lines.some((l) => l.role === 'assistant' && (l.text ?? '').trim() === ask!.preamble!.trim())
+	);
 
 	const actions = useSessionActions();
 
@@ -923,7 +946,9 @@
 		{/if}
 
 		{#each lines as ln, i (ln.ts + (ln.text ?? ln.html ?? '').slice(0, 24) + ln.role)}
-			{#if ln.ask}
+			{#if ln.ask && isDupeOfLiveAsk(ln.ask)}
+				<!-- Suppressed: same question is rendered live below (CCT-218). -->
+			{:else if ln.ask}
 				<AskQuestionCard
 					questions={ln.ask}
 					interactive={i === lines.length - 1 && !archived && !answering}
@@ -1004,7 +1029,7 @@
 			     structured options, so render the interactive option-card form
 			     live. Older deliveries (no structured payload) fall back to the
 			     question text with a free-text answer. Answering sends a reply. -->
-			{#if askPreambleHtml}
+			{#if askPreambleHtml && !preambleInLines}
 				<!-- The assistant prose preceding the question (CCT-213): the
 				     reasoning the choice depends on, so the user isn't blind. -->
 				<div class="line assistant ask-preamble">

@@ -204,6 +204,12 @@ pub struct Driver {
     /// string is all we get), so we mint our own purely as a correlation token
     /// the server/clients echo back; the answer is keyed on the worker `short`.
     perm_seq: u64,
+    /// Sessions with an `AskUserQuestion` form currently up in the PTY,
+    /// maintained by the ask-hook listener (CCT-219). A `reply` injected while
+    /// the form is up would just confirm the highlighted option — the reply
+    /// path dismisses the form (attach+ESC) first so the user's actual text is
+    /// what claude receives.
+    pending_asks: super::PendingAsks,
 }
 
 #[derive(Debug, Clone)]
@@ -292,6 +298,7 @@ impl Driver {
             attach,
             pending_perms: HashMap::new(),
             perm_seq: 0,
+            pending_asks: super::PendingAsks::default(),
         }
     }
 
@@ -299,6 +306,12 @@ impl Driver {
     /// ask-hook listener to translate live `session_id`s (CCT-167).
     pub fn session_map(&self) -> SessionMap {
         self.session_to_local.clone()
+    }
+
+    /// Clone handle to the shared pending-ask set, for the ask-hook listener
+    /// to maintain (CCT-219).
+    pub fn pending_asks(&self) -> super::PendingAsks {
+        self.pending_asks.clone()
     }
 
     #[allow(clippy::cognitive_complexity)]
@@ -372,6 +385,31 @@ impl Driver {
             AdapterCommand::SendMessage { local_id, text }
             | AdapterCommand::Reply { local_id, text } => {
                 let short = self.resolve_short(&local_id)?;
+                // If an AskUserQuestion form is up in the worker's PTY, a bare
+                // `reply` just presses Enter on the highlighted option — claude
+                // records option 1 ("Proceed"-style) and the user's text is
+                // swallowed (CCT-219). Dismiss the form first (attach+ESC, the
+                // same mechanism as interrupt/permission-deny), then deliver
+                // the text so claude reads the user's actual answer.
+                let ask_pending =
+                    self.pending_asks.lock().is_ok_and(|mut s| s.remove(&local_id));
+                if ask_pending {
+                    if let Err(err) = socket::attach_interrupt(&sock, &short).await {
+                        tracing::warn!(%err, %short, "failed to dismiss pending ask form");
+                    } else {
+                        tracing::info!(%short, "dismissed pending ask form before reply");
+                        // PostToolUse never fires for a cancelled ask, so the
+                        // hook won't emit `resolved` — synthesize it so the
+                        // server/clients drop the live question card.
+                        let _ = self
+                            .events
+                            .send(AdapterEvent::AskResolved { local_id: local_id.clone() })
+                            .await;
+                        // Give the TUI a beat to settle after the ESC before
+                        // the reply lands.
+                        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                    }
+                }
                 let resp = socket::one_shot(
                     &sock,
                     &json!({"proto":1,"op":"reply","short":short,"text":text}),

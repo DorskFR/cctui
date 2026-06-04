@@ -37,6 +37,14 @@ use crate::adapter_runtime::{Adapter, AdapterCtx, AdapterFactory};
 /// live `session_id` a hook reports into the `local_id` the server keys on.
 pub(crate) type SessionMap = Arc<Mutex<HashMap<String, String>>>;
 
+/// Shared set of `local_id`s with an `AskUserQuestion` form currently up in
+/// the worker's PTY (CCT-219). Maintained by the ask-hook listener (insert on
+/// `kind:"ask"`, remove on `kind:"resolved"`) and consulted by the driver's
+/// reply path: a `reply` op injected while the form is up just confirms the
+/// highlighted option (the swallowed-text / phantom-"Proceed" bug), so the
+/// driver must dismiss the form first.
+pub(crate) type PendingAsks = Arc<Mutex<std::collections::HashSet<String>>>;
+
 pub struct ClaudeCodeAdapter;
 
 #[async_trait::async_trait]
@@ -60,9 +68,16 @@ impl Adapter for ClaudeCodeAdapter {
             let hook_events = ctx.events;
             let hook_shutdown = ctx.shutdown;
             let session_map = driver.session_map();
+            let pending_asks = driver.pending_asks();
             tokio::spawn(async move {
-                if let Err(err) =
-                    run_hook_listener(hook_sock, hook_events, hook_shutdown, session_map).await
+                if let Err(err) = run_hook_listener(
+                    hook_sock,
+                    hook_events,
+                    hook_shutdown,
+                    session_map,
+                    pending_asks,
+                )
+                .await
                 {
                     tracing::warn!(%err, "claude-code ask-hook listener exited");
                 }
@@ -150,6 +165,7 @@ async fn run_hook_listener(
     events: tokio::sync::mpsc::Sender<AdapterEvent>,
     shutdown: CancellationToken,
     session_map: SessionMap,
+    pending_asks: PendingAsks,
 ) -> anyhow::Result<()> {
     let _ = std::fs::remove_file(&path);
     if let Some(parent) = path.parent() {
@@ -173,8 +189,11 @@ async fn run_hook_listener(
                 let (stream, _) = accept?;
                 let events = events.clone();
                 let session_map = session_map.clone();
+                let pending_asks = pending_asks.clone();
                 tokio::spawn(async move {
-                    if let Err(err) = handle_hook_connection(stream, events, session_map).await {
+                    if let Err(err) =
+                        handle_hook_connection(stream, events, session_map, pending_asks).await
+                    {
                         tracing::debug!(%err, "ask-hook connection error");
                     }
                 });
@@ -187,6 +206,7 @@ async fn handle_hook_connection(
     stream: tokio::net::UnixStream,
     events: tokio::sync::mpsc::Sender<AdapterEvent>,
     session_map: SessionMap,
+    pending_asks: PendingAsks,
 ) -> anyhow::Result<()> {
     let mut lines = BufReader::new(stream).lines();
     while let Some(line) = lines.next_line().await? {
@@ -197,6 +217,19 @@ async fn handle_hook_connection(
         let Some(evt) = hook_line_to_event(line, &session_map) else {
             continue;
         };
+        // Track which sessions have the ask form up (CCT-219) so the driver's
+        // reply path can dismiss it before injecting text.
+        if let Ok(mut set) = pending_asks.lock() {
+            match &evt {
+                AdapterEvent::AskQuestion { local_id, .. } => {
+                    set.insert(local_id.clone());
+                }
+                AdapterEvent::AskResolved { local_id } => {
+                    set.remove(local_id);
+                }
+                _ => {}
+            }
+        }
         if events.send(evt).await.is_err() {
             break;
         }
