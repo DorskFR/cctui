@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { SessionListItem } from '@bindings/SessionListItem';
-	import { useSessions, useSessionActions, endpoints } from '$lib/queries';
+	import { useSessions, useSessionActions, endpoints, SYSTEM_MACHINE_KINDS } from '$lib/queries';
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { toasts } from '$lib/toast.svelte';
 	import { ws } from '$lib/ws.svelte';
@@ -186,16 +186,29 @@
 
 	// Classifier buckets (CCT-90), in attention-first display order. Sessions
 	// that want the user's eyes float to the top; empty buckets are dropped.
-	const BUCKETS: { key: SessionListItem['bucket']; label: string }[] = [
+	// Sessions on server-managed machines (dispatch / ephemeral workers) get
+	// their own "Dispatched" group at the bottom (CCT-231) — they're unattended
+	// noise next to interactive sessions — EXCEPT blocked ones, which still
+	// surface under Needs input so attention never gets buried.
+	type GroupKey = SessionListItem['bucket'] | 'dispatched';
+	const BUCKETS: { key: GroupKey; label: string }[] = [
 		{ key: 'blocked', label: 'Needs input' },
 		{ key: 'review', label: 'Ready for review' },
 		{ key: 'working', label: 'Working' },
-		{ key: 'done', label: 'Completed' }
+		{ key: 'done', label: 'Completed' },
+		{ key: 'dispatched', label: 'Dispatched' }
 	];
+	const isDispatched = (s: SessionListItem) =>
+		s.machine_kind != null && SYSTEM_MACHINE_KINDS.has(s.machine_kind);
+	const groupOf = (s: SessionListItem): GroupKey => {
+		const bucket = s.bucket ?? 'working';
+		if (bucket === 'blocked') return 'blocked';
+		return isDispatched(s) ? 'dispatched' : bucket;
+	};
 	const groups = $derived(
 		BUCKETS.map((b) => ({
 			...b,
-			sessions: topLevel.filter((s) => (s.bucket ?? 'working') === b.key)
+			sessions: topLevel.filter((s) => groupOf(s) === b.key)
 		})).filter((g) => g.sessions.length > 0)
 	);
 

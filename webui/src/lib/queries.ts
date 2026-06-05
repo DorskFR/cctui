@@ -202,6 +202,8 @@ function optimisticDispatchCard(id: string, body: DispatchRequest): SessionListI
 		adapter_id: 'claude-code',
 		machine_name: 'dispatch',
 		machine_hue: null,
+		// Lands the optimistic card straight in the Dispatched group (CCT-231).
+		machine_kind: 'dispatch',
 		last_message_text: 'Dispatching…',
 		last_message_at: null,
 		name: p.name || p.prompt_file || (p.prompt ? p.prompt.slice(0, 40) : null) || id.slice(0, 6),

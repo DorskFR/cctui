@@ -40,6 +40,13 @@ machine_name: string | null,
  */
 machine_hue: number | null, 
 /**
+ * Machine kind (resolved from `machine_id`, CCT-231): `"persistent"`
+ * for enrolled daemons, `"dispatch"`/`"ephemeral"` for server-managed
+ * dispatch workers. Lets clients group dispatched sessions separately.
+ * `None` when the machine row is gone.
+ */
+machine_kind: string | null, 
+/**
  * Last message text seen on this session, truncated to ~120 chars.
  */
 last_message_text: string | null, 

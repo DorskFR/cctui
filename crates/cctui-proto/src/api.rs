@@ -121,6 +121,12 @@ pub struct SessionListItem {
     /// client derives the hue from the machine name hash.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub machine_hue: Option<i16>,
+    /// Machine kind (resolved from `machine_id`, CCT-231): `"persistent"`
+    /// for enrolled daemons, `"dispatch"`/`"ephemeral"` for server-managed
+    /// dispatch workers. Lets clients group dispatched sessions separately.
+    /// `None` when the machine row is gone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine_kind: Option<String>,
     /// Last message text seen on this session, truncated to ~120 chars.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_message_text: Option<String>,
