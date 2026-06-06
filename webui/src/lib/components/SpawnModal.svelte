@@ -206,6 +206,17 @@
 			files = [];
 			onspawned();
 			onclose();
+		} else if (result.timedOut) {
+			// No confirmation ≠ failed (CCT-242): slow/cold spawns routinely land
+			// after the wait. Close + refresh so the new session shows up; keep the
+			// draft so a *real* miss is one re-open away. Re-submitting blindly
+			// would dispatch a second spawn → duplicate agent.
+			toasts.push(
+				'Spawn dispatched but not confirmed yet — check the list before retrying (a retry starts a second session)',
+				'info'
+			);
+			onspawned();
+			onclose();
 		} else {
 			toasts.err(`Spawn failed: ${result.error ?? 'unknown error'}`);
 		}
@@ -731,6 +742,22 @@
 	.file {
 		font-size: var(--fs-xs);
 		color: var(--text-muted);
+	}
+	/* A real, thumb-sized browse button (CCT-241) — the UA default is tiny,
+	   which makes the picker nearly untappable on mobile. */
+	.file::file-selector-button {
+		padding: var(--sp-2) var(--sp-4);
+		margin-right: var(--sp-3);
+		font-size: var(--fs-sm);
+		font-weight: var(--fw-medium);
+		color: var(--text);
+		background: var(--bg-elevated-2);
+		border: 1px solid var(--border-strong);
+		border-radius: var(--r-md);
+		cursor: pointer;
+	}
+	.file::file-selector-button:hover {
+		border-color: var(--c-blue);
 	}
 	.stack {
 		position: relative;

@@ -2,7 +2,6 @@
 	import { useUsers, useSessionStats } from '$lib/queries';
 	import { apiOrigin } from '$lib/config';
 	import { toasts } from '$lib/toast.svelte';
-	import { auth } from '$lib/auth.svelte';
 
 	const users = useUsers();
 	// Aggregate counts from the server, not the capped session list — the list
@@ -68,14 +67,7 @@
 	</p>
 </div>
 
-<div class="logout">
-	<button class="btn btn-block" onclick={() => auth.clear()}>⏻ Log out</button>
-</div>
-
 <style>
-	.logout {
-		margin-top: var(--sp-8);
-	}
 	.page-title {
 		font-size: var(--fs-2xl);
 		margin-bottom: var(--sp-4);

@@ -157,7 +157,10 @@ class WsClient {
 
 	private socket: WebSocket | null = null;
 	private subscribed = new Set<string>();
-	private waiters = new Map<string, (r: { ok: boolean; error?: string }) => void>();
+	private waiters = new Map<
+		string,
+		(r: { ok: boolean; error?: string; timedOut?: boolean }) => void
+	>();
 	private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 	private listDirtyTimer: ReturnType<typeof setTimeout> | null = null;
 	private want = false;
@@ -624,13 +627,23 @@ class WsClient {
 		);
 	}
 
-	/** Resolve when the server reports a result for `commandId` (spawn). */
-	awaitCommand(commandId: string, timeoutMs = 20_000): Promise<{ ok: boolean; error?: string }> {
+	/** Resolve when the server reports a result for `commandId` (spawn).
+	 *
+	 * A timeout is NOT a failure (CCT-242): a cold spawn (kickstarting the
+	 * agent daemon, staging uploads) can easily outlive any client-side wait,
+	 * and the session still lands. `timedOut` lets the caller phrase it as
+	 * "unconfirmed, check the list" instead of an error inviting a retry —
+	 * re-submitting dispatches a brand-new spawn and a duplicate agent.
+	 */
+	awaitCommand(
+		commandId: string,
+		timeoutMs = 60_000
+	): Promise<{ ok: boolean; error?: string; timedOut?: boolean }> {
 		return new Promise((resolve) => {
 			this.waiters.set(commandId, resolve);
 			setTimeout(() => {
 				if (this.waiters.delete(commandId)) {
-					resolve({ ok: false, error: 'timed out waiting for daemon ACK' });
+					resolve({ ok: false, timedOut: true, error: 'no spawn confirmation from the daemon' });
 				}
 			}, timeoutMs);
 		});

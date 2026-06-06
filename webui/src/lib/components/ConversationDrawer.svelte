@@ -1239,7 +1239,9 @@
 					rows="1"
 					placeholder={dragActive
 						? 'Drop files to attach'
-						: 'Message… (Enter to send, Shift+Enter for newline)'}
+						: coarsePointer
+							? 'Message…'
+							: 'Message… (Enter to send)'}
 					bind:value={input}
 					bind:this={textarea}
 					onkeydown={onKey}
@@ -1461,6 +1463,10 @@
 	.conv {
 		flex: 1;
 		overflow-y: auto;
+		/* Keep the chat's scroll inside the pane (CCT-241): without this,
+		   hitting the top/bottom of a long log chains the swipe to the page
+		   behind, scrolling the app under the drawer. */
+		overscroll-behavior: contain;
 		-webkit-overflow-scrolling: touch;
 		padding: var(--sp-3);
 		display: flex;

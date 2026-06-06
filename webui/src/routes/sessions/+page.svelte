@@ -109,6 +109,19 @@
 	const PAGE = 50;
 	let rawQuery = $state('');
 	let query = $state('');
+	// Mobile (narrow viewports): the search input collapses to a magnifier
+	// button and expands over the toolbar on tap (CCT-241). Desktop ignores
+	// `searchOpen` entirely — the input always fills the bar there.
+	let searchOpen = $state(false);
+	let searchEl = $state<HTMLInputElement | null>(null);
+	function openSearch() {
+		searchOpen = true;
+		// Focus after the expand transition kicks in so the keyboard pops.
+		requestAnimationFrame(() => searchEl?.focus());
+	}
+	function onSearchBlur() {
+		if (!rawQuery.trim()) searchOpen = false;
+	}
 	$effect(() => {
 		const v = rawQuery.trim();
 		const t = setTimeout(() => (query = v), 200);
@@ -339,7 +352,28 @@
 
 <div class="bar row">
 	<h1 class="page-title">Sessions</h1>
-	<input class="search" type="search" placeholder="Search all chats…" bind:value={rawQuery} />
+	<button class="btn btn-sm search-toggle" aria-label="Search chats" onclick={openSearch}>
+		<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+			<circle cx="11" cy="11" r="7" />
+			<path d="m21 21-4.3-4.3" />
+		</svg>
+	</button>
+	<input
+		class="search"
+		class:open={searchOpen}
+		type="search"
+		placeholder="Search all chats…"
+		bind:value={rawQuery}
+		bind:this={searchEl}
+		onblur={onSearchBlur}
+		onkeydown={(e) => {
+			if (e.key === 'Escape') {
+				rawQuery = '';
+				searchOpen = false;
+				(e.currentTarget as HTMLInputElement).blur();
+			}
+		}}
+	/>
 	<label class="arch row">
 		<input type="checkbox" bind:checked={showArchived} /> Archived
 	</label>
@@ -510,9 +544,17 @@
 
 <style>
 	.bar {
+		/* Sticky under the fixed app header so search/density/New stay reachable
+		   on long lists without scrolling back up (CCT-241). Also the positioning
+		   context for the mobile search overlay. */
+		position: sticky;
+		top: calc(var(--header-h) + var(--safe-top));
+		z-index: 6;
 		margin-bottom: var(--sp-4);
+		padding: var(--sp-2) 0;
 		gap: var(--sp-2);
 		align-items: stretch;
+		background: var(--bg);
 	}
 	.page-title {
 		font-size: var(--fs-2xl);
@@ -536,10 +578,39 @@
 		background: var(--bg-elevated);
 		color: var(--text);
 	}
+	/* Desktop: the input always fills the bar; no toggle button. */
+	.search-toggle {
+		display: none;
+		align-self: center;
+	}
+	/* Mobile: collapsed to a magnifier; tapping it expands the input over the
+	   whole toolbar with a smooth width/opacity transition (CCT-241). */
+	@media (max-width: 639px) {
+		.search-toggle {
+			display: inline-flex;
+			align-items: center;
+		}
+		.search {
+			position: absolute;
+			inset: var(--sp-2) 0;
+			width: 2.25rem;
+			margin-left: auto;
+			opacity: 0;
+			pointer-events: none;
+			transition:
+				width 0.2s var(--ease),
+				opacity 0.15s var(--ease);
+		}
+		.search.open {
+			width: 100%;
+			opacity: 1;
+			pointer-events: auto;
+		}
+	}
 	/* Sticky bulk-action bar (CCT-172) shown while in select mode. */
 	.bulkbar {
 		position: sticky;
-		top: 0;
+		top: calc(var(--header-h) + var(--safe-top) + var(--sp-2));
 		z-index: 5;
 		gap: var(--sp-2);
 		align-items: center;

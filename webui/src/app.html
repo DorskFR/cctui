@@ -4,10 +4,13 @@
 		<meta charset="utf-8" />
 		<link rel="icon" href="%sveltekit.assets%/favicon.svg" />
 		<!-- viewport-fit=cover so env(safe-area-inset-*) is honoured on phones
-		     with a notch / bottom gesture bar / browser address bar. -->
+		     with a notch / bottom gesture bar / browser address bar.
+		     interactive-widget=resizes-content keeps fixed headers on screen when
+		     the on-screen keyboard opens (CCT-241): the keyboard shrinks the
+		     layout viewport instead of scrolling fixed elements out of view. -->
 		<meta
 			name="viewport"
-			content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=5"
+			content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=5, interactive-widget=resizes-content"
 		/>
 		<meta name="theme-color" content="#0f1115" />
 		<meta name="color-scheme" content="dark light" />

@@ -5,6 +5,7 @@
 	import UserExpand from '$lib/components/UserExpand.svelte';
 	import SecretReveal from '$lib/components/SecretReveal.svelte';
 	import { SvelteSet } from 'svelte/reactivity';
+	import { auth } from '$lib/auth.svelte';
 
 	const users = useUsers();
 	const actions = useUserActions();
@@ -146,9 +147,17 @@
 	<SecretReveal title={secret.title} secret={secret.value} onclose={() => (secret = null)} />
 {/if}
 
+<!-- Log out lives here with the rest of account management (CCT-241). -->
+<div class="logout">
+	<button class="btn btn-block" onclick={() => auth.clear()}>⏻ Log out</button>
+</div>
+
 <style>
 	.bar {
 		margin-bottom: var(--sp-4);
+	}
+	.logout {
+		margin-top: var(--sp-8);
 	}
 	.page-title {
 		font-size: var(--fs-2xl);
