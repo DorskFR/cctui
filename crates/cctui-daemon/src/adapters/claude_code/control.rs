@@ -1967,8 +1967,7 @@ mod tests {
         let (mut d, mut rx) = driver();
         let sess = "abcd1234-uuid";
         let parent_path = transcript::transcript_path(&d.cfg.projects_root, "/tmp", sess);
-        let run_dir =
-            transcript::subagents_dir(&parent_path).join("workflows").join("wf_test123");
+        let run_dir = transcript::subagents_dir(&parent_path).join("workflows").join("wf_test123");
         std::fs::create_dir_all(&run_dir).unwrap();
         let mut f = std::fs::File::create(run_dir.join("agent-wfa.jsonl")).unwrap();
         f.write_all(br#"{"type":"assistant","isSidechain":true,"agentId":"wfa","message":{"content":[{"type":"text","text":"wf work"}]}}"#).unwrap();

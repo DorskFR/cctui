@@ -10,6 +10,18 @@ pub struct HttpDispatcherConfig {
     pub token: Option<String>,
 }
 
+/// One dispatcher registration, parsed from `CCTUI_DISPATCHERS` — a JSON array
+/// of `{ "kind": "http"|"kube"|"docker", ... }` (CCT-234). Supersedes the
+/// http-only `CCTUI_HTTP_DISPATCHERS` (still parsed for back-compat); both lists
+/// are merged at startup. `kind` is the discriminant.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum DispatcherConfig {
+    Http(HttpDispatcherConfig),
+    Kube(crate::dispatchers::kube::KubeDispatcherConfig),
+    Docker(crate::dispatchers::docker::DockerDispatcherConfig),
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub host: String,
@@ -36,6 +48,9 @@ pub struct Config {
     pub github_token: Option<String>,
     /// External dispatcher registrations, parsed from `CCTUI_HTTP_DISPATCHERS`.
     pub http_dispatchers: Vec<HttpDispatcherConfig>,
+    /// Native + http dispatcher registrations, parsed from `CCTUI_DISPATCHERS`
+    /// (CCT-234). Merged with `http_dispatchers` at startup.
+    pub dispatchers: Vec<DispatcherConfig>,
     /// How long an `ephemeral` (dispatch/worker) machine may go without being
     /// seen before the reaper soft-deletes it — covers pods that die before
     /// self-deenroll (CCT-183). Configured in hours via
@@ -78,6 +93,11 @@ impl Config {
                 .map(|s| {
                     serde_json::from_str(&s).expect("CCTUI_HTTP_DISPATCHERS must be a JSON array")
                 })
+                .unwrap_or_default(),
+            dispatchers: env::var("CCTUI_DISPATCHERS")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+                .map(|s| serde_json::from_str(&s).expect("CCTUI_DISPATCHERS must be a JSON array"))
                 .unwrap_or_default(),
             ephemeral_machine_ttl_secs: env::var("CCTUI_EPHEMERAL_MACHINE_TTL_HOURS")
                 .ok()

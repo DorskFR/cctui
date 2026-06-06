@@ -42,7 +42,7 @@ async fn main() -> anyhow::Result<()> {
 
     let archive = init_archive_store().await;
     let skills = init_skill_store().await;
-    let dispatchers = init_dispatchers(&config);
+    let dispatchers = init_dispatchers(&config).await;
 
     let state = AppState {
         pool,
@@ -209,17 +209,63 @@ async fn init_skill_store() -> Arc<skill_store::SkillStore> {
     store
 }
 
-/// Construct the [`dispatchers::Registry`] from `config.http_dispatchers`.
-fn init_dispatchers(config: &Config) -> Arc<dispatchers::Registry> {
+/// Construct the [`dispatchers::Registry`] from config (CCT-234).
+///
+/// Merges the legacy `CCTUI_HTTP_DISPATCHERS` (http-only, back-compat) with the
+/// kind-tagged `CCTUI_DISPATCHERS`. Native kube/docker dispatchers do a connect
+/// probe at startup: if the backend is unreachable (e.g. no docker socket in the
+/// k8s pod, or no kube config off-cluster) the instance is logged and skipped
+/// rather than aborting boot — the rest of the registry still comes up.
+#[allow(clippy::cognitive_complexity)]
+async fn init_dispatchers(config: &Config) -> Arc<dispatchers::Registry> {
+    use config::DispatcherConfig;
+
     let mut registry = dispatchers::Registry::new();
+
     for d in &config.http_dispatchers {
-        tracing::info!(id = %d.id, url = %d.url, "http dispatcher registered");
+        tracing::info!(id = %d.id, url = %d.url, "http dispatcher registered (legacy CCTUI_HTTP_DISPATCHERS)");
         registry = registry.with(Arc::new(dispatchers::http::HttpDispatcher::new(
             &d.id,
             &d.url,
             d.token.clone(),
         )));
     }
+
+    for d in &config.dispatchers {
+        match d {
+            DispatcherConfig::Http(c) => {
+                tracing::info!(id = %c.id, url = %c.url, "http dispatcher registered");
+                registry = registry.with(Arc::new(dispatchers::http::HttpDispatcher::new(
+                    &c.id,
+                    &c.url,
+                    c.token.clone(),
+                )));
+            }
+            DispatcherConfig::Kube(c) => {
+                match dispatchers::kube::KubeDispatcher::try_new(c).await {
+                    Ok(k) => {
+                        tracing::info!(id = %c.id, namespace = %c.namespace, source_cronjob = %c.source_cronjob, "kube dispatcher registered");
+                        registry = registry.with(Arc::new(k));
+                    }
+                    Err(e) => {
+                        tracing::warn!(id = %c.id, "kube dispatcher skipped (no kube client): {e}")
+                    }
+                }
+            }
+            DispatcherConfig::Docker(c) => {
+                match dispatchers::docker::DockerDispatcher::try_new(c).await {
+                    Ok(k) => {
+                        tracing::info!(id = %c.id, image = %c.image, "docker dispatcher registered");
+                        registry = registry.with(Arc::new(k));
+                    }
+                    Err(e) => {
+                        tracing::warn!(id = %c.id, "docker dispatcher skipped (no docker socket): {e}")
+                    }
+                }
+            }
+        }
+    }
+
     Arc::new(registry)
 }
 

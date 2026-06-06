@@ -296,6 +296,7 @@ pub async fn dispatch(
                 DispatchError::InvalidIntent(_) => (StatusCode::BAD_REQUEST, e.to_string()),
                 DispatchError::UnknownDispatcher(_) => (StatusCode::NOT_FOUND, e.to_string()),
                 DispatchError::Backend(_) => (StatusCode::BAD_GATEWAY, e.to_string()),
+                DispatchError::Unsupported(_) => (StatusCode::NOT_IMPLEMENTED, e.to_string()),
             };
             return Err((code, Json(ApiError { error: msg })));
         }

@@ -373,6 +373,7 @@ async fn enrich_and_sort(
         // machine UUID, but legacy `/register` callers carry the OS hostname.
         // Match on either `id` or `name`, and prefer `display_name` (operator
         // override) over `name` for the resolved label.
+        #[allow(clippy::type_complexity)]
         let rows: Vec<(String, String, Option<String>, Option<i16>, String)> = sqlx::query_as(
             "SELECT id::text, name, display_name, hue, kind FROM machines \
              WHERE id::text = ANY($1) OR name = ANY($1)",

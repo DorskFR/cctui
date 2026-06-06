@@ -1,5 +1,9 @@
 //! Pluggable [`Dispatcher`]s that turn a [`DispatchSpec`] into a launched
-//! session. Only impl is [`http::HttpDispatcher`].
+//! session. Impls: [`http::HttpDispatcher`] (forward to an external endpoint),
+//! [`kube::KubeDispatcher`] (clone the claude-worker `CronJob` template into a
+//! one-shot k8s Job, in-process — retires the external python dispatcher,
+//! CCT-234) and [`docker::DockerDispatcher`] (run the worker image as a
+//! container via bollard, only when a docker socket is configured).
 //!
 //! Lifecycle: the route ([`crate::routes::dispatch`]) mints a session id,
 //! inserts a row in `sessions` (`origin = '<dispatcher_id>'`, status
@@ -11,7 +15,9 @@
 
 use async_trait::async_trait;
 
+pub mod docker;
 pub mod http;
+pub mod kube;
 
 #[derive(Debug, Clone)]
 pub struct DispatchHandle {
@@ -48,6 +54,28 @@ pub enum DispatchError {
     InvalidIntent(String),
     #[error("backend error: {0}")]
     Backend(String),
+    /// The dispatcher does not implement this operation (e.g. `HttpDispatcher`
+    /// can dispatch but not introspect/cancel a handle it forwarded).
+    #[error("operation not supported by dispatcher: {0}")]
+    Unsupported(String),
+}
+
+/// Lifecycle state of a dispatched handle, reported by [`Dispatcher::status`].
+///
+/// Part of the trait surface added in CCT-234 (`status`/`cancel`); consumed by
+/// the kube/docker dispatchers and reserved for a future observe/cancel route,
+/// so the variants are allowed to be unused for now.
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub enum HandleStatus {
+    /// The Job/container is still pending or running.
+    Running,
+    /// The Job/container finished successfully.
+    Complete,
+    /// The Job/container failed (backoff exhausted, deadline, non-zero exit).
+    Failed,
+    /// No Job/container with this handle exists (already GC'd or never created).
+    Gone,
 }
 
 #[async_trait]
@@ -60,6 +88,20 @@ pub trait Dispatcher: Send + Sync {
     /// returned handle is opaque per-dispatcher (e.g. `"jobs/foo-…"`)
     /// and persisted alongside the session row for observability.
     async fn dispatch(&self, spec: &DispatchSpec<'_>) -> Result<DispatchHandle, DispatchError>;
+
+    /// Inspect a previously returned handle. Defaults to `Unsupported` so
+    /// `HttpDispatcher` (which forwards to an opaque endpoint) need not
+    /// implement it; the native kube/docker dispatchers override it.
+    #[allow(dead_code)]
+    async fn status(&self, handle: &str) -> Result<HandleStatus, DispatchError> {
+        Err(DispatchError::Unsupported(format!("status({handle})")))
+    }
+
+    /// Cancel/delete a previously returned handle. Defaults to `Unsupported`.
+    #[allow(dead_code)]
+    async fn cancel(&self, handle: &str) -> Result<(), DispatchError> {
+        Err(DispatchError::Unsupported(format!("cancel({handle})")))
+    }
 }
 
 /// Resolves dispatcher id strings to concrete impls. Built once at
