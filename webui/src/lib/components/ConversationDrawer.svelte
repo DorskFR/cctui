@@ -1730,6 +1730,31 @@
 		padding: 1px 4px;
 		border-radius: 4px;
 	}
+	/* GFM tables (CCT-233): themed borders + header row, horizontally scrollable
+	   so wide tables don't blow out the bubble width. */
+	:global(.bubble .md-table) {
+		display: block;
+		max-width: 100%;
+		overflow-x: auto;
+		border-collapse: collapse;
+		margin: var(--sp-2) 0;
+		font-size: var(--fs-sm);
+	}
+	:global(.bubble .md-table th),
+	:global(.bubble .md-table td) {
+		border: 1px solid var(--border-strong);
+		padding: var(--sp-1) var(--sp-2);
+		text-align: left;
+		vertical-align: top;
+	}
+	:global(.bubble .md-table th) {
+		background: var(--bg-elevated);
+		font-weight: var(--fw-semibold);
+		color: var(--text);
+	}
+	:global(.bubble .md-table tbody tr:nth-child(even)) {
+		background: color-mix(in srgb, var(--bg-elevated) 45%, transparent);
+	}
 	/* Syntax-highlight token colors (CCT-161 item 5) — all themeable. */
 	:global(.syn-keyword) {
 		color: var(--syn-keyword);

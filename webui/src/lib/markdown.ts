@@ -141,6 +141,44 @@ function highlightJson(raw: string): string {
 
 // ── Markdown ────────────────────────────────────────────────────────────────
 
+// Inline markdown passes (code, bold, italic, links) shared between the main
+// body render and table-cell rendering. Operates on already-escaped text.
+function inlineMd(s: string): string {
+	// inline code
+	s = s.replace(/`([^`]+)`/g, '<code class="md-code">$1</code>');
+	// bold
+	s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+	// italic (avoid touching ** already consumed)
+	s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+	// links [text](url)
+	s = s.replace(
+		/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+		'<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>'
+	);
+	return s;
+}
+
+// Split a GFM table row into cells. Drops the leading/trailing pipe and honors
+// backslash-escaped pipes (`\|`) inside cell content.
+function splitRow(row: string): string[] {
+	const cells: string[] = [];
+	let cur = '';
+	const t = row.trim().replace(/^\|/, '').replace(/\|$/, '');
+	for (let i = 0; i < t.length; i++) {
+		if (t[i] === '\\' && t[i + 1] === '|') {
+			cur += '|';
+			i++;
+		} else if (t[i] === '|') {
+			cells.push(cur);
+			cur = '';
+		} else {
+			cur += t[i];
+		}
+	}
+	cells.push(cur);
+	return cells;
+}
+
 export function renderMarkdown(src: string): string {
 	// Strip terminal control sequences before any structural parsing.
 	src = stripAnsi(src);
@@ -158,20 +196,40 @@ export function renderMarkdown(src: string): string {
 
 	s = escapeHtml(s);
 
+	// GFM tables (CCT-233): a header row, a delimiter row (---|:--:|--- with
+	// optional alignment colons), then ≥1 body rows. Detected on the escaped text
+	// (so cell content stays safe) and rendered to a real <table>. Cells are run
+	// through the inline passes below via a placeholder so bold/code/links inside
+	// cells still render; we stash the whole table to keep it clear of the
+	// list/blockquote/line-break passes.
+	s = s.replace(
+		/(?:^|\n)([ \t]*\|.+\|[ \t]*)\n([ \t]*\|(?:[ \t]*:?-+:?[ \t]*\|)+[ \t]*)\n((?:[ \t]*\|.*\|[ \t]*(?:\n|$))+)/g,
+		(_m, header: string, delim: string, body: string) => {
+			const aligns = splitRow(delim).map((c) => {
+				const l = c.startsWith(':');
+				const r = c.endsWith(':');
+				return r && l ? 'center' : r ? 'right' : l ? 'left' : '';
+			});
+			const cell = (txt: string, i: number, tag: 'th' | 'td') => {
+				const a = aligns[i] ? ` style="text-align:${aligns[i]}"` : '';
+				return `<${tag}${a}>${inlineMd(txt.trim())}</${tag}>`;
+			};
+			const head = `<tr>${splitRow(header).map((c, i) => cell(c, i, 'th')).join('')}</tr>`;
+			const rows = body
+				.split('\n')
+				.filter((r) => r.trim())
+				.map((r) => `<tr>${splitRow(r).map((c, i) => cell(c, i, 'td')).join('')}</tr>`)
+				.join('');
+			const i = blocks.push(`<table class="md-table"><thead>${head}</thead><tbody>${rows}</tbody></table>`) - 1;
+			return `${BLOCK_L}s${i}${BLOCK_R}`;
+		}
+	);
+
 	// Leaked harness pseudo-tags -> muted chip (don't show as broken text).
 	s = s.replace(PSEUDO_TAG, '<span class="md-meta-tag">&lt;$1&gt;</span>');
 
-	// inline code
-	s = s.replace(/`([^`]+)`/g, '<code class="md-code">$1</code>');
-	// bold
-	s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-	// italic (avoid touching ** already consumed)
-	s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
-	// links [text](url)
-	s = s.replace(
-		/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
-		'<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>'
-	);
+	// inline emphasis/code/links
+	s = inlineMd(s);
 	// headings -> styled bold line
 	s = s.replace(/^#{1,6}\s+(.+)$/gm, '<span class="md-h">$1</span>');
 	// blockquote

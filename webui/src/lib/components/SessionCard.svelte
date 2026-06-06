@@ -68,6 +68,10 @@
 					: 'dot-dead'
 	);
 	const u = $derived(s.token_usage);
+	// CCT-233: the active/inactive status badges are pure noise — liveness is
+	// already conveyed by the colored dot. Only keep the badge for the meaningful
+	// lifecycle states ("new", "archived").
+	const showStatusBadge = $derived(s.status === 'new' || s.status === 'archived');
 
 	// ── Swipe-to-archive (CCT-172, touch only) ──────────────────────────────
 	// Track a dominantly-horizontal left-swipe of the row; commit (archive) once
@@ -199,7 +203,7 @@
 			<div class="spacer"></div>
 		{/if}
 		{#if dense}
-			<span class="badge {statusBadgeClass(s.status)} tag">{s.status}</span>
+			{#if showStatusBadge}<span class="badge {statusBadgeClass(s.status)} tag">{s.status}</span>{/if}
 			{#if s.last_message_at}<span class="faint sm">{relativeTime(s.last_message_at)}</span>{/if}
 		{/if}
 		{#if s.model}<span class="muted sm model">{s.model}{s.effort ? ` · ${s.effort}` : ''}</span>{/if}
@@ -209,7 +213,7 @@
 	{#if !dense}
 		<div class="row meta row-wrap">
 			<MachineBadge name={s.machine_name} id={s.machine_id} hue={s.machine_hue} />
-			<span class="badge {statusBadgeClass(s.status)}">{s.status}</span>
+			{#if showStatusBadge}<span class="badge {statusBadgeClass(s.status)}">{s.status}</span>{/if}
 			<span class="muted sm">up {uptime(Number(s.uptime_secs))}</span>
 		</div>
 
