@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import { useSessions, useSessionActions, endpoints, SYSTEM_MACHINE_KINDS } from '$lib/queries';
 	import { useQueryClient } from '@tanstack/svelte-query';
@@ -67,10 +68,16 @@
 	}
 
 	// URL → drawer: react to the `session` param (initial load, back/forward,
-	// pasted link). Only act when it differs from what's already open.
+	// pasted link). Only act when it differs from what's already open. The
+	// `openSession` read is untracked (CCT-240): if this effect depended on it,
+	// any `openSession = …` (card click, notification) would re-run it *before*
+	// the drawer→URL effect below pushes `?session=<id>` — the still-empty URL
+	// param then hit the `openSession = null` branch and closed the drawer in
+	// the same flush, so conversations never opened. Depending only on the URL
+	// keeps this effect to its job: URL changes drive the drawer, not vice versa.
 	$effect(() => {
 		const id = page.url.searchParams.get('session');
-		if (id === (openSession?.id ?? null)) return;
+		if (id === untrack(() => openSession?.id ?? null)) return;
 		if (id) void openById(id);
 		else openSession = null;
 	});
