@@ -91,6 +91,44 @@ pub async fn spawn_session(
     }
 
     let adapter_id = req.adapter_id.clone().unwrap_or_else(|| "claude-code".to_owned());
+
+    // OAuth account selection (CCT-232): if the caller picked a named account,
+    // mint a session-scoped gateway token bound to it and inject the gateway
+    // base-url + token into the worker env. Raw OAuth tokens never leave the
+    // server. The session id isn't known until the worker registers, so the
+    // command_id keys the (token → account) mapping for revocation.
+    let command_id = Uuid::new_v4();
+    let mut env = req.env.clone();
+    if let Some(account_name) = req.account.as_deref().filter(|a| !a.trim().is_empty()) {
+        let uid = ctx.user_id.ok_or_else(|| {
+            (StatusCode::FORBIDDEN, Json(ApiError { error: "account selection needs a user token".into() }))
+        })?;
+        match crate::routes::gateway::mint_session_env(
+            &state,
+            uid,
+            account_name,
+            &adapter_id,
+            &command_id.to_string(),
+        )
+        .await
+        {
+            Ok(Some(gateway_env)) => env.extend(gateway_env),
+            Ok(None) => {
+                return Err((
+                    StatusCode::NOT_FOUND,
+                    Json(ApiError { error: format!("no account named {account_name:?} for this adapter") }),
+                ));
+            }
+            Err(e) => {
+                tracing::error!("mint_session_env failed: {e}");
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ApiError { error: "could not provision account session".into() }),
+                ));
+            }
+        }
+    }
+
     let bootstrap = if uploads.is_empty() {
         serde_json::Value::Null
     } else {
@@ -109,13 +147,12 @@ pub async fn spawn_session(
         name: req.name.clone(),
         permission_mode: req.permission_mode,
         effort: req.effort.clone().filter(|e| !e.trim().is_empty()),
-        env: req.env.clone(),
+        env,
         bootstrap,
     };
-    // Mint the correlation id up front so it travels with the command and
-    // comes back in an `AdapterEvent::CommandResult` → `ServerEvent::CommandResult`,
-    // letting the client surface success/failure instead of silently polling.
-    let command_id = Uuid::new_v4();
+    // `command_id` (minted above) travels with the command and comes back in an
+    // `AdapterEvent::CommandResult` → `ServerEvent::CommandResult`, letting the
+    // client surface success/failure instead of silently polling.
     let frame = DaemonFrameDown::Command {
         adapter_id: adapter_id.clone(),
         command: Box::new(AdapterCommand::Spawn { spec, command_id: Some(command_id) }),

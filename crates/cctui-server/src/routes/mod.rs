@@ -1,7 +1,9 @@
+pub mod accounts;
 pub mod admin;
 pub mod admin_auth;
 pub mod archive;
 pub mod credentials;
+pub mod gateway;
 pub mod daemon;
 pub mod dispatch;
 pub mod dispatchers;

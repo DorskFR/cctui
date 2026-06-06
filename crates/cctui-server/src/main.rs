@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::extract::DefaultBodyLimit;
-use axum::routing::{delete, get, patch, post, put};
+use axum::routing::{any, delete, get, patch, post, put};
 use axum::{Extension, Router, middleware};
 use config::Config;
 use registry::Registry;
@@ -56,6 +56,8 @@ async fn main() -> anyhow::Result<()> {
         daemon_connections: Arc::new(dashmap::DashMap::new()),
         dispatchers,
         pending_stage_requests: Arc::new(dashmap::DashMap::new()),
+        account_locks: Arc::new(dashmap::DashMap::new()),
+        http_client: reqwest::Client::new(),
     };
 
     let api_router = Router::new()
@@ -114,6 +116,14 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/keys/{id}", delete(routes::credentials::delete_api_key))
         .route("/keys/{id}/value", get(routes::credentials::get_api_key_value))
+        .route(
+            "/accounts",
+            get(routes::accounts::list_accounts).post(routes::accounts::create_account),
+        )
+        .route(
+            "/accounts/{id}",
+            patch(routes::accounts::rename_account).delete(routes::accounts::delete_account),
+        )
         .route("/machines/{machine_id}/commands/pending", get(routes::spawn::get_machine_commands))
         .route("/enroll", post(routes::enroll::enroll))
         .route("/deenroll", post(routes::enroll::deenroll))
@@ -181,6 +191,12 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/daemon/auth", post(routes::daemon::auth))
         .route("/api/v1/daemon/ws", get(routes::daemon::ws))
         .route("/api/v1/triggers/{kind}", post(routes::triggers::ingest))
+        // OAuth passthrough gateway (CCT-232). Auths via the session-scoped
+        // token in the request's own Authorization header — NOT the user-token
+        // `api_router` middleware — so it lives on the outer app. Matches any
+        // method + sub-path under each provider prefix.
+        .route("/gateway/anthropic/{*path}", any(routes::gateway::anthropic))
+        .route("/gateway/openai/{*path}", any(routes::gateway::openai))
         .nest("/api/v1", api_router)
         // The standalone web UI is served from a different origin and talks to
         // this API cross-origin. Auth is via the `Authorization` Bearer header

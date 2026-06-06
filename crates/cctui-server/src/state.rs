@@ -45,4 +45,11 @@ pub struct AppState {
     pub dispatchers: Arc<DispatcherRegistry>,
     /// In-flight mid-chat file-stage requests awaiting a daemon reply (CCT-236).
     pub pending_stage_requests: PendingStageRequests,
+    /// Per-OAuth-account refresh mutex (CCT-232). OAuth refresh tokens are
+    /// single-use; two concurrent sessions on the same account must not both
+    /// refresh (the second would invalidate the first). The gateway grabs the
+    /// account's lock around the read-expiry → refresh → persist sequence.
+    pub account_locks: Arc<DashMap<Uuid, Arc<tokio::sync::Mutex<()>>>>,
+    /// Shared outbound HTTP client for the gateway passthrough (CCT-232).
+    pub http_client: reqwest::Client,
 }

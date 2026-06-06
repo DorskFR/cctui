@@ -259,6 +259,13 @@ pub struct SpawnRequest {
     /// the transcript/timeline. `Debug` redacts the values.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub env: std::collections::BTreeMap<String, String>,
+    /// Named OAuth account to run the session under (CCT-232). Resolved against
+    /// the caller's own vault; the server mints a session-scoped gateway token
+    /// and injects `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` (or the codex
+    /// equivalents) into `env` so the worker's traffic flows through the
+    /// passthrough gateway under that account. `None` → no gateway injection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
 }
 
 impl std::fmt::Debug for SpawnRequest {
