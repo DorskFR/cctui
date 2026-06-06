@@ -2,6 +2,8 @@
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import { useSessions, useSessionActions, endpoints, SYSTEM_MACHINE_KINDS } from '$lib/queries';
 	import { useQueryClient } from '@tanstack/svelte-query';
+	import { page } from '$app/state';
+	import { pushState, replaceState } from '$app/navigation';
 	import { toasts } from '$lib/toast.svelte';
 	import { ws } from '$lib/ws.svelte';
 	import SessionCard from '$lib/components/SessionCard.svelte';
@@ -20,6 +22,69 @@
 	let showArchived = $state(false);
 	let openSession = $state<SessionListItem | null>(null);
 	let showSpawn = $state(false);
+
+	// ── Deep-linkable session (CCT-206) ─────────────────────────────────────
+	// A session's stable, shareable URL is /sessions?session=<id>. The whole SPA
+	// already sits behind the login wall (layout renders <Login/> when unauthed
+	// and keeps the URL intact), so following a shared link while logged out shows
+	// the login wall and lands on the requested session right after auth — the
+	// "return to intended destination" is free as long as we never redirect away.
+	//
+	// `openSession` is the source of truth for the drawer; the URL mirrors it.
+	// `openById` opens a session by id, pulling it from the loaded lists or, if
+	// absent (purged from the live view, on another page, etc.), fetching it
+	// directly so a pasted link still resolves. We track the last id we synced to
+	// the URL so list refetches (which churn the session object) don't re-push.
+	let lastUrlId: string | null = null;
+	let urlResolving = false;
+
+	function setUrlSession(id: string | null, replace = false) {
+		const url = new URL(page.url);
+		if (id) url.searchParams.set('session', id);
+		else url.searchParams.delete('session');
+		if (url.href === page.url.href) return;
+		if (replace) replaceState(url, {});
+		else pushState(url, {});
+	}
+
+	async function openById(id: string) {
+		const found = [...items, ...pageRows].find((s) => s.id === id);
+		if (found) {
+			openSession = found;
+			return;
+		}
+		urlResolving = true;
+		try {
+			openSession = await endpoints.session(id);
+		} catch {
+			toasts.err('Session not found or archived.');
+			openSession = null;
+			// drop the dangling id from the URL so a reload doesn't re-toast
+			setUrlSession(null, true);
+		} finally {
+			urlResolving = false;
+		}
+	}
+
+	// URL → drawer: react to the `session` param (initial load, back/forward,
+	// pasted link). Only act when it differs from what's already open.
+	$effect(() => {
+		const id = page.url.searchParams.get('session');
+		if (id === (openSession?.id ?? null)) return;
+		if (id) void openById(id);
+		else openSession = null;
+	});
+
+	// drawer → URL: reflect the open session into the address bar so it's always
+	// a shareable link. Skip while we're resolving a URL-driven open (no echo).
+	$effect(() => {
+		const id = openSession?.id ?? null;
+		if (urlResolving) return;
+		if (id === lastUrlId) return;
+		// first reflection on load uses replace (don't trap back); thereafter push
+		setUrlSession(id, lastUrlId === null);
+		lastUrlId = id;
+	});
 
 	// Live buckets always show non-archived sessions; the archive is a separate
 	// paginated section below (CCT-184).
@@ -168,6 +233,10 @@
 		const target = [...items, ...pageRows].find((s) => s.id === id);
 		if (target) {
 			openSession = target;
+			notify.pendingOpen = null;
+		} else {
+			// not in any loaded list — fetch it by id so the notification still opens
+			void openById(id);
 			notify.pendingOpen = null;
 		}
 	});

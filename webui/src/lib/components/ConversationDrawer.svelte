@@ -822,6 +822,19 @@
 		}
 	}
 
+	// Copy the session's stable, shareable URL (CCT-206) so it can be pasted into
+	// a PR/comment. Same-origin link gated by the login wall — only authed people
+	// who follow it can read the log.
+	async function doCopyLink() {
+		const url = `${location.origin}/sessions?session=${id}`;
+		try {
+			await navigator.clipboard.writeText(url);
+			toasts.ok('Link copied');
+		} catch {
+			toasts.err(url);
+		}
+	}
+
 	async function doInterrupt() {
 		try {
 			await actions.interrupt(id);
@@ -975,6 +988,17 @@
 					}}>✎</button
 				>
 			{/if}
+			<button
+				class="tapbtn"
+				aria-label="Copy shareable link"
+				title="Copy a stable link to this session (paste in a PR — login-gated)"
+				onclick={doCopyLink}
+			>
+				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+					<path d="M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+					<path d="M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+				</svg>
+			</button>
 			<button
 				class="tapbtn"
 				aria-label="Export conversation"
