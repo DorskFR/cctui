@@ -19,11 +19,8 @@
 use axum::extract::{Multipart, Path, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
-use base64::Engine;
 
-use cctui_proto::adapter::{
-    AdapterCommand, AdapterId, BootstrapFile, BootstrapUploads, SessionSpec,
-};
+use cctui_proto::adapter::{AdapterCommand, AdapterId, BootstrapUploads, SessionSpec};
 use cctui_proto::api::{ApiError, SpawnRequest, SpawnResponse};
 use cctui_proto::ws::DaemonFrameDown;
 use uuid::Uuid;
@@ -31,33 +28,10 @@ use uuid::Uuid;
 use crate::auth::{AuthContext, TokenRole};
 use crate::registry::MachineCommand;
 use crate::state::AppState;
-
-/// Upload caps (CCT-203). The bytes ride the server→daemon WS leg as base64
-/// inside a single JSON frame, so this is deliberately a "attach a screenshot /
-/// small doc" budget, not bulk transfer. The route's `DefaultBodyLimit` is set
-/// above the total so an over-cap upload is rejected here with a clear 413
-/// rather than a generic body-limit error.
-const MAX_FILE_BYTES: usize = 5 * 1024 * 1024;
-const MAX_TOTAL_BYTES: usize = 20 * 1024 * 1024;
-const MAX_FILES: usize = 10;
+use crate::uploads::parse_upload_multipart;
 
 fn bad_request(msg: impl Into<String>) -> (StatusCode, Json<ApiError>) {
     (StatusCode::BAD_REQUEST, Json(ApiError { error: msg.into() }))
-}
-
-/// Reduce an uploaded filename to a safe bare name: strip any directory
-/// component and reject traversal (`..`)/empty/`.`. Prevents a malicious
-/// `name` from escaping `/tmp/cctui-uploads/<session-id>/`.
-fn sanitize_upload_name(raw: &str) -> Result<String, (StatusCode, Json<ApiError>)> {
-    let base = std::path::Path::new(raw)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .map(str::to_owned)
-        .ok_or_else(|| bad_request(format!("invalid upload filename: {raw:?}")))?;
-    if base.is_empty() || base == ".." || base == "." {
-        return Err(bad_request(format!("invalid upload filename: {raw:?}")));
-    }
-    Ok(base)
 }
 
 /// `POST /api/v1/sessions/spawn` — `multipart/form-data` (CCT-203).
@@ -74,70 +48,17 @@ fn sanitize_upload_name(raw: &str) -> Result<String, (StatusCode, Json<ApiError>
 pub async fn spawn_session(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
-    mut multipart: Multipart,
+    multipart: Multipart,
 ) -> Result<(StatusCode, Json<SpawnResponse>), (StatusCode, Json<ApiError>)> {
-    let mut req: Option<SpawnRequest> = None;
-    let mut uploads: Vec<BootstrapFile> = Vec::new();
-    let mut total_bytes = 0usize;
-
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| bad_request(format!("malformed multipart body: {e}")))?
-    {
-        let field_name = field.name().map(str::to_owned);
-        let file_name = field.file_name().map(str::to_owned);
-        if let Some(raw_name) = file_name {
-            // A file part.
-            let name = sanitize_upload_name(&raw_name)?;
-            let bytes = field
-                .bytes()
-                .await
-                .map_err(|e| bad_request(format!("reading upload {name:?}: {e}")))?;
-            if bytes.len() > MAX_FILE_BYTES {
-                return Err((
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                    Json(ApiError {
-                        error: format!(
-                            "file {name:?} is {} bytes; per-file cap is {MAX_FILE_BYTES}",
-                            bytes.len()
-                        ),
-                    }),
-                ));
-            }
-            total_bytes += bytes.len();
-            if total_bytes > MAX_TOTAL_BYTES {
-                return Err((
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                    Json(ApiError {
-                        error: format!("uploads exceed the {MAX_TOTAL_BYTES}-byte total cap"),
-                    }),
-                ));
-            }
-            uploads.push(BootstrapFile {
-                name,
-                content_b64: base64::engine::general_purpose::STANDARD.encode(&bytes),
-            });
-            if uploads.len() > MAX_FILES {
-                return Err((
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                    Json(ApiError { error: format!("too many files; cap is {MAX_FILES}") }),
-                ));
-            }
-        } else if field_name.as_deref() == Some("request") {
-            let raw = field
-                .text()
-                .await
-                .map_err(|e| bad_request(format!("reading request part: {e}")))?;
-            req = Some(
-                serde_json::from_str(&raw)
-                    .map_err(|e| bad_request(format!("invalid SpawnRequest JSON: {e}")))?,
-            );
-        }
-        // Unknown non-file parts are ignored.
-    }
-
-    let req = req.ok_or_else(|| bad_request("missing `request` part"))?;
+    let parsed = parse_upload_multipart(multipart).await?;
+    let uploads = parsed.files;
+    let req: SpawnRequest = parsed
+        .request_json
+        .ok_or_else(|| bad_request("missing `request` part"))
+        .and_then(|raw| {
+            serde_json::from_str(&raw)
+                .map_err(|e| bad_request(format!("invalid SpawnRequest JSON: {e}")))
+        })?;
 
     // Validate env keys (CCT-202): shell-style `^[A-Z_][A-Z0-9_]*$`.
     for key in req.env.keys() {
@@ -218,6 +139,57 @@ pub async fn spawn_session(
 
     tracing::info!(machine = %req.machine_id, %command_id, %adapter_id, "spawn dispatched");
     Ok((StatusCode::ACCEPTED, Json(SpawnResponse { command_id, status: "dispatched".into() })))
+}
+
+/// `POST /api/v1/sessions/{id}/files` — `multipart/form-data` (CCT-236).
+///
+/// Mid-chat file attachments. Same multipart shape + caps as `/sessions/spawn`
+/// (one shared helper, [`crate::uploads::parse_upload_multipart`]); files are
+/// forwarded to the owning daemon over the existing WS as a `StageFiles` op and
+/// staged into the same per-session dir used at spawn time. Returns the staged
+/// absolute paths so the client can reference them under the reply prompt.
+pub async fn stage_session_files(
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+    multipart: Multipart,
+) -> Result<Json<cctui_proto::api::StageFilesResponse>, (StatusCode, Json<ApiError>)> {
+    let parsed = parse_upload_multipart(multipart).await?;
+    if parsed.files.is_empty() {
+        return Err(bad_request("no files in upload"));
+    }
+    let count = parsed.files.len();
+    match crate::daemon_dispatch::stage_files(&state, &session_id, parsed.files).await {
+        Ok(paths) => {
+            tracing::info!(%session_id, count, "staged mid-chat files");
+            Ok(Json(cctui_proto::api::StageFilesResponse { paths }))
+        }
+        Err(crate::daemon_dispatch::Error::NotFound) => {
+            Err((StatusCode::NOT_FOUND, Json(ApiError { error: "session not found".into() })))
+        }
+        Err(
+            err @ (crate::daemon_dispatch::Error::NoDaemon(_)
+            | crate::daemon_dispatch::Error::Closed),
+        ) => Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ApiError {
+                error: format!("{err} — the session's machine is offline; try again"),
+            }),
+        )),
+        Err(crate::daemon_dispatch::Error::Timeout) => Err((
+            StatusCode::GATEWAY_TIMEOUT,
+            Json(ApiError { error: "timed out staging files on the session's machine".into() }),
+        )),
+        Err(err @ crate::daemon_dispatch::Error::Staging(_)) => {
+            Err((StatusCode::BAD_GATEWAY, Json(ApiError { error: err.to_string() })))
+        }
+        Err(err) => {
+            tracing::error!(%session_id, %err, "stage_files dispatch error");
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError { error: "could not stage files".into() }),
+            ))
+        }
+    }
 }
 
 /// Legacy poll endpoint — superseded by WS push. Retained so older

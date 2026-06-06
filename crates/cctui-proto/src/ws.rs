@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::adapter::{AdapterCommand, AdapterEvent};
+use crate::adapter::{AdapterCommand, AdapterEvent, BootstrapFile};
 use crate::api::DaemonAdapterConfig;
 
 // --- Daemon → Server ---
@@ -27,6 +27,18 @@ pub enum DaemonFrameUp {
     /// Liveness ping. Includes coarse per-daemon stats (counts of adapters
     /// running, queued events) for the future supervisor view.
     Heartbeat { sent_at: chrono::DateTime<chrono::Utc> },
+    /// Reply to a [`DaemonFrameDown::StageFiles`] request (CCT-236, mid-chat
+    /// attachments). `request_id` correlates with the originating
+    /// `POST /api/v1/sessions/{id}/files` so the server can return the staged
+    /// absolute paths (or the error) to the waiting HTTP client.
+    StageFilesResult {
+        request_id: uuid::Uuid,
+        ok: bool,
+        #[serde(default)]
+        paths: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
 }
 
 /// Frames sent by the server to a daemon over `/api/v1/daemon/ws`.
@@ -44,6 +56,18 @@ pub enum DaemonFrameDown {
     /// Acknowledge that an event with the given monotonic `seq` has been
     /// durably stored. Lets the daemon trim its on-disk spool.
     Ack { seq: u64 },
+    /// Stage mid-chat file attachments for a running session (CCT-236). The
+    /// daemon decodes + writes the files into the same per-session staging dir
+    /// used for spawn-time uploads, then replies with a
+    /// [`DaemonFrameUp::StageFilesResult`] carrying the staged absolute paths.
+    /// `local_id` is the adapter-local session id (the daemon's staging key);
+    /// `request_id` correlates the reply with the waiting HTTP request.
+    StageFiles {
+        request_id: uuid::Uuid,
+        adapter_id: String,
+        local_id: String,
+        uploads: Vec<BootstrapFile>,
+    },
 }
 
 // --- Agent → Server (stream events) ---

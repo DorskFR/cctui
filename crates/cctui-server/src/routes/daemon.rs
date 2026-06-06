@@ -256,6 +256,22 @@ async fn process_frame(
             );
             handle_event(state, machine_id, user_id, &adapter_id, event).await
         }
+        DaemonFrameUp::StageFilesResult { request_id, ok, paths, error } => {
+            // Mid-chat attachment reply (CCT-236): fire the oneshot the
+            // `POST /sessions/{id}/files` route is awaiting.
+            if let Some((_, reply_tx)) = state.pending_stage_requests.remove(&request_id) {
+                let outcome = if ok {
+                    Ok(paths)
+                } else {
+                    Err(error.unwrap_or_else(|| "daemon reported staging failure".to_owned()))
+                };
+                // Receiver gone (route timed out already) → drop silently.
+                let _ = reply_tx.send(outcome);
+            } else {
+                tracing::debug!(%request_id, "StageFilesResult for unknown request (timed out?)");
+            }
+            Ok(())
+        }
         // Heartbeat (and any future #[non_exhaustive] variants) are no-ops.
         _ => Ok(()),
     }

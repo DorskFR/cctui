@@ -7,7 +7,17 @@
 	import { toasts } from '$lib/toast.svelte';
 	import { drafts, SPAWN_DRAFT, LAST_MACHINE } from '$lib/drafts';
 	import { autoresize } from '$lib/autoresize';
+	import { dropzone } from '$lib/dropzone';
+	import {
+		MAX_FILE_BYTES,
+		MAX_TOTAL_BYTES,
+		MAX_FILES,
+		mergeFiles,
+		removeFileByName,
+		fileCapError
+	} from '$lib/attachments';
 	import BrandLogo from './BrandLogo.svelte';
+	import AttachmentList from './AttachmentList.svelte';
 	import Modal from './Modal.svelte';
 
 	let { onclose, onspawned }: { onclose: () => void; onspawned: () => void } = $props();
@@ -108,26 +118,17 @@
 	let showSecrets = $state(false);
 
 	const ENV_KEY_RE = /^[A-Z_][A-Z0-9_]*$/;
-	// Mirror the server caps (spawn.rs) so we reject before uploading.
-	const MAX_FILE_BYTES = 5 * 1024 * 1024;
-	const MAX_TOTAL_BYTES = 20 * 1024 * 1024;
-	const MAX_FILES = 10;
 
 	// Rows with a non-empty key whose key fails the shell-var pattern.
 	const badEnvKeys = $derived(
 		envRows.filter((r) => r.key.trim() && !ENV_KEY_RE.test(r.key.trim()))
 	);
-	const totalFileBytes = $derived(files.reduce((n, f) => n + f.size, 0));
-	const fileError = $derived(
-		files.some((f) => f.size > MAX_FILE_BYTES)
-			? `A file exceeds the ${MAX_FILE_BYTES / 1024 / 1024} MB per-file cap`
-			: files.length > MAX_FILES
-				? `Too many files (max ${MAX_FILES})`
-				: totalFileBytes > MAX_TOTAL_BYTES
-					? `Attachments exceed the ${MAX_TOTAL_BYTES / 1024 / 1024} MB total cap`
-					: ''
-	);
+	const fileError = $derived(fileCapError(files));
 	const secretsValid = $derived(badEnvKeys.length === 0 && !fileError);
+
+	// Highlight the modal as a dropzone while a file drag hovers it (CCT-236).
+	let dragActive = $state(false);
+	const addFiles = (incoming: File[]) => (files = mergeFiles(files, incoming));
 
 	/** Collected env map: complete rows only (both key and value set). */
 	function envMap(): Record<string, string> {
@@ -143,15 +144,9 @@
 
 	function onPickFiles(e: Event) {
 		const picked = Array.from((e.currentTarget as HTMLInputElement).files ?? []);
-		// Merge + de-dup by name so re-picking doesn't double-add.
-		const byName = new Map(files.map((f) => [f.name, f]));
-		for (const f of picked) byName.set(f.name, f);
-		files = [...byName.values()];
+		addFiles(picked);
 	}
-	const removeFile = (name: string) => (files = files.filter((f) => f.name !== name));
-	function fmtSize(n: number): string {
-		return n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(0)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`;
-	}
+	const removeFile = (name: string) => (files = removeFileByName(files, name));
 
 	const spawnValid = $derived(!!form.machine_id && !!form.working_dir.trim());
 	// A dispatched worker needs a dispatcher and something to run (inline prompt
@@ -302,7 +297,18 @@
 
 <Modal title="New session" {onclose}>
 	{#snippet body()}
-		<div class="stack">
+		<div
+			class="stack"
+			class:dropping={dragActive && target === 'machine'}
+			use:dropzone={{
+				onFiles: addFiles,
+				onActive: (a) => (dragActive = a),
+				disabled: target !== 'machine'
+			}}
+		>
+			{#if dragActive && target === 'machine'}
+				<div class="dropoverlay">Drop files to attach</div>
+			{/if}
 			{#if canDispatch}
 				<div class="field">
 					<span class="label">Run on</span>
@@ -552,21 +558,10 @@
 				/>
 				<span class="faint sm">
 					Up to {MAX_FILES} files, {MAX_FILE_BYTES / 1024 / 1024} MB each /
-					{MAX_TOTAL_BYTES / 1024 / 1024} MB total. Staged on the machine and
-					referenced in the prompt.
+					{MAX_TOTAL_BYTES / 1024 / 1024} MB total. Drag-and-drop anywhere on this
+					dialog or pick. Staged on the machine and referenced in the prompt.
 				</span>
-				{#if files.length}
-					<ul class="files">
-						{#each files as f (f.name)}
-							<li>
-								<code class="grow">{f.name}</code>
-								<span class="faint sm">{fmtSize(f.size)}</span>
-								<button type="button" class="x" onclick={() => removeFile(f.name)}>✕</button>
-							</li>
-						{/each}
-					</ul>
-				{/if}
-				{#if fileError}<span class="err sm">{fileError}</span>{/if}
+				<AttachmentList {files} onremove={removeFile} />
 			</div>
 			{/if}
 
@@ -696,18 +691,26 @@
 		font-size: var(--fs-xs);
 		color: var(--text-muted);
 	}
-	.files {
-		list-style: none;
-		margin: var(--sp-1) 0 0;
-		padding: 0;
-		display: flex;
-		flex-direction: column;
-		gap: var(--sp-1);
+	.stack {
+		position: relative;
 	}
-	.files li {
+	.stack.dropping {
+		outline: 2px dashed var(--c-blue);
+		outline-offset: 4px;
+		border-radius: var(--r-md);
+	}
+	.dropoverlay {
+		position: absolute;
+		inset: 0;
+		z-index: 5;
 		display: flex;
 		align-items: center;
-		gap: var(--sp-2);
+		justify-content: center;
+		font-weight: var(--fw-medium);
+		color: var(--c-blue);
+		background: color-mix(in srgb, var(--c-blue) 12%, var(--bg));
+		border-radius: var(--r-md);
+		pointer-events: none;
 	}
 	.x {
 		background: none;

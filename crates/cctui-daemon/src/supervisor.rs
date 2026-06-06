@@ -89,6 +89,11 @@ impl Supervisor {
         // and from there onto the WS.
         let (event_tx, mut event_rx) = mpsc::channel::<(String, AdapterEvent)>(256);
 
+        // Out-of-band frames the supervisor itself produces (currently the
+        // `StageFilesResult` reply to a mid-chat attachment request, CCT-236),
+        // fanned onto the same WS sink as adapter events.
+        let (frame_up_tx, mut frame_up_rx) = mpsc::channel::<DaemonFrameUp>(64);
+
         // Per-adapter command sinks (so `Command` frames from the server can
         // be routed to the right adapter by `adapter_id`).
         let mut running: HashMap<String, AdapterRunning> = HashMap::new();
@@ -114,8 +119,12 @@ impl Supervisor {
                     let msg = msg?;
                     last_rx = tokio::time::Instant::now();
                     if let Some(frame) = parse_frame(msg)? {
-                        self.handle_frame(frame, &mut running, &event_tx, &shutdown).await;
+                        self.handle_frame(frame, &mut running, &event_tx, &frame_up_tx, &shutdown).await;
                     }
+                }
+                Some(frame) = frame_up_rx.recv() => {
+                    let payload = serde_json::to_string(&frame)?;
+                    sink.send(Message::Text(payload.into())).await?;
                 }
                 Some((adapter_id, event)) = event_rx.recv() => {
                     tracing::debug!(
@@ -149,6 +158,7 @@ impl Supervisor {
         frame: DaemonFrameDown,
         running: &mut HashMap<String, AdapterRunning>,
         event_tx: &mpsc::Sender<(String, AdapterEvent)>,
+        frame_up_tx: &mpsc::Sender<DaemonFrameUp>,
         shutdown: &CancellationToken,
     ) {
         match frame {
@@ -160,6 +170,12 @@ impl Supervisor {
                     let _ = running.channels.commands_tx.send(*command).await;
                 } else {
                     tracing::warn!(%adapter_id, "command for unknown adapter; dropping");
+                }
+            }
+            DaemonFrameDown::StageFiles { request_id, adapter_id, local_id, uploads } => {
+                let up = stage_files_result(request_id, &adapter_id, &local_id, &uploads);
+                if frame_up_tx.send(up).await.is_err() {
+                    tracing::warn!("frame_up channel closed; dropping StageFilesResult");
                 }
             }
             _ => {}
@@ -240,6 +256,37 @@ impl Supervisor {
 struct AdapterRunning {
     shutdown: CancellationToken,
     channels: AdapterChannels,
+}
+
+/// Stage mid-chat attachments (CCT-236) and build the `StageFilesResult` reply.
+/// Filesystem-only and reuses the spawn-time staging dir, so it doesn't need the
+/// running adapter beyond confirming the adapter is supported.
+fn stage_files_result(
+    request_id: uuid::Uuid,
+    adapter_id: &str,
+    local_id: &str,
+    uploads: &[cctui_proto::adapter::BootstrapFile],
+) -> DaemonFrameUp {
+    let result = if adapter_id == "claude-code" {
+        crate::adapters::claude_code::stage_mid_chat_files(local_id, uploads)
+    } else {
+        Err(anyhow::anyhow!("adapter {adapter_id} does not support mid-chat file staging"))
+    };
+    match result {
+        Ok(paths) => {
+            tracing::info!(%local_id, count = paths.len(), "staged mid-chat files");
+            DaemonFrameUp::StageFilesResult { request_id, ok: true, paths, error: None }
+        }
+        Err(err) => {
+            tracing::warn!(%local_id, %err, "mid-chat file staging failed");
+            DaemonFrameUp::StageFilesResult {
+                request_id,
+                ok: false,
+                paths: Vec::new(),
+                error: Some(err.to_string()),
+            }
+        }
+    }
 }
 
 fn event_local_id(event: &AdapterEvent) -> &str {

@@ -20,6 +20,15 @@ use crate::skill_store::SkillStore;
 /// to the `commands` table for replay on reconnect (post-v0).
 pub type DaemonConnections = Arc<DashMap<Uuid, mpsc::Sender<DaemonFrameDown>>>;
 
+/// Outcome of a mid-chat file-stage request (CCT-236): the staged absolute
+/// paths on success, or an error string on failure.
+pub type StageFilesOutcome = Result<Vec<String>, String>;
+
+/// In-flight `POST /sessions/{id}/files` requests awaiting a daemon
+/// `StageFilesResult`, keyed by the request id minted by the route. The daemon
+/// WS read loop fires the oneshot when the matching reply arrives (CCT-236).
+pub type PendingStageRequests = Arc<DashMap<Uuid, tokio::sync::oneshot::Sender<StageFilesOutcome>>>;
+
 #[derive(Clone)]
 pub struct AppState {
     pub pool: PgPool,
@@ -34,4 +43,6 @@ pub struct AppState {
     pub skills: Arc<SkillStore>,
     pub daemon_connections: DaemonConnections,
     pub dispatchers: Arc<DispatcherRegistry>,
+    /// In-flight mid-chat file-stage requests awaiting a daemon reply (CCT-236).
+    pub pending_stage_requests: PendingStageRequests,
 }

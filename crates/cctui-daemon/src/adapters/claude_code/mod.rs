@@ -15,6 +15,7 @@
 mod attach;
 mod backfill;
 mod control;
+pub(crate) use control::stage_mid_chat_files;
 mod discovery;
 mod kickstart;
 mod socket;

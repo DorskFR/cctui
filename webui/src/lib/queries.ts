@@ -7,6 +7,7 @@ import type { SessionListItem } from '@bindings/SessionListItem';
 import type { AgentEvent } from '@bindings/AgentEvent';
 import type { SpawnRequest } from '@bindings/SpawnRequest';
 import type { SpawnResponse } from '@bindings/SpawnResponse';
+import type { StageFilesResponse } from '@bindings/StageFilesResponse';
 import type { DispatchRequest } from '@bindings/DispatchRequest';
 import type { DispatchResponse } from '@bindings/DispatchResponse';
 import type { UserRow } from '@bindings/UserRow';
@@ -34,34 +35,46 @@ export const qk = {
 	conversation: (id: string) => ['conversation', id] as const,
 	users: ['users'] as const,
 	machines: (userId: string) => ['users', userId, 'machines'] as const,
-	tokens: (userId: string) => ['users', userId, 'tokens'] as const
+	tokens: (userId: string) => ['users', userId, 'tokens'] as const,
 };
 
 /** Raw typed fetchers — also usable outside of components. */
 export const endpoints = {
 	version: () => api.get<VersionInfo>('/version'),
 	sessions: (archived: boolean) =>
-		api.get<SessionListResponse>('/sessions', { include_archived: archived || undefined }),
+		api.get<SessionListResponse>('/sessions', {
+			include_archived: archived || undefined,
+		}),
 	/** Aggregate session counts for the Overview — correct past the list's
 	 * 25-row display cap (the list-derived counts are not). */
 	sessionStats: () => api.get<SessionStats>('/sessions/stats'),
 	// Full-transcript substring search (CCT-184). `includeArchived` sets scope
 	// (live-only vs all); an empty `q` with `includeArchived` browses the
 	// archive. Offset-paginated.
-	searchSessions: (q: string, includeArchived: boolean, limit: number, offset: number) =>
+	searchSessions: (
+		q: string,
+		includeArchived: boolean,
+		limit: number,
+		offset: number,
+	) =>
 		api.get<SessionListResponse>('/sessions/search', {
 			q: q || undefined,
 			include_archived: includeArchived || undefined,
 			limit,
-			offset
+			offset,
 		}),
 	session: (id: string) => api.get<SessionListItem>(`/sessions/${id}`),
-	conversation: (id: string) => api.get<AgentEvent[]>(`/sessions/${id}/conversation`),
+	conversation: (id: string) =>
+		api.get<AgentEvent[]>(`/sessions/${id}/conversation`),
 	recentDirs: (machineId: string) =>
-		api.get<string[]>('/sessions/recent-dirs', { machine_id: machineId || undefined }),
+		api.get<string[]>('/sessions/recent-dirs', {
+			machine_id: machineId || undefined,
+		}),
 	users: () => api.get<UserRow[]>('/admin/users'),
-	machines: (userId: string) => api.get<MachineRow[]>(`/admin/users/${userId}/machines`),
-	tokens: (userId: string) => api.get<UserTokenRow[]>(`/admin/users/${userId}/tokens`),
+	machines: (userId: string) =>
+		api.get<MachineRow[]>(`/admin/users/${userId}/machines`),
+	tokens: (userId: string) =>
+		api.get<UserTokenRow[]>(`/admin/users/${userId}/tokens`),
 	/** Spawn on a machine. Always `multipart/form-data` (CCT-203): the JSON
 	 *  `SpawnRequest` rides in the `request` part and any attached files ride as
 	 *  file parts the daemon stages under /tmp/cctui-uploads. */
@@ -71,7 +84,19 @@ export const endpoints = {
 		for (const f of files) form.append('files', f, f.name);
 		return api.postForm<SpawnResponse>('/sessions/spawn', form);
 	},
-	dispatch: (body: DispatchRequest) => api.post<DispatchResponse>('/sessions/dispatch', body),
+	/** Stage mid-chat attachments for a running session (CCT-236). Same
+	 *  multipart shape + caps as spawn; resolves to the staged absolute paths
+	 *  on the session's machine, which the composer appends under the reply. */
+	stageFiles: (sessionId: string, files: File[]) => {
+		const form = new FormData();
+		for (const f of files) form.append('files', f, f.name);
+		return api.postForm<StageFilesResponse>(
+			`/sessions/${sessionId}/files`,
+			form,
+		);
+	},
+	dispatch: (body: DispatchRequest) =>
+		api.post<DispatchResponse>('/sessions/dispatch', body),
 	/** Configured dispatcher ids (e.g. `["claude-worker"]`); empty when none. */
 	dispatchers: () => api.get<string[]>('/sessions/dispatchers'),
 	/** Every spawnable machine across all active users — for the spawn picker.
@@ -79,12 +104,16 @@ export const endpoints = {
 	 * `dispatch` machine): those aren't somewhere you'd start an interactive
 	 * session, only real enrolled daemons are (CCT-183 / CCT-185). */
 	allMachines: async (): Promise<MachineRow[]> => {
-		const users = (await api.get<UserRow[]>('/admin/users')).filter((u) => !u.revoked_at);
-		const lists = await Promise.all(
-			users.map((u) => api.get<MachineRow[]>(`/admin/users/${u.id}/machines`))
+		const users = (await api.get<UserRow[]>('/admin/users')).filter(
+			(u) => !u.revoked_at,
 		);
-		return lists.flat().filter((m) => !m.revoked_at && !SYSTEM_MACHINE_KINDS.has(m.kind));
-	}
+		const lists = await Promise.all(
+			users.map((u) => api.get<MachineRow[]>(`/admin/users/${u.id}/machines`)),
+		);
+		return lists
+			.flat()
+			.filter((m) => !m.revoked_at && !SYSTEM_MACHINE_KINDS.has(m.kind));
+	},
 };
 
 /* ---------------- Queries ----------------
@@ -93,31 +122,38 @@ export const endpoints = {
  * `toStore(getter)`; param-less queries pass a plain options object. */
 
 export const useVersion = () =>
-	createQuery({ queryKey: qk.version, queryFn: endpoints.version, staleTime: 60_000 });
+	createQuery({
+		queryKey: qk.version,
+		queryFn: endpoints.version,
+		staleTime: 60_000,
+	});
 
 export const useSessions = (archived: () => boolean) =>
 	createQuery(
 		toStore(() => ({
 			queryKey: qk.sessions(archived()),
 			queryFn: () => endpoints.sessions(archived()),
-			refetchInterval: 15_000
-		}))
+			refetchInterval: 15_000,
+		})),
 	);
 
 export const useSessionStats = () =>
 	createQuery({
 		queryKey: qk.sessionStats,
 		queryFn: endpoints.sessionStats,
-		refetchInterval: 15_000
+		refetchInterval: 15_000,
 	});
 
-export const useConversation = (id: () => string, enabled: () => boolean = () => true) =>
+export const useConversation = (
+	id: () => string,
+	enabled: () => boolean = () => true,
+) =>
 	createQuery(
 		toStore(() => ({
 			queryKey: qk.conversation(id()),
 			queryFn: () => endpoints.conversation(id()),
-			enabled: enabled() && !!id()
-		}))
+			enabled: enabled() && !!id(),
+		})),
 	);
 
 export const useRecentDirs = (machineId: () => string) =>
@@ -126,11 +162,12 @@ export const useRecentDirs = (machineId: () => string) =>
 			queryKey: ['recent-dirs', machineId()],
 			queryFn: () => endpoints.recentDirs(machineId()),
 			enabled: !!machineId(),
-			staleTime: 30_000
-		}))
+			staleTime: 30_000,
+		})),
 	);
 
-export const useUsers = () => createQuery({ queryKey: qk.users, queryFn: endpoints.users });
+export const useUsers = () =>
+	createQuery({ queryKey: qk.users, queryFn: endpoints.users });
 
 export const useDispatchers = (enabled: () => boolean) =>
 	createQuery(
@@ -138,8 +175,8 @@ export const useDispatchers = (enabled: () => boolean) =>
 			queryKey: ['dispatchers'],
 			queryFn: endpoints.dispatchers,
 			enabled: enabled(),
-			staleTime: 60_000
-		}))
+			staleTime: 60_000,
+		})),
 	);
 
 export const useAllMachines = (enabled: () => boolean) =>
@@ -147,8 +184,8 @@ export const useAllMachines = (enabled: () => boolean) =>
 		toStore(() => ({
 			queryKey: ['machines', 'all'],
 			queryFn: endpoints.allMachines,
-			enabled: enabled()
-		}))
+			enabled: enabled(),
+		})),
 	);
 
 export const useMachines = (userId: () => string, enabled: () => boolean) =>
@@ -156,8 +193,8 @@ export const useMachines = (userId: () => string, enabled: () => boolean) =>
 		toStore(() => ({
 			queryKey: qk.machines(userId()),
 			queryFn: () => endpoints.machines(userId()),
-			enabled: enabled()
-		}))
+			enabled: enabled(),
+		})),
 	);
 
 export const useTokens = (userId: () => string, enabled: () => boolean) =>
@@ -165,8 +202,8 @@ export const useTokens = (userId: () => string, enabled: () => boolean) =>
 		toStore(() => ({
 			queryKey: qk.tokens(userId()),
 			queryFn: () => endpoints.tokens(userId()),
-			enabled: enabled()
-		}))
+			enabled: enabled(),
+		})),
 	);
 
 /* ---------------- Actions (plain async + invalidation) ----------------
@@ -177,7 +214,10 @@ export const useTokens = (userId: () => string, enabled: () => boolean) =>
 /** Build a placeholder card for an in-flight dispatch (CCT-193). Mirrors the
  * fields the worker will report once its daemon registers, so the optimistic
  * card looks like the real one until the refetch reconciles it by id. */
-function optimisticDispatchCard(id: string, body: DispatchRequest): SessionListItem {
+function optimisticDispatchCard(
+	id: string,
+	body: DispatchRequest,
+): SessionListItem {
 	const p = (body.payload ?? {}) as Record<string, string>;
 	return {
 		id,
@@ -196,7 +236,7 @@ function optimisticDispatchCard(id: string, body: DispatchRequest): SessionListI
 			tokens_out: 0,
 			cost_usd: 0,
 			cache_read_tokens: 0,
-			cache_creation_tokens: 0
+			cache_creation_tokens: 0,
 		},
 		metadata: null,
 		adapter_id: 'claude-code',
@@ -206,7 +246,11 @@ function optimisticDispatchCard(id: string, body: DispatchRequest): SessionListI
 		machine_kind: 'dispatch',
 		last_message_text: 'Dispatching…',
 		last_message_at: null,
-		name: p.name || p.prompt_file || (p.prompt ? p.prompt.slice(0, 40) : null) || id.slice(0, 6),
+		name:
+			p.name ||
+			p.prompt_file ||
+			(p.prompt ? p.prompt.slice(0, 40) : null) ||
+			id.slice(0, 6),
 		model: p.model ?? null,
 		effort: p.effort ?? null,
 		auto_approve: false,
@@ -214,7 +258,7 @@ function optimisticDispatchCard(id: string, body: DispatchRequest): SessionListI
 		last_activity_at: null,
 		cache_cold: false,
 		estimated_burst_tokens: null,
-		hibernated: false
+		hibernated: false,
 	};
 }
 
@@ -256,7 +300,11 @@ export function useSessionActions() {
 			await api.post<void>(`/sessions/${id}/auto-approve`, { enabled });
 			inval();
 		},
-		spawn: (body: SpawnRequest, files: File[] = []) => endpoints.spawn(body, files),
+		spawn: (body: SpawnRequest, files: File[] = []) =>
+			endpoints.spawn(body, files),
+		// Mid-chat attachments (CCT-236): stage files for a running session and
+		// return the staged paths the composer references under the reply.
+		stageFiles: (id: string, files: File[]) => endpoints.stageFiles(id, files),
 		// Dispatch returns synchronously (no daemon ACK / command_id), so unlike
 		// spawn there's nothing to await on the ws — the worker pod registers the
 		// pre-minted session_id later. We optimistically insert a placeholder card
@@ -269,7 +317,10 @@ export function useSessionActions() {
 			if (body.session_id == null) body = { ...body, session_id: id };
 			const placeholder = optimisticDispatchCard(id, body);
 			qc.setQueryData<SessionListResponse>(key, (prev) => ({
-				sessions: [placeholder, ...(prev?.sessions ?? []).filter((s) => s.id !== id)]
+				sessions: [
+					placeholder,
+					...(prev?.sessions ?? []).filter((s) => s.id !== id),
+				],
 			}));
 			try {
 				const res = await endpoints.dispatch(body);
@@ -281,14 +332,15 @@ export function useSessionActions() {
 				inval();
 				throw e;
 			}
-		}
+		},
 	};
 }
 
 export function useUserActions() {
 	const qc = useQueryClient();
 	const invalUsers = () => qc.invalidateQueries({ queryKey: qk.users });
-	const invalUser = (userId: string) => qc.invalidateQueries({ queryKey: ['users', userId] });
+	const invalUser = (userId: string) =>
+		qc.invalidateQueries({ queryKey: ['users', userId] });
 	return {
 		create: async (name: string): Promise<CreateUserResponse> => {
 			const r = await api.post<CreateUserResponse>('/admin/users', { name });
@@ -300,7 +352,9 @@ export function useUserActions() {
 			invalUsers();
 		},
 		setCanDispatch: async (id: string, canDispatch: boolean) => {
-			await api.patch<void>(`/admin/users/${id}`, { can_dispatch: canDispatch });
+			await api.patch<void>(`/admin/users/${id}`, {
+				can_dispatch: canDispatch,
+			});
 			invalUsers();
 		},
 		rotate: async (id: string): Promise<RotateResponse> => {
@@ -316,13 +370,24 @@ export function useUserActions() {
 			await api.del<void>(`/admin/users/${id}/purge`);
 			invalUsers();
 		},
-		mintToken: async (userId: string, label: string | null): Promise<MintTokenResponse> => {
-			const r = await api.post<MintTokenResponse>(`/users/${userId}/tokens`, { label });
+		mintToken: async (
+			userId: string,
+			label: string | null,
+		): Promise<MintTokenResponse> => {
+			const r = await api.post<MintTokenResponse>(`/users/${userId}/tokens`, {
+				label,
+			});
 			invalUser(userId);
 			return r;
 		},
-		relabelToken: async (userId: string, tokenId: string, label: string | null) => {
-			await api.patch<void>(`/admin/users/${userId}/tokens/${tokenId}`, { label });
+		relabelToken: async (
+			userId: string,
+			tokenId: string,
+			label: string | null,
+		) => {
+			await api.patch<void>(`/admin/users/${userId}/tokens/${tokenId}`, {
+				label,
+			});
 			invalUser(userId);
 		},
 		revokeToken: async (userId: string, tokenId: string) => {
@@ -333,7 +398,10 @@ export function useUserActions() {
 			await api.del<void>(`/admin/users/${userId}/tokens/${tokenId}/purge`);
 			invalUser(userId);
 		},
-		rotateMachine: async (userId: string, id: string): Promise<RotateResponse> => {
+		rotateMachine: async (
+			userId: string,
+			id: string,
+		): Promise<RotateResponse> => {
 			const r = await api.post<RotateResponse>(`/admin/machines/${id}/rotate`);
 			invalUser(userId);
 			return r;
@@ -344,9 +412,12 @@ export function useUserActions() {
 			userId: string,
 			id: string,
 			displayName: string | null,
-			hue: number | null
+			hue: number | null,
 		) => {
-			await api.patch<void>(`/admin/machines/${id}`, { display_name: displayName, hue });
+			await api.patch<void>(`/admin/machines/${id}`, {
+				display_name: displayName,
+				hue,
+			});
 			invalUser(userId);
 		},
 		revokeMachine: async (userId: string, id: string) => {
@@ -356,6 +427,6 @@ export function useUserActions() {
 		purgeMachine: async (userId: string, id: string) => {
 			await api.del<void>(`/admin/machines/${id}/purge`);
 			invalUser(userId);
-		}
+		},
 	};
 }

@@ -5,7 +5,7 @@
 //! `adapter_id`, or no connected daemon returns an error which callers
 //! can log and ignore.
 
-use cctui_proto::adapter::AdapterCommand;
+use cctui_proto::adapter::{AdapterCommand, BootstrapFile};
 use cctui_proto::ws::DaemonFrameDown;
 use uuid::Uuid;
 
@@ -23,6 +23,10 @@ pub enum Error {
     NoDaemon(Uuid),
     #[error("daemon channel closed")]
     Closed,
+    #[error("timed out waiting for the daemon to stage files")]
+    Timeout,
+    #[error("daemon could not stage files: {0}")]
+    Staging(String),
     #[error("db error: {0}")]
     Db(#[from] sqlx::Error),
 }
@@ -49,4 +53,66 @@ pub async fn dispatch(
         .await
         .map_err(|_| Error::Closed)?;
     Ok(())
+}
+
+/// How long the `POST /sessions/{id}/files` route waits for the daemon's
+/// `StageFilesResult` before giving up. Staging is local filesystem work after
+/// a small base64 decode, so this is generous-but-bounded.
+const STAGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Stage mid-chat attachment `files` for `session_id` (CCT-236) and return the
+/// staged absolute paths reported by the owning daemon.
+///
+/// Looks up `(adapter_id, machine_uuid)` the same way [`dispatch`] does, sends a
+/// [`DaemonFrameDown::StageFiles`] keyed by a fresh `request_id`, registers a
+/// oneshot in `state.pending_stage_requests`, and awaits the daemon's
+/// `StageFilesResult` (routed back in by the daemon WS read loop).
+pub async fn stage_files(
+    state: &AppState,
+    session_id: &str,
+    files: Vec<BootstrapFile>,
+) -> Result<Vec<String>, Error> {
+    let row: Option<(Option<String>, Option<Uuid>)> =
+        sqlx::query_as("SELECT adapter_id, machine_uuid FROM sessions WHERE id = $1")
+            .bind(session_id)
+            .fetch_optional(&state.pool)
+            .await?;
+    let (adapter_id, machine_uuid) = row.ok_or(Error::NotFound)?;
+    let adapter_id = adapter_id.ok_or(Error::NoAdapter)?;
+    let machine_uuid = machine_uuid.ok_or(Error::NoMachine)?;
+    let Some(tx) = state.daemon_connections.get(&machine_uuid) else {
+        return Err(Error::NoDaemon(machine_uuid));
+    };
+
+    let request_id = Uuid::new_v4();
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    state.pending_stage_requests.insert(request_id, reply_tx);
+
+    let send = tx
+        .send(DaemonFrameDown::StageFiles {
+            request_id,
+            adapter_id,
+            local_id: session_id.to_owned(),
+            uploads: files,
+        })
+        .await;
+    if send.is_err() {
+        state.pending_stage_requests.remove(&request_id);
+        return Err(Error::Closed);
+    }
+
+    match tokio::time::timeout(STAGE_TIMEOUT, reply_rx).await {
+        Ok(Ok(Ok(paths))) => Ok(paths),
+        Ok(Ok(Err(msg))) => Err(Error::Staging(msg)),
+        // Sender dropped (daemon disconnected mid-request) — clean up handled
+        // by the read loop on disconnect, but remove defensively.
+        Ok(Err(_)) => {
+            state.pending_stage_requests.remove(&request_id);
+            Err(Error::Closed)
+        }
+        Err(_) => {
+            state.pending_stage_requests.remove(&request_id);
+            Err(Error::Timeout)
+        }
+    }
 }

@@ -12,6 +12,7 @@ mod registry;
 mod routes;
 mod skill_store;
 mod state;
+mod uploads;
 mod ws;
 
 use std::path::PathBuf;
@@ -55,6 +56,7 @@ async fn main() -> anyhow::Result<()> {
         skills,
         daemon_connections: Arc::new(dashmap::DashMap::new()),
         dispatchers,
+        pending_stage_requests: Arc::new(dashmap::DashMap::new()),
     };
 
     let api_router = Router::new()
@@ -66,6 +68,12 @@ async fn main() -> anyhow::Result<()> {
             // 20 MB total cap itself; allow a little headroom over it for
             // multipart framing + base64 isn't applied until after parsing.
             post(routes::spawn::spawn_session).layer(DefaultBodyLimit::max(24 * 1024 * 1024)),
+        )
+        .route(
+            // Mid-chat file attachments (CCT-236) — same multipart shape + caps
+            // as spawn, same body-limit headroom.
+            "/sessions/{id}/files",
+            post(routes::spawn::stage_session_files).layer(DefaultBodyLimit::max(24 * 1024 * 1024)),
         )
         .route("/sessions/dispatch", post(routes::dispatch::dispatch))
         .route("/sessions/dispatchers", get(routes::dispatch::list_dispatchers))

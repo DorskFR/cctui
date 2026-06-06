@@ -8,6 +8,8 @@
 	import { clockTime, statusBadgeClass, compact } from '$lib/format';
 	import { drafts, composerKey, history as msgHistory, clearSessionStorage, VIEW_OPTS } from '$lib/drafts';
 	import { autoresize } from '$lib/autoresize';
+	import { dropzone } from '$lib/dropzone';
+	import { mergeFiles, removeFileByName, fileCapError } from '$lib/attachments';
 	import { downloadConversationHtml } from '$lib/export';
 	import { toasts } from '$lib/toast.svelte';
 	import { useQueryClient } from '@tanstack/svelte-query';
@@ -17,6 +19,7 @@
 	import TokenUsage from './TokenUsage.svelte';
 	import PermissionCard from './PermissionCard.svelte';
 	import AskQuestionCard from './AskQuestionCard.svelte';
+	import AttachmentList from './AttachmentList.svelte';
 
 	let {
 		session,
@@ -491,6 +494,28 @@
 		drafts.set(composerKey(session.id), input);
 	});
 
+	// ── Mid-chat file attachments (CCT-236) ────────────────────────────────
+	// Held client-side next to the draft (File handles can't be persisted to
+	// localStorage, so unlike `input` these don't survive a reload — the draft
+	// text does). On send we upload first, then append the staged paths under
+	// the message text (same convention as spawn-time uploads) so the agent
+	// reads them. Only claude-code supports mid-chat staging today.
+	const supportsAttachments = $derived(session.adapter_id === 'claude-code');
+	let attachments = $state<File[]>([]);
+	let uploading = $state(false);
+	let dragActive = $state(false);
+	const attachError = $derived(fileCapError(attachments));
+	const addAttachments = (incoming: File[]) => {
+		if (!supportsAttachments || archived) return;
+		attachments = mergeFiles(attachments, incoming);
+	};
+	const removeAttachment = (name: string) => (attachments = removeFileByName(attachments, name));
+	function onPickAttachments(e: Event) {
+		const el = e.currentTarget as HTMLInputElement;
+		addAttachments(Array.from(el.files ?? []));
+		el.value = '';
+	}
+
 	// ── Message delivery tracking (CCT-212 → CCT-214) ───────────────────────
 	// We create the optimistic echo (we own `live` + the `ts` ordering) and hand
 	// the send off to the ws singleton, which owns the dispatch + ack timeout +
@@ -542,8 +567,43 @@
 		histIndex = -1;
 	}
 
-	function send() {
+	async function send() {
 		const text = input.trim();
+		// Allow sending attachments with no text (the staged paths become the
+		// message), but require at least one of text/attachments.
+		if ((!text && attachments.length === 0) || archived || uploading) return;
+		if (attachError) {
+			toasts.err(attachError);
+			return;
+		}
+
+		// Stage any pending attachments first; append the staged absolute paths
+		// under the message so the agent reads them (CCT-236). On failure keep the
+		// draft + attachments intact and surface the error rather than sending a
+		// half-message.
+		let body = text;
+		if (attachments.length) {
+			uploading = true;
+			try {
+				const { paths } = await actions.stageFiles(id, attachments);
+				const list = paths.map((p) => `- ${p}`).join('\n');
+				const header =
+					paths.length === 1 ? 'Attached file:' : `Attached files (${paths.length}):`;
+				body = text ? `${text}\n\n${header}\n${list}` : `${header}\n${list}`;
+				attachments = [];
+			} catch (e) {
+				toasts.err(`Attachment upload failed: ${(e as Error).message}`);
+				return;
+			} finally {
+				uploading = false;
+			}
+		}
+		sendBody(body);
+	}
+
+	// The original send path, now operating on the final message body (text +
+	// any appended staged-attachment paths).
+	function sendBody(text: string) {
 		if (!text || archived) return;
 		// NB: a free-typed send does NOT dismiss a pending AskUserQuestion
 		// (CCT-208). The old code cleared `ask` on every send, which hid the
@@ -982,7 +1042,14 @@
 		<div class="attn-banner">✋ Waiting for your input</div>
 	{/if}
 
-	<div class="conv-wrap">
+	<div
+		class="conv-wrap"
+		use:dropzone={{
+			onFiles: addAttachments,
+			onActive: (a) => (dragActive = a),
+			disabled: !supportsAttachments || archived
+		}}
+	>
 	<div
 		class="conv"
 		bind:this={scroller}
@@ -1114,7 +1181,7 @@
 		{/if}
 	</div>
 
-	<div class="composer">
+	<div class="composer" class:dropping={dragActive}>
 		{#if archived}
 			<div class="hint muted">
 				Session archived —
@@ -1124,29 +1191,51 @@
 		{:else}
 			<!-- Failed sends now surface inline on the message bubble itself
 			     (red + Retry, CCT-212), so there's no separate composer banner. -->
-			<textarea
-				class="textarea grow"
-				rows="1"
-				placeholder="Message… (Enter to send, Shift+Enter for newline)"
-				bind:value={input}
-				bind:this={textarea}
-				onkeydown={onKey}
-				oninput={() => resetHistoryNav()}
-				use:autoresize={input}
-			></textarea>
-			<button
-				class="btn btn-primary send"
-				class:cold={cacheCold}
-				disabled={!input.trim()}
-				onclick={send}
+			{#if supportsAttachments && attachments.length}
+				<div class="attachments">
+					<AttachmentList files={attachments} onremove={removeAttachment} compact />
+				</div>
+			{/if}
+			<div class="composer-row">
+				{#if supportsAttachments}
+					<!-- File picker (CCT-236). Drag-and-drop onto the conversation pane
+					     also adds attachments. -->
+					<label class="attach-btn" title="Attach files">
+						📎
+						<input
+							class="file-hidden"
+							type="file"
+							multiple
+							onchange={onPickAttachments}
+						/>
+					</label>
+				{/if}
+				<textarea
+					class="textarea grow"
+					rows="1"
+					placeholder={dragActive
+						? 'Drop files to attach'
+						: 'Message… (Enter to send, Shift+Enter for newline)'}
+					bind:value={input}
+					bind:this={textarea}
+					onkeydown={onKey}
+					oninput={() => resetHistoryNav()}
+					use:autoresize={input}
+				></textarea>
+				<button
+					class="btn btn-primary send"
+					class:cold={cacheCold}
+					disabled={uploading || (!input.trim() && attachments.length === 0)}
+					onclick={send}
 				title={cacheCold
 					? burstTokens
 						? `Prompt cache is cold — the next send re-writes ~${compact(burstTokens)} tokens to cache`
 						: 'Prompt cache is cold — the next send re-bills the full context'
 					: undefined}
 			>
-				{#if cacheCold && burstTokens}Send ❄️ ~{compact(burstTokens)}{:else if cacheCold}Send ❄️{:else}Send{/if}
+				{#if uploading}Uploading…{:else if cacheCold && burstTokens}Send ❄️ ~{compact(burstTokens)}{:else if cacheCold}Send ❄️{:else}Send{/if}
 			</button>
+			</div>
 		{/if}
 	</div>
 </div>
@@ -1639,13 +1728,51 @@
 	}
 	.composer {
 		display: flex;
-		flex-wrap: wrap;
+		flex-direction: column;
 		gap: var(--sp-2);
-		align-items: flex-end;
 		padding: var(--sp-3);
 		padding-bottom: calc(var(--sp-3) + var(--safe-bottom));
 		border-top: 1px solid var(--border);
 		background: var(--bg-elevated);
+	}
+	/* Highlight the composer while a file drag hovers the conversation pane
+	   (CCT-236). */
+	.composer.dropping {
+		outline: 2px dashed var(--c-blue);
+		outline-offset: -2px;
+		background: color-mix(in srgb, var(--c-blue) 8%, var(--bg-elevated));
+	}
+	.composer-row {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--sp-2);
+		align-items: flex-end;
+	}
+	.attachments {
+		width: 100%;
+	}
+	.attach-btn {
+		flex: none;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-width: 2.75rem;
+		min-height: 2.75rem;
+		border: 1px solid var(--border-strong);
+		border-radius: var(--r-md);
+		background: var(--bg);
+		cursor: pointer;
+		font-size: var(--fs-md);
+	}
+	.attach-btn:hover {
+		border-color: var(--c-blue);
+	}
+	.file-hidden {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		opacity: 0;
+		pointer-events: none;
 	}
 	.attn-banner {
 		padding: var(--sp-2) var(--sp-3);

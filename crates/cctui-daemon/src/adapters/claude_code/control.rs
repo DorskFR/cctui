@@ -1396,21 +1396,37 @@ const fn kill_signal_name(signal: i32) -> &'static str {
 /// spawn so the user learns the attachment didn't land rather than the worker
 /// silently starting without it.
 fn stage_uploads(session_id: &str, bootstrap: &serde_json::Value) -> anyhow::Result<Vec<String>> {
-    use base64::Engine;
-
     if bootstrap.is_null() {
         return Ok(Vec::new());
     }
     let parsed: cctui_proto::adapter::BootstrapUploads =
         serde_json::from_value(bootstrap.clone()).context("decoding bootstrap uploads")?;
-    if parsed.uploads.is_empty() {
+    stage_upload_files(session_id, &parsed.uploads)
+}
+
+/// Decode + write a batch of uploaded files into the per-session staging dir
+/// (`/tmp/cctui-uploads/<session_id>/`), returning the staged absolute paths.
+///
+/// Shared by spawn-time bootstrap uploads ([`stage_uploads`]) and mid-chat
+/// attachments (CCT-236). Files are written 0600 (Unix). Name collisions —
+/// against an existing staged file from an earlier upload in the same session —
+/// are resolved by inserting a numeric suffix before the extension
+/// (`report.pdf` → `report-1.pdf`) rather than overwriting, so a later
+/// attachment never clobbers one the agent may still reference.
+fn stage_upload_files(
+    session_id: &str,
+    uploads: &[cctui_proto::adapter::BootstrapFile],
+) -> anyhow::Result<Vec<String>> {
+    use base64::Engine;
+
+    if uploads.is_empty() {
         return Ok(Vec::new());
     }
     let dir = std::path::Path::new("/tmp/cctui-uploads").join(session_id);
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("creating upload dir {}", dir.display()))?;
-    let mut paths = Vec::with_capacity(parsed.uploads.len());
-    for file in &parsed.uploads {
+    let mut paths = Vec::with_capacity(uploads.len());
+    for file in uploads {
         // Defensive re-sanitize: the server already strips path separators, but
         // never trust a wire-supplied name when it becomes a filesystem path.
         let name = std::path::Path::new(&file.name)
@@ -1421,7 +1437,7 @@ fn stage_uploads(session_id: &str, bootstrap: &serde_json::Value) -> anyhow::Res
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(file.content_b64.as_bytes())
             .with_context(|| format!("base64-decoding upload {name}"))?;
-        let path = dir.join(name);
+        let path = unique_staging_path(&dir, name);
         std::fs::write(&path, &bytes)
             .with_context(|| format!("writing upload {}", path.display()))?;
         #[cfg(unix)]
@@ -1432,8 +1448,39 @@ fn stage_uploads(session_id: &str, bootstrap: &serde_json::Value) -> anyhow::Res
         }
         paths.push(path.to_string_lossy().into_owned());
     }
-    tracing::info!(%session_id, count = paths.len(), "staged uploaded files for spawn");
+    tracing::info!(%session_id, count = paths.len(), "staged uploaded files");
     Ok(paths)
+}
+
+/// Resolve a non-colliding path in `dir` for `name`. If `dir/name` is free use
+/// it; otherwise append `-1`, `-2`, … before the extension until a free path is
+/// found.
+fn unique_staging_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+    let candidate = dir.join(name);
+    if !candidate.exists() {
+        return candidate;
+    }
+    let path = std::path::Path::new(name);
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or(name);
+    let ext = path.extension().and_then(|s| s.to_str());
+    for n in 1u32.. {
+        let alt = ext.map_or_else(|| format!("{stem}-{n}"), |ext| format!("{stem}-{n}.{ext}"));
+        let candidate = dir.join(alt);
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    unreachable!("exhausted u32 collision suffixes")
+}
+
+/// Public entry point for mid-chat attachment staging (CCT-236). Thin wrapper
+/// over [`stage_upload_files`] so the supervisor can stage without reaching into
+/// control internals.
+pub fn stage_mid_chat_files(
+    session_id: &str,
+    uploads: &[cctui_proto::adapter::BootstrapFile],
+) -> anyhow::Result<Vec<String>> {
+    stage_upload_files(session_id, uploads)
 }
 
 fn hook_settings_path() -> Option<PathBuf> {
@@ -1656,6 +1703,46 @@ mod tests {
     #[test]
     fn stage_uploads_null_bootstrap_is_empty() {
         assert!(stage_uploads("sid", &serde_json::Value::Null).unwrap().is_empty());
+    }
+
+    #[test]
+    fn stage_mid_chat_files_suffixes_name_collisions() {
+        use base64::Engine;
+        use cctui_proto::adapter::BootstrapFile;
+
+        let session_id = format!("test-{}", uuid::Uuid::new_v4());
+        let b64 = |s: &str| base64::engine::general_purpose::STANDARD.encode(s.as_bytes());
+        let dir = std::path::Path::new("/tmp/cctui-uploads").join(&session_id);
+
+        // First upload stages report.pdf.
+        let first = stage_mid_chat_files(
+            &session_id,
+            &[BootstrapFile { name: "report.pdf".into(), content_b64: b64("one") }],
+        )
+        .expect("stage ok");
+        assert_eq!(first, vec![dir.join("report.pdf").to_string_lossy().into_owned()]);
+
+        // A later upload with the same name must NOT overwrite — it gets a suffix.
+        let second = stage_mid_chat_files(
+            &session_id,
+            &[
+                BootstrapFile { name: "report.pdf".into(), content_b64: b64("two") },
+                BootstrapFile { name: "report.pdf".into(), content_b64: b64("three") },
+            ],
+        )
+        .expect("stage ok");
+        assert_eq!(
+            second,
+            vec![
+                dir.join("report-1.pdf").to_string_lossy().into_owned(),
+                dir.join("report-2.pdf").to_string_lossy().into_owned(),
+            ]
+        );
+        assert_eq!(std::fs::read_to_string(dir.join("report.pdf")).unwrap(), "one");
+        assert_eq!(std::fs::read_to_string(dir.join("report-1.pdf")).unwrap(), "two");
+        assert_eq!(std::fs::read_to_string(dir.join("report-2.pdf")).unwrap(), "three");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn driver() -> (Driver, mpsc::Receiver<AdapterEvent>) {

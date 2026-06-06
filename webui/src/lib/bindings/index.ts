@@ -27,6 +27,7 @@ export type * from './SessionStatus';
 export type * from './Session';
 export type * from './SpawnRequest';
 export type * from './SpawnResponse';
+export type * from './StageFilesResponse';
 export type * from './TokenUsage';
 export type * from './TuiCommand';
 export type * from './UpdateUserRequest';

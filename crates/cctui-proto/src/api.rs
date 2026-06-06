@@ -284,6 +284,18 @@ pub struct SpawnResponse {
     pub status: String,
 }
 
+/// Response to `POST /api/v1/sessions/{id}/files` (CCT-236, mid-chat
+/// attachments).
+///
+/// The staged absolute paths on the session's machine, in the same order the
+/// files were uploaded. The webui appends these under the reply prompt so the
+/// agent reads them — the same convention as spawn-time uploads.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct StageFilesResponse {
+    pub paths: Vec<String>,
+}
+
 /// CCT-107: dispatcher-routed session start.
 ///
 /// `dispatcher` selects which [`Dispatcher`] impl on the server materializes
