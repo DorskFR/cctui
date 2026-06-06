@@ -23,6 +23,25 @@ import type { VersionInfo } from '@bindings/VersionInfo';
  * hidden from the "new machines" list in the UI (CCT-183 / CCT-185). */
 export const SYSTEM_MACHINE_KINDS = new Set(['dispatch', 'ephemeral']);
 
+/** A user-defined named dispatcher (CCT-235). `config` is the type-specific
+ *  blob with secrets redacted (the http `token` reads back as `"<redacted>"`
+ *  when set, or absent when unset). */
+export interface UserDispatcher {
+	id: string;
+	name: string;
+	kind: string;
+	config: Record<string, unknown>;
+	created_at: string;
+	updated_at: string;
+}
+
+/** Create/update payload — `config` carries cleartext secrets on the way in. */
+export interface UpsertDispatcher {
+	name: string;
+	kind: string;
+	config: Record<string, unknown>;
+}
+
 /** Centralised query keys so invalidation stays consistent. */
 export const qk = {
 	version: ['version'] as const,
@@ -99,6 +118,14 @@ export const endpoints = {
 		api.post<DispatchResponse>('/sessions/dispatch', body),
 	/** Configured dispatcher ids (e.g. `["claude-worker"]`); empty when none. */
 	dispatchers: () => api.get<string[]>('/sessions/dispatchers'),
+	/** The caller's own named dispatchers (CCT-235) with config secrets
+	 *  redacted. Used by the management UI. */
+	userDispatchers: () => api.get<UserDispatcher[]>('/dispatchers'),
+	createDispatcher: (body: UpsertDispatcher) =>
+		api.post<UserDispatcher>('/dispatchers', body),
+	updateDispatcher: (id: string, body: UpsertDispatcher) =>
+		api.patch<UserDispatcher>(`/dispatchers/${id}`, body),
+	deleteDispatcher: (id: string) => api.del<void>(`/dispatchers/${id}`),
 	/** Every spawnable machine across all active users — for the spawn picker.
 	 * Excludes server-managed machines (`ephemeral` worker pods and the per-user
 	 * `dispatch` machine): those aren't somewhere you'd start an interactive
@@ -178,6 +205,12 @@ export const useDispatchers = (enabled: () => boolean) =>
 			staleTime: 60_000,
 		})),
 	);
+
+export const useUserDispatchers = () =>
+	createQuery({
+		queryKey: ['user-dispatchers'],
+		queryFn: endpoints.userDispatchers,
+	});
 
 export const useAllMachines = (enabled: () => boolean) =>
 	createQuery(
@@ -427,6 +460,32 @@ export function useUserActions() {
 		purgeMachine: async (userId: string, id: string) => {
 			await api.del<void>(`/admin/machines/${id}/purge`);
 			invalUser(userId);
+		},
+	};
+}
+
+/** CRUD for the caller's own named dispatchers (CCT-235). Invalidates both the
+ *  management list and the merged dispatch picker after a mutation. */
+export function useDispatcherActions() {
+	const qc = useQueryClient();
+	const inval = () => {
+		qc.invalidateQueries({ queryKey: ['user-dispatchers'] });
+		qc.invalidateQueries({ queryKey: ['dispatchers'] });
+	};
+	return {
+		create: async (body: UpsertDispatcher) => {
+			const r = await endpoints.createDispatcher(body);
+			inval();
+			return r;
+		},
+		update: async (id: string, body: UpsertDispatcher) => {
+			const r = await endpoints.updateDispatcher(id, body);
+			inval();
+			return r;
+		},
+		remove: async (id: string) => {
+			await endpoints.deleteDispatcher(id);
+			inval();
 		},
 	};
 }

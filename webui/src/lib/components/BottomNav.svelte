@@ -4,7 +4,8 @@
 	const items = [
 		{ href: '/', label: 'Overview', icon: '◧' },
 		{ href: '/sessions', label: 'Sessions', icon: '◰' },
-		{ href: '/users', label: 'Users', icon: '◍' }
+		{ href: '/users', label: 'Users', icon: '◍' },
+		{ href: '/dispatchers', label: 'Dispatchers', icon: '◈' }
 	];
 	const active = (href: string) =>
 		href === '/' ? page.url.pathname === '/' : page.url.pathname.startsWith(href);

@@ -18,6 +18,7 @@ use async_trait::async_trait;
 pub mod docker;
 pub mod http;
 pub mod kube;
+pub mod stored;
 
 #[derive(Debug, Clone)]
 pub struct DispatchHandle {

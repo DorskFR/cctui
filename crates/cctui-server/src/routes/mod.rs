@@ -4,6 +4,7 @@ pub mod archive;
 pub mod credentials;
 pub mod daemon;
 pub mod dispatch;
+pub mod dispatchers;
 pub mod enroll;
 pub mod manifest;
 pub mod permissions;

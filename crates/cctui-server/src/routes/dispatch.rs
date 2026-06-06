@@ -16,7 +16,8 @@ use axum::{Extension, Json};
 use cctui_proto::api::{ApiError, DispatchRequest, DispatchResponse};
 
 use crate::auth::{AuthContext, machine_token, mint_secret, sha256_hex};
-use crate::dispatchers::{DispatchError, DispatchSpec};
+use crate::dispatchers::stored::StoredConfig;
+use crate::dispatchers::{DispatchError, DispatchSpec, Dispatcher};
 use crate::ntfy::{self, Notification};
 use crate::state::AppState;
 
@@ -155,17 +156,66 @@ async fn ensure_dispatch_machine(
     Ok((machine_id, token))
 }
 
-/// `GET /api/v1/sessions/dispatchers` — the ids of every configured
-/// dispatcher (e.g. `["claude-worker"]`). The web UI uses this to decide
-/// whether to offer the "Dispatch to k8s" mode and which dispatcher to target.
-/// Any authenticated caller may read it (no role gate, matching dispatch
-/// itself — see CCT-185 for per-user gating).
+/// Resolve a dispatcher *name* for the caller: their own named dispatcher
+/// (CCT-235) takes precedence, falling back to the global env-configured
+/// registry. Returns `Ok(None)` to mean "no such name anywhere" so the caller
+/// can 404 distinctly from a permission denial.
+async fn resolve_dispatcher(
+    state: &AppState,
+    user_id: Option<uuid::Uuid>,
+    name: &str,
+) -> Result<Option<std::sync::Arc<dyn Dispatcher>>, DispatchError> {
+    if let Some(uid) = user_id {
+        let row: Option<(String, serde_json::Value)> = sqlx::query_as(
+            "SELECT kind, config FROM dispatchers \
+             WHERE user_id = $1 AND name = $2 AND deleted_at IS NULL LIMIT 1",
+        )
+        .bind(uid)
+        .bind(name)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| DispatchError::Backend(format!("dispatcher lookup: {e}")))?;
+        if let Some((kind, config)) = row {
+            let mut tagged = config;
+            if let Some(obj) = tagged.as_object_mut() {
+                obj.insert("kind".into(), serde_json::Value::String(kind));
+            }
+            let mut cfg: StoredConfig = serde_json::from_value(tagged)
+                .map_err(|e| DispatchError::Backend(format!("stored dispatcher config: {e}")))?;
+            cfg.decrypt_secrets(&crate::crypto::vault_key());
+            return cfg.build(name).await.map(Some);
+        }
+    }
+    // Fall back to a global env-configured dispatcher.
+    match state.dispatchers.get(name) {
+        Ok(d) => Ok(Some(d)),
+        Err(DispatchError::UnknownDispatcher(_)) => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// `GET /api/v1/sessions/dispatchers` — the names of every dispatcher the
+/// caller can target: their own named dispatchers (CCT-235) merged with the
+/// global env-configured registry. The web UI uses this to populate the
+/// dispatch picker. Any authenticated caller may read it (no role gate,
+/// matching dispatch itself — see CCT-185 for per-user gating).
 pub async fn list_dispatchers(
     State(state): State<AppState>,
-    Extension(_ctx): Extension<AuthContext>,
+    Extension(ctx): Extension<AuthContext>,
 ) -> Json<Vec<String>> {
     let mut ids = state.dispatchers.ids();
+    if let Some(uid) = ctx.user_id
+        && let Ok(names) = sqlx::query_scalar::<_, String>(
+            "SELECT name FROM dispatchers WHERE user_id = $1 AND deleted_at IS NULL",
+        )
+        .bind(uid)
+        .fetch_all(&state.pool)
+        .await
+    {
+        ids.extend(names);
+    }
     ids.sort();
+    ids.dedup();
     Json(ids)
 }
 
@@ -175,11 +225,29 @@ pub async fn dispatch(
     Extension(ctx): Extension<AuthContext>,
     Json(req): Json<DispatchRequest>,
 ) -> Result<(StatusCode, Json<DispatchResponse>), (StatusCode, Json<ApiError>)> {
-    let dispatcher = state.dispatchers.get(&req.dispatcher).map_err(|e| {
-        let known = state.dispatchers.ids().join(", ");
-        tracing::warn!("dispatch rejected: {e} (known: {known})");
-        (StatusCode::NOT_FOUND, Json(ApiError { error: format!("{e}. known: [{known}]") }))
-    })?;
+    let dispatcher = match resolve_dispatcher(&state, ctx.user_id, &req.dispatcher).await {
+        Ok(Some(d)) => d,
+        Ok(None) => {
+            let known = state.dispatchers.ids().join(", ");
+            tracing::warn!(
+                "dispatch rejected: unknown dispatcher {} (known: {known})",
+                req.dispatcher
+            );
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ApiError {
+                    error: format!("unknown dispatcher: {}. known: [{known}]", req.dispatcher),
+                }),
+            ));
+        }
+        Err(e) => {
+            tracing::error!("dispatcher resolution failed: {e}");
+            return Err((
+                StatusCode::BAD_GATEWAY,
+                Json(ApiError { error: format!("dispatcher unavailable: {e}") }),
+            ));
+        }
+    };
 
     let session_id = req.session_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let origin = dispatcher.id();
