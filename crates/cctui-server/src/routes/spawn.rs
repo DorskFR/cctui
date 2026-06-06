@@ -101,7 +101,10 @@ pub async fn spawn_session(
     let mut env = req.env.clone();
     if let Some(account_name) = req.account.as_deref().filter(|a| !a.trim().is_empty()) {
         let uid = ctx.user_id.ok_or_else(|| {
-            (StatusCode::FORBIDDEN, Json(ApiError { error: "account selection needs a user token".into() }))
+            (
+                StatusCode::FORBIDDEN,
+                Json(ApiError { error: "account selection needs a user token".into() }),
+            )
         })?;
         match crate::routes::gateway::mint_session_env(
             &state,
@@ -116,7 +119,9 @@ pub async fn spawn_session(
             Ok(None) => {
                 return Err((
                     StatusCode::NOT_FOUND,
-                    Json(ApiError { error: format!("no account named {account_name:?} for this adapter") }),
+                    Json(ApiError {
+                        error: format!("no account named {account_name:?} for this adapter"),
+                    }),
                 ));
             }
             Err(e) => {

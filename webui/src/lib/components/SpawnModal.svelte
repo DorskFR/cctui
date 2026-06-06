@@ -2,7 +2,13 @@
 	import type { SpawnRequest } from '@bindings/SpawnRequest';
 	import type { DispatchRequest } from '@bindings/DispatchRequest';
 	import type { PermissionMode } from '@bindings/PermissionMode';
-	import { useAllMachines, useDispatchers, useSessionActions, useRecentDirs } from '$lib/queries';
+	import {
+		useAllMachines,
+		useDispatchers,
+		useSessionActions,
+		useRecentDirs,
+		useAccounts
+	} from '$lib/queries';
 	import { ws } from '$lib/ws.svelte';
 	import { toasts } from '$lib/toast.svelte';
 	import { drafts, SPAWN_DRAFT, LAST_MACHINE } from '$lib/drafts';
@@ -46,6 +52,9 @@
 		ticket: string;
 		prompt_file: string;
 		model: string;
+		// Named OAuth account to run under (CCT-237), resolved per-adapter at
+		// spawn. Empty = no gateway injection (the worker's own auth).
+		account: string;
 		// Effort is per-adapter (claude and codex have different level sets), so
 		// each gets its own slider + form field and they're preserved across an
 		// adapter switch. Dispatch (k8s) runs a claude worker → uses effort_claude.
@@ -66,6 +75,7 @@
 		ticket: '',
 		prompt_file: '',
 		model: '',
+		account: '',
 		effort_claude: '',
 		effort_codex: '',
 		timeout: ''
@@ -101,6 +111,20 @@
 	// recent working dirs on the selected machine, from the server (last 5).
 	const dirsQuery = useRecentDirs(() => form.machine_id);
 	const recentDirs = $derived([...new Set($dirsQuery.data ?? [])]);
+
+	// OAuth accounts (CCT-237). The picker offers only accounts whose provider
+	// matches the selected adapter (codex → openai, else anthropic). Switching
+	// adapter to one with no matching account clears the stale selection.
+	const accounts = useAccounts(() => true);
+	const wantProvider = $derived(form.adapter_id === 'codex' ? 'openai' : 'anthropic');
+	const matchingAccounts = $derived(
+		($accounts.data ?? []).filter((a) => a.provider === wantProvider)
+	);
+	$effect(() => {
+		if (form.account && !matchingAccounts.some((a) => a.name === form.account)) {
+			form.account = '';
+		}
+	});
 
 	const actions = useSessionActions();
 	let busy = $state(false);
@@ -167,7 +191,8 @@
 			prompt_name: null,
 			permission_mode: form.permission_mode,
 			effort: (form.adapter_id === 'codex' ? form.effort_codex : form.effort_claude) || null,
-			env: envMap()
+			env: envMap(),
+			account: form.account.trim() || null
 		};
 		const res = await actions.spawn(body, files);
 		drafts.set(LAST_MACHINE, form.machine_id);
@@ -508,6 +533,22 @@
 					</button>
 				</div>
 			</div>
+
+			<!-- OAuth account picker (CCT-237). Only accounts whose provider
+			     matches the selected adapter are offered; empty = the worker's
+			     own auth (no gateway). -->
+			{#if matchingAccounts.length}
+				<div class="field">
+					<label class="label" for="sp-account">Account (optional)</label>
+					<select id="sp-account" class="select" bind:value={form.account}>
+						<option value="">Default (worker's own auth)</option>
+						{#each matchingAccounts as a (a.id)}
+							<option value={a.name}>{a.name}</option>
+						{/each}
+					</select>
+					<span class="faint sm">Run through the passthrough gateway under this account.</span>
+				</div>
+			{/if}
 
 			<!-- Per-adapter effort: each adapter has its own level set and its own
 			     form field, so switching adapters preserves both. -->

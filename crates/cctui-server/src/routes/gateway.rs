@@ -112,7 +112,6 @@ pub async fn mint_session_env(
 
 /// Revoke every session token bound to a session (CCT-232) — called when a
 /// session ends so the gateway can no longer be used under that token.
-#[allow(dead_code)]
 pub async fn revoke_session_tokens(state: &AppState, session_id: &str) {
     let _ = sqlx::query(
         "UPDATE session_tokens SET revoked_at = now() \
@@ -141,18 +140,17 @@ struct Account {
 /// account. Returns `None` for unknown/revoked tokens.
 async fn resolve_account(state: &AppState, session_token: &str) -> Option<Account> {
     let hash = crate::auth::sha256_hex(session_token);
-    let row: Option<AccountRow> =
-        sqlx::query_as(
-            "SELECT a.id, a.provider, a.encrypted_access_token, a.encrypted_refresh_token, \
+    let row: Option<AccountRow> = sqlx::query_as(
+        "SELECT a.id, a.provider, a.encrypted_access_token, a.encrypted_refresh_token, \
                     a.expires_at \
              FROM session_tokens t JOIN oauth_accounts a ON a.id = t.account_id \
              WHERE t.token_hash = $1 AND t.revoked_at IS NULL",
-        )
-        .bind(&hash)
-        .fetch_optional(&state.pool)
-        .await
-        .ok()
-        .flatten();
+    )
+    .bind(&hash)
+    .fetch_optional(&state.pool)
+    .await
+    .ok()
+    .flatten();
     let (id, provider, enc_access, enc_refresh, expires_at) = row?;
     let key = crate::crypto::vault_key();
     let access_token = enc_access.and_then(|e| crate::crypto::deobfuscate(&e, &key));
@@ -184,16 +182,10 @@ async fn refresh_account(state: &AppState, acct: &Account) -> Result<String, Sta
         "refresh_token": acct.refresh_token,
         "client_id": client_id,
     });
-    let resp = state
-        .http_client
-        .post(&token_url)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| {
-            tracing::error!(account = %acct.id, "oauth refresh transport error: {e}");
-            StatusCode::BAD_GATEWAY
-        })?;
+    let resp = state.http_client.post(&token_url).json(&body).send().await.map_err(|e| {
+        tracing::error!(account = %acct.id, "oauth refresh transport error: {e}");
+        StatusCode::BAD_GATEWAY
+    })?;
     if !resp.status().is_success() {
         tracing::error!(account = %acct.id, status = %resp.status(), "oauth refresh rejected");
         return Err(StatusCode::BAD_GATEWAY);
@@ -272,16 +264,15 @@ async fn current_access_token(state: &AppState, acct: &Account) -> Result<String
 }
 
 async fn reload_account(state: &AppState, id: Uuid) -> Option<Account> {
-    let row: Option<ReloadRow> =
-        sqlx::query_as(
-            "SELECT provider, encrypted_access_token, encrypted_refresh_token, expires_at \
+    let row: Option<ReloadRow> = sqlx::query_as(
+        "SELECT provider, encrypted_access_token, encrypted_refresh_token, expires_at \
              FROM oauth_accounts WHERE id = $1",
-        )
-        .bind(id)
-        .fetch_optional(&state.pool)
-        .await
-        .ok()
-        .flatten();
+    )
+    .bind(id)
+    .fetch_optional(&state.pool)
+    .await
+    .ok()
+    .flatten();
     let (provider, enc_access, enc_refresh, expires_at) = row?;
     let key = crate::crypto::vault_key();
     Some(Account {
@@ -330,8 +321,8 @@ async fn passthrough(
     let query = req.uri().query().map(|q| format!("?{q}")).unwrap_or_default();
     let url = format!("{}{tail}{query}", upstream_base.trim_end_matches('/'));
 
-    let method =
-        reqwest::Method::from_bytes(req.method().as_str().as_bytes()).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let method = reqwest::Method::from_bytes(req.method().as_str().as_bytes())
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
 
     // Preserve every client header verbatim except hop-by-hop + the bearer we
     // are swapping and the Host (reqwest sets it from the upstream URL).
@@ -388,8 +379,8 @@ async fn passthrough(
 
     // Mirror status + headers back to the client untouched (retry-after, 429,
     // 529, SSE content-type — all verbatim) and stream the body.
-    let status = StatusCode::from_u16(upstream.status().as_u16())
-        .unwrap_or(StatusCode::BAD_GATEWAY);
+    let status =
+        StatusCode::from_u16(upstream.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     let mut builder = Response::builder().status(status);
     for (name, value) in upstream.headers() {
         let n = name.as_str().to_ascii_lowercase();

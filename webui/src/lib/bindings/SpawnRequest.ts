@@ -30,4 +30,12 @@ effort: string | null,
  * like a bearer capability: NEVER persisted, NEVER logged, NEVER written to
  * the transcript/timeline. `Debug` redacts the values.
  */
-env: { [key in string]?: string }, };
+env: { [key in string]?: string }, 
+/**
+ * Named OAuth account to run the session under (CCT-232). Resolved against
+ * the caller's own vault; the server mints a session-scoped gateway token
+ * and injects `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` (or the codex
+ * equivalents) into `env` so the worker's traffic flows through the
+ * passthrough gateway under that account. `None` → no gateway injection.
+ */
+account: string | null, };

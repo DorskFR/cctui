@@ -679,6 +679,10 @@ async fn mark_session_ended(
         .bind(local_id)
         .execute(&state.pool)
         .await?;
+    // Revoke any per-session gateway tokens (CCT-237): the session-scoped
+    // cctui tokens minted at spawn map to `(session_id, account_id)` and must
+    // die with the session so the gateway can no longer be driven under them.
+    crate::routes::gateway::revoke_session_tokens(state, local_id).await;
     Ok(())
 }
 

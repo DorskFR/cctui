@@ -42,6 +42,30 @@ export interface UpsertDispatcher {
 	config: Record<string, unknown>;
 }
 
+/** A named OAuth account in the vault (CCT-232/CCT-237). Tokens are never
+ *  returned by the API — only name/provider/expiry/last-used + lightweight
+ *  usage stats. `provider` is `anthropic` (claude) or `openai` (codex). */
+export interface OAuthAccount {
+	id: string;
+	name: string;
+	provider: string;
+	expires_at: string | null;
+	created_at: string;
+	last_used_at: string | null;
+	request_count: number;
+	bytes_transferred: number;
+}
+
+/** Register payload — the refresh token is sent cleartext once, stored
+ *  encrypted, and never read back. */
+export interface CreateAccount {
+	name: string;
+	provider: string;
+	refresh_token: string;
+	access_token?: string;
+	expires_at?: number;
+}
+
 /** Centralised query keys so invalidation stays consistent. */
 export const qk = {
 	version: ['version'] as const,
@@ -126,6 +150,13 @@ export const endpoints = {
 	updateDispatcher: (id: string, body: UpsertDispatcher) =>
 		api.patch<UserDispatcher>(`/dispatchers/${id}`, body),
 	deleteDispatcher: (id: string) => api.del<void>(`/dispatchers/${id}`),
+	/** The caller's own OAuth accounts (CCT-232). Tokens never returned. */
+	accounts: () => api.get<OAuthAccount[]>('/accounts'),
+	createAccount: (body: CreateAccount) =>
+		api.post<OAuthAccount>('/accounts', body),
+	renameAccount: (id: string, name: string) =>
+		api.patch<OAuthAccount>(`/accounts/${id}`, { name }),
+	deleteAccount: (id: string) => api.del<void>(`/accounts/${id}`),
 	/** Every spawnable machine across all active users — for the spawn picker.
 	 * Excludes server-managed machines (`ephemeral` worker pods and the per-user
 	 * `dispatch` machine): those aren't somewhere you'd start an interactive
@@ -211,6 +242,15 @@ export const useUserDispatchers = () =>
 		queryKey: ['user-dispatchers'],
 		queryFn: endpoints.userDispatchers,
 	});
+
+export const useAccounts = (enabled: () => boolean = () => true) =>
+	createQuery(
+		toStore(() => ({
+			queryKey: ['accounts'],
+			queryFn: endpoints.accounts,
+			enabled: enabled(),
+		})),
+	);
 
 export const useAllMachines = (enabled: () => boolean) =>
 	createQuery(
@@ -485,6 +525,29 @@ export function useDispatcherActions() {
 		},
 		remove: async (id: string) => {
 			await endpoints.deleteDispatcher(id);
+			inval();
+		},
+	};
+}
+
+/** CRUD for the caller's own OAuth accounts (CCT-237). Invalidates the accounts
+ *  list after a mutation. */
+export function useAccountActions() {
+	const qc = useQueryClient();
+	const inval = () => qc.invalidateQueries({ queryKey: ['accounts'] });
+	return {
+		create: async (body: CreateAccount) => {
+			const r = await endpoints.createAccount(body);
+			inval();
+			return r;
+		},
+		rename: async (id: string, name: string) => {
+			const r = await endpoints.renameAccount(id, name);
+			inval();
+			return r;
+		},
+		remove: async (id: string) => {
+			await endpoints.deleteAccount(id);
 			inval();
 		},
 	};

@@ -2,8 +2,10 @@
 
 /**
  * Response to `POST /api/v1/sessions/{id}/files` (CCT-236, mid-chat
- * attachments): the staged absolute paths on the session's machine, in the
- * same order the files were uploaded. The webui appends these under the reply
- * prompt so the agent reads them — the same convention as spawn-time uploads.
+ * attachments).
+ *
+ * The staged absolute paths on the session's machine, in the same order the
+ * files were uploaded. The webui appends these under the reply prompt so the
+ * agent reads them — the same convention as spawn-time uploads.
  */
 export type StageFilesResponse = { paths: Array<string>, };
