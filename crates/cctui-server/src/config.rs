@@ -95,15 +95,6 @@ impl Config {
         format!("{}:{}", self.host, self.port)
     }
 
-    pub fn agent_tokens() -> Vec<String> {
-        env::var("CCTUI_AGENT_TOKENS")
-            .unwrap_or_default()
-            .split(',')
-            .filter(|s| !s.is_empty())
-            .map(|s| s.trim().to_string())
-            .collect()
-    }
-
     pub fn admin_tokens() -> Vec<String> {
         env::var("CCTUI_ADMIN_TOKENS")
             .unwrap_or_default()

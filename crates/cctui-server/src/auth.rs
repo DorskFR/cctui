@@ -15,9 +15,6 @@ const CACHE_TTL: Duration = Duration::from_secs(30);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenRole {
     Admin,
-    /// Legacy env-based agent token (`CCTUI_AGENT_TOKENS`). Kept for backward
-    /// compatibility for clients not yet migrated to machine keys.
-    Agent,
     User,
     Machine,
 }
@@ -39,14 +36,13 @@ struct CacheEntry {
 #[derive(Clone)]
 pub struct AuthConfig {
     pub admin_tokens: Vec<String>,
-    pub agent_tokens: Vec<String>,
     pub pool: PgPool,
     cache: Arc<Mutex<HashMap<String, CacheEntry>>>,
 }
 
 impl AuthConfig {
-    pub fn new(admin_tokens: Vec<String>, agent_tokens: Vec<String>, pool: PgPool) -> Self {
-        Self { admin_tokens, agent_tokens, pool, cache: Arc::new(Mutex::new(HashMap::new())) }
+    pub fn new(admin_tokens: Vec<String>, pool: PgPool) -> Self {
+        Self { admin_tokens, pool, cache: Arc::new(Mutex::new(HashMap::new())) }
     }
 
     /// Purge a cached entry by its key hash. Call after revoke/rotate so the
@@ -75,12 +71,9 @@ impl AuthConfig {
     }
 
     pub async fn validate(&self, token: &str) -> Option<AuthContext> {
-        // Env-based admin/agent take precedence (cheap, no DB hit).
+        // Env-based admin takes precedence (cheap, no DB hit).
         if self.admin_tokens.iter().any(|t| t == token) {
             return Some(AuthContext { role: TokenRole::Admin, user_id: None, machine_id: None });
-        }
-        if self.agent_tokens.iter().any(|t| t == token) {
-            return Some(AuthContext { role: TokenRole::Agent, user_id: None, machine_id: None });
         }
 
         let hash = sha256_hex(token);
@@ -240,7 +233,7 @@ mod tests {
         // Pool is required but never touched for env-token paths.
         // Build a cheaply-invalid lazy pool — tests that hit DB are integration-gated.
         let pool = PgPool::connect_lazy("postgres://invalid").unwrap();
-        AuthConfig::new(vec!["admin-secret".into()], vec!["agent-secret".into()], pool)
+        AuthConfig::new(vec!["admin-secret".into()], pool)
     }
 
     #[tokio::test]
@@ -252,10 +245,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn env_agent_resolves() {
+    async fn unknown_env_token_rejected() {
         let cfg = config_with_env_only();
-        let ctx = cfg.validate("agent-secret").await.unwrap();
-        assert_eq!(ctx.role, TokenRole::Agent);
+        // A token that is neither the admin secret nor a DB-backed credential
+        // resolves to nothing now that the legacy agent env path is gone.
+        assert!(cfg.validate("agent-secret").await.is_none());
     }
 
     #[test]

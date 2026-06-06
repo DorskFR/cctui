@@ -37,8 +37,7 @@ async fn main() -> anyhow::Result<()> {
 
     let config = Config::from_env();
     let pool = db::connect(&config.database_url).await?;
-    let auth_config =
-        auth::AuthConfig::new(Config::admin_tokens(), Config::agent_tokens(), pool.clone());
+    let auth_config = auth::AuthConfig::new(Config::admin_tokens(), pool.clone());
     let (tui_tx, _) = tokio::sync::broadcast::channel(256);
 
     let archive = init_archive_store().await;

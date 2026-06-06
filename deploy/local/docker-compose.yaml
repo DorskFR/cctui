@@ -39,7 +39,6 @@ services:
       CCTUI_PORT: "8700"
       # Tokens you log in / enroll with. Change these for anything non-local.
       CCTUI_ADMIN_TOKENS: ${CCTUI_ADMIN_TOKENS:-dev-admin}
-      CCTUI_AGENT_TOKENS: ${CCTUI_AGENT_TOKENS:-dev-agent}
       # Origin the daemon/clients reach this server at, from the host.
       CCTUI_EXTERNAL_URL: ${CCTUI_EXTERNAL_URL:-http://localhost:8700}
     ports:

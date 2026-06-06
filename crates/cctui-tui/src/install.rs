@@ -108,8 +108,10 @@ fn write_json_pretty(path: &Path, value: &Value) -> Result<()> {
 /// Merge the cctui hook block into the user's Claude Code config.
 ///
 /// `fallback_token` is embedded verbatim into the hook command strings as the
-/// last-resort auth token if neither `$CCTUI_AGENT_TOKEN` nor `machine.json`
-/// is readable at hook time. Pass the current `machine_key`.
+/// last-resort auth token if neither `$CCTUI_AGENT_TOKEN` (a local bearer
+/// override; despite the historical name it carries a machine key, not the
+/// retired server-side `CCTUI_AGENT_TOKENS`) nor `machine.json` is readable at
+/// hook time. Pass the current `machine_key`.
 pub fn apply_settings(server_url: &str, fallback_token: &str, _bin_path: &Path) -> Result<()> {
     let home = home_dir().context("could not resolve $HOME")?;
     let settings_json = home.join(".claude/settings.json");

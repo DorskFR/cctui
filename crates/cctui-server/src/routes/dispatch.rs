@@ -25,7 +25,7 @@ use crate::state::AppState;
 /// the caller even if the lookup misses.
 async fn caller_label(state: &AppState, user_id: Option<uuid::Uuid>) -> String {
     let Some(uid) = user_id else {
-        return "anonymous (agent/admin token)".into();
+        return "anonymous (admin token)".into();
     };
     sqlx::query_scalar::<_, String>("SELECT name FROM users WHERE id = $1")
         .bind(uid)
@@ -214,14 +214,14 @@ pub async fn dispatch(
     // Resolve the caller's stable dispatch machine and forward its key to the
     // pod via a reserved payload key (CCT-191). The dispatcher lifts it into
     // `CCTUI_MACHINE_KEY` and keeps it OUT of TASK_PAYLOAD_JSON, so the worker's
-    // daemon runs AS this one machine without a per-pod enroll. The web UI
-    // dispatches with a user token (user_id present); admin/agent-token callers
-    // (no owning user) dispatch without the shared identity.
+    // daemon runs AS this one machine without a per-pod enroll. The web UI and
+    // automation dispatch with a user token (user_id present); the admin token (no
+    // owning user) dispatches without the shared identity.
     let mut forwarded_payload = req.payload.clone();
     if let Some(uid) = ctx.user_id {
         // Per-user dispatch permission (CCT-185). Applies to any caller that
         // owns a user (User token or worker Machine key inheriting its owner);
-        // admin/agent env tokens have no `user_id` and skip the gate. The flag
+        // the admin env token has no `user_id` and skips the gate. The flag
         // defaults TRUE, so this only blocks users an admin has explicitly
         // toggled off. Missing row (deleted mid-request) → treat as denied.
         let can_dispatch = sqlx::query_scalar::<_, bool>(

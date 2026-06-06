@@ -9,8 +9,8 @@ fn server_url() -> String {
     std::env::var("TEST_CCTUI_URL").unwrap_or_else(|_| "http://localhost:8700".into())
 }
 
-fn agent_token() -> String {
-    std::env::var("TEST_AGENT_TOKEN").unwrap_or_else(|_| "test-agent".into())
+fn machine_key() -> String {
+    std::env::var("TEST_MACHINE_KEY").unwrap_or_else(|_| "test-machine-key".into())
 }
 
 fn admin_token() -> String {
@@ -35,7 +35,7 @@ async fn register_and_list_session() {
     // Register
     let resp = client
         .post(format!("{base}/api/v1/sessions/register"))
-        .bearer_auth(agent_token())
+        .bearer_auth(machine_key())
         .json(&json!({
             "machine_id": "test-machine",
             "working_dir": "/tmp/test",
@@ -63,7 +63,7 @@ async fn register_and_list_session() {
     // Deregister
     let resp = client
         .post(format!("{base}/api/v1/sessions/{session_id}/deregister"))
-        .bearer_auth(agent_token())
+        .bearer_auth(machine_key())
         .send()
         .await
         .unwrap();
@@ -336,13 +336,14 @@ async fn archive_requires_machine_role() {
         .unwrap();
     assert_eq!(res.status(), 403);
 
-    // Env-based agent token is also not Machine.
+    // An unknown bearer token (no DB-backed credential) is rejected outright
+    // now that the legacy env agent path is gone.
     let res = client
         .put(format!("{base}/api/v1/archive/-home-foo/abc-1"))
-        .bearer_auth(agent_token())
+        .bearer_auth("not-a-real-token")
         .body(b"x".to_vec())
         .send()
         .await
         .unwrap();
-    assert_eq!(res.status(), 403);
+    assert_eq!(res.status(), 401);
 }
