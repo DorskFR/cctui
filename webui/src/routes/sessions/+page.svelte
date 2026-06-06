@@ -5,6 +5,7 @@
 	import { toasts } from '$lib/toast.svelte';
 	import { ws } from '$lib/ws.svelte';
 	import SessionCard from '$lib/components/SessionCard.svelte';
+	import WorkflowGroup from '$lib/components/WorkflowGroup.svelte';
 	import ConversationDrawer from '$lib/components/ConversationDrawer.svelte';
 	import SpawnModal from '$lib/components/SpawnModal.svelte';
 	import { drafts, LIST_DENSITY } from '$lib/drafts';
@@ -184,6 +185,41 @@
 	});
 	const topLevel = $derived(items.filter((s) => !s.parent_id || !ids.has(s.parent_id)));
 
+	// Workflow-tool subagents (CCT-225) carry a `workflow_run_id` in their
+	// session metadata. A single run can spawn 100+ agents, so rather than
+	// dumping them all as flat children we group them by run id under a
+	// collapsible "Workflow: <name> (<runId>)" header. Plain (Task-tool)
+	// children render as before. Returns, per parent id, the ungrouped children
+	// plus an ordered list of workflow groups.
+	type WfGroup = { runId: string; name: string | null; agents: SessionListItem[] };
+	function metaStr(s: SessionListItem, key: string): string | null {
+		const m = s.metadata as Record<string, unknown> | null;
+		const v = m?.[key];
+		return typeof v === 'string' ? v : null;
+	}
+	const childGroupsOf = $derived.by(() => {
+		const map = new Map<string, { plain: SessionListItem[]; workflows: WfGroup[] }>();
+		for (const [parentId, kids] of childrenOf) {
+			const plain: SessionListItem[] = [];
+			const byRun = new Map<string, WfGroup>();
+			for (const k of kids) {
+				const runId = metaStr(k, 'workflow_run_id');
+				if (runId) {
+					let g = byRun.get(runId);
+					if (!g) {
+						g = { runId, name: metaStr(k, 'workflow_name'), agents: [] };
+						byRun.set(runId, g);
+					}
+					g.agents.push(k);
+				} else {
+					plain.push(k);
+				}
+			}
+			map.set(parentId, { plain, workflows: [...byRun.values()] });
+		}
+		return map;
+	});
+
 	// Classifier buckets (CCT-90), in attention-first display order. Sessions
 	// that want the user's eyes float to the top; empty buckets are dropped.
 	// Sessions on server-managed machines (dispatch / ephemeral workers) get
@@ -333,7 +369,7 @@
 						swipeLabel="Archive"
 						onSwipe={swipeArchive}
 					/>
-					{#each childrenOf.get(s.id) ?? [] as c (c.id)}
+					{#each childGroupsOf.get(s.id)?.plain ?? [] as c (c.id)}
 						<SessionCard
 							session={c}
 							child
@@ -346,6 +382,20 @@
 							swipeable
 							swipeLabel="Archive"
 							onSwipe={swipeArchive}
+						/>
+					{/each}
+					{#each childGroupsOf.get(s.id)?.workflows ?? [] as g (g.runId)}
+						<WorkflowGroup
+							runId={g.runId}
+							name={g.name}
+							agents={g.agents}
+							compact={dense}
+							pending={pending}
+							onopen={(x) => (openSession = x)}
+							selecting={selecting}
+							selected={selected}
+							onToggleSelect={toggleSelect}
+							swipeArchive={swipeArchive}
 						/>
 					{/each}
 				{/each}

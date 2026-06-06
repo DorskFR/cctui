@@ -1181,7 +1181,8 @@ impl Driver {
 
         for (parent_id, parent_path, cwd) in parents {
             let dir = transcript::subagents_dir(&parent_path);
-            for (agent_id, path) in transcript::discover_subagents(&dir) {
+            for entry in transcript::discover_subagents(&dir) {
+                let transcript::SubagentEntry { agent_id, path, workflow } = entry;
                 if self.ended_subagents.contains(&agent_id) {
                     continue;
                 }
@@ -1190,12 +1191,27 @@ impl Driver {
                         agent_id.clone(),
                         SubagentState { parent_local_id: parent_id.clone(), idle_ticks: 0 },
                     );
+                    // Base subagent meta; Workflow-tool agents (CCT-225) add
+                    // workflow run context so the UI can group them under a
+                    // named "Workflow: <name> (<runId>)" node.
+                    let mut extra = json!({ "subagent": true, "agent_id": agent_id });
+                    if let Some(wf) = &workflow {
+                        let obj = extra.as_object_mut().expect("json object literal");
+                        obj.insert("workflow_run_id".into(), json!(wf.run_id));
+                        if let Some(name) = &wf.name {
+                            obj.insert("workflow_name".into(), json!(name));
+                        }
+                        obj.insert(
+                            "agent_type".into(),
+                            json!(wf.agent_type.as_deref().unwrap_or("workflow-subagent")),
+                        );
+                    }
                     self.emit(AdapterEvent::SessionStarted {
                         local_id: agent_id.clone(),
                         meta: SessionMeta {
                             working_dir: Some(cwd.clone()),
                             parent_local_id: Some(parent_id.clone()),
-                            extra: json!({ "subagent": true, "agent_id": agent_id }),
+                            extra,
                         },
                     })
                     .await;
@@ -1941,6 +1957,47 @@ mod tests {
         assert!(started_parent, "parent SessionStarted expected");
         assert!(started_child, "subagent SessionStarted expected");
         assert!(child_text, "subagent transcript should stream through");
+    }
+
+    #[tokio::test]
+    async fn workflow_subagent_carries_workflow_meta() {
+        // CCT-225: a Workflow-tool agent under subagents/workflows/<runId>/ is
+        // discovered and its SessionStarted meta.extra carries workflow context.
+        use std::io::Write;
+        let (mut d, mut rx) = driver();
+        let sess = "abcd1234-uuid";
+        let parent_path = transcript::transcript_path(&d.cfg.projects_root, "/tmp", sess);
+        let run_dir =
+            transcript::subagents_dir(&parent_path).join("workflows").join("wf_test123");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        let mut f = std::fs::File::create(run_dir.join("agent-wfa.jsonl")).unwrap();
+        f.write_all(br#"{"type":"assistant","isSidechain":true,"agentId":"wfa","message":{"content":[{"type":"text","text":"wf work"}]}}"#).unwrap();
+        f.write_all(b"\n").unwrap();
+        std::fs::write(
+            run_dir.join("agent-wfa.meta.json"),
+            br#"{"agentType":"workflow-subagent"}"#,
+        )
+        .unwrap();
+        // Run-state with name (sibling: <session>/workflows/<runId>.json).
+        let wf_state = parent_path.with_extension("").join("workflows");
+        std::fs::create_dir_all(&wf_state).unwrap();
+        std::fs::write(wf_state.join("wf_test123.json"), br#"{"name":"deep-research"}"#).unwrap();
+
+        d.apply_snapshot(vec![snap("abcd1234", "working", None)]).await;
+
+        let mut extra = None;
+        while let Ok(evt) = rx.try_recv() {
+            if let AdapterEvent::SessionStarted { local_id, meta } = evt {
+                if local_id == "wfa" {
+                    extra = Some(meta.extra);
+                }
+            }
+        }
+        let extra = extra.expect("workflow subagent SessionStarted expected");
+        assert_eq!(extra.get("subagent").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(extra.get("workflow_run_id").and_then(|v| v.as_str()), Some("wf_test123"));
+        assert_eq!(extra.get("workflow_name").and_then(|v| v.as_str()), Some("deep-research"));
+        assert_eq!(extra.get("agent_type").and_then(|v| v.as_str()), Some("workflow-subagent"));
     }
 
     #[tokio::test]

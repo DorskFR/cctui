@@ -58,12 +58,44 @@ pub fn subagents_dir(parent_transcript: &Path) -> PathBuf {
     parent_transcript.with_extension("").join("subagents")
 }
 
-/// List `(agent_id, path)` for every `agent-<agentId>.jsonl` transcript in
-/// `dir`. A missing directory (the common case — most sessions spawn no
-/// subagents) yields an empty vec. The `agentId` is the stable subagent
-/// identifier Claude assigns (also the id the Agent tool returns).
+/// Workflow-tool context for a subagent transcript discovered under
+/// `subagents/workflows/<runId>/` (CCT-225). The Task tool's flat
+/// `subagents/agent-*.jsonl` layout has no workflow, so this is `None` there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowContext {
+    /// The workflow run id (e.g. `wf_fab6efd5-4bf`), = the `<runId>` dir name.
+    pub run_id: String,
+    /// Human workflow name (e.g. `deep-research`) from `workflows/<runId>.json`,
+    /// if resolvable.
+    pub name: Option<String>,
+    /// `agentType` from the agent's `.meta.json` (e.g. `workflow-subagent`).
+    pub agent_type: Option<String>,
+}
+
+/// A discovered subagent transcript: its agent id, transcript path, and (for
+/// Workflow-tool agents) the enclosing workflow run context.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubagentEntry {
+    pub agent_id: String,
+    pub path: PathBuf,
+    pub workflow: Option<WorkflowContext>,
+}
+
+/// Discover every subagent transcript reachable from a parent session's
+/// `subagents/` dir. Covers two layouts:
+///
+/// 1. Task tool — flat `subagents/agent-<agentId>.jsonl` (CCT-141).
+/// 2. Workflow tool — nested `subagents/workflows/<runId>/agent-<agentId>.jsonl`
+///    (CCT-225), with per-agent `.meta.json` (`agentType`) and a run-state
+///    `workflows/<runId>.json` one level up under the session dir carrying the
+///    workflow name. Nested `workflow()` calls reuse the same dir shape, so the
+///    single-level glob below covers them too.
+///
+/// A missing directory (the common case — most sessions spawn no subagents)
+/// yields an empty vec. The `agentId` is the stable subagent identifier Claude
+/// assigns (also the id the Agent tool returns).
 #[must_use]
-pub fn discover_subagents(dir: &Path) -> Vec<(String, PathBuf)> {
+pub fn discover_subagents(dir: &Path) -> Vec<SubagentEntry> {
     let mut out = Vec::new();
     let Ok(entries) = std::fs::read_dir(dir) else {
         return out;
@@ -73,13 +105,86 @@ pub fn discover_subagents(dir: &Path) -> Vec<(String, PathBuf)> {
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        if let Some(agent_id) =
-            name.strip_prefix("agent-").and_then(|rest| rest.strip_suffix(".jsonl"))
-        {
-            out.push((agent_id.to_owned(), path.clone()));
+        if let Some(agent_id) = name.strip_prefix("agent-").and_then(strip_jsonl) {
+            out.push(SubagentEntry { agent_id: agent_id.to_owned(), path, workflow: None });
+        } else if name == "workflows" && path.is_dir() {
+            discover_workflow_subagents(&path, &mut out);
         }
     }
     out
+}
+
+fn strip_jsonl(name: &str) -> Option<&str> {
+    name.strip_suffix(".jsonl")
+}
+
+/// Scan `subagents/workflows/` — one `<runId>/` dir per workflow run, each
+/// holding `agent-<id>.jsonl` transcripts (+ `.meta.json` sidecars).
+fn discover_workflow_subagents(workflows_dir: &Path, out: &mut Vec<SubagentEntry>) {
+    let Ok(runs) = std::fs::read_dir(workflows_dir) else {
+        return;
+    };
+    for run in runs.flatten() {
+        let run_dir = run.path();
+        if !run_dir.is_dir() {
+            continue;
+        }
+        let Some(run_id) = run_dir.file_name().and_then(|n| n.to_str()).map(str::to_owned) else {
+            continue;
+        };
+        let name = workflow_name(workflows_dir, &run_id);
+        let Ok(agents) = std::fs::read_dir(&run_dir) else {
+            continue;
+        };
+        for agent in agents.flatten() {
+            let path = agent.path();
+            let Some(fname) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            let Some(agent_id) = fname.strip_prefix("agent-").and_then(strip_jsonl) else {
+                continue;
+            };
+            let agent_type = agent_type_from_meta(&run_dir, agent_id);
+            out.push(SubagentEntry {
+                agent_id: agent_id.to_owned(),
+                path: path.clone(),
+                workflow: Some(WorkflowContext {
+                    run_id: run_id.clone(),
+                    name: name.clone(),
+                    agent_type,
+                }),
+            });
+        }
+    }
+}
+
+/// Read the workflow name from the run-state file
+/// `<session-dir>/workflows/<runId>.json` (one level up from the subagents
+/// `workflows/` dir). The run state lives under `<session>/workflows/`, while
+/// transcripts live under `<session>/subagents/workflows/` — siblings of the
+/// session dir.
+fn workflow_name(subagents_workflows_dir: &Path, run_id: &str) -> Option<String> {
+    // subagents_workflows_dir = <session>/subagents/workflows
+    // run state              = <session>/workflows/<runId>.json
+    let session_dir = subagents_workflows_dir.parent()?.parent()?;
+    let run_state = session_dir.join("workflows").join(format!("{run_id}.json"));
+    let bytes = std::fs::read(run_state).ok()?;
+    let value: Value = serde_json::from_slice(&bytes).ok()?;
+    value
+        .get("name")
+        .and_then(Value::as_str)
+        .or_else(|| value.pointer("/script/name").and_then(Value::as_str))
+        .or_else(|| value.pointer("/script/meta/name").and_then(Value::as_str))
+        .map(str::to_owned)
+}
+
+/// Read `agentType` from a workflow agent's `.meta.json` sidecar
+/// (`<runId>/agent-<id>.meta.json`).
+fn agent_type_from_meta(run_dir: &Path, agent_id: &str) -> Option<String> {
+    let meta_path = run_dir.join(format!("agent-{agent_id}.meta.json"));
+    let bytes = std::fs::read(meta_path).ok()?;
+    let value: Value = serde_json::from_slice(&bytes).ok()?;
+    value.get("agentType").and_then(Value::as_str).map(str::to_owned)
 }
 
 /// Read new lines from `path` starting at `offset`. Returns the parsed
@@ -433,14 +538,90 @@ mod tests {
         std::fs::write(dir.join("notes.txt"), b"x").unwrap();
         std::fs::write(dir.join("agent-partial.json"), b"x").unwrap();
         let mut found = discover_subagents(dir);
-        found.sort();
+        found.sort_by(|a, b| a.agent_id.cmp(&b.agent_id));
         assert_eq!(
             found,
             vec![
-                ("a8412884de5cc5396".to_owned(), dir.join("agent-a8412884de5cc5396.jsonl")),
-                ("b0c27d990208c793".to_owned(), dir.join("agent-b0c27d990208c793.jsonl")),
+                SubagentEntry {
+                    agent_id: "a8412884de5cc5396".to_owned(),
+                    path: dir.join("agent-a8412884de5cc5396.jsonl"),
+                    workflow: None,
+                },
+                SubagentEntry {
+                    agent_id: "b0c27d990208c793".to_owned(),
+                    path: dir.join("agent-b0c27d990208c793.jsonl"),
+                    workflow: None,
+                },
             ]
         );
+    }
+
+    #[test]
+    fn discover_subagents_finds_nested_workflow_agents() {
+        // CCT-225: Workflow-tool agents live under subagents/workflows/<runId>/.
+        let tmp = tempfile::tempdir().unwrap();
+        // Lay out a realistic <session>/ tree.
+        let session = tmp.path().join("-home-dorsk").join("bea6c407");
+        let subagents = session.join("subagents");
+        let run_dir = subagents.join("workflows").join("wf_fab6efd5-4bf");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        // Two workflow agents, one with a meta sidecar.
+        std::fs::write(run_dir.join("agent-aaa.jsonl"), b"{}\n").unwrap();
+        std::fs::write(run_dir.join("agent-bbb.jsonl"), b"{}\n").unwrap();
+        std::fs::write(
+            run_dir.join("agent-aaa.meta.json"),
+            br#"{"agentType":"workflow-subagent"}"#,
+        )
+        .unwrap();
+        // Run-state file carries the workflow name.
+        let wf_state = session.join("workflows");
+        std::fs::create_dir_all(&wf_state).unwrap();
+        std::fs::write(wf_state.join("wf_fab6efd5-4bf.json"), br#"{"name":"deep-research"}"#)
+            .unwrap();
+        // Also a flat Task-tool agent alongside.
+        std::fs::write(subagents.join("agent-flat.jsonl"), b"{}\n").unwrap();
+
+        let mut found = discover_subagents(&subagents);
+        found.sort_by(|a, b| a.agent_id.cmp(&b.agent_id));
+        assert_eq!(found.len(), 3);
+
+        let aaa = found.iter().find(|e| e.agent_id == "aaa").unwrap();
+        assert_eq!(
+            aaa.workflow,
+            Some(WorkflowContext {
+                run_id: "wf_fab6efd5-4bf".to_owned(),
+                name: Some("deep-research".to_owned()),
+                agent_type: Some("workflow-subagent".to_owned()),
+            })
+        );
+        let bbb = found.iter().find(|e| e.agent_id == "bbb").unwrap();
+        assert_eq!(
+            bbb.workflow,
+            Some(WorkflowContext {
+                run_id: "wf_fab6efd5-4bf".to_owned(),
+                name: Some("deep-research".to_owned()),
+                agent_type: None, // no meta sidecar
+            })
+        );
+        let flat = found.iter().find(|e| e.agent_id == "flat").unwrap();
+        assert_eq!(flat.workflow, None);
+    }
+
+    #[test]
+    fn workflow_name_falls_back_to_script_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session = tmp.path().join("sess");
+        let run_dir = session.join("subagents").join("workflows").join("wf_x");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        std::fs::write(run_dir.join("agent-z.jsonl"), b"{}\n").unwrap();
+        let wf_state = session.join("workflows");
+        std::fs::create_dir_all(&wf_state).unwrap();
+        // No top-level `name`, but script.name present.
+        std::fs::write(wf_state.join("wf_x.json"), br#"{"script":{"name":"scripted"}}"#).unwrap();
+
+        let found = discover_subagents(&session.join("subagents"));
+        let z = found.iter().find(|e| e.agent_id == "z").unwrap();
+        assert_eq!(z.workflow.as_ref().unwrap().name.as_deref(), Some("scripted"));
     }
 
     #[test]
