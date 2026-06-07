@@ -85,7 +85,8 @@ impl AuthConfig {
         let row: Option<(Uuid, Uuid)> = sqlx::query_as(
             "SELECT m.id, m.user_id FROM machines m \
              JOIN users u ON u.id = m.user_id \
-             WHERE m.key_hash = $1 AND m.revoked_at IS NULL AND u.revoked_at IS NULL",
+             WHERE m.key_hash = $1 AND m.revoked_at IS NULL \
+             AND u.revoked_at IS NULL AND u.disabled_at IS NULL",
         )
         .bind(&hash)
         .fetch_optional(&self.pool)
@@ -113,12 +114,14 @@ impl AuthConfig {
         // User lookup. Two surfaces:
         //   1. `users.key_hash` — original single-token-per-user model (008).
         //   2. `user_tokens` — many tokens per user, labelled, revocable (014).
-        let row: Option<(Uuid,)> =
-            sqlx::query_as("SELECT id FROM users WHERE key_hash = $1 AND revoked_at IS NULL")
-                .bind(&hash)
-                .fetch_optional(&self.pool)
-                .await
-                .unwrap_or(None);
+        let row: Option<(Uuid,)> = sqlx::query_as(
+            "SELECT id FROM users \
+                 WHERE key_hash = $1 AND revoked_at IS NULL AND disabled_at IS NULL",
+        )
+        .bind(&hash)
+        .fetch_optional(&self.pool)
+        .await
+        .unwrap_or(None);
 
         if let Some((user_id,)) = row {
             let ctx =
@@ -133,7 +136,8 @@ impl AuthConfig {
              WHERE t.token_hash = $1 \
              AND t.revoked_at IS NULL \
              AND (t.expires_at IS NULL OR t.expires_at > now()) \
-             AND u.revoked_at IS NULL",
+             AND u.revoked_at IS NULL \
+             AND u.disabled_at IS NULL",
         )
         .bind(&hash)
         .fetch_optional(&self.pool)

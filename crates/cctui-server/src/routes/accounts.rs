@@ -19,7 +19,7 @@ use dashmap::DashMap;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::auth::{AuthContext, require_user};
+use crate::auth::{AuthContext, TokenRole, require_user};
 use crate::routes::gateway;
 use crate::state::AppState;
 
@@ -40,12 +40,34 @@ pub struct PendingOAuthLogin {
     pub created_at: DateTime<Utc>,
 }
 
+/// Resolve which user an account operation targets (CCT-251). A user token
+/// always acts as itself; the env admin token has no user identity, so it must
+/// name the owner explicitly (`user_id` in the request). This is what lets an
+/// admin-authed webui run the "Sign in with Claude/ChatGPT" flows instead of
+/// bouncing off "user token required".
+fn resolve_owner(
+    ctx: &AuthContext,
+    explicit: Option<Uuid>,
+) -> Result<Uuid, (StatusCode, Json<serde_json::Value>)> {
+    match (ctx.role, ctx.user_id) {
+        (TokenRole::User, Some(uid)) => Ok(uid),
+        (TokenRole::Admin, _) => explicit.ok_or_else(|| {
+            err(StatusCode::BAD_REQUEST, "user_id required when using the admin token")
+        }),
+        _ => Err(err(StatusCode::FORBIDDEN, "user or admin token required")),
+    }
+}
+
 /// API view of an account — secrets (tokens) deliberately absent.
 #[derive(Debug, serde::Serialize, sqlx::FromRow)]
 pub struct AccountInfo {
     pub id: Uuid,
     pub name: String,
     pub provider: String,
+    /// Owning user (CCT-251) — admins see all accounts, so the owner matters.
+    pub user_id: Uuid,
+    /// Owner's name for display; only populated on the list query's join.
+    pub user_name: Option<String>,
     pub expires_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub last_used_at: Option<DateTime<Utc>>,
@@ -68,6 +90,10 @@ pub struct CreateAccount {
     /// refreshes on first use.
     #[serde(default)]
     pub expires_at: Option<i64>,
+    /// Owning user — required (and only honoured) when authenticated with the
+    /// admin token, which has no user identity of its own (CCT-251).
+    #[serde(default)]
+    pub user_id: Option<Uuid>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -80,17 +106,23 @@ fn err(code: StatusCode, msg: &str) -> (StatusCode, Json<serde_json::Value>) {
 }
 
 /// `GET /api/v1/accounts` — the caller's own accounts (tokens never returned).
+/// Admin sees every account, with the owner's name joined in (CCT-251).
 pub async fn list_accounts(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
 ) -> Result<Json<Vec<AccountInfo>>, (StatusCode, Json<serde_json::Value>)> {
-    let uid = require_user(&ctx).map_err(|c| err(c, "user token required"))?;
+    if ctx.role != TokenRole::Admin && require_user(&ctx).is_err() {
+        return Err(err(StatusCode::FORBIDDEN, "user or admin token required"));
+    }
     let rows: Vec<AccountInfo> = sqlx::query_as(
-        "SELECT id, name, provider, expires_at, created_at, last_used_at, \
-                request_count, bytes_transferred \
-         FROM oauth_accounts WHERE user_id = $1 ORDER BY provider, name",
+        "SELECT a.id, a.name, a.provider, a.user_id, u.name AS user_name, \
+                a.expires_at, a.created_at, a.last_used_at, \
+                a.request_count, a.bytes_transferred \
+         FROM oauth_accounts a JOIN users u ON u.id = a.user_id \
+         WHERE $1::uuid IS NULL OR a.user_id = $1 \
+         ORDER BY a.provider, a.name",
     )
-    .bind(uid)
+    .bind(ctx.user_id)
     .fetch_all(&state.pool)
     .await
     .map_err(|e| {
@@ -106,7 +138,7 @@ pub async fn create_account(
     Extension(ctx): Extension<AuthContext>,
     Json(req): Json<CreateAccount>,
 ) -> Result<(StatusCode, Json<AccountInfo>), (StatusCode, Json<serde_json::Value>)> {
-    let uid = require_user(&ctx).map_err(|c| err(c, "user token required"))?;
+    let uid = resolve_owner(&ctx, req.user_id)?;
     if req.name.trim().is_empty() {
         return Err(err(StatusCode::BAD_REQUEST, "name required"));
     }
@@ -126,7 +158,8 @@ pub async fn create_account(
         "INSERT INTO oauth_accounts \
             (user_id, name, provider, encrypted_refresh_token, encrypted_access_token, expires_at) \
          VALUES ($1, $2, $3, $4, $5, $6) \
-         RETURNING id, name, provider, expires_at, created_at, last_used_at, \
+         RETURNING id, name, provider, user_id, NULL::text AS user_name, \
+                   expires_at, created_at, last_used_at, \
                    request_count, bytes_transferred",
     )
     .bind(uid)
@@ -157,17 +190,22 @@ pub async fn rename_account(
     Path(id): Path<Uuid>,
     Json(req): Json<RenameAccount>,
 ) -> Result<Json<AccountInfo>, (StatusCode, Json<serde_json::Value>)> {
-    let uid = require_user(&ctx).map_err(|c| err(c, "user token required"))?;
+    if ctx.role != TokenRole::Admin && require_user(&ctx).is_err() {
+        return Err(err(StatusCode::FORBIDDEN, "user or admin token required"));
+    }
     if req.name.trim().is_empty() {
         return Err(err(StatusCode::BAD_REQUEST, "name required"));
     }
+    // Admin (`ctx.user_id` = NULL) may rename any account; a user only its own.
     let row: Option<AccountInfo> = sqlx::query_as(
-        "UPDATE oauth_accounts SET name = $3 WHERE id = $1 AND user_id = $2 \
-         RETURNING id, name, provider, expires_at, created_at, last_used_at, \
+        "UPDATE oauth_accounts SET name = $3 \
+         WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2) \
+         RETURNING id, name, provider, user_id, NULL::text AS user_name, \
+                   expires_at, created_at, last_used_at, \
                    request_count, bytes_transferred",
     )
     .bind(id)
-    .bind(uid)
+    .bind(ctx.user_id)
     .bind(req.name.trim())
     .fetch_optional(&state.pool)
     .await
@@ -184,16 +222,21 @@ pub async fn delete_account(
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, (StatusCode, Json<serde_json::Value>)> {
-    let uid = require_user(&ctx).map_err(|c| err(c, "user token required"))?;
-    let res = sqlx::query("DELETE FROM oauth_accounts WHERE id = $1 AND user_id = $2")
-        .bind(id)
-        .bind(uid)
-        .execute(&state.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("db error: {e}");
-            err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
-        })?;
+    if ctx.role != TokenRole::Admin && require_user(&ctx).is_err() {
+        return Err(err(StatusCode::FORBIDDEN, "user or admin token required"));
+    }
+    // Admin (`ctx.user_id` = NULL) may delete any account; a user only its own.
+    let res = sqlx::query(
+        "DELETE FROM oauth_accounts WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)",
+    )
+    .bind(id)
+    .bind(ctx.user_id)
+    .execute(&state.pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("db error: {e}");
+        err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
+    })?;
     if res.rows_affected() == 0 {
         return Err(err(StatusCode::NOT_FOUND, "no such account"));
     }
@@ -221,6 +264,10 @@ pub async fn delete_account(
 pub struct OAuthStart {
     /// `anthropic` ("Sign in with Claude") or `openai` ("Sign in with ChatGPT").
     pub provider: String,
+    /// Owning user — required (and only honoured) when authenticated with the
+    /// admin token (CCT-251).
+    #[serde(default)]
+    pub user_id: Option<Uuid>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -352,7 +399,7 @@ pub async fn oauth_start(
     Extension(ctx): Extension<AuthContext>,
     Json(req): Json<OAuthStart>,
 ) -> Result<Json<OAuthStartResponse>, (StatusCode, Json<serde_json::Value>)> {
-    let uid = require_user(&ctx).map_err(|c| err(c, "user token required"))?;
+    let uid = resolve_owner(&ctx, req.user_id)?;
     if !matches!(req.provider.as_str(), "anthropic" | "openai") {
         return Err(err(StatusCode::BAD_REQUEST, "provider must be anthropic|openai"));
     }
@@ -416,7 +463,9 @@ pub async fn oauth_finish(
     Extension(ctx): Extension<AuthContext>,
     Json(req): Json<OAuthFinish>,
 ) -> Result<(StatusCode, Json<AccountInfo>), (StatusCode, Json<serde_json::Value>)> {
-    let uid = require_user(&ctx).map_err(|c| err(c, "user token required"))?;
+    if ctx.role != TokenRole::Admin && require_user(&ctx).is_err() {
+        return Err(err(StatusCode::FORBIDDEN, "user or admin token required"));
+    }
     if req.name.trim().is_empty() {
         return Err(err(StatusCode::BAD_REQUEST, "name required"));
     }
@@ -424,11 +473,14 @@ pub async fn oauth_finish(
     sweep_expired(&state.pending_oauth_logins);
 
     // Consume the pending record (single-use), but only if it belongs to the
-    // caller — never let one user finish another user's login.
+    // caller — never let one user finish another user's login. Admin started
+    // the flow on behalf of the owner stored in the record, so it may finish
+    // any pending login (CCT-251). The account lands on the stored owner.
     let pending = match state.pending_oauth_logins.get(&req.nonce) {
-        Some(p) if p.user_id == uid => p.clone(),
+        Some(p) if ctx.role == TokenRole::Admin || ctx.user_id == Some(p.user_id) => p.clone(),
         _ => return Err(err(StatusCode::BAD_REQUEST, "unknown or expired login")),
     };
+    let uid = pending.user_id;
     state.pending_oauth_logins.remove(&req.nonce);
 
     // The token exchange differs per provider: anthropic posts JSON with the
@@ -508,7 +560,8 @@ pub async fn oauth_finish(
             (user_id, name, provider, encrypted_refresh_token, encrypted_access_token, \
              expires_at, provider_account_id) \
          VALUES ($1, $2, $3, $4, $5, $6, $7) \
-         RETURNING id, name, provider, expires_at, created_at, last_used_at, \
+         RETURNING id, name, provider, user_id, NULL::text AS user_name, \
+                   expires_at, created_at, last_used_at, \
                    request_count, bytes_transferred",
     )
     .bind(uid)

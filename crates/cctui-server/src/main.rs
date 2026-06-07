@@ -128,6 +128,7 @@ async fn main() -> anyhow::Result<()> {
             patch(routes::accounts::rename_account).delete(routes::accounts::delete_account),
         )
         .route("/machines/{machine_id}/commands/pending", get(routes::spawn::get_machine_commands))
+        .route("/me", get(routes::me::me))
         .route("/enroll", post(routes::enroll::enroll))
         .route("/deenroll", post(routes::enroll::deenroll))
         .route(

@@ -2,6 +2,8 @@
 	import {
 		useAccounts,
 		useAccountActions,
+		useMe,
+		useUsers,
 		type OAuthAccount,
 		type CreateAccount,
 	} from '$lib/queries';
@@ -10,6 +12,17 @@
 
 	const accounts = useAccounts();
 	const actions = useAccountActions();
+	// Accounts are user-owned; the admin token has no user identity, so an
+	// admin operator picks the owning user explicitly (CCT-251).
+	const me = useMe();
+	const isAdmin = $derived($me.data?.role === 'admin');
+	const users = useUsers(() => isAdmin);
+	const activeUsers = $derived(($users.data ?? []).filter((u) => !u.revoked_at));
+	let ownerId = $state('');
+	// Default the owner select to the first active user once loaded.
+	$effect(() => {
+		if (isAdmin && !ownerId && activeUsers.length) ownerId = activeUsers[0].id;
+	});
 	const guard = (p: Promise<unknown>) => p.catch((e: Error) => toasts.err(e.message));
 
 	// Editor state. `editing` holds the id when renaming, null when creating a
@@ -39,9 +52,13 @@
 	// new tab, and reveal the paste field. Works for both Claude (anthropic) and
 	// "Sign in with ChatGPT" for Codex (openai) — CCT-243/CCT-244.
 	async function startOAuthLogin() {
+		if (isAdmin && !ownerId) {
+			toasts.err('Pick the owning user first');
+			return;
+		}
 		oauthBusy = true;
 		try {
-			const r = await actions.oauthStart(provider);
+			const r = await actions.oauthStart(provider, isAdmin ? ownerId : undefined);
 			oauthNonce = r.nonce;
 			window.open(r.authorize_url, '_blank', 'noopener');
 			if (provider === 'openai') {
@@ -120,10 +137,15 @@
 					toasts.err('Refresh token is required');
 					return;
 				}
+				if (isAdmin && !ownerId) {
+					toasts.err('Pick the owning user first');
+					return;
+				}
 				const body: CreateAccount = {
 					name: name.trim(),
 					provider,
 					refresh_token: refreshToken.trim(),
+					...(isAdmin ? { user_id: ownerId } : {}),
 				};
 				await actions.create(body);
 				toasts.ok('Account added');
@@ -167,6 +189,7 @@
 			<thead>
 				<tr>
 					<th class="col-name">Name</th>
+					{#if isAdmin}<th class="col-owner">Owner</th>{/if}
 					<th class="col-prov">Provider</th>
 					<th class="col-usage">Requests</th>
 					<th class="col-usage">Bytes</th>
@@ -179,6 +202,7 @@
 				{#each rows as a (a.id)}
 					<tr>
 						<td class="col-name"><span class="name">{a.name}</span></td>
+						{#if isAdmin}<td class="col-owner faint">{a.user_name ?? '—'}</td>{/if}
 						<td class="col-prov"><span class="badge">{providerLabel(a.provider)}</span></td>
 						<td class="col-usage faint">{compact(a.request_count)}</td>
 						<td class="col-usage faint">{compact(a.bytes_transferred)}</td>
@@ -217,6 +241,16 @@
 				<input class="input" bind:value={name} placeholder="personal" />
 			</label>
 			{#if !editing}
+				{#if isAdmin}
+					<label class="fld">
+						<span>Owner</span>
+						<select class="input" bind:value={ownerId}>
+							{#each activeUsers as u (u.id)}
+								<option value={u.id}>{u.name}</option>
+							{/each}
+						</select>
+					</label>
+				{/if}
 				<label class="fld">
 					<span>Provider</span>
 					<select
@@ -342,6 +376,9 @@
 	}
 	.col-prov {
 		width: 7rem;
+	}
+	.col-owner {
+		width: 8rem;
 	}
 	.col-usage {
 		width: 6rem;

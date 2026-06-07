@@ -60,13 +60,15 @@ pub async fn enroll(
     };
 
     sqlx::query(
-        "INSERT INTO machines (id, user_id, name, key_hash, kind) VALUES ($1, $2, $3, $4, $5)",
+        "INSERT INTO machines (id, user_id, name, key_hash, kind, key_preview) \
+         VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind(machine_id)
     .bind(user_id)
     .bind(&req.hostname)
     .bind(&key_hash)
     .bind(kind)
+    .bind(crate::auth::token_preview(&token))
     .execute(&state.pool)
     .await
     .map_err(|e| {

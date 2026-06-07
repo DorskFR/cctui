@@ -17,6 +17,7 @@ import type { CreateUserResponse } from '@bindings/CreateUserResponse';
 import type { RotateResponse } from '@bindings/RotateResponse';
 import type { MintTokenResponse } from '@bindings/MintTokenResponse';
 import type { VersionInfo } from '@bindings/VersionInfo';
+import type { MeResponse } from '@bindings/MeResponse';
 
 /** Machine kinds the server manages itself — the per-user `dispatch` machine
  * and one-shot `ephemeral` worker pods. They are never spawn targets and are
@@ -49,6 +50,9 @@ export interface OAuthAccount {
 	id: string;
 	name: string;
 	provider: string;
+	/** Owning user (CCT-251) — shown to admins, who see all accounts. */
+	user_id: string;
+	user_name: string | null;
 	expires_at: string | null;
 	created_at: string;
 	last_used_at: string | null;
@@ -64,6 +68,8 @@ export interface CreateAccount {
 	refresh_token: string;
 	access_token?: string;
 	expires_at?: number;
+	/** Owner — required when authenticated with the admin token (CCT-251). */
+	user_id?: string;
 }
 
 /** "Sign in with Claude" OAuth start payload/response (CCT-243). */
@@ -102,6 +108,8 @@ export const qk = {
 /** Raw typed fetchers — also usable outside of components. */
 export const endpoints = {
 	version: () => api.get<VersionInfo>('/version'),
+	/** Who the stored bearer token resolves to (CCT-251). */
+	me: () => api.get<MeResponse>('/me'),
 	sessions: (archived: boolean) =>
 		api.get<SessionListResponse>('/sessions', {
 			include_archived: archived || undefined,
@@ -175,8 +183,11 @@ export const endpoints = {
 	renameAccount: (id: string, name: string) =>
 		api.patch<OAuthAccount>(`/accounts/${id}`, { name }),
 	deleteAccount: (id: string) => api.del<void>(`/accounts/${id}`),
-	oauthStart: (provider: string) =>
-		api.post<OAuthStartResponse>('/accounts/oauth/start', { provider }),
+	oauthStart: (provider: string, userId?: string) =>
+		api.post<OAuthStartResponse>('/accounts/oauth/start', {
+			provider,
+			user_id: userId,
+		}),
 	oauthFinish: (body: OAuthFinish) =>
 		api.post<OAuthAccount>('/accounts/oauth/finish', body),
 	/** Every spawnable machine across all active users — for the spawn picker.
@@ -200,6 +211,13 @@ export const endpoints = {
  * This svelte-query build types options as `T | Readable<T>` (not an accessor
  * function), so reactive params are bridged from runes via Svelte 5's
  * `toStore(getter)`; param-less queries pass a plain options object. */
+
+export const useMe = () =>
+	createQuery({
+		queryKey: ['me'],
+		queryFn: endpoints.me,
+		staleTime: 5 * 60_000,
+	});
 
 export const useVersion = () =>
 	createQuery({
@@ -246,8 +264,14 @@ export const useRecentDirs = (machineId: () => string) =>
 		})),
 	);
 
-export const useUsers = () =>
-	createQuery({ queryKey: qk.users, queryFn: endpoints.users });
+export const useUsers = (enabled: () => boolean = () => true) =>
+	createQuery(
+		toStore(() => ({
+			queryKey: qk.users,
+			queryFn: endpoints.users,
+			enabled: enabled(),
+		})),
+	);
 
 export const useDispatchers = (enabled: () => boolean) =>
 	createQuery(
@@ -452,10 +476,11 @@ export function useUserActions() {
 			});
 			invalUsers();
 		},
-		rotate: async (id: string): Promise<RotateResponse> => {
-			const r = await api.post<RotateResponse>(`/admin/users/${id}/rotate`);
+		// Temporary on/off switch (CCT-251) — unlike revoke, nothing is
+		// invalidated; flipping back restores all tokens + machines.
+		setDisabled: async (id: string, disabled: boolean) => {
+			await api.patch<void>(`/admin/users/${id}`, { disabled });
 			invalUsers();
-			return r;
 		},
 		revoke: async (id: string) => {
 			await api.del<void>(`/admin/users/${id}`);
@@ -492,14 +517,6 @@ export function useUserActions() {
 		purgeToken: async (userId: string, tokenId: string) => {
 			await api.del<void>(`/admin/users/${userId}/tokens/${tokenId}/purge`);
 			invalUser(userId);
-		},
-		rotateMachine: async (
-			userId: string,
-			id: string,
-		): Promise<RotateResponse> => {
-			const r = await api.post<RotateResponse>(`/admin/machines/${id}/rotate`);
-			invalUser(userId);
-			return r;
 		},
 		// The PATCH replaces both fields (display_name + hue), so callers pass
 		// the full pair — send the current value for the field they didn't touch.
@@ -566,7 +583,8 @@ export function useAccountActions() {
 		// "Sign in with Claude" (CCT-243): start returns the authorize URL the
 		// page opens in a new tab; finish exchanges the pasted code for tokens
 		// and creates the account (no inval needed on start, only on finish).
-		oauthStart: (provider: string) => endpoints.oauthStart(provider),
+		oauthStart: (provider: string, userId?: string) =>
+			endpoints.oauthStart(provider, userId),
 		oauthFinish: async (body: OAuthFinish) => {
 			const r = await endpoints.oauthFinish(body);
 			inval();

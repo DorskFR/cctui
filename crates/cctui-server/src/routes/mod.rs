@@ -9,6 +9,7 @@ pub mod dispatchers;
 pub mod enroll;
 pub mod gateway;
 pub mod manifest;
+pub mod me;
 pub mod permissions;
 pub mod prompts;
 pub mod sessions;

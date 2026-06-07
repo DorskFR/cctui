@@ -9,4 +9,9 @@ kind: string,
 /**
  * Operator-set badge hue (0-359, CCT-222). `None` = hash of the name.
  */
-hue: number | null, };
+hue: number | null, 
+/**
+ * Non-secret machine-key fragment, e.g. `cctui_m_ab1234…ef34` (CCT-251).
+ * `None` for machines enrolled before the preview column existed.
+ */
+key_preview: string | null, };

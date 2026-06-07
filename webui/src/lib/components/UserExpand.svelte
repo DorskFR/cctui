@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { UserRow } from '@bindings/UserRow';
 	import MachineBadge from './MachineBadge.svelte';
-	import { useMachines, useTokens, useUserActions, SYSTEM_MACHINE_KINDS } from '$lib/queries';
+	import { useMachines, useTokens, useUserActions } from '$lib/queries';
 	import { dateOnly, relativeTime } from '$lib/format';
 	import { toasts } from '$lib/toast.svelte';
 
@@ -29,16 +29,16 @@
 	const actions = useUserActions();
 	const guard = (p: Promise<unknown>) => p.catch((e: Error) => toasts.err(e.message));
 
-	// Only real enrolled daemons belong in the machines list — the per-user
-	// `dispatch` machine and one-shot `ephemeral` worker pods are server-managed
-	// and hidden (CCT-185).
-	const realMachines = $derived(
-		($machines.data ?? []).filter((m) => !SYSTEM_MACHINE_KINDS.has(m.kind))
-	);
-	const hiddenCount = $derived(($machines.data ?? []).length - realMachines.length);
+	// Real enrolled daemons plus the server-managed per-user `dispatch` machine
+	// (shown read-only so its badge color stays editable — CCT-251). One-shot
+	// `ephemeral` worker pods stay hidden.
+	const shownMachines = $derived(($machines.data ?? []).filter((m) => m.kind !== 'ephemeral'));
+	const hiddenCount = $derived(($machines.data ?? []).length - shownMachines.length);
 
-	// Preset hue swatches for the per-machine color override (CCT-222).
+	// Preset hue swatches for the per-machine color override (CCT-222). Shown
+	// in a popover anchored to the machine badge (CCT-251), not inline.
 	const HUES = [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330];
+	let paletteFor = $state<string | null>(null);
 
 	function toggleDispatch() {
 		const next = !user.can_dispatch;
@@ -46,6 +46,12 @@
 			actions
 				.setCanDispatch(user.id, next)
 				.then(() => toasts.ok(next ? 'Dispatch enabled' : 'Dispatch disabled'))
+		);
+	}
+	function mintToken() {
+		const label = prompt('Token label (optional)', '')?.trim() || null;
+		guard(
+			actions.mintToken(user.id, label).then((r) => onsecret(`Token — ${user.name}`, r.token))
 		);
 	}
 	function relabelToken(tokenId: string, current: string | null) {
@@ -59,19 +65,17 @@
 		if (confirm('Delete this token? It is revoked and removed in one step.'))
 			guard(actions.purgeToken(user.id, tokenId));
 	}
-	function rotateMachine(id: string) {
-		if (!confirm('Rotate this machine key?')) return;
-		guard(actions.rotateMachine(user.id, id).then((r) => onsecret('New machine key', r.key)));
-	}
 	function renameMachine(id: string, current: string | null, hue: number | null) {
 		const displayName = prompt('Machine display name', current ?? '')?.trim() || null;
 		guard(actions.updateMachine(user.id, id, displayName, hue));
 	}
 	function setHue(id: string, displayName: string | null, hue: number | null) {
+		paletteFor = null;
 		guard(actions.updateMachine(user.id, id, displayName, hue));
 	}
 	function revokeMachine(id: string) {
-		if (confirm('Revoke this machine?')) guard(actions.revokeMachine(user.id, id));
+		if (confirm('Revoke this machine? Its key stops working; the daemon must re-enroll.'))
+			guard(actions.revokeMachine(user.id, id));
 	}
 	function purgeMachine(id: string) {
 		if (confirm('Permanently remove this revoked machine?')) guard(actions.purgeMachine(user.id, id));
@@ -105,44 +109,66 @@
 	<section class="stack sec">
 		<h3 class="sub-h">Machines</h3>
 		{#if $machines.isLoading}<span class="spin"></span>
-		{:else if !realMachines.length}<p class="faint sm">No machines.</p>
+		{:else if !shownMachines.length}<p class="faint sm">No machines.</p>
 		{:else}
-			{#each realMachines as mc (mc.id)}
+			{#each shownMachines as mc (mc.id)}
+				{@const system = mc.kind === 'dispatch'}
 				<div class="sub-row">
 					<div class="stack info">
 						<span class="row badge-line">
-							<MachineBadge name={mc.display_name || mc.name} id={mc.id} hue={mc.hue} />
-						</span>
-						<span class="faint sm">seen {relativeTime(mc.last_seen_at)}</span>
-					</div>
-					{#if !mc.revoked_at}
-						<div class="row swatches" role="radiogroup" aria-label="Badge color">
+							<!-- Clicking the badge opens the color popover (CCT-251). -->
 							<button
-								class="swatch auto"
-								class:active={mc.hue == null}
-								title="Auto (name hash)"
-								aria-label="Auto color"
-								onclick={() => setHue(mc.id, mc.display_name, null)}>A</button
+								class="badge-btn"
+								title="Badge color"
+								aria-label="Badge color"
+								disabled={!!mc.revoked_at}
+								onclick={() => (paletteFor = paletteFor === mc.id ? null : mc.id)}
 							>
-							{#each HUES as h (h)}
+								<MachineBadge name={mc.display_name || mc.name} id={mc.id} hue={mc.hue} />
+							</button>
+							{#if !mc.revoked_at && !system}
 								<button
-									class="swatch"
-									class:active={mc.hue === h}
-									style={`--sh:${h}`}
-									title={`Hue ${h}`}
-									aria-label={`Hue ${h}`}
-									onclick={() => setHue(mc.id, mc.display_name, h)}
-								></button>
-							{/each}
-						</div>
-					{/if}
+									class="pen"
+									title="Rename machine"
+									aria-label="Rename machine"
+									onclick={() => renameMachine(mc.id, mc.display_name, mc.hue)}>✎</button
+								>
+							{/if}
+							{#if system}<span class="badge">dispatch</span>{/if}
+							{#if paletteFor === mc.id}
+								<span class="palette-anchor">
+									<span class="row palette" role="radiogroup" aria-label="Badge color">
+										<button
+											class="swatch auto"
+											class:active={mc.hue == null}
+											title="Auto (name hash)"
+											aria-label="Auto color"
+											onclick={() => setHue(mc.id, mc.display_name, null)}>A</button
+										>
+										{#each HUES as h (h)}
+											<button
+												class="swatch"
+												class:active={mc.hue === h}
+												style={`--sh:${h}`}
+												title={`Hue ${h}`}
+												aria-label={`Hue ${h}`}
+												onclick={() => setHue(mc.id, mc.display_name, h)}
+											></button>
+										{/each}
+									</span>
+								</span>
+							{/if}
+						</span>
+						<span class="faint sm mono">{mc.key_preview ?? '••••••••'}</span>
+						<span class="faint sm"
+							>{system ? 'server-managed · ' : ''}seen {relativeTime(mc.last_seen_at)}</span
+						>
+					</div>
 					<div class="row row-wrap mini">
 						{#if mc.revoked_at}
 							<span class="badge badge-danger">revoked</span>
 							<button class="btn btn-sm btn-danger" onclick={() => purgeMachine(mc.id)}>Purge</button>
-						{:else}
-							<button class="btn btn-sm" onclick={() => renameMachine(mc.id, mc.display_name, mc.hue)}>Rename</button>
-							<button class="btn btn-sm" onclick={() => rotateMachine(mc.id)}>Rotate</button>
+						{:else if !system}
 							<button class="btn btn-sm btn-danger" onclick={() => revokeMachine(mc.id)}>Revoke</button>
 						{/if}
 					</div>
@@ -150,13 +176,20 @@
 			{/each}
 		{/if}
 		{#if hiddenCount > 0}
-			<p class="faint sm">{hiddenCount} server-managed machine{hiddenCount === 1 ? '' : 's'} hidden.</p>
+			<p class="faint sm">{hiddenCount} ephemeral worker machine{hiddenCount === 1 ? '' : 's'} hidden.</p>
 		{/if}
 	</section>
 
-	<!-- Tokens -->
+	<!-- Tokens: many per user, all resolving to this same user. Minting lives
+	     here (not on the user row) so it's clear what a "Token" is (CCT-251). -->
 	<section class="stack sec">
-		<h3 class="sub-h">Tokens</h3>
+		<div class="row sec-head">
+			<h3 class="sub-h">Tokens</h3>
+			<div class="spacer"></div>
+			{#if !revoked}
+				<button class="btn btn-sm" onclick={mintToken}>+ New token</button>
+			{/if}
+		</div>
 		{#if $tokens.isLoading}<span class="spin"></span>
 		{:else if !($tokens.data ?? []).length}<p class="faint sm">No tokens.</p>
 		{:else}
@@ -199,6 +232,9 @@
 		padding-top: var(--sp-2);
 		border-top: 1px solid var(--border);
 	}
+	.sec-head {
+		gap: var(--sp-2);
+	}
 	.sub-h {
 		font-size: var(--fs-sm);
 		color: var(--text-muted);
@@ -222,6 +258,30 @@
 	}
 	.badge-line {
 		gap: var(--sp-1);
+		position: relative;
+		flex-wrap: wrap;
+	}
+	.badge-btn {
+		background: none;
+		border: none;
+		padding: 0;
+		cursor: pointer;
+		font: inherit;
+	}
+	.badge-btn:disabled {
+		cursor: default;
+	}
+	.pen {
+		flex: none;
+		background: none;
+		border: none;
+		padding: 0 var(--sp-1);
+		cursor: pointer;
+		color: var(--text-muted);
+		font-size: var(--fs-sm);
+	}
+	.pen:hover {
+		color: var(--text);
 	}
 	.mini {
 		gap: var(--sp-1);
@@ -232,10 +292,24 @@
 	.perm {
 		gap: var(--sp-3);
 	}
-	/* hue swatches (CCT-222) */
-	.swatches {
+	/* hue popover anchored to the badge (CCT-251) */
+	.palette-anchor {
+		position: relative;
+	}
+	.palette {
+		position: absolute;
+		top: calc(100% + 4px);
+		left: 0;
+		z-index: 10;
 		gap: 4px;
 		flex-wrap: wrap;
+		width: max-content;
+		max-width: 12rem;
+		padding: var(--sp-2);
+		background: var(--bg-elevated-2);
+		border: 1px solid var(--border-strong);
+		border-radius: var(--r-md, 6px);
+		box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
 	}
 	.swatch {
 		width: 1.1rem;
@@ -256,7 +330,7 @@
 		box-shadow: 0 0 0 2px var(--bg);
 	}
 	.swatch.auto {
-		background: var(--bg-elevated-2);
+		background: var(--bg-elevated);
 		border: 1px dashed var(--border-strong);
 		color: var(--text-muted);
 		font-size: var(--fs-xs);

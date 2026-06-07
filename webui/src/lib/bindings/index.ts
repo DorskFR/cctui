@@ -11,6 +11,7 @@ export type * from './DispatchRequest';
 export type * from './DispatchResponse';
 export type * from './Liveness';
 export type * from './MachineRow';
+export type * from './MeResponse';
 export type * from './MessageRequest';
 export type * from './MintTokenRequest';
 export type * from './MintTokenResponse';

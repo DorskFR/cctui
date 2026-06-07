@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { useUsers, useUserActions } from '$lib/queries';
+	import { useUsers, useUserActions, useMe } from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
 	import { dateOnly } from '$lib/format';
 	import UserExpand from '$lib/components/UserExpand.svelte';
@@ -8,6 +8,7 @@
 	import { auth } from '$lib/auth.svelte';
 
 	const users = useUsers();
+	const me = useMe();
 	const actions = useUserActions();
 	const guard = (p: Promise<unknown>) => p.catch((e: Error) => toasts.err(e.message));
 
@@ -38,13 +39,24 @@
 		const name = prompt('New user name', current)?.trim();
 		if (name) guard(actions.rename(id, name).then(() => toasts.ok('Renamed')));
 	}
-	function rotate(id: string, name: string) {
-		if (!confirm(`Rotate key for ${name}? The old key stops working.`)) return;
-		guard(actions.rotate(id).then((r) => showSecret(`New key — ${name}`, r.key)));
-	}
 	function revoke(id: string, name: string) {
-		if (!confirm(`Revoke ${name}? All their machine keys are invalidated.`)) return;
+		if (
+			!confirm(
+				`Revoke ${name}? ALL their user tokens and machine keys stop working permanently. ` +
+					`To turn a user off temporarily, use the active toggle instead.`
+			)
+		)
+			return;
 		guard(actions.revoke(id).then(() => toasts.ok('Revoked')));
+	}
+	// Non-destructive on/off (CCT-251): auth fails while disabled, nothing is
+	// invalidated, flipping back restores everything.
+	function toggleDisabled(id: string, name: string, disabled: boolean) {
+		guard(
+			actions
+				.setDisabled(id, disabled)
+				.then(() => toasts.ok(disabled ? `${name} disabled` : `${name} enabled`))
+		);
 	}
 	function purgeUser(id: string, name: string) {
 		if (!confirm(`Permanently delete ${name}? This cannot be undone.`)) return;
@@ -54,10 +66,6 @@
 				expanded.delete(id);
 			})
 		);
-	}
-	function mint(id: string, name: string) {
-		const label = prompt('Token label (optional)', '')?.trim() || null;
-		guard(actions.mintToken(id, label).then((r) => showSecret(`Token — ${name}`, r.token)));
 	}
 
 	// Active first, then revoked; within each, by creation order (stable).
@@ -76,6 +84,28 @@
 	<div class="spacer"></div>
 	<button class="btn btn-primary btn-sm" onclick={createUser}>+ New user</button>
 </div>
+
+<!-- Who am I (CCT-251): role + identity + a non-secret preview of the stored
+     bearer, so "user token required" errors stop being a mystery. -->
+{#if $me.data}
+	{@const m = $me.data}
+	<div class="card whoami row">
+		<span class="faint">Signed in as</span>
+		<span class="badge" class:badge-warn={m.role === 'admin'} class:badge-ok={m.role === 'user'}
+			>{m.role}</span
+		>
+		{#if m.user_name}<span class="who-name">{m.user_name}</span>{/if}
+		<span class="mono faint preview">{m.token_preview}</span>
+		{#if m.role === 'admin'}
+			<span class="faint sm note"
+				>The admin token is server-wide and owns no machines or accounts — OAuth accounts are
+				created under a user.</span
+			>
+		{/if}
+		<div class="spacer"></div>
+		<button class="btn btn-sm" onclick={() => auth.clear()}>⏻ Log out</button>
+	</div>
+{/if}
 
 {#if ($users.data ?? []).length > 6}
 	<input class="input filter" placeholder="Filter users…" bind:value={filter} />
@@ -101,14 +131,26 @@
 					{@const open = expanded.has(u.id)}
 					<tr class="user-row" class:open>
 						<td class="col-name">
-							<button class="name-btn row" onclick={() => toggle(u.id)} aria-expanded={open}>
-								<span class="caret" class:open>›</span>
-								<span class="name truncate">{u.name}</span>
-							</button>
+							<span class="row name-line">
+								<button class="name-btn row" onclick={() => toggle(u.id)} aria-expanded={open}>
+									<span class="caret" class:open>›</span>
+									<span class="name truncate">{u.name}</span>
+								</button>
+								{#if !u.revoked_at}
+									<button
+										class="pen"
+										title="Rename user"
+										aria-label="Rename user"
+										onclick={() => rename(u.id, u.name)}>✎</button
+									>
+								{/if}
+							</span>
 						</td>
 						<td class="col-status">
 							{#if u.revoked_at}
 								<span class="badge badge-danger">revoked</span>
+							{:else if u.disabled_at}
+								<span class="badge badge-warn">disabled</span>
 							{:else}
 								<span class="badge badge-ok">active</span>
 								{#if !u.can_dispatch}
@@ -122,9 +164,17 @@
 								{#if u.revoked_at}
 									<button class="btn btn-sm btn-danger" onclick={() => purgeUser(u.id, u.name)}>Delete</button>
 								{:else}
-									<button class="btn btn-sm" onclick={() => rename(u.id, u.name)}>Rename</button>
-									<button class="btn btn-sm" onclick={() => mint(u.id, u.name)}>Token</button>
-									<button class="btn btn-sm" onclick={() => rotate(u.id, u.name)}>Rotate</button>
+									<button
+										class="switch"
+										class:on={!u.disabled_at}
+										role="switch"
+										aria-checked={!u.disabled_at}
+										title={u.disabled_at ? 'Enable user' : 'Disable user (temporary)'}
+										aria-label="Active"
+										onclick={() => toggleDisabled(u.id, u.name, !u.disabled_at)}
+									>
+										<span class="knob"></span>
+									</button>
 									<button class="btn btn-sm btn-danger" onclick={() => revoke(u.id, u.name)}>Revoke</button>
 								{/if}
 							</div>
@@ -147,20 +197,27 @@
 	<SecretReveal title={secret.title} secret={secret.value} onclose={() => (secret = null)} />
 {/if}
 
-<!-- Log out lives here with the rest of account management (CCT-241). -->
-<div class="logout">
-	<button class="btn btn-block" onclick={() => auth.clear()}>⏻ Log out</button>
-</div>
-
 <style>
 	.bar {
 		margin-bottom: var(--sp-4);
 	}
-	.logout {
-		margin-top: var(--sp-8);
-	}
 	.page-title {
 		font-size: var(--fs-2xl);
+	}
+	.whoami {
+		gap: var(--sp-2);
+		padding: var(--sp-2) var(--sp-3);
+		margin-bottom: var(--sp-4);
+		flex-wrap: wrap;
+	}
+	.who-name {
+		font-weight: var(--fw-semibold);
+	}
+	.preview {
+		font-size: var(--fs-xs);
+	}
+	.note {
+		font-size: var(--fs-xs);
 	}
 	.filter {
 		margin-bottom: var(--sp-3);
@@ -202,7 +259,11 @@
 		width: 8rem;
 	}
 	.col-actions {
-		width: 18rem;
+		width: 12rem;
+	}
+	.name-line {
+		gap: var(--sp-1);
+		max-width: 100%;
 	}
 	.name-btn {
 		background: none;
@@ -212,10 +273,28 @@
 		cursor: pointer;
 		color: var(--text);
 		font: inherit;
-		max-width: 100%;
+		min-width: 0;
 	}
 	.name {
 		font-weight: var(--fw-semibold);
+	}
+	.pen {
+		flex: none;
+		background: none;
+		border: none;
+		padding: 0 var(--sp-1);
+		cursor: pointer;
+		color: var(--text-muted);
+		font-size: var(--fs-sm);
+		opacity: 0;
+		transition: opacity 0.12s var(--ease);
+	}
+	.user-row:hover .pen,
+	.pen:focus-visible {
+		opacity: 1;
+	}
+	.pen:hover {
+		color: var(--text);
 	}
 	.caret {
 		flex: none;
@@ -230,12 +309,46 @@
 		margin-left: var(--sp-1);
 	}
 	.acts {
-		gap: var(--sp-1);
+		gap: var(--sp-2);
+		align-items: center;
 	}
 	.expand-row td {
 		padding: 0;
 		background: var(--bg-elevated);
 		border-top: 1px solid var(--border);
+	}
+	/* pill toggle (matches UserExpand's switch) */
+	.switch {
+		flex: none;
+		width: 2.75rem;
+		height: 1.6rem;
+		border-radius: var(--r-pill);
+		border: 1px solid var(--border-strong);
+		background: var(--bg-elevated-2);
+		padding: 2px;
+		display: flex;
+		align-items: center;
+		cursor: pointer;
+		transition:
+			background 0.14s var(--ease),
+			border-color 0.14s var(--ease);
+	}
+	.switch .knob {
+		width: 1.25rem;
+		height: 1.25rem;
+		border-radius: 50%;
+		background: var(--text-muted);
+		transition:
+			transform 0.14s var(--ease),
+			background 0.14s var(--ease);
+	}
+	.switch.on {
+		background: var(--accent);
+		border-color: var(--accent);
+	}
+	.switch.on .knob {
+		transform: translateX(1.15rem);
+		background: var(--text-on-accent);
 	}
 
 	@media (max-width: 720px) {
@@ -246,7 +359,7 @@
 			width: 7rem;
 		}
 		.col-actions {
-			width: 12rem;
+			width: 10rem;
 		}
 	}
 </style>

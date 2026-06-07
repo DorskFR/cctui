@@ -8,4 +8,8 @@ export type UpdateUserRequest = {
 /**
  * Blank/whitespace is rejected (name is `NOT NULL`); `None` leaves it.
  */
-name: string | null, can_dispatch: boolean | null, };
+name: string | null, can_dispatch: boolean | null, 
+/**
+ * `true` sets `disabled_at = now()`, `false` clears it (CCT-251).
+ */
+disabled: boolean | null, };

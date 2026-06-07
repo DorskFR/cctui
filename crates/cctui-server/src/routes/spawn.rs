@@ -100,12 +100,10 @@ pub async fn spawn_session(
     let command_id = Uuid::new_v4();
     let mut env = req.env.clone();
     if let Some(account_name) = req.account.as_deref().filter(|a| !a.trim().is_empty()) {
-        let uid = ctx.user_id.ok_or_else(|| {
-            (
-                StatusCode::FORBIDDEN,
-                Json(ApiError { error: "account selection needs a user token".into() }),
-            )
-        })?;
+        // Accounts are user-owned. The admin token has no user identity, so it
+        // resolves the account against the target machine's owner (CCT-251) —
+        // the session runs on that user's machine with that user's account.
+        let uid = ctx.user_id.unwrap_or(owner);
         match crate::routes::gateway::mint_session_env(
             &state,
             uid,

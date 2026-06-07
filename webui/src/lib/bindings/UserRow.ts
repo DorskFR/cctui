@@ -2,6 +2,11 @@
 
 export type UserRow = { id: string, name: string, created_at: string, revoked_at: string | null, 
 /**
+ * Temporary off switch (CCT-251) — auth fails while set, nothing is
+ * invalidated, clearing restores. Distinct from the permanent revoke.
+ */
+disabled_at: string | null, 
+/**
  * Per-user dispatch permission (CCT-185). Enforced on `POST
  * /sessions/dispatch`; defaults TRUE.
  */

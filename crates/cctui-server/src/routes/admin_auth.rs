@@ -49,6 +49,9 @@ pub struct UserRow {
     pub name: String,
     pub created_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,
+    /// Temporary off switch (CCT-251) — auth fails while set, nothing is
+    /// invalidated, clearing restores. Distinct from the permanent revoke.
+    pub disabled_at: Option<DateTime<Utc>>,
     /// Per-user dispatch permission (CCT-185). Enforced on `POST
     /// /sessions/dispatch`; defaults TRUE.
     pub can_dispatch: bool,
@@ -69,6 +72,9 @@ pub struct MachineRow {
     pub kind: String,
     /// Operator-set badge hue (0-359, CCT-222). `None` = hash of the name.
     pub hue: Option<i16>,
+    /// Non-secret machine-key fragment, e.g. `cctui_m_ab1234…ef34` (CCT-251).
+    /// `None` for machines enrolled before the preview column existed.
+    pub key_preview: Option<String>,
 }
 
 #[derive(Deserialize, TS)]
@@ -90,6 +96,8 @@ pub struct UpdateUserRequest {
     /// Blank/whitespace is rejected (name is `NOT NULL`); `None` leaves it.
     pub name: Option<String>,
     pub can_dispatch: Option<bool>,
+    /// `true` sets `disabled_at = now()`, `false` clears it (CCT-251).
+    pub disabled: Option<bool>,
 }
 
 #[derive(Deserialize, TS)]
@@ -149,7 +157,8 @@ pub async fn list_users(
 ) -> Result<Json<Vec<UserRow>>, (StatusCode, Json<ApiError>)> {
     forbid_or(&ctx)?;
     let rows: Vec<UserRow> = sqlx::query_as(
-        "SELECT id, name, created_at, revoked_at, can_dispatch FROM users ORDER BY created_at",
+        "SELECT id, name, created_at, revoked_at, disabled_at, can_dispatch \
+         FROM users ORDER BY created_at",
     )
     .fetch_all(&state.pool)
     .await
@@ -213,7 +222,8 @@ pub async fn list_user_machines(
 ) -> Result<Json<Vec<MachineRow>>, (StatusCode, Json<ApiError>)> {
     forbid_or(&ctx)?;
     let rows: Vec<MachineRow> = sqlx::query_as(
-        "SELECT id, user_id, name, display_name, first_seen_at, last_seen_at, revoked_at, kind, hue \
+        "SELECT id, user_id, name, display_name, first_seen_at, last_seen_at, revoked_at, kind, \
+                hue, key_preview \
          FROM machines WHERE user_id = $1 AND deleted_at IS NULL ORDER BY first_seen_at",
     )
     .bind(user_id)
@@ -325,21 +335,28 @@ pub async fn update_user(
         }
         other => other,
     };
-    if name.is_none() && req.can_dispatch.is_none() {
+    if name.is_none() && req.can_dispatch.is_none() && req.disabled.is_none() {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ApiError { error: "nothing to update".into() }),
         ));
     }
     // COALESCE keeps the existing value when a field is NULL (not supplied).
+    // `disabled` maps to the timestamp: true → now() (kept if already set so
+    // the original disable time survives repeats), false → NULL.
     let outcome = sqlx::query(
         "UPDATE users SET \
             name = COALESCE($1, name), \
-            can_dispatch = COALESCE($2, can_dispatch) \
-         WHERE id = $3",
+            can_dispatch = COALESCE($2, can_dispatch), \
+            disabled_at = CASE \
+                WHEN $3::bool IS NULL THEN disabled_at \
+                WHEN $3 THEN COALESCE(disabled_at, now()) \
+                ELSE NULL END \
+         WHERE id = $4",
     )
     .bind(name)
     .bind(req.can_dispatch)
+    .bind(req.disabled)
     .bind(id)
     .execute(&state.pool)
     .await
@@ -347,7 +364,11 @@ pub async fn update_user(
     if outcome.rows_affected() == 0 {
         return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "user not found".into() })));
     }
-    tracing::info!(user_id = %id, name, can_dispatch = ?req.can_dispatch, "user updated");
+    // Disabling must take effect immediately, not after the auth-cache TTL.
+    if req.disabled == Some(true) {
+        purge_user_cache(&state.auth_config, id, &state.pool).await;
+    }
+    tracing::info!(user_id = %id, name, can_dispatch = ?req.can_dispatch, disabled = ?req.disabled, "user updated");
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -521,8 +542,9 @@ pub async fn rotate_machine(
     let secret = mint_secret();
     let token = machine_token(&secret);
     let hash = sha256_hex(&token);
-    sqlx::query("UPDATE machines SET key_hash = $1 WHERE id = $2")
+    sqlx::query("UPDATE machines SET key_hash = $1, key_preview = $2 WHERE id = $3")
         .bind(&hash)
+        .bind(crate::auth::token_preview(&token))
         .bind(id)
         .execute(&state.pool)
         .await
