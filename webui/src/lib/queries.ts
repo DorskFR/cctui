@@ -72,11 +72,16 @@ export interface OAuthStartResponse {
 	authorize_url: string;
 }
 
-/** Finish payload — the `code#state` pair pasted from claude.ai. */
+/**
+ * Finish payload. For Claude: the `code#state` pair pasted from claude.ai. For
+ * Codex: the full localhost:1455 callback URL pasted from the address bar
+ * (CCT-244).
+ */
 export interface OAuthFinish {
 	nonce: string;
 	name: string;
-	code: string;
+	code?: string;
+	callback_url?: string;
 }
 
 /** Centralised query keys so invalidation stays consistent. */

@@ -36,14 +36,21 @@
 	}
 
 	// Start the authorize leg: ask the server for an authorize URL, open it in a
-	// new tab, and reveal the code-paste field.
-	async function startClaudeLogin() {
+	// new tab, and reveal the paste field. Works for both Claude (anthropic) and
+	// "Sign in with ChatGPT" for Codex (openai) — CCT-243/CCT-244.
+	async function startOAuthLogin() {
 		oauthBusy = true;
 		try {
-			const r = await actions.oauthStart('anthropic');
+			const r = await actions.oauthStart(provider);
 			oauthNonce = r.nonce;
 			window.open(r.authorize_url, '_blank', 'noopener');
-			toasts.ok('Opened claude.ai — authorize, then paste the code below');
+			if (provider === 'openai') {
+				toasts.ok(
+					'Opened ChatGPT — authorize, then copy the localhost:1455 URL and paste it below',
+				);
+			} else {
+				toasts.ok('Opened claude.ai — authorize, then paste the code below');
+			}
 		} catch (e) {
 			toasts.err((e as Error).message);
 		} finally {
@@ -51,23 +58,29 @@
 		}
 	}
 
-	// Finish: exchange the pasted code#state for tokens and create the account.
-	async function finishClaudeLogin() {
+	// Finish: exchange the pasted code/callback URL for tokens and create the
+	// account. Claude sends `code` (the code#state pair); Codex sends
+	// `callback_url` (the full localhost:1455 URL from the address bar).
+	async function finishOAuthLogin() {
 		if (!name.trim()) {
 			toasts.err('Name is required');
 			return;
 		}
 		if (!oauthNonce || !oauthCode.trim()) {
-			toasts.err('Paste the code from claude.ai first');
+			toasts.err(
+				provider === 'openai'
+					? 'Paste the localhost:1455 URL first'
+					: 'Paste the code from claude.ai first',
+			);
 			return;
 		}
 		oauthBusy = true;
 		try {
-			await actions.oauthFinish({
-				nonce: oauthNonce,
-				name: name.trim(),
-				code: oauthCode.trim(),
-			});
+			await actions.oauthFinish(
+				provider === 'openai'
+					? { nonce: oauthNonce, name: name.trim(), callback_url: oauthCode.trim() }
+					: { nonce: oauthNonce, name: name.trim(), code: oauthCode.trim() },
+			);
 			toasts.ok('Account added');
 			close();
 		} catch (e) {
@@ -206,50 +219,57 @@
 			{#if !editing}
 				<label class="fld">
 					<span>Provider</span>
-					<select class="input" bind:value={provider}>
+					<select
+						class="input"
+						bind:value={provider}
+						onchange={() => {
+							oauthNonce = null;
+							oauthCode = '';
+						}}
+					>
 						<option value="anthropic">Claude (anthropic)</option>
 						<option value="openai">Codex (openai)</option>
 					</select>
 				</label>
-				{#if provider === 'anthropic'}
-					<!-- Sign in with Claude: authorize at claude.ai, paste the code. -->
-					{#if !oauthNonce}
-						<button
-							class="btn btn-sm btn-primary signin"
-							disabled={oauthBusy}
-							onclick={startClaudeLogin}
-						>
-							{oauthBusy ? 'Opening…' : 'Sign in with Claude'}
-						</button>
-					{:else}
-						<label class="fld">
-							<span>Code from claude.ai</span>
-							<input
-								class="input"
-								bind:value={oauthCode}
-								placeholder="paste the code#state shown after authorizing"
-							/>
-						</label>
+				<!-- Sign in with Claude / ChatGPT: authorize upstream, paste back. -->
+				{#if !oauthNonce}
+					<button
+						class="btn btn-sm btn-primary signin"
+						disabled={oauthBusy}
+						onclick={startOAuthLogin}
+					>
+						{oauthBusy
+							? 'Opening…'
+							: provider === 'openai'
+								? 'Sign in with ChatGPT'
+								: 'Sign in with Claude'}
+					</button>
+				{:else}
+					<label class="fld">
+						<span>{provider === 'openai' ? 'URL from ChatGPT' : 'Code from claude.ai'}</span>
+						<input
+							class="input"
+							bind:value={oauthCode}
+							placeholder={provider === 'openai'
+								? 'paste the http://localhost:1455/auth/callback?... URL'
+								: 'paste the code#state shown after authorizing'}
+						/>
+					</label>
+					{#if provider === 'openai'}
 						<p class="hint sub">
-							Didn't get a code?
-							<button class="linkbtn" onclick={startClaudeLogin}
-								>Open claude.ai again</button
-							>
+							The browser tab will fail to load localhost:1455 — that's expected.
+							Copy the full URL from its address bar and paste it above.
 						</p>
 					{/if}
-					<details bind:open={showAdvanced} class="adv">
-						<summary>Advanced: paste a refresh token instead</summary>
-						<label class="fld">
-							<span>OAuth refresh token</span>
-							<input
-								class="input"
-								type="password"
-								bind:value={refreshToken}
-								placeholder="paste the OAuth refresh token"
-							/>
-						</label>
-					</details>
-				{:else}
+					<p class="hint sub">
+						Didn't get {provider === 'openai' ? 'a URL' : 'a code'}?
+						<button class="linkbtn" onclick={startOAuthLogin}
+							>Open {provider === 'openai' ? 'ChatGPT' : 'claude.ai'} again</button
+						>
+					</p>
+				{/if}
+				<details bind:open={showAdvanced} class="adv">
+					<summary>Advanced: paste a refresh token instead</summary>
 					<label class="fld">
 						<span>OAuth refresh token</span>
 						<input
@@ -259,16 +279,16 @@
 							placeholder="paste the OAuth refresh token"
 						/>
 					</label>
-				{/if}
+				</details>
 			{/if}
 			<div class="row editor-acts">
 				<div class="spacer"></div>
 				<button class="btn btn-sm" onclick={close}>Cancel</button>
-				{#if !editing && provider === 'anthropic' && oauthNonce && !showAdvanced}
+				{#if !editing && oauthNonce && !showAdvanced}
 					<button
 						class="btn btn-sm btn-primary"
 						disabled={oauthBusy}
-						onclick={finishClaudeLogin}>Save</button
+						onclick={finishOAuthLogin}>Save</button
 					>
 				{:else}
 					<button class="btn btn-sm btn-primary" onclick={save}>Save</button>

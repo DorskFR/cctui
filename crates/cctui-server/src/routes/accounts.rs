@@ -201,20 +201,25 @@ pub async fn delete_account(
 }
 
 // ----------------------------------------------------------------------------
-// "Sign in with Claude" OAuth authorize flow (CCT-243)
+// "Sign in with Claude" / "Sign in with ChatGPT" OAuth authorize flow
+// (CCT-243 anthropic, CCT-244 openai/Codex)
 //
-// OAuth 2.1 authorization-code + PKCE in manual code-paste mode (same as
-// `claude /login` / better-ccflare): we generate a PKCE verifier/challenge and
-// a nonce, the user authorizes at claude.ai which displays a `code#state` pair,
-// and they paste it back. We exchange it for tokens and store the account
-// exactly like POST /accounts. Pending logins live in memory only, keyed by
-// nonce + scoped to the authenticated user, single-use, TTL-bounded.
+// OAuth 2.1 authorization-code + PKCE in manual paste mode: we generate a PKCE
+// verifier/challenge and a nonce, the user authorizes upstream, and pastes the
+// result back. Anthropic (claude.ai, `claude /login` / better-ccflare) displays
+// a `code#state` pair the user copies. Codex's public client has a FIXED
+// localhost:1455 redirect we can't change, so the browser redirect fails to
+// load and the user copies the full callback URL from the address bar; we parse
+// the `code` out of it. Token exchange differs per provider (anthropic JSON,
+// openai form-encoded) and Codex's id_token carries the chatgpt_account_id we
+// persist for the gateway's upstream header. Pending logins live in memory
+// only, keyed by nonce + scoped to the authenticated user, single-use,
+// TTL-bounded.
 // ----------------------------------------------------------------------------
 
 #[derive(Debug, serde::Deserialize)]
 pub struct OAuthStart {
-    /// Only `anthropic` is supported today (Codex stays on the manual path —
-    /// CCT-244).
+    /// `anthropic` ("Sign in with Claude") or `openai` ("Sign in with ChatGPT").
     pub provider: String,
 }
 
@@ -228,9 +233,15 @@ pub struct OAuthStartResponse {
 pub struct OAuthFinish {
     pub nonce: String,
     pub name: String,
-    /// The `code#state` pair pasted from claude.ai (the `#state` suffix is
-    /// optional — we fall back to our stored verifier as the state).
-    pub code: String,
+    /// anthropic: the `code#state` pair pasted from claude.ai (the `#state`
+    /// suffix is optional). Either this or `callback_url` must be present.
+    #[serde(default)]
+    pub code: Option<String>,
+    /// openai/Codex: the full `http://localhost:1455/auth/callback?code=…&state=…`
+    /// URL the user copies from the browser address bar after the redirect fails
+    /// to load (the fixed redirect can't reach cctui — CCT-244).
+    #[serde(default)]
+    pub callback_url: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -239,6 +250,76 @@ struct OAuthTokenResponse {
     refresh_token: String,
     #[serde(default)]
     expires_in: Option<i64>,
+    /// OpenAI/Codex returns an OIDC `id_token` whose claims carry the
+    /// `chatgpt_account_id` we need for the upstream header (CCT-244).
+    #[serde(default)]
+    id_token: Option<String>,
+}
+
+/// Extract `chatgpt_account_id` from an OpenAI `id_token` JWT without verifying
+/// the signature (the token came straight from the trusted token endpoint over
+/// TLS). The claim is nested under `https://api.openai.com/auth` (CCT-244).
+fn chatgpt_account_id_from_id_token(id_token: &str) -> Option<String> {
+    let payload = id_token.split('.').nth(1)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload).ok()?;
+    let claims: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    claims
+        .get("https://api.openai.com/auth")?
+        .get("chatgpt_account_id")?
+        .as_str()
+        .map(str::to_string)
+}
+
+/// Parse the `code` out of an OpenAI callback URL (or a bare `code`/`code#state`
+/// string). Accepts the full `http://localhost:1455/auth/callback?code=…&state=…`
+/// the user pastes, or just the code itself (CCT-244).
+fn code_from_callback(input: &str) -> Option<String> {
+    let input = input.trim();
+    if input.is_empty() {
+        return None;
+    }
+    if let Some(qpos) = input.find('?') {
+        for pair in input[qpos + 1..].split('&') {
+            if let Some(code) = pair.strip_prefix("code=") {
+                let code = code.split('#').next().unwrap_or(code);
+                return Some(urldecode(code));
+            }
+        }
+        return None;
+    }
+    // Bare value: strip any `#state` suffix and use it verbatim.
+    Some(input.split('#').next().unwrap_or(input).to_string())
+}
+
+/// Minimal percent-decoding for the `code` query param.
+fn urldecode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' if i + 2 < bytes.len() => {
+                let hi = (bytes[i + 1] as char).to_digit(16);
+                let lo = (bytes[i + 2] as char).to_digit(16);
+                if let (Some(hi), Some(lo)) = (hi, lo) {
+                    out.push((hi * 16 + lo) as u8);
+                    i += 3;
+                    continue;
+                }
+                out.push(bytes[i]);
+                i += 1;
+            }
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// PKCE S256 challenge for a verifier: base64url(sha256(verifier)), no padding.
@@ -272,8 +353,8 @@ pub async fn oauth_start(
     Json(req): Json<OAuthStart>,
 ) -> Result<Json<OAuthStartResponse>, (StatusCode, Json<serde_json::Value>)> {
     let uid = require_user(&ctx).map_err(|c| err(c, "user token required"))?;
-    if req.provider != "anthropic" {
-        return Err(err(StatusCode::BAD_REQUEST, "provider must be anthropic"));
+    if !matches!(req.provider.as_str(), "anthropic" | "openai") {
+        return Err(err(StatusCode::BAD_REQUEST, "provider must be anthropic|openai"));
     }
 
     sweep_expired(&state.pending_oauth_logins);
@@ -285,16 +366,34 @@ pub async fn oauth_start(
     let nonce = crate::auth::mint_secret();
     let challenge = pkce_challenge(&code_verifier);
 
-    let authorize_url = format!(
-        "{}?code=true&client_id={}&response_type=code&redirect_uri={}\
-         &scope=org:create_api_key%20user:profile%20user:inference\
-         &code_challenge={}&code_challenge_method=S256&state={}",
-        gateway::anthropic_authorize_url(),
-        urlencoding(&gateway::anthropic_client_id()),
-        urlencoding(&gateway::anthropic_oauth_redirect_uri()),
-        urlencoding(&challenge),
-        urlencoding(&code_verifier),
-    );
+    let authorize_url = if req.provider == "openai" {
+        // "Sign in with ChatGPT": auth.openai.com authorize with the codex
+        // public client. The redirect is fixed to localhost:1455 (can't be
+        // changed), so the browser redirect fails to load and the user pastes
+        // the full callback URL back to us (CCT-244).
+        format!(
+            "{}?response_type=code&client_id={}&redirect_uri={}\
+             &scope=openid%20profile%20email%20offline_access\
+             &code_challenge={}&code_challenge_method=S256&state={}\
+             &id_token_add_organizations=true&codex_cli_simplified_flow=true&prompt=login",
+            gateway::openai_authorize_url(),
+            urlencoding(&gateway::openai_client_id()),
+            urlencoding(&gateway::openai_oauth_redirect_uri()),
+            urlencoding(&challenge),
+            urlencoding(&code_verifier),
+        )
+    } else {
+        format!(
+            "{}?code=true&client_id={}&response_type=code&redirect_uri={}\
+             &scope=org:create_api_key%20user:profile%20user:inference\
+             &code_challenge={}&code_challenge_method=S256&state={}",
+            gateway::anthropic_authorize_url(),
+            urlencoding(&gateway::anthropic_client_id()),
+            urlencoding(&gateway::anthropic_oauth_redirect_uri()),
+            urlencoding(&challenge),
+            urlencoding(&code_verifier),
+        )
+    };
 
     state.pending_oauth_logins.insert(
         nonce.clone(),
@@ -332,42 +431,72 @@ pub async fn oauth_finish(
     };
     state.pending_oauth_logins.remove(&req.nonce);
 
-    let (code, state_part) = split_code_state(&req.code);
-    if code.is_empty() {
-        return Err(err(StatusCode::BAD_REQUEST, "code required"));
-    }
-    // claude.ai sends `code#state`; the state must equal the verifier we issued.
-    let oauth_state = state_part.unwrap_or_else(|| pending.code_verifier.clone());
+    // The token exchange differs per provider: anthropic posts JSON with the
+    // pasted `code#state`; openai/Codex posts a form-encoded body with the code
+    // extracted from the pasted callback URL (CCT-244).
+    let resp = if pending.provider == "openai" {
+        let raw = req
+            .callback_url
+            .as_deref()
+            .or(req.code.as_deref())
+            .ok_or_else(|| err(StatusCode::BAD_REQUEST, "callback_url required"))?;
+        let code = code_from_callback(raw)
+            .filter(|c| !c.is_empty())
+            .ok_or_else(|| err(StatusCode::BAD_REQUEST, "could not find code in callback URL"))?;
 
-    let body = serde_json::json!({
-        "grant_type": "authorization_code",
-        "code": code,
-        "state": oauth_state,
-        "client_id": gateway::anthropic_client_id(),
-        "redirect_uri": gateway::anthropic_oauth_redirect_uri(),
-        "code_verifier": pending.code_verifier,
-    });
+        let form = [
+            ("grant_type", "authorization_code"),
+            ("code", code.as_str()),
+            ("client_id", &gateway::openai_client_id()),
+            ("redirect_uri", &gateway::openai_oauth_redirect_uri()),
+            ("code_verifier", pending.code_verifier.as_str()),
+        ];
+        state.http_client.post(gateway::openai_token_url()).form(&form).send().await
+    } else {
+        let raw =
+            req.code.as_deref().ok_or_else(|| err(StatusCode::BAD_REQUEST, "code required"))?;
+        let (code, state_part) = split_code_state(raw);
+        if code.is_empty() {
+            return Err(err(StatusCode::BAD_REQUEST, "code required"));
+        }
+        // claude.ai sends `code#state`; the state must equal the verifier we issued.
+        let oauth_state = state_part.unwrap_or_else(|| pending.code_verifier.clone());
+        let body = serde_json::json!({
+            "grant_type": "authorization_code",
+            "code": code,
+            "state": oauth_state,
+            "client_id": gateway::anthropic_client_id(),
+            "redirect_uri": gateway::anthropic_oauth_redirect_uri(),
+            "code_verifier": pending.code_verifier,
+        });
+        state.http_client.post(gateway::anthropic_token_url()).json(&body).send().await
+    };
 
-    let resp =
-        state.http_client.post(gateway::anthropic_token_url()).json(&body).send().await.map_err(
-            |e| {
-                tracing::error!("oauth token exchange transport error: {e}");
-                err(StatusCode::BAD_GATEWAY, "token exchange failed")
-            },
-        )?;
+    let resp = resp.map_err(|e| {
+        tracing::error!("oauth token exchange transport error: {e}");
+        err(StatusCode::BAD_GATEWAY, "token exchange failed")
+    })?;
     if !resp.status().is_success() {
         let status = resp.status();
         let detail = resp.text().await.unwrap_or_default();
         tracing::error!(%status, "oauth token exchange rejected: {detail}");
         return Err(err(
             StatusCode::BAD_REQUEST,
-            "token exchange rejected — check the pasted code",
+            "token exchange rejected — check the pasted code/URL",
         ));
     }
     let tok: OAuthTokenResponse = resp.json().await.map_err(|e| {
         tracing::error!("oauth token exchange decode error: {e}");
         err(StatusCode::BAD_GATEWAY, "token exchange decode failed")
     })?;
+
+    // For Codex, pull the chatgpt account id out of the id_token so the gateway
+    // can send the `Chatgpt-Account-Id` header upstream.
+    let provider_account_id = tok
+        .id_token
+        .as_deref()
+        .and_then(chatgpt_account_id_from_id_token)
+        .filter(|_| pending.provider == "openai");
 
     let key = crate::crypto::vault_key();
     let enc_refresh = crate::crypto::obfuscate(&tok.refresh_token, &key);
@@ -376,8 +505,9 @@ pub async fn oauth_finish(
 
     let row: Result<AccountInfo, sqlx::Error> = sqlx::query_as(
         "INSERT INTO oauth_accounts \
-            (user_id, name, provider, encrypted_refresh_token, encrypted_access_token, expires_at) \
-         VALUES ($1, $2, $3, $4, $5, $6) \
+            (user_id, name, provider, encrypted_refresh_token, encrypted_access_token, \
+             expires_at, provider_account_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7) \
          RETURNING id, name, provider, expires_at, created_at, last_used_at, \
                    request_count, bytes_transferred",
     )
@@ -387,6 +517,7 @@ pub async fn oauth_finish(
     .bind(&enc_refresh)
     .bind(&enc_access)
     .bind(expires_at)
+    .bind(&provider_account_id)
     .fetch_one(&state.pool)
     .await;
 
@@ -469,6 +600,42 @@ mod tests {
         sweep_expired(&store);
         assert!(store.contains_key("fresh"));
         assert!(!store.contains_key("stale"));
+    }
+
+    #[test]
+    fn extracts_code_from_callback_url() {
+        assert_eq!(
+            code_from_callback("http://localhost:1455/auth/callback?code=ABC123&state=xyz")
+                .as_deref(),
+            Some("ABC123")
+        );
+        // code may be url-encoded and carry a #state suffix.
+        assert_eq!(
+            code_from_callback("http://localhost:1455/auth/callback?code=a%2Bb%3Dc#st").as_deref(),
+            Some("a+b=c")
+        );
+        // bare code (no URL).
+        assert_eq!(code_from_callback("  rawcode#state ").as_deref(), Some("rawcode"));
+        assert_eq!(code_from_callback(""), None);
+        // query present but no code param.
+        assert_eq!(code_from_callback("http://localhost:1455/auth/callback?state=x"), None);
+    }
+
+    #[test]
+    fn parses_chatgpt_account_id_from_id_token() {
+        // header.payload.signature — only the payload (claims) is read.
+        let payload = serde_json::json!({
+            "sub": "user-1",
+            "https://api.openai.com/auth": { "chatgpt_account_id": "acct-abc-123" }
+        });
+        let payload_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&payload).unwrap());
+        let jwt = format!("header.{payload_b64}.sig");
+        assert_eq!(chatgpt_account_id_from_id_token(&jwt).as_deref(), Some("acct-abc-123"));
+        // missing claim → None.
+        let empty = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b"{}");
+        assert_eq!(chatgpt_account_id_from_id_token(&format!("h.{empty}.s")), None);
+        assert_eq!(chatgpt_account_id_from_id_token("not-a-jwt"), None);
     }
 
     #[test]

@@ -1,0 +1,11 @@
+-- CCT-244: "Sign in with ChatGPT" OAuth for Codex/OpenAI accounts.
+--
+-- ChatGPT-backed Codex requests must carry a `Chatgpt-Account-Id` header
+-- upstream (https://chatgpt.com/backend-api/codex). The account id comes from
+-- the `chatgpt_account_id` claim in the OAuth `id_token` (nested under the
+-- `https://api.openai.com/auth` claim). We persist it per account so the
+-- gateway can inject the header on every request under that account.
+--
+-- Nullable: anthropic accounts and manually-pasted refresh tokens won't have
+-- one, and the gateway only injects the header when present.
+ALTER TABLE oauth_accounts ADD COLUMN IF NOT EXISTS provider_account_id TEXT;

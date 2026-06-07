@@ -57,15 +57,37 @@ pub fn anthropic_oauth_redirect_uri() -> String {
 fn anthropic_upstream() -> String {
     std::env::var("CCTUI_ANTHROPIC_UPSTREAM").unwrap_or_else(|_| "https://api.anthropic.com".into())
 }
-fn openai_token_url() -> String {
+/// OpenAI/Codex OAuth token endpoint. Codex's public client exchanges +
+/// refreshes here with **form-encoded** bodies (unlike Anthropic's JSON).
+/// Overridable via env to track upstream changes without a code redeploy.
+pub fn openai_token_url() -> String {
     std::env::var("CCTUI_OPENAI_OAUTH_TOKEN_URL")
         .unwrap_or_else(|_| "https://auth.openai.com/oauth/token".into())
 }
-fn openai_client_id() -> String {
-    std::env::var("CCTUI_OPENAI_OAUTH_CLIENT_ID").unwrap_or_default()
+/// Codex's public OAuth client id. Defaults to the well-known `codex` client
+/// (`app_EMoamEEZ73f0CkXaXp7hrann`); overridable via env (CCT-244).
+pub fn openai_client_id() -> String {
+    std::env::var("CCTUI_OPENAI_OAUTH_CLIENT_ID")
+        .unwrap_or_else(|_| "app_EMoamEEZ73f0CkXaXp7hrann".into())
+}
+/// auth.openai.com authorize endpoint for the "Sign in with ChatGPT" login
+/// (CCT-244). Overridable so we can track upstream without a redeploy.
+pub fn openai_authorize_url() -> String {
+    std::env::var("CCTUI_OPENAI_OAUTH_AUTHORIZE_URL")
+        .unwrap_or_else(|_| "https://auth.openai.com/oauth/authorize".into())
+}
+/// Fixed redirect URI baked into Codex's public client — we can't point it at
+/// cctui.example.internal. The browser redirect to localhost:1455 fails to load; the
+/// user copies the full URL from the address bar and pastes it back (CCT-244).
+pub fn openai_oauth_redirect_uri() -> String {
+    std::env::var("CCTUI_OPENAI_OAUTH_REDIRECT_URI")
+        .unwrap_or_else(|_| "http://localhost:1455/auth/callback".into())
 }
 fn openai_upstream() -> String {
-    std::env::var("CCTUI_OPENAI_UPSTREAM").unwrap_or_else(|_| "https://api.openai.com".into())
+    // Codex ChatGPT-backed accounts talk to the chatgpt backend, NOT
+    // api.openai.com (matches what the codex CLI + CLIProxyAPI do).
+    std::env::var("CCTUI_OPENAI_UPSTREAM")
+        .unwrap_or_else(|_| "https://chatgpt.com/backend-api/codex".into())
 }
 
 /// Resolve a named account for a user and mint a session-scoped gateway token
@@ -135,9 +157,10 @@ pub async fn revoke_session_tokens(state: &AppState, session_id: &str) {
 }
 
 /// Raw account row as selected from the join (before decrypt).
-type AccountRow = (Uuid, String, Option<String>, String, Option<chrono::DateTime<Utc>>);
+type AccountRow =
+    (Uuid, String, Option<String>, String, Option<chrono::DateTime<Utc>>, Option<String>);
 /// Raw account row by id (no id column, before decrypt).
-type ReloadRow = (String, Option<String>, String, Option<chrono::DateTime<Utc>>);
+type ReloadRow = (String, Option<String>, String, Option<chrono::DateTime<Utc>>, Option<String>);
 
 /// Loaded account row (decrypted in-process; never serialized out).
 struct Account {
@@ -146,6 +169,10 @@ struct Account {
     access_token: Option<String>,
     refresh_token: String,
     expires_at: Option<chrono::DateTime<Utc>>,
+    /// For Codex/OpenAI accounts: the `chatgpt_account_id` claim, sent upstream
+    /// as the `Chatgpt-Account-Id` header (CCT-244). NULL for anthropic / manual
+    /// refresh-token accounts.
+    provider_account_id: Option<String>,
 }
 
 /// Resolve the session token (the upstream bearer the worker sent) to its
@@ -154,7 +181,7 @@ async fn resolve_account(state: &AppState, session_token: &str) -> Option<Accoun
     let hash = crate::auth::sha256_hex(session_token);
     let row: Option<AccountRow> = sqlx::query_as(
         "SELECT a.id, a.provider, a.encrypted_access_token, a.encrypted_refresh_token, \
-                    a.expires_at \
+                    a.expires_at, a.provider_account_id \
              FROM session_tokens t JOIN oauth_accounts a ON a.id = t.account_id \
              WHERE t.token_hash = $1 AND t.revoked_at IS NULL",
     )
@@ -163,11 +190,11 @@ async fn resolve_account(state: &AppState, session_token: &str) -> Option<Accoun
     .await
     .ok()
     .flatten();
-    let (id, provider, enc_access, enc_refresh, expires_at) = row?;
+    let (id, provider, enc_access, enc_refresh, expires_at, provider_account_id) = row?;
     let key = crate::crypto::vault_key();
     let access_token = enc_access.and_then(|e| crate::crypto::deobfuscate(&e, &key));
     let refresh_token = crate::crypto::deobfuscate(&enc_refresh, &key)?;
-    Some(Account { id, provider, access_token, refresh_token, expires_at })
+    Some(Account { id, provider, access_token, refresh_token, expires_at, provider_account_id })
 }
 
 #[derive(serde::Deserialize)]
@@ -183,18 +210,29 @@ struct TokenResponse {
 /// pair. Caller MUST hold the account's refresh mutex. Returns the new access
 /// token.
 async fn refresh_account(state: &AppState, acct: &Account) -> Result<String, StatusCode> {
-    let (token_url, client_id) = match acct.provider.as_str() {
-        "anthropic" => (anthropic_token_url(), anthropic_client_id()),
-        "openai" => (openai_token_url(), openai_client_id()),
+    // Anthropic refreshes with a JSON body; OpenAI/Codex with a form-encoded
+    // body (matches the codex CLI + CLIProxyAPI — CCT-244).
+    let request = match acct.provider.as_str() {
+        "anthropic" => {
+            let body = serde_json::json!({
+                "grant_type": "refresh_token",
+                "refresh_token": acct.refresh_token,
+                "client_id": anthropic_client_id(),
+            });
+            state.http_client.post(anthropic_token_url()).json(&body)
+        }
+        "openai" => {
+            let form = [
+                ("grant_type", "refresh_token"),
+                ("refresh_token", acct.refresh_token.as_str()),
+                ("client_id", &openai_client_id()),
+                ("scope", "openid profile email"),
+            ];
+            state.http_client.post(openai_token_url()).form(&form)
+        }
         _ => return Err(StatusCode::BAD_GATEWAY),
     };
-
-    let body = serde_json::json!({
-        "grant_type": "refresh_token",
-        "refresh_token": acct.refresh_token,
-        "client_id": client_id,
-    });
-    let resp = state.http_client.post(&token_url).json(&body).send().await.map_err(|e| {
+    let resp = request.send().await.map_err(|e| {
         tracing::error!(account = %acct.id, "oauth refresh transport error: {e}");
         StatusCode::BAD_GATEWAY
     })?;
@@ -277,7 +315,8 @@ async fn current_access_token(state: &AppState, acct: &Account) -> Result<String
 
 async fn reload_account(state: &AppState, id: Uuid) -> Option<Account> {
     let row: Option<ReloadRow> = sqlx::query_as(
-        "SELECT provider, encrypted_access_token, encrypted_refresh_token, expires_at \
+        "SELECT provider, encrypted_access_token, encrypted_refresh_token, expires_at, \
+                    provider_account_id \
              FROM oauth_accounts WHERE id = $1",
     )
     .bind(id)
@@ -285,7 +324,7 @@ async fn reload_account(state: &AppState, id: Uuid) -> Option<Account> {
     .await
     .ok()
     .flatten();
-    let (provider, enc_access, enc_refresh, expires_at) = row?;
+    let (provider, enc_access, enc_refresh, expires_at, provider_account_id) = row?;
     let key = crate::crypto::vault_key();
     Some(Account {
         id,
@@ -293,6 +332,7 @@ async fn reload_account(state: &AppState, id: Uuid) -> Option<Account> {
         access_token: enc_access.and_then(|e| crate::crypto::deobfuscate(&e, &key)),
         refresh_token: crate::crypto::deobfuscate(&enc_refresh, &key)?,
         expires_at,
+        provider_account_id,
     })
 }
 
@@ -356,6 +396,12 @@ async fn passthrough(
         reqwest::header::HeaderValue::from_str(&format!("Bearer {access_token}"))
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
     );
+    // ChatGPT-backed Codex requests must carry the account id upstream (CCT-244).
+    if let Some(account_id) = acct.provider_account_id.as_deref()
+        && let Ok(hv) = reqwest::header::HeaderValue::from_str(account_id)
+    {
+        headers.insert("chatgpt-account-id", hv);
+    }
 
     // Stream the request body through without buffering.
     let body_stream = req.into_body().into_data_stream();
