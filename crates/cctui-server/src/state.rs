@@ -52,4 +52,8 @@ pub struct AppState {
     pub account_locks: Arc<DashMap<Uuid, Arc<tokio::sync::Mutex<()>>>>,
     /// Shared outbound HTTP client for the gateway passthrough (CCT-232).
     pub http_client: reqwest::Client,
+    /// Pending "Sign in with Claude" OAuth logins (CCT-243), keyed by nonce.
+    /// In-memory, TTL-bounded, scoped to the authenticated user. Entries are
+    /// single-use (deleted on finish) and lazily swept on access.
+    pub pending_oauth_logins: crate::routes::accounts::PendingOAuthLogins,
 }

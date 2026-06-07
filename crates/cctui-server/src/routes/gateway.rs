@@ -34,13 +34,25 @@ const REFRESH_SKEW_SECS: i64 = 60;
 /// Anthropic Claude-Code OAuth token endpoint + client id. These are not stable
 /// public APIs (caveat accepted in the ticket); overridable via env so we can
 /// track upstream changes without a redeploy of code.
-fn anthropic_token_url() -> String {
+pub fn anthropic_token_url() -> String {
     std::env::var("CCTUI_ANTHROPIC_OAUTH_TOKEN_URL")
         .unwrap_or_else(|_| "https://console.anthropic.com/v1/oauth/token".into())
 }
-fn anthropic_client_id() -> String {
+pub fn anthropic_client_id() -> String {
     std::env::var("CCTUI_ANTHROPIC_OAUTH_CLIENT_ID")
         .unwrap_or_else(|_| "9d1c250a-e61b-44d9-88ed-5944d1962f5e".into())
+}
+/// claude.ai authorize endpoint for the manual code-paste OAuth login (CCT-243).
+/// Overridable so we can track upstream without a redeploy.
+pub fn anthropic_authorize_url() -> String {
+    std::env::var("CCTUI_ANTHROPIC_OAUTH_AUTHORIZE_URL")
+        .unwrap_or_else(|_| "https://claude.ai/oauth/authorize".into())
+}
+/// Redirect URI used for the manual code-paste flow — claude.ai displays the
+/// `code#state` pair instead of redirecting. Must match what the token exchange
+/// sends back.
+pub fn anthropic_oauth_redirect_uri() -> String {
+    "https://console.anthropic.com/oauth/code/callback".into()
 }
 fn anthropic_upstream() -> String {
     std::env::var("CCTUI_ANTHROPIC_UPSTREAM").unwrap_or_else(|_| "https://api.anthropic.com".into())

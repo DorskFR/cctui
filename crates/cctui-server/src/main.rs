@@ -58,6 +58,7 @@ async fn main() -> anyhow::Result<()> {
         pending_stage_requests: Arc::new(dashmap::DashMap::new()),
         account_locks: Arc::new(dashmap::DashMap::new()),
         http_client: reqwest::Client::new(),
+        pending_oauth_logins: Arc::new(dashmap::DashMap::new()),
     };
 
     let api_router = Router::new()
@@ -120,6 +121,8 @@ async fn main() -> anyhow::Result<()> {
             "/accounts",
             get(routes::accounts::list_accounts).post(routes::accounts::create_account),
         )
+        .route("/accounts/oauth/start", post(routes::accounts::oauth_start))
+        .route("/accounts/oauth/finish", post(routes::accounts::oauth_finish))
         .route(
             "/accounts/{id}",
             patch(routes::accounts::rename_account).delete(routes::accounts::delete_account),

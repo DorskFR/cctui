@@ -19,10 +19,62 @@
 	let provider = $state<'anthropic' | 'openai'>('anthropic');
 	let refreshToken = $state('');
 
+	// "Sign in with Claude" OAuth flow state (CCT-243).
+	let oauthNonce = $state<string | null>(null);
+	let oauthCode = $state('');
+	let oauthBusy = $state(false);
+	let showAdvanced = $state(false);
+
 	function resetForm() {
 		name = '';
 		provider = 'anthropic';
 		refreshToken = '';
+		oauthNonce = null;
+		oauthCode = '';
+		oauthBusy = false;
+		showAdvanced = false;
+	}
+
+	// Start the authorize leg: ask the server for an authorize URL, open it in a
+	// new tab, and reveal the code-paste field.
+	async function startClaudeLogin() {
+		oauthBusy = true;
+		try {
+			const r = await actions.oauthStart('anthropic');
+			oauthNonce = r.nonce;
+			window.open(r.authorize_url, '_blank', 'noopener');
+			toasts.ok('Opened claude.ai — authorize, then paste the code below');
+		} catch (e) {
+			toasts.err((e as Error).message);
+		} finally {
+			oauthBusy = false;
+		}
+	}
+
+	// Finish: exchange the pasted code#state for tokens and create the account.
+	async function finishClaudeLogin() {
+		if (!name.trim()) {
+			toasts.err('Name is required');
+			return;
+		}
+		if (!oauthNonce || !oauthCode.trim()) {
+			toasts.err('Paste the code from claude.ai first');
+			return;
+		}
+		oauthBusy = true;
+		try {
+			await actions.oauthFinish({
+				nonce: oauthNonce,
+				name: name.trim(),
+				code: oauthCode.trim(),
+			});
+			toasts.ok('Account added');
+			close();
+		} catch (e) {
+			toasts.err((e as Error).message);
+		} finally {
+			oauthBusy = false;
+		}
 	}
 
 	function openCreate() {
@@ -159,20 +211,68 @@
 						<option value="openai">Codex (openai)</option>
 					</select>
 				</label>
-				<label class="fld">
-					<span>OAuth refresh token</span>
-					<input
-						class="input"
-						type="password"
-						bind:value={refreshToken}
-						placeholder="paste the OAuth refresh token"
-					/>
-				</label>
+				{#if provider === 'anthropic'}
+					<!-- Sign in with Claude: authorize at claude.ai, paste the code. -->
+					{#if !oauthNonce}
+						<button
+							class="btn btn-sm btn-primary signin"
+							disabled={oauthBusy}
+							onclick={startClaudeLogin}
+						>
+							{oauthBusy ? 'Opening…' : 'Sign in with Claude'}
+						</button>
+					{:else}
+						<label class="fld">
+							<span>Code from claude.ai</span>
+							<input
+								class="input"
+								bind:value={oauthCode}
+								placeholder="paste the code#state shown after authorizing"
+							/>
+						</label>
+						<p class="hint sub">
+							Didn't get a code?
+							<button class="linkbtn" onclick={startClaudeLogin}
+								>Open claude.ai again</button
+							>
+						</p>
+					{/if}
+					<details bind:open={showAdvanced} class="adv">
+						<summary>Advanced: paste a refresh token instead</summary>
+						<label class="fld">
+							<span>OAuth refresh token</span>
+							<input
+								class="input"
+								type="password"
+								bind:value={refreshToken}
+								placeholder="paste the OAuth refresh token"
+							/>
+						</label>
+					</details>
+				{:else}
+					<label class="fld">
+						<span>OAuth refresh token</span>
+						<input
+							class="input"
+							type="password"
+							bind:value={refreshToken}
+							placeholder="paste the OAuth refresh token"
+						/>
+					</label>
+				{/if}
 			{/if}
 			<div class="row editor-acts">
 				<div class="spacer"></div>
 				<button class="btn btn-sm" onclick={close}>Cancel</button>
-				<button class="btn btn-sm btn-primary" onclick={save}>Save</button>
+				{#if !editing && provider === 'anthropic' && oauthNonce && !showAdvanced}
+					<button
+						class="btn btn-sm btn-primary"
+						disabled={oauthBusy}
+						onclick={finishClaudeLogin}>Save</button
+					>
+				{:else}
+					<button class="btn btn-sm btn-primary" onclick={save}>Save</button>
+				{/if}
 			</div>
 		</div>
 	</div>
@@ -266,6 +366,29 @@
 	}
 	.editor-acts {
 		gap: var(--sp-1);
+		margin-top: var(--sp-2);
+	}
+	.signin {
+		align-self: flex-start;
+	}
+	.hint.sub {
+		margin: 0;
+	}
+	.linkbtn {
+		background: none;
+		border: none;
+		padding: 0;
+		color: var(--accent, var(--text));
+		cursor: pointer;
+		text-decoration: underline;
+		font: inherit;
+	}
+	.adv summary {
+		cursor: pointer;
+		color: var(--text-muted);
+		font-size: var(--fs-sm);
+	}
+	.adv .fld {
 		margin-top: var(--sp-2);
 	}
 	@media (max-width: 720px) {

@@ -66,6 +66,19 @@ export interface CreateAccount {
 	expires_at?: number;
 }
 
+/** "Sign in with Claude" OAuth start payload/response (CCT-243). */
+export interface OAuthStartResponse {
+	nonce: string;
+	authorize_url: string;
+}
+
+/** Finish payload — the `code#state` pair pasted from claude.ai. */
+export interface OAuthFinish {
+	nonce: string;
+	name: string;
+	code: string;
+}
+
 /** Centralised query keys so invalidation stays consistent. */
 export const qk = {
 	version: ['version'] as const,
@@ -157,6 +170,10 @@ export const endpoints = {
 	renameAccount: (id: string, name: string) =>
 		api.patch<OAuthAccount>(`/accounts/${id}`, { name }),
 	deleteAccount: (id: string) => api.del<void>(`/accounts/${id}`),
+	oauthStart: (provider: string) =>
+		api.post<OAuthStartResponse>('/accounts/oauth/start', { provider }),
+	oauthFinish: (body: OAuthFinish) =>
+		api.post<OAuthAccount>('/accounts/oauth/finish', body),
 	/** Every spawnable machine across all active users — for the spawn picker.
 	 * Excludes server-managed machines (`ephemeral` worker pods and the per-user
 	 * `dispatch` machine): those aren't somewhere you'd start an interactive
@@ -538,6 +555,15 @@ export function useAccountActions() {
 	return {
 		create: async (body: CreateAccount) => {
 			const r = await endpoints.createAccount(body);
+			inval();
+			return r;
+		},
+		// "Sign in with Claude" (CCT-243): start returns the authorize URL the
+		// page opens in a new tab; finish exchanges the pasted code for tokens
+		// and creates the account (no inval needed on start, only on finish).
+		oauthStart: (provider: string) => endpoints.oauthStart(provider),
+		oauthFinish: async (body: OAuthFinish) => {
+			const r = await endpoints.oauthFinish(body);
 			inval();
 			return r;
 		},
