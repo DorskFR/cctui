@@ -136,6 +136,24 @@ pub(super) struct LiveSnapshot {
     pub source: Option<String>,
     #[serde(default)]
     pub dying: bool,
+    /// Claude's per-session "process gone" flag (CCT-252). When the worker
+    /// process exits while still listed (e.g. it died while the supervisor was
+    /// down — "process gone while supervisor down"), claude keeps the entry in
+    /// `daemon list` but marks it dead. We have no live known-dead sample of
+    /// the exact wire shape, so we parse DEFENSIVELY: a boolean `gone`/`dead`
+    /// flag, OR an explicit `alive: false`, OR a terminal `status` string
+    /// (`gone`/`exited`/`dead`). `is_dead()` folds them together.
+    #[serde(default)]
+    pub gone: bool,
+    #[serde(default)]
+    pub dead: bool,
+    /// Defensive: some builds may report liveness positively. `Some(false)`
+    /// means dead; `None`/`Some(true)` mean "no signal / alive".
+    #[serde(default)]
+    pub alive: Option<bool>,
+    /// Defensive: a free-form lifecycle string distinct from `state`/`tempo`.
+    #[serde(default)]
+    pub status: Option<String>,
     #[serde(default, alias = "cliVersion")]
     pub cli_version: Option<String>,
 }
@@ -149,6 +167,32 @@ impl LiveSnapshot {
     fn is_user_visible(&self) -> bool {
         !self.dying && self.source.as_deref() != Some("spare")
     }
+
+    /// Whether claude reports this still-listed session as dead / "process
+    /// gone" (CCT-252). Parsed DEFENSIVELY across the plausible wire shapes
+    /// since no live known-dead sample was available when this was written:
+    ///   - boolean `gone` / `dead` flags,
+    ///   - `alive: false`,
+    ///   - a terminal `status`/`state`/`tempo` string
+    ///     (`gone`/`exited`/`dead`/`process gone`).
+    ///
+    /// `dying` is handled separately (it filters the session out entirely), so
+    /// it is intentionally NOT folded in here.
+    fn is_dead(&self) -> bool {
+        const TERMINAL: &[&str] = &["gone", "exited", "dead", "process gone"];
+        let terminal_str = |o: &Option<String>| {
+            o.as_deref().is_some_and(|s| {
+                let s = s.trim().to_ascii_lowercase();
+                TERMINAL.contains(&s.as_str())
+            })
+        };
+        self.gone
+            || self.dead
+            || self.alive == Some(false)
+            || terminal_str(&self.status)
+            || terminal_str(&self.state)
+            || terminal_str(&self.tempo)
+    }
 }
 
 pub struct Driver {
@@ -159,6 +203,14 @@ pub struct Driver {
     shutdown: CancellationToken,
     roster: HashSet<String>,
     last_status: HashMap<String, StatusSnapshot>,
+    /// Shorts claude reports dead-but-still-listed (CCT-252). Once we emit the
+    /// dead transition (hibernated or `SessionEnded`) we record the short here
+    /// and suppress further live-status emits for it, so the still-present
+    /// roster entry can't re-emit a non-terminal Status and re-green the dot
+    /// (daemon-side sticky, mirroring the server's CCT-192 sticky terminal
+    /// status). Cleared when the worker revives (reports alive again) or drops
+    /// off the roster.
+    dead_shorts: HashSet<String>,
     /// Shared `session_id → stable local_id` map. Populated as transcripts are
     /// pinned (incl. across `/clear` rotations) and read by the ask-hook
     /// listener so a hook's live `session_id` resolves to the `local_id` the
@@ -288,6 +340,7 @@ impl Driver {
             shutdown,
             roster: HashSet::new(),
             last_status: HashMap::new(),
+            dead_shorts: HashSet::new(),
             session_to_local: Arc::new(Mutex::new(HashMap::new())),
             offsets,
             transcript_locations: HashMap::new(),
@@ -947,6 +1000,59 @@ impl Driver {
                 .unwrap_or_else(|| job.short.clone());
             let on_disk = StateJson::read(&self.cfg.jobs_root, &job.short);
 
+            // Dead-but-still-listed (CCT-252). claude can keep a session in
+            // `daemon list` while its worker process is gone (e.g. it died
+            // while the supervisor was down — "process gone while supervisor
+            // down"). Previously cctui only transitioned a session to
+            // hibernated/ended when its `short` DROPPED OFF the roster
+            // (`gone` handling below), and liveness was otherwise purely
+            // time-derived (server `derive_liveness`), so such a session kept
+            // showing its last status with a green/stale dot for minutes. Here
+            // we surface the dead state within one poll instead.
+            if job.is_dead() {
+                // Emit the terminal transition exactly once, then mark the
+                // short sticky so the still-present roster entry can't re-emit
+                // a non-terminal Status and re-green it (daemon-side mirror of
+                // the server's CCT-192 sticky terminal status). Mirrors the
+                // roster-disappearance path: hibernated if job state survives
+                // on disk (revivable red dot, CCT-228), else SessionEnded.
+                if self.dead_shorts.insert(job.short.clone()) {
+                    self.clear_permission(&job.short).await;
+                    if on_disk.is_some() {
+                        self.emit(AdapterEvent::Status {
+                            local_id: local_id.clone(),
+                            tempo: Some("hibernated".to_owned()),
+                            state: None,
+                            detail: None,
+                            activity: None,
+                            name: None,
+                            intent: None,
+                            model: None,
+                            effort: None,
+                            children: Vec::new(),
+                        })
+                        .await;
+                    } else {
+                        self.emit(AdapterEvent::SessionEnded {
+                            local_id: local_id.clone(),
+                            reason: EndReason::Completed,
+                        })
+                        .await;
+                    }
+                    // Drop the cached status so a later revive (worker reports
+                    // alive again) is detected as a change and re-emitted.
+                    self.last_status.remove(&job.short);
+                }
+                // Sticky: skip transcript re-pin + Status for this poll. The
+                // roster-disappearance branch still cleans up if it later
+                // drops off; a revive clears `dead_shorts` (below) so live
+                // status resumes.
+                continue;
+            }
+            // Revived: claude reports this short alive again after we marked it
+            // dead — clear the sticky flag so live status flows again.
+            self.dead_shorts.remove(&job.short);
+
             // Surface (or clear) a tool-permission prompt from the live
             // `tempo`/`needs` signal (CCT-211), before the Status emit below.
             self.reconcile_permission(
@@ -1113,6 +1219,7 @@ impl Driver {
         let gone: Vec<String> = self.roster.difference(&now_shorts).cloned().collect();
         for short in &gone {
             self.last_status.remove(short);
+            let was_dead = self.dead_shorts.remove(short);
             self.clear_permission(short).await;
             if let Some(loc) = self.transcript_locations.remove(short) {
                 // Hibernated, not gone (CCT-228): the worker process exited but
@@ -1123,7 +1230,11 @@ impl Driver {
                 // `agent_state`) so the bucket classifier still sees the final
                 // state (`done` → Completed); a revived worker's next live
                 // snapshot overwrites it.
-                if StateJson::read(&self.cfg.jobs_root, short).is_some() {
+                //
+                // Skip if we already emitted this short's dead transition while
+                // it was still listed (CCT-252 `dead_shorts`) — the hibernated
+                // Status already went out; re-emitting it here is redundant.
+                if !was_dead && StateJson::read(&self.cfg.jobs_root, short).is_some() {
                     self.emit(AdapterEvent::Status {
                         local_id: loc.local_id.clone(),
                         tempo: Some("hibernated".to_owned()),
@@ -1679,6 +1790,10 @@ mod tests {
             intent: None,
             source: Some("shell".into()),
             dying: false,
+            gone: false,
+            dead: false,
+            alive: None,
+            status: None,
             cli_version: Some("2.1.145".into()),
         }
     }
@@ -1810,6 +1925,118 @@ mod tests {
         d.apply_snapshot(vec![]).await;
         let evt = rx.recv().await.unwrap();
         assert!(matches!(evt, AdapterEvent::SessionEnded { .. }));
+    }
+
+    #[test]
+    fn is_dead_parses_defensive_shapes() {
+        // CCT-252: no live known-dead sample, so several plausible shapes.
+        let mut s = snap("abcd1234", "working", None);
+        assert!(!s.is_dead(), "live working session is not dead");
+
+        s.gone = true;
+        assert!(s.is_dead(), "gone flag → dead");
+        s.gone = false;
+
+        s.dead = true;
+        assert!(s.is_dead(), "dead flag → dead");
+        s.dead = false;
+
+        s.alive = Some(false);
+        assert!(s.is_dead(), "alive:false → dead");
+        s.alive = Some(true);
+        assert!(!s.is_dead(), "alive:true → not dead");
+        s.alive = None;
+
+        s.status = Some("Exited".into());
+        assert!(s.is_dead(), "status:exited (case-insensitive) → dead");
+        s.status = Some("process gone".into());
+        assert!(s.is_dead(), "status:'process gone' → dead");
+        s.status = Some("running".into());
+        assert!(!s.is_dead(), "status:running → not dead");
+        s.status = None;
+
+        s.state = Some("gone".into());
+        assert!(s.is_dead(), "state:gone → dead");
+        s.state = Some("working".into());
+
+        s.tempo = Some("dead".into());
+        assert!(s.is_dead(), "tempo:dead → dead");
+    }
+
+    #[tokio::test]
+    async fn dead_in_roster_emits_hibernated_with_state_json() {
+        // CCT-252 B2: a still-listed session that claude reports dead emits a
+        // hibernated Status (state.json survives → revivable red dot) within
+        // one poll, without waiting for roster disappearance.
+        let (mut d, mut rx) = driver();
+        // Start it live.
+        d.apply_snapshot(vec![snap("aaaa0001", "working", None)]).await;
+        assert!(matches!(rx.recv().await.unwrap(), AdapterEvent::SessionStarted { .. }));
+        assert!(matches!(rx.recv().await.unwrap(), AdapterEvent::Status { .. }));
+
+        // Persist on-disk job state so the dead transition picks hibernated.
+        let short_dir = d.cfg.jobs_root.join("aaaa0001");
+        std::fs::create_dir_all(&short_dir).unwrap();
+        std::fs::write(
+            short_dir.join("state.json"),
+            r#"{"sessionId":"sess-a","cwd":"/tmp","state":"working"}"#,
+        )
+        .unwrap();
+
+        // Same short, now reported dead but STILL listed.
+        let mut dead = snap("aaaa0001", "working", None);
+        dead.gone = true;
+        d.apply_snapshot(vec![dead]).await;
+        let evt = rx.recv().await.unwrap();
+        match evt {
+            AdapterEvent::Status { tempo, .. } => {
+                assert_eq!(tempo.as_deref(), Some("hibernated"));
+            }
+            other => panic!("expected hibernated Status, got {other:?}"),
+        }
+
+        // B3 sticky: a second poll still reporting dead must NOT re-emit
+        // (no Status, no SessionEnded) — the dot can't be re-greened.
+        let mut dead2 = snap("aaaa0001", "working", None);
+        dead2.gone = true;
+        d.apply_snapshot(vec![dead2]).await;
+        assert!(rx.try_recv().is_err(), "dead-in-roster is sticky: no re-emit");
+    }
+
+    #[tokio::test]
+    async fn dead_in_roster_emits_ended_without_state_json() {
+        // CCT-252 B2: dead-but-listed with no surviving job state → SessionEnded
+        // (the server marks the row `ended`, which is sticky per CCT-192).
+        let (mut d, mut rx) = driver();
+        d.apply_snapshot(vec![snap("bbbb0002", "working", None)]).await;
+        assert!(matches!(rx.recv().await.unwrap(), AdapterEvent::SessionStarted { .. }));
+        assert!(matches!(rx.recv().await.unwrap(), AdapterEvent::Status { .. }));
+
+        let mut dead = snap("bbbb0002", "working", None);
+        dead.status = Some("exited".into());
+        d.apply_snapshot(vec![dead]).await;
+        let evt = rx.recv().await.unwrap();
+        assert!(matches!(evt, AdapterEvent::SessionEnded { .. }));
+    }
+
+    #[tokio::test]
+    async fn revive_clears_dead_sticky_and_resumes_status() {
+        // CCT-252: if claude reports the short alive again after we marked it
+        // dead, the sticky flag clears and live Status flows once more.
+        let (mut d, mut rx) = driver();
+        d.apply_snapshot(vec![snap("cccc0003", "working", None)]).await;
+        rx.recv().await.unwrap(); // Started
+        rx.recv().await.unwrap(); // Status
+
+        let mut dead = snap("cccc0003", "working", None);
+        dead.dead = true;
+        d.apply_snapshot(vec![dead]).await;
+        // SessionEnded (no state.json).
+        assert!(matches!(rx.recv().await.unwrap(), AdapterEvent::SessionEnded { .. }));
+
+        // Revived: alive again → a fresh Status is emitted.
+        d.apply_snapshot(vec![snap("cccc0003", "busy", None)]).await;
+        assert!(matches!(rx.recv().await.unwrap(), AdapterEvent::Status { .. }));
     }
 
     #[tokio::test]
