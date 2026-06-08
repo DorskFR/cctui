@@ -142,7 +142,12 @@
 	--control-height: 2.75rem;
 
 	/* ---- Layout ---- */
-	--header-h: 3.25rem;
+	/* Fixed (px, not rem): the header is chrome that must NOT scale with the
+	   UI font slider it hosts (CCT-264) — a rem header-h would grow under the
+	   slider and reflow it mid-drag. Pinning here keeps the bar height, the
+	   content clearance, and the sticky offsets that key off it all consistent
+	   with the fixed toolbar. */
+	--header-h: 52px;
 	--nav-h: 3.5rem;
 	--content-max: 56rem;
 	--z-header: 50;
