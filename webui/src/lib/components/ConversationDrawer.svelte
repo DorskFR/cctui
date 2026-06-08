@@ -601,16 +601,31 @@
 	// backward-looking `cache_cold` flag drives the ❄️ list glyph instead.)
 	// A timer re-evaluates so the button flips blue while the drawer sits open.
 	const CACHE_TTL_MS = 5 * 60 * 1000;
+	// Final-minute countdown window (CCT-261): show a live "Send (Ns)" countdown
+	// while the warm cache is within this many ms of going cold.
+	const COLD_WARN_MS = 60 * 1000;
 	let now = $state(Date.now());
-	$effect(() => {
-		const t = setInterval(() => (now = Date.now()), 15_000);
-		return () => clearInterval(t);
-	});
 	const lastActivityMs = $derived(
 		session.last_activity_at ? new Date(session.last_activity_at).getTime() : null
 	);
 	const cacheCold = $derived(lastActivityMs !== null && now - lastActivityMs > CACHE_TTL_MS);
 	const burstTokens = $derived(session.estimated_burst_tokens ?? null);
+	// Milliseconds until the warm window lapses (null when no activity / cold).
+	const msUntilCold = $derived(
+		lastActivityMs === null ? null : CACHE_TTL_MS - (now - lastActivityMs)
+	);
+	// Whether we're in the final-minute countdown band (warm, but ≤60s left).
+	const coldImminent = $derived(msUntilCold !== null && msUntilCold > 0 && msUntilCold <= COLD_WARN_MS);
+	// Seconds to display, clamped to [0, 60].
+	const coldCountdownSecs = $derived(coldImminent ? Math.ceil(msUntilCold! / 1000) : null);
+	// Tick fast (1s) only while counting down so the number is smooth; otherwise
+	// a lazy 15s tick is enough to flip the button cold. Re-evaluates as the
+	// session (last_activity_at) changes; the interval is torn down on unmount.
+	$effect(() => {
+		const fast = coldImminent;
+		const t = setInterval(() => (now = Date.now()), fast ? 1_000 : 15_000);
+		return () => clearInterval(t);
+	});
 
 	// ── Sent-message history recall (ArrowUp/ArrowDown) ─────────────────────
 	// histIndex: -1 = editing the live draft; 0..n-1 = browsing history
@@ -1329,15 +1344,18 @@
 				<button
 					class="btn btn-primary send"
 					class:cold={cacheCold}
+					class:warning={coldImminent}
 					disabled={uploading || (!input.trim() && attachments.length === 0)}
 					onclick={send}
 				title={cacheCold
 					? burstTokens
 						? `Prompt cache is cold — the next send re-writes ~${compact(burstTokens)} tokens to cache`
 						: 'Prompt cache is cold — the next send re-bills the full context'
-					: undefined}
+					: coldImminent
+						? 'Prompt cache goes cold soon — send now to keep it warm'
+						: undefined}
 			>
-				{#if uploading}Uploading…{:else if cacheCold && burstTokens}Send ❄️ ~{compact(burstTokens)}{:else if cacheCold}Send ❄️{:else}Send{/if}
+				{#if uploading}Uploading…{:else if coldImminent}Send (<span class="countdown">{coldCountdownSecs}s</span>){:else if cacheCold && burstTokens}Send ❄️ ~{compact(burstTokens)}{:else if cacheCold}Send ❄️{:else}Send{/if}
 			</button>
 			</div>
 		{/if}
@@ -1993,6 +2011,20 @@
 		background: var(--c-blue);
 		box-shadow: 0 0 0 1px color-mix(in srgb, var(--c-blue) 40%, transparent);
 		color: #fff;
+	}
+	/* Final-minute warm-window countdown (CCT-261): amber to nudge a send before
+	   the cache cools. Loses to .cold (which only applies once already lapsed). */
+	.send.warning {
+		background: var(--c-amber);
+		box-shadow: 0 0 0 1px color-mix(in srgb, var(--c-amber) 40%, transparent);
+		color: #fff;
+	}
+	/* Fixed-width, tabular digits so "59s"→"0s" doesn't jitter the button. */
+	.send .countdown {
+		display: inline-block;
+		min-width: 2.4ch;
+		text-align: right;
+		font-variant-numeric: tabular-nums;
 	}
 	.hint {
 		font-size: var(--fs-sm);
