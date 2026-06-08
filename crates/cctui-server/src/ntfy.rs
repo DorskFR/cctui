@@ -7,7 +7,8 @@
 //! path on a flaky ntfy server.
 //!
 //! Target topic is `CCTUI_NTFY_URL` (a full topic URL, e.g.
-//! `https://ntfy.example.internal/cctui-dispatch`); the token is sent as a bearer.
+//! `https://ntfy.example.com/cctui-dispatch`); the token is sent as a bearer.
+//! With no default, notifications stay off unless both env vars are set.
 
 use crate::config::Config;
 
@@ -27,7 +28,9 @@ pub fn notify(config: &Config, n: Notification) {
     let Some(token) = config.ntfy_token.clone() else {
         return;
     };
-    let url = config.ntfy_url.clone();
+    let Some(url) = config.ntfy_url.clone() else {
+        return;
+    };
     tokio::spawn(async move {
         let client = reqwest::Client::new();
         let resp = client

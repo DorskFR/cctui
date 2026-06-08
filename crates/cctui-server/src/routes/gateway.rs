@@ -77,7 +77,7 @@ pub fn openai_authorize_url() -> String {
         .unwrap_or_else(|_| "https://auth.openai.com/oauth/authorize".into())
 }
 /// Fixed redirect URI baked into Codex's public client — we can't point it at
-/// cctui.example.internal. The browser redirect to localhost:1455 fails to load; the
+/// our own host. The browser redirect to localhost:1455 fails to load; the
 /// user copies the full URL from the address bar and pastes it back (CCT-244).
 pub fn openai_oauth_redirect_uri() -> String {
     std::env::var("CCTUI_OPENAI_OAUTH_REDIRECT_URI")

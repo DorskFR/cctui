@@ -1,12 +1,10 @@
 //! In-process Kubernetes dispatcher (CCT-234).
 //!
-//! Clones the suspended `claude-worker` CronJob's `jobTemplate` into a one-shot
-//! `batch/v1` Job, injecting the per-session env (mirroring the retired python
-//! `claude-worker-dispatcher` service `overlays/ai/claude-worker/dispatcher/app.py`).
-//! Runs inside cctui-server using the pod's projected ServiceAccount token
-//! (in-cluster config); RBAC for `cronjobs: get` + `jobs: get,create,delete` in
-//! the worker namespace is provisioned in `infra.example.internal`
-//! (`overlays/dev/cctui/cctui/rbac-dispatcher.yaml`).
+//! Clones a suspended worker CronJob's `jobTemplate` into a one-shot
+//! `batch/v1` Job, injecting the per-session env. Runs inside cctui-server
+//! using the pod's projected ServiceAccount token (in-cluster config); the
+//! worker namespace and its RBAC (`cronjobs: get` + `jobs: get,create,delete`)
+//! are provisioned out-of-band in your cluster manifests.
 //!
 //! Semantics preserved verbatim from the python service:
 //! - Job name = `claude-worker-<sha1(session_id)[:12]>` so a repeat dispatch of
@@ -37,9 +35,9 @@ const ANNOTATION_SESSION_ID: &str = "cctui.dev/session-id";
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct KubeDispatcherConfig {
     pub id: String,
-    /// Namespace the worker Job + source CronJob live in (e.g. `ai`).
+    /// Namespace the worker Job + source CronJob live in (e.g. `workers`).
     pub namespace: String,
-    /// Suspended CronJob whose `jobTemplate` is cloned (e.g. `claude-worker-base`).
+    /// Suspended CronJob whose `jobTemplate` is cloned (e.g. `worker-template`).
     pub source_cronjob: String,
     /// `CCTUI_URL` injected into the worker so its daemon dials back.
     #[serde(default)]
@@ -361,7 +359,7 @@ mod tests {
         serde_json::from_value(json!({
             "apiVersion": "batch/v1",
             "kind": "CronJob",
-            "metadata": { "name": "claude-worker-base" },
+            "metadata": { "name": "worker-template" },
             "spec": {
                 "schedule": "0 0 31 2 *",
                 "jobTemplate": {
@@ -373,7 +371,7 @@ mod tests {
                                 "restartPolicy": "Never",
                                 "containers": [{
                                     "name": "worker",
-                                    "image": "registry.example.internal/internal/claude-worker:v1.4.5",
+                                    "image": "example.com/worker:latest",
                                     "command": ["sleep", "infinity"],
                                     "env": [
                                         { "name": "TASK_ID", "value": "" },

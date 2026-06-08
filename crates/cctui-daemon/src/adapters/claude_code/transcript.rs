@@ -561,7 +561,7 @@ mod tests {
         // CCT-225: Workflow-tool agents live under subagents/workflows/<runId>/.
         let tmp = tempfile::tempdir().unwrap();
         // Lay out a realistic <session>/ tree.
-        let session = tmp.path().join("-home-dorsk").join("bea6c407");
+        let session = tmp.path().join("-home-user").join("bea6c407");
         let subagents = session.join("subagents");
         let run_dir = subagents.join("workflows").join("wf_fab6efd5-4bf");
         std::fs::create_dir_all(&run_dir).unwrap();

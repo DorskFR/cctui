@@ -193,15 +193,15 @@
 			{:else}
 				<label class="fld">
 					<span>Namespace</span>
-					<input class="input" bind:value={namespace} placeholder="ai" />
+					<input class="input" bind:value={namespace} placeholder="workers" />
 				</label>
 				<label class="fld">
 					<span>Source CronJob</span>
-					<input class="input" bind:value={sourceCronjob} placeholder="claude-worker-base" />
+					<input class="input" bind:value={sourceCronjob} placeholder="worker-template" />
 				</label>
 				<label class="fld">
 					<span>CCTUI URL (optional)</span>
-					<input class="input" bind:value={cctuiUrl} placeholder="https://cctui.example.internal" />
+					<input class="input" bind:value={cctuiUrl} placeholder="https://cctui.example.com" />
 				</label>
 			{/if}
 			<div class="row editor-acts">

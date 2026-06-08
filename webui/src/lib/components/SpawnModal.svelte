@@ -397,7 +397,7 @@
 					<input
 						id="sp-identity"
 						class="input mono"
-						placeholder="dorsk"
+						placeholder="alice"
 						bind:value={form.identity}
 					/>
 					<span class="faint sm">Which account the worker acts as. Empty = worker default.</span>

@@ -61,9 +61,10 @@ pub struct Config {
     /// presence is the on/off switch for dispatch push notifications: when
     /// unset, `ntfy::notify` is a no-op (CCT-198).
     pub ntfy_token: Option<String>,
-    /// ntfy topic URL to POST notifications to (`CCTUI_NTFY_URL`). Defaults to
-    /// `https://ntfy.example.internal/cctui-dispatch`.
-    pub ntfy_url: String,
+    /// ntfy topic URL to POST notifications to (`CCTUI_NTFY_URL`, a full topic
+    /// URL, e.g. `https://ntfy.example.com/cctui-dispatch`). No default: when
+    /// unset, push notifications stay off.
+    pub ntfy_url: Option<String>,
 }
 
 impl Config {
@@ -104,10 +105,7 @@ impl Config {
                 .and_then(|s| s.parse::<u64>().ok())
                 .map_or(2 * 60 * 60, |hours| hours * 60 * 60),
             ntfy_token: env::var("CCTUI_NTFY_TOKEN").ok().filter(|s| !s.trim().is_empty()),
-            ntfy_url: env::var("CCTUI_NTFY_URL")
-                .ok()
-                .filter(|s| !s.trim().is_empty())
-                .unwrap_or_else(|| "https://ntfy.example.internal/cctui-dispatch".into()),
+            ntfy_url: env::var("CCTUI_NTFY_URL").ok().filter(|s| !s.trim().is_empty()),
         }
     }
 
