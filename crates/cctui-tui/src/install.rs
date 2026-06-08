@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 /// (new hook, changed endpoint, altered prelude…). Self-update compares this
 /// against the integer stored in `~/.cctui/settings_schema` to decide whether
 /// to re-merge the user's settings files.
-pub const SETTINGS_SCHEMA_VERSION: u32 = 1;
+pub const SETTINGS_SCHEMA_VERSION: u32 = 2;
 
 const SCHEMA_MARKER_FILENAME: &str = "settings_schema";
 
@@ -77,13 +77,11 @@ fn build_hooks(server_url: &str, fallback_token: &str) -> Value {
         ),
         fallback_token,
     );
-    let check = curl_cmd(server_url, "/api/v1/check", None, fallback_token);
     let post_tool = curl_cmd(server_url, "/api/v1/hooks/post-tool-use", None, fallback_token);
     let stop = curl_cmd(server_url, "/api/v1/hooks/stop", None, fallback_token);
 
     json!({
         "SessionStart": [{"hooks": [{"type": "command", "command": session_start}]}],
-        "PreToolUse":   [{"hooks": [{"type": "command", "command": check}]}],
         "PostToolUse":  [{"hooks": [{"type": "command", "command": post_tool}]}],
         "Stop":         [{"hooks": [{"type": "command", "command": stop}]}],
     })
@@ -122,6 +120,10 @@ pub fn apply_settings(server_url: &str, fallback_token: &str, _bin_path: &Path) 
     let hooks_val = sobj.entry("hooks").or_insert_with(|| Value::Object(serde_json::Map::new()));
     let new_hooks = build_hooks(server_url, fallback_token);
     if let (Some(existing), Some(new_map)) = (hooks_val.as_object_mut(), new_hooks.as_object()) {
+        // Drop the stale `/api/v1/check` PreToolUse hook left by schema v1
+        // installs (CCT-238): the server route no longer exists, so re-applying
+        // must actively remove the key, not just overwrite the ones we still emit.
+        existing.remove("PreToolUse");
         for (k, v) in new_map {
             existing.insert(k.clone(), v.clone());
         }
@@ -201,6 +203,30 @@ mod tests {
 
         assert_eq!(first, second);
         assert!(first.contains("session-start"));
+    }
+
+    #[test]
+    fn apply_settings_drops_stale_pretooluse_hook() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _g = HomeGuard::set(tmp.path());
+        let settings_path = tmp.path().join(".claude/settings.json");
+        std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+        // Simulate a schema-v1 install that wrote a PreToolUse /api/v1/check hook.
+        std::fs::write(
+            &settings_path,
+            r#"{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"curl /api/v1/check"}]}]}}"#,
+        )
+        .unwrap();
+
+        let bin = tmp.path().join("cctui");
+        std::fs::write(&bin, b"").unwrap();
+        apply_settings("https://s", "tok", &bin).unwrap();
+
+        let v: Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+        assert!(v["hooks"]["PreToolUse"].is_null(), "stale PreToolUse hook must be removed");
+        assert!(v["hooks"]["SessionStart"].is_array());
+        assert!(!std::fs::read_to_string(&settings_path).unwrap().contains("/api/v1/check"));
     }
 
     #[test]
