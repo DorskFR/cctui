@@ -221,7 +221,7 @@ impl AttachTask {
 /// 8-char hex id, `cols`/`rows` ints in `1..=10000`. `caps` is optional but
 /// when present `terminal`/`mux`/`ssh` are its required members.
 fn attach_request(short: &str, attach_id: &str) -> Value {
-    json!({
+    let mut req = json!({
         "proto": 1,
         "op": "attach",
         "short": short,
@@ -229,7 +229,13 @@ fn attach_request(short: &str, attach_id: &str) -> Value {
         "rows": ATTACH_ROWS,
         "attachId": attach_id,
         "caps": { "terminal": Value::Null, "mux": Value::Null, "ssh": false },
-    })
+    });
+    // Claude Code ≥2.1.168 gates `attach` behind the daemon control key
+    // (CCT-264); echo it back when present, or the daemon rejects with EAUTH.
+    if let (Some(obj), Some(key)) = (req.as_object_mut(), super::socket::control_key()) {
+        obj.insert("auth".to_owned(), Value::String(key));
+    }
+    req
 }
 
 /// What an attach cycle tells the reconnect loop to do next.

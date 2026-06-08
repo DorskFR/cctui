@@ -788,7 +788,9 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("t.jsonl");
         let line = |t: &str| {
-            format!(r#"{{"type":"assistant","message":{{"content":[{{"type":"text","text":"{t}"}}]}}}}"#)
+            format!(
+                r#"{{"type":"assistant","message":{{"content":[{{"type":"text","text":"{t}"}}]}}}}"#
+            )
         };
         write_lines(&path, &[&line("a"), &line("b"), &line("c")]);
         // The persisted offset sits at EOF (all three lines "tailed"), but
@@ -811,7 +813,9 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("t.jsonl");
         let line = |t: &str| {
-            format!(r#"{{"type":"assistant","message":{{"content":[{{"type":"text","text":"{t}"}}]}}}}"#)
+            format!(
+                r#"{{"type":"assistant","message":{{"content":[{{"type":"text","text":"{t}"}}]}}}}"#
+            )
         };
         // ~80 bytes/line; ~1200 lines comfortably exceeds the 64 KiB window.
         let lines: Vec<String> = (0..1200).map(|i| line(&format!("msg-{i}"))).collect();

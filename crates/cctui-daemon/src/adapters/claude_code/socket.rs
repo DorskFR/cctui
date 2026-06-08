@@ -4,7 +4,7 @@
 //! one-response on a fresh connection; `subscribe` and `attach` keep the
 //! connection open and stream multiple response lines.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use serde::de::DeserializeOwned;
@@ -12,13 +12,60 @@ use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
+/// Control-socket ops that the claude daemon gates behind the control key
+/// (CCT-264). Read ops (`ping`/`list`/`has`/`kill`) are ungated; only the
+/// mutating `dispatch`/`reply`/`attach` ops are rejected with `EAUTH` when no
+/// `auth` is presented. The daemon's request schema is a strict discriminated
+/// union, so `auth` must ONLY ride on these ops — adding it to `ping`/`list`
+/// would be rejected as a malformed request.
+const AUTH_GATED_OPS: &[&str] = &["dispatch", "reply", "attach"];
+
+/// Path to the claude daemon's control key, mirroring the CLI's own resolution
+/// (`<config>/daemon/control.key`, where `<config>` is `$CLAUDE_CONFIG_DIR` or
+/// `~/.claude`). Claude Code ≥2.1.168 generates this file (16 random bytes, hex,
+/// mode 0600) and requires every gated op to echo it back.
+fn control_key_path() -> Option<PathBuf> {
+    let base = std::env::var_os("CLAUDE_CONFIG_DIR")
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|h| h.join(".claude")))?;
+    Some(base.join("daemon").join("control.key"))
+}
+
+/// Read the daemon control key, if present. Read fresh each call (the file is
+/// tiny) so a key rotation across a daemon restart is picked up without needing
+/// to restart cctui-daemon. Absence is not an error here: older claude builds
+/// have no key file and don't gate, so callers send no `auth` and succeed.
+pub fn control_key() -> Option<String> {
+    let path = control_key_path()?;
+    let key = std::fs::read_to_string(path).ok()?;
+    let key = key.trim();
+    if key.is_empty() { None } else { Some(key.to_owned()) }
+}
+
+/// Inject the control key as a top-level `auth` field when `request` is an
+/// auth-gated op and doesn't already carry one. No-op otherwise.
+fn inject_auth(request: &mut Value) {
+    let is_gated =
+        request.get("op").and_then(Value::as_str).is_some_and(|op| AUTH_GATED_OPS.contains(&op));
+    if !is_gated || request.get("auth").is_some() {
+        return;
+    }
+    if let (Some(obj), Some(key)) = (request.as_object_mut(), control_key()) {
+        obj.insert("auth".to_owned(), Value::String(key));
+    }
+}
+
 /// Send a single request and read a single JSON-line response.
 pub async fn one_shot(socket: &Path, request: &Value) -> Result<Value> {
     let stream = UnixStream::connect(socket)
         .await
         .with_context(|| format!("connecting to {}", socket.display()))?;
     let (read_half, mut write_half) = stream.into_split();
-    let mut line = serde_json::to_string(request)?;
+    // Echo the daemon control key on auth-gated ops (dispatch/reply); a clone
+    // keeps the borrow read-only for callers that reuse the request.
+    let mut request = request.clone();
+    inject_auth(&mut request);
+    let mut line = serde_json::to_string(&request)?;
     line.push('\n');
     write_half.write_all(line.as_bytes()).await?;
     write_half.flush().await?;
@@ -117,9 +164,10 @@ async fn attach_send_chunks(socket: &Path, short: &str, chunks: &[Vec<u8>]) -> R
         .with_context(|| format!("connecting to {}", socket.display()))?;
     let (read_half, mut write_half) = stream.into_split();
 
-    let mut line = serde_json::to_string(
-        &serde_json::json!({"proto":1,"op":"attach","short":short,"cols":120,"rows":40}),
-    )?;
+    let mut attach_req =
+        serde_json::json!({"proto":1,"op":"attach","short":short,"cols":120,"rows":40});
+    inject_auth(&mut attach_req);
+    let mut line = serde_json::to_string(&attach_req)?;
     line.push('\n');
     write_half.write_all(line.as_bytes()).await?;
     write_half.flush().await?;

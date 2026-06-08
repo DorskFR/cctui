@@ -151,17 +151,20 @@
 	.notify-on {
 		color: var(--accent);
 	}
-	/* Top-bar font-size slider (CCT-250 item 3) — mirrors the chat slider but
-	   drives the global UI scale. Compact so it fits the header on phones. */
+	/* Top-bar font-size slider (CCT-250 item 3) — drives the global UI scale.
+	   Its own geometry is pinned in px (NOT rem): the slider scales the root
+	   font-size, so a rem-sized track would resize itself mid-drag and remap
+	   the thumb under the cursor, oscillating the value. Fixed px keeps the
+	   track stable while dragging. */
 	.font-slider {
 		display: inline-flex;
 		align-items: center;
-		gap: var(--sp-1);
+		gap: 4px;
 		color: var(--text-faint);
-		font-size: var(--fs-xs);
+		font-size: 12px;
 	}
 	.font-slider input[type='range'] {
-		width: 4rem;
+		width: 64px;
 		accent-color: var(--accent);
 	}
 	/* Theme picker: a native <select> overlaid transparently on the icon button
