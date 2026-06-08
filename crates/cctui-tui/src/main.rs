@@ -616,6 +616,7 @@ fn handle_server_event(app: &mut App, event: ServerEvent) {
         | ServerEvent::CommandResult { .. }
         | ServerEvent::AskQuestion { .. }
         | ServerEvent::MessageAck { .. }
+        | ServerEvent::MachineLiveness { .. }
         | ServerEvent::AskResolved { .. } => {
             // Archive coverage is web-only (CCT-68); spawn feedback
             // (CommandResult, CCT-131) is surfaced in the web client and the
@@ -623,7 +624,9 @@ fn handle_server_event(app: &mut App, event: ServerEvent) {
             // (CCT-164) render in the web client; the TUI shows the question
             // from the transcript, so nothing to render here. MessageAck
             // (CCT-212) is opt-in via `client_msg_id`, which the TUI never
-            // sends, so the server won't emit one to it.
+            // sends, so the server won't emit one to it. MachineLiveness
+            // (CCT-255) drives a web-only per-machine badge; the TUI doesn't
+            // render machine liveness, so nothing to do here.
         }
         ServerEvent::PermissionResolved { session_id, request_id } => {
             // Drop any queued entry that matches; if it's the head and the
