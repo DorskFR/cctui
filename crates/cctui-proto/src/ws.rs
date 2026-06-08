@@ -254,6 +254,14 @@ pub enum ServerEvent {
         machine_id: uuid::Uuid,
         count: i64,
     },
+    /// A machine's liveness tier just changed (CCT-255). Derived from the age
+    /// of `machines.last_seen_at`, which the server advances on every daemon
+    /// `Heartbeat`. Broadcast on transition so webui/TUI can flip a machine to
+    /// offline within one liveness window without waiting for a failed dispatch.
+    MachineLiveness {
+        machine_id: uuid::Uuid,
+        liveness: crate::models::MachineLiveness,
+    },
     /// A single archive file has just finished uploading (CCT-68).
     ArchiveUploaded {
         machine_id: uuid::Uuid,

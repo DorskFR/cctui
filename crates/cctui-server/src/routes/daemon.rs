@@ -205,6 +205,7 @@ fn frame_trace(frame: &DaemonFrameUp) -> String {
                 event_local_id(event),
             )
         }
+        DaemonFrameUp::Heartbeat { .. } => "heartbeat".to_owned(),
         _ => "other".to_owned(),
     }
 }
@@ -272,7 +273,28 @@ async fn process_frame(
             }
             Ok(())
         }
-        // Heartbeat (and any future #[non_exhaustive] variants) are no-ops.
+        DaemonFrameUp::Heartbeat { .. } => {
+            // Machine liveness (CCT-255): advance `last_seen_at` on EVERY
+            // heartbeat (not just connect, as auth.rs does), then derive the
+            // online/stale/offline tier and broadcast it on transition. This is
+            // the proactive signal the server previously lacked — a daemon that
+            // stops heartbeating ages to offline without a failed dispatch.
+            if let Err(err) =
+                sqlx::query("UPDATE machines SET last_seen_at = now() WHERE id = $1")
+                    .bind(machine_id)
+                    .execute(&state.pool)
+                    .await
+            {
+                tracing::warn!(%err, %machine_id, "heartbeat last_seen_at bump failed");
+            }
+            crate::machine_liveness::record_and_broadcast(
+                state,
+                machine_id,
+                cctui_proto::models::MachineLiveness::Online,
+            );
+            Ok(())
+        }
+        // Any future #[non_exhaustive] variants are no-ops.
         _ => Ok(()),
     }
 }

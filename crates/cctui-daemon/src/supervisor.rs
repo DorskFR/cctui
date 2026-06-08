@@ -148,6 +148,14 @@ impl Supervisor {
                         );
                     }
                     sink.send(Message::Ping(Vec::new().into())).await?;
+                    // App-level liveness heartbeat (CCT-255). The WS Ping above
+                    // keeps the socket warm, but the server only advances
+                    // `machines.last_seen_at` on an application frame; this
+                    // Heartbeat gives it a per-cadence signal to derive the
+                    // machine online/stale/offline tier from.
+                    let hb = DaemonFrameUp::Heartbeat { sent_at: chrono::Utc::now() };
+                    let payload = serde_json::to_string(&hb)?;
+                    sink.send(Message::Text(payload.into())).await?;
                 }
             }
         }

@@ -75,6 +75,11 @@ pub struct MachineRow {
     /// Non-secret machine-key fragment, e.g. `cctui_m_ab1234…ef34` (CCT-251).
     /// `None` for machines enrolled before the preview column existed.
     pub key_preview: Option<String>,
+    /// Derived online/stale/offline tier from `last_seen_at` age (CCT-255).
+    /// Not a DB column — `#[sqlx(skip)]` makes `query_as` ignore it (filled via
+    /// `Default`); the handler fills it in from `last_seen_at` after the fetch.
+    #[sqlx(skip)]
+    pub liveness: cctui_proto::models::MachineLiveness,
 }
 
 #[derive(Deserialize, TS)]
@@ -221,7 +226,7 @@ pub async fn list_user_machines(
     Path(user_id): Path<Uuid>,
 ) -> Result<Json<Vec<MachineRow>>, (StatusCode, Json<ApiError>)> {
     forbid_or(&ctx)?;
-    let rows: Vec<MachineRow> = sqlx::query_as(
+    let mut rows: Vec<MachineRow> = sqlx::query_as(
         "SELECT id, user_id, name, display_name, first_seen_at, last_seen_at, revoked_at, kind, \
                 hue, key_preview \
          FROM machines WHERE user_id = $1 AND deleted_at IS NULL ORDER BY first_seen_at",
@@ -230,6 +235,12 @@ pub async fn list_user_machines(
     .fetch_all(&state.pool)
     .await
     .map_err(|e| db_err(&e))?;
+    // Derive the online/stale/offline tier from `last_seen_at` age (CCT-255) so
+    // the UI can render a machine health dot without re-implementing the
+    // thresholds client-side.
+    for row in &mut rows {
+        row.liveness = crate::machine_liveness::derive(row.last_seen_at);
+    }
     Ok(Json(rows))
 }
 

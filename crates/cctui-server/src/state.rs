@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use cctui_proto::models::MachineLiveness;
 use cctui_proto::ws::{DaemonFrameDown, ServerEvent};
 use dashmap::DashMap;
 use sqlx::PgPool;
@@ -45,6 +46,12 @@ pub struct AppState {
     pub dispatchers: Arc<DispatcherRegistry>,
     /// In-flight mid-chat file-stage requests awaiting a daemon reply (CCT-236).
     pub pending_stage_requests: PendingStageRequests,
+    /// Last broadcast liveness tier per machine (CCT-255). The daemon-WS
+    /// heartbeat handler and the reaper both re-derive a machine's tier from
+    /// `machines.last_seen_at` age; this map lets them broadcast a
+    /// [`ServerEvent::MachineLiveness`] only on an actual transition (e.g.
+    /// online → offline) rather than on every tick.
+    pub machine_liveness: Arc<DashMap<Uuid, MachineLiveness>>,
     /// Per-OAuth-account refresh mutex (CCT-232). OAuth refresh tokens are
     /// single-use; two concurrent sessions on the same account must not both
     /// refresh (the second would invalidate the first). The gateway grabs the

@@ -5,6 +5,7 @@ mod crypto;
 mod daemon_dispatch;
 mod db;
 mod dispatchers;
+mod machine_liveness;
 mod normalize;
 mod ntfy;
 mod policy;
@@ -56,6 +57,7 @@ async fn main() -> anyhow::Result<()> {
         daemon_connections: Arc::new(dashmap::DashMap::new()),
         dispatchers,
         pending_stage_requests: Arc::new(dashmap::DashMap::new()),
+        machine_liveness: Arc::new(dashmap::DashMap::new()),
         account_locks: Arc::new(dashmap::DashMap::new()),
         http_client: reqwest::Client::new(),
         pending_oauth_logins: Arc::new(dashmap::DashMap::new()),
@@ -362,6 +364,13 @@ async fn reaper_task(state: AppState) {
                 Err(err) => tracing::warn!(%err, "ephemeral machine reap failed"),
             }
         }
+
+        // Machine liveness (CCT-255): re-derive every machine's tier from its
+        // `last_seen_at` and broadcast any transitions. The 30s cadence means a
+        // daemon that stops heartbeating ages online → stale → offline on its
+        // own — the acceptance case "killing a daemon flips it offline within
+        // one liveness window without a dispatch attempt".
+        machine_liveness::sweep(&state).await;
 
         {
             let mut pstore = state.permission_store.write().await;

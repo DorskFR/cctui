@@ -10,6 +10,7 @@ export type * from './CreateUserResponse';
 export type * from './DispatchRequest';
 export type * from './DispatchResponse';
 export type * from './Liveness';
+export type * from './MachineLiveness';
 export type * from './MachineRow';
 export type * from './MeResponse';
 export type * from './MessageRequest';

@@ -40,6 +40,26 @@ pub enum Liveness {
     Dead,
 }
 
+/// Coarse liveness tier for a machine (its daemon's WS), derived from the age
+/// of `machines.last_seen_at`, which the server now advances on every daemon
+/// `Heartbeat` frame (CCT-255). Mirrors the session [`Liveness`] tiers but
+/// names them in machine terms:
+///
+/// - `Online`: a heartbeat arrived within the active window.
+/// - `Stale`: quiet but not yet declared dead — past the active window.
+/// - `Offline`: no heartbeat for the full dead window (daemon gone).
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum MachineLiveness {
+    Online,
+    Stale,
+    /// Default tier — a freshly-fetched row before its `last_seen_at` is mapped
+    /// is treated as offline until proven otherwise.
+    #[default]
+    Offline,
+}
+
 /// Why a session wants the user's eyes, surfaced as a glyph.
 ///
 /// Derived from the classifier; today only the "blocked" bucket is
