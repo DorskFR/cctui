@@ -6,9 +6,10 @@ app mode, no SSR) + TanStack Query. Replaces the legacy single-file
 
 ## Layout
 
-- `src/lib/styles/variables.css` — **the theme**. Every color/space/font/radius
-  is a token here; swapping the theme = replacing this one file. `reset` + base
-  + components live in `app.css` and only consume tokens.
+- `src/lib/styles/variables.css` — **theme tokens**. Every color/space/font/radius
+  is a token here; each selectable theme is a `[data-theme="…"]` palette block.
+  `src/lib/theme.svelte.ts` persists/applies the chosen theme, while `reset` +
+  base + components live in `app.css` and only consume tokens.
 - `src/lib/bindings/` — TypeScript types **generated from the Rust structs** via
   ts-rs (committed). Regenerate with `npm run bindings` (or `make bindings` at
   the repo root) after changing an annotated Rust type. Imported via `@bindings`.

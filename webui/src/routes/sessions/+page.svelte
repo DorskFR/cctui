@@ -6,6 +6,7 @@
 	import { page } from '$app/state';
 	import { pushState, replaceState } from '$app/navigation';
 	import { toasts } from '$lib/toast.svelte';
+	import { ApiError } from '$lib/api';
 	import { ws } from '$lib/ws.svelte';
 	import SessionCard from '$lib/components/SessionCard.svelte';
 	import WorkflowGroup from '$lib/components/WorkflowGroup.svelte';
@@ -23,6 +24,20 @@
 	let showArchived = $state(false);
 	let openSession = $state<SessionListItem | null>(null);
 	let showSpawn = $state(false);
+	// Prefill for "new session from same script" (CCT-250 item 8). Seeded from an
+	// archived session's config, then handed to the SpawnModal.
+	let spawnPrefill = $state<Record<string, string> | null>(null);
+	function newFromScript(s: SessionListItem) {
+		spawnPrefill = {
+			machine_id: s.machine_id,
+			working_dir: s.working_dir,
+			adapter_id: s.adapter_id ?? 'claude-code',
+			name: '',
+			model: s.model ?? ''
+		};
+		openSession = null;
+		showSpawn = true;
+	}
 
 	// ── Deep-linkable session (CCT-206) ─────────────────────────────────────
 	// A session's stable, shareable URL is /sessions?session=<id>. The whole SPA
@@ -57,11 +72,18 @@
 		urlResolving = true;
 		try {
 			openSession = await endpoints.session(id);
-		} catch {
-			toasts.err('Session not found or archived.');
-			openSession = null;
-			// drop the dangling id from the URL so a reload doesn't re-toast
-			setUrlSession(null, true);
+		} catch (e) {
+			// Archived/ended sessions now resolve from the DB (read-only), so a
+			// 404 means the session was actually DELETED — only then toast +
+			// drop the id (CCT-250 item 6). Transient errors (network, 5xx) leave
+			// the URL intact so a retry/refresh can recover instead of nagging.
+			if (e instanceof ApiError && e.status === 404) {
+				toasts.err('Session not found — it may have been deleted.');
+				openSession = null;
+				setUrlSession(null, true);
+			} else {
+				toasts.err(`Could not open session: ${(e as Error).message}`);
+			}
 		} finally {
 			urlResolving = false;
 		}
@@ -479,21 +501,21 @@
 						swipeLabel="Archive"
 						onSwipe={swipeArchive}
 					/>
-					{#each childGroupsOf.get(s.id)?.plain ?? [] as c (c.id)}
-						<SessionCard
-							session={c}
-							child
+					{#if (childGroupsOf.get(s.id)?.plain ?? []).length > 0}
+						<!-- Plain (Task-tool) subagents fold under the parent with a
+						     "N× subagents" badge (CCT-250 item 4), reusing the same
+						     collapsible mechanism as workflow groups. -->
+						<WorkflowGroup
+							agents={childGroupsOf.get(s.id)?.plain ?? []}
 							compact={dense}
-							pendingCount={pending(c.id)}
+							pending={pending}
 							onopen={(x) => (openSession = x)}
-							selectable={selecting}
-							selected={selected.has(c.id)}
+							selecting={selecting}
+							selected={selected}
 							onToggleSelect={toggleSelect}
-							swipeable
-							swipeLabel="Archive"
-							onSwipe={swipeArchive}
+							swipeArchive={swipeArchive}
 						/>
-					{/each}
+					{/if}
 					{#each childGroupsOf.get(s.id)?.workflows ?? [] as g (g.runId)}
 						<WorkflowGroup
 							runId={g.runId}
@@ -532,12 +554,17 @@
 		session={liveOpen}
 		onclose={() => (openSession = null)}
 		highlight={searchTerms}
+		onNewFromScript={newFromScript}
 	/>
 {/if}
 
 {#if showSpawn}
 	<SpawnModal
-		onclose={() => (showSpawn = false)}
+		prefill={spawnPrefill}
+		onclose={() => {
+			showSpawn = false;
+			spawnPrefill = null;
+		}}
 		onspawned={() => qc.invalidateQueries({ queryKey: ['sessions'] })}
 	/>
 {/if}
@@ -553,7 +580,11 @@
 		margin-bottom: var(--sp-4);
 		padding: var(--sp-2) 0;
 		gap: var(--sp-2);
-		align-items: stretch;
+		/* CCT-250 item 1: center all toolbar controls on one baseline so the
+		   magnifier button lines up with the other buttons (was `stretch`,
+		   which only stretched text buttons → the icon-only search button sat
+		   at a different height). */
+		align-items: center;
 		background: var(--bg);
 	}
 	.page-title {

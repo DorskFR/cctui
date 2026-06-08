@@ -21,13 +21,24 @@ import { renderMarkdown, highlightBlock, prettyJson, escapeHtml } from '$lib/mar
 import { USER_PREFIX } from '$lib/ws.svelte';
 
 /** The subset of the drawer's ViewOpts the export honors. */
+// Mirrors the drawer's ViewOpts filter model (CCT-250 item 2). Each message
+// type is off/include/exclude; if any is 'include', only included types export.
+type MsgType = 'assistant' | 'user' | 'tool' | 'mcp' | 'system' | 'result';
+type TagState = 'off' | 'include' | 'exclude';
+
 export interface ExportOpts {
-	showTool: boolean;
-	showMcp: boolean;
-	showSystem: boolean;
-	showResult: boolean;
+	typeFilter: Record<MsgType, TagState>;
 	prettyJson: boolean;
 	prettyDiff: boolean;
+	prettyTables: boolean;
+}
+
+function typeVisible(opts: ExportOpts, t: MsgType): boolean {
+	const f = opts.typeFilter;
+	if (f[t] === 'exclude') return false;
+	const anyIncluded = (Object.keys(f) as MsgType[]).some((k) => f[k] === 'include');
+	if (anyIncluded) return f[t] === 'include';
+	return true;
 }
 
 interface Block {
@@ -72,6 +83,9 @@ function formatAsk(input: unknown): string | null {
 	return parts.length ? parts.join('') : null;
 }
 
+// Render markdown honoring the export's table formatting toggle.
+const md = (s: string, opts: ExportOpts) => renderMarkdown(s, { tables: opts.prettyTables });
+
 function toBlock(e: AgentEvent, opts: ExportOpts): Block | null {
 	switch (e.type) {
 		case 'text': {
@@ -79,32 +93,33 @@ function toBlock(e: AgentEvent, opts: ExportOpts): Block | null {
 			if (e.content.startsWith(USER_PREFIX)) {
 				const content = e.content.slice(USER_PREFIX.length).trimStart();
 				const system = e.meta || looksMeta(content);
-				if (system && !opts.showSystem) return null;
-				return { role: system ? 'system' : 'user', ts: Number(e.ts), html: renderMarkdown(content) };
+				if (!typeVisible(opts, system ? 'system' : 'user')) return null;
+				return { role: system ? 'system' : 'user', ts: Number(e.ts), html: md(content, opts) };
 			}
-			return { role: 'assistant', ts: Number(e.ts), html: renderMarkdown(e.content) };
+			if (!typeVisible(opts, 'assistant')) return null;
+			return { role: 'assistant', ts: Number(e.ts), html: md(e.content, opts) };
 		}
 		case 'reply':
 			if (!e.content.trim()) return null;
-			return { role: 'user', ts: Number(e.ts), html: renderMarkdown(e.content) };
+			if (!typeVisible(opts, 'user')) return null;
+			return { role: 'user', ts: Number(e.ts), html: md(e.content, opts) };
 		case 'tool_call': {
 			if (e.tool === 'AskUserQuestion') {
 				const ask = formatAsk(e.input);
 				if (ask) return { role: 'ask', ts: Number(e.ts), label: 'AskUserQuestion', html: ask };
 			}
 			const isMcp = e.tool.startsWith('mcp__');
-			if (!opts.showTool) return null;
-			if (isMcp && !opts.showMcp) return null;
+			if (!typeVisible(opts, isMcp ? 'mcp' : 'tool')) return null;
 			return { role: 'tool', ts: Number(e.ts), label: e.tool, html: `<pre><code>${formatToolInput(e.tool, e.input, opts)}</code></pre>` };
 		}
 		case 'tool_result':
-			if (!opts.showResult) return null;
+			if (!typeVisible(opts, 'result')) return null;
 			return { role: 'result', ts: Number(e.ts), label: e.tool, html: `<pre><code>${highlightBlock(e.output_summary, '')}</code></pre>` };
 		case 'context_reset':
 			return { role: 'reset', ts: Number(e.ts), html: '⟳ context reset · /clear or /compact' };
 		case 'compact_summary':
 			if (!e.content.trim()) return null;
-			return { role: 'compact', ts: Number(e.ts), html: renderMarkdown(e.content) };
+			return { role: 'compact', ts: Number(e.ts), html: md(e.content, opts) };
 		default:
 			return null; // heartbeat, turn_end
 	}

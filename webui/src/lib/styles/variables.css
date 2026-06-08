@@ -5,8 +5,8 @@
  * font and size used anywhere in the app is a `var(--…)` defined here. No
  * component hard-codes a color or pixel value.
  *
- * Default is dark; a `[data-theme="light"]` block at the bottom flips the
- * palette tokens only (everything downstream is unchanged).
+ * Default is dark; `[data-theme="…"]` blocks at the bottom flip palette tokens
+ * only (everything downstream is unchanged).
  */
 
 :root {
@@ -137,6 +137,10 @@
 	--shadow-md: 0 6px 20px rgba(0, 0, 0, 0.45);
 	--shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.55);
 
+	/* ---- Controls (CCT-250 item 1) — shared height for icon buttons + inputs
+	   so toolbars/composers line up. `.btn-control` (app.css) consumes it. */
+	--control-height: 2.75rem;
+
 	/* ---- Layout ---- */
 	--header-h: 3.25rem;
 	--nav-h: 3.5rem;
@@ -209,3 +213,82 @@
 	--shadow-md: 0 6px 20px rgba(80, 60, 30, 0.14);
 	--shadow-lg: 0 12px 40px rgba(80, 60, 30, 0.2);
 }
+
+/* ---- Catppuccin Mocha - official Mocha base/surface/text/accent colors. */
+[data-theme='mocha'] {
+	--c-bg: #1e1e2e;
+	--c-bg-elev: #242438;
+	--c-bg-elev-2: #313244;
+	--c-surface: #313244;
+	--c-border: #45475a;
+	--c-border-strong: #585b70;
+	--c-text: #cdd6f4;
+	--c-text-muted: #bac2de;
+	--c-text-faint: #7f849c;
+	--c-accent: #cba6f7;
+	--c-accent-ink: #1e1e2e;
+	--c-accent-dim: #6c7086;
+	--c-blue: #89b4fa;
+	--c-amber: #f9e2af;
+	--c-red: #f38ba8;
+	--c-green: #a6e3a1;
+	--c-violet: #cba6f7;
+	--c-gold: #f9e2af;
+	--c-teal: #94e2d5;
+	--shadow-sm: 0 1px 2px rgba(17, 17, 27, 0.36);
+	--shadow-md: 0 6px 20px rgba(17, 17, 27, 0.42);
+	--shadow-lg: 0 12px 40px rgba(17, 17, 27, 0.5);
+}
+
+/* ---- Dracula - official palette colors with UI contrast assignments. */
+[data-theme='dracula'] {
+	--c-bg: #282a36;
+	--c-bg-elev: #343746;
+	--c-bg-elev-2: #44475a;
+	--c-surface: #343746;
+	--c-border: #44475a;
+	--c-border-strong: #6272a4;
+	--c-text: #f8f8f2;
+	--c-text-muted: #c7c9d1;
+	--c-text-faint: #6272a4;
+	--c-accent: #bd93f9;
+	--c-accent-ink: #1d1726;
+	--c-accent-dim: #6f558f;
+	--c-blue: #8be9fd;
+	--c-amber: #ffb86c;
+	--c-red: #ff5555;
+	--c-green: #50fa7b;
+	--c-violet: #bd93f9;
+	--c-gold: #f1fa8c;
+	--c-teal: #8be9fd;
+	--shadow-sm: 0 1px 2px rgba(20, 21, 27, 0.36);
+	--shadow-md: 0 6px 20px rgba(20, 21, 27, 0.44);
+	--shadow-lg: 0 12px 40px rgba(20, 21, 27, 0.52);
+}
+
+/* ---- Nord - Polar Night, Snow Storm, Frost, and Aurora palette tokens. */
+[data-theme='nord'] {
+	--c-bg: #2e3440;
+	--c-bg-elev: #3b4252;
+	--c-bg-elev-2: #434c5e;
+	--c-surface: #3b4252;
+	--c-border: #4c566a;
+	--c-border-strong: #5e81ac;
+	--c-text: #eceff4;
+	--c-text-muted: #d8dee9;
+	--c-text-faint: #8fbcbb;
+	--c-accent: #88c0d0;
+	--c-accent-ink: #1f242d;
+	--c-accent-dim: #5e81ac;
+	--c-blue: #81a1c1;
+	--c-amber: #ebcb8b;
+	--c-red: #bf616a;
+	--c-green: #a3be8c;
+	--c-violet: #b48ead;
+	--c-gold: #ebcb8b;
+	--c-teal: #8fbcbb;
+	--shadow-sm: 0 1px 2px rgba(20, 25, 34, 0.34);
+	--shadow-md: 0 6px 20px rgba(20, 25, 34, 0.42);
+	--shadow-lg: 0 12px 40px rgba(20, 25, 34, 0.5);
+}
+

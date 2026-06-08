@@ -24,8 +24,15 @@
 	let {
 		session,
 		onclose,
-		highlight = []
-	}: { session: SessionListItem; onclose: () => void; highlight?: string[] } = $props();
+		highlight = [],
+		onNewFromScript
+	}: {
+		session: SessionListItem;
+		onclose: () => void;
+		highlight?: string[];
+		// "New session from same script" for archived sessions (CCT-250 item 8).
+		onNewFromScript?: (s: SessionListItem) => void;
+	} = $props();
 
 	// Search terms to highlight inline (CCT-187), set when opened from a search.
 	const hl = (html: string) => (highlight.length ? highlightTerms(html, highlight) : html);
@@ -35,13 +42,30 @@
 	const needsInput = $derived(session.attention === 'needs_input' && !archived);
 	const qc = useQueryClient();
 
+	// ── Message-type tag filter (CCT-250 item 2) ──────────────────────────────
+	// Each message type is a clickable badge with include/exclude semantics:
+	//   'off'      → neutral (shown unless something else is set to 'include')
+	//   'include'  → if ANY tag is 'include', only included types render
+	//   'exclude'  → always hidden
+	// Replaces the old showTool/showMcp/showSystem/showResult booleans.
+	type MsgType = 'assistant' | 'user' | 'tool' | 'mcp' | 'system' | 'result';
+	type TagState = 'off' | 'include' | 'exclude';
+	const MSG_TYPES: { id: MsgType; label: string; role: string }[] = [
+		{ id: 'assistant', label: 'Assistant', role: 'assistant' },
+		{ id: 'user', label: 'User', role: 'user' },
+		{ id: 'tool', label: 'Tools', role: 'tool' },
+		{ id: 'mcp', label: 'MCP', role: 'mcp' },
+		{ id: 'system', label: 'System', role: 'system' },
+		{ id: 'result', label: 'Results', role: 'result' }
+	];
+
 	interface ViewOpts {
-		showTool: boolean;
-		showMcp: boolean;
-		showSystem: boolean;
-		showResult: boolean;
+		// Per-type tag filter state (CCT-250 item 2).
+		typeFilter: Record<MsgType, TagState>;
+		// Formatting toggles (kept as toggles, visually grouped).
 		prettyJson: boolean;
 		prettyDiff: boolean;
+		prettyTables: boolean;
 		// Chat message font scale in rem (CCT-161 item 4); applied via --chat-font-size.
 		fontSize: number;
 		// Desktop drawer width in px (drag-to-resize the left border). Null → the
@@ -49,25 +73,53 @@
 		paneWidth: number | null;
 	}
 	const defaults: ViewOpts = {
-		showTool: true,
-		showMcp: false,
-		showSystem: true,
-		showResult: true,
+		typeFilter: {
+			assistant: 'off',
+			user: 'off',
+			tool: 'off',
+			mcp: 'exclude',
+			system: 'off',
+			result: 'off'
+		},
 		prettyJson: true,
 		prettyDiff: true,
+		prettyTables: true,
 		fontSize: 0.8125,
 		paneWidth: null
 	};
 	const FONT_MIN = 0.75;
-	const FONT_MAX: number = 1.25;
+	// CCT-250 item 3: widened upper range so chat text can go meaningfully
+	// larger (global UI scale lives in the top-bar slider; this is chat-only).
+	const FONT_MAX: number = 1.75;
 	const PANE_MIN = 360; // px — narrowest the drawer can be dragged
 	let view = $state<ViewOpts>(loadView());
 	function loadView(): ViewOpts {
 		try {
-			return { ...defaults, ...JSON.parse(drafts.get(VIEW_OPTS) || '{}') };
+			const saved = JSON.parse(drafts.get(VIEW_OPTS) || '{}');
+			return {
+				...defaults,
+				...saved,
+				// typeFilter is nested — merge per-key so a partial/old payload
+				// (which had no typeFilter) keeps the sensible defaults.
+				typeFilter: { ...defaults.typeFilter, ...(saved.typeFilter ?? {}) }
+			};
 		} catch {
 			return { ...defaults };
 		}
+	}
+	// Cycle a tag: off → include → exclude → off (CCT-250 item 2).
+	function cycleTag(t: MsgType) {
+		const order: TagState[] = ['off', 'include', 'exclude'];
+		const i = order.indexOf(view.typeFilter[t]);
+		view.typeFilter = { ...view.typeFilter, [t]: order[(i + 1) % order.length] };
+	}
+	// Whether a given message type passes the current tag filter.
+	const anyIncluded = $derived(MSG_TYPES.some((m) => view.typeFilter[m.id] === 'include'));
+	function typeVisible(t: MsgType): boolean {
+		const st = view.typeFilter[t];
+		if (st === 'exclude') return false;
+		if (anyIncluded) return st === 'include';
+		return true;
 	}
 	$effect(() => {
 		drafts.set(VIEW_OPTS, JSON.stringify(view));
@@ -348,10 +400,12 @@
 		const t = text.trimStart();
 		return META_TAGS.some((m) => t.startsWith(m));
 	}
+	// Render markdown honoring the table formatting toggle (CCT-250 item 2).
+	const mdRender = (s: string) => hl(renderMarkdown(s, { tables: view.prettyTables }));
 	function userOrSystem(content: string, ts: number, meta: boolean): Line | null {
 		const role = meta ? 'system' : 'user';
-		if (role === 'system' && !view.showSystem) return null;
-		return { role, ts, html: hl(renderMarkdown(content)), text: content };
+		if (!typeVisible(role)) return null;
+		return { role, ts, html: mdRender(content), text: content };
 	}
 
 	function toLine(e: AgentEvent): Line | null {
@@ -364,7 +418,8 @@
 					const content = e.content.slice(USER_PREFIX.length).trimStart();
 					return userOrSystem(content, Number(e.ts), e.meta || looksMeta(content));
 				}
-				return { role: 'assistant', ts: Number(e.ts), html: hl(renderMarkdown(e.content)), text: e.content };
+				if (!typeVisible('assistant')) return null;
+				return { role: 'assistant', ts: Number(e.ts), html: mdRender(e.content), text: e.content };
 			}
 			case 'reply':
 				// `reply` is only ever our own optimistic echo of typed input.
@@ -377,8 +432,8 @@
 					if (ask) return { role: 'tool', ts: Number(e.ts), tool: e.tool, ask };
 				}
 				const isMcp = e.tool.startsWith('mcp__');
-				if (!view.showTool) return null;
-				if (isMcp && !view.showMcp) return null;
+				// MCP tool calls filter on the 'mcp' tag; other tool calls on 'tool'.
+				if (!typeVisible(isMcp ? 'mcp' : 'tool')) return null;
 				const { text, lang } = formatToolInput(e.tool, e.input);
 				return {
 					role: 'tool',
@@ -390,7 +445,7 @@
 				};
 			}
 			case 'tool_result':
-				if (!view.showResult) return null;
+				if (!typeVisible('result')) return null;
 				return {
 					role: 'result',
 					ts: Number(e.ts),
@@ -407,7 +462,7 @@
 				// so it arrives with its text (CCT-159). Render as a distinct
 				// "context compacted" block rather than a user bubble.
 				if (!e.content.trim()) return null;
-				return { role: 'compact', ts: Number(e.ts), html: hl(renderMarkdown(e.content)), text: e.content };
+				return { role: 'compact', ts: Number(e.ts), html: mdRender(e.content), text: e.content };
 			default:
 				return null; // heartbeat, turn_end
 		}
@@ -801,13 +856,10 @@
 		}
 	}
 
-	async function doUnarchive() {
-		try {
-			await actions.unarchive(id);
-			toasts.ok('Unarchived');
-		} catch (e) {
-			toasts.err((e as Error).message);
-		}
+	// Replaces the misleading "unarchive" (CCT-250 item 8): the agent-side worker
+	// is gone, so re-dispatch a fresh session seeded with this one's config.
+	function newFromScript() {
+		onNewFromScript?.(session);
 	}
 
 	// Export the transcript as a self-contained HTML file (CCT-227). Built from
@@ -1039,27 +1091,53 @@
 		</div>
 	</div>
 
-	<div class="toggles row row-wrap">
-		<label class="tg"><input type="checkbox" bind:checked={view.showTool} /> Tools</label>
-		<label class="tg"><input type="checkbox" bind:checked={view.showMcp} /> MCP</label>
-		<label class="tg"><input type="checkbox" bind:checked={view.showSystem} /> System</label>
-		<label class="tg"><input type="checkbox" bind:checked={view.showResult} /> Results</label>
-		<label class="tg"><input type="checkbox" bind:checked={view.prettyJson} /> JSON</label>
-		<label class="tg"><input type="checkbox" bind:checked={view.prettyDiff} /> Diff</label>
-		<label class="tg font" title="Chat font size">
-			<span aria-hidden="true">A</span>
-			<input
-				type="range"
-				min={FONT_MIN}
-				max={FONT_MAX}
-				step="0.0625"
-				bind:value={view.fontSize}
-				aria-label="Chat font size"
-			/>
-		</label>
-		<label class="tg auto" title="Auto-approve permission requests for this session">
-			<input type="checkbox" checked={session.auto_approve} onchange={toggleAutoApprove} /> Auto-approve
-		</label>
+	<div class="toolbar">
+		<!-- Message-type filters: click a tag to cycle off → include → exclude.
+		     Active (include) tags wear their message-badge color; excluded tags
+		     show a strike. (CCT-250 item 2) -->
+		<div class="tagbar row row-wrap" role="group" aria-label="Message type filter">
+			{#each MSG_TYPES as t (t.id)}
+				<button
+					type="button"
+					class="tag {t.id}"
+					class:include={view.typeFilter[t.id] === 'include'}
+					class:exclude={view.typeFilter[t.id] === 'exclude'}
+					title={`${t.label}: ${view.typeFilter[t.id] === 'include' ? 'only this' : view.typeFilter[t.id] === 'exclude' ? 'hidden' : 'shown'} — click to cycle`}
+					aria-pressed={view.typeFilter[t.id] !== 'off'}
+					onclick={() => cycleTag(t.id)}
+				>
+					{#if view.typeFilter[t.id] === 'exclude'}✕ {/if}{t.label}
+				</button>
+			{/each}
+		</div>
+		<!-- Formatting toggles: gray when off, colored when on. -->
+		<div class="fmtbar row row-wrap" role="group" aria-label="Formatting">
+			<button type="button" class="fmt" class:on={view.prettyJson} aria-pressed={view.prettyJson} onclick={() => (view.prettyJson = !view.prettyJson)}>JSON</button>
+			<button type="button" class="fmt" class:on={view.prettyDiff} aria-pressed={view.prettyDiff} onclick={() => (view.prettyDiff = !view.prettyDiff)}>Diff</button>
+			<button type="button" class="fmt" class:on={view.prettyTables} aria-pressed={view.prettyTables} onclick={() => (view.prettyTables = !view.prettyTables)} title="Render markdown tables as tables">Tables</button>
+			<label class="tg font" title="Chat font size">
+				<span aria-hidden="true">A</span>
+				<input
+					type="range"
+					min={FONT_MIN}
+					max={FONT_MAX}
+					step="0.0625"
+					bind:value={view.fontSize}
+					aria-label="Chat font size"
+				/>
+			</label>
+		</div>
+		<!-- Behavior toggle: distinct from filters/formatting. -->
+		<div class="behbar row row-wrap" role="group" aria-label="Behavior">
+			<button
+				type="button"
+				class="beh"
+				class:on={session.auto_approve}
+				aria-pressed={session.auto_approve}
+				title="Auto-approve permission requests for this session"
+				onclick={toggleAutoApprove}
+			>⚡ Auto-approve</button>
+		</div>
 	</div>
 
 	{#if needsInput}
@@ -1208,9 +1286,9 @@
 	<div class="composer" class:dropping={dragActive}>
 		{#if archived}
 			<div class="hint muted">
-				Session archived —
-				<button type="button" class="link" onclick={doUnarchive}>unarchive</button>
-				to send messages.
+				Session archived (read-only). The worker is gone on the agent side —
+				<button type="button" class="link" onclick={newFromScript}>start a new session from the same script</button>
+				to continue.
 			</div>
 		{:else}
 			<!-- Failed sends now surface inline on the message bubble itself
@@ -1402,10 +1480,6 @@
 		border-color: color-mix(in srgb, var(--danger, #bf616a) 40%, var(--border-strong));
 		background: color-mix(in srgb, var(--danger, #bf616a) 10%, var(--bg-elevated-2));
 	}
-	.tg.auto {
-		margin-left: auto;
-		font-weight: 600;
-	}
 	.hmeta {
 		gap: var(--sp-2);
 	}
@@ -1435,12 +1509,100 @@
 	.sm {
 		font-size: var(--fs-xs);
 	}
-	.toggles {
-		gap: var(--sp-3);
+	/* Toolbar (CCT-250 item 2): three visually-separated groups — message-type
+	   tag filter, formatting toggles, behavior toggle — divided by thin rules. */
+	.toolbar {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: var(--sp-2) var(--sp-3);
 		padding: var(--sp-2) var(--sp-3);
 		border-bottom: 1px solid var(--border);
 		overflow-x: auto;
 		font-size: var(--fs-xs);
+	}
+	.tagbar,
+	.fmtbar,
+	.behbar {
+		gap: var(--sp-1);
+	}
+	.fmtbar,
+	.behbar {
+		padding-left: var(--sp-3);
+		border-left: 1px solid var(--border);
+	}
+	/* Message-type tag badge. Gray when neutral; takes its role color when
+	   active (include); struck-through danger tint when excluded. */
+	.tag {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		padding: 0.15rem var(--sp-2);
+		border-radius: var(--r-pill);
+		font-size: var(--fs-xs);
+		font-weight: var(--fw-medium);
+		line-height: 1.4;
+		white-space: nowrap;
+		background: var(--bg-elevated-2);
+		color: var(--text-muted);
+		border: 1px solid var(--border);
+		cursor: pointer;
+	}
+	.tag:hover {
+		border-color: var(--border-strong);
+	}
+	.tag.assistant {
+		--tc: var(--role-assistant);
+	}
+	.tag.user {
+		--tc: var(--role-user);
+	}
+	.tag.tool {
+		--tc: var(--role-tool);
+	}
+	.tag.mcp {
+		--tc: var(--role-mcp);
+	}
+	.tag.system {
+		--tc: var(--role-system);
+	}
+	.tag.result {
+		--tc: var(--role-tool);
+	}
+	.tag.include {
+		color: var(--tc);
+		border-color: color-mix(in srgb, var(--tc) 55%, transparent);
+		background: color-mix(in srgb, var(--tc) 16%, transparent);
+	}
+	.tag.exclude {
+		color: var(--danger);
+		border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+		background: color-mix(in srgb, var(--danger) 12%, transparent);
+		text-decoration: line-through;
+	}
+	/* Formatting toggle button: gray when off, accent-colored when on. */
+	.fmt,
+	.beh {
+		padding: 0.15rem var(--sp-2);
+		border-radius: var(--r-sm);
+		font-size: var(--fs-xs);
+		font-weight: var(--fw-medium);
+		white-space: nowrap;
+		background: var(--bg-elevated-2);
+		color: var(--text-muted);
+		border: 1px solid var(--border);
+		cursor: pointer;
+	}
+	.fmt.on {
+		color: var(--accent);
+		border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+		background: color-mix(in srgb, var(--accent) 14%, transparent);
+	}
+	/* Behavior toggle visually distinct (warm/amber) from filters + formatting. */
+	.beh.on {
+		color: var(--warn);
+		border-color: color-mix(in srgb, var(--warn) 55%, transparent);
+		background: color-mix(in srgb, var(--warn) 14%, transparent);
 	}
 	.tg {
 		display: inline-flex;
@@ -1781,13 +1943,14 @@
 	.attachments {
 		width: 100%;
 	}
+	/* Composer attach button — uniform control height (CCT-250 item 1). */
 	.attach-btn {
 		flex: none;
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
-		min-width: 2.75rem;
-		min-height: 2.75rem;
+		width: var(--control-height);
+		height: var(--control-height);
 		border: 1px solid var(--border-strong);
 		border-radius: var(--r-md);
 		background: var(--bg);
@@ -1814,13 +1977,15 @@
 	}
 	.composer .textarea {
 		flex: 1;
-		min-height: 2.75rem;
+		min-height: var(--control-height);
 		max-height: 40vh;
 		resize: none;
 		overflow-y: auto;
 	}
+	/* Send button matches the attach button + textarea collapsed height. */
 	.send {
 		flex: none;
+		min-height: var(--control-height);
 	}
 	/* Cold-cache burst (CCT-189): the next send re-writes the whole context to
 	   cache, so the normally-green Send button goes blue to flag the cost. */

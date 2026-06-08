@@ -26,7 +26,18 @@
 	import AttachmentList from './AttachmentList.svelte';
 	import Modal from './Modal.svelte';
 
-	let { onclose, onspawned }: { onclose: () => void; onspawned: () => void } = $props();
+	let {
+		onclose,
+		onspawned,
+		prefill = null
+	}: {
+		onclose: () => void;
+		onspawned: () => void;
+		// "New session from same script" (CCT-250 item 8): seed the form from an
+		// existing session's config (machine, dir, adapter, model). Overrides the
+		// persisted draft so the dialog opens ready to re-dispatch.
+		prefill?: Partial<Form> | null;
+	} = $props();
 
 	const machines = useAllMachines(() => true);
 	const dispatchers = useDispatchers(() => true);
@@ -83,9 +94,9 @@
 	let form = $state<Form>(load());
 	function load(): Form {
 		try {
-			return { ...blank, ...JSON.parse(drafts.get(SPAWN_DRAFT) || '{}') };
+			return { ...blank, ...JSON.parse(drafts.get(SPAWN_DRAFT) || '{}'), ...(prefill ?? {}) };
 		} catch {
-			return { ...blank };
+			return { ...blank, ...(prefill ?? {}) };
 		}
 	}
 	$effect(() => {
@@ -139,7 +150,6 @@
 	}
 	let envRows = $state<EnvRow[]>([]);
 	let files = $state<File[]>([]);
-	let showSecrets = $state(false);
 
 	const ENV_KEY_RE = /^[A-Z_][A-Z0-9_]*$/;
 
@@ -621,37 +631,32 @@
 			     env vars in the worker process, never shown in the conversation,
 			     and fixed for the session's lifetime. -->
 			<div class="field">
-				<button type="button" class="disclose" onclick={() => (showSecrets = !showSecrets)}>
-					<span class="label">Environment secrets</span>
-					<span class="faint sm">{showSecrets ? '▾' : '▸'} {envRows.length || ''}</span>
-				</button>
-				{#if showSecrets}
-					<span class="faint sm">
-						Injected as env vars in the worker — not visible in the conversation,
-						logs, or transcript, and fixed for the session's lifetime.
-					</span>
-					{#each envRows as row, i (i)}
-						<div class="row gap">
-							<input
-								class="input mono grow"
-								placeholder="API_KEY"
-								aria-label="Secret name"
-								bind:value={row.key}
-							/>
-							<input
-								class="input mono grow"
-								type="password"
-								placeholder="value"
-								aria-label="Secret value"
-								bind:value={row.value}
-							/>
-							<button type="button" class="x" onclick={() => removeEnvRow(i)}>✕</button>
-						</div>
-					{/each}
-					<button type="button" class="btn btn-sm" onclick={addEnvRow}>+ Add secret</button>
-					{#if badEnvKeys.length}
-						<span class="err sm">Keys must match <code>^[A-Z_][A-Z0-9_]*$</code></span>
-					{/if}
+				<span class="label">Environment secrets</span>
+				<span class="faint sm">
+					Injected as env vars in the worker — not visible in the conversation,
+					logs, or transcript, and fixed for the session's lifetime.
+				</span>
+				{#each envRows as row, i (i)}
+					<div class="row gap">
+						<input
+							class="input mono grow"
+							placeholder="API_KEY"
+							aria-label="Secret name"
+							bind:value={row.key}
+						/>
+						<input
+							class="input mono grow"
+							type="password"
+							placeholder="value"
+							aria-label="Secret value"
+							bind:value={row.value}
+						/>
+						<button type="button" class="x" onclick={() => removeEnvRow(i)}>✕</button>
+					</div>
+				{/each}
+				<button type="button" class="btn-control add-secret" onclick={addEnvRow}>+ Add secret</button>
+				{#if badEnvKeys.length}
+					<span class="err sm">Keys must match <code>^[A-Z_][A-Z0-9_]*$</code></span>
 				{/if}
 			</div>
 		</div>
@@ -728,17 +733,6 @@
 		flex: 1;
 		min-width: 0;
 	}
-	.disclose {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: var(--sp-2);
-		padding: 0;
-		background: none;
-		border: none;
-		cursor: pointer;
-		text-align: left;
-	}
 	.file {
 		font-size: var(--fs-xs);
 		color: var(--text-muted);
@@ -795,6 +789,11 @@
 		align-self: flex-start;
 		font-size: var(--fs-xs);
 		padding: 2px var(--sp-2);
+	}
+	/* Add-secret button shares the shared control sizing/shape with the
+	   "browse files to upload" button (CCT-250 item 1 + 7). */
+	.add-secret {
+		align-self: flex-start;
 	}
 	.err {
 		color: var(--c-red);

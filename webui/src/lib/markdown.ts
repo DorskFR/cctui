@@ -179,7 +179,10 @@ function splitRow(row: string): string[] {
 	return cells;
 }
 
-export function renderMarkdown(src: string): string {
+export function renderMarkdown(src: string, opts: { tables?: boolean } = {}): string {
+	// Render GFM tables as real <table>s by default; when `tables` is false
+	// (formatting toggle, CCT-250 item 2) leave the pipe rows as plain text.
+	const tables = opts.tables !== false;
 	// Strip terminal control sequences before any structural parsing.
 	src = stripAnsi(src);
 	// Protect fenced code blocks before escaping the rest.
@@ -202,7 +205,8 @@ export function renderMarkdown(src: string): string {
 	// through the inline passes below via a placeholder so bold/code/links inside
 	// cells still render; we stash the whole table to keep it clear of the
 	// list/blockquote/line-break passes.
-	s = s.replace(
+	if (tables)
+		s = s.replace(
 		/(?:^|\n)([ \t]*\|.+\|[ \t]*)\n([ \t]*\|(?:[ \t]*:?-+:?[ \t]*\|)+[ \t]*)\n((?:[ \t]*\|.*\|[ \t]*(?:\n|$))+)/g,
 		(_m, header: string, delim: string, body: string) => {
 			const aligns = splitRow(delim).map((c) => {

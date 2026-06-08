@@ -2,7 +2,8 @@
 	import { ws } from '$lib/ws.svelte';
 	import { useVersion, useSessions } from '$lib/queries';
 	import { useQueryClient } from '@tanstack/svelte-query';
-	import { theme } from '$lib/theme.svelte';
+	import { theme, THEMES } from '$lib/theme.svelte';
+	import { fontScale, SCALE_MIN, SCALE_MAX } from '$lib/fontscale.svelte';
 	import { notify } from '$lib/notify.svelte';
 	import { toasts } from '$lib/toast.svelte';
 
@@ -72,9 +73,32 @@
 		>
 			{notify.enabled ? '🔔' : '🔕'}
 		</button>
-		<button class="btn btn-ghost btn-icon" title="Toggle theme ({theme.current})" onclick={() => theme.toggle()}>
-			{theme.icon}
-		</button>
+		<label class="font-slider" title="UI font size">
+			<span aria-hidden="true">A</span>
+			<input
+				type="range"
+				min={SCALE_MIN}
+				max={SCALE_MAX}
+				step="0.05"
+				value={fontScale.current}
+				oninput={(e) => fontScale.set(Number((e.currentTarget as HTMLInputElement).value))}
+				aria-label="UI font size"
+			/>
+		</label>
+		<!-- Theme picker (CCT-250 item 5): pick any palette directly, not just
+		     cycle. Falls back gracefully — the button still shows the active icon. -->
+		<div class="theme-pick btn btn-ghost btn-icon" title={`Theme: ${theme.label}`}>
+			<span aria-hidden="true">{theme.icon}</span>
+			<select
+				aria-label="Theme"
+				value={theme.current}
+				onchange={(e) => theme.set((e.currentTarget as HTMLSelectElement).value as typeof theme.current)}
+			>
+				{#each THEMES as t (t.id)}
+					<option value={t.id}>{t.icon} {t.label}</option>
+				{/each}
+			</select>
+		</div>
 	</div>
 </header>
 
@@ -126,5 +150,34 @@
 	}
 	.notify-on {
 		color: var(--accent);
+	}
+	/* Top-bar font-size slider (CCT-250 item 3) — mirrors the chat slider but
+	   drives the global UI scale. Compact so it fits the header on phones. */
+	.font-slider {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--sp-1);
+		color: var(--text-faint);
+		font-size: var(--fs-xs);
+	}
+	.font-slider input[type='range'] {
+		width: 4rem;
+		accent-color: var(--accent);
+	}
+	/* Theme picker: a native <select> overlaid transparently on the icon button
+	   so it gets the platform dropdown UI while keeping the icon affordance. */
+	.theme-pick {
+		position: relative;
+		overflow: hidden;
+	}
+	.theme-pick select {
+		position: absolute;
+		inset: 0;
+		width: 100%;
+		height: 100%;
+		opacity: 0;
+		cursor: pointer;
+		border: none;
+		background: none;
 	}
 </style>

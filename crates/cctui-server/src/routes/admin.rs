@@ -821,39 +821,101 @@ pub async fn get_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
 ) -> Result<Json<SessionListItem>, (StatusCode, Json<ApiError>)> {
-    let registry = state.registry.read().await;
-    let handle = registry.get(&session_id).ok_or_else(|| {
+    // Live session — serve straight from the registry.
+    {
+        let registry = state.registry.read().await;
+        if let Some(handle) = registry.get(&session_id) {
+            let item = SessionListItem {
+                id: handle.session.id.clone(),
+                parent_id: handle.session.parent_id.clone(),
+                machine_id: handle.session.machine_id.clone(),
+                working_dir: handle.session.working_dir.clone(),
+                status: derive_status(handle.session.registered_at, handle.session.last_heartbeat),
+                liveness: derive_liveness(handle.session.last_heartbeat),
+                attention: None,
+                bucket: Bucket::Working,
+                uptime_secs: (Utc::now() - handle.session.registered_at).num_seconds(),
+                token_usage: handle.token_usage.clone(),
+                metadata: handle.session.metadata.clone(),
+                adapter_id: handle.session.adapter_id.clone(),
+                machine_name: None,
+                machine_hue: None,
+                machine_kind: None,
+                last_message_text: None,
+                last_message_at: None,
+                name: None,
+                model: None,
+                effort: None,
+                auto_approve: state
+                    .permission_store
+                    .read()
+                    .await
+                    .is_auto_approve(&handle.session.id),
+                match_snippet: None,
+                last_activity_at: None,
+                cache_cold: false,
+                estimated_burst_tokens: None,
+                hibernated: false,
+            };
+            return Ok(Json(item));
+        }
+    }
+
+    // Not live — fall back to the DB so archived/ended sessions still open
+    // (read-only). A true 404 now means the session was actually deleted, not
+    // just archived (CCT-250 item 6 — kills the spurious "not found or
+    // archived" toast on refresh).
+    let row: Option<DbSession> = sqlx::query_as(
+        "SELECT s.id, s.parent_id, s.machine_id, s.working_dir, s.status, \
+                s.registered_at, s.last_heartbeat, s.metadata, s.adapter_id, \
+                COALESCE(m.display_name, m.name) AS resolved_machine_name, \
+                m.hue AS resolved_machine_hue, m.kind AS resolved_machine_kind \
+         FROM sessions s \
+         LEFT JOIN machines m ON m.id = s.machine_uuid \
+         WHERE s.id = $1",
+    )
+    .bind(&session_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("db error: {e}");
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+    })?;
+
+    let row = row.ok_or_else(|| {
         (StatusCode::NOT_FOUND, Json(ApiError { error: "session not found".into() }))
     })?;
+
+    let (status, liveness) =
+        resolve_status_liveness(&row.status, row.registered_at, row.last_heartbeat);
     let item = SessionListItem {
-        id: handle.session.id.clone(),
-        parent_id: handle.session.parent_id.clone(),
-        machine_id: handle.session.machine_id.clone(),
-        working_dir: handle.session.working_dir.clone(),
-        status: derive_status(handle.session.registered_at, handle.session.last_heartbeat),
-        liveness: derive_liveness(handle.session.last_heartbeat),
+        id: row.id.clone(),
+        parent_id: row.parent_id,
+        machine_id: row.machine_id,
+        working_dir: row.working_dir,
+        status,
+        liveness,
         attention: None,
         bucket: Bucket::Working,
-        uptime_secs: (Utc::now() - handle.session.registered_at).num_seconds(),
-        token_usage: handle.token_usage.clone(),
-        metadata: handle.session.metadata.clone(),
-        adapter_id: handle.session.adapter_id.clone(),
-        machine_name: None,
-        machine_hue: None,
-        machine_kind: None,
+        uptime_secs: (Utc::now() - row.registered_at).num_seconds(),
+        token_usage: cctui_proto::models::TokenUsage::default(),
+        metadata: row.metadata,
+        adapter_id: row.adapter_id.map(cctui_proto::adapter::AdapterId::new),
+        machine_name: row.resolved_machine_name,
+        machine_hue: row.resolved_machine_hue,
+        machine_kind: row.resolved_machine_kind,
         last_message_text: None,
         last_message_at: None,
         name: None,
         model: None,
         effort: None,
-        auto_approve: state.permission_store.read().await.is_auto_approve(&handle.session.id),
+        auto_approve: state.permission_store.read().await.is_auto_approve(&row.id),
         match_snippet: None,
         last_activity_at: None,
         cache_cold: false,
         estimated_burst_tokens: None,
         hibernated: false,
     };
-    drop(registry);
     Ok(Json(item))
 }
 

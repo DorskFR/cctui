@@ -2,12 +2,14 @@
 	import type { SessionListItem } from '$lib/bindings/SessionListItem';
 	import SessionCard from './SessionCard.svelte';
 
-	// A collapsible group of Workflow-tool subagents (CCT-225) that share one
-	// `workflow_run_id`. A single deep-research run can spawn 100+ agents, so
-	// they collapse by default and the header shows running/done counts.
+	// A collapsible group of subagents folded under their parent (CCT-250 item 4).
+	// Originally just Workflow-tool subagents sharing one `workflow_run_id`
+	// (CCT-225); now also used to fold plain (Task-tool) subagents with a
+	// "N× subagents" badge. A single run can spawn 100+ agents, so they collapse
+	// by default and the header shows running/done counts.
 	let {
-		runId,
-		name,
+		runId = null,
+		name = null,
 		agents,
 		compact = false,
 		pending,
@@ -17,8 +19,9 @@
 		onToggleSelect,
 		swipeArchive
 	}: {
-		runId: string;
-		name: string | null;
+		// Present for workflow groups; null for plain subagent groups.
+		runId?: string | null;
+		name?: string | null;
 		agents: SessionListItem[];
 		compact?: boolean;
 		pending: (id: string) => number;
@@ -31,20 +34,29 @@
 
 	let open = $state(false);
 
+	// Workflow groups carry a run id; plain subagent groups don't.
+	const isWorkflow = $derived(runId !== null);
+
 	// "running" = anything still live/working; "done" = ended/completed.
 	const running = $derived(
 		agents.filter((a) => a.status !== 'archived' && a.liveness !== 'dead' && !a.hibernated).length
 	);
 	const done = $derived(agents.length - running);
-	const label = $derived(name ? `Workflow: ${name}` : 'Workflow');
+	const label = $derived(
+		isWorkflow
+			? name
+				? `Workflow: ${name}`
+				: 'Workflow'
+			: `${agents.length}× subagent${agents.length === 1 ? '' : 's'}`
+	);
 </script>
 
 <button class="wf-header" class:compact onclick={() => (open = !open)} type="button">
 	<span class="caret" class:open>▸</span>
 	<span class="wf-name">{label}</span>
-	<span class="wf-run">{runId}</span>
+	{#if isWorkflow}<span class="wf-run">{runId}</span>{/if}
 	<span class="wf-counts">
-		<span class="count">{agents.length}</span>
+		{#if isWorkflow}<span class="count">{agents.length}</span>{/if}
 		{#if running > 0}<span class="run">{running} running</span>{/if}
 		{#if done > 0}<span class="done">{done} done</span>{/if}
 	</span>
