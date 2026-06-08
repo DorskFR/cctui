@@ -240,6 +240,89 @@ pub fn tail_once(
     Ok((events, new_offset))
 }
 
+/// How far behind the persisted offset a reconciliation re-tail backs up
+/// before re-reading (CCT-253). Large enough to recover several missed
+/// turns' worth of transcript, small enough that the re-emitted volume
+/// stays cheap (the server's content-hash dedup drops every dup).
+pub const RECONCILE_BACKUP_BYTES: u64 = 64 * 1024;
+
+/// Re-tail `path` from a checkpoint a fixed window BEHIND `persisted_offset`
+/// to self-heal any gap left when an event was emitted but never persisted
+/// server-side (a send dropped while the offset advanced) or when roster
+/// churn re-homed the tail (CCT-253). Returns the parsed events; the caller
+/// MUST NOT advance/persist any offset from this — it deliberately re-reads
+/// already-seen lines, relying on the server's `ON CONFLICT … DO NOTHING`
+/// dedup to drop the dups and surface only real gaps.
+///
+/// The checkpoint is realigned to a JSONL line boundary so parsing never
+/// starts mid-line: `persisted_offset` always sits just after a `\n` (only
+/// complete lines advance it in `tail_once`), but `persisted_offset -
+/// backup` lands in the middle of an earlier line. We scan forward from the
+/// backed-up position to the next `\n` and resume after it, so the first
+/// line read is always whole. When the backup reaches the start of the file
+/// (offset 0) we read from 0 directly — byte 0 is already a line boundary.
+pub fn reconcile_tail(
+    path: &Path,
+    local_id: &str,
+    persisted_offset: u64,
+) -> std::io::Result<Vec<AdapterEvent>> {
+    let mut file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(e) => return Err(e),
+    };
+    let len = file.metadata()?.len();
+    if len == 0 {
+        return Ok(vec![]);
+    }
+    // Clamp the offset to the current length (the file may have rotated /
+    // been truncated since the offset was taken) so the backup math stays
+    // in bounds, then back up the window.
+    let anchor = persisted_offset.min(len);
+    let mut start = anchor.saturating_sub(RECONCILE_BACKUP_BYTES);
+
+    file.seek(SeekFrom::Start(start))?;
+    let mut reader = BufReader::new(file);
+
+    // Realign to a line boundary: when we backed up into the middle of a
+    // line (start > 0), discard the partial line by reading up to and
+    // including the next '\n'. At start == 0 the position is already a
+    // boundary, so skip the realignment.
+    if start > 0 {
+        let mut partial = String::new();
+        let n = reader.read_line(&mut partial)?;
+        start += n as u64;
+        // If that "line" had no terminating '\n' it ran to EOF with no
+        // complete line after the checkpoint — nothing to reconcile.
+        if !partial.ends_with('\n') {
+            return Ok(vec![]);
+        }
+    }
+
+    let mut events = Vec::new();
+    loop {
+        let mut line = String::new();
+        let n = reader.read_line(&mut line)?;
+        if n == 0 {
+            break;
+        }
+        // Only parse complete lines; a truncated trailing line is left for
+        // the regular tail to pick up once it's whole.
+        if !line.ends_with('\n') {
+            break;
+        }
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(trimmed) else {
+            continue;
+        };
+        parse_line(local_id, &value, &mut events);
+    }
+    Ok(events)
+}
+
 fn parse_line(local_id: &str, line: &Value, out: &mut Vec<AdapterEvent>) {
     let kind = line.get("type").and_then(Value::as_str).unwrap_or_default();
     // CCT-159: `/compact` appends an `isCompactSummary` line (a `type:"user"`
@@ -694,6 +777,62 @@ mod tests {
         let (events, new_off) = tail_once(&path, "s", off).unwrap();
         assert_eq!(events.len(), 1);
         assert!(new_off > 0 && new_off < off + 1024); // restarted from 0
+    }
+
+    #[test]
+    fn reconcile_tail_closes_a_gap_behind_the_offset() {
+        // Simulate the CCT-253 failure: the forward tail advanced (and
+        // persisted) its offset past lines whose events never reached the
+        // server. The reconcile re-tail backs up behind that offset and
+        // re-emits them so the gap self-heals.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("t.jsonl");
+        let line = |t: &str| {
+            format!(r#"{{"type":"assistant","message":{{"content":[{{"type":"text","text":"{t}"}}]}}}}"#)
+        };
+        write_lines(&path, &[&line("a"), &line("b"), &line("c")]);
+        // The persisted offset sits at EOF (all three lines "tailed"), but
+        // say b and c never made it to the server.
+        let persisted = std::fs::metadata(&path).unwrap().len();
+
+        // A reconcile from a checkpoint behind the offset re-reads the lines.
+        // The backup window is larger than the file, so it re-reads from the
+        // start (byte 0) and re-emits every line.
+        let events = reconcile_tail(&path, "s", persisted).unwrap();
+        assert_eq!(events.len(), 3, "all lines behind the offset are re-emitted for dedup");
+    }
+
+    #[test]
+    fn reconcile_tail_realigns_to_a_line_boundary() {
+        // Build a transcript larger than the backup window so the checkpoint
+        // (offset - RECONCILE_BACKUP_BYTES) genuinely lands MID-LINE, not at
+        // byte 0. The realignment must discard that partial line and emit only
+        // whole, fully-parsed messages — never a mangled half-line.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("t.jsonl");
+        let line = |t: &str| {
+            format!(r#"{{"type":"assistant","message":{{"content":[{{"type":"text","text":"{t}"}}]}}}}"#)
+        };
+        // ~80 bytes/line; ~1200 lines comfortably exceeds the 64 KiB window.
+        let lines: Vec<String> = (0..1200).map(|i| line(&format!("msg-{i}"))).collect();
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        write_lines(&path, &refs);
+        let len = std::fs::metadata(&path).unwrap().len();
+        assert!(len > RECONCILE_BACKUP_BYTES, "fixture must exceed the backup window");
+
+        // Persisted offset at EOF -> checkpoint = len - 64KiB, mid-line.
+        let events = reconcile_tail(&path, "s", len).unwrap();
+
+        // Boundary safety: every event is a fully-parsed assistant message
+        // (a mid-line start would have produced a fragment that fails JSON
+        // parse and is dropped — so a corrupted bubble would never appear, but
+        // the FIRST whole line after the checkpoint must parse cleanly).
+        assert!(!events.is_empty(), "the window's worth of lines is re-emitted");
+        for e in &events {
+            assert!(matches!(e, AdapterEvent::Message { .. }));
+        }
+        // It re-emits only the window behind the offset, not the whole file.
+        assert!(events.len() < lines.len(), "only the backup window is re-read, not all of it");
     }
 
     #[test]

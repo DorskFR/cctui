@@ -11,7 +11,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use cctui_proto::adapter::{AdapterCommand, AdapterEvent, EndReason, JobShort, SessionMeta};
@@ -262,6 +262,16 @@ pub struct Driver {
     /// path dismisses the form (attach+ESC) first so the user's actual text is
     /// what claude receives.
     pending_asks: super::PendingAsks,
+    /// When the last periodic reconciliation re-tail ran (CCT-253). The
+    /// reconciler re-reads each live session's transcript from a checkpoint
+    /// behind the persisted offset so a gap left by a dropped send or
+    /// roster-churn re-home self-heals within one cycle; the server's
+    /// content-hash dedup drops the re-emitted dups.
+    last_reconcile: Instant,
+    /// Set when the control socket vanished (roster flushed) so the next
+    /// successful poll triggers an immediate reconciliation re-tail rather
+    /// than waiting for the periodic cycle (CCT-253).
+    churned: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -352,8 +362,16 @@ impl Driver {
             pending_perms: HashMap::new(),
             perm_seq: 0,
             pending_asks: super::PendingAsks::default(),
+            last_reconcile: Instant::now(),
+            churned: false,
         }
     }
+
+    /// How often the periodic reconciliation re-tail runs (CCT-253). Chosen
+    /// in the 30–60s band: frequent enough that a dropped-send gap self-heals
+    /// quickly, infrequent enough that the re-emitted (then deduped) volume is
+    /// negligible next to the regular poll tail.
+    const RECONCILE_INTERVAL: Duration = Duration::from_secs(45);
 
     /// Clone handle to the shared `session_id → local_id` map, for the
     /// ask-hook listener to translate live `session_id`s (CCT-167).
@@ -380,6 +398,13 @@ impl Driver {
                 _ = tick.tick() => {
                     if let Err(err) = self.poll_once().await {
                         tracing::debug!(%err, "claude daemon poll failed (will retry)");
+                    }
+                    // Periodic reconciliation re-tail (CCT-253): catch up any
+                    // transcript gap the forward-only tail left behind. Driven
+                    // off the poll tick (rather than a second timer) so it
+                    // can't race apply_snapshot's tail/offset updates.
+                    if self.last_reconcile.elapsed() >= Self::RECONCILE_INTERVAL {
+                        self.reconcile_tail().await;
                     }
                 }
                 Some(cmd) = self.commands.recv() => {
@@ -951,11 +976,23 @@ impl Driver {
             // previously knew about as ended.
             self.kickstarter.kick(false);
             self.flush_roster(EndReason::Other { detail: "daemon gone".into() }).await;
+            // Roster churn (CCT-253): the socket vanished and sessions were
+            // flushed. When it comes back the workers are re-pinned and the
+            // tail resumes from the persisted offset — but a re-home can leave
+            // a gap (briefly tailing a file no longer appended, or a send
+            // dropped during the churn). Arm an immediate reconcile on the
+            // next successful poll so the gap self-heals without waiting for
+            // the periodic cycle.
+            self.churned = true;
             return Ok(());
         };
 
         let resp: ListResponse = socket::call(&sock, &json!({"proto": 1, "op": "list"})).await?;
         self.apply_snapshot(resp.jobs).await;
+        if self.churned {
+            self.churned = false;
+            self.reconcile_tail().await;
+        }
         Ok(())
     }
 
@@ -1387,6 +1424,50 @@ impl Driver {
                 reason: EndReason::Completed,
             })
             .await;
+        }
+    }
+
+    /// Periodic + churn-triggered reconciliation re-tail (CCT-253, A1).
+    ///
+    /// Nothing re-reads a transcript once its persisted offset advances, so a
+    /// gap is otherwise permanent: an event emitted but never persisted
+    /// server-side (a dropped WS send while the offset still flushed), or a
+    /// roster-churn re-home that briefly tailed a file no longer being
+    /// appended. Here we re-read each live session's transcript from a
+    /// checkpoint a fixed window BEHIND its persisted offset and re-emit the
+    /// events. The server inserts `stream_events` with
+    /// `ON CONFLICT (session_id,event_type,content_hash) DO NOTHING` and
+    /// broadcasts only newly-inserted rows, so re-emitting already-seen lines
+    /// is idempotent and cheap — only real gaps surface, and they self-heal.
+    ///
+    /// Crucially this NEVER touches the persisted offset: it is a pure
+    /// catch-up replay layered on top of the forward-only tail in
+    /// `apply_snapshot`. The checkpoint is realigned to a JSONL line boundary
+    /// inside `transcript::reconcile_tail`, so backing up mid-line can't
+    /// corrupt parsing.
+    async fn reconcile_tail(&mut self) {
+        self.last_reconcile = Instant::now();
+        let locations: Vec<TranscriptLocation> =
+            self.transcript_locations.values().cloned().collect();
+        for loc in locations {
+            let off = self.offsets.get(&loc.offset_key);
+            match transcript::reconcile_tail(&loc.path, &loc.local_id, off) {
+                Ok(events) => {
+                    if !events.is_empty() {
+                        tracing::debug!(
+                            count = events.len(),
+                            path = %loc.path.display(),
+                            "reconcile re-tail re-emitting (server dedups)"
+                        );
+                    }
+                    for evt in events {
+                        self.emit(evt).await;
+                    }
+                }
+                Err(err) => {
+                    tracing::debug!(%err, path = %loc.path.display(), "reconcile re-tail failed");
+                }
+            }
         }
     }
 
@@ -2213,10 +2294,10 @@ mod tests {
 
         let mut extra = None;
         while let Ok(evt) = rx.try_recv() {
-            if let AdapterEvent::SessionStarted { local_id, meta } = evt {
-                if local_id == "wfa" {
-                    extra = Some(meta.extra);
-                }
+            if let AdapterEvent::SessionStarted { local_id, meta } = evt
+                && local_id == "wfa"
+            {
+                extra = Some(meta.extra);
             }
         }
         let extra = extra.expect("workflow subagent SessionStarted expected");
