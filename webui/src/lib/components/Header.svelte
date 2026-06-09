@@ -130,6 +130,14 @@
 		--sp-2: 8px;
 		--sp-3: 12px;
 		--sp-4: 16px;
+		/* The header's inner is a `.container` (max-width: --content-max,
+		   margin-inline:auto). --content-max is 56rem, so it ALSO tracked the
+		   root font-size: scaling up widened the centered container and slid its
+		   right-aligned contents (the slider) rightward under the cursor — the
+		   real remaining cause of the drag "seizure" after the token pin above.
+		   Pin it to px (56rem @16px = 896px) so the header's width is fully
+		   scale-immune. */
+		--content-max: 896px;
 	}
 	/* The two header icon buttons size off hardcoded rem (min-height/min-width),
 	   not the tokens above — pin them too so they don't grow with the scale. */

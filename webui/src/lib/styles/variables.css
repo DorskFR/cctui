@@ -56,9 +56,6 @@
 	--syn-function: var(--c-blue);
 	--syn-punct: var(--c-text-muted);
 
-	/* chat font scale (CCT-161 item 4) — overridden inline by the slider */
-	--chat-font-size: var(--fs-sm);
-
 	/* ---- Semantic ---- */
 	--bg: var(--c-bg);
 	--bg-elevated: var(--c-bg-elev);

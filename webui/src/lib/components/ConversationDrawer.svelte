@@ -12,6 +12,7 @@
 	import { mergeFiles, removeFileByName, fileCapError } from '$lib/attachments';
 	import { downloadConversationHtml } from '$lib/export';
 	import { toasts } from '$lib/toast.svelte';
+	import { fontScale, SCALE_MIN, SCALE_MAX } from '$lib/fontscale.svelte';
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { qk } from '$lib/queries';
 	import AdapterIcon from './AdapterIcon.svelte';
@@ -66,8 +67,6 @@
 		prettyJson: boolean;
 		prettyDiff: boolean;
 		prettyTables: boolean;
-		// Chat message font scale in rem (CCT-161 item 4); applied via --chat-font-size.
-		fontSize: number;
 		// Desktop drawer width in px (drag-to-resize the left border). Null → the
 		// default min(900px, 100vw). Persisted with the other view opts.
 		paneWidth: number | null;
@@ -84,13 +83,8 @@
 		prettyJson: true,
 		prettyDiff: true,
 		prettyTables: true,
-		fontSize: 0.8125,
 		paneWidth: null
 	};
-	const FONT_MIN = 0.75;
-	// CCT-250 item 3: widened upper range so chat text can go meaningfully
-	// larger (global UI scale lives in the top-bar slider; this is chat-only).
-	const FONT_MAX: number = 1.75;
 	const PANE_MIN = 360; // px — narrowest the drawer can be dragged
 	let view = $state<ViewOpts>(loadView());
 	function loadView(): ViewOpts {
@@ -1130,15 +1124,19 @@
 			<button type="button" class="fmt" class:on={view.prettyJson} aria-pressed={view.prettyJson} onclick={() => (view.prettyJson = !view.prettyJson)}>JSON</button>
 			<button type="button" class="fmt" class:on={view.prettyDiff} aria-pressed={view.prettyDiff} onclick={() => (view.prettyDiff = !view.prettyDiff)}>Diff</button>
 			<button type="button" class="fmt" class:on={view.prettyTables} aria-pressed={view.prettyTables} onclick={() => (view.prettyTables = !view.prettyTables)} title="Render markdown tables as tables">Tables</button>
-			<label class="tg font" title="Chat font size">
+			<!-- Second control for the SINGLE global UI scale (CCT-265): same
+			     setting the header slider drives, exposed here so it's reachable
+			     while the conversation is open. Both write fontScale. -->
+			<label class="tg font" title="UI font size">
 				<span aria-hidden="true">A</span>
 				<input
 					type="range"
-					min={FONT_MIN}
-					max={FONT_MAX}
-					step="0.0625"
-					bind:value={view.fontSize}
-					aria-label="Chat font size"
+					min={SCALE_MIN}
+					max={SCALE_MAX}
+					step="0.05"
+					value={fontScale.current}
+					oninput={(e) => fontScale.set(Number((e.currentTarget as HTMLInputElement).value))}
+					aria-label="UI font size"
 				/>
 			</label>
 		</div>
@@ -1171,7 +1169,6 @@
 		class="conv"
 		bind:this={scroller}
 		onscroll={onScroll}
-		style="--chat-font-size: {view.fontSize}rem"
 	>
 		{#if $history.isLoading}
 			<div class="empty"><span class="spin"></span></div>
@@ -1729,7 +1726,7 @@
 		overflow-wrap: anywhere;
 		word-break: break-word;
 		/* CCT-161 item 4 — slider-driven, falls back to --fs-sm. */
-		font-size: var(--chat-font-size, var(--fs-sm));
+		font-size: var(--fs-sm);
 	}
 	/* Uniform role tints (CCT-161 item 1) — all via --role-* tokens. */
 	.line.user .bubble {
@@ -1901,7 +1898,7 @@
 		white-space: pre-wrap;
 		max-height: 22rem;
 		overflow: auto;
-		font-size: calc(var(--chat-font-size, var(--fs-sm)) - 0.0625rem);
+		font-size: calc(var(--fs-sm) - 0.0625rem);
 	}
 	.tg.font {
 		gap: var(--sp-2);
