@@ -23,8 +23,8 @@
 
 <style>
 	.mach {
-		background: hsl(var(--mh) 45% 22%);
-		color: hsl(var(--mh) 70% 80%);
-		border-color: hsl(var(--mh) 45% 35%);
+		background: var(--mach-bg);
+		color: var(--mach-fg);
+		border-color: var(--mach-border);
 	}
 </style>

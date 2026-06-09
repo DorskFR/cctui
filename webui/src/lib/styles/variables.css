@@ -88,6 +88,15 @@
 	--attention-bg: color-mix(in srgb, var(--c-amber) 12%, transparent);
 	--attention-bar: var(--c-amber);
 
+	/* machine-badge tinting (CCT-271) — the hue is per-machine (name hash or
+	   operator override, --mh), but saturation/lightness come from the theme so
+	   the SAME machine reads with a different "feel" under each theme. Dark
+	   themes default here; light themes flip to a dark-text-on-pale-tint scheme
+	   in their [data-theme] block. */
+	--mach-bg: hsl(var(--mh) 45% 22%);
+	--mach-fg: hsl(var(--mh) 70% 80%);
+	--mach-border: hsl(var(--mh) 45% 35%);
+
 	/* ---- Typography ---- */
 	--font-sans:
 		ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
@@ -186,6 +195,10 @@
 	--shadow-sm: 0 1px 2px rgba(20, 24, 31, 0.08);
 	--shadow-md: 0 6px 20px rgba(20, 24, 31, 0.12);
 	--shadow-lg: 0 12px 40px rgba(20, 24, 31, 0.18);
+	/* light bg → pale tint + dark ink so badges stay legible */
+	--mach-bg: hsl(var(--mh) 60% 90%);
+	--mach-fg: hsl(var(--mh) 55% 30%);
+	--mach-border: hsl(var(--mh) 45% 72%);
 }
 
 /* ---- Sepia / "Claude paper" theme (CCT-161 item 3) — warm cream paper,
@@ -214,6 +227,10 @@
 	--shadow-sm: 0 1px 2px rgba(80, 60, 30, 0.1);
 	--shadow-md: 0 6px 20px rgba(80, 60, 30, 0.14);
 	--shadow-lg: 0 12px 40px rgba(80, 60, 30, 0.2);
+	/* warm, slightly desaturated tint to sit with the cream paper */
+	--mach-bg: hsl(var(--mh) 40% 84%);
+	--mach-fg: hsl(var(--mh) 45% 32%);
+	--mach-border: hsl(var(--mh) 35% 66%);
 }
 
 /* ---- Catppuccin Mocha - official Mocha base/surface/text/accent colors. */
@@ -240,6 +257,10 @@
 	--shadow-sm: 0 1px 2px rgba(17, 17, 27, 0.36);
 	--shadow-md: 0 6px 20px rgba(17, 17, 27, 0.42);
 	--shadow-lg: 0 12px 40px rgba(17, 17, 27, 0.5);
+	/* soft pastel tint to match Catppuccin's low-saturation palette */
+	--mach-bg: hsl(var(--mh) 35% 26%);
+	--mach-fg: hsl(var(--mh) 55% 82%);
+	--mach-border: hsl(var(--mh) 35% 40%);
 }
 
 /* ---- Dracula - official palette colors with UI contrast assignments. */
@@ -266,6 +287,10 @@
 	--shadow-sm: 0 1px 2px rgba(20, 21, 27, 0.36);
 	--shadow-md: 0 6px 20px rgba(20, 21, 27, 0.44);
 	--shadow-lg: 0 12px 40px rgba(20, 21, 27, 0.52);
+	/* vivid, high-chroma to echo Dracula's neon accents */
+	--mach-bg: hsl(var(--mh) 55% 24%);
+	--mach-fg: hsl(var(--mh) 85% 82%);
+	--mach-border: hsl(var(--mh) 55% 40%);
 }
 
 /* ---- Nord - Polar Night, Snow Storm, Frost, and Aurora palette tokens. */
@@ -292,5 +317,212 @@
 	--shadow-sm: 0 1px 2px rgba(20, 25, 34, 0.34);
 	--shadow-md: 0 6px 20px rgba(20, 25, 34, 0.42);
 	--shadow-lg: 0 12px 40px rgba(20, 25, 34, 0.5);
+	/* muted, frost-cool tint in keeping with Nord's restrained palette */
+	--mach-bg: hsl(var(--mh) 28% 30%);
+	--mach-fg: hsl(var(--mh) 40% 84%);
+	--mach-border: hsl(var(--mh) 28% 44%);
+}
+
+/* ---- Tokyo Night — deep blue/indigo base with purple + cyan accents. */
+[data-theme='tokyonight'] {
+	--c-bg: #1a1b26;
+	--c-bg-elev: #1f2233;
+	--c-bg-elev-2: #24283b;
+	--c-surface: #1f2233;
+	--c-border: #2f344d;
+	--c-border-strong: #414868;
+	--c-text: #c0caf5;
+	--c-text-muted: #9aa5ce;
+	--c-text-faint: #565f89;
+	--c-accent: #7aa2f7;
+	--c-accent-ink: #11121d;
+	--c-accent-dim: #3d59a1;
+	--c-blue: #7aa2f7;
+	--c-amber: #e0af68;
+	--c-red: #f7768e;
+	--c-green: #9ece6a;
+	--c-violet: #bb9af7;
+	--c-gold: #e0af68;
+	--c-teal: #7dcfff;
+	--shadow-sm: 0 1px 2px rgba(13, 14, 22, 0.4);
+	--shadow-md: 0 6px 20px rgba(13, 14, 22, 0.48);
+	--shadow-lg: 0 12px 40px rgba(13, 14, 22, 0.56);
+	--mach-bg: hsl(var(--mh) 48% 23%);
+	--mach-fg: hsl(var(--mh) 75% 82%);
+	--mach-border: hsl(var(--mh) 48% 38%);
+}
+
+/* ---- Gruvbox (dark, medium) — warm retro browns with orange/green accents. */
+[data-theme='gruvbox'] {
+	--c-bg: #282828;
+	--c-bg-elev: #32302f;
+	--c-bg-elev-2: #3c3836;
+	--c-surface: #32302f;
+	--c-border: #504945;
+	--c-border-strong: #665c54;
+	--c-text: #ebdbb2;
+	--c-text-muted: #d5c4a1;
+	--c-text-faint: #a89984;
+	--c-accent: #fe8019;
+	--c-accent-ink: #1d1a14;
+	--c-accent-dim: #af3a03;
+	--c-blue: #83a598;
+	--c-amber: #fabd2f;
+	--c-red: #fb4934;
+	--c-green: #b8bb26;
+	--c-violet: #d3869b;
+	--c-gold: #fabd2f;
+	--c-teal: #8ec07c;
+	--shadow-sm: 0 1px 2px rgba(20, 19, 17, 0.4);
+	--shadow-md: 0 6px 20px rgba(20, 19, 17, 0.48);
+	--shadow-lg: 0 12px 40px rgba(20, 19, 17, 0.56);
+	--mach-bg: hsl(var(--mh) 42% 25%);
+	--mach-fg: hsl(var(--mh) 60% 80%);
+	--mach-border: hsl(var(--mh) 42% 40%);
+}
+
+/* ---- Solarized Dark — Ethan Schoonover's base03 with the 16-color accents. */
+[data-theme='solarized'] {
+	--c-bg: #002b36;
+	--c-bg-elev: #073642;
+	--c-bg-elev-2: #0a4350;
+	--c-surface: #073642;
+	--c-border: #0f4d5c;
+	--c-border-strong: #586e75;
+	--c-text: #eee8d5;
+	--c-text-muted: #93a1a1;
+	--c-text-faint: #657b83;
+	--c-accent: #2aa198;
+	--c-accent-ink: #002b36;
+	--c-accent-dim: #1a6b66;
+	--c-blue: #268bd2;
+	--c-amber: #b58900;
+	--c-red: #dc322f;
+	--c-green: #859900;
+	--c-violet: #6c71c4;
+	--c-gold: #b58900;
+	--c-teal: #2aa198;
+	--shadow-sm: 0 1px 2px rgba(0, 17, 22, 0.42);
+	--shadow-md: 0 6px 20px rgba(0, 17, 22, 0.5);
+	--shadow-lg: 0 12px 40px rgba(0, 17, 22, 0.58);
+	--mach-bg: hsl(var(--mh) 50% 20%);
+	--mach-fg: hsl(var(--mh) 55% 78%);
+	--mach-border: hsl(var(--mh) 50% 34%);
+}
+
+/* ---- Rosé Pine — soho-vibe with muted rose, iris (purple) and pine. */
+[data-theme='rosepine'] {
+	--c-bg: #191724;
+	--c-bg-elev: #1f1d2e;
+	--c-bg-elev-2: #26233a;
+	--c-surface: #1f1d2e;
+	--c-border: #2a2839;
+	--c-border-strong: #403d52;
+	--c-text: #e0def4;
+	--c-text-muted: #908caa;
+	--c-text-faint: #6e6a86;
+	--c-accent: #c4a7e7;
+	--c-accent-ink: #14121d;
+	--c-accent-dim: #6c5d8a;
+	--c-blue: #9ccfd8;
+	--c-amber: #f6c177;
+	--c-red: #eb6f92;
+	--c-green: #3e8fb0;
+	--c-violet: #c4a7e7;
+	--c-gold: #f6c177;
+	--c-teal: #9ccfd8;
+	--shadow-sm: 0 1px 2px rgba(13, 12, 20, 0.42);
+	--shadow-md: 0 6px 20px rgba(13, 12, 20, 0.5);
+	--shadow-lg: 0 12px 40px rgba(13, 12, 20, 0.58);
+	--mach-bg: hsl(var(--mh) 38% 26%);
+	--mach-fg: hsl(var(--mh) 58% 84%);
+	--mach-border: hsl(var(--mh) 38% 42%);
+}
+
+/* ---- One Dark — Atom's classic palette, blue-leaning with warm accents. */
+[data-theme='onedark'] {
+	--c-bg: #282c34;
+	--c-bg-elev: #2f343f;
+	--c-bg-elev-2: #353b45;
+	--c-surface: #2f343f;
+	--c-border: #3e4451;
+	--c-border-strong: #4b5263;
+	--c-text: #abb2bf;
+	--c-text-muted: #9da5b4;
+	--c-text-faint: #5c6370;
+	--c-accent: #61afef;
+	--c-accent-ink: #11151c;
+	--c-accent-dim: #2c6da3;
+	--c-blue: #61afef;
+	--c-amber: #e5c07b;
+	--c-red: #e06c75;
+	--c-green: #98c379;
+	--c-violet: #c678dd;
+	--c-gold: #e5c07b;
+	--c-teal: #56b6c2;
+	--shadow-sm: 0 1px 2px rgba(17, 19, 25, 0.4);
+	--shadow-md: 0 6px 20px rgba(17, 19, 25, 0.48);
+	--shadow-lg: 0 12px 40px rgba(17, 19, 25, 0.56);
+	--mach-bg: hsl(var(--mh) 40% 26%);
+	--mach-fg: hsl(var(--mh) 65% 80%);
+	--mach-border: hsl(var(--mh) 40% 40%);
+}
+
+/* ---- Everforest (dark, medium) — soft green forest base, low-contrast. */
+[data-theme='everforest'] {
+	--c-bg: #2d353b;
+	--c-bg-elev: #343f44;
+	--c-bg-elev-2: #3d484d;
+	--c-surface: #343f44;
+	--c-border: #475258;
+	--c-border-strong: #4f585e;
+	--c-text: #d3c6aa;
+	--c-text-muted: #a7b0a3;
+	--c-text-faint: #859289;
+	--c-accent: #a7c080;
+	--c-accent-ink: #1c2226;
+	--c-accent-dim: #5c6f49;
+	--c-blue: #7fbbb3;
+	--c-amber: #dbbc7f;
+	--c-red: #e67e80;
+	--c-green: #a7c080;
+	--c-violet: #d699b6;
+	--c-gold: #dbbc7f;
+	--c-teal: #83c092;
+	--shadow-sm: 0 1px 2px rgba(22, 27, 30, 0.4);
+	--shadow-md: 0 6px 20px rgba(22, 27, 30, 0.48);
+	--shadow-lg: 0 12px 40px rgba(22, 27, 30, 0.56);
+	--mach-bg: hsl(var(--mh) 30% 28%);
+	--mach-fg: hsl(var(--mh) 45% 80%);
+	--mach-border: hsl(var(--mh) 30% 42%);
+}
+
+/* ---- Monokai — the vivid classic: lime, magenta, orange and cyan on slate. */
+[data-theme='monokai'] {
+	--c-bg: #272822;
+	--c-bg-elev: #2f302a;
+	--c-bg-elev-2: #383830;
+	--c-surface: #2f302a;
+	--c-border: #49483e;
+	--c-border-strong: #5b5a4e;
+	--c-text: #f8f8f2;
+	--c-text-muted: #cfcfc2;
+	--c-text-faint: #75715e;
+	--c-accent: #a6e22e;
+	--c-accent-ink: #14160f;
+	--c-accent-dim: #5f7d18;
+	--c-blue: #66d9ef;
+	--c-amber: #fd971f;
+	--c-red: #f92672;
+	--c-green: #a6e22e;
+	--c-violet: #ae81ff;
+	--c-gold: #e6db74;
+	--c-teal: #66d9ef;
+	--shadow-sm: 0 1px 2px rgba(18, 19, 14, 0.42);
+	--shadow-md: 0 6px 20px rgba(18, 19, 14, 0.5);
+	--shadow-lg: 0 12px 40px rgba(18, 19, 14, 0.58);
+	--mach-bg: hsl(var(--mh) 55% 22%);
+	--mach-fg: hsl(var(--mh) 80% 80%);
+	--mach-border: hsl(var(--mh) 55% 38%);
 }
 

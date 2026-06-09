@@ -8,7 +8,14 @@ export const THEMES = [
 	{ id: 'sepia', label: 'Sepia', icon: '✶', themeColor: '#f4ecd8' },
 	{ id: 'mocha', label: 'Catppuccin Mocha', icon: 'M', themeColor: '#1e1e2e' },
 	{ id: 'dracula', label: 'Dracula', icon: 'D', themeColor: '#282a36' },
-	{ id: 'nord', label: 'Nord', icon: 'N', themeColor: '#2e3440' }
+	{ id: 'nord', label: 'Nord', icon: 'N', themeColor: '#2e3440' },
+	{ id: 'tokyonight', label: 'Tokyo Night', icon: '✦', themeColor: '#1a1b26' },
+	{ id: 'gruvbox', label: 'Gruvbox', icon: '◆', themeColor: '#282828' },
+	{ id: 'solarized', label: 'Solarized Dark', icon: '◐', themeColor: '#002b36' },
+	{ id: 'rosepine', label: 'Rosé Pine', icon: '❀', themeColor: '#191724' },
+	{ id: 'onedark', label: 'One Dark', icon: '①', themeColor: '#282c34' },
+	{ id: 'everforest', label: 'Everforest', icon: '☘', themeColor: '#2d353b' },
+	{ id: 'monokai', label: 'Monokai', icon: '✸', themeColor: '#272822' }
 ] as const;
 
 export type Mode = (typeof THEMES)[number]['id'];
