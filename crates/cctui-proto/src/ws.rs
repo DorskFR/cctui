@@ -70,6 +70,94 @@ pub enum DaemonFrameDown {
     },
 }
 
+// --- Dispatcher ↔ Server (CCT-246/247/248) ---
+
+/// A dispatch intent relayed from the server to an enrolled dispatcher over the
+/// wire (CCT-248). The dispatcher turns this into a worker container/pod on its
+/// host, injecting the dispatch info into the worker env. `payload` is opaque —
+/// the dispatcher forwards it verbatim (lifting `cctui_machine_key` /`name` out
+/// for env injection) without otherwise inspecting it.
+///
+/// This is the wire mirror of the server-internal `DispatchSpec`; the borrowed
+/// in-process form stays on the server, this owned form crosses the WS.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireDispatchSpec {
+    /// Pre-minted session id (also the runtime correlation id).
+    pub session_id: String,
+    /// Per-flow timeout in minutes, if the caller set one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_minutes: Option<u32>,
+    /// Caller resume URL — a bearer capability; do not log.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_url: Option<String>,
+    /// Free-form blob, forwarded verbatim to the worker.
+    pub payload: serde_json::Value,
+}
+
+/// Frames sent by the server to an enrolled dispatcher over
+/// `/api/v1/dispatcher/ws` (CCT-248). Peer of [`DaemonFrameDown`]; the verb is
+/// Dispatch (spawn a container/pod) rather than a per-adapter command.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum DispatcherFrameDown {
+    /// Spawn a worker for this session. The dispatcher replies with a
+    /// [`DispatcherFrameUp::DispatchResult`] carrying the opaque handle and the
+    /// idempotency outcome (`dispatched`/`deduplicated`/`redispatched`).
+    Dispatch { request_id: uuid::Uuid, spec: WireDispatchSpec },
+    /// Inspect a previously returned handle. Replies with
+    /// [`DispatcherFrameUp::StatusResult`].
+    Status { request_id: uuid::Uuid, handle: String },
+    /// Cancel/delete a previously returned handle. Replies with
+    /// [`DispatcherFrameUp::CancelResult`].
+    Cancel { request_id: uuid::Uuid, handle: String },
+}
+
+/// Frames sent by an enrolled dispatcher to the server over
+/// `/api/v1/dispatcher/ws` (CCT-248). Peer of [`DaemonFrameUp`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum DispatcherFrameUp {
+    /// Sent once on connect: identifies the dispatcher kind + running version.
+    Hello { kind: String, version: String },
+    /// Liveness ping; drives the server's last-seen/online-stale-offline tier
+    /// (mirrors the daemon heartbeat, CCT-255).
+    Heartbeat { sent_at: chrono::DateTime<chrono::Utc> },
+    /// Outcome of a [`DispatcherFrameDown::Dispatch`]. `status` is the
+    /// idempotency outcome surfaced verbatim to the caller; `handle` is the
+    /// opaque per-dispatcher reference (e.g. `container/cctui-worker-…`).
+    DispatchResult {
+        request_id: uuid::Uuid,
+        session_id: String,
+        handle: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        namespace: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    /// Outcome of a [`DispatcherFrameDown::Status`]: the lifecycle state of a
+    /// handle (`running`/`complete`/`failed`/`gone`).
+    StatusResult {
+        request_id: uuid::Uuid,
+        handle: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        state: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    /// Outcome of a [`DispatcherFrameDown::Cancel`].
+    CancelResult {
+        request_id: uuid::Uuid,
+        handle: String,
+        ok: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+}
+
 // --- Agent → Server (stream events) ---
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -469,6 +557,55 @@ mod tests {
         assert!(json.contains(r#""ok":false"#));
         assert!(json.contains(r#""client_msg_id":"abc-123""#));
         let _back: ServerEvent = serde_json::from_str(&json).unwrap();
+    }
+
+    #[test]
+    fn dispatcher_frame_down_dispatch_roundtrips() {
+        let f = DispatcherFrameDown::Dispatch {
+            request_id: uuid::Uuid::nil(),
+            spec: WireDispatchSpec {
+                session_id: "sess-1".into(),
+                timeout_minutes: Some(30),
+                reply_url: None,
+                payload: serde_json::json!({"name": "demo"}),
+            },
+        };
+        let json = serde_json::to_string(&f).unwrap();
+        assert!(json.contains(r#""type":"dispatch""#));
+        assert!(!json.contains("reply_url"), "None reply_url must be skipped: {json}");
+        let _back: DispatcherFrameDown = serde_json::from_str(&json).unwrap();
+    }
+
+    #[test]
+    fn dispatcher_frame_up_roundtrips() {
+        let frames = vec![
+            DispatcherFrameUp::Hello { kind: "docker".into(), version: "0.0.0".into() },
+            DispatcherFrameUp::Heartbeat { sent_at: chrono::Utc::now() },
+            DispatcherFrameUp::DispatchResult {
+                request_id: uuid::Uuid::nil(),
+                session_id: "sess-1".into(),
+                handle: "container/cctui-worker-abc".into(),
+                namespace: None,
+                status: Some("dispatched".into()),
+                error: None,
+            },
+            DispatcherFrameUp::StatusResult {
+                request_id: uuid::Uuid::nil(),
+                handle: "container/cctui-worker-abc".into(),
+                state: Some("running".into()),
+                error: None,
+            },
+            DispatcherFrameUp::CancelResult {
+                request_id: uuid::Uuid::nil(),
+                handle: "container/cctui-worker-abc".into(),
+                ok: true,
+                error: None,
+            },
+        ];
+        for f in frames {
+            let json = serde_json::to_string(&f).unwrap();
+            let _back: DispatcherFrameUp = serde_json::from_str(&json).unwrap();
+        }
     }
 
     #[test]
