@@ -4,6 +4,7 @@ members = [
     "crates/cctui-admin",
     "crates/cctui-daemon",
     "crates/cctui-dispatcher-docker",
+    "crates/cctui-dispatcher-kube",
     "crates/cctui-proto",
     "crates/cctui-server",
     "crates/cctui-tui",
