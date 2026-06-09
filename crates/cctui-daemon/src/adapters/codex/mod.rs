@@ -29,6 +29,7 @@
 
 mod app_server;
 mod log_tail;
+mod thread_list;
 
 use std::path::PathBuf;
 
@@ -108,12 +109,38 @@ async fn run_default(ctx: AdapterCtx) -> anyhow::Result<()> {
         ctx.shutdown.clone(),
     );
     log.set_owned(registry.clone());
+
+    // CCT-263: poll `codex app-server`'s state-DB-backed `thread/list` for a
+    // first-class inventory of EVERY machine session (cli/vscode/exec/
+    // appServer) with real preview/name/cwd/status — the parity-with-claude
+    // upgrade over the log-tail's heuristic JSONL scrape. Shares the
+    // app-server `registry` so cctui-driven threads aren't double-emitted.
+    // Falls back silently to log-tail-only when the poll can't run (codex
+    // missing, sandbox/userns, auth). Disable with `inventory = false`.
+    let inventory_handle = if thread_list::ThreadListConfig::enabled(&ctx.config) {
+        let seen = thread_list::SeenIds::default();
+        log.set_inventory(seen.clone());
+        let inv = thread_list::ThreadListInventory::new(
+            thread_list::ThreadListConfig::from_value(&ctx.config),
+            ctx.events.clone(),
+            ctx.shutdown.clone(),
+            registry.clone(),
+            seen,
+        );
+        Some(tokio::spawn(inv.run()))
+    } else {
+        None
+    };
+
     let log_handle = tokio::spawn(log.run());
 
     let pump =
         command_pump(ctx.commands, ctx.events.clone(), live, registry, app_cfg, ctx.shutdown);
     pump.await;
     log_handle.abort();
+    if let Some(h) = inventory_handle {
+        h.abort();
+    }
     Ok(())
 }
 

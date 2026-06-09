@@ -81,6 +81,11 @@ pub struct LogTail {
     /// skipped here so we don't double-ingest. `local_id` is the rollout
     /// `UUIDv7`, which is a suffix of the rollout filename stem.
     owned: Option<super::app_server::SessionRegistry>,
+    /// Ids surfaced by the `thread/list` inventory (CCT-263). Those carry
+    /// richer metadata (preview/name/cwd/status) than the heuristic scrape, so
+    /// the log-tail skips their files to avoid a second, poorer `SessionStarted`
+    /// for the same session.
+    inventory: Option<super::thread_list::SeenIds>,
 }
 
 impl LogTail {
@@ -89,13 +94,19 @@ impl LogTail {
         events: mpsc::Sender<AdapterEvent>,
         shutdown: CancellationToken,
     ) -> Self {
-        Self { cfg, events, shutdown, sessions: HashMap::new(), owned: None }
+        Self { cfg, events, shutdown, sessions: HashMap::new(), owned: None, inventory: None }
     }
 
     /// Share the app-server session registry so app-server-owned rollout
     /// files are skipped (no double-ingest of the same session).
     pub fn set_owned(&mut self, registry: super::app_server::SessionRegistry) {
         self.owned = Some(registry);
+    }
+
+    /// Share the `thread/list` inventory's surfaced-id set so those rollout
+    /// files are skipped here (CCT-263 — the inventory is the richer source).
+    pub fn set_inventory(&mut self, seen: super::thread_list::SeenIds) {
+        self.inventory = Some(seen);
     }
 
     pub async fn run(mut self) -> anyhow::Result<()> {
@@ -116,10 +127,14 @@ impl LogTail {
         // App-server-owned session ids (rollout UUIDv7). Files whose stem
         // ends with one of these are driven directly via app-server and must
         // not be tailed here.
-        let owned: Vec<String> = match &self.owned {
+        let mut owned: Vec<String> = match &self.owned {
             Some(reg) => reg.lock().await.keys().cloned().collect(),
             None => Vec::new(),
         };
+        // Also skip files for sessions the thread/list inventory has surfaced.
+        if let Some(seen) = &self.inventory {
+            owned.extend(seen.lock().await.keys().cloned());
+        }
         let mut alive: HashSet<PathBuf> = HashSet::new();
         for entry in entries.flatten() {
             let path = entry.path();
