@@ -1535,6 +1535,19 @@
 		border-bottom: 1px solid var(--border);
 		overflow-x: auto;
 		font-size: var(--fs-xs);
+		/* This bar hosts a UI-scale slider (CCT-265), and the app scales by
+		   changing the ROOT font-size — so every rem here (button font-size +
+		   horizontal padding) grew while dragging, widening the buttons left of
+		   the slider and shoving the slider out from under the cursor → the same
+		   "seizure" the header had. Pin the bar's size tokens to px (the exact
+		   rem values at the 16px base) so the toolbar's geometry is scale-immune:
+		   the chat messages in `.conv` still rescale live, the slider's row does
+		   not move. Mirrors the `.hd` fix in Header.svelte. */
+		--fs-xs: 12px;
+		--fs-sm: 13px;
+		--sp-1: 4px;
+		--sp-2: 8px;
+		--sp-3: 12px;
 	}
 	.tagbar,
 	.fmtbar,
@@ -1904,7 +1917,7 @@
 		gap: var(--sp-2);
 	}
 	.tg.font input[type='range'] {
-		width: 5rem;
+		width: 80px; /* px (= 5rem@16) so the track doesn't resize under the cursor */
 		accent-color: var(--accent);
 	}
 	.tg.font span {
