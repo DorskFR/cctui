@@ -4,6 +4,16 @@
 //! and the construction of a live [`Dispatcher`] impl from a row — the same
 //! trait/registry the global env-configured dispatchers use.
 //!
+//! CCT-248 reworks this: rows stop being executor-*config* blobs the server
+//! instantiates in-process and become **enrolled-dispatcher identity records**
+//! (id, kind, enrollment `key_hash`/`key_preview`, user, display name,
+//! last-seen) — peers of `machines`. The server then orchestrates by sending a
+//! key-checked Dispatch command over the enrolled dispatcher's connection
+//! instead of building an `Arc<dyn Dispatcher>` from a `config` blob. That
+//! rework lands with the dispatcher binaries (CCT-246/247); the config-blob
+//! shape here is the transitional CCT-235 form. The secret-redaction discipline
+//! carries over (enrollment keys are never echoed back).
+//!
 //! Secrets (the http bearer token, etc.) are encrypted in-place with
 //! [`crate::crypto`] before the blob is stored, and stripped out of every
 //! list/get/notification response. The wire/API form never exposes a stored

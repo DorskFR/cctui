@@ -1,5 +1,12 @@
 //! In-process Kubernetes dispatcher (CCT-234).
 //!
+//! TRANSITIONAL — to be removed (CCT-248). The corrected model makes the server
+//! an orchestrator that never touches the kube API (and carries no k8s RBAC):
+//! these Job mechanics move into a standalone, per-account *enrolled*
+//! `cctui-dispatcher-kube` executor (CCT-247) that the server reaches over the
+//! wire, then this module is deleted. Kept here only until that executor lands
+//! and soaks.
+//!
 //! Clones a suspended worker CronJob's `jobTemplate` into a one-shot
 //! `batch/v1` Job, injecting the per-session env. Runs inside cctui-server
 //! using the pod's projected ServiceAccount token (in-cluster config); the

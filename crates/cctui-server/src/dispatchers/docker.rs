@@ -1,5 +1,11 @@
 //! In-process Docker dispatcher (CCT-234).
 //!
+//! TRANSITIONAL — to be removed (CCT-248). The corrected model makes the server
+//! an orchestrator that never touches the docker API: these container mechanics
+//! move into a standalone, per-account *enrolled* `cctui-dispatcher-docker`
+//! executor (CCT-246) that the server reaches over the wire, then this module
+//! is deleted. Kept here only until that executor lands and soaks.
+//!
 //! Runs the same claude-worker image as a one-shot container via bollard against
 //! a configured docker socket/host. Intended for the local self-host
 //! docker-compose stack (CCT-217); the k8s server pod has NO docker socket, so
