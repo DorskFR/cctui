@@ -172,3 +172,16 @@ jobs:
           tags: |
             ghcr.io/dorskfr/cctui-ui:${{ steps.ver.outputs.version }}
             ghcr.io/dorskfr/cctui-ui:latest
+
+      # The per-session worker image dispatchers spawn: claude code + codex +
+      # cctui-daemon, non-enrolled (identity injected at spawn). (CCT-245)
+      - name: Build + push worker image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: deploy/worker.Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ghcr.io/dorskfr/cctui-worker:${{ steps.ver.outputs.version }}
+            ghcr.io/dorskfr/cctui-worker:latest

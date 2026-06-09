@@ -17,6 +17,7 @@ export CCTUI_TOKEN
 .PHONY: db/test/up db/test/down db/test/migrate/up
 .PHONY: run/server run/tui run/admin
 .PHONY: image/build image/push image/release
+.PHONY: worker/image/build worker/image/push worker/image/release
 .PHONY: local/up local/down local/logs local/pull local/ps
 .PHONY: bindings webui/install webui/dev webui/build
 
@@ -156,6 +157,23 @@ image/push:  ## Push container image tags
 	docker push $(IMAGE):latest
 
 image/release: image/build image/push  ## Build + push container image
+
+# ── Worker image (claude code + codex + cctui-daemon, non-enrolled) ────────
+# The execution environment dispatchers spawn per session (CCT-245). CI builds
+# + pushes it on tag (see .github/workflows/release.yml); these targets are the
+# same local fallback as image/*.
+WORKER_IMAGE ?= $(IMAGE_REGISTRY)/cctui-worker
+
+worker/image/build:  ## Build the worker image ($(WORKER_IMAGE):$(IMAGE_VERSION) + :latest)
+	docker build -f deploy/worker.Dockerfile \
+	  -t $(WORKER_IMAGE):$(IMAGE_VERSION) \
+	  -t $(WORKER_IMAGE):latest .
+
+worker/image/push:  ## Push the worker image tags
+	docker push $(WORKER_IMAGE):$(IMAGE_VERSION)
+	docker push $(WORKER_IMAGE):latest
+
+worker/image/release: worker/image/build worker/image/push  ## Build + push the worker image
 
 # ── Web UI image (standalone SPA) ──────────────────────────
 UI_IMAGE ?= $(IMAGE_REGISTRY)/cctui-ui
