@@ -28,6 +28,8 @@ WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 COPY migrations/ migrations/
+# cctui-daemon's service.rs include_str!()s these unit templates at compile time.
+COPY packaging/ packaging/
 
 # sqlx runs in offline mode so no database is needed at build time.
 ENV SQLX_OFFLINE=true
