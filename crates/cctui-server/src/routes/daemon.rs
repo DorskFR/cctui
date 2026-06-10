@@ -574,6 +574,13 @@ async fn upsert_session(
     // parent is upserted earlier in the same poll, so it resolves. On
     // conflict, COALESCE keeps an already-set parent and otherwise fills it
     // in from a later poll.
+    //
+    // `status` on conflict (CCT-275): the codex thread/list inventory poll
+    // (CCT-263) re-emits SessionStarted for every machine-wide thread every
+    // ~15s, including ones the user archived. Preserve terminal/parked states
+    // (`inactive`, `archived`, `ended`) so a re-discovery refreshes the
+    // heartbeat without resurrecting the session into the Working list;
+    // otherwise revive it to `active`.
     sqlx::query(
         r"INSERT INTO sessions
             (id, parent_id, account_id, machine_id, working_dir, status, registered_at,
@@ -582,7 +589,7 @@ async fn upsert_session(
                   now(), now(), '{}'::jsonb, $4, $5, $6)
           ON CONFLICT (id) DO UPDATE SET
             last_heartbeat = now(),
-            status = CASE WHEN sessions.status = 'inactive' THEN 'inactive' ELSE 'active' END,
+            status = CASE WHEN sessions.status IN ('inactive', 'archived', 'ended') THEN sessions.status ELSE 'active' END,
             adapter_id = EXCLUDED.adapter_id,
             parent_id = COALESCE(sessions.parent_id, EXCLUDED.parent_id)",
     )
