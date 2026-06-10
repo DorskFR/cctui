@@ -88,14 +88,17 @@
 	--attention-bg: color-mix(in srgb, var(--c-amber) 12%, transparent);
 	--attention-bar: var(--c-amber);
 
-	/* machine-badge tinting (CCT-271) — the hue is per-machine (name hash or
-	   operator override, --mh), but saturation/lightness come from the theme so
-	   the SAME machine reads with a different "feel" under each theme. Dark
-	   themes default here; light themes flip to a dark-text-on-pale-tint scheme
-	   in their [data-theme] block. */
-	--mach-bg: hsl(var(--mh) 45% 22%);
-	--mach-fg: hsl(var(--mh) 70% 80%);
-	--mach-border: hsl(var(--mh) 45% 35%);
+	/* machine-badge tinting (CCT-271, fixed CCT-272) — the hue is per-machine
+	   (name hash or operator override, --mh, set on the badge element), but the
+	   saturation/lightness come from the theme as `<sat%> <light%>` PAIRS. The
+	   badge composes `hsl(var(--mh) var(--mach-*-sl))` itself, so both vars
+	   resolve on the element where --mh lives. (Composing the full hsl() here at
+	   :root would break: --mh is undefined at :root, so the token is invalid and
+	   inherits down invalid → white badges.) Dark themes default here; light
+	   themes flip to dark-text-on-pale-tint in their [data-theme] block. */
+	--mach-bg-sl: 45% 22%;
+	--mach-fg-sl: 70% 80%;
+	--mach-border-sl: 45% 35%;
 
 	/* ---- Typography ---- */
 	--font-sans:
@@ -196,9 +199,9 @@
 	--shadow-md: 0 6px 20px rgba(20, 24, 31, 0.12);
 	--shadow-lg: 0 12px 40px rgba(20, 24, 31, 0.18);
 	/* light bg → pale tint + dark ink so badges stay legible */
-	--mach-bg: hsl(var(--mh) 60% 90%);
-	--mach-fg: hsl(var(--mh) 55% 30%);
-	--mach-border: hsl(var(--mh) 45% 72%);
+	--mach-bg-sl: 60% 90%;
+	--mach-fg-sl: 55% 30%;
+	--mach-border-sl: 45% 72%;
 }
 
 /* ---- Sepia / "Claude paper" theme (CCT-161 item 3) — warm cream paper,
@@ -228,9 +231,9 @@
 	--shadow-md: 0 6px 20px rgba(80, 60, 30, 0.14);
 	--shadow-lg: 0 12px 40px rgba(80, 60, 30, 0.2);
 	/* warm, slightly desaturated tint to sit with the cream paper */
-	--mach-bg: hsl(var(--mh) 40% 84%);
-	--mach-fg: hsl(var(--mh) 45% 32%);
-	--mach-border: hsl(var(--mh) 35% 66%);
+	--mach-bg-sl: 40% 84%;
+	--mach-fg-sl: 45% 32%;
+	--mach-border-sl: 35% 66%;
 }
 
 /* ---- Catppuccin Mocha - official Mocha base/surface/text/accent colors. */
@@ -258,9 +261,9 @@
 	--shadow-md: 0 6px 20px rgba(17, 17, 27, 0.42);
 	--shadow-lg: 0 12px 40px rgba(17, 17, 27, 0.5);
 	/* soft pastel tint to match Catppuccin's low-saturation palette */
-	--mach-bg: hsl(var(--mh) 35% 26%);
-	--mach-fg: hsl(var(--mh) 55% 82%);
-	--mach-border: hsl(var(--mh) 35% 40%);
+	--mach-bg-sl: 35% 26%;
+	--mach-fg-sl: 55% 82%;
+	--mach-border-sl: 35% 40%;
 }
 
 /* ---- Dracula - official palette colors with UI contrast assignments. */
@@ -288,9 +291,9 @@
 	--shadow-md: 0 6px 20px rgba(20, 21, 27, 0.44);
 	--shadow-lg: 0 12px 40px rgba(20, 21, 27, 0.52);
 	/* vivid, high-chroma to echo Dracula's neon accents */
-	--mach-bg: hsl(var(--mh) 55% 24%);
-	--mach-fg: hsl(var(--mh) 85% 82%);
-	--mach-border: hsl(var(--mh) 55% 40%);
+	--mach-bg-sl: 55% 24%;
+	--mach-fg-sl: 85% 82%;
+	--mach-border-sl: 55% 40%;
 }
 
 /* ---- Nord - Polar Night, Snow Storm, Frost, and Aurora palette tokens. */
@@ -318,9 +321,9 @@
 	--shadow-md: 0 6px 20px rgba(20, 25, 34, 0.42);
 	--shadow-lg: 0 12px 40px rgba(20, 25, 34, 0.5);
 	/* muted, frost-cool tint in keeping with Nord's restrained palette */
-	--mach-bg: hsl(var(--mh) 28% 30%);
-	--mach-fg: hsl(var(--mh) 40% 84%);
-	--mach-border: hsl(var(--mh) 28% 44%);
+	--mach-bg-sl: 28% 30%;
+	--mach-fg-sl: 40% 84%;
+	--mach-border-sl: 28% 44%;
 }
 
 /* ---- Tokyo Night — deep blue/indigo base with purple + cyan accents. */
@@ -347,9 +350,9 @@
 	--shadow-sm: 0 1px 2px rgba(13, 14, 22, 0.4);
 	--shadow-md: 0 6px 20px rgba(13, 14, 22, 0.48);
 	--shadow-lg: 0 12px 40px rgba(13, 14, 22, 0.56);
-	--mach-bg: hsl(var(--mh) 48% 23%);
-	--mach-fg: hsl(var(--mh) 75% 82%);
-	--mach-border: hsl(var(--mh) 48% 38%);
+	--mach-bg-sl: 48% 23%;
+	--mach-fg-sl: 75% 82%;
+	--mach-border-sl: 48% 38%;
 }
 
 /* ---- Gruvbox (dark, medium) — warm retro browns with orange/green accents. */
@@ -376,9 +379,9 @@
 	--shadow-sm: 0 1px 2px rgba(20, 19, 17, 0.4);
 	--shadow-md: 0 6px 20px rgba(20, 19, 17, 0.48);
 	--shadow-lg: 0 12px 40px rgba(20, 19, 17, 0.56);
-	--mach-bg: hsl(var(--mh) 42% 25%);
-	--mach-fg: hsl(var(--mh) 60% 80%);
-	--mach-border: hsl(var(--mh) 42% 40%);
+	--mach-bg-sl: 42% 25%;
+	--mach-fg-sl: 60% 80%;
+	--mach-border-sl: 42% 40%;
 }
 
 /* ---- Solarized Dark — Ethan Schoonover's base03 with the 16-color accents. */
@@ -405,9 +408,9 @@
 	--shadow-sm: 0 1px 2px rgba(0, 17, 22, 0.42);
 	--shadow-md: 0 6px 20px rgba(0, 17, 22, 0.5);
 	--shadow-lg: 0 12px 40px rgba(0, 17, 22, 0.58);
-	--mach-bg: hsl(var(--mh) 50% 20%);
-	--mach-fg: hsl(var(--mh) 55% 78%);
-	--mach-border: hsl(var(--mh) 50% 34%);
+	--mach-bg-sl: 50% 20%;
+	--mach-fg-sl: 55% 78%;
+	--mach-border-sl: 50% 34%;
 }
 
 /* ---- Rosé Pine — soho-vibe with muted rose, iris (purple) and pine. */
@@ -434,9 +437,9 @@
 	--shadow-sm: 0 1px 2px rgba(13, 12, 20, 0.42);
 	--shadow-md: 0 6px 20px rgba(13, 12, 20, 0.5);
 	--shadow-lg: 0 12px 40px rgba(13, 12, 20, 0.58);
-	--mach-bg: hsl(var(--mh) 38% 26%);
-	--mach-fg: hsl(var(--mh) 58% 84%);
-	--mach-border: hsl(var(--mh) 38% 42%);
+	--mach-bg-sl: 38% 26%;
+	--mach-fg-sl: 58% 84%;
+	--mach-border-sl: 38% 42%;
 }
 
 /* ---- One Dark — Atom's classic palette, blue-leaning with warm accents. */
@@ -463,9 +466,9 @@
 	--shadow-sm: 0 1px 2px rgba(17, 19, 25, 0.4);
 	--shadow-md: 0 6px 20px rgba(17, 19, 25, 0.48);
 	--shadow-lg: 0 12px 40px rgba(17, 19, 25, 0.56);
-	--mach-bg: hsl(var(--mh) 40% 26%);
-	--mach-fg: hsl(var(--mh) 65% 80%);
-	--mach-border: hsl(var(--mh) 40% 40%);
+	--mach-bg-sl: 40% 26%;
+	--mach-fg-sl: 65% 80%;
+	--mach-border-sl: 40% 40%;
 }
 
 /* ---- Everforest (dark, medium) — soft green forest base, low-contrast. */
@@ -492,9 +495,9 @@
 	--shadow-sm: 0 1px 2px rgba(22, 27, 30, 0.4);
 	--shadow-md: 0 6px 20px rgba(22, 27, 30, 0.48);
 	--shadow-lg: 0 12px 40px rgba(22, 27, 30, 0.56);
-	--mach-bg: hsl(var(--mh) 30% 28%);
-	--mach-fg: hsl(var(--mh) 45% 80%);
-	--mach-border: hsl(var(--mh) 30% 42%);
+	--mach-bg-sl: 30% 28%;
+	--mach-fg-sl: 45% 80%;
+	--mach-border-sl: 30% 42%;
 }
 
 /* ---- Monokai — the vivid classic: lime, magenta, orange and cyan on slate. */
@@ -521,8 +524,8 @@
 	--shadow-sm: 0 1px 2px rgba(18, 19, 14, 0.42);
 	--shadow-md: 0 6px 20px rgba(18, 19, 14, 0.5);
 	--shadow-lg: 0 12px 40px rgba(18, 19, 14, 0.58);
-	--mach-bg: hsl(var(--mh) 55% 22%);
-	--mach-fg: hsl(var(--mh) 80% 80%);
-	--mach-border: hsl(var(--mh) 55% 38%);
+	--mach-bg-sl: 55% 22%;
+	--mach-fg-sl: 80% 80%;
+	--mach-border-sl: 55% 38%;
 }
 

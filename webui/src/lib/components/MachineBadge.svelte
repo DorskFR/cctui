@@ -22,9 +22,12 @@
 <span class="badge mach" class:mono style={`--mh:${hue ?? hashHue(label)}`}>{label}</span>
 
 <style>
+	/* Compose the tint HERE, on the element where --mh is set (CCT-272): the
+	   theme supplies only `<sat%> <light%>` pairs, so the per-machine hue and
+	   the theme's saturation/lightness resolve together in a real property. */
 	.mach {
-		background: var(--mach-bg);
-		color: var(--mach-fg);
-		border-color: var(--mach-border);
+		background: hsl(var(--mh) var(--mach-bg-sl));
+		color: hsl(var(--mh) var(--mach-fg-sl));
+		border-color: hsl(var(--mh) var(--mach-border-sl));
 	}
 </style>
