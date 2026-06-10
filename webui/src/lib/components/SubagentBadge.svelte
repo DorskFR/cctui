@@ -1,12 +1,7 @@
 <script lang="ts">
-	// A compact count badge that sits at the START of a parent session's row
-	// (CCT-269) and toggles its subagent group expanded/collapsed. Replaces the
-	// old full-width subagent-group header row. Only rendered when a group has
-	// >= 3 agents; smaller groups render inline (always expanded), no badge.
-	//
-	// The running/done breakdown is folded into the badge: the badge tints toward
-	// the accent color while any agent is still running, and a tooltip spells out
-	// the counts and (for workflow groups) the run label.
+	// A compact count badge that sits before a parent session row (CCT-269) and
+	// toggles its subagent group expanded/collapsed. Only rendered for groups with
+	// >= 3 agents; smaller groups render inline, always expanded.
 	let {
 		count,
 		running,
@@ -24,64 +19,59 @@
 
 	const done = $derived(count - running);
 	const title = $derived(
-		`${label} — ${count} total` +
+		`${label} - ${count} total` +
 			(running > 0 ? `, ${running} running` : '') +
 			(done > 0 ? `, ${done} done` : '') +
 			(open ? ' (click to collapse)' : ' (click to expand)')
 	);
+	const ariaLabel = $derived(`${open ? 'Collapse' : 'Expand'} ${title}`);
 </script>
 
 <button
-	class="badge-toggle"
+	class="badge badge-info badge-toggle"
 	class:open
-	class:active={running > 0}
+	class:running={running > 0}
 	type="button"
 	{title}
+	aria-label={ariaLabel}
+	aria-expanded={open}
 	onclick={(e) => {
 		e.stopPropagation();
 		ontoggle();
 	}}
 >
-	<span class="caret" class:open>▸</span>
-	<span class="n">{count}</span>
+	{count}
 </button>
 
 <style>
 	.badge-toggle {
-		flex: none;
-		display: inline-flex;
-		align-items: center;
-		gap: 0.15rem;
-		padding: 0.05rem var(--sp-2);
-		border-radius: var(--r-sm);
-		border: 1px solid var(--border-strong);
-		background: var(--bg);
-		color: var(--text-muted);
+		justify-content: center;
+		min-width: 1.5rem;
+		height: 1.5rem;
+		padding: 0 var(--sp-2);
+		border-radius: var(--r-pill);
+		border-color: color-mix(in srgb, var(--info) 44%, transparent);
+		background: color-mix(in srgb, var(--info) 13%, transparent);
+		color: var(--info);
 		font-size: var(--fs-xs);
 		font-weight: var(--fw-semibold);
-		line-height: 1.4;
+		line-height: 1;
+		font-variant-numeric: tabular-nums;
 		cursor: pointer;
 	}
 	.badge-toggle:hover {
-		background: var(--bg-elevated);
+		border-color: color-mix(in srgb, var(--info) 62%, transparent);
+		background: color-mix(in srgb, var(--info) 20%, transparent);
 	}
-	.badge-toggle.active {
-		border-color: color-mix(in srgb, var(--accent) 55%, transparent);
-		color: var(--accent);
+	.badge-toggle:focus-visible {
+		outline: 2px solid var(--info);
+		outline-offset: 2px;
+	}
+	.badge-toggle.running {
+		border-color: color-mix(in srgb, var(--info) 68%, transparent);
+		background: color-mix(in srgb, var(--info) 24%, transparent);
 	}
 	.badge-toggle.open {
-		background: var(--bg-elevated);
-	}
-	.caret {
-		display: inline-block;
-		transition: transform 0.1s ease;
-		opacity: 0.7;
-		font-size: 0.75em;
-	}
-	.caret.open {
-		transform: rotate(90deg);
-	}
-	.n {
-		font-variant-numeric: tabular-nums;
+		box-shadow: 0 0 0 2px color-mix(in srgb, var(--info) 18%, transparent);
 	}
 </style>

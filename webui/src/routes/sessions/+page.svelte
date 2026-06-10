@@ -383,6 +383,11 @@
 		}
 		return map;
 	});
+	const hasCollapsibleSubagents = $derived(
+		[...childGroupsOf.values()].some((groups) =>
+			groups.some((g) => g.agents.length >= INLINE_THRESHOLD)
+		)
+	);
 
 	// Expand/collapse state for collapsible (>=3) subagent groups, keyed by
 	// `${parentId}/${group.key}`. Default collapsed.
@@ -552,26 +557,30 @@
 	{:else if topLevel.length === 0 && !showArchived}
 		<div class="empty">No sessions — tick Archived or start one.</div>
 	{:else}
-		<div class="stack" class:tight={dense}>
+		<div class="stack" class:tight={dense} class:badge-gutter={hasCollapsibleSubagents}>
 			{#each groups as g (g.key)}
 				<div class="group-header" data-bucket={g.key}>
 					{g.label} <span class="count">{g.sessions.length}</span>
 				</div>
 				{#each g.sessions as s (s.id)}
 					{@const subGroups = childGroupsOf.get(s.id) ?? []}
-					<!-- Collapsible (>=3) groups surface as count badges at the START
-					     of the parent row (CCT-269); smaller groups render inline below
-					     with no badge. -->
-					<div class="parent-row">
-						{#each subGroups.filter((g) => g.agents.length >= INLINE_THRESHOLD) as g (g.key)}
-							<SubagentBadge
-								count={g.agents.length}
-								running={g.running}
-								open={expanded.has(groupId(s.id, g.key))}
-								label={g.label}
-								ontoggle={() => toggleGroup(s.id, g.key)}
-							/>
-						{/each}
+					{@const collapsibleGroups = subGroups.filter((g) => g.agents.length >= INLINE_THRESHOLD)}
+					<!-- Collapsible (>=3) groups surface as count badges outside the
+					     parent row layout; smaller groups render inline below. -->
+					<div class="parent-row" class:dense>
+						{#if collapsibleGroups.length > 0}
+							<div class="subagent-badge-rail">
+								{#each collapsibleGroups as g (g.key)}
+									<SubagentBadge
+										count={g.agents.length}
+										running={g.running}
+										open={expanded.has(groupId(s.id, g.key))}
+										label={g.label}
+										ontoggle={() => toggleGroup(s.id, g.key)}
+									/>
+								{/each}
+							</div>
+						{/if}
 						<div class="parent-card">
 							<SessionCard
 								session={s}
@@ -737,17 +746,33 @@
 	.stack.tight {
 		gap: var(--sp-1);
 	}
-	/* Parent row (CCT-269): leading count badge(s) for collapsible subagent
-	   groups, then the parent card filling the rest of the width. Badges align to
-	   the top of the card so they read as a prefix to the parent's first line. */
+	/* Parent row (CCT-269): the card remains a normal full-width row. Count
+	   badge(s) are absolutely positioned before it so they don't affect row
+	   sizing or the alignment of card contents. */
 	.parent-row {
-		display: flex;
-		align-items: flex-start;
-		gap: var(--sp-2);
+		position: relative;
 	}
 	.parent-row .parent-card {
-		flex: 1;
+		width: 100%;
 		min-width: 0;
+	}
+	.subagent-badge-rail {
+		position: absolute;
+		z-index: 2;
+		top: var(--sp-4);
+		right: calc(100% + var(--sp-2));
+		display: flex;
+		flex-direction: column;
+		align-items: flex-end;
+		gap: var(--sp-1);
+	}
+	.parent-row.dense .subagent-badge-rail {
+		top: var(--sp-2);
+	}
+	@media (max-width: 639px) {
+		.stack.badge-gutter {
+			padding-left: calc(1.5rem + var(--sp-2));
+		}
 	}
 	.loadmore {
 		display: flex;
