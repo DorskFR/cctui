@@ -40,8 +40,10 @@ use tokio_util::sync::CancellationToken;
 
 use super::app_server::{AppServerConfig, SessionRegistry};
 
-/// Shared set of thread ids the inventory has surfaced (id → last seen
-/// `status.type`). Shared with the log-tail so it skips these files.
+/// Set of thread ids the inventory has surfaced (id → last seen
+/// `status.type`). This is the inventory's own dedup state; since CCT-276 it is
+/// no longer shared with the log-tail (which keeps tailing the real rollout
+/// JSONL so discovered CLI sessions get a populated conversation).
 pub type SeenIds = Arc<Mutex<HashMap<String, Option<String>>>>;
 
 /// One inventory entry parsed from a `thread/list` `data[]` element.
@@ -277,11 +279,19 @@ impl ThreadListInventory {
             let _ = self.events.send(status_name(&entry.id, name)).await;
         }
         if let Some(preview) = entry.preview.clone() {
+            // Emit the preview as a codex-native `userMessage` so it survives
+            // the server's `normalize::for_client("codex","message",…)` (which
+            // keys off the codex `type` discriminant and drops payloads without
+            // one). A claude-style `{role,text}` payload would render on the
+            // list card but vanish in the conversation drawer (CCT-276).
             let _ = self
                 .events
                 .send(AdapterEvent::Message {
                     local_id: entry.id.clone(),
-                    payload: json!({"role": "user", "text": preview}),
+                    payload: json!({
+                        "type": "userMessage",
+                        "content": [{"type": "text", "text": preview}],
+                    }),
                 })
                 .await;
         }
@@ -484,7 +494,14 @@ mod tests {
         // SessionStarted, Status(name), Message(preview), Status(idle).
         assert!(matches!(rx.recv().await.unwrap(), AdapterEvent::SessionStarted { .. }));
         assert!(matches!(rx.recv().await.unwrap(), AdapterEvent::Status { name: Some(_), .. }));
-        assert!(matches!(rx.recv().await.unwrap(), AdapterEvent::Message { .. }));
+        // CCT-276: the preview is emitted as a codex-native `userMessage` so it
+        // survives `normalize::for_client("codex","message",…)` server-side.
+        let AdapterEvent::Message { payload, .. } = rx.recv().await.unwrap() else {
+            panic!("expected preview Message")
+        };
+        assert_eq!(payload["type"], "userMessage");
+        assert_eq!(payload["content"][0]["type"], "text");
+        assert_eq!(payload["content"][0]["text"], "hello");
         assert!(matches!(rx.recv().await.unwrap(), AdapterEvent::Status { .. }));
 
         // Same status again → nothing new.

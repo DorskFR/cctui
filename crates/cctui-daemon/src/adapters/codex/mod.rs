@@ -118,8 +118,10 @@ async fn run_default(ctx: AdapterCtx) -> anyhow::Result<()> {
     // Falls back silently to log-tail-only when the poll can't run (codex
     // missing, sandbox/userns, auth). Disable with `inventory = false`.
     let inventory_handle = if thread_list::ThreadListConfig::enabled(&ctx.config) {
+        // CCT-276: the inventory's `seen` set is its own dedup state only — it
+        // is no longer shared with the log-tail to suppress rollout files, so a
+        // discovered CLI session still gets its real transcript backfilled.
         let seen = thread_list::SeenIds::default();
-        log.set_inventory(seen.clone());
         let inv = thread_list::ThreadListInventory::new(
             thread_list::ThreadListConfig::from_value(&ctx.config),
             ctx.events.clone(),

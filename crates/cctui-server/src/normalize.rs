@@ -343,6 +343,27 @@ mod tests {
     }
 
     #[test]
+    fn codex_legacy_role_text_preview_is_dropped() {
+        // CCT-276: the old inventory preview payload `{role,text}` has no codex
+        // `type` discriminant, so the codex normalizer drops it → the
+        // conversation drawer rendered "No events yet". Documents that bug.
+        let p = json!({ "role": "user", "text": "Implement CCT-276 please." });
+        assert_eq!(for_client("codex", "message", p), None);
+    }
+
+    #[test]
+    fn codex_native_preview_survives_normalize() {
+        // CCT-276 fix: the inventory now emits the preview as a codex-native
+        // `userMessage`, which normalizes to a renderable user line.
+        let p = json!({ "type": "userMessage", "content": [
+            { "type": "text", "text": "Implement CCT-276 please." }
+        ]});
+        let n = for_client("codex", "message", p).unwrap();
+        assert_eq!(n["type"], "text");
+        assert_eq!(n["content"], "▷ User: Implement CCT-276 please.");
+    }
+
+    #[test]
     fn codex_command_execution_maps_to_shell_tool_call() {
         let p = json!({
             "type": "commandExecution",
