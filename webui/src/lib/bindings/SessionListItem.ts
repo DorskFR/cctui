@@ -110,4 +110,10 @@ estimated_burst_tokens: number | null,
  * Derived from the adapter's final `tempo:"hibernated"` Status. Drives
  * the claude-style red "exited, will resume on reply" dot.
  */
-hibernated: boolean, };
+hibernated: boolean, 
+/**
+ * Pinned/starred (CCT-267): the operator pinned this session so it sorts
+ * above everything in the live list and is exempt from the auto-archive
+ * reaper regardless of heartbeat age. DB-backed (`sessions.pinned`).
+ */
+pinned: boolean, };

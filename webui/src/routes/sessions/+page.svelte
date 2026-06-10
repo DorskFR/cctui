@@ -258,6 +258,19 @@
 		}
 	}
 
+	// Pin/unpin a session (CCT-267). Pinning floats it to the top group and
+	// exempts it from auto-archive; the list refetches so the move is immediate.
+	async function togglePin(s: SessionListItem) {
+		try {
+			if (s.pinned) await actions.unpin(s.id);
+			else await actions.pin(s.id);
+			toasts.ok(s.pinned ? 'Unpinned' : 'Pinned');
+			refreshTick++;
+		} catch (e) {
+			toasts.err((e as Error).message);
+		}
+	}
+
 	// live status changes from the websocket → refetch the list
 	$effect(() => {
 		void ws.changeTick;
@@ -389,8 +402,10 @@
 	// their own "Dispatched" group at the bottom (CCT-231) — they're unattended
 	// noise next to interactive sessions — EXCEPT blocked ones, which still
 	// surface under Needs input so attention never gets buried.
-	type GroupKey = SessionListItem['bucket'] | 'dispatched';
+	type GroupKey = SessionListItem['bucket'] | 'dispatched' | 'pinned';
 	const BUCKETS: { key: GroupKey; label: string }[] = [
+		// Pinned/starred sessions (CCT-267) float above every bucket.
+		{ key: 'pinned', label: 'Pinned' },
 		{ key: 'blocked', label: 'Needs input' },
 		{ key: 'review', label: 'Ready for review' },
 		{ key: 'working', label: 'Working' },
@@ -400,6 +415,7 @@
 	const isDispatched = (s: SessionListItem) =>
 		s.machine_kind != null && SYSTEM_MACHINE_KINDS.has(s.machine_kind);
 	const groupOf = (s: SessionListItem): GroupKey => {
+		if (s.pinned) return 'pinned';
 		const bucket = s.bucket ?? 'working';
 		if (bucket === 'blocked') return 'blocked';
 		return isDispatched(s) ? 'dispatched' : bucket;
@@ -492,6 +508,7 @@
 			swipeable
 			swipeLabel={s.status === 'archived' ? 'Unarchive' : 'Archive'}
 			onSwipe={swipeArchive}
+			onTogglePin={togglePin}
 			highlight={searchTerms}
 		/>
 	{/each}
@@ -567,6 +584,7 @@
 								swipeable
 								swipeLabel="Archive"
 								onSwipe={swipeArchive}
+								onTogglePin={togglePin}
 							/>
 						</div>
 					</div>

@@ -216,6 +216,7 @@ pub async fn list_sessions(
                         cache_cold: false,
                         estimated_burst_tokens: None,
                         hibernated: false,
+                        pinned: false,
                     },
                 )
             })
@@ -297,6 +298,7 @@ pub async fn list_sessions(
                 cache_cold: false,
                 estimated_burst_tokens: None,
                 hibernated: false,
+                pinned: false,
             },
         ));
     }
@@ -510,9 +512,10 @@ async fn enrich_and_sort(
             Option<String>,
             Option<String>,
             Option<String>,
+            bool,
         );
         let rows: Vec<SignalRow> = sqlx::query_as(
-            "SELECT id, tempo, agent_state, activity, session_name, model, effort \
+            "SELECT id, tempo, agent_state, activity, session_name, model, effort, pinned \
              FROM sessions WHERE id = ANY($1)",
         )
         .bind(&session_ids)
@@ -528,7 +531,7 @@ async fn enrich_and_sort(
             by_session.insert(row.0.clone(), row);
         }
         for (_, s) in &mut with_ts {
-            if let Some((_, tempo, agent_state, activity, name, model, effort)) =
+            if let Some((_, tempo, agent_state, activity, name, model, effort, pinned)) =
                 by_session.remove(&s.id)
             {
                 let bucket = bucket_from_signals(
@@ -545,6 +548,7 @@ async fn enrich_and_sort(
                 s.name = name;
                 s.model = model;
                 s.effort = effort;
+                s.pinned = pinned;
             }
         }
     }
@@ -604,11 +608,14 @@ async fn enrich_and_sort(
         }
     }
 
-    // Sort by most recent message so active sessions float to the top;
-    // fall back to registration time when a session has no messages yet.
+    // Pinned sessions sort above everything (CCT-267). Within each group, sort
+    // by most recent message so active sessions float to the top; fall back to
+    // registration time when a session has no messages yet.
     with_ts.sort_by(|a, b| {
         let key = |s: &SessionListItem, reg: DateTime<Utc>| s.last_message_at.unwrap_or(reg);
-        key(&b.1, b.0).cmp(&key(&a.1, a.0))
+        b.1.pinned
+            .cmp(&a.1.pinned)
+            .then_with(|| key(&b.1, b.0).cmp(&key(&a.1, a.0)))
     });
     Ok(with_ts.into_iter().map(|(_, s)| s).collect())
 }
@@ -795,6 +802,7 @@ pub async fn search_sessions(
                     cache_cold: false,
                     estimated_burst_tokens: None,
                     hibernated: false,
+                    pinned: false,
                 },
             )
         })
@@ -877,6 +885,7 @@ pub async fn get_session(
                 cache_cold: false,
                 estimated_burst_tokens: None,
                 hibernated: false,
+                pinned: false,
             };
             return Ok(Json(item));
         }
@@ -937,6 +946,7 @@ pub async fn get_session(
         cache_cold: false,
         estimated_burst_tokens: None,
         hibernated: false,
+        pinned: false,
     };
     Ok(Json(item))
 }
@@ -1200,6 +1210,91 @@ async fn unarchive_one(state: &AppState, session_id: &str) -> Result<(), sqlx::E
         .await?;
     tracing::info!(session_id = %session_id, "session unarchived");
     Ok(())
+}
+
+/// Pin (star) a session (CCT-267): it sorts above everything in the live list
+/// and is exempt from the auto-archive reaper regardless of heartbeat age.
+/// Pinning an already-archived session also un-archives it so it reappears.
+pub async fn pin_session(
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    pin_one(&state, &session_id).await.map_err(|e| {
+        tracing::error!("db error: {e}");
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+    })?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn pin_one(state: &AppState, session_id: &str) -> Result<(), sqlx::Error> {
+    // Pinning un-archives so a pinned session is always visible in the live
+    // list. `archived` -> `inactive`; other statuses are left untouched.
+    sqlx::query(
+        "UPDATE sessions \
+         SET pinned = true, pinned_at = now(), \
+             status = CASE WHEN status = 'archived' THEN 'inactive' ELSE status END \
+         WHERE id = $1",
+    )
+    .bind(session_id)
+    .execute(&state.pool)
+    .await?;
+    tracing::info!(session_id = %session_id, "session pinned");
+    Ok(())
+}
+
+/// Unpin a session — returns it to normal recency sorting and makes it eligible
+/// for auto-archive again.
+pub async fn unpin_session(
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    unpin_one(&state, &session_id).await.map_err(|e| {
+        tracing::error!("db error: {e}");
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+    })?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn unpin_one(state: &AppState, session_id: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE sessions SET pinned = false, pinned_at = NULL WHERE id = $1")
+        .bind(session_id)
+        .execute(&state.pool)
+        .await?;
+    tracing::info!(session_id = %session_id, "session unpinned");
+    Ok(())
+}
+
+/// `POST /api/v1/sessions/pin` — pin many sessions in one request. Mirrors the
+/// batch archive route; per-id failures are logged but don't abort the batch.
+pub async fn pin_sessions(
+    State(state): State<AppState>,
+    Json(req): Json<BatchIds>,
+) -> StatusCode {
+    let mut ok = 0usize;
+    for id in &req.ids {
+        match pin_one(&state, id).await {
+            Ok(()) => ok += 1,
+            Err(e) => tracing::error!(session_id = %id, "batch pin db error: {e}"),
+        }
+    }
+    tracing::info!(pinned = ok, requested = req.ids.len(), "batch pin");
+    StatusCode::NO_CONTENT
+}
+
+/// `POST /api/v1/sessions/unpin` — the batch mirror of `unpin_session`.
+pub async fn unpin_sessions(
+    State(state): State<AppState>,
+    Json(req): Json<BatchIds>,
+) -> StatusCode {
+    let mut ok = 0usize;
+    for id in &req.ids {
+        match unpin_one(&state, id).await {
+            Ok(()) => ok += 1,
+            Err(e) => tracing::error!(session_id = %id, "batch unpin db error: {e}"),
+        }
+    }
+    tracing::info!(unpinned = ok, requested = req.ids.len(), "batch unpin");
+    StatusCode::NO_CONTENT
 }
 
 /// Body for the batch archive/unarchive routes.

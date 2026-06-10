@@ -19,6 +19,7 @@
 		swipeable = false,
 		swipeLabel = 'Archive',
 		onSwipe,
+		onTogglePin,
 		highlight = []
 	}: {
 		session: SessionListItem;
@@ -40,6 +41,9 @@
 		swipeable?: boolean;
 		swipeLabel?: string;
 		onSwipe?: (s: SessionListItem) => void;
+		// Pin/star toggle (CCT-267): when provided, a star button appears in the
+		// header. Pinned sessions sort to the top and skip auto-archive.
+		onTogglePin?: (s: SessionListItem) => void;
 	} = $props();
 
 	const s = $derived(session);
@@ -191,6 +195,29 @@
 		{#if dense && !child}<MachineBadge name={s.machine_name} id={s.machine_id} hue={s.machine_hue} mono />{/if}
 		<span class="dot {livenessClass}"></span>
 		<span class="title truncate">{title}</span>
+		{#if onTogglePin && !child}
+			<span
+				class="star"
+				class:on={s.pinned}
+				role="button"
+				tabindex="0"
+				title={s.pinned ? 'Unpin' : 'Pin to top (exempt from auto-archive)'}
+				aria-pressed={s.pinned}
+				aria-label={s.pinned ? 'Unpin session' : 'Pin session'}
+				onpointerdown={(e) => e.stopPropagation()}
+				onclick={(e) => {
+					e.stopPropagation();
+					onTogglePin?.(s);
+				}}
+				onkeydown={(e) => {
+					if (e.key === 'Enter' || e.key === ' ') {
+						e.preventDefault();
+						e.stopPropagation();
+						onTogglePin?.(s);
+					}
+				}}>{s.pinned ? '★' : '☆'}</span
+			>
+		{/if}
 		{#if child}<span class="badge badge-info tag">subagent</span>{/if}
 		{#if needsInput}<span class="hand" title="needs input">✋</span>{/if}
 		{#if pendingCount > 0}<span class="badge badge-warn">{pendingCount} perm</span>{/if}
@@ -357,6 +384,23 @@
 	.title {
 		font-weight: var(--fw-semibold);
 		font-size: var(--fs-md);
+	}
+	.star {
+		background: none;
+		border: none;
+		cursor: pointer;
+		user-select: none;
+		padding: 0;
+		line-height: 1;
+		font-size: var(--fs-md);
+		color: var(--text-faint);
+		flex: none;
+	}
+	.star.on {
+		color: var(--warn, #e0a800);
+	}
+	.star:hover {
+		color: var(--warn, #e0a800);
 	}
 	.hand {
 		font-size: var(--fs-sm);

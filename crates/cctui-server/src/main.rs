@@ -92,6 +92,8 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/sessions/archive", post(routes::admin::archive_sessions))
         .route("/sessions/unarchive", post(routes::admin::unarchive_sessions))
+        .route("/sessions/pin", post(routes::admin::pin_sessions))
+        .route("/sessions/unpin", post(routes::admin::unpin_sessions))
         .route("/sessions", get(routes::admin::list_sessions))
         .route("/sessions/stats", get(routes::admin::session_stats))
         .route("/sessions/search", get(routes::admin::search_sessions))
@@ -105,6 +107,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/sessions/{id}/auto-approve", post(routes::admin::set_auto_approve))
         .route("/sessions/{id}/archive", post(routes::admin::archive_session))
         .route("/sessions/{id}/unarchive", post(routes::admin::unarchive_session))
+        .route("/sessions/{id}/pin", post(routes::admin::pin_session))
+        .route("/sessions/{id}/unpin", post(routes::admin::unpin_session))
         .route("/sessions/{id}/policy", post(routes::admin::set_session_policy))
         .route("/manifest/daemon", get(routes::manifest::daemon_manifest))
         .route("/daemon/binary/{target}", get(routes::manifest::download_daemon_binary))
@@ -326,7 +330,7 @@ async fn reaper_task(state: AppState) {
                 );
             match sqlx::query(
                 "UPDATE sessions SET status = 'archived' \
-                 WHERE status != 'archived' AND last_heartbeat < $1",
+                 WHERE status != 'archived' AND pinned = false AND last_heartbeat < $1",
             )
             .bind(cutoff)
             .execute(&state.pool)

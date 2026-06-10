@@ -599,6 +599,7 @@ fn handle_server_event(app: &mut App, event: ServerEvent) {
                     cache_cold: false,
                     estimated_burst_tokens: None,
                     hibernated: false,
+                    pinned: false,
                 });
                 app.update_aggregates();
             }

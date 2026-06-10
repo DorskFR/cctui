@@ -383,6 +383,7 @@ function optimisticDispatchCard(
 		cache_cold: false,
 		estimated_burst_tokens: null,
 		hibernated: false,
+		pinned: false,
 	};
 }
 
@@ -400,6 +401,16 @@ export function useSessionActions() {
 		},
 		unarchive: async (id: string) => {
 			await api.post<void>(`/sessions/${id}/unarchive`);
+			inval();
+		},
+		// Pin/unpin (CCT-267): pinned sessions sort to the top and are exempt
+		// from auto-archive. Pinning an archived session also un-archives it.
+		pin: async (id: string) => {
+			await api.post<void>(`/sessions/${id}/pin`);
+			inval();
+		},
+		unpin: async (id: string) => {
+			await api.post<void>(`/sessions/${id}/unpin`);
 			inval();
 		},
 		// Batch archive/unarchive (CCT-172). One request, one invalidation.

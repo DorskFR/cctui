@@ -180,6 +180,11 @@ pub struct SessionListItem {
     /// the claude-style red "exited, will resume on reply" dot.
     #[serde(default)]
     pub hibernated: bool,
+    /// Pinned/starred (CCT-267): the operator pinned this session so it sorts
+    /// above everything in the live list and is exempt from the auto-archive
+    /// reaper regardless of heartbeat age. DB-backed (`sessions.pinned`).
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, TS)]
