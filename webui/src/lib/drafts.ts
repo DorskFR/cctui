@@ -58,5 +58,33 @@ export function clearSessionStorage(sessionId: string) {
 
 export const SPAWN_DRAFT = 'cctui_spawn_draft';
 export const LAST_MACHINE = 'cctui_last_machine';
+
+/** Spawn settings remembered PER MACHINE (CCT-274): the adapter, per-adapter
+ * model + effort, and account last used on a given machine, so the next spawn
+ * on e.g. dev1 re-selects what you usually run there. Keyed by machine id. */
+export interface MachineSpawnPrefs {
+	adapter_id: string;
+	model_claude: string;
+	model_codex: string;
+	effort_claude: string;
+	effort_codex: string;
+	account: string;
+}
+const machinePrefsKey = (machineId: string) => `cctui_spawn_prefs_${machineId}`;
+
+export function loadMachinePrefs(machineId: string): Partial<MachineSpawnPrefs> | null {
+	if (!browser || !machineId) return null;
+	try {
+		const raw = localStorage.getItem(machinePrefsKey(machineId));
+		return raw ? (JSON.parse(raw) as Partial<MachineSpawnPrefs>) : null;
+	} catch {
+		return null;
+	}
+}
+
+export function saveMachinePrefs(machineId: string, prefs: MachineSpawnPrefs) {
+	if (!browser || !machineId) return;
+	localStorage.setItem(machinePrefsKey(machineId), JSON.stringify(prefs));
+}
 export const VIEW_OPTS = 'cctui_view_opts';
 export const LIST_DENSITY = 'cctui_list_density';

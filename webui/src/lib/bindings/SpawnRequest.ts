@@ -25,6 +25,13 @@ permission_mode: PermissionMode | null,
  */
 effort: string | null, 
 /**
+ * Model family to launch under (CCT-274). Passed to claude as `--model`
+ * and to codex as `-c model="…"`. Free-form (the adapter resolves family
+ * aliases like `opus`/`sonnet`/`haiku`/`fable`); `None` → the adapter's
+ * own default model.
+ */
+model: string | null, 
+/**
  * Environment secrets to inject into the worker process env at spawn time
  * (CCT-202). Keys must match `^[A-Z_][A-Z0-9_]*$`. Carried to the runtime
  * like a bearer capability: NEVER persisted, NEVER logged, NEVER written to

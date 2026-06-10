@@ -863,6 +863,15 @@ impl Driver {
             respawn_flags.push("--effort".to_owned());
             respawn_flags.push(effort.to_owned());
         }
+        // Model family (claude `--model`: opus/sonnet/haiku/fable + aliases —
+        // CCT-274). Like effort, mirrored into `respawnFlags` so it survives a
+        // `/clear`/`/compact` relaunch and round-trips through `state.json`.
+        if let Some(model) = spec.model.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
+            args.push("--model".to_owned());
+            args.push(model.to_owned());
+            respawn_flags.push("--model".to_owned());
+            respawn_flags.push(model.to_owned());
+        }
         if let Some(settings) = ensure_hook_settings(&self.cfg.hook_socket_path) {
             let settings = settings.to_string_lossy().into_owned();
             args.push("--settings".to_owned());

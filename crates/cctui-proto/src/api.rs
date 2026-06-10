@@ -253,6 +253,12 @@ pub struct SpawnRequest {
     /// `minimal`/`low`/`medium`/`high`). `None` → the adapter's default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    /// Model family to launch under (CCT-274). Passed to claude as `--model`
+    /// and to codex as `-c model="…"`. Free-form (the adapter resolves family
+    /// aliases like `opus`/`sonnet`/`haiku`/`fable`); `None` → the adapter's
+    /// own default model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     /// Environment secrets to inject into the worker process env at spawn time
     /// (CCT-202). Keys must match `^[A-Z_][A-Z0-9_]*$`. Carried to the runtime
     /// like a bearer capability: NEVER persisted, NEVER logged, NEVER written to
@@ -279,6 +285,7 @@ impl std::fmt::Debug for SpawnRequest {
             .field("adapter_id", &self.adapter_id)
             .field("permission_mode", &self.permission_mode)
             .field("effort", &self.effort)
+            .field("model", &self.model)
             .field("env", &format_args!("<{} secret(s) redacted>", self.env.len()))
             .finish()
     }

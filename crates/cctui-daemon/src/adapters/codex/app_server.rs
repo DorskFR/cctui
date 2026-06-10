@@ -413,6 +413,9 @@ pub struct AppServerConfig {
     /// (codex: `minimal`/`low`/`medium`/`high`). `None` keeps the codex
     /// default. Set per-spawn from the spawn request.
     pub reasoning_effort: Option<String>,
+    /// Model passed via `-c model="…"` (CCT-274). `None` keeps the codex
+    /// default. Set per-spawn from the spawn request.
+    pub model: Option<String>,
 }
 
 impl Default for AppServerConfig {
@@ -422,6 +425,7 @@ impl Default for AppServerConfig {
             approval_policy: "untrusted".to_string(),
             sandbox_mode: "workspace-write".to_string(),
             reasoning_effort: None,
+            model: None,
         }
     }
 }
@@ -440,6 +444,9 @@ impl AppServerConfig {
         }
         if let Some(e) = v.get("model_reasoning_effort").and_then(Value::as_str) {
             cfg.reasoning_effort = Some(e.to_string());
+        }
+        if let Some(m) = v.get("model").and_then(Value::as_str) {
+            cfg.model = Some(m.to_string());
         }
         cfg
     }
@@ -525,6 +532,9 @@ impl CodexSession {
             .arg(format!("sandbox_mode=\"{}\"", self.cfg.sandbox_mode));
         if let Some(effort) = self.cfg.reasoning_effort.as_deref() {
             cmd.arg("-c").arg(format!("model_reasoning_effort=\"{effort}\""));
+        }
+        if let Some(model) = self.cfg.model.as_deref() {
+            cmd.arg("-c").arg(format!("model=\"{model}\""));
         }
         let mut child = cmd
             .current_dir(cwd_path)

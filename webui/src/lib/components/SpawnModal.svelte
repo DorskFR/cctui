@@ -11,7 +11,13 @@
 	} from '$lib/queries';
 	import { ws } from '$lib/ws.svelte';
 	import { toasts } from '$lib/toast.svelte';
-	import { drafts, SPAWN_DRAFT, LAST_MACHINE } from '$lib/drafts';
+	import {
+		drafts,
+		SPAWN_DRAFT,
+		LAST_MACHINE,
+		loadMachinePrefs,
+		saveMachinePrefs
+	} from '$lib/drafts';
 	import { autoresize } from '$lib/autoresize';
 	import { dropzone } from '$lib/dropzone';
 	import {
@@ -62,7 +68,11 @@
 		repo: string;
 		ticket: string;
 		prompt_file: string;
-		model: string;
+		// Model family is per-adapter (claude families vs codex models), like
+		// effort below, so each gets its own field and they survive an adapter
+		// switch (CCT-274). Dispatch (k8s) runs a claude worker → model_claude.
+		model_claude: string;
+		model_codex: string;
 		// Named OAuth account to run under (CCT-237), resolved per-adapter at
 		// spawn. Empty = no gateway injection (the worker's own auth).
 		account: string;
@@ -85,7 +95,8 @@
 		repo: '',
 		ticket: '',
 		prompt_file: '',
-		model: '',
+		model_claude: '',
+		model_codex: '',
 		account: '',
 		effort_claude: '',
 		effort_codex: '',
@@ -109,6 +120,28 @@
 		if (form.machine_id || !list.length) return;
 		const last = drafts.get(LAST_MACHINE);
 		form.machine_id = list.some((m) => m.id === last) ? last : list[0].id;
+	});
+
+	// Remember spawn settings PER MACHINE (CCT-274): when the selected machine
+	// changes, pull that machine's last-used adapter/model/effort/account so the
+	// next spawn on e.g. dev1 re-selects what you usually run there. An explicit
+	// prefill (re-dispatch from an existing session) takes precedence — we don't
+	// clobber it. We set `prefsLoadedFor` BEFORE writing the fields, so the
+	// re-runs triggered by those writes hit the early-return.
+	let prefsLoadedFor = $state<string | null>(null);
+	$effect(() => {
+		const id = form.machine_id;
+		if (!id || id === prefsLoadedFor) return;
+		prefsLoadedFor = id;
+		if (prefill) return;
+		const p = loadMachinePrefs(id);
+		if (!p) return;
+		if (p.adapter_id) form.adapter_id = p.adapter_id;
+		if (p.model_claude != null) form.model_claude = p.model_claude;
+		if (p.model_codex != null) form.model_codex = p.model_codex;
+		if (p.effort_claude != null) form.effort_claude = p.effort_claude;
+		if (p.effort_codex != null) form.effort_codex = p.effort_codex;
+		if (p.account != null) form.account = p.account;
 	});
 
 	// default the dispatcher to the first configured one once loaded
@@ -201,11 +234,23 @@
 			prompt_name: null,
 			permission_mode: form.permission_mode,
 			effort: (form.adapter_id === 'codex' ? form.effort_codex : form.effort_claude) || null,
+			model: (form.adapter_id === 'codex' ? form.model_codex : form.model_claude) || null,
 			env: envMap(),
 			account: form.account.trim() || null
 		};
 		const res = await actions.spawn(body, files);
 		drafts.set(LAST_MACHINE, form.machine_id);
+		// Remember these settings for this machine (CCT-274) so the next spawn
+		// here pre-selects them. Saved on submit (not just on confirmed success)
+		// so a slow/unconfirmed spawn still records the operator's intent.
+		saveMachinePrefs(form.machine_id, {
+			adapter_id: form.adapter_id,
+			model_claude: form.model_claude,
+			model_codex: form.model_codex,
+			effort_claude: form.effort_claude,
+			effort_codex: form.effort_codex,
+			account: form.account
+		});
 		toasts.push('Spawning…', 'info');
 		const result = await ws.awaitCommand(res.command_id);
 		if (result.ok) {
@@ -249,7 +294,7 @@
 		if (form.ticket.trim()) payload.context = { issue_id: form.ticket.trim() };
 		if (form.prompt.trim()) payload.prompt = form.prompt.trim();
 		if (form.prompt_file.trim()) payload.prompt_file = form.prompt_file.trim();
-		if (form.model.trim()) payload.model = form.model.trim();
+		if (form.model_claude.trim()) payload.model = form.model_claude.trim();
 		if (form.effort_claude.trim()) payload.effort = form.effort_claude.trim();
 		// Environment secrets (CCT-202): the external dispatcher turns `env` into
 		// pod env / an ephemeral Secret. The server redacts these from its dispatch
@@ -309,7 +354,23 @@
 	// Per-adapter effort levels, index 0 = "" (adapter default). Claude and
 	// codex expose different reasoning-effort vocabularies.
 	const claudeEfforts = ['', 'low', 'medium', 'high', 'xhigh', 'max'];
-	const codexEfforts = ['', 'minimal', 'low', 'medium', 'high'];
+	const codexEfforts = ['', 'low', 'medium', 'high', 'xhigh'];
+
+	// Model families per adapter (CCT-274). `''` = the adapter's own default.
+	// claude resolves the family alias (opus/sonnet/haiku/fable) to a concrete
+	// model; codex takes the model slug directly.
+	const claudeModels = [
+		{ v: '', label: 'Default' },
+		{ v: 'haiku', label: 'Haiku' },
+		{ v: 'sonnet', label: 'Sonnet' },
+		{ v: 'opus', label: 'Opus' },
+		{ v: 'fable', label: 'Fable' }
+	];
+	const codexModels = [
+		{ v: '', label: 'Default' },
+		{ v: 'gpt-5.5-codex', label: 'GPT-5.5 Codex' },
+		{ v: 'gpt-5.4-codex', label: 'GPT-5.4 Codex' }
+	];
 </script>
 
 <!-- A discrete effort slider. `levels[0]` is "" (adapter default); the track
@@ -459,8 +520,11 @@
 
 				<div class="row gap">
 					<div class="field grow">
-						<label class="label" for="sp-model">Model (optional)</label>
-						<input id="sp-model" class="input mono" placeholder="opus" bind:value={form.model} />
+						<label class="label" for="sp-model">Model</label>
+						<!-- Dispatch runs a claude worker → claude families. -->
+						<select id="sp-model" class="select" bind:value={form.model_claude}>
+							{#each claudeModels as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
+						</select>
 					</div>
 					<div class="field grow">
 						<label class="label" for="sp-timeout">Timeout min</label>
@@ -553,6 +617,21 @@
 						<span>Codex</span>
 					</button>
 				</div>
+			</div>
+
+			<!-- Model family (CCT-274), per adapter. `Default` = the adapter's own
+			     default model. -->
+			<div class="field">
+				<label class="label" for="sp-model-m">Model</label>
+				{#if form.adapter_id === 'codex'}
+					<select id="sp-model-m" class="select" bind:value={form.model_codex}>
+						{#each codexModels as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
+					</select>
+				{:else}
+					<select id="sp-model-m" class="select" bind:value={form.model_claude}>
+						{#each claudeModels as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
+					</select>
+				{/if}
 			</div>
 
 			<!-- OAuth account picker (CCT-237). Only accounts whose provider

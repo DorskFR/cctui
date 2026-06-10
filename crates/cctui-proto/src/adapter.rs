@@ -386,6 +386,10 @@ pub struct SessionSpec {
     /// `model_reasoning_effort`). `None` defers to the adapter default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    /// Model family to launch under (CCT-274). claude `--model`, codex
+    /// `-c model="…"`. `None` defers to the adapter default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     /// Environment secrets injected into the worker process env at spawn time
     /// (CCT-202). Merged on top of the pre-forked spare's baseline env and
     /// mirrored into `reattachEnv` so they survive a respawn/reattach. NEVER
@@ -409,6 +413,7 @@ impl std::fmt::Debug for SessionSpec {
             .field("name", &self.name)
             .field("permission_mode", &self.permission_mode)
             .field("effort", &self.effort)
+            .field("model", &self.model)
             // Redacted: secret values / file bytes must never reach a log.
             .field("env", &format_args!("<{} secret(s) redacted>", self.env.len()))
             .field("bootstrap", &format_args!("<redacted>"))
@@ -613,6 +618,7 @@ mod tests {
             name: None,
             permission_mode: None,
             effort: None,
+            model: None,
             env: std::collections::BTreeMap::new(),
             bootstrap: serde_json::Value::Null,
         };

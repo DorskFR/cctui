@@ -204,11 +204,17 @@ async fn command_pump(
                             sandbox.clone_into(&mut cfg.sandbox_mode);
                             approval.clone_into(&mut cfg.approval_policy);
                         }
-                        // Per-spawn reasoning effort (codex: minimal/low/medium/high).
+                        // Per-spawn reasoning effort (codex: low/medium/high/xhigh).
                         if let Some(effort) =
                             spec.effort.as_deref().map(str::trim).filter(|e| !e.is_empty())
                         {
                             cfg.reasoning_effort = Some(effort.to_owned());
+                        }
+                        // Per-spawn model family (CCT-274).
+                        if let Some(model) =
+                            spec.model.as_deref().map(str::trim).filter(|m| !m.is_empty())
+                        {
+                            cfg.model = Some(model.to_owned());
                         }
                         let session = CodexSession::new_fresh(
                             cfg,

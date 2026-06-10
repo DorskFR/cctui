@@ -28,12 +28,16 @@
 	// archived session's config, then handed to the SpawnModal.
 	let spawnPrefill = $state<Record<string, string> | null>(null);
 	function newFromScript(s: SessionListItem) {
+		const adapter = s.adapter_id ?? 'claude-code';
+		// Model is per-adapter in the spawn form (CCT-274); seed the field that
+		// matches this session's adapter.
+		const modelField = adapter === 'codex' ? 'model_codex' : 'model_claude';
 		spawnPrefill = {
 			machine_id: s.machine_id,
 			working_dir: s.working_dir,
-			adapter_id: s.adapter_id ?? 'claude-code',
+			adapter_id: adapter,
 			name: '',
-			model: s.model ?? ''
+			[modelField]: s.model ?? ''
 		};
 		openSession = null;
 		showSpawn = true;

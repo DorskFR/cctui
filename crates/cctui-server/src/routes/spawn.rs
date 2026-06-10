@@ -150,6 +150,7 @@ pub async fn spawn_session(
         name: req.name.clone(),
         permission_mode: req.permission_mode,
         effort: req.effort.clone().filter(|e| !e.trim().is_empty()),
+        model: req.model.clone().filter(|m| !m.trim().is_empty()),
         env,
         bootstrap,
     };
