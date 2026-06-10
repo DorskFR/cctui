@@ -21,6 +21,28 @@ export function relativeTime(iso: string | null | undefined): string {
 	return new Date(iso).toLocaleDateString();
 }
 
+/** Full ISO-8601 of an ISO datetime (or "—" when null/invalid). */
+function isoOrDash(iso: string | null | undefined): string {
+	if (!iso) return '—';
+	const d = new Date(iso);
+	return Number.isNaN(d.getTime()) ? '—' : d.toISOString();
+}
+
+/**
+ * Multi-line tooltip body for a relative timestamp (CCT-270): ISO start and
+ * last-message datetimes, used as a native `title` so hover shows the richer
+ * info with no layout shift. `lastActivity` is optional.
+ */
+export function timestampTooltip(
+	startedAt: string | null | undefined,
+	lastMessageAt: string | null | undefined,
+	lastActivityAt?: string | null | undefined
+): string {
+	const lines = [`Started:      ${isoOrDash(startedAt)}`, `Last message: ${isoOrDash(lastMessageAt)}`];
+	if (lastActivityAt) lines.push(`Last activity: ${isoOrDash(lastActivityAt)}`);
+	return lines.join('\n');
+}
+
 /** Wall-clock HH:MM:SS from a unix-millis timestamp (matches the proto `AgentEvent.ts`). */
 export function clockTime(tsMs: number): string {
 	if (!Number.isFinite(tsMs)) return '';

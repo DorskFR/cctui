@@ -55,6 +55,11 @@ last_message_text: string | null,
  */
 last_message_at: string | null, 
 /**
+ * Timestamp the conversation was first registered (CCT-270). Surfaced so
+ * clients can show the ISO start datetime in the relative-time tooltip.
+ */
+registered_at: string | null, 
+/**
  * User-defined session name, when set (falls back to id in the UI).
  */
 name: string | null, 

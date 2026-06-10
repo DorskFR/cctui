@@ -369,6 +369,7 @@ function optimisticDispatchCard(
 		machine_kind: 'dispatch',
 		last_message_text: 'Dispatching…',
 		last_message_at: null,
+		registered_at: null,
 		name:
 			p.name ||
 			p.prompt_file ||

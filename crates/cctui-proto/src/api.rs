@@ -133,6 +133,10 @@ pub struct SessionListItem {
     /// Timestamp of the last message event for this session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_message_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Timestamp the conversation was first registered (CCT-270). Surfaced so
+    /// clients can show the ISO start datetime in the relative-time tooltip.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registered_at: Option<chrono::DateTime<chrono::Utc>>,
     /// User-defined session name, when set (falls back to id in the UI).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,

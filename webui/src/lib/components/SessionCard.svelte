@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { SessionListItem } from '@bindings/SessionListItem';
-	import { relativeTime, uptime, statusBadgeClass } from '$lib/format';
+	import { relativeTime, uptime, statusBadgeClass, timestampTooltip } from '$lib/format';
 	import MachineBadge from './MachineBadge.svelte';
 	import TokenUsage from './TokenUsage.svelte';
 	import AdapterIcon from './AdapterIcon.svelte';
@@ -204,7 +204,11 @@
 		{/if}
 		{#if dense}
 			{#if showStatusBadge}<span class="badge {statusBadgeClass(s.status)} tag">{s.status}</span>{/if}
-			{#if s.last_message_at}<span class="faint sm">{relativeTime(s.last_message_at)}</span>{/if}
+			{#if s.last_message_at}<span
+					class="faint sm"
+					title={timestampTooltip(s.registered_at, s.last_message_at, s.last_activity_at)}
+					>{relativeTime(s.last_message_at)}</span
+				>{/if}
 		{/if}
 		{#if s.model}<span class="muted sm model">{s.model}{s.effort ? ` · ${s.effort}` : ''}</span>{/if}
 		<AdapterIcon adapter={s.adapter_id} size={16} />
@@ -231,7 +235,11 @@
 		<div class="row foot">
 			<TokenUsage usage={u} cold={s.cache_cold} />
 			<div class="spacer"></div>
-			{#if s.last_message_at}<span class="faint sm">{relativeTime(s.last_message_at)}</span>{/if}
+			{#if s.last_message_at}<span
+					class="faint sm"
+					title={timestampTooltip(s.registered_at, s.last_message_at, s.last_activity_at)}
+					>{relativeTime(s.last_message_at)}</span
+				>{/if}
 		</div>
 	{/if}
 	</button>
