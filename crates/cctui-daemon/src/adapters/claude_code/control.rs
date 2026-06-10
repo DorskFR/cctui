@@ -484,10 +484,11 @@ impl Driver {
         // swallowed (CCT-219).
         let pending_ask = self.pending_asks.lock().ok().and_then(|mut m| m.remove(local_id));
         if let Some(questions) = pending_ask {
-            // Native answer first (CCT-226): drive the real form.
-            if let Some(picks) = ask_picks
-                && let Some(chunks) = questions.as_ref().and_then(|q| ask_keystrokes(q, &picks))
-            {
+            // Native answer first (CCT-226): drive the real form via keystrokes.
+            let native_picks = ask_picks
+                .as_ref()
+                .and_then(|picks| questions.as_ref().and_then(|q| ask_keystrokes(q, picks)));
+            if let Some(chunks) = native_picks {
                 match socket::attach_answer_keys(sock, &short, &chunks).await {
                     Ok(()) => {
                         tracing::info!(%short, "answered ask form natively via keystrokes");
@@ -501,28 +502,44 @@ impl Driver {
                         return Ok(());
                     }
                     Err(err) => {
-                        tracing::warn!(%err, %short, "native ask answer failed; falling back to dismiss+reply");
+                        // CCT-278: do NOT fall through to attach+ESC here. The
+                        // pending-ask record can be stale (the form already
+                        // resolved in the native TUI or timed out, and the
+                        // `resolved` hook hasn't reached us yet), in which case
+                        // an ESC lands on whatever is now on screen — typically a
+                        // running tool — and aborts the turn. That is exactly the
+                        // "answering interrupted the tool" symptom. A stray text
+                        // reply is harmless by comparison, so just deliver it.
+                        tracing::warn!(%err, %short, "native ask answer failed; delivering text reply without ESC");
                     }
                 }
+            } else if ask_picks.is_none() {
+                // Genuine free-text answer: the user typed prose rather than
+                // picking options, so the form must be dismissed before the text
+                // lands or claude records option 1 + swallows the text (CCT-219).
+                // This is the only path that intentionally dismisses the form.
+                if let Err(err) = socket::attach_interrupt(sock, &short).await {
+                    tracing::warn!(%err, %short, "failed to dismiss pending ask form");
+                } else {
+                    tracing::info!(%short, "dismissed pending ask form before free-text reply");
+                    // PostToolUse never fires for a cancelled ask, so synthesize
+                    // `resolved` so the server/clients drop the live card.
+                    let _ = self
+                        .events
+                        .send(AdapterEvent::AskResolved { local_id: local_id.to_owned() })
+                        .await;
+                    // Give the TUI a beat to settle after the ESC before the
+                    // reply lands.
+                    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                }
             }
-            // Fallback: dismiss the form (attach+ESC, the same mechanism as
-            // interrupt/permission-deny), then deliver the text so claude
-            // reads the user's actual answer.
-            if let Err(err) = socket::attach_interrupt(sock, &short).await {
-                tracing::warn!(%err, %short, "failed to dismiss pending ask form");
-            } else {
-                tracing::info!(%short, "dismissed pending ask form before reply");
-                // PostToolUse never fires for a cancelled ask, so the
-                // hook won't emit `resolved` — synthesize it so the
-                // server/clients drop the live question card.
-                let _ = self
-                    .events
-                    .send(AdapterEvent::AskResolved { local_id: local_id.to_owned() })
-                    .await;
-                // Give the TUI a beat to settle after the ESC before
-                // the reply lands.
-                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-            }
+            // Fallback paths (native answer failed, or option picks with an
+            // unanswerable shape) deliver the text reply without dismissing the
+            // form. The user has still answered, so tell clients to drop the live
+            // card; idempotent if a real `resolved` hook follows, and a harmless
+            // repeat of the free-text branch's own emit above (CCT-278).
+            let _ =
+                self.events.send(AdapterEvent::AskResolved { local_id: local_id.to_owned() }).await;
         }
         let resp =
             socket::one_shot(sock, &json!({"proto":1,"op":"reply","short":short,"text":text}))

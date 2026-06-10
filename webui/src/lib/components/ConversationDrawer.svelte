@@ -253,6 +253,12 @@
 			pendingReplies = snap.pending;
 			failedReplies = snap.failed;
 			retryingReplies = snap.retrying;
+			// A failed answer must not leave the ask sites locked "Answering…"
+			// forever (CCT-278). `answerQuestion` optimistically sets `answering`
+			// and dismisses the card; if that send couldn't be delivered, release
+			// the lock so the question (replayed by the server on resubscribe) is
+			// answerable again rather than stuck.
+			if (snap.failed.size) answering = false;
 		});
 		return () => {
 			offStream();

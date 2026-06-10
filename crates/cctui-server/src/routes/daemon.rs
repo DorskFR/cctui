@@ -279,11 +279,10 @@ async fn process_frame(
             // online/stale/offline tier and broadcast it on transition. This is
             // the proactive signal the server previously lacked — a daemon that
             // stops heartbeating ages to offline without a failed dispatch.
-            if let Err(err) =
-                sqlx::query("UPDATE machines SET last_seen_at = now() WHERE id = $1")
-                    .bind(machine_id)
-                    .execute(&state.pool)
-                    .await
+            if let Err(err) = sqlx::query("UPDATE machines SET last_seen_at = now() WHERE id = $1")
+                .bind(machine_id)
+                .execute(&state.pool)
+                .await
             {
                 tracing::warn!(%err, %machine_id, "heartbeat last_seen_at bump failed");
             }
@@ -456,6 +455,18 @@ async fn handle_event(
             // lands in history via the transcript once the turn advances.
             // `questions` carries the structured options so the client renders
             // the interactive form live, not just the flattened text (CCT-181).
+            // Park it authoritatively so a client that (re)subscribes after the
+            // broadcast still learns the open prompt — the broadcast alone was
+            // lost forever if nobody was listening at that instant (CCT-277).
+            state.permission_store.write().await.insert_ask(
+                crate::routes::permissions::PendingAsk {
+                    session_id: local_id.clone(),
+                    question: question.clone(),
+                    questions: questions.clone(),
+                    preamble: preamble.clone(),
+                    received_at: chrono::Utc::now(),
+                },
+            );
             let _ = state.tui_tx.send(cctui_proto::ws::ServerEvent::AskQuestion {
                 session_id: local_id.clone(),
                 question,
@@ -465,6 +476,7 @@ async fn handle_event(
             bump_heartbeat(state, &local_id).await;
         }
         AdapterEvent::AskResolved { local_id } => {
+            state.permission_store.write().await.remove_ask(&local_id);
             let _ = state
                 .tui_tx
                 .send(cctui_proto::ws::ServerEvent::AskResolved { session_id: local_id.clone() });

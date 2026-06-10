@@ -139,6 +139,39 @@ async fn handle_subscribe(
         registry.subscribe(&session_id)
     };
 
+    // Replay any prompt the session is currently blocked on (CCT-277). Asks and
+    // permission requests were originally fire-and-forget broadcasts: a client
+    // that wasn't subscribed at the instant one went out never learned about it,
+    // and the client re-subscribes on every tab focus/visibility change
+    // (CCT-182) — so a backgrounded tab routinely missed them. The store now
+    // holds them authoritatively; re-send them to *this* socket so a (re)subscribe
+    // always re-surfaces the live prompt. Deduped client-side by request_id /
+    // overwrite, so a replay that races the live broadcast is harmless.
+    {
+        let store = state.permission_store.read().await;
+        for p in store.list_pending().into_iter().filter(|p| p.session_id == session_id) {
+            let _ = event_tx
+                .send(ServerEvent::PermissionRequest {
+                    session_id: p.session_id,
+                    request_id: p.request_id,
+                    tool_name: p.tool_name,
+                    description: p.description,
+                    input_preview: p.input_preview,
+                })
+                .await;
+        }
+        if let Some(ask) = store.pending_ask(&session_id) {
+            let _ = event_tx
+                .send(ServerEvent::AskQuestion {
+                    session_id: ask.session_id,
+                    question: ask.question,
+                    questions: ask.questions,
+                    preamble: ask.preamble,
+                })
+                .await;
+        }
+    }
+
     if let Some(receiver) = receiver {
         let handle = spawn_relay_task(receiver, session_id.clone(), event_tx.clone());
         // Abort any prior relay task for this session on this socket before

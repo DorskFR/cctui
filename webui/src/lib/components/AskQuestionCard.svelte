@@ -40,6 +40,16 @@
 	let submitted = $state(false);
 	// Editable only while interactive AND not yet submitted.
 	const live = $derived(interactive && !submitted);
+	// Release the optimistic lock if the parent re-enables the card (CCT-278):
+	// `interactive` goes false while an answer is in flight and flips back to
+	// true only if that answer failed to deliver (the parent clears its
+	// `answering` lock). Detecting the false→true edge lets a failed answer be
+	// resubmitted instead of staying stuck on "Answering…".
+	let wasInteractive = interactive;
+	$effect(() => {
+		if (interactive && !wasInteractive) submitted = false;
+		wasInteractive = interactive;
+	});
 
 	function pick(qi: number, oi: number) {
 		if (!live) return;
