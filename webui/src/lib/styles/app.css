@@ -14,6 +14,12 @@
 html {
 	-webkit-text-size-adjust: 100%;
 	text-size-adjust: 100%;
+	/* The UI font scaler (CCT-265) sets html { font-size } so every rem tracks
+	   it. On small screens a scaled-up rem can push a fixed/min-width child past
+	   the viewport; clip sideways here too (not just on body) so the whole page
+	   never gains a horizontal scrollbar (CCT-279 item 8). */
+	overflow-x: hidden;
+	max-width: 100%;
 }
 
 body {

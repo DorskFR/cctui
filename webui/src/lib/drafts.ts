@@ -88,3 +88,5 @@ export function saveMachinePrefs(machineId: string, prefs: MachineSpawnPrefs) {
 }
 export const VIEW_OPTS = 'cctui_view_opts';
 export const LIST_DENSITY = 'cctui_list_density';
+// Whether the "Dispatched" session group is collapsed/hidden (CCT-279 item 6).
+export const DISPATCHED_COLLAPSED = 'cctui_dispatched_collapsed';

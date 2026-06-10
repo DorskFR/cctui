@@ -402,7 +402,7 @@
 	</div>
 {/snippet}
 
-<Modal title="New session" {onclose}>
+<Modal title="New session" {onclose} resizeKey="cctui_spawn_modal_width">
 	{#snippet body()}
 		<div
 			class="stack"

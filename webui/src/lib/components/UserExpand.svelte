@@ -241,25 +241,43 @@
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
 	}
+	/* One-row layout (CCT-279 item 4): info column takes all free space and its
+	   long mono key/preview truncates instead of forcing the row to wrap into a
+	   squished 4-line column with a blank body. Actions stay compact on the right
+	   and only wrap as a last resort on very narrow screens. */
 	.sub-row {
 		display: flex;
 		align-items: center;
 		gap: var(--sp-3);
 		padding: var(--sp-2) 0;
-		flex-wrap: wrap;
 	}
 	.sub-row + .sub-row {
 		border-top: 1px solid var(--border);
 	}
 	.info {
-		flex: 1;
-		min-width: 8rem;
+		flex: 1 1 auto;
+		min-width: 0;
 		gap: 0;
+		overflow: hidden;
+	}
+	/* The mono key/token preview and the "seen…" line must not force overflow —
+	   ellipsize them within the column. */
+	.info > .mono,
+	.info > .sm {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		max-width: 100%;
 	}
 	.badge-line {
 		gap: var(--sp-1);
 		position: relative;
 		flex-wrap: wrap;
+		min-width: 0;
+	}
+	/* Actions hug their content on the right; never grow/shrink into the info. */
+	.mini {
+		flex: 0 0 auto;
 	}
 	.badge-btn {
 		background: none;

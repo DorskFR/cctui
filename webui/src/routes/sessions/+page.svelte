@@ -12,13 +12,19 @@
 	import SubagentBadge from '$lib/components/SubagentBadge.svelte';
 	import ConversationDrawer from '$lib/components/ConversationDrawer.svelte';
 	import SpawnModal from '$lib/components/SpawnModal.svelte';
-	import { drafts, LIST_DENSITY } from '$lib/drafts';
+	import { drafts, LIST_DENSITY, DISPATCHED_COLLAPSED } from '$lib/drafts';
 	import { notify } from '$lib/notify.svelte';
 	import { tokenizeQuery } from '$lib/search';
 
 	let dense = $state(drafts.get(LIST_DENSITY) === 'compact');
 	$effect(() => {
 		drafts.set(LIST_DENSITY, dense ? 'compact' : 'normal');
+	});
+
+	// Collapse/hide the Dispatched group as one unit (CCT-279 item 6). Persisted.
+	let dispatchedCollapsed = $state(drafts.get(DISPATCHED_COLLAPSED) === '1');
+	$effect(() => {
+		drafts.set(DISPATCHED_COLLAPSED, dispatchedCollapsed ? '1' : '0');
 	});
 
 	let showArchived = $state(false);
@@ -237,6 +243,27 @@
 			toasts.ok(`Archived ${ids.length}`);
 			exitSelect();
 			refreshTick++;
+		} catch (e) {
+			toasts.err((e as Error).message);
+		} finally {
+			archiving = false;
+		}
+	}
+
+	// Bulk-archive every Dispatched conversation at once (CCT-279 item 7). Uses
+	// the existing batch endpoint (POST /sessions/archive) over all dispatched
+	// (server-managed machine) sessions in the live list, children included.
+	async function archiveAllDispatched() {
+		const ids = items.filter(isDispatched).map((s) => s.id);
+		if (ids.length === 0) return;
+		if (!confirm(`Archive all ${ids.length} dispatched conversation${ids.length === 1 ? '' : 's'}?`))
+			return;
+		archiving = true;
+		try {
+			await actions.archiveMany(ids);
+			toasts.ok(`Archived ${ids.length}`);
+			refreshTick++;
+			qc.invalidateQueries({ queryKey: ['sessions'] });
 		} catch (e) {
 			toasts.err((e as Error).message);
 		} finally {
@@ -559,10 +586,35 @@
 	{:else}
 		<div class="stack" class:tight={dense} class:badge-gutter={hasCollapsibleSubagents}>
 			{#each groups as g (g.key)}
-				<div class="group-header" data-bucket={g.key}>
-					{g.label} <span class="count">{g.sessions.length}</span>
-				</div>
-				{#each g.sessions as s (s.id)}
+				{#if g.key === 'dispatched'}
+					<!-- Dispatched group (CCT-279 items 6 + 7): collapsible as one unit
+					     with a bulk "Archive all" action. -->
+					<div class="group-header" data-bucket={g.key}>
+						<button
+							class="group-toggle"
+							aria-expanded={!dispatchedCollapsed}
+							onclick={() => (dispatchedCollapsed = !dispatchedCollapsed)}
+						>
+							<span class="chev" class:collapsed={dispatchedCollapsed}>▾</span>
+							{g.label} <span class="count">{g.sessions.length}</span>
+						</button>
+						<div class="spacer"></div>
+						<button
+							class="btn btn-sm btn-danger"
+							disabled={archiving}
+							title="Archive all dispatched conversations"
+							onclick={archiveAllDispatched}
+						>
+							{#if archiving}<span class="spin"></span>{/if}
+							Archive all
+						</button>
+					</div>
+				{:else}
+					<div class="group-header" data-bucket={g.key}>
+						{g.label} <span class="count">{g.sessions.length}</span>
+					</div>
+				{/if}
+				{#each g.key === 'dispatched' && dispatchedCollapsed ? [] : g.sessions as s (s.id)}
 					{@const subGroups = childGroupsOf.get(s.id) ?? []}
 					{@const collapsibleGroups = subGroups.filter((g) => g.agents.length >= INLINE_THRESHOLD)}
 					<!-- Collapsible (>=3) groups surface as count badges outside the
@@ -799,6 +851,31 @@
 	.group-header .count {
 		font-weight: 400;
 		opacity: 0.7;
+	}
+	/* Dispatched group collapse toggle (CCT-279 item 6). */
+	.group-toggle {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--sp-2);
+		background: none;
+		border: none;
+		padding: 0;
+		font: inherit;
+		color: inherit;
+		text-transform: inherit;
+		letter-spacing: inherit;
+		cursor: pointer;
+	}
+	.group-toggle:hover {
+		color: var(--text);
+	}
+	.group-toggle .chev {
+		display: inline-block;
+		transition: transform 0.12s var(--ease);
+		font-size: 0.85em;
+	}
+	.group-toggle .chev.collapsed {
+		transform: rotate(-90deg);
 	}
 	.group-header[data-bucket='blocked'] {
 		color: var(--warn, #d08770);

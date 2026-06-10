@@ -39,8 +39,6 @@ export function stripAnsi(s: string): string {
 
 // Sentinels for placeholder protection — characters that never appear in source
 // text or in our escaped HTML, so restore passes can't collide with content.
-const SLOT_L = '';
-const SLOT_R = '';
 const BLOCK_L = '';
 const BLOCK_R = '';
 
@@ -50,93 +48,111 @@ const PSEUDO_TAG =
 	/&lt;(\/?(?:system[- ]message|system-reminder|task-notification|command-name|command-message|local-command[^&]*|bash-input|bash-stdout|bash-stderr)[^&]*?)&gt;/gi;
 
 // ── Syntax highlighting ─────────────────────────────────────────────────────
-// Lightweight, regex-based, token-class -> CSS-variable. Not a full lexer; aims
-// for "good enough" Claude-Code-terminal feel without pulling in a heavy dep.
+// Real grammar-driven highlighting via highlight.js (CCT-279 item 5), replacing
+// the old hand-rolled regex tokenizer. We register only the languages we care
+// about (the common-set bundle), so the dep stays lean. highlight.js emits
+// already-escaped HTML with `hljs-*` token classes; we map those to the existing
+// `--syn-*` theme variables in CSS so dark/light/sepia themes still drive the
+// colors (and the standalone export's baked palette keeps working). Unknown
+// languages and diffs fall back to plain escaped text — still safe, just flat.
 
-const KEYWORDS: Record<string, string> = {
-	js: 'const|let|var|function|return|if|else|for|while|class|new|import|export|from|async|await|try|catch|finally|throw|typeof|instanceof|extends|super|this|null|undefined|true|false|switch|case|break|continue|default|of|in|yield|do|delete|void',
-	ts: 'const|let|var|function|return|if|else|for|while|class|new|import|export|from|async|await|try|catch|finally|throw|typeof|instanceof|extends|super|this|null|undefined|true|false|switch|case|break|continue|default|of|in|yield|interface|type|enum|implements|public|private|protected|readonly|as|keyof|namespace|declare|abstract',
-	py: 'def|return|if|elif|else|for|while|class|import|from|as|try|except|finally|raise|with|lambda|yield|async|await|None|True|False|and|or|not|in|is|pass|break|continue|global|nonlocal|assert|del|self',
-	rust: 'fn|let|mut|const|return|if|else|for|while|loop|match|struct|enum|impl|trait|pub|use|mod|crate|self|super|async|await|move|ref|where|dyn|as|in|Some|None|Ok|Err|true|false|unsafe|type',
-	go: 'func|return|if|else|for|range|switch|case|default|var|const|type|struct|interface|map|chan|go|defer|package|import|nil|true|false|break|continue|select|fallthrough',
-	sh: 'if|then|else|elif|fi|for|while|do|done|case|esac|function|return|in|export|local|echo|cd|set'
-};
+import hljs from 'highlight.js/lib/core';
+import javascript from 'highlight.js/lib/languages/javascript';
+import typescript from 'highlight.js/lib/languages/typescript';
+import python from 'highlight.js/lib/languages/python';
+import rust from 'highlight.js/lib/languages/rust';
+import go from 'highlight.js/lib/languages/go';
+import bash from 'highlight.js/lib/languages/shell';
+import bashLang from 'highlight.js/lib/languages/bash';
+import json from 'highlight.js/lib/languages/json';
+import yaml from 'highlight.js/lib/languages/yaml';
+import xml from 'highlight.js/lib/languages/xml';
+import css from 'highlight.js/lib/languages/css';
+import sql from 'highlight.js/lib/languages/sql';
+import dockerfile from 'highlight.js/lib/languages/dockerfile';
+import diffLang from 'highlight.js/lib/languages/diff';
+import markdown from 'highlight.js/lib/languages/markdown';
+import toml from 'highlight.js/lib/languages/ini';
+
+hljs.registerLanguage('javascript', javascript);
+hljs.registerLanguage('typescript', typescript);
+hljs.registerLanguage('python', python);
+hljs.registerLanguage('rust', rust);
+hljs.registerLanguage('go', go);
+hljs.registerLanguage('shell', bash);
+hljs.registerLanguage('bash', bashLang);
+hljs.registerLanguage('json', json);
+hljs.registerLanguage('yaml', yaml);
+hljs.registerLanguage('xml', xml);
+hljs.registerLanguage('css', css);
+hljs.registerLanguage('sql', sql);
+hljs.registerLanguage('dockerfile', dockerfile);
+hljs.registerLanguage('diff', diffLang);
+hljs.registerLanguage('markdown', markdown);
+hljs.registerLanguage('ini', toml);
+
 const LANG_ALIAS: Record<string, string> = {
-	javascript: 'js',
-	jsx: 'js',
-	mjs: 'js',
-	typescript: 'ts',
-	tsx: 'ts',
-	python: 'py',
+	js: 'javascript',
+	jsx: 'javascript',
+	mjs: 'javascript',
+	cjs: 'javascript',
+	ts: 'typescript',
+	tsx: 'typescript',
+	py: 'python',
 	rs: 'rust',
 	golang: 'go',
-	bash: 'sh',
-	shell: 'sh',
-	zsh: 'sh'
+	sh: 'shell',
+	zsh: 'shell',
+	yml: 'yaml',
+	html: 'xml',
+	svg: 'xml',
+	md: 'markdown',
+	toml: 'ini',
+	docker: 'dockerfile',
+	patch: 'diff'
 };
 
 function highlightCode(rawCode: string, lang: string): string {
+	const clean = stripAnsi(rawCode);
 	const norm = LANG_ALIAS[lang.toLowerCase()] ?? lang.toLowerCase();
-	if (norm === 'json') return highlightJson(rawCode);
 
-	const kw = KEYWORDS[norm];
-	// Work against escaped text so we never emit unescaped markup.
-	let s = escapeHtml(stripAnsi(rawCode));
+	// Diff blocks (our pretty-diff path passes `lang: ''` but the body is `+`/`-`
+	// prefixed lines) and explicit diff/patch: line-color them ourselves so the
+	// classic green-add / red-remove reads at a glance, independent of grammar.
+	if (norm === 'diff' || (!norm && looksLikeDiff(clean))) return highlightDiff(clean);
 
-	// Placeholder protection for strings/comments so later passes don't touch them.
-	const slots: string[] = [];
-	// The index is prefixed with a word char ('s') so the later number pass
-	// (/\b\d+\b/) can't match the bare digit wedged between the control-char
-	// sentinels — a sentinel→digit junction is a word boundary, so without the
-	// prefix the index got wrapped in a <span> and the restore below failed,
-	// leaking the slot index as a stray number and dropping the stashed string.
-	const stash = (html: string) => {
-		const i = slots.push(html) - 1;
-		return `${SLOT_L}s${i}${SLOT_R}`;
-	};
-
-	// comments (/* block */, // line, # line)
-	s = s.replace(/\/\*[\s\S]*?\*\//g, (m) => stash(`<span class="syn-comment">${m}</span>`));
-	s = s.replace(/(^|[^:])\/\/[^\n]*/g, (m, p) => p + stash(`<span class="syn-comment">${m.slice(p.length)}</span>`));
-	if (norm === 'py' || norm === 'sh' || norm === 'rust' || norm === 'go' || !kw) {
-		s = s.replace(/#[^\n]*/g, (m) => stash(`<span class="syn-comment">${m}</span>`));
+	if (norm && hljs.getLanguage(norm)) {
+		try {
+			return hljs.highlight(clean, { language: norm, ignoreIllegals: true }).value;
+		} catch {
+			/* fall through to plain */
+		}
 	}
-	// strings (", ', `) — escaped double-quotes are &quot;
-	s = s.replace(/(&quot;|['`])(?:\\.|(?!\1)[\s\S])*?\1/g, (m) => stash(`<span class="syn-string">${m}</span>`));
-
-	// numbers, keywords and function names are stashed too (not emitted inline):
-	// otherwise a later pass would re-scan the markup we just emitted — e.g. the
-	// keyword pass matching the word `class` inside a `<span class="syn-number">`
-	// — and produce malformed nested tags that the browser renders as garbled
-	// text. Stashing each emission keeps every pass operating on plain source.
-	s = s.replace(/\b(0x[0-9a-fA-F]+|\d+\.?\d*(?:[eE][+-]?\d+)?)\b/g, (m) =>
-		stash(`<span class="syn-number">${m}</span>`)
-	);
-
-	// keywords
-	if (kw) {
-		const re = new RegExp(`\\b(${kw})\\b`, 'g');
-		s = s.replace(re, (m) => stash(`<span class="syn-keyword">${m}</span>`));
-	}
-	// function-call names: ident immediately before "("
-	s = s.replace(/\b([A-Za-z_]\w*)(\s*\()/g, (_m, name, paren) => stash(`<span class="syn-function">${name}</span>`) + paren);
-
-	// restore stashed comment/string slots
-	s = s.replace(new RegExp(`${SLOT_L}s(\\d+)${SLOT_R}`, 'g'), (_m, i) => slots[Number(i)]);
-	return s;
+	// Unknown / no language: escaped plain text (flat, but safe).
+	return escapeHtml(clean);
 }
 
-function highlightJson(raw: string): string {
-	let s = escapeHtml(stripAnsi(raw));
-	// keys "..." :
-	s = s.replace(/(&quot;(?:\\.|[^&]|&(?!quot;))*?&quot;)(\s*:)/g, '<span class="syn-function">$1</span>$2');
-	// remaining strings
-	s = s.replace(/(&quot;(?:\\.|[^&]|&(?!quot;))*?&quot;)/g, '<span class="syn-string">$1</span>');
-	// numbers
-	s = s.replace(/\b(-?\d+\.?\d*(?:[eE][+-]?\d+)?)\b/g, '<span class="syn-number">$1</span>');
-	// literals
-	s = s.replace(/\b(true|false|null)\b/g, '<span class="syn-keyword">$1</span>');
-	return s;
+// Heuristic: a body where most non-blank lines start with +/-/space (and at
+// least one +/- line) is a unified diff even without a `diff` info-string.
+function looksLikeDiff(s: string): boolean {
+	const lines = s.split('\n').filter((l) => l.length);
+	if (lines.length < 2) return false;
+	let marked = 0;
+	for (const l of lines) if (l[0] === '+' || l[0] === '-') marked++;
+	return marked >= 1 && marked >= lines.length * 0.5;
+}
+
+function highlightDiff(s: string): string {
+	return s
+		.split('\n')
+		.map((line) => {
+			const esc = escapeHtml(line);
+			if (line.startsWith('+')) return `<span class="hljs-addition">${esc}</span>`;
+			if (line.startsWith('-')) return `<span class="hljs-deletion">${esc}</span>`;
+			if (line.startsWith('@@')) return `<span class="hljs-meta">${esc}</span>`;
+			return esc;
+		})
+		.join('\n');
 }
 
 // ── Markdown ────────────────────────────────────────────────────────────────

@@ -10,7 +10,7 @@
 	import { autoresize } from '$lib/autoresize';
 	import { dropzone } from '$lib/dropzone';
 	import { mergeFiles, removeFileByName, fileCapError } from '$lib/attachments';
-	import { downloadConversationHtml } from '$lib/export';
+	import { downloadConversationHtml, conversationToMarkdown } from '$lib/export';
 	import { toasts } from '$lib/toast.svelte';
 	import { fontScale, SCALE_MIN, SCALE_MAX } from '$lib/fontscale.svelte';
 	import { useQueryClient } from '@tanstack/svelte-query';
@@ -535,6 +535,33 @@
 		return out;
 	});
 
+	// ── Lazy render of large transcripts (CCT-279 item 1) ───────────────────
+	// Mounting an entire long conversation (hundreds of tool calls + results,
+	// each running the markdown/highlight pipeline) blocks the open for seconds.
+	// Render only the most recent `renderLimit` lines initially and expose a
+	// "load older" control that reveals more upward, in chunks. New live events
+	// always fall inside the tail window, so auto-scroll-to-bottom is unaffected.
+	const RENDER_CHUNK = 60;
+	let renderLimit = $state(RENDER_CHUNK);
+	// Reset the window when the open session changes.
+	$effect(() => {
+		void id;
+		renderLimit = RENDER_CHUNK;
+	});
+	const hiddenOlder = $derived(Math.max(0, lines.length - renderLimit));
+	const visibleLines = $derived(hiddenOlder > 0 ? lines.slice(hiddenOlder) : lines);
+	function loadOlder() {
+		// Hold scroll position when prepending older content: capture distance from
+		// the bottom, grow the window, then restore so the viewport doesn't jump.
+		const el = scroller;
+		const fromBottom = el ? el.scrollHeight - el.scrollTop : 0;
+		renderLimit += RENDER_CHUNK;
+		if (el)
+			requestAnimationFrame(() => {
+				el.scrollTop = el.scrollHeight - fromBottom;
+			});
+	}
+
 	// Suppress the live preamble block when the same assistant prose has
 	// already streamed into the transcript (CCT-218).
 	const preambleInLines = $derived(
@@ -608,14 +635,26 @@
 	const lastActivityMs = $derived(
 		session.last_activity_at ? new Date(session.last_activity_at).getTime() : null
 	);
-	const cacheCold = $derived(lastActivityMs !== null && now - lastActivityMs > CACHE_TTL_MS);
+	// The cache window is anchored to the last FINISHED turn, not the last send
+	// (CCT-279 item 2). `last_activity_at` is the timestamp of the most recent
+	// token-usage row, which the server records when the agent's turn completes —
+	// i.e. the agent reply. While a turn is in flight (`working`) the previous
+	// turn's anchor would keep counting down and could flip the button "cold"
+	// mid-turn (the "timer started from the send" symptom); suppress the
+	// cold/countdown UI entirely while working, then it re-anchors off the new
+	// reply's `last_activity_at` once the turn ends.
+	const cacheCold = $derived(
+		!working && lastActivityMs !== null && now - lastActivityMs > CACHE_TTL_MS
+	);
 	const burstTokens = $derived(session.estimated_burst_tokens ?? null);
 	// Milliseconds until the warm window lapses (null when no activity / cold).
 	const msUntilCold = $derived(
 		lastActivityMs === null ? null : CACHE_TTL_MS - (now - lastActivityMs)
 	);
 	// Whether we're in the final-minute countdown band (warm, but ≤60s left).
-	const coldImminent = $derived(msUntilCold !== null && msUntilCold > 0 && msUntilCold <= COLD_WARN_MS);
+	const coldImminent = $derived(
+		!working && msUntilCold !== null && msUntilCold > 0 && msUntilCold <= COLD_WARN_MS
+	);
 	// Seconds to display, clamped to [0, 60].
 	const coldCountdownSecs = $derived(coldImminent ? Math.ceil(msUntilCold! / 1000) : null);
 	// Tick fast (1s) only while counting down so the number is smooth; otherwise
@@ -889,6 +928,18 @@
 		}
 	}
 
+	// Copy the whole conversation as Markdown (CCT-279 item 9), honoring the
+	// current view filters — so it can be pasted straight into a PR/issue/notes.
+	async function doCopyMarkdown() {
+		try {
+			const md = conversationToMarkdown(session, events, view);
+			await navigator.clipboard.writeText(md);
+			toasts.ok('Copied as Markdown');
+		} catch (e) {
+			toasts.err(`Copy failed: ${(e as Error).message}`);
+		}
+	}
+
 	// Copy the session's stable, shareable URL (CCT-206) so it can be pasted into
 	// a PR/comment. Same-origin link gated by the login wall — only authed people
 	// who follow it can read the log.
@@ -1068,6 +1119,18 @@
 			</button>
 			<button
 				class="tapbtn"
+				aria-label="Copy conversation as Markdown"
+				title="Copy the whole conversation as Markdown (honors the view filters)"
+				onclick={doCopyMarkdown}
+			>
+				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+					<rect x="3" y="5" width="18" height="14" rx="2" />
+					<path d="M7 15V9l3 3 3-3v6" />
+					<path d="m15 11 2 2 2-2" />
+				</svg>
+			</button>
+			<button
+				class="tapbtn"
 				aria-label="Export conversation"
 				title="Download transcript as HTML (print it for a PDF)"
 				onclick={doExport}
@@ -1182,13 +1245,21 @@
 			<div class="empty">No events yet.</div>
 		{/if}
 
-		{#each lines as ln, i (ln.ts + (ln.text ?? ln.html ?? '').slice(0, 24) + ln.role)}
+		{#if hiddenOlder > 0}
+			<!-- Lazy render (CCT-279 item 1): older lines are mounted on demand so a
+			     long transcript opens fast. -->
+			<button class="load-older" onclick={loadOlder}>
+				↑ Load {Math.min(RENDER_CHUNK, hiddenOlder)} older
+				<span class="faint">({hiddenOlder} hidden)</span>
+			</button>
+		{/if}
+		{#each visibleLines as ln, i (ln.ts + (ln.text ?? ln.html ?? '').slice(0, 24) + ln.role)}
 			{#if ln.ask && isDupeOfLiveAsk(ln.ask)}
 				<!-- Suppressed: same question is rendered live below (CCT-218). -->
 			{:else if ln.ask}
 				<AskQuestionCard
 					questions={ln.ask}
-					interactive={i === lines.length - 1 && !archived && !answering && !ask}
+					interactive={i === visibleLines.length - 1 && !archived && !answering && !ask}
 					onsubmit={(t, p) => answerQuestion(t, p, ln.ask)}
 				/>
 			{:else if ln.role === 'reset'}
@@ -1913,6 +1984,25 @@
 		font-size: var(--fs-sm);
 		opacity: 0.9;
 	}
+	/* Lazy-render "load older" control (CCT-279 item 1). */
+	.load-older {
+		align-self: center;
+		padding: var(--sp-1) var(--sp-3);
+		border-radius: var(--r-pill);
+		border: 1px solid var(--border-strong);
+		background: var(--bg-elevated-2);
+		color: var(--text-muted);
+		font-size: var(--fs-xs);
+		font-weight: var(--fw-medium);
+		cursor: pointer;
+	}
+	.load-older:hover {
+		border-color: var(--accent);
+		color: var(--accent);
+	}
+	.load-older .faint {
+		color: var(--text-faint);
+	}
 	.code {
 		white-space: pre-wrap;
 		max-height: 22rem;
@@ -1970,9 +2060,21 @@
 	}
 	.composer-row {
 		display: flex;
-		flex-wrap: wrap;
+		flex-wrap: nowrap;
 		gap: var(--sp-2);
+		/* Align the attach/send controls to the BOTTOM edge of the (growable)
+		   textarea so all three share a baseline at every font scale (CCT-279
+		   item 8). With flex-end the icon buttons hug the textarea's collapsed
+		   height and stay pinned to its bottom as it grows. */
 		align-items: flex-end;
+		/* Never let the row exceed the composer width — at large scales the
+		   wrapped layout pushed the send button off-screen, forcing horizontal
+		   scroll. nowrap + min-width:0 on the textarea keeps it contained. */
+		min-width: 0;
+	}
+	/* Attachments preview spans the full row above the input. */
+	.composer-row .grow {
+		min-width: 0;
 	}
 	.attachments {
 		width: 100%;
@@ -2125,21 +2227,53 @@
 	:global(.bubble .md-table tbody tr:nth-child(even)) {
 		background: color-mix(in srgb, var(--bg-elevated) 45%, transparent);
 	}
-	/* Syntax-highlight token colors (CCT-161 item 5) — all themeable. */
-	:global(.syn-keyword) {
+	/* Syntax-highlight token colors. highlight.js emits hljs-* classes (CCT-279
+	   item 5); we map them onto the existing themeable --syn-* tokens so dark/
+	   light/sepia keep driving the palette. The legacy --syn-* classes from the
+	   old regex highlighter are kept as aliases for any cached content. */
+	:global(.syn-keyword),
+	:global(.hljs-keyword),
+	:global(.hljs-built_in),
+	:global(.hljs-type),
+	:global(.hljs-literal),
+	:global(.hljs-symbol),
+	:global(.hljs-selector-tag) {
 		color: var(--syn-keyword);
 	}
-	:global(.syn-string) {
+	:global(.syn-string),
+	:global(.hljs-string),
+	:global(.hljs-char),
+	:global(.hljs-regexp) {
 		color: var(--syn-string);
 	}
-	:global(.syn-number) {
+	:global(.syn-number),
+	:global(.hljs-number),
+	:global(.hljs-attr),
+	:global(.hljs-attribute),
+	:global(.hljs-variable),
+	:global(.hljs-template-variable) {
 		color: var(--syn-number);
 	}
-	:global(.syn-comment) {
+	:global(.syn-comment),
+	:global(.hljs-comment),
+	:global(.hljs-quote) {
 		color: var(--syn-comment);
 		font-style: italic;
 	}
-	:global(.syn-function) {
+	/* Diff add/remove lines (our highlightDiff + hljs diff grammar). */
+	:global(.hljs-addition) {
+		color: var(--syn-string);
+	}
+	:global(.hljs-deletion) {
+		color: var(--danger, #f0716b);
+	}
+	:global(.syn-function),
+	:global(.hljs-title),
+	:global(.hljs-title.function_),
+	:global(.hljs-section),
+	:global(.hljs-name),
+	:global(.hljs-meta),
+	:global(.hljs-property) {
 		color: var(--syn-function);
 	}
 </style>

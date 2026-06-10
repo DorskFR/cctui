@@ -213,8 +213,12 @@ code{font-family:inherit}
 .md-meta-tag{color:var(--c-text-faint);font-style:italic}
 strong{color:var(--md-strong)}
 a{color:var(--c-blue)}
-.syn-keyword{color:var(--syn-keyword)}.syn-string{color:var(--syn-string)}.syn-number{color:var(--syn-number)}
-.syn-comment{color:var(--syn-comment);font-style:italic}.syn-function{color:var(--syn-function)}
+.syn-keyword,.hljs-keyword,.hljs-built_in,.hljs-type,.hljs-literal,.hljs-symbol,.hljs-selector-tag{color:var(--syn-keyword)}
+.syn-string,.hljs-string,.hljs-char,.hljs-regexp{color:var(--syn-string)}
+.syn-number,.hljs-number,.hljs-attr,.hljs-attribute,.hljs-variable,.hljs-template-variable{color:var(--syn-number)}
+.syn-comment,.hljs-comment,.hljs-quote{color:var(--syn-comment);font-style:italic}
+.syn-function,.hljs-title,.hljs-section,.hljs-name,.hljs-meta,.hljs-property{color:var(--syn-function)}
+.hljs-addition{color:var(--syn-string)}.hljs-deletion{color:var(--c-red)}
 .ask-q{margin:2px 0;color:var(--c-text);font-weight:600}
 .ask-opts{margin:4px 0 2px;padding-left:18px}
 footer{margin-top:28px;color:var(--c-text-faint);font-size:11px;text-align:center}
@@ -265,6 +269,86 @@ ${body}
 </body>
 </html>
 `;
+}
+
+// ── Copy-as-Markdown (CCT-279 item 9) ────────────────────────────────────────
+// Serialize the conversation to a plain-Markdown string for the clipboard, so a
+// whole chat can be pasted into a PR/issue/notes. Honors the same view filters
+// as the HTML export. Tool inputs / results go in fenced code blocks; the
+// pretty-diff/json toggles shape the body the same way the screen does.
+
+function fenced(body: string, lang = ''): string {
+	// Avoid breaking out of the fence if the body itself contains ```.
+	const safe = body.replace(/```/g, '` ` `');
+	return `\`\`\`${lang}\n${safe}\n\`\`\``;
+}
+
+function toMarkdownBlock(e: AgentEvent, opts: ExportOpts): string | null {
+	const obj = (input: unknown) => input as Record<string, unknown> | null;
+	switch (e.type) {
+		case 'text': {
+			if (!e.content.trim()) return null;
+			if (e.content.startsWith(USER_PREFIX)) {
+				const content = e.content.slice(USER_PREFIX.length).trimStart();
+				const system = e.meta || looksMeta(content);
+				if (!typeVisible(opts, system ? 'system' : 'user')) return null;
+				return `**${system ? 'System' : 'User'}:**\n\n${content}`;
+			}
+			if (!typeVisible(opts, 'assistant')) return null;
+			return `**Assistant:**\n\n${e.content}`;
+		}
+		case 'reply':
+			if (!e.content.trim()) return null;
+			if (!typeVisible(opts, 'user')) return null;
+			return `**User:**\n\n${e.content}`;
+		case 'tool_call': {
+			const isMcp = e.tool.startsWith('mcp__');
+			if (!typeVisible(opts, isMcp ? 'mcp' : 'tool')) return null;
+			const o = obj(e.input);
+			if (opts.prettyDiff && o && 'old_string' in o && 'new_string' in o) {
+				const minus = String(o.old_string ?? '').split('\n').map((l) => `- ${l}`).join('\n');
+				const plus = String(o.new_string ?? '').split('\n').map((l) => `+ ${l}`).join('\n');
+				return `**Tool · ${e.tool}**\n\n${fenced(`${o.file_path ?? ''}\n${minus}\n${plus}`.trim(), 'diff')}`;
+			}
+			if (o && typeof o.command === 'string') {
+				const desc = typeof o.description === 'string' && o.description.trim() ? `# ${o.description.trim()}\n` : '';
+				return `**Tool · ${e.tool}**\n\n${fenced(`${desc}${o.command}`, 'sh')}`;
+			}
+			const json = prettyJson(e.input).replace(/\\n/g, '\n').replace(/\\t/g, '\t');
+			return `**Tool · ${e.tool}**\n\n${fenced(json, 'json')}`;
+		}
+		case 'tool_result':
+			if (!typeVisible(opts, 'result')) return null;
+			return `**Result · ${e.tool}**\n\n${fenced(e.output_summary)}`;
+		case 'context_reset':
+			return `---\n\n_⟳ context reset · /clear or /compact_\n\n---`;
+		case 'compact_summary':
+			if (!e.content.trim()) return null;
+			return `**Compacted context:**\n\n${e.content}`;
+		default:
+			return null;
+	}
+}
+
+export function conversationToMarkdown(
+	session: SessionListItem,
+	events: AgentEvent[],
+	opts: ExportOpts
+): string {
+	const title = session.name || session.working_dir || session.id;
+	const head: string[] = [`# ${title}`, ''];
+	const metaBits = [
+		`session: \`${session.id}\``,
+		session.machine_name ? `machine: ${session.machine_name}` : '',
+		session.model ? `model: ${session.model}${session.effort ? ` · ${session.effort}` : ''}` : '',
+		session.working_dir ? `cwd: \`${session.working_dir}\`` : ''
+	].filter(Boolean);
+	if (metaBits.length) head.push(metaBits.join(' · '), '');
+	const body = events
+		.map((e) => toMarkdownBlock(e, opts))
+		.filter((b): b is string => b !== null)
+		.join('\n\n');
+	return `${head.join('\n')}${body}\n`;
 }
 
 /** Trigger a client-side download of the built HTML transcript. */
