@@ -73,6 +73,14 @@ pub struct AccountInfo {
     pub last_used_at: Option<DateTime<Utc>>,
     pub request_count: i64,
     pub bytes_transferred: i64,
+    /// Total tokens (input + output + cache) attributed to this account across
+    /// all its sessions (CCT-273). Joined from `session_tokens` →
+    /// `session_token_usage` at read time.
+    pub total_tokens: i64,
+    /// Rough USD cost estimate derived from `total_tokens` using a per-provider
+    /// blended rate (CCT-273). An estimate only — OAuth/subscription accounts
+    /// aren't metered per token; this is a usage-weight signal, not a bill.
+    pub est_cost_usd: f64,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -114,11 +122,38 @@ pub async fn list_accounts(
     if ctx.role != TokenRole::Admin && require_user(&ctx).is_err() {
         return Err(err(StatusCode::FORBIDDEN, "user or admin token required"));
     }
+    // Per-account token totals + a rough USD cost estimate (CCT-273). Tokens
+    // are recorded per session (`session_token_usage`); `session_tokens` bridges
+    // a session to the account it ran under. SUM() over bigint returns NUMERIC,
+    // so cast back to bigint for the i64 columns. Cost uses a per-provider
+    // blended per-million rate (input/output/cache weighted) — an estimate, not
+    // a meter (these are subscription accounts).
     let rows: Vec<AccountInfo> = sqlx::query_as(
         "SELECT a.id, a.name, a.provider, a.user_id, u.name AS user_name, \
                 a.expires_at, a.created_at, a.last_used_at, \
-                a.request_count, a.bytes_transferred \
+                a.request_count, a.bytes_transferred, \
+                (COALESCE(t.input_tokens,0) + COALESCE(t.output_tokens,0) \
+                 + COALESCE(t.cache_read_tokens,0) + COALESCE(t.cache_creation_tokens,0))::bigint \
+                  AS total_tokens, \
+                (CASE a.provider \
+                   WHEN 'openai' THEN \
+                     COALESCE(t.input_tokens,0)*1.25 + COALESCE(t.output_tokens,0)*10 \
+                     + COALESCE(t.cache_read_tokens,0)*0.125 + COALESCE(t.cache_creation_tokens,0)*1.25 \
+                   ELSE \
+                     COALESCE(t.input_tokens,0)*3 + COALESCE(t.output_tokens,0)*15 \
+                     + COALESCE(t.cache_read_tokens,0)*0.3 + COALESCE(t.cache_creation_tokens,0)*3.75 \
+                 END / 1000000.0)::double precision AS est_cost_usd \
          FROM oauth_accounts a JOIN users u ON u.id = a.user_id \
+         LEFT JOIN ( \
+             SELECT st.account_id, \
+                    SUM(stu.input_tokens)          AS input_tokens, \
+                    SUM(stu.output_tokens)         AS output_tokens, \
+                    SUM(stu.cache_read_tokens)     AS cache_read_tokens, \
+                    SUM(stu.cache_creation_tokens) AS cache_creation_tokens \
+             FROM session_tokens st \
+             JOIN session_token_usage stu ON stu.session_id = st.session_id \
+             GROUP BY st.account_id \
+         ) t ON t.account_id = a.id \
          WHERE $1::uuid IS NULL OR a.user_id = $1 \
          ORDER BY a.provider, a.name",
     )

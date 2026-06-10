@@ -165,6 +165,10 @@
 
 	const providerLabel = (p: string) =>
 		p === 'anthropic' ? 'Claude' : p === 'openai' ? 'Codex' : p;
+
+	// Estimated cost (CCT-273): sub-cent → "<$0.01", small → 2 dp, large → compact.
+	const usd = (v: number) =>
+		!v ? '$0' : v < 0.01 ? '<$0.01' : v < 1000 ? `$${v.toFixed(2)}` : `$${compact(v)}`;
 </script>
 
 <div class="bar row">
@@ -192,7 +196,7 @@
 					{#if isAdmin}<th class="col-owner">Owner</th>{/if}
 					<th class="col-prov">Provider</th>
 					<th class="col-usage">Requests</th>
-					<th class="col-usage">Bytes</th>
+					<th class="col-usage" title="Estimated from token usage — subscription accounts aren't metered per token">Cost (est.)</th>
 					<th class="col-used">Last used</th>
 					<th class="col-created">Created</th>
 					<th class="col-actions">Actions</th>
@@ -205,7 +209,7 @@
 						{#if isAdmin}<td class="col-owner faint">{a.user_name ?? '—'}</td>{/if}
 						<td class="col-prov"><span class="badge">{providerLabel(a.provider)}</span></td>
 						<td class="col-usage faint">{compact(a.request_count)}</td>
-						<td class="col-usage faint">{compact(a.bytes_transferred)}</td>
+						<td class="col-usage faint" title={`${compact(a.total_tokens)} tokens`}>{usd(a.est_cost_usd)}</td>
 						<td class="col-used faint">{relativeTime(a.last_used_at)}</td>
 						<td class="col-created faint">{dateOnly(a.created_at)}</td>
 						<td class="col-actions">
@@ -350,8 +354,14 @@
 	}
 	table.disp {
 		width: 100%;
+		/* `auto` (not `fixed`): under `fixed` the sum of the explicit column
+		   widths could exceed the table, collapsing the width-less Name column to
+		   0 so its text overlapped the next column (CCT-273). `auto` sizes to
+		   content; `min-width` + the card's `overflow-x` give horizontal scroll
+		   on narrow screens instead of crushing. */
+		min-width: 46rem;
 		border-collapse: collapse;
-		table-layout: fixed;
+		table-layout: auto;
 	}
 	th {
 		text-align: left;
@@ -373,6 +383,9 @@
 	}
 	.name {
 		font-weight: var(--fw-semibold);
+	}
+	.col-name {
+		min-width: 10rem;
 	}
 	.col-prov {
 		width: 7rem;

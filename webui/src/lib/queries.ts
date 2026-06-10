@@ -58,6 +58,10 @@ export interface OAuthAccount {
 	last_used_at: string | null;
 	request_count: number;
 	bytes_transferred: number;
+	/** Total tokens (input + output + cache) across this account's sessions. */
+	total_tokens: number;
+	/** Rough USD cost estimate from tokens (per-provider blended rate, CCT-273). */
+	est_cost_usd: number;
 }
 
 /** Register payload — the refresh token is sent cleartext once, stored
