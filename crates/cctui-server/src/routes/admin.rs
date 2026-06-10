@@ -224,22 +224,39 @@ pub async fn list_sessions(
     // Historical inactive sessions from DB (not currently in the live registry).
     // Archived sessions are hidden unless explicitly requested.
     let live_ids: HashSet<String> = with_ts.iter().map(|(_, s)| s.id.clone()).collect();
-    let archived_filter = if params.include_archived { "" } else { "WHERE s.status != 'archived'" };
-    let query = format!(
-        "SELECT s.id, s.parent_id, s.machine_id, s.working_dir, s.status, \
+    let cols = "s.id, s.parent_id, s.machine_id, s.working_dir, s.status, \
                 s.registered_at, s.last_heartbeat, s.metadata, s.adapter_id, \
                 COALESCE(m.display_name, m.name) AS resolved_machine_name, \
-                m.hue AS resolved_machine_hue, m.kind AS resolved_machine_kind \
+                m.hue AS resolved_machine_hue, m.kind AS resolved_machine_kind";
+    // ALL non-archived sessions are always returned (no cap) so live/working
+    // sessions are never silently truncated. The LIMIT 25 cap applies only to
+    // the archived tail, and only when archived history is requested (the
+    // webui paginates the archive list separately).
+    let db_err = |e: sqlx::Error| {
+        tracing::error!("db error: {e}");
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+    };
+    let non_archived_query = format!(
+        "SELECT {cols} \
          FROM sessions s \
          LEFT JOIN machines m ON m.id = s.machine_uuid \
-         {archived_filter} \
-         ORDER BY s.registered_at DESC LIMIT 25",
+         WHERE s.status != 'archived' \
+         ORDER BY s.registered_at DESC",
     );
-    let rows: Vec<DbSession> =
-        sqlx::query_as(&query).fetch_all(&state.pool).await.map_err(|e| {
-            tracing::error!("db error: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-        })?;
+    let mut rows: Vec<DbSession> =
+        sqlx::query_as(&non_archived_query).fetch_all(&state.pool).await.map_err(db_err)?;
+    if params.include_archived {
+        let archived_query = format!(
+            "SELECT {cols} \
+             FROM sessions s \
+             LEFT JOIN machines m ON m.id = s.machine_uuid \
+             WHERE s.status = 'archived' \
+             ORDER BY s.registered_at DESC LIMIT 25",
+        );
+        let archived: Vec<DbSession> =
+            sqlx::query_as(&archived_query).fetch_all(&state.pool).await.map_err(db_err)?;
+        rows.extend(archived);
+    }
 
     for row in rows {
         if live_ids.contains(&row.id) {
