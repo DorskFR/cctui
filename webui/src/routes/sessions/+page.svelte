@@ -9,7 +9,7 @@
 	import { ApiError } from '$lib/api';
 	import { ws } from '$lib/ws.svelte';
 	import SessionCard from '$lib/components/SessionCard.svelte';
-	import WorkflowGroup from '$lib/components/WorkflowGroup.svelte';
+	import SubagentBadge from '$lib/components/SubagentBadge.svelte';
 	import ConversationDrawer from '$lib/components/ConversationDrawer.svelte';
 	import SpawnModal from '$lib/components/SpawnModal.svelte';
 	import { drafts, LIST_DENSITY } from '$lib/drafts';
@@ -306,23 +306,40 @@
 	// collapsible "Workflow: <name> (<runId>)" header. Plain (Task-tool)
 	// children render as before. Returns, per parent id, the ungrouped children
 	// plus an ordered list of workflow groups.
-	type WfGroup = { runId: string; name: string | null; agents: SessionListItem[] };
+	// A subagent group folded under a parent. Workflow-tool subagents (CCT-225)
+	// carry a `workflow_run_id`; plain (Task-tool) children share the synthetic
+	// "plain" group. Each group renders inline (always expanded) when it has
+	// fewer than 3 agents; larger groups collapse behind a count badge on the
+	// parent row that toggles expand/collapse (CCT-269).
+	type SubGroup = {
+		// Stable key, unique within a parent: "plain" or "wf:<runId>".
+		key: string;
+		// Run id for workflow groups; null for the plain group.
+		runId: string | null;
+		// Tooltip label, e.g. "Workflow: deploy" or "subagents".
+		label: string;
+		agents: SessionListItem[];
+		running: number;
+	};
+	const INLINE_THRESHOLD = 3; // < this → always expanded inline, no badge
 	function metaStr(s: SessionListItem, key: string): string | null {
 		const m = s.metadata as Record<string, unknown> | null;
 		const v = m?.[key];
 		return typeof v === 'string' ? v : null;
 	}
+	const runningCount = (agents: SessionListItem[]) =>
+		agents.filter((a) => a.status !== 'archived' && a.liveness !== 'dead' && !a.hibernated).length;
 	const childGroupsOf = $derived.by(() => {
-		const map = new Map<string, { plain: SessionListItem[]; workflows: WfGroup[] }>();
+		const map = new Map<string, SubGroup[]>();
 		for (const [parentId, kids] of childrenOf) {
 			const plain: SessionListItem[] = [];
-			const byRun = new Map<string, WfGroup>();
+			const byRun = new Map<string, { name: string | null; agents: SessionListItem[] }>();
 			for (const k of kids) {
 				const runId = metaStr(k, 'workflow_run_id');
 				if (runId) {
 					let g = byRun.get(runId);
 					if (!g) {
-						g = { runId, name: metaStr(k, 'workflow_name'), agents: [] };
+						g = { name: metaStr(k, 'workflow_name'), agents: [] };
 						byRun.set(runId, g);
 					}
 					g.agents.push(k);
@@ -330,10 +347,41 @@
 					plain.push(k);
 				}
 			}
-			map.set(parentId, { plain, workflows: [...byRun.values()] });
+			const groups: SubGroup[] = [];
+			if (plain.length > 0) {
+				groups.push({
+					key: 'plain',
+					runId: null,
+					label: 'subagents',
+					agents: plain,
+					running: runningCount(plain)
+				});
+			}
+			for (const [runId, g] of byRun) {
+				groups.push({
+					key: `wf:${runId}`,
+					runId,
+					label: g.name ? `Workflow: ${g.name}` : 'Workflow',
+					agents: g.agents,
+					running: runningCount(g.agents)
+				});
+			}
+			if (groups.length > 0) map.set(parentId, groups);
 		}
 		return map;
 	});
+
+	// Expand/collapse state for collapsible (>=3) subagent groups, keyed by
+	// `${parentId}/${group.key}`. Default collapsed.
+	let expanded = $state(new Set<string>());
+	const groupId = (parentId: string, key: string) => `${parentId}/${key}`;
+	function toggleGroup(parentId: string, key: string) {
+		const id = groupId(parentId, key);
+		const next = new Set(expanded);
+		if (next.has(id)) next.delete(id);
+		else next.add(id);
+		expanded = next;
+	}
 
 	// Classifier buckets (CCT-90), in attention-first display order. Sessions
 	// that want the user's eyes float to the top; empty buckets are dropped.
@@ -493,46 +541,53 @@
 					{g.label} <span class="count">{g.sessions.length}</span>
 				</div>
 				{#each g.sessions as s (s.id)}
-					<SessionCard
-						session={s}
-						compact={dense}
-						pendingCount={pending(s.id)}
-						onopen={(x) => (openSession = x)}
-						selectable={selecting}
-						selected={selected.has(s.id)}
-						onToggleSelect={toggleSelect}
-						swipeable
-						swipeLabel="Archive"
-						onSwipe={swipeArchive}
-					/>
-					{#if (childGroupsOf.get(s.id)?.plain ?? []).length > 0}
-						<!-- Plain (Task-tool) subagents fold under the parent with a
-						     "N× subagents" badge (CCT-250 item 4), reusing the same
-						     collapsible mechanism as workflow groups. -->
-						<WorkflowGroup
-							agents={childGroupsOf.get(s.id)?.plain ?? []}
-							compact={dense}
-							pending={pending}
-							onopen={(x) => (openSession = x)}
-							selecting={selecting}
-							selected={selected}
-							onToggleSelect={toggleSelect}
-							swipeArchive={swipeArchive}
-						/>
-					{/if}
-					{#each childGroupsOf.get(s.id)?.workflows ?? [] as g (g.runId)}
-						<WorkflowGroup
-							runId={g.runId}
-							name={g.name}
-							agents={g.agents}
-							compact={dense}
-							pending={pending}
-							onopen={(x) => (openSession = x)}
-							selecting={selecting}
-							selected={selected}
-							onToggleSelect={toggleSelect}
-							swipeArchive={swipeArchive}
-						/>
+					{@const subGroups = childGroupsOf.get(s.id) ?? []}
+					<!-- Collapsible (>=3) groups surface as count badges at the START
+					     of the parent row (CCT-269); smaller groups render inline below
+					     with no badge. -->
+					<div class="parent-row">
+						{#each subGroups.filter((g) => g.agents.length >= INLINE_THRESHOLD) as g (g.key)}
+							<SubagentBadge
+								count={g.agents.length}
+								running={g.running}
+								open={expanded.has(groupId(s.id, g.key))}
+								label={g.label}
+								ontoggle={() => toggleGroup(s.id, g.key)}
+							/>
+						{/each}
+						<div class="parent-card">
+							<SessionCard
+								session={s}
+								compact={dense}
+								pendingCount={pending(s.id)}
+								onopen={(x) => (openSession = x)}
+								selectable={selecting}
+								selected={selected.has(s.id)}
+								onToggleSelect={toggleSelect}
+								swipeable
+								swipeLabel="Archive"
+								onSwipe={swipeArchive}
+							/>
+						</div>
+					</div>
+					{#each subGroups as g (g.key)}
+						{#if g.agents.length < INLINE_THRESHOLD || expanded.has(groupId(s.id, g.key))}
+							{#each g.agents as a (a.id)}
+								<SessionCard
+									session={a}
+									child
+									compact={dense}
+									pendingCount={pending(a.id)}
+									onopen={(x) => (openSession = x)}
+									selectable={selecting}
+									selected={selected.has(a.id)}
+									onToggleSelect={toggleSelect}
+									swipeable
+									swipeLabel="Archive"
+									onSwipe={swipeArchive}
+								/>
+							{/each}
+						{/if}
 					{/each}
 				{/each}
 			{/each}
@@ -663,6 +718,18 @@
 	}
 	.stack.tight {
 		gap: var(--sp-1);
+	}
+	/* Parent row (CCT-269): leading count badge(s) for collapsible subagent
+	   groups, then the parent card filling the rest of the width. Badges align to
+	   the top of the card so they read as a prefix to the parent's first line. */
+	.parent-row {
+		display: flex;
+		align-items: flex-start;
+		gap: var(--sp-2);
+	}
+	.parent-row .parent-card {
+		flex: 1;
+		min-width: 0;
 	}
 	.loadmore {
 		display: flex;
