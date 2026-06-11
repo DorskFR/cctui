@@ -1,16 +1,21 @@
 import { browser } from '$app/environment';
 
-// Global UI font scale (CCT-250 item 3). The whole design system is rem-based,
-// so scaling the document root font-size scales ALL text — main UI, chat,
-// markdown tables, badges — uniformly. Persisted and applied to <html>.
+// Global UI font scale (CCT-250 item 3, range fixed in CCT-305). The control
+// multiplies ONLY the font-size tokens (--fs-scale, consumed by every --fs-* in
+// variables.css) — NOT the document root font-size. Scaling the root grew every
+// rem-based chrome dimension (button heights, padding, the badges) in lockstep,
+// so bumping the size up ballooned the UI while text "barely grew" relative to
+// it (the CCT-305 regression). Driving --fs-scale instead leaves spacing /
+// control sizes / the px-pinned header fixed and enlarges only text, so the top
+// of the range gives big readable chat/session text rather than a giant UI.
 const KEY = 'cctui_font_scale';
 
 // Discrete scale levels (CCT-297 #11). A continuous slider let the value change
-// on every pixel of drag, reflowing the whole rem-based UI live ("UI seizure")
-// and — since the header hosted the control — sliding the thumb out from under
-// the cursor. Five fixed steps remove the per-pixel churn: one click = one stable
-// relayout. Each level is a multiplier of the 16px root; the design system is
-// rem-based so this scales ALL text uniformly.
+// on every pixel of drag, reflowing the UI live ("UI seizure") and — since the
+// header hosted the control — sliding the thumb out from under the cursor. Five
+// fixed steps remove the per-pixel churn: one click = one stable relayout. Each
+// level is a text-size multiplier (--fs-scale); the top end is deliberately
+// large (1.5×) so "Largest" yields genuinely big, readable text (CCT-305).
 export interface ScaleLevel {
 	id: string;
 	label: string;
@@ -20,8 +25,8 @@ export const SCALE_LEVELS: ScaleLevel[] = [
 	{ id: 'smallest', label: 'Smallest', value: 0.85 },
 	{ id: 'small', label: 'Small', value: 0.925 },
 	{ id: 'normal', label: 'Normal', value: 1 },
-	{ id: 'large', label: 'Large', value: 1.15 },
-	{ id: 'largest', label: 'Largest', value: 1.3 }
+	{ id: 'large', label: 'Large', value: 1.25 },
+	{ id: 'largest', label: 'Largest', value: 1.5 }
 ];
 const DEFAULT_LEVEL = 'normal';
 
@@ -57,9 +62,10 @@ class FontScale {
 	}
 	private apply() {
 		if (!browser) return;
-		// Root stays at 16px nominal; scale via font-size percentage so every
-		// rem downstream tracks it.
-		document.documentElement.style.fontSize = `${levelById(this.levelId).value * 100}%`;
+		// Drive the font-token scale only (CCT-305) — the root font-size stays at
+		// its nominal 16px so rem-based chrome (spacing, control heights, header)
+		// is untouched while every --fs-* token grows with the level.
+		document.documentElement.style.setProperty('--fs-scale', String(levelById(this.levelId).value));
 	}
 	set(id: string) {
 		this.levelId = SCALE_LEVELS.some((l) => l.id === id) ? id : DEFAULT_LEVEL;

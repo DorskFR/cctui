@@ -14,10 +14,11 @@
 html {
 	-webkit-text-size-adjust: 100%;
 	text-size-adjust: 100%;
-	/* The UI font scaler (CCT-265) sets html { font-size } so every rem tracks
-	   it. On small screens a scaled-up rem can push a fixed/min-width child past
-	   the viewport; clip sideways here too (not just on body) so the whole page
-	   never gains a horizontal scrollbar (CCT-279 item 8). */
+	/* The UI font scaler drives --fs-scale (CCT-305), so only --fs-* text tokens
+	   grow — chrome rem dimensions stay fixed. A scaled-up text token can still
+	   push a fixed/min-width child past the viewport on small screens; clip
+	   sideways here too (not just on body) so the whole page never gains a
+	   horizontal scrollbar (CCT-279 item 8). */
 	overflow-x: hidden;
 	max-width: 100%;
 }

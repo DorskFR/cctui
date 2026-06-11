@@ -11,6 +11,7 @@
 		session,
 		child = false,
 		compact: dense = false,
+		grid = false,
 		pendingCount = 0,
 		onopen,
 		selectable = false,
@@ -26,6 +27,11 @@
 		session: SessionListItem;
 		child?: boolean;
 		compact?: boolean;
+		// Grid (card-view) layout (CCT-305): keeps cards uniform — single-line cwd
+		// path (ellipsis, no wrap) and full-height fill — so a row of cards is the
+		// same height with no ragged wrapping. List view leaves this false so the
+		// detailed card keeps wrapping the full path (seeing it whole is the point).
+		grid?: boolean;
 		pendingCount?: number;
 		onopen: (s: SessionListItem) => void;
 		// Search terms to highlight in the match snippet (CCT-187).
@@ -164,6 +170,7 @@
 	class="sc-wrap"
 	class:child
 	class:dense
+	class:grid
 	class:swiping
 	onpointerdown={swipeStart}
 	onpointermove={swipeMove}
@@ -188,6 +195,7 @@
 		class="card card-tap sc stack"
 		class:child
 		class:dense
+		class:grid
 		class:attn={needsInput}
 		class:selectable
 		class:selected
@@ -302,6 +310,31 @@
 	.sc-wrap.child {
 		width: auto;
 		margin-left: var(--sp-4);
+	}
+	/* Grid cards (CCT-305): the wrapper and the card fill the grid cell's full
+	   height so every card in a row matches (the grid stretches the cells), and
+	   the footer pins to the bottom for a uniform silhouette regardless of how
+	   much middle content each card has. */
+	.sc-wrap.grid {
+		height: 100%;
+	}
+	.sc.grid {
+		height: 100%;
+	}
+	.sc.grid .foot {
+		margin-top: auto;
+	}
+	/* Uniform single-line cwd path in grid view — never wrap to a second line
+	   (the source of ragged, uneven-height cards); ellipsis instead. */
+	.sc.grid .path {
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		word-break: normal;
+		min-width: 0;
+	}
+	.sc.grid .dir {
+		min-width: 0;
 	}
 	/* Track the finger with no transition while swiping; ease back (spring) or
 	   off-screen (commit) when released. */

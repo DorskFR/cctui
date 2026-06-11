@@ -21,11 +21,16 @@
 		drafts.set(LIST_DENSITY, dense ? 'compact' : 'normal');
 	});
 
-	// Main-list layout (CCT-297 item 16): 'list' rows (with subagent nesting) or
-	// 'card' — a responsive grid of cards for at-a-glance status, filling the full
-	// screen width (CCT-301 #4). Card view is top-level only (subagents stay
-	// visible in list view / the drawer). Density (compact/detailed) applies to
-	// both views and controls how many cards pack per row in grid view.
+	// Main-list layout × density semantics (CCT-305). Two independent toggles:
+	//   list ⇄ grid (cardView) and compact ⇄ detailed (dense). The 2×2 matrix:
+	//     list  + compact  → one row per session
+	//     list  + detailed → multi-row per session
+	//     grid  + compact  → grid of cards constrained to the list container width
+	//                        (~2 columns), NOT full-bleed
+	//     grid  + detailed → the SAME cards, no column cap → spans the full window
+	//   Card MARKUP is identical across compact/detailed in grid (always the
+	//   detailed card); only the container width / column cap changes. Grid is
+	//   top-level only (subagents stay in list view / the drawer).
 	let cardView = $state(drafts.get(LIST_VIEW) === 'card');
 	$effect(() => {
 		drafts.set(LIST_VIEW, cardView ? 'card' : 'list');
@@ -610,11 +615,16 @@
      out as detailed cards in a responsive grid. Subagents are omitted here (the
      list view + the drawer still show them); the point is at-a-glance status. -->
 {#snippet cardGrid(rows: SessionListItem[])}
-	<div class="grid" class:dense>
+	<!-- Grid (CCT-305): cards always use the detailed markup (compact={false}) so
+	     they're uniform; `dense` (compact) only narrows the grid to the list
+	     container width with a ~2-column cap, vs detailed which goes full-bleed.
+	     `grid` tells the card to keep a uniform single-line cwd path (no wrap). -->
+	<div class="grid" class:narrow={dense}>
 		{#each rows as s (s.id)}
 			<SessionCard
 				session={s}
-				compact={dense}
+				compact={false}
+				grid
 				pendingCount={pending(s.id)}
 				onopen={(x) => (openSession = x)}
 				selectable={selecting}
@@ -945,27 +955,43 @@
 	.stack.tight {
 		gap: var(--sp-1);
 	}
-	/* Card (grid) view (CCT-297 item 16, CCT-301 #4): responsive auto-fill columns
-	   that BREAK OUT of the centered --content-max container (full-bleed) so the
-	   cards fill the whole screen width with as many columns as fit, rather than
-	   being capped at ~2 columns inside the 896px column. `dense` packs more,
-	   smaller cards per row; the detailed (default) cards are larger. */
+	/* Grid (card) view (CCT-305). Two widths driven by the density toggle:
+	   - detailed (default): full-bleed — escape the centered --content-max column
+	     and span the whole viewport with as many uniform cards as fit.
+	   - compact (.narrow): stay inside the normal list container width with a
+	     ~2-column cap, so it reads as a tighter version of the list rather than a
+	     full-window sprawl.
+	   Card MARKUP is identical between the two (always the detailed card); only
+	   the container width and the column template change. `align-items: stretch`
+	   makes every card in a row the same height so rows aren't ragged. */
 	.grid {
 		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(20rem, 1fr));
 		gap: var(--sp-3);
-		align-items: start;
+		align-items: stretch;
 		/* full-bleed: escape the .container max-width and span the viewport */
 		width: 100vw;
 		position: relative;
 		left: 50%;
 		margin-left: -50vw;
 		box-sizing: border-box;
+		grid-template-columns: repeat(auto-fill, minmax(20rem, 1fr));
 		padding-inline: max(var(--sp-4), var(--safe-left)) max(var(--sp-4), var(--safe-right));
 	}
-	.grid.dense {
-		grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+	/* Compact grid: drop the full-bleed break-out and live within the container,
+	   capped at 2 columns. minmax(0,1fr) lets cards shrink on narrow viewports so
+	   nothing overflows; a single column kicks in below ~32rem via the media query. */
+	.grid.narrow {
+		width: auto;
+		left: auto;
+		margin-left: 0;
+		padding-inline: 0;
 		gap: var(--sp-2);
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+	}
+	@media (max-width: 32rem) {
+		.grid.narrow {
+			grid-template-columns: 1fr;
+		}
 	}
 	/* Parent row (CCT-269): the card remains a normal full-width row. Count
 	   badge(s) are absolutely positioned before it so they don't affect row
