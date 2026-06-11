@@ -175,7 +175,7 @@
 <div class="bar row">
 	<h1 class="page-title">Accounts</h1>
 	<div class="spacer"></div>
-	<button class="btn btn-primary btn-sm" onclick={openCreate}>+ New account</button>
+	<button class="btn-control btn-primary" onclick={openCreate}>+ New account</button>
 </div>
 
 <p class="hint">
@@ -198,6 +198,7 @@
 					<th class="col-prov">Provider</th>
 					<th class="col-usage" title="Subscription usage from the provider's free OAuth usage API — 5h session + 7d weekly window utilization (Claude only)">Usage</th>
 						<th class="col-usage">Requests</th>
+					<th class="col-usage">Tokens</th>
 					<th class="col-usage" title="Estimated from token usage — subscription accounts aren't metered per token">Cost (est.)</th>
 					<th class="col-used">Last used</th>
 					<th class="col-created">Created</th>
@@ -207,15 +208,16 @@
 			<tbody>
 				{#each rows as a (a.id)}
 					<tr>
-						<td class="col-name"><span class="name">{a.name}</span></td>
-						{#if isAdmin}<td class="col-owner faint">{a.user_name ?? '—'}</td>{/if}
-						<td class="col-prov"><span class="badge">{providerLabel(a.provider)}</span></td>
-						<td class="col-usage"><UsageChip id={a.id} provider={a.provider} /></td>
-							<td class="col-usage faint">{compact(a.request_count)}</td>
-						<td class="col-usage faint" title={`${compact(a.total_tokens)} tokens`}>{usd(a.est_cost_usd)}</td>
-						<td class="col-used faint">{relativeTime(a.last_used_at)}</td>
-						<td class="col-created faint">{dateOnly(a.created_at)}</td>
-						<td class="col-actions">
+						<td class="col-name" data-label="Name"><span class="name">{a.name}</span></td>
+						{#if isAdmin}<td class="col-owner faint" data-label="Owner">{a.user_name ?? '—'}</td>{/if}
+						<td class="col-prov" data-label="Provider"><span class="badge">{providerLabel(a.provider)}</span></td>
+						<td class="col-usage" data-label="Usage"><UsageChip id={a.id} provider={a.provider} /></td>
+							<td class="col-usage faint" data-label="Requests">{compact(a.request_count)}</td>
+						<td class="col-usage faint" data-label="Tokens">{compact(a.total_tokens)}</td>
+						<td class="col-usage faint" data-label="Cost (est.)">{usd(a.est_cost_usd)}</td>
+						<td class="col-used faint" data-label="Last used">{relativeTime(a.last_used_at)}</td>
+						<td class="col-created faint" data-label="Created">{dateOnly(a.created_at)}</td>
+						<td class="col-actions" data-label="Actions">
 							<div class="row acts">
 								<button class="btn btn-sm" onclick={() => openRename(a)}>Rename</button>
 								<button class="btn btn-sm btn-danger" onclick={() => remove(a)}>Delete</button>
@@ -464,9 +466,76 @@
 	.adv .fld {
 		margin-top: var(--sp-2);
 	}
-	@media (max-width: 720px) {
-		.col-created,
-		.col-usage {
+	/* Mobile (CCT-313): the wide table overflowed the viewport horizontally yet
+	   each account was a single cramped row. Below 640px the table reflows into
+	   one horizontal card per account — the name is the card title, every other
+	   field becomes a labelled chip that wraps across the card, and actions sit on
+	   their own row. No horizontal scroll, and Usage/Tokens/Created stay visible
+	   (they were previously hidden) so there's room to surface per-account stats. */
+	@media (max-width: 639px) {
+		.table-card {
+			padding: var(--sp-2);
+			overflow-x: visible;
+			background: transparent;
+			border: none;
+		}
+		table.disp {
+			min-width: 0;
+			display: block;
+		}
+		table.disp thead {
+			/* visually hidden but kept for a11y */
+			position: absolute;
+			width: 1px;
+			height: 1px;
+			overflow: hidden;
+			clip: rect(0 0 0 0);
+			clip-path: inset(50%);
+		}
+		table.disp tbody {
+			display: flex;
+			flex-direction: column;
+			gap: var(--sp-2);
+		}
+		table.disp tr {
+			display: flex;
+			flex-wrap: wrap;
+			align-items: baseline;
+			gap: var(--sp-1) var(--sp-4);
+			background: var(--bg-elevated);
+			border: 1px solid var(--border);
+			border-radius: var(--r-lg);
+			padding: var(--sp-3);
+		}
+		table.disp td {
+			border: none;
+			padding: 0;
+			display: inline-flex;
+			align-items: baseline;
+			gap: var(--sp-1);
+		}
+		/* Field label chip derived from the column header. */
+		table.disp td::before {
+			content: attr(data-label);
+			color: var(--text-muted);
+			font-size: var(--fs-xs);
+			text-transform: uppercase;
+			letter-spacing: 0.04em;
+		}
+		/* Name is the card title — full width, larger, no label. */
+		table.disp td.col-name {
+			flex: 0 0 100%;
+			font-size: var(--fs-md);
+		}
+		table.disp td.col-name::before {
+			display: none;
+		}
+		/* Actions span their own bottom row. */
+		table.disp td.col-actions {
+			flex: 0 0 100%;
+			margin-top: var(--sp-1);
+		}
+		table.disp td.col-actions::before {
 			display: none;
 		}
 	}

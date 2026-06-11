@@ -540,7 +540,7 @@
 
 <div class="bar row">
 	<h1 class="page-title">Sessions</h1>
-	<button class="btn btn-sm search-toggle" aria-label="Search chats" onclick={openSearch}>
+	<button class="btn-control btn-control-square search-toggle" aria-label="Search chats" onclick={openSearch}>
 		<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
 			<circle cx="11" cy="11" r="7" />
 			<path d="m21 21-4.3-4.3" />
@@ -587,7 +587,7 @@
 	     overflowed the toolbar. A native <select> overlaid transparently on the
 	     trigger button (same pattern as the header theme/font pickers) gives the
 	     platform popup with zero outside-click bookkeeping. -->
-	<div class="view-pick btn btn-sm" title="View: {viewLabel}">
+	<div class="view-pick btn-control" title="View: {viewLabel}">
 		<span class="view-pick-icon" aria-hidden="true">{cardView ? '▦' : '☰'}</span>
 		<span class="view-pick-label">{viewLabel}</span>
 		<span class="view-pick-caret" aria-hidden="true">▾</span>
@@ -603,14 +603,14 @@
 	</div>
 	{#if !searching}
 		{#if selecting}
-			<button class="btn btn-sm" onclick={exitSelect}>Cancel</button>
+			<button class="btn-control" onclick={exitSelect}>Cancel</button>
 		{:else}
-			<button class="btn btn-sm" title="Select multiple to archive" onclick={() => (selecting = true)}
+			<button class="btn-control" title="Select multiple to archive" onclick={() => (selecting = true)}
 				>☑ Select</button
 			>
 		{/if}
 	{/if}
-	<button class="btn btn-primary btn-sm" onclick={() => (showSpawn = true)}>+ New</button>
+	<button class="btn-control btn-primary" onclick={() => (showSpawn = true)}>+ New</button>
 </div>
 
 {#if selecting && !searching}
@@ -860,7 +860,10 @@
 		top: calc(var(--header-h) + var(--safe-top));
 		z-index: 6;
 		margin-bottom: var(--sp-4);
-		padding: var(--sp-2) 0;
+		/* CCT-314: only pad the bottom. The earlier symmetric `var(--sp-2) 0`
+		   top-padding pushed the title ~8px lower than every other page's header
+		   (which have no sticky top padding), so Sessions looked misaligned. */
+		padding: 0 0 var(--sp-2);
 		gap: var(--sp-2);
 		/* CCT-250 item 1: center all toolbar controls on one baseline so the
 		   magnifier button lines up with the other buttons (was `stretch`,
@@ -1074,8 +1077,12 @@
 			grid-template-columns: 1fr;
 			gap: var(--sp-2);
 		}
-		.grid:not(.narrow) :global(.sc.grid) {
-			min-height: 48vh;
+		/* CCT-312: the old `min-height: 48vh` forced every detailed mobile card to
+		   half the screen even when sparse, so cards read as "big and empty". Let
+		   them size to their content (still floored by the base 11rem) and let the
+		   message preview fill/cap the height instead (see `.last` in SessionCard). */
+		.grid:not(.narrow) :global(.sc.grid .last) {
+			max-height: 42vh;
 		}
 		.grid.narrow {
 			grid-template-columns: repeat(2, minmax(0, 1fr));

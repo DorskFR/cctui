@@ -14,19 +14,21 @@ const KEY = 'cctui_font_scale';
 // on every pixel of drag, reflowing the UI live ("UI seizure") and — since the
 // header hosted the control — sliding the thumb out from under the cursor. Five
 // fixed steps remove the per-pixel churn: one click = one stable relayout. Each
-// level is a text-size multiplier (--fs-scale); the top end is deliberately
-// large (1.5×) so "Largest" yields genuinely big, readable text (CCT-305).
+// level is a text-size multiplier (--fs-scale). The range is deliberately wide
+// (CCT-311): "Smallest" drops well below 1× for dense scanning and "Largest"
+// jumps to 2× for genuinely big text — the earlier 0.85–1.5× span left both
+// ends too close to Normal.
 export interface ScaleLevel {
 	id: string;
 	label: string;
 	value: number;
 }
 export const SCALE_LEVELS: ScaleLevel[] = [
-	{ id: 'smallest', label: 'Smallest', value: 0.85 },
-	{ id: 'small', label: 'Small', value: 0.925 },
+	{ id: 'smallest', label: 'Smallest', value: 0.7 },
+	{ id: 'small', label: 'Small', value: 0.85 },
 	{ id: 'normal', label: 'Normal', value: 1 },
-	{ id: 'large', label: 'Large', value: 1.25 },
-	{ id: 'largest', label: 'Largest', value: 1.5 }
+	{ id: 'large', label: 'Large', value: 1.45 },
+	{ id: 'largest', label: 'Largest', value: 2 }
 ];
 const DEFAULT_LEVEL = 'normal';
 

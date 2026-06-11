@@ -106,7 +106,7 @@
 <div class="bar row">
 	<h1 class="page-title">Dispatchers</h1>
 	<div class="spacer"></div>
-	<button class="btn btn-primary btn-sm" onclick={openCreate}>+ New dispatcher</button>
+	<button class="btn-control btn-primary" onclick={openCreate}>+ New dispatcher</button>
 </div>
 
 <p class="hint">

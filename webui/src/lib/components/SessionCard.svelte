@@ -328,17 +328,21 @@
 	.sc.grid .foot {
 		margin-top: auto;
 	}
-	/* Card view shows more of the latest message — clamp the last-message preview
-	   to 3 lines (overriding the single-line `truncate` it carries) instead of one
-	   ellipsised line (CCT-305 follow-up). The search-match snippet already clamps
-	   to 3 lines via `.match`. */
+	/* Card view: let the latest message FILL the card's free vertical space, then
+	   clip at the bottom (CCT-312). The old fixed 3-line clamp left tall cards
+	   mostly empty — a short preview cut at ~3 lines with a wall of blank space
+	   down to the pinned footer. Instead `.last` flex-grows into the gap between
+	   the dir row and the footer; a bottom fade mask softens the cut edge when the
+	   text actually fills (a short message leaves the lower region empty, so the
+	   mask fades nothing visible). */
 	.sc.grid .last {
-		display: -webkit-box;
-		-webkit-line-clamp: 3;
-		line-clamp: 3;
-		-webkit-box-orient: vertical;
+		flex: 1 1 auto;
+		min-height: 0;
+		display: block;
 		white-space: normal;
 		overflow: hidden;
+		-webkit-mask-image: linear-gradient(180deg, #000 calc(100% - 1.4em), transparent);
+		mask-image: linear-gradient(180deg, #000 calc(100% - 1.4em), transparent);
 	}
 	/* Uniform single-line cwd path in grid view — never wrap to a second line
 	   (the source of ragged, uneven-height cards); ellipsis instead. */

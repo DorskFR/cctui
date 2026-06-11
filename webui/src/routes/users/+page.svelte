@@ -82,7 +82,7 @@
 <div class="bar row">
 	<h1 class="page-title">Users</h1>
 	<div class="spacer"></div>
-	<button class="btn btn-primary btn-sm" onclick={createUser}>+ New user</button>
+	<button class="btn-control btn-primary" onclick={createUser}>+ New user</button>
 </div>
 
 <!-- Who am I (CCT-251): role + identity + a non-secret preview of the stored

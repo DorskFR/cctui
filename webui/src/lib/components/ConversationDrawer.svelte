@@ -41,6 +41,20 @@
 	const id = $derived(session.id);
 	const archived = $derived(session.status === 'archived');
 	const needsInput = $derived(session.attention === 'needs_input' && !archived);
+	// Liveness dot next to the title (CCT-311), mirroring SessionCard: the colored
+	// dot already conveys active/stale/dead/hibernated, so the redundant "active"
+	// status badge below is dropped — only the meaningful lifecycle states (new,
+	// archived) keep a badge.
+	const livenessClass = $derived(
+		session.hibernated
+			? 'dot-hibernated'
+			: session.liveness === 'active'
+				? 'dot-active'
+				: session.liveness === 'stale'
+					? 'dot-stale'
+					: 'dot-dead'
+	);
+	const showStatusBadge = $derived(session.status === 'new' || session.status === 'archived');
 	const qc = useQueryClient();
 
 	// ── Message-type tag filter (CCT-250 item 2) ──────────────────────────────
@@ -1057,6 +1071,14 @@
 	// export) collapse into a "⋯" flyout. Kept open while renaming so the ✓ save
 	// button is reachable.
 	let moreOpen = $state(false);
+	// Mobile chat controls (CCT-311): the filter / format / auto-approve groups
+	// don't fit on one mobile row, so they collapse behind three text buttons
+	// (Filters · Format · Auto-Approve) that each open a popover holding the same
+	// controls. null = no panel open. Desktop ignores this and shows them inline.
+	let mobilePanel = $state<'filters' | 'format' | 'auto' | null>(null);
+	function togglePanel(p: 'filters' | 'format' | 'auto') {
+		mobilePanel = mobilePanel === p ? null : p;
+	}
 	async function doRename() {
 		const n = newName.trim();
 		renaming = false;
@@ -1257,6 +1279,7 @@
 		<div class="hrow">
 			<button class="tapbtn back" aria-label="Back" onclick={onclose}>‹</button>
 			<AdapterIcon adapter={session.adapter_id} size={20} />
+			<span class="dot {livenessClass}" title={session.hibernated ? 'hibernated' : session.liveness}></span>
 			<div class="dtitle">
 				{#if renaming}
 					<input
@@ -1368,7 +1391,7 @@
 			</button>
 		</div>
 		<div class="hmeta row row-wrap">
-			<span class="badge {statusBadgeClass(session.status)}">{session.status}</span>
+			{#if showStatusBadge}<span class="badge {statusBadgeClass(session.status)}">{session.status}</span>{/if}
 			{#if isCodexSession && !archived}
 				{#if modelEditing}
 					<span class="chip row model-editor">
@@ -1405,11 +1428,38 @@
 		</div>
 	</div>
 
-	<div class="toolbar">
+	<div class="toolbar" class:panel-active={mobilePanel !== null}>
+		<!-- Mobile (CCT-311): collapse the three control groups into a single row
+		     of text buttons that each open a popover. Hidden on desktop, where the
+		     groups render inline below. -->
+		<div class="mobile-tabs" role="group" aria-label="Chat controls">
+			<button
+				type="button"
+				class="mtab"
+				class:active={mobilePanel === 'filters'}
+				aria-expanded={mobilePanel === 'filters'}
+				onclick={() => togglePanel('filters')}>Filters</button
+			>
+			<button
+				type="button"
+				class="mtab"
+				class:active={mobilePanel === 'format'}
+				aria-expanded={mobilePanel === 'format'}
+				onclick={() => togglePanel('format')}>Format</button
+			>
+			<button
+				type="button"
+				class="mtab"
+				class:active={mobilePanel === 'auto'}
+				class:on={session.auto_approve}
+				aria-expanded={mobilePanel === 'auto'}
+				onclick={() => togglePanel('auto')}>Auto-Approve</button
+			>
+		</div>
 		<!-- Message-type filters: click a tag to cycle off → include → exclude.
 		     Active (include) tags wear their message-badge color; excluded tags
 		     show a strike. (CCT-250 item 2) -->
-		<div class="tagbar row row-wrap" role="group" aria-label="Message type filter">
+		<div class="tagbar row row-wrap" class:panel-open={mobilePanel === 'filters'} role="group" aria-label="Message type filter">
 			{#each MSG_TYPES as t (t.id)}
 				<button
 					type="button"
@@ -1425,13 +1475,13 @@
 			{/each}
 		</div>
 		<!-- Formatting toggles: gray when off, colored when on. -->
-		<div class="fmtbar row row-wrap" role="group" aria-label="Formatting">
+		<div class="fmtbar row row-wrap" class:panel-open={mobilePanel === 'format'} role="group" aria-label="Formatting">
 			<button type="button" class="fmt" class:on={view.prettyJson} aria-pressed={view.prettyJson} onclick={() => (view.prettyJson = !view.prettyJson)}>JSON</button>
 			<button type="button" class="fmt" class:on={view.prettyDiff} aria-pressed={view.prettyDiff} onclick={() => (view.prettyDiff = !view.prettyDiff)}>Diff</button>
 			<button type="button" class="fmt" class:on={view.prettyTables} aria-pressed={view.prettyTables} onclick={() => (view.prettyTables = !view.prettyTables)} title="Render markdown tables as tables">Tables</button>
 		</div>
 		<!-- Behavior toggle: distinct from filters/formatting. -->
-		<div class="behbar row row-wrap" role="group" aria-label="Behavior">
+		<div class="behbar row row-wrap" class:panel-open={mobilePanel === 'auto'} role="group" aria-label="Behavior">
 			<button
 				type="button"
 				class="beh"
@@ -2116,6 +2166,71 @@
 		color: var(--warn);
 		border-color: color-mix(in srgb, var(--warn) 55%, transparent);
 		background: color-mix(in srgb, var(--warn) 14%, transparent);
+	}
+	/* Mobile-tab triggers (CCT-311): hidden on desktop where the groups inline. */
+	.mobile-tabs {
+		display: none;
+	}
+	.mtab {
+		flex: 1;
+		padding: 0.3rem var(--sp-2);
+		border-radius: var(--r-sm);
+		font-size: var(--fs-sm);
+		font-weight: var(--fw-medium);
+		white-space: nowrap;
+		background: var(--bg-elevated-2);
+		color: var(--text-muted);
+		border: 1px solid var(--border);
+		cursor: pointer;
+	}
+	.mtab.active {
+		color: var(--accent);
+		border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+		background: color-mix(in srgb, var(--accent) 14%, transparent);
+	}
+	/* Auto-Approve trigger glows amber while the behavior is on, even closed. */
+	.mtab.on {
+		color: var(--warn);
+		border-color: color-mix(in srgb, var(--warn) 55%, transparent);
+		background: color-mix(in srgb, var(--warn) 14%, transparent);
+	}
+	@media (max-width: 959px) {
+		.toolbar {
+			position: relative;
+			/* The popovers float above the message log; keep the bar itself a single
+			   tidy row of triggers and let panels overlay rather than push content. */
+			overflow: visible;
+		}
+		.mobile-tabs {
+			display: flex;
+			gap: var(--sp-2);
+			width: 100%;
+		}
+		/* Collapse the inline groups; each reappears as an absolute popover when
+		   its trigger is active. */
+		.tagbar,
+		.fmtbar,
+		.behbar {
+			display: none;
+		}
+		.tagbar.panel-open,
+		.fmtbar.panel-open,
+		.behbar.panel-open {
+			display: flex;
+			position: absolute;
+			top: calc(100% + var(--sp-1));
+			left: 0;
+			right: 0;
+			z-index: 5;
+			padding: var(--sp-2);
+			/* Drop the desktop divider that separated fmt/beh from the filters. */
+			padding-left: var(--sp-2);
+			border-left: none;
+			background: var(--bg-elevated-2);
+			border: 1px solid var(--border-strong);
+			border-radius: var(--r-md);
+			box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+		}
 	}
 	.tg {
 		display: inline-flex;
