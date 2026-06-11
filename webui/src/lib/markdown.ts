@@ -172,6 +172,46 @@ function codeBlockHtml(body: string, langAttr: string): string {
 
 // ── Markdown ────────────────────────────────────────────────────────────────
 
+// Sentinels for the autolink protect/restore pass — control chars that never
+// survive into source text (stripAnsi runs once up front in renderMarkdown) and
+// are fully balanced within `autolinkUrls`, so they never leak into the output.
+const AUTO_L = '\x0E';
+const AUTO_R = '\x0F';
+
+// Turn bare http(s) URLs into clickable links. Runs LAST in inlineMd, after the
+// `[text](url)` and inline-code passes, so it can protect already-linked URLs
+// and code spans from being re-linked. Operates on already-escaped text, where a
+// URL's `&` shows as `&amp;`: that entity is allowed mid-URL (query strings),
+// while the other entities (`&lt;`/`&gt;`/`&quot;`) terminate the match so a
+// trailing escaped delimiter isn't swallowed into the href.
+function autolinkUrls(s: string): string {
+	const saved: string[] = [];
+	const stash = (html: string) => `${AUTO_L}${saved.push(html) - 1}${AUTO_R}`;
+	// Keep existing anchors and inline-code spans out of the autolinker.
+	s = s.replace(/<a\b[^>]*>[\s\S]*?<\/a>|<code\b[^>]*>[\s\S]*?<\/code>/g, stash);
+	s = s.replace(/\bhttps?:\/\/(?:&amp;|[^\s&<>"])+/g, (raw) => {
+		let url = raw;
+		let trail = '';
+		// Trailing sentence punctuation usually isn't part of the URL.
+		const punct = url.match(/[.,;:!?]+$/);
+		if (punct) {
+			trail = punct[0];
+			url = url.slice(0, -trail.length);
+		}
+		// A closing bracket with no matching opener inside the URL is sentence
+		// punctuation too (e.g. "(see https://x.com)"); keep balanced ones
+		// (e.g. Wikipedia "..._(disambiguation)").
+		const close = url.slice(-1);
+		if ((close === ')' || close === ']') && !url.includes(close === ')' ? '(' : '[')) {
+			trail = close + trail;
+			url = url.slice(0, -1);
+		}
+		if (!url) return raw;
+		return `<a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>${trail}`;
+	});
+	return s.replace(new RegExp(`${AUTO_L}(\\d+)${AUTO_R}`, 'g'), (_m, i) => saved[Number(i)]);
+}
+
 // Inline markdown passes (code, bold, italic, links) shared between the main
 // body render and table-cell rendering. Operates on already-escaped text.
 function inlineMd(s: string): string {
@@ -186,6 +226,8 @@ function inlineMd(s: string): string {
 		/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
 		'<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>'
 	);
+	// bare URLs -> links (after the markdown-link pass so they aren't double-linked)
+	s = autolinkUrls(s);
 	return s;
 }
 
