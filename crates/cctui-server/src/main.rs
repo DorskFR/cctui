@@ -97,6 +97,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/sessions/unpin", post(routes::admin::unpin_sessions))
         .route("/sessions", get(routes::admin::list_sessions))
         .route("/sessions/stats", get(routes::admin::session_stats))
+        .route("/sessions/stats/tokens", get(routes::admin::session_token_stats))
         .route("/sessions/search", get(routes::admin::search_sessions))
         .route("/sessions/recent-dirs", get(routes::admin::recent_dirs))
         .route("/sessions/{id}", get(routes::admin::get_session))

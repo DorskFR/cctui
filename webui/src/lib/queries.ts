@@ -3,6 +3,7 @@ import { toStore } from 'svelte/store';
 import { api } from './api';
 import type { SessionListResponse } from '@bindings/SessionListResponse';
 import type { SessionStats } from '@bindings/SessionStats';
+import type { TokenUsageWindows } from '@bindings/TokenUsageWindows';
 import type { SessionListItem } from '@bindings/SessionListItem';
 import type { AgentEvent } from '@bindings/AgentEvent';
 import type { SpawnRequest } from '@bindings/SpawnRequest';
@@ -99,6 +100,7 @@ export const qk = {
 	version: ['version'] as const,
 	sessions: (archived: boolean) => ['sessions', { archived }] as const,
 	sessionStats: ['session-stats'] as const,
+	tokenStats: ['token-stats'] as const,
 	// NOT under ['sessions'] on purpose: list invalidations (`['sessions']`,
 	// bumped ~every 2s while streaming) must NOT refetch the conversation —
 	// a refetched history that overlaps the live ws events produced duplicate
@@ -121,6 +123,10 @@ export const endpoints = {
 	/** Aggregate session counts for the Overview — correct past the list's
 	 * 25-row display cap (the list-derived counts are not). */
 	sessionStats: () => api.get<SessionStats>('/sessions/stats'),
+	/** Token totals across rolling windows for the Overview. `tzOffset` is
+	 * `Date.getTimezoneOffset()` — only used to anchor "today" to local midnight. */
+	tokenStats: (tzOffset: number) =>
+		api.get<TokenUsageWindows>('/sessions/stats/tokens', { tz_offset: tzOffset }),
 	// Full-transcript substring search (CCT-184). `includeArchived` sets scope
 	// (live-only vs all); an empty `q` with `includeArchived` browses the
 	// archive. Offset-paginated.
@@ -247,6 +253,14 @@ export const useSessionStats = () =>
 	createQuery({
 		queryKey: qk.sessionStats,
 		queryFn: endpoints.sessionStats,
+		refetchInterval: 15_000,
+	});
+
+export const useTokenStats = () =>
+	createQuery({
+		queryKey: qk.tokenStats,
+		// Resolve the offset per fetch so it stays correct across a DST change.
+		queryFn: () => endpoints.tokenStats(new Date().getTimezoneOffset()),
 		refetchInterval: 15_000,
 	});
 

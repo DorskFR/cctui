@@ -3,11 +3,12 @@ use std::collections::HashSet;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use serde::Deserialize;
 
 use cctui_proto::api::{
     ApiError, MessageRequest, RenameRequest, SessionListItem, SessionListResponse, SessionStats,
+    TokenUsageWindows, WindowTokenUsage,
 };
 use cctui_proto::classifier::{Bucket, ClassifyInput, PrStatus, classify};
 use cctui_proto::models::{Attention, Liveness, SessionStatus};
@@ -372,6 +373,117 @@ pub async fn session_stats(
     Ok(Json(SessionStats { total, live, needs_input, archived }))
 }
 
+/// Query params for `GET /sessions/stats/tokens`. `tz_offset` is the caller's
+/// `Date.getTimezoneOffset()` (minutes; positive west of UTC), used only to
+/// anchor the calendar "today" window to local midnight. Defaults to UTC.
+#[derive(Debug, Default, Deserialize)]
+pub struct TokenStatsParams {
+    #[serde(default)]
+    pub tz_offset: i32,
+}
+
+/// UTC instant of the most recent local midnight, given the caller's
+/// `Date.getTimezoneOffset()` value. JS reports local = UTC − offset, so the
+/// UTC instant of a local wall-clock time L is `L + offset`.
+fn day_start_for_offset(now: DateTime<Utc>, tz_offset_minutes: i32) -> DateTime<Utc> {
+    let offset = Duration::minutes(i64::from(tz_offset_minutes));
+    let local_now = now - offset;
+    // Truncate the local wall-clock time to midnight, then map back to UTC.
+    let local_midnight =
+        local_now.date_naive().and_hms_opt(0, 0, 0).unwrap_or(local_now.naive_utc());
+    DateTime::<Utc>::from_naive_utc_and_offset(local_midnight, Utc) + offset
+}
+
+/// `GET /sessions/stats/tokens` — token totals across rolling time windows for
+/// the Overview. One scan of `session_token_usage` with per-window conditional
+/// aggregates. Each window reports the same three figures the session card
+/// shows (`↑input ↓output ⚡cache_read`). Global, like `session_stats`.
+pub async fn session_token_stats(
+    State(state): State<AppState>,
+    Query(params): Query<TokenStatsParams>,
+) -> Result<Json<TokenUsageWindows>, (StatusCode, Json<ApiError>)> {
+    let now = Utc::now();
+    let hour = now - Duration::hours(1);
+    let today = day_start_for_offset(now, params.tz_offset);
+    let day = now - Duration::hours(24);
+    let week = now - Duration::days(7);
+    let month = now - Duration::days(30);
+
+    // 15 conditional sums (5 windows × 3 metrics) in one pass. COALESCE keeps
+    // every column a non-null bigint even when no rows match the window.
+    type Row = (i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64);
+    let r: Row = sqlx::query_as(
+        "SELECT \
+            COALESCE(SUM(input_tokens)       FILTER (WHERE created_at >= $1), 0)::bigint, \
+            COALESCE(SUM(output_tokens)      FILTER (WHERE created_at >= $1), 0)::bigint, \
+            COALESCE(SUM(cache_read_tokens)  FILTER (WHERE created_at >= $1), 0)::bigint, \
+            COALESCE(SUM(input_tokens)       FILTER (WHERE created_at >= $2), 0)::bigint, \
+            COALESCE(SUM(output_tokens)      FILTER (WHERE created_at >= $2), 0)::bigint, \
+            COALESCE(SUM(cache_read_tokens)  FILTER (WHERE created_at >= $2), 0)::bigint, \
+            COALESCE(SUM(input_tokens)       FILTER (WHERE created_at >= $3), 0)::bigint, \
+            COALESCE(SUM(output_tokens)      FILTER (WHERE created_at >= $3), 0)::bigint, \
+            COALESCE(SUM(cache_read_tokens)  FILTER (WHERE created_at >= $3), 0)::bigint, \
+            COALESCE(SUM(input_tokens)       FILTER (WHERE created_at >= $4), 0)::bigint, \
+            COALESCE(SUM(output_tokens)      FILTER (WHERE created_at >= $4), 0)::bigint, \
+            COALESCE(SUM(cache_read_tokens)  FILTER (WHERE created_at >= $4), 0)::bigint, \
+            COALESCE(SUM(input_tokens)       FILTER (WHERE created_at >= $5), 0)::bigint, \
+            COALESCE(SUM(output_tokens)      FILTER (WHERE created_at >= $5), 0)::bigint, \
+            COALESCE(SUM(cache_read_tokens)  FILTER (WHERE created_at >= $5), 0)::bigint \
+         FROM session_token_usage \
+         WHERE created_at >= $5",
+    )
+    .bind(hour)
+    .bind(today)
+    .bind(day)
+    .bind(week)
+    .bind(month)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("db error (token stats): {e}");
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+    })?;
+
+    let cast = |v: i64| u64::try_from(v).unwrap_or(0);
+    let win = |i: usize, o: usize, c: usize, t: &Row| WindowTokenUsage {
+        input: cast(field(t, i)),
+        output: cast(field(t, o)),
+        cache_read: cast(field(t, c)),
+    };
+    Ok(Json(TokenUsageWindows {
+        hour: win(0, 1, 2, &r),
+        today: win(3, 4, 5, &r),
+        day: win(6, 7, 8, &r),
+        week: win(9, 10, 11, &r),
+        month: win(12, 13, 14, &r),
+    }))
+}
+
+/// Index a 15-tuple positionally (the `query_as` row above). Keeps the window
+/// construction terse without a 15-field named struct.
+fn field(
+    t: &(i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64),
+    i: usize,
+) -> i64 {
+    match i {
+        0 => t.0,
+        1 => t.1,
+        2 => t.2,
+        3 => t.3,
+        4 => t.4,
+        5 => t.5,
+        6 => t.6,
+        7 => t.7,
+        8 => t.8,
+        9 => t.9,
+        10 => t.10,
+        11 => t.11,
+        12 => t.12,
+        13 => t.13,
+        _ => t.14,
+    }
+}
+
 /// Shared enrichment for both the sessions list and search: resolve machine
 /// names, aggregate token usage, attach last-message text, apply classifier
 /// signals + display metadata + the in-memory auto-approve flag, then sort
@@ -613,9 +725,7 @@ async fn enrich_and_sort(
     // registration time when a session has no messages yet.
     with_ts.sort_by(|a, b| {
         let key = |s: &SessionListItem, reg: DateTime<Utc>| s.last_message_at.unwrap_or(reg);
-        b.1.pinned
-            .cmp(&a.1.pinned)
-            .then_with(|| key(&b.1, b.0).cmp(&key(&a.1, a.0)))
+        b.1.pinned.cmp(&a.1.pinned).then_with(|| key(&b.1, b.0).cmp(&key(&a.1, a.0)))
     });
     Ok(with_ts.into_iter().map(|(_, s)| s).collect())
 }
@@ -1325,10 +1435,7 @@ async fn unpin_one(state: &AppState, session_id: &str) -> Result<(), sqlx::Error
 
 /// `POST /api/v1/sessions/pin` — pin many sessions in one request. Mirrors the
 /// batch archive route; per-id failures are logged but don't abort the batch.
-pub async fn pin_sessions(
-    State(state): State<AppState>,
-    Json(req): Json<BatchIds>,
-) -> StatusCode {
+pub async fn pin_sessions(State(state): State<AppState>, Json(req): Json<BatchIds>) -> StatusCode {
     let mut ok = 0usize;
     for id in &req.ids {
         match pin_one(&state, id).await {
@@ -1424,8 +1531,10 @@ fn normalize_last_message(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        attention_from_bucket, bucket_from_signals, derive_liveness, normalize_last_message,
+        attention_from_bucket, bucket_from_signals, day_start_for_offset, derive_liveness,
+        normalize_last_message,
     };
+    use chrono::{DateTime, TimeZone};
 
     fn attention_from_signals(
         tempo: Option<&str>,
@@ -1516,6 +1625,35 @@ mod tests {
         let out = normalize_last_message(&raw);
         assert_eq!(out.chars().count(), 200);
         assert!(!out.ends_with('…'));
+    }
+
+    #[test]
+    fn day_start_utc_when_no_offset() {
+        // 2026-06-11T09:30Z with offset 0 → midnight the same UTC day.
+        let now = Utc.with_ymd_and_hms(2026, 6, 11, 9, 30, 0).unwrap();
+        let start = day_start_for_offset(now, 0);
+        assert_eq!(start, Utc.with_ymd_and_hms(2026, 6, 11, 0, 0, 0).unwrap());
+    }
+
+    #[test]
+    fn day_start_uses_local_midnight_west_of_utc() {
+        // tz_offset +480 (UTC−8). At 2026-06-11T05:00Z it's still 2026-06-10
+        // 21:00 locally, so "today" started at 2026-06-10T08:00Z (local midnight).
+        let now = Utc.with_ymd_and_hms(2026, 6, 11, 5, 0, 0).unwrap();
+        let start = day_start_for_offset(now, 480);
+        assert_eq!(start, Utc.with_ymd_and_hms(2026, 6, 10, 8, 0, 0).unwrap());
+    }
+
+    #[test]
+    fn day_start_uses_local_midnight_east_of_utc() {
+        // tz_offset −120 (UTC+2, Europe/Paris summer). At 2026-06-11T01:00Z it's
+        // already 03:00 on the 11th locally, so local midnight was 2026-06-10T22:00Z.
+        let now = Utc.with_ymd_and_hms(2026, 6, 11, 1, 0, 0).unwrap();
+        let start = day_start_for_offset(now, -120);
+        assert_eq!(start, Utc.with_ymd_and_hms(2026, 6, 10, 22, 0, 0).unwrap());
+        // Sanity: the boundary is in the past relative to `now`.
+        let _: DateTime<Utc> = start;
+        assert!(start < now);
     }
 
     #[test]

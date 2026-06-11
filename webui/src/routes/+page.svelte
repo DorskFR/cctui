@@ -1,12 +1,36 @@
 <script lang="ts">
-	import { useUsers, useSessionStats } from '$lib/queries';
+	import { useUsers, useSessionStats, useTokenStats } from '$lib/queries';
 	import { apiOrigin } from '$lib/config';
 	import { toasts } from '$lib/toast.svelte';
+	import TokenUsage from '$lib/components/TokenUsage.svelte';
+	import type { WindowTokenUsage } from '@bindings/WindowTokenUsage';
+	import type { TokenUsage as TokenUsageT } from '@bindings/TokenUsage';
 
 	const users = useUsers();
 	// Aggregate counts from the server, not the capped session list — the list
 	// tops out at 25 rows so counting it client-side undercounts (CCT).
 	const stats = useSessionStats();
+	// Token totals across rolling windows, same ↑in ↓out ⚡cache readout the
+	// session list shows.
+	const tokens = useTokenStats();
+
+	// Adapt a window's {input, output, cache_read} to the shape TokenUsage.svelte
+	// renders (the session-card readout). cost_usd / cache_creation are unused here.
+	const asUsage = (w: WindowTokenUsage | undefined): TokenUsageT => ({
+		tokens_in: w?.input ?? 0,
+		tokens_out: w?.output ?? 0,
+		cost_usd: 0,
+		cache_read_tokens: w?.cache_read ?? 0,
+		cache_creation_tokens: 0
+	});
+
+	const tokenCards = $derived([
+		{ lbl: 'Last hour', usage: asUsage($tokens.data?.hour) },
+		{ lbl: 'Today', usage: asUsage($tokens.data?.today) },
+		{ lbl: 'Last 24h', usage: asUsage($tokens.data?.day) },
+		{ lbl: 'Last 7d', usage: asUsage($tokens.data?.week) },
+		{ lbl: 'Last 30d', usage: asUsage($tokens.data?.month) }
+	]);
 
 	const activeUsers = $derived(($users.data ?? []).filter((u) => !u.revoked_at).length);
 	const revokedUsers = $derived(($users.data ?? []).filter((u) => u.revoked_at).length);
@@ -52,6 +76,16 @@
 	</div>
 </div>
 
+<h2 class="section-title">Token usage</h2>
+<div class="grid token-grid">
+	{#each tokenCards as c (c.lbl)}
+		<div class="card stat">
+			<TokenUsage usage={c.usage} />
+			<span class="lbl">{c.lbl}</span>
+		</div>
+	{/each}
+</div>
+
 <div class="card install stack">
 	<strong>Enroll a machine</strong>
 	<p class="muted">
@@ -82,6 +116,13 @@
 		.grid {
 			grid-template-columns: repeat(3, 1fr);
 		}
+	}
+	.section-title {
+		font-size: var(--fs-lg);
+		margin-bottom: var(--sp-3);
+	}
+	.token-grid {
+		margin-bottom: var(--sp-4);
 	}
 	.stat {
 		display: flex;

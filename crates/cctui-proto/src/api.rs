@@ -210,6 +210,38 @@ pub struct SessionStats {
     pub archived: i64,
 }
 
+/// Token totals for one time window, mirroring the three figures the session
+/// list shows (`↑in ↓out ⚡cache`). Cache-creation tokens are intentionally
+/// omitted here — the Overview surfaces the same readout as the session card.
+#[derive(Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct WindowTokenUsage {
+    /// Non-cached prompt tokens (`input_tokens`).
+    pub input: u64,
+    /// Generated tokens (`output_tokens`).
+    pub output: u64,
+    /// Tokens served from the prompt cache (`cache_read_tokens`, the ⚡ figure).
+    pub cache_read: u64,
+}
+
+/// Aggregate token usage across rolling time windows for the Overview page.
+/// `today` is calendar-day (since local midnight, derived from the caller's
+/// timezone offset); the others are rolling intervals back from now.
+#[derive(Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct TokenUsageWindows {
+    /// Last 60 minutes.
+    pub hour: WindowTokenUsage,
+    /// Since local midnight.
+    pub today: WindowTokenUsage,
+    /// Last 24 hours.
+    pub day: WindowTokenUsage,
+    /// Last 7 days.
+    pub week: WindowTokenUsage,
+    /// Last 30 days.
+    pub month: WindowTokenUsage,
+}
+
 #[derive(Debug, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct MessageRequest {
