@@ -538,3 +538,72 @@
 	--mach-border-sl: 55% 38%;
 }
 
+/* ---- AMOLED (CCT-309) — pure-black background, high-contrast white text for
+   maximum contrast / OLED power saving. Elevated surfaces step up in tiny
+   increments off true black (so cards/popovers/composer/code blocks stay
+   distinguishable without diluting the black page), borders are bright enough
+   to read as crisp dividers, and accents are vivid for legibility on black. */
+[data-theme='amoled'] {
+	--c-bg: #000000;
+	--c-bg-elev: #0a0a0a;
+	--c-bg-elev-2: #141414;
+	--c-surface: #0d0d0d;
+	--c-border: #2a2a2a;
+	--c-border-strong: #4a4a4a;
+	--c-text: #ffffff;
+	--c-text-muted: #c8c8c8;
+	--c-text-faint: #8e8e8e;
+	--c-accent: #34e89e;
+	--c-accent-ink: #000000;
+	--c-accent-dim: #1f8f62;
+	--c-blue: #4db5ff;
+	--c-amber: #ffc24b;
+	--c-red: #ff6b6b;
+	--c-green: #34e89e;
+	--c-violet: #c79bff;
+	--c-gold: #ffc24b;
+	--c-teal: #45e0d8;
+	--md-code-bg: color-mix(in srgb, var(--c-blue) 18%, #000000);
+	--shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.8);
+	--shadow-md: 0 6px 20px rgba(0, 0, 0, 0.85);
+	--shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.9);
+	/* high-chroma tint to read sharply against pure black */
+	--mach-bg-sl: 60% 18%;
+	--mach-fg-sl: 90% 84%;
+	--mach-border-sl: 60% 42%;
+}
+
+/* ---- High Contrast Light (CCT-309) — pure-white background, near-black text.
+   The light-mode counterpart to AMOLED: maximum contrast for bright
+   environments. Strong borders and dark, saturated accents keep every surface
+   legible on white. */
+[data-theme='highcontrast'] {
+	--c-bg: #ffffff;
+	--c-bg-elev: #ffffff;
+	--c-bg-elev-2: #f0f0f0;
+	--c-surface: #ffffff;
+	--c-border: #b0b0b0;
+	--c-border-strong: #707070;
+	--c-text: #000000;
+	--c-text-muted: #2e2e2e;
+	--c-text-faint: #555555;
+	--c-accent: #0a7d4f;
+	--c-accent-ink: #ffffff;
+	--c-accent-dim: #6fbf9a;
+	--c-blue: #0b5fc4;
+	--c-amber: #9a6500;
+	--c-red: #c4150c;
+	--c-green: #0a7d4f;
+	--c-violet: #6d28d9;
+	--c-gold: #9a6500;
+	--c-teal: #0a7d7d;
+	--md-code-bg: color-mix(in srgb, var(--c-blue) 10%, #ffffff);
+	--shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.18);
+	--shadow-md: 0 6px 20px rgba(0, 0, 0, 0.22);
+	--shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.28);
+	/* pale tint + dark ink so badges stay legible on white */
+	--mach-bg-sl: 65% 88%;
+	--mach-fg-sl: 60% 26%;
+	--mach-border-sl: 50% 64%;
+}
+

@@ -15,7 +15,9 @@ export const THEMES = [
 	{ id: 'rosepine', label: 'Rosé Pine', icon: '❀', themeColor: '#191724' },
 	{ id: 'onedark', label: 'One Dark', icon: '①', themeColor: '#282c34' },
 	{ id: 'everforest', label: 'Everforest', icon: '☘', themeColor: '#2d353b' },
-	{ id: 'monokai', label: 'Monokai', icon: '✸', themeColor: '#272822' }
+	{ id: 'monokai', label: 'Monokai', icon: '✸', themeColor: '#272822' },
+	{ id: 'amoled', label: 'AMOLED (high contrast)', icon: '◼', themeColor: '#000000' },
+	{ id: 'highcontrast', label: 'High Contrast Light', icon: '◻', themeColor: '#ffffff' }
 ] as const;
 
 export type Mode = (typeof THEMES)[number]['id'];
