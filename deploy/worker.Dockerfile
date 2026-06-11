@@ -1,8 +1,11 @@
-# cctui worker image — the execution environment dispatchers (the docker /
-# kubernetes dispatchers) spawn per session. Bundles:
+# cctui worker image (contract v1) — the execution environment dispatchers
+# (the docker / kubernetes dispatchers) spawn per session. Bundles:
 #   - the claude code CLI
 #   - the codex CLI
-#   - the cctui-daemon binary
+#   - the cctui-daemon binary (session observability)
+#   - the cctui sandbox toolchain: cctui-guard-proxy (egress allow-list),
+#     cctui-supervisor (landlock + seccomp + cap-drop exec wrapper), and
+#     cctui-guard (markdown-driven workflow guard daemon)
 #
 # It is **non-enrolled**: NO credentials and NO machine identity are baked in.
 # Identity arrives at spawn time as env injected by the dispatcher:
@@ -16,10 +19,16 @@
 # (Config::from_env) and runs in ephemeral, --no-auto-update mode: the worker
 # is short-lived and re-fetched on spawn, so there is nothing to self-update.
 #
+# This is a LEAN base. Heavy toolchains (Rust, Go, pnpm stores, dockerd) belong
+# in **derived org images** (`FROM ghcr.io/<org>/cctui-worker`), never here —
+# the base only ships what every worker needs to boot, sandbox, and talk git.
+#
+# See docs/worker-contract.md for the full env / mount / capability contract.
+#
 # ⚠️ This repo is PUBLIC. Keep it free of any private/homelab registries,
 # hosts, or namespaces — neutral placeholders only.
 
-# ── Builder: compile cctui-daemon ──────────────────────────────────────────
+# ── Builder: compile the worker binaries ────────────────────────────────────
 # Match the runtime's glibc (bookworm-slim ships glibc 2.36) by building on the
 # bookworm-based rust image, same as deploy/Dockerfile (see CCT-112).
 FROM rust:1.90-slim-bookworm AS builder
@@ -33,19 +42,45 @@ COPY packaging/ packaging/
 
 # sqlx runs in offline mode so no database is needed at build time.
 ENV SQLX_OFFLINE=true
-RUN cargo build --release -p cctui-daemon
+RUN cargo build --release \
+        -p cctui-daemon \
+        -p cctui-guard-proxy \
+        -p cctui-supervisor \
+        -p cctui-guard
 
-# ── Runtime: claude code + codex + cctui-daemon ─────────────────────────────
+# ── Runtime: claude code + codex + cctui binaries ───────────────────────────
 FROM node:22-bookworm-slim
 
-# git + ca-certificates for repo work and TLS; libssl3 for the daemon's
-# rustls/native deps; ripgrep is what claude code shells out to for search.
+# Base tooling kept deliberately lean:
+#   ca-certificates, libssl3 — TLS for the daemon's rustls/native deps.
+#   git, git-lfs            — repo work and large-file fetches.
+#   ripgrep                 — what claude code shells out to for search.
+#   gnupg                   — GPG_PRIVATE_KEY_<ID> import + commit signing.
+#   jq                      — payload unpack + result-callback synthesis.
+#   curl                    — context-pack token auth, result callback, health.
+#   rsync                   — warm-repo workspace fallback when overlayfs is off.
+#   iptables                — transparent-mode egress REDIRECT to the proxy.
+#   openssh-client          — git over SSH for credentialed clones.
+#   gh                      — GitHub CLI for token auth + PR work.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
+        curl \
         git \
-        libssl3 \
+        git-lfs \
+        gnupg \
+        iptables \
+        jq \
+        openssh-client \
         ripgrep \
+        rsync \
+    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+        > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
 
 # Agent CLIs, version-pinnable at build time. Defaults track latest; CI / a
@@ -57,14 +92,33 @@ RUN npm install -g \
         "@openai/codex@${CODEX_VERSION}" \
     && npm cache clean --force
 
-COPY --from=builder /app/target/release/cctui-daemon /usr/local/bin/cctui-daemon
-COPY deploy/worker-entrypoint.sh /usr/local/bin/cctui-worker-entrypoint
+# Worker user (uid 1000). The container starts as root only to bootstrap the
+# sandbox (iptables, overlayfs, context pack), then cctui-supervisor setuids to
+# this user before exec'ing the daemon. A real home keeps per-session agent
+# state (~/.claude, ~/.codex, ~/.mcp.json, ~/.npmrc, ~/.gnupg) writable.
+RUN groupadd --gid 1000 worker \
+    && useradd --uid 1000 --gid 1000 --create-home --home-dir /home/worker worker
 
-# Run as an unprivileged user with a writable HOME for per-session agent state
-# (the node base image ships the `node` user). The daemon writes nothing to a
-# config file in this mode — it reads its identity from the environment.
-ENV HOME=/home/node
-USER node
-WORKDIR /home/node
+COPY --from=builder /app/target/release/cctui-daemon       /usr/local/bin/cctui-daemon
+COPY --from=builder /app/target/release/cctui-guard-proxy  /usr/local/bin/cctui-guard-proxy
+COPY --from=builder /app/target/release/cctui-supervisor   /usr/local/bin/cctui-supervisor
+COPY --from=builder /app/target/release/cctui-guard        /usr/local/bin/cctui-guard
+COPY deploy/worker-entrypoint.sh   /usr/local/bin/cctui-worker-entrypoint
+COPY deploy/worker-credentials.sh  /usr/local/bin/cctui-worker-credentials
 
+# Sandbox state dirs the entrypoint and proxy/guard write into. /opt/context is
+# the context-pack mount target (read-only after fetch).
+RUN mkdir -p /var/run/guard-proxy /var/run/workflow-guard /workspace /opt/context \
+    && chmod +x /usr/local/bin/cctui-worker-entrypoint \
+                /usr/local/bin/cctui-worker-credentials
+
+# Contract marker: derived images and dispatchers can assert the wire contract.
+LABEL dev.cctui.contract="1"
+
+# HOME defaults to the worker home; the entrypoint runs as root first and the
+# supervisor re-exports HOME=/home/worker for the dropped process.
+ENV HOME=/home/worker
+WORKDIR /home/worker
+
+# Starts as root to bootstrap the sandbox; drops to uid 1000 via cctui-supervisor.
 ENTRYPOINT ["/usr/local/bin/cctui-worker-entrypoint"]

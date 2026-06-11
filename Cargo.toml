@@ -5,8 +5,11 @@ members = [
     "crates/cctui-daemon",
     "crates/cctui-dispatcher-docker",
     "crates/cctui-dispatcher-kube",
+    "crates/cctui-guard",
+    "crates/cctui-guard-proxy",
     "crates/cctui-proto",
     "crates/cctui-server",
+    "crates/cctui-supervisor",
     "crates/cctui-tui",
 ]
 
@@ -47,6 +50,7 @@ sha2 = "0.10"
 hex = "0.4"
 base64 = "0.22"
 clap = { version = "4", features = ["derive", "env"] }
+axum = { version = "0.8", features = ["ws", "multipart"] }
 thiserror = "2"
 tempfile = "3"
 tokio-util = "0.7"
