@@ -585,6 +585,38 @@
 
 	const actions = useSessionActions();
 
+	// ── In-place model/effort switch (CCT-303) ─────────────────────────────
+	// Codex supports it natively (thread/settings/update on the live thread);
+	// claude has no non-interactive set-model lever, so for claude we surface a
+	// "fork to change model" affordance instead (the fork flow is CCT-302).
+	const isCodexSession = $derived((session.adapter_id ?? '').startsWith('codex'));
+	const codexEfforts = ['', 'low', 'medium', 'high', 'xhigh'];
+	const codexModels = [
+		{ v: '', label: 'Default' },
+		{ v: 'gpt-5.5-codex', label: 'GPT-5.5 Codex' },
+		{ v: 'gpt-5.4-codex', label: 'GPT-5.4 Codex' }
+	];
+	let modelEditing = $state(false);
+	let pendingModel = $state('');
+	let pendingEffort = $state('');
+	function openModelEditor() {
+		pendingModel = session.model ?? '';
+		pendingEffort = session.effort ?? '';
+		modelEditing = true;
+	}
+	async function applyModelChange() {
+		const model = pendingModel.trim();
+		const effort = pendingEffort.trim();
+		modelEditing = false;
+		if (!model && !effort) return;
+		try {
+			await actions.setModel(id, model, effort);
+			toasts.ok('Model updated');
+		} catch (e) {
+			toasts.err((e as Error).message);
+		}
+	}
+
 	// Composer
 	let input = $state(drafts.get(composerKey(session.id)));
 	$effect(() => {
@@ -1283,7 +1315,31 @@
 		</div>
 		<div class="hmeta row row-wrap">
 			<span class="badge {statusBadgeClass(session.status)}">{session.status}</span>
-			{#if session.model}<span class="chip">{session.model}{session.effort ? ` · ${session.effort}` : ''}</span>{/if}
+			{#if isCodexSession && !archived}
+				{#if modelEditing}
+					<span class="chip row model-editor">
+						<select class="mini-select" bind:value={pendingModel} aria-label="Model">
+							{#each codexModels as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
+						</select>
+						<select class="mini-select" bind:value={pendingEffort} aria-label="Effort">
+							{#each codexEfforts as e (e)}<option value={e}>{e || 'default effort'}</option>{/each}
+						</select>
+						<button class="tapbtn" aria-label="Apply" onclick={applyModelChange}>✓</button>
+						<button class="tapbtn" aria-label="Cancel" onclick={() => (modelEditing = false)}>✕</button>
+					</span>
+				{:else}
+					<button
+						class="chip"
+						title="Change model / effort for the next turn"
+						onclick={openModelEditor}
+					>{session.model ?? 'default'}{session.effort ? ` · ${session.effort}` : ''} ✎</button>
+				{/if}
+			{:else if session.model || session.effort}
+				<span
+					class="chip"
+					title="Claude can't switch model in place — fork to change model (coming soon)"
+				>{session.model ?? ''}{session.effort ? ` · ${session.effort}` : ''}</span>
+			{/if}
 			<MachineBadge name={session.machine_name} id={session.machine_id} hue={session.machine_hue} mono />
 			<button
 				class="chip mono cwd truncate"
@@ -1776,6 +1832,20 @@
 		flex: 1;
 		min-width: 6rem;
 		text-align: left;
+	}
+	/* In-place model/effort editor (CCT-303). */
+	.model-editor {
+		gap: var(--sp-1);
+		align-items: center;
+		padding: 0.05rem var(--sp-1);
+	}
+	.mini-select {
+		font-size: var(--fs-xs);
+		color: var(--text);
+		background: var(--bg-elevated-2);
+		border: 1px solid var(--border);
+		border-radius: var(--r-sm, 4px);
+		padding: 0 0.2rem;
 	}
 	.sm {
 		font-size: var(--fs-xs);

@@ -446,6 +446,16 @@ export function useSessionActions() {
 		interrupt: async (id: string) => {
 			await api.post<void>(`/sessions/${id}/interrupt`);
 		},
+		// In-place model/effort switch (CCT-303). Codex applies it on the live
+		// thread and echoes the resolved values back via Status; claude rejects
+		// it (the UI offers fork-to-change-model for claude instead).
+		setModel: async (id: string, model?: string, effort?: string) => {
+			await api.post<void>(`/sessions/${id}/set-model`, {
+				model: model || null,
+				effort: effort || null,
+			});
+			inval();
+		},
 		setAutoApprove: async (id: string, enabled: boolean) => {
 			await api.post<void>(`/sessions/${id}/auto-approve`, { enabled });
 			inval();

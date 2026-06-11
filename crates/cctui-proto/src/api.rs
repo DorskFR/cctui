@@ -231,6 +231,20 @@ pub struct AutoApproveRequest {
     pub enabled: bool,
 }
 
+/// Body for `POST /api/v1/sessions/{id}/set-model` (CCT-303).
+///
+/// Changes the model and/or reasoning effort of a running session in place. At
+/// least one of `model`/`effort` should be set; an empty string clears nothing
+/// (the field is simply omitted from the adapter command when `None`).
+#[derive(Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SetModelRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+}
+
 #[derive(Debug, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct ApiError {

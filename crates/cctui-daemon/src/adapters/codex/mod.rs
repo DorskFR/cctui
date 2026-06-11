@@ -307,6 +307,17 @@ async fn command_pump(
                         .await;
                         registry.lock().await.remove(&local_id);
                     }
+                    AdapterCommand::SetModel { local_id, model, effort } => {
+                        forward(
+                            &live,
+                            &registry,
+                            &events,
+                            &shutdown,
+                            &local_id,
+                            SessionCommand::SetModel { model, effort },
+                        )
+                        .await;
+                    }
                     _ => tracing::warn!("codex: unhandled AdapterCommand variant"),
                 }
             }

@@ -1140,6 +1140,42 @@ pub async fn interrupt_session(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// `POST /api/v1/sessions/{id}/set-model` — change the model and/or reasoning
+/// effort of a running session in place (CCT-303). Agent-asymmetric: the codex
+/// adapter applies it via `thread/settings/update` on the live thread and
+/// echoes the resolved model/effort back as an `AdapterEvent::Status` (which
+/// updates the DB row + chip); the claude-code adapter rejects it with a clear
+/// "fork to change model" error (the webui pre-empts that by offering the fork
+/// affordance for claude sessions). Best-effort dispatch — the chip reflects
+/// the change once the daemon echoes Status, matching the interrupt pattern.
+pub async fn set_model(
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+    Json(req): Json<cctui_proto::api::SetModelRequest>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    let norm = |s: Option<String>| s.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
+    let model = norm(req.model);
+    let effort = norm(req.effort);
+    if model.is_none() && effort.is_none() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ApiError { error: "model or effort must be set".into() }),
+        ));
+    }
+    let _ = crate::daemon_dispatch::dispatch(
+        &state,
+        &session_id,
+        cctui_proto::adapter::AdapterCommand::SetModel {
+            local_id: session_id.clone(),
+            model: model.clone(),
+            effort: effort.clone(),
+        },
+    )
+    .await;
+    tracing::info!(session_id = %session_id, ?model, ?effort, "set-model dispatched");
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// `POST /api/v1/sessions/{id}/auto-approve` — toggle cctui-side auto-approve
 /// (CCT-151). When on, incoming permission requests for this session are
 /// answered `allow` immediately. In-memory; reset on server restart.

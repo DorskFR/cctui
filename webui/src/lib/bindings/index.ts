@@ -27,6 +27,7 @@ export type * from './SessionListResponse';
 export type * from './SessionStats';
 export type * from './SessionStatus';
 export type * from './Session';
+export type * from './SetModelRequest';
 export type * from './SpawnRequest';
 export type * from './SpawnResponse';
 export type * from './StageFilesResponse';

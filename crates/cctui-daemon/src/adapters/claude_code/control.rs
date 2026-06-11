@@ -631,6 +631,18 @@ impl Driver {
                     .with_context(|| format!("rename session {short} -> {name}"))?;
                 tracing::info!(%short, %name, "renamed session via state.json");
             }
+            AdapterCommand::SetModel { local_id, .. } => {
+                // In-place model/effort switch is not supported on claude via
+                // cctui's path (CCT-303): the `claude daemon` control socket has
+                // no set-model op, and the Agent SDK's `setModel()` is only
+                // reachable in streaming-input mode, not through this socket.
+                // The supported substitute is fork-with-`--model` (CCT-302), so
+                // surface a clear error the webui can route to the fork flow.
+                tracing::warn!(%local_id, "claude: in-place model/effort switch not supported; fork to change model");
+                anyhow::bail!(
+                    "in-place model/effort switch is not supported for claude sessions — fork to change model"
+                );
+            }
             _ => {
                 // AdapterCommand is #[non_exhaustive]; tolerate unknown
                 // future variants by logging.

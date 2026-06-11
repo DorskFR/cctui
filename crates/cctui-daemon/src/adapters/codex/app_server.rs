@@ -290,6 +290,27 @@ fn thread_name_set_req(id: i64, thread_id: &str, name: &str) -> Value {
     })
 }
 
+/// Build a `thread/settings/update` request that persistently overrides the
+/// model and/or reasoning effort for subsequent turns on `thread_id` (CCT-303).
+/// Only the provided fields are sent so a partial update leaves the other
+/// setting untouched.
+fn thread_settings_update_req(
+    id: i64,
+    thread_id: &str,
+    model: Option<&str>,
+    effort: Option<&str>,
+) -> Value {
+    let mut params = serde_json::Map::new();
+    params.insert("threadId".to_owned(), json!(thread_id));
+    if let Some(model) = model {
+        params.insert("model".to_owned(), json!(model));
+    }
+    if let Some(effort) = effort {
+        params.insert("effort".to_owned(), json!(effort));
+    }
+    json!({"jsonrpc": "2.0", "id": id, "method": "thread/settings/update", "params": params})
+}
+
 fn turn_start_req(id: i64, thread_id: &str, text: &str) -> Value {
     json!({
         "jsonrpc": "2.0",
@@ -333,12 +354,17 @@ pub enum SessionCommand {
     /// thread stays resumable. Distinct from `Kill`, which interrupts *and*
     /// terminates the child.
     Interrupt,
+    /// Change the model and/or reasoning effort of the running thread in place
+    /// (CCT-303): sends `thread/settings/update { threadId, model?, effort? }`
+    /// so subsequent turns use the new settings, and echoes the resolved values
+    /// back via [`AdapterEvent::Status`] so the webui chip updates live.
+    SetModel { model: Option<String>, effort: Option<String> },
 }
 
 impl SessionCommand {
     #[must_use]
     pub const fn is_resumable(&self) -> bool {
-        matches!(self, Self::Send { .. } | Self::Rename { .. })
+        matches!(self, Self::Send { .. } | Self::Rename { .. } | Self::SetModel { .. })
     }
 }
 
@@ -655,6 +681,23 @@ impl CodexSession {
                                 break;
                             }
                         }
+                        Some(SessionCommand::SetModel { model, effort }) => {
+                            if let Err(e) = set_thread_model(
+                                &mut stdin,
+                                &mut next_id,
+                                &local_id,
+                                model.as_deref(),
+                                effort.as_deref(),
+                                &self.events,
+                                &self.registry,
+                            )
+                            .await
+                            {
+                                tracing::warn!(%e, "codex: thread/settings/update write failed; ending session");
+                                retry_after_hibernate = Some(SessionCommand::SetModel { model, effort });
+                                break;
+                            }
+                        }
                         None => break,
                     }
                 }
@@ -818,6 +861,25 @@ impl CodexSession {
                                                     break;
                                                 }
                                             }
+                                            SessionCommand::SetModel { model, effort } => {
+                                                if let Err(e) = set_thread_model(
+                                                    &mut stdin,
+                                                    &mut next_id,
+                                                    &local_id,
+                                                    model.as_deref(),
+                                                    effort.as_deref(),
+                                                    &self.events,
+                                                    &self.registry,
+                                                )
+                                                .await
+                                                {
+                                                    tracing::warn!(%e, "codex: resumed thread/settings/update write failed");
+                                                    retry_after_hibernate =
+                                                        Some(SessionCommand::SetModel { model, effort });
+                                                    end_after_initial = true;
+                                                    break;
+                                                }
+                                            }
                                             other => {
                                                 tracing::warn!(?other, "codex: ignoring non-resumable initial command");
                                             }
@@ -944,6 +1006,50 @@ async fn set_thread_name<W: AsyncWriteExt + Unpin>(
             intent: None,
             model: None,
             effort: None,
+            children: Vec::new(),
+        })
+        .await
+        .ok();
+    Ok(())
+}
+
+/// Apply an in-place model/effort change (CCT-303): send
+/// `thread/settings/update` to the running thread, update the durable
+/// `SessionRecord` cfg so a later resume keeps the new settings, and echo the
+/// resolved values back via [`AdapterEvent::Status`] so the webui chip updates
+/// live (codex emits a `thread/settings/updated` notification too, but we
+/// surface the requested values directly for immediacy).
+#[allow(clippy::too_many_arguments)]
+async fn set_thread_model<W: AsyncWriteExt + Unpin>(
+    stdin: &mut W,
+    next_id: &mut i64,
+    thread_id: &str,
+    model: Option<&str>,
+    effort: Option<&str>,
+    events: &mpsc::Sender<AdapterEvent>,
+    registry: &SessionRegistry,
+) -> Result<()> {
+    write_json(stdin, &thread_settings_update_req(*next_id, thread_id, model, effort)).await?;
+    *next_id += 1;
+    if let Some(record) = registry.lock().await.get_mut(thread_id) {
+        if let Some(model) = model {
+            record.cfg.model = Some(model.to_owned());
+        }
+        if let Some(effort) = effort {
+            record.cfg.reasoning_effort = Some(effort.to_owned());
+        }
+    }
+    events
+        .send(AdapterEvent::Status {
+            local_id: thread_id.to_owned(),
+            tempo: None,
+            state: None,
+            detail: None,
+            activity: None,
+            name: None,
+            intent: None,
+            model: model.map(str::to_owned),
+            effort: effort.map(str::to_owned),
             children: Vec::new(),
         })
         .await
@@ -1190,6 +1296,30 @@ mod tests {
         let turn = turn_start_req(100, "tid", "hello");
         assert_eq!(turn["params"]["threadId"], "tid");
         assert_eq!(turn["params"]["input"][0]["text"], "hello");
+    }
+
+    #[test]
+    fn thread_settings_update_req_sends_only_provided_fields() {
+        // Both fields.
+        let both = thread_settings_update_req(102, "tid", Some("gpt-5-codex"), Some("high"));
+        assert_eq!(both["method"], "thread/settings/update");
+        assert_eq!(both["id"], 102);
+        assert_eq!(both["params"]["threadId"], "tid");
+        assert_eq!(both["params"]["model"], "gpt-5-codex");
+        assert_eq!(both["params"]["effort"], "high");
+        // Model only — effort key must be absent so codex keeps its current effort.
+        let model_only = thread_settings_update_req(103, "tid", Some("gpt-5-codex"), None);
+        assert_eq!(model_only["params"]["model"], "gpt-5-codex");
+        assert!(model_only["params"].get("effort").is_none());
+        // Effort only.
+        let effort_only = thread_settings_update_req(104, "tid", None, Some("low"));
+        assert_eq!(effort_only["params"]["effort"], "low");
+        assert!(effort_only["params"].get("model").is_none());
+    }
+
+    #[test]
+    fn set_model_is_resumable() {
+        assert!(SessionCommand::SetModel { model: Some("m".into()), effort: None }.is_resumable());
     }
 
     #[tokio::test]
