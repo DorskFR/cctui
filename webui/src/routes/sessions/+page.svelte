@@ -36,6 +36,26 @@
 		drafts.set(LIST_VIEW, cardView ? 'card' : 'list');
 	});
 
+	// View picker (CCT-307): collapse the two awkward icon toggles (which still
+	// overflowed the toolbar) into one labelled picker offering the 4 explicit
+	// combinations. Persistence is unchanged — the picker just reads/writes the
+	// existing `cardView` (list ⇄ card) and `dense` (compact ⇄ detailed) state,
+	// each of which already round-trips through drafts above.
+	const VIEW_OPTIONS = [
+		{ value: 'list-compact', label: 'List · Compact', card: false, dense: true },
+		{ value: 'list-detailed', label: 'List · Detailed', card: false, dense: false },
+		{ value: 'card-compact', label: 'Card · Compact', card: true, dense: true },
+		{ value: 'card-detailed', label: 'Card · Detailed', card: true, dense: false }
+	] as const;
+	let viewMode = $derived(`${cardView ? 'card' : 'list'}-${dense ? 'compact' : 'detailed'}`);
+	function selectView(value: string) {
+		const opt = VIEW_OPTIONS.find((o) => o.value === value);
+		if (!opt) return;
+		cardView = opt.card;
+		dense = opt.dense;
+	}
+	let viewLabel = $derived(VIEW_OPTIONS.find((o) => o.value === viewMode)?.label ?? 'View');
+
 	// Collapse/hide the Dispatched group as one unit (CCT-279 item 6). Persisted.
 	let dispatchedCollapsed = $state(drafts.get(DISPATCHED_COLLAPSED) === '1');
 	$effect(() => {
@@ -562,23 +582,25 @@
 	<label class="arch row">
 		<input type="checkbox" bind:checked={showArchived} /> Archived
 	</label>
-	<!-- View controls (CCT-301 #4): two independent icon toggles instead of the
-	     confusing list/compact/card/grid quartet — one for layout (list ⇄ grid),
-	     one for density (compact ⇄ detailed). Grid fills the screen width. -->
-	<button
-		class="btn btn-sm icon-toggle"
-		title={cardView ? 'List view' : 'Grid view'}
-		aria-pressed={cardView}
-		aria-label={cardView ? 'Switch to list view' : 'Switch to grid view'}
-		onclick={() => (cardView = !cardView)}>{cardView ? '☰' : '▦'}</button
-	>
-	<button
-		class="btn btn-sm icon-toggle"
-		title={dense ? 'Detailed' : 'Compact'}
-		aria-pressed={!dense}
-		aria-label={dense ? 'Switch to detailed' : 'Switch to compact'}
-		onclick={() => (dense = !dense)}>{dense ? '▤' : '▥'}</button
-	>
+	<!-- View picker (CCT-307): one labelled control offering the 4 explicit
+	     layout × density combinations, replacing the two icon toggles that still
+	     overflowed the toolbar. A native <select> overlaid transparently on the
+	     trigger button (same pattern as the header theme/font pickers) gives the
+	     platform popup with zero outside-click bookkeeping. -->
+	<div class="view-pick btn btn-sm" title="View: {viewLabel}">
+		<span class="view-pick-icon" aria-hidden="true">{cardView ? '▦' : '☰'}</span>
+		<span class="view-pick-label">{viewLabel}</span>
+		<span class="view-pick-caret" aria-hidden="true">▾</span>
+		<select
+			aria-label="Choose list view"
+			value={viewMode}
+			onchange={(e) => selectView((e.currentTarget as HTMLSelectElement).value)}
+		>
+			{#each VIEW_OPTIONS as o (o.value)}
+				<option value={o.value}>{o.label}</option>
+			{/each}
+		</select>
+	</div>
 	{#if !searching}
 		{#if selecting}
 			<button class="btn btn-sm" onclick={exitSelect}>Cancel</button>
@@ -850,6 +872,40 @@
 	.page-title {
 		font-size: var(--fs-2xl);
 		align-self: center;
+	}
+	/* View picker (CCT-307): a native <select> overlaid transparently on a
+	   labelled trigger (same pattern as the header theme/font pickers) so it gets
+	   the platform popup with no custom outside-click logic. One control instead
+	   of two icon toggles, so the toolbar no longer overflows. */
+	.view-pick {
+		position: relative;
+		display: inline-flex;
+		align-items: center;
+		gap: var(--sp-1);
+		flex: none;
+		white-space: nowrap;
+		cursor: pointer;
+	}
+	.view-pick-caret {
+		font-size: var(--fs-xs);
+		color: var(--text-faint);
+	}
+	.view-pick select {
+		position: absolute;
+		inset: 0;
+		width: 100%;
+		height: 100%;
+		opacity: 0;
+		cursor: pointer;
+		border: none;
+		background: none;
+	}
+	/* Narrow viewports: drop the text label, keep just the icon + caret so the
+	   toolbar never overflows; the platform popup still shows the full names. */
+	@media (max-width: 639px) {
+		.view-pick-label {
+			display: none;
+		}
 	}
 	.arch {
 		font-size: var(--fs-sm);
