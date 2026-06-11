@@ -320,9 +320,25 @@
 	}
 	.sc.grid {
 		height: 100%;
+		/* Vertical-shaped cards (CCT-305 follow-up): a min-height so each card is
+		   taller than it is wide-ish, giving the 3-line last-message preview room
+		   to breathe even when a card has little other content. */
+		min-height: 11rem;
 	}
 	.sc.grid .foot {
 		margin-top: auto;
+	}
+	/* Card view shows more of the latest message — clamp the last-message preview
+	   to 3 lines (overriding the single-line `truncate` it carries) instead of one
+	   ellipsised line (CCT-305 follow-up). The search-match snippet already clamps
+	   to 3 lines via `.match`. */
+	.sc.grid .last {
+		display: -webkit-box;
+		-webkit-line-clamp: 3;
+		line-clamp: 3;
+		-webkit-box-orient: vertical;
+		white-space: normal;
+		overflow: hidden;
 	}
 	/* Uniform single-line cwd path in grid view — never wrap to a second line
 	   (the source of ragged, uneven-height cards); ellipsis instead. */

@@ -1042,7 +1042,11 @@
 		left: 50%;
 		margin-left: -50vw;
 		box-sizing: border-box;
-		grid-template-columns: repeat(auto-fill, minmax(20rem, 1fr));
+		/* Detailed grid: as many columns as fit at a column width tuned for cards
+		   that read more vertical than horizontal (CCT-305 follow-up) — a narrower
+		   track than the old 20rem packs more columns across a wide window while
+		   keeping each card a portrait-ish rectangle. */
+		grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr));
 		padding-inline: max(var(--sp-4), var(--safe-left)) max(var(--sp-4), var(--safe-right));
 	}
 	/* Compact grid: drop the full-bleed break-out and live within the container,
@@ -1056,14 +1060,23 @@
 		gap: var(--sp-2);
 		grid-template-columns: repeat(2, minmax(0, 1fr));
 	}
-	/* CCT-308 item 2: on phones a single full-width card per row read like a wide
-	   detailed list row, not a card. Force the card grid to 2 narrow columns on
-	   mobile (for BOTH detailed full-bleed and compact .narrow) so each card is
-	   half-viewport wide — its contents then stack vertically and it reads as a
-	   proper card. The detailed-grid minmax(20rem) otherwise resolved to a single
-	   column below ~40rem; override the template here so 2 columns hold. */
+	/* Mobile card grid (CCT-305 follow-up). The two densities now diverge on phones,
+	   mirroring desktop's "compact = more in less space, detailed = more per card":
+	   - compact (.grid.narrow) → 2 narrow columns, each card half-viewport wide so
+	     it reads as a proper (vertical) card rather than a wide list row.
+	   - detailed (.grid) → a single full-viewport-width column, each card at least
+	     ~half the screen tall, giving a squarish-to-slightly-vertical aspect with
+	     plenty of room for the 3-line message preview.
+	   (The detailed-grid minmax(17rem) would otherwise resolve to a single column
+	   below ~36rem anyway, but we pin it explicitly and add the min-height.) */
 	@media (max-width: 639px) {
-		.grid,
+		.grid {
+			grid-template-columns: 1fr;
+			gap: var(--sp-2);
+		}
+		.grid:not(.narrow) :global(.sc.grid) {
+			min-height: 48vh;
+		}
 		.grid.narrow {
 			grid-template-columns: repeat(2, minmax(0, 1fr));
 			gap: var(--sp-2);
