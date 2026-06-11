@@ -12,13 +12,26 @@
 	import SubagentBadge from '$lib/components/SubagentBadge.svelte';
 	import ConversationDrawer from '$lib/components/ConversationDrawer.svelte';
 	import SpawnModal from '$lib/components/SpawnModal.svelte';
-	import { drafts, LIST_DENSITY, DISPATCHED_COLLAPSED } from '$lib/drafts';
+	import { drafts, LIST_DENSITY, DISPATCHED_COLLAPSED, LIST_VIEW, CARD_FULL } from '$lib/drafts';
 	import { notify } from '$lib/notify.svelte';
 	import { tokenizeQuery } from '$lib/search';
 
 	let dense = $state(drafts.get(LIST_DENSITY) === 'compact');
 	$effect(() => {
 		drafts.set(LIST_DENSITY, dense ? 'compact' : 'normal');
+	});
+
+	// Main-list layout (CCT-297 item 16): 'list' rows (with subagent nesting) or
+	// 'card' — a responsive grid of detailed cards for at-a-glance status. Card
+	// view is top-level only (subagents stay visible in list view / the drawer).
+	// `cardFull` lays the cards out one-per-row instead of multi-column.
+	let cardView = $state(drafts.get(LIST_VIEW) === 'card');
+	let cardFull = $state(drafts.get(CARD_FULL) === '1');
+	$effect(() => {
+		drafts.set(LIST_VIEW, cardView ? 'card' : 'list');
+	});
+	$effect(() => {
+		drafts.set(CARD_FULL, cardFull ? '1' : '0');
 	});
 
 	// Collapse/hide the Dispatched group as one unit (CCT-279 item 6). Persisted.
@@ -528,9 +541,24 @@
 	<label class="arch row">
 		<input type="checkbox" bind:checked={showArchived} /> Archived
 	</label>
-	<button class="btn btn-sm" title="Toggle compact / detailed rows" onclick={() => (dense = !dense)}
-		>{dense ? '☰ Compact' : '▤ Detailed'}</button
+	{#if !cardView}
+		<button class="btn btn-sm" title="Toggle compact / detailed rows" onclick={() => (dense = !dense)}
+			>{dense ? '☰ Compact' : '▤ Detailed'}</button
+		>
+	{/if}
+	<button
+		class="btn btn-sm"
+		title={cardView ? 'Switch to list view' : 'Switch to card (grid) view'}
+		onclick={() => (cardView = !cardView)}>{cardView ? '☷ List' : '▦ Cards'}</button
 	>
+	{#if cardView}
+		<button
+			class="btn btn-sm"
+			title="Toggle full-width cards"
+			aria-pressed={cardFull}
+			onclick={() => (cardFull = !cardFull)}>{cardFull ? '▭ Full' : '▥ Grid'}</button
+		>
+	{/if}
 	{#if !searching}
 		{#if selecting}
 			<button class="btn btn-sm" onclick={exitSelect}>Cancel</button>
@@ -563,6 +591,29 @@
      shared by the live buckets, search results, and the archive browse so they
      all render the same nesting (CCT-298 item 1). `allowSelect` gates the
      multi-select checkboxes (live buckets only); `hl` carries search terms. -->
+<!-- Card (grid) view of the main list (CCT-297 item 16): top-level sessions laid
+     out as detailed cards in a responsive grid. Subagents are omitted here (the
+     list view + the drawer still show them); the point is at-a-glance status. -->
+{#snippet cardGrid(rows: SessionListItem[])}
+	<div class="grid" class:full={cardFull}>
+		{#each rows as s (s.id)}
+			<SessionCard
+				session={s}
+				compact={false}
+				pendingCount={pending(s.id)}
+				onopen={(x) => (openSession = x)}
+				selectable={selecting}
+				selected={selected.has(s.id)}
+				onToggleSelect={toggleSelect}
+				swipeable
+				swipeLabel="Archive"
+				onSwipe={swipeArchive}
+				onTogglePin={togglePin}
+			/>
+		{/each}
+	</div>
+{/snippet}
+
 {#snippet nestedRows(
 	rows: SessionListItem[],
 	childGroups: Map<string, SubGroup[]>,
@@ -672,7 +723,11 @@
 	{:else if topLevel.length === 0 && !showArchived}
 		<div class="empty">No sessions — tick Archived or start one.</div>
 	{:else}
-		<div class="stack" class:tight={dense} class:badge-gutter={hasCollapsibleSubagents}>
+		<div
+			class="stack"
+			class:tight={dense && !cardView}
+			class:badge-gutter={!cardView && hasCollapsibleSubagents}
+		>
 			{#each groups as g (g.key)}
 				{#if g.key === 'dispatched'}
 					<!-- Dispatched group (CCT-279 items 6 + 7): collapsible as one unit
@@ -702,12 +757,12 @@
 						{g.label} <span class="count">{g.sessions.length}</span>
 					</div>
 				{/if}
-				{@render nestedRows(
-					g.key === 'dispatched' && dispatchedCollapsed ? [] : g.sessions,
-					childGroupsOf,
-					true,
-					[]
-				)}
+				{@const vis = g.key === 'dispatched' && dispatchedCollapsed ? [] : g.sessions}
+				{#if cardView}
+					{@render cardGrid(vis)}
+				{:else}
+					{@render nestedRows(vis, childGroupsOf, true, [])}
+				{/if}
 			{/each}
 		</div>
 	{/if}
@@ -872,6 +927,18 @@
 	}
 	.stack.tight {
 		gap: var(--sp-1);
+	}
+	/* Card (grid) view (CCT-297 item 16): responsive auto-fill columns; `full`
+	   collapses to a single full-width column. The grid is a child of the same
+	   `.stack` so it sits under each bucket header with normal spacing. */
+	.grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(20rem, 1fr));
+		gap: var(--sp-3);
+		align-items: start;
+	}
+	.grid.full {
+		grid-template-columns: 1fr;
 	}
 	/* Parent row (CCT-269): the card remains a normal full-width row. Count
 	   badge(s) are absolutely positioned before it so they don't affect row

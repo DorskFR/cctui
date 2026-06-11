@@ -88,5 +88,10 @@ export function saveMachinePrefs(machineId: string, prefs: MachineSpawnPrefs) {
 }
 export const VIEW_OPTS = 'cctui_view_opts';
 export const LIST_DENSITY = 'cctui_list_density';
+// Main session list layout: 'list' (rows, default) or 'card' (responsive grid
+// of detailed cards) — CCT-297 item 16.
+export const LIST_VIEW = 'cctui_list_view';
+// In card view, lay cards out full-width (one per row) instead of multi-column.
+export const CARD_FULL = 'cctui_card_full';
 // Whether the "Dispatched" session group is collapsed/hidden (CCT-279 item 6).
 export const DISPATCHED_COLLAPSED = 'cctui_dispatched_collapsed';
