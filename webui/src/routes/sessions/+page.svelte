@@ -480,22 +480,39 @@
 			<path d="m21 21-4.3-4.3" />
 		</svg>
 	</button>
-	<input
-		class="search"
-		class:open={searchOpen}
-		type="search"
-		placeholder="Search all chats…"
-		bind:value={rawQuery}
-		bind:this={searchEl}
-		onblur={onSearchBlur}
-		onkeydown={(e) => {
-			if (e.key === 'Escape') {
-				rawQuery = '';
-				searchOpen = false;
-				(e.currentTarget as HTMLInputElement).blur();
-			}
-		}}
-	/>
+	<div class="search-wrap" class:open={searchOpen}>
+		<input
+			class="search"
+			type="search"
+			placeholder="Search all chats…"
+			bind:value={rawQuery}
+			bind:this={searchEl}
+			onblur={onSearchBlur}
+			onkeydown={(e) => {
+				if (e.key === 'Escape') {
+					rawQuery = '';
+					searchOpen = false;
+					(e.currentTarget as HTMLInputElement).blur();
+				}
+			}}
+		/>
+		{#if rawQuery}
+			<!-- In-field clear (CCT-297 #22). onmousedown preventDefault keeps the
+			     input from blurring (which on mobile would collapse it) before the
+			     click clears the query. -->
+			<button
+				type="button"
+				class="search-clear"
+				aria-label="Clear search"
+				title="Clear search"
+				onmousedown={(e) => e.preventDefault()}
+				onclick={() => {
+					rawQuery = '';
+					searchEl?.focus();
+				}}>✕</button
+			>
+		{/if}
+	</div>
 	<label class="arch row">
 		<input type="checkbox" bind:checked={showArchived} /> Archived
 	</label>
@@ -736,15 +753,49 @@
 		align-self: center;
 		white-space: nowrap;
 	}
-	/* Fill all the space between the title and the Archived checkbox. */
+	/* Fill all the space between the title and the Archived checkbox; the wrapper
+	   is the flex item / positioning context for the in-field clear button. */
+	.search-wrap {
+		flex: 1;
+		min-width: 0;
+		position: relative;
+		display: flex;
+	}
 	.search {
 		flex: 1;
 		min-width: 0;
-		padding: var(--sp-1) var(--sp-3);
+		/* room on the right for the clear button so text doesn't run under it */
+		padding: var(--sp-1) calc(var(--sp-3) + 1.25rem) var(--sp-1) var(--sp-3);
 		font-size: var(--fs-sm);
 		border: 1px solid var(--border-strong);
 		border-radius: var(--r-md);
 		background: var(--bg-elevated);
+		color: var(--text);
+	}
+	/* Hide any browser-native search clear; we provide our own cross. */
+	.search::-webkit-search-cancel-button {
+		display: none;
+	}
+	.search-clear {
+		position: absolute;
+		top: 50%;
+		right: var(--sp-2);
+		transform: translateY(-50%);
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 1.25rem;
+		height: 1.25rem;
+		padding: 0;
+		border: none;
+		border-radius: 50%;
+		background: var(--bg-elevated-2, var(--border));
+		color: var(--text-faint);
+		font-size: var(--fs-xs);
+		line-height: 1;
+		cursor: pointer;
+	}
+	.search-clear:hover {
 		color: var(--text);
 	}
 	/* Desktop: the input always fills the bar; no toggle button. */
@@ -759,10 +810,11 @@
 			display: inline-flex;
 			align-items: center;
 		}
-		.search {
+		.search-wrap {
 			position: absolute;
 			inset: var(--sp-2) 0;
 			width: 2.25rem;
+			flex: none;
 			margin-left: auto;
 			opacity: 0;
 			pointer-events: none;
@@ -770,7 +822,7 @@
 				width 0.2s var(--ease),
 				opacity 0.15s var(--ease);
 		}
-		.search.open {
+		.search-wrap.open {
 			width: 100%;
 			opacity: 1;
 			pointer-events: auto;

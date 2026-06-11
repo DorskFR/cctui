@@ -155,6 +155,19 @@ function highlightDiff(s: string): string {
 		.join('\n');
 }
 
+// Wrap a highlighted code body in a positioned figure carrying a copy button
+// (CCT-297 #20). The button is plain markup; a single delegated listener
+// (installCodeCopy, src/lib/codecopy.ts) handles the click for every block,
+// including those rendered through {@html} in messages and tool-call panes.
+function codeBlockHtml(body: string, langAttr: string): string {
+	return (
+		`<div class="md-pre-wrap">` +
+		`<button class="md-copy" type="button" aria-label="Copy code" title="Copy code">Copy</button>` +
+		`<pre class="md-pre"${langAttr}><code>${body}</code></pre>` +
+		`</div>`
+	);
+}
+
 // ── Markdown ────────────────────────────────────────────────────────────────
 
 // Inline markdown passes (code, bold, italic, links) shared between the main
@@ -207,7 +220,7 @@ export function renderMarkdown(src: string, opts: { tables?: boolean } = {}): st
 		const lang = (info || '').trim().split(/\s+/)[0] ?? '';
 		const body = highlightCode(code.replace(/\n$/, ''), lang);
 		const cls = lang ? ` data-lang="${escapeHtml(lang)}"` : '';
-		const i = blocks.push(`<pre class="md-pre"${cls}><code>${body}</code></pre>`) - 1;
+		const i = blocks.push(codeBlockHtml(body, cls)) - 1;
 		// 's'-prefixed for the same reason as the slot placeholders in
 		// highlightCode: keep the bare index out of reach of digit-matching passes.
 		return `${BLOCK_L}s${i}${BLOCK_R}`;

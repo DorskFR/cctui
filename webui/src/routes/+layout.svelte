@@ -7,8 +7,14 @@
 	import BottomNav from '$lib/components/BottomNav.svelte';
 	import Toaster from '$lib/components/Toaster.svelte';
 	import Login from '$lib/components/Login.svelte';
+	import { installCodeCopy } from '$lib/codecopy';
 
 	let { children } = $props();
+
+	// One delegated listener for every code-block copy button (CCT-297 #20).
+	$effect(() => {
+		installCodeCopy();
+	});
 
 	const queryClient = new QueryClient({
 		defaultOptions: {

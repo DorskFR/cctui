@@ -504,3 +504,45 @@ pre {
 	border-radius: 2px;
 	padding: 0 1px;
 }
+
+/* Per-code-block copy button (CCT-297 #20). The block is wrapped in a positioned
+   figure; the button hovers in the top-right and reveals on hover (always visible
+   on touch, where there's no hover). Rendered inside {@html}, so global. */
+.md-pre-wrap {
+	position: relative;
+}
+.md-pre-wrap .md-copy {
+	position: absolute;
+	top: 4px;
+	right: 4px;
+	z-index: 1;
+	font: inherit;
+	font-size: var(--fs-xs, 12px);
+	line-height: 1;
+	padding: 3px 7px;
+	border-radius: var(--r-sm, 4px);
+	border: 1px solid var(--border, #444);
+	background: color-mix(in srgb, var(--bg-elevated, #222) 88%, transparent);
+	color: var(--text-faint, #aaa);
+	cursor: pointer;
+	opacity: 0;
+	transition: opacity 0.12s ease;
+}
+.md-pre-wrap:hover .md-copy,
+.md-pre-wrap .md-copy:focus-visible {
+	opacity: 1;
+}
+.md-pre-wrap .md-copy:hover {
+	color: var(--text, #eee);
+	border-color: var(--accent, #88c0d0);
+}
+.md-pre-wrap .md-copy.done {
+	color: var(--ok, #a3be8c);
+	border-color: var(--ok, #a3be8c);
+	opacity: 1;
+}
+@media (hover: none) {
+	.md-pre-wrap .md-copy {
+		opacity: 0.7;
+	}
+}

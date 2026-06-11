@@ -3,7 +3,7 @@
 	import { useVersion, useSessions } from '$lib/queries';
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { theme, THEMES } from '$lib/theme.svelte';
-	import { fontScale, SCALE_MIN, SCALE_MAX } from '$lib/fontscale.svelte';
+	import { fontScale, SCALE_LEVELS } from '$lib/fontscale.svelte';
 	import { notify } from '$lib/notify.svelte';
 	import { toasts } from '$lib/toast.svelte';
 
@@ -73,18 +73,22 @@
 		>
 			{notify.enabled ? '🔔' : '🔕'}
 		</button>
-		<label class="font-slider" title="UI font size">
+		<!-- UI font size as 5 discrete levels (CCT-297 #11): a native <select> styled
+		     like the theme picker. Discrete steps avoid the live-reflow "seizure" the
+		     continuous slider caused, and let the whole UI scale by one stable step
+		     per click. -->
+		<div class="font-pick btn btn-ghost btn-icon" title="UI font size">
 			<span aria-hidden="true">A</span>
-			<input
-				type="range"
-				min={SCALE_MIN}
-				max={SCALE_MAX}
-				step="0.05"
-				value={fontScale.current}
-				oninput={(e) => fontScale.set(Number((e.currentTarget as HTMLInputElement).value))}
+			<select
 				aria-label="UI font size"
-			/>
-		</label>
+				value={fontScale.levelId}
+				onchange={(e) => fontScale.set((e.currentTarget as HTMLSelectElement).value)}
+			>
+				{#each SCALE_LEVELS as l (l.id)}
+					<option value={l.id}>{l.label}</option>
+				{/each}
+			</select>
+		</div>
 		<!-- Theme picker (CCT-250 item 5): pick any palette directly, not just
 		     cycle. Falls back gracefully — the button still shows the active icon. -->
 		<div class="theme-pick btn btn-ghost btn-icon" title={`Theme: ${theme.label}`}>
@@ -185,19 +189,24 @@
 	.notify-on {
 		color: var(--accent);
 	}
-	/* Top-bar font-size slider (CCT-250 item 3) — drives the global UI scale.
-	   px geometry (not rem) like the rest of the header, so the track neither
-	   resizes nor reflows under the cursor while dragging (see `.hd`). */
-	.font-slider {
-		display: inline-flex;
-		align-items: center;
-		gap: 4px;
-		color: var(--text-faint);
-		font-size: 12px;
+	/* Top-bar font-size picker (CCT-297 #11) — 5 discrete levels driving the
+	   global UI scale. A native <select> overlaid transparently on an "A" icon
+	   button (same pattern as the theme picker below). Discrete steps replace the
+	   old continuous slider, which reflowed the whole UI per pixel of drag. */
+	.font-pick {
+		position: relative;
+		overflow: hidden;
+		font-weight: var(--fw-bold);
 	}
-	.font-slider input[type='range'] {
-		width: 64px;
-		accent-color: var(--accent);
+	.font-pick select {
+		position: absolute;
+		inset: 0;
+		width: 100%;
+		height: 100%;
+		opacity: 0;
+		cursor: pointer;
+		border: none;
+		background: none;
 	}
 	/* Theme picker: a native <select> overlaid transparently on the icon button
 	   so it gets the platform dropdown UI while keeping the icon affordance. */

@@ -12,7 +12,7 @@
 	import { mergeFiles, removeFileByName, fileCapError } from '$lib/attachments';
 	import { downloadConversationHtml, conversationToMarkdown } from '$lib/export';
 	import { toasts } from '$lib/toast.svelte';
-	import { fontScale, SCALE_MIN, SCALE_MAX } from '$lib/fontscale.svelte';
+	import { fontScale, SCALE_LEVELS } from '$lib/fontscale.svelte';
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { qk } from '$lib/queries';
 	import AdapterIcon from './AdapterIcon.svelte';
@@ -102,10 +102,21 @@
 		}
 	}
 	// Cycle a tag: off → include → exclude → off (CCT-250 item 2).
+	// 'include' is EXCLUSIVE (CCT-297 #21): selecting "only this" for a type clears
+	// any other type's include so the active selection is unambiguous (previously
+	// several could be included at once, which read as "only the last one wins").
+	// 'exclude' stays additive — you can hide multiple types independently.
 	function cycleTag(t: MsgType) {
 		const order: TagState[] = ['off', 'include', 'exclude'];
 		const i = order.indexOf(view.typeFilter[t]);
-		view.typeFilter = { ...view.typeFilter, [t]: order[(i + 1) % order.length] };
+		const next = order[(i + 1) % order.length];
+		const updated = { ...view.typeFilter, [t]: next };
+		if (next === 'include') {
+			for (const m of MSG_TYPES) {
+				if (m.id !== t && updated[m.id] === 'include') updated[m.id] = 'off';
+			}
+		}
+		view.typeFilter = updated;
 	}
 	// Whether a given message type passes the current tag filter.
 	const anyIncluded = $derived(MSG_TYPES.some((m) => view.typeFilter[m.id] === 'include'));
@@ -1198,15 +1209,15 @@
 			     while the conversation is open. Both write fontScale. -->
 			<label class="tg font" title="UI font size">
 				<span aria-hidden="true">A</span>
-				<input
-					type="range"
-					min={SCALE_MIN}
-					max={SCALE_MAX}
-					step="0.05"
-					value={fontScale.current}
-					oninput={(e) => fontScale.set(Number((e.currentTarget as HTMLInputElement).value))}
+				<select
+					value={fontScale.levelId}
+					onchange={(e) => fontScale.set((e.currentTarget as HTMLSelectElement).value)}
 					aria-label="UI font size"
-				/>
+				>
+					{#each SCALE_LEVELS as l (l.id)}
+						<option value={l.id}>{l.label}</option>
+					{/each}
+				</select>
 			</label>
 		</div>
 		<!-- Behavior toggle: distinct from filters/formatting. -->
@@ -2012,9 +2023,13 @@
 	.tg.font {
 		gap: var(--sp-2);
 	}
-	.tg.font input[type='range'] {
-		width: 80px; /* px (= 5rem@16) so the track doesn't resize under the cursor */
-		accent-color: var(--accent);
+	.tg.font select {
+		font: inherit;
+		color: var(--text);
+		background: var(--bg-elevated);
+		border: 1px solid var(--border);
+		border-radius: var(--r-sm);
+		padding: 2px 4px;
 	}
 	.tg.font span {
 		font-weight: var(--fw-bold);

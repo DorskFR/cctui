@@ -232,7 +232,7 @@
 		{#if dense}
 			{#if showStatusBadge}<span class="badge {statusBadgeClass(s.status)} tag">{s.status}</span>{/if}
 			{#if s.last_message_at}<span
-					class="faint sm"
+					class="faint sm ago"
 					title={timestampTooltip(s.registered_at, s.last_message_at, s.last_activity_at)}
 					>{relativeTime(s.last_message_at)}</span
 				>{/if}
@@ -263,7 +263,7 @@
 			<TokenUsage usage={u} cold={s.cache_cold} />
 			<div class="spacer"></div>
 			{#if s.last_message_at}<span
-					class="faint sm"
+					class="faint sm ago"
 					title={timestampTooltip(s.registered_at, s.last_message_at, s.last_activity_at)}
 					>{relativeTime(s.last_message_at)}</span
 				>{/if}
@@ -421,6 +421,11 @@
 		max-width: 14rem;
 		overflow: hidden;
 		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	/* Relative-time hint ("4m ago") must never wrap to a second line (CCT-297 #15). */
+	.ago {
+		flex: none;
 		white-space: nowrap;
 	}
 	/* Full working dir (detailed view) — break long paths rather than truncating,
