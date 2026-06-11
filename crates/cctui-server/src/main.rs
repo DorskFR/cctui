@@ -62,6 +62,7 @@ async fn main() -> anyhow::Result<()> {
         account_locks: Arc::new(dashmap::DashMap::new()),
         http_client: reqwest::Client::new(),
         pending_oauth_logins: Arc::new(dashmap::DashMap::new()),
+        account_usage_cache: Arc::new(dashmap::DashMap::new()),
     };
 
     let api_router = Router::new()
@@ -137,6 +138,7 @@ async fn main() -> anyhow::Result<()> {
             "/accounts/{id}",
             patch(routes::accounts::rename_account).delete(routes::accounts::delete_account),
         )
+        .route("/accounts/{id}/usage", get(routes::accounts::account_usage))
         .route("/machines/{machine_id}/commands/pending", get(routes::spawn::get_machine_commands))
         .route("/machines/{machine_id}/fs/dirs", get(routes::fs::list_dirs))
         .route("/me", get(routes::me::me))

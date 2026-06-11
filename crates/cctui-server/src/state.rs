@@ -75,4 +75,21 @@ pub struct AppState {
     /// In-memory, TTL-bounded, scoped to the authenticated user. Entries are
     /// single-use (deleted on finish) and lazily swept on access.
     pub pending_oauth_logins: crate::routes::accounts::PendingOAuthLogins,
+    /// Slow-refresh cache of per-account OAuth usage windows (CCT-306), keyed by
+    /// account id. Anthropic's usage endpoint rate-limits per access token, so we
+    /// serve a cached value and only re-fetch upstream past a TTL — the accounts
+    /// view polls lazily and many clients share one cache entry per account.
+    pub account_usage_cache: AccountUsageCache,
 }
+
+/// A cached usage fetch: when it was fetched and the JSON payload (the raw
+/// upstream usage windows). `None` payload means "fetched, but no usage" (e.g. a
+/// non-anthropic account) — still cached so we don't re-hit upstream.
+#[derive(Clone)]
+pub struct CachedUsage {
+    pub fetched_at: std::time::Instant,
+    pub usage: Option<serde_json::Value>,
+}
+
+/// Per-account usage cache (CCT-306).
+pub type AccountUsageCache = Arc<DashMap<Uuid, CachedUsage>>;

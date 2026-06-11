@@ -66,6 +66,30 @@ export interface OAuthAccount {
 	est_cost_usd: number;
 }
 
+/** One usage window from Anthropic's free OAuth usage API (CCT-306):
+ *  `utilization` is a 0–100 percentage of the window consumed, `resets_at` an
+ *  ISO timestamp. */
+export interface UsageWindow {
+	utilization: number | null;
+	resets_at: string | null;
+}
+
+/** Per-account subscription usage (CCT-306). `usage` is the raw upstream payload
+ *  (5h session + 7d weekly windows) for anthropic accounts, or `null` when the
+ *  provider has no usage API (Codex) or the account has no active windows — the
+ *  UI hides the chip in that case. `age_secs` reflects the slow-refresh cache. */
+export interface AccountUsage {
+	account_id: string;
+	provider: string;
+	usage: {
+		five_hour?: UsageWindow | null;
+		seven_day?: UsageWindow | null;
+		seven_day_opus?: UsageWindow | null;
+		seven_day_sonnet?: UsageWindow | null;
+	} | null;
+	age_secs: number;
+}
+
 /** Register payload — the refresh token is sent cleartext once, stored
  *  encrypted, and never read back. */
 export interface CreateAccount {
@@ -202,6 +226,9 @@ export const endpoints = {
 	renameAccount: (id: string, name: string) =>
 		api.patch<OAuthAccount>(`/accounts/${id}`, { name }),
 	deleteAccount: (id: string) => api.del<void>(`/accounts/${id}`),
+	/** Current subscription usage for an account (CCT-306). Free + tokenless;
+	 *  the server slow-refreshes a cache so polling never spams upstream. */
+	accountUsage: (id: string) => api.get<AccountUsage>(`/accounts/${id}/usage`),
 	oauthStart: (provider: string, userId?: string) =>
 		api.post<OAuthStartResponse>('/accounts/oauth/start', {
 			provider,
@@ -333,6 +360,26 @@ export const useAccounts = (enabled: () => boolean = () => true) =>
 			queryKey: ['accounts'],
 			queryFn: endpoints.accounts,
 			enabled: enabled(),
+		})),
+	);
+
+/** Per-account subscription usage (CCT-306). Lazy + slow-refresh: only fetched
+ *  while the accounts view is mounted (caller gates `enabled`), and re-polled on
+ *  a slow 3-minute interval that matches the server-side cache TTL so Anthropic's
+ *  rate-limited usage endpoint is never spammed. Codex accounts return `null`. */
+export const useAccountUsage = (
+	accountId: () => string,
+	enabled: () => boolean = () => true,
+) =>
+	createQuery(
+		toStore(() => ({
+			queryKey: ['account-usage', accountId()],
+			queryFn: () => endpoints.accountUsage(accountId()),
+			enabled: enabled(),
+			staleTime: 180_000,
+			refetchInterval: 180_000,
+			refetchOnWindowFocus: false,
+			retry: false,
 		})),
 	);
 

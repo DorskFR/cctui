@@ -458,3 +458,65 @@ async fn passthrough(
         StatusCode::INTERNAL_SERVER_ERROR
     })
 }
+
+/// Anthropic's free OAuth usage endpoint (CCT-306). Returns subscription window
+/// utilization (5h session + 7d weekly) WITHOUT consuming any tokens — it is not
+/// an inference call. Undocumented + caveat-accepted (same class as the OAuth
+/// token endpoints above); overridable via env to track upstream changes.
+pub fn anthropic_usage_url() -> String {
+    std::env::var("CCTUI_ANTHROPIC_OAUTH_USAGE_URL")
+        .unwrap_or_else(|_| "https://api.anthropic.com/api/oauth/usage".into())
+}
+
+/// `User-Agent` the usage endpoint requires (`claude-code/<version>`). Without a
+/// claude-code UA the endpoint drops the caller into an aggressively rate-limited
+/// bucket (persistent 429s). Overridable so we can bump the version it expects
+/// without a code redeploy.
+pub fn anthropic_usage_user_agent() -> String {
+    std::env::var("CCTUI_ANTHROPIC_USAGE_USER_AGENT").unwrap_or_else(|_| "claude-code/2.1.0".into())
+}
+
+/// Fetch the Anthropic OAuth usage windows for an account (CCT-306).
+///
+/// Reloads + decrypts the account, ensures a fresh access token (refreshing under
+/// the per-account mutex if needed), and calls Anthropic's free usage endpoint.
+/// Returns:
+///   * `Ok(Some(json))` — anthropic account, usage fetched
+///   * `Ok(None)` — no such account, or a non-anthropic provider (no usage API)
+///   * `Err(status)` — token refresh failed or upstream rejected (e.g. 429)
+///
+/// This makes NO inference request and costs no tokens. Callers MUST throttle it
+/// (the endpoint rate-limits per access token); see the usage cache in the route.
+pub async fn fetch_account_usage(
+    state: &AppState,
+    account_id: Uuid,
+) -> Result<Option<serde_json::Value>, StatusCode> {
+    let Some(acct) = reload_account(state, account_id).await else { return Ok(None) };
+    if acct.provider != "anthropic" {
+        // Codex/OpenAI has no equivalent free usage endpoint — degrade gracefully.
+        return Ok(None);
+    }
+    let access_token = current_access_token(state, &acct).await?;
+    let resp = state
+        .http_client
+        .get(anthropic_usage_url())
+        .header(reqwest::header::AUTHORIZATION, format!("Bearer {access_token}"))
+        .header(reqwest::header::USER_AGENT, anthropic_usage_user_agent())
+        .header("anthropic-beta", "oauth-2025-04-20")
+        .send()
+        .await
+        .map_err(|e| {
+            tracing::warn!(account = %account_id, "usage fetch transport error: {e}");
+            StatusCode::BAD_GATEWAY
+        })?;
+    let status = StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+    if !status.is_success() {
+        tracing::warn!(account = %account_id, %status, "usage fetch rejected");
+        return Err(status);
+    }
+    let json: serde_json::Value = resp.json().await.map_err(|e| {
+        tracing::warn!(account = %account_id, "usage decode error: {e}");
+        StatusCode::BAD_GATEWAY
+    })?;
+    Ok(Some(json))
+}

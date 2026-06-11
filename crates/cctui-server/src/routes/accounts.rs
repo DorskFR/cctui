@@ -639,6 +639,98 @@ fn urlencoding(s: &str) -> String {
     out
 }
 
+/// How long a cached usage fetch is served before we re-hit upstream (CCT-306).
+/// Anthropic's usage endpoint rate-limits per access token (safe at ~180s); we
+/// cache for a few minutes so a viewed accounts page + slow background poll never
+/// spams it, and many clients share one entry per account.
+const USAGE_CACHE_TTL: Duration = Duration::minutes(3);
+
+/// Usage windows surfaced per account (CCT-306). `usage` mirrors Anthropic's free
+/// OAuth usage payload (`five_hour`/`seven_day` utilization + reset timestamps);
+/// `None` means the provider has no usage API (Codex) or the account has no
+/// active windows — the webui hides the indicator in that case.
+#[derive(Debug, serde::Serialize)]
+pub struct AccountUsage {
+    pub account_id: Uuid,
+    pub provider: String,
+    /// Raw upstream usage JSON (passed through verbatim) or `null`.
+    pub usage: Option<serde_json::Value>,
+    /// Seconds since this usage was fetched upstream (0 = just now). Lets the UI
+    /// show staleness; values refresh on the slow cache TTL, not per request.
+    pub age_secs: u64,
+}
+
+/// `GET /api/v1/accounts/{id}/usage` — current subscription usage for an account
+/// (CCT-306). Free + tokenless: for anthropic accounts this hits Anthropic's
+/// OAuth usage endpoint (5h/7d window utilization), served from a slow-refresh
+/// per-account cache so we never spam the rate-limited upstream. Non-anthropic
+/// providers (Codex) have no such API → `usage: null` (the UI hides the chip).
+/// Ownership: a user may only read their own accounts; admin may read any.
+pub async fn account_usage(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<AccountUsage>, (StatusCode, Json<serde_json::Value>)> {
+    if ctx.role != TokenRole::Admin && require_user(&ctx).is_err() {
+        return Err(err(StatusCode::FORBIDDEN, "user or admin token required"));
+    }
+    // Authorize + resolve provider in one go. Admin (`ctx.user_id` = NULL) may
+    // read any account; a user only its own.
+    let provider: Option<String> = sqlx::query_scalar(
+        "SELECT provider FROM oauth_accounts \
+         WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)",
+    )
+    .bind(id)
+    .bind(ctx.user_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("db error: {e}");
+        err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
+    })?;
+    let Some(provider) = provider else {
+        return Err(err(StatusCode::NOT_FOUND, "no such account"));
+    };
+
+    // Serve a fresh-enough cached value without touching upstream.
+    if let Some(hit) = state.account_usage_cache.get(&id) {
+        if hit.fetched_at.elapsed() < USAGE_CACHE_TTL.to_std().unwrap_or_default() {
+            let age_secs = hit.fetched_at.elapsed().as_secs();
+            return Ok(Json(AccountUsage {
+                account_id: id,
+                provider,
+                usage: hit.usage.clone(),
+                age_secs,
+            }));
+        }
+    }
+
+    // Stale or absent → fetch upstream (anthropic only; Codex returns None).
+    let usage = match gateway::fetch_account_usage(&state, id).await {
+        Ok(u) => u,
+        Err(_) => {
+            // Upstream hiccup (e.g. 429/refresh fail): fall back to the last
+            // cached value if we have one rather than erroring the whole row.
+            if let Some(hit) = state.account_usage_cache.get(&id) {
+                let age_secs = hit.fetched_at.elapsed().as_secs();
+                return Ok(Json(AccountUsage {
+                    account_id: id,
+                    provider,
+                    usage: hit.usage.clone(),
+                    age_secs,
+                }));
+            }
+            // No prior value — surface as "no usage" so the UI just hides the chip.
+            None
+        }
+    };
+    state.account_usage_cache.insert(
+        id,
+        crate::state::CachedUsage { fetched_at: std::time::Instant::now(), usage: usage.clone() },
+    );
+    Ok(Json(AccountUsage { account_id: id, provider, usage, age_secs: 0 }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

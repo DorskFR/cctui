@@ -9,6 +9,7 @@
 	} from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
 	import { dateOnly, relativeTime, compact } from '$lib/format';
+	import UsageChip from '$lib/components/UsageChip.svelte';
 
 	const accounts = useAccounts();
 	const actions = useAccountActions();
@@ -195,7 +196,8 @@
 					<th class="col-name">Name</th>
 					{#if isAdmin}<th class="col-owner">Owner</th>{/if}
 					<th class="col-prov">Provider</th>
-					<th class="col-usage">Requests</th>
+					<th class="col-usage" title="Subscription usage from the provider's free OAuth usage API — 5h session + 7d weekly window utilization (Claude only)">Usage</th>
+						<th class="col-usage">Requests</th>
 					<th class="col-usage" title="Estimated from token usage — subscription accounts aren't metered per token">Cost (est.)</th>
 					<th class="col-used">Last used</th>
 					<th class="col-created">Created</th>
@@ -208,7 +210,8 @@
 						<td class="col-name"><span class="name">{a.name}</span></td>
 						{#if isAdmin}<td class="col-owner faint">{a.user_name ?? '—'}</td>{/if}
 						<td class="col-prov"><span class="badge">{providerLabel(a.provider)}</span></td>
-						<td class="col-usage faint">{compact(a.request_count)}</td>
+						<td class="col-usage"><UsageChip id={a.id} provider={a.provider} /></td>
+							<td class="col-usage faint">{compact(a.request_count)}</td>
 						<td class="col-usage faint" title={`${compact(a.total_tokens)} tokens`}>{usd(a.est_cost_usd)}</td>
 						<td class="col-used faint">{relativeTime(a.last_used_at)}</td>
 						<td class="col-created faint">{dateOnly(a.created_at)}</td>
