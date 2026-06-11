@@ -272,6 +272,12 @@ pub struct Driver {
     /// successful poll triggers an immediate reconciliation re-tail rather
     /// than waiting for the periodic cycle (CCT-253).
     churned: bool,
+    /// Spawn-time `--model`/`--effort` remembered per worker `short` (CCT-299).
+    /// Used as a fallback for the Status event when `state.json` isn't on disk
+    /// yet (freshly spawned) or transiently absent (`/clear` rotation), so the
+    /// session list still shows the model/effort we launched the worker with.
+    /// `Mutex` because `spawn` takes `&self` while the poll loop holds `&mut self`.
+    spawn_model_effort: std::sync::Mutex<HashMap<String, (Option<String>, Option<String>)>>,
 }
 
 #[derive(Debug, Clone)]
@@ -364,6 +370,7 @@ impl Driver {
             pending_asks: super::PendingAsks::default(),
             last_reconcile: Instant::now(),
             churned: false,
+            spawn_model_effort: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -889,6 +896,21 @@ impl Driver {
             respawn_flags.push("--model".to_owned());
             respawn_flags.push(model.to_owned());
         }
+        // Remember the spawn-time model/effort keyed by `short` (CCT-299) so the
+        // Status emit can fall back to it while `state.json` is still being
+        // written (or transiently gone across a `/clear`).
+        {
+            let model = spec.model.as_deref().map(str::trim).filter(|m| !m.is_empty());
+            let effort = spec.effort.as_deref().map(str::trim).filter(|e| !e.is_empty());
+            if model.is_some() || effort.is_some() {
+                if let Ok(mut map) = self.spawn_model_effort.lock() {
+                    map.insert(
+                        short.to_owned(),
+                        (model.map(str::to_owned), effort.map(str::to_owned)),
+                    );
+                }
+            }
+        }
         if let Some(settings) = ensure_hook_settings(&self.cfg.hook_socket_path) {
             let settings = settings.to_string_lossy().into_owned();
             args.push("--settings".to_owned());
@@ -1101,6 +1123,10 @@ impl Driver {
                             reason: EndReason::Completed,
                         })
                         .await;
+                        // Truly gone — drop the remembered spawn flags (CCT-299).
+                        if let Ok(mut m) = self.spawn_model_effort.lock() {
+                            m.remove(&job.short);
+                        }
                     }
                     // Drop the cached status so a later revive (worker reports
                     // alive again) is detected as a change and re-emitted.
@@ -1206,8 +1232,21 @@ impl Driver {
             let intent =
                 on_disk.as_ref().and_then(|s| s.intent.clone()).or_else(|| job.intent.clone());
             let activity = on_disk.as_ref().and_then(|s| s.activity.clone());
-            let model = on_disk.as_ref().and_then(|s| s.model.clone());
-            let effort = on_disk.as_ref().and_then(|s| s.effort.clone());
+            // Prefer the on-disk state.json; fall back to the spawn-time flags
+            // we remembered while state.json is absent/transient (CCT-299).
+            let spawned = self
+                .spawn_model_effort
+                .lock()
+                .ok()
+                .and_then(|m| m.get(&job.short).cloned());
+            let model = on_disk
+                .as_ref()
+                .and_then(|s| s.model.clone())
+                .or_else(|| spawned.as_ref().and_then(|(m, _)| m.clone()));
+            let effort = on_disk
+                .as_ref()
+                .and_then(|s| s.effort.clone())
+                .or_else(|| spawned.as_ref().and_then(|(_, e)| e.clone()));
             let children = on_disk.as_ref().map(StateJson::proto_children).unwrap_or_default();
 
             // NB: live `AskUserQuestion` surfacing is NOT derived from status

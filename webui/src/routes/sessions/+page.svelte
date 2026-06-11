@@ -12,7 +12,7 @@
 	import SubagentBadge from '$lib/components/SubagentBadge.svelte';
 	import ConversationDrawer from '$lib/components/ConversationDrawer.svelte';
 	import SpawnModal from '$lib/components/SpawnModal.svelte';
-	import { drafts, LIST_DENSITY, DISPATCHED_COLLAPSED, LIST_VIEW, CARD_FULL } from '$lib/drafts';
+	import { drafts, LIST_DENSITY, DISPATCHED_COLLAPSED, LIST_VIEW } from '$lib/drafts';
 	import { notify } from '$lib/notify.svelte';
 	import { tokenizeQuery } from '$lib/search';
 
@@ -22,16 +22,13 @@
 	});
 
 	// Main-list layout (CCT-297 item 16): 'list' rows (with subagent nesting) or
-	// 'card' — a responsive grid of detailed cards for at-a-glance status. Card
-	// view is top-level only (subagents stay visible in list view / the drawer).
-	// `cardFull` lays the cards out one-per-row instead of multi-column.
+	// 'card' — a responsive grid of cards for at-a-glance status, filling the full
+	// screen width (CCT-301 #4). Card view is top-level only (subagents stay
+	// visible in list view / the drawer). Density (compact/detailed) applies to
+	// both views and controls how many cards pack per row in grid view.
 	let cardView = $state(drafts.get(LIST_VIEW) === 'card');
-	let cardFull = $state(drafts.get(CARD_FULL) === '1');
 	$effect(() => {
 		drafts.set(LIST_VIEW, cardView ? 'card' : 'list');
-	});
-	$effect(() => {
-		drafts.set(CARD_FULL, cardFull ? '1' : '0');
 	});
 
 	// Collapse/hide the Dispatched group as one unit (CCT-279 item 6). Persisted.
@@ -436,18 +433,23 @@
 		return { topLevel, childGroups, hasCollapsible };
 	}
 
-	// Aggregated subagent cost for a parent (CCT-297 #19): the parent's own cost
-	// plus every subagent's, with the agent count. Null when there are no agents.
+	// Aggregated subagent usage for a parent (CCT-297 #19, tokens per CCT-301 #2):
+	// the parent's own total tokens plus every subagent's, with the agent count.
+	// Reported in tokens (not dollars). Null when there are no agents.
+	const totalTokens = (u: SessionListItem['token_usage']) =>
+		Number(u.tokens_in) +
+		Number(u.tokens_out) +
+		Number(u.cache_read_tokens) +
+		Number(u.cache_creation_tokens);
 	function costRollup(
 		s: SessionListItem,
 		groups: SubGroup[]
-	): { cost: number; count: number } | null {
+	): { tokens: number; count: number } | null {
 		const agents = groups.flatMap((g) => g.agents);
 		if (agents.length === 0) return null;
-		const cost =
-			Number(s.token_usage.cost_usd) +
-			agents.reduce((n, a) => n + Number(a.token_usage.cost_usd), 0);
-		return { cost, count: agents.length };
+		const tokens =
+			totalTokens(s.token_usage) + agents.reduce((n, a) => n + totalTokens(a.token_usage), 0);
+		return { tokens, count: agents.length };
 	}
 
 	const liveNest = $derived(nest(items));
@@ -555,24 +557,23 @@
 	<label class="arch row">
 		<input type="checkbox" bind:checked={showArchived} /> Archived
 	</label>
-	{#if !cardView}
-		<button class="btn btn-sm" title="Toggle compact / detailed rows" onclick={() => (dense = !dense)}
-			>{dense ? '☰ Compact' : '▤ Detailed'}</button
-		>
-	{/if}
+	<!-- View controls (CCT-301 #4): two independent icon toggles instead of the
+	     confusing list/compact/card/grid quartet — one for layout (list ⇄ grid),
+	     one for density (compact ⇄ detailed). Grid fills the screen width. -->
 	<button
-		class="btn btn-sm"
-		title={cardView ? 'Switch to list view' : 'Switch to card (grid) view'}
-		onclick={() => (cardView = !cardView)}>{cardView ? '☷ List' : '▦ Cards'}</button
+		class="btn btn-sm icon-toggle"
+		title={cardView ? 'List view' : 'Grid view'}
+		aria-pressed={cardView}
+		aria-label={cardView ? 'Switch to list view' : 'Switch to grid view'}
+		onclick={() => (cardView = !cardView)}>{cardView ? '☰' : '▦'}</button
 	>
-	{#if cardView}
-		<button
-			class="btn btn-sm"
-			title="Toggle full-width cards"
-			aria-pressed={cardFull}
-			onclick={() => (cardFull = !cardFull)}>{cardFull ? '▭ Full' : '▥ Grid'}</button
-		>
-	{/if}
+	<button
+		class="btn btn-sm icon-toggle"
+		title={dense ? 'Detailed' : 'Compact'}
+		aria-pressed={!dense}
+		aria-label={dense ? 'Switch to detailed' : 'Switch to compact'}
+		onclick={() => (dense = !dense)}>{dense ? '▤' : '▥'}</button
+	>
 	{#if !searching}
 		{#if selecting}
 			<button class="btn btn-sm" onclick={exitSelect}>Cancel</button>
@@ -609,11 +610,11 @@
      out as detailed cards in a responsive grid. Subagents are omitted here (the
      list view + the drawer still show them); the point is at-a-glance status. -->
 {#snippet cardGrid(rows: SessionListItem[])}
-	<div class="grid" class:full={cardFull}>
+	<div class="grid" class:dense>
 		{#each rows as s (s.id)}
 			<SessionCard
 				session={s}
-				compact={false}
+				compact={dense}
 				pendingCount={pending(s.id)}
 				onopen={(x) => (openSession = x)}
 				selectable={selecting}
@@ -944,17 +945,27 @@
 	.stack.tight {
 		gap: var(--sp-1);
 	}
-	/* Card (grid) view (CCT-297 item 16): responsive auto-fill columns; `full`
-	   collapses to a single full-width column. The grid is a child of the same
-	   `.stack` so it sits under each bucket header with normal spacing. */
+	/* Card (grid) view (CCT-297 item 16, CCT-301 #4): responsive auto-fill columns
+	   that BREAK OUT of the centered --content-max container (full-bleed) so the
+	   cards fill the whole screen width with as many columns as fit, rather than
+	   being capped at ~2 columns inside the 896px column. `dense` packs more,
+	   smaller cards per row; the detailed (default) cards are larger. */
 	.grid {
 		display: grid;
 		grid-template-columns: repeat(auto-fill, minmax(20rem, 1fr));
 		gap: var(--sp-3);
 		align-items: start;
+		/* full-bleed: escape the .container max-width and span the viewport */
+		width: 100vw;
+		position: relative;
+		left: 50%;
+		margin-left: -50vw;
+		box-sizing: border-box;
+		padding-inline: max(var(--sp-4), var(--safe-left)) max(var(--sp-4), var(--safe-right));
 	}
-	.grid.full {
-		grid-template-columns: 1fr;
+	.grid.dense {
+		grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+		gap: var(--sp-2);
 	}
 	/* Parent row (CCT-269): the card remains a normal full-width row. Count
 	   badge(s) are absolutely positioned before it so they don't affect row

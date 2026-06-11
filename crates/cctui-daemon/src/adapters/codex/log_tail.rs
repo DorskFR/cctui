@@ -238,6 +238,15 @@ fn read_new_lines(path: &Path, offset: u64, local_id: &str) -> std::io::Result<V
 
 fn parse_line(local_id: &str, line: &str) -> AdapterEvent {
     if let Ok(value) = serde_json::from_str::<Value>(line) {
+        // `turn_context` rollout lines carry the model + reasoning effort the
+        // session runs on (CCT-299). Surface them as a Status so discovered
+        // (log-tailed) codex sessions render model/effort in the list, instead
+        // of letting the line fall through as a meaningless "message".
+        if value.get("type").and_then(Value::as_str) == Some("turn_context") {
+            if let Some(status) = turn_context_status(local_id, &value) {
+                return status;
+            }
+        }
         // Heuristic: lines that look like tool calls.
         if value.get("tool").is_some()
             || value.get("function_call").is_some()
@@ -251,6 +260,36 @@ fn parse_line(local_id: &str, line: &str) -> AdapterEvent {
         local_id: local_id.to_owned(),
         payload: json!({"role": "assistant", "text": line}),
     }
+}
+
+/// Extract model + reasoning effort from a `turn_context` rollout line and build
+/// a `Status` event (CCT-299). The model lives at `payload.model`; effort at
+/// `payload.collaboration_mode.settings.reasoning_effort` (newer codex) or a
+/// top-level `payload.reasoning_effort` fallback — both may be null. Returns
+/// `None` when neither is present so we don't emit an empty Status.
+fn turn_context_status(local_id: &str, value: &Value) -> Option<AdapterEvent> {
+    let p = value.get("payload")?;
+    let str_at = |v: &Value, ptr: &str| {
+        v.pointer(ptr).and_then(Value::as_str).map(str::to_owned).filter(|s| !s.is_empty())
+    };
+    let model = str_at(p, "/model");
+    let effort = str_at(p, "/collaboration_mode/settings/reasoning_effort")
+        .or_else(|| str_at(p, "/reasoning_effort"));
+    if model.is_none() && effort.is_none() {
+        return None;
+    }
+    Some(AdapterEvent::Status {
+        local_id: local_id.to_owned(),
+        tempo: None,
+        state: None,
+        detail: None,
+        activity: None,
+        name: None,
+        intent: None,
+        model,
+        effort,
+        children: vec![],
+    })
 }
 
 #[cfg(test)]
@@ -397,5 +436,35 @@ mod tests {
     fn parse_line_handles_plain_text() {
         let evt = parse_line("s1", "hello world");
         assert!(matches!(evt, AdapterEvent::Message { .. }));
+    }
+
+    #[test]
+    fn turn_context_line_emits_status_with_model_and_effort() {
+        let line = r#"{"type":"turn_context","payload":{"model":"gpt-5.5","collaboration_mode":{"settings":{"reasoning_effort":"high"}}}}"#;
+        match parse_line("s1", line) {
+            AdapterEvent::Status { model, effort, .. } => {
+                assert_eq!(model.as_deref(), Some("gpt-5.5"));
+                assert_eq!(effort.as_deref(), Some("high"));
+            }
+            other => panic!("expected Status, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn turn_context_with_null_effort_still_surfaces_model() {
+        let line = r#"{"type":"turn_context","payload":{"model":"gpt-5.5","collaboration_mode":{"settings":{"reasoning_effort":null}}}}"#;
+        match parse_line("s1", line) {
+            AdapterEvent::Status { model, effort, .. } => {
+                assert_eq!(model.as_deref(), Some("gpt-5.5"));
+                assert_eq!(effort, None);
+            }
+            other => panic!("expected Status, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn turn_context_without_model_or_effort_falls_through_to_message() {
+        let line = r#"{"type":"turn_context","payload":{"cwd":"/w"}}"#;
+        assert!(matches!(parse_line("s1", line), AdapterEvent::Message { .. }));
     }
 }

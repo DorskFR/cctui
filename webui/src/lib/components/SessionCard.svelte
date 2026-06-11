@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { SessionListItem } from '@bindings/SessionListItem';
-	import { relativeTime, uptime, statusBadgeClass, timestampTooltip } from '$lib/format';
+	import { relativeTime, uptime, statusBadgeClass, timestampTooltip, compact } from '$lib/format';
 	import MachineBadge from './MachineBadge.svelte';
 	import TokenUsage from './TokenUsage.svelte';
 	import AdapterIcon from './AdapterIcon.svelte';
@@ -45,10 +45,10 @@
 		// Pin/star toggle (CCT-267): when provided, a star button appears in the
 		// header. Pinned sessions sort to the top and skip auto-archive.
 		onTogglePin?: (s: SessionListItem) => void;
-		// Rolled-up subagent cost (CCT-297 #19): on a parent that spawned
-		// subagents, the parent's own cost plus the aggregated cost of all its
-		// subagents, with the subagent count. Shown as an extra chip.
-		subagentCost?: { cost: number; count: number } | null;
+		// Rolled-up subagent usage (CCT-297 #19): on a parent that spawned
+		// subagents, the parent's own tokens plus the aggregated tokens of all its
+		// subagents, with the subagent count. Reported in tokens (CCT-301 #2).
+		subagentCost?: { tokens: number; count: number } | null;
 	} = $props();
 
 	const s = $derived(session);
@@ -79,7 +79,6 @@
 	const u = $derived(s.token_usage);
 	// Subagent cost rollup (CCT-297 #19): only meaningful when there are agents.
 	const rollup = $derived(subagentCost && subagentCost.count > 0 ? subagentCost : null);
-	const fmtCost = (c: number) => (c >= 1 ? `$${c.toFixed(2)}` : `$${c.toFixed(3)}`);
 	// CCT-233: the active/inactive status badges are pure noise — liveness is
 	// already conveyed by the colored dot. Only keep the badge for the meaningful
 	// lifecycle states ("new", "archived").
@@ -248,8 +247,8 @@
 		{#if s.model}<span class="muted sm model">{s.model}{s.effort ? ` · ${s.effort}` : ''}</span>{/if}
 		{#if rollup}<span
 				class="rollup sm"
-				title="Total cost incl. {rollup.count} subagent{rollup.count === 1 ? '' : 's'}"
-				>Σ {fmtCost(rollup.cost)}</span
+				title="Total tokens incl. {rollup.count} subagent{rollup.count === 1 ? '' : 's'}"
+				>Σ {compact(rollup.tokens)} tok</span
 			>{/if}
 		<AdapterIcon adapter={s.adapter_id} size={16} />
 	</div>
@@ -276,8 +275,8 @@
 			<TokenUsage usage={u} cold={s.cache_cold} />
 			{#if rollup}<span
 					class="rollup sm"
-					title="Parent + {rollup.count} subagent{rollup.count === 1 ? '' : 's'} aggregated cost"
-					>Σ {fmtCost(rollup.cost)} · {rollup.count} agent{rollup.count === 1 ? '' : 's'}</span
+					title="Parent + {rollup.count} subagent{rollup.count === 1 ? '' : 's'} aggregated tokens"
+					>Σ {compact(rollup.tokens)} tok · {rollup.count} agent{rollup.count === 1 ? '' : 's'}</span
 				>{/if}
 			<div class="spacer"></div>
 			{#if s.last_message_at}<span

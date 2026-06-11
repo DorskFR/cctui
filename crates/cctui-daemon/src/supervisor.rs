@@ -275,7 +275,10 @@ fn stage_files_result(
     local_id: &str,
     uploads: &[cctui_proto::adapter::BootstrapFile],
 ) -> DaemonFrameUp {
-    let result = if adapter_id == "claude-code" {
+    // Staging is filesystem-only (writes to /tmp/cctui-uploads/<id>/ and returns
+    // absolute paths the message text references), so it's adapter-agnostic —
+    // codex reads staged file paths just like claude does (CCT-300).
+    let result = if adapter_id == "claude-code" || adapter_id == "codex" {
         crate::adapters::claude_code::stage_mid_chat_files(local_id, uploads)
     } else {
         Err(anyhow::anyhow!("adapter {adapter_id} does not support mid-chat file staging"))

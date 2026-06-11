@@ -596,8 +596,11 @@
 	// localStorage, so unlike `input` these don't survive a reload — the draft
 	// text does). On send we upload first, then append the staged paths under
 	// the message text (same convention as spawn-time uploads) so the agent
-	// reads them. Only claude-code supports mid-chat staging today.
-	const supportsAttachments = $derived(session.adapter_id === 'claude-code');
+	// reads them. Staging is filesystem-only, so both claude-code and codex
+	// support it — this also enables large-paste masking for codex (CCT-300).
+	const supportsAttachments = $derived(
+		session.adapter_id === 'claude-code' || session.adapter_id === 'codex'
+	);
 	let attachments = $state<File[]>([]);
 	let uploading = $state(false);
 	let dragActive = $state(false);
@@ -972,6 +975,11 @@
 
 	let renaming = $state(false);
 	let newName = $state(session.name ?? '');
+	// Mobile header overflow menu (CCT-301 #7): on narrow screens only Stop +
+	// Archive stay inline; the rest (font size, rename, copy link, copy markdown,
+	// export) collapse into a "⋯" flyout. Kept open while renaming so the ✓ save
+	// button is reachable.
+	let moreOpen = $state(false);
 	async function doRename() {
 		const n = newName.trim();
 		renaming = false;
@@ -1183,6 +1191,25 @@
 					<span class="truncate name">{headTitle}</span>
 				{/if}
 			</div>
+			<!-- Secondary actions (CCT-301 #7): inline on desktop, collapsed into the
+			     ⋯ flyout on mobile so a long title + many buttons no longer overflow. -->
+			<div class="secondary" class:open={moreOpen || renaming}>
+			<!-- UI font size (CCT-301 #6): the SAME discrete "A" control as the main
+			     window header (CCT-297 #11), promoted out of the formatting bar up to
+			     this top-level row so scaling is reachable without scanning the
+			     JSON/Diff/Tables toggles. Both write the single global fontScale. -->
+			<div class="font-pick btn btn-ghost btn-icon" title="UI font size">
+				<span aria-hidden="true">A</span>
+				<select
+					aria-label="UI font size"
+					value={fontScale.levelId}
+					onchange={(e) => fontScale.set((e.currentTarget as HTMLSelectElement).value)}
+				>
+					{#each SCALE_LEVELS as l (l.id)}
+						<option value={l.id}>{l.label}</option>
+					{/each}
+				</select>
+			</div>
 			{#if renaming}
 				<button class="tapbtn" aria-label="Save" onclick={doRename}>✓</button>
 			{:else}
@@ -1230,6 +1257,15 @@
 					<path d="M4 19h16" />
 				</svg>
 			</button>
+			</div>
+			<!-- Mobile-only overflow toggle (CCT-301 #7); hidden on desktop. -->
+			<button
+				class="tapbtn more"
+				aria-label="More actions"
+				aria-expanded={moreOpen}
+				title="More actions"
+				onclick={() => (moreOpen = !moreOpen)}>⋯</button
+			>
 			{#if !archived}
 				<button class="tapbtn interrupt" aria-label="Interrupt turn" title="Interrupt the in-flight turn" onclick={doInterrupt}>
 					<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
@@ -1282,21 +1318,6 @@
 			<button type="button" class="fmt" class:on={view.prettyJson} aria-pressed={view.prettyJson} onclick={() => (view.prettyJson = !view.prettyJson)}>JSON</button>
 			<button type="button" class="fmt" class:on={view.prettyDiff} aria-pressed={view.prettyDiff} onclick={() => (view.prettyDiff = !view.prettyDiff)}>Diff</button>
 			<button type="button" class="fmt" class:on={view.prettyTables} aria-pressed={view.prettyTables} onclick={() => (view.prettyTables = !view.prettyTables)} title="Render markdown tables as tables">Tables</button>
-			<!-- Second control for the SINGLE global UI scale (CCT-265): same
-			     setting the header slider drives, exposed here so it's reachable
-			     while the conversation is open. Both write fontScale. -->
-			<label class="tg font" title="UI font size">
-				<span aria-hidden="true">A</span>
-				<select
-					value={fontScale.levelId}
-					onchange={(e) => fontScale.set((e.currentTarget as HTMLSelectElement).value)}
-					aria-label="UI font size"
-				>
-					{#each SCALE_LEVELS as l (l.id)}
-						<option value={l.id}>{l.label}</option>
-					{/each}
-				</select>
-			</label>
 		</div>
 		<!-- Behavior toggle: distinct from filters/formatting. -->
 		<div class="behbar row row-wrap" role="group" aria-label="Behavior">
@@ -1409,18 +1430,25 @@
 						{/if}
 					{/if}
 					<span class="line-actions">
+						<!-- Copy-as-Markdown uses the same markdown glyph as the
+						     conversation-level copy (CCT-301 #5); save-as-image uses a
+						     plain image icon and sits right next to it (CCT-301 #1). -->
 						<button
 							class="btn btn-ghost copy"
 							aria-label="Copy as Markdown"
 							title="Copy this message as Markdown"
-							onclick={() => copyLineMarkdown(ln)}>⧉</button
+							onclick={() => copyLineMarkdown(ln)}
 						>
+							<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M7 15V9l3 3 3-3v6" /><path d="m15 11 2 2 2-2" /></svg>
+						</button>
 						<button
 							class="btn btn-ghost copy"
 							aria-label="Save as image"
 							title="Save this message as an image"
-							onclick={(e) => saveLineImage(e, ln)}>🖼</button
+							onclick={(e) => saveLineImage(e, ln)}
 						>
+							<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.8" /><path d="m21 15-4.5-4.5L7 21" /></svg>
+						</button>
 					</span>
 				</div>
 				{#if ln.html}
@@ -1638,6 +1666,36 @@
 		display: flex;
 		align-items: center;
 		gap: var(--sp-2);
+		position: relative;
+	}
+	/* Secondary actions: inline on desktop, ⋯ flyout on mobile (CCT-301 #7). */
+	.secondary {
+		display: contents;
+	}
+	.more {
+		display: none;
+	}
+	@media (max-width: 959px) {
+		.more {
+			display: inline-flex;
+		}
+		.secondary {
+			display: none;
+			position: absolute;
+			top: calc(100% + var(--sp-1));
+			right: 0;
+			z-index: 5;
+			flex-direction: column;
+			gap: var(--sp-1);
+			padding: var(--sp-2);
+			background: var(--bg-elevated-2);
+			border: 1px solid var(--border-strong);
+			border-radius: var(--r-md);
+			box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+		}
+		.secondary.open {
+			display: flex;
+		}
 	}
 	.dtitle {
 		flex: 1;
@@ -1661,6 +1719,24 @@
 		background: var(--bg-elevated-2);
 		border: 1px solid var(--border-strong);
 		color: var(--text);
+	}
+	/* UI font-size picker promoted to the header row (CCT-301 #6) — identical
+	   pattern to the main-window control: a native <select> overlaid transparently
+	   on an "A" icon button. */
+	.font-pick {
+		position: relative;
+		overflow: hidden;
+		font-weight: var(--fw-bold);
+	}
+	.font-pick select {
+		position: absolute;
+		inset: 0;
+		width: 100%;
+		height: 100%;
+		opacity: 0;
+		cursor: pointer;
+		border: none;
+		background: none;
 	}
 	.tapbtn.back {
 		font-size: 1.8rem;
@@ -1913,10 +1989,16 @@
 		gap: var(--sp-1);
 	}
 	.copy {
-		padding: 0 var(--sp-2);
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		padding: var(--sp-1);
 		min-height: auto;
-		font-size: var(--fs-lg);
 		line-height: 1;
+		color: var(--text-muted);
+	}
+	.copy:hover {
+		color: var(--text);
 	}
 	.bubble {
 		padding: var(--sp-2) var(--sp-3);
@@ -2118,20 +2200,6 @@
 		max-height: 22rem;
 		overflow: auto;
 		font-size: calc(var(--fs-sm) - 0.0625rem);
-	}
-	.tg.font {
-		gap: var(--sp-2);
-	}
-	.tg.font select {
-		font: inherit;
-		color: var(--text);
-		background: var(--bg-elevated);
-		border: 1px solid var(--border);
-		border-radius: var(--r-sm);
-		padding: 2px 4px;
-	}
-	.tg.font span {
-		font-weight: var(--fw-bold);
 	}
 	/* Jump-to-bottom pill (CCT-161 item 7) — anchored to the bottom of the chat
 	   display area (inside .conv-wrap), so it never collides with the composer

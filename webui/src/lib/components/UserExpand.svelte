@@ -114,7 +114,10 @@
 			{#each shownMachines as mc (mc.id)}
 				{@const system = mc.kind === 'dispatch'}
 				<div class="sub-row">
-					<div class="stack info">
+					<!-- One compact horizontal line per machine (CCT-301 #3): badge,
+					     key preview and "seen" sit inline instead of stacking into a
+					     tall 3-line block. Wraps only when too narrow. -->
+					<div class="info info-inline">
 						<span class="row badge-line">
 							<!-- Clicking the badge opens the color popover (CCT-251). -->
 							<button
@@ -259,6 +262,24 @@
 		min-width: 0;
 		gap: 0;
 		overflow: hidden;
+	}
+	/* Machine rows (CCT-301 #3): lay the badge, key preview and "seen" out on a
+	   single horizontal line so each machine is one compact row, not a tall
+	   3-line stack. Wraps to a second line only when the column is too narrow. */
+	.info-inline {
+		display: flex;
+		flex-direction: row;
+		align-items: center;
+		flex-wrap: wrap;
+		column-gap: var(--sp-3);
+		row-gap: var(--sp-1);
+		overflow: visible;
+	}
+	.info-inline > .badge-line {
+		flex: 0 0 auto;
+	}
+	.info-inline > .mono {
+		flex: 0 1 auto;
 	}
 	/* The mono key/token preview and the "seen…" line must not force overflow —
 	   ellipsize them within the column. */

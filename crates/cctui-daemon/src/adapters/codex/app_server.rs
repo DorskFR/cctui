@@ -729,10 +729,13 @@ impl CodexSession {
                             );
                             self.live.lock().await.insert(local_id.clone(), cmd_tx.clone());
                             registered = true;
-                            // Surface the configured reasoning effort so the
-                            // session list shows it (claude gets this for free
-                            // via state.json; codex has no equivalent feed).
-                            if let Some(effort) = self.cfg.reasoning_effort.clone() {
+                            // Surface the configured model + reasoning effort so
+                            // the session list shows them (claude gets this for
+                            // free via state.json; codex has no equivalent feed).
+                            // Emit when either is known (CCT-299).
+                            let model = self.cfg.model.clone();
+                            let effort = self.cfg.reasoning_effort.clone();
+                            if model.is_some() || effort.is_some() {
                                 self.events
                                     .send(AdapterEvent::Status {
                                         local_id: local_id.clone(),
@@ -742,8 +745,8 @@ impl CodexSession {
                                         activity: None,
                                         name: None,
                                         intent: None,
-                                        model: None,
-                                        effort: Some(effort),
+                                        model,
+                                        effort,
                                         children: vec![],
                                     })
                                     .await
