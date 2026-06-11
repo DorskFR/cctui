@@ -96,8 +96,11 @@ RUN npm install -g \
 # sandbox (iptables, overlayfs, context pack), then cctui-supervisor setuids to
 # this user before exec'ing the daemon. A real home keeps per-session agent
 # state (~/.claude, ~/.codex, ~/.mcp.json, ~/.npmrc, ~/.gnupg) writable.
-RUN groupadd --gid 1000 worker \
-    && useradd --uid 1000 --gid 1000 --create-home --home-dir /home/worker worker
+# The node base image already occupies uid/gid 1000 with a `node` user, so
+# rename it to `worker` and relocate its home rather than create a duplicate.
+RUN groupmod --new-name worker node \
+    && usermod --login worker --home /home/worker --move-home node \
+    && chmod 0755 /home/worker
 
 COPY --from=builder /app/target/release/cctui-daemon       /usr/local/bin/cctui-daemon
 COPY --from=builder /app/target/release/cctui-guard-proxy  /usr/local/bin/cctui-guard-proxy
