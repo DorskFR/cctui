@@ -458,6 +458,13 @@
 	.meta {
 		gap: var(--sp-2);
 	}
+	/* CCT-308 item 1: the footer (token usage + rollup + relative time) is a
+	   no-wrap row that could run past a narrow viewport; let it wrap so the
+	   detailed list row never overflows horizontally. */
+	.foot {
+		flex-wrap: wrap;
+		row-gap: var(--sp-1);
+	}
 	.sm {
 		font-size: var(--fs-xs);
 	}
@@ -472,6 +479,18 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+	/* CCT-308 item 1: on narrow viewports a 14rem model label + title + badges in
+	   the no-wrap top row ran wider than the screen, and the page clips horizontal
+	   overflow → the right edge of detailed list rows was unreachable. Cap the
+	   model label hard and let the top row wrap so nothing is pushed off-screen. */
+	@media (max-width: 639px) {
+		.top {
+			flex-wrap: wrap;
+		}
+		.model {
+			max-width: 8rem;
+		}
 	}
 	/* Aggregated subagent cost chip (CCT-297 #19). */
 	.rollup {

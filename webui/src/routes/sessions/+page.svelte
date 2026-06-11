@@ -867,11 +867,23 @@
 		   which only stretched text buttons → the icon-only search button sat
 		   at a different height). */
 		align-items: center;
+		/* CCT-308 item 3: the toolbar is a no-wrap flex row whose buttons are
+		   `flex:none` + `white-space:nowrap` (they can't shrink). Bumping the UI
+		   scale grew the title + button text past the viewport width; since the
+		   page clips horizontal overflow, the controls were pushed off-frame and
+		   unreachable. Let the toolbar wrap so controls reflow onto a second line
+		   instead of overflowing, keeping the title + every action in-frame at any
+		   scale. */
+		flex-wrap: wrap;
 		background: var(--bg);
 	}
 	.page-title {
-		font-size: var(--fs-2xl);
+		/* CCT-308 item 3: the title is toolbar chrome, not content — pin it to a
+		   fixed px size (1.75rem @16px = 28px) so the UI font scale doesn't grow
+		   it and shove the action buttons out of frame. */
+		font-size: 28px;
 		align-self: center;
+		flex: none;
 	}
 	/* View picker (CCT-307): a native <select> overlaid transparently on a
 	   labelled trigger (same pattern as the header theme/font pickers) so it gets
@@ -1044,9 +1056,17 @@
 		gap: var(--sp-2);
 		grid-template-columns: repeat(2, minmax(0, 1fr));
 	}
-	@media (max-width: 32rem) {
+	/* CCT-308 item 2: on phones a single full-width card per row read like a wide
+	   detailed list row, not a card. Force the card grid to 2 narrow columns on
+	   mobile (for BOTH detailed full-bleed and compact .narrow) so each card is
+	   half-viewport wide — its contents then stack vertically and it reads as a
+	   proper card. The detailed-grid minmax(20rem) otherwise resolved to a single
+	   column below ~40rem; override the template here so 2 columns hold. */
+	@media (max-width: 639px) {
+		.grid,
 		.grid.narrow {
-			grid-template-columns: 1fr;
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+			gap: var(--sp-2);
 		}
 	}
 	/* Parent row (CCT-269): the card remains a normal full-width row. Count
