@@ -211,9 +211,6 @@
 		if (pagerActive) loadPage(true);
 	});
 
-	const liveResults = $derived(pageRows.filter((s) => s.status !== 'archived'));
-	const archivedResults = $derived(pageRows.filter((s) => s.status === 'archived'));
-
 	// ── Multi-select / batch archive (CCT-172) ─────────────────────────────
 	// Applies to the live buckets only (always non-archived → always archives).
 	let selecting = $state(false);
@@ -328,17 +325,6 @@
 	});
 
 	const items = $derived($sessions.data?.sessions ?? []);
-	const ids = $derived(new Set(items.map((s) => s.id)));
-	const childrenOf = $derived.by(() => {
-		const map = new Map<string, SessionListItem[]>();
-		for (const s of items) {
-			if (s.parent_id && ids.has(s.parent_id)) {
-				map.set(s.parent_id, [...(map.get(s.parent_id) ?? []), s]);
-			}
-		}
-		return map;
-	});
-	const topLevel = $derived(items.filter((s) => !s.parent_id || !ids.has(s.parent_id)));
 
 	// Workflow-tool subagents (CCT-225) carry a `workflow_run_id` in their
 	// session metadata. A single run can spawn 100+ agents, so rather than
@@ -369,52 +355,78 @@
 	}
 	const runningCount = (agents: SessionListItem[]) =>
 		agents.filter((a) => a.status !== 'archived' && a.liveness !== 'dead' && !a.hibernated).length;
-	const childGroupsOf = $derived.by(() => {
-		const map = new Map<string, SubGroup[]>();
-		for (const [parentId, kids] of childrenOf) {
-			const plain: SessionListItem[] = [];
-			const byRun = new Map<string, { name: string | null; agents: SessionListItem[] }>();
-			for (const k of kids) {
-				const runId = metaStr(k, 'workflow_run_id');
-				if (runId) {
-					let g = byRun.get(runId);
-					if (!g) {
-						g = { name: metaStr(k, 'workflow_name'), agents: [] };
-						byRun.set(runId, g);
-					}
-					g.agents.push(k);
-				} else {
-					plain.push(k);
+	// Fold a parent's children into plain + per-workflow groups.
+	function groupChildren(kids: SessionListItem[]): SubGroup[] {
+		const plain: SessionListItem[] = [];
+		const byRun = new Map<string, { name: string | null; agents: SessionListItem[] }>();
+		for (const k of kids) {
+			const runId = metaStr(k, 'workflow_run_id');
+			if (runId) {
+				let g = byRun.get(runId);
+				if (!g) {
+					g = { name: metaStr(k, 'workflow_name'), agents: [] };
+					byRun.set(runId, g);
 				}
+				g.agents.push(k);
+			} else {
+				plain.push(k);
 			}
-			const groups: SubGroup[] = [];
-			if (plain.length > 0) {
-				groups.push({
-					key: 'plain',
-					runId: null,
-					label: 'subagents',
-					agents: plain,
-					running: runningCount(plain)
-				});
-			}
-			for (const [runId, g] of byRun) {
-				groups.push({
-					key: `wf:${runId}`,
-					runId,
-					label: g.name ? `Workflow: ${g.name}` : 'Workflow',
-					agents: g.agents,
-					running: runningCount(g.agents)
-				});
-			}
-			if (groups.length > 0) map.set(parentId, groups);
 		}
-		return map;
-	});
-	const hasCollapsibleSubagents = $derived(
-		[...childGroupsOf.values()].some((groups) =>
-			groups.some((g) => g.agents.length >= INLINE_THRESHOLD)
-		)
-	);
+		const groups: SubGroup[] = [];
+		if (plain.length > 0) {
+			groups.push({
+				key: 'plain',
+				runId: null,
+				label: 'subagents',
+				agents: plain,
+				running: runningCount(plain)
+			});
+		}
+		for (const [runId, g] of byRun) {
+			groups.push({
+				key: `wf:${runId}`,
+				runId,
+				label: g.name ? `Workflow: ${g.name}` : 'Workflow',
+				agents: g.agents,
+				running: runningCount(g.agents)
+			});
+		}
+		return groups;
+	}
+
+	// Build the parent→subagent-group nesting for an arbitrary row set. Used for
+	// the live buckets AND, since CCT-298 item 1, for the archive + search views
+	// so they keep the same nesting + count badges instead of a flat list. A
+	// child whose parent is absent from `rows` falls back to top-level so nothing
+	// is dropped.
+	type Nest = {
+		topLevel: SessionListItem[];
+		childGroups: Map<string, SubGroup[]>;
+		hasCollapsible: boolean;
+	};
+	function nest(rows: SessionListItem[]): Nest {
+		const ids = new Set(rows.map((s) => s.id));
+		const childrenOf = new Map<string, SessionListItem[]>();
+		for (const s of rows) {
+			if (s.parent_id && ids.has(s.parent_id)) {
+				childrenOf.set(s.parent_id, [...(childrenOf.get(s.parent_id) ?? []), s]);
+			}
+		}
+		const topLevel = rows.filter((s) => !s.parent_id || !ids.has(s.parent_id));
+		const childGroups = new Map<string, SubGroup[]>();
+		let hasCollapsible = false;
+		for (const [parentId, kids] of childrenOf) {
+			const groups = groupChildren(kids);
+			if (groups.length > 0) childGroups.set(parentId, groups);
+			if (groups.some((g) => g.agents.length >= INLINE_THRESHOLD)) hasCollapsible = true;
+		}
+		return { topLevel, childGroups, hasCollapsible };
+	}
+
+	const liveNest = $derived(nest(items));
+	const topLevel = $derived(liveNest.topLevel);
+	const childGroupsOf = $derived(liveNest.childGroups);
+	const hasCollapsibleSubagents = $derived(liveNest.hasCollapsible);
 
 	// Expand/collapse state for collapsible (>=3) subagent groups, keyed by
 	// `${parentId}/${group.key}`. Default collapsed.
@@ -547,19 +559,72 @@
 	</div>
 {/if}
 
-{#snippet pager(rows: SessionListItem[])}
+<!-- Nested list of top-level rows with subagent count badges + inline children,
+     shared by the live buckets, search results, and the archive browse so they
+     all render the same nesting (CCT-298 item 1). `allowSelect` gates the
+     multi-select checkboxes (live buckets only); `hl` carries search terms. -->
+{#snippet nestedRows(
+	rows: SessionListItem[],
+	childGroups: Map<string, SubGroup[]>,
+	allowSelect: boolean,
+	hl: string[]
+)}
 	{#each rows as s (s.id)}
-		<SessionCard
-			session={s}
-			compact={dense}
-			pendingCount={pending(s.id)}
-			onopen={(x) => (openSession = x)}
-			swipeable
-			swipeLabel={s.status === 'archived' ? 'Unarchive' : 'Archive'}
-			onSwipe={swipeArchive}
-			onTogglePin={togglePin}
-			highlight={searchTerms}
-		/>
+		{@const subGroups = childGroups.get(s.id) ?? []}
+		{@const collapsibleGroups = subGroups.filter((g) => g.agents.length >= INLINE_THRESHOLD)}
+		<!-- Collapsible (>=3) groups surface as count badges outside the parent
+		     row layout; smaller groups render inline below. -->
+		<div class="parent-row" class:dense>
+			{#if collapsibleGroups.length > 0}
+				<div class="subagent-badge-rail">
+					{#each collapsibleGroups as g (g.key)}
+						<SubagentBadge
+							count={g.agents.length}
+							running={g.running}
+							open={expanded.has(groupId(s.id, g.key))}
+							label={g.label}
+							ontoggle={() => toggleGroup(s.id, g.key)}
+						/>
+					{/each}
+				</div>
+			{/if}
+			<div class="parent-card">
+				<SessionCard
+					session={s}
+					compact={dense}
+					pendingCount={pending(s.id)}
+					onopen={(x) => (openSession = x)}
+					selectable={allowSelect && selecting}
+					selected={selected.has(s.id)}
+					onToggleSelect={toggleSelect}
+					swipeable
+					swipeLabel={s.status === 'archived' ? 'Unarchive' : 'Archive'}
+					onSwipe={swipeArchive}
+					onTogglePin={togglePin}
+					highlight={hl}
+				/>
+			</div>
+		</div>
+		{#each subGroups as g (g.key)}
+			{#if g.agents.length < INLINE_THRESHOLD || expanded.has(groupId(s.id, g.key))}
+				{#each g.agents as a (a.id)}
+					<SessionCard
+						session={a}
+						child
+						compact={dense}
+						pendingCount={pending(a.id)}
+						onopen={(x) => (openSession = x)}
+						selectable={allowSelect && selecting}
+						selected={selected.has(a.id)}
+						onToggleSelect={toggleSelect}
+						swipeable
+						swipeLabel={a.status === 'archived' ? 'Unarchive' : 'Archive'}
+						onSwipe={swipeArchive}
+						highlight={hl}
+					/>
+				{/each}
+			{/if}
+		{/each}
 	{/each}
 {/snippet}
 
@@ -582,14 +647,20 @@
 	{:else if pageRows.length === 0}
 		<div class="empty">No chats match “{query}”{showArchived ? '' : ' (live only — tick Archived to search all)'}.</div>
 	{:else}
-		<div class="stack" class:tight={dense}>
-			{#if liveResults.length > 0}
-				<div class="group-header">Live <span class="count">{liveResults.length}</span></div>
-				{@render pager(liveResults)}
+		<!-- Nest over the whole result set so a parent and its subagents stay
+		     grouped even if they land in different status sections; then split
+		     the top-level rows into Live / Archived (CCT-298 item 1). -->
+		{@const ns = nest(pageRows)}
+		{@const liveTop = ns.topLevel.filter((s) => s.status !== 'archived')}
+		{@const archTop = ns.topLevel.filter((s) => s.status === 'archived')}
+		<div class="stack" class:tight={dense} class:badge-gutter={ns.hasCollapsible}>
+			{#if liveTop.length > 0}
+				<div class="group-header">Live <span class="count">{liveTop.length}</span></div>
+				{@render nestedRows(liveTop, ns.childGroups, false, searchTerms)}
 			{/if}
-			{#if archivedResults.length > 0}
-				<div class="group-header">Archived <span class="count">{archivedResults.length}</span></div>
-				{@render pager(archivedResults)}
+			{#if archTop.length > 0}
+				<div class="group-header">Archived <span class="count">{archTop.length}</span></div>
+				{@render nestedRows(archTop, ns.childGroups, false, searchTerms)}
 			{/if}
 			{@render loadMore()}
 		</div>
@@ -631,73 +702,25 @@
 						{g.label} <span class="count">{g.sessions.length}</span>
 					</div>
 				{/if}
-				{#each g.key === 'dispatched' && dispatchedCollapsed ? [] : g.sessions as s (s.id)}
-					{@const subGroups = childGroupsOf.get(s.id) ?? []}
-					{@const collapsibleGroups = subGroups.filter((g) => g.agents.length >= INLINE_THRESHOLD)}
-					<!-- Collapsible (>=3) groups surface as count badges outside the
-					     parent row layout; smaller groups render inline below. -->
-					<div class="parent-row" class:dense>
-						{#if collapsibleGroups.length > 0}
-							<div class="subagent-badge-rail">
-								{#each collapsibleGroups as g (g.key)}
-									<SubagentBadge
-										count={g.agents.length}
-										running={g.running}
-										open={expanded.has(groupId(s.id, g.key))}
-										label={g.label}
-										ontoggle={() => toggleGroup(s.id, g.key)}
-									/>
-								{/each}
-							</div>
-						{/if}
-						<div class="parent-card">
-							<SessionCard
-								session={s}
-								compact={dense}
-								pendingCount={pending(s.id)}
-								onopen={(x) => (openSession = x)}
-								selectable={selecting}
-								selected={selected.has(s.id)}
-								onToggleSelect={toggleSelect}
-								swipeable
-								swipeLabel="Archive"
-								onSwipe={swipeArchive}
-								onTogglePin={togglePin}
-							/>
-						</div>
-					</div>
-					{#each subGroups as g (g.key)}
-						{#if g.agents.length < INLINE_THRESHOLD || expanded.has(groupId(s.id, g.key))}
-							{#each g.agents as a (a.id)}
-								<SessionCard
-									session={a}
-									child
-									compact={dense}
-									pendingCount={pending(a.id)}
-									onopen={(x) => (openSession = x)}
-									selectable={selecting}
-									selected={selected.has(a.id)}
-									onToggleSelect={toggleSelect}
-									swipeable
-									swipeLabel="Archive"
-									onSwipe={swipeArchive}
-								/>
-							{/each}
-						{/if}
-					{/each}
-				{/each}
+				{@render nestedRows(
+					g.key === 'dispatched' && dispatchedCollapsed ? [] : g.sessions,
+					childGroupsOf,
+					true,
+					[]
+				)}
 			{/each}
 		</div>
 	{/if}
 
 	<!-- …then the paginated archive when requested. -->
 	{#if showArchived}
-		<div class="stack" class:tight={dense}>
-			<div class="group-header">Archived <span class="count">{pageRows.length}</span></div>
+		{@const ns = nest(pageRows)}
+		<div class="stack" class:tight={dense} class:badge-gutter={ns.hasCollapsible}>
+			<div class="group-header">Archived <span class="count">{ns.topLevel.length}</span></div>
 			{#if pageRows.length === 0 && !pageLoading}
 				<div class="empty">No archived sessions.</div>
 			{:else}
-				{@render pager(pageRows)}
+				{@render nestedRows(ns.topLevel, ns.childGroups, false, searchTerms)}
 				{@render loadMore()}
 			{/if}
 		</div>

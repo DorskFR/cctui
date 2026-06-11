@@ -740,7 +740,27 @@ pub async fn search_sessions(
         // — its transcript (trgm-accelerated EXISTS) or its id / name / dir.
         // Terms may hit in different events; that's the "convo contains all the
         // words" model. The scope clause keeps archived rows out unless asked.
-        let scope = if params.include_archived { "TRUE" } else { "s.status <> 'archived'" };
+        //
+        // Live-only scope normally drops archived rows, but a session that's
+        // currently live in the in-memory registry (e.g. a dispatched worker
+        // auto-archived in the DB while still running) must stay searchable —
+        // the bucketed live list surfaces those via the registry, so search
+        // would otherwise be the one place they vanish (CCT-298 item 2). OR in
+        // the live registry ids so they're never filtered by status. With
+        // include_archived the scope is already open, so no extra bind is needed.
+        let live_ids: Vec<String> = if params.include_archived {
+            Vec::new()
+        } else {
+            let registry = state.registry.read().await;
+            registry.list().into_iter().map(|h| h.session.id.clone()).collect()
+        };
+        let scope = if params.include_archived {
+            "TRUE".to_string()
+        } else {
+            format!("(s.status <> 'archived' OR s.id = ANY(${}))", patterns.len() + 1)
+        };
+        // Whether we bound the live_ids array (1) or not (0) — shifts limit/offset.
+        let extra = usize::from(!params.include_archived);
         let clauses: Vec<String> = (1..=patterns.len())
             .map(|i| {
                 format!(
@@ -751,7 +771,7 @@ pub async fn search_sessions(
                 )
             })
             .collect();
-        let (li, oi) = (patterns.len() + 1, patterns.len() + 2);
+        let (li, oi) = (patterns.len() + 1 + extra, patterns.len() + 2 + extra);
         let sql = format!(
             "{SEARCH_SELECT} WHERE ({scope}) AND {} ORDER BY s.registered_at DESC LIMIT ${li} OFFSET ${oi}",
             clauses.join(" AND "),
@@ -759,6 +779,9 @@ pub async fn search_sessions(
         let mut query = sqlx::query_as::<_, DbSession>(&sql);
         for p in &patterns {
             query = query.bind(p);
+        }
+        if !params.include_archived {
+            query = query.bind(live_ids);
         }
         query.bind(limit).bind(offset).fetch_all(&state.pool).await
     }
