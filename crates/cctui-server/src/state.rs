@@ -30,6 +30,16 @@ pub type StageFilesOutcome = Result<Vec<String>, String>;
 /// WS read loop fires the oneshot when the matching reply arrives (CCT-236).
 pub type PendingStageRequests = Arc<DashMap<Uuid, tokio::sync::oneshot::Sender<StageFilesOutcome>>>;
 
+/// Outcome of a working-dir autocomplete listing (spawn dialog): the
+/// directory names on success, or an error string on failure.
+pub type ListDirsOutcome = Result<Vec<String>, String>;
+
+/// In-flight `GET /machines/{id}/fs/dirs` requests awaiting a daemon
+/// `ListDirsResult`, keyed by the request id minted by the route. The daemon
+/// WS read loop fires the oneshot when the matching reply arrives.
+pub type PendingListDirsRequests =
+    Arc<DashMap<Uuid, tokio::sync::oneshot::Sender<ListDirsOutcome>>>;
+
 #[derive(Clone)]
 pub struct AppState {
     pub pool: PgPool,
@@ -46,6 +56,8 @@ pub struct AppState {
     pub dispatchers: Arc<DispatcherRegistry>,
     /// In-flight mid-chat file-stage requests awaiting a daemon reply (CCT-236).
     pub pending_stage_requests: PendingStageRequests,
+    /// In-flight working-dir autocomplete requests awaiting a daemon reply.
+    pub pending_listdirs_requests: PendingListDirsRequests,
     /// Last broadcast liveness tier per machine (CCT-255). The daemon-WS
     /// heartbeat handler and the reaper both re-derive a machine's tier from
     /// `machines.last_seen_at` age; this map lets them broadcast a

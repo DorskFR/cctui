@@ -143,6 +143,10 @@ export const endpoints = {
 		api.get<string[]>('/sessions/recent-dirs', {
 			machine_id: machineId || undefined,
 		}),
+	/** Sub-directories of `path` on a machine, for the working-dir
+	 *  autocomplete in the spawn dialog. */
+	machineDirs: (machineId: string, path: string) =>
+		api.get<{ dirs: string[] }>(`/machines/${machineId}/fs/dirs`, { path }),
 	users: () => api.get<UserRow[]>('/admin/users'),
 	machines: (userId: string) =>
 		api.get<MachineRow[]>(`/admin/users/${userId}/machines`),
@@ -265,6 +269,17 @@ export const useRecentDirs = (machineId: () => string) =>
 			queryFn: () => endpoints.recentDirs(machineId()),
 			enabled: !!machineId(),
 			staleTime: 30_000,
+		})),
+	);
+
+export const useMachineDirs = (machineId: () => string, path: () => string) =>
+	createQuery(
+		toStore(() => ({
+			queryKey: ['machine-dirs', machineId(), path()],
+			queryFn: () => endpoints.machineDirs(machineId(), path()),
+			enabled: !!machineId() && !!path(),
+			staleTime: 10_000,
+			retry: false,
 		})),
 	);
 

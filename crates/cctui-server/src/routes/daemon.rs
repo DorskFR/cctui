@@ -273,6 +273,22 @@ async fn process_frame(
             }
             Ok(())
         }
+        DaemonFrameUp::ListDirsResult { request_id, ok, dirs, error } => {
+            // Working-dir autocomplete reply: fire the oneshot the
+            // `GET /machines/{id}/fs/dirs` route is awaiting.
+            if let Some((_, reply_tx)) = state.pending_listdirs_requests.remove(&request_id) {
+                let outcome = if ok {
+                    Ok(dirs)
+                } else {
+                    Err(error.unwrap_or_else(|| "daemon reported a listing failure".to_owned()))
+                };
+                // Receiver gone (route timed out already) → drop silently.
+                let _ = reply_tx.send(outcome);
+            } else {
+                tracing::debug!(%request_id, "ListDirsResult for unknown request (timed out?)");
+            }
+            Ok(())
+        }
         DaemonFrameUp::Heartbeat { .. } => {
             // Machine liveness (CCT-255): advance `last_seen_at` on EVERY
             // heartbeat (not just connect, as auth.rs does), then derive the

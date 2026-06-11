@@ -57,6 +57,7 @@ async fn main() -> anyhow::Result<()> {
         daemon_connections: Arc::new(dashmap::DashMap::new()),
         dispatchers,
         pending_stage_requests: Arc::new(dashmap::DashMap::new()),
+        pending_listdirs_requests: Arc::new(dashmap::DashMap::new()),
         machine_liveness: Arc::new(dashmap::DashMap::new()),
         account_locks: Arc::new(dashmap::DashMap::new()),
         http_client: reqwest::Client::new(),
@@ -134,6 +135,7 @@ async fn main() -> anyhow::Result<()> {
             patch(routes::accounts::rename_account).delete(routes::accounts::delete_account),
         )
         .route("/machines/{machine_id}/commands/pending", get(routes::spawn::get_machine_commands))
+        .route("/machines/{machine_id}/fs/dirs", get(routes::fs::list_dirs))
         .route("/me", get(routes::me::me))
         .route("/enroll", post(routes::enroll::enroll))
         .route("/deenroll", post(routes::enroll::deenroll))

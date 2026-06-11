@@ -186,6 +186,22 @@ impl Supervisor {
                     tracing::warn!("frame_up channel closed; dropping StageFilesResult");
                 }
             }
+            DaemonFrameDown::ListDirs { request_id, path } => {
+                let up = match crate::listdirs::list_dirs(&path) {
+                    Ok(dirs) => {
+                        DaemonFrameUp::ListDirsResult { request_id, ok: true, dirs, error: None }
+                    }
+                    Err(err) => DaemonFrameUp::ListDirsResult {
+                        request_id,
+                        ok: false,
+                        dirs: Vec::new(),
+                        error: Some(err.to_string()),
+                    },
+                };
+                if frame_up_tx.send(up).await.is_err() {
+                    tracing::warn!("frame_up channel closed; dropping ListDirsResult");
+                }
+            }
             _ => {}
         }
     }

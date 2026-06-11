@@ -7,6 +7,7 @@ pub mod daemon;
 pub mod dispatch;
 pub mod dispatchers;
 pub mod enroll;
+pub mod fs;
 pub mod gateway;
 pub mod manifest;
 pub mod me;

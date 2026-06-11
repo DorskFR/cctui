@@ -7,6 +7,7 @@
 		useDispatchers,
 		useSessionActions,
 		useRecentDirs,
+		useMachineDirs,
 		useAccounts
 	} from '$lib/queries';
 	import { ws } from '$lib/ws.svelte';
@@ -155,6 +156,62 @@
 	// recent working dirs on the selected machine, from the server (last 5).
 	const dirsQuery = useRecentDirs(() => form.machine_id);
 	const recentDirs = $derived([...new Set($dirsQuery.data ?? [])]);
+
+	// --- Working-directory autocomplete ---
+	// Split the typed value at the last `/`: list `parent` on the machine,
+	// filter by `prefix` locally. Listings are keyed by (machine, parent) so a
+	// request only fires when the user crosses a `/` boundary. Dotdirs only
+	// surface once the typed segment starts with a dot.
+	let cwdFocused = $state(false);
+	let cwdHighlight = $state(-1);
+	const cwdParent = $derived.by(() => {
+		const i = form.working_dir.lastIndexOf('/');
+		if (i < 0) return '';
+		return i === 0 ? '/' : form.working_dir.slice(0, i);
+	});
+	const cwdPrefix = $derived.by(() => {
+		const i = form.working_dir.lastIndexOf('/');
+		return i < 0 ? form.working_dir : form.working_dir.slice(i + 1);
+	});
+	const machineDirs = useMachineDirs(
+		() => (cwdFocused ? form.machine_id : ''),
+		() => cwdParent
+	);
+	const cwdSuggestions = $derived.by(() => {
+		const dirs = $machineDirs.data?.dirs ?? [];
+		const prefix = cwdPrefix.toLowerCase();
+		const showHidden = prefix.startsWith('.');
+		return dirs
+			.filter((d) => (showHidden || !d.startsWith('.')) && d.toLowerCase().startsWith(prefix))
+			.slice(0, 50);
+	});
+	$effect(() => {
+		void cwdSuggestions; // reset highlight whenever the list changes
+		cwdHighlight = -1;
+	});
+	function pickCwd(name: string) {
+		form.working_dir = `${cwdParent === '/' ? '' : cwdParent}/${name}/`;
+		cwdHighlight = -1;
+	}
+	function cwdKeydown(e: KeyboardEvent) {
+		if (!cwdFocused || !cwdSuggestions.length) return;
+		if (e.key === 'ArrowDown') {
+			e.preventDefault();
+			cwdHighlight = (cwdHighlight + 1) % cwdSuggestions.length;
+		} else if (e.key === 'ArrowUp') {
+			e.preventDefault();
+			cwdHighlight = (cwdHighlight - 1 + cwdSuggestions.length) % cwdSuggestions.length;
+		} else if ((e.key === 'Enter' || e.key === 'Tab') && cwdHighlight >= 0) {
+			e.preventDefault();
+			pickCwd(cwdSuggestions[cwdHighlight]);
+		} else if (e.key === 'Tab' && cwdSuggestions.length === 1) {
+			e.preventDefault();
+			pickCwd(cwdSuggestions[0]);
+		} else if (e.key === 'Escape') {
+			e.stopPropagation(); // keep the modal open; just dismiss the list
+			cwdFocused = false;
+		}
+	}
 
 	// OAuth accounts (CCT-237). The picker offers only accounts whose provider
 	// matches the selected adapter (codex → openai, else anthropic). Switching
@@ -571,12 +628,37 @@
 						{#each recentDirs as d (d)}<option value={d}>{d}</option>{/each}
 					</select>
 				{/if}
-				<input
-					id="sp-cwd"
-					class="input mono"
-					placeholder="/home/user/project"
-					bind:value={form.working_dir}
-				/>
+				<div class="cwd-combo">
+					<input
+						id="sp-cwd"
+						class="input mono"
+						placeholder="/home/user/project"
+						autocomplete="off"
+						bind:value={form.working_dir}
+						onfocus={() => (cwdFocused = true)}
+						oninput={() => (cwdFocused = true)}
+						onblur={() => setTimeout(() => (cwdFocused = false), 150)}
+						onkeydown={cwdKeydown}
+					/>
+					{#if cwdFocused && cwdSuggestions.length}
+						<ul class="cwd-suggestions" role="listbox" aria-label="Directory suggestions">
+							{#each cwdSuggestions as d, i (d)}
+								<!-- svelte-ignore a11y_click_events_have_key_events -->
+								<li
+									role="option"
+									aria-selected={i === cwdHighlight}
+									class:active={i === cwdHighlight}
+									onmousedown={(e) => {
+										e.preventDefault();
+										pickCwd(d);
+									}}
+								>
+									{d}/
+								</li>
+							{/each}
+						</ul>
+					{/if}
+				</div>
 			</div>
 
 			<div class="field">
@@ -939,5 +1021,34 @@
 	}
 	.mode.sel .faint {
 		color: color-mix(in srgb, var(--mode-c) 70%, var(--text-muted));
+	}
+	.cwd-combo {
+		position: relative;
+	}
+	.cwd-suggestions {
+		position: absolute;
+		top: 100%;
+		left: 0;
+		right: 0;
+		z-index: 10;
+		margin: 2px 0 0;
+		padding: var(--sp-1);
+		list-style: none;
+		max-height: 220px;
+		overflow-y: auto;
+		background: var(--bg);
+		border: 1px solid var(--border-strong);
+		border-radius: var(--r-md);
+		font-size: var(--fs-xs);
+	}
+	.cwd-suggestions li {
+		padding: 2px var(--sp-2);
+		border-radius: var(--r-sm);
+		cursor: pointer;
+	}
+	.cwd-suggestions li:hover,
+	.cwd-suggestions li.active {
+		background: color-mix(in srgb, var(--c-blue) 14%, var(--bg));
+		color: var(--c-blue);
 	}
 </style>

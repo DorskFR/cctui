@@ -27,6 +27,8 @@ pub enum Error {
     Timeout,
     #[error("daemon could not stage files: {0}")]
     Staging(String),
+    #[error("daemon could not list the directory: {0}")]
+    ListDirs(String),
     #[error("db error: {0}")]
     Db(#[from] sqlx::Error),
 }
@@ -112,6 +114,47 @@ pub async fn stage_files(
         }
         Err(_) => {
             state.pending_stage_requests.remove(&request_id);
+            Err(Error::Timeout)
+        }
+    }
+}
+
+/// How long the `GET /machines/{id}/fs/dirs` route waits for the daemon's
+/// `ListDirsResult`. Autocomplete is interactive — better to fail fast than
+/// to hold the typeahead open.
+const LIST_DIRS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Ask the daemon on `machine_uuid` for the sub-directories of `path`
+/// (working-directory autocomplete). Same request_id + oneshot pattern as
+/// [`stage_files`], but machine-addressed (no session involved).
+pub async fn list_dirs(
+    state: &AppState,
+    machine_uuid: Uuid,
+    path: String,
+) -> Result<Vec<String>, Error> {
+    let Some(tx) = state.daemon_connections.get(&machine_uuid).map(|r| r.clone()) else {
+        return Err(Error::NoDaemon(machine_uuid));
+    };
+
+    let request_id = Uuid::new_v4();
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    state.pending_listdirs_requests.insert(request_id, reply_tx);
+
+    if tx.send(DaemonFrameDown::ListDirs { request_id, path }).await.is_err() {
+        state.pending_listdirs_requests.remove(&request_id);
+        return Err(Error::Closed);
+    }
+
+    match tokio::time::timeout(LIST_DIRS_TIMEOUT, reply_rx).await {
+        Ok(Ok(Ok(dirs))) => Ok(dirs),
+        Ok(Ok(Err(msg))) => Err(Error::ListDirs(msg)),
+        // Sender dropped (daemon disconnected mid-request).
+        Ok(Err(_)) => {
+            state.pending_listdirs_requests.remove(&request_id);
+            Err(Error::Closed)
+        }
+        Err(_) => {
+            state.pending_listdirs_requests.remove(&request_id);
             Err(Error::Timeout)
         }
     }

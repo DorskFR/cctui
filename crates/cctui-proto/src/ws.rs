@@ -39,6 +39,18 @@ pub enum DaemonFrameUp {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
+    /// Reply to a [`DaemonFrameDown::ListDirs`] request (working-directory
+    /// autocomplete in the spawn dialog). `request_id` correlates with the
+    /// originating `GET /api/v1/machines/{id}/fs/dirs` so the server can
+    /// return the directory names (or the error) to the waiting HTTP client.
+    ListDirsResult {
+        request_id: uuid::Uuid,
+        ok: bool,
+        #[serde(default)]
+        dirs: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
 }
 
 /// Frames sent by the server to a daemon over `/api/v1/daemon/ws`.
@@ -68,6 +80,11 @@ pub enum DaemonFrameDown {
         local_id: String,
         uploads: Vec<BootstrapFile>,
     },
+    /// List the sub-directories of `path` on the daemon's machine (working-
+    /// directory autocomplete in the spawn dialog). The daemon expands a
+    /// leading `~`, reads one directory level, and replies with a
+    /// [`DaemonFrameUp::ListDirsResult`] carrying the sorted entry names.
+    ListDirs { request_id: uuid::Uuid, path: String },
 }
 
 // --- Dispatcher ↔ Server (CCT-246/247/248) ---
@@ -606,6 +623,28 @@ mod tests {
             let json = serde_json::to_string(&f).unwrap();
             let _back: DispatcherFrameUp = serde_json::from_str(&json).unwrap();
         }
+    }
+
+    #[test]
+    fn daemon_frame_down_list_dirs_roundtrips() {
+        let f = DaemonFrameDown::ListDirs { request_id: uuid::Uuid::nil(), path: "/home".into() };
+        let json = serde_json::to_string(&f).unwrap();
+        assert!(json.contains(r#""type":"list_dirs""#));
+        let _back: DaemonFrameDown = serde_json::from_str(&json).unwrap();
+    }
+
+    #[test]
+    fn daemon_frame_up_list_dirs_result_roundtrips() {
+        let f = DaemonFrameUp::ListDirsResult {
+            request_id: uuid::Uuid::nil(),
+            ok: true,
+            dirs: vec!["projects".into()],
+            error: None,
+        };
+        let json = serde_json::to_string(&f).unwrap();
+        assert!(json.contains(r#""type":"list_dirs_result""#));
+        assert!(!json.contains("error"), "None error must be skipped: {json}");
+        let _back: DaemonFrameUp = serde_json::from_str(&json).unwrap();
     }
 
     #[test]
