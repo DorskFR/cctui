@@ -365,6 +365,9 @@
 		// Pre-highlighted code HTML for the <pre> bubble (tool/result), {@html}.
 		htmlCode?: string;
 		text?: string;
+		// Code language for tool input (sh/json/diff/…), used to fence the
+		// copy-as-Markdown output (CCT-297 #17).
+		lang?: string;
 		tool?: string;
 		// Tool calls under the mcp__ prefix get the distinct MCP role hue.
 		mcp?: boolean;
@@ -452,6 +455,7 @@
 					tool: e.tool,
 					mcp: isMcp,
 					text,
+					lang,
 					htmlCode: hl(highlightBlock(text, lang))
 				};
 			}
@@ -607,6 +611,26 @@
 		const el = e.currentTarget as HTMLInputElement;
 		addAttachments(Array.from(el.files ?? []));
 		el.value = '';
+	}
+
+	// Mask a large pasted block (CCT-297 #13): instead of dumping thousands of
+	// characters into the composer, collapse it into a `paste-N.txt` attachment
+	// (the Claude Code trick), keeping the textarea readable. Only kicks in for
+	// big text pastes on adapters that support staging; small pastes and real
+	// file pastes fall through to the default behavior.
+	const PASTE_MASK_CHARS = 2000;
+	let pasteCounter = 1;
+	function onPaste(e: ClipboardEvent) {
+		if (!supportsAttachments || archived) return;
+		const cd = e.clipboardData;
+		if (!cd || (cd.files && cd.files.length > 0)) return; // real files → existing path
+		const text = cd.getData('text/plain');
+		if (!text || text.length < PASTE_MASK_CHARS) return; // small → normal paste
+		e.preventDefault();
+		const name = `paste-${pasteCounter++}.txt`;
+		addAttachments([new File([text], name, { type: 'text/plain' })]);
+		const lines = text.split('\n').length;
+		toasts.ok(`Large paste attached as ${name} (${lines} lines)`);
 	}
 
 	// ── Message delivery tracking (CCT-212 → CCT-214) ───────────────────────
@@ -883,12 +907,66 @@
 		return ts;
 	}
 
-	async function copyLine(text: string) {
+	async function copyText(text: string) {
 		try {
 			await navigator.clipboard.writeText(text);
 			toasts.ok('Copied');
 		} catch {
 			toasts.err('Clipboard unavailable');
+		}
+	}
+
+	// Render a single message line as Markdown (CCT-297 #17). Assistant/user/
+	// system content is already a Markdown source string, so it copies verbatim
+	// (code fences, lists, backticks preserved); tool/result code is wrapped in a
+	// fenced block (with the tool's language when known) under a bold label.
+	function lineMarkdown(ln: Line): string {
+		const t = ln.text ?? '';
+		if (ln.role === 'tool') {
+			const label = ln.tool ? `**${ln.mcp ? 'MCP' : 'Tool'} · ${ln.tool}**\n\n` : '';
+			return `${label}\`\`\`${ln.lang ?? ''}\n${t}\n\`\`\``;
+		}
+		if (ln.role === 'result') {
+			const label = ln.tool ? `**Result · ${ln.tool}**\n\n` : '';
+			return `${label}\`\`\`\n${t}\n\`\`\``;
+		}
+		return t;
+	}
+
+	async function copyLineMarkdown(ln: Line) {
+		try {
+			await navigator.clipboard.writeText(lineMarkdown(ln));
+			toasts.ok('Copied as Markdown');
+		} catch {
+			toasts.err('Clipboard unavailable');
+		}
+	}
+
+	// Save a single message as a PNG (CCT-297 #18), rendered with the current
+	// theme. We snapshot the live `.line` node (so theme colors come for free),
+	// filtering out the hover action buttons, and bake the page background in so
+	// transparent bubbles read correctly. html-to-image is loaded on demand to
+	// keep it out of the main bundle.
+	async function saveLineImage(e: MouseEvent, ln: Line) {
+		const node = (e.currentTarget as HTMLElement).closest('.line') as HTMLElement | null;
+		if (!node) return;
+		try {
+			const bg = getComputedStyle(document.body).getPropertyValue('--bg').trim() || '#1e1e1e';
+			const { toPng } = await import('html-to-image');
+			const dataUrl = await toPng(node, {
+				pixelRatio: 2,
+				backgroundColor: bg,
+				width: 760,
+				style: { width: '760px', margin: '0', padding: '16px', boxSizing: 'border-box' },
+				filter: (n) => !(n instanceof HTMLElement && n.classList.contains('line-actions'))
+			});
+			const a = document.createElement('a');
+			a.download = `cctui-message-${ln.ts}.png`;
+			a.href = dataUrl;
+			a.click();
+			toasts.ok('Saved image');
+		} catch (err) {
+			toasts.err(`Image export failed: ${(err as Error).message}`);
 		}
 	}
 
@@ -1174,7 +1252,7 @@
 			<button
 				class="chip mono cwd truncate"
 				title="Click to copy — {session.working_dir}"
-				onclick={() => copyLine(session.working_dir)}
+				onclick={() => copyText(session.working_dir)}
 			>📁 {session.working_dir} ⧉</button>
 			<TokenUsage usage={session.token_usage} />
 		</div>
@@ -1330,7 +1408,20 @@
 							>
 						{/if}
 					{/if}
-					<button class="btn btn-ghost copy" aria-label="Copy" onclick={() => copyLine(ln.text ?? '')}>⧉</button>
+					<span class="line-actions">
+						<button
+							class="btn btn-ghost copy"
+							aria-label="Copy as Markdown"
+							title="Copy this message as Markdown"
+							onclick={() => copyLineMarkdown(ln)}>⧉</button
+						>
+						<button
+							class="btn btn-ghost copy"
+							aria-label="Save as image"
+							title="Save this message as an image"
+							onclick={(e) => saveLineImage(e, ln)}>🖼</button
+						>
+					</span>
 				</div>
 				{#if ln.html}
 					<div class="bubble">{@html ln.html}</div>
@@ -1424,6 +1515,7 @@
 					bind:this={textarea}
 					onkeydown={onKey}
 					oninput={() => resetHistoryNav()}
+					onpaste={onPaste}
 					use:autoresize={input}
 				></textarea>
 				<button
@@ -1812,8 +1904,15 @@
 	.badge-role.mcp {
 		--bc: var(--role-mcp);
 	}
-	.copy {
+	/* Per-message action buttons (copy-as-Markdown + save-image, CCT-297 #17/#18),
+	   pushed to the right of the meta row. Excluded from the saved image. */
+	.line-actions {
 		margin-left: auto;
+		display: inline-flex;
+		align-items: center;
+		gap: var(--sp-1);
+	}
+	.copy {
 		padding: 0 var(--sp-2);
 		min-height: auto;
 		font-size: var(--fs-lg);
