@@ -385,6 +385,22 @@ fn parse_assistant(local_id: &str, line: &Value, out: &mut Vec<AdapterEvent>) {
             });
         }
     }
+    // Model id of what actually ran (`message.model`, e.g. "claude-opus-4-8").
+    // Surfaces the model for sessions started without an explicit `--model`
+    // flag; the server writes it only when `sessions.model` is still unset, so
+    // an explicit `--model` alias keeps priority. Subagent transcripts carry
+    // the parent's model too, so each gets labelled.
+    if let Some(model) = message
+        .and_then(|m| m.get("model"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+    {
+        out.push(AdapterEvent::SessionModel {
+            local_id: local_id.to_owned(),
+            model: model.to_owned(),
+        });
+    }
     let Some(content) = message.and_then(|m| m.get("content")).and_then(Value::as_array) else {
         return;
     };
@@ -902,6 +918,41 @@ mod tests {
             })
             .collect();
         assert_eq!(metas, vec![false, true, true]);
+    }
+
+    #[test]
+    fn emits_session_model_from_assistant_message() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("t.jsonl");
+        write_lines(
+            &path,
+            &[
+                r#"{"type":"assistant","message":{"id":"m1","model":"claude-opus-4-8","content":[{"type":"text","text":"hi"}]}}"#,
+            ],
+        );
+        let (events, _) = tail_once(&path, "s", 0).unwrap();
+        let model = events.iter().find_map(|e| match e {
+            AdapterEvent::SessionModel { local_id, model } => {
+                Some((local_id.clone(), model.clone()))
+            }
+            _ => None,
+        });
+        assert_eq!(model, Some(("s".to_owned(), "claude-opus-4-8".to_owned())));
+    }
+
+    #[test]
+    fn no_session_model_when_field_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("t.jsonl");
+        write_lines(
+            &path,
+            // older transcripts / sessions with no model field on the message
+            &[
+                r#"{"type":"assistant","message":{"id":"m1","content":[{"type":"text","text":"hi"}]}}"#,
+            ],
+        );
+        let (events, _) = tail_once(&path, "s", 0).unwrap();
+        assert!(!events.iter().any(|e| matches!(e, AdapterEvent::SessionModel { .. })));
     }
 
     #[test]

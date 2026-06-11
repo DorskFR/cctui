@@ -526,6 +526,21 @@ async fn handle_event(
             )
             .await?;
         }
+        AdapterEvent::SessionModel { local_id, model } => {
+            // Fill the model from the transcript's ground truth, but only when
+            // it's still unset — an explicit `--model` alias delivered via a
+            // Status event keeps priority (the alias the operator typed, e.g.
+            // "opus", rather than the full id). Cheap indexed no-op once set.
+            sqlx::query("UPDATE sessions SET model = $2 WHERE id = $1 AND model IS NULL")
+                .bind(&local_id)
+                .bind(&model)
+                .execute(&state.pool)
+                .await
+                .map_err(|e| {
+                    tracing::error!("db error (session model): {e}");
+                    e
+                })?;
+        }
         _ => {}
     }
     if let Some(id) = local_id_for_bump {

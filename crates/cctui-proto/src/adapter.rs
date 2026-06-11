@@ -189,6 +189,16 @@ pub enum AdapterEvent {
         #[serde(default)]
         cache_creation_tokens: u64,
     },
+    /// The model id observed on an assistant message in the transcript (e.g.
+    /// `"claude-opus-4-8"`). This is the ground truth of what actually ran;
+    /// it fills `sessions.model` for sessions launched without an explicit
+    /// `--model` flag (where the flag-derived model is absent). The server
+    /// writes it only when the model is still unset, so an explicit
+    /// `--model` alias keeps priority.
+    SessionModel {
+        local_id: String,
+        model: String,
+    },
     /// The agent is blocked awaiting a tool-permission decision. The
     /// `request_id` is what the client must echo back via
     /// `AdapterCommand::PermissionResponse`. Carrier is adapter-specific
