@@ -436,6 +436,20 @@
 		return { topLevel, childGroups, hasCollapsible };
 	}
 
+	// Aggregated subagent cost for a parent (CCT-297 #19): the parent's own cost
+	// plus every subagent's, with the agent count. Null when there are no agents.
+	function costRollup(
+		s: SessionListItem,
+		groups: SubGroup[]
+	): { cost: number; count: number } | null {
+		const agents = groups.flatMap((g) => g.agents);
+		if (agents.length === 0) return null;
+		const cost =
+			Number(s.token_usage.cost_usd) +
+			agents.reduce((n, a) => n + Number(a.token_usage.cost_usd), 0);
+		return { cost, count: agents.length };
+	}
+
 	const liveNest = $derived(nest(items));
 	const topLevel = $derived(liveNest.topLevel);
 	const childGroupsOf = $derived(liveNest.childGroups);
@@ -609,6 +623,7 @@
 				swipeLabel="Archive"
 				onSwipe={swipeArchive}
 				onTogglePin={togglePin}
+				subagentCost={costRollup(s, childGroupsOf.get(s.id) ?? [])}
 			/>
 		{/each}
 	</div>
@@ -653,6 +668,7 @@
 					onSwipe={swipeArchive}
 					onTogglePin={togglePin}
 					highlight={hl}
+					subagentCost={costRollup(s, subGroups)}
 				/>
 			</div>
 		</div>

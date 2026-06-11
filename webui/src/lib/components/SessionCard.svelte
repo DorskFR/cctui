@@ -20,7 +20,8 @@
 		swipeLabel = 'Archive',
 		onSwipe,
 		onTogglePin,
-		highlight = []
+		highlight = [],
+		subagentCost = null
 	}: {
 		session: SessionListItem;
 		child?: boolean;
@@ -44,6 +45,10 @@
 		// Pin/star toggle (CCT-267): when provided, a star button appears in the
 		// header. Pinned sessions sort to the top and skip auto-archive.
 		onTogglePin?: (s: SessionListItem) => void;
+		// Rolled-up subagent cost (CCT-297 #19): on a parent that spawned
+		// subagents, the parent's own cost plus the aggregated cost of all its
+		// subagents, with the subagent count. Shown as an extra chip.
+		subagentCost?: { cost: number; count: number } | null;
 	} = $props();
 
 	const s = $derived(session);
@@ -72,6 +77,9 @@
 					: 'dot-dead'
 	);
 	const u = $derived(s.token_usage);
+	// Subagent cost rollup (CCT-297 #19): only meaningful when there are agents.
+	const rollup = $derived(subagentCost && subagentCost.count > 0 ? subagentCost : null);
+	const fmtCost = (c: number) => (c >= 1 ? `$${c.toFixed(2)}` : `$${c.toFixed(3)}`);
 	// CCT-233: the active/inactive status badges are pure noise — liveness is
 	// already conveyed by the colored dot. Only keep the badge for the meaningful
 	// lifecycle states ("new", "archived").
@@ -238,6 +246,11 @@
 				>{/if}
 		{/if}
 		{#if s.model}<span class="muted sm model">{s.model}{s.effort ? ` · ${s.effort}` : ''}</span>{/if}
+		{#if rollup}<span
+				class="rollup sm"
+				title="Total cost incl. {rollup.count} subagent{rollup.count === 1 ? '' : 's'}"
+				>Σ {fmtCost(rollup.cost)}</span
+			>{/if}
 		<AdapterIcon adapter={s.adapter_id} size={16} />
 	</div>
 
@@ -261,6 +274,11 @@
 
 		<div class="row foot">
 			<TokenUsage usage={u} cold={s.cache_cold} />
+			{#if rollup}<span
+					class="rollup sm"
+					title="Parent + {rollup.count} subagent{rollup.count === 1 ? '' : 's'} aggregated cost"
+					>Σ {fmtCost(rollup.cost)} · {rollup.count} agent{rollup.count === 1 ? '' : 's'}</span
+				>{/if}
 			<div class="spacer"></div>
 			{#if s.last_message_at}<span
 					class="faint sm ago"
@@ -422,6 +440,13 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+	/* Aggregated subagent cost chip (CCT-297 #19). */
+	.rollup {
+		flex: none;
+		white-space: nowrap;
+		font-weight: var(--fw-semibold);
+		color: var(--accent, #88c0d0);
 	}
 	/* Relative-time hint ("4m ago") must never wrap to a second line (CCT-297 #15). */
 	.ago {
