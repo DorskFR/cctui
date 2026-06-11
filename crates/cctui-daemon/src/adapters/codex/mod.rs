@@ -234,6 +234,61 @@ async fn command_pump(
                             }
                         });
                     }
+                    AdapterCommand::Fork { parent_local_id, spec, command_id } => {
+                        // Fork an existing thread into a new one seeded from its
+                        // history (CCT-302). Mirrors Spawn for cfg overrides
+                        // (permission/effort/model) but launches via thread/fork.
+                        let working_dir = spec
+                            .working_dir
+                            .clone()
+                            .unwrap_or_else(|| parent_local_id.clone());
+                        if let Some(command_id) = command_id {
+                            let _ = events
+                                .send(AdapterEvent::CommandResult {
+                                    command_id,
+                                    ok: true,
+                                    error: None,
+                                })
+                                .await;
+                        }
+                        let mut cfg = app_cfg.clone();
+                        if let Some(mode) = spec.permission_mode {
+                            use cctui_proto::adapter::PermissionMode;
+                            let (sandbox, approval) = match mode {
+                                PermissionMode::Yolo => ("danger-full-access", "never"),
+                                PermissionMode::Auto => ("workspace-write", "never"),
+                                PermissionMode::Ask => ("workspace-write", "untrusted"),
+                            };
+                            sandbox.clone_into(&mut cfg.sandbox_mode);
+                            approval.clone_into(&mut cfg.approval_policy);
+                        }
+                        if let Some(effort) =
+                            spec.effort.as_deref().map(str::trim).filter(|e| !e.is_empty())
+                        {
+                            cfg.reasoning_effort = Some(effort.to_owned());
+                        }
+                        if let Some(model) =
+                            spec.model.as_deref().map(str::trim).filter(|m| !m.is_empty())
+                        {
+                            cfg.model = Some(model.to_owned());
+                        }
+                        let session = CodexSession::new_fork(
+                            cfg,
+                            working_dir,
+                            parent_local_id,
+                            spec.prompt.clone(),
+                            spec.name.clone(),
+                            events.clone(),
+                            live.clone(),
+                            registry.clone(),
+                            shutdown.clone(),
+                        );
+                        tokio::spawn(async move {
+                            if let Err(err) = session.run().await {
+                                tracing::error!(%err, "codex app-server fork ended in error");
+                            }
+                        });
+                    }
                     AdapterCommand::PermissionResponse { local_id, request_id, allow } => {
                         forward(
                             &live,

@@ -278,6 +278,14 @@ pub struct Driver {
     /// session list still shows the model/effort we launched the worker with.
     /// `Mutex` because `spawn` takes `&self` while the poll loop holds `&mut self`.
     spawn_model_effort: std::sync::Mutex<HashMap<String, (Option<String>, Option<String>)>>,
+    /// Parent session id remembered per freshly-forked child `short` (CCT-302).
+    /// `fork` dispatches a new worker but the `SessionStarted` for it is emitted
+    /// later by the poll loop when the short first appears in the roster — that
+    /// path has no idea it was a fork, so we stash the parent here and the
+    /// roster-discovery emit reads it to set `SessionMeta::parent_local_id` (the
+    /// link the server resolves into `parent_id`). `Mutex` for the same reason as
+    /// `spawn_model_effort`.
+    fork_parent_by_short: std::sync::Mutex<HashMap<String, String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -371,6 +379,7 @@ impl Driver {
             last_reconcile: Instant::now(),
             churned: false,
             spawn_model_effort: std::sync::Mutex::new(HashMap::new()),
+            fork_parent_by_short: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -620,6 +629,9 @@ impl Driver {
             }
             AdapterCommand::Spawn { spec, .. } => {
                 self.spawn(&sock, &spec).await?;
+            }
+            AdapterCommand::Fork { parent_local_id, spec, .. } => {
+                self.fork(&sock, &parent_local_id, &spec).await?;
             }
             AdapterCommand::Rename { local_id, name } => {
                 let short = self.resolve_short(&local_id)?;
@@ -1009,6 +1021,169 @@ impl Driver {
         Ok(())
     }
 
+    /// Fork an existing conversation into a brand-new claude session (CCT-302).
+    ///
+    /// Mirrors [`spawn`] — mints a fresh `short`/`sessionId`/`nonce` and
+    /// dispatches a new worker via the control socket — but prepends `--resume
+    /// <parent-session-id> --fork-session` to the launch argv so claude copies
+    /// the parent's history into the new session id, leaving the parent intact.
+    /// `--model`/`--effort` from `spec` ride on top (this is the supported
+    /// "switch model mid-conversation" path, CCT-303).
+    ///
+    /// The parent session id is resolved to the id claude should resume from:
+    /// the parent's on-disk `resumeSessionId` when present (so a `/clear`ed or
+    /// `/compact`ed parent forks from the live conversation, not the stale spawn
+    /// id — CCT-160), else the parent's `sessionId`, else the `parent_local_id`
+    /// itself (covers reopening an archived parent whose `state.json` was removed
+    /// by `claude rm` but whose transcript still resumes).
+    ///
+    /// The child's `SessionStarted` is emitted later by the roster-discovery
+    /// path, which has no fork context, so we stash `parent_local_id` keyed by
+    /// the new `short` in `fork_parent_by_short` for it to read.
+    #[allow(clippy::too_many_lines)]
+    async fn fork(
+        &self,
+        sock: &std::path::Path,
+        parent_local_id: &str,
+        spec: &cctui_proto::adapter::SessionSpec,
+    ) -> anyhow::Result<()> {
+        let cwd = spec
+            .working_dir
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("fork: working_dir required"))?;
+        let cwd_path = std::path::Path::new(cwd);
+        if !cwd_path.is_dir() {
+            anyhow::bail!("fork: working_dir does not exist or is not a directory: {cwd}");
+        }
+
+        // Resolve the id to resume+fork from. Prefer the parent's on-disk
+        // `resumeSessionId` (the live conversation head after `/clear`/`/compact`
+        // — CCT-160), then its `sessionId`, then the raw parent id (archived
+        // parent whose job state was removed by `claude rm`, but whose transcript
+        // still resumes — the native "reopen archived as a new conversation").
+        let resume_id = self
+            .resolve_short_for_removal(parent_local_id)
+            .ok()
+            .and_then(|short| StateJson::read(&self.cfg.jobs_root, &short))
+            .and_then(|st| st.resume_session_id.or(st.session_id))
+            .unwrap_or_else(|| parent_local_id.to_owned());
+
+        let agent = "claude";
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let short = session_id[..8].to_owned();
+        let nonce: String = uuid::Uuid::new_v4().simple().to_string().chars().take(8).collect();
+        let created_at = u64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0),
+        )
+        .unwrap_or(0);
+
+        // Launch argv: resume the parent + fork into the fresh session id. The
+        // `--session-id` we minted is the new (child) id; `--resume`/`--fork-session`
+        // seed it from the parent's history.
+        let mut args = vec![
+            "--resume".to_owned(),
+            resume_id.clone(),
+            "--fork-session".to_owned(),
+            "--session-id".to_owned(),
+            session_id.clone(),
+            "--agent".to_owned(),
+            agent.to_owned(),
+        ];
+        if let Some(name) = &spec.name {
+            args.push("--name".to_owned());
+            args.push(name.clone());
+        }
+        if let Some(mode) = spec.permission_mode {
+            use cctui_proto::adapter::PermissionMode;
+            let claude_mode = match mode {
+                PermissionMode::Yolo => "bypassPermissions",
+                PermissionMode::Auto => "acceptEdits",
+                PermissionMode::Ask => "default",
+            };
+            args.push("--permission-mode".to_owned());
+            args.push(claude_mode.to_owned());
+        }
+        let mut respawn_flags = vec!["--agent".to_owned(), agent.to_owned()];
+        if let Some(effort) = spec.effort.as_deref().map(str::trim).filter(|e| !e.is_empty()) {
+            args.push("--effort".to_owned());
+            args.push(effort.to_owned());
+            respawn_flags.push("--effort".to_owned());
+            respawn_flags.push(effort.to_owned());
+        }
+        if let Some(model) = spec.model.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
+            args.push("--model".to_owned());
+            args.push(model.to_owned());
+            respawn_flags.push("--model".to_owned());
+            respawn_flags.push(model.to_owned());
+        }
+        {
+            let model = spec.model.as_deref().map(str::trim).filter(|m| !m.is_empty());
+            let effort = spec.effort.as_deref().map(str::trim).filter(|e| !e.is_empty());
+            if (model.is_some() || effort.is_some())
+                && let Ok(mut map) = self.spawn_model_effort.lock()
+            {
+                map.insert(short.clone(), (model.map(str::to_owned), effort.map(str::to_owned)));
+            }
+        }
+        if let Some(settings) = ensure_hook_settings(&self.cfg.hook_socket_path) {
+            let settings = settings.to_string_lossy().into_owned();
+            args.push("--settings".to_owned());
+            args.push(settings.clone());
+            respawn_flags.push("--settings".to_owned());
+            respawn_flags.push(settings);
+        }
+        // Optional first turn on the forked branch.
+        if let Some(prompt) = spec.prompt.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+            args.push("--".to_owned());
+            args.push(prompt.to_owned());
+        }
+        let intent = spec.prompt.clone().or_else(|| spec.name.clone()).unwrap_or_default();
+        let mut seed = serde_json::Map::new();
+        seed.insert("intent".to_owned(), json!(intent));
+        if let Some(name) = &spec.name {
+            seed.insert("name".to_owned(), json!(name));
+            seed.insert("nameSource".to_owned(), json!("user"));
+        }
+
+        // Remember the parent BEFORE dispatching so the roster-discovery emit
+        // (which can race in on the very next poll) finds the link.
+        if let Ok(mut map) = self.fork_parent_by_short.lock() {
+            map.insert(short.clone(), parent_local_id.to_owned());
+        }
+
+        let req = json!({
+            "proto": 1,
+            "op": "dispatch",
+            "timeoutMs": 15000,
+            "d": {
+                "proto": 1,
+                "short": short,
+                "nonce": nonce,
+                "sessionId": session_id,
+                "createdAt": created_at,
+                "source": "fleet",
+                "cwd": cwd,
+                "launch": { "mode": "prompt", "args": args },
+                "env": {},
+                "reattachEnv": {},
+                "isolation": "none",
+                "respawnFlags": respawn_flags,
+                "agent": agent,
+                "seed": seed,
+                "cols": 120,
+                "rows": 40,
+            }
+        });
+        let resp: serde_json::Value = socket::call(sock, &req)
+            .await
+            .with_context(|| format!("dispatch fork of {parent_local_id} in {cwd}"))?;
+        tracing::info!(?resp, %cwd, %session_id, %parent_local_id, %resume_id, "fork dispatched via control socket");
+        Ok(())
+    }
+
     /// Locate the control socket, booting the on-demand claude daemon if it's
     /// missing and waiting (up to ~12s) for the socket to appear. Used on the
     /// command path, where failing to find a socket means a dropped spawn/
@@ -1067,15 +1242,19 @@ impl Driver {
             if !self.roster.contains(&job.short) {
                 let session_id = job.session_id().map_or_else(|| job.short.clone(), str::to_owned);
                 self.short_by_session.insert(session_id.clone(), job.short.clone());
+                // If this short was just forked (CCT-302), carry the parent link
+                // so the server resolves it into `parent_id`. Consumed once.
+                let parent_local_id =
+                    self.fork_parent_by_short.lock().ok().and_then(|mut m| m.remove(&job.short));
                 self.emit(AdapterEvent::SessionStarted {
                     local_id: session_id,
                     meta: SessionMeta {
                         working_dir: job.cwd.clone(),
+                        parent_local_id,
                         extra: json!({
                             "short": job.short,
                             "cli_version": job.cli_version,
                         }),
-                        ..SessionMeta::default()
                     },
                 })
                 .await;
@@ -1246,11 +1425,8 @@ impl Driver {
             let activity = on_disk.as_ref().and_then(|s| s.activity.clone());
             // Prefer the on-disk state.json; fall back to the spawn-time flags
             // we remembered while state.json is absent/transient (CCT-299).
-            let spawned = self
-                .spawn_model_effort
-                .lock()
-                .ok()
-                .and_then(|m| m.get(&job.short).cloned());
+            let spawned =
+                self.spawn_model_effort.lock().ok().and_then(|m| m.get(&job.short).cloned());
             let model = on_disk
                 .as_ref()
                 .and_then(|s| s.model.clone())

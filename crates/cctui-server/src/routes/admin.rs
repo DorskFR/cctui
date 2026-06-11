@@ -1286,6 +1286,94 @@ pub async fn set_model(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// `POST /api/v1/sessions/{id}/fork` — fork an existing conversation into a
+/// brand-new session, optionally changing model/effort at fork time (CCT-302).
+///
+/// Resolves the parent's `(adapter_id, machine_uuid, working_dir)` from the DB,
+/// builds a [`SessionSpec`] (working_dir inherited from the parent; model/effort
+/// from the request, which the webui pre-fills with the parent's current
+/// values), and dispatches an [`AdapterCommand::Fork`] to the owning daemon. The
+/// child links back to the parent via `SessionMeta::parent_local_id` on its
+/// `SessionStarted` (resolved into `parent_id` server-side) — the parent row is
+/// left untouched, so reopening an archived session as a fork does not revive or
+/// re-flip it. Returns a `command_id` the webui can await like a spawn (CCT-131).
+pub async fn fork_session(
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+    Json(req): Json<cctui_proto::api::ForkRequest>,
+) -> Result<(StatusCode, Json<cctui_proto::api::SpawnResponse>), (StatusCode, Json<ApiError>)> {
+    let norm = |s: Option<String>| s.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
+
+    // Resolve the parent: adapter + machine + cwd. The fork inherits the
+    // parent's working directory and adapter; only model/effort/name/prompt can
+    // be overridden by the caller.
+    let row: Option<(Option<String>, Option<uuid::Uuid>, String)> =
+        sqlx::query_as("SELECT adapter_id, machine_uuid, working_dir FROM sessions WHERE id = $1")
+            .bind(&session_id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(|e| {
+                tracing::error!("db error: {e}");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ApiError { error: "database error".into() }),
+                )
+            })?;
+    let Some((adapter_id, machine_uuid, working_dir)) = row else {
+        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "session not found".into() })));
+    };
+    let Some(adapter_id) = adapter_id else {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(ApiError { error: "session has no adapter (legacy) — cannot fork".into() }),
+        ));
+    };
+    let Some(machine_uuid) = machine_uuid else {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(ApiError { error: "session has no machine — cannot fork".into() }),
+        ));
+    };
+
+    let command_id = uuid::Uuid::new_v4();
+    let spec = cctui_proto::adapter::SessionSpec {
+        adapter_id: cctui_proto::adapter::AdapterId::new(&adapter_id),
+        working_dir: Some(working_dir),
+        prompt: norm(req.prompt),
+        name: norm(req.name),
+        permission_mode: None,
+        effort: norm(req.effort),
+        model: norm(req.model),
+        env: std::collections::BTreeMap::new(),
+        bootstrap: serde_json::Value::Null,
+    };
+    let frame = cctui_proto::ws::DaemonFrameDown::Command {
+        adapter_id: adapter_id.clone(),
+        command: Box::new(cctui_proto::adapter::AdapterCommand::Fork {
+            parent_local_id: session_id.clone(),
+            spec,
+            command_id: Some(command_id),
+        }),
+    };
+    let Some(sender) = state.daemon_connections.get(&machine_uuid).map(|r| r.clone()) else {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ApiError { error: "daemon for that machine is offline".into() }),
+        ));
+    };
+    if sender.send(frame).await.is_err() {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ApiError { error: "daemon disconnected mid-dispatch".into() }),
+        ));
+    }
+    tracing::info!(parent = %session_id, %command_id, %adapter_id, "fork dispatched");
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(cctui_proto::api::SpawnResponse { command_id, status: "dispatched".into() }),
+    ))
+}
+
 /// `POST /api/v1/sessions/{id}/auto-approve` — toggle cctui-side auto-approve
 /// (CCT-151). When on, incoming permission requests for this session are
 /// answered `allow` immediately. In-memory; reset on server restart.

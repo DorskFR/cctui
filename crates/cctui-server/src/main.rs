@@ -107,6 +107,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/sessions/{id}/kill", post(routes::admin::kill_session))
         .route("/sessions/{id}/interrupt", post(routes::admin::interrupt_session))
         .route("/sessions/{id}/set-model", post(routes::admin::set_model))
+        .route("/sessions/{id}/fork", post(routes::admin::fork_session))
         .route("/sessions/{id}/auto-approve", post(routes::admin::set_auto_approve))
         .route("/sessions/{id}/archive", post(routes::admin::archive_session))
         .route("/sessions/{id}/unarchive", post(routes::admin::unarchive_session))

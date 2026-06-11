@@ -301,6 +301,31 @@ pub enum AdapterCommand {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         command_id: Option<Uuid>,
     },
+    /// Fork an existing conversation into a brand-new session, optionally
+    /// changing the model/effort at fork time (CCT-302). Each adapter maps it
+    /// to its native primitive: claude `--resume <parent-session-id>
+    /// --fork-session [--model …] [--effort …]` (minting a fresh short /
+    /// session id, forking from the parent's on-disk `resumeSessionId` when
+    /// present — CCT-160); codex app-server `thread/fork { threadId, … }`.
+    /// The new session links back to the parent via
+    /// [`SessionMeta::parent_local_id`] on its `SessionStarted`, so the fork is
+    /// discoverable; the parent is left intact (NOT archived/flipped). The
+    /// supported substitute for claude's missing in-place model switch
+    /// (CCT-303) routes here. `spec.working_dir`/`model`/`effort`/`name` carry
+    /// the (optionally overridden) launch parameters; `spec.prompt` is an
+    /// optional first turn on the forked branch.
+    Fork {
+        /// The parent session's `local_id` — for claude this is the parent's
+        /// session id (== its DB row id, from which the short is derived); for
+        /// codex it is the parent thread id.
+        parent_local_id: String,
+        spec: SessionSpec,
+        /// Correlation id minted by the server's fork route, echoed back in an
+        /// [`AdapterEvent::CommandResult`] (CCT-131). `None` for non-HTTP
+        /// callers.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        command_id: Option<Uuid>,
+    },
     /// Claude-code-specific: inject `text` directly into the worker PTY
     /// via the `reply` op. Distinct from `SendMessage` (which v0 routed
     /// through MCP notifications) so that adapters with both paths can

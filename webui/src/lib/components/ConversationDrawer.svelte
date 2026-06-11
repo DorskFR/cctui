@@ -617,6 +617,51 @@
 		}
 	}
 
+	// ── Fork conversation (CCT-302) ───────────────────────────────────────────
+	// Fork this conversation into a brand-new session, optionally changing the
+	// model/effort. For claude this is also the supported "switch model"
+	// substitute (no in-place switch — CCT-303); for archived sessions it is the
+	// "reopen as a new conversation" path. Defaults inherit the parent's
+	// model/effort so a plain fork preserves them.
+	const claudeEfforts = ['', 'low', 'medium', 'high', 'xhigh', 'max'];
+	const claudeModels = [
+		{ v: '', label: 'Default' },
+		{ v: 'haiku', label: 'Haiku' },
+		{ v: 'sonnet', label: 'Sonnet' },
+		{ v: 'opus', label: 'Opus' },
+		{ v: 'fable', label: 'Fable' }
+	];
+	const forkModels = $derived(isCodexSession ? codexModels : claudeModels);
+	const forkEfforts = $derived(isCodexSession ? codexEfforts : claudeEfforts);
+	let forking = $state(false);
+	let forkOpen = $state(false);
+	let forkModel = $state('');
+	let forkEffort = $state('');
+	function openFork() {
+		forkModel = session.model ?? '';
+		forkEffort = session.effort ?? '';
+		forkOpen = true;
+	}
+	async function doFork() {
+		if (forking) return;
+		forking = true;
+		try {
+			await actions.fork(id, {
+				model: forkModel.trim() || null,
+				effort: forkEffort.trim() || null,
+				prompt: null,
+				name: null
+			});
+			forkOpen = false;
+			toasts.ok(archived ? 'Reopened as a new conversation' : 'Forked conversation');
+			onclose();
+		} catch (e) {
+			toasts.err((e as Error).message);
+		} finally {
+			forking = false;
+		}
+	}
+
 	// Composer
 	let input = $state(drafts.get(composerKey(session.id)));
 	$effect(() => {
@@ -1312,6 +1357,15 @@
 					</svg>
 				</button>
 			{/if}
+			<button class="tapbtn fork" aria-label="Fork conversation" title="Fork into a new conversation (optionally change model)" onclick={openFork}>
+				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+					<circle cx="6" cy="6" r="2.5" />
+					<circle cx="18" cy="6" r="2.5" />
+					<circle cx="12" cy="19" r="2.5" />
+					<path d="M6 8.5v2a3 3 0 0 0 3 3h6a3 3 0 0 0 3-3v-2" />
+					<path d="M12 13.5v3" />
+				</svg>
+			</button>
 		</div>
 		<div class="hmeta row row-wrap">
 			<span class="badge {statusBadgeClass(session.status)}">{session.status}</span>
@@ -1335,10 +1389,11 @@
 					>{session.model ?? 'default'}{session.effort ? ` · ${session.effort}` : ''} ✎</button>
 				{/if}
 			{:else if session.model || session.effort}
-				<span
+				<button
 					class="chip"
-					title="Claude can't switch model in place — fork to change model (coming soon)"
-				>{session.model ?? ''}{session.effort ? ` · ${session.effort}` : ''}</span>
+					title="Claude can't switch model in place — fork to change model"
+					onclick={openFork}
+				>{session.model ?? ''}{session.effort ? ` · ${session.effort}` : ''} ⑂</button>
 			{/if}
 			<MachineBadge name={session.machine_name} id={session.machine_id} hue={session.machine_hue} mono />
 			<button
@@ -1562,8 +1617,9 @@
 		{#if archived}
 			<div class="hint muted">
 				Session archived (read-only). The worker is gone on the agent side —
-				<button type="button" class="link" onclick={newFromScript}>start a new session from the same script</button>
-				to continue.
+				<button type="button" class="link" onclick={openFork}>reopen as a new conversation</button>
+				(carries the history), or
+				<button type="button" class="link" onclick={newFromScript}>start fresh from the same script</button>.
 			</div>
 		{:else}
 			<!-- Failed sends now surface inline on the message bubble itself
@@ -1623,7 +1679,110 @@
 	</div>
 </div>
 
+{#if forkOpen}
+	<div
+		class="fork-scrim"
+		role="button"
+		tabindex="-1"
+		aria-label="Cancel fork"
+		onclick={() => (forkOpen = false)}
+		onkeydown={(e) => e.key === 'Escape' && (forkOpen = false)}
+	></div>
+	<div class="fork-modal" role="dialog" aria-modal="true" aria-label="Fork conversation">
+		<h3>{archived ? 'Reopen as a new conversation' : 'Fork conversation'}</h3>
+		<p class="muted">
+			Creates a new {isCodexSession ? 'codex thread' : 'claude session'} seeded from this
+			conversation's history. The original is left untouched. Adjust the model/effort below,
+			or keep them to fork as-is.
+		</p>
+		<label class="fork-field">
+			<span>Model</span>
+			<select bind:value={forkModel}>
+				{#each forkModels as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
+			</select>
+		</label>
+		<label class="fork-field">
+			<span>Effort</span>
+			<select bind:value={forkEffort}>
+				{#each forkEfforts as e (e)}<option value={e}>{e || 'default'}</option>{/each}
+			</select>
+		</label>
+		<div class="fork-actions row">
+			<button class="link" onclick={() => (forkOpen = false)} disabled={forking}>Cancel</button>
+			<button class="primary" onclick={doFork} disabled={forking}>
+				{forking ? 'Forking…' : archived ? 'Reopen' : 'Fork'}
+			</button>
+		</div>
+	</div>
+{/if}
+
 <style>
+	.fork-scrim {
+		position: fixed;
+		inset: 0;
+		background: rgba(0, 0, 0, 0.55);
+		z-index: 200;
+		border: 0;
+	}
+	.fork-modal {
+		position: fixed;
+		top: 50%;
+		left: 50%;
+		transform: translate(-50%, -50%);
+		z-index: 201;
+		width: min(420px, calc(100vw - 2rem));
+		background: var(--bg, #1a1a1a);
+		border: 1px solid var(--border, #333);
+		border-radius: 10px;
+		padding: 1.1rem 1.2rem;
+		box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+	}
+	.fork-modal h3 {
+		margin: 0 0 0.4rem;
+		font-size: 1.05rem;
+	}
+	.fork-modal p {
+		margin: 0 0 0.9rem;
+		font-size: 0.85rem;
+		line-height: 1.4;
+	}
+	.fork-field {
+		display: flex;
+		align-items: center;
+		gap: 0.6rem;
+		margin-bottom: 0.7rem;
+		font-size: 0.9rem;
+	}
+	.fork-field span {
+		width: 4.5rem;
+		flex: 0 0 auto;
+	}
+	.fork-field select {
+		flex: 1;
+		padding: 0.35rem 0.5rem;
+		background: var(--bg-elev, #222);
+		color: inherit;
+		border: 1px solid var(--border, #333);
+		border-radius: 6px;
+	}
+	.fork-actions {
+		justify-content: flex-end;
+		gap: 0.8rem;
+		margin-top: 0.4rem;
+	}
+	.fork-actions .primary {
+		background: var(--accent, #4a9eff);
+		color: #fff;
+		border: 0;
+		border-radius: 6px;
+		padding: 0.4rem 1rem;
+		cursor: pointer;
+	}
+	.fork-actions .primary:disabled {
+		opacity: 0.6;
+		cursor: default;
+	}
+
 	/* No scrim on mobile — the drawer is full-width, nothing behind to click. */
 	.scrim {
 		display: none;

@@ -277,6 +277,29 @@ pub struct SetModelRequest {
     pub effort: Option<String>,
 }
 
+/// Body for `POST /api/v1/sessions/{id}/fork` (CCT-302).
+///
+/// Fork an existing conversation into a brand-new session. All fields are
+/// optional overrides; omitted fields inherit from the parent (the working
+/// directory is always inherited from the parent server-side, and the
+/// adapter/account follow the parent too). `model`/`effort` default to the
+/// parent's current values (the webui pre-fills them), so a plain fork
+/// preserves the model; setting them is how "fork to change model" works for
+/// claude (which has no in-place switch — CCT-303). `prompt` is an optional
+/// first turn to send on the forked branch.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ForkRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
 #[derive(Debug, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct ApiError {

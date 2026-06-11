@@ -281,6 +281,20 @@ fn thread_resume_req(thread_id: &str, cwd: &str) -> Value {
     })
 }
 
+/// Fork an existing thread into a brand-new one seeded from its history
+/// (CCT-302). The app-server returns a fresh `thread` (its own id) just like
+/// `thread/start`, so the response is parsed through the same `ID_THREAD_START`
+/// path. Model/effort overrides ride on the subprocess `-c` flags (set in the
+/// command pump), mirroring the spawn path, so they apply to the forked thread.
+fn thread_fork_req(parent_thread_id: &str, cwd: &str) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": ID_THREAD_START,
+        "method": "thread/fork",
+        "params": {"threadId": parent_thread_id, "cwd": cwd},
+    })
+}
+
 fn thread_name_set_req(id: i64, thread_id: &str, name: &str) -> Value {
     json!({
         "jsonrpc": "2.0",
@@ -480,8 +494,23 @@ impl AppServerConfig {
 
 #[derive(Debug, Clone)]
 enum SessionLaunch {
-    Fresh { prompt: Option<String>, name: Option<String> },
-    Resume { thread_id: String, initial_commands: Vec<SessionCommand> },
+    Fresh {
+        prompt: Option<String>,
+        name: Option<String>,
+    },
+    Resume {
+        thread_id: String,
+        initial_commands: Vec<SessionCommand>,
+    },
+    /// Fork a parent thread into a new one seeded from its history (CCT-302).
+    /// Post-fork it behaves like `Fresh` (optional name + first turn), but the
+    /// start handshake sends `thread/fork { threadId }` and the resulting
+    /// `SessionStarted` carries `parent_local_id` for discoverability.
+    Fork {
+        parent_thread_id: String,
+        prompt: Option<String>,
+        name: Option<String>,
+    },
 }
 
 /// One spawned Codex session: owns a `codex app-server` subprocess and a
@@ -512,6 +541,29 @@ impl CodexSession {
             cfg,
             cwd,
             launch: SessionLaunch::Fresh { prompt, name },
+            events,
+            live,
+            registry,
+            shutdown,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub const fn new_fork(
+        cfg: AppServerConfig,
+        cwd: String,
+        parent_thread_id: String,
+        prompt: Option<String>,
+        name: Option<String>,
+        events: mpsc::Sender<AdapterEvent>,
+        live: LiveSessionRegistry,
+        registry: SessionRegistry,
+        shutdown: CancellationToken,
+    ) -> Self {
+        Self {
+            cfg,
+            cwd,
+            launch: SessionLaunch::Fork { parent_thread_id, prompt, name },
             events,
             live,
             registry,
@@ -731,6 +783,13 @@ impl CodexSession {
                                     write_json(&mut stdin, &thread_resume_req(thread_id, &self.cwd))
                                         .await?;
                                 }
+                                SessionLaunch::Fork { parent_thread_id, .. } => {
+                                    write_json(
+                                        &mut stdin,
+                                        &thread_fork_req(parent_thread_id, &self.cwd),
+                                    )
+                                    .await?;
+                                }
                             }
                         }
                         Incoming::Response { id, value } if id == ID_THREAD_START => {
@@ -739,22 +798,31 @@ impl CodexSession {
                                 anyhow::bail!("codex thread/start response missing thread id");
                             };
                             local_id.clone_from(&info.thread_id);
+                            // Link a forked thread back to its parent (CCT-302)
+                            // so the server resolves `parent_id`.
+                            let parent_local_id = match &self.launch {
+                                SessionLaunch::Fork { parent_thread_id, .. } => {
+                                    Some(parent_thread_id.clone())
+                                }
+                                _ => None,
+                            };
                             self.events
                                 .send(AdapterEvent::SessionStarted {
                                     local_id: local_id.clone(),
                                     meta: SessionMeta {
                                         working_dir: info.cwd.or_else(|| Some(self.cwd.clone())),
+                                        parent_local_id,
                                         extra: json!({
                                             "source": "codex-app-server",
                                             "rollout_path": info.rollout_path,
                                         }),
-                                        ..SessionMeta::default()
                                     },
                                 })
                                 .await
                                 .ok();
                             let remembered_name = match &self.launch {
-                                SessionLaunch::Fresh { name, .. } => name.clone(),
+                                SessionLaunch::Fresh { name, .. }
+                                | SessionLaunch::Fork { name, .. } => name.clone(),
                                 SessionLaunch::Resume { .. } => self
                                     .registry
                                     .lock()
@@ -798,7 +866,8 @@ impl CodexSession {
 
                             let mut end_after_initial = false;
                             match &self.launch {
-                                SessionLaunch::Fresh { name, prompt } => {
+                                SessionLaunch::Fresh { name, prompt }
+                                | SessionLaunch::Fork { name, prompt, .. } => {
                                     if let Some(name) = name.as_deref() {
                                         let result = set_thread_name(
                                             &mut stdin,
@@ -1288,6 +1357,10 @@ mod tests {
         assert_eq!(resume["method"], "thread/resume");
         assert_eq!(resume["params"]["threadId"], "tid");
         assert_eq!(resume["params"]["cwd"], "/repo");
+        let fork = thread_fork_req("parent-tid", "/repo");
+        assert_eq!(fork["method"], "thread/fork");
+        assert_eq!(fork["params"]["threadId"], "parent-tid");
+        assert_eq!(fork["params"]["cwd"], "/repo");
         let rename = thread_name_set_req(101, "tid", "build fix");
         assert_eq!(rename["method"], "thread/name/set");
         assert_eq!(rename["id"], 101);

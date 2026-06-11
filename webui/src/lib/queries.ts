@@ -8,6 +8,7 @@ import type { SessionListItem } from '@bindings/SessionListItem';
 import type { AgentEvent } from '@bindings/AgentEvent';
 import type { SpawnRequest } from '@bindings/SpawnRequest';
 import type { SpawnResponse } from '@bindings/SpawnResponse';
+import type { ForkRequest } from '@bindings/ForkRequest';
 import type { StageFilesResponse } from '@bindings/StageFilesResponse';
 import type { DispatchRequest } from '@bindings/DispatchRequest';
 import type { DispatchResponse } from '@bindings/DispatchResponse';
@@ -178,6 +179,10 @@ export const endpoints = {
 			form,
 		);
 	},
+	/** Fork a conversation into a new session, optionally changing model/effort
+	 *  (CCT-302). Returns a `command_id` to await on the ws like spawn. */
+	fork: (sessionId: string, body: ForkRequest) =>
+		api.post<SpawnResponse>(`/sessions/${sessionId}/fork`, body),
 	dispatch: (body: DispatchRequest) =>
 		api.post<DispatchResponse>('/sessions/dispatch', body),
 	/** Configured dispatcher ids (e.g. `["claude-worker"]`); empty when none. */
@@ -476,6 +481,14 @@ export function useSessionActions() {
 		},
 		spawn: (body: SpawnRequest, files: File[] = []) =>
 			endpoints.spawn(body, files),
+		// Fork a conversation into a new session (CCT-302). Optionally overrides
+		// model/effort (the "fork to change model" path for claude). The new
+		// session links back to the parent and registers shortly after; refetch.
+		fork: async (id: string, body: ForkRequest) => {
+			const res = await endpoints.fork(id, body);
+			inval();
+			return res;
+		},
 		// Mid-chat attachments (CCT-236): stage files for a running session and
 		// return the staged paths the composer references under the reply.
 		stageFiles: (id: string, files: File[]) => endpoints.stageFiles(id, files),
