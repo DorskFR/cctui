@@ -49,7 +49,10 @@
 		justify-content: center;
 		gap: 2px;
 		color: var(--text-faint);
-		font-size: var(--fs-xs);
+		/* Footer is fixed chrome (like the px-pinned header) — it deliberately does
+		   NOT respond to the font-scale picker, so use fixed sizes for both the
+		   label and the glyph so they scale together / not at all (CCT-345). */
+		font-size: 0.6875rem;
 		text-decoration: none;
 		font-weight: var(--fw-medium);
 	}

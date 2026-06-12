@@ -419,7 +419,9 @@
 		z-index: 1;
 	}
 	.sc.child {
-		border-left: 2px solid color-mix(in srgb, var(--border-strong) 70%, var(--bg-elevated));
+		/* Subagent rows: just a plain 1px border, no faded/clipped left-border
+		   accent (CCT-345). The indent already signals the parent relationship. */
+		border: 1px solid var(--border);
 		background: var(--bg-elevated);
 		color: var(--text);
 	}
@@ -432,7 +434,7 @@
 		margin-left: 0;
 	}
 	.sc.dense.child {
-		border-left: none;
+		border: 1px solid var(--border);
 	}
 	.tag {
 		font-size: var(--fs-xs);

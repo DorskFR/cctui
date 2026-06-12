@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { untrack } from 'svelte';
+	import { untrack, onMount } from 'svelte';
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import { useSessions, useSessionActions, endpoints, SYSTEM_MACHINE_KINDS } from '$lib/queries';
 	import { useQueryClient } from '@tanstack/svelte-query';
@@ -100,6 +100,17 @@
 	// the URL so list refetches (which churn the session object) don't re-push.
 	let lastUrlId: string | null = null;
 	let urlResolving = false;
+	// Seed lastUrlId from the URL on mount so a deep-link load doesn't double-push,
+	// while opening a session from the list DOES push a history entry — so the
+	// browser Back button (and the drawer's < button) returns to /sessions instead
+	// of skipping the list (CCT-345 / CCT-326). `mounted` is reactive so the
+	// drawer→URL effect re-runs once the initial sync is in place.
+	let mounted = $state(false);
+	onMount(() => {
+		lastUrlId =
+			(page.params.session as string | undefined) ?? page.url.searchParams.get('session') ?? null;
+		mounted = true;
+	});
 
 	function setUrlSession(id: string | null, replace = false) {
 		const url = new URL(page.url);
@@ -157,9 +168,12 @@
 	$effect(() => {
 		const id = openSession?.id ?? null;
 		if (urlResolving) return;
+		if (!mounted) return;
 		if (id === lastUrlId) return;
-		// first reflection on load uses replace (don't trap back); thereafter push
-		setUrlSession(id, lastUrlId === null);
+		// Always push so opening/closing a session is a real history step and Back
+		// returns to the list. The deep-link case is handled by seeding lastUrlId
+		// on mount (above), so no redundant entry is added on first load.
+		setUrlSession(id, false);
 		lastUrlId = id;
 	});
 
@@ -785,7 +799,7 @@
 						</button>
 						<div class="spacer"></div>
 							<Button
-								size="sm"
+								control
 								variant="danger"
 								disabled={archiving}
 								title="Archive all dispatched conversations"

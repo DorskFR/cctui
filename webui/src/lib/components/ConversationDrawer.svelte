@@ -6,7 +6,7 @@
 	import { useConversation, useSessionActions } from '$lib/queries';
 	import { renderMarkdown, prettyJson, highlightBlock } from '$lib/markdown';
 	import { highlightTerms } from '$lib/search';
-	import { clockTime, statusBadgeClass, compact } from '$lib/format';
+	import { clockTime, statusBadgeClass, compact, timestampTooltip } from '$lib/format';
 	import { drafts, composerKey, history as msgHistory, clearSessionStorage, VIEW_OPTS } from '$lib/drafts';
 	import { autoresize } from '$lib/autoresize';
 	import { dropzone } from '$lib/dropzone';
@@ -582,20 +582,14 @@
 		return out;
 	});
 	function lineTooltip(ts: number): string {
+		// Mirror the session-list "x minutes ago" hover (CCT-345 / CCT-331):
+		// Started / Last message / Last activity, prefixed with this message's time.
 		const d = new Date(ts);
-		const u = session.token_usage;
-		const tokens =
-			Number(u.tokens_in) +
-			Number(u.tokens_out) +
-			Number(u.cache_read_tokens) +
-			Number(u.cache_creation_tokens);
+		const msgTime = `This message: ${Number.isNaN(d.getTime()) ? '—' : d.toISOString()}`;
 		return [
-			`Time: ${Number.isNaN(d.getTime()) ? '—' : d.toISOString()}`,
-			`Machine: ${session.machine_name ?? session.machine_id}`,
-			session.model ? `Model: ${session.model}${session.effort ? ` · ${session.effort}` : ''}` : '',
-			`Path: ${session.working_dir}`,
-			`Session tokens: ${compact(tokens)}`
-		].filter(Boolean).join('\n');
+			msgTime,
+			timestampTooltip(session.registered_at, session.last_message_at, session.last_activity_at)
+		].join('\n');
 	}
 	function durationLabel(ms: number | undefined): string {
 		if (!ms || ms < 1000) return '';
@@ -1112,9 +1106,15 @@
 			const bg = getComputedStyle(document.body).getPropertyValue('--bg').trim() || '#1e1e1e';
 			const { toPng } = await import('html-to-image');
 			const clone = node.cloneNode(true) as HTMLElement;
+			// Render on-screen but visually hidden — a node parked at left:-10000px
+			// can skip layout/paint in some engines, which yielded a fully BLANK
+			// image (CCT-345). opacity:0 + pointer-events:none keeps it laid out.
 			clone.style.position = 'fixed';
-			clone.style.left = '-10000px';
+			clone.style.left = '0';
 			clone.style.top = '0';
+			clone.style.zIndex = '-1';
+			clone.style.opacity = '0';
+			clone.style.pointerEvents = 'none';
 			clone.style.width = '760px';
 			clone.style.maxWidth = '760px';
 			clone.style.height = 'auto';
@@ -1122,16 +1122,20 @@
 			clone.style.overflow = 'visible';
 			clone.style.padding = '16px';
 			clone.style.margin = '0';
+			clone.style.boxSizing = 'border-box';
 			clone.style.background = bg;
 			clone.querySelectorAll<HTMLElement>('.line-actions').forEach((el) => el.remove());
 			document.body.appendChild(clone);
-			await new Promise((resolve) => requestAnimationFrame(resolve));
+			// Let fonts settle and the clone lay out before measuring, otherwise the
+			// captured height is 0 / fonts render as blank boxes.
+			if (document.fonts?.ready) await document.fonts.ready;
+			await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+			const rect = clone.getBoundingClientRect();
 			const dataUrl = await toPng(clone, {
 				pixelRatio: 2,
 				backgroundColor: bg,
-				width: clone.scrollWidth,
-				height: clone.scrollHeight,
-				style: { width: '760px', height: `${clone.scrollHeight}px`, overflow: 'visible' }
+				width: Math.ceil(rect.width),
+				height: Math.ceil(rect.height)
 			});
 			clone.remove();
 			const a = document.createElement('a');
@@ -1261,7 +1265,25 @@
 	let scroller = $state<HTMLElement>();
 	let stuck = $state(true); // currently pinned to the bottom
 	let composerResizing = false;
+	let composerGuardTimer: ReturnType<typeof setTimeout> | undefined;
 	const STICK_SLOP = 48; // px from bottom still counts as "at bottom"
+
+	// Pin to the bottom and hold the composer-resize guard open long enough that
+	// the trailing scroll event (fired after the reflow) doesn't flip `stuck` off
+	// — a single rAF closed too early, which is why typing a long message still
+	// scrolled the latest line out of view (CCT-345 / CCT-161).
+	function pinAndGuard() {
+		if (!stuck || !scroller) return;
+		composerResizing = true;
+		scroller.scrollTop = scroller.scrollHeight;
+		requestAnimationFrame(() => {
+			if (scroller) scroller.scrollTop = scroller.scrollHeight;
+		});
+		clearTimeout(composerGuardTimer);
+		composerGuardTimer = setTimeout(() => {
+			composerResizing = false;
+		}, 120);
+	}
 
 	function atBottom(): boolean {
 		const el = scroller;
@@ -1301,19 +1323,18 @@
 	// vertical space from the chat; without this the latest lines scroll out of
 	// view. Observe the textarea and re-pin on each resize while stuck.
 	$effect(() => {
-		const el = textarea;
-		if (!el || typeof ResizeObserver === 'undefined') return;
-		const ro = new ResizeObserver(() => {
-			if (!stuck || !scroller) return;
-			composerResizing = true;
-			scroller.scrollTop = scroller.scrollHeight;
-			requestAnimationFrame(() => {
-				if (scroller) scroller.scrollTop = scroller.scrollHeight;
-				composerResizing = false;
-			});
-		});
-		ro.observe(el);
-		return () => ro.disconnect();
+		if (typeof ResizeObserver === 'undefined') return;
+		// Observe BOTH the textarea (it grows) and the scroll viewport (its height
+		// shrinks as a result) — re-pinning on the viewport's own resize is what
+		// actually keeps the latest line visible regardless of how the layout
+		// redistributes the space.
+		const ro = new ResizeObserver(() => pinAndGuard());
+		if (textarea) ro.observe(textarea);
+		if (scroller) ro.observe(scroller);
+		return () => {
+			ro.disconnect();
+			clearTimeout(composerGuardTimer);
+		};
 	});
 
 	// ── Drag-to-resize the desktop drawer (left border) ─────────────────────
@@ -1391,15 +1412,10 @@
 					<span class="truncate name">{headTitle}</span>
 				{/if}
 			</div>
-			<IconButton
-				class="tapbtn desktop-fork"
-				icon="fork"
-				label="Fork conversation"
-				title="Fork into a new conversation (optionally change model)"
-				onclick={openFork}
-			/>
 			<!-- Secondary actions (CCT-301 #7): inline on desktop, collapsed into the
-			     ⋯ flyout on mobile so a long title + many buttons no longer overflow. -->
+			     ⋯ flyout on mobile so a long title + many buttons no longer overflow.
+			     Font-size is the left-most action; a single fork lives at the end of
+			     the group (CCT-345). -->
 			<div class="secondary" class:open={moreOpen || renaming}>
 			<!-- UI font size (CCT-301 #6): the SAME discrete "A" control as the main
 			     window header (CCT-297 #11), promoted out of the formatting bar up to
@@ -1452,10 +1468,10 @@
 				onclick={doExport}
 			/>
 			<IconButton
-				class="tapbtn menu-fork"
+				class="tapbtn fork-action"
 				icon="fork"
 				label="Fork conversation"
-				title="Fork into a new conversation"
+				title="Fork into a new conversation (optionally change model)"
 				onclick={openFork}
 			/>
 			</div>
@@ -1754,9 +1770,11 @@
 		{#if archived}
 			<div class="archived-actions">
 				<span class="hint muted">Session archived (read-only).</span>
-				<Button variant="primary" onclick={doResume}>Resume this conversation</Button>
-				<Button onclick={openFork}>Fork as a new conversation</Button>
-				<Button variant="ghost" onclick={newFromScript}>New from same script</Button>
+				<span class="archived-actions-btns">
+					<Button onclick={newFromScript}>New from same script</Button>
+					<Button onclick={openFork}>Fork</Button>
+					<Button variant="primary" onclick={doResume}>Resume</Button>
+				</span>
 			</div>
 		{:else}
 			<!-- Failed sends now surface inline on the message bubble itself
@@ -1834,13 +1852,13 @@
 		</p>
 		<label class="fork-field">
 			<span>Model</span>
-			<select class="input" bind:value={forkModel}>
+			<select class="select" bind:value={forkModel}>
 				{#each forkModels as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
 			</select>
 		</label>
 		<label class="fork-field">
 			<span>Effort</span>
-			<select class="input" bind:value={forkEffort}>
+			<select class="select" bind:value={forkEffort}>
 				{#each forkEfforts as e (e)}<option value={e}>{e || 'default'}</option>{/each}
 			</select>
 		</label>
@@ -1895,12 +1913,10 @@
 		flex: 0 0 auto;
 	}
 	.fork-field select {
+		/* Inherit theme tokens from the global .select rule (CCT-345) — the old
+		   hardcoded var(--bg-elev,#222) rendered black-on-black in light themes. */
 		flex: 1;
-		padding: 0.35rem 0.5rem;
-		background: var(--bg-elev, #222);
-		color: inherit;
-		border: 1px solid var(--border, #333);
-		border-radius: 6px;
+		width: auto;
 	}
 	.fork-actions {
 		justify-content: flex-end;
@@ -2012,9 +2028,8 @@
 	.secondary {
 		display: contents;
 	}
-	.menu-fork {
-		display: none;
-	}
+	/* Desktop shows every action inline, so the ⋯ flyout toggle is pointless
+	   there — only surface it when actions actually collapse (CCT-345). */
 	.more {
 		display: none;
 	}
@@ -2029,6 +2044,10 @@
 			right: 0;
 			z-index: 5;
 			flex-direction: column;
+			align-items: stretch;
+			width: max-content;
+			min-width: 12rem;
+			max-width: calc(100vw - 2rem);
 			gap: var(--sp-1);
 			padding: var(--sp-2);
 			background: var(--bg-elevated-2);
@@ -2039,16 +2058,12 @@
 		.secondary.open {
 			display: flex;
 		}
-		.desktop-fork {
-			display: none;
-		}
-		.menu-fork {
-			display: inline-flex;
-		}
 		.secondary :global(.tapbtn),
 		.secondary .font-pick {
+			/* Full-width, left-aligned menu items; no min-width so long labels
+			   never force horizontal overflow on narrow phones (CCT-345). */
 			width: 100%;
-			min-width: 13rem;
+			min-width: 0;
 			justify-content: flex-start;
 			gap: var(--sp-2);
 			padding-inline: var(--sp-3);
@@ -2373,6 +2388,13 @@
 		align-items: center;
 		flex-wrap: wrap;
 		gap: var(--sp-2);
+	}
+	/* Right-aligned action cluster: New from same script · Fork · Resume (CCT-345). */
+	.archived-actions-btns {
+		display: flex;
+		align-items: center;
+		gap: var(--sp-2);
+		margin-left: auto;
 	}
 	.line {
 		display: flex;

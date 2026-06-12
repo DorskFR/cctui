@@ -249,6 +249,19 @@ svg[aria-hidden="true"] {
   opacity: 0.45;
   cursor: not-allowed;
 }
+/* A control-sized button can still be the primary action (e.g. the toolbar
+   "New" button). .btn-control follows .btn-primary in source order and would
+   otherwise paint it with the neutral --surface, so restore the accent fill
+   when both classes are present (CCT-345). */
+.btn-control.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--text-on-accent);
+}
+.btn-control.btn-primary:hover:not(:disabled) {
+  border-color: var(--accent);
+  filter: brightness(1.08);
+}
 .btn-control-square {
   width: var(--control-height);
   padding: 0;
