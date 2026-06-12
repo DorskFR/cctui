@@ -1120,39 +1120,40 @@
 		try {
 			const bg = getComputedStyle(document.body).getPropertyValue('--bg').trim() || '#1e1e1e';
 			const { toPng } = await import('html-to-image');
-			const clone = node.cloneNode(true) as HTMLElement;
-			// Render on-screen but visually hidden — a node parked at left:-10000px
-			// can skip layout/paint in some engines, which yielded a fully BLANK
-			// image (CCT-345). opacity:0 + pointer-events:none keeps it laid out.
-			clone.style.position = 'fixed';
-			clone.style.left = '0';
-			clone.style.top = '0';
-			clone.style.zIndex = '-1';
-			clone.style.opacity = '0';
-			clone.style.pointerEvents = 'none';
-			clone.style.width = '760px';
-			clone.style.maxWidth = '760px';
-			clone.style.height = 'auto';
-			clone.style.maxHeight = 'none';
-			clone.style.overflow = 'visible';
-			clone.style.padding = '16px';
-			clone.style.margin = '0';
-			clone.style.boxSizing = 'border-box';
-			clone.style.background = bg;
-			clone.querySelectorAll<HTMLElement>('.line-actions').forEach((el) => el.remove());
-			document.body.appendChild(clone);
-			// Let fonts settle and the clone lay out before measuring, otherwise the
-			// captured height is 0 / fonts render as blank boxes.
+			// Capture the ACTUAL on-screen node in place (CCT-327). Every prior
+			// attempt cloned the node off into a detached/visually-hidden element and
+			// fed THAT to html-to-image — which produced a blank PNG: html-to-image
+			// rasterises by serialising the node into an SVG <foreignObject>, reading
+			// each element's *computed* style. On a clone that html-to-image moves
+			// out of the live cascade, the `color-mix()`/CSS-variable theme tokens and
+			// `opacity:0` on the capture root all resolve to nothing → empty canvas.
+			// The visible node is already laid out with fonts loaded and every var/
+			// color-mix resolved to a concrete value, so capturing it directly paints
+			// the full, untruncated content. We only hide the hover action buttons for
+			// the duration of the capture, then restore them.
+			const actions = node.querySelector<HTMLElement>('.line-actions');
+			const prevActionsDisplay = actions?.style.display ?? '';
+			if (actions) actions.style.display = 'none';
+			// Make sure fonts are ready so glyphs paint rather than render as blank
+			// boxes, and let the layout settle (the hidden action buttons reflow).
 			if (document.fonts?.ready) await document.fonts.ready;
 			await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-			const rect = clone.getBoundingClientRect();
-			const dataUrl = await toPng(clone, {
-				pixelRatio: 2,
-				backgroundColor: bg,
-				width: Math.ceil(rect.width),
-				height: Math.ceil(rect.height)
-			});
-			clone.remove();
+			let dataUrl: string;
+			try {
+				const rect = node.getBoundingClientRect();
+				dataUrl = await toPng(node, {
+					pixelRatio: 2,
+					cacheBust: true,
+					backgroundColor: bg,
+					// scrollHeight/Width captures the full content even if the node is
+					// inside a scroll container, so nothing is clipped.
+					width: Math.ceil(Math.max(rect.width, node.scrollWidth)),
+					height: Math.ceil(Math.max(rect.height, node.scrollHeight)),
+					style: { margin: '0', padding: '16px', boxSizing: 'border-box', background: bg }
+				});
+			} finally {
+				if (actions) actions.style.display = prevActionsDisplay;
+			}
 			const a = document.createElement('a');
 			a.download = `cctui-message-${ln.ts}.png`;
 			a.href = dataUrl;
