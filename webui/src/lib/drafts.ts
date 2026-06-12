@@ -60,8 +60,9 @@ export const SPAWN_DRAFT = 'cctui_spawn_draft';
 export const LAST_MACHINE = 'cctui_last_machine';
 
 /** Spawn settings remembered PER MACHINE (CCT-274): the adapter, per-adapter
- * model + effort, and account last used on a given machine, so the next spawn
- * on e.g. dev1 re-selects what you usually run there. Keyed by machine id. */
+ * model + effort, account and working directory last used on a given machine,
+ * so the next spawn on e.g. dev1 re-selects what you usually run there.
+ * Keyed by machine id. */
 export interface MachineSpawnPrefs {
 	adapter_id: string;
 	model_claude: string;
@@ -69,6 +70,7 @@ export interface MachineSpawnPrefs {
 	effort_claude: string;
 	effort_codex: string;
 	account: string;
+	working_dir: string;
 }
 const machinePrefsKey = (machineId: string) => `cctui_spawn_prefs_${machineId}`;
 
@@ -85,6 +87,20 @@ export function loadMachinePrefs(machineId: string): Partial<MachineSpawnPrefs> 
 export function saveMachinePrefs(machineId: string, prefs: MachineSpawnPrefs) {
 	if (!browser || !machineId) return;
 	localStorage.setItem(machinePrefsKey(machineId), JSON.stringify(prefs));
+}
+
+/** The session name last submitted from the spawn dialog (either target).
+ * A fresh dialog open proposes it with a bumped numeric suffix. */
+export const LAST_SPAWN_NAME = 'cctui_last_spawn_name';
+
+/** Next proposed session name: bump a trailing `-<n>` suffix, else append
+ * `-2` (`toto` → `toto-2`, `toto-5` → `toto-6`). Zero-padding is kept
+ * (`run-09` → `run-10`). */
+export function nextSessionName(last: string): string {
+	const m = last.match(/^(.*)-(\d+)$/);
+	if (!m) return `${last}-2`;
+	const next = String(Number(m[2]) + 1);
+	return `${m[1]}-${next.padStart(m[2].length, '0')}`;
 }
 export const VIEW_OPTS = 'cctui_view_opts';
 export const LIST_DENSITY = 'cctui_list_density';

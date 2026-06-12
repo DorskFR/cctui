@@ -16,6 +16,8 @@
 		drafts,
 		SPAWN_DRAFT,
 		LAST_MACHINE,
+		LAST_SPAWN_NAME,
+		nextSessionName,
 		loadMachinePrefs,
 		saveMachinePrefs
 	} from '$lib/drafts';
@@ -116,7 +118,15 @@
 			loadedDraft = !!raw && !prefill;
 			restoredEnvRows = Array.isArray(saved.envRows) ? saved.envRows : [];
 			const { envRows: _envRows, ...savedForm } = saved;
-			return { ...blank, ...savedForm, ...(prefill ?? {}) };
+			const seeded = { ...blank, ...savedForm, ...(prefill ?? {}) };
+			// Fresh open (no draft to restore, no explicit prefill): propose the
+			// last submitted session name with a bumped numeric suffix, so serial
+			// spawns don't retype a label (toto → toto-2 → toto-3).
+			if (!raw && !prefill) {
+				const lastName = drafts.get(LAST_SPAWN_NAME);
+				if (lastName) seeded.name = nextSessionName(lastName);
+			}
+			return seeded;
 		} catch {
 			return { ...blank, ...(prefill ?? {}) };
 		}
@@ -131,8 +141,9 @@
 	});
 
 	// Remember spawn settings PER MACHINE (CCT-274): when the selected machine
-	// changes, pull that machine's last-used adapter/model/effort/account so the
-	// next spawn on e.g. dev1 re-selects what you usually run there. An explicit
+	// changes, pull that machine's last-used adapter/model/effort/account and
+	// working dir so the next spawn on e.g. dev1 re-selects what you usually
+	// run there. An explicit
 	// prefill (re-dispatch from an existing session) takes precedence — we don't
 	// clobber it. We set `prefsLoadedFor` BEFORE writing the fields, so the
 	// re-runs triggered by those writes hit the early-return.
@@ -150,6 +161,7 @@
 		if (p.effort_claude != null) form.effort_claude = p.effort_claude;
 		if (p.effort_codex != null) form.effort_codex = p.effort_codex;
 		if (p.account != null) form.account = p.account;
+		if (p.working_dir) form.working_dir = p.working_dir;
 	});
 
 	// default the dispatcher to the first configured one once loaded
@@ -307,6 +319,8 @@
 		};
 		const res = await actions.spawn(body, files);
 		drafts.set(LAST_MACHINE, form.machine_id);
+		// An empty submitted name clears the proposal (drafts.set removes the key).
+		drafts.set(LAST_SPAWN_NAME, form.name.trim());
 		// Remember these settings for this machine (CCT-274) so the next spawn
 		// here pre-selects them. Saved on submit (not just on confirmed success)
 		// so a slow/unconfirmed spawn still records the operator's intent.
@@ -316,7 +330,8 @@
 			model_codex: form.model_codex,
 			effort_claude: form.effort_claude,
 			effort_codex: form.effort_codex,
-			account: form.account
+			account: form.account,
+			working_dir: form.working_dir.trim()
 		});
 		toasts.push('Spawning…', 'info');
 		const result = await ws.awaitCommand(res.command_id);
@@ -382,6 +397,7 @@
 			payload: payload as DispatchRequest['payload']
 		};
 		const res = await actions.dispatch(body);
+		drafts.set(LAST_SPAWN_NAME, form.name.trim());
 		toasts.ok(`Dispatched to ${res.dispatcher} (${res.handle})`);
 		pendingDispatchId = null;
 		drafts.clear(SPAWN_DRAFT);
