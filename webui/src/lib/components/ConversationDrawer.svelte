@@ -1279,25 +1279,32 @@
 	// scrolled up, don't yank them down — show a "jump to bottom" pill instead.
 	let scroller = $state<HTMLElement>();
 	let stuck = $state(true); // currently pinned to the bottom
-	let composerResizing = false;
-	let composerGuardTimer: ReturnType<typeof setTimeout> | undefined;
+	// The scroller's clientHeight at the time of the last settled scroll. A shrink
+	// (the composer/textarea grew and stole vertical space) is a LAYOUT-induced
+	// scroll event, never a user gesture, so it must not clear `stuck`. A genuine
+	// user scroll-up arrives with an unchanged clientHeight.
+	let lastClientHeight = 0;
 	const STICK_SLOP = 48; // px from bottom still counts as "at bottom"
 
-	// Pin to the bottom and hold the composer-resize guard open long enough that
-	// the trailing scroll event (fired after the reflow) doesn't flip `stuck` off
-	// — a single rAF closed too early, which is why typing a long message still
-	// scrolled the latest line out of view (CCT-345 / CCT-161).
+	// Pin to the bottom synchronously, then again after the browser has applied
+	// the reflow (rAF). Called from the composer/viewport ResizeObserver while
+	// stuck. We do NOT rely on a time-boxed guard window any more (the old 120ms
+	// timer expired between rapid resize ticks past ~4 rows of growth, letting a
+	// trailing onScroll recompute `stuck` against the shrunken clientHeight and
+	// flip it false — the lost-pin bug, CCT-329). Instead onScroll itself rejects
+	// any scroll event that coincides with a clientHeight shrink (see below), so
+	// the pin holds for arbitrarily tall composers regardless of timing.
 	function pinAndGuard() {
 		if (!stuck || !scroller) return;
-		composerResizing = true;
 		scroller.scrollTop = scroller.scrollHeight;
+		// Adopt the new (smaller) viewport height immediately so the trailing
+		// onScroll sees it as the current baseline rather than a fresh shrink.
+		lastClientHeight = scroller.clientHeight;
 		requestAnimationFrame(() => {
-			if (scroller) scroller.scrollTop = scroller.scrollHeight;
+			if (!scroller) return;
+			scroller.scrollTop = scroller.scrollHeight;
+			lastClientHeight = scroller.clientHeight;
 		});
-		clearTimeout(composerGuardTimer);
-		composerGuardTimer = setTimeout(() => {
-			composerResizing = false;
-		}, 120);
 	}
 
 	function atBottom(): boolean {
@@ -1306,14 +1313,26 @@
 		return el.scrollHeight - el.scrollTop - el.clientHeight <= STICK_SLOP;
 	}
 	function onScroll() {
-		if (composerResizing) {
-			if (stuck && scroller) scroller.scrollTop = scroller.scrollHeight;
+		const el = scroller;
+		if (!el) return;
+		const ch = el.clientHeight;
+		// Layout-induced scroll: the viewport got SHORTER since the last settled
+		// scroll (the composer grew). This is not a user gesture — keep the pin and
+		// re-stick, never recompute `stuck` from the transient geometry. This is
+		// growth-size-independent: it holds whether the composer grew by 1 row or 40.
+		if (ch < lastClientHeight) {
+			lastClientHeight = ch;
+			if (stuck) el.scrollTop = el.scrollHeight;
 			return;
 		}
+		lastClientHeight = ch;
 		stuck = atBottom();
 	}
 	function jumpToBottom() {
-		if (scroller) scroller.scrollTop = scroller.scrollHeight;
+		if (scroller) {
+			scroller.scrollTop = scroller.scrollHeight;
+			lastClientHeight = scroller.clientHeight;
+		}
 		stuck = true;
 	}
 	$effect(() => {
@@ -1331,6 +1350,7 @@
 	$effect(() => {
 		void id;
 		stuck = true;
+		lastClientHeight = scroller?.clientHeight ?? 0;
 	});
 
 	// Keep pinned to the bottom while the composer grows (CCT-161). When the user
@@ -1343,12 +1363,12 @@
 		// shrinks as a result) — re-pinning on the viewport's own resize is what
 		// actually keeps the latest line visible regardless of how the layout
 		// redistributes the space.
+		if (scroller) lastClientHeight = scroller.clientHeight;
 		const ro = new ResizeObserver(() => pinAndGuard());
 		if (textarea) ro.observe(textarea);
 		if (scroller) ro.observe(scroller);
 		return () => {
 			ro.disconnect();
-			clearTimeout(composerGuardTimer);
 		};
 	});
 
