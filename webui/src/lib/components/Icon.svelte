@@ -5,6 +5,7 @@
 		| 'check'
 		| 'download'
 		| 'edit'
+		| 'filter'
 		| 'folder'
 		| 'fork'
 		| 'image'
@@ -76,5 +77,7 @@
 		<circle cx="12" cy="12" r="5" />
 	{:else if name === 'send'}
 		<path d="M22 2 11 13" /><path d="M22 2 15 22l-4-9-9-4z" />
+	{:else if name === 'filter'}
+		<path d="M3 4h18l-7 8v6l-4 2v-10z" />
 	{/if}
 </svg>

@@ -14,9 +14,23 @@
 	import SpawnModal from '$lib/components/SpawnModal.svelte';
 	import Button from '$lib/components/Button.svelte';
 	import IconButton from '$lib/components/IconButton.svelte';
+	import Icon from '$lib/components/Icon.svelte';
 	import { drafts, LIST_DENSITY, DISPATCHED_COLLAPSED, LIST_VIEW, LIST_SECTION } from '$lib/drafts';
 	import { notify } from '$lib/notify.svelte';
 	import { tokenizeQuery } from '$lib/search';
+
+	// Close a popover when a pointer/focus lands outside the node it's attached to.
+	function clickOutside(node: HTMLElement, onOutside: () => void) {
+		const handler = (e: Event) => {
+			if (!node.contains(e.target as Node)) onOutside();
+		};
+		document.addEventListener('pointerdown', handler, true);
+		return {
+			destroy() {
+				document.removeEventListener('pointerdown', handler, true);
+			}
+		};
+	}
 
 	let dense = $state(drafts.get(LIST_DENSITY) === 'compact');
 	$effect(() => {
@@ -64,15 +78,15 @@
 		drafts.set(DISPATCHED_COLLAPSED, dispatchedCollapsed ? '1' : '0');
 	});
 
-	// Section picker (CCT-322): the sessions list is partitioned into four
-	// mutually-exclusive sections, and this picker chooses which one is in view —
-	// recovering the section concept that the toolbar rework collapsed down to a
-	// lone "Archived" checkbox. Semantics over the loaded list:
-	//   • starred    → pinned sessions (CCT-267) only
-	//   • live       → interactive, non-archived, non-dispatched sessions
+	// Section filter (CCT-322 / CCT-345): the sessions list is partitioned into
+	// four sections, each an INDEPENDENT on/off toggle (not a forced single
+	// choice) — one toolbar button opens a popover of four checkboxes so any
+	// combination can be shown at once. Semantics over the loaded list:
+	//   • starred    → pinned sessions (CCT-267)
+	//   • live       → interactive, non-dispatched, non-pinned sessions
 	//   • dispatched → server-managed / ephemeral-worker sessions (CCT-231)
-	//   • archived   → the paginated archive browse (CCT-184)
-	// Persisted so the chosen section sticks across reloads.
+	//   • archived   → also append the paginated archive browse (CCT-184)
+	// The chosen set is persisted (comma-joined) so it sticks across reloads.
 	type Section = 'starred' | 'live' | 'dispatched' | 'archived';
 	const SECTIONS: { value: Section; label: string; icon: 'star' | 'live' | 'send' | 'archive' }[] = [
 		{ value: 'starred', label: 'Starred', icon: 'star' },
@@ -80,16 +94,29 @@
 		{ value: 'dispatched', label: 'Dispatched', icon: 'send' },
 		{ value: 'archived', label: 'Archived', icon: 'archive' }
 	];
-	const isSection = (v: string | null): v is Section =>
+	const isSection = (v: string): v is Section =>
 		v === 'starred' || v === 'live' || v === 'dispatched' || v === 'archived';
-	const storedSection = drafts.get(LIST_SECTION);
-	let section = $state<Section>(isSection(storedSection) ? storedSection : 'live');
+	const parseSections = (raw: string | null): Set<Section> => {
+		const set = new Set<Section>((raw ?? '').split(',').filter(isSection));
+		// Never strand the user on an empty list (would render nothing).
+		return set.size ? set : new Set<Section>(['starred', 'live', 'dispatched']);
+	};
+	let sections = $state<Set<Section>>(parseSections(drafts.get(LIST_SECTION)));
+	let sectionMenuOpen = $state(false);
+	function toggleSection(v: Section) {
+		const next = new Set(sections);
+		if (next.has(v)) next.delete(v);
+		else next.add(v);
+		if (next.size === 0) return; // keep at least one on
+		sections = next;
+	}
 	$effect(() => {
-		drafts.set(LIST_SECTION, section);
+		drafts.set(LIST_SECTION, [...sections].join(','));
 	});
-	// `showArchived` drives the paginated archive pager + search scope; it's now a
-	// view of `section` so all the existing pager wiring keeps working unchanged.
-	const showArchived = $derived(section === 'archived');
+	const sectionCount = $derived(sections.size);
+	// `showArchived` drives the paginated archive pager + search scope; archived is
+	// now just one of the enabled sections, so the existing pager wiring is reused.
+	const showArchived = $derived(sections.has('archived'));
 	let openSession = $state<SessionListItem | null>(null);
 	let showSpawn = $state(false);
 	// Prefill for "new session from same script" (CCT-250 item 8). Seeded from an
@@ -588,16 +615,16 @@
 		if (bucket === 'blocked') return 'blocked';
 		return isDispatched(s) ? 'dispatched' : bucket;
 	};
-	// Which live buckets belong to the selected section (CCT-322):
-	//   • starred    → only the Pinned bucket
-	//   • live       → every interactive bucket EXCEPT Dispatched
-	//   • dispatched → only the Dispatched bucket
-	//   • archived   → none here (the paginated archive renders separately below)
+	// Each live bucket maps to exactly ONE section toggle, so the four toggles
+	// select disjoint slices that compose cleanly (CCT-345):
+	//   • Pinned bucket      ← starred
+	//   • Dispatched bucket  ← dispatched
+	//   • every other bucket ← live
+	// (Archived isn't a bucket — it appends the paginated archive browse below.)
 	const bucketInSection = (key: GroupKey): boolean => {
-		if (section === 'starred') return key === 'pinned';
-		if (section === 'dispatched') return key === 'dispatched';
-		if (section === 'live') return key !== 'dispatched';
-		return false; // archived
+		if (key === 'pinned') return sections.has('starred');
+		if (key === 'dispatched') return sections.has('dispatched');
+		return sections.has('live');
 	};
 	const groups = $derived(
 		BUCKETS.filter((b) => bucketInSection(b.key)).map((b) => ({
@@ -655,21 +682,41 @@
 			>
 		{/if}
 	</div>
-	<!-- Section picker (CCT-322): a segmented icon-button control choosing which
-	     of the four sections (Starred / Live / Dispatched / Archived) is in view,
-	     replacing the lone "Archived" checkbox. Same IconButton primitive as the
-	     rest of the toolbar; the selected segment is highlighted via aria-pressed. -->
-	<div class="section-pick" role="group" aria-label="Section">
-		{#each SECTIONS as sec (sec.value)}
-			<IconButton
-				class="section-seg btn-control-square"
-				icon={sec.icon}
-				label={sec.label}
-				title={sec.label}
-				aria-pressed={section === sec.value}
-				onclick={() => (section = sec.value)}
-			/>
-		{/each}
+	<!-- Section filter (CCT-322 / CCT-345): ONE button opens a popover of four
+	     independent on/off toggles (Starred / Live / Dispatched / Archived) so any
+	     combination can be shown at once — not a forced single choice. -->
+	<div
+		class="section-pick"
+		use:clickOutside={() => (sectionMenuOpen = false)}
+	>
+		<IconButton
+			class="btn-control-square"
+			icon="filter"
+			label="Filter sections"
+			title="Filter sections ({sectionCount}/4)"
+			aria-haspopup="true"
+			aria-expanded={sectionMenuOpen}
+			aria-pressed={sectionCount < SECTIONS.length}
+			onclick={() => (sectionMenuOpen = !sectionMenuOpen)}
+		/>
+		{#if sectionCount < SECTIONS.length}<span class="section-count" aria-hidden="true">{sectionCount}</span>{/if}
+		{#if sectionMenuOpen}
+			<div class="section-menu" role="menu" aria-label="Sections">
+				{#each SECTIONS as sec (sec.value)}
+					<button
+						type="button"
+						role="menuitemcheckbox"
+						class="section-opt"
+						aria-checked={sections.has(sec.value)}
+						onclick={() => toggleSection(sec.value)}
+					>
+						<span class="section-check" aria-hidden="true">{sections.has(sec.value) ? '✓' : ''}</span>
+						<Icon name={sec.icon} size={15} />
+						<span class="section-opt-label">{sec.label}</span>
+					</button>
+				{/each}
+			</div>
+		{/if}
 	</div>
 	<!-- View picker (CCT-307): one labelled control offering the 4 explicit
 	     layout × density combinations, replacing the two icon toggles that still
@@ -850,13 +897,7 @@
 		<div class="empty"><span class="spin"></span></div>
 	{:else if groups.length === 0 && !showArchived}
 		<div class="empty">
-			{#if section === 'starred'}
-				No starred sessions — star one to pin it here.
-			{:else if section === 'dispatched'}
-				No dispatched sessions.
-			{:else}
-				No live sessions — start one or pick another section.
-			{/if}
+			No sessions in the selected sections — toggle more from the section filter.
 		</div>
 	{:else}
 		<div
@@ -1008,30 +1049,87 @@
 		border: none;
 		background: none;
 	}
-	/* Section picker (CCT-322): a segmented row of icon buttons sharing one
-	   border so it reads as a single control, matching the toolbar's other
-	   square controls in height. The pressed segment is highlighted. */
+	/* Section filter (CCT-345): one square toolbar button that opens a popover of
+	   independent toggles. The wrapper is the positioning context for the popover
+	   and the small "active count" badge. */
 	.section-pick {
+		position: relative;
 		display: inline-flex;
 		align-items: center;
 		flex: none;
 		align-self: center;
+	}
+	/* Count badge shown when not all four sections are enabled (i.e. a filter is
+	   active), so the toolbar shows at a glance that the list is filtered. */
+	.section-count {
+		position: absolute;
+		top: -0.35rem;
+		right: -0.35rem;
+		min-width: 1rem;
+		height: 1rem;
+		padding: 0 0.25rem;
+		border-radius: 999px;
+		background: var(--accent);
+		color: var(--bg);
+		font-size: 0.62rem;
+		font-weight: var(--fw-semibold);
+		line-height: 1rem;
+		text-align: center;
+		pointer-events: none;
+	}
+	.section-menu {
+		position: absolute;
+		top: calc(100% + var(--sp-1));
+		right: 0;
+		z-index: 40;
+		min-width: 12rem;
+		display: flex;
+		flex-direction: column;
+		padding: var(--sp-1);
 		border: 1px solid var(--border-strong);
 		border-radius: var(--r-md);
-		overflow: hidden;
 		background: var(--bg-elevated);
+		box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.4));
 	}
-	.section-pick :global(.section-seg) {
+	.section-opt {
+		display: flex;
+		align-items: center;
+		gap: var(--sp-2);
+		width: 100%;
+		padding: var(--sp-2);
 		border: none;
-		border-radius: 0;
+		border-radius: var(--r-sm);
 		background: none;
+		color: var(--text);
+		font-size: var(--fs-sm);
+		text-align: left;
+		cursor: pointer;
 	}
-	.section-pick :global(.section-seg + .section-seg) {
-		border-left: 1px solid var(--border-strong);
+	.section-opt:hover {
+		background: var(--bg-hover, var(--border));
 	}
-	.section-pick :global(.section-seg[aria-pressed='true']) {
-		background: var(--accent-soft, var(--bg-elevated-2, var(--border)));
+	.section-opt[aria-checked='true'] {
 		color: var(--accent, var(--text));
+	}
+	.section-check {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 1.05rem;
+		height: 1.05rem;
+		flex: none;
+		border-radius: var(--r-sm);
+		border: 1.5px solid var(--border-strong);
+		font-size: 0.75rem;
+		line-height: 1;
+	}
+	.section-opt[aria-checked='true'] .section-check {
+		background: var(--accent);
+		border-color: var(--accent);
+		color: var(--bg);
+	}
+	.section-opt-label {
+		flex: 1 1 auto;
 	}
 	/* Fill all the space between the title and the Archived checkbox; the wrapper
 	   is the flex item / positioning context for the in-field clear button. */
@@ -1182,19 +1280,17 @@
 		   that read more vertical than horizontal (CCT-305 follow-up) — a narrower
 		   track than the old 20rem packs more columns across a wide window while
 		   keeping each card a portrait-ish rectangle. */
-		grid-template-columns: repeat(auto-fill, minmax(22rem, 1fr));
+		/* Detailed = the spacious view: a WIDE track so few, large cards fill the
+		   row. Must read bigger than compact (CCT-345 follow-up). */
+		grid-template-columns: repeat(auto-fill, minmax(34rem, 1fr));
 		padding-inline: max(var(--sp-4), var(--safe-left)) max(var(--sp-4), var(--safe-right));
 	}
-	/* Compact grid: drop the full-bleed break-out and live within the container,
-	   capped at 2 columns. minmax(0,1fr) lets cards shrink on narrow viewports so
-	   nothing overflows; a single column kicks in below ~32rem via the media query. */
+	/* Compact grid: denser than detailed — also full-bleed, but a NARROWER track so
+	   more, smaller cards pack across the row. minmax(0,1fr) lets cards shrink on
+	   narrow viewports; a single column kicks in below ~32rem via the media query. */
 	.grid.narrow {
-		width: auto;
-		left: auto;
-		margin-left: 0;
-		padding-inline: 0;
 		gap: var(--sp-2);
-		grid-template-columns: repeat(2, minmax(0, 1fr));
+		grid-template-columns: repeat(auto-fill, minmax(21rem, 1fr));
 	}
 	/* Mobile card grid (CCT-305 follow-up). The two densities now diverge on phones,
 	   mirroring desktop's "compact = more in less space, detailed = more per card":
