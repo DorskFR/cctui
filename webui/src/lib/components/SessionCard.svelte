@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { SessionListItem } from '@bindings/SessionListItem';
-	import { relativeTime, uptime, statusBadgeClass, timestampTooltip, compact } from '$lib/format';
+	import { relativeTime, statusBadgeClass, timestampTooltip, compact } from '$lib/format';
 	import MachineBadge from './MachineBadge.svelte';
 	import TokenUsage from './TokenUsage.svelte';
 	import AdapterIcon from './AdapterIcon.svelte';
@@ -202,12 +202,18 @@
 		style="transform: translateX({swipeX}px)"
 		onclick={handleClick}
 	>
-	<div class="row top">
+	<!-- Canonical field model (CCT-320/321): the SAME skeleton renders in all four
+	     variants (list/card × compact/detailed). Density only changes spacing, the
+	     preview line count, and grid sizing — never WHERE a field lives.
+	       1. Lead row: star · status dot · machine badge · title · [hand/perm/status] · spacer · subagent Σ chip
+	       2. Preview:  last-message / search snippet (compact = 1 line + …, detailed = multi-line)
+	       3. Meta row: model name + logo · token sum (ONCE) · timestamp · path -->
+	<div class="row lead">
 		{#if selectable}
 			<span class="check" class:on={selected} aria-hidden="true">{selected ? '✓' : ''}</span>
 		{/if}
 		{#if child}<span class="sub" title="subagent">↳</span>{/if}
-		{#if dense && onTogglePin && !child}
+		{#if onTogglePin && !child}
 			<span
 				class="star"
 				class:on={s.pinned}
@@ -230,93 +236,44 @@
 				}}>{s.pinned ? '★' : '☆'}</span
 			>
 		{/if}
-		{#if dense && !child}<MachineBadge name={s.machine_name} id={s.machine_id} hue={s.machine_hue} mono />{/if}
 		<span class="dot {livenessClass}"></span>
+		{#if !child}<MachineBadge name={s.machine_name} id={s.machine_id} hue={s.machine_hue} mono />{/if}
 		<span class="title truncate">{title}</span>
-		{#if !dense && onTogglePin && !child}
-			<span
-				class="star"
-				class:on={s.pinned}
-				role="button"
-				tabindex="0"
-				title={s.pinned ? 'Unpin' : 'Pin to top (exempt from auto-archive)'}
-				aria-pressed={s.pinned}
-				aria-label={s.pinned ? 'Unpin session' : 'Pin session'}
-				onpointerdown={(e) => e.stopPropagation()}
-				onclick={(e) => {
-					e.stopPropagation();
-					onTogglePin?.(s);
-				}}
-				onkeydown={(e) => {
-					if (e.key === 'Enter' || e.key === ' ') {
-						e.preventDefault();
-						e.stopPropagation();
-						onTogglePin?.(s);
-					}
-				}}>{s.pinned ? '★' : '☆'}</span
-			>
-		{/if}
 		{#if child}<span class="badge badge-info tag">subagent</span>{/if}
 		{#if needsInput}<span class="hand" title="needs input">✋</span>{/if}
-		{#if pendingCount > 0}<span class="badge badge-warn">{pendingCount} perm</span>{/if}
-		{#if dense && (s.match_snippet || s.last_message_text)}
-			<span class="preview muted"
-				>{#if snippetHtml}{@html snippetHtml}{:else}{s.match_snippet ??
-						s.last_message_text}{/if}</span
-			>
-		{:else}
-			<div class="spacer"></div>
-		{/if}
-		{#if dense}
-			{#if showStatusBadge}<span class="badge {statusBadgeClass(s.status)} tag">{s.status}</span>{/if}
-			{#if s.last_message_at}<span
-					class="faint sm ago"
-					title={timestampTooltip(s.registered_at, s.last_message_at, s.last_activity_at)}
-					>{relativeTime(s.last_message_at)}</span
-				>{/if}
-		{/if}
-		{#if s.model}<span class="muted sm model">{s.model}{s.effort ? ` · ${s.effort}` : ''}</span>{/if}
-		{#if dense && rollup}<span
+		{#if pendingCount > 0}<span class="badge badge-warn tag">{pendingCount} perm</span>{/if}
+		{#if showStatusBadge}<span class="badge {statusBadgeClass(s.status)} tag">{s.status}</span>{/if}
+		<div class="spacer"></div>
+		{#if rollup}<span
 				class="rollup sm"
-				title="Total tokens incl. {rollup.count} subagent{rollup.count === 1 ? '' : 's'}"
-				>Σ {compact(rollup.tokens)} tok</span
+				title="Parent + {rollup.count} subagent{rollup.count === 1 ? '' : 's'} aggregated tokens"
+				>Σ {compact(rollup.tokens)} tok · {rollup.count} agent{rollup.count === 1 ? '' : 's'}</span
 			>{/if}
-		<AdapterIcon adapter={s.adapter_id} size={16} />
 	</div>
 
-	{#if !dense}
-		<div class="row meta row-wrap">
-			<MachineBadge name={s.machine_name} id={s.machine_id} hue={s.machine_hue} />
-			{#if showStatusBadge}<span class="badge {statusBadgeClass(s.status)}">{s.status}</span>{/if}
-			<span class="muted sm">up {uptime(Number(s.uptime_secs))}</span>
-		</div>
-
-		<div class="row dir" title={s.working_dir}>
-			<span class="faint sm">📁</span>
-			<span class="path sm">{s.working_dir}</span>
-		</div>
-
-		{#if s.match_snippet}
-			<div class="match">🔍 {#if snippetHtml}{@html snippetHtml}{:else}{s.match_snippet}{/if}</div>
-		{:else if s.last_message_text}
-			<div class="last truncate muted">{s.last_message_text}</div>
-		{/if}
-
-		<div class="row foot">
-			<TokenUsage usage={u} cold={s.cache_cold} />
-			{#if rollup}<span
-					class="rollup sm"
-					title="Parent + {rollup.count} subagent{rollup.count === 1 ? '' : 's'} aggregated tokens"
-					>Σ {compact(rollup.tokens)} tok · {rollup.count} agent{rollup.count === 1 ? '' : 's'}</span
-				>{/if}
-			<div class="spacer"></div>
-			{#if s.last_message_at}<span
-					class="faint sm ago"
-					title={timestampTooltip(s.registered_at, s.last_message_at, s.last_activity_at)}
-					>{relativeTime(s.last_message_at)}</span
-				>{/if}
-		</div>
+	<!-- Secondary line: last-message preview / search snippet. Compact clamps to a
+	     single line with an ellipsis; detailed (and grid) get multiple lines. The
+	     plain `…` (no fade mask, CCT-321) comes from the CSS text-overflow. -->
+	{#if s.match_snippet}
+		<div class="preview match">🔍 {#if snippetHtml}{@html snippetHtml}{:else}{s.match_snippet}{/if}</div>
+	{:else if s.last_message_text}
+		<div class="preview last muted">{s.last_message_text}</div>
 	{/if}
+
+	<!-- Metadata row: model + logo, token sum (once), timestamp, path — one row,
+	     same place in every variant (CCT-320: machine/timestamp/path consolidated). -->
+	<div class="row meta">
+		<AdapterIcon adapter={s.adapter_id} size={14} />
+		{#if s.model}<span class="muted sm model">{s.model}{s.effort ? ` · ${s.effort}` : ''}</span>{/if}
+		<span class="meta-sep" aria-hidden="true">·</span>
+		<TokenUsage usage={u} cold={s.cache_cold} />
+		{#if s.last_message_at}<span
+				class="faint sm ago"
+				title={timestampTooltip(s.registered_at, s.last_message_at, s.last_activity_at)}
+				>{relativeTime(s.last_message_at)}</span
+			>{/if}
+		<span class="path sm faint" title={s.working_dir}>{s.working_dir}</span>
+	</div>
 	</button>
 </div>
 
@@ -341,53 +298,49 @@
 	.sc-wrap.grid {
 		height: 100%;
 	}
-	.sc.grid {
-		height: 100%;
-		/* Vertical-shaped cards (CCT-305 follow-up): a min-height so each card is
-		   taller than it is wide-ish, giving the 3-line last-message preview room
-		   to breathe even when a card has little other content. */
-		min-height: 11rem;
-	}
-	.sc.grid .foot {
-		margin-top: auto;
-	}
-	/* Card view: let the latest message FILL the card's free vertical space, then
-	   clip at the bottom (CCT-312). The old fixed 3-line clamp left tall cards
-	   mostly empty — a short preview cut at ~3 lines with a wall of blank space
-	   down to the pinned footer. Instead `.last` flex-grows into the gap between
-	   the dir row and the footer; a bottom fade mask softens the cut edge when the
-	   text actually fills (a short message leaves the lower region empty, so the
-	   mask fades nothing visible). */
-	.sc.grid .last {
-		flex: 1 1 auto;
-		min-height: 0;
-		display: block;
-		white-space: normal;
-		overflow: hidden;
-		text-overflow: ellipsis;
-	}
-	/* Uniform single-line cwd path in grid view — never wrap to a second line
-	   (the source of ragged, uneven-height cards); ellipsis instead. */
-	.sc.grid .path {
+	/* ── Canonical preview clamp (CCT-320/321) ──────────────────────────────
+	   The last-message preview is the only field whose SIZE differs by variant;
+	   its POSITION (between lead row and meta row) is constant. Compact = single
+	   truncated line with a plain `…`; detailed = a multi-line clamp. No fade. */
+	.preview {
+		min-width: 0;
 		white-space: nowrap;
 		overflow: hidden;
 		text-overflow: ellipsis;
-		word-break: normal;
-		min-width: 0;
+		font-size: var(--fs-sm);
 	}
-	.sc.grid .dir {
-		min-width: 0;
+	.sc.dense .preview {
+		font-size: var(--fs-xs);
 	}
-	/* List detailed (non-grid): the row is tall but `.last` is a single truncated
-	   line — give the preview up to 3 lines to reclaim the wasted space (CCT-320).
-	   Card (grid) view has its own flex-grow rule above and is untouched. */
-	.sc:not(.grid):not(.dense) .last {
+	/* Detailed (list + card): multi-line clamp. List clamps to 3 lines; grid lets
+	   the preview grow to fill the card's free vertical space (still clamped). */
+	.sc:not(.dense) .preview {
 		white-space: normal;
 		display: -webkit-box;
 		-webkit-line-clamp: 3;
 		line-clamp: 3;
 		-webkit-box-orient: vertical;
-		overflow: hidden;
+	}
+	/* Card grid: the card fills its cell; the preview flex-grows into the gap
+	   between the lead row and the pinned meta row so tall cards aren't empty. */
+	.sc.grid {
+		height: 100%;
+		min-height: 9rem;
+	}
+	.sc.grid .meta {
+		margin-top: auto;
+	}
+	.sc.grid:not(.dense) {
+		/* Detailed cards are the MOST spacious view (CCT-321): taller floor + more
+		   padding than compact cards, and the preview grows to fill. */
+		min-height: 13rem;
+		padding: var(--sp-4);
+	}
+	.sc.grid:not(.dense) .preview {
+		flex: 1 1 auto;
+		min-height: 0;
+		-webkit-line-clamp: 6;
+		line-clamp: 6;
 	}
 	/* Track the finger with no transition while swiping; ease back (spring) or
 	   off-screen (commit) when released. */
@@ -438,7 +391,7 @@
 	}
 	.sc.dense {
 		padding: var(--sp-2) var(--sp-3);
-		gap: 0;
+		gap: var(--sp-1);
 	}
 	/* Compact mode is a flat list — no indent for subagents. */
 	.sc-wrap.dense.child {
@@ -479,8 +432,12 @@
 		border-color: var(--accent);
 		color: var(--bg);
 	}
-	.top {
+	/* Lead row: leading controls (star, dot, machine) + title + inline badges +
+	   spacer + Σ chip. Wraps on overflow so badges never push content off-screen. */
+	.lead {
 		gap: var(--sp-2);
+		flex-wrap: wrap;
+		row-gap: var(--sp-1);
 	}
 	.sub {
 		color: var(--text-faint);
@@ -488,6 +445,12 @@
 	.title {
 		font-weight: var(--fw-semibold);
 		font-size: var(--fs-md);
+		flex: 1 1 auto;
+		min-width: 0;
+	}
+	/* Detailed views give the title more presence (CCT-321: clearly visible title). */
+	.sc:not(.dense) .title {
+		font-size: var(--fs-lg, 1.05rem);
 	}
 	.star {
 		background: none;
@@ -509,24 +472,22 @@
 	.hand {
 		font-size: var(--fs-sm);
 	}
+	/* Metadata row (CCT-320/321): model + logo · token sum (once) · timestamp ·
+	   path — one consistent row in every variant. Wraps on narrow viewports so it
+	   never overflows; the path takes the remaining width with an ellipsis. */
 	.meta {
 		gap: var(--sp-2);
-	}
-	/* CCT-308 item 1: the footer (token usage + rollup + relative time) is a
-	   no-wrap row that could run past a narrow viewport; let it wrap so the
-	   detailed list row never overflows horizontally. */
-	.foot {
 		flex-wrap: wrap;
 		row-gap: var(--sp-1);
+		align-items: center;
+	}
+	.meta-sep {
+		color: var(--text-faint);
 	}
 	.sm {
 		font-size: var(--fs-xs);
 	}
-	.last {
-		font-size: var(--fs-sm);
-	}
-	/* Model label sits just before the adapter logo in the top row; keep it from
-	   eating the row when names are long. */
+	/* Model label: keep it from eating the row when names are long. */
 	.model {
 		flex: none;
 		max-width: 14rem;
@@ -534,14 +495,7 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	/* CCT-308 item 1: on narrow viewports a 14rem model label + title + badges in
-	   the no-wrap top row ran wider than the screen, and the page clips horizontal
-	   overflow → the right edge of detailed list rows was unreachable. Cap the
-	   model label hard and let the top row wrap so nothing is pushed off-screen. */
 	@media (max-width: 639px) {
-		.top {
-			flex-wrap: wrap;
-		}
 		.model {
 			max-width: 8rem;
 		}
@@ -558,37 +512,21 @@
 		flex: none;
 		white-space: nowrap;
 	}
-	/* Full working dir (detailed view) — break long paths rather than truncating,
-	   since seeing the whole path is the point. */
-	.dir {
-		gap: var(--sp-1);
-		align-items: baseline;
-	}
+	/* Working-dir path: trails the metadata row, takes the remaining width, and
+	   truncates with an ellipsis (uniform across all four variants). */
 	.path {
+		flex: 1 1 8rem;
+		min-width: 0;
 		color: var(--text-muted);
-		word-break: break-all;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
 	}
-	/* Search match snippet (CCT-184): full transcript context around the hit,
-	   allowed to wrap a couple of lines so the keyword is readable. */
+	/* Search match snippet (CCT-184): accent rule + clamp, sharing the .preview
+	   sizing above so the snippet sits in the same slot as the message preview. */
 	.match {
-		font-size: var(--fs-sm);
 		color: var(--text);
 		border-left: 2px solid var(--accent, #88c0d0);
 		padding-left: var(--sp-2);
-		display: -webkit-box;
-		-webkit-line-clamp: 3;
-		line-clamp: 3;
-		-webkit-box-orient: vertical;
-		overflow: hidden;
-	}
-	/* Dense-mode last-message preview: fills the space between the title and the
-	   status badge, single line, ellipsis — never wraps or grows the row. */
-	.preview {
-		flex: 1;
-		min-width: 0;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-		font-size: var(--fs-xs);
 	}
 </style>

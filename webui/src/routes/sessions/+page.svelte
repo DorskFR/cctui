@@ -724,15 +724,16 @@
      out as detailed cards in a responsive grid. Subagents are omitted here (the
      list view + the drawer still show them); the point is at-a-glance status. -->
 {#snippet cardGrid(rows: SessionListItem[])}
-	<!-- Grid (CCT-305): cards always use the detailed markup (compact={false}) so
-	     they're uniform; `dense` (compact) only narrows the grid to the list
-	     container width with a ~2-column cap, vs detailed which goes full-bleed.
-	     `grid` tells the card to keep a uniform single-line cwd path (no wrap). -->
+	<!-- Grid (CCT-305 / CCT-321): the card uses the SAME canonical field model in
+	     both densities; `compact` (dense) only tightens spacing + clamps the
+	     preview to one line, and the grid narrows to a 2-column cap. Detailed cards
+	     are deliberately the largest (wider track + roomier card). `grid` keeps a
+	     uniform single-line cwd path so a row of cards stays the same height. -->
 	<div class="grid" class:narrow={dense}>
 		{#each rows as s (s.id)}
 			<SessionCard
 				session={s}
-				compact={false}
+				compact={dense}
 				grid
 				pendingCount={pending(s.id)}
 				onopen={(x) => (openSession = x)}
@@ -876,17 +877,17 @@
 							<span class="chev" class:collapsed={dispatchedCollapsed}>▾</span>
 							{g.label} <span class="count">{g.sessions.length}</span>
 						</button>
+						<Button
+							size="sm"
+							variant="danger"
+							disabled={archiving}
+							title="Archive all dispatched conversations"
+							onclick={archiveAllDispatched}
+						>
+							{#if archiving}<span class="spin"></span>{/if}
+							Archive all
+						</Button>
 						<div class="spacer"></div>
-							<Button
-								control
-								variant="danger"
-								disabled={archiving}
-								title="Archive all dispatched conversations"
-								onclick={archiveAllDispatched}
-							>
-								{#if archiving}<span class="spin"></span>{/if}
-								Archive all
-							</Button>
 						</div>
 				{:else}
 					<div class="group-header" data-bucket={g.key}>
@@ -910,6 +911,10 @@
 			<div class="group-header">Archived <span class="count">{ns.topLevel.length}</span></div>
 			{#if pageRows.length === 0 && !pageLoading}
 				<div class="empty">No archived sessions.</div>
+			{:else if cardView}
+				<!-- Card mode applies to archived sessions too (CCT-321 parity). -->
+				{@render cardGrid(ns.topLevel)}
+				{@render loadMore()}
 			{:else}
 				{@render nestedRows(ns.topLevel, ns.childGroups, false, searchTerms)}
 				{@render loadMore()}
@@ -1177,7 +1182,7 @@
 		   that read more vertical than horizontal (CCT-305 follow-up) — a narrower
 		   track than the old 20rem packs more columns across a wide window while
 		   keeping each card a portrait-ish rectangle. */
-		grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr));
+		grid-template-columns: repeat(auto-fill, minmax(22rem, 1fr));
 		padding-inline: max(var(--sp-4), var(--safe-left)) max(var(--sp-4), var(--safe-right));
 	}
 	/* Compact grid: drop the full-bleed break-out and live within the container,
@@ -1209,7 +1214,7 @@
 		   half the screen even when sparse, so cards read as "big and empty". Let
 		   them size to their content (still floored by the base 11rem) and let the
 		   message preview fill/cap the height instead (see `.last` in SessionCard). */
-		.grid:not(.narrow) :global(.sc.grid .last) {
+		.grid:not(.narrow) :global(.sc.grid .preview) {
 			max-height: 42vh;
 		}
 		.grid.narrow {
