@@ -2049,11 +2049,15 @@
 	}
 	/* Desktop shows every action inline, so the ⋯ flyout toggle is pointless
 	   there — only surface it when actions actually collapse (CCT-345). */
-	.more {
+	/* NB: `.more` is rendered by the IconButton child component, so the rule
+	   MUST be `:global` — a plain `.more` selector is scoped to THIS
+	   component and never matches the child <button>, which is why the kebab
+	   leaked onto desktop (CCT-323). */
+	.drawer :global(.tapbtn.more) {
 		display: none;
 	}
 	@media (max-width: 959px) {
-		.more {
+		.drawer :global(.tapbtn.more) {
 			display: inline-flex;
 		}
 		.secondary {
@@ -2077,16 +2081,31 @@
 		.secondary.open {
 			display: flex;
 		}
+		/* Flyout rows are icon + text label, NOT the bordered 2.5rem icon-chip
+		   used in the desktop toolbar. Reusing the .tapbtn primitive drew an
+		   empty bordered square around each icon and broke alignment (CCT-323);
+		   here we flatten it into a borderless, auto-height, full-width row. */
 		.secondary :global(.tapbtn),
 		.secondary .font-pick {
-			/* Full-width, left-aligned menu items; no min-width so long labels
-			   never force horizontal overflow on narrow phones (CCT-345). */
 			width: 100%;
 			min-width: 0;
+			height: auto;
+			min-height: 2.25rem;
 			justify-content: flex-start;
 			gap: var(--sp-2);
-			padding-inline: var(--sp-3);
+			padding: var(--sp-1) var(--sp-2);
 			font-size: var(--fs-sm);
+			background: none;
+			border: none;
+			border-radius: var(--r-sm);
+		}
+		.secondary :global(.tapbtn):hover,
+		.secondary .font-pick:hover {
+			background: var(--bg-elevated-3, var(--bg-elevated-2));
+		}
+		/* Plain inline icon glyph inside a row — no chip box. */
+		.secondary :global(.tapbtn svg) {
+			flex: none;
 		}
 		.secondary :global(.tapbtn)::after,
 		.secondary .font-pick::after {
