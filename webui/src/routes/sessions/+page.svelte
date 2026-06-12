@@ -615,19 +615,20 @@
 </div>
 
 {#if selecting && !searching}
-	<div class="bulkbar row">
-		<span class="count">{selected.size} selected</span>
-		<button class="btn btn-sm" onclick={selectAll}>Select all</button>
-		<div class="spacer"></div>
-		<button
-			class="btn btn-sm btn-danger"
-			disabled={selected.size === 0 || archiving}
-			onclick={archiveSelected}
-		>
-			{#if archiving}<span class="spin"></span>{/if}
-			Archive {selected.size || ''}
-		</button>
-	</div>
+		<div class="bulkbar row">
+			<span class="count">{selected.size} selected</span>
+			<Button size="sm" onclick={selectAll}>Select all</Button>
+			<div class="spacer"></div>
+			<Button
+				size="sm"
+				variant="danger"
+				disabled={selected.size === 0 || archiving}
+				onclick={archiveSelected}
+			>
+				{#if archiving}<span class="spin"></span>{/if}
+				Archive {selected.size || ''}
+			</Button>
+		</div>
 {/if}
 
 <!-- Nested list of top-level rows with subagent count badges + inline children,
@@ -725,11 +726,11 @@
 		<div class="empty err">Search failed: {pageError}</div>
 	{:else if pageLoading}
 		<div class="loadmore"><span class="spin"></span></div>
-	{:else if !pageDone && pageRows.length > 0}
-		<div class="loadmore">
-			<button class="btn btn-sm" onclick={() => loadPage(false)}>Load more</button>
-		</div>
-	{/if}
+		{:else if !pageDone && pageRows.length > 0}
+			<div class="loadmore">
+				<Button size="sm" onclick={() => loadPage(false)}>Load more</Button>
+			</div>
+		{/if}
 {/snippet}
 
 {#if searching}
@@ -783,16 +784,17 @@
 							{g.label} <span class="count">{g.sessions.length}</span>
 						</button>
 						<div class="spacer"></div>
-						<button
-							class="btn btn-sm btn-danger"
-							disabled={archiving}
-							title="Archive all dispatched conversations"
-							onclick={archiveAllDispatched}
-						>
-							{#if archiving}<span class="spin"></span>{/if}
-							Archive all
-						</button>
-					</div>
+							<Button
+								size="sm"
+								variant="danger"
+								disabled={archiving}
+								title="Archive all dispatched conversations"
+								onclick={archiveAllDispatched}
+							>
+								{#if archiving}<span class="spin"></span>{/if}
+								Archive all
+							</Button>
+						</div>
 				{:else}
 					<div class="group-header" data-bucket={g.key}>
 						{g.label} <span class="count">{g.sessions.length}</span>

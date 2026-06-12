@@ -22,6 +22,8 @@
 	import PermissionCard from './PermissionCard.svelte';
 	import AskQuestionCard from './AskQuestionCard.svelte';
 	import AttachmentList from './AttachmentList.svelte';
+	import Button from './Button.svelte';
+	import IconButton from './IconButton.svelte';
 
 	let {
 		session,
@@ -1375,7 +1377,7 @@
 	></div>
 	<div class="dhead">
 		<div class="hrow">
-			<button class="tapbtn back" aria-label="Back" onclick={onclose}>‹</button>
+			<IconButton class="tapbtn back" icon="back" label="Back" onclick={onclose} />
 			<AdapterIcon adapter={session.adapter_id} size={20} />
 			<span class="dot {livenessClass}" title={session.hibernated ? 'hibernated' : session.liveness}></span>
 			<div class="dtitle">
@@ -1389,7 +1391,13 @@
 					<span class="truncate name">{headTitle}</span>
 				{/if}
 			</div>
-			<button class="tapbtn fork desktop-fork" aria-label="Fork conversation" title="Fork into a new conversation (optionally change model)" onclick={openFork}>⑂</button>
+			<IconButton
+				class="tapbtn desktop-fork"
+				icon="fork"
+				label="Fork conversation"
+				title="Fork into a new conversation (optionally change model)"
+				onclick={openFork}
+			/>
 			<!-- Secondary actions (CCT-301 #7): inline on desktop, collapsed into the
 			     ⋯ flyout on mobile so a long title + many buttons no longer overflow. -->
 			<div class="secondary" class:open={moreOpen || renaming}>
@@ -1410,75 +1418,59 @@
 				</select>
 			</div>
 			{#if renaming}
-				<button class="tapbtn" aria-label="Save" onclick={doRename}>✓</button>
+				<IconButton class="tapbtn" icon="check" label="Save" onclick={doRename} />
 			{:else}
-				<button
+				<IconButton
 					class="tapbtn"
-					aria-label="Rename"
+					icon="edit"
+					label="Rename"
 					onclick={() => {
 						renaming = true;
 						newName = session.name ?? '';
-					}}>✎</button
-				>
+					}}
+				/>
 			{/if}
-			<button
+			<IconButton
 				class="tapbtn"
-				aria-label="Copy shareable link"
+				icon="link"
+				label="Copy shareable link"
 				title="Copy a stable link to this session (paste in a PR — login-gated)"
 				onclick={doCopyLink}
-			>
-				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-					<path d="M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
-					<path d="M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
-				</svg>
-			</button>
-			<button
+			/>
+			<IconButton
 				class="tapbtn"
-				aria-label="Copy conversation as Markdown"
+				icon="markdown"
+				label="Copy conversation as Markdown"
 				title="Copy the whole conversation as Markdown (honors the view filters)"
 				onclick={doCopyMarkdown}
-			>
-				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-					<rect x="3" y="5" width="18" height="14" rx="2" />
-					<path d="M7 15V9l3 3 3-3v6" />
-					<path d="m15 11 2 2 2-2" />
-				</svg>
-			</button>
-			<button
+			/>
+			<IconButton
 				class="tapbtn"
-				aria-label="Export conversation"
+				icon="download"
+				label="Export conversation"
 				title="Download transcript as HTML (print it for a PDF)"
 				onclick={doExport}
-			>
-				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-					<path d="M12 3v12" />
-					<path d="m7 10 5 5 5-5" />
-					<path d="M4 19h16" />
-				</svg>
-			</button>
-			<button class="tapbtn menu-fork" aria-label="Fork conversation" title="Fork into a new conversation" onclick={openFork}>⑂</button>
+			/>
+			<IconButton
+				class="tapbtn menu-fork"
+				icon="fork"
+				label="Fork conversation"
+				title="Fork into a new conversation"
+				onclick={openFork}
+			/>
 			</div>
 			<!-- Mobile-only overflow toggle (CCT-301 #7); hidden on desktop. -->
-			<button
+			<IconButton
 				class="tapbtn more"
-				aria-label="More actions"
+				icon="more"
+				label="More actions"
 				aria-expanded={moreOpen}
 				title="More actions"
-				onclick={() => (moreOpen = !moreOpen)}>⋯</button
-			>
+				onclick={() => (moreOpen = !moreOpen)}
+			/>
 			{#if !archived}
-				<button class="tapbtn interrupt" aria-label="Interrupt turn" title="Interrupt the in-flight turn" onclick={doInterrupt}>
-					<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-						<rect x="6" y="6" width="12" height="12" rx="1.5" />
-					</svg>
-				</button>
-				<button class="tapbtn archive" aria-label="Archive" onclick={doArchive}>
-					<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-						<rect x="3" y="4" width="18" height="4" rx="1" />
-						<path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8" />
-						<path d="M9 12h6" />
-					</svg>
-				</button>
+				<IconButton class="tapbtn interrupt" icon="stop" label="Interrupt turn" title="Interrupt the in-flight turn" onclick={doInterrupt} />
+				<IconButton class="tapbtn archive" icon="archive" label="Archive" onclick={doArchive} />
 			{/if}
 		</div>
 		<div class="hmeta row row-wrap">
@@ -1492,8 +1484,8 @@
 						<select class="mini-select" bind:value={pendingEffort} aria-label="Effort">
 							{#each codexEfforts as e (e)}<option value={e}>{e || 'default effort'}</option>{/each}
 						</select>
-						<button class="tapbtn" aria-label="Apply" onclick={applyModelChange}>✓</button>
-						<button class="tapbtn" aria-label="Cancel" onclick={() => (modelEditing = false)}>✕</button>
+						<IconButton class="tapbtn" icon="check" label="Apply" onclick={applyModelChange} />
+						<IconButton class="tapbtn" icon="x" label="Cancel" onclick={() => (modelEditing = false)} />
 					</span>
 				{:else}
 					<button
@@ -1610,10 +1602,10 @@
 		{#if hiddenOlder > 0}
 			<!-- Lazy render (CCT-279 item 1): older lines are mounted on demand so a
 			     long transcript opens fast. -->
-			<button class="load-older" onclick={loadOlder}>
-				↑ Load {Math.min(RENDER_CHUNK, hiddenOlder)} older
-				<span class="faint">({hiddenOlder} hidden)</span>
-			</button>
+				<Button class="load-older" onclick={loadOlder}>
+					↑ Load {Math.min(RENDER_CHUNK, hiddenOlder)} older
+					<span class="faint">({hiddenOlder} hidden)</span>
+				</Button>
 		{/if}
 		{#each visibleLines as ln, i (ln.ts + (ln.text ?? ln.html ?? '').slice(0, 24) + ln.role)}
 			{#if ln.ask && isDupeOfLiveAsk(ln.ask)}
@@ -1651,18 +1643,18 @@
 					{#if ln.failed}
 						<span class="sm not-delivered" title={ln.failed}>⚠ Not delivered</span>
 						{#if !archived}
-							<button
-								class="btn btn-ghost retry-failed"
-								aria-label="Retry sending this message"
-								title="Resend this message ({ln.failed})"
-								onclick={() => retryFailed(ln.ts)}>↻ Retry</button
-							>
-							<button
-								class="btn btn-ghost edit-pending"
-								aria-label="Edit message"
+								<Button
+									variant="ghost"
+									class="retry-failed"
+									title="Resend this message ({ln.failed})"
+									onclick={() => retryFailed(ln.ts)}>↻ Retry</Button>
+							<IconButton
+								class="edit-pending"
+								icon="edit"
+								label="Edit message"
 								title="Pull this message back into the composer to edit and resend"
-								onclick={() => editPending(ln.text ?? '', ln.ts)}>✎</button
-							>
+								onclick={() => editPending(ln.text ?? '', ln.ts)}
+							/>
 						{/if}
 					{:else if ln.pending}
 						{#if ln.retrying}
@@ -1673,34 +1665,33 @@
 							<span class="faint sm sending">sending…</span>
 						{/if}
 						{#if !archived}
-							<button
-								class="btn btn-ghost edit-pending"
-								aria-label="Edit pending message"
+							<IconButton
+								class="edit-pending"
+								icon="edit"
+								label="Edit pending message"
 								title="Pull this still-pending message back into the composer to edit and resend"
-								onclick={() => editPending(ln.text ?? '', ln.ts)}>✎</button
-							>
+								onclick={() => editPending(ln.text ?? '', ln.ts)}
+							/>
 						{/if}
 					{/if}
 					<span class="line-actions">
 						<!-- Copy-as-Markdown uses the same markdown glyph as the
 						     conversation-level copy (CCT-301 #5); save-as-image uses a
 						     plain image icon and sits right next to it (CCT-301 #1). -->
-						<button
-							class="btn btn-ghost copy"
-							aria-label="Save as image"
+						<IconButton
+							class="copy"
+							icon="image"
+							label="Save as image"
 							title="Save this message as an image"
 							onclick={(e) => saveLineImage(e, ln)}
-						>
-							<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.8" /><path d="m21 15-4.5-4.5L7 21" /></svg>
-						</button>
-						<button
-							class="btn btn-ghost copy"
-							aria-label="Copy as Markdown"
+						/>
+						<IconButton
+							class="copy"
+							icon="markdown"
+							label="Copy as Markdown"
 							title="Copy this message as Markdown"
 							onclick={() => copyLineMarkdown(ln)}
-						>
-							<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M7 15V9l3 3 3-3v6" /><path d="m15 11 2 2 2-2" /></svg>
-						</button>
+						/>
 					</span>
 				</div>
 				{#if ln.html}
@@ -1753,9 +1744,9 @@
 	</div>
 
 		{#if !stuck}
-			<button class="jump-pill" onclick={jumpToBottom} aria-label="Jump to bottom">
+			<Button class="jump-pill" onclick={jumpToBottom} aria-label="Jump to bottom">
 				↓ Jump to latest
-			</button>
+			</Button>
 		{/if}
 	</div>
 
@@ -1763,9 +1754,9 @@
 		{#if archived}
 			<div class="archived-actions">
 				<span class="hint muted">Session archived (read-only).</span>
-				<button type="button" class="btn btn-primary" onclick={doResume}>Resume this conversation</button>
-				<button type="button" class="btn" onclick={openFork}>Fork as a new conversation</button>
-				<button type="button" class="btn btn-ghost" onclick={newFromScript}>New from same script</button>
+				<Button variant="primary" onclick={doResume}>Resume this conversation</Button>
+				<Button onclick={openFork}>Fork as a new conversation</Button>
+				<Button variant="ghost" onclick={newFromScript}>New from same script</Button>
 			</div>
 		{:else}
 			<!-- Failed sends now surface inline on the message bubble itself
@@ -1854,10 +1845,10 @@
 			</select>
 		</label>
 		<div class="fork-actions row">
-			<button class="btn" onclick={() => (forkOpen = false)} disabled={forking}>Cancel</button>
-			<button class="btn btn-primary" onclick={doFork} disabled={forking}>
+			<Button onclick={() => (forkOpen = false)} disabled={forking}>Cancel</Button>
+			<Button variant="primary" onclick={doFork} disabled={forking}>
 				{forking ? 'Forking…' : archived ? 'Reopen' : 'Fork'}
-			</button>
+			</Button>
 		</div>
 	</div>
 {/if}
@@ -2054,7 +2045,7 @@
 		.menu-fork {
 			display: inline-flex;
 		}
-		.secondary .tapbtn,
+		.secondary :global(.tapbtn),
 		.secondary .font-pick {
 			width: 100%;
 			min-width: 13rem;
@@ -2063,7 +2054,7 @@
 			padding-inline: var(--sp-3);
 			font-size: var(--fs-sm);
 		}
-		.secondary .tapbtn::after,
+		.secondary :global(.tapbtn)::after,
 		.secondary .font-pick::after {
 			content: attr(aria-label);
 			font-size: var(--fs-sm);
@@ -2080,13 +2071,16 @@
 		font-size: var(--fs-md);
 	}
 	/* Bigger, easy-to-tap icon buttons with a tinted, outlined chip look. */
-	.tapbtn {
+	.drawer :global(.tapbtn) {
 		flex: none;
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
 		width: 2.5rem;
+		min-width: 2.5rem;
 		height: 2.5rem;
+		min-height: 2.5rem;
+		padding: 0;
 		font-size: 1.35rem;
 		line-height: 1;
 		border-radius: var(--r-md);
@@ -2112,16 +2106,16 @@
 		border: none;
 		background: none;
 	}
-	.tapbtn.back {
+	.drawer :global(.tapbtn.back) {
 		font-size: 1.8rem;
 	}
-	.tapbtn.archive {
+	.drawer :global(.tapbtn.archive) {
 		order: 10;
 		color: var(--warn);
 		border-color: color-mix(in srgb, var(--warn) 40%, var(--border-strong));
 		background: color-mix(in srgb, var(--warn) 10%, var(--bg-elevated-2));
 	}
-	.tapbtn.interrupt {
+	.drawer :global(.tapbtn.interrupt) {
 		order: 11;
 		color: var(--danger, #bf616a);
 		border-color: color-mix(in srgb, var(--danger, #bf616a) 40%, var(--border-strong));
@@ -2449,19 +2443,20 @@
 		align-items: center;
 		gap: var(--sp-1);
 	}
-	.copy {
+	.line-actions :global(.copy) {
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
 		padding: var(--sp-1);
+		min-width: auto;
 		min-height: auto;
 		line-height: 1;
 		color: var(--text-muted);
 	}
-	.copy:hover {
+	.line-actions :global(.copy:hover) {
 		color: var(--text);
 	}
-	.copy svg {
+	.line-actions :global(.copy svg) {
 		width: 1rem;
 		height: 1rem;
 	}
@@ -2508,14 +2503,15 @@
 		margin-left: auto;
 	}
 	/* Edit-pending button (CCT-208): sits next to "sending…" on a pending line. */
-	.edit-pending {
+	.lmeta :global(.edit-pending) {
 		padding: 0 var(--sp-1);
+		min-width: auto;
 		min-height: auto;
 		font-size: var(--fs-sm);
 		line-height: 1;
 		color: var(--text-faint);
 	}
-	.edit-pending:hover {
+	.lmeta :global(.edit-pending:hover) {
 		color: var(--accent);
 	}
 	/* Failed send (CCT-212): the bubble goes red and a Retry control appears. */
@@ -2528,7 +2524,7 @@
 		margin-left: auto;
 		white-space: nowrap;
 	}
-	.retry-failed {
+	.lmeta :global(.retry-failed) {
 		padding: 0 var(--sp-1);
 		min-height: auto;
 		font-size: var(--fs-sm);
@@ -2536,7 +2532,7 @@
 		color: var(--danger);
 		font-weight: 600;
 	}
-	.retry-failed:hover {
+	.lmeta :global(.retry-failed:hover) {
 		color: color-mix(in srgb, var(--danger) 70%, var(--text));
 	}
 	/* Working indicator (CCT-208) — animated dots + label proving claude is
@@ -2648,9 +2644,10 @@
 		opacity: 0.9;
 	}
 	/* Lazy-render "load older" control (CCT-279 item 1). */
-	.load-older {
+	.conv :global(.load-older) {
 		align-self: center;
 		padding: var(--sp-1) var(--sp-3);
+		min-height: auto;
 		border-radius: var(--r-pill);
 		border: 1px solid var(--border-strong);
 		background: var(--bg-elevated-2);
@@ -2659,11 +2656,11 @@
 		font-weight: var(--fw-medium);
 		cursor: pointer;
 	}
-	.load-older:hover {
+	.conv :global(.load-older:hover) {
 		border-color: var(--accent);
 		color: var(--accent);
 	}
-	.load-older .faint {
+	.conv :global(.load-older .faint) {
 		color: var(--text-faint);
 	}
 	.code {
@@ -2675,7 +2672,7 @@
 	/* Jump-to-bottom pill (CCT-161 item 7) — anchored to the bottom of the chat
 	   display area (inside .conv-wrap), so it never collides with the composer
 	   as the textarea grows when typing a long message. */
-	.jump-pill {
+	.conv-wrap :global(.jump-pill) {
 		position: absolute;
 		left: 50%;
 		transform: translateX(-50%);
@@ -2691,7 +2688,7 @@
 		box-shadow: var(--shadow-md);
 		cursor: pointer;
 	}
-	.jump-pill:hover {
+	.conv-wrap :global(.jump-pill:hover) {
 		border-color: var(--accent);
 		color: var(--accent);
 	}

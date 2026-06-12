@@ -1,5 +1,15 @@
 <script lang="ts">
+	import type { HTMLButtonAttributes } from 'svelte/elements';
 	import Icon from './Icon.svelte';
+	import type { IconName } from './Icon.svelte';
+
+	type IconButtonProps = HTMLButtonAttributes & {
+		icon: IconName;
+		label: string;
+		variant?: 'default' | 'primary' | 'ghost' | 'danger';
+		size?: number;
+		class?: string;
+	};
 
 	let {
 		icon,
@@ -9,20 +19,13 @@
 		size = 16,
 		disabled = false,
 		onclick,
-		class: klass = ''
-	}: {
-		icon: 'search' | 'archive' | 'download' | 'link' | 'markdown' | 'image' | 'fork' | 'stop';
-		label: string;
-		title?: string;
-		variant?: 'default' | 'primary' | 'ghost' | 'danger';
-		size?: number;
-		disabled?: boolean;
-		onclick?: (e: MouseEvent) => void;
-		class?: string;
-	} = $props();
+		class: klass = '',
+		...rest
+	}: IconButtonProps = $props();
 </script>
 
 <button
+	{...rest}
 	type="button"
 	class="btn btn-icon {klass}"
 	class:btn-primary={variant === 'primary'}
