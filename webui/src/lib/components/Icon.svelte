@@ -9,10 +9,13 @@
 		| 'fork'
 		| 'image'
 		| 'link'
+		| 'live'
 		| 'markdown'
 		| 'more'
 		| 'retry'
 		| 'search'
+		| 'send'
+		| 'star'
 		| 'stop'
 		| 'x';
 
@@ -30,8 +33,8 @@
 	width={size}
 	height={size}
 	viewBox="0 0 24 24"
-	fill={name === 'stop' ? 'currentColor' : 'none'}
-	stroke={name === 'stop' ? 'none' : 'currentColor'}
+	fill={name === 'stop' || name === 'star' || name === 'live' ? 'currentColor' : 'none'}
+	stroke={name === 'stop' || name === 'star' || name === 'live' ? 'none' : 'currentColor'}
 	stroke-width="2"
 	stroke-linecap="round"
 	stroke-linejoin="round"
@@ -67,5 +70,11 @@
 		<path d="M21 12a9 9 0 1 1-2.64-6.36" /><path d="M21 3v6h-6" />
 	{:else if name === 'stop'}
 		<rect x="6" y="6" width="12" height="12" rx="1.5" />
+	{:else if name === 'star'}
+		<path d="M12 2.5l2.9 5.9 6.5.95-4.7 4.58 1.1 6.47L12 17.9l-5.8 3.05 1.1-6.47-4.7-4.58 6.5-.95z" />
+	{:else if name === 'live'}
+		<circle cx="12" cy="12" r="5" />
+	{:else if name === 'send'}
+		<path d="M22 2 11 13" /><path d="M22 2 15 22l-4-9-9-4z" />
 	{/if}
 </svg>

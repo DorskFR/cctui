@@ -14,7 +14,7 @@
 	import SpawnModal from '$lib/components/SpawnModal.svelte';
 	import Button from '$lib/components/Button.svelte';
 	import IconButton from '$lib/components/IconButton.svelte';
-	import { drafts, LIST_DENSITY, DISPATCHED_COLLAPSED, LIST_VIEW } from '$lib/drafts';
+	import { drafts, LIST_DENSITY, DISPATCHED_COLLAPSED, LIST_VIEW, LIST_SECTION } from '$lib/drafts';
 	import { notify } from '$lib/notify.svelte';
 	import { tokenizeQuery } from '$lib/search';
 
@@ -64,7 +64,32 @@
 		drafts.set(DISPATCHED_COLLAPSED, dispatchedCollapsed ? '1' : '0');
 	});
 
-	let showArchived = $state(false);
+	// Section picker (CCT-322): the sessions list is partitioned into four
+	// mutually-exclusive sections, and this picker chooses which one is in view —
+	// recovering the section concept that the toolbar rework collapsed down to a
+	// lone "Archived" checkbox. Semantics over the loaded list:
+	//   • starred    → pinned sessions (CCT-267) only
+	//   • live       → interactive, non-archived, non-dispatched sessions
+	//   • dispatched → server-managed / ephemeral-worker sessions (CCT-231)
+	//   • archived   → the paginated archive browse (CCT-184)
+	// Persisted so the chosen section sticks across reloads.
+	type Section = 'starred' | 'live' | 'dispatched' | 'archived';
+	const SECTIONS: { value: Section; label: string; icon: 'star' | 'live' | 'send' | 'archive' }[] = [
+		{ value: 'starred', label: 'Starred', icon: 'star' },
+		{ value: 'live', label: 'Live', icon: 'live' },
+		{ value: 'dispatched', label: 'Dispatched', icon: 'send' },
+		{ value: 'archived', label: 'Archived', icon: 'archive' }
+	];
+	const isSection = (v: string | null): v is Section =>
+		v === 'starred' || v === 'live' || v === 'dispatched' || v === 'archived';
+	const storedSection = drafts.get(LIST_SECTION);
+	let section = $state<Section>(isSection(storedSection) ? storedSection : 'live');
+	$effect(() => {
+		drafts.set(LIST_SECTION, section);
+	});
+	// `showArchived` drives the paginated archive pager + search scope; it's now a
+	// view of `section` so all the existing pager wiring keeps working unchanged.
+	const showArchived = $derived(section === 'archived');
 	let openSession = $state<SessionListItem | null>(null);
 	let showSpawn = $state(false);
 	// Prefill for "new session from same script" (CCT-250 item 8). Seeded from an
@@ -563,8 +588,19 @@
 		if (bucket === 'blocked') return 'blocked';
 		return isDispatched(s) ? 'dispatched' : bucket;
 	};
+	// Which live buckets belong to the selected section (CCT-322):
+	//   • starred    → only the Pinned bucket
+	//   • live       → every interactive bucket EXCEPT Dispatched
+	//   • dispatched → only the Dispatched bucket
+	//   • archived   → none here (the paginated archive renders separately below)
+	const bucketInSection = (key: GroupKey): boolean => {
+		if (section === 'starred') return key === 'pinned';
+		if (section === 'dispatched') return key === 'dispatched';
+		if (section === 'live') return key !== 'dispatched';
+		return false; // archived
+	};
 	const groups = $derived(
-		BUCKETS.map((b) => ({
+		BUCKETS.filter((b) => bucketInSection(b.key)).map((b) => ({
 			...b,
 			sessions: topLevel.filter((s) => groupOf(s) === b.key)
 		})).filter((g) => g.sessions.length > 0)
@@ -619,9 +655,22 @@
 			>
 		{/if}
 	</div>
-	<label class="arch row">
-		<input type="checkbox" bind:checked={showArchived} /> Archived
-	</label>
+	<!-- Section picker (CCT-322): a segmented icon-button control choosing which
+	     of the four sections (Starred / Live / Dispatched / Archived) is in view,
+	     replacing the lone "Archived" checkbox. Same IconButton primitive as the
+	     rest of the toolbar; the selected segment is highlighted via aria-pressed. -->
+	<div class="section-pick" role="group" aria-label="Section">
+		{#each SECTIONS as sec (sec.value)}
+			<IconButton
+				class="section-seg btn-control-square"
+				icon={sec.icon}
+				label={sec.label}
+				title={sec.label}
+				aria-pressed={section === sec.value}
+				onclick={() => (section = sec.value)}
+			/>
+		{/each}
+	</div>
 	<!-- View picker (CCT-307): one labelled control offering the 4 explicit
 	     layout × density combinations, replacing the two icon toggles that still
 	     overflowed the toolbar. A native <select> overlaid transparently on the
@@ -774,7 +823,7 @@
 	{#if pageLoading && pageRows.length === 0}
 		<div class="empty"><span class="spin"></span></div>
 	{:else if pageRows.length === 0}
-		<div class="empty">No chats match “{query}”{showArchived ? '' : ' (live only — tick Archived to search all)'}.</div>
+		<div class="empty">No chats match “{query}”{showArchived ? '' : ' (live only — pick Archived to search all)'}.</div>
 	{:else}
 		<!-- Nest over the whole result set so a parent and its subagents stay
 		     grouped even if they land in different status sections; then split
@@ -798,8 +847,16 @@
 	<!-- Live buckets first… -->
 	{#if $sessions.isLoading}
 		<div class="empty"><span class="spin"></span></div>
-	{:else if topLevel.length === 0 && !showArchived}
-		<div class="empty">No sessions — tick Archived or start one.</div>
+	{:else if groups.length === 0 && !showArchived}
+		<div class="empty">
+			{#if section === 'starred'}
+				No starred sessions — star one to pin it here.
+			{:else if section === 'dispatched'}
+				No dispatched sessions.
+			{:else}
+				No live sessions — start one or pick another section.
+			{/if}
+		</div>
 	{:else}
 		<div
 			class="stack"
@@ -946,12 +1003,30 @@
 		border: none;
 		background: none;
 	}
-	.arch {
-		font-size: var(--fs-sm);
-		color: var(--text-muted);
-		gap: var(--sp-1);
+	/* Section picker (CCT-322): a segmented row of icon buttons sharing one
+	   border so it reads as a single control, matching the toolbar's other
+	   square controls in height. The pressed segment is highlighted. */
+	.section-pick {
+		display: inline-flex;
+		align-items: center;
+		flex: none;
 		align-self: center;
-		white-space: nowrap;
+		border: 1px solid var(--border-strong);
+		border-radius: var(--r-md);
+		overflow: hidden;
+		background: var(--bg-elevated);
+	}
+	.section-pick :global(.section-seg) {
+		border: none;
+		border-radius: 0;
+		background: none;
+	}
+	.section-pick :global(.section-seg + .section-seg) {
+		border-left: 1px solid var(--border-strong);
+	}
+	.section-pick :global(.section-seg[aria-pressed='true']) {
+		background: var(--accent-soft, var(--bg-elevated-2, var(--border)));
+		color: var(--accent, var(--text));
 	}
 	/* Fill all the space between the title and the Archived checkbox; the wrapper
 	   is the flex item / positioning context for the in-field clear button. */
@@ -1023,16 +1098,16 @@
 			grid-column: 3;
 			grid-row: 1;
 		}
-		/* Second row: the (now icon-only) controls pack to the left instead of
-		   stretching across the wide 1fr search column (CCT-345). */
-		.arch,
+		/* Second row (CCT-322 mobile layout): section picker · view toggle · select
+		   toggle — the icon-only controls pack to the left instead of stretching
+		   across the wide 1fr search column (CCT-345). */
+		.section-pick,
 		.view-pick,
 		.bar > :global(.toolbar-select) {
 			grid-row: 2;
-			grid-column: 1 / -1;
 			justify-self: start;
 		}
-		.arch {
+		.section-pick {
 			grid-column: 1;
 		}
 		.view-pick {
