@@ -1141,15 +1141,23 @@
 			let dataUrl: string;
 			try {
 				const rect = node.getBoundingClientRect();
+				// The capture adds a uniform PADDING with box-sizing:border-box, which
+				// shrinks the content box by 2×pad — so the content (laid out at its
+				// full width) was clipped on the right by ~pad (CCT-345). Add the
+				// padding to the requested dimensions so the content keeps its full
+				// width and the padding sits OUTSIDE it.
+				const pad = 16;
+				// scrollHeight/Width captures the full content even if the node is
+				// inside a scroll container, so nothing is clipped vertically.
+				const contentW = Math.ceil(Math.max(rect.width, node.scrollWidth));
+				const contentH = Math.ceil(Math.max(rect.height, node.scrollHeight));
 				dataUrl = await toPng(node, {
 					pixelRatio: 2,
 					cacheBust: true,
 					backgroundColor: bg,
-					// scrollHeight/Width captures the full content even if the node is
-					// inside a scroll container, so nothing is clipped.
-					width: Math.ceil(Math.max(rect.width, node.scrollWidth)),
-					height: Math.ceil(Math.max(rect.height, node.scrollHeight)),
-					style: { margin: '0', padding: '16px', boxSizing: 'border-box', background: bg }
+					width: contentW + pad * 2,
+					height: contentH + pad * 2,
+					style: { margin: '0', padding: `${pad}px`, boxSizing: 'border-box', background: bg }
 				});
 			} finally {
 				if (actions) actions.style.display = prevActionsDisplay;
@@ -1308,6 +1316,14 @@
 		});
 	}
 
+	// Timestamp of the last genuine user scroll gesture (wheel / touchmove /
+	// keyboard). Only such a gesture may UNSTICK the view; every other scroll
+	// event is layout-induced (composer growth, new content, on-screen keyboard,
+	// visualViewport resize) and must never clear the pin (CCT-329 / CCT-345).
+	let lastUserScroll = 0;
+	function markUserScroll() {
+		lastUserScroll = performance.now();
+	}
 	function atBottom(): boolean {
 		const el = scroller;
 		if (!el) return true;
@@ -1317,17 +1333,23 @@
 		const el = scroller;
 		if (!el) return;
 		const ch = el.clientHeight;
-		// Layout-induced scroll: the viewport got SHORTER since the last settled
-		// scroll (the composer grew). This is not a user gesture — keep the pin and
-		// re-stick, never recompute `stuck` from the transient geometry. This is
-		// growth-size-independent: it holds whether the composer grew by 1 row or 40.
+		const userDriven = performance.now() - lastUserScroll < 200;
+		// Viewport shrank since the last settled scroll (composer grew / keyboard
+		// opened): layout-induced — re-stick and bail, never recompute `stuck`.
 		if (ch < lastClientHeight) {
 			lastClientHeight = ch;
 			if (stuck) el.scrollTop = el.scrollHeight;
 			return;
 		}
 		lastClientHeight = ch;
-		stuck = atBottom();
+		if (userDriven) {
+			// A real gesture: honour where the user landed (may unstick).
+			stuck = atBottom();
+		} else if (atBottom()) {
+			// Layout settled back at the bottom — re-pin, but a non-gesture scroll
+			// can NEVER unstick, so a transient mid-grow position can't flip it.
+			stuck = true;
+		}
 	}
 	function jumpToBottom() {
 		if (scroller) {
@@ -1644,6 +1666,10 @@
 		class="conv"
 		bind:this={scroller}
 		onscroll={onScroll}
+		onwheel={markUserScroll}
+		ontouchmove={markUserScroll}
+		onpointerdown={markUserScroll}
+		onkeydown={markUserScroll}
 	>
 		{#if $history.isLoading}
 			<div class="empty"><span class="spin"></span></div>
@@ -2086,18 +2112,23 @@
 			position: absolute;
 			top: calc(100% + var(--sp-1));
 			right: 0;
-			z-index: 5;
+			/* Above the message list + composer; the old z:5 let chat content sit on
+			   top of the flyout (CCT-345). */
+			z-index: 60;
 			flex-direction: column;
 			align-items: stretch;
-			width: max-content;
-			min-width: 12rem;
-			max-width: calc(100vw - 2rem);
+			/* Fixed, content-comfortable width: the rows are width:100%, which made a
+			   max-content panel width circular so it collapsed to min-width and the
+			   long labels overflowed off the right edge (CCT-345). Pin a width that
+			   fits the labels and never exceeds the viewport. */
+			width: 17rem;
+			max-width: calc(100vw - 1.5rem);
 			gap: var(--sp-1);
 			padding: var(--sp-2);
 			background: var(--bg-elevated-2);
 			border: 1px solid var(--border-strong);
 			border-radius: var(--r-md);
-			box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+			box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.5));
 		}
 		.secondary.open {
 			display: flex;
@@ -2106,8 +2137,12 @@
 		   used in the desktop toolbar. Reusing the .tapbtn primitive drew an
 		   empty bordered square around each icon and broke alignment (CCT-323);
 		   here we flatten it into a borderless, auto-height, full-width row. */
-		.secondary :global(.tapbtn),
-		.secondary .font-pick {
+		/* NB: the `.drawer` prefix raises specificity ABOVE the base
+		   `.drawer :global(.tapbtn)` rule below (equal specificity but later in
+		   source) — without it the rows stayed pinned at the 2.5rem icon-chip
+		   width and the labels wrapped inside a 40px box (CCT-345). */
+		.drawer .secondary :global(.tapbtn),
+		.drawer .secondary .font-pick {
 			width: 100%;
 			min-width: 0;
 			height: auto;
@@ -2120,20 +2155,24 @@
 			border: none;
 			border-radius: var(--r-sm);
 		}
-		.secondary :global(.tapbtn):hover,
-		.secondary .font-pick:hover {
+		.drawer .secondary :global(.tapbtn):hover,
+		.drawer .secondary .font-pick:hover {
 			background: var(--bg-elevated-3, var(--bg-elevated-2));
 		}
 		/* Plain inline icon glyph inside a row — no chip box. */
-		.secondary :global(.tapbtn svg) {
+		.drawer .secondary :global(.tapbtn svg) {
 			flex: none;
 		}
-		.secondary :global(.tapbtn)::after,
-		.secondary .font-pick::after {
+		.drawer .secondary :global(.tapbtn)::after,
+		.drawer .secondary .font-pick::after {
 			content: attr(aria-label);
 			font-size: var(--fs-sm);
 			font-weight: var(--fw-medium);
-			white-space: nowrap;
+			/* Let a long label wrap inside the panel instead of clipping at the
+			   viewport edge (CCT-345). */
+			white-space: normal;
+			text-align: left;
+			line-height: 1.2;
 		}
 	}
 	.dtitle {
