@@ -234,7 +234,7 @@ async fn command_pump(
                             }
                         });
                     }
-                    AdapterCommand::Fork { parent_local_id, spec, command_id } => {
+                    AdapterCommand::Fork { parent_local_id, spec, command_id, .. } => {
                         // Fork an existing thread into a new one seeded from its
                         // history (CCT-302). Mirrors Spawn for cfg overrides
                         // (permission/effort/model) but launches via thread/fork.

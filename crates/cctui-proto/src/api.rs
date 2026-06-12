@@ -376,6 +376,20 @@ pub struct SpawnResponse {
     pub status: String,
 }
 
+/// Response to `POST /api/v1/sessions/{id}/fork` (CCT-345). Like
+/// [`SpawnResponse`] but also returns the child `session_id` the server
+/// pre-minted (when the adapter supports a caller-supplied id, i.e. claude) so
+/// the webui can navigate to the new conversation immediately instead of
+/// waiting for the next roster poll to discover it.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ForkResponse {
+    pub command_id: Uuid,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+}
+
 /// Response to `POST /api/v1/sessions/{id}/files` (CCT-236, mid-chat
 /// attachments).
 ///

@@ -9,6 +9,7 @@ import type { AgentEvent } from "@bindings/AgentEvent";
 import type { SpawnRequest } from "@bindings/SpawnRequest";
 import type { SpawnResponse } from "@bindings/SpawnResponse";
 import type { ForkRequest } from "@bindings/ForkRequest";
+import type { ForkResponse } from "@bindings/ForkResponse";
 import type { StageFilesResponse } from "@bindings/StageFilesResponse";
 import type { DispatchRequest } from "@bindings/DispatchRequest";
 import type { DispatchResponse } from "@bindings/DispatchResponse";
@@ -208,7 +209,7 @@ export const endpoints = {
   /** Fork a conversation into a new session, optionally changing model/effort
    *  (CCT-302). Returns a `command_id` to await on the ws like spawn. */
   fork: (sessionId: string, body: ForkRequest) =>
-    api.post<SpawnResponse>(`/sessions/${sessionId}/fork`, body),
+    api.post<ForkResponse>(`/sessions/${sessionId}/fork`, body),
   resume: (sessionId: string) =>
     api.post<void>(`/sessions/${sessionId}/resume`, {}),
   dispatch: (body: DispatchRequest) =>

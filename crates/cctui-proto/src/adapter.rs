@@ -325,6 +325,12 @@ pub enum AdapterCommand {
         /// callers.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         command_id: Option<Uuid>,
+        /// Child session id pre-minted by the server so the fork route can
+        /// return it and the webui can navigate to the new conversation
+        /// immediately (CCT-345). When `Some`, the claude adapter uses it as the
+        /// new `--session-id` instead of minting its own.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
     },
     /// Claude-code-specific: inject `text` directly into the worker PTY
     /// via the `reply` op. Distinct from `SendMessage` (which v0 routed
@@ -354,8 +360,15 @@ pub enum AdapterCommand {
     /// Claude-code maps this to the same `dispatch --resume <sessionId>`
     /// primitive used by resume-on-reply; adapters that do not support durable
     /// transcripts may reject it.
+    ///
+    /// `working_dir` lets the daemon resume even when the on-disk job
+    /// `state.json` is gone (archiving runs `claude rm`, which deletes it while
+    /// preserving the conversation transcript) — the daemon then falls back to
+    /// `local_id` as the conversation id and this cwd (CCT-345).
     Resume {
         local_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        working_dir: Option<String>,
     },
     /// Answer a previously-emitted `AdapterEvent::PermissionRequest`.
     PermissionResponse {

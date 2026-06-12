@@ -9,7 +9,8 @@
 	} from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
 	import { dateOnly, relativeTime, compact } from '$lib/format';
-	import UsageChip from '$lib/components/UsageChip.svelte';
+	import UsageBars from '$lib/components/UsageBars.svelte';
+	import Button from '$lib/components/Button.svelte';
 
 	const accounts = useAccounts();
 	const actions = useAccountActions();
@@ -199,20 +200,25 @@
 					</div>
 					<span class="badge">{providerLabel(a.provider)}</span>
 				</div>
-				<div class="account-fields">
+				{#if a.provider === 'anthropic'}
+					<div class="usage-block">
+						<div class="usage-head">Subscription usage</div>
+						<UsageBars id={a.id} provider={a.provider} />
+					</div>
+				{/if}
+				<dl class="stats">
 					{#if isAdmin}
-						<div class="field-chip"><span>Owner</span><b>{a.user_name ?? '—'}</b></div>
+						<div><dt>Owner</dt><dd>{a.user_name ?? '—'}</dd></div>
 					{/if}
-					<div class="field-chip usage"><span>Usage</span><UsageChip id={a.id} provider={a.provider} /></div>
-					<div class="field-chip"><span>Requests</span><b>{compact(a.request_count)}</b></div>
-					<div class="field-chip"><span>Tokens</span><b>{compact(a.total_tokens)}</b></div>
-					<div class="field-chip"><span>Cost</span><b>{usd(a.est_cost_usd)}</b></div>
-					<div class="field-chip"><span>Last used</span><b>{relativeTime(a.last_used_at)}</b></div>
-					<div class="field-chip"><span>Created</span><b>{dateOnly(a.created_at)}</b></div>
-				</div>
+					<div><dt>Requests</dt><dd>{compact(a.request_count)}</dd></div>
+					<div><dt>Tokens</dt><dd>{compact(a.total_tokens)}</dd></div>
+					<div><dt>Cost</dt><dd>{usd(a.est_cost_usd)}</dd></div>
+					<div><dt>Last used</dt><dd>{relativeTime(a.last_used_at)}</dd></div>
+					<div><dt>Created</dt><dd>{dateOnly(a.created_at)}</dd></div>
+				</dl>
 				<div class="row acts">
-					<button class="btn btn-sm" onclick={() => openRename(a)}>Rename</button>
-					<button class="btn btn-sm btn-danger" onclick={() => remove(a)}>Delete</button>
+					<Button size="sm" onclick={() => openRename(a)}>Rename</Button>
+					<Button size="sm" variant="danger" onclick={() => remove(a)}>Delete</Button>
 				</div>
 			</article>
 		{/each}
@@ -367,34 +373,42 @@
 	.sm {
 		font-size: var(--fs-xs);
 	}
-	.account-fields {
-		display: grid;
-		grid-template-columns: repeat(2, minmax(0, 1fr));
+	.usage-block {
+		display: flex;
+		flex-direction: column;
 		gap: var(--sp-2);
-	}
-	.field-chip {
-		min-width: 0;
-		padding: var(--sp-2);
+		padding: var(--sp-3);
 		border: 1px solid var(--border);
 		border-radius: var(--r-sm);
 		background: var(--bg-elevated-2);
 	}
-	.field-chip span {
-		display: block;
+	.usage-head {
+		font-size: var(--fs-xs);
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--text-muted);
+	}
+	/* Lightweight stat list — label over value, no input-like chrome (CCT-345). */
+	.stats {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));
+		gap: var(--sp-2) var(--sp-3);
+		margin: 0;
+	}
+	.stats div {
+		min-width: 0;
+	}
+	.stats dt {
 		color: var(--text-muted);
 		font-size: var(--fs-xs);
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
 	}
-	.field-chip b {
-		display: block;
-		margin-top: 0.1rem;
+	.stats dd {
+		margin: 0.1rem 0 0;
 		font-size: var(--fs-sm);
 		font-weight: var(--fw-medium);
 		overflow-wrap: anywhere;
-	}
-	.field-chip.usage {
-		grid-column: 1 / -1;
 	}
 	.acts {
 		gap: var(--sp-1);
@@ -453,10 +467,5 @@
 	}
 	.adv .fld {
 		margin-top: var(--sp-2);
-	}
-	@media (max-width: 639px) {
-		.account-fields {
-			grid-template-columns: 1fr;
-		}
 	}
 </style>

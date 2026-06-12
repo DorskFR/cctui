@@ -29,13 +29,17 @@
 		session,
 		onclose,
 		highlight = [],
-		onNewFromScript
+		onNewFromScript,
+		onNavigate
 	}: {
 		session: SessionListItem;
 		onclose: () => void;
 		highlight?: string[];
 		// "New session from same script" for archived sessions (CCT-250 item 8).
 		onNewFromScript?: (s: SessionListItem) => void;
+		// Open another session in place by id (CCT-345) — used to jump straight
+		// to a freshly forked conversation without a manual refresh.
+		onNavigate?: (sessionId: string) => void;
 	} = $props();
 
 	// Search terms to highlight inline (CCT-187), set when opened from a search.
@@ -700,6 +704,14 @@
 	let forkOpen = $state(false);
 	let forkModel = $state('');
 	let forkEffort = $state('');
+	// Parent's total tokens — shown in the fork notice so the user knows the
+	// opening turn re-bills this much context (CCT-345).
+	const forkParentTokens = $derived(
+		Number(session.token_usage.tokens_in) +
+			Number(session.token_usage.tokens_out) +
+			Number(session.token_usage.cache_read_tokens) +
+			Number(session.token_usage.cache_creation_tokens)
+	);
 	function openFork() {
 		forkModel = session.model ?? '';
 		forkEffort = session.effort ?? '';
@@ -709,7 +721,7 @@
 		if (forking) return;
 		forking = true;
 		try {
-			await actions.fork(id, {
+			const res = await actions.fork(id, {
 				model: forkModel.trim() || null,
 				effort: forkEffort.trim() || null,
 				prompt: null,
@@ -717,7 +729,10 @@
 			});
 			forkOpen = false;
 			toasts.ok(archived ? 'Reopened as a new conversation' : 'Forked conversation');
-			onclose();
+			// Jump straight to the new conversation when the server returned its id
+			// (claude); otherwise just close and let the list refetch surface it.
+			if (res?.session_id && onNavigate) onNavigate(res.session_id);
+			else onclose();
 		} catch (e) {
 			toasts.err((e as Error).message);
 		} finally {
@@ -1849,6 +1864,10 @@
 			Creates a new {isCodexSession ? 'codex thread' : 'claude session'} seeded from this
 			conversation's history. The original is left untouched. Adjust the model/effort below,
 			or keep them to fork as-is.
+		</p>
+		<p class="muted fork-cost">
+			Your first message on the fork re-sends this conversation's history (~{compact(forkParentTokens)}
+			tokens from the parent), so the opening turn re-bills that context.
 		</p>
 		<label class="fork-field">
 			<span>Model</span>

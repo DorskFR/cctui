@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { untrack, onMount } from 'svelte';
 	import type { SessionListItem } from '@bindings/SessionListItem';
-	import { useSessions, useSessionActions, endpoints, SYSTEM_MACHINE_KINDS } from '$lib/queries';
+	import { useSessions, useSessionActions, endpoints, qk, SYSTEM_MACHINE_KINDS } from '$lib/queries';
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { page } from '$app/state';
 	import { pushState, replaceState } from '$app/navigation';
@@ -145,6 +145,29 @@
 		} finally {
 			urlResolving = false;
 		}
+	}
+
+	// Open a freshly forked session (CCT-345): the server pre-minted its id but
+	// the DB row only appears once the daemon launches the worker and the next
+	// roster poll lands (~2-3s). Poll a few times so we open it in place without
+	// a manual refresh, and don't false-toast "not found" during the gap.
+	async function navigateToForked(id: string) {
+		for (let i = 0; i < 16; i++) {
+			const found = [...items, ...pageRows].find((s) => s.id === id);
+			if (found) {
+				openSession = found;
+				return;
+			}
+			try {
+				openSession = await endpoints.session(id);
+				return;
+			} catch {
+				// not registered yet — keep polling
+			}
+			await qc.invalidateQueries({ queryKey: qk.sessions(false) });
+			await new Promise((r) => setTimeout(r, 500));
+		}
+		toasts.err('Forked conversation is taking a while to appear — it will show in the list shortly.');
 	}
 
 	// URL → drawer: react to the `session` param (initial load, back/forward,
@@ -604,9 +627,8 @@
 	     overflowed the toolbar. A native <select> overlaid transparently on the
 	     trigger button (same pattern as the header theme/font pickers) gives the
 	     platform popup with zero outside-click bookkeeping. -->
-	<div class="view-pick btn-control" title="View: {viewLabel}">
+	<div class="view-pick btn-control" title="View: {viewLabel}" aria-label="View: {viewLabel}">
 		<span class="view-pick-icon" aria-hidden="true">{cardView ? '▦' : '☰'}</span>
-		<span class="view-pick-label">{viewLabel}</span>
 		<span class="view-pick-caret" aria-hidden="true">▾</span>
 		<select
 			aria-label="Choose list view"
@@ -620,9 +642,9 @@
 	</div>
 	{#if !searching}
 		{#if selecting}
-			<Button class="toolbar-select" control onclick={exitSelect}>Cancel</Button>
+			<Button class="toolbar-select" control title="Cancel selection" aria-label="Cancel selection" onclick={exitSelect}>✕</Button>
 		{:else}
-			<Button class="toolbar-select" control title="Select multiple to archive" onclick={() => (selecting = true)}>☑ Select</Button>
+			<Button class="toolbar-select" control title="Select multiple to archive" aria-label="Select multiple to archive" onclick={() => (selecting = true)}>☑</Button>
 		{/if}
 	{/if}
 	<Button class="toolbar-new" control variant="primary" onclick={() => (showSpawn = true)}>+ New</Button>
@@ -845,6 +867,7 @@
 		onclose={() => (openSession = null)}
 		highlight={searchTerms}
 		onNewFromScript={newFromScript}
+		onNavigate={(sid) => void navigateToForked(sid)}
 	/>
 {/if}
 
@@ -923,13 +946,6 @@
 		border: none;
 		background: none;
 	}
-	/* Narrow viewports: drop the text label, keep just the icon + caret so the
-	   toolbar never overflows; the platform popup still shows the full names. */
-	@media (max-width: 639px) {
-		.view-pick-label {
-			display: none;
-		}
-	}
 	.arch {
 		font-size: var(--fs-sm);
 		color: var(--text-muted);
@@ -1007,10 +1023,24 @@
 			grid-column: 3;
 			grid-row: 1;
 		}
+		/* Second row: the (now icon-only) controls pack to the left instead of
+		   stretching across the wide 1fr search column (CCT-345). */
 		.arch,
 		.view-pick,
 		.bar > :global(.toolbar-select) {
 			grid-row: 2;
+			grid-column: 1 / -1;
+			justify-self: start;
+		}
+		.arch {
+			grid-column: 1;
+		}
+		.view-pick {
+			grid-column: 2;
+			justify-self: start;
+		}
+		.bar > :global(.toolbar-select) {
+			grid-column: 3;
 		}
 		:global(.search-toggle) {
 			display: none;

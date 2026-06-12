@@ -1291,10 +1291,23 @@ pub async fn resume_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    // Pass the working_dir so the daemon can resume even after archiving ran
+    // `claude rm` (which deletes the on-disk job state.json but keeps the
+    // conversation transcript) — the daemon falls back to local_id + this cwd.
+    let working_dir: Option<String> =
+        sqlx::query_scalar("SELECT working_dir FROM sessions WHERE id = $1")
+            .bind(&session_id)
+            .fetch_optional(&state.pool)
+            .await
+            .ok()
+            .flatten();
     crate::daemon_dispatch::dispatch(
         &state,
         &session_id,
-        cctui_proto::adapter::AdapterCommand::Resume { local_id: session_id.clone() },
+        cctui_proto::adapter::AdapterCommand::Resume {
+            local_id: session_id.clone(),
+            working_dir,
+        },
     )
     .await
     .map_err(|e| {
@@ -1364,7 +1377,7 @@ pub async fn fork_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
     Json(req): Json<cctui_proto::api::ForkRequest>,
-) -> Result<(StatusCode, Json<cctui_proto::api::SpawnResponse>), (StatusCode, Json<ApiError>)> {
+) -> Result<(StatusCode, Json<cctui_proto::api::ForkResponse>), (StatusCode, Json<ApiError>)> {
     let norm = |s: Option<String>| s.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
 
     // Resolve the parent: adapter + machine + cwd. The fork inherits the
@@ -1399,6 +1412,12 @@ pub async fn fork_session(
     };
 
     let command_id = uuid::Uuid::new_v4();
+    // Pre-mint the child session id for claude (which accepts a caller-supplied
+    // `--session-id`) so we can return it and the webui can open the new
+    // conversation right away (CCT-345). Codex mints its own thread id, so we
+    // don't claim one for it.
+    let is_claude = adapter_id == "claude-code";
+    let child_session_id = is_claude.then(|| uuid::Uuid::new_v4().to_string());
     let spec = cctui_proto::adapter::SessionSpec {
         adapter_id: cctui_proto::adapter::AdapterId::new(&adapter_id),
         working_dir: Some(working_dir),
@@ -1416,6 +1435,7 @@ pub async fn fork_session(
             parent_local_id: session_id.clone(),
             spec,
             command_id: Some(command_id),
+            session_id: child_session_id.clone(),
         }),
     };
     let Some(sender) = state.daemon_connections.get(&machine_uuid).map(|r| r.clone()) else {
@@ -1430,10 +1450,14 @@ pub async fn fork_session(
             Json(ApiError { error: "daemon disconnected mid-dispatch".into() }),
         ));
     }
-    tracing::info!(parent = %session_id, %command_id, %adapter_id, "fork dispatched");
+    tracing::info!(parent = %session_id, %command_id, %adapter_id, child = ?child_session_id, "fork dispatched");
     Ok((
         StatusCode::ACCEPTED,
-        Json(cctui_proto::api::SpawnResponse { command_id, status: "dispatched".into() }),
+        Json(cctui_proto::api::ForkResponse {
+            command_id,
+            status: "dispatched".into(),
+            session_id: child_session_id,
+        }),
     ))
 }
 

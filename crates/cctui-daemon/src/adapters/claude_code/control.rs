@@ -609,11 +609,15 @@ impl Driver {
                 socket::attach_interrupt(&sock, &short).await?;
                 tracing::info!(%short, "interrupted in-flight turn via attach+ESC");
             }
-            AdapterCommand::Resume { local_id } => {
+            AdapterCommand::Resume { local_id, working_dir } => {
                 let short = self
                     .resolve_short(&local_id)
                     .or_else(|_| self.resolve_short_for_removal(&local_id))?;
-                self.resume_if_hibernated(&sock, &short).await?;
+                // Fall back to (local_id, working_dir) when the on-disk job state
+                // is gone — archiving runs `claude rm`, which deletes state.json
+                // but keeps the conversation transcript, so an explicit Resume of
+                // an archived session must not depend on it (CCT-345).
+                self.resume_worker(&sock, &short, Some(&local_id), working_dir.as_deref()).await?;
                 tracing::info!(%short, %local_id, "resumed session via explicit command");
             }
             AdapterCommand::PermissionResponse { local_id, request_id, allow } => {
@@ -642,8 +646,8 @@ impl Driver {
             AdapterCommand::Spawn { spec, .. } => {
                 self.spawn(&sock, &spec).await?;
             }
-            AdapterCommand::Fork { parent_local_id, spec, .. } => {
-                self.fork(&sock, &parent_local_id, &spec).await?;
+            AdapterCommand::Fork { parent_local_id, spec, session_id, .. } => {
+                self.fork(&sock, &parent_local_id, &spec, session_id.as_deref()).await?;
             }
             AdapterCommand::Rename { local_id, name } => {
                 let short = self.resolve_short(&local_id)?;
@@ -737,6 +741,22 @@ impl Driver {
         sock: &std::path::Path,
         short: &str,
     ) -> anyhow::Result<()> {
+        self.resume_worker(sock, short, None, None).await
+    }
+
+    /// Revive an exited worker bound to its saved conversation. Prefers the
+    /// on-disk `state.json` (so `/clear`/`/compact`'s rotated `resumeSessionId`
+    /// is honored, CCT-160); when it's gone — e.g. an archived session whose
+    /// `claude rm` deleted the job metadata but left the transcript — falls back
+    /// to the caller-supplied `(session_id, cwd)` from the server's DB row
+    /// (CCT-345). No-op (one cheap `has` round-trip) when the worker is alive.
+    async fn resume_worker(
+        &self,
+        sock: &std::path::Path,
+        short: &str,
+        fallback_session_id: Option<&str>,
+        fallback_cwd: Option<&str>,
+    ) -> anyhow::Result<()> {
         let alive = |resp: &serde_json::Value| {
             resp.get("alive").and_then(serde_json::Value::as_bool).unwrap_or(false)
         };
@@ -745,21 +765,23 @@ impl Driver {
             return Ok(());
         }
 
-        let st = StateJson::read(&self.cfg.jobs_root, short).ok_or_else(|| {
-            anyhow::anyhow!(
-                "session {short} has exited and no job state remains on disk to resume from"
-            )
-        })?;
+        let st = StateJson::read(&self.cfg.jobs_root, short);
         // `/clear`/`/compact` rotate the live conversation into the id recorded
         // in `resumeSessionId`; resuming the stale spawn id would fork the
-        // conversation back at the pre-reset state (CCT-160).
+        // conversation back at the pre-reset state (CCT-160). When state.json is
+        // gone, fall back to the id/cwd the server passed from its DB row.
         let session_id = st
-            .resume_session_id
-            .clone()
-            .or_else(|| st.session_id.clone())
-            .ok_or_else(|| anyhow::anyhow!("state.json for {short} has no session id"))?;
-        let cwd =
-            st.cwd.clone().ok_or_else(|| anyhow::anyhow!("state.json for {short} has no cwd"))?;
+            .as_ref()
+            .and_then(|s| s.resume_session_id.clone().or_else(|| s.session_id.clone()))
+            .or_else(|| fallback_session_id.map(str::to_owned))
+            .ok_or_else(|| {
+                anyhow::anyhow!("no session id on disk or from caller to resume {short}")
+            })?;
+        let cwd = st
+            .as_ref()
+            .and_then(|s| s.cwd.clone())
+            .or_else(|| fallback_cwd.map(str::to_owned))
+            .ok_or_else(|| anyhow::anyhow!("no cwd on disk or from caller to resume {short}"))?;
 
         let agent = "claude";
         let nonce: String = uuid::Uuid::new_v4().simple().to_string().chars().take(8).collect();
@@ -789,7 +811,7 @@ impl Driver {
                 "agent": agent,
                 // `state.json` already exists for this short; the daemon keeps
                 // its identity fields, so the seed is just protocol filler.
-                "seed": { "intent": st.intent.clone().unwrap_or_default() },
+                "seed": { "intent": st.as_ref().and_then(|s| s.intent.clone()).unwrap_or_default() },
                 "cols": 120,
                 "rows": 40,
             }
@@ -1058,6 +1080,7 @@ impl Driver {
         sock: &std::path::Path,
         parent_local_id: &str,
         spec: &cctui_proto::adapter::SessionSpec,
+        forced_session_id: Option<&str>,
     ) -> anyhow::Result<()> {
         let cwd = spec
             .working_dir
@@ -1081,7 +1104,10 @@ impl Driver {
             .unwrap_or_else(|| parent_local_id.to_owned());
 
         let agent = "claude";
-        let session_id = uuid::Uuid::new_v4().to_string();
+        // Use the server-pre-minted child id when supplied (CCT-345) so the id
+        // the webui navigated to matches the worker the daemon launches.
+        let session_id =
+            forced_session_id.map(str::to_owned).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let short = session_id[..8].to_owned();
         let nonce: String = uuid::Uuid::new_v4().simple().to_string().chars().take(8).collect();
         let created_at = u64::try_from(

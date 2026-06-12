@@ -276,7 +276,7 @@
 				>{/if}
 		{/if}
 		{#if s.model}<span class="muted sm model">{s.model}{s.effort ? ` · ${s.effort}` : ''}</span>{/if}
-		{#if rollup}<span
+		{#if dense && rollup}<span
 				class="rollup sm"
 				title="Total tokens incl. {rollup.count} subagent{rollup.count === 1 ? '' : 's'}"
 				>Σ {compact(rollup.tokens)} tok</span
@@ -377,6 +377,17 @@
 	}
 	.sc.grid .dir {
 		min-width: 0;
+	}
+	/* List detailed (non-grid): the row is tall but `.last` is a single truncated
+	   line — give the preview up to 3 lines to reclaim the wasted space (CCT-320).
+	   Card (grid) view has its own flex-grow rule above and is untouched. */
+	.sc:not(.grid):not(.dense) .last {
+		white-space: normal;
+		display: -webkit-box;
+		-webkit-line-clamp: 3;
+		line-clamp: 3;
+		-webkit-box-orient: vertical;
+		overflow: hidden;
 	}
 	/* Track the finger with no transition while swiping; ease back (spring) or
 	   off-screen (commit) when released. */
