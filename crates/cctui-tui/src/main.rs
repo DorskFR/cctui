@@ -759,7 +759,7 @@ fn clean_user_message(text: &str) -> Option<String> {
 
 fn agent_event_to_line(event: &AgentEvent) -> ConversationLine {
     match event {
-        AgentEvent::Text { content, meta, ts } => {
+        AgentEvent::Text { content, meta, ts, .. } => {
             let (kind, text) = if content.starts_with("▷ User:") {
                 let user_text = content.trim_start_matches("▷ User: ");
                 // `meta` (set authoritatively at the adapter layer) marks a

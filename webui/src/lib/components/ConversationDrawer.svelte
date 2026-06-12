@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import type { AgentEvent } from '@bindings/AgentEvent';
+	import type { TokenUsage as TokenUsageT } from '@bindings/TokenUsage';
 	import { ws, userMsgKey, USER_PREFIX, type PermReq, type LiveAsk } from '$lib/ws.svelte';
 	import { useConversation, useSessionActions } from '$lib/queries';
 	import { renderMarkdown, prettyJson, highlightBlock } from '$lib/markdown';
@@ -394,6 +395,9 @@
 		failed?: string;
 		// Parsed AskUserQuestion payload (CCT-146) — rendered as interactive cards.
 		ask?: AskQuestion[];
+		durationMs?: number;
+		messageId?: string;
+		usage?: TokenUsageT;
 	}
 
 	// Pull a well-formed questions[] out of an AskUserQuestion tool input.
@@ -447,7 +451,14 @@
 					return userOrSystem(content, Number(e.ts), e.meta || looksMeta(content));
 				}
 				if (!typeVisible('assistant')) return null;
-				return { role: 'assistant', ts: Number(e.ts), html: mdRender(e.content), text: e.content };
+				return {
+					role: 'assistant',
+					ts: Number(e.ts),
+					html: mdRender(e.content),
+					text: e.content,
+					messageId: e.message_id,
+					usage: e.usage
+				};
 			}
 			case 'reply':
 				// `reply` is only ever our own optimistic echo of typed input.
@@ -561,8 +572,50 @@
 			}
 			out.push(ln);
 		}
+		for (let i = 0; i < out.length; i++) {
+			if (out[i].role !== 'assistant') continue;
+			const prev = [...out.slice(0, i)].reverse().find((l) => l.role === 'user' || l.role === 'assistant');
+			if (prev && out[i].ts > prev.ts) out[i].durationMs = out[i].ts - prev.ts;
+		}
 		return out;
 	});
+	function lineTooltip(ts: number): string {
+		const d = new Date(ts);
+		const u = session.token_usage;
+		const tokens =
+			Number(u.tokens_in) +
+			Number(u.tokens_out) +
+			Number(u.cache_read_tokens) +
+			Number(u.cache_creation_tokens);
+		return [
+			`Time: ${Number.isNaN(d.getTime()) ? '—' : d.toISOString()}`,
+			`Machine: ${session.machine_name ?? session.machine_id}`,
+			session.model ? `Model: ${session.model}${session.effort ? ` · ${session.effort}` : ''}` : '',
+			`Path: ${session.working_dir}`,
+			`Session tokens: ${compact(tokens)}`
+		].filter(Boolean).join('\n');
+	}
+	function durationLabel(ms: number | undefined): string {
+		if (!ms || ms < 1000) return '';
+		const secs = Math.round(ms / 1000);
+		if (secs < 60) return `${secs}s`;
+		const mins = Math.floor(secs / 60);
+		return `${mins}m ${secs % 60}s`;
+	}
+	function usageLabel(u: TokenUsageT | undefined): string {
+		if (!u) return '';
+		const total =
+			Number(u.tokens_in) +
+			Number(u.tokens_out) +
+			Number(u.cache_read_tokens) +
+			Number(u.cache_creation_tokens);
+		if (!total) return '';
+		const cache =
+			Number(u.cache_read_tokens) + Number(u.cache_creation_tokens) > 0
+				? ` · cache ${compact(Number(u.cache_read_tokens) + Number(u.cache_creation_tokens))}`
+				: '';
+		return `${compact(total)} tok${cache}`;
+	}
 
 	// ── Lazy render of large transcripts (CCT-279 item 1) ───────────────────
 	// Mounting an entire long conversation (hundreds of tool calls + results,
@@ -673,6 +726,15 @@
 			toasts.err((e as Error).message);
 		} finally {
 			forking = false;
+		}
+	}
+	async function doResume() {
+		try {
+			await actions.resume(id);
+			toasts.ok('Resume dispatched');
+			onclose();
+		} catch (e) {
+			toasts.err((e as Error).message);
 		}
 	}
 
@@ -1047,13 +1109,29 @@
 		try {
 			const bg = getComputedStyle(document.body).getPropertyValue('--bg').trim() || '#1e1e1e';
 			const { toPng } = await import('html-to-image');
-			const dataUrl = await toPng(node, {
+			const clone = node.cloneNode(true) as HTMLElement;
+			clone.style.position = 'fixed';
+			clone.style.left = '-10000px';
+			clone.style.top = '0';
+			clone.style.width = '760px';
+			clone.style.maxWidth = '760px';
+			clone.style.height = 'auto';
+			clone.style.maxHeight = 'none';
+			clone.style.overflow = 'visible';
+			clone.style.padding = '16px';
+			clone.style.margin = '0';
+			clone.style.background = bg;
+			clone.querySelectorAll<HTMLElement>('.line-actions').forEach((el) => el.remove());
+			document.body.appendChild(clone);
+			await new Promise((resolve) => requestAnimationFrame(resolve));
+			const dataUrl = await toPng(clone, {
 				pixelRatio: 2,
 				backgroundColor: bg,
-				width: 760,
-				style: { width: '760px', margin: '0', padding: '16px', boxSizing: 'border-box' },
-				filter: (n) => !(n instanceof HTMLElement && n.classList.contains('line-actions'))
+				width: clone.scrollWidth,
+				height: clone.scrollHeight,
+				style: { width: '760px', height: `${clone.scrollHeight}px`, overflow: 'visible' }
 			});
+			clone.remove();
 			const a = document.createElement('a');
 			a.download = `cctui-message-${ln.ts}.png`;
 			a.href = dataUrl;
@@ -1071,6 +1149,12 @@
 	// export) collapse into a "⋯" flyout. Kept open while renaming so the ✓ save
 	// button is reachable.
 	let moreOpen = $state(false);
+	function closeMoreFromOutside(e: PointerEvent) {
+		if (!moreOpen) return;
+		const t = e.target as HTMLElement | null;
+		if (t?.closest('.secondary') || t?.closest('.more')) return;
+		moreOpen = false;
+	}
 	// Mobile chat controls (CCT-311): the filter / format / auto-approve groups
 	// don't fit on one mobile row, so they collapse behind three text buttons
 	// (Filters · Format · Auto-Approve) that each open a popover holding the same
@@ -1174,6 +1258,7 @@
 	// scrolled up, don't yank them down — show a "jump to bottom" pill instead.
 	let scroller = $state<HTMLElement>();
 	let stuck = $state(true); // currently pinned to the bottom
+	let composerResizing = false;
 	const STICK_SLOP = 48; // px from bottom still counts as "at bottom"
 
 	function atBottom(): boolean {
@@ -1182,6 +1267,10 @@
 		return el.scrollHeight - el.scrollTop - el.clientHeight <= STICK_SLOP;
 	}
 	function onScroll() {
+		if (composerResizing) {
+			if (stuck && scroller) scroller.scrollTop = scroller.scrollHeight;
+			return;
+		}
 		stuck = atBottom();
 	}
 	function jumpToBottom() {
@@ -1213,7 +1302,13 @@
 		const el = textarea;
 		if (!el || typeof ResizeObserver === 'undefined') return;
 		const ro = new ResizeObserver(() => {
-			if (stuck && scroller) scroller.scrollTop = scroller.scrollHeight;
+			if (!stuck || !scroller) return;
+			composerResizing = true;
+			scroller.scrollTop = scroller.scrollHeight;
+			requestAnimationFrame(() => {
+				if (scroller) scroller.scrollTop = scroller.scrollHeight;
+				composerResizing = false;
+			});
 		});
 		ro.observe(el);
 		return () => ro.disconnect();
@@ -1245,7 +1340,10 @@
 	);
 </script>
 
-<svelte:window onkeydown={(e) => e.key === 'Escape' && !renaming && onclose()} />
+<svelte:window
+	onkeydown={(e) => e.key === 'Escape' && !renaming && (moreOpen ? (moreOpen = false) : onclose())}
+	onpointerdown={closeMoreFromOutside}
+/>
 
 <!-- Desktop side-pane: a scrim over the rest of the viewport so clicking
      outside the pane (or Escape) closes it, instead of hunting for the ‹ icon.
@@ -1291,6 +1389,7 @@
 					<span class="truncate name">{headTitle}</span>
 				{/if}
 			</div>
+			<button class="tapbtn fork desktop-fork" aria-label="Fork conversation" title="Fork into a new conversation (optionally change model)" onclick={openFork}>⑂</button>
 			<!-- Secondary actions (CCT-301 #7): inline on desktop, collapsed into the
 			     ⋯ flyout on mobile so a long title + many buttons no longer overflow. -->
 			<div class="secondary" class:open={moreOpen || renaming}>
@@ -1298,7 +1397,7 @@
 			     window header (CCT-297 #11), promoted out of the formatting bar up to
 			     this top-level row so scaling is reachable without scanning the
 			     JSON/Diff/Tables toggles. Both write the single global fontScale. -->
-			<div class="font-pick btn btn-ghost btn-icon" title="UI font size">
+			<div class="font-pick btn btn-ghost btn-icon menu-item" title="UI font size" aria-label="Font size">
 				<span aria-hidden="true">A</span>
 				<select
 					aria-label="UI font size"
@@ -1357,6 +1456,7 @@
 					<path d="M4 19h16" />
 				</svg>
 			</button>
+			<button class="tapbtn menu-fork" aria-label="Fork conversation" title="Fork into a new conversation" onclick={openFork}>⑂</button>
 			</div>
 			<!-- Mobile-only overflow toggle (CCT-301 #7); hidden on desktop. -->
 			<button
@@ -1380,15 +1480,6 @@
 					</svg>
 				</button>
 			{/if}
-			<button class="tapbtn fork" aria-label="Fork conversation" title="Fork into a new conversation (optionally change model)" onclick={openFork}>
-				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-					<circle cx="6" cy="6" r="2.5" />
-					<circle cx="18" cy="6" r="2.5" />
-					<circle cx="12" cy="19" r="2.5" />
-					<path d="M6 8.5v2a3 3 0 0 0 3 3h6a3 3 0 0 0 3-3v-2" />
-					<path d="M12 13.5v3" />
-				</svg>
-			</button>
 		</div>
 		<div class="hmeta row row-wrap">
 			{#if showStatusBadge}<span class="badge {statusBadgeClass(session.status)}">{session.status}</span>{/if}
@@ -1556,7 +1647,7 @@
 					{#if ln.role === 'tool' || ln.role === 'result'}
 						<span class="who tool-name">{ln.role === 'result' ? '↳ ' : ''}{ln.tool ?? 'tool'}</span>
 					{/if}
-					<span class="faint sm">{clockTime(ln.ts)}</span>
+					<span class="faint sm" title={lineTooltip(ln.ts)}>{clockTime(ln.ts)}</span>
 					{#if ln.failed}
 						<span class="sm not-delivered" title={ln.failed}>⚠ Not delivered</span>
 						{#if !archived}
@@ -1596,19 +1687,19 @@
 						     plain image icon and sits right next to it (CCT-301 #1). -->
 						<button
 							class="btn btn-ghost copy"
-							aria-label="Copy as Markdown"
-							title="Copy this message as Markdown"
-							onclick={() => copyLineMarkdown(ln)}
-						>
-							<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M7 15V9l3 3 3-3v6" /><path d="m15 11 2 2 2-2" /></svg>
-						</button>
-						<button
-							class="btn btn-ghost copy"
 							aria-label="Save as image"
 							title="Save this message as an image"
 							onclick={(e) => saveLineImage(e, ln)}
 						>
 							<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.8" /><path d="m21 15-4.5-4.5L7 21" /></svg>
+						</button>
+						<button
+							class="btn btn-ghost copy"
+							aria-label="Copy as Markdown"
+							title="Copy this message as Markdown"
+							onclick={() => copyLineMarkdown(ln)}
+						>
+							<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M7 15V9l3 3 3-3v6" /><path d="m15 11 2 2 2-2" /></svg>
 						</button>
 					</span>
 				</div>
@@ -1618,6 +1709,11 @@
 					<pre class="bubble mono code">{@html ln.htmlCode}</pre>
 				{:else}
 					<pre class="bubble mono code">{ln.text}</pre>
+				{/if}
+				{#if (ln.durationMs || ln.usage) && (ln.role === 'assistant' || ln.role === 'result')}
+					<div class="line-foot">
+						{[durationLabel(ln.durationMs), usageLabel(ln.usage)].filter(Boolean).join(' · ')}
+					</div>
 				{/if}
 			</div>
 			{/if}
@@ -1665,11 +1761,11 @@
 
 	<div class="composer" class:dropping={dragActive}>
 		{#if archived}
-			<div class="hint muted">
-				Session archived (read-only). The worker is gone on the agent side —
-				<button type="button" class="link" onclick={openFork}>reopen as a new conversation</button>
-				(carries the history), or
-				<button type="button" class="link" onclick={newFromScript}>start fresh from the same script</button>.
+			<div class="archived-actions">
+				<span class="hint muted">Session archived (read-only).</span>
+				<button type="button" class="btn btn-primary" onclick={doResume}>Resume this conversation</button>
+				<button type="button" class="btn" onclick={openFork}>Fork as a new conversation</button>
+				<button type="button" class="btn btn-ghost" onclick={newFromScript}>New from same script</button>
 			</div>
 		{:else}
 			<!-- Failed sends now surface inline on the message bubble itself
@@ -1747,19 +1843,19 @@
 		</p>
 		<label class="fork-field">
 			<span>Model</span>
-			<select bind:value={forkModel}>
+			<select class="input" bind:value={forkModel}>
 				{#each forkModels as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
 			</select>
 		</label>
 		<label class="fork-field">
 			<span>Effort</span>
-			<select bind:value={forkEffort}>
+			<select class="input" bind:value={forkEffort}>
 				{#each forkEfforts as e (e)}<option value={e}>{e || 'default'}</option>{/each}
 			</select>
 		</label>
 		<div class="fork-actions row">
-			<button class="link" onclick={() => (forkOpen = false)} disabled={forking}>Cancel</button>
-			<button class="primary" onclick={doFork} disabled={forking}>
+			<button class="btn" onclick={() => (forkOpen = false)} disabled={forking}>Cancel</button>
+			<button class="btn btn-primary" onclick={doFork} disabled={forking}>
 				{forking ? 'Forking…' : archived ? 'Reopen' : 'Fork'}
 			</button>
 		</div>
@@ -1819,18 +1915,6 @@
 		justify-content: flex-end;
 		gap: 0.8rem;
 		margin-top: 0.4rem;
-	}
-	.fork-actions .primary {
-		background: var(--accent, #4a9eff);
-		color: #fff;
-		border: 0;
-		border-radius: 6px;
-		padding: 0.4rem 1rem;
-		cursor: pointer;
-	}
-	.fork-actions .primary:disabled {
-		opacity: 0.6;
-		cursor: default;
 	}
 
 	/* No scrim on mobile — the drawer is full-width, nothing behind to click. */
@@ -1937,6 +2021,9 @@
 	.secondary {
 		display: contents;
 	}
+	.menu-fork {
+		display: none;
+	}
 	.more {
 		display: none;
 	}
@@ -1960,6 +2047,28 @@
 		}
 		.secondary.open {
 			display: flex;
+		}
+		.desktop-fork {
+			display: none;
+		}
+		.menu-fork {
+			display: inline-flex;
+		}
+		.secondary .tapbtn,
+		.secondary .font-pick {
+			width: 100%;
+			min-width: 13rem;
+			justify-content: flex-start;
+			gap: var(--sp-2);
+			padding-inline: var(--sp-3);
+			font-size: var(--fs-sm);
+		}
+		.secondary .tapbtn::after,
+		.secondary .font-pick::after {
+			content: attr(aria-label);
+			font-size: var(--fs-sm);
+			font-weight: var(--fw-medium);
+			white-space: nowrap;
 		}
 	}
 	.dtitle {
@@ -2007,11 +2116,13 @@
 		font-size: 1.8rem;
 	}
 	.tapbtn.archive {
+		order: 10;
 		color: var(--warn);
 		border-color: color-mix(in srgb, var(--warn) 40%, var(--border-strong));
 		background: color-mix(in srgb, var(--warn) 10%, var(--bg-elevated-2));
 	}
 	.tapbtn.interrupt {
+		order: 11;
 		color: var(--danger, #bf616a);
 		border-color: color-mix(in srgb, var(--danger, #bf616a) 40%, var(--border-strong));
 		background: color-mix(in srgb, var(--danger, #bf616a) 10%, var(--bg-elevated-2));
@@ -2263,6 +2374,12 @@
 		flex-direction: column;
 		gap: var(--sp-3);
 	}
+	.archived-actions {
+		display: flex;
+		align-items: center;
+		flex-wrap: wrap;
+		gap: var(--sp-2);
+	}
 	.line {
 		display: flex;
 		flex-direction: column;
@@ -2343,6 +2460,16 @@
 	}
 	.copy:hover {
 		color: var(--text);
+	}
+	.copy svg {
+		width: 1rem;
+		height: 1rem;
+	}
+	.line-foot {
+		align-self: flex-end;
+		font-size: var(--fs-xs);
+		color: var(--text-faint);
+		padding-inline: var(--sp-1);
 	}
 	.bubble {
 		padding: var(--sp-2) var(--sp-3);

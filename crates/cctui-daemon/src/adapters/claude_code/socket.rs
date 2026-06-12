@@ -129,6 +129,14 @@ pub async fn attach_permission_response(socket: &Path, short: &str, allow: bool)
     }
 }
 
+/// Submit the current draft in a worker PTY. Used after multiline `reply`
+/// payloads: current Claude builds can accept the text into the composer but
+/// leave it as an unsent draft, which is most visible for attachment messages
+/// because the web UI appends staged file paths on separate lines.
+pub async fn attach_submit(socket: &Path, short: &str) -> Result<()> {
+    attach_send_keys(socket, short, b"\r").await
+}
+
 /// Answer a pending `AskUserQuestion` form natively (CCT-226): inject the
 /// keystroke sequence a human would press, one chunk per UI step, paced so the
 /// form's renderer keeps up between steps. The grammar (verified live against

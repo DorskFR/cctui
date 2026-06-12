@@ -207,10 +207,33 @@
 			<span class="check" class:on={selected} aria-hidden="true">{selected ? '✓' : ''}</span>
 		{/if}
 		{#if child}<span class="sub" title="subagent">↳</span>{/if}
+		{#if dense && onTogglePin && !child}
+			<span
+				class="star"
+				class:on={s.pinned}
+				role="button"
+				tabindex="0"
+				title={s.pinned ? 'Unpin' : 'Pin to top (exempt from auto-archive)'}
+				aria-pressed={s.pinned}
+				aria-label={s.pinned ? 'Unpin session' : 'Pin session'}
+				onpointerdown={(e) => e.stopPropagation()}
+				onclick={(e) => {
+					e.stopPropagation();
+					onTogglePin?.(s);
+				}}
+				onkeydown={(e) => {
+					if (e.key === 'Enter' || e.key === ' ') {
+						e.preventDefault();
+						e.stopPropagation();
+						onTogglePin?.(s);
+					}
+				}}>{s.pinned ? '★' : '☆'}</span
+			>
+		{/if}
 		{#if dense && !child}<MachineBadge name={s.machine_name} id={s.machine_id} hue={s.machine_hue} mono />{/if}
 		<span class="dot {livenessClass}"></span>
 		<span class="title truncate">{title}</span>
-		{#if onTogglePin && !child}
+		{#if !dense && onTogglePin && !child}
 			<span
 				class="star"
 				class:on={s.pinned}
@@ -341,8 +364,7 @@
 		display: block;
 		white-space: normal;
 		overflow: hidden;
-		-webkit-mask-image: linear-gradient(180deg, #000 calc(100% - 1.4em), transparent);
-		mask-image: linear-gradient(180deg, #000 calc(100% - 1.4em), transparent);
+		text-overflow: ellipsis;
 	}
 	/* Uniform single-line cwd path in grid view — never wrap to a second line
 	   (the source of ragged, uneven-height cards); ellipsis instead. */
@@ -397,10 +419,9 @@
 		z-index: 1;
 	}
 	.sc.child {
-		border-left: 2px solid var(--border-strong);
-		/* slightly recessed/faded vs a top-level card — theme-token based */
-		background: color-mix(in srgb, var(--bg) 55%, var(--bg-elevated));
-		color: var(--text-muted);
+		border-left: 2px solid color-mix(in srgb, var(--border-strong) 70%, var(--bg-elevated));
+		background: var(--bg-elevated);
+		color: var(--text);
 	}
 	.sc.dense {
 		padding: var(--sp-2) var(--sp-3);

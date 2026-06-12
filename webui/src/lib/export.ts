@@ -15,130 +15,218 @@
  *    on-screen lines — what you see is what you save.
  */
 
-import type { AgentEvent } from '@bindings/AgentEvent';
-import type { SessionListItem } from '@bindings/SessionListItem';
-import { renderMarkdown, highlightBlock, prettyJson, escapeHtml } from '$lib/markdown';
-import { USER_PREFIX } from '$lib/ws.svelte';
+import type { AgentEvent } from "@bindings/AgentEvent";
+import type { SessionListItem } from "@bindings/SessionListItem";
+import {
+  renderMarkdown,
+  highlightBlock,
+  prettyJson,
+  escapeHtml,
+} from "$lib/markdown";
+import { USER_PREFIX } from "$lib/ws.svelte";
 
 /** The subset of the drawer's ViewOpts the export honors. */
 // Mirrors the drawer's ViewOpts filter model (CCT-250 item 2). Each message
 // type is off/include/exclude; if any is 'include', only included types export.
-type MsgType = 'assistant' | 'user' | 'tool' | 'mcp' | 'system' | 'result';
-type TagState = 'off' | 'include' | 'exclude';
+type MsgType = "assistant" | "user" | "tool" | "mcp" | "system" | "result";
+type TagState = "off" | "include" | "exclude";
 
 export interface ExportOpts {
-	typeFilter: Record<MsgType, TagState>;
-	prettyJson: boolean;
-	prettyDiff: boolean;
-	prettyTables: boolean;
+  typeFilter: Record<MsgType, TagState>;
+  prettyJson: boolean;
+  prettyDiff: boolean;
+  prettyTables: boolean;
 }
 
 function typeVisible(opts: ExportOpts, t: MsgType): boolean {
-	const f = opts.typeFilter;
-	if (f[t] === 'exclude') return false;
-	const anyIncluded = (Object.keys(f) as MsgType[]).some((k) => f[k] === 'include');
-	if (anyIncluded) return f[t] === 'include';
-	return true;
+  const f = opts.typeFilter;
+  if (f[t] === "exclude") return false;
+  const anyIncluded = (Object.keys(f) as MsgType[]).some(
+    (k) => f[k] === "include",
+  );
+  if (anyIncluded) return f[t] === "include";
+  return true;
 }
 
 interface Block {
-	role: 'assistant' | 'user' | 'system' | 'tool' | 'result' | 'reset' | 'compact' | 'ask';
-	ts: number;
-	label?: string; // tool name / divider text
-	html: string; // inner HTML, already escaped/rendered
+  role:
+    | "assistant"
+    | "user"
+    | "system"
+    | "tool"
+    | "result"
+    | "reset"
+    | "compact"
+    | "ask";
+  ts: number;
+  label?: string; // tool name / divider text
+  html: string; // inner HTML, already escaped/rendered
 }
 
-const META_TAGS = ['<task-notification', '<system-reminder', '<command-name', '<command-message', '<local-command', '<bash-input', '<bash-stdout', '<bash-stderr'];
-const looksMeta = (t: string) => META_TAGS.some((m) => t.trimStart().startsWith(m));
+const META_TAGS = [
+  "<task-notification",
+  "<system-reminder",
+  "<command-name",
+  "<command-message",
+  "<local-command",
+  "<bash-input",
+  "<bash-stdout",
+  "<bash-stderr",
+];
+const looksMeta = (t: string) =>
+  META_TAGS.some((m) => t.trimStart().startsWith(m));
 
 // Mirror the drawer's tool-input prettification (diff / shell / JSON),
 // honoring the same prettyDiff/prettyJson toggles.
-function formatToolInput(tool: string, input: unknown, opts: ExportOpts): string {
-	const obj = input as Record<string, unknown> | null;
-	if (opts.prettyDiff && obj && typeof obj === 'object' && 'old_string' in obj && 'new_string' in obj) {
-		const minus = String(obj.old_string ?? '').split('\n').map((l) => `- ${l}`).join('\n');
-		const plus = String(obj.new_string ?? '').split('\n').map((l) => `+ ${l}`).join('\n');
-		return highlightBlock(`${obj.file_path ?? ''}\n${minus}\n${plus}`.trim(), '');
-	}
-	if (opts.prettyJson && obj && typeof obj === 'object' && typeof obj.command === 'string') {
-		const desc = typeof obj.description === 'string' && obj.description.trim() ? `# ${obj.description.trim()}\n` : '';
-		return highlightBlock(`${desc}${obj.command}`, 'sh');
-	}
-	if (!opts.prettyJson) return highlightBlock(JSON.stringify(input), 'json');
-	return highlightBlock(prettyJson(input).replace(/\\n/g, '\n').replace(/\\t/g, '\t'), 'json');
+function formatToolInput(
+  tool: string,
+  input: unknown,
+  opts: ExportOpts,
+): string {
+  const obj = input as Record<string, unknown> | null;
+  if (
+    opts.prettyDiff &&
+    obj &&
+    typeof obj === "object" &&
+    "old_string" in obj &&
+    "new_string" in obj
+  ) {
+    const minus = String(obj.old_string ?? "")
+      .split("\n")
+      .map((l) => `- ${l}`)
+      .join("\n");
+    const plus = String(obj.new_string ?? "")
+      .split("\n")
+      .map((l) => `+ ${l}`)
+      .join("\n");
+    return highlightBlock(
+      `${obj.file_path ?? ""}\n${minus}\n${plus}`.trim(),
+      "",
+    );
+  }
+  if (
+    opts.prettyJson &&
+    obj &&
+    typeof obj === "object" &&
+    typeof obj.command === "string"
+  ) {
+    const desc =
+      typeof obj.description === "string" && obj.description.trim()
+        ? `# ${obj.description.trim()}\n`
+        : "";
+    return highlightBlock(`${desc}${obj.command}`, "sh");
+  }
+  if (!opts.prettyJson) return highlightBlock(JSON.stringify(input), "json");
+  return highlightBlock(
+    prettyJson(input).replace(/\\n/g, "\n").replace(/\\t/g, "\t"),
+    "json",
+  );
 }
 
 // AskUserQuestion inputs render as a readable Q/options card, not raw JSON.
 function formatAsk(input: unknown): string | null {
-	const qs = (input as { questions?: unknown })?.questions;
-	if (!Array.isArray(qs) || qs.length === 0) return null;
-	const parts: string[] = [];
-	for (const q of qs as { question?: string; options?: { label?: string; description?: string }[] }[]) {
-		if (typeof q?.question !== 'string') continue;
-		const opts = (q.options ?? [])
-			.map((o) => `<li><strong>${escapeHtml(String(o.label ?? ''))}</strong>${o.description ? ` — ${escapeHtml(o.description)}` : ''}</li>`)
-			.join('');
-		parts.push(`<p class="ask-q">${escapeHtml(q.question)}</p><ul class="ask-opts">${opts}</ul>`);
-	}
-	return parts.length ? parts.join('') : null;
+  const qs = (input as { questions?: unknown })?.questions;
+  if (!Array.isArray(qs) || qs.length === 0) return null;
+  const parts: string[] = [];
+  for (const q of qs as {
+    question?: string;
+    options?: { label?: string; description?: string }[];
+  }[]) {
+    if (typeof q?.question !== "string") continue;
+    const opts = (q.options ?? [])
+      .map(
+        (o) =>
+          `<li><strong>${escapeHtml(String(o.label ?? ""))}</strong>${o.description ? ` — ${escapeHtml(o.description)}` : ""}</li>`,
+      )
+      .join("");
+    parts.push(
+      `<p class="ask-q">${escapeHtml(q.question)}</p><ul class="ask-opts">${opts}</ul>`,
+    );
+  }
+  return parts.length ? parts.join("") : null;
 }
 
 // Render markdown honoring the export's table formatting toggle.
-const md = (s: string, opts: ExportOpts) => renderMarkdown(s, { tables: opts.prettyTables });
+const md = (s: string, opts: ExportOpts) =>
+  renderMarkdown(s, { tables: opts.prettyTables });
 
 function toBlock(e: AgentEvent, opts: ExportOpts): Block | null {
-	switch (e.type) {
-		case 'text': {
-			if (!e.content.trim()) return null;
-			if (e.content.startsWith(USER_PREFIX)) {
-				const content = e.content.slice(USER_PREFIX.length).trimStart();
-				const system = e.meta || looksMeta(content);
-				if (!typeVisible(opts, system ? 'system' : 'user')) return null;
-				return { role: system ? 'system' : 'user', ts: Number(e.ts), html: md(content, opts) };
-			}
-			if (!typeVisible(opts, 'assistant')) return null;
-			return { role: 'assistant', ts: Number(e.ts), html: md(e.content, opts) };
-		}
-		case 'reply':
-			if (!e.content.trim()) return null;
-			if (!typeVisible(opts, 'user')) return null;
-			return { role: 'user', ts: Number(e.ts), html: md(e.content, opts) };
-		case 'tool_call': {
-			if (e.tool === 'AskUserQuestion') {
-				const ask = formatAsk(e.input);
-				if (ask) return { role: 'ask', ts: Number(e.ts), label: 'AskUserQuestion', html: ask };
-			}
-			const isMcp = e.tool.startsWith('mcp__');
-			if (!typeVisible(opts, isMcp ? 'mcp' : 'tool')) return null;
-			return { role: 'tool', ts: Number(e.ts), label: e.tool, html: `<pre><code>${formatToolInput(e.tool, e.input, opts)}</code></pre>` };
-		}
-		case 'tool_result':
-			if (!typeVisible(opts, 'result')) return null;
-			return { role: 'result', ts: Number(e.ts), label: e.tool, html: `<pre><code>${highlightBlock(e.output_summary, '')}</code></pre>` };
-		case 'context_reset':
-			return { role: 'reset', ts: Number(e.ts), html: '⟳ context reset · /clear or /compact' };
-		case 'compact_summary':
-			if (!e.content.trim()) return null;
-			return { role: 'compact', ts: Number(e.ts), html: md(e.content, opts) };
-		default:
-			return null; // heartbeat, turn_end
-	}
+  switch (e.type) {
+    case "text": {
+      if (!e.content.trim()) return null;
+      if (e.content.startsWith(USER_PREFIX)) {
+        const content = e.content.slice(USER_PREFIX.length).trimStart();
+        const system = e.meta || looksMeta(content);
+        if (!typeVisible(opts, system ? "system" : "user")) return null;
+        return {
+          role: system ? "system" : "user",
+          ts: Number(e.ts),
+          html: md(content, opts),
+        };
+      }
+      if (!typeVisible(opts, "assistant")) return null;
+      return { role: "assistant", ts: Number(e.ts), html: md(e.content, opts) };
+    }
+    case "reply":
+      if (!e.content.trim()) return null;
+      if (!typeVisible(opts, "user")) return null;
+      return { role: "user", ts: Number(e.ts), html: md(e.content, opts) };
+    case "tool_call": {
+      if (e.tool === "AskUserQuestion") {
+        const ask = formatAsk(e.input);
+        if (ask)
+          return {
+            role: "ask",
+            ts: Number(e.ts),
+            label: "AskUserQuestion",
+            html: ask,
+          };
+      }
+      const isMcp = e.tool.startsWith("mcp__");
+      if (!typeVisible(opts, isMcp ? "mcp" : "tool")) return null;
+      return {
+        role: "tool",
+        ts: Number(e.ts),
+        label: e.tool,
+        html: `<pre><code>${formatToolInput(e.tool, e.input, opts)}</code></pre>`,
+      };
+    }
+    case "tool_result":
+      if (!typeVisible(opts, "result")) return null;
+      return {
+        role: "result",
+        ts: Number(e.ts),
+        label: e.tool,
+        html: `<pre><code>${highlightBlock(e.output_summary, "")}</code></pre>`,
+      };
+    case "context_reset":
+      return {
+        role: "reset",
+        ts: Number(e.ts),
+        html: "⟳ context reset · /clear or /compact",
+      };
+    case "compact_summary":
+      if (!e.content.trim()) return null;
+      return { role: "compact", ts: Number(e.ts), html: md(e.content, opts) };
+    default:
+      return null; // heartbeat, turn_end
+  }
 }
 
-const ROLE_LABEL: Record<Block['role'], string> = {
-	assistant: 'Assistant',
-	user: 'User',
-	system: 'System',
-	tool: 'Tool',
-	result: 'Result',
-	ask: 'Question',
-	reset: '',
-	compact: 'Compacted context'
+const ROLE_LABEL: Record<Block["role"], string> = {
+  assistant: "Assistant",
+  user: "User",
+  system: "System",
+  tool: "Tool",
+  result: "Result",
+  ask: "Question",
+  reset: "",
+  compact: "Compacted context",
 };
 
 function fmtTs(ts: number): string {
-	const d = new Date(ts);
-	return isNaN(d.getTime()) ? '' : d.toLocaleString();
+  const d = new Date(ts);
+  return isNaN(d.getTime()) ? "" : d.toLocaleString();
 }
 
 // ── Theme capture ────────────────────────────────────────────────────────────
@@ -150,34 +238,49 @@ function fmtTs(ts: number): string {
 // still valid CSS in the standalone file. Fallbacks = the dark palette, for
 // safety if a token is ever missing.
 const TOKEN_FALLBACKS: Record<string, string> = {
-	'--c-bg': '#0f1115',
-	'--c-bg-elev': '#171a21',
-	'--c-border': '#2c323d',
-	'--c-text': '#e6e9ef',
-	'--c-text-muted': '#9aa3b2',
-	'--c-text-faint': '#6b7384',
-	'--c-blue': '#5aa9ff',
-	'--c-green': '#5ad6a0',
-	'--c-amber': '#f0b454',
-	'--c-red': '#f0716b',
-	'--c-violet': '#b48ef0',
-	'--md-text': '#9aa3b2',
-	'--md-strong': '#e6e9ef',
-	'--md-code': '#5aa9ff',
-	'--md-code-bg': 'rgba(90,169,255,.12)',
-	'--md-heading': '#e6e9ef',
-	'--syn-keyword': '#b48ef0',
-	'--syn-string': '#5ad6a0',
-	'--syn-number': '#f0b454',
-	'--syn-comment': '#6b7384',
-	'--syn-function': '#5aa9ff'
+  "--c-bg": "#0f1115",
+  "--c-bg-elev": "#171a21",
+  "--c-border": "#2c323d",
+  "--c-text": "#e6e9ef",
+  "--c-text-muted": "#9aa3b2",
+  "--c-text-faint": "#6b7384",
+  "--c-blue": "#5aa9ff",
+  "--c-green": "#5ad6a0",
+  "--c-amber": "#f0b454",
+  "--c-red": "#f0716b",
+  "--c-violet": "#b48ef0",
+  "--role-user": "#5ad6a0",
+  "--role-assistant": "#5aa9ff",
+  "--role-system": "#b48ef0",
+  "--role-tool": "#f0b454",
+  "--role-mcp": "#4fd6cf",
+  "--font-sans":
+    "ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif",
+  "--font-mono":
+    "ui-monospace,'SF Mono','JetBrains Mono','Fira Code',Menlo,Consolas,monospace",
+  "--md-text": "#9aa3b2",
+  "--md-strong": "#e6e9ef",
+  "--md-code": "#5aa9ff",
+  "--md-code-bg": "rgba(90,169,255,.12)",
+  "--md-heading": "#e6e9ef",
+  "--syn-keyword": "#b48ef0",
+  "--syn-string": "#5ad6a0",
+  "--syn-number": "#f0b454",
+  "--syn-comment": "#6b7384",
+  "--syn-function": "#5aa9ff",
 };
 
 function themeVarsCss(): string {
-	const cs = typeof document !== 'undefined' ? getComputedStyle(document.documentElement) : null;
-	return Object.entries(TOKEN_FALLBACKS)
-		.map(([name, fb]) => `${name}:${(cs?.getPropertyValue(name) || '').trim() || fb}`)
-		.join(';');
+  const cs =
+    typeof document !== "undefined"
+      ? getComputedStyle(document.documentElement)
+      : null;
+  return Object.entries(TOKEN_FALLBACKS)
+    .map(
+      ([name, fb]) =>
+        `${name}:${(cs?.getPropertyValue(name) || "").trim() || fb}`,
+    )
+    .join(";");
 }
 
 // Layout/structure CSS. Colors come exclusively from the captured theme tokens
@@ -185,26 +288,26 @@ function themeVarsCss(): string {
 // a sepia screen prints sepia); it only adds page setup + break rules.
 const CSS = `
 *{box-sizing:border-box}
-body{margin:0;background:var(--c-bg);color:var(--c-text);font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;print-color-adjust:exact;-webkit-print-color-adjust:exact}
+body{margin:0;background:var(--c-bg);color:var(--c-text);font:14px/1.5 var(--font-sans);print-color-adjust:exact;-webkit-print-color-adjust:exact}
 .page{max-width:900px;margin:0 auto;padding:24px 20px 48px}
 header{border-bottom:1px solid var(--c-border);padding-bottom:14px;margin-bottom:18px}
 header h1{font-size:18px;margin:0 0 8px;word-break:break-word}
 .meta{display:flex;flex-wrap:wrap;gap:6px 14px;color:var(--c-text-muted);font-size:12px}
 .meta b{color:var(--c-text);font-weight:600}
-.msg{margin:10px 0;border-left:3px solid var(--c-border);padding:6px 12px;border-radius:4px;background:var(--c-bg-elev)}
+.msg{margin:10px 0;border:1px solid var(--c-border);border-left-width:3px;padding:6px 12px;border-radius:4px;background:var(--c-bg-elev)}
 .msg .who{display:flex;gap:8px;align-items:baseline;font-size:11px;color:var(--c-text-faint);margin-bottom:4px}
 .msg .who .r{font-weight:700;text-transform:uppercase;letter-spacing:.04em}
 .msg .body{color:var(--md-text);word-break:break-word;overflow-wrap:anywhere;white-space:normal}
-.user{border-left-color:var(--c-green)}.user .who .r{color:var(--c-green)}
-.assistant{border-left-color:var(--c-blue)}.assistant .who .r{color:var(--c-blue)}
-.system{border-left-color:var(--c-text-faint);opacity:.85}.system .who .r{color:var(--c-text-faint)}
-.tool{border-left-color:var(--c-violet)}.tool .who .r{color:var(--c-violet)}
-.result{border-left-color:var(--c-amber)}.result .who .r{color:var(--c-amber)}
+.user{border-color:color-mix(in srgb,var(--role-user) 45%,transparent);border-left-color:var(--role-user);background:color-mix(in srgb,var(--role-user) 14%,var(--c-bg-elev))}.user .who .r{color:var(--role-user)}
+.assistant{border-color:color-mix(in srgb,var(--role-assistant) 28%,var(--c-border));border-left-color:var(--role-assistant);background:color-mix(in srgb,var(--role-assistant) 7%,var(--c-bg-elev))}.assistant .who .r{color:var(--role-assistant)}
+.system{border-color:color-mix(in srgb,var(--role-system) 24%,var(--c-border));border-left-color:var(--role-system);background:color-mix(in srgb,var(--role-system) 7%,var(--c-bg-elev));opacity:.9}.system .who .r{color:var(--role-system)}
+.tool{border-color:color-mix(in srgb,var(--role-tool) 26%,var(--c-border));border-left-color:var(--role-tool);background:color-mix(in srgb,var(--role-tool) 6%,var(--c-bg-elev))}.tool .who .r{color:var(--role-tool)}
+.result{border-color:color-mix(in srgb,var(--c-amber) 26%,var(--c-border));border-left-color:var(--c-amber);background:color-mix(in srgb,var(--c-amber) 6%,var(--c-bg-elev))}.result .who .r{color:var(--c-amber)}
 .ask{border-left-color:var(--c-red)}.ask .who .r{color:var(--c-red)}
 .compact{border-left-color:var(--c-amber)}
 .reset{border-left:none;background:none;text-align:center;color:var(--c-text-faint);font-size:12px;margin:18px 0}
 pre{margin:4px 0;padding:8px 10px;background:color-mix(in srgb,var(--c-text) 5%,var(--c-bg));border:1px solid var(--c-border);border-radius:4px;overflow-x:auto;white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.45}
-code{font-family:inherit}
+code{font-family:var(--font-mono)}
 .md-pre{margin:6px 0}
 .md-code{color:var(--md-code);background:var(--md-code-bg);padding:0 4px;border-radius:3px}
 .md-h{display:block;font-weight:700;color:var(--md-heading);margin-top:6px}
@@ -229,30 +332,44 @@ a{text-decoration:none}
 @page{margin:14mm}}
 `;
 
-export function buildConversationHtml(session: SessionListItem, events: AgentEvent[], opts: ExportOpts): string {
-	const blocks = events.map((e) => toBlock(e, opts)).filter((b): b is Block => b !== null);
-	const title = session.name || session.working_dir || session.id;
-	const first = blocks[0]?.ts;
-	const last = blocks[blocks.length - 1]?.ts;
-	const meta: string[] = [
-		`<span><b>session</b> ${escapeHtml(session.id)}</span>`,
-		session.machine_name ? `<span><b>machine</b> ${escapeHtml(session.machine_name)}</span>` : '',
-		session.model ? `<span><b>model</b> ${escapeHtml(session.model)}${session.effort ? ` · ${escapeHtml(session.effort)}` : ''}</span>` : '',
-		session.working_dir ? `<span><b>cwd</b> ${escapeHtml(session.working_dir)}</span>` : '',
-		first ? `<span><b>from</b> ${escapeHtml(fmtTs(first))}</span>` : '',
-		last ? `<span><b>to</b> ${escapeHtml(fmtTs(last))}</span>` : '',
-		`<span><b>events</b> ${blocks.length}</span>`
-	].filter(Boolean);
+export function buildConversationHtml(
+  session: SessionListItem,
+  events: AgentEvent[],
+  opts: ExportOpts,
+): string {
+  const blocks = events
+    .map((e) => toBlock(e, opts))
+    .filter((b): b is Block => b !== null);
+  const title = session.name || session.working_dir || session.id;
+  const first = blocks[0]?.ts;
+  const last = blocks[blocks.length - 1]?.ts;
+  const meta: string[] = [
+    `<span><b>session</b> ${escapeHtml(session.id)}</span>`,
+    session.machine_name
+      ? `<span><b>machine</b> ${escapeHtml(session.machine_name)}</span>`
+      : "",
+    session.model
+      ? `<span><b>model</b> ${escapeHtml(session.model)}${session.effort ? ` · ${escapeHtml(session.effort)}` : ""}</span>`
+      : "",
+    session.working_dir
+      ? `<span><b>cwd</b> ${escapeHtml(session.working_dir)}</span>`
+      : "",
+    first ? `<span><b>from</b> ${escapeHtml(fmtTs(first))}</span>` : "",
+    last ? `<span><b>to</b> ${escapeHtml(fmtTs(last))}</span>` : "",
+    `<span><b>events</b> ${blocks.length}</span>`,
+  ].filter(Boolean);
 
-	const body = blocks
-		.map((b) => {
-			if (b.role === 'reset') return `<div class="reset">${b.html}</div>`;
-			const label = b.label ? `${ROLE_LABEL[b.role]} · ${escapeHtml(b.label)}` : ROLE_LABEL[b.role];
-			return `<div class="msg ${b.role}"><div class="who"><span class="r">${label}</span><span>${escapeHtml(fmtTs(b.ts))}</span></div><div class="body">${b.html}</div></div>`;
-		})
-		.join('\n');
+  const body = blocks
+    .map((b) => {
+      if (b.role === "reset") return `<div class="reset">${b.html}</div>`;
+      const label = b.label
+        ? `${ROLE_LABEL[b.role]} · ${escapeHtml(b.label)}`
+        : ROLE_LABEL[b.role];
+      return `<div class="msg ${b.role}"><div class="who"><span class="r">${label}</span><span>${escapeHtml(fmtTs(b.ts))}</span></div><div class="body">${b.html}</div></div>`;
+    })
+    .join("\n");
 
-	return `<!doctype html>
+  return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
@@ -262,7 +379,7 @@ export function buildConversationHtml(session: SessionListItem, events: AgentEve
 </head>
 <body>
 <div class="page">
-<header><h1>${escapeHtml(title)}</h1><div class="meta">${meta.join('')}</div></header>
+<header><h1>${escapeHtml(title)}</h1><div class="meta">${meta.join("")}</div></header>
 ${body}
 <footer>Exported from cctui · ${escapeHtml(new Date().toLocaleString())} · use your browser's Print → Save as PDF for a PDF copy</footer>
 </div>
@@ -277,92 +394,111 @@ ${body}
 // as the HTML export. Tool inputs / results go in fenced code blocks; the
 // pretty-diff/json toggles shape the body the same way the screen does.
 
-function fenced(body: string, lang = ''): string {
-	// Avoid breaking out of the fence if the body itself contains ```.
-	const safe = body.replace(/```/g, '` ` `');
-	return `\`\`\`${lang}\n${safe}\n\`\`\``;
+function fenced(body: string, lang = ""): string {
+  // Avoid breaking out of the fence if the body itself contains ```.
+  const safe = body.replace(/```/g, "` ` `");
+  return `\`\`\`${lang}\n${safe}\n\`\`\``;
 }
 
 function toMarkdownBlock(e: AgentEvent, opts: ExportOpts): string | null {
-	const obj = (input: unknown) => input as Record<string, unknown> | null;
-	switch (e.type) {
-		case 'text': {
-			if (!e.content.trim()) return null;
-			if (e.content.startsWith(USER_PREFIX)) {
-				const content = e.content.slice(USER_PREFIX.length).trimStart();
-				const system = e.meta || looksMeta(content);
-				if (!typeVisible(opts, system ? 'system' : 'user')) return null;
-				return `**${system ? 'System' : 'User'}:**\n\n${content}`;
-			}
-			if (!typeVisible(opts, 'assistant')) return null;
-			return `**Assistant:**\n\n${e.content}`;
-		}
-		case 'reply':
-			if (!e.content.trim()) return null;
-			if (!typeVisible(opts, 'user')) return null;
-			return `**User:**\n\n${e.content}`;
-		case 'tool_call': {
-			const isMcp = e.tool.startsWith('mcp__');
-			if (!typeVisible(opts, isMcp ? 'mcp' : 'tool')) return null;
-			const o = obj(e.input);
-			if (opts.prettyDiff && o && 'old_string' in o && 'new_string' in o) {
-				const minus = String(o.old_string ?? '').split('\n').map((l) => `- ${l}`).join('\n');
-				const plus = String(o.new_string ?? '').split('\n').map((l) => `+ ${l}`).join('\n');
-				return `**Tool · ${e.tool}**\n\n${fenced(`${o.file_path ?? ''}\n${minus}\n${plus}`.trim(), 'diff')}`;
-			}
-			if (o && typeof o.command === 'string') {
-				const desc = typeof o.description === 'string' && o.description.trim() ? `# ${o.description.trim()}\n` : '';
-				return `**Tool · ${e.tool}**\n\n${fenced(`${desc}${o.command}`, 'sh')}`;
-			}
-			const json = prettyJson(e.input).replace(/\\n/g, '\n').replace(/\\t/g, '\t');
-			return `**Tool · ${e.tool}**\n\n${fenced(json, 'json')}`;
-		}
-		case 'tool_result':
-			if (!typeVisible(opts, 'result')) return null;
-			return `**Result · ${e.tool}**\n\n${fenced(e.output_summary)}`;
-		case 'context_reset':
-			return `---\n\n_⟳ context reset · /clear or /compact_\n\n---`;
-		case 'compact_summary':
-			if (!e.content.trim()) return null;
-			return `**Compacted context:**\n\n${e.content}`;
-		default:
-			return null;
-	}
+  const obj = (input: unknown) => input as Record<string, unknown> | null;
+  switch (e.type) {
+    case "text": {
+      if (!e.content.trim()) return null;
+      if (e.content.startsWith(USER_PREFIX)) {
+        const content = e.content.slice(USER_PREFIX.length).trimStart();
+        const system = e.meta || looksMeta(content);
+        if (!typeVisible(opts, system ? "system" : "user")) return null;
+        return `**${system ? "System" : "User"}:**\n\n${content}`;
+      }
+      if (!typeVisible(opts, "assistant")) return null;
+      return `**Assistant:**\n\n${e.content}`;
+    }
+    case "reply":
+      if (!e.content.trim()) return null;
+      if (!typeVisible(opts, "user")) return null;
+      return `**User:**\n\n${e.content}`;
+    case "tool_call": {
+      const isMcp = e.tool.startsWith("mcp__");
+      if (!typeVisible(opts, isMcp ? "mcp" : "tool")) return null;
+      const o = obj(e.input);
+      if (opts.prettyDiff && o && "old_string" in o && "new_string" in o) {
+        const minus = String(o.old_string ?? "")
+          .split("\n")
+          .map((l) => `- ${l}`)
+          .join("\n");
+        const plus = String(o.new_string ?? "")
+          .split("\n")
+          .map((l) => `+ ${l}`)
+          .join("\n");
+        return `**Tool · ${e.tool}**\n\n${fenced(`${o.file_path ?? ""}\n${minus}\n${plus}`.trim(), "diff")}`;
+      }
+      if (o && typeof o.command === "string") {
+        const desc =
+          typeof o.description === "string" && o.description.trim()
+            ? `# ${o.description.trim()}\n`
+            : "";
+        return `**Tool · ${e.tool}**\n\n${fenced(`${desc}${o.command}`, "sh")}`;
+      }
+      const json = prettyJson(e.input)
+        .replace(/\\n/g, "\n")
+        .replace(/\\t/g, "\t");
+      return `**Tool · ${e.tool}**\n\n${fenced(json, "json")}`;
+    }
+    case "tool_result":
+      if (!typeVisible(opts, "result")) return null;
+      return `**Result · ${e.tool}**\n\n${fenced(e.output_summary)}`;
+    case "context_reset":
+      return `---\n\n_⟳ context reset · /clear or /compact_\n\n---`;
+    case "compact_summary":
+      if (!e.content.trim()) return null;
+      return `**Compacted context:**\n\n${e.content}`;
+    default:
+      return null;
+  }
 }
 
 export function conversationToMarkdown(
-	session: SessionListItem,
-	events: AgentEvent[],
-	opts: ExportOpts
+  session: SessionListItem,
+  events: AgentEvent[],
+  opts: ExportOpts,
 ): string {
-	const title = session.name || session.working_dir || session.id;
-	const head: string[] = [`# ${title}`, ''];
-	const metaBits = [
-		`session: \`${session.id}\``,
-		session.machine_name ? `machine: ${session.machine_name}` : '',
-		session.model ? `model: ${session.model}${session.effort ? ` · ${session.effort}` : ''}` : '',
-		session.working_dir ? `cwd: \`${session.working_dir}\`` : ''
-	].filter(Boolean);
-	if (metaBits.length) head.push(metaBits.join(' · '), '');
-	const body = events
-		.map((e) => toMarkdownBlock(e, opts))
-		.filter((b): b is string => b !== null)
-		.join('\n\n');
-	return `${head.join('\n')}${body}\n`;
+  const title = session.name || session.working_dir || session.id;
+  const head: string[] = [`# ${title}`, ""];
+  const metaBits = [
+    `session: \`${session.id}\``,
+    session.machine_name ? `machine: ${session.machine_name}` : "",
+    session.model
+      ? `model: ${session.model}${session.effort ? ` · ${session.effort}` : ""}`
+      : "",
+    session.working_dir ? `cwd: \`${session.working_dir}\`` : "",
+  ].filter(Boolean);
+  if (metaBits.length) head.push(metaBits.join(" · "), "");
+  const body = events
+    .map((e) => toMarkdownBlock(e, opts))
+    .filter((b): b is string => b !== null)
+    .join("\n\n");
+  return `${head.join("\n")}${body}\n`;
 }
 
 /** Trigger a client-side download of the built HTML transcript. */
-export function downloadConversationHtml(session: SessionListItem, events: AgentEvent[], opts: ExportOpts) {
-	const html = buildConversationHtml(session, events, opts);
-	const stamp = new Date().toISOString().slice(0, 10);
-	const base = (session.name || session.id).replace(/[^\w.-]+/g, '_').slice(0, 60) || 'conversation';
-	const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
-	const url = URL.createObjectURL(blob);
-	const a = document.createElement('a');
-	a.href = url;
-	a.download = `cctui-${base}-${stamp}.html`;
-	document.body.appendChild(a);
-	a.click();
-	a.remove();
-	URL.revokeObjectURL(url);
+export function downloadConversationHtml(
+  session: SessionListItem,
+  events: AgentEvent[],
+  opts: ExportOpts,
+) {
+  const html = buildConversationHtml(session, events, opts);
+  const stamp = new Date().toISOString().slice(0, 10);
+  const base =
+    (session.name || session.id).replace(/[^\w.-]+/g, "_").slice(0, 60) ||
+    "conversation";
+  const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `cctui-${base}-${stamp}.html`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }

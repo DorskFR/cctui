@@ -561,6 +561,11 @@ impl Driver {
             socket::one_shot(sock, &json!({"proto":1,"op":"reply","short":short,"text":text}))
                 .await?;
         tracing::debug!(?resp, %short, "reply ack");
+        if text.contains('\n') {
+            if let Err(err) = socket::attach_submit(sock, &short).await {
+                tracing::warn!(%err, %short, "failed to submit multiline reply draft");
+            }
+        }
         Ok(())
     }
 
@@ -603,6 +608,13 @@ impl Driver {
                 let short = self.resolve_short(&local_id)?;
                 socket::attach_interrupt(&sock, &short).await?;
                 tracing::info!(%short, "interrupted in-flight turn via attach+ESC");
+            }
+            AdapterCommand::Resume { local_id } => {
+                let short = self
+                    .resolve_short(&local_id)
+                    .or_else(|_| self.resolve_short_for_removal(&local_id))?;
+                self.resume_if_hibernated(&sock, &short).await?;
+                tracing::info!(%short, %local_id, "resumed session via explicit command");
             }
             AdapterCommand::PermissionResponse { local_id, request_id, allow } => {
                 // The control socket's `permission-response` op is a no-op stub
@@ -1250,10 +1262,11 @@ impl Driver {
                     local_id: session_id,
                     meta: SessionMeta {
                         working_dir: job.cwd.clone(),
-                        parent_local_id,
+                        parent_local_id: parent_local_id.clone(),
                         extra: json!({
                             "short": job.short,
                             "cli_version": job.cli_version,
+                            "relation": if parent_local_id.is_some() { "fork" } else { "root" },
                         }),
                     },
                 })

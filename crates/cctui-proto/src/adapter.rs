@@ -350,6 +350,13 @@ pub enum AdapterCommand {
     Interrupt {
         local_id: String,
     },
+    /// Revive an exited-but-resumable conversation without sending a reply.
+    /// Claude-code maps this to the same `dispatch --resume <sessionId>`
+    /// primitive used by resume-on-reply; adapters that do not support durable
+    /// transcripts may reject it.
+    Resume {
+        local_id: String,
+    },
     /// Answer a previously-emitted `AdapterEvent::PermissionRequest`.
     PermissionResponse {
         local_id: String,

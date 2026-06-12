@@ -192,6 +192,10 @@ pub enum AgentEvent {
         #[serde(default)]
         meta: bool,
         ts: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        usage: Option<crate::models::TokenUsage>,
     },
     ToolCall {
         tool: String,
@@ -383,7 +387,13 @@ mod tests {
 
     #[test]
     fn agent_event_tagged_serialization() {
-        let event = AgentEvent::Text { content: "hello".into(), meta: false, ts: 1_234_567_890 };
+        let event = AgentEvent::Text {
+            content: "hello".into(),
+            meta: false,
+            ts: 1_234_567_890,
+            message_id: None,
+            usage: None,
+        };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains(r#""type":"text""#));
         assert!(json.contains(r#""content":"hello""#));
@@ -440,7 +450,13 @@ mod tests {
     #[test]
     fn agent_event_roundtrip_all_variants() {
         let variants = vec![
-            AgentEvent::Text { content: "hello".into(), meta: false, ts: 1 },
+            AgentEvent::Text {
+                content: "hello".into(),
+                meta: false,
+                ts: 1,
+                message_id: None,
+                usage: None,
+            },
             AgentEvent::ToolCall { tool: "Read".into(), input: serde_json::json!({}), ts: 2 },
             AgentEvent::ToolResult { tool: "Read".into(), output_summary: "ok".into(), ts: 3 },
             AgentEvent::Heartbeat { tokens_in: 10, tokens_out: 5, cost_usd: 0.001, ts: 4 },
@@ -459,7 +475,13 @@ mod tests {
     fn server_event_serialization() {
         let event = ServerEvent::Stream {
             session_id: "test-session".into(),
-            data: AgentEvent::Text { content: "hi".into(), meta: false, ts: 1 },
+            data: AgentEvent::Text {
+                content: "hi".into(),
+                meta: false,
+                ts: 1,
+                message_id: None,
+                usage: None,
+            },
         };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains(r#""type":"stream""#));

@@ -189,44 +189,33 @@
 {:else if rows.length === 0}
 	<div class="empty">No accounts yet.</div>
 {:else}
-	<div class="card table-card">
-		<table class="disp">
-			<thead>
-				<tr>
-					<th class="col-name">Name</th>
-					{#if isAdmin}<th class="col-owner">Owner</th>{/if}
-					<th class="col-prov">Provider</th>
-					<th class="col-usage" title="Subscription usage from the provider's free OAuth usage API — 5h session + 7d weekly window utilization (Claude only)">Usage</th>
-						<th class="col-usage">Requests</th>
-					<th class="col-usage">Tokens</th>
-					<th class="col-usage" title="Estimated from token usage — subscription accounts aren't metered per token">Cost (est.)</th>
-					<th class="col-used">Last used</th>
-					<th class="col-created">Created</th>
-					<th class="col-actions">Actions</th>
-				</tr>
-			</thead>
-			<tbody>
-				{#each rows as a (a.id)}
-					<tr>
-						<td class="col-name" data-label="Name"><span class="name">{a.name}</span></td>
-						{#if isAdmin}<td class="col-owner faint" data-label="Owner">{a.user_name ?? '—'}</td>{/if}
-						<td class="col-prov" data-label="Provider"><span class="badge">{providerLabel(a.provider)}</span></td>
-						<td class="col-usage" data-label="Usage"><UsageChip id={a.id} provider={a.provider} /></td>
-							<td class="col-usage faint" data-label="Requests">{compact(a.request_count)}</td>
-						<td class="col-usage faint" data-label="Tokens">{compact(a.total_tokens)}</td>
-						<td class="col-usage faint" data-label="Cost (est.)">{usd(a.est_cost_usd)}</td>
-						<td class="col-used faint" data-label="Last used">{relativeTime(a.last_used_at)}</td>
-						<td class="col-created faint" data-label="Created">{dateOnly(a.created_at)}</td>
-						<td class="col-actions" data-label="Actions">
-							<div class="row acts">
-								<button class="btn btn-sm" onclick={() => openRename(a)}>Rename</button>
-								<button class="btn btn-sm btn-danger" onclick={() => remove(a)}>Delete</button>
-							</div>
-						</td>
-					</tr>
-				{/each}
-			</tbody>
-		</table>
+	<div class="accounts-grid">
+		{#each rows as a (a.id)}
+			<article class="card account-card">
+				<div class="account-head row">
+					<div class="account-title">
+						<h2>{a.name}</h2>
+						<div class="muted sm">{providerLabel(a.provider)}</div>
+					</div>
+					<span class="badge">{providerLabel(a.provider)}</span>
+				</div>
+				<div class="account-fields">
+					{#if isAdmin}
+						<div class="field-chip"><span>Owner</span><b>{a.user_name ?? '—'}</b></div>
+					{/if}
+					<div class="field-chip usage"><span>Usage</span><UsageChip id={a.id} provider={a.provider} /></div>
+					<div class="field-chip"><span>Requests</span><b>{compact(a.request_count)}</b></div>
+					<div class="field-chip"><span>Tokens</span><b>{compact(a.total_tokens)}</b></div>
+					<div class="field-chip"><span>Cost</span><b>{usd(a.est_cost_usd)}</b></div>
+					<div class="field-chip"><span>Last used</span><b>{relativeTime(a.last_used_at)}</b></div>
+					<div class="field-chip"><span>Created</span><b>{dateOnly(a.created_at)}</b></div>
+				</div>
+				<div class="row acts">
+					<button class="btn btn-sm" onclick={() => openRename(a)}>Rename</button>
+					<button class="btn btn-sm btn-danger" onclick={() => remove(a)}>Delete</button>
+				</div>
+			</article>
+		{/each}
 	</div>
 {/if}
 
@@ -353,65 +342,64 @@
 		font-size: var(--fs-sm);
 		margin-bottom: var(--sp-4);
 	}
-	.table-card {
-		padding: 0;
-		overflow-x: auto;
+	.accounts-grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(min(100%, 22rem), 1fr));
+		gap: var(--sp-3);
 	}
-	table.disp {
-		width: 100%;
-		/* `auto` (not `fixed`): under `fixed` the sum of the explicit column
-		   widths could exceed the table, collapsing the width-less Name column to
-		   0 so its text overlapped the next column (CCT-273). `auto` sizes to
-		   content; `min-width` + the card's `overflow-x` give horizontal scroll
-		   on narrow screens instead of crushing. */
-		min-width: 46rem;
-		border-collapse: collapse;
-		table-layout: auto;
+	.account-card {
+		display: flex;
+		flex-direction: column;
+		gap: var(--sp-3);
 	}
-	th {
-		text-align: left;
+	.account-head {
+		align-items: flex-start;
+	}
+	.account-title {
+		flex: 1;
+		min-width: 0;
+	}
+	.account-title h2 {
+		font-size: var(--fs-lg);
+		line-height: var(--lh-tight);
+		word-break: break-word;
+	}
+	.sm {
 		font-size: var(--fs-xs);
+	}
+	.account-fields {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: var(--sp-2);
+	}
+	.field-chip {
+		min-width: 0;
+		padding: var(--sp-2);
+		border: 1px solid var(--border);
+		border-radius: var(--r-sm);
+		background: var(--bg-elevated-2);
+	}
+	.field-chip span {
+		display: block;
 		color: var(--text-muted);
+		font-size: var(--fs-xs);
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
-		font-weight: var(--fw-semibold);
-		padding: var(--sp-2) var(--sp-3);
-		border-bottom: 1px solid var(--border);
 	}
-	td {
-		padding: var(--sp-2) var(--sp-3);
-		vertical-align: middle;
-		border-top: 1px solid var(--border);
+	.field-chip b {
+		display: block;
+		margin-top: 0.1rem;
+		font-size: var(--fs-sm);
+		font-weight: var(--fw-medium);
+		overflow-wrap: anywhere;
 	}
-	tbody tr:first-child td {
-		border-top: none;
-	}
-	.name {
-		font-weight: var(--fw-semibold);
-	}
-	.col-name {
-		min-width: 10rem;
-	}
-	.col-prov {
-		width: 7rem;
-	}
-	.col-owner {
-		width: 8rem;
-	}
-	.col-usage {
-		width: 6rem;
-	}
-	.col-used {
-		width: 8rem;
-	}
-	.col-created {
-		width: 8rem;
-	}
-	.col-actions {
-		width: 13rem;
+	.field-chip.usage {
+		grid-column: 1 / -1;
 	}
 	.acts {
 		gap: var(--sp-1);
+		justify-content: flex-end;
+		flex-wrap: wrap;
 	}
 	.overlay {
 		position: fixed;
@@ -466,77 +454,9 @@
 	.adv .fld {
 		margin-top: var(--sp-2);
 	}
-	/* Mobile (CCT-313): the wide table overflowed the viewport horizontally yet
-	   each account was a single cramped row. Below 640px the table reflows into
-	   one horizontal card per account — the name is the card title, every other
-	   field becomes a labelled chip that wraps across the card, and actions sit on
-	   their own row. No horizontal scroll, and Usage/Tokens/Created stay visible
-	   (they were previously hidden) so there's room to surface per-account stats. */
 	@media (max-width: 639px) {
-		.table-card {
-			padding: var(--sp-2);
-			overflow-x: visible;
-			background: transparent;
-			border: none;
-		}
-		table.disp {
-			min-width: 0;
-			display: block;
-		}
-		table.disp thead {
-			/* visually hidden but kept for a11y */
-			position: absolute;
-			width: 1px;
-			height: 1px;
-			overflow: hidden;
-			clip: rect(0 0 0 0);
-			clip-path: inset(50%);
-		}
-		table.disp tbody {
-			display: flex;
-			flex-direction: column;
-			gap: var(--sp-2);
-		}
-		table.disp tr {
-			display: flex;
-			flex-wrap: wrap;
-			align-items: baseline;
-			gap: var(--sp-1) var(--sp-4);
-			background: var(--bg-elevated);
-			border: 1px solid var(--border);
-			border-radius: var(--r-lg);
-			padding: var(--sp-3);
-		}
-		table.disp td {
-			border: none;
-			padding: 0;
-			display: inline-flex;
-			align-items: baseline;
-			gap: var(--sp-1);
-		}
-		/* Field label chip derived from the column header. */
-		table.disp td::before {
-			content: attr(data-label);
-			color: var(--text-muted);
-			font-size: var(--fs-xs);
-			text-transform: uppercase;
-			letter-spacing: 0.04em;
-		}
-		/* Name is the card title — full width, larger, no label. */
-		table.disp td.col-name {
-			flex: 0 0 100%;
-			font-size: var(--fs-md);
-		}
-		table.disp td.col-name::before {
-			display: none;
-		}
-		/* Actions span their own bottom row. */
-		table.disp td.col-actions {
-			flex: 0 0 100%;
-			margin-top: var(--sp-1);
-		}
-		table.disp td.col-actions::before {
-			display: none;
+		.account-fields {
+			grid-template-columns: 1fr;
 		}
 	}
 </style>

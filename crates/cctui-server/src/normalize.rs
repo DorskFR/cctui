@@ -36,11 +36,24 @@ pub fn to_agent_event(adapter_id: &str, event_type: &str, payload: &Value) -> Op
             match role {
                 "user" => {
                     let meta = payload.get("meta").and_then(Value::as_bool).unwrap_or(false);
-                    Some(AgentEvent::Text { content: format!("▷ User: {text}"), meta, ts })
+                    Some(AgentEvent::Text {
+                        content: format!("▷ User: {text}"),
+                        meta,
+                        ts,
+                        message_id: None,
+                        usage: None,
+                    })
                 }
-                "assistant" | "assistant_thinking" => {
-                    Some(AgentEvent::Text { content: text.to_owned(), meta: false, ts })
-                }
+                "assistant" | "assistant_thinking" => Some(AgentEvent::Text {
+                    content: text.to_owned(),
+                    meta: false,
+                    ts,
+                    message_id: payload
+                        .get("message_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    usage: None,
+                }),
                 "context_reset" => Some(AgentEvent::ContextReset { ts }),
                 "compact_summary" => {
                     Some(AgentEvent::CompactSummary { content: text.to_owned(), ts })
@@ -87,6 +100,8 @@ fn agent_event_from_canonical(v: &Value, ts: i64) -> Option<AgentEvent> {
             content: v.get("content").and_then(Value::as_str).unwrap_or_default().to_owned(),
             meta: v.get("meta").and_then(Value::as_bool).unwrap_or(false),
             ts,
+            message_id: v.get("message_id").and_then(Value::as_str).map(str::to_owned),
+            usage: serde_json::from_value(v.get("usage").cloned().unwrap_or(Value::Null)).ok(),
         }),
         "tool_call" => Some(AgentEvent::ToolCall {
             tool: v.get("tool").and_then(Value::as_str).unwrap_or_default().to_owned(),
@@ -211,6 +226,7 @@ fn map_daemon_message(payload: &Value) -> Option<Value> {
             "type": "text",
             "content": text,
             "role": "Assistant",
+            "message_id": payload.get("message_id"),
         })),
         "summary" => {
             // Post-turn summaries carry status_category / status_detail; surface

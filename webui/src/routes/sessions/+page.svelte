@@ -12,6 +12,8 @@
 	import SubagentBadge from '$lib/components/SubagentBadge.svelte';
 	import ConversationDrawer from '$lib/components/ConversationDrawer.svelte';
 	import SpawnModal from '$lib/components/SpawnModal.svelte';
+	import Button from '$lib/components/Button.svelte';
+	import IconButton from '$lib/components/IconButton.svelte';
 	import { drafts, LIST_DENSITY, DISPATCHED_COLLAPSED, LIST_VIEW } from '$lib/drafts';
 	import { notify } from '$lib/notify.svelte';
 	import { tokenizeQuery } from '$lib/search';
@@ -101,8 +103,8 @@
 
 	function setUrlSession(id: string | null, replace = false) {
 		const url = new URL(page.url);
-		if (id) url.searchParams.set('session', id);
-		else url.searchParams.delete('session');
+		url.searchParams.delete('session');
+		url.pathname = id ? `/sessions/${encodeURIComponent(id)}` : '/sessions';
 		if (url.href === page.url.href) return;
 		if (replace) replaceState(url, {});
 		else pushState(url, {});
@@ -143,7 +145,8 @@
 	// the same flush, so conversations never opened. Depending only on the URL
 	// keeps this effect to its job: URL changes drive the drawer, not vice versa.
 	$effect(() => {
-		const id = page.url.searchParams.get('session');
+		const legacyId = page.url.searchParams.get('session');
+		const id = (page.params.session as string | undefined) ?? legacyId;
 		if (id === untrack(() => openSession?.id ?? null)) return;
 		if (id) void openById(id);
 		else openSession = null;
@@ -388,6 +391,11 @@
 		const v = m?.[key];
 		return typeof v === 'string' ? v : null;
 	}
+	const relationOf = (s: SessionListItem) => metaStr(s, 'relation') ?? (metaBool(s, 'subagent') ? 'subagent' : 'root');
+	function metaBool(s: SessionListItem, key: string): boolean {
+		const m = s.metadata as Record<string, unknown> | null;
+		return m?.[key] === true;
+	}
 	const runningCount = (agents: SessionListItem[]) =>
 		agents.filter((a) => a.status !== 'archived' && a.liveness !== 'dead' && !a.hibernated).length;
 	// Fold a parent's children into plain + per-workflow groups.
@@ -443,11 +451,11 @@
 		const ids = new Set(rows.map((s) => s.id));
 		const childrenOf = new Map<string, SessionListItem[]>();
 		for (const s of rows) {
-			if (s.parent_id && ids.has(s.parent_id)) {
+			if (s.parent_id && ids.has(s.parent_id) && relationOf(s) !== 'fork') {
 				childrenOf.set(s.parent_id, [...(childrenOf.get(s.parent_id) ?? []), s]);
 			}
 		}
-		const topLevel = rows.filter((s) => !s.parent_id || !ids.has(s.parent_id));
+		const topLevel = rows.filter((s) => !s.parent_id || !ids.has(s.parent_id) || relationOf(s) === 'fork');
 		const childGroups = new Map<string, SubGroup[]>();
 		let hasCollapsible = false;
 		for (const [parentId, kids] of childrenOf) {
@@ -540,12 +548,7 @@
 
 <div class="bar row">
 	<h1 class="page-title">Sessions</h1>
-	<button class="btn-control btn-control-square search-toggle" aria-label="Search chats" onclick={openSearch}>
-		<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
-			<circle cx="11" cy="11" r="7" />
-			<path d="m21 21-4.3-4.3" />
-		</svg>
-	</button>
+	<IconButton class="search-toggle btn-control-square" icon="search" label="Search chats" onclick={openSearch} />
 	<div class="search-wrap" class:open={searchOpen}>
 		<input
 			class="search"
@@ -603,14 +606,12 @@
 	</div>
 	{#if !searching}
 		{#if selecting}
-			<button class="btn-control" onclick={exitSelect}>Cancel</button>
+			<Button class="toolbar-select" control onclick={exitSelect}>Cancel</Button>
 		{:else}
-			<button class="btn-control" title="Select multiple to archive" onclick={() => (selecting = true)}
-				>☑ Select</button
-			>
+			<Button class="toolbar-select" control title="Select multiple to archive" onclick={() => (selecting = true)}>☑ Select</Button>
 		{/if}
 	{/if}
-	<button class="btn-control btn-primary" onclick={() => (showSpawn = true)}>+ New</button>
+	<Button class="toolbar-new" control variant="primary" onclick={() => (showSpawn = true)}>+ New</Button>
 </div>
 
 {#if selecting && !searching}
@@ -666,7 +667,8 @@
 	rows: SessionListItem[],
 	childGroups: Map<string, SubGroup[]>,
 	allowSelect: boolean,
-	hl: string[]
+	hl: string[],
+	depth = 0
 )}
 	{#each rows as s (s.id)}
 		{@const subGroups = childGroups.get(s.id) ?? []}
@@ -690,6 +692,7 @@
 			<div class="parent-card">
 				<SessionCard
 					session={s}
+					child={depth > 0}
 					compact={dense}
 					pendingCount={pending(s.id)}
 					onopen={(x) => (openSession = x)}
@@ -699,32 +702,21 @@
 					swipeable
 					swipeLabel={s.status === 'archived' ? 'Unarchive' : 'Archive'}
 					onSwipe={swipeArchive}
-					onTogglePin={togglePin}
+					onTogglePin={depth > 0 ? undefined : togglePin}
 					highlight={hl}
 					subagentCost={costRollup(s, subGroups)}
 				/>
 			</div>
 		</div>
-		{#each subGroups as g (g.key)}
-			{#if g.agents.length < INLINE_THRESHOLD || expanded.has(groupId(s.id, g.key))}
-				{#each g.agents as a (a.id)}
-					<SessionCard
-						session={a}
-						child
-						compact={dense}
-						pendingCount={pending(a.id)}
-						onopen={(x) => (openSession = x)}
-						selectable={allowSelect && selecting}
-						selected={selected.has(a.id)}
-						onToggleSelect={toggleSelect}
-						swipeable
-						swipeLabel={a.status === 'archived' ? 'Unarchive' : 'Archive'}
-						onSwipe={swipeArchive}
-						highlight={hl}
-					/>
-				{/each}
-			{/if}
-		{/each}
+		{#if depth < 5}
+			{#each subGroups as g (g.key)}
+				{#if g.agents.length < INLINE_THRESHOLD || expanded.has(groupId(s.id, g.key))}
+					<div class="agent-children" style="--agent-depth: {Math.min(depth + 1, 5)}">
+						{@render nestedRows(g.agents, childGroups, allowSelect, hl, depth + 1)}
+					</div>
+				{/if}
+			{/each}
+		{/if}
 	{/each}
 {/snippet}
 
@@ -940,6 +932,7 @@
 	.search {
 		flex: 1;
 		min-width: 0;
+		height: var(--control-height);
 		/* room on the right for the clear button so text doesn't run under it */
 		padding: var(--sp-1) calc(var(--sp-3) + 1.25rem) var(--sp-1) var(--sp-3);
 		font-size: var(--fs-sm);
@@ -975,28 +968,42 @@
 		color: var(--text);
 	}
 	/* Desktop: the input always fills the bar; no toggle button. */
-	.search-toggle {
+	:global(.search-toggle) {
 		display: none;
 		align-self: center;
 	}
 	/* Mobile: collapsed to a magnifier; tapping it expands the input over the
 	   whole toolbar with a smooth width/opacity transition (CCT-241). */
 	@media (max-width: 639px) {
-		.search-toggle {
-			display: inline-flex;
+		.bar {
+			display: grid;
+			grid-template-columns: auto minmax(0, 1fr) auto;
 			align-items: center;
 		}
+		.bar > .page-title {
+			grid-column: 1;
+		}
+		.bar > :global(.search-toggle),
+		.bar > .search-wrap {
+			grid-column: 2;
+		}
+		.bar > :global(.toolbar-new) {
+			grid-column: 3;
+			grid-row: 1;
+		}
+		.arch,
+		.view-pick,
+		.bar > :global(.toolbar-select) {
+			grid-row: 2;
+		}
+		:global(.search-toggle) {
+			display: none;
+		}
 		.search-wrap {
-			position: absolute;
-			inset: var(--sp-2) 0;
-			width: 2.25rem;
-			flex: none;
-			margin-left: auto;
-			opacity: 0;
-			pointer-events: none;
-			transition:
-				width 0.2s var(--ease),
-				opacity 0.15s var(--ease);
+			position: static;
+			width: 100%;
+			opacity: 1;
+			pointer-events: auto;
 		}
 		.search-wrap.open {
 			width: 100%;
@@ -1112,9 +1119,18 @@
 	.parent-row.dense .subagent-badge-rail {
 		top: var(--sp-2);
 	}
+	.agent-children {
+		margin-left: min(calc(var(--agent-depth) * var(--sp-4)), 5rem);
+		display: flex;
+		flex-direction: column;
+		gap: var(--sp-1);
+	}
 	@media (max-width: 639px) {
 		.stack.badge-gutter {
 			padding-left: calc(1.5rem + var(--sp-2));
+		}
+		.agent-children {
+			margin-left: min(calc(var(--agent-depth) * var(--sp-2)), 2.5rem);
 		}
 	}
 	.loadmore {

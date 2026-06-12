@@ -103,17 +103,24 @@
 		effort_codex: '',
 		timeout: ''
 	};
+	interface SpawnDraftPayload extends Partial<Form> {
+		envRows?: EnvRow[];
+	}
+	let loadedDraft = false;
+	let restoredEnvRows: EnvRow[] = [];
 	let form = $state<Form>(load());
 	function load(): Form {
 		try {
-			return { ...blank, ...JSON.parse(drafts.get(SPAWN_DRAFT) || '{}'), ...(prefill ?? {}) };
+			const raw = drafts.get(SPAWN_DRAFT);
+			const saved = raw ? (JSON.parse(raw) as SpawnDraftPayload) : {};
+			loadedDraft = !!raw && !prefill;
+			restoredEnvRows = Array.isArray(saved.envRows) ? saved.envRows : [];
+			const { envRows: _envRows, ...savedForm } = saved;
+			return { ...blank, ...savedForm, ...(prefill ?? {}) };
 		} catch {
 			return { ...blank, ...(prefill ?? {}) };
 		}
 	}
-	$effect(() => {
-		drafts.set(SPAWN_DRAFT, JSON.stringify(form));
-	});
 
 	// default the machine to the last used one (else the first) once loaded
 	$effect(() => {
@@ -134,7 +141,7 @@
 		const id = form.machine_id;
 		if (!id || id === prefsLoadedFor) return;
 		prefsLoadedFor = id;
-		if (prefill) return;
+		if (prefill || loadedDraft) return;
 		const p = loadMachinePrefs(id);
 		if (!p) return;
 		if (p.adapter_id) form.adapter_id = p.adapter_id;
@@ -238,8 +245,11 @@
 		key: string;
 		value: string;
 	}
-	let envRows = $state<EnvRow[]>([]);
+	let envRows = $state<EnvRow[]>(restoredEnvRows);
 	let files = $state<File[]>([]);
+	$effect(() => {
+		drafts.set(SPAWN_DRAFT, JSON.stringify({ ...form, envRows }));
+	});
 
 	const ENV_KEY_RE = /^[A-Z_][A-Z0-9_]*$/;
 

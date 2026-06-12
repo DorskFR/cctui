@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
@@ -1113,6 +1113,34 @@ pub async fn get_conversation(
         (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
     })?;
 
+    let usage_rows: Vec<(String, i64, i64, i64, i64)> = sqlx::query_as(
+        "SELECT message_id, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens \
+         FROM session_token_usage WHERE session_id = $1",
+    )
+    .bind(&session_id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("db error (message usage): {e}");
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+    })?;
+    let usage_by_message: HashMap<String, cctui_proto::models::TokenUsage> = usage_rows
+        .into_iter()
+        .map(|(message_id, input, output, cache_read, cache_creation)| {
+            let cast = |v: i64| u64::try_from(v).unwrap_or(0);
+            (
+                message_id,
+                cctui_proto::models::TokenUsage {
+                    tokens_in: cast(input),
+                    tokens_out: cast(output),
+                    cost_usd: 0.0,
+                    cache_read_tokens: cast(cache_read),
+                    cache_creation_tokens: cast(cache_creation),
+                },
+            )
+        })
+        .collect();
+
     let adapter_id = adapter.as_deref().unwrap_or("claude-code");
     // Stamp each event with `ts` (unix millis, matching the live `AgentEvent`
     // shape) derived from `created_at`, so the client renders real timestamps
@@ -1125,6 +1153,12 @@ pub async fn get_conversation(
                 if let Some(obj) = v.as_object_mut() {
                     obj.entry("ts")
                         .or_insert_with(|| serde_json::json!(created_at.timestamp_millis()));
+                    if let Some(message_id) =
+                        obj.get("message_id").and_then(serde_json::Value::as_str)
+                        && let Some(usage) = usage_by_message.get(message_id)
+                    {
+                        obj.insert("usage".to_owned(), serde_json::json!(usage));
+                    }
                 }
                 v
             })
@@ -1248,6 +1282,35 @@ pub async fn interrupt_session(
     .await;
     tracing::info!(session_id = %session_id, "session interrupted");
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /api/v1/sessions/{id}/resume` — explicitly revive an exited durable
+/// conversation in place. The adapter reuses the original transcript identity;
+/// this is not a fork.
+pub async fn resume_session(
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    crate::daemon_dispatch::dispatch(
+        &state,
+        &session_id,
+        cctui_proto::adapter::AdapterCommand::Resume { local_id: session_id.clone() },
+    )
+    .await
+    .map_err(|e| {
+        tracing::warn!(%session_id, error = %e, "resume dispatch failed");
+        (StatusCode::SERVICE_UNAVAILABLE, Json(ApiError { error: format!("resume failed: {e}") }))
+    })?;
+    sqlx::query("UPDATE sessions SET status = 'inactive' WHERE id = $1 AND status = 'archived'")
+        .bind(&session_id)
+        .execute(&state.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("db error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+        })?;
+    tracing::info!(session_id = %session_id, "resume dispatched");
+    Ok(StatusCode::ACCEPTED)
 }
 
 /// `POST /api/v1/sessions/{id}/set-model` — change the model and/or reasoning

@@ -362,6 +362,7 @@ fn parse_line(local_id: &str, line: &Value, out: &mut Vec<AdapterEvent>) {
 
 fn parse_assistant(local_id: &str, line: &Value, out: &mut Vec<AdapterEvent>) {
     let message = line.get("message");
+    let message_id = message.and_then(|m| m.get("id")).and_then(Value::as_str);
     // Token usage — one row per assistant message, idempotent on
     // `(session_id, message_id)`. Skip when either the usage block or
     // the message id is missing (older transcripts).
@@ -412,6 +413,7 @@ fn parse_assistant(local_id: &str, line: &Value, out: &mut Vec<AdapterEvent>) {
                     payload: json!({
                         "role": "assistant",
                         "text": block.get("text"),
+                        "message_id": message_id,
                     }),
                 });
             }
@@ -421,6 +423,7 @@ fn parse_assistant(local_id: &str, line: &Value, out: &mut Vec<AdapterEvent>) {
                     payload: json!({
                         "role": "assistant_thinking",
                         "text": block.get("thinking").or_else(|| block.get("text")),
+                        "message_id": message_id,
                     }),
                 });
             }
