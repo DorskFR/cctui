@@ -21,6 +21,32 @@ export function relativeTime(iso: string | null | undefined): string {
 	return new Date(iso).toLocaleDateString();
 }
 
+/**
+ * Relative time toward a FUTURE instant: "resets in 2h 14m", "resets in 45m".
+ * `relativeTime` only counts backward (it clamps `now - then` at 0), so feeding
+ * it a future `resets_at` always yields "0s ago" — this is its forward twin for
+ * reset/expiry timestamps (CCT-324). Returns "" on null/invalid, and "now" once
+ * the instant is in the past (the window has rolled over).
+ */
+export function relativeFuture(iso: string | null | undefined): string {
+	if (!iso) return '';
+	const then = new Date(iso).getTime();
+	if (Number.isNaN(then)) return '';
+	const secs = Math.floor((then - Date.now()) / 1000);
+	if (secs <= 0) return 'now';
+	const mins = Math.floor(secs / 60);
+	if (mins < 1) return 'in <1m';
+	if (mins < 60) return `in ${mins}m`;
+	const hrs = Math.floor(mins / 60);
+	if (hrs < 24) {
+		const rem = mins % 60;
+		return rem ? `in ${hrs}h ${rem}m` : `in ${hrs}h`;
+	}
+	const days = Math.floor(hrs / 24);
+	const remH = hrs % 24;
+	return remH ? `in ${days}d ${remH}h` : `in ${days}d`;
+}
+
 /** Full ISO-8601 of an ISO datetime (or "—" when null/invalid). */
 function isoOrDash(iso: string | null | undefined): string {
 	if (!iso) return '—';

@@ -1,6 +1,12 @@
 <script lang="ts">
 	import { useAccountUsage } from '$lib/queries';
-	import { relativeTime } from '$lib/format';
+	import { relativeFuture } from '$lib/format';
+
+	// Severity breakpoints on window utilization (%). Below WARN → green ("ok"),
+	// WARN–HOT → amber ("warm"), at/above HOT → red ("hot"). Named so the bar
+	// colour and the percent text stay in lockstep (CCT-324).
+	const WARN_PCT = 70;
+	const HOT_PCT = 90;
 
 	// Per-account subscription-usage shown as horizontal bars (CCT-345), styled
 	// after the menubar "Agent Usage" popover: one row per window (5h / 7d) with a
@@ -30,7 +36,7 @@
 		const u = w?.utilization;
 		if (u === null || u === undefined) return null;
 		const pct = Math.max(0, Math.min(100, Math.round(u)));
-		const tone = pct >= 90 ? 'hot' : pct >= 70 ? 'warm' : 'ok';
+		const tone = pct >= HOT_PCT ? 'hot' : pct >= WARN_PCT ? 'warm' : 'ok';
 		return { label, pct, tone, resets: w?.resets_at ?? null };
 	}
 
@@ -50,7 +56,7 @@
 			<div class="bar-row">
 				<span class="bar-label">{b.label}</span>
 				<span class="bar-pct" class:warm={b.tone === 'warm'} class:hot={b.tone === 'hot'}>
-					{b.pct}%{#if b.resets}<span class="bar-reset"> · resets {relativeTime(b.resets)}</span>{/if}
+					{b.pct}%{#if b.resets}<span class="bar-reset"> · resets {relativeFuture(b.resets)}</span>{/if}
 				</span>
 				<div class="bar-track">
 					<div
@@ -90,7 +96,7 @@
 		justify-self: end;
 		font-size: var(--fs-xs);
 		font-variant-numeric: tabular-nums;
-		color: var(--c-green, #3fb950);
+		color: var(--ok, #3fb950);
 	}
 	.bar-pct.warm {
 		color: var(--warn, #d29922);
@@ -112,7 +118,7 @@
 	.bar-fill {
 		height: 100%;
 		border-radius: 999px;
-		background: var(--c-green, #3fb950);
+		background: var(--ok, #3fb950);
 		transition: width 0.2s var(--ease);
 	}
 	.bar-fill.warm {
