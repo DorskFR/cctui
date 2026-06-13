@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { untrack, onMount } from 'svelte';
 	import type { SessionListItem } from '@bindings/SessionListItem';
-	import { useSessions, useSessionActions, endpoints, qk } from '$lib/queries';
+	import { useSessions, useSessionActions, useLabels, endpoints, qk } from '$lib/queries';
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { page } from '$app/state';
 	import { pushState, replaceState } from '$app/navigation';
@@ -16,7 +16,7 @@
 	import Select from '$lib/components/atoms/Select.svelte';
 	import IconButton from '$lib/components/molecules/IconButton.svelte';
 	import Icon from '$lib/components/atoms/Icon.svelte';
-	import { drafts, LIST_DENSITY, LIST_VIEW, LIST_SECTION } from '$lib/drafts';
+	import { drafts, LIST_DENSITY, LIST_VIEW, LIST_SECTION, LIST_LABELS } from '$lib/drafts';
 	import { notify } from '$lib/notify.svelte';
 	import { tokenizeQuery } from '$lib/search';
 	import {
@@ -34,6 +34,11 @@
 		type Section,
 		type SubGroup
 	} from './sessions.logic';
+
+	// Parse the persisted comma-joined label-filter ids back into a list.
+	function parseLabelFilter(raw: string | null | undefined): string[] {
+		return (raw ?? '').split(',').filter(Boolean);
+	}
 
 	// Close a popover when a pointer/focus lands outside the node it's attached to.
 	function clickOutside(node: HTMLElement, onOutside: () => void) {
@@ -248,6 +253,38 @@
 
 	const qc = useQueryClient();
 	const actions = useSessionActions();
+
+	// Labels (CCT-360): the global label set feeds both the per-card picker and
+	// the toolbar filter. `labelFilter` holds the selected label ids; when
+	// non-empty the live list and archive browse are narrowed to sessions
+	// carrying at least one of them (OR semantics). Persisted across reloads.
+	const labelsQuery = useLabels();
+	const allLabels = $derived($labelsQuery.data?.labels ?? []);
+	let labelFilter = $state(new Set<string>(parseLabelFilter(drafts.get(LIST_LABELS))));
+	let labelMenuOpen = $state(false);
+	function toggleLabelFilter(id: string) {
+		const next = new Set(labelFilter);
+		if (next.has(id)) next.delete(id);
+		else next.add(id);
+		labelFilter = next;
+	}
+	$effect(() => {
+		drafts.set(LIST_LABELS, [...labelFilter].join(','));
+	});
+	// Drop filter ids whose label was deleted so the count stays honest.
+	$effect(() => {
+		const known = new Set(allLabels.map((l) => l.id));
+		if ([...labelFilter].some((id) => !known.has(id))) {
+			labelFilter = new Set([...labelFilter].filter((id) => known.has(id)));
+		}
+	});
+	const matchesLabelFilter = (s: SessionListItem): boolean =>
+		labelFilter.size === 0 || s.labels.some((l) => labelFilter.has(l.id));
+
+	// Per-card label callbacks, threaded into every SessionCard.
+	const createLabel = (name: string, color: string) => actions.createLabel(name, color);
+	const attachLabel = (id: string, labelId: string) => actions.attachLabel(id, labelId);
+	const detachLabel = (id: string, labelId: string) => actions.detachLabel(id, labelId);
 
 	// ── Search + archive browse (CCT-184) ──────────────────────────────────
 	// One paginated "pager" feeds two views, never both at once:
@@ -479,7 +516,7 @@
 	const groups = $derived(
 		BUCKETS.filter((b) => bucketInSection(b.key)).map((b) => ({
 			...b,
-			sessions: topLevel.filter((s) => groupOf(s) === b.key)
+			sessions: topLevel.filter((s) => groupOf(s) === b.key && matchesLabelFilter(s))
 		})).filter((g) => g.sessions.length > 0)
 	);
 
@@ -570,6 +607,47 @@
 			</div>
 		{/if}
 	</div>
+	<!-- Label filter (CCT-360): one button opens a popover of label toggles; a
+	     session shows when it carries ANY selected label (OR). Hidden when no
+	     labels exist yet. -->
+	{#if allLabels.length > 0}
+		<div class="section-pick" use:clickOutside={() => (labelMenuOpen = false)}>
+			<IconButton
+				class="btn-control-square"
+				icon="tag"
+				label="Filter by label"
+				title={labelFilter.size > 0 ? `Filtering by ${labelFilter.size} label(s)` : 'Filter by label'}
+				aria-haspopup="true"
+				aria-expanded={labelMenuOpen}
+				aria-pressed={labelFilter.size > 0}
+				onclick={() => (labelMenuOpen = !labelMenuOpen)}
+			/>
+			{#if labelFilter.size > 0}<span class="section-count" aria-hidden="true">{labelFilter.size}</span>{/if}
+			{#if labelMenuOpen}
+				<div class="section-menu label-menu" role="menu" aria-label="Labels">
+					{#each allLabels as l (l.id)}
+						<button
+							type="button"
+							role="menuitemcheckbox"
+							class="section-opt"
+							aria-checked={labelFilter.has(l.id)}
+							onclick={() => toggleLabelFilter(l.id)}
+						>
+							<span class="section-check" aria-hidden="true">{labelFilter.has(l.id) ? '✓' : ''}</span>
+							<span class="label-dot" style="background:{l.color}"></span>
+							<span class="section-opt-label">{l.name}</span>
+						</button>
+					{/each}
+					{#if labelFilter.size > 0}
+						<button type="button" class="section-opt label-clear" onclick={() => (labelFilter = new Set())}>
+							<span class="section-check" aria-hidden="true">✕</span>
+							<span class="section-opt-label">Clear filter</span>
+						</button>
+					{/if}
+				</div>
+			{/if}
+		</div>
+	{/if}
 	<!-- View picker (CCT-307): one labelled control offering the 4 explicit
 	     layout × density combinations, replacing the two icon toggles that still
 	     overflowed the toolbar. A native <select> overlaid transparently on the
@@ -645,6 +723,10 @@
 				onSwipe={swipeArchive}
 				onTogglePin={togglePin}
 				subagentCost={costRollup(s, childGroupsOf.get(s.id) ?? [])}
+				{allLabels}
+				onCreateLabel={createLabel}
+				onAttachLabel={attachLabel}
+				onDetachLabel={detachLabel}
 			/>
 		{/each}
 	</div>
@@ -692,6 +774,10 @@
 					onTogglePin={depth > 0 ? undefined : togglePin}
 					highlight={hl}
 					subagentCost={costRollup(s, subGroups)}
+					{allLabels}
+					onCreateLabel={createLabel}
+					onAttachLabel={depth > 0 ? undefined : attachLabel}
+					onDetachLabel={depth > 0 ? undefined : detachLabel}
 				/>
 			</div>
 		</div>
@@ -794,16 +880,17 @@
 	<!-- …then the paginated archive when requested. -->
 	{#if showArchived}
 		{@const ns = nest(pageRows)}
+		{@const archTop = ns.topLevel.filter(matchesLabelFilter)}
 		<div class="stack" class:tight={dense} class:badge-gutter={ns.hasCollapsible}>
-			<div class="group-header">Archived <Text class="count">{ns.topLevel.length}</Text></div>
+			<div class="group-header">Archived <Text class="count">{archTop.length}</Text></div>
 			{#if pageRows.length === 0 && !pageLoading}
 				<div class="empty"><Text tone="muted">No archived sessions.</Text></div>
 			{:else if cardView}
 				<!-- Card mode applies to archived sessions too (CCT-321 parity). -->
-				{@render cardGrid(ns.topLevel)}
+				{@render cardGrid(archTop)}
 				{@render loadMore()}
 			{:else}
-				{@render nestedRows(ns.topLevel, ns.childGroups, false, searchTerms)}
+				{@render nestedRows(archTop, ns.childGroups, false, searchTerms)}
 				{@render loadMore()}
 			{/if}
 		</div>
@@ -968,6 +1055,21 @@
 	}
 	.section-opt-label {
 		flex: 1 1 auto;
+	}
+	/* Label filter (CCT-360): colored dot per label in the popover; allow the
+	   menu to scroll once there are many labels. */
+	.label-menu {
+		max-height: 16rem;
+		overflow-y: auto;
+	}
+	.label-dot {
+		width: 0.7rem;
+		height: 0.7rem;
+		border-radius: 999px;
+		flex: none;
+	}
+	.label-clear {
+		color: var(--text-muted);
 	}
 	/* Fill all the space between the title and the Archived checkbox; the wrapper
 	   is the flex item / positioning context for the in-field clear button. */

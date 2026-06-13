@@ -21,6 +21,8 @@ import type { RotateResponse } from "@bindings/RotateResponse";
 import type { MintTokenResponse } from "@bindings/MintTokenResponse";
 import type { VersionInfo } from "@bindings/VersionInfo";
 import type { MeResponse } from "@bindings/MeResponse";
+import type { Label } from "@bindings/Label";
+import type { LabelListResponse } from "@bindings/LabelListResponse";
 
 /** Machine kinds the server manages itself — the per-user `dispatch` machine
  * and one-shot `ephemeral` worker pods. They are never spawn targets and are
@@ -135,6 +137,7 @@ export const qk = {
   users: ["users"] as const,
   machines: (userId: string) => ["users", userId, "machines"] as const,
   tokens: (userId: string) => ["users", userId, "tokens"] as const,
+  labels: ["labels"] as const,
 };
 
 /** Raw typed fetchers — also usable outside of components. */
@@ -149,6 +152,8 @@ export const endpoints = {
   /** Aggregate session counts for the Overview — correct past the list's
    * 25-row display cap (the list-derived counts are not). */
   sessionStats: () => api.get<SessionStats>("/sessions/stats"),
+  /** Every label known to the server (CCT-360) — feeds the picker + filter. */
+  labels: () => api.get<LabelListResponse>("/labels"),
   /** Token totals across rolling windows for the Overview. `tzOffset` is
    * `Date.getTimezoneOffset()` — only used to anchor "today" to local midnight. */
   tokenStats: (tzOffset: number) =>
@@ -291,6 +296,15 @@ export const useSessionStats = () =>
     queryKey: qk.sessionStats,
     queryFn: endpoints.sessionStats,
     refetchInterval: 15_000,
+  });
+
+/** All label definitions (CCT-360). Shared by the per-session picker and the
+ * sessions-page filter; refetched lazily since labels change rarely. */
+export const useLabels = () =>
+  createQuery({
+    queryKey: qk.labels,
+    queryFn: endpoints.labels,
+    refetchInterval: 60_000,
   });
 
 export const useTokenStats = () =>
@@ -470,12 +484,14 @@ function optimisticDispatchCard(
     estimated_burst_tokens: null,
     hibernated: false,
     pinned: false,
+    labels: [],
   };
 }
 
 export function useSessionActions() {
   const qc = useQueryClient();
   const inval = () => qc.invalidateQueries({ queryKey: ["sessions"] });
+  const invalLabels = () => qc.invalidateQueries({ queryKey: qk.labels });
   return {
     rename: async (id: string, name: string) => {
       await api.patch<void>(`/sessions/${id}`, { name });
@@ -497,6 +513,27 @@ export function useSessionActions() {
     },
     unpin: async (id: string) => {
       await api.post<void>(`/sessions/${id}/unpin`);
+      inval();
+    },
+    // Labels (CCT-360). `createLabel` is get-or-create by name (and recolors an
+    // existing one); attach/detach wire a label to a session. Each mutation
+    // refreshes the session list so the chips update in place.
+    createLabel: async (name: string, color: string): Promise<Label> => {
+      const label = await api.post<Label>("/labels", { name, color });
+      invalLabels();
+      return label;
+    },
+    deleteLabel: async (labelId: string) => {
+      await api.del<void>(`/labels/${labelId}`);
+      invalLabels();
+      inval();
+    },
+    attachLabel: async (id: string, labelId: string) => {
+      await api.post<void>(`/sessions/${id}/labels`, { label_id: labelId });
+      inval();
+    },
+    detachLabel: async (id: string, labelId: string) => {
+      await api.del<void>(`/sessions/${id}/labels/${labelId}`);
       inval();
     },
     // Batch archive/unarchive (CCT-172). One request, one invalidation.

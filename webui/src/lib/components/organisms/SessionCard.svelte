@@ -2,7 +2,9 @@
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import { relativeTime, statusBadgeClass, timestampTooltip, compact } from '$lib/format';
 	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
+	import LabelChips from '$lib/components/molecules/LabelChips.svelte';
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
+	import type { Label } from '@bindings/Label';
 	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
 	import { Badge, Text } from '@dorsk/tsumikit';
 	import { escapeHtml } from '$lib/markdown';
@@ -23,7 +25,13 @@
 		onSwipe,
 		onTogglePin,
 		highlight = [],
-		subagentCost = null
+		subagentCost = null,
+		// Label editing (CCT-360): when `onAttachLabel` is supplied the card shows
+		// the inline add/remove picker; otherwise the chips render read-only.
+		allLabels = [],
+		onCreateLabel,
+		onAttachLabel,
+		onDetachLabel
 	}: {
 		session: SessionListItem;
 		child?: boolean;
@@ -56,6 +64,11 @@
 		// subagents, the parent's own tokens plus the aggregated tokens of all its
 		// subagents, with the subagent count. Reported in tokens (CCT-301 #2).
 		subagentCost?: { tokens: number; count: number } | null;
+		// Label editing (CCT-360).
+		allLabels?: Label[];
+		onCreateLabel?: (name: string, color: string) => Promise<Label>;
+		onAttachLabel?: (id: string, labelId: string) => void | Promise<void>;
+		onDetachLabel?: (id: string, labelId: string) => void | Promise<void>;
 	} = $props();
 
 	const s = $derived(session);
@@ -281,6 +294,22 @@
 		<Text class="path" tone="muted" size="xs" title={s.working_dir}>{s.working_dir}</Text>
 	</div>
 	</button>
+	<!-- Label strip (CCT-360). Rendered OUTSIDE the card <button> so its own
+	     buttons/inputs are valid and their clicks don't open the session. Shows
+	     read-only chips everywhere; the inline add/remove picker only when an
+	     attach handler is wired (top-level rows). -->
+	{#if (s.labels.length > 0 || (onAttachLabel && !child))}
+		<div class="label-strip" class:child>
+			<LabelChips
+				labels={s.labels}
+				editable={!!onAttachLabel && !child}
+				{allLabels}
+				onCreate={onCreateLabel}
+				onAttach={(lid) => onAttachLabel?.(s.id, lid)}
+				onDetach={(lid) => onDetachLabel?.(s.id, lid)}
+			/>
+		</div>
+	{/if}
 </div>
 
 <style>
@@ -296,6 +325,17 @@
 	.sc-wrap.child {
 		width: auto;
 		margin-left: var(--sp-4);
+	}
+	/* Label strip (CCT-360): a thin row tucked under the card content. Indented
+	   to align with the card's text and sitting above its z-index so the picker
+	   popover overlays neighboring cards. */
+	.label-strip {
+		position: relative;
+		z-index: 2;
+		padding: var(--sp-1) var(--sp-3) 0;
+	}
+	.label-strip.child {
+		padding-left: var(--sp-4);
 	}
 	/* Grid cards (CCT-305): the wrapper and the card fill the grid cell's full
 	   height so every card in a row matches (the grid stretches the cells), and

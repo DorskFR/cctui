@@ -600,6 +600,7 @@ fn handle_server_event(app: &mut App, event: ServerEvent) {
                     estimated_burst_tokens: None,
                     hibernated: false,
                     pinned: false,
+                    labels: Vec::new(),
                 });
                 app.update_aggregates();
             }
