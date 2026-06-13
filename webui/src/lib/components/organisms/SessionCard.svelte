@@ -337,9 +337,9 @@
 		<div class="meta-right">
 			<!-- Σ leads the token block; when this parent spawned subagents we pass the
 			     parent+subagents aggregate as the sum so Σ reflects the true cost. -->
-			<span class="tok"
-				><TokenUsage usage={u} cold={s.cache_cold} sum={rollup ? rollup.tokens : null} /></span
-			>
+			<div class="tok">
+				<TokenUsage usage={u} cold={s.cache_cold} sum={rollup ? rollup.tokens : null} />
+			</div>
 			{#if s.model}<Text class="model" tone="muted" size="xs">{s.model}{s.effort ? ` · ${s.effort}` : ''}</Text>{/if}
 			<span class="logo"><AdapterIcon adapter={s.adapter_id} size={14} /></span>
 		</div>

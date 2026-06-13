@@ -56,11 +56,22 @@ Pages / routes  → routes/*: assemble organisms, .ts logic (queries, format,
    `var(--…)` from `variables.css`. Swapping a theme = editing palette tokens in
    that one file; everything downstream is unchanged.
 
-4. **Override by specificity, never by forking.** When a call-site needs a tweak
-   on an atom, pass `class="…"` and target it with higher specificity
-   (e.g. `:global(.input.search)` beats the atom's `.input` base regardless of
-   bundle order). The atom keeps owning the base; the tweak is additive and
-   local. Don't copy the atom's CSS to change one value.
+4. **No `:global(…)` reach-ins. Style atoms through their seams.** An atom's CSS
+   is scoped, so a parent can only override it by escaping the scope with
+   `:global(.foo)` — that is *forbidden* (enforced by a lefthook ratchet on new
+   `:global(` in `.svelte` files). It couples call-sites to an atom's private
+   class names and scatters an atom's styling across the tree. When a call-site
+   needs a tweak, in order of preference:
+   1. **Use the atom's props/variants** — `tone`, `weight`, `size`, `variant`,
+      `truncate`, … carry most needs (e.g. `tone="accent"`, not a colour override).
+   2. **Pass a one-off `style="…"`** for a local token-based tweak — atoms spread
+      `...rest`, so `style="line-height: 1; color: var(--warn)"` lands on the
+      element. Tokens only (rule 3); no hard-coded values.
+   3. **Wrap the atom in a LOCAL element** when the tweak is structural chrome
+      (a bordered box, a flex container). The wrapper styles *itself* with scoped
+      CSS — no `:global` needed — and owns layout concerns like `flex`/`min-width`.
+   4. **If many call-sites want the same tweak, it belongs on the atom** — add the
+      prop/variant in tsumikit, don't repeat the override.
 
 5. **Props flow down, including a11y.** Atoms spread `...rest` onto their
    primitive, so `aria-*`, `title`, `disabled`, `onclick`, native attributes all

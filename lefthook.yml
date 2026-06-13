@@ -15,3 +15,20 @@ pre-commit:
       glob: "*.{json,yaml,yml,md}"
       run: biome check --write --no-errors-on-unmatched {staged_files}
       stage_fixed: true
+    # Ratchet against new :global(...) CSS overrides in the webui. Reaching into a
+    # tsumikit atom's scoped class from a parent is banned (webui/DESIGN.md rule 4) —
+    # style atoms via props/variants, or wrap in a LOCAL element so scoped CSS
+    # reaches it. We only flag ADDED lines, so the existing backlog doesn't block
+    # edits; clear it opportunistically. Matches ":global(" so prose/comments that
+    # merely mention :global don't trip it.
+    no-css-global:
+      glob: "webui/**/*.svelte"
+      run: |
+        added=$(git diff --cached -U0 -- {staged_files} | awk '/^\+/ && !/^\+\+\+/ && /:global\(/')
+        if [ -n "$added" ]; then
+          echo "✖ New :global(...) CSS override in a Svelte file — forbidden (webui/DESIGN.md rule 4)."
+          echo "  Style tsumikit atoms via props/variants, or wrap the styled bit in a LOCAL"
+          echo "  element so its scoped CSS reaches it. Offending added lines:"
+          echo "$added"
+          exit 1
+        fi
