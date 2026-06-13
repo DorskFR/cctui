@@ -2,11 +2,11 @@
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import { relativeTime, statusBadgeClass, timestampTooltip, compact } from '$lib/format';
 	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
-	import LabelChips from '$lib/components/molecules/LabelChips.svelte';
+	import LabelBadge from '$lib/components/molecules/LabelBadge.svelte';
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
 	import type { Label } from '@bindings/Label';
 	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
-	import { Badge, Text } from '@dorsk/tsumikit';
+	import { Badge, Card, Text } from '@dorsk/tsumikit';
 	import { escapeHtml } from '$lib/markdown';
 	import { highlightTerms } from '$lib/search';
 
@@ -205,16 +205,34 @@
 			</div>
 		</div>
 	{/if}
-	<button
-		class="card card-tap sc stack"
-		class:child
-		class:dense
-		class:grid
-		class:attn={needsInput}
-		class:selectable
-		class:selected
+	<!-- Tappable surface is the tsumikit Card as a <div> (NOT a <button>): the row
+	     hosts its own interactive controls (label color pickers, the +-popover,
+	     remove buttons), which can't legally nest inside a <button>. `tap` carries
+	     the hover/active affordance; role/tabindex/onkeydown restore button a11y. -->
+	<Card
+		as="div"
+		tap
+		role="button"
+		tabindex={0}
+		class={[
+			'sc stack',
+			child && 'child',
+			dense && 'dense',
+			grid && 'grid',
+			needsInput && 'attn',
+			selectable && 'selectable',
+			selected && 'selected'
+		]
+			.filter(Boolean)
+			.join(' ')}
 		style="transform: translateX({swipeX}px)"
 		onclick={handleClick}
+		onkeydown={(e: KeyboardEvent) => {
+			if (e.key === 'Enter' || e.key === ' ') {
+				e.preventDefault();
+				handleClick();
+			}
+		}}
 	>
 	<!-- Canonical field model (CCT-320/321): the SAME skeleton renders in all four
 	     variants (list/card × compact/detailed). Density only changes spacing, the
@@ -257,11 +275,10 @@
 		     the inline add/remove picker only on top-level rows with an attach
 		     handler. The popover is portaled out of this card <button>. -->
 		{#if s.labels.length > 0 || (onAttachLabel && !child)}
-			<LabelChips
+			<LabelBadge
 				labels={s.labels}
 				editable={!!onAttachLabel && !child}
 				{allLabels}
-				portalMenu
 				onCreate={onCreateLabel}
 				onAttach={(lid) => onAttachLabel?.(s.id, lid)}
 				onDetach={(lid) => onDetachLabel?.(s.id, lid)}
@@ -307,7 +324,7 @@
 			>{/if}
 		<Text class="path" tone="muted" size="xs" title={s.working_dir}>{s.working_dir}</Text>
 	</div>
-	</button>
+	</Card>
 </div>
 
 <style>
@@ -342,12 +359,12 @@
 		text-overflow: ellipsis;
 		font-size: var(--fs-sm);
 	}
-	.sc.dense .preview {
+	.sc-wrap.dense .preview {
 		font-size: var(--fs-xs);
 	}
 	/* Detailed (list + card): multi-line clamp. List clamps to 3 lines; grid lets
 	   the preview grow to fill the card's free vertical space (still clamped). */
-	.sc:not(.dense) .preview {
+	.sc-wrap:not(.dense) .preview {
 		white-space: normal;
 		display: -webkit-box;
 		-webkit-line-clamp: 3;
@@ -360,7 +377,7 @@
 		height: 100%;
 		min-height: 9rem;
 	}
-	.sc.grid .meta {
+	.sc-wrap.grid .meta {
 		margin-top: auto;
 	}
 	.sc.grid:not(.dense) {
@@ -369,7 +386,7 @@
 		min-height: 13rem;
 		padding: var(--sp-4);
 	}
-	.sc.grid:not(.dense) .preview {
+	.sc-wrap.grid:not(.dense) .preview {
 		flex: 1 1 auto;
 		min-height: 0;
 		-webkit-line-clamp: 6;
@@ -447,28 +464,28 @@
 	}
 	/* Lead sizes to its content (the title still truncates via min-width:0) and
 	   must not stretch — its internal spacer would otherwise eat the whole row. */
-	.sc.dense:not(.grid) .lead {
+	.sc-wrap.dense:not(.grid) .lead {
 		flex: 0 1 auto;
 		flex-wrap: nowrap;
 		min-width: 0;
 	}
-	.sc.dense:not(.grid) .lead .spacer {
+	.sc-wrap.dense:not(.grid) .lead .spacer {
 		display: none;
 	}
 	/* Preview takes the flexible middle as a single ellipsised line. */
-	.sc.dense:not(.grid) .preview {
+	.sc-wrap.dense:not(.grid) .preview {
 		flex: 1 1 auto;
 	}
 	/* Meta trails on the right (margin-auto pins it there even when there is no
 	   preview to absorb the slack) and never wraps. */
-	.sc.dense:not(.grid) .meta {
+	.sc-wrap.dense:not(.grid) .meta {
 		flex: 0 1 auto;
 		flex-wrap: nowrap;
 		margin-left: auto;
 	}
 	/* Path is the lowest-priority field on a single line: let it shrink away
 	   first (ellipsis) so model · tokens · timestamp stay readable. */
-	.sc.dense:not(.grid) .meta :global(.path) {
+	.sc-wrap.dense:not(.grid) .meta :global(.path) {
 		flex: 0 1 auto;
 	}
 	.sc.attn {

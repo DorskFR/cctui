@@ -27,7 +27,7 @@
 	import { mergeFiles, removeFileByName, fileCapError } from '$lib/attachments';
 	import Modal from '$lib/components/molecules/Modal.svelte';
 	import { Button, Field, OptionButton, Text } from '@dorsk/tsumikit';
-	import LabelChips from '$lib/components/molecules/LabelChips.svelte';
+	import LabelBadge from '$lib/components/molecules/LabelBadge.svelte';
 	import EnvSecretsField from './spawn/EnvSecretsField.svelte';
 	import MachineFields from './spawn/MachineFields.svelte';
 	import DispatchFields from './spawn/DispatchFields.svelte';
@@ -484,11 +484,10 @@
 			<!-- Labels (CCT-360), both targets. Defaults to the last-used set;
 			     attached to the session once it spawns. -->
 			<Field label="Labels (optional)">
-				<LabelChips
+				<LabelBadge
 					labels={selectedLabels}
 					editable
 					{allLabels}
-					portalMenu
 					onCreate={createSpawnLabel}
 					onAttach={attachSpawnLabel}
 					onDetach={detachSpawnLabel}

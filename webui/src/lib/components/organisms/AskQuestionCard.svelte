@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { renderMarkdown } from '$lib/markdown';
-	import { Button, Chip, Heading, Text } from '@dorsk/tsumikit';
+	import { Badge, Button, Heading, Text } from '@dorsk/tsumikit';
 
 	interface Opt {
 		label: string;
@@ -103,7 +103,7 @@
 		{@const hasPreview = q.options.some((o) => o.preview)}
 		<div class="q">
 			<div class="q-top">
-				{#if q.header}<Chip>{q.header}</Chip>{/if}
+				{#if q.header}<Badge>{q.header}</Badge>{/if}
 				<Text weight="medium">{q.question}</Text>
 				{#if q.multiSelect}<Text tone="muted" size="xs">(choose any)</Text>{/if}
 			</div>

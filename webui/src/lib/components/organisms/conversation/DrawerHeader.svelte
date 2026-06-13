@@ -14,7 +14,7 @@
 	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
 	import IconButton from '$lib/components/molecules/IconButton.svelte';
-	import { Badge, Chip, Input, SelectButton, Text } from '@dorsk/tsumikit';
+	import { Badge, Input, SelectButton, Text } from '@dorsk/tsumikit';
 	import Select from '$lib/components/atoms/Select.svelte';
 
 	let {
@@ -203,7 +203,7 @@
 		{#if showStatusBadge}<Badge class={statusBadgeClass(session.status)}>{session.status}</Badge>{/if}
 		{#if isCodexSession && !archived}
 			{#if modelEditing}
-				<Chip class="row" style="gap:var(--sp-1);padding:0.05rem var(--sp-1)">
+				<Badge class="row" style="gap:var(--sp-1);padding:0.05rem var(--sp-1)">
 					<Select class="mini-select" bind:value={pendingModel} aria-label="Model">
 						{#each codexModels as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
 					</Select>
@@ -212,32 +212,32 @@
 					</Select>
 					<IconButton class="tapbtn" icon="check" label="Apply" onclick={applyModelChange} />
 					<IconButton class="tapbtn" icon="x" label="Cancel" onclick={() => (modelEditing = false)} />
-				</Chip>
+				</Badge>
 			{:else}
-				<Chip
+				<Badge
 					as="button"
 					mono
 					title="Change model / effort for the next turn"
 					onclick={openModelEditor}
-				>{session.model ?? 'default'}{session.effort ? ` · ${session.effort}` : ''} ✎</Chip>
+				>{session.model ?? 'default'}{session.effort ? ` · ${session.effort}` : ''} ✎</Badge>
 			{/if}
 		{:else if session.model || session.effort}
-			<Chip
+			<Badge
 				as="button"
 				mono
 				title="Claude can't switch model in place — fork to change model"
 				onclick={onfork}
-			>{session.model ?? ''}{session.effort ? ` · ${session.effort}` : ''} ⑂</Chip>
+			>{session.model ?? ''}{session.effort ? ` · ${session.effort}` : ''} ⑂</Badge>
 		{/if}
 		<MachineBadge name={session.machine_name} id={session.machine_id} hue={session.machine_hue} mono />
-		<Chip
+		<Badge
 			as="button"
 			mono
 			class="truncate"
 			style="flex:1;min-width:6rem;text-align:left"
 			title="Click to copy — {session.working_dir}"
 			onclick={() => copyText(session.working_dir)}
-		>📁 {session.working_dir} ⧉</Chip>
+		>📁 {session.working_dir} ⧉</Badge>
 		<TokenUsage usage={session.token_usage} />
 	</div>
 </div>
