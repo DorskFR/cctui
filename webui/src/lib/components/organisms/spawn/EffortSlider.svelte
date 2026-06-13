@@ -2,7 +2,7 @@
 	// A discrete reasoning-effort slider, extracted from SpawnModal. `levels[0]`
 	// is "" (the adapter's default); the track snaps to each named level and the
 	// active label is highlighted. Per-adapter level sets are passed in.
-	import Field from '$lib/components/molecules/Field.svelte';
+	import { Field } from '@dorsk/tsumikit';
 	import Range from '$lib/components/atoms/Range.svelte';
 
 	let {

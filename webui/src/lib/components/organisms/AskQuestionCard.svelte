@@ -1,9 +1,6 @@
 <script lang="ts">
 	import { renderMarkdown } from '$lib/markdown';
-	import Button from '$lib/components/atoms/Button.svelte';
-	import Chip from '$lib/components/atoms/Chip.svelte';
-	import Heading from '$lib/components/atoms/Heading.svelte';
-	import Text from '$lib/components/atoms/Text.svelte';
+	import { Button, Chip, Heading, Text } from '@dorsk/tsumikit';
 
 	interface Opt {
 		label: string;

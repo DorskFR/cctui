@@ -6,8 +6,7 @@
 	import { clockTime } from '$lib/format';
 	import { compact } from '$lib/format';
 	import IconButton from '$lib/components/molecules/IconButton.svelte';
-	import Button from '$lib/components/atoms/Button.svelte';
-	import Text from '$lib/components/atoms/Text.svelte';
+	import { Button, Text } from '@dorsk/tsumikit';
 	import type { Line } from './types';
 	import type { TokenUsage as TokenUsageT } from '@bindings/TokenUsage';
 	import './bubble.css';

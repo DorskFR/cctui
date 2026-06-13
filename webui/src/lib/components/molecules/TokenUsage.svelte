@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { TokenUsage } from '@bindings/TokenUsage';
 	import { compact } from '$lib/format';
-	import Text from '$lib/components/atoms/Text.svelte';
+	import { Text } from '@dorsk/tsumikit';
 
 	// Compact token-usage readout (↑in ↓out ⚡cache), shared by the session
 	// list card and the chat header.

@@ -4,12 +4,7 @@
 	import { dateOnly } from '$lib/format';
 	import UserExpand from '$lib/components/molecules/UserExpand.svelte';
 	import SecretReveal from '$lib/components/molecules/SecretReveal.svelte';
-	import Button from '$lib/components/atoms/Button.svelte';
-	import Input from '$lib/components/atoms/Input.svelte';
-	import Badge from '$lib/components/atoms/Badge.svelte';
-	import Switch from '$lib/components/atoms/Switch.svelte';
-	import Heading from '$lib/components/atoms/Heading.svelte';
-	import Text from '$lib/components/atoms/Text.svelte';
+	import { Badge, Button, Heading, Input, Switch, Text } from '@dorsk/tsumikit';
 	import IconButton from '$lib/components/molecules/IconButton.svelte';
 	import { SvelteSet } from 'svelte/reactivity';
 	import { auth } from '$lib/auth.svelte';

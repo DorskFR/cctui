@@ -1,7 +1,6 @@
 <script lang="ts">
 	import Modal from '$lib/components/molecules/Modal.svelte';
-	import Button from '$lib/components/atoms/Button.svelte';
-	import Text from '$lib/components/atoms/Text.svelte';
+	import { Button, Text } from '@dorsk/tsumikit';
 	import { toasts } from '$lib/toast.svelte';
 
 	let { title, secret, onclose }: { title: string; secret: string; onclose: () => void } =

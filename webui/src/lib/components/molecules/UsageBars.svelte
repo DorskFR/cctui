@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { useAccountUsage } from '$lib/queries';
 	import { relativeFuture } from '$lib/format';
-	import Text from '$lib/components/atoms/Text.svelte';
+	import { Text } from '@dorsk/tsumikit';
 
 	// Severity breakpoints on window utilization (%). Below WARN → green ("ok"),
 	// WARN–HOT → amber ("warm"), at/above HOT → red ("hot"). Named so the bar

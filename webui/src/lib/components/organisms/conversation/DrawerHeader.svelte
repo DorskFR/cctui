@@ -14,12 +14,8 @@
 	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
 	import IconButton from '$lib/components/molecules/IconButton.svelte';
-	import Badge from '$lib/components/atoms/Badge.svelte';
-	import Chip from '$lib/components/atoms/Chip.svelte';
-	import Input from '$lib/components/atoms/Input.svelte';
+	import { Badge, Chip, Input, SelectButton, Text } from '@dorsk/tsumikit';
 	import Select from '$lib/components/atoms/Select.svelte';
-	import Text from '$lib/components/atoms/Text.svelte';
-	import SelectButton from '$lib/components/molecules/SelectButton.svelte';
 
 	let {
 		session,

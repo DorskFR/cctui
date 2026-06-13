@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { hashHue } from '$lib/format';
-	import Badge from '$lib/components/atoms/Badge.svelte';
+	import { Badge } from '@dorsk/tsumikit';
 
 	// Deterministic-color machine badge, shared by the session list and the
 	// chat header so the same machine reads the same hue everywhere. Composes the

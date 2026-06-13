@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { toasts } from '$lib/toast.svelte';
-	import Card from '$lib/components/atoms/Card.svelte';
+	import { Card } from '@dorsk/tsumikit';
 </script>
 
 {#if toasts.items.length}

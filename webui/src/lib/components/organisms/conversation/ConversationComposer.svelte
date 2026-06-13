@@ -1,9 +1,7 @@
 <script lang="ts">
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import AttachmentList from '$lib/components/molecules/AttachmentList.svelte';
-	import Button from '$lib/components/atoms/Button.svelte';
-	import Textarea from '$lib/components/atoms/Textarea.svelte';
-	import Text from '$lib/components/atoms/Text.svelte';
+	import { Button, Text, Textarea } from '@dorsk/tsumikit';
 	import FileInput from '$lib/components/atoms/FileInput.svelte';
 	import { drafts, composerKey, history as msgHistory } from '$lib/drafts';
 	import { mergeFiles, removeFileByName, fileCapError } from '$lib/attachments';

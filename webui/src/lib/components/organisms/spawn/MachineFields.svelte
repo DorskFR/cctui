@@ -8,12 +8,8 @@
 	import { MAX_FILE_BYTES, MAX_TOTAL_BYTES, MAX_FILES } from '$lib/attachments';
 	import BrandLogo from '$lib/components/atoms/BrandLogo.svelte';
 	import AttachmentList from '$lib/components/molecules/AttachmentList.svelte';
-	import Field from '$lib/components/molecules/Field.svelte';
-	import OptionButton from '$lib/components/molecules/OptionButton.svelte';
-	import Input from '$lib/components/atoms/Input.svelte';
+	import { Field, Input, OptionButton, Text, Textarea } from '@dorsk/tsumikit';
 	import Select from '$lib/components/atoms/Select.svelte';
-	import Textarea from '$lib/components/atoms/Textarea.svelte';
-	import Text from '$lib/components/atoms/Text.svelte';
 	import FileInput from '$lib/components/atoms/FileInput.svelte';
 	import CwdCombo from './CwdCombo.svelte';
 	import EffortSlider from './EffortSlider.svelte';

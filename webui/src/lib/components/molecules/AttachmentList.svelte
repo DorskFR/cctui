@@ -4,7 +4,7 @@
 	// when present, the cap error.
 	import { fmtSize, fileCapError } from '$lib/attachments';
 	import IconButton from '$lib/components/molecules/IconButton.svelte';
-	import Text from '$lib/components/atoms/Text.svelte';
+	import { Text } from '@dorsk/tsumikit';
 
 	let {
 		files,

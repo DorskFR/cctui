@@ -3,7 +3,7 @@
 	// toggles its subagent group expanded/collapsed. Only rendered for groups with
 	// >= 3 agents; smaller groups render inline, always expanded. Composes the
 	// base Badge as an interactive (info-toned) button.
-	import Badge from '$lib/components/atoms/Badge.svelte';
+	import { Badge } from '@dorsk/tsumikit';
 
 	let {
 		count,

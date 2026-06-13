@@ -6,9 +6,7 @@
 	import { fontScale, SCALE_LEVELS } from '$lib/fontscale.svelte';
 	import { notify } from '$lib/notify.svelte';
 	import { toasts } from '$lib/toast.svelte';
-	import Button from '$lib/components/atoms/Button.svelte';
-	import SelectButton from '$lib/components/molecules/SelectButton.svelte';
-	import Text from '$lib/components/atoms/Text.svelte';
+	import { Button, SelectButton, Text } from '@dorsk/tsumikit';
 	import NavLink from '$lib/components/atoms/NavLink.svelte';
 
 	const version = useVersion();

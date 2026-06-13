@@ -1,8 +1,7 @@
 <script lang="ts">
 	import PermissionCard from '$lib/components/organisms/PermissionCard.svelte';
 	import AskQuestionCard from '$lib/components/organisms/AskQuestionCard.svelte';
-	import Button from '$lib/components/atoms/Button.svelte';
-	import Text from '$lib/components/atoms/Text.svelte';
+	import { Button, Text } from '@dorsk/tsumikit';
 	import ConversationLine from './ConversationLine.svelte';
 	import { dropzone } from '$lib/dropzone';
 	import { copyLineMarkdown, saveLineImage } from './lineActions';

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { useAccountUsage } from '$lib/queries';
 	import { relativeTime } from '$lib/format';
-	import Text from '$lib/components/atoms/Text.svelte';
+	import { Text } from '@dorsk/tsumikit';
 
 	// Per-account subscription-usage chip (CCT-306). Shows Anthropic's free OAuth
 	// usage windows (5h session + 7d weekly utilization) for claude accounts;

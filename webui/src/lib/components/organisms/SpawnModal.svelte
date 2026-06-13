@@ -22,10 +22,7 @@
 	import { dropzone } from '$lib/dropzone';
 	import { mergeFiles, removeFileByName, fileCapError } from '$lib/attachments';
 	import Modal from '$lib/components/molecules/Modal.svelte';
-	import Button from '$lib/components/atoms/Button.svelte';
-	import Field from '$lib/components/molecules/Field.svelte';
-	import OptionButton from '$lib/components/molecules/OptionButton.svelte';
-	import Text from '$lib/components/atoms/Text.svelte';
+	import { Button, Field, OptionButton, Text } from '@dorsk/tsumikit';
 	import EnvSecretsField from './spawn/EnvSecretsField.svelte';
 	import MachineFields from './spawn/MachineFields.svelte';
 	import DispatchFields from './spawn/DispatchFields.svelte';

@@ -8,11 +8,8 @@
 		key: string;
 		value: string;
 	}
-	import Button from '$lib/components/atoms/Button.svelte';
+	import { Button, Field, Input, Text } from '@dorsk/tsumikit';
 	import IconButton from '$lib/components/molecules/IconButton.svelte';
-	import Field from '$lib/components/molecules/Field.svelte';
-	import Input from '$lib/components/atoms/Input.svelte';
-	import Text from '$lib/components/atoms/Text.svelte';
 
 	let {
 		envRows = $bindable(),

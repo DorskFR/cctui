@@ -4,8 +4,7 @@
 	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
 	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
-	import Badge from '$lib/components/atoms/Badge.svelte';
-	import Text from '$lib/components/atoms/Text.svelte';
+	import { Badge, Text } from '@dorsk/tsumikit';
 	import { escapeHtml } from '$lib/markdown';
 	import { highlightTerms } from '$lib/search';
 

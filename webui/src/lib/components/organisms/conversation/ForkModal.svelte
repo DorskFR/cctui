@@ -4,10 +4,8 @@
 	// — also the "reopen as a new conversation" path for archived sessions and the
 	// supported "switch model" substitute for claude (no in-place switch, CCT-303).
 	import { compact } from '$lib/format';
-	import Button from '$lib/components/atoms/Button.svelte';
+	import { Button, Heading, Text } from '@dorsk/tsumikit';
 	import Select from '$lib/components/atoms/Select.svelte';
-	import Heading from '$lib/components/atoms/Heading.svelte';
-	import Text from '$lib/components/atoms/Text.svelte';
 
 	let {
 		archived,

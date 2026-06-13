@@ -1,11 +1,7 @@
 <script lang="ts">
 	import { auth } from '$lib/auth.svelte';
 	import { apiBase } from '$lib/config';
-	import Button from '$lib/components/atoms/Button.svelte';
-	import Card from '$lib/components/atoms/Card.svelte';
-	import Field from '$lib/components/molecules/Field.svelte';
-	import Input from '$lib/components/atoms/Input.svelte';
-	import Text from '$lib/components/atoms/Text.svelte';
+	import { Button, Card, Field, Input, Text } from '@dorsk/tsumikit';
 
 	let token = $state('');
 	let err = $state('');

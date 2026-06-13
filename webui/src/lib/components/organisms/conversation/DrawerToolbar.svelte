@@ -4,7 +4,7 @@
 	// tag filter, formatting toggles, behavior (auto-approve) toggle — that on
 	// mobile collapse behind three text-button tabs opening popovers.
 	import { MSG_TYPES, type MsgType, type ViewOpts } from './types';
-	import Toggle from '$lib/components/molecules/Toggle.svelte';
+	import { Toggle } from '@dorsk/tsumikit';
 
 	// The on-state tint for a message-type tag: its role color (result reuses
 	// the tool color), or danger when excluded.

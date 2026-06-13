@@ -1,8 +1,6 @@
 <script lang="ts">
 	import type { PermReq } from '$lib/ws.svelte';
-	import Badge from '$lib/components/atoms/Badge.svelte';
-	import Button from '$lib/components/atoms/Button.svelte';
-	import Text from '$lib/components/atoms/Text.svelte';
+	import { Badge, Button, Text } from '@dorsk/tsumikit';
 
 	let {
 		req,

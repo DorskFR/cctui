@@ -5,8 +5,7 @@
 	// locally, so a request only fires when the user crosses a `/` boundary.
 	// Dotdirs surface only once the typed segment starts with a dot.
 	import { useMachineDirs } from '$lib/queries';
-	import Field from '$lib/components/molecules/Field.svelte';
-	import Input from '$lib/components/atoms/Input.svelte';
+	import { Field, Input } from '@dorsk/tsumikit';
 	import Select from '$lib/components/atoms/Select.svelte';
 
 	let {

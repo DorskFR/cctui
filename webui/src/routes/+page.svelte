@@ -3,9 +3,7 @@
 	import { apiOrigin } from '$lib/config';
 	import { toasts } from '$lib/toast.svelte';
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
-	import Button from '$lib/components/atoms/Button.svelte';
-	import Heading from '$lib/components/atoms/Heading.svelte';
-	import Text from '$lib/components/atoms/Text.svelte';
+	import { Button, Heading, Text } from '@dorsk/tsumikit';
 	import { asUsage } from './home.logic';
 
 	const users = useUsers();

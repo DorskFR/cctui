@@ -1,11 +1,7 @@
 <script lang="ts">
 	import type { UserRow } from '@bindings/UserRow';
 	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
-	import Badge from '$lib/components/atoms/Badge.svelte';
-	import Button from '$lib/components/atoms/Button.svelte';
-	import Switch from '$lib/components/atoms/Switch.svelte';
-	import Heading from '$lib/components/atoms/Heading.svelte';
-	import Text from '$lib/components/atoms/Text.svelte';
+	import { Badge, Button, Heading, Switch, Text } from '@dorsk/tsumikit';
 	import IconButton from '$lib/components/molecules/IconButton.svelte';
 	import ColorPicker from '$lib/components/molecules/ColorPicker.svelte';
 	import { useMachines, useTokens, useUserActions } from '$lib/queries';

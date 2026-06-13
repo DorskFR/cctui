@@ -7,13 +7,8 @@
 	} from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
 	import { dateOnly } from '$lib/format';
-	import Button from '$lib/components/atoms/Button.svelte';
-	import Input from '$lib/components/atoms/Input.svelte';
+	import { Badge, Button, Field, Heading, Input, Text } from '@dorsk/tsumikit';
 	import Select from '$lib/components/atoms/Select.svelte';
-	import Badge from '$lib/components/atoms/Badge.svelte';
-	import Heading from '$lib/components/atoms/Heading.svelte';
-	import Text from '$lib/components/atoms/Text.svelte';
-	import Field from '$lib/components/molecules/Field.svelte';
 	import Modal from '$lib/components/molecules/Modal.svelte';
 	import { summarize } from './dispatchers.logic';
 
