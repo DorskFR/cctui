@@ -80,9 +80,14 @@ jobs:
           cp "target/${{ matrix.target }}/release/cctui" "dist/cctui-${{ matrix.os }}-${{ matrix.arch }}"
           cp "target/${{ matrix.target }}/release/cctui-daemon" "dist/cctui-daemon-${{ matrix.os }}-${{ matrix.arch }}"
 
+      # These are throwaway hand-offs to the `release` job within the same run;
+      # the real binaries live on the published GitHub Release (unmetered
+      # Releases storage). 1-day retention stops them piling up against the
+      # 0.5 GB Actions-storage quota.
       - uses: actions/upload-artifact@v7
         with:
           name: cctui-bins-${{ matrix.os }}-${{ matrix.arch }}
+          retention-days: 1
           path: |
             dist/cctui-${{ matrix.os }}-${{ matrix.arch }}
             dist/cctui-daemon-${{ matrix.os }}-${{ matrix.arch }}
