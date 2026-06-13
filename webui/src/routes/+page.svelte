@@ -74,7 +74,7 @@
 <div class="grid token-grid">
 	{#each tokenCards as c (c.lbl)}
 		<div class="card stat">
-			<TokenUsage usage={c.usage} />
+			<TokenUsage usage={c.usage} showSum={false} />
 			<Text size="sm" tone="muted">{c.lbl}</Text>
 		</div>
 	{/each}

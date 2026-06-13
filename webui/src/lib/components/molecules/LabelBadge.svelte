@@ -87,30 +87,17 @@
 		onkeydown={(e) => e.stopPropagation()}
 	>
 		{#each labels as l (l.id)}
-			<Badge class="label" style={labelTint(l)}>
-				{#if editable && onCreate}
-					<ColorPicker
-						value={storedHue(l.color)}
-						hues={LABEL_HUES}
-						label={`Recolor ${l.name}`}
-						onchange={(h) => recolor(l, h)}
-					>
-						{#snippet trigger()}{@render dot(l)}{/snippet}
-					</ColorPicker>
-				{:else}
-					{@render dot(l)}
-				{/if}
+			<!-- The chip is just the tinted, square, removable label — recolor lives in
+			     the add-popover (per-label ColorPicker), NOT inside the Badge. -->
+			<Badge
+				class="label"
+				style="{labelTint(l)};border-radius:var(--r-sm)"
+				removable={editable}
+				onremove={() => {
+					if (!busy) onDetach?.(l.id);
+				}}
+			>
 				<span class="name">{l.name}</span>
-				{#if editable}
-					<IconButton
-						inline
-						icon="x"
-						size={12}
-						label={`Remove ${l.name}`}
-						disabled={busy}
-						onclick={() => onDetach?.(l.id)}
-					/>
-				{/if}
 			</Badge>
 		{/each}
 

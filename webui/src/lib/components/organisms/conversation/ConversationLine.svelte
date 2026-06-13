@@ -4,11 +4,10 @@
 	// row (role badge, tool name, time, delivery state), the bubble, and the
 	// per-message action buttons, delegating retry/edit/save/copy to callbacks.
 	import { clockTime } from '$lib/format';
-	import { compact } from '$lib/format';
 	import IconButton from '$lib/components/molecules/IconButton.svelte';
+	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
 	import { Button, Text } from '@dorsk/tsumikit';
 	import type { Line } from './types';
-	import type { TokenUsage as TokenUsageT } from '@bindings/TokenUsage';
 	import './bubble.css';
 
 	let {
@@ -36,20 +35,6 @@
 		if (secs < 60) return `${secs}s`;
 		const mins = Math.floor(secs / 60);
 		return `${mins}m ${secs % 60}s`;
-	}
-	function usageLabel(u: TokenUsageT | undefined): string {
-		if (!u) return '';
-		const total =
-			Number(u.tokens_in) +
-			Number(u.tokens_out) +
-			Number(u.cache_read_tokens) +
-			Number(u.cache_creation_tokens);
-		if (!total) return '';
-		const cache =
-			Number(u.cache_read_tokens) + Number(u.cache_creation_tokens) > 0
-				? ` · cache ${compact(Number(u.cache_read_tokens) + Number(u.cache_creation_tokens))}`
-				: '';
-		return `${compact(total)} tok${cache}`;
 	}
 </script>
 
@@ -129,9 +114,13 @@
 		<pre class="bubble mono code">{ln.text}</pre>
 	{/if}
 	{#if (ln.durationMs || ln.usage) && (ln.role === 'assistant' || ln.role === 'result')}
-		<Text as="div" class="line-foot" tone="faint" size="xs">
-			{[durationLabel(ln.durationMs), usageLabel(ln.usage)].filter(Boolean).join(' · ')}
-		</Text>
+		{@const dur = durationLabel(ln.durationMs)}
+		<div class="line-foot row">
+			<!-- How long the model took to reply (CCT) — kept alongside the per-reply
+			     token breakdown (no Σ; that's the conversation-wide aggregate). -->
+			{#if dur}<Text tone="faint" size="xs">⏱ {dur}</Text>{/if}
+			{#if ln.usage}<TokenUsage usage={ln.usage} showSum={false} />{/if}
+		</div>
 	{/if}
 </div>
 

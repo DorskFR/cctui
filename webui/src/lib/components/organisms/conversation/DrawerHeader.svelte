@@ -8,7 +8,7 @@
 	// are delegated to callbacks; the editing UI state lives here.
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import { statusBadgeClass } from '$lib/format';
-	import { toasts } from '$lib/toast.svelte';
+	import { copyText } from '$lib/clipboard';
 	import { fontScale, SCALE_LEVELS } from '$lib/fontscale.svelte';
 	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
 	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
@@ -88,14 +88,6 @@
 		onsetmodel(model, effort);
 	}
 
-	async function copyText(text: string) {
-		try {
-			await navigator.clipboard.writeText(text);
-			toasts.ok('Copied');
-		} catch {
-			toasts.err('Clipboard unavailable');
-		}
-	}
 
 	function closeMoreFromOutside(e: PointerEvent) {
 		if (!moreOpen) return;
