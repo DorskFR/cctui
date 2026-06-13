@@ -273,6 +273,12 @@
 	});
 	// Drop filter ids whose label was deleted so the count stays honest.
 	$effect(() => {
+		// Wait for the label set to actually load before pruning: on a refresh
+		// the persisted filter is restored synchronously while `labelsQuery` is
+		// still in flight (allLabels === []), so pruning here would treat every
+		// restored id as "deleted", wipe the filter, and the drafts.set effect
+		// above would then persist that empty set — losing the filter for good.
+		if (!$labelsQuery.data) return;
 		const known = new Set(allLabels.map((l) => l.id));
 		if ([...labelFilter].some((id) => !known.has(id))) {
 			labelFilter = new Set([...labelFilter].filter((id) => known.has(id)));
