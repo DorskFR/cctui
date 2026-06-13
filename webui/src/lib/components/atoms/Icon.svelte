@@ -18,6 +18,7 @@
 		| 'send'
 		| 'star'
 		| 'stop'
+		| 'tag'
 		| 'x';
 
 	let {
@@ -79,6 +80,8 @@
 		<path d="M22 2 11 13" /><path d="M22 2 15 22l-4-9-9-4z" />
 	{:else if name === 'filter'}
 		<path d="M3 4h18l-7 8v6l-4 2v-10z" />
+	{:else if name === 'tag'}
+		<path d="M20.59 13.41 13.42 20.58a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z" /><line x1="7" y1="7" x2="7.01" y2="7" />
 	{/if}
 </svg>
 

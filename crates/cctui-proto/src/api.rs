@@ -185,6 +185,43 @@ pub struct SessionListItem {
     /// reaper regardless of heartbeat age. DB-backed (`sessions.pinned`).
     #[serde(default)]
     pub pinned: bool,
+    /// User-defined colored labels attached to this session (CCT-360).
+    /// Many-to-many (`labels` / `session_labels` tables); empty when unlabeled.
+    #[serde(default)]
+    pub labels: Vec<Label>,
+}
+
+/// A reusable, user-defined colored label (CCT-360). Labels are global (shared
+/// across sessions) and attached many-to-many; `color` is a CSS hex string
+/// (e.g. `"#e11d48"`) chosen via the label picker's swatches/color input.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Label {
+    pub id: String,
+    pub name: String,
+    pub color: String,
+}
+
+/// Body for `POST /api/v1/labels` — create (or get-or-create by name) a label.
+#[derive(Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CreateLabelRequest {
+    pub name: String,
+    pub color: String,
+}
+
+/// Body for `POST /api/v1/sessions/{id}/labels` — attach an existing label.
+#[derive(Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AttachLabelRequest {
+    pub label_id: String,
+}
+
+/// Response for `GET /api/v1/labels` — every label known to the server.
+#[derive(Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct LabelListResponse {
+    pub labels: Vec<Label>,
 }
 
 #[derive(Debug, Serialize, Deserialize, TS)]

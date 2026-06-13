@@ -7,8 +7,9 @@ use chrono::{DateTime, Duration, Utc};
 use serde::Deserialize;
 
 use cctui_proto::api::{
-    ApiError, MessageRequest, RenameRequest, SessionListItem, SessionListResponse, SessionStats,
-    TokenUsageWindows, WindowTokenUsage,
+    ApiError, AttachLabelRequest, CreateLabelRequest, Label, LabelListResponse, MessageRequest,
+    RenameRequest, SessionListItem, SessionListResponse, SessionStats, TokenUsageWindows,
+    WindowTokenUsage,
 };
 use cctui_proto::classifier::{Bucket, ClassifyInput, PrStatus, classify};
 use cctui_proto::models::{Attention, Liveness, SessionStatus};
@@ -218,6 +219,7 @@ pub async fn list_sessions(
                         estimated_burst_tokens: None,
                         hibernated: false,
                         pinned: false,
+                        labels: Vec::new(),
                     },
                 )
             })
@@ -300,6 +302,7 @@ pub async fn list_sessions(
                 estimated_burst_tokens: None,
                 hibernated: false,
                 pinned: false,
+                labels: Vec::new(),
             },
         ));
     }
@@ -665,6 +668,39 @@ async fn enrich_and_sort(
         }
     }
 
+    // Session labels (CCT-360): one batched join over the junction table, then
+    // bucket the rows per session so each item carries its colored labels.
+    if !session_ids.is_empty() {
+        type LabelRow = (String, uuid::Uuid, String, String);
+        let rows: Vec<LabelRow> = sqlx::query_as(
+            "SELECT sl.session_id, l.id, l.name, l.color \
+             FROM session_labels sl JOIN labels l ON l.id = sl.label_id \
+             WHERE sl.session_id = ANY($1) \
+             ORDER BY lower(l.name)",
+        )
+        .bind(&session_ids)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("db error (labels lookup): {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+        })?;
+        let mut by_session: std::collections::HashMap<String, Vec<Label>> =
+            std::collections::HashMap::new();
+        for (sid, id, name, color) in rows {
+            by_session.entry(sid).or_default().push(Label {
+                id: id.to_string(),
+                name,
+                color,
+            });
+        }
+        for (_, s) in &mut with_ts {
+            if let Some(labels) = by_session.remove(&s.id) {
+                s.labels = labels;
+            }
+        }
+    }
+
     // Reflect the in-memory auto-approve flag per session (CCT-151) so clients
     // can render the toggle in its current state.
     {
@@ -936,6 +972,7 @@ pub async fn search_sessions(
                     estimated_burst_tokens: None,
                     hibernated: false,
                     pinned: false,
+                    labels: Vec::new(),
                 },
             )
         })
@@ -1019,6 +1056,7 @@ pub async fn get_session(
                 estimated_burst_tokens: None,
                 hibernated: false,
                 pinned: false,
+                labels: Vec::new(),
             };
             return Ok(Json(item));
         }
@@ -1080,6 +1118,7 @@ pub async fn get_session(
         estimated_burst_tokens: None,
         hibernated: false,
         pinned: false,
+        labels: Vec::new(),
     };
     Ok(Json(item))
 }
@@ -1677,6 +1716,117 @@ pub async fn unarchive_sessions(
     }
     tracing::info!(unarchived = ok, requested = req.ids.len(), "batch unarchive");
     StatusCode::NO_CONTENT
+}
+
+// --- Session labels (CCT-360) ---
+
+fn db_err(e: sqlx::Error) -> (StatusCode, Json<ApiError>) {
+    tracing::error!("db error: {e}");
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+}
+
+/// `GET /api/v1/labels` — every label known to the server, name-sorted. Feeds
+/// both the per-session label picker and the sessions-page filter.
+pub async fn list_labels(
+    State(state): State<AppState>,
+) -> Result<Json<LabelListResponse>, (StatusCode, Json<ApiError>)> {
+    let rows: Vec<(uuid::Uuid, String, String)> =
+        sqlx::query_as("SELECT id, name, color FROM labels ORDER BY lower(name)")
+            .fetch_all(&state.pool)
+            .await
+            .map_err(db_err)?;
+    let labels = rows
+        .into_iter()
+        .map(|(id, name, color)| Label { id: id.to_string(), name, color })
+        .collect();
+    Ok(Json(LabelListResponse { labels }))
+}
+
+/// `POST /api/v1/labels` — get-or-create a label by case-insensitive name. If
+/// the name already exists its color is refreshed to the supplied one (lets the
+/// picker recolor a label); returns the resulting label either way.
+pub async fn create_label(
+    State(state): State<AppState>,
+    Json(req): Json<CreateLabelRequest>,
+) -> Result<(StatusCode, Json<Label>), (StatusCode, Json<ApiError>)> {
+    let name = req.name.trim();
+    if name.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ApiError { error: "label name is required".into() }),
+        ));
+    }
+    let row: (uuid::Uuid, String, String) = sqlx::query_as(
+        "INSERT INTO labels (name, color) VALUES ($1, $2) \
+         ON CONFLICT (lower(name)) DO UPDATE SET color = EXCLUDED.color \
+         RETURNING id, name, color",
+    )
+    .bind(name)
+    .bind(&req.color)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(db_err)?;
+    Ok((
+        StatusCode::CREATED,
+        Json(Label { id: row.0.to_string(), name: row.1, color: row.2 }),
+    ))
+}
+
+/// `DELETE /api/v1/labels/{id}` — delete a label globally; cascades to detach
+/// it from every session.
+pub async fn delete_label(
+    State(state): State<AppState>,
+    Path(label_id): Path<String>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    let id = parse_label_id(&label_id)?;
+    sqlx::query("DELETE FROM labels WHERE id = $1")
+        .bind(id)
+        .execute(&state.pool)
+        .await
+        .map_err(db_err)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /api/v1/sessions/{id}/labels` — attach an existing label to a session.
+/// Idempotent (re-attaching the same label is a no-op).
+pub async fn attach_label(
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+    Json(req): Json<AttachLabelRequest>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    let label_id = parse_label_id(&req.label_id)?;
+    sqlx::query(
+        "INSERT INTO session_labels (session_id, label_id) VALUES ($1, $2) \
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(&session_id)
+    .bind(label_id)
+    .execute(&state.pool)
+    .await
+    .map_err(db_err)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `DELETE /api/v1/sessions/{id}/labels/{label_id}` — detach a label from a
+/// session (leaves the label definition intact for other sessions).
+pub async fn detach_label(
+    State(state): State<AppState>,
+    Path((session_id, label_id)): Path<(String, String)>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    let label_id = parse_label_id(&label_id)?;
+    sqlx::query("DELETE FROM session_labels WHERE session_id = $1 AND label_id = $2")
+        .bind(&session_id)
+        .bind(label_id)
+        .execute(&state.pool)
+        .await
+        .map_err(db_err)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+fn parse_label_id(raw: &str) -> Result<uuid::Uuid, (StatusCode, Json<ApiError>)> {
+    uuid::Uuid::parse_str(raw).map_err(|_| {
+        (StatusCode::BAD_REQUEST, Json(ApiError { error: "invalid label id".into() }))
+    })
 }
 
 pub async fn set_session_policy(

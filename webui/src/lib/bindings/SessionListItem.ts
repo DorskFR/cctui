@@ -3,6 +3,7 @@ import type { AdapterId } from "./AdapterId";
 import type { Attention } from "./Attention";
 import type { Bucket } from "./Bucket";
 import type { JsonValue } from "./serde_json/JsonValue";
+import type { Label } from "./Label";
 import type { Liveness } from "./Liveness";
 import type { SessionStatus } from "./SessionStatus";
 import type { TokenUsage } from "./TokenUsage";
@@ -116,4 +117,9 @@ hibernated: boolean,
  * above everything in the live list and is exempt from the auto-archive
  * reaper regardless of heartbeat age. DB-backed (`sessions.pinned`).
  */
-pinned: boolean, };
+pinned: boolean, 
+/**
+ * User-defined colored labels attached to this session (CCT-360).
+ * Many-to-many (`labels` / `session_labels` tables); empty when unlabeled.
+ */
+labels: Array<Label>, };

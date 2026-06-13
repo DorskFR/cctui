@@ -110,3 +110,5 @@ export const LIST_VIEW = 'cctui_list_view';
 // Which session section is in view (CCT-322): 'starred' | 'live' | 'dispatched'
 // | 'archived'. Replaces the old archived on/off checkbox with a 4-way picker.
 export const LIST_SECTION = 'cctui_list_section';
+// Selected label-filter ids (CCT-360), comma-joined. Empty = show all.
+export const LIST_LABELS = 'cctui_list_labels';
