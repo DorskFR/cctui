@@ -32,4 +32,8 @@ export interface Form {
 	effort_claude: string;
 	effort_codex: string;
 	timeout: string;
+	// Label ids to attach to the spawned session (CCT-360). Remembered between
+	// New Session opens via LAST_SPAWN_LABELS so the next spawn defaults to the
+	// last-used set. Resolved against the live label list for display.
+	labels: string[];
 }

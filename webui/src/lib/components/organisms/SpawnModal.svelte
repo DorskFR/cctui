@@ -6,8 +6,11 @@
 		useDispatchers,
 		useSessionActions,
 		useRecentDirs,
-		useAccounts
+		useAccounts,
+		useLabels,
+		endpoints
 	} from '$lib/queries';
+	import type { Label } from '@bindings/Label';
 	import { ws } from '$lib/ws.svelte';
 	import { toasts } from '$lib/toast.svelte';
 	import {
@@ -15,6 +18,7 @@
 		SPAWN_DRAFT,
 		LAST_MACHINE,
 		LAST_SPAWN_NAME,
+		LAST_SPAWN_LABELS,
 		nextSessionName,
 		loadMachinePrefs,
 		saveMachinePrefs
@@ -23,6 +27,7 @@
 	import { mergeFiles, removeFileByName, fileCapError } from '$lib/attachments';
 	import Modal from '$lib/components/molecules/Modal.svelte';
 	import { Button, Field, OptionButton, Text } from '@dorsk/tsumikit';
+	import LabelChips from '$lib/components/molecules/LabelChips.svelte';
 	import EnvSecretsField from './spawn/EnvSecretsField.svelte';
 	import MachineFields from './spawn/MachineFields.svelte';
 	import DispatchFields from './spawn/DispatchFields.svelte';
@@ -66,7 +71,8 @@
 		account: '',
 		effort_claude: '',
 		effort_codex: '',
-		timeout: ''
+		timeout: '',
+		labels: []
 	};
 	interface SpawnDraftPayload extends Partial<Form> {
 		envRows?: EnvRow[];
@@ -88,6 +94,11 @@
 			if (!raw && !prefill) {
 				const lastName = drafts.get(LAST_SPAWN_NAME);
 				if (lastName) seeded.name = nextSessionName(lastName);
+				// Default the label picker to the last-used set (CCT-360) unless a
+				// draft/prefill already carries labels.
+				if (!savedForm.labels) {
+					seeded.labels = (drafts.get(LAST_SPAWN_LABELS) ?? '').split(',').filter(Boolean);
+				}
 			}
 			return seeded;
 		} catch {
@@ -145,6 +156,69 @@
 	// matches the selected adapter (codex → openai, else anthropic). Switching
 	// adapter to one with no matching account clears the stale selection.
 	const accounts = useAccounts(() => true);
+
+	// Labels (CCT-360): the picker selects label ids into `form.labels`; on spawn
+	// they're attached to the new session and remembered for next time. New
+	// labels are created server-side immediately (get-or-create) so we always
+	// track real ids. Display resolves ids against the live label set, dropping
+	// any that were deleted.
+	const labelsQuery = useLabels();
+	const allLabels = $derived($labelsQuery.data?.labels ?? []);
+	const selectedLabels = $derived(allLabels.filter((l) => form.labels.includes(l.id)));
+	async function createSpawnLabel(name: string, color: string): Promise<Label> {
+		return actions.createLabel(name, color);
+	}
+	function attachSpawnLabel(id: string) {
+		if (!form.labels.includes(id)) form.labels = [...form.labels, id];
+	}
+	function detachSpawnLabel(id: string) {
+		form.labels = form.labels.filter((x) => x !== id);
+	}
+
+	// Attach the chosen labels to a session once we know its id.
+	async function attachLabelsTo(sessionId: string, ids: string[]) {
+		for (const id of ids) {
+			try {
+				await actions.attachLabel(sessionId, id);
+			} catch {
+				/* best-effort: a deleted label or transient error shouldn't fail the spawn */
+			}
+		}
+	}
+
+	// Machine spawns don't return a session id (the worker registers its own id
+	// later — see spawn.rs). Correlate with the documented heuristic: the newest
+	// session on the same (machine, working_dir) registered at/after the request,
+	// retrying briefly while the worker comes up.
+	async function attachLabelsToSpawned(
+		machineId: string,
+		cwd: string,
+		sinceMs: number,
+		ids: string[]
+	) {
+		if (!ids.length) return;
+		for (let i = 0; i < 6; i++) {
+			let list;
+			try {
+				list = await endpoints.sessions(false);
+			} catch {
+				return;
+			}
+			const match = list.sessions
+				.filter((s) => s.machine_id === machineId && s.working_dir === cwd)
+				.filter((s) => !s.registered_at || new Date(s.registered_at).getTime() >= sinceMs - 2000)
+				.sort(
+					(a, b) =>
+						new Date(b.registered_at ?? 0).getTime() - new Date(a.registered_at ?? 0).getTime()
+				)[0];
+			if (match) {
+				await attachLabelsTo(match.id, ids);
+				return;
+			}
+			await new Promise((r) => setTimeout(r, 500));
+		}
+	}
+
 	const wantProvider = $derived(form.adapter_id === 'codex' ? 'openai' : 'anthropic');
 	const matchingAccounts = $derived(
 		($accounts.data ?? []).filter((a) => a.provider === wantProvider)
@@ -223,10 +297,17 @@
 			env: envMap(),
 			account: form.account.trim() || null
 		};
+		// Capture label intent before the form is reset on success (CCT-360).
+		const labelIds = [...form.labels];
+		const labelCwd = form.working_dir.trim();
+		const labelMachine = form.machine_id;
+		const requestedAt = Date.now();
 		const res = await actions.spawn(body, files);
 		drafts.set(LAST_MACHINE, form.machine_id);
 		// An empty submitted name clears the proposal (drafts.set removes the key).
 		drafts.set(LAST_SPAWN_NAME, form.name.trim());
+		// Remember the label set for the next New Session (empty clears it).
+		drafts.set(LAST_SPAWN_LABELS, labelIds.join(','));
 		// Remember these settings for this machine (CCT-274) so the next spawn
 		// here pre-selects them. Saved on submit (not just on confirmed success)
 		// so a slow/unconfirmed spawn still records the operator's intent.
@@ -243,6 +324,8 @@
 		const result = await ws.awaitCommand(res.command_id);
 		if (result.ok) {
 			toasts.ok('Session spawned');
+			// Attach labels to the freshly-registered session (best-effort, async).
+			void attachLabelsToSpawned(labelMachine, labelCwd, requestedAt, labelIds);
 			drafts.clear(SPAWN_DRAFT);
 			form = { ...blank, machine_id: form.machine_id, dispatcher: form.dispatcher };
 			envRows = [];
@@ -250,6 +333,8 @@
 			onspawned();
 			onclose();
 		} else if (result.timedOut) {
+			// Still try to label it — the session usually lands shortly after.
+			void attachLabelsToSpawned(labelMachine, labelCwd, requestedAt, labelIds);
 			// No confirmation ≠ failed (CCT-242): slow/cold spawns routinely land
 			// after the wait. Close + refresh so the new session shows up; keep the
 			// draft so a *real* miss is one re-open away. Re-submitting blindly
@@ -302,8 +387,14 @@
 			// nested `env` object, so cast at the boundary.
 			payload: payload as DispatchRequest['payload']
 		};
+		const labelIds = [...form.labels];
+		const dispatchedId = pendingDispatchId;
 		const res = await actions.dispatch(body);
 		drafts.set(LAST_SPAWN_NAME, form.name.trim());
+		// Remember the label set + attach to the dispatched session (its id is the
+		// client-minted dispatch id, CCT-360).
+		drafts.set(LAST_SPAWN_LABELS, labelIds.join(','));
+		void attachLabelsTo(dispatchedId, labelIds);
 		toasts.ok(`Dispatched to ${res.dispatcher} (${res.handle})`);
 		pendingDispatchId = null;
 		drafts.clear(SPAWN_DRAFT);
@@ -389,6 +480,20 @@
 
 			<!-- Environment secrets (CCT-202), both targets. -->
 			<EnvSecretsField bind:envRows invalid={badEnvKeys.length > 0} />
+
+			<!-- Labels (CCT-360), both targets. Defaults to the last-used set;
+			     attached to the session once it spawns. -->
+			<Field label="Labels (optional)">
+				<LabelChips
+					labels={selectedLabels}
+					editable
+					{allLabels}
+					portalMenu
+					onCreate={createSpawnLabel}
+					onAttach={attachSpawnLabel}
+					onDetach={detachSpawnLabel}
+				/>
+			</Field>
 		</div>
 	{/snippet}
 	{#snippet footer()}

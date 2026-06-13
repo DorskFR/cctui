@@ -3,24 +3,29 @@
 	import { Input } from '@dorsk/tsumikit';
 	import { LABEL_COLORS, labelTextColor } from '$lib/labels';
 
-	// Per-session label strip (CCT-360): renders the session's colored labels as
-	// chips and, when `editable`, an inline "+" that opens a small dropdown to
-	// pick existing labels or create a new one (name + color picker). Read-only
-	// callers (e.g. subagent rows) just get the chips.
+	// Label strip + picker (CCT-360). Renders the attached labels as colored
+	// chips and, when `editable`, a `+` trigger that opens a dropdown to toggle
+	// existing labels or create a new one (name + color picker).
+	//
+	// All inline affordances are <span role="button">, never <button>, so the
+	// whole component is valid INSIDE a parent <button> (the session card). The
+	// popover itself holds form controls, so when `portalMenu` is set it is
+	// teleported to <body> (escaping the card button) and positioned under the
+	// trigger.
 	let {
 		labels,
 		editable = false,
 		allLabels = [],
+		portalMenu = false,
 		onCreate,
 		onAttach,
 		onDetach
 	}: {
-		/** Labels currently attached to this session. */
 		labels: Label[];
 		editable?: boolean;
-		/** Every label known to the server — the picker's existing-label list. */
 		allLabels?: Label[];
-		/** get-or-create a label by name; resolves to the label so we can attach it. */
+		/** Teleport the popover to <body> (needed when nested in a <button>). */
+		portalMenu?: boolean;
 		onCreate?: (name: string, color: string) => Promise<Label>;
 		onAttach?: (labelId: string) => void | Promise<void>;
 		onDetach?: (labelId: string) => void | Promise<void>;
@@ -30,18 +35,46 @@
 	let name = $state('');
 	let color = $state(LABEL_COLORS[0]);
 	let busy = $state(false);
+	let rootEl = $state<HTMLElement>();
+	let addEl = $state<HTMLElement>();
+	let menuEl = $state<HTMLElement>();
 
 	const attachedIds = $derived(new Set(labels.map((l) => l.id)));
 
-	// Close the popover on any outside pointer (mirrors the sessions page).
-	function clickOutside(node: HTMLElement, onOutside: () => void) {
+	// Close on any pointer outside BOTH the inline strip and the (possibly
+	// portaled) menu. Installed only while open.
+	$effect(() => {
+		if (!open) return;
 		const handler = (e: Event) => {
-			if (!node.contains(e.target as Node)) onOutside();
+			const t = e.target as Node;
+			if (rootEl?.contains(t) || menuEl?.contains(t)) return;
+			open = false;
 		};
 		document.addEventListener('pointerdown', handler, true);
+		return () => document.removeEventListener('pointerdown', handler, true);
+	});
+
+	// Portal + position the popover under the trigger; reposition on scroll/resize.
+	function portal(node: HTMLElement) {
+		if (!portalMenu) return;
+		document.body.appendChild(node);
+		const place = () => {
+			if (!addEl) return;
+			const r = addEl.getBoundingClientRect();
+			node.style.position = 'fixed';
+			node.style.top = `${r.bottom + 4}px`;
+			const mw = node.offsetWidth || 220;
+			node.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - mw - 8))}px`;
+			node.style.zIndex = '1000';
+		};
+		place();
+		window.addEventListener('scroll', place, true);
+		window.addEventListener('resize', place);
 		return {
 			destroy() {
-				document.removeEventListener('pointerdown', handler, true);
+				window.removeEventListener('scroll', place, true);
+				window.removeEventListener('resize', place);
+				node.remove();
 			}
 		};
 	}
@@ -84,30 +117,32 @@
 </script>
 
 {#if labels.length > 0 || editable}
-	<div class="labels" use:clickOutside={() => (open = false)}>
+	<span class="labels" bind:this={rootEl}>
 		{#each labels as l (l.id)}
-			<span
-				class="chip"
-				style="background:{l.color};color:{labelTextColor(l.color)}"
-				title={l.name}
-			>
+			<span class="chip" style="background:{l.color};color:{labelTextColor(l.color)}" title={l.name}>
 				{l.name}
 				{#if editable}
-					<button
-						type="button"
+					<span
 						class="chip-x"
+						role="button"
+						tabindex="0"
 						aria-label={`Remove ${l.name}`}
 						onpointerdown={(e) => e.stopPropagation()}
-						onclick={(e) => removeChip(e, l)}>×</button
+						onclick={(e) => removeChip(e, l)}
+						onkeydown={(e) => {
+							if (e.key === 'Enter' || e.key === ' ') removeChip(e, l);
+						}}>×</span
 					>
 				{/if}
 			</span>
 		{/each}
 
 		{#if editable}
-			<button
-				type="button"
+			<span
 				class="add"
+				bind:this={addEl}
+				role="button"
+				tabindex="0"
 				title="Add label"
 				aria-label="Add label"
 				aria-haspopup="true"
@@ -116,19 +151,30 @@
 				onclick={(e) => {
 					e.stopPropagation();
 					open = !open;
-				}}>+</button
+				}}
+				onkeydown={(e) => {
+					if (e.key === 'Enter' || e.key === ' ') {
+						e.preventDefault();
+						open = !open;
+					}
+				}}>+</span
 			>
 
 			{#if open}
-				<div class="menu" aria-label="Labels">
+				<!-- svelte-ignore a11y_no_static_element_interactions -->
+				<div
+					class="menu"
+					bind:this={menuEl}
+					use:portal
+					onpointerdown={(e) => e.stopPropagation()}
+				>
 					{#if allLabels.length > 0}
 						<div class="menu-list">
 							{#each allLabels as l (l.id)}
 								<button
 									type="button"
 									class="opt"
-									role="menuitemcheckbox"
-									aria-checked={attachedIds.has(l.id)}
+									aria-pressed={attachedIds.has(l.id)}
 									disabled={busy}
 									onclick={() => toggleExisting(l)}
 								>
@@ -142,12 +188,7 @@
 					{/if}
 
 					<form class="create" onsubmit={createAndAttach}>
-						<Input
-							class="name-in"
-							placeholder="New label…"
-							bind:value={name}
-							maxlength={40}
-						/>
+						<Input class="name-in" placeholder="New label…" bind:value={name} maxlength={40} />
 						<div class="swatches">
 							{#each LABEL_COLORS as c (c)}
 								<button
@@ -163,20 +204,18 @@
 								<input type="color" bind:value={color} aria-label="Custom color" />
 							</label>
 						</div>
-						<button type="submit" class="create-btn" disabled={busy || !name.trim()}
-							>Add</button
-						>
+						<button type="submit" class="create-btn" disabled={busy || !name.trim()}>Add</button>
 					</form>
 				</div>
 			{/if}
 		{/if}
-	</div>
+	</span>
 {/if}
 
 <style>
 	.labels {
 		position: relative;
-		display: flex;
+		display: inline-flex;
 		flex-wrap: wrap;
 		align-items: center;
 		gap: var(--sp-1);
@@ -193,11 +232,7 @@
 		white-space: nowrap;
 	}
 	.chip-x {
-		border: none;
-		background: none;
-		color: inherit;
 		cursor: pointer;
-		padding: 0;
 		font-size: 0.9rem;
 		line-height: 1;
 		opacity: 0.75;
@@ -213,17 +248,17 @@
 		height: 1.1rem;
 		border-radius: var(--r-pill, 999px);
 		border: 1px dashed var(--border-strong);
-		background: none;
 		color: var(--text-muted);
 		cursor: pointer;
 		font-size: var(--fs-sm);
 		line-height: 1;
-		padding: 0;
 	}
 	.add:hover {
 		color: var(--text);
 		border-color: var(--accent);
 	}
+	/* The popover. When portaled to <body> it keeps this scoped class (Svelte
+	   scoping is class-based and survives the DOM move), so the styling holds. */
 	.menu {
 		position: absolute;
 		top: 100%;
@@ -239,6 +274,8 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-2);
+		text-align: left;
+		white-space: normal;
 	}
 	.menu-list {
 		display: flex;

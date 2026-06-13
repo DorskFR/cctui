@@ -93,6 +93,11 @@ export function saveMachinePrefs(machineId: string, prefs: MachineSpawnPrefs) {
  * A fresh dialog open proposes it with a bumped numeric suffix. */
 export const LAST_SPAWN_NAME = 'cctui_last_spawn_name';
 
+/** Label ids (comma-joined) last attached from the spawn dialog (CCT-360). A
+ * fresh dialog open defaults its label picker to this set; an empty submit
+ * clears it. */
+export const LAST_SPAWN_LABELS = 'cctui_last_spawn_labels';
+
 /** Next proposed session name: bump a trailing `-<n>` suffix, else append
  * `-2` (`toto` → `toto-2`, `toto-5` → `toto-6`). Zero-padding is kept
  * (`run-09` → `run-10`). */
