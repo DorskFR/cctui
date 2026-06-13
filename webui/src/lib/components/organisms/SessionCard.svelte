@@ -433,6 +433,44 @@
 	.sc.dense.child {
 		border: 1px solid var(--border);
 	}
+	/* ── Compact list = one row per session (CCT-320/321 follow-up) ───────────
+	   The canonical field model stacks lead/preview/meta in every variant, which
+	   regressed list-compact from the single-line row it used to be (≤ v0.3.165)
+	   to a 2–3 line card. Here we lay those same three sections out side-by-side
+	   so compact is genuinely dense again — same fields, same source, one line.
+	   Scope is list-compact only: grid-compact stays a stacked 2-col card and
+	   detailed is untouched. */
+	.sc.dense:not(.grid) {
+		flex-direction: row;
+		align-items: center;
+		flex-wrap: nowrap;
+	}
+	/* Lead sizes to its content (the title still truncates via min-width:0) and
+	   must not stretch — its internal spacer would otherwise eat the whole row. */
+	.sc.dense:not(.grid) .lead {
+		flex: 0 1 auto;
+		flex-wrap: nowrap;
+		min-width: 0;
+	}
+	.sc.dense:not(.grid) .lead .spacer {
+		display: none;
+	}
+	/* Preview takes the flexible middle as a single ellipsised line. */
+	.sc.dense:not(.grid) .preview {
+		flex: 1 1 auto;
+	}
+	/* Meta trails on the right (margin-auto pins it there even when there is no
+	   preview to absorb the slack) and never wraps. */
+	.sc.dense:not(.grid) .meta {
+		flex: 0 1 auto;
+		flex-wrap: nowrap;
+		margin-left: auto;
+	}
+	/* Path is the lowest-priority field on a single line: let it shrink away
+	   first (ellipsis) so model · tokens · timestamp stay readable. */
+	.sc.dense:not(.grid) .meta :global(.path) {
+		flex: 0 1 auto;
+	}
 	.sc.attn {
 		background: var(--attention-bg);
 		border-left: 3px solid var(--attention-bar);
