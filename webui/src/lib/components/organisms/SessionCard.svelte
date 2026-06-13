@@ -253,6 +253,20 @@
 		<span class="dot {livenessClass}"></span>
 		{#if !child}<MachineBadge name={s.machine_name} id={s.machine_id} hue={s.machine_hue} mono />{/if}
 		<Text class="title" weight="semibold" truncate>{title}</Text>
+		<!-- Labels inline after the title (CCT-360). Read-only chips everywhere;
+		     the inline add/remove picker only on top-level rows with an attach
+		     handler. The popover is portaled out of this card <button>. -->
+		{#if s.labels.length > 0 || (onAttachLabel && !child)}
+			<LabelChips
+				labels={s.labels}
+				editable={!!onAttachLabel && !child}
+				{allLabels}
+				portalMenu
+				onCreate={onCreateLabel}
+				onAttach={(lid) => onAttachLabel?.(s.id, lid)}
+				onDetach={(lid) => onDetachLabel?.(s.id, lid)}
+			/>
+		{/if}
 		{#if child}<Badge tone="info" style="padding:0.05rem var(--sp-2)">subagent</Badge>{/if}
 		{#if needsInput}<span class="hand" title="needs input">✋</span>{/if}
 		{#if pendingCount > 0}<Badge tone="warn" style="padding:0.05rem var(--sp-2)">{pendingCount} perm</Badge>{/if}
@@ -294,22 +308,6 @@
 		<Text class="path" tone="muted" size="xs" title={s.working_dir}>{s.working_dir}</Text>
 	</div>
 	</button>
-	<!-- Label strip (CCT-360). Rendered OUTSIDE the card <button> so its own
-	     buttons/inputs are valid and their clicks don't open the session. Shows
-	     read-only chips everywhere; the inline add/remove picker only when an
-	     attach handler is wired (top-level rows). -->
-	{#if (s.labels.length > 0 || (onAttachLabel && !child))}
-		<div class="label-strip" class:child>
-			<LabelChips
-				labels={s.labels}
-				editable={!!onAttachLabel && !child}
-				{allLabels}
-				onCreate={onCreateLabel}
-				onAttach={(lid) => onAttachLabel?.(s.id, lid)}
-				onDetach={(lid) => onDetachLabel?.(s.id, lid)}
-			/>
-		</div>
-	{/if}
 </div>
 
 <style>
@@ -325,17 +323,6 @@
 	.sc-wrap.child {
 		width: auto;
 		margin-left: var(--sp-4);
-	}
-	/* Label strip (CCT-360): a thin row tucked under the card content. Indented
-	   to align with the card's text and sitting above its z-index so the picker
-	   popover overlays neighboring cards. */
-	.label-strip {
-		position: relative;
-		z-index: 2;
-		padding: var(--sp-1) var(--sp-3) 0;
-	}
-	.label-strip.child {
-		padding-left: var(--sp-4);
 	}
 	/* Grid cards (CCT-305): the wrapper and the card fill the grid cell's full
 	   height so every card in a row matches (the grid stretches the cells), and
@@ -486,7 +473,10 @@
 	}
 	.sc :global(.title) {
 		font-size: var(--fs-md);
-		flex: 1 1 auto;
+		/* Don't grow (CCT-360): size to content so inline labels + the add button
+		   sit right after the title; the trailing spacer absorbs free space. Still
+		   shrinks (min-width:0) to truncate long titles when the row is tight. */
+		flex: 0 1 auto;
 		min-width: 0;
 	}
 	/* Detailed views give the title more presence (CCT-321: clearly visible title). */
