@@ -3,6 +3,7 @@
 	// is "" (the adapter's default); the track snaps to each named level and the
 	// active label is highlighted. Per-adapter level sets are passed in.
 	import Field from '$lib/components/molecules/Field.svelte';
+	import Range from '$lib/components/atoms/Range.svelte';
 
 	let {
 		id,
@@ -20,10 +21,9 @@
 </script>
 
 <Field label="Effort" for={id}>
-	<input
+	<Range
 		{id}
-		class="slider"
-		type="range"
+		style="accent-color:var(--c-blue);margin:2px 0"
 		min="0"
 		max={levels.length - 1}
 		step="1"
@@ -43,11 +43,6 @@
 </Field>
 
 <style>
-	.slider {
-		width: 100%;
-		accent-color: var(--c-blue);
-		margin: 2px 0;
-	}
 	.ticks {
 		display: flex;
 		justify-content: space-between;

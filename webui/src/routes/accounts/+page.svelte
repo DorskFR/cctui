@@ -15,6 +15,11 @@
 	import Select from '$lib/components/atoms/Select.svelte';
 	import Badge from '$lib/components/atoms/Badge.svelte';
 	import Link from '$lib/components/atoms/Link.svelte';
+	import Heading from '$lib/components/atoms/Heading.svelte';
+	import Text from '$lib/components/atoms/Text.svelte';
+	import Field from '$lib/components/molecules/Field.svelte';
+	import Modal from '$lib/components/molecules/Modal.svelte';
+	import { usd, providerLabel } from './accounts.logic';
 
 	const accounts = useAccounts();
 	const actions = useAccountActions();
@@ -168,45 +173,40 @@
 	}
 
 	const rows = $derived([...($accounts.data ?? [])]);
-
-	const providerLabel = (p: string) =>
-		p === 'anthropic' ? 'Claude' : p === 'openai' ? 'Codex' : p;
-
-	// Estimated cost (CCT-273): sub-cent → "<$0.01", small → 2 dp, large → compact.
-	const usd = (v: number) =>
-		!v ? '$0' : v < 0.01 ? '<$0.01' : v < 1000 ? `$${v.toFixed(2)}` : `$${compact(v)}`;
 </script>
 
 <div class="bar row">
-	<h1 class="page-title">Accounts</h1>
+	<Heading level={1}>Accounts</Heading>
 	<div class="spacer"></div>
 	<Button control variant="primary" onclick={openCreate}>+ New account</Button>
 </div>
 
-<p class="hint">
-	Named OAuth accounts for Claude and Codex. Pick one per job at spawn time; the
-	session runs through a passthrough gateway under that account. Tokens are
-	stored encrypted and never shown again.
-</p>
+<div class="intro">
+	<Text as="p" tone="muted" size="sm">
+		Named OAuth accounts for Claude and Codex. Pick one per job at spawn time; the
+		session runs through a passthrough gateway under that account. Tokens are
+		stored encrypted and never shown again.
+	</Text>
+</div>
 
 {#if $accounts.isLoading}
 	<div class="empty"><span class="spin"></span></div>
 {:else if rows.length === 0}
-	<div class="empty">No accounts yet.</div>
+	<div class="empty"><Text tone="muted">No accounts yet.</Text></div>
 {:else}
 	<div class="accounts-grid">
 		{#each rows as a (a.id)}
 			<article class="card account-card">
 				<div class="account-head row">
 					<div class="account-title">
-						<h2>{a.name}</h2>
-						<div class="muted sm">{providerLabel(a.provider)}</div>
+						<Heading level={2} size="lg" class="account-name">{a.name}</Heading>
+						<Text as="div" tone="muted" size="xs">{providerLabel(a.provider)}</Text>
 					</div>
 					<Badge>{providerLabel(a.provider)}</Badge>
 				</div>
 				{#if a.provider === 'anthropic'}
 					<div class="usage-block">
-						<div class="usage-head">Subscription usage</div>
+						<Text as="div" tone="muted" size="xs" class="usage-head">Subscription usage</Text>
 						<UsageBars id={a.id} provider={a.provider} />
 					</div>
 				{/if}
@@ -230,121 +230,102 @@
 {/if}
 
 {#if editing !== undefined}
-	<div
-		class="overlay"
-		role="presentation"
-		onclick={close}
-		onkeydown={(e) => e.key === 'Escape' && close()}
-	>
-		<div
-			class="card editor"
-			role="dialog"
-			tabindex="-1"
-			onclick={(e) => e.stopPropagation()}
-			onkeydown={(e) => e.stopPropagation()}
-		>
-			<h2>{editing ? 'Rename account' : 'New account'}</h2>
-			<label class="fld">
-				<span>Name</span>
-				<Input bind:value={name} placeholder="personal" />
-			</label>
-			{#if !editing}
-				{#if isAdmin}
-					<label class="fld">
-						<span>Owner</span>
-						<Select bind:value={ownerId}>
-							{#each activeUsers as u (u.id)}
-								<option value={u.id}>{u.name}</option>
-							{/each}
-						</Select>
-					</label>
-				{/if}
-				<label class="fld">
-					<span>Provider</span>
-					<Select
-						bind:value={provider}
-						onchange={() => {
-							oauthNonce = null;
-							oauthCode = '';
-						}}
-					>
-						<option value="anthropic">Claude (anthropic)</option>
-						<option value="openai">Codex (openai)</option>
-					</Select>
-				</label>
-				<!-- Sign in with Claude / ChatGPT: authorize upstream, paste back. -->
-				{#if !oauthNonce}
-					<Button
-						size="sm"
-						variant="primary"
-						style="align-self: flex-start"
-						disabled={oauthBusy}
-						onclick={startOAuthLogin}
-					>
-						{oauthBusy
-							? 'Opening…'
-							: provider === 'openai'
-								? 'Sign in with ChatGPT'
-								: 'Sign in with Claude'}
-					</Button>
-				{:else}
-					<label class="fld">
-						<span>{provider === 'openai' ? 'URL from ChatGPT' : 'Code from claude.ai'}</span>
-						<Input
-							bind:value={oauthCode}
-							placeholder={provider === 'openai'
-								? 'paste the http://localhost:1455/auth/callback?... URL'
-								: 'paste the code#state shown after authorizing'}
-						/>
-					</label>
-					{#if provider === 'openai'}
-						<p class="hint sub">
-							The browser tab will fail to load localhost:1455 — that's expected.
-							Copy the full URL from its address bar and paste it above.
-						</p>
+	<Modal title={editing ? 'Rename account' : 'New account'} onclose={close}>
+		{#snippet body()}
+			<div class="editor-body">
+				<Field label="Name">
+					<Input bind:value={name} placeholder="personal" />
+				</Field>
+				{#if !editing}
+					{#if isAdmin}
+						<Field label="Owner">
+							<Select bind:value={ownerId}>
+								{#each activeUsers as u (u.id)}
+									<option value={u.id}>{u.name}</option>
+								{/each}
+							</Select>
+						</Field>
 					{/if}
-					<p class="hint sub">
-						Didn't get {provider === 'openai' ? 'a URL' : 'a code'}?
-						<Link onclick={startOAuthLogin}
-							>Open {provider === 'openai' ? 'ChatGPT' : 'claude.ai'} again</Link
+					<Field label="Provider">
+						<Select
+							bind:value={provider}
+							onchange={() => {
+								oauthNonce = null;
+								oauthCode = '';
+							}}
 						>
-					</p>
-				{/if}
-				<details bind:open={showAdvanced} class="adv">
-					<summary>Advanced: paste a refresh token instead</summary>
-					<label class="fld">
-						<span>OAuth refresh token</span>
-						<Input
-							type="password"
-							bind:value={refreshToken}
-							placeholder="paste the OAuth refresh token"
-						/>
-					</label>
-				</details>
-			{/if}
-			<div class="row editor-acts">
-				<div class="spacer"></div>
-				<Button size="sm" onclick={close}>Cancel</Button>
-				{#if !editing && oauthNonce && !showAdvanced}
-					<Button size="sm" variant="primary" disabled={oauthBusy} onclick={finishOAuthLogin}>Save</Button>
-				{:else}
-					<Button size="sm" variant="primary" onclick={save}>Save</Button>
+							<option value="anthropic">Claude (anthropic)</option>
+							<option value="openai">Codex (openai)</option>
+						</Select>
+					</Field>
+					<!-- Sign in with Claude / ChatGPT: authorize upstream, paste back. -->
+					{#if !oauthNonce}
+						<Button
+							size="sm"
+							variant="primary"
+							style="align-self: flex-start"
+							disabled={oauthBusy}
+							onclick={startOAuthLogin}
+						>
+							{oauthBusy
+								? 'Opening…'
+								: provider === 'openai'
+									? 'Sign in with ChatGPT'
+									: 'Sign in with Claude'}
+						</Button>
+					{:else}
+						<Field label={provider === 'openai' ? 'URL from ChatGPT' : 'Code from claude.ai'}>
+							<Input
+								bind:value={oauthCode}
+								placeholder={provider === 'openai'
+									? 'paste the http://localhost:1455/auth/callback?... URL'
+									: 'paste the code#state shown after authorizing'}
+							/>
+						</Field>
+						{#if provider === 'openai'}
+							<Text as="p" tone="muted" size="sm">
+								The browser tab will fail to load localhost:1455 — that's expected.
+								Copy the full URL from its address bar and paste it above.
+							</Text>
+						{/if}
+						<Text as="p" tone="muted" size="sm">
+							Didn't get {provider === 'openai' ? 'a URL' : 'a code'}?
+							<Link onclick={startOAuthLogin}
+								>Open {provider === 'openai' ? 'ChatGPT' : 'claude.ai'} again</Link
+							>
+						</Text>
+					{/if}
+					<details bind:open={showAdvanced} class="adv">
+						<summary><Text tone="muted" size="sm">Advanced: paste a refresh token instead</Text></summary>
+						<Field label="OAuth refresh token" class="adv-fld">
+							<Input
+								type="password"
+								bind:value={refreshToken}
+								placeholder="paste the OAuth refresh token"
+							/>
+						</Field>
+					</details>
 				{/if}
 			</div>
-		</div>
-	</div>
+		{/snippet}
+		{#snippet footer()}
+			<div class="spacer"></div>
+			<Button size="sm" onclick={close}>Cancel</Button>
+			{#if !editing && oauthNonce && !showAdvanced}
+				<Button size="sm" variant="primary" disabled={oauthBusy} onclick={finishOAuthLogin}>Save</Button>
+			{:else}
+				<Button size="sm" variant="primary" onclick={save}>Save</Button>
+			{/if}
+		{/snippet}
+	</Modal>
 {/if}
 
 <style>
 	.bar {
 		margin-bottom: var(--sp-2);
 	}
-	.page-title {
-		font-size: var(--fs-2xl);
-	}
-	.hint {
-		color: var(--text-muted);
-		font-size: var(--fs-sm);
+	/* Typography from the Text atom; only the page rhythm lives here. */
+	.intro {
 		margin-bottom: var(--sp-4);
 	}
 	.accounts-grid {
@@ -364,13 +345,8 @@
 		flex: 1;
 		min-width: 0;
 	}
-	.account-title h2 {
-		font-size: var(--fs-lg);
-		line-height: var(--lh-tight);
+	.account-title :global(.account-name) {
 		word-break: break-word;
-	}
-	.sm {
-		font-size: var(--fs-xs);
 	}
 	.usage-block {
 		display: flex;
@@ -381,11 +357,11 @@
 		border-radius: var(--r-sm);
 		background: var(--bg-elevated-2);
 	}
-	.usage-head {
-		font-size: var(--fs-xs);
+	/* Passed to a Text atom (renders inside it), so target globally. Size/colour
+	   come from Text; the page owns only the uppercase treatment. */
+	.usage-block :global(.usage-head) {
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
-		color: var(--text-muted);
 	}
 	/* Lightweight stat list — label over value, no input-like chrome (CCT-345). */
 	.stats {
@@ -414,45 +390,15 @@
 		justify-content: flex-end;
 		flex-wrap: wrap;
 	}
-	.overlay {
-		position: fixed;
-		inset: 0;
-		background: rgba(0, 0, 0, 0.5);
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		padding: var(--sp-4);
-		z-index: 50;
-	}
-	.editor {
-		width: 100%;
-		max-width: 30rem;
+	.editor-body {
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-3);
 	}
-	.fld {
-		display: flex;
-		flex-direction: column;
-		gap: var(--sp-1);
-		font-size: var(--fs-sm);
-	}
-	.fld span {
-		color: var(--text-muted);
-	}
-	.editor-acts {
-		gap: var(--sp-1);
-		margin-top: var(--sp-2);
-	}
-	.hint.sub {
-		margin: 0;
-	}
 	.adv summary {
 		cursor: pointer;
-		color: var(--text-muted);
-		font-size: var(--fs-sm);
 	}
-	.adv .fld {
+	.adv :global(.adv-fld) {
 		margin-top: var(--sp-2);
 	}
 </style>

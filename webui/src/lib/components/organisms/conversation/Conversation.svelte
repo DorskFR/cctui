@@ -2,6 +2,7 @@
 	import PermissionCard from '$lib/components/organisms/PermissionCard.svelte';
 	import AskQuestionCard from '$lib/components/organisms/AskQuestionCard.svelte';
 	import Button from '$lib/components/atoms/Button.svelte';
+	import Text from '$lib/components/atoms/Text.svelte';
 	import ConversationLine from './ConversationLine.svelte';
 	import { dropzone } from '$lib/dropzone';
 	import { copyLineMarkdown, saveLineImage } from './lineActions';
@@ -100,7 +101,7 @@
 		{#if isLoading}
 			<div class="empty"><span class="spin"></span></div>
 		{:else if lines.length === 0 && perms.length === 0 && !ask}
-			<div class="empty">No events yet.</div>
+			<div class="empty"><Text>No events yet.</Text></div>
 		{/if}
 
 		{#if hiddenOlder > 0}
@@ -108,7 +109,7 @@
 			     long transcript opens fast. -->
 			<Button class="load-older" onclick={loadOlder}>
 				↑ Load {Math.min(RENDER_CHUNK, hiddenOlder)} older
-				<span class="faint">({hiddenOlder} hidden)</span>
+				<Text tone="faint">({hiddenOlder} hidden)</Text>
 			</Button>
 		{/if}
 		{#each visibleLines as ln, i (ln.ts + (ln.text ?? ln.html ?? '').slice(0, 24) + ln.role)}
@@ -332,9 +333,6 @@
 	.conv :global(.load-older:hover) {
 		border-color: var(--accent);
 		color: var(--accent);
-	}
-	.conv :global(.load-older .faint) {
-		color: var(--text-faint);
 	}
 	/* Jump-to-bottom pill (CCT-161 item 7) — anchored to the bottom of the chat
 	   display area (inside .conv-wrap), so it never collides with the composer as

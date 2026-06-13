@@ -5,6 +5,7 @@
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
 	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
 	import Badge from '$lib/components/atoms/Badge.svelte';
+	import Text from '$lib/components/atoms/Text.svelte';
 	import { escapeHtml } from '$lib/markdown';
 	import { highlightTerms } from '$lib/search';
 
@@ -213,7 +214,7 @@
 		{#if selectable}
 			<span class="check" class:on={selected} aria-hidden="true">{selected ? '✓' : ''}</span>
 		{/if}
-		{#if child}<span class="sub" title="subagent">↳</span>{/if}
+		{#if child}<Text tone="faint" title="subagent">↳</Text>{/if}
 		{#if onTogglePin && !child}
 			<span
 				class="star"
@@ -239,16 +240,19 @@
 		{/if}
 		<span class="dot {livenessClass}"></span>
 		{#if !child}<MachineBadge name={s.machine_name} id={s.machine_id} hue={s.machine_hue} mono />{/if}
-		<span class="title truncate">{title}</span>
+		<Text class="title" weight="semibold" truncate>{title}</Text>
 		{#if child}<Badge tone="info" style="padding:0.05rem var(--sp-2)">subagent</Badge>{/if}
 		{#if needsInput}<span class="hand" title="needs input">✋</span>{/if}
 		{#if pendingCount > 0}<Badge tone="warn" style="padding:0.05rem var(--sp-2)">{pendingCount} perm</Badge>{/if}
 		{#if showStatusBadge}<Badge class={statusBadgeClass(s.status)} style="padding:0.05rem var(--sp-2)">{s.status}</Badge>{/if}
 		<div class="spacer"></div>
-		{#if rollup}<span
-				class="rollup sm"
+		{#if rollup}<Text
+				class="rollup"
+				tone="accent"
+				weight="semibold"
+				size="xs"
 				title="Parent + {rollup.count} subagent{rollup.count === 1 ? '' : 's'} aggregated tokens"
-				>Σ {compact(rollup.tokens)} tok · {rollup.count} agent{rollup.count === 1 ? '' : 's'}</span
+				>Σ {compact(rollup.tokens)} tok · {rollup.count} agent{rollup.count === 1 ? '' : 's'}</Text
 			>{/if}
 	</div>
 
@@ -265,15 +269,17 @@
 	     same place in every variant (CCT-320: machine/timestamp/path consolidated). -->
 	<div class="row meta">
 		<AdapterIcon adapter={s.adapter_id} size={14} />
-		{#if s.model}<span class="muted sm model">{s.model}{s.effort ? ` · ${s.effort}` : ''}</span>{/if}
-		<span class="meta-sep" aria-hidden="true">·</span>
+		{#if s.model}<Text class="model" tone="muted" size="xs">{s.model}{s.effort ? ` · ${s.effort}` : ''}</Text>{/if}
+		<Text tone="faint" aria-hidden="true">·</Text>
 		<TokenUsage usage={u} cold={s.cache_cold} />
-		{#if s.last_message_at}<span
-				class="faint sm ago"
+		{#if s.last_message_at}<Text
+				class="ago"
+				tone="faint"
+				size="xs"
 				title={timestampTooltip(s.registered_at, s.last_message_at, s.last_activity_at)}
-				>{relativeTime(s.last_message_at)}</span
+				>{relativeTime(s.last_message_at)}</Text
 			>{/if}
-		<span class="path sm faint" title={s.working_dir}>{s.working_dir}</span>
+		<Text class="path" tone="muted" size="xs" title={s.working_dir}>{s.working_dir}</Text>
 	</div>
 	</button>
 </div>
@@ -439,14 +445,13 @@
 	.sub {
 		color: var(--text-faint);
 	}
-	.title {
-		font-weight: var(--fw-semibold);
+	.sc :global(.title) {
 		font-size: var(--fs-md);
 		flex: 1 1 auto;
 		min-width: 0;
 	}
 	/* Detailed views give the title more presence (CCT-321: clearly visible title). */
-	.sc:not(.dense) .title {
+	.sc:not(.dense) :global(.title) {
 		font-size: var(--fs-lg, 1.05rem);
 	}
 	.star {
@@ -481,11 +486,8 @@
 	.meta-sep {
 		color: var(--text-faint);
 	}
-	.sm {
-		font-size: var(--fs-xs);
-	}
 	/* Model label: keep it from eating the row when names are long. */
-	.model {
+	.meta :global(.model) {
 		flex: none;
 		max-width: 14rem;
 		overflow: hidden;
@@ -493,28 +495,25 @@
 		white-space: nowrap;
 	}
 	@media (max-width: 639px) {
-		.model {
+		.meta :global(.model) {
 			max-width: 8rem;
 		}
 	}
 	/* Aggregated subagent cost chip (CCT-297 #19). */
-	.rollup {
+	.sc :global(.rollup) {
 		flex: none;
 		white-space: nowrap;
-		font-weight: var(--fw-semibold);
-		color: var(--accent, #88c0d0);
 	}
 	/* Relative-time hint ("4m ago") must never wrap to a second line (CCT-297 #15). */
-	.ago {
+	.meta :global(.ago) {
 		flex: none;
 		white-space: nowrap;
 	}
 	/* Working-dir path: trails the metadata row, takes the remaining width, and
 	   truncates with an ellipsis (uniform across all four variants). */
-	.path {
+	.meta :global(.path) {
 		flex: 1 1 8rem;
 		min-width: 0;
-		color: var(--text-muted);
 		white-space: nowrap;
 		overflow: hidden;
 		text-overflow: ellipsis;

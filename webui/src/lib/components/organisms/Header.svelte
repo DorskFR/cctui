@@ -8,6 +8,8 @@
 	import { toasts } from '$lib/toast.svelte';
 	import Button from '$lib/components/atoms/Button.svelte';
 	import SelectButton from '$lib/components/molecules/SelectButton.svelte';
+	import Text from '$lib/components/atoms/Text.svelte';
+	import NavLink from '$lib/components/atoms/NavLink.svelte';
 
 	const version = useVersion();
 
@@ -47,8 +49,8 @@
 <header class="hd">
 	<div class="hd-inner container">
 		<div class="brand">
-			<span class="logo">»_</span>
-			<span class="name">cctui</span>
+			<Text variant="code" tone="accent" size="lg" weight="bold">»_</Text>
+			<Text size="lg" weight="bold">cctui</Text>
 		</div>
 		<span
 			class="conn"
@@ -58,9 +60,9 @@
 		></span>
 		<div class="spacer"></div>
 		{#if $version.data}
-			<a class="ver mono" href={$version.data.commit_url} target="_blank" rel="noopener">
+			<NavLink class="ver mono" href={$version.data.commit_url} target="_blank" rel="noopener">
 				srv v{$version.data.version} · ui v{__CLIENT_VERSION__}
-			</a>
+			</NavLink>
 		{/if}
 		<Button
 			variant="ghost"
@@ -154,12 +156,6 @@
 		display: flex;
 		align-items: center;
 		gap: var(--sp-2);
-		font-weight: var(--fw-bold);
-		font-size: var(--fs-lg);
-	}
-	.logo {
-		font-family: var(--font-mono);
-		color: var(--accent);
 	}
 	.conn {
 		width: 8px;
@@ -174,7 +170,8 @@
 	.conn.mid {
 		background: var(--warn);
 	}
-	.ver {
+	/* ver is the class on the NavLink atom, so reach it via :global. */
+	:global(.ver) {
 		font-size: var(--fs-xs);
 		color: var(--text-faint);
 	}

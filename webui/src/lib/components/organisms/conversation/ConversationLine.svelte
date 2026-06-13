@@ -7,6 +7,7 @@
 	import { compact } from '$lib/format';
 	import IconButton from '$lib/components/molecules/IconButton.svelte';
 	import Button from '$lib/components/atoms/Button.svelte';
+	import Text from '$lib/components/atoms/Text.svelte';
 	import type { Line } from './types';
 	import type { TokenUsage as TokenUsageT } from '@bindings/TokenUsage';
 	import './bubble.css';
@@ -66,9 +67,9 @@
 		{#if ln.role === 'tool' || ln.role === 'result'}
 			<span class="who tool-name">{ln.role === 'result' ? '↳ ' : ''}{ln.tool ?? 'tool'}</span>
 		{/if}
-		<span class="faint sm" title={tooltip}>{clockTime(ln.ts)}</span>
+		<Text tone="faint" size="xs" title={tooltip}>{clockTime(ln.ts)}</Text>
 		{#if ln.failed}
-			<span class="sm not-delivered" title={ln.failed}>⚠ Not delivered</span>
+			<Text class="not-delivered" tone="danger" size="xs" title={ln.failed}>⚠ Not delivered</Text>
 			{#if !archived}
 				<Button
 					variant="ghost"
@@ -85,11 +86,11 @@
 			{/if}
 		{:else if ln.pending}
 			{#if ln.retrying}
-				<span class="faint sm sending" title="Delivery failed — retrying with backoff"
-					>retrying… ({ln.retrying.attempt}/{ln.retrying.max})</span
+				<Text class="sending" tone="inherit" size="xs" title="Delivery failed — retrying with backoff"
+					>retrying… ({ln.retrying.attempt}/{ln.retrying.max})</Text
 				>
 			{:else}
-				<span class="faint sm sending">sending…</span>
+				<Text class="sending" tone="inherit" size="xs">sending…</Text>
 			{/if}
 			{#if !archived}
 				<IconButton
@@ -129,9 +130,9 @@
 		<pre class="bubble mono code">{ln.text}</pre>
 	{/if}
 	{#if (ln.durationMs || ln.usage) && (ln.role === 'assistant' || ln.role === 'result')}
-		<div class="line-foot">
+		<Text as="div" class="line-foot" tone="faint" size="xs">
 			{[durationLabel(ln.durationMs), usageLabel(ln.usage)].filter(Boolean).join(' · ')}
-		</div>
+		</Text>
 	{/if}
 </div>
 
@@ -161,9 +162,6 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 		max-width: 60%;
-	}
-	.sm {
-		font-size: var(--fs-xs);
 	}
 	/* Role badge pill (CCT-161 item 2) — colored per role via --role-* tokens. */
 	.badge-role {
@@ -225,10 +223,10 @@
 		width: 1rem;
 		height: 1rem;
 	}
-	.line-foot {
+	/* Layout only; typography (faint xs) is the Text atom's. The class rides on a
+	   Text child, so it must be :global to reach it. */
+	.line :global(.line-foot) {
 		align-self: flex-end;
-		font-size: var(--fs-xs);
-		color: var(--text-faint);
 		padding-inline: var(--sp-1);
 	}
 	/* Uniform role tints (CCT-161 item 1) — all via --role-* tokens. */
@@ -253,7 +251,8 @@
 		border-color: color-mix(in srgb, var(--warn) 35%, transparent);
 		opacity: 0.85;
 	}
-	.sending {
+	/* Amber tint + push-right; rides on a Text child, so :global. */
+	.lmeta :global(.sending) {
 		color: var(--warn);
 		margin-left: auto;
 	}
@@ -274,8 +273,9 @@
 		background: color-mix(in srgb, var(--danger) 12%, var(--bg-elevated));
 		border-color: color-mix(in srgb, var(--danger) 50%, transparent);
 	}
-	.not-delivered {
-		color: var(--danger);
+	/* Push-right + nowrap; colour (danger) is the Text atom's. Rides on a Text
+	   child, so :global. */
+	.lmeta :global(.not-delivered) {
 		margin-left: auto;
 		white-space: nowrap;
 	}

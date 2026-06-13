@@ -2,19 +2,31 @@
 	// Native <select> primitive. Owns its styling from theme tokens; supports
 	// `bind:value` and passes through every native attribute. Options are slotted
 	// children so call-sites keep full control over <option> rendering.
+	//
+	// `variant="ghost"` makes the control fill its (positioned) parent fully
+	// transparently — for the "native select overlaid on a custom trigger" pattern
+	// (view picker, SelectButton): the platform popup with no custom outside-click
+	// logic, while a styled trigger shows through underneath.
 	import type { Snippet } from 'svelte';
 	import type { HTMLSelectAttributes } from 'svelte/elements';
 
 	type Props = HTMLSelectAttributes & {
+		variant?: 'default' | 'ghost';
 		class?: string;
 		value?: HTMLSelectAttributes['value'];
 		children?: Snippet;
 	};
 
-	let { class: klass = '', value = $bindable(), children, ...rest }: Props = $props();
+	let {
+		variant = 'default',
+		class: klass = '',
+		value = $bindable(),
+		children,
+		...rest
+	}: Props = $props();
 </script>
 
-<select class="select {klass}" bind:value {...rest}>
+<select class="select {variant} {klass}" bind:value {...rest}>
 	{@render children?.()}
 </select>
 
@@ -31,5 +43,17 @@
 	.select:focus {
 		outline: none;
 		border-color: var(--accent);
+	}
+	/* Transparent overlay: fills the positioned parent, the trigger shows through. */
+	.select.ghost {
+		position: absolute;
+		inset: 0;
+		width: 100%;
+		height: 100%;
+		padding: 0;
+		opacity: 0;
+		border: none;
+		background: none;
+		cursor: pointer;
 	}
 </style>

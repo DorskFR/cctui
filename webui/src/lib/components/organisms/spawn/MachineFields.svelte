@@ -13,6 +13,8 @@
 	import Input from '$lib/components/atoms/Input.svelte';
 	import Select from '$lib/components/atoms/Select.svelte';
 	import Textarea from '$lib/components/atoms/Textarea.svelte';
+	import Text from '$lib/components/atoms/Text.svelte';
+	import FileInput from '$lib/components/atoms/FileInput.svelte';
 	import CwdCombo from './CwdCombo.svelte';
 	import EffortSlider from './EffortSlider.svelte';
 	import { claudeModels, codexModels, claudeEfforts, codexEfforts, modes } from './options';
@@ -81,7 +83,7 @@
 			onclick={() => (form.adapter_id = 'claude-code')}
 		>
 			<BrandLogo adapter="claude-code" size={18} />
-			<span>Claude Code</span>
+			<Text>Claude Code</Text>
 		</OptionButton>
 		<OptionButton
 			row
@@ -90,7 +92,7 @@
 			onclick={() => (form.adapter_id = 'codex')}
 		>
 			<BrandLogo adapter="codex" size={18} />
-			<span>Codex</span>
+			<Text>Codex</Text>
 		</OptionButton>
 	</div>
 </Field>
@@ -119,7 +121,7 @@
 				<option value={a.name}>{a.name}</option>
 			{/each}
 		</Select>
-		<span class="faint sm">Run through the passthrough gateway under this account.</span>
+		<Text tone="faint" size="xs">Run through the passthrough gateway under this account.</Text>
 	</Field>
 {/if}
 
@@ -150,7 +152,7 @@
 				onclick={() => (form.permission_mode = md.v)}
 			>
 				<strong>{md.label}</strong>
-				<span class="faint sm">{md.hint}</span>
+				<Text tone="faint" size="xs">{md.hint}</Text>
 			</OptionButton>
 		{/each}
 	</div>
@@ -160,19 +162,16 @@
      /tmp/cctui-uploads/<session>/ on the daemon and referenced in the prompt
      so the worker can read them. -->
 <Field label="Attachments (optional)">
-	<input id="sp-files" class="file" type="file" multiple onchange={onpickfiles} />
-	<span class="faint sm">
+	<FileInput id="sp-files" multiple onchange={onpickfiles} />
+	<Text tone="faint" size="xs">
 		Up to {MAX_FILES} files, {MAX_FILE_BYTES / 1024 / 1024} MB each /
 		{MAX_TOTAL_BYTES / 1024 / 1024} MB total. Drag-and-drop anywhere on this
 		dialog or pick. Staged on the machine and referenced in the prompt.
-	</span>
+	</Text>
 	<AttachmentList {files} onremove={onremovefile} />
 </Field>
 
 <style>
-	.sm {
-		font-size: var(--fs-xs);
-	}
 	.adapters {
 		display: grid;
 		grid-template-columns: 1fr 1fr;
@@ -182,25 +181,5 @@
 		display: grid;
 		grid-template-columns: 1fr 1fr 1fr;
 		gap: var(--sp-2);
-	}
-	.file {
-		font-size: var(--fs-xs);
-		color: var(--text-muted);
-	}
-	/* A real, thumb-sized browse button (CCT-241) — the UA default is tiny,
-	   which makes the picker nearly untappable on mobile. */
-	.file::file-selector-button {
-		padding: var(--sp-2) var(--sp-4);
-		margin-right: var(--sp-3);
-		font-size: var(--fs-sm);
-		font-weight: var(--fw-medium);
-		color: var(--text);
-		background: var(--bg-elevated-2);
-		border: 1px solid var(--border-strong);
-		border-radius: var(--r-md);
-		cursor: pointer;
-	}
-	.file::file-selector-button:hover {
-		border-color: var(--c-blue);
 	}
 </style>

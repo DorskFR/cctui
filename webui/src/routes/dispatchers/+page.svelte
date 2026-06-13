@@ -11,6 +11,11 @@
 	import Input from '$lib/components/atoms/Input.svelte';
 	import Select from '$lib/components/atoms/Select.svelte';
 	import Badge from '$lib/components/atoms/Badge.svelte';
+	import Heading from '$lib/components/atoms/Heading.svelte';
+	import Text from '$lib/components/atoms/Text.svelte';
+	import Field from '$lib/components/molecules/Field.svelte';
+	import Modal from '$lib/components/molecules/Modal.svelte';
+	import { summarize } from './dispatchers.logic';
 
 	const dispatchers = useUserDispatchers();
 	const actions = useDispatcherActions();
@@ -96,32 +101,25 @@
 	}
 
 	const rows = $derived([...($dispatchers.data ?? [])]);
-
-	function summarize(d: UserDispatcher): string {
-		const c = d.config ?? {};
-		if (d.kind === 'http') {
-			const tok = c.token ? ' · token set' : '';
-			return `${(c.url as string) ?? ''}${tok}`;
-		}
-		return `${(c.namespace as string) ?? ''}/${(c.source_cronjob as string) ?? ''}`;
-	}
 </script>
 
 <div class="bar row">
-	<h1 class="page-title">Dispatchers</h1>
+	<Heading level={1}>Dispatchers</Heading>
 	<div class="spacer"></div>
 	<Button control variant="primary" onclick={openCreate}>+ New dispatcher</Button>
 </div>
 
-<p class="hint">
-	Named targets for <code>/dispatch</code>. Reference one by its name; a name here
-	overrides a global dispatcher of the same name, for you only.
-</p>
+<div class="intro">
+	<Text as="p" tone="muted" size="sm">
+		Named targets for <Text variant="code">/dispatch</Text>. Reference one by its name; a name
+		here overrides a global dispatcher of the same name, for you only.
+	</Text>
+</div>
 
 {#if $dispatchers.isLoading}
 	<div class="empty"><span class="spin"></span></div>
 {:else if rows.length === 0}
-	<div class="empty">No dispatchers yet.</div>
+	<div class="empty"><Text tone="muted">No dispatchers yet.</Text></div>
 {:else}
 	<div class="card table-card">
 		<table class="disp">
@@ -137,7 +135,7 @@
 			<tbody>
 				{#each rows as d (d.id)}
 					<tr>
-						<td class="col-name"><span class="name">{d.name}</span></td>
+						<td class="col-name"><Text weight="semibold">{d.name}</Text></td>
 						<td class="col-kind"><Badge>{d.kind}</Badge></td>
 						<td class="col-config faint truncate">{summarize(d)}</td>
 						<td class="col-created faint">{dateOnly(d.created_at)}</td>
@@ -155,77 +153,56 @@
 {/if}
 
 {#if editing !== undefined}
-	<div
-		class="overlay"
-		role="presentation"
-		onclick={close}
-		onkeydown={(e) => e.key === 'Escape' && close()}
-	>
-		<div
-			class="card editor"
-			role="dialog"
-			tabindex="-1"
-			onclick={(e) => e.stopPropagation()}
-			onkeydown={(e) => e.stopPropagation()}
-		>
-			<h2>{editing ? 'Edit dispatcher' : 'New dispatcher'}</h2>
-			<label class="fld">
-				<span>Name</span>
-				<Input bind:value={name} placeholder="my-worker" />
-			</label>
-			<label class="fld">
-				<span>Type</span>
-				<Select bind:value={kind}>
-					<option value="http">http</option>
-					<option value="kubernetes">kubernetes</option>
-				</Select>
-			</label>
-			{#if kind === 'http'}
-				<label class="fld">
-					<span>URL</span>
-					<Input bind:value={url} placeholder="https://dispatcher.example/dispatch" />
-				</label>
-				<label class="fld">
-					<span>Bearer token</span>
-					<Input
-						type="password"
-						bind:value={token}
-						placeholder={editing ? 'leave blank to keep current' : 'optional'}
-					/>
-				</label>
-			{:else}
-				<label class="fld">
-					<span>Namespace</span>
-					<Input bind:value={namespace} placeholder="workers" />
-				</label>
-				<label class="fld">
-					<span>Source CronJob</span>
-					<Input bind:value={sourceCronjob} placeholder="worker-template" />
-				</label>
-				<label class="fld">
-					<span>CCTUI URL (optional)</span>
-					<Input bind:value={cctuiUrl} placeholder="https://cctui.example.com" />
-				</label>
-			{/if}
-			<div class="row editor-acts">
-				<div class="spacer"></div>
-				<Button size="sm" onclick={close}>Cancel</Button>
-				<Button size="sm" variant="primary" onclick={save}>Save</Button>
+	<Modal title={editing ? 'Edit dispatcher' : 'New dispatcher'} onclose={close}>
+		{#snippet body()}
+			<div class="editor-body">
+				<Field label="Name">
+					<Input bind:value={name} placeholder="my-worker" />
+				</Field>
+				<Field label="Type">
+					<Select bind:value={kind}>
+						<option value="http">http</option>
+						<option value="kubernetes">kubernetes</option>
+					</Select>
+				</Field>
+				{#if kind === 'http'}
+					<Field label="URL">
+						<Input bind:value={url} placeholder="https://dispatcher.example/dispatch" />
+					</Field>
+					<Field label="Bearer token">
+						<Input
+							type="password"
+							bind:value={token}
+							placeholder={editing ? 'leave blank to keep current' : 'optional'}
+						/>
+					</Field>
+				{:else}
+					<Field label="Namespace">
+						<Input bind:value={namespace} placeholder="workers" />
+					</Field>
+					<Field label="Source CronJob">
+						<Input bind:value={sourceCronjob} placeholder="worker-template" />
+					</Field>
+					<Field label="CCTUI URL (optional)">
+						<Input bind:value={cctuiUrl} placeholder="https://cctui.example.com" />
+					</Field>
+				{/if}
 			</div>
-		</div>
-	</div>
+		{/snippet}
+		{#snippet footer()}
+			<div class="spacer"></div>
+			<Button size="sm" onclick={close}>Cancel</Button>
+			<Button size="sm" variant="primary" onclick={save}>Save</Button>
+		{/snippet}
+	</Modal>
 {/if}
 
 <style>
 	.bar {
 		margin-bottom: var(--sp-2);
 	}
-	.page-title {
-		font-size: var(--fs-2xl);
-	}
-	.hint {
-		color: var(--text-muted);
-		font-size: var(--fs-sm);
+	/* Typography from the Text atom; only the page rhythm lives here. */
+	.intro {
 		margin-bottom: var(--sp-4);
 	}
 	.table-card {
@@ -255,9 +232,6 @@
 	tbody tr:first-child td {
 		border-top: none;
 	}
-	.name {
-		font-weight: var(--fw-semibold);
-	}
 	.col-kind {
 		width: 8rem;
 	}
@@ -270,35 +244,10 @@
 	.acts {
 		gap: var(--sp-1);
 	}
-	.overlay {
-		position: fixed;
-		inset: 0;
-		background: rgba(0, 0, 0, 0.5);
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		padding: var(--sp-4);
-		z-index: 50;
-	}
-	.editor {
-		width: 100%;
-		max-width: 30rem;
+	.editor-body {
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-3);
-	}
-	.fld {
-		display: flex;
-		flex-direction: column;
-		gap: var(--sp-1);
-		font-size: var(--fs-sm);
-	}
-	.fld span {
-		color: var(--text-muted);
-	}
-	.editor-acts {
-		gap: var(--sp-1);
-		margin-top: var(--sp-2);
 	}
 	@media (max-width: 720px) {
 		.col-created {

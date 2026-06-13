@@ -5,6 +5,7 @@
 	import Card from '$lib/components/atoms/Card.svelte';
 	import Field from '$lib/components/molecules/Field.svelte';
 	import Input from '$lib/components/atoms/Input.svelte';
+	import Text from '$lib/components/atoms/Text.svelte';
 
 	let token = $state('');
 	let err = $state('');
@@ -37,8 +38,8 @@
 
 <div class="login">
 	<Card as="form" class="stack" style="width:100%;max-width:22rem" onsubmit={submit}>
-		<div class="brand"><span class="logo">»_</span> cctui</div>
-		<p class="muted">Enter an admin or user token to continue.</p>
+		<Text size="xl" weight="bold" class="brand"><Text variant="code" tone="accent">»_</Text> cctui</Text>
+		<Text as="p" tone="muted">Enter an admin or user token to continue.</Text>
 		<Field label="Token" for="token">
 			<Input
 				id="token"
@@ -49,7 +50,7 @@
 				bind:value={token}
 			/>
 		</Field>
-		{#if err}<div class="err">{err}</div>{/if}
+		{#if err}<Text as="div" tone="danger" size="sm">{err}</Text>{/if}
 		<Button variant="primary" block type="submit" disabled={busy || !token.trim()}>
 			{#if busy}<span class="spin"></span>{:else}Sign in{/if}
 		</Button>
@@ -63,17 +64,5 @@
 		place-items: center;
 		padding: var(--sp-6);
 		padding-top: max(var(--sp-6), var(--safe-top));
-	}
-	.brand {
-		font-size: var(--fs-xl);
-		font-weight: var(--fw-bold);
-	}
-	.logo {
-		font-family: var(--font-mono);
-		color: var(--accent);
-	}
-	.err {
-		color: var(--danger);
-		font-size: var(--fs-sm);
 	}
 </style>

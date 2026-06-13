@@ -6,6 +6,8 @@
 	import { compact } from '$lib/format';
 	import Button from '$lib/components/atoms/Button.svelte';
 	import Select from '$lib/components/atoms/Select.svelte';
+	import Heading from '$lib/components/atoms/Heading.svelte';
+	import Text from '$lib/components/atoms/Text.svelte';
 
 	let {
 		archived,
@@ -43,24 +45,24 @@
 	onkeydown={(e) => e.key === 'Escape' && oncancel()}
 ></div>
 <div class="fork-modal" role="dialog" aria-modal="true" aria-label="Fork conversation">
-	<h3>{archived ? 'Reopen as a new conversation' : 'Fork conversation'}</h3>
-	<p class="muted">
+	<Heading level={3}>{archived ? 'Reopen as a new conversation' : 'Fork conversation'}</Heading>
+	<Text as="p" class="fork-p" tone="muted" size="sm">
 		Creates a new {isCodexSession ? 'codex thread' : 'claude session'} seeded from this
 		conversation's history. The original is left untouched. Adjust the model/effort below,
 		or keep them to fork as-is.
-	</p>
-	<p class="muted fork-cost">
+	</Text>
+	<Text as="p" class="fork-p fork-cost" tone="muted" size="sm">
 		Your first message on the fork re-sends this conversation's history (~{compact(parentTokens)}
 		tokens from the parent), so the opening turn re-bills that context.
-	</p>
+	</Text>
 	<label class="fork-field">
-		<span>Model</span>
+		<Text class="fork-label">Model</Text>
 		<Select style="flex:1;width:auto" bind:value={model}>
 			{#each models as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
 		</Select>
 	</label>
 	<label class="fork-field">
-		<span>Effort</span>
+		<Text class="fork-label">Effort</Text>
 		<Select style="flex:1;width:auto" bind:value={effort}>
 			{#each efforts as e (e)}<option value={e}>{e || 'default'}</option>{/each}
 		</Select>
@@ -94,13 +96,14 @@
 		padding: 1.1rem 1.2rem;
 		box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
 	}
-	.fork-modal h3 {
+	/* h3/p/label-span typography is now the Heading/Text atoms'. These classes ride
+	   on atom children, so the residual layout (margins, line-height, label width)
+	   must be :global to reach them. */
+	.fork-modal :global(.heading) {
 		margin: 0 0 0.4rem;
-		font-size: 1.05rem;
 	}
-	.fork-modal p {
+	.fork-modal :global(.fork-p) {
 		margin: 0 0 0.9rem;
-		font-size: 0.85rem;
 		line-height: 1.4;
 	}
 	.fork-field {
@@ -110,7 +113,7 @@
 		margin-bottom: 0.7rem;
 		font-size: 0.9rem;
 	}
-	.fork-field span {
+	.fork-field :global(.fork-label) {
 		width: 4.5rem;
 		flex: 0 0 auto;
 	}

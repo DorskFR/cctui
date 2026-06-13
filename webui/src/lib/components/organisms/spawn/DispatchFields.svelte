@@ -8,6 +8,7 @@
 	import Input from '$lib/components/atoms/Input.svelte';
 	import Select from '$lib/components/atoms/Select.svelte';
 	import Textarea from '$lib/components/atoms/Textarea.svelte';
+	import Text from '$lib/components/atoms/Text.svelte';
 	import { claudeModels, claudeEfforts } from './options';
 	import type { Form } from './types';
 
@@ -30,22 +31,22 @@
 
 <Field label="Name (optional)" for="sp-name-d">
 	<Input id="sp-name-d" placeholder="session label" bind:value={form.name} />
-	<span class="faint sm">Passed to the worker as <code>--name</code>.</span>
+	<Text tone="faint" size="xs">Passed to the worker as <Text variant="code">--name</Text>.</Text>
 </Field>
 
 <Field label="Identity (optional)" for="sp-identity">
 	<Input id="sp-identity" mono placeholder="alice" bind:value={form.identity} />
-	<span class="faint sm">Which account the worker acts as. Empty = worker default.</span>
+	<Text tone="faint" size="xs">Which account the worker acts as. Empty = worker default.</Text>
 </Field>
 
 <Field label="Repo" for="sp-repo">
 	<Input id="sp-repo" mono placeholder="cctui" bind:value={form.repo} />
-	<span class="faint sm">Checked out under the worker's /workspace (optional).</span>
+	<Text tone="faint" size="xs">Checked out under the worker's /workspace (optional).</Text>
 </Field>
 
 <Field label="Ticket (optional)" for="sp-ticket">
 	<Input id="sp-ticket" mono placeholder="PROJ-1234" bind:value={form.ticket} />
-	<span class="faint sm">Issue id for the flow's context (e.g. an implement prompt).</span>
+	<Text tone="faint" size="xs">Issue id for the flow's context (e.g. an implement prompt).</Text>
 </Field>
 
 <Field label="Prompt" for="sp-prompt-d">
@@ -60,7 +61,7 @@
 
 <Field label="Prompt file (optional)" for="sp-prompt-file">
 	<Input id="sp-prompt-file" mono placeholder="implement-from-ticket.md" bind:value={form.prompt_file} />
-	<span class="faint sm">A file under the worker's /prompts. Overrides the inline prompt.</span>
+	<Text tone="faint" size="xs">A file under the worker's /prompts. Overrides the inline prompt.</Text>
 </Field>
 
 <div class="row gap">
@@ -95,8 +96,5 @@
 	.grow {
 		flex: 1;
 		min-width: 0;
-	}
-	.sm {
-		font-size: var(--fs-xs);
 	}
 </style>

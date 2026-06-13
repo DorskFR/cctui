@@ -8,6 +8,8 @@
 	import Input from '$lib/components/atoms/Input.svelte';
 	import Badge from '$lib/components/atoms/Badge.svelte';
 	import Switch from '$lib/components/atoms/Switch.svelte';
+	import Heading from '$lib/components/atoms/Heading.svelte';
+	import Text from '$lib/components/atoms/Text.svelte';
 	import IconButton from '$lib/components/molecules/IconButton.svelte';
 	import { SvelteSet } from 'svelte/reactivity';
 	import { auth } from '$lib/auth.svelte';
@@ -85,7 +87,7 @@
 </script>
 
 <div class="bar row">
-	<h1 class="page-title">Users</h1>
+	<Heading level={1}>Users</Heading>
 	<div class="spacer"></div>
 	<Button control variant="primary" onclick={createUser}>+ New user</Button>
 </div>
@@ -95,14 +97,14 @@
 {#if $me.data}
 	{@const m = $me.data}
 	<div class="card whoami row">
-		<span class="faint">Signed in as</span>
+		<Text tone="faint">Signed in as</Text>
 		<Badge tone={m.role === 'admin' ? 'warn' : m.role === 'user' ? 'ok' : 'neutral'}>{m.role}</Badge>
-		{#if m.user_name}<span class="who-name">{m.user_name}</span>{/if}
-		<span class="mono faint preview">{m.token_preview}</span>
+		{#if m.user_name}<Text weight="semibold">{m.user_name}</Text>{/if}
+		<Text variant="code" tone="faint" size="xs">{m.token_preview}</Text>
 		{#if m.role === 'admin'}
-			<span class="faint sm note"
+			<Text tone="faint" size="xs"
 				>The admin token is server-wide and owns no machines or accounts — OAuth accounts are
-				created under a user.</span
+				created under a user.</Text
 			>
 		{/if}
 		<div class="spacer"></div>
@@ -117,7 +119,7 @@
 {#if $users.isLoading}
 	<div class="empty"><span class="spin"></span></div>
 {:else if shown.length === 0}
-	<div class="empty">{filter.trim() ? 'No matching users.' : 'No users yet.'}</div>
+	<div class="empty"><Text tone="muted">{filter.trim() ? 'No matching users.' : 'No users yet.'}</Text></div>
 {:else}
 	<div class="card table-card">
 		<table class="users">
@@ -137,7 +139,7 @@
 							<span class="row name-line">
 								<button class="name-btn row" onclick={() => toggle(u.id)} aria-expanded={open}>
 									<span class="caret" class:open>›</span>
-									<span class="name truncate">{u.name}</span>
+									<Text weight="semibold" truncate>{u.name}</Text>
 								</button>
 								{#if !u.revoked_at}
 									<IconButton
@@ -202,23 +204,11 @@
 	.bar {
 		margin-bottom: var(--sp-4);
 	}
-	.page-title {
-		font-size: var(--fs-2xl);
-	}
 	.whoami {
 		gap: var(--sp-2);
 		padding: var(--sp-2) var(--sp-3);
 		margin-bottom: var(--sp-4);
 		flex-wrap: wrap;
-	}
-	.who-name {
-		font-weight: var(--fw-semibold);
-	}
-	.preview {
-		font-size: var(--fs-xs);
-	}
-	.note {
-		font-size: var(--fs-xs);
 	}
 	.table-card {
 		padding: 0;
@@ -272,9 +262,6 @@
 		color: var(--text);
 		font: inherit;
 		min-width: 0;
-	}
-	.name {
-		font-weight: var(--fw-semibold);
 	}
 	.user-row :global(.pen) {
 		flex: none;

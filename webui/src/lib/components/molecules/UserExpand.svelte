@@ -4,6 +4,8 @@
 	import Badge from '$lib/components/atoms/Badge.svelte';
 	import Button from '$lib/components/atoms/Button.svelte';
 	import Switch from '$lib/components/atoms/Switch.svelte';
+	import Heading from '$lib/components/atoms/Heading.svelte';
+	import Text from '$lib/components/atoms/Text.svelte';
 	import IconButton from '$lib/components/molecules/IconButton.svelte';
 	import ColorPicker from '$lib/components/molecules/ColorPicker.svelte';
 	import { useMachines, useTokens, useUserActions } from '$lib/queries';
@@ -88,11 +90,11 @@
 <div class="stack expand">
 	<!-- Permissions (CCT-185) -->
 	<section class="stack sec">
-		<h3 class="sub-h">Permissions</h3>
+		<Heading level={3} size="sm" tone="muted" class="sub-h">Permissions</Heading>
 		<div class="row perm">
 			<div class="stack info">
-				<span>Can dispatch</span>
-				<span class="faint sm">Allow this user to dispatch k8s worker sessions.</span>
+				<Text>Can dispatch</Text>
+				<Text size="xs" tone="faint">Allow this user to dispatch k8s worker sessions.</Text>
 			</div>
 			<Switch
 				checked={user.can_dispatch}
@@ -105,9 +107,9 @@
 
 	<!-- Machines -->
 	<section class="stack sec">
-		<h3 class="sub-h">Machines</h3>
+		<Heading level={3} size="sm" tone="muted" class="sub-h">Machines</Heading>
 		{#if $machines.isLoading}<span class="spin"></span>
-		{:else if !shownMachines.length}<p class="faint sm">No machines.</p>
+		{:else if !shownMachines.length}<Text as="p" size="xs" tone="faint">No machines.</Text>
 		{:else}
 			{#each shownMachines as mc (mc.id)}
 				{@const system = mc.kind === 'dispatch'}
@@ -141,9 +143,11 @@
 							{/if}
 							{#if system}<Badge>dispatch</Badge>{/if}
 						</span>
-						<span class="faint sm mono">{mc.key_preview ?? '••••••••'}</span>
-						<span class="faint sm"
-							>{system ? 'server-managed · ' : ''}seen {relativeTime(mc.last_seen_at)}</span
+						<Text size="xs" tone="faint" variant="code" truncate class="mono"
+							>{mc.key_preview ?? '••••••••'}</Text
+						>
+						<Text size="xs" tone="faint" truncate
+							>{system ? 'server-managed · ' : ''}seen {relativeTime(mc.last_seen_at)}</Text
 						>
 					</div>
 					<div class="row row-wrap mini">
@@ -158,7 +162,9 @@
 			{/each}
 		{/if}
 		{#if hiddenCount > 0}
-			<p class="faint sm">{hiddenCount} ephemeral worker machine{hiddenCount === 1 ? '' : 's'} hidden.</p>
+			<Text as="p" size="xs" tone="faint"
+				>{hiddenCount} ephemeral worker machine{hiddenCount === 1 ? '' : 's'} hidden.</Text
+			>
 		{/if}
 	</section>
 
@@ -166,25 +172,27 @@
 	     here (not on the user row) so it's clear what a "Token" is (CCT-251). -->
 	<section class="stack sec">
 		<div class="row sec-head">
-			<h3 class="sub-h">Tokens</h3>
+			<Heading level={3} size="sm" tone="muted" class="sub-h">Tokens</Heading>
 			<div class="spacer"></div>
 			{#if !revoked}
 				<Button size="sm" onclick={mintToken}>+ New token</Button>
 			{/if}
 		</div>
 		{#if $tokens.isLoading}<span class="spin"></span>
-		{:else if !($tokens.data ?? []).length}<p class="faint sm">No tokens.</p>
+		{:else if !($tokens.data ?? []).length}<Text as="p" size="xs" tone="faint">No tokens.</Text>
 		{:else}
 			{#each $tokens.data ?? [] as t (t.id)}
 				<div class="sub-row">
 					<div class="stack info">
-						<span class="truncate">{t.label || '(unlabeled)'}</span>
-						<span class="faint sm mono">{t.token_preview ?? '••••••••'}</span>
-						<span class="faint sm">
+						<Text truncate>{t.label || '(unlabeled)'}</Text>
+						<Text size="xs" tone="faint" variant="code" truncate class="mono"
+							>{t.token_preview ?? '••••••••'}</Text
+						>
+						<Text size="xs" tone="faint" truncate>
 							created {dateOnly(t.created_at)}{t.expires_at
 								? ` · expires ${dateOnly(t.expires_at)}`
 								: ''}
-						</span>
+						</Text>
 					</div>
 					<div class="row row-wrap mini">
 						{#if t.revoked_at}
@@ -217,9 +225,9 @@
 	.sec-head {
 		gap: var(--sp-2);
 	}
-	.sub-h {
-		font-size: var(--fs-sm);
-		color: var(--text-muted);
+	/* Heading owns the size/colour; this selector targets the element Heading
+	   renders (so it must be :global) to add only the section-label chrome. */
+	:global(.sub-h) {
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
 	}
@@ -257,17 +265,10 @@
 	.info-inline > .badge-line {
 		flex: 0 0 auto;
 	}
-	.info-inline > .mono {
+	/* The mono key preview is rendered by the Text atom, so this layout rule must
+	   be :global to reach it; ellipsis is handled by Text's `truncate` prop. */
+	.info-inline > :global(.mono) {
 		flex: 0 1 auto;
-	}
-	/* The mono key/token preview and the "seen…" line must not force overflow —
-	   ellipsize them within the column. */
-	.info > .mono,
-	.info > .sm {
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-		max-width: 100%;
 	}
 	.badge-line {
 		gap: var(--sp-1);
@@ -281,9 +282,6 @@
 	}
 	.mini {
 		gap: var(--sp-1);
-	}
-	.sm {
-		font-size: var(--fs-xs);
 	}
 	.perm {
 		gap: var(--sp-3);

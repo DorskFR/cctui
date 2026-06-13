@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { useAccountUsage } from '$lib/queries';
 	import { relativeFuture } from '$lib/format';
+	import Text from '$lib/components/atoms/Text.svelte';
 
 	// Severity breakpoints on window utilization (%). Below WARN → green ("ok"),
 	// WARN–HOT → amber ("warm"), at/above HOT → red ("hot"). Named so the bar
@@ -54,10 +55,10 @@
 	<div class="bars">
 		{#each bars as b (b.label)}
 			<div class="bar-row">
-				<span class="bar-label">{b.label}</span>
-				<span class="bar-pct" class:warm={b.tone === 'warm'} class:hot={b.tone === 'hot'}>
-					{b.pct}%{#if b.resets}<span class="bar-reset"> · resets {relativeFuture(b.resets)}</span>{/if}
-				</span>
+				<Text size="xs" tone="muted" class="bar-label">{b.label}</Text>
+				<Text size="xs" class={`bar-pct${b.tone === 'warm' ? ' warm' : ''}${b.tone === 'hot' ? ' hot' : ''}`}>
+					{b.pct}%{#if b.resets}<Text tone="faint" class="bar-reset"> · resets {relativeFuture(b.resets)}</Text>{/if}
+				</Text>
 				<div class="bar-track">
 					<div
 						class="bar-fill"
@@ -72,7 +73,7 @@
 {:else if active && $q.isLoading}
 	<span class="spin"></span>
 {:else}
-	<span class="faint">No usage data</span>
+	<Text tone="faint">No usage data</Text>
 {/if}
 
 <style>
@@ -87,25 +88,21 @@
 		align-items: baseline;
 		column-gap: var(--sp-2);
 	}
-	.bar-label {
-		font-size: var(--fs-xs);
-		color: var(--text-muted);
+	/* These elements are rendered by the Text atom (which owns their size/tone),
+	   so the residual layout + tone-colour chrome must be :global to reach them. */
+	:global(.bar-label) {
 		font-variant-numeric: tabular-nums;
 	}
-	.bar-pct {
+	:global(.bar-pct) {
 		justify-self: end;
-		font-size: var(--fs-xs);
 		font-variant-numeric: tabular-nums;
 		color: var(--ok, #3fb950);
 	}
-	.bar-pct.warm {
+	:global(.bar-pct.warm) {
 		color: var(--warn, #d29922);
 	}
-	.bar-pct.hot {
+	:global(.bar-pct.hot) {
 		color: var(--danger, #f85149);
-	}
-	.bar-reset {
-		color: var(--text-faint);
 	}
 	.bar-track {
 		grid-column: 1 / -1;

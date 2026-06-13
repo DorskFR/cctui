@@ -4,8 +4,9 @@
 	import { toasts } from '$lib/toast.svelte';
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
 	import Button from '$lib/components/atoms/Button.svelte';
-	import type { WindowTokenUsage } from '@bindings/WindowTokenUsage';
-	import type { TokenUsage as TokenUsageT } from '@bindings/TokenUsage';
+	import Heading from '$lib/components/atoms/Heading.svelte';
+	import Text from '$lib/components/atoms/Text.svelte';
+	import { asUsage } from './home.logic';
 
 	const users = useUsers();
 	// Aggregate counts from the server, not the capped session list — the list
@@ -14,16 +15,6 @@
 	// Token totals across rolling windows, same ↑in ↓out ⚡cache readout the
 	// session list shows.
 	const tokens = useTokenStats();
-
-	// Adapt a window's {input, output, cache_read} to the shape TokenUsage.svelte
-	// renders (the session-card readout). cost_usd / cache_creation are unused here.
-	const asUsage = (w: WindowTokenUsage | undefined): TokenUsageT => ({
-		tokens_in: w?.input ?? 0,
-		tokens_out: w?.output ?? 0,
-		cost_usd: 0,
-		cache_read_tokens: w?.cache_read ?? 0,
-		cache_creation_tokens: 0
-	});
 
 	const tokenCards = $derived([
 		{ lbl: 'Last hour', usage: asUsage($tokens.data?.hour) },
@@ -54,57 +45,61 @@
 	}
 </script>
 
-<h1 class="page-title">Overview</h1>
+<div class="title">
+	<Heading level={1}>Overview</Heading>
+</div>
 
 <div class="grid">
 	<div class="card stat">
-		<span class="num">{live}</span><span class="lbl">Live sessions</span>
+		<Text size="2xl" weight="bold" class="num">{live}</Text><Text size="sm" tone="muted">Live sessions</Text>
 	</div>
 	<div class="card stat">
-		<span class="num" class:warn={needs > 0}>{needs}</span><span class="lbl">Need input</span>
+		<Text size="2xl" weight="bold" class="num {needs > 0 ? 'warn' : ''}">{needs}</Text><Text size="sm" tone="muted">Need input</Text>
 	</div>
 	<div class="card stat">
-		<span class="num">{archived}</span><span class="lbl">Archived</span>
+		<Text size="2xl" weight="bold" class="num">{archived}</Text><Text size="sm" tone="muted">Archived</Text>
 	</div>
 	<div class="card stat">
-		<span class="num">{activeUsers}</span><span class="lbl">Active users</span>
+		<Text size="2xl" weight="bold" class="num">{activeUsers}</Text><Text size="sm" tone="muted">Active users</Text>
 	</div>
 	<div class="card stat">
-		<span class="num">{revokedUsers}</span><span class="lbl">Revoked users</span>
+		<Text size="2xl" weight="bold" class="num">{revokedUsers}</Text><Text size="sm" tone="muted">Revoked users</Text>
 	</div>
 	<div class="card stat">
-		<span class="num">{total}</span><span class="lbl">Total sessions</span>
+		<Text size="2xl" weight="bold" class="num">{total}</Text><Text size="sm" tone="muted">Total sessions</Text>
 	</div>
 </div>
 
-<h2 class="section-title">Token usage</h2>
+<div class="section-title">
+	<Heading level={2} size="lg">Token usage</Heading>
+</div>
 <div class="grid token-grid">
 	{#each tokenCards as c (c.lbl)}
 		<div class="card stat">
 			<TokenUsage usage={c.usage} />
-			<span class="lbl">{c.lbl}</span>
+			<Text size="sm" tone="muted">{c.lbl}</Text>
 		</div>
 	{/each}
 </div>
 
 <div class="card install stack">
-	<strong>Enroll a machine</strong>
-	<p class="muted">
-		Install <code class="mono">cctui-daemon</code> on the target host (from GitHub Releases), then
+	<Text weight="bold">Enroll a machine</Text>
+	<Text as="p" tone="muted" size="sm">
+		Install <Text variant="code">cctui-daemon</Text> on the target host (from GitHub Releases), then
 		enroll it with a user token (create one on the Users page):
-	</p>
+	</Text>
 	<div class="row">
-		<code class="cmd mono truncate">{enrollCmd}</code>
+		<Text variant="code" truncate class="cmd">{enrollCmd}</Text>
 		<Button size="sm" onclick={copyEnroll}>Copy</Button>
 	</div>
-	<p class="muted">
-		Then run it as a service: <code class="mono">cctui-daemon service install</code>
-	</p>
+	<Text as="p" tone="muted" size="sm">
+		Then run it as a service: <Text variant="code">cctui-daemon service install</Text>
+	</Text>
 </div>
 
 <style>
-	.page-title {
-		font-size: var(--fs-2xl);
+	/* Typography from the Heading/Text atoms; only the page rhythm lives here. */
+	.title {
 		margin-bottom: var(--sp-4);
 	}
 	.grid {
@@ -119,7 +114,6 @@
 		}
 	}
 	.section-title {
-		font-size: var(--fs-lg);
 		margin-bottom: var(--sp-3);
 	}
 	.token-grid {
@@ -131,19 +125,16 @@
 		gap: var(--sp-1);
 		align-items: flex-start;
 	}
-	.num {
-		font-size: var(--fs-2xl);
-		font-weight: var(--fw-bold);
+	/* The stat figure tightens its line-box; the warn variant recolours it.
+	   :global — these ride on the Text atom whose scoped class can't see ours. */
+	.stat :global(.num) {
 		line-height: 1;
 	}
-	.num.warn {
+	.stat :global(.num.warn) {
 		color: var(--warn);
 	}
-	.lbl {
-		font-size: var(--fs-sm);
-		color: var(--text-muted);
-	}
-	.install .cmd {
+	/* The enroll command box is structural chrome around the Text atom. */
+	.install .row :global(.cmd) {
 		flex: 1;
 		padding: var(--sp-2) var(--sp-3);
 		background: var(--bg);

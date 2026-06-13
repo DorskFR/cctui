@@ -1,6 +1,7 @@
 <script lang="ts">
 	import Modal from '$lib/components/molecules/Modal.svelte';
 	import Button from '$lib/components/atoms/Button.svelte';
+	import Text from '$lib/components/atoms/Text.svelte';
 	import { toasts } from '$lib/toast.svelte';
 
 	let { title, secret, onclose }: { title: string; secret: string; onclose: () => void } =
@@ -19,8 +20,8 @@
 <Modal {title} {onclose}>
 	{#snippet body()}
 		<div class="stack">
-			<p class="muted">Copy this now — it is shown only once and cannot be retrieved later.</p>
-			<code class="secret mono">{secret}</code>
+			<Text as="p" tone="muted">Copy this now — it is shown only once and cannot be retrieved later.</Text>
+			<Text variant="code" size="sm" tone="accent" class="secret">{secret}</Text>
 		</div>
 	{/snippet}
 	{#snippet footer()}
@@ -30,14 +31,14 @@
 </Modal>
 
 <style>
-	.secret {
+	/* .secret is rendered by the Text atom (which owns its size/tone/mono), so
+	   the residual box chrome must be :global to reach that element. */
+	:global(.secret) {
 		display: block;
 		padding: var(--sp-3);
 		background: var(--bg);
 		border: 1px solid var(--border-strong);
 		border-radius: var(--r-md);
 		word-break: break-all;
-		font-size: var(--fs-sm);
-		color: var(--accent);
 	}
 </style>

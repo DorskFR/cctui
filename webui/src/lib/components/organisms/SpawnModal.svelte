@@ -25,6 +25,7 @@
 	import Button from '$lib/components/atoms/Button.svelte';
 	import Field from '$lib/components/molecules/Field.svelte';
 	import OptionButton from '$lib/components/molecules/OptionButton.svelte';
+	import Text from '$lib/components/atoms/Text.svelte';
 	import EnvSecretsField from './spawn/EnvSecretsField.svelte';
 	import MachineFields from './spawn/MachineFields.svelte';
 	import DispatchFields from './spawn/DispatchFields.svelte';
@@ -360,7 +361,7 @@
 							onclick={() => (target = 'machine')}
 						>
 							<strong>Machine</strong>
-							<span class="faint sm">An enrolled daemon</span>
+							<Text tone="faint" size="xs">An enrolled daemon</Text>
 						</OptionButton>
 						<OptionButton
 							selected={target === 'dispatch'}
@@ -368,7 +369,7 @@
 							onclick={() => (target = 'dispatch')}
 						>
 							<strong>Dispatch (k8s)</strong>
-							<span class="faint sm">Ephemeral worker pod</span>
+							<Text tone="faint" size="xs">Ephemeral worker pod</Text>
 						</OptionButton>
 					</div>
 				</Field>
@@ -401,9 +402,6 @@
 </Modal>
 
 <style>
-	.sm {
-		font-size: var(--fs-xs);
-	}
 	.targets {
 		display: grid;
 		grid-template-columns: 1fr 1fr;

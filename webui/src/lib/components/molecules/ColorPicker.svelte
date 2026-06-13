@@ -4,6 +4,7 @@
 	// closes on selection. The `trigger` snippet renders whatever opens it (e.g. a
 	// MachineBadge showing the current color); `value`/`onchange` carry the hue.
 	import type { Snippet } from 'svelte';
+	import Swatch from '$lib/components/atoms/Swatch.svelte';
 
 	let {
 		value = null,
@@ -44,22 +45,21 @@
 	{#if open}
 		<span class="cp-pop">
 			<span class="row palette" role="radiogroup" aria-label={label}>
-				<button
-					class="swatch auto"
-					class:active={value == null}
+				<Swatch
+					hue={null}
+					active={value == null}
 					title="Auto (name hash)"
 					aria-label="Auto color"
-					onclick={() => select(null)}>A</button
+					onclick={() => select(null)}>A</Swatch
 				>
 				{#each hues as h (h)}
-					<button
-						class="swatch"
-						class:active={value === h}
-						style={`--sh:${h}`}
+					<Swatch
+						hue={h}
+						active={value === h}
 						title={`Hue ${h}`}
 						aria-label={`Hue ${h}`}
 						onclick={() => select(h)}
-					></button>
+					/>
 				{/each}
 			</span>
 		</span>
@@ -97,34 +97,5 @@
 		border: 1px solid var(--border-strong);
 		border-radius: var(--r-md, 6px);
 		box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
-	}
-	.swatch {
-		width: 1.1rem;
-		height: 1.1rem;
-		border-radius: 50%;
-		border: 1px solid transparent;
-		background: hsl(var(--sh) 55% 40%);
-		padding: 0;
-		cursor: pointer;
-		font-size: 0;
-		transition: transform 0.1s var(--ease);
-	}
-	.swatch:hover {
-		transform: scale(1.2);
-	}
-	.swatch.active {
-		border-color: var(--text);
-		box-shadow: 0 0 0 2px var(--bg);
-	}
-	.swatch.auto {
-		background: var(--bg-elevated);
-		border: 1px dashed var(--border-strong);
-		color: var(--text-muted);
-		font-size: var(--fs-xs);
-		line-height: 1;
-	}
-	.swatch.auto.active {
-		border-style: solid;
-		border-color: var(--text);
 	}
 </style>

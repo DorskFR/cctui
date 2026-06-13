@@ -3,6 +3,8 @@
 	import AttachmentList from '$lib/components/molecules/AttachmentList.svelte';
 	import Button from '$lib/components/atoms/Button.svelte';
 	import Textarea from '$lib/components/atoms/Textarea.svelte';
+	import Text from '$lib/components/atoms/Text.svelte';
+	import FileInput from '$lib/components/atoms/FileInput.svelte';
 	import { drafts, composerKey, history as msgHistory } from '$lib/drafts';
 	import { mergeFiles, removeFileByName, fileCapError } from '$lib/attachments';
 	import { compact } from '$lib/format';
@@ -251,7 +253,7 @@
 <div class="composer" class:dropping={dragActive}>
 	{#if archived}
 		<div class="archived-actions">
-			<span class="hint muted">Session archived (read-only).</span>
+			<Text class="hint" tone="muted" size="sm">Session archived (read-only).</Text>
 			<span class="archived-actions-btns">
 				<Button onclick={onNewFromScript}>New from same script</Button>
 				<Button onclick={onFork}>Fork</Button>
@@ -272,7 +274,7 @@
 				     adds attachments. -->
 				<label class="attach-btn" title="Attach files">
 					📎
-					<input class="file-hidden" type="file" multiple onchange={onPickAttachments} />
+					<FileInput hidden multiple onchange={onPickAttachments} />
 				</label>
 			{/if}
 			<Textarea
@@ -374,13 +376,6 @@
 	.attach-btn:hover {
 		border-color: var(--c-blue);
 	}
-	.file-hidden {
-		position: absolute;
-		width: 1px;
-		height: 1px;
-		opacity: 0;
-		pointer-events: none;
-	}
 	/* The textarea + send button are rendered by child components (Textarea /
 	   Button), so these overrides target them via :global. The textarea sizing is
 	   passed inline at the call-site; the send-button states stay here. */
@@ -410,8 +405,9 @@
 		text-align: right;
 		font-variant-numeric: tabular-nums;
 	}
-	.hint {
-		font-size: var(--fs-sm);
+	/* Layout only (centered, full width); size/tone are the Text atom's. The class
+	   rides on a Text child, so :global. */
+	:global(.hint) {
 		text-align: center;
 		width: 100%;
 	}

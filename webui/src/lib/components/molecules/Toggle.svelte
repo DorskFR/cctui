@@ -4,8 +4,13 @@
 	// so callers recolor it per-use (e.g. warm for behavior, role color for
 	// message-type filters) without restyling the base. Used across the
 	// conversation toolbar (filters / formatting / behavior / mobile tabs).
+	//
+	// Specializes the Button atom (ghost variant) for shared disabled/focus/
+	// transition behaviour; the chip surface + "on" tint are overrides.
+	// `.btn.toggle` outranks the atom's :where()-scoped variant classes.
 	import type { Snippet } from 'svelte';
 	import type { HTMLButtonAttributes } from 'svelte/elements';
+	import Button from '$lib/components/atoms/Button.svelte';
 
 	let {
 		pressed = false,
@@ -22,51 +27,42 @@
 	} = $props();
 </script>
 
-<button
+<Button
 	{...rest}
-	type="button"
-	class="toggle {klass}"
-	class:pill
-	class:struck
-	class:on={pressed}
+	variant="ghost"
+	class="toggle {pill ? 'pill' : ''} {struck ? 'struck' : ''} {pressed ? 'on' : ''} {klass}"
 	aria-pressed={pressed}
 >
 	{@render children?.()}
-</button>
+</Button>
 
 <style>
-	.toggle {
-		display: inline-flex;
-		align-items: center;
+	:global(.btn.toggle) {
 		gap: 4px;
+		min-height: 0;
 		padding: 0.15rem var(--sp-2);
 		border-radius: var(--r-sm);
 		font-size: var(--fs-xs);
 		font-weight: var(--fw-medium);
 		line-height: 1.4;
-		white-space: nowrap;
 		background: var(--bg-elevated-2);
 		color: var(--text-muted);
 		border: 1px solid var(--border);
-		cursor: pointer;
-		transition:
-			background 0.12s var(--ease),
-			border-color 0.12s var(--ease),
-			color 0.12s var(--ease);
 	}
-	.toggle.pill {
+	:global(.btn.toggle.pill) {
 		border-radius: var(--r-pill);
 	}
-	.toggle:hover:not(:disabled) {
+	:global(.btn.toggle:hover:not(:disabled)) {
 		border-color: var(--border-strong);
+		background: var(--bg-elevated-2);
 	}
-	.toggle.on {
+	:global(.btn.toggle.on) {
 		--tc: var(--toggle-accent, var(--accent));
 		color: var(--tc);
 		border-color: color-mix(in srgb, var(--tc) 55%, transparent);
 		background: color-mix(in srgb, var(--tc) 16%, transparent);
 	}
-	.toggle.struck {
+	:global(.btn.toggle.struck) {
 		text-decoration: line-through;
 	}
 </style>

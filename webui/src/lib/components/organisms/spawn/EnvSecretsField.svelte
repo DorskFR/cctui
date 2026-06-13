@@ -12,6 +12,7 @@
 	import IconButton from '$lib/components/molecules/IconButton.svelte';
 	import Field from '$lib/components/molecules/Field.svelte';
 	import Input from '$lib/components/atoms/Input.svelte';
+	import Text from '$lib/components/atoms/Text.svelte';
 
 	let {
 		envRows = $bindable(),
@@ -27,10 +28,10 @@
 </script>
 
 <Field label="Environment secrets">
-	<span class="faint sm">
+	<Text tone="faint" size="xs">
 		Injected as env vars in the worker — not visible in the conversation,
 		logs, or transcript, and fixed for the session's lifetime.
-	</span>
+	</Text>
 	{#each envRows as row, i (i)}
 		<div class="row gap">
 			<Input
@@ -53,7 +54,7 @@
 	{/each}
 	<Button control style="align-self:flex-start" onclick={addEnvRow}>+ Add secret</Button>
 	{#if invalid}
-		<span class="err sm">Keys must match <code>^[A-Z_][A-Z0-9_]*$</code></span>
+		<Text class="err" size="xs">Keys must match <Text variant="code">^[A-Z_][A-Z0-9_]*$</Text></Text>
 	{/if}
 </Field>
 
@@ -62,10 +63,8 @@
 		display: flex;
 		gap: var(--sp-2);
 	}
-	.err {
+	/* Error colour; size is the Text atom's. Rides on a Text child, so :global. */
+	:global(.err) {
 		color: var(--c-red);
-	}
-	.sm {
-		font-size: var(--fs-xs);
 	}
 </style>

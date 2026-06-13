@@ -2,6 +2,8 @@
 	import { renderMarkdown } from '$lib/markdown';
 	import Button from '$lib/components/atoms/Button.svelte';
 	import Chip from '$lib/components/atoms/Chip.svelte';
+	import Heading from '$lib/components/atoms/Heading.svelte';
+	import Text from '$lib/components/atoms/Text.svelte';
 
 	interface Opt {
 		label: string;
@@ -99,14 +101,14 @@
 </script>
 
 <div class="ask" class:done={!live}>
-	<div class="ask-head">❓ Question{questions.length > 1 ? 's' : ''}</div>
+	<Heading level={3} size="sm">❓ Question{questions.length > 1 ? 's' : ''}</Heading>
 	{#each questions as q, qi (qi)}
 		{@const hasPreview = q.options.some((o) => o.preview)}
 		<div class="q">
 			<div class="q-top">
 				{#if q.header}<Chip>{q.header}</Chip>{/if}
-				<span class="q-text">{q.question}</span>
-				{#if q.multiSelect}<span class="muted sm">(choose any)</span>{/if}
+				<Text weight="medium">{q.question}</Text>
+				{#if q.multiSelect}<Text tone="muted" size="xs">(choose any)</Text>{/if}
 			</div>
 			<div class="q-body" class:split={hasPreview}>
 				<div class="opts">
@@ -141,7 +143,7 @@
 						{#if q.options[focused[qi]]?.preview}
 							<div class="preview-body">{@html renderMarkdown(q.options[focused[qi]].preview ?? '')}</div>
 						{:else}
-							<div class="muted sm">No preview for this option.</div>
+							<Text as="div" tone="muted" size="xs">No preview for this option.</Text>
 						{/if}
 					</div>
 				{/if}
@@ -151,9 +153,9 @@
 	{#if live}
 		<Button variant="primary" style="align-self:flex-start" disabled={!answeredAll} onclick={submit}>Send answer</Button>
 	{:else if submitted && interactive}
-		<div class="muted sm answered">Answering…</div>
+		<Text as="div" class="answered" tone="muted" size="xs">Answering…</Text>
 	{:else}
-		<div class="muted sm answered">Answered.</div>
+		<Text as="div" class="answered" tone="muted" size="xs">Answered.</Text>
 	{/if}
 </div>
 
@@ -173,10 +175,6 @@
 		border-color: var(--border);
 		background: var(--bg-elevated-2);
 	}
-	.ask-head {
-		font-weight: 600;
-		font-size: var(--fs-sm);
-	}
 	.q {
 		display: flex;
 		flex-direction: column;
@@ -187,9 +185,6 @@
 		align-items: baseline;
 		flex-wrap: wrap;
 		gap: var(--sp-2);
-	}
-	.q-text {
-		font-weight: 500;
 	}
 	.q-body.split {
 		display: grid;
@@ -261,7 +256,7 @@
 		font-family: var(--font-mono, monospace);
 		font-size: var(--fs-xs);
 	}
-	.answered {
+	.ask :global(.answered) {
 		font-style: italic;
 	}
 </style>

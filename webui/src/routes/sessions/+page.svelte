@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { untrack, onMount } from 'svelte';
 	import type { SessionListItem } from '@bindings/SessionListItem';
-	import { useSessions, useSessionActions, endpoints, qk, SYSTEM_MACHINE_KINDS } from '$lib/queries';
+	import { useSessions, useSessionActions, endpoints, qk } from '$lib/queries';
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { page } from '$app/state';
 	import { pushState, replaceState } from '$app/navigation';
@@ -13,11 +13,30 @@
 	import ConversationDrawer from '$lib/components/organisms/ConversationDrawer.svelte';
 	import SpawnModal from '$lib/components/organisms/SpawnModal.svelte';
 	import Button from '$lib/components/atoms/Button.svelte';
+	import Input from '$lib/components/atoms/Input.svelte';
+	import Select from '$lib/components/atoms/Select.svelte';
 	import IconButton from '$lib/components/molecules/IconButton.svelte';
 	import Icon from '$lib/components/atoms/Icon.svelte';
-	import { drafts, LIST_DENSITY, DISPATCHED_COLLAPSED, LIST_VIEW, LIST_SECTION } from '$lib/drafts';
+	import Heading from '$lib/components/atoms/Heading.svelte';
+	import Text from '$lib/components/atoms/Text.svelte';
+	import { drafts, LIST_DENSITY, LIST_VIEW, LIST_SECTION } from '$lib/drafts';
 	import { notify } from '$lib/notify.svelte';
 	import { tokenizeQuery } from '$lib/search';
+	import {
+		VIEW_OPTIONS,
+		SECTIONS,
+		parseSections,
+		PAGE,
+		INLINE_THRESHOLD,
+		nest,
+		costRollup,
+		groupId,
+		BUCKETS,
+		isDispatched,
+		groupOf,
+		type Section,
+		type SubGroup
+	} from './sessions.logic';
 
 	// Close a popover when a pointer/focus lands outside the node it's attached to.
 	function clickOutside(node: HTMLElement, onOutside: () => void) {
@@ -57,12 +76,6 @@
 	// combinations. Persistence is unchanged — the picker just reads/writes the
 	// existing `cardView` (list ⇄ card) and `dense` (compact ⇄ detailed) state,
 	// each of which already round-trips through drafts above.
-	const VIEW_OPTIONS = [
-		{ value: 'list-compact', label: 'List · Compact', card: false, dense: true },
-		{ value: 'list-detailed', label: 'List · Detailed', card: false, dense: false },
-		{ value: 'card-compact', label: 'Card · Compact', card: true, dense: true },
-		{ value: 'card-detailed', label: 'Card · Detailed', card: true, dense: false }
-	] as const;
 	let viewMode = $derived(`${cardView ? 'card' : 'list'}-${dense ? 'compact' : 'detailed'}`);
 	function selectView(value: string) {
 		const opt = VIEW_OPTIONS.find((o) => o.value === value);
@@ -72,13 +85,7 @@
 	}
 	let viewLabel = $derived(VIEW_OPTIONS.find((o) => o.value === viewMode)?.label ?? 'View');
 
-	// Collapse/hide the Dispatched group as one unit (CCT-279 item 6). Persisted.
-	let dispatchedCollapsed = $state(drafts.get(DISPATCHED_COLLAPSED) === '1');
-	$effect(() => {
-		drafts.set(DISPATCHED_COLLAPSED, dispatchedCollapsed ? '1' : '0');
-	});
-
-	// Section filter (CCT-322 / CCT-345): the sessions list is partitioned into
+// Section filter (CCT-322 / CCT-345): the sessions list is partitioned into
 	// four sections, each an INDEPENDENT on/off toggle (not a forced single
 	// choice) — one toolbar button opens a popover of four checkboxes so any
 	// combination can be shown at once. Semantics over the loaded list:
@@ -87,20 +94,6 @@
 	//   • dispatched → server-managed / ephemeral-worker sessions (CCT-231)
 	//   • archived   → also append the paginated archive browse (CCT-184)
 	// The chosen set is persisted (comma-joined) so it sticks across reloads.
-	type Section = 'starred' | 'live' | 'dispatched' | 'archived';
-	const SECTIONS: { value: Section; label: string; icon: 'star' | 'live' | 'send' | 'archive' }[] = [
-		{ value: 'starred', label: 'Starred', icon: 'star' },
-		{ value: 'live', label: 'Live', icon: 'live' },
-		{ value: 'dispatched', label: 'Dispatched', icon: 'send' },
-		{ value: 'archived', label: 'Archived', icon: 'archive' }
-	];
-	const isSection = (v: string): v is Section =>
-		v === 'starred' || v === 'live' || v === 'dispatched' || v === 'archived';
-	const parseSections = (raw: string | null): Set<Section> => {
-		const set = new Set<Section>((raw ?? '').split(',').filter(isSection));
-		// Never strand the user on an empty list (would render nothing).
-		return set.size ? set : new Set<Section>(['starred', 'live', 'dispatched']);
-	};
 	let sections = $state<Set<Section>>(parseSections(drafts.get(LIST_SECTION)));
 	let sectionMenuOpen = $state(false);
 	function toggleSection(v: Section) {
@@ -265,7 +258,6 @@
 	//     (unticked = live only, ticked = all). Split into Live / Archived.
 	//   • not searching + showArchived → browse the archive (empty q), paged.
 	// Live-only with no query needs no pager — the bucketed list owns it.
-	const PAGE = 50;
 	let rawQuery = $state('');
 	let query = $state('');
 	// Mobile (narrow viewports): the search input collapses to a magnifier
@@ -453,127 +445,10 @@
 
 	const items = $derived($sessions.data?.sessions ?? []);
 
-	// Workflow-tool subagents (CCT-225) carry a `workflow_run_id` in their
-	// session metadata. A single run can spawn 100+ agents, so rather than
-	// dumping them all as flat children we group them by run id under a
-	// collapsible "Workflow: <name> (<runId>)" header. Plain (Task-tool)
-	// children render as before. Returns, per parent id, the ungrouped children
-	// plus an ordered list of workflow groups.
-	// A subagent group folded under a parent. Workflow-tool subagents (CCT-225)
-	// carry a `workflow_run_id`; plain (Task-tool) children share the synthetic
-	// "plain" group. Each group renders inline (always expanded) when it has
-	// fewer than 3 agents; larger groups collapse behind a count badge on the
-	// parent row that toggles expand/collapse (CCT-269).
-	type SubGroup = {
-		// Stable key, unique within a parent: "plain" or "wf:<runId>".
-		key: string;
-		// Run id for workflow groups; null for the plain group.
-		runId: string | null;
-		// Tooltip label, e.g. "Workflow: deploy" or "subagents".
-		label: string;
-		agents: SessionListItem[];
-		running: number;
-	};
-	const INLINE_THRESHOLD = 3; // < this → always expanded inline, no badge
-	function metaStr(s: SessionListItem, key: string): string | null {
-		const m = s.metadata as Record<string, unknown> | null;
-		const v = m?.[key];
-		return typeof v === 'string' ? v : null;
-	}
-	const relationOf = (s: SessionListItem) => metaStr(s, 'relation') ?? (metaBool(s, 'subagent') ? 'subagent' : 'root');
-	function metaBool(s: SessionListItem, key: string): boolean {
-		const m = s.metadata as Record<string, unknown> | null;
-		return m?.[key] === true;
-	}
-	const runningCount = (agents: SessionListItem[]) =>
-		agents.filter((a) => a.status !== 'archived' && a.liveness !== 'dead' && !a.hibernated).length;
-	// Fold a parent's children into plain + per-workflow groups.
-	function groupChildren(kids: SessionListItem[]): SubGroup[] {
-		const plain: SessionListItem[] = [];
-		const byRun = new Map<string, { name: string | null; agents: SessionListItem[] }>();
-		for (const k of kids) {
-			const runId = metaStr(k, 'workflow_run_id');
-			if (runId) {
-				let g = byRun.get(runId);
-				if (!g) {
-					g = { name: metaStr(k, 'workflow_name'), agents: [] };
-					byRun.set(runId, g);
-				}
-				g.agents.push(k);
-			} else {
-				plain.push(k);
-			}
-		}
-		const groups: SubGroup[] = [];
-		if (plain.length > 0) {
-			groups.push({
-				key: 'plain',
-				runId: null,
-				label: 'subagents',
-				agents: plain,
-				running: runningCount(plain)
-			});
-		}
-		for (const [runId, g] of byRun) {
-			groups.push({
-				key: `wf:${runId}`,
-				runId,
-				label: g.name ? `Workflow: ${g.name}` : 'Workflow',
-				agents: g.agents,
-				running: runningCount(g.agents)
-			});
-		}
-		return groups;
-	}
-
-	// Build the parent→subagent-group nesting for an arbitrary row set. Used for
-	// the live buckets AND, since CCT-298 item 1, for the archive + search views
-	// so they keep the same nesting + count badges instead of a flat list. A
-	// child whose parent is absent from `rows` falls back to top-level so nothing
-	// is dropped.
-	type Nest = {
-		topLevel: SessionListItem[];
-		childGroups: Map<string, SubGroup[]>;
-		hasCollapsible: boolean;
-	};
-	function nest(rows: SessionListItem[]): Nest {
-		const ids = new Set(rows.map((s) => s.id));
-		const childrenOf = new Map<string, SessionListItem[]>();
-		for (const s of rows) {
-			if (s.parent_id && ids.has(s.parent_id) && relationOf(s) !== 'fork') {
-				childrenOf.set(s.parent_id, [...(childrenOf.get(s.parent_id) ?? []), s]);
-			}
-		}
-		const topLevel = rows.filter((s) => !s.parent_id || !ids.has(s.parent_id) || relationOf(s) === 'fork');
-		const childGroups = new Map<string, SubGroup[]>();
-		let hasCollapsible = false;
-		for (const [parentId, kids] of childrenOf) {
-			const groups = groupChildren(kids);
-			if (groups.length > 0) childGroups.set(parentId, groups);
-			if (groups.some((g) => g.agents.length >= INLINE_THRESHOLD)) hasCollapsible = true;
-		}
-		return { topLevel, childGroups, hasCollapsible };
-	}
-
-	// Aggregated subagent usage for a parent (CCT-297 #19, tokens per CCT-301 #2):
-	// the parent's own total tokens plus every subagent's, with the agent count.
-	// Reported in tokens (not dollars). Null when there are no agents.
-	const totalTokens = (u: SessionListItem['token_usage']) =>
-		Number(u.tokens_in) +
-		Number(u.tokens_out) +
-		Number(u.cache_read_tokens) +
-		Number(u.cache_creation_tokens);
-	function costRollup(
-		s: SessionListItem,
-		groups: SubGroup[]
-	): { tokens: number; count: number } | null {
-		const agents = groups.flatMap((g) => g.agents);
-		if (agents.length === 0) return null;
-		const tokens =
-			totalTokens(s.token_usage) + agents.reduce((n, a) => n + totalTokens(a.token_usage), 0);
-		return { tokens, count: agents.length };
-	}
-
+	// Subagent grouping (CCT-225 / CCT-269), nesting (CCT-298 item 1), and the
+	// cost rollup (CCT-297 #19) are all pure data transforms — see
+	// sessions.logic.ts. The component keeps only the reactive derivations + the
+	// expand/collapse state below.
 	const liveNest = $derived(nest(items));
 	const topLevel = $derived(liveNest.topLevel);
 	const childGroupsOf = $derived(liveNest.childGroups);
@@ -582,7 +457,6 @@
 	// Expand/collapse state for collapsible (>=3) subagent groups, keyed by
 	// `${parentId}/${group.key}`. Default collapsed.
 	let expanded = $state(new Set<string>());
-	const groupId = (parentId: string, key: string) => `${parentId}/${key}`;
 	function toggleGroup(parentId: string, key: string) {
 		const id = groupId(parentId, key);
 		const next = new Set(expanded);
@@ -591,30 +465,9 @@
 		expanded = next;
 	}
 
-	// Classifier buckets (CCT-90), in attention-first display order. Sessions
-	// that want the user's eyes float to the top; empty buckets are dropped.
-	// Sessions on server-managed machines (dispatch / ephemeral workers) get
-	// their own "Dispatched" group at the bottom (CCT-231) — they're unattended
-	// noise next to interactive sessions — EXCEPT blocked ones, which still
-	// surface under Needs input so attention never gets buried.
-	type GroupKey = SessionListItem['bucket'] | 'dispatched' | 'pinned';
-	const BUCKETS: { key: GroupKey; label: string }[] = [
-		// Pinned/starred sessions (CCT-267) float above every bucket.
-		{ key: 'pinned', label: 'Pinned' },
-		{ key: 'blocked', label: 'Needs input' },
-		{ key: 'review', label: 'Ready for review' },
-		{ key: 'working', label: 'Working' },
-		{ key: 'done', label: 'Completed' },
-		{ key: 'dispatched', label: 'Dispatched' }
-	];
-	const isDispatched = (s: SessionListItem) =>
-		s.machine_kind != null && SYSTEM_MACHINE_KINDS.has(s.machine_kind);
-	const groupOf = (s: SessionListItem): GroupKey => {
-		if (s.pinned) return 'pinned';
-		const bucket = s.bucket ?? 'working';
-		if (bucket === 'blocked') return 'blocked';
-		return isDispatched(s) ? 'dispatched' : bucket;
-	};
+	// Classifier buckets (CCT-90) + the dispatch/pinned mapping are pure — see
+	// BUCKETS / isDispatched / groupOf in sessions.logic.ts.
+	type GroupKey = ReturnType<typeof groupOf>;
 	// Each live bucket maps to exactly ONE section toggle, so the four toggles
 	// select disjoint slices that compose cleanly (CCT-345):
 	//   • Pinned bucket      ← starred
@@ -647,15 +500,15 @@
 </script>
 
 <div class="bar row">
-	<h1 class="page-title">Sessions</h1>
+	<Heading level={1} class="page-title">Sessions</Heading>
 	<IconButton class="search-toggle btn-control-square" icon="search" label="Search chats" onclick={openSearch} />
 	<div class="search-wrap" class:open={searchOpen}>
-		<input
+		<Input
 			class="search"
 			type="search"
 			placeholder="Search all chats…"
 			bind:value={rawQuery}
-			bind:this={searchEl}
+			bind:el={searchEl}
 			onblur={onSearchBlur}
 			onkeydown={(e) => {
 				if (e.key === 'Escape') {
@@ -728,7 +581,8 @@
 	<div class="view-pick btn-control" title="View: {viewLabel}" aria-label="View: {viewLabel}">
 		<span class="view-pick-icon" aria-hidden="true">{cardView ? '▦' : '☰'}</span>
 		<span class="view-pick-caret" aria-hidden="true">▾</span>
-		<select
+		<Select
+			variant="ghost"
 			aria-label="Choose list view"
 			value={viewMode}
 			onchange={(e) => selectView((e.currentTarget as HTMLSelectElement).value)}
@@ -736,7 +590,7 @@
 			{#each VIEW_OPTIONS as o (o.value)}
 				<option value={o.value}>{o.label}</option>
 			{/each}
-		</select>
+		</Select>
 	</div>
 	{#if !searching}
 		{#if selecting}
@@ -750,7 +604,7 @@
 
 {#if selecting && !searching}
 		<div class="bulkbar row">
-			<span class="count">{selected.size} selected</span>
+			<Text class="count" size="sm" weight="semibold" tone="muted">{selected.size} selected</Text>
 			<Button size="sm" onclick={selectAll}>Select all</Button>
 			<div class="spacer"></div>
 			<Button
@@ -858,7 +712,7 @@
 
 {#snippet loadMore()}
 	{#if pageError}
-		<div class="empty err">Search failed: {pageError}</div>
+		<div class="empty err"><Text tone="danger">Search failed: {pageError}</Text></div>
 	{:else if pageLoading}
 		<div class="loadmore"><span class="spin"></span></div>
 		{:else if !pageDone && pageRows.length > 0}
@@ -873,7 +727,7 @@
 	{#if pageLoading && pageRows.length === 0}
 		<div class="empty"><span class="spin"></span></div>
 	{:else if pageRows.length === 0}
-		<div class="empty">No chats match “{query}”{showArchived ? '' : ' (live only — pick Archived to search all)'}.</div>
+		<div class="empty"><Text tone="muted">No chats match “{query}”{showArchived ? '' : ' (live only — pick Archived to search all)'}.</Text></div>
 	{:else}
 		<!-- Nest over the whole result set so a parent and its subagents stay
 		     grouped even if they land in different status sections; then split
@@ -883,11 +737,11 @@
 		{@const archTop = ns.topLevel.filter((s) => s.status === 'archived')}
 		<div class="stack" class:tight={dense} class:badge-gutter={ns.hasCollapsible}>
 			{#if liveTop.length > 0}
-				<div class="group-header">Live <span class="count">{liveTop.length}</span></div>
+				<div class="group-header">Live <Text class="count">{liveTop.length}</Text></div>
 				{@render nestedRows(liveTop, ns.childGroups, false, searchTerms)}
 			{/if}
 			{#if archTop.length > 0}
-				<div class="group-header">Archived <span class="count">{archTop.length}</span></div>
+				<div class="group-header">Archived <Text class="count">{archTop.length}</Text></div>
 				{@render nestedRows(archTop, ns.childGroups, false, searchTerms)}
 			{/if}
 			{@render loadMore()}
@@ -899,7 +753,7 @@
 		<div class="empty"><span class="spin"></span></div>
 	{:else if groups.length === 0 && !showArchived}
 		<div class="empty">
-			No sessions in the selected sections — toggle more from the section filter.
+			<Text tone="muted">No sessions in the selected sections — toggle more from the section filter.</Text>
 		</div>
 	{:else}
 		<div
@@ -909,17 +763,11 @@
 		>
 			{#each groups as g (g.key)}
 				{#if g.key === 'dispatched'}
-					<!-- Dispatched group (CCT-279 items 6 + 7): collapsible as one unit
-					     with a bulk "Archive all" action. -->
+					<!-- Dispatched is a plain section header like Pinned/Completed, with a
+					     bulk "Archive all" action on the right (CCT-279 item 7). -->
 					<div class="group-header" data-bucket={g.key}>
-						<button
-							class="group-toggle"
-							aria-expanded={!dispatchedCollapsed}
-							onclick={() => (dispatchedCollapsed = !dispatchedCollapsed)}
-						>
-							<span class="chev" class:collapsed={dispatchedCollapsed}>▾</span>
-							{g.label} <span class="count">{g.sessions.length}</span>
-						</button>
+						{g.label} <Text class="count">{g.sessions.length}</Text>
+						<div class="spacer"></div>
 						<Button
 							size="sm"
 							variant="danger"
@@ -930,14 +778,13 @@
 							{#if archiving}<span class="spin"></span>{/if}
 							Archive all
 						</Button>
-						<div class="spacer"></div>
-						</div>
+					</div>
 				{:else}
 					<div class="group-header" data-bucket={g.key}>
-						{g.label} <span class="count">{g.sessions.length}</span>
+						{g.label} <Text class="count">{g.sessions.length}</Text>
 					</div>
 				{/if}
-				{@const vis = g.key === 'dispatched' && dispatchedCollapsed ? [] : g.sessions}
+				{@const vis = g.sessions}
 				{#if cardView}
 					{@render cardGrid(vis)}
 				{:else}
@@ -951,9 +798,9 @@
 	{#if showArchived}
 		{@const ns = nest(pageRows)}
 		<div class="stack" class:tight={dense} class:badge-gutter={ns.hasCollapsible}>
-			<div class="group-header">Archived <span class="count">{ns.topLevel.length}</span></div>
+			<div class="group-header">Archived <Text class="count">{ns.topLevel.length}</Text></div>
 			{#if pageRows.length === 0 && !pageLoading}
-				<div class="empty">No archived sessions.</div>
+				<div class="empty"><Text tone="muted">No archived sessions.</Text></div>
 			{:else if cardView}
 				<!-- Card mode applies to archived sessions too (CCT-321 parity). -->
 				{@render cardGrid(ns.topLevel)}
@@ -1016,7 +863,9 @@
 		flex-wrap: wrap;
 		background: var(--bg);
 	}
-	.page-title {
+	/* The title is the Heading atom; a class on an atom can't match a plain
+	   scoped selector, so target it via :global. */
+	:global(.page-title) {
 		/* CCT-308 item 3: the title is toolbar chrome, not content — pin it to a
 		   fixed px size (1.75rem @16px = 28px) so the UI font scale doesn't grow
 		   it and shove the action buttons out of frame. */
@@ -1040,16 +889,6 @@
 	.view-pick-caret {
 		font-size: var(--fs-xs);
 		color: var(--text-faint);
-	}
-	.view-pick select {
-		position: absolute;
-		inset: 0;
-		width: 100%;
-		height: 100%;
-		opacity: 0;
-		cursor: pointer;
-		border: none;
-		background: none;
 	}
 	/* Section filter (CCT-345): one square toolbar button that opens a popover of
 	   independent toggles. The wrapper is the positioning context for the popover
@@ -1141,20 +980,19 @@
 		position: relative;
 		display: flex;
 	}
-	.search {
+	/* Toolbar-specific tweaks layered on the Input atom (`.input.search` beats the
+	   atom's `.input` base, so order in the bundle doesn't matter): compact height,
+	   elevated fill, and right padding that clears the in-field × button. */
+	.search-wrap :global(.input.search) {
 		flex: 1;
 		min-width: 0;
 		height: var(--control-height);
-		/* room on the right for the clear button so text doesn't run under it */
 		padding: var(--sp-1) calc(var(--sp-3) + 1.25rem) var(--sp-1) var(--sp-3);
 		font-size: var(--fs-sm);
-		border: 1px solid var(--border-strong);
-		border-radius: var(--r-md);
 		background: var(--bg-elevated);
-		color: var(--text);
 	}
 	/* Hide any browser-native search clear; we provide our own cross. */
-	.search::-webkit-search-cancel-button {
+	.search-wrap :global(.input.search)::-webkit-search-cancel-button {
 		display: none;
 	}
 	.search-wrap :global(.search-clear) {
@@ -1186,7 +1024,7 @@
 			grid-template-columns: auto minmax(0, 1fr) auto;
 			align-items: center;
 		}
-		.bar > .page-title {
+		.bar > :global(.page-title) {
 			grid-column: 1;
 		}
 		.bar > :global(.search-toggle),
@@ -1244,11 +1082,6 @@
 		border-radius: var(--r-md);
 		background: var(--bg-elevated);
 		box-shadow: var(--shadow-md);
-	}
-	.bulkbar .count {
-		font-size: var(--fs-sm);
-		font-weight: var(--fw-semibold);
-		color: var(--text-muted);
 	}
 	.stack.tight {
 		gap: var(--sp-1);
@@ -1356,9 +1189,6 @@
 		justify-content: center;
 		padding: var(--sp-3) 0;
 	}
-	.empty.err {
-		color: var(--danger, #bf616a);
-	}
 	.group-header {
 		display: flex;
 		align-items: center;
@@ -1373,35 +1203,12 @@
 	.group-header:first-child {
 		margin-top: 0;
 	}
-	.group-header .count {
+	/* The count is a Text atom; target the passed class via :global. */
+	.group-header :global(.count) {
 		font-weight: 400;
 		opacity: 0.7;
 	}
 	/* Dispatched group collapse toggle (CCT-279 item 6). */
-	.group-toggle {
-		display: inline-flex;
-		align-items: center;
-		gap: var(--sp-2);
-		background: none;
-		border: none;
-		padding: 0;
-		font: inherit;
-		color: inherit;
-		text-transform: inherit;
-		letter-spacing: inherit;
-		cursor: pointer;
-	}
-	.group-toggle:hover {
-		color: var(--text);
-	}
-	.group-toggle .chev {
-		display: inline-block;
-		transition: transform 0.12s var(--ease);
-		font-size: 0.85em;
-	}
-	.group-toggle .chev.collapsed {
-		transform: rotate(-90deg);
-	}
 	.group-header[data-bucket='blocked'] {
 		color: var(--warn, #d08770);
 	}

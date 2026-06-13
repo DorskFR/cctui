@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { useAccountUsage } from '$lib/queries';
 	import { relativeTime } from '$lib/format';
+	import Text from '$lib/components/atoms/Text.svelte';
 
 	// Per-account subscription-usage chip (CCT-306). Shows Anthropic's free OAuth
 	// usage windows (5h session + 7d weekly utilization) for claude accounts;
@@ -56,13 +57,13 @@
 
 {#if active && (fivePct !== null || sevenPct !== null)}
 	<span class="usage" class:hot={tone === 'hot'} class:warm={tone === 'warm'} title={tip}>
-		{#if fivePct !== null}<span class="seg">5h {fivePct}%</span>{/if}
-		{#if sevenPct !== null}<span class="seg seg-week">7d {sevenPct}%</span>{/if}
+		{#if fivePct !== null}<Text class="seg">5h {fivePct}%</Text>{/if}
+		{#if sevenPct !== null}<Text class="seg seg-week">7d {sevenPct}%</Text>{/if}
 	</span>
 {:else if active && $q.isLoading}
 	<span class="spin"></span>
 {:else}
-	<span class="faint">—</span>
+	<Text tone="faint">—</Text>
 {/if}
 
 <style>
@@ -74,17 +75,19 @@
 		font-size: 0.85em;
 		white-space: nowrap;
 	}
-	.seg {
+	/* .seg is rendered by the Text atom, so these selectors must be :global to
+	   reach it (only opacity/colour chrome lives here; typography is Text's). */
+	:global(.seg) {
 		opacity: 0.85;
 	}
-	.seg-week {
+	:global(.seg-week) {
 		opacity: 0.6;
 	}
-	.usage.warm .seg {
+	.usage.warm :global(.seg) {
 		color: var(--warn, #d08700);
 		opacity: 1;
 	}
-	.usage.hot .seg {
+	.usage.hot :global(.seg) {
 		color: var(--danger, #d33);
 		opacity: 1;
 		font-weight: 600;

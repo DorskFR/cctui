@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
+	import NavLink from '$lib/components/atoms/NavLink.svelte';
 
 	const items = [
 		{ href: '/', label: 'Overview', icon: '◧' },
@@ -15,10 +16,10 @@
 <nav class="nav">
 	<div class="nav-inner">
 		{#each items as it (it.href)}
-			<a class="nav-btn" class:active={active(it.href)} href={it.href}>
+			<NavLink href={it.href} class="nav-btn {active(it.href) ? 'active' : ''}">
 				<span class="ico">{it.icon}</span>
 				<span class="lbl">{it.label}</span>
-			</a>
+			</NavLink>
 		{/each}
 	</div>
 </nav>
@@ -41,7 +42,8 @@
 		margin-inline: auto;
 		display: flex;
 	}
-	.nav-btn {
+	/* nav-btn is the class on the NavLink atom, so reach it via :global. */
+	:global(.nav-btn) {
 		flex: 1;
 		display: flex;
 		flex-direction: column;
@@ -53,17 +55,16 @@
 		   NOT respond to the font-scale picker, so use fixed sizes for both the
 		   label and the glyph so they scale together / not at all (CCT-345). */
 		font-size: 0.6875rem;
-		text-decoration: none;
 		font-weight: var(--fw-medium);
 	}
-	.nav-btn .ico {
+	:global(.nav-btn) .ico {
 		font-size: 1.25rem;
 		line-height: 1;
 	}
-	.nav-btn.active {
+	:global(.nav-btn.active) {
 		color: var(--accent);
 	}
-	.nav-btn:active {
+	:global(.nav-btn:active) {
 		background: var(--bg-elevated-2);
 	}
 </style>

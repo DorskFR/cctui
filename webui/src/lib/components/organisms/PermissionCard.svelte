@@ -2,6 +2,7 @@
 	import type { PermReq } from '$lib/ws.svelte';
 	import Badge from '$lib/components/atoms/Badge.svelte';
 	import Button from '$lib/components/atoms/Button.svelte';
+	import Text from '$lib/components/atoms/Text.svelte';
 
 	let {
 		req,
@@ -12,9 +13,9 @@
 <div class="perm">
 	<div class="row">
 		<Badge tone="warn">permission</Badge>
-		<span class="tool mono truncate">{req.tool_name}</span>
+		<Text variant="code" weight="semibold" truncate>{req.tool_name}</Text>
 	</div>
-	{#if req.description}<p class="desc muted">{req.description}</p>{/if}
+	{#if req.description}<Text as="p" tone="muted" size="sm">{req.description}</Text>{/if}
 	{#if req.input_preview}<pre class="prev mono">{req.input_preview}</pre>{/if}
 	<div class="row acts">
 		<Button variant="danger" block onclick={() => onrespond(req.request_id, false)}>Deny</Button>
@@ -31,12 +32,6 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-2);
-	}
-	.tool {
-		font-weight: var(--fw-semibold);
-	}
-	.desc {
-		font-size: var(--fs-sm);
 	}
 	.prev {
 		max-height: 8rem;

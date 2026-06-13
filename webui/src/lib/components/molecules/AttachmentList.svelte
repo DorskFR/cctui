@@ -4,6 +4,7 @@
 	// when present, the cap error.
 	import { fmtSize, fileCapError } from '$lib/attachments';
 	import IconButton from '$lib/components/molecules/IconButton.svelte';
+	import Text from '$lib/components/atoms/Text.svelte';
 
 	let {
 		files,
@@ -18,14 +19,14 @@
 	<ul class="files" class:compact>
 		{#each files as f (f.name)}
 			<li>
-				<code class="grow">{f.name}</code>
-				<span class="faint sz">{fmtSize(f.size)}</span>
+				<Text variant="code" truncate class="grow">{f.name}</Text>
+				<Text size="xs" tone="faint">{fmtSize(f.size)}</Text>
 				<IconButton inline class="hover-danger" icon="x" label="Remove" title="Remove" onclick={() => onremove(f.name)} />
 			</li>
 		{/each}
 	</ul>
 {/if}
-{#if error}<span class="err sz">{error}</span>{/if}
+{#if error}<Text size="xs" class="err">{error}</Text>{/if}
 
 <style>
 	.files {
@@ -54,17 +55,14 @@
 		padding: 2px var(--sp-2);
 		max-width: 100%;
 	}
-	.grow {
+	/* The filename and the cap error are rendered by the Text atom, so their
+	   residual layout/colour chrome must be :global to reach those elements;
+	   ellipsis on the filename is handled by Text's `truncate` prop. */
+	:global(.grow) {
 		flex: 1;
 		min-width: 0;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
 	}
-	.sz {
-		font-size: var(--fs-xs);
-	}
-	.err {
+	:global(.err) {
 		color: var(--c-red);
 	}
 </style>

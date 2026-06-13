@@ -17,6 +17,8 @@
 	import Badge from '$lib/components/atoms/Badge.svelte';
 	import Chip from '$lib/components/atoms/Chip.svelte';
 	import Input from '$lib/components/atoms/Input.svelte';
+	import Select from '$lib/components/atoms/Select.svelte';
+	import Text from '$lib/components/atoms/Text.svelte';
 	import SelectButton from '$lib/components/molecules/SelectButton.svelte';
 
 	let {
@@ -123,7 +125,7 @@
 			{#if renaming}
 				<Input bind:value={newName} onkeydown={(e: KeyboardEvent) => e.key === 'Enter' && doRename()} />
 			{:else}
-				<span class="truncate name">{headTitle}</span>
+				<Text class="name" weight="semibold" size="md" truncate>{headTitle}</Text>
 			{/if}
 		</div>
 		<!-- Secondary actions (CCT-301 #7): inline on desktop, collapsed into the
@@ -206,12 +208,12 @@
 		{#if isCodexSession && !archived}
 			{#if modelEditing}
 				<Chip class="row" style="gap:var(--sp-1);padding:0.05rem var(--sp-1)">
-					<select class="mini-select" bind:value={pendingModel} aria-label="Model">
+					<Select class="mini-select" bind:value={pendingModel} aria-label="Model">
 						{#each codexModels as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
-					</select>
-					<select class="mini-select" bind:value={pendingEffort} aria-label="Effort">
+					</Select>
+					<Select class="mini-select" bind:value={pendingEffort} aria-label="Effort">
 						{#each codexEfforts as e (e)}<option value={e}>{e || 'default effort'}</option>{/each}
-					</select>
+					</Select>
 					<IconButton class="tapbtn" icon="check" label="Apply" onclick={applyModelChange} />
 					<IconButton class="tapbtn" icon="x" label="Cancel" onclick={() => (modelEditing = false)} />
 				</Chip>
@@ -351,10 +353,6 @@
 		flex: 1;
 		min-width: 0;
 	}
-	.name {
-		font-weight: var(--fw-semibold);
-		font-size: var(--fs-md);
-	}
 	/* Bigger, easy-to-tap icon buttons with a tinted, outlined chip look. */
 	.dhead :global(.tapbtn) {
 		flex: none;
@@ -391,9 +389,11 @@
 	.hmeta {
 		gap: var(--sp-2);
 	}
-	.mini-select {
+	/* Compact override on the Select atom (rendered inside Select, so :global;
+	   `.select.mini-select` outranks the atom's :where()-scoped `.select`). */
+	:global(.select.mini-select) {
+		width: auto;
 		font-size: var(--fs-xs);
-		color: var(--text);
 		background: var(--bg-elevated-2);
 		border: 1px solid var(--border);
 		border-radius: var(--r-sm, 4px);
