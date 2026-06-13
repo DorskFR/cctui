@@ -14,6 +14,7 @@
 	import CwdCombo from './CwdCombo.svelte';
 	import EffortSlider from './EffortSlider.svelte';
 	import { claudeModels, codexModels, claudeEfforts, codexEfforts, modes } from './options';
+	import { submitChordLabel, isSubmitChord } from '$lib/platform';
 	import type { Form } from './types';
 
 	let {
@@ -23,7 +24,8 @@
 		matchingAccounts,
 		files,
 		onpickfiles,
-		onremovefile
+		onremovefile,
+		onsubmit
 	}: {
 		form: Form;
 		machines: MachineRow[];
@@ -32,6 +34,8 @@
 		files: File[];
 		onpickfiles: (e: Event) => void;
 		onremovefile: (name: string) => void;
+		// Submit the whole spawn form from the prompt textarea (Ctrl/⌘+Enter).
+		onsubmit?: () => void;
 	} = $props();
 
 	// Per-mode accent: ask = green (safe), auto = blue (sandboxed),
@@ -67,7 +71,14 @@
 		placeholder="Initial prompt…"
 		bind:value={form.prompt}
 		autoresize
+		onkeydown={(e: KeyboardEvent) => {
+			if (onsubmit && isSubmitChord(e)) {
+				e.preventDefault();
+				onsubmit();
+			}
+		}}
 	/>
+	<Text size="xs" tone="faint" style="display:block;margin-top:var(--sp-1)">{submitChordLabel()} to create</Text>
 </Field>
 
 <Field label="Adapter">

@@ -7,14 +7,18 @@
 	import { Field, Input, Text, Textarea } from '@dorsk/tsumikit';
 	import Select from '$lib/components/atoms/Select.svelte';
 	import { claudeModels, claudeEfforts } from './options';
+	import { submitChordLabel, isSubmitChord } from '$lib/platform';
 	import type { Form } from './types';
 
 	let {
 		form = $bindable(),
-		dispatcherIds
+		dispatcherIds,
+		onsubmit
 	}: {
 		form: Form;
 		dispatcherIds: string[];
+		// Submit the spawn form from the prompt textarea (Ctrl/⌘+Enter).
+		onsubmit?: () => void;
 	} = $props();
 </script>
 
@@ -53,7 +57,14 @@
 		placeholder="What should the worker do? (e.g. work on CCT-123 / a PR)"
 		bind:value={form.prompt}
 		autoresize
+		onkeydown={(e: KeyboardEvent) => {
+			if (onsubmit && isSubmitChord(e)) {
+				e.preventDefault();
+				onsubmit();
+			}
+		}}
 	/>
+	<Text size="xs" tone="faint" style="display:block;margin-top:var(--sp-1)">{submitChordLabel()} to dispatch</Text>
 </Field>
 
 <Field label="Prompt file (optional)" for="sp-prompt-file">
