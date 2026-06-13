@@ -9,8 +9,12 @@
 	} from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
 	import { dateOnly, relativeTime, compact } from '$lib/format';
-	import UsageBars from '$lib/components/UsageBars.svelte';
-	import Button from '$lib/components/Button.svelte';
+	import UsageBars from '$lib/components/molecules/UsageBars.svelte';
+	import Button from '$lib/components/atoms/Button.svelte';
+	import Input from '$lib/components/atoms/Input.svelte';
+	import Select from '$lib/components/atoms/Select.svelte';
+	import Badge from '$lib/components/atoms/Badge.svelte';
+	import Link from '$lib/components/atoms/Link.svelte';
 
 	const accounts = useAccounts();
 	const actions = useAccountActions();
@@ -176,7 +180,7 @@
 <div class="bar row">
 	<h1 class="page-title">Accounts</h1>
 	<div class="spacer"></div>
-	<button class="btn-control btn-primary" onclick={openCreate}>+ New account</button>
+	<Button control variant="primary" onclick={openCreate}>+ New account</Button>
 </div>
 
 <p class="hint">
@@ -198,7 +202,7 @@
 						<h2>{a.name}</h2>
 						<div class="muted sm">{providerLabel(a.provider)}</div>
 					</div>
-					<span class="badge">{providerLabel(a.provider)}</span>
+					<Badge>{providerLabel(a.provider)}</Badge>
 				</div>
 				{#if a.provider === 'anthropic'}
 					<div class="usage-block">
@@ -242,23 +246,22 @@
 			<h2>{editing ? 'Rename account' : 'New account'}</h2>
 			<label class="fld">
 				<span>Name</span>
-				<input class="input" bind:value={name} placeholder="personal" />
+				<Input bind:value={name} placeholder="personal" />
 			</label>
 			{#if !editing}
 				{#if isAdmin}
 					<label class="fld">
 						<span>Owner</span>
-						<select class="input" bind:value={ownerId}>
+						<Select bind:value={ownerId}>
 							{#each activeUsers as u (u.id)}
 								<option value={u.id}>{u.name}</option>
 							{/each}
-						</select>
+						</Select>
 					</label>
 				{/if}
 				<label class="fld">
 					<span>Provider</span>
-					<select
-						class="input"
+					<Select
 						bind:value={provider}
 						onchange={() => {
 							oauthNonce = null;
@@ -267,12 +270,14 @@
 					>
 						<option value="anthropic">Claude (anthropic)</option>
 						<option value="openai">Codex (openai)</option>
-					</select>
+					</Select>
 				</label>
 				<!-- Sign in with Claude / ChatGPT: authorize upstream, paste back. -->
 				{#if !oauthNonce}
-					<button
-						class="btn btn-sm btn-primary signin"
+					<Button
+						size="sm"
+						variant="primary"
+						style="align-self: flex-start"
 						disabled={oauthBusy}
 						onclick={startOAuthLogin}
 					>
@@ -281,12 +286,11 @@
 							: provider === 'openai'
 								? 'Sign in with ChatGPT'
 								: 'Sign in with Claude'}
-					</button>
+					</Button>
 				{:else}
 					<label class="fld">
 						<span>{provider === 'openai' ? 'URL from ChatGPT' : 'Code from claude.ai'}</span>
-						<input
-							class="input"
+						<Input
 							bind:value={oauthCode}
 							placeholder={provider === 'openai'
 								? 'paste the http://localhost:1455/auth/callback?... URL'
@@ -301,8 +305,8 @@
 					{/if}
 					<p class="hint sub">
 						Didn't get {provider === 'openai' ? 'a URL' : 'a code'}?
-						<button class="linkbtn" onclick={startOAuthLogin}
-							>Open {provider === 'openai' ? 'ChatGPT' : 'claude.ai'} again</button
+						<Link onclick={startOAuthLogin}
+							>Open {provider === 'openai' ? 'ChatGPT' : 'claude.ai'} again</Link
 						>
 					</p>
 				{/if}
@@ -310,8 +314,7 @@
 					<summary>Advanced: paste a refresh token instead</summary>
 					<label class="fld">
 						<span>OAuth refresh token</span>
-						<input
-							class="input"
+						<Input
 							type="password"
 							bind:value={refreshToken}
 							placeholder="paste the OAuth refresh token"
@@ -321,15 +324,11 @@
 			{/if}
 			<div class="row editor-acts">
 				<div class="spacer"></div>
-				<button class="btn btn-sm" onclick={close}>Cancel</button>
+				<Button size="sm" onclick={close}>Cancel</Button>
 				{#if !editing && oauthNonce && !showAdvanced}
-					<button
-						class="btn btn-sm btn-primary"
-						disabled={oauthBusy}
-						onclick={finishOAuthLogin}>Save</button
-					>
+					<Button size="sm" variant="primary" disabled={oauthBusy} onclick={finishOAuthLogin}>Save</Button>
 				{:else}
-					<button class="btn btn-sm btn-primary" onclick={save}>Save</button>
+					<Button size="sm" variant="primary" onclick={save}>Save</Button>
 				{/if}
 			</div>
 		</div>
@@ -445,20 +444,8 @@
 		gap: var(--sp-1);
 		margin-top: var(--sp-2);
 	}
-	.signin {
-		align-self: flex-start;
-	}
 	.hint.sub {
 		margin: 0;
-	}
-	.linkbtn {
-		background: none;
-		border: none;
-		padding: 0;
-		color: var(--accent, var(--text));
-		cursor: pointer;
-		text-decoration: underline;
-		font: inherit;
 	}
 	.adv summary {
 		cursor: pointer;

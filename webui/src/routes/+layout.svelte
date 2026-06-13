@@ -3,10 +3,10 @@
 	import { QueryClient, QueryClientProvider } from '@tanstack/svelte-query';
 	import { auth } from '$lib/auth.svelte';
 	import { ws } from '$lib/ws.svelte';
-	import Header from '$lib/components/Header.svelte';
-	import BottomNav from '$lib/components/BottomNav.svelte';
-	import Toaster from '$lib/components/Toaster.svelte';
-	import Login from '$lib/components/Login.svelte';
+	import Header from '$lib/components/organisms/Header.svelte';
+	import BottomNav from '$lib/components/organisms/BottomNav.svelte';
+	import Toaster from '$lib/components/organisms/Toaster.svelte';
+	import Login from '$lib/components/organisms/Login.svelte';
 	import { installCodeCopy } from '$lib/codecopy';
 
 	let { children } = $props();

@@ -1,0 +1,267 @@
+<script lang="ts">
+	import { renderMarkdown } from '$lib/markdown';
+	import Button from '$lib/components/atoms/Button.svelte';
+	import Chip from '$lib/components/atoms/Chip.svelte';
+
+	interface Opt {
+		label: string;
+		description?: string;
+		preview?: string;
+	}
+	interface Question {
+		header?: string;
+		question: string;
+		multiSelect?: boolean;
+		options: Opt[];
+	}
+
+	let {
+		questions,
+		interactive,
+		onsubmit
+	}: {
+		questions: Question[];
+		interactive: boolean;
+		/** `picks` is the structured per-question option selection (0-based
+		 * indices) when every answer is a pure option pick, or `null` when any
+		 * question used the free-text "Other…" field — the daemon answers the
+		 * real form natively from picks (CCT-226) and only falls back to
+		 * dismiss-then-reply for free text. */
+		onsubmit: (text: string, picks: number[][] | null) => void;
+	} = $props();
+
+	// Per-question chosen option indices + free-text "Other".
+	let chosen = $state<Set<number>[]>(questions.map(() => new Set<number>()));
+	let other = $state<string[]>(questions.map(() => ''));
+	// Which option's preview is shown per question (last hovered/selected).
+	let focused = $state<number[]>(questions.map(() => 0));
+	// Optimistic local lock (CCT-190): the card is fully prop-driven, so without
+	// this it stays editable/"Send answer" until the server round-trip flips
+	// `interactive` to false — a multi-second lag. Setting `submitted` on click
+	// flips the card to its in-flight state instantly, independent of the server.
+	let submitted = $state(false);
+	// Editable only while interactive AND not yet submitted.
+	const live = $derived(interactive && !submitted);
+	// Release the optimistic lock if the parent re-enables the card (CCT-278):
+	// `interactive` goes false while an answer is in flight and flips back to
+	// true only if that answer failed to deliver (the parent clears its
+	// `answering` lock). Detecting the false→true edge lets a failed answer be
+	// resubmitted instead of staying stuck on "Answering…".
+	let wasInteractive = interactive;
+	$effect(() => {
+		if (interactive && !wasInteractive) submitted = false;
+		wasInteractive = interactive;
+	});
+
+	function pick(qi: number, oi: number) {
+		if (!live) return;
+		const q = questions[qi];
+		const set = new Set(chosen[qi]);
+		if (q.multiSelect) {
+			if (set.has(oi)) set.delete(oi);
+			else set.add(oi);
+		} else {
+			set.clear();
+			set.add(oi);
+		}
+		chosen[qi] = set;
+		focused[qi] = oi;
+	}
+
+	const answeredAll = $derived(
+		questions.every((_, qi) => chosen[qi].size > 0 || other[qi].trim().length > 0)
+	);
+
+	function buildAnswer(): string {
+		return questions
+			.map((q, qi) => {
+				const picks = [...chosen[qi]].map((oi) => q.options[oi]?.label).filter(Boolean);
+				if (other[qi].trim()) picks.push(other[qi].trim());
+				const head = q.header ? `**${q.header}** — ` : '';
+				return `${head}${q.question}\n→ ${picks.join(', ')}`;
+			})
+			.join('\n\n');
+	}
+
+	/** Structured selection for the native answer path (CCT-226): one sorted
+	 * list of 0-based option indices per question, or `null` if any question
+	 * was answered (even partially) via the free-text "Other…" field. */
+	function buildPicks(): number[][] | null {
+		if (other.some((t) => t.trim().length > 0)) return null;
+		return questions.map((_, qi) => [...chosen[qi]].sort((a, b) => a - b));
+	}
+
+	function submit() {
+		if (!live || !answeredAll) return;
+		submitted = true; // optimistic flip — show "Answering…" immediately
+		onsubmit(buildAnswer(), buildPicks());
+	}
+</script>
+
+<div class="ask" class:done={!live}>
+	<div class="ask-head">❓ Question{questions.length > 1 ? 's' : ''}</div>
+	{#each questions as q, qi (qi)}
+		{@const hasPreview = q.options.some((o) => o.preview)}
+		<div class="q">
+			<div class="q-top">
+				{#if q.header}<Chip>{q.header}</Chip>{/if}
+				<span class="q-text">{q.question}</span>
+				{#if q.multiSelect}<span class="muted sm">(choose any)</span>{/if}
+			</div>
+			<div class="q-body" class:split={hasPreview}>
+				<div class="opts">
+					{#each q.options as o, oi (oi)}
+						<button
+							type="button"
+							class="opt"
+							class:sel={chosen[qi].has(oi)}
+							disabled={!live}
+							onclick={() => pick(qi, oi)}
+							onmouseenter={() => (focused[qi] = oi)}
+						>
+							<span class="mark">{chosen[qi].has(oi) ? (q.multiSelect ? '☑' : '◉') : q.multiSelect ? '☐' : '○'}</span>
+							<span class="opt-text">
+								<span class="opt-label">{o.label}</span>
+								{#if o.description}<span class="opt-desc">{o.description}</span>{/if}
+							</span>
+						</button>
+					{/each}
+					<label class="opt other" class:sel={other[qi].trim().length > 0}>
+						<span class="mark">✎</span>
+						<input
+							class="other-in"
+							placeholder="Other…"
+							bind:value={other[qi]}
+							disabled={!live}
+						/>
+					</label>
+				</div>
+				{#if hasPreview}
+					<div class="preview">
+						{#if q.options[focused[qi]]?.preview}
+							<div class="preview-body">{@html renderMarkdown(q.options[focused[qi]].preview ?? '')}</div>
+						{:else}
+							<div class="muted sm">No preview for this option.</div>
+						{/if}
+					</div>
+				{/if}
+			</div>
+		</div>
+	{/each}
+	{#if live}
+		<Button variant="primary" style="align-self:flex-start" disabled={!answeredAll} onclick={submit}>Send answer</Button>
+	{:else if submitted && interactive}
+		<div class="muted sm answered">Answering…</div>
+	{:else}
+		<div class="muted sm answered">Answered.</div>
+	{/if}
+</div>
+
+<style>
+	.ask {
+		border: 1px solid var(--c-violet);
+		border-radius: var(--r-md);
+		background: color-mix(in srgb, var(--c-violet) 6%, var(--bg-elevated));
+		padding: var(--sp-3);
+		margin: var(--sp-2) 0;
+		display: flex;
+		flex-direction: column;
+		gap: var(--sp-3);
+	}
+	.ask.done {
+		opacity: 0.7;
+		border-color: var(--border);
+		background: var(--bg-elevated-2);
+	}
+	.ask-head {
+		font-weight: 600;
+		font-size: var(--fs-sm);
+	}
+	.q {
+		display: flex;
+		flex-direction: column;
+		gap: var(--sp-2);
+	}
+	.q-top {
+		display: flex;
+		align-items: baseline;
+		flex-wrap: wrap;
+		gap: var(--sp-2);
+	}
+	.q-text {
+		font-weight: 500;
+	}
+	.q-body.split {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: var(--sp-3);
+		align-items: start;
+	}
+	.opts {
+		display: flex;
+		flex-direction: column;
+		gap: var(--sp-1);
+	}
+	.opt {
+		display: flex;
+		gap: var(--sp-2);
+		align-items: flex-start;
+		text-align: left;
+		padding: var(--sp-2);
+		border: 1px solid var(--border);
+		border-radius: var(--r-sm);
+		background: var(--bg-elevated-2);
+		color: var(--text);
+		cursor: pointer;
+		width: 100%;
+	}
+	.opt:hover:not(:disabled) {
+		border-color: var(--c-violet);
+	}
+	.opt.sel {
+		border-color: var(--c-violet);
+		background: color-mix(in srgb, var(--c-violet) 14%, var(--bg-elevated-2));
+	}
+	.opt:disabled {
+		cursor: default;
+	}
+	.mark {
+		flex: 0 0 auto;
+		font-size: var(--fs-sm);
+	}
+	.opt-text {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+	.opt-label {
+		font-weight: 500;
+	}
+	.opt-desc {
+		font-size: var(--fs-xs);
+		color: var(--text-muted);
+	}
+	.opt.other {
+		align-items: center;
+	}
+	.other-in {
+		flex: 1;
+		background: transparent;
+		border: none;
+		color: var(--text);
+		outline: none;
+	}
+	.preview {
+		border: 1px solid var(--border);
+		border-radius: var(--r-sm);
+		background: var(--bg);
+		padding: var(--sp-2);
+		max-height: 320px;
+		overflow: auto;
+		font-family: var(--font-mono, monospace);
+		font-size: var(--fs-xs);
+	}
+	.answered {
+		font-style: italic;
+	}
+</style>

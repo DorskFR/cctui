@@ -2,7 +2,8 @@
 	import { useUsers, useSessionStats, useTokenStats } from '$lib/queries';
 	import { apiOrigin } from '$lib/config';
 	import { toasts } from '$lib/toast.svelte';
-	import TokenUsage from '$lib/components/TokenUsage.svelte';
+	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
+	import Button from '$lib/components/atoms/Button.svelte';
 	import type { WindowTokenUsage } from '@bindings/WindowTokenUsage';
 	import type { TokenUsage as TokenUsageT } from '@bindings/TokenUsage';
 
@@ -94,7 +95,7 @@
 	</p>
 	<div class="row">
 		<code class="cmd mono truncate">{enrollCmd}</code>
-		<button class="btn btn-sm" onclick={copyEnroll}>Copy</button>
+		<Button size="sm" onclick={copyEnroll}>Copy</Button>
 	</div>
 	<p class="muted">
 		Then run it as a service: <code class="mono">cctui-daemon service install</code>

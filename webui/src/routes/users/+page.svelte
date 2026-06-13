@@ -2,8 +2,13 @@
 	import { useUsers, useUserActions, useMe } from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
 	import { dateOnly } from '$lib/format';
-	import UserExpand from '$lib/components/UserExpand.svelte';
-	import SecretReveal from '$lib/components/SecretReveal.svelte';
+	import UserExpand from '$lib/components/molecules/UserExpand.svelte';
+	import SecretReveal from '$lib/components/molecules/SecretReveal.svelte';
+	import Button from '$lib/components/atoms/Button.svelte';
+	import Input from '$lib/components/atoms/Input.svelte';
+	import Badge from '$lib/components/atoms/Badge.svelte';
+	import Switch from '$lib/components/atoms/Switch.svelte';
+	import IconButton from '$lib/components/molecules/IconButton.svelte';
 	import { SvelteSet } from 'svelte/reactivity';
 	import { auth } from '$lib/auth.svelte';
 
@@ -82,7 +87,7 @@
 <div class="bar row">
 	<h1 class="page-title">Users</h1>
 	<div class="spacer"></div>
-	<button class="btn-control btn-primary" onclick={createUser}>+ New user</button>
+	<Button control variant="primary" onclick={createUser}>+ New user</Button>
 </div>
 
 <!-- Who am I (CCT-251): role + identity + a non-secret preview of the stored
@@ -91,9 +96,7 @@
 	{@const m = $me.data}
 	<div class="card whoami row">
 		<span class="faint">Signed in as</span>
-		<span class="badge" class:badge-warn={m.role === 'admin'} class:badge-ok={m.role === 'user'}
-			>{m.role}</span
-		>
+		<Badge tone={m.role === 'admin' ? 'warn' : m.role === 'user' ? 'ok' : 'neutral'}>{m.role}</Badge>
 		{#if m.user_name}<span class="who-name">{m.user_name}</span>{/if}
 		<span class="mono faint preview">{m.token_preview}</span>
 		{#if m.role === 'admin'}
@@ -103,12 +106,12 @@
 			>
 		{/if}
 		<div class="spacer"></div>
-		<button class="btn btn-sm" onclick={() => auth.clear()}>⏻ Log out</button>
+		<Button size="sm" onclick={() => auth.clear()}>⏻ Log out</Button>
 	</div>
 {/if}
 
 {#if ($users.data ?? []).length > 6}
-	<input class="input filter" placeholder="Filter users…" bind:value={filter} />
+	<Input placeholder="Filter users…" bind:value={filter} style="margin-bottom: var(--sp-3)" />
 {/if}
 
 {#if $users.isLoading}
@@ -137,24 +140,27 @@
 									<span class="name truncate">{u.name}</span>
 								</button>
 								{#if !u.revoked_at}
-									<button
+									<IconButton
+										inline
 										class="pen"
+										icon="edit"
+										size={14}
 										title="Rename user"
-										aria-label="Rename user"
-										onclick={() => rename(u.id, u.name)}>✎</button
-									>
+										label="Rename user"
+										onclick={() => rename(u.id, u.name)}
+									/>
 								{/if}
 							</span>
 						</td>
 						<td class="col-status">
 							{#if u.revoked_at}
-								<span class="badge badge-danger">revoked</span>
+								<Badge tone="danger">revoked</Badge>
 							{:else if u.disabled_at}
-								<span class="badge badge-warn">disabled</span>
+								<Badge tone="warn">disabled</Badge>
 							{:else}
-								<span class="badge badge-ok">active</span>
+								<Badge tone="ok">active</Badge>
 								{#if !u.can_dispatch}
-									<span class="badge badge-warn">no dispatch</span>
+									<Badge tone="warn">no dispatch</Badge>
 								{/if}
 							{/if}
 						</td>
@@ -162,20 +168,15 @@
 						<td class="col-actions">
 							<div class="row row-wrap acts">
 								{#if u.revoked_at}
-									<button class="btn btn-sm btn-danger" onclick={() => purgeUser(u.id, u.name)}>Delete</button>
+									<Button size="sm" variant="danger" onclick={() => purgeUser(u.id, u.name)}>Delete</Button>
 								{:else}
-									<button
-										class="switch"
-										class:on={!u.disabled_at}
-										role="switch"
-										aria-checked={!u.disabled_at}
+									<Switch
+										checked={!u.disabled_at}
 										title={u.disabled_at ? 'Enable user' : 'Disable user (temporary)'}
-										aria-label="Active"
+										label="Active"
 										onclick={() => toggleDisabled(u.id, u.name, !u.disabled_at)}
-									>
-										<span class="knob"></span>
-									</button>
-									<button class="btn btn-sm btn-danger" onclick={() => revoke(u.id, u.name)}>Revoke</button>
+									/>
+									<Button size="sm" variant="danger" onclick={() => revoke(u.id, u.name)}>Revoke</Button>
 								{/if}
 							</div>
 						</td>
@@ -218,9 +219,6 @@
 	}
 	.note {
 		font-size: var(--fs-xs);
-	}
-	.filter {
-		margin-bottom: var(--sp-3);
 	}
 	.table-card {
 		padding: 0;
@@ -278,23 +276,14 @@
 	.name {
 		font-weight: var(--fw-semibold);
 	}
-	.pen {
+	.user-row :global(.pen) {
 		flex: none;
-		background: none;
-		border: none;
-		padding: 0 var(--sp-1);
-		cursor: pointer;
-		color: var(--text-muted);
-		font-size: var(--fs-sm);
 		opacity: 0;
 		transition: opacity 0.12s var(--ease);
 	}
-	.user-row:hover .pen,
-	.pen:focus-visible {
+	.user-row:hover :global(.pen),
+	.user-row :global(.pen:focus-visible) {
 		opacity: 1;
-	}
-	.pen:hover {
-		color: var(--text);
 	}
 	.caret {
 		flex: none;
@@ -305,7 +294,7 @@
 	.caret.open {
 		transform: rotate(90deg);
 	}
-	.col-status .badge + .badge {
+	.col-status :global(.badge + .badge) {
 		margin-left: var(--sp-1);
 	}
 	.acts {
@@ -317,40 +306,6 @@
 		background: var(--bg-elevated);
 		border-top: 1px solid var(--border);
 	}
-	/* pill toggle (matches UserExpand's switch) */
-	.switch {
-		flex: none;
-		width: 2.75rem;
-		height: 1.6rem;
-		border-radius: var(--r-pill);
-		border: 1px solid var(--border-strong);
-		background: var(--bg-elevated-2);
-		padding: 2px;
-		display: flex;
-		align-items: center;
-		cursor: pointer;
-		transition:
-			background 0.14s var(--ease),
-			border-color 0.14s var(--ease);
-	}
-	.switch .knob {
-		width: 1.25rem;
-		height: 1.25rem;
-		border-radius: 50%;
-		background: var(--text-muted);
-		transition:
-			transform 0.14s var(--ease),
-			background 0.14s var(--ease);
-	}
-	.switch.on {
-		background: var(--accent);
-		border-color: var(--accent);
-	}
-	.switch.on .knob {
-		transform: translateX(1.15rem);
-		background: var(--text-on-accent);
-	}
-
 	@media (max-width: 720px) {
 		.col-created {
 			display: none;

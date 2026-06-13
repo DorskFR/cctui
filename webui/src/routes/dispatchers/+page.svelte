@@ -7,6 +7,10 @@
 	} from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
 	import { dateOnly } from '$lib/format';
+	import Button from '$lib/components/atoms/Button.svelte';
+	import Input from '$lib/components/atoms/Input.svelte';
+	import Select from '$lib/components/atoms/Select.svelte';
+	import Badge from '$lib/components/atoms/Badge.svelte';
 
 	const dispatchers = useUserDispatchers();
 	const actions = useDispatcherActions();
@@ -106,7 +110,7 @@
 <div class="bar row">
 	<h1 class="page-title">Dispatchers</h1>
 	<div class="spacer"></div>
-	<button class="btn-control btn-primary" onclick={openCreate}>+ New dispatcher</button>
+	<Button control variant="primary" onclick={openCreate}>+ New dispatcher</Button>
 </div>
 
 <p class="hint">
@@ -134,13 +138,13 @@
 				{#each rows as d (d.id)}
 					<tr>
 						<td class="col-name"><span class="name">{d.name}</span></td>
-						<td class="col-kind"><span class="badge">{d.kind}</span></td>
+						<td class="col-kind"><Badge>{d.kind}</Badge></td>
 						<td class="col-config faint truncate">{summarize(d)}</td>
 						<td class="col-created faint">{dateOnly(d.created_at)}</td>
 						<td class="col-actions">
 							<div class="row acts">
-								<button class="btn btn-sm" onclick={() => openEdit(d)}>Edit</button>
-								<button class="btn btn-sm btn-danger" onclick={() => remove(d)}>Delete</button>
+								<Button size="sm" onclick={() => openEdit(d)}>Edit</Button>
+								<Button size="sm" variant="danger" onclick={() => remove(d)}>Delete</Button>
 							</div>
 						</td>
 					</tr>
@@ -167,24 +171,23 @@
 			<h2>{editing ? 'Edit dispatcher' : 'New dispatcher'}</h2>
 			<label class="fld">
 				<span>Name</span>
-				<input class="input" bind:value={name} placeholder="my-worker" />
+				<Input bind:value={name} placeholder="my-worker" />
 			</label>
 			<label class="fld">
 				<span>Type</span>
-				<select class="input" bind:value={kind}>
+				<Select bind:value={kind}>
 					<option value="http">http</option>
 					<option value="kubernetes">kubernetes</option>
-				</select>
+				</Select>
 			</label>
 			{#if kind === 'http'}
 				<label class="fld">
 					<span>URL</span>
-					<input class="input" bind:value={url} placeholder="https://dispatcher.example/dispatch" />
+					<Input bind:value={url} placeholder="https://dispatcher.example/dispatch" />
 				</label>
 				<label class="fld">
 					<span>Bearer token</span>
-					<input
-						class="input"
+					<Input
 						type="password"
 						bind:value={token}
 						placeholder={editing ? 'leave blank to keep current' : 'optional'}
@@ -193,21 +196,21 @@
 			{:else}
 				<label class="fld">
 					<span>Namespace</span>
-					<input class="input" bind:value={namespace} placeholder="workers" />
+					<Input bind:value={namespace} placeholder="workers" />
 				</label>
 				<label class="fld">
 					<span>Source CronJob</span>
-					<input class="input" bind:value={sourceCronjob} placeholder="worker-template" />
+					<Input bind:value={sourceCronjob} placeholder="worker-template" />
 				</label>
 				<label class="fld">
 					<span>CCTUI URL (optional)</span>
-					<input class="input" bind:value={cctuiUrl} placeholder="https://cctui.example.com" />
+					<Input bind:value={cctuiUrl} placeholder="https://cctui.example.com" />
 				</label>
 			{/if}
 			<div class="row editor-acts">
 				<div class="spacer"></div>
-				<button class="btn btn-sm" onclick={close}>Cancel</button>
-				<button class="btn btn-sm btn-primary" onclick={save}>Save</button>
+				<Button size="sm" onclick={close}>Cancel</Button>
+				<Button size="sm" variant="primary" onclick={save}>Save</Button>
 			</div>
 		</div>
 	</div>

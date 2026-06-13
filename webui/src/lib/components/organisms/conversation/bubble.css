@@ -1,0 +1,136 @@
+/* Shared message-bubble + rendered-markdown styling, extracted from
+   ConversationDrawer (no behavior change). Imported as a global stylesheet by
+   the components that render a `.bubble` (ConversationLine, and the drawer's
+   ask-preamble), so the base look + markdown/syntax-highlight token colors are
+   defined once. Role tints (`.line.user .bubble`, …) stay scoped in
+   ConversationLine since they key off `.line`. */
+
+.bubble {
+	padding: var(--sp-2) var(--sp-3);
+	border-radius: var(--r-md);
+	background: var(--bg-elevated);
+	border: 1px solid var(--border);
+	overflow-wrap: anywhere;
+	word-break: break-word;
+	/* CCT-161 item 4 — slider-driven, falls back to --fs-sm. */
+	font-size: var(--fs-sm);
+	/* Base prose: grayish (Claude-Code terminal feel, CCT-161 item 5). */
+	color: var(--md-text);
+}
+.bubble strong {
+	color: var(--md-strong);
+	font-weight: var(--fw-bold);
+}
+.bubble .md-h {
+	display: inline-block;
+	color: var(--md-heading);
+	font-weight: var(--fw-bold);
+}
+.bubble .md-quote {
+	display: inline-block;
+	border-left: 2px solid var(--border-strong);
+	padding-left: var(--sp-2);
+	color: var(--text-faint);
+}
+.bubble .md-li {
+	display: inline-block;
+}
+/* Leaked harness pseudo-tags rendered as a muted inline chip. */
+.bubble .md-meta-tag {
+	font-family: var(--font-mono);
+	font-size: 0.9em;
+	color: var(--text-faint);
+	background: var(--bg-elevated-2);
+	border-radius: 4px;
+	padding: 0 3px;
+}
+.bubble .md-pre {
+	background: var(--bg);
+	padding: var(--sp-2);
+	border-radius: var(--r-sm);
+	overflow-x: auto;
+	white-space: pre-wrap;
+	color: var(--text);
+	margin: var(--sp-1) 0;
+}
+.bubble .md-code {
+	color: var(--md-code);
+	font-weight: var(--fw-semibold);
+	background: var(--md-code-bg);
+	padding: 1px 4px;
+	border-radius: 4px;
+}
+/* GFM tables (CCT-233): themed borders + header row, horizontally scrollable
+   so wide tables don't blow out the bubble width. */
+.bubble .md-table {
+	display: block;
+	max-width: 100%;
+	overflow-x: auto;
+	border-collapse: collapse;
+	margin: var(--sp-2) 0;
+	font-size: var(--fs-sm);
+}
+.bubble .md-table th,
+.bubble .md-table td {
+	border: 1px solid var(--border-strong);
+	padding: var(--sp-1) var(--sp-2);
+	text-align: left;
+	vertical-align: top;
+}
+.bubble .md-table th {
+	background: var(--bg-elevated);
+	font-weight: var(--fw-semibold);
+	color: var(--text);
+}
+.bubble .md-table tbody tr:nth-child(even) {
+	background: color-mix(in srgb, var(--bg-elevated) 45%, transparent);
+}
+/* Syntax-highlight token colors. highlight.js emits hljs-* classes (CCT-279
+   item 5); we map them onto the existing themeable --syn-* tokens so dark/
+   light/sepia keep driving the palette. The legacy --syn-* classes from the
+   old regex highlighter are kept as aliases for any cached content. */
+.syn-keyword,
+.hljs-keyword,
+.hljs-built_in,
+.hljs-type,
+.hljs-literal,
+.hljs-symbol,
+.hljs-selector-tag {
+	color: var(--syn-keyword);
+}
+.syn-string,
+.hljs-string,
+.hljs-char,
+.hljs-regexp {
+	color: var(--syn-string);
+}
+.syn-number,
+.hljs-number,
+.hljs-attr,
+.hljs-attribute,
+.hljs-variable,
+.hljs-template-variable {
+	color: var(--syn-number);
+}
+.syn-comment,
+.hljs-comment,
+.hljs-quote {
+	color: var(--syn-comment);
+	font-style: italic;
+}
+/* Diff add/remove lines (our highlightDiff + hljs diff grammar). */
+.hljs-addition {
+	color: var(--syn-string);
+}
+.hljs-deletion {
+	color: var(--danger, #f0716b);
+}
+.syn-function,
+.hljs-title,
+.hljs-title.function_,
+.hljs-section,
+.hljs-name,
+.hljs-meta,
+.hljs-property {
+	color: var(--syn-function);
+}

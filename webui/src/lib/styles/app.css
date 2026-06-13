@@ -141,28 +141,13 @@ pre {
   white-space: nowrap;
 }
 
-/* ---------- buttons ---------- */
-.btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--sp-2);
-  padding: var(--sp-2) var(--sp-4);
-  min-height: 2.5rem;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--r-md);
-  background: var(--surface);
-  color: var(--text);
-  font-weight: var(--fw-medium);
-  font-size: var(--fs-sm);
-  line-height: 1;
-  transition:
-    background 0.12s var(--ease),
-    border-color 0.12s var(--ease),
-    opacity 0.12s var(--ease);
-  user-select: none;
-  white-space: nowrap;
-}
+/* ---------- buttons ----------
+ * The Button primitive (Button.svelte) owns the .btn base + .btn-primary/
+ * ghost/danger/sm/block variants in its scoped style now. What stays global
+ * here are: the svg/icon sizing rule (used by raw aria-hidden svgs too), and
+ * the string-passed utility modifiers .btn-icon / .btn-control* that ride on a
+ * Button-rendered element or a bespoke control div (e.g. the sessions view
+ * picker) and so can't live in a single component's scope. */
 .btn svg,
 .icon,
 svg[aria-hidden="true"] {
@@ -172,50 +157,29 @@ svg[aria-hidden="true"] {
   min-width: 1em;
   min-height: 1em;
 }
-.btn:hover:not(:disabled) {
-  border-color: var(--accent);
-}
-.btn:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-.btn-primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--text-on-accent);
-  font-weight: var(--fw-semibold);
-}
-.btn-primary:hover:not(:disabled) {
-  filter: brightness(1.08);
-}
-.btn-danger {
-  color: var(--danger);
-  border-color: color-mix(in srgb, var(--danger) 50%, var(--border));
-}
-.btn-danger:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--danger) 14%, transparent);
-  border-color: var(--danger);
-}
-.btn-ghost {
-  background: transparent;
-  border-color: transparent;
-}
-.btn-ghost:hover:not(:disabled) {
-  background: var(--bg-elevated-2);
-  border-color: transparent;
-}
-.btn-sm {
-  min-height: 2rem;
-  padding: var(--sp-1) var(--sp-3);
-  font-size: var(--fs-xs);
-}
 .btn-icon {
   min-height: 2.25rem;
   min-width: 2.25rem;
   padding: var(--sp-2);
 }
-.btn-block {
-  width: 100%;
+/* Borderless, compact icon affordance (IconButton `inline`): chip-remove ✕,
+   hover-reveal edit ✎. Overrides the .btn chrome down to a bare muted glyph
+   that brightens on hover. Add `.hover-danger` for destructive removers. */
+.btn-icon-inline {
+  min-height: 0;
+  min-width: 0;
+  padding: 0 var(--sp-1);
+  border: none;
+  background: none;
+  color: var(--text-muted);
+}
+.btn-icon-inline:hover:not(:disabled) {
+  border: none;
+  background: none;
+  color: var(--text);
+}
+.btn-icon-inline.hover-danger:hover:not(:disabled) {
+  color: var(--c-red);
 }
 /* Uniform-height control (CCT-250 item 1). Use on icon buttons, inputs, and
    action buttons that share a toolbar/composer row so they line up exactly.
@@ -288,42 +252,9 @@ svg[aria-hidden="true"] {
   border-color: var(--border-strong);
 }
 
-/* ---------- badges / pills ---------- */
-.badge {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-1);
-  padding: 0.15rem var(--sp-2);
-  border-radius: var(--r-pill);
-  font-size: var(--fs-xs);
-  font-weight: var(--fw-medium);
-  line-height: 1.4;
-  background: var(--bg-elevated-2);
-  color: var(--text-muted);
-  border: 1px solid var(--border);
-  white-space: nowrap;
-}
-.badge-ok {
-  color: var(--ok);
-  border-color: color-mix(in srgb, var(--ok) 40%, transparent);
-  background: color-mix(in srgb, var(--ok) 12%, transparent);
-}
-.badge-warn {
-  color: var(--warn);
-  border-color: color-mix(in srgb, var(--warn) 40%, transparent);
-  background: color-mix(in srgb, var(--warn) 12%, transparent);
-}
-.badge-danger {
-  color: var(--danger);
-  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
-  background: color-mix(in srgb, var(--danger) 12%, transparent);
-}
-.badge-info {
-  color: var(--info);
-  border-color: color-mix(in srgb, var(--info) 40%, transparent);
-  background: color-mix(in srgb, var(--info) 12%, transparent);
-}
-
+/* ---------- status dots ----------
+ * The badge/pill shape + tone palette now lives in the Badge primitive
+ * (Badge.svelte). The liveness dots are a separate, non-badge indicator. */
 .dot {
   width: 0.55rem;
   height: 0.55rem;
@@ -346,39 +277,8 @@ svg[aria-hidden="true"] {
   background: var(--dot-hibernated);
 }
 
-/* ---------- forms ---------- */
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-1);
-}
-.label {
-  font-size: var(--fs-sm);
-  font-weight: var(--fw-medium);
-  color: var(--text-muted);
-}
-.input,
-.textarea,
-.select {
-  width: 100%;
-  padding: var(--sp-3);
-  background: var(--bg);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--r-md);
-  color: var(--text);
-  transition: border-color 0.12s var(--ease);
-}
-.input:focus,
-.textarea:focus,
-.select:focus {
-  outline: none;
-  border-color: var(--accent);
-}
-.textarea {
-  resize: vertical;
-  min-height: 5rem;
-  font-family: inherit;
-}
+/* ---------- forms ----------
+ * Field/Input/Textarea/Select primitives own the form styling now. */
 
 /* ---------- modal / bottom sheet ---------- */
 .overlay {
@@ -458,8 +358,15 @@ svg[aria-hidden="true"] {
   max-width: 30rem;
   pointer-events: none;
 }
-.toast {
+/* Rendered via <Card as="button">; the `.toast-wrap` prefix lifts specificity
+   above Card's base `.card` so the toast keeps its own surface (elevated-2 bg,
+   r-md radius, shadow) and left-aligned full-width clickable layout. */
+.toast-wrap .toast {
   pointer-events: auto;
+  width: 100%;
+  text-align: left;
+  color: inherit;
+  cursor: pointer;
   background: var(--bg-elevated-2);
   border: 1px solid var(--border-strong);
   border-radius: var(--r-md);
@@ -468,11 +375,11 @@ svg[aria-hidden="true"] {
   font-size: var(--fs-sm);
   animation: sheet-up 0.18s var(--ease);
 }
-.toast-err {
+.toast-wrap .toast-err {
   border-color: var(--danger);
   color: var(--danger);
 }
-.toast-ok {
+.toast-wrap .toast-ok {
   border-color: var(--accent);
 }
 

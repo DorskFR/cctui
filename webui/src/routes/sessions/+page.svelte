@@ -8,13 +8,13 @@
 	import { toasts } from '$lib/toast.svelte';
 	import { ApiError } from '$lib/api';
 	import { ws } from '$lib/ws.svelte';
-	import SessionCard from '$lib/components/SessionCard.svelte';
-	import SubagentBadge from '$lib/components/SubagentBadge.svelte';
-	import ConversationDrawer from '$lib/components/ConversationDrawer.svelte';
-	import SpawnModal from '$lib/components/SpawnModal.svelte';
-	import Button from '$lib/components/Button.svelte';
-	import IconButton from '$lib/components/IconButton.svelte';
-	import Icon from '$lib/components/Icon.svelte';
+	import SessionCard from '$lib/components/organisms/SessionCard.svelte';
+	import SubagentBadge from '$lib/components/molecules/SubagentBadge.svelte';
+	import ConversationDrawer from '$lib/components/organisms/ConversationDrawer.svelte';
+	import SpawnModal from '$lib/components/organisms/SpawnModal.svelte';
+	import Button from '$lib/components/atoms/Button.svelte';
+	import IconButton from '$lib/components/molecules/IconButton.svelte';
+	import Icon from '$lib/components/atoms/Icon.svelte';
 	import { drafts, LIST_DENSITY, DISPATCHED_COLLAPSED, LIST_VIEW, LIST_SECTION } from '$lib/drafts';
 	import { notify } from '$lib/notify.svelte';
 	import { tokenizeQuery } from '$lib/search';
@@ -669,17 +669,19 @@
 			<!-- In-field clear (CCT-297 #22). onmousedown preventDefault keeps the
 			     input from blurring (which on mobile would collapse it) before the
 			     click clears the query. -->
-			<button
-				type="button"
+			<IconButton
+				inline
 				class="search-clear"
-				aria-label="Clear search"
+				icon="x"
+				size={13}
+				label="Clear search"
 				title="Clear search"
-				onmousedown={(e) => e.preventDefault()}
+				onmousedown={(e: MouseEvent) => e.preventDefault()}
 				onclick={() => {
 					rawQuery = '';
 					searchEl?.focus();
-				}}>✕</button
-			>
+				}}
+			/>
 		{/if}
 	</div>
 	<!-- Section filter (CCT-322 / CCT-345): ONE button opens a popover of four
@@ -1155,27 +1157,21 @@
 	.search::-webkit-search-cancel-button {
 		display: none;
 	}
-	.search-clear {
+	.search-wrap :global(.search-clear) {
 		position: absolute;
 		top: 50%;
 		right: var(--sp-2);
 		transform: translateY(-50%);
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
 		width: 1.25rem;
 		height: 1.25rem;
 		padding: 0;
-		border: none;
 		border-radius: 50%;
 		background: var(--bg-elevated-2, var(--border));
 		color: var(--text-faint);
-		font-size: var(--fs-xs);
-		line-height: 1;
-		cursor: pointer;
 	}
-	.search-clear:hover {
+	.search-wrap :global(.search-clear):hover {
 		color: var(--text);
+		background: var(--bg-elevated-2, var(--border));
 	}
 	/* Desktop: the input always fills the bar; no toggle button. */
 	:global(.search-toggle) {
