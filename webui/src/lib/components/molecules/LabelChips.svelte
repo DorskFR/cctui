@@ -38,6 +38,10 @@
 	let rootEl = $state<HTMLElement>();
 	let addEl = $state<HTMLElement>();
 	let menuEl = $state<HTMLElement>();
+	// Non-portaled menus are positioned with CSS (top:100%); flip to bottom:100%
+	// when opening below would overflow the viewport. Portaled menus handle this
+	// inline in the `portal` action instead.
+	let flipUp = $state(false);
 
 	const attachedIds = $derived(new Set(labels.map((l) => l.id)));
 
@@ -54,6 +58,18 @@
 		return () => document.removeEventListener('pointerdown', handler, true);
 	});
 
+	// Decide flip direction for the CSS-positioned (non-portaled) menu once it is
+	// rendered. Runs whenever the menu opens.
+	$effect(() => {
+		if (!open || portalMenu || !menuEl || !addEl) {
+			flipUp = false;
+			return;
+		}
+		const r = addEl.getBoundingClientRect();
+		const mh = menuEl.offsetHeight || 0;
+		flipUp = r.bottom + 4 + mh > window.innerHeight && r.top - 4 - mh >= 0;
+	});
+
 	// Portal + position the popover under the trigger; reposition on scroll/resize.
 	function portal(node: HTMLElement) {
 		if (!portalMenu) return;
@@ -62,8 +78,13 @@
 			if (!addEl) return;
 			const r = addEl.getBoundingClientRect();
 			node.style.position = 'fixed';
-			node.style.top = `${r.bottom + 4}px`;
 			const mw = node.offsetWidth || 220;
+			const mh = node.offsetHeight || 0;
+			// Flip up when opening below would overflow the viewport bottom and
+			// there is room above (e.g. trigger already near the bottom edge).
+			const below = r.bottom + 4;
+			const flipUp = below + mh > window.innerHeight && r.top - 4 - mh >= 0;
+			node.style.top = flipUp ? `${r.top - 4 - mh}px` : `${below}px`;
 			node.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - mw - 8))}px`;
 			node.style.zIndex = '1000';
 		};
@@ -164,6 +185,7 @@
 				<!-- svelte-ignore a11y_no_static_element_interactions -->
 				<div
 					class="menu"
+					class:up={flipUp}
 					bind:this={menuEl}
 					use:portal
 					onpointerdown={(e) => e.stopPropagation()}
@@ -276,6 +298,14 @@
 		gap: var(--sp-2);
 		text-align: left;
 		white-space: normal;
+	}
+	/* Flip the CSS-positioned menu above the trigger when it would otherwise
+	   overflow the viewport bottom. Inline-styled portaled menus ignore this. */
+	.menu.up {
+		top: auto;
+		bottom: 100%;
+		margin-top: 0;
+		margin-bottom: var(--sp-1);
 	}
 	.menu-list {
 		display: flex;
