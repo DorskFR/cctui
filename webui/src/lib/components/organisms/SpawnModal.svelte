@@ -373,7 +373,7 @@
 			{/if}
 
 			{#if target === 'dispatch'}
-				<DispatchFields bind:form {dispatcherIds} />
+				<DispatchFields bind:form {dispatcherIds} onsubmit={submit} />
 			{:else}
 				<MachineFields
 					bind:form
@@ -383,6 +383,7 @@
 					{files}
 					onpickfiles={onPickFiles}
 					onremovefile={removeFile}
+					onsubmit={submit}
 				/>
 			{/if}
 
