@@ -666,7 +666,26 @@
 		{#if selecting}
 			<IconButton class="btn-control-square" icon="x" label="Cancel selection" onclick={exitSelect} />
 		{:else}
-			<IconButton class="btn-control-square" icon="check" label="Select multiple to archive" onclick={() => (selecting = true)} />
+			<!-- "Select multiple" wants a checklist/multi-select glyph, which the icon
+			     registry doesn't ship. IconButton only takes a registry name, so render
+			     its Button(icon)+Icon structure directly and feed Icon a raw "list-checks"
+			     svg (24×24, stroke-2) via its children snippet. -->
+			<Button
+				class="btn-control-square"
+				icon
+				variant="ghost"
+				title="Select multiple to archive"
+				aria-label="Select multiple to archive"
+				onclick={() => (selecting = true)}
+			>
+				<Icon label="Select multiple to archive" size={18}>
+					<path d="m3 17 2 2 4-4" />
+					<path d="m3 7 2 2 4-4" />
+					<path d="M13 6h8" />
+					<path d="M13 12h8" />
+					<path d="M13 18h8" />
+				</Icon>
+			</Button>
 		{/if}
 	{/if}
 	<Button class="toolbar-new" control variant="primary" title="New session" aria-label="New session" onclick={() => (showSpawn = true)}>+<span class="new-label"> New</span></Button>
