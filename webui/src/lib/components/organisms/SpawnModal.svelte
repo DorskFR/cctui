@@ -25,8 +25,7 @@
 	} from '$lib/drafts';
 	import { dropzone } from '$lib/dropzone';
 	import { mergeFiles, removeFileByName, fileCapError } from '$lib/attachments';
-	import Modal from '$lib/components/molecules/Modal.svelte';
-	import { Button, Field, OptionButton, Text } from '@dorsk/tsumikit';
+	import { Button, Field, Modal, OptionButton, Text } from '@dorsk/tsumikit';
 	import LabelBadge from '$lib/components/molecules/LabelBadge.svelte';
 	import EnvSecretsField from './spawn/EnvSecretsField.svelte';
 	import MachineFields from './spawn/MachineFields.svelte';

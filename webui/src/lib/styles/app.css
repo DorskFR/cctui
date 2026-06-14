@@ -280,69 +280,7 @@ svg[aria-hidden="true"] {
 /* ---------- forms ----------
  * Field/Input/Textarea/Select primitives own the form styling now. */
 
-/* ---------- modal / bottom sheet ---------- */
-.overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.55);
-  z-index: var(--z-modal);
-  display: flex;
-  align-items: flex-end;
-  justify-content: center;
-}
-@media (min-width: 640px) {
-  .overlay {
-    align-items: center;
-    padding: var(--sp-6);
-  }
-}
-.sheet {
-  width: 100%;
-  max-width: 34rem;
-  max-height: calc(100dvh - var(--safe-top) - var(--sp-6));
-  display: flex;
-  flex-direction: column;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: var(--r-lg) var(--r-lg) 0 0;
-  box-shadow: var(--shadow-lg);
-  animation: sheet-up 0.18s var(--ease);
-  padding-bottom: var(--safe-bottom);
-}
-@media (min-width: 640px) {
-  .sheet {
-    border-radius: var(--r-lg);
-    padding-bottom: 0;
-  }
-}
-@keyframes sheet-up {
-  from {
-    transform: translateY(8%);
-    opacity: 0.4;
-  }
-}
-.sheet-head {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  padding: var(--sp-4);
-  border-bottom: 1px solid var(--border);
-}
-.sheet-title {
-  font-size: var(--fs-lg);
-  font-weight: var(--fw-semibold);
-}
-.sheet-body {
-  padding: var(--sp-4);
-  overflow-y: auto;
-  -webkit-overflow-scrolling: touch;
-}
-.sheet-foot {
-  display: flex;
-  gap: var(--sp-2);
-  padding: var(--sp-4);
-  border-top: 1px solid var(--border);
-}
+/* Modal / bottom-sheet styling now lives in tsumikit's <dialog>-based Modal. */
 
 /* ---------- toast ---------- */
 .toast-wrap {

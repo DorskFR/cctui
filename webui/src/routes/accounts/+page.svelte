@@ -20,11 +20,11 @@
 		Heading,
 		Input,
 		Link,
+		Modal,
 		Select,
 		Stack,
 		Text
 	} from '@dorsk/tsumikit';
-	import Modal from '$lib/components/molecules/Modal.svelte';
 	import { providerLabel } from './accounts.logic';
 
 	const accounts = useAccounts();
