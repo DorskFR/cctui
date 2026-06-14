@@ -2,7 +2,7 @@
 	import type { Label } from '@bindings/Label';
 	import { Badge, Icon, Input, Popover } from '@dorsk/tsumikit';
 	import Swatch from '$lib/components/atoms/Swatch.svelte';
-	import { LABEL_HUES, labelHue, labelTint, storedHue, hueToColor } from '$lib/labels';
+	import { LABEL_HUES, labelTint, storedHue, hueToColor } from '$lib/labels';
 
 	// Session-label strip + picker (CCT-360, reworked CCT-? onto a single
 	// filter-and-pick popover). Attached labels render as hue-tinted, removable
@@ -126,8 +126,7 @@
 					{#snippet trigger()}<Icon name="tag" />{/snippet}
 
 					<form class="filter" onsubmit={onSubmit}>
-						<Icon name="search" />
-						<Input placeholder="Filter or create…" bind:value={q} maxlength={40} />
+						<Input size="sm" placeholder="Filter or create…" bind:value={q} maxlength={40} />
 					</form>
 
 					<div class="list">
@@ -143,8 +142,9 @@
 									<span class="check">
 										{#if attachedIds.has(l.id)}<Icon name="check" />{/if}
 									</span>
-									<span class="dot" style="background:hsl({labelHue(l)} 60% 50%)"></span>
-									<span class="opt-name">{l.name}</span>
+									<Badge size="sm" class="label" style="{labelTint(l)};border-radius:var(--r-sm)">
+										<span class="opt-name">{l.name}</span>
+									</Badge>
 								</button>
 								<button
 									type="button"
@@ -183,7 +183,14 @@
 						{#if showCreate}
 							<button type="button" class="opt create" disabled={busy} onclick={createAndAttach}>
 								<span class="check" aria-hidden="true">+</span>
-								<span class="opt-name">Create “{query}”</span>
+								<span class="create-label">Create</span>
+								<Badge
+									size="sm"
+									class="label"
+									style="{labelTint({ name: query, color: '' })};border-radius:var(--r-sm)"
+								>
+									<span class="opt-name">{query}</span>
+								</Badge>
 							</button>
 						{/if}
 
@@ -222,13 +229,18 @@
 		background: var(--bg-elevated-2);
 	}
 
+	/* The panel keeps a stable width so expanding a row's hue strip wraps the
+	   swatches instead of widening the popover (no horizontal layout shift). */
+	.filter,
+	.list {
+		box-sizing: border-box;
+		width: 15rem;
+	}
 	/* Filter/create box pinned at the top of the panel. */
 	.filter {
 		display: flex;
 		align-items: center;
-		gap: var(--sp-2);
 		padding: var(--sp-1) var(--sp-2);
-		color: var(--text-muted);
 	}
 	.filter :global(input) {
 		flex: 1;
@@ -273,13 +285,17 @@
 		flex: none;
 		color: var(--accent);
 	}
-	.dot {
-		display: inline-block;
-		width: 0.6rem;
-		height: 0.6rem;
-		border-radius: 50%;
+	/* The menu row shows the real (tinted) label Badge — same chip the card
+	   renders — rather than a separate dot + plain text. Let it shrink so long
+	   names ellipsis inside the fixed-width panel. */
+	.opt :global(.label) {
+		min-width: 0;
+		overflow: hidden;
+	}
+	.create-label {
 		flex: none;
-		box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
+		color: var(--text-muted);
+		font-size: var(--fs-sm);
 	}
 	.opt-name {
 		min-width: 0;
