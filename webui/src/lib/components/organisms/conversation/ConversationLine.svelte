@@ -62,7 +62,7 @@
 				<IconButton
 					class="edit-pending"
 					icon="edit"
-					size={16}
+
 					label="Edit message"
 					title="Pull this message back into the composer to edit and resend"
 					onclick={() => onedit(ln.text ?? '', ln.ts)}
@@ -80,7 +80,7 @@
 				<IconButton
 					class="edit-pending"
 					icon="edit"
-					size={16}
+
 					label="Edit pending message"
 					title="Pull this still-pending message back into the composer to edit and resend"
 					onclick={() => onedit(ln.text ?? '', ln.ts)}
@@ -94,7 +94,7 @@
 			<IconButton
 				class="copy"
 				icon="image"
-				size={16}
+
 				label="Save as image"
 				title="Save this message as an image"
 				onclick={(e) => onsaveimage(e, ln)}
@@ -102,7 +102,7 @@
 			<IconButton
 				class="copy"
 				icon="markdown"
-				size={16}
+
 				label="Copy as Markdown"
 				title="Copy this message as Markdown"
 				onclick={() => oncopymarkdown(ln)}

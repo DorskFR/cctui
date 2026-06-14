@@ -20,7 +20,7 @@
 			<li>
 				<Text variant="code" truncate class="grow">{f.name}</Text>
 				<Text size="xs" tone="faint">{fmtSize(f.size)}</Text>
-				<IconButton inline class="hover-danger" icon="x" size={16} label="Remove" title="Remove" onclick={() => onremove(f.name)} />
+				<IconButton inline class="hover-danger" icon="x"  label="Remove" title="Remove" onclick={() => onremove(f.name)} />
 			</li>
 		{/each}
 	</ul>

@@ -538,7 +538,7 @@
 
 <div class="bar row">
 	<Heading level={1} class="page-title">Sessions</Heading>
-	<IconButton class="search-toggle btn-control-square" icon="search" size={16} label="Search chats" onclick={openSearch} />
+	<IconButton class="search-toggle btn-control-square" icon="search"  label="Search chats" onclick={openSearch} />
 	<div class="search-wrap" class:open={searchOpen}>
 		<Input
 			class="search"
@@ -584,7 +584,7 @@
 		<IconButton
 			class="btn-control-square"
 			icon="filter"
-			size={16}
+
 			label="Filter sections"
 			title="Filter sections ({sectionCount}/4)"
 			aria-haspopup="true"
@@ -619,7 +619,7 @@
 			<IconButton
 				class="btn-control-square"
 				icon="tag"
-				size={16}
+
 				label="Filter by label"
 				title={labelFilter.size > 0 ? `Filtering by ${labelFilter.size} label(s)` : 'Filter by label'}
 				aria-haspopup="true"
