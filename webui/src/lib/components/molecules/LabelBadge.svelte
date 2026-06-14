@@ -1,17 +1,20 @@
 <script lang="ts">
 	import type { Label } from '@bindings/Label';
-	import { Badge, Icon, IconButton, Input, Popover } from '@dorsk/tsumikit';
-	import ColorPicker from '$lib/components/molecules/ColorPicker.svelte';
+	import { Badge, Icon, Input, Popover } from '@dorsk/tsumikit';
 	import Swatch from '$lib/components/atoms/Swatch.svelte';
 	import { LABEL_HUES, labelHue, labelTint, storedHue, hueToColor } from '$lib/labels';
 
-	// Session-label strip + picker (CCT-360, reworked onto tsumikit). Renders the
-	// attached labels as hue-tinted Badges, each with a colored dot that opens the
-	// shared ColorPicker to recolor the tag. When `editable`, a dashed-circle `+`
-	// opens a Popover to toggle existing tags or create a new one (name + color).
+	// Session-label strip + picker (CCT-360, reworked CCT-? onto a single
+	// filter-and-pick popover). Attached labels render as hue-tinted, removable
+	// Badges. When `editable`, a `tag` trigger opens ONE popover that is a combined
+	// filter/create box: a text input at the top filters the existing labels and,
+	// when nothing matches, becomes a "Create" affordance. Each row toggles
+	// attach/detach; the pencil expands an INLINE hue strip (in flow — no nested
+	// popover, so nothing is clipped behind the input the way the old ColorPicker
+	// pop-in-pop was) to recolor that label.
 	//
-	// Recolor reuses POST /labels — it is get-or-create-by-name and refreshes the
-	// color, so re-posting the same name with a new hue recolors it everywhere.
+	// Recolor reuses POST /labels — get-or-create-by-name that refreshes the color,
+	// so re-posting the same name with a new hue recolors it everywhere.
 	let {
 		labels,
 		editable = false,
@@ -28,21 +31,20 @@
 		onDetach?: (labelId: string) => void | Promise<void>;
 	} = $props();
 
-	let name = $state('');
-	let newHue = $state<number | null>(null);
+	let q = $state('');
 	let busy = $state(false);
+	// Which label's inline hue strip is expanded (null = none).
+	let editingId = $state<string | null>(null);
 
 	const attachedIds = $derived(new Set(labels.map((l) => l.id)));
-
-	async function recolor(label: Label, hue: number | null) {
-		if (busy || !onCreate) return;
-		busy = true;
-		try {
-			await onCreate(label.name, hueToColor(hue));
-		} finally {
-			busy = false;
-		}
-	}
+	const query = $derived(q.trim());
+	const filtered = $derived(
+		query ? allLabels.filter((l) => l.name.toLowerCase().includes(query.toLowerCase())) : allLabels
+	);
+	const exactMatch = $derived(
+		allLabels.find((l) => l.name.toLowerCase() === query.toLowerCase()) ?? null
+	);
+	const showCreate = $derived(!!query && !exactMatch);
 
 	async function toggleExisting(l: Label) {
 		if (busy) return;
@@ -55,25 +57,36 @@
 		}
 	}
 
-	async function createAndAttach(e: SubmitEvent) {
-		e.preventDefault();
-		const trimmed = name.trim();
-		if (!trimmed || busy || !onCreate) return;
+	async function recolor(l: Label, hue: number | null) {
+		if (busy || !onCreate) return;
 		busy = true;
 		try {
-			const label = await onCreate(trimmed, hueToColor(newHue));
+			await onCreate(l.name, hueToColor(hue));
+		} finally {
+			busy = false;
+			editingId = null;
+		}
+	}
+
+	async function createAndAttach() {
+		if (!query || busy || !onCreate) return;
+		busy = true;
+		try {
+			const label = await onCreate(query, hueToColor(null));
 			if (!attachedIds.has(label.id)) await onAttach?.(label.id);
-			name = '';
-			newHue = null;
+			q = '';
 		} finally {
 			busy = false;
 		}
 	}
-</script>
 
-{#snippet dot(l: Label)}
-	<span class="dot" style="background:hsl({labelHue(l)} 60% 50%)"></span>
-{/snippet}
+	// Enter in the filter box: toggle the single exact match, else create.
+	function onSubmit(e: SubmitEvent) {
+		e.preventDefault();
+		if (exactMatch) toggleExisting(exactMatch);
+		else createAndAttach();
+	}
+</script>
 
 {#if labels.length > 0 || editable}
 	<!-- Swallow clicks/keys so interacting with labels never taps the parent
@@ -87,8 +100,6 @@
 		onkeydown={(e) => e.stopPropagation()}
 	>
 		{#each labels as l (l.id)}
-			<!-- The chip is just the tinted, square, removable label — recolor lives in
-			     the add-popover (per-label ColorPicker), NOT inside the Badge. -->
 			<Badge
 				class="label"
 				style="{labelTint(l)};border-radius:var(--r-sm)"
@@ -103,57 +114,83 @@
 
 		{#if editable}
 			<span class="add">
-				<Popover label="Add label" placement="bottom-start">
-					{#snippet trigger()}<Icon name="plus" label="Add label" />{/snippet}
-					{#if allLabels.length > 0}
-						<div class="opts">
-							{#each allLabels as l (l.id)}
-								<div class="opt-row">
-									<ColorPicker
-										value={storedHue(l.color)}
-										hues={LABEL_HUES}
-										label={`Recolor ${l.name}`}
-										onchange={(h) => recolor(l, h)}
-									>
-										{#snippet trigger()}{@render dot(l)}{/snippet}
-									</ColorPicker>
-									<button
-										type="button"
-										class="opt"
-										aria-pressed={attachedIds.has(l.id)}
-										disabled={busy}
-										onclick={() => toggleExisting(l)}
-									>
-										<span class="check">{attachedIds.has(l.id) ? '✓' : ''}</span>
-										<span class="opt-name">{l.name}</span>
-									</button>
-								</div>
-							{/each}
-						</div>
-						<div class="sep"></div>
-					{/if}
+				<Popover
+					label="Edit labels"
+					placement="bottom-start"
+					triggerClass="tag-trigger"
+					onclose={() => {
+						q = '';
+						editingId = null;
+					}}
+				>
+					{#snippet trigger()}<Icon name="tag" />{/snippet}
 
-					<form class="create" onsubmit={createAndAttach}>
-						<div class="create-row">
-							<ColorPicker
-								value={newHue}
-								hues={LABEL_HUES}
-								label="New label color"
-								onchange={(h) => (newHue = h)}
-							>
-								{#snippet trigger()}<Swatch hue={newHue} />{/snippet}
-							</ColorPicker>
-							<Input placeholder="New label…" bind:value={name} maxlength={40} />
-						</div>
-						<IconButton
-							icon="plus"
-							variant="primary"
-							label="Create and attach label"
-							disabled={busy || !name.trim()}
-							onclick={() => {}}
-							type="submit"
-						/>
+					<form class="filter" onsubmit={onSubmit}>
+						<Icon name="search" />
+						<Input placeholder="Filter or create…" bind:value={q} maxlength={40} />
 					</form>
+
+					<div class="list">
+						{#each filtered as l (l.id)}
+							<div class="row">
+								<button
+									type="button"
+									class="opt"
+									aria-pressed={attachedIds.has(l.id)}
+									disabled={busy}
+									onclick={() => toggleExisting(l)}
+								>
+									<span class="check">
+										{#if attachedIds.has(l.id)}<Icon name="check" />{/if}
+									</span>
+									<span class="dot" style="background:hsl({labelHue(l)} 60% 50%)"></span>
+									<span class="opt-name">{l.name}</span>
+								</button>
+								<button
+									type="button"
+									class="edit"
+									class:on={editingId === l.id}
+									aria-label={`Recolor ${l.name}`}
+									aria-expanded={editingId === l.id}
+									disabled={busy}
+									onclick={() => (editingId = editingId === l.id ? null : l.id)}
+								>
+									<Icon name="edit" />
+								</button>
+							</div>
+							{#if editingId === l.id}
+								<div class="hues" role="radiogroup" aria-label={`Color for ${l.name}`}>
+									<Swatch
+										hue={null}
+										active={storedHue(l.color) == null}
+										title="Auto (name hash)"
+										aria-label="Auto color"
+										onclick={() => recolor(l, null)}>A</Swatch
+									>
+									{#each LABEL_HUES as h (h)}
+										<Swatch
+											hue={h}
+											active={storedHue(l.color) === h}
+											title={`Hue ${h}`}
+											aria-label={`Hue ${h}`}
+											onclick={() => recolor(l, h)}
+										/>
+									{/each}
+								</div>
+							{/if}
+						{/each}
+
+						{#if showCreate}
+							<button type="button" class="opt create" disabled={busy} onclick={createAndAttach}>
+								<span class="check" aria-hidden="true">+</span>
+								<span class="opt-name">Create “{query}”</span>
+							</button>
+						{/if}
+
+						{#if filtered.length === 0 && !showCreate}
+							<p class="empty">No labels yet — type to create one.</p>
+						{/if}
+					</div>
 				</Popover>
 			</span>
 		{/if}
@@ -167,52 +204,49 @@
 		align-items: center;
 		gap: var(--sp-1);
 	}
-	/* The colored dot is the recolor handle inside each tinted badge. */
-	.dot {
-		display: inline-block;
-		width: 0.6rem;
-		height: 0.6rem;
-		border-radius: 50%;
-		flex: none;
-		box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
-	}
 	.name {
 		min-width: 0;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	/* `+` trigger: reuse the Popover's ghost-icon button, restyled as the dotted
-	   circle (Swatch's "Auto" affordance) the design calls for. */
-	.add :global(.pop-trigger) {
-		width: 1.25rem;
-		height: 1.25rem;
-		min-width: 0;
-		min-height: 0;
-		padding: 0;
-		background: transparent;
-		border: 1px dashed var(--border-strong);
-		border-radius: 50%;
+	/* `tag` trigger: a small ghost icon-button reading clearly as "labels". */
+	.add :global(.tag-trigger) {
+		min-width: 1.5rem;
+		min-height: 1.5rem;
+		padding: var(--sp-1);
 		color: var(--text-muted);
 	}
-	.add :global(.pop-trigger:hover:not(:disabled)) {
-		background: transparent;
+	.add :global(.tag-trigger:hover) {
 		color: var(--text);
-		border-color: var(--accent);
+		background: var(--bg-elevated-2);
 	}
 
-	.opts {
-		display: flex;
-		flex-direction: column;
-		gap: 0.1rem;
-		max-height: 11rem;
-		overflow-y: auto;
-	}
-	.opt-row {
+	/* Filter/create box pinned at the top of the panel. */
+	.filter {
 		display: flex;
 		align-items: center;
 		gap: var(--sp-2);
-		padding: 0 var(--sp-1);
+		padding: var(--sp-1) var(--sp-2);
+		color: var(--text-muted);
+	}
+	.filter :global(input) {
+		flex: 1;
+		min-width: 0;
+	}
+
+	.list {
+		display: flex;
+		flex-direction: column;
+		gap: 0.05rem;
+		max-height: 14rem;
+		overflow-y: auto;
+		margin-top: var(--sp-1);
+	}
+	.row {
+		display: flex;
+		align-items: center;
+		gap: var(--sp-1);
 	}
 	.opt {
 		display: flex;
@@ -220,7 +254,7 @@
 		gap: var(--sp-2);
 		flex: 1;
 		min-width: 0;
-		padding: var(--sp-1);
+		padding: var(--sp-1) var(--sp-2);
 		border: none;
 		background: none;
 		color: var(--text);
@@ -229,12 +263,23 @@
 		font-size: var(--fs-sm);
 		text-align: left;
 	}
-	.opt:hover {
-		background: var(--bg);
+	.opt:hover:not(:disabled),
+	.edit:hover:not(:disabled) {
+		background: var(--bg-elevated-2);
 	}
 	.check {
-		width: 1rem;
+		display: inline-flex;
+		width: 0.9rem;
+		flex: none;
 		color: var(--accent);
+	}
+	.dot {
+		display: inline-block;
+		width: 0.6rem;
+		height: 0.6rem;
+		border-radius: 50%;
+		flex: none;
+		box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
 	}
 	.opt-name {
 		min-width: 0;
@@ -242,20 +287,36 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	.sep {
-		height: 1px;
-		background: var(--border);
-		margin: var(--sp-1) 0;
+	.edit {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		flex: none;
+		padding: var(--sp-1);
+		border: none;
+		background: none;
+		color: var(--text-muted);
+		cursor: pointer;
+		border-radius: var(--r-sm);
+	}
+	.edit.on {
+		color: var(--accent);
+	}
+	/* Inline hue strip — lives in flow, pushing the list down. Never overlays or
+	   gets clipped (the old nested ColorPicker popover did). */
+	.hues {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 4px;
+		padding: var(--sp-1) var(--sp-2) var(--sp-2) calc(0.9rem + 2 * var(--sp-2));
 	}
 	.create {
-		display: flex;
-		flex-direction: column;
-		gap: var(--sp-2);
-		padding: var(--sp-1);
+		color: var(--text-muted);
 	}
-	.create-row {
-		display: flex;
-		align-items: center;
-		gap: var(--sp-2);
+	.empty {
+		margin: 0;
+		padding: var(--sp-2);
+		color: var(--text-muted);
+		font-size: var(--fs-sm);
 	}
 </style>
