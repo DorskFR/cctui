@@ -55,7 +55,7 @@
 <Stack gap="var(--sp-6)">
 		<Heading level={1}>Overview</Heading>
 
-		<AutoGrid min="10rem" gap="var(--sp-3)">
+		<AutoGrid min="10rem" gap="var(--sp-3)" maxCols={3}>
 			{#each statCards as c (c.lbl)}
 				<Card>
 					<Stack gap="var(--sp-1)" align="flex-start">
@@ -72,7 +72,7 @@
 
 		<Stack gap="var(--sp-3)">
 			<Heading level={2} size="lg">Token usage</Heading>
-			<AutoGrid min="10rem" gap="var(--sp-3)">
+			<AutoGrid min="10rem" gap="var(--sp-3)"  maxCols={3}>
 				{#each tokenCards as c (c.lbl)}
 					<Card>
 						<Stack gap="var(--sp-1)" align="flex-start">
