@@ -2,7 +2,7 @@
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import type { AgentEvent } from '@bindings/AgentEvent';
 	import { ws, USER_PREFIX } from '$lib/ws.svelte';
-	import { useConversation, useSessionActions, qk } from '$lib/queries';
+	import { useConversation, useSessionActions, useLabels, qk } from '$lib/queries';
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { renderMarkdown, highlightBlock } from '$lib/markdown';
 	import { highlightTerms } from '$lib/search';
@@ -105,6 +105,19 @@
 		() => true
 	);
 	const actions = useSessionActions();
+
+	// Labels (CCT-360) + pin (CCT-267) in the drawer header — the same global
+	// label set and mutations the session list uses, so editing a session's
+	// labels/star from the open conversation stays in sync with the list.
+	const labelsQuery = useLabels();
+	const allLabels = $derived($labelsQuery.data?.labels ?? []);
+	const createLabel = (name: string, color: string) => actions.createLabel(name, color);
+	const attachLabel = (sid: string, labelId: string) => actions.attachLabel(sid, labelId);
+	const detachLabel = (sid: string, labelId: string) => actions.detachLabel(sid, labelId);
+	const updateLabel = (labelId: string, patch: { name?: string; color?: string }) =>
+		actions.updateLabel(labelId, patch);
+	const deleteLabel = (labelId: string) => actions.deleteLabel(labelId);
+	const togglePin = (s: SessionListItem) => (s.pinned ? actions.unpin(s.id) : actions.pin(s.id));
 
 	// ── Sticky-bottom scroll controller (CCT-161) ──────────────────────────
 	// Shared by the viewport (binds the scroller) and the composer (binds the
@@ -426,6 +439,13 @@
 		onfork={fork.openDialog}
 		oninterrupt={sa.interrupt}
 		onarchive={sa.archive}
+		onTogglePin={togglePin}
+		{allLabels}
+		onCreateLabel={createLabel}
+		onAttachLabel={attachLabel}
+		onDetachLabel={detachLabel}
+		onUpdateLabel={updateLabel}
+		onDeleteLabel={deleteLabel}
 	/>
 
 	<DrawerToolbar

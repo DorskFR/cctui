@@ -7,10 +7,12 @@
 	// change model" chip, machine badge, cwd, token usage). Action side-effects
 	// are delegated to callbacks; the editing UI state lives here.
 	import type { SessionListItem } from '@bindings/SessionListItem';
+	import type { Label } from '@bindings/Label';
 	import { statusBadgeClass } from '$lib/format';
 	import { fontScale, SCALE_LEVELS } from '$lib/fontscale.svelte';
 	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
 	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
+	import LabelBadge from '$lib/components/molecules/LabelBadge.svelte';
 	import WorkingDir from '$lib/components/molecules/WorkingDir.svelte';
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
 	import { Badge, IconButton, Input, Select, SelectButton, Text } from '@dorsk/tsumikit';
@@ -29,7 +31,16 @@
 		onexport,
 		onfork,
 		oninterrupt,
-		onarchive
+		onarchive,
+		onTogglePin,
+		// Label editing (CCT-360): same picker as the session card — when
+		// `onAttachLabel` is supplied the strip is interactive, else read-only.
+		allLabels = [],
+		onCreateLabel,
+		onAttachLabel,
+		onDetachLabel,
+		onUpdateLabel,
+		onDeleteLabel
 	}: {
 		session: SessionListItem;
 		archived: boolean;
@@ -45,7 +56,17 @@
 		onfork: () => void;
 		oninterrupt: () => void;
 		onarchive: () => void;
+		onTogglePin?: (s: SessionListItem) => void;
+		allLabels?: Label[];
+		onCreateLabel?: (name: string, color: string) => Promise<Label>;
+		onAttachLabel?: (id: string, labelId: string) => void | Promise<void>;
+		onDetachLabel?: (id: string, labelId: string) => void | Promise<void>;
+		onUpdateLabel?: (labelId: string, patch: { name?: string; color?: string }) => Promise<Label>;
+		onDeleteLabel?: (labelId: string) => void | Promise<void>;
 	} = $props();
+
+	// Label picker is interactive only when an attach handler is wired in.
+	const labelEditable = $derived(!!onAttachLabel);
 
 	const headTitle = $derived(session.name || session.working_dir);
 
@@ -105,15 +126,53 @@
 <div class="dhead">
 	<div class="hrow">
 		<IconButton class="tapbtn back" icon="back"  label="Back" onclick={onclose} />
-		<AdapterIcon adapter={session.adapter_id} size={20} />
-		<span class="dot {livenessClass}" title={session.hibernated ? 'hibernated' : session.liveness}></span>
-		<div class="dtitle">
-			{#if renaming}
-				<Input bind:value={newName} onkeydown={(e: KeyboardEvent) => e.key === 'Enter' && doRename()} />
-			{:else}
-				<Text class="name" weight="semibold" size="md" truncate>{headTitle}</Text>
+		<!-- Lead group: star · dot · machine · title · labels. Wraps so the label
+		     strip falls to its own row when the header is narrow, while the title
+		     stays visible and the trailing controls stay pinned on the first line
+		     (the title shrink-wraps with flex:0 1 auto; labels are last so they wrap
+		     first). The tag picker trigger therefore always trails the title, never
+		     mingles with the action buttons. -->
+		<span class="lead">
+			{#if onTogglePin}
+				<span
+					class="star"
+					class:on={session.pinned}
+					role="button"
+					tabindex="0"
+					title={session.pinned ? 'Unpin' : 'Pin to top (exempt from auto-archive)'}
+					aria-pressed={session.pinned}
+					aria-label={session.pinned ? 'Unpin session' : 'Pin session'}
+					onclick={() => onTogglePin?.(session)}
+					onkeydown={(e: KeyboardEvent) => {
+						if (e.key === 'Enter' || e.key === ' ') {
+							e.preventDefault();
+							onTogglePin?.(session);
+						}
+					}}>{session.pinned ? '★' : '☆'}</span
+				>
 			{/if}
-		</div>
+			<span class="dot {livenessClass}" title={session.hibernated ? 'hibernated' : session.liveness}></span>
+			<MachineBadge name={session.machine_name} id={session.machine_id} hue={session.machine_hue} mono />
+			<div class="dtitle" class:editing={renaming}>
+				{#if renaming}
+					<Input bind:value={newName} onkeydown={(e: KeyboardEvent) => e.key === 'Enter' && doRename()} />
+				{:else}
+					<Text class="name" weight="semibold" size="md" truncate>{headTitle}</Text>
+				{/if}
+			</div>
+			{#if session.labels.length > 0 || labelEditable}
+				<LabelBadge
+					labels={session.labels}
+					editable={labelEditable}
+					{allLabels}
+					onCreate={onCreateLabel}
+					onAttach={(lid) => onAttachLabel?.(session.id, lid)}
+					onDetach={(lid) => onDetachLabel?.(session.id, lid)}
+					onUpdate={onUpdateLabel}
+					onDelete={onDeleteLabel}
+				/>
+			{/if}
+		</span>
 		<!-- Secondary actions (CCT-301 #7): inline on desktop, collapsed into the
 		     ⋯ flyout on mobile so a long title + many buttons no longer overflow.
 		     Font-size is the left-most action; a single fork lives at the end of
@@ -197,6 +256,9 @@
 	</div>
 	<div class="hmeta row row-wrap">
 		{#if showStatusBadge}<Badge class={statusBadgeClass(session.status)}>{session.status}</Badge>{/if}
+		<WorkingDir path={session.working_dir} />
+		<div class="meta-trail">
+		<TokenUsage usage={session.token_usage} />
 		{#if isCodexSession && !archived}
 			{#if modelEditing}
 				<!-- display:contents wrapper exists only to give the compact Selects a
@@ -230,9 +292,8 @@
 				onclick={onfork}
 			>{session.model ?? ''}{session.effort ? ` · ${session.effort}` : ''} ⑂</Badge>
 		{/if}
-		<MachineBadge name={session.machine_name} id={session.machine_id} hue={session.machine_hue} mono />
-		<WorkingDir path={session.working_dir} />
-		<TokenUsage usage={session.token_usage} />
+		<AdapterIcon adapter={session.adapter_id} size={20} />
+		</div>
 	</div>
 </div>
 
@@ -247,10 +308,15 @@
 		padding: var(--sp-2) var(--sp-3);
 		border-bottom: 1px solid var(--border);
 		background: var(--bg-elevated);
+		/* Collapse the secondary actions based on the DRAWER's own width, not the
+		   viewport (CCT-301 #7): a narrow-but-on-desktop drawer should fold its
+		   buttons into the ⋯ flyout so the title stays visible. The header is the
+		   size container the rules below query against. */
+		container: drawer-head / inline-size;
 	}
 	.hrow {
 		display: flex;
-		align-items: center;
+		align-items: flex-start;
 		gap: var(--sp-2);
 		position: relative;
 	}
@@ -267,7 +333,7 @@
 	.dhead :global(.tapbtn.more) {
 		display: none;
 	}
-	@media (max-width: 959px) {
+	@container drawer-head (max-width: 640px) {
 		.dhead :global(.tapbtn.more) {
 			display: inline-flex;
 		}
@@ -334,9 +400,30 @@
 			line-height: 1.2;
 		}
 	}
-	.dtitle {
-		flex: 1;
+	/* Lead group wraps (label strip drops to its own row when narrow) while the
+	   trailing action buttons stay pinned to the first line. */
+	.lead {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		column-gap: var(--sp-2);
+		row-gap: var(--sp-1);
+		flex: 1 1 auto;
 		min-width: 0;
+		/* One button-height tall so a single-line header reads centered against the
+		   back/action buttons (hrow is flex-start); when the label strip wraps the
+		   lead grows downward and the buttons stay aligned to the title line. */
+		min-height: 2.5rem;
+	}
+	/* Title shrink-wraps so labels can sit beside it and wrap first; it never
+	   eats the whole row (which would force labels to wrap even with space). */
+	.dtitle {
+		flex: 0 1 auto;
+		min-width: 0;
+	}
+	/* While renaming, let the input claim the lead's free width. */
+	.dtitle.editing {
+		flex: 1 1 12rem;
 	}
 	/* Bigger, easy-to-tap icon buttons with a tinted, outlined chip look. */
 	.dhead :global(.tapbtn) {
@@ -373,6 +460,32 @@
 	}
 	.hmeta {
 		gap: var(--sp-2);
+		align-items: center;
+	}
+	/* Push token usage · model · logo to the right edge, opposite the working
+	   dir, mirroring the session card footer. */
+	.meta-trail {
+		display: flex;
+		align-items: center;
+		gap: var(--sp-2);
+		flex: none;
+		margin-left: auto;
+	}
+	/* Star/pin toggle in the lead row (mirrors SessionCard). */
+	.star {
+		background: none;
+		border: none;
+		cursor: pointer;
+		user-select: none;
+		padding: 0;
+		line-height: 1;
+		font-size: 1.35rem;
+		color: var(--text-faint);
+		flex: none;
+	}
+	.star.on,
+	.star:hover {
+		color: var(--warn, #e0a800);
 	}
 	.model-edit {
 		display: contents;
