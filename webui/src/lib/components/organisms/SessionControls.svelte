@@ -70,6 +70,10 @@
 		{/if}
 	{/if}
 	<Button class="toolbar-new" control variant="primary" title="New session" aria-label="New session" onclick={onNew}>+<span class="new-label"> New</span></Button>
+	<!-- Mobile-only flex row-break (CCT-369): basis:100% forces row 2 (search +
+	     tools) onto a fresh line below title+New. Hidden on desktop where everything
+	     sits on one row. -->
+	<span class="row-break break-tools" aria-hidden="true"></span>
 </div>
 
 <style>
@@ -109,30 +113,44 @@
 	.new-label {
 		display: inline;
 	}
-	/* Mobile (CCT-369): row 1 holds the title + every square control + a square
-	   "+" New button; the search input wraps onto its own full-width second row. */
+	/* Row-break helpers: zero-height flex items with a full-width basis. Off by
+	   default (single-row desktop bar); switched on in the mobile query below. */
+	.row-break {
+		display: none;
+	}
+	/* Mobile (CCT-369): two rows — row 1 title + full "+ New", row 2 the search bar
+	   (which shrinks to fill) followed by the tool controls on the right. `order`
+	   sequences the items; the row-break forces the single wrap. */
 	@media (max-width: 639px) {
-		/* Title eats the leftover space on row 1 so the square controls pack to the
-		   right edge instead of leaving a ragged gap. */
+		/* Default everyone to row 2… */
+		.bar > :global(*) {
+			order: 2;
+		}
+		/* Row 1: title (grows to push New flush right) then the New button. */
 		.bar > :global(.page-title) {
+			order: 0;
 			flex: 1 1 auto;
 			min-width: 0;
 		}
-		/* Search drops to its own row, full width. `order` pushes it after every
-		   row-1 control; the 100% basis forces the wrap. */
-		.bar :global(.search-box) {
-			order: 10;
-			flex: 1 1 100%;
-			width: 100%;
-		}
-		/* "+ New" collapses to just "+" so it matches the square aspect ratio of the
-		   other controls and the whole set stays on one row. */
 		.bar :global(.toolbar-new) {
-			width: var(--control-height);
-			padding: 0;
+			order: 1;
 		}
-		.new-label {
-			display: none;
+		/* Break after row 1: forces search + tools onto row 2. height:0 + negative
+		   row-gap cancel so the phantom line adds no vertical space. */
+		.break-tools {
+			display: block;
+			order: 1;
+			flex: 0 0 100%;
+			height: 0;
+			margin-top: calc(-1 * var(--sp-2));
+		}
+		/* Row 2: search takes only the leftover space (basis:0 so it never demands
+		   its intrinsic input width) and shrinks freely; the tools follow on the
+		   right, all on one row. */
+		.bar :global(.search-box) {
+			order: 2;
+			flex: 1 1 0;
+			min-width: 0;
 		}
 	}
 </style>
