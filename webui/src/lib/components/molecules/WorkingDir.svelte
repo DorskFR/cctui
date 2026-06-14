@@ -48,12 +48,17 @@
 
 	let avail = $state(Infinity); // measured slot width, in px
 	let chPx = $state(8); // measured width of one mono char, in px
+	// Non-text chrome (badge padding + border + 📁 glyph + gap), in px. Measured
+	// as badge.offsetWidth − text.offsetWidth, which is text-independent (the
+	// text term cancels), so it stays correct even while the text is clipped.
+	let chrome = $state(0);
 
 	// The rail claims the flex slot and is what we measure; the colored Badge
 	// sizes to its content INSIDE it (left-aligned), so the leftover space is
 	// transparent — no empty box — and `avail` is independent of which candidate
 	// we picked (measuring the Badge itself would collapse to the chosen text).
 	let rail: HTMLSpanElement | undefined = $state();
+	let txt: HTMLSpanElement | undefined = $state();
 	let probe: HTMLSpanElement | undefined = $state();
 
 	$effect(() => {
@@ -61,6 +66,8 @@
 		const measure = () => {
 			avail = rail!.clientWidth;
 			if (probe) chPx = probe.getBoundingClientRect().width / 10 || chPx;
+			const badgeEl = txt?.parentElement;
+			if (badgeEl && txt) chrome = Math.max(0, badgeEl.offsetWidth - txt.offsetWidth);
 		};
 		measure();
 		const ro = new ResizeObserver(measure);
@@ -68,10 +75,9 @@
 		return () => ro.disconnect();
 	});
 
-	// The 📁 glyph + a hair of trailing room; leave it out of the path budget.
-	const reserve = $derived(chPx * 2.5);
 	const shown = $derived.by(() => {
-		const budget = Math.max(0, avail - reserve);
+		// 1px safety so a sub-pixel rounding error never re-introduces a clip.
+		const budget = Math.max(0, avail - chrome - 1);
 		const fit = candidates.find((c) => c.length * chPx <= budget);
 		return fit ?? candidates[candidates.length - 1];
 	});
@@ -95,7 +101,7 @@
 		}}
 	>
 		<span aria-hidden="true" style="flex:none">📁</span>
-		<span style="overflow:hidden;white-space:nowrap;text-overflow:clip">{shown}</span>
+		<span bind:this={txt} style="overflow:hidden;white-space:nowrap;text-overflow:clip">{shown}</span>
 		<!-- Offscreen 10-char ruler: one mono char's px width for the fit math. -->
 		<span
 			bind:this={probe}
