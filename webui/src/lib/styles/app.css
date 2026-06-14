@@ -228,6 +228,12 @@ svg[aria-hidden="true"] {
 }
 .btn-control-square {
   width: var(--control-height);
+  /* Pin BOTH dimensions to --control-height so the box is truly square and lines
+     up with sibling .btn-control items. IconButton renders as .btn-icon (a
+     shorter 2.25rem box), so without an explicit height the square controls came
+     out shorter than the view/select controls next to them. */
+  height: var(--control-height);
+  min-height: var(--control-height);
   padding: 0;
   flex: none;
 }
