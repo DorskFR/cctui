@@ -712,7 +712,9 @@
 						     bulk "Archive all" action on the right (CCT-279 item 7). -->
 						<div class="group-header" data-bucket={g.key}>
 							{g.label} <Text class="count">{g.sessions.length}</Text>
-							<div class="spacer"></div>
+							<!-- In card mode the action sits right next to the title; in
+							     list mode it's pushed to the far right via the spacer. -->
+							{#if !cardView}<div class="spacer"></div>{/if}
 							<Button
 								size="sm"
 								variant="danger"
