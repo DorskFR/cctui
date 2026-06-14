@@ -8,10 +8,10 @@
 	// are delegated to callbacks; the editing UI state lives here.
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import { statusBadgeClass } from '$lib/format';
-	import { copyText } from '$lib/clipboard';
 	import { fontScale, SCALE_LEVELS } from '$lib/fontscale.svelte';
 	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
 	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
+	import WorkingDir from '$lib/components/molecules/WorkingDir.svelte';
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
 	import IconButton from '$lib/components/molecules/IconButton.svelte';
 	import { Badge, Input, SelectButton, Text } from '@dorsk/tsumikit';
@@ -222,14 +222,7 @@
 			>{session.model ?? ''}{session.effort ? ` · ${session.effort}` : ''} ⑂</Badge>
 		{/if}
 		<MachineBadge name={session.machine_name} id={session.machine_id} hue={session.machine_hue} mono />
-		<Badge
-			as="button"
-			mono
-			class="truncate"
-			style="flex:1;min-width:6rem;text-align:left"
-			title="Click to copy — {session.working_dir}"
-			onclick={() => copyText(session.working_dir)}
-		>📁 {session.working_dir} ⧉</Badge>
+		<WorkingDir path={session.working_dir} style="flex:0 1 auto;min-width:0;margin-right:auto" />
 		<TokenUsage usage={session.token_usage} />
 	</div>
 </div>

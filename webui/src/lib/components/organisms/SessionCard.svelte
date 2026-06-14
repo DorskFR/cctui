@@ -4,12 +4,12 @@
 	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
 	import LabelBadge from '$lib/components/molecules/LabelBadge.svelte';
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
+	import WorkingDir from '$lib/components/molecules/WorkingDir.svelte';
 	import type { Label } from '@bindings/Label';
 	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
-	import { Badge, Card, Cluster, Icon, Stack, Text } from '@dorsk/tsumikit';
+	import { Badge, Card, Cluster, Stack, Text } from '@dorsk/tsumikit';
 	import { escapeHtml } from '$lib/markdown';
 	import { highlightTerms } from '$lib/search';
-	import { copyText } from '$lib/clipboard';
 
 	let {
 		session,
@@ -268,8 +268,8 @@
 				{:else}
 					<span style="flex:1 1 auto"></span>
 				{/if}
-				<!-- Path collapses to a folder glyph (the basename already leads the title). -->
-				<span class="folder" title={s.working_dir} aria-hidden="true"><Icon name="folder" size={14} /></span>
+				<!-- No working-dir chip in compact list: the basename already leads the
+				     title, and a bare folder glyph here can't be hovered or copied. -->
 				{@render time()}
 				{#if s.model}<Text tone="muted" size="xs" style="flex:none;white-space:nowrap">{modelFamily(s.model)}</Text>{/if}
 				{@render logo()}
@@ -320,20 +320,10 @@
 				<!-- 4. FOOTER: path ···· tokens · Σ · model · logo. Wraps when tight so a
 				     long model can't shove the logo out (grid pins it to the bottom). -->
 				<Cluster gap="var(--sp-2)" style={grid ? 'margin-top:auto' : ''}>
-					<!-- Copy-to-clipboard path chip. Flexes and truncates from the LEFT
-					     (direction:rtl) so the basename stays visible; a min floor keeps it
-					     from shrinking to nothing (the Cluster wraps the right group first). -->
-					<Badge
-						as="button"
-						mono
-						title="Click to copy — {s.working_dir}"
-						style="flex:0 1 auto;max-width:22rem;min-width:min(100%,14ch);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;text-align:left"
-						onpointerdown={(e: PointerEvent) => e.stopPropagation()}
-						onclick={(e: MouseEvent) => {
-							e.stopPropagation();
-							copyText(s.working_dir);
-						}}>{s.working_dir}</Badge
-					>
+					<!-- Fish-style working-dir chip: leaf stays whole, ancestors abbreviate
+					     as width shrinks (see WorkingDir). Flexes within the footer; the
+					     right-hand token/model group keeps its size. -->
+					<WorkingDir path={s.working_dir} style="flex:0 1 auto;max-width:22rem" />
 					<Cluster wrap={false} gap="var(--sp-2)" style="margin-left:auto;flex:none">
 						<TokenUsage usage={u} cold={s.cache_cold} sum={rollup ? rollup.tokens : null} />
 						{#if s.model}<Text tone="muted" size="xs" truncate style="max-width:14rem;flex:none">{modelShort(s.model)}{s.effort ? ` · ${s.effort}` : ''}</Text>{/if}
@@ -531,12 +521,6 @@
 	}
 	.star:hover {
 		color: var(--warn, #e0a800);
-	}
-	/* Compact-list folder glyph (a native span we render). */
-	.folder {
-		display: inline-flex;
-		flex: none;
-		color: var(--text-faint);
 	}
 	/* Search match snippet (CCT-184): accent rule + clamp, sharing the .preview
 	   sizing above so the snippet sits in the same slot as the message preview. */
