@@ -12,14 +12,12 @@
 	import SubagentBadge from '$lib/components/molecules/SubagentBadge.svelte';
 	import ConversationDrawer from '$lib/components/organisms/ConversationDrawer.svelte';
 	import SpawnModal from '$lib/components/organisms/SpawnModal.svelte';
-	import { Button, Heading, Icon, IconButton, Input, Select, Text } from '@dorsk/tsumikit';
+	import SessionControls from '$lib/components/organisms/SessionControls.svelte';
+	import { Button, Text } from '@dorsk/tsumikit';
 	import { drafts, LIST_DENSITY, LIST_VIEW, LIST_SECTION, LIST_LABELS } from '$lib/drafts';
-	import { labelTint } from '$lib/labels';
 	import { notify } from '$lib/notify.svelte';
 	import { tokenizeQuery } from '$lib/search';
 	import {
-		VIEW_OPTIONS,
-		SECTIONS,
 		parseSections,
 		PAGE,
 		INLINE_THRESHOLD,
@@ -36,19 +34,6 @@
 	// Parse the persisted comma-joined label-filter ids back into a list.
 	function parseLabelFilter(raw: string | null | undefined): string[] {
 		return (raw ?? '').split(',').filter(Boolean);
-	}
-
-	// Close a popover when a pointer/focus lands outside the node it's attached to.
-	function clickOutside(node: HTMLElement, onOutside: () => void) {
-		const handler = (e: Event) => {
-			if (!node.contains(e.target as Node)) onOutside();
-		};
-		document.addEventListener('pointerdown', handler, true);
-		return {
-			destroy() {
-				document.removeEventListener('pointerdown', handler, true);
-			}
-		};
 	}
 
 	let dense = $state(drafts.get(LIST_DENSITY) === 'compact');
@@ -71,19 +56,9 @@
 		drafts.set(LIST_VIEW, cardView ? 'card' : 'list');
 	});
 
-	// View picker (CCT-307): collapse the two awkward icon toggles (which still
-	// overflowed the toolbar) into one labelled picker offering the 4 explicit
-	// combinations. Persistence is unchanged — the picker just reads/writes the
-	// existing `cardView` (list ⇄ card) and `dense` (compact ⇄ detailed) state,
-	// each of which already round-trips through drafts above.
-	let viewMode = $derived(`${cardView ? 'card' : 'list'}-${dense ? 'compact' : 'detailed'}`);
-	function selectView(value: string) {
-		const opt = VIEW_OPTIONS.find((o) => o.value === value);
-		if (!opt) return;
-		cardView = opt.card;
-		dense = opt.dense;
-	}
-	let viewLabel = $derived(VIEW_OPTIONS.find((o) => o.value === viewMode)?.label ?? 'View');
+	// View picker (CCT-307): `cardView` (list ⇄ card) and `dense` (compact ⇄
+	// detailed) round-trip through drafts above; the ViewPicker molecule owns the
+	// picker UI and writes back to them via bindable props.
 
 // Section filter (CCT-322 / CCT-345): the sessions list is partitioned into
 	// four sections, each an INDEPENDENT on/off toggle (not a forced single
@@ -94,19 +69,12 @@
 	//   • dispatched → server-managed / ephemeral-worker sessions (CCT-231)
 	//   • archived   → also append the paginated archive browse (CCT-184)
 	// The chosen set is persisted (comma-joined) so it sticks across reloads.
+	// The SectionFilter molecule owns the popover + toggle UI and writes back the
+	// chosen set via its bindable prop; the page keeps the state (and persists it).
 	let sections = $state<Set<Section>>(parseSections(drafts.get(LIST_SECTION)));
-	let sectionMenuOpen = $state(false);
-	function toggleSection(v: Section) {
-		const next = new Set(sections);
-		if (next.has(v)) next.delete(v);
-		else next.add(v);
-		if (next.size === 0) return; // keep at least one on
-		sections = next;
-	}
 	$effect(() => {
 		drafts.set(LIST_SECTION, [...sections].join(','));
 	});
-	const sectionCount = $derived(sections.size);
 	// `showArchived` drives the paginated archive pager + search scope; archived is
 	// now just one of the enabled sections, so the existing pager wiring is reused.
 	const showArchived = $derived(sections.has('archived'));
@@ -258,14 +226,9 @@
 	// carrying at least one of them (OR semantics). Persisted across reloads.
 	const labelsQuery = useLabels();
 	const allLabels = $derived($labelsQuery.data?.labels ?? []);
+	// The LabelFilter molecule owns the popover + toggle UI; the page keeps the
+	// selected-id set (and persists it / prunes deleted ids below).
 	let labelFilter = $state(new Set<string>(parseLabelFilter(drafts.get(LIST_LABELS))));
-	let labelMenuOpen = $state(false);
-	function toggleLabelFilter(id: string) {
-		const next = new Set(labelFilter);
-		if (next.has(id)) next.delete(id);
-		else next.add(id);
-		labelFilter = next;
-	}
 	$effect(() => {
 		drafts.set(LIST_LABELS, [...labelFilter].join(','));
 	});
@@ -299,11 +262,10 @@
 	//     (unticked = live only, ticked = all). Split into Live / Archived.
 	//   • not searching + showArchived → browse the archive (empty q), paged.
 	// Live-only with no query needs no pager — the bucketed list owns it.
+	// `rawQuery` is the live input (debounced into `query`); the SearchBox molecule
+	// binds to it and owns the field UI (clear button, focus).
 	let rawQuery = $state('');
 	let query = $state('');
-	// The search input is always visible now (CCT-369): it fills the toolbar on
-	// desktop and spans its own full-width row on mobile — no collapse/expand.
-	let searchEl = $state<HTMLInputElement | null>(null);
 	$effect(() => {
 		const v = rawQuery.trim();
 		const t = setTimeout(() => (query = v), 200);
@@ -530,166 +492,19 @@
 	);
 </script>
 
-<div class="bar row">
-	<Heading level={1} class="page-title">Sessions</Heading>
-	<div class="search-wrap">
-		<Input
-			class="search"
-			type="search"
-			placeholder="Search all chats…"
-			bind:value={rawQuery}
-			bind:el={searchEl}
-			onkeydown={(e) => {
-				if (e.key === 'Escape') {
-					rawQuery = '';
-					(e.currentTarget as HTMLInputElement).blur();
-				}
-			}}
-		/>
-		{#if rawQuery}
-			<!-- In-field clear (CCT-297 #22). onmousedown preventDefault keeps the
-			     input from blurring (which on mobile would collapse it) before the
-			     click clears the query. -->
-			<IconButton
-				inline
-				class="search-clear"
-				icon="x"
-				size={13}
-				label="Clear search"
-				title="Clear search"
-				onmousedown={(e: MouseEvent) => e.preventDefault()}
-				onclick={() => {
-					rawQuery = '';
-					searchEl?.focus();
-				}}
-			/>
-		{/if}
-	</div>
-	<!-- Section filter (CCT-322 / CCT-345): ONE button opens a popover of four
-	     independent on/off toggles (Starred / Live / Dispatched / Archived) so any
-	     combination can be shown at once — not a forced single choice. -->
-	<div
-		class="section-pick"
-		use:clickOutside={() => (sectionMenuOpen = false)}
-	>
-		<IconButton
-			class="btn-control-square"
-			icon="filter"
-
-			label="Filter sections"
-			title="Filter sections ({sectionCount}/4)"
-			aria-haspopup="true"
-			aria-expanded={sectionMenuOpen}
-			aria-pressed={sectionCount < SECTIONS.length}
-			onclick={() => (sectionMenuOpen = !sectionMenuOpen)}
-		/>
-		{#if sectionCount < SECTIONS.length}<span class="section-count" aria-hidden="true">{sectionCount}</span>{/if}
-		{#if sectionMenuOpen}
-			<div class="section-menu" role="menu" aria-label="Sections">
-				{#each SECTIONS as sec (sec.value)}
-					<button
-						type="button"
-						role="menuitemcheckbox"
-						class="section-opt"
-						aria-checked={sections.has(sec.value)}
-						onclick={() => toggleSection(sec.value)}
-					>
-						<span class="section-check" aria-hidden="true">{sections.has(sec.value) ? '✓' : ''}</span>
-						<Icon name={sec.icon} size={15} />
-						<span class="section-opt-label">{sec.label}</span>
-					</button>
-				{/each}
-			</div>
-		{/if}
-	</div>
-	<!-- Label filter (CCT-360): one button opens a popover of label toggles; a
-	     session shows when it carries ANY selected label (OR). Hidden when no
-	     labels exist yet. -->
-	{#if allLabels.length > 0}
-		<div class="section-pick" use:clickOutside={() => (labelMenuOpen = false)}>
-			<IconButton
-				class="btn-control-square"
-				icon="tag"
-
-				label="Filter by label"
-				title={labelFilter.size > 0 ? `Filtering by ${labelFilter.size} label(s)` : 'Filter by label'}
-				aria-haspopup="true"
-				aria-expanded={labelMenuOpen}
-				aria-pressed={labelFilter.size > 0}
-				onclick={() => (labelMenuOpen = !labelMenuOpen)}
-			/>
-			{#if labelFilter.size > 0}<span class="section-count" aria-hidden="true">{labelFilter.size}</span>{/if}
-			{#if labelMenuOpen}
-				<div class="section-menu label-menu" role="menu" aria-label="Labels">
-					{#each allLabels as l (l.id)}
-						<button
-							type="button"
-							role="menuitemcheckbox"
-							class="section-opt label-opt"
-							style={labelTint(l)}
-							aria-checked={labelFilter.has(l.id)}
-							onclick={() => toggleLabelFilter(l.id)}
-						>
-							<span class="section-check" aria-hidden="true">{labelFilter.has(l.id) ? '✓' : ''}</span>
-							<span class="section-opt-label">{l.name}</span>
-						</button>
-					{/each}
-					{#if labelFilter.size > 0}
-						<button type="button" class="section-opt label-clear" onclick={() => (labelFilter = new Set())}>
-							<span class="section-check" aria-hidden="true">✕</span>
-							<span class="section-opt-label">Clear filter</span>
-						</button>
-					{/if}
-				</div>
-			{/if}
-		</div>
-	{/if}
-	<!-- View picker (CCT-307): one labelled control offering the 4 explicit
-	     layout × density combinations, replacing the two icon toggles that still
-	     overflowed the toolbar. A native <select> overlaid transparently on the
-	     trigger button (same pattern as the header theme/font pickers) gives the
-	     platform popup with zero outside-click bookkeeping. -->
-	<div class="view-pick btn-control btn-control-square" title="View: {viewLabel}" aria-label="View: {viewLabel}">
-		<span class="view-pick-icon" aria-hidden="true">{cardView ? '▦' : '☰'}</span>
-		<Select
-			variant="ghost"
-			aria-label="Choose list view"
-			value={viewMode}
-			onchange={(e) => selectView((e.currentTarget as HTMLSelectElement).value)}
-		>
-			{#each VIEW_OPTIONS as o (o.value)}
-				<option value={o.value}>{o.label}</option>
-			{/each}
-		</Select>
-	</div>
-	{#if !searching}
-		{#if selecting}
-			<IconButton class="btn-control-square" icon="x" label="Cancel selection" onclick={exitSelect} />
-		{:else}
-			<!-- "Select multiple" wants a checklist/multi-select glyph, which the icon
-			     registry doesn't ship. IconButton only takes a registry name, so render
-			     its Button(icon)+Icon structure directly and feed Icon a raw "list-checks"
-			     svg (24×24, stroke-2) via its children snippet. -->
-			<Button
-				class="btn-control-square"
-				icon
-				variant="ghost"
-				title="Select multiple to archive"
-				aria-label="Select multiple to archive"
-				onclick={() => (selecting = true)}
-			>
-				<Icon label="Select multiple to archive" size={18}>
-					<path d="m3 17 2 2 4-4" />
-					<path d="m3 7 2 2 4-4" />
-					<path d="M13 6h8" />
-					<path d="M13 12h8" />
-					<path d="M13 18h8" />
-				</Icon>
-			</Button>
-		{/if}
-	{/if}
-	<Button class="toolbar-new" control variant="primary" title="New session" aria-label="New session" onclick={() => (showSpawn = true)}>+<span class="new-label"> New</span></Button>
-</div>
+<SessionControls
+	bind:rawQuery
+	bind:sections
+	labels={allLabels}
+	bind:labelFilter
+	bind:cardView
+	bind:dense
+	{selecting}
+	{searching}
+	onStartSelect={() => (selecting = true)}
+	onCancelSelect={exitSelect}
+	onNew={() => (showSpawn = true)}
+/>
 
 {#if selecting && !searching}
 		<div class="bulkbar row">
@@ -937,251 +752,6 @@
 {/if}
 
 <style>
-	.bar {
-		/* Sticky under the fixed app header so search/density/New stay reachable
-		   on long lists without scrolling back up (CCT-241). Also the positioning
-		   context for the mobile search overlay. */
-		position: sticky;
-		top: calc(var(--header-h) + var(--safe-top));
-		z-index: 6;
-		margin-bottom: var(--sp-4);
-		/* CCT-314: only pad the bottom. The earlier symmetric `var(--sp-2) 0`
-		   top-padding pushed the title ~8px lower than every other page's header
-		   (which have no sticky top padding), so Sessions looked misaligned. */
-		padding: 0 0 var(--sp-2);
-		gap: var(--sp-2);
-		/* CCT-250 item 1: center all toolbar controls on one baseline so the
-		   magnifier button lines up with the other buttons (was `stretch`,
-		   which only stretched text buttons → the icon-only search button sat
-		   at a different height). */
-		align-items: center;
-		/* CCT-308 item 3: the toolbar is a no-wrap flex row whose buttons are
-		   `flex:none` + `white-space:nowrap` (they can't shrink). Bumping the UI
-		   scale grew the title + button text past the viewport width; since the
-		   page clips horizontal overflow, the controls were pushed off-frame and
-		   unreachable. Let the toolbar wrap so controls reflow onto a second line
-		   instead of overflowing, keeping the title + every action in-frame at any
-		   scale. */
-		flex-wrap: wrap;
-		background: var(--bg);
-	}
-	/* The title is the Heading atom; a class on an atom can't match a plain
-	   scoped selector, so target it via :global. */
-	:global(.page-title) {
-		/* CCT-308 item 3: the title is toolbar chrome, not content — pin it to a
-		   fixed px size (1.75rem @16px = 28px) so the UI font scale doesn't grow
-		   it and shove the action buttons out of frame. */
-		font-size: 28px;
-		align-self: center;
-		flex: none;
-	}
-	/* View picker (CCT-307): a native <select> overlaid transparently on a
-	   labelled trigger (same pattern as the header theme/font pickers) so it gets
-	   the platform popup with no custom outside-click logic. One control instead
-	   of two icon toggles, so the toolbar no longer overflows. */
-	.view-pick {
-		position: relative;
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		flex: none;
-		white-space: nowrap;
-		cursor: pointer;
-	}
-	/* Section filter (CCT-345): one square toolbar button that opens a popover of
-	   independent toggles. The wrapper is the positioning context for the popover
-	   and the small "active count" badge. */
-	.section-pick {
-		position: relative;
-		display: inline-flex;
-		align-items: center;
-		flex: none;
-		align-self: center;
-	}
-	/* Count badge shown when not all four sections are enabled (i.e. a filter is
-	   active), so the toolbar shows at a glance that the list is filtered. */
-	.section-count {
-		position: absolute;
-		top: -0.35rem;
-		right: -0.35rem;
-		min-width: 1rem;
-		height: 1rem;
-		padding: 0 0.25rem;
-		border-radius: 999px;
-		background: var(--accent);
-		color: var(--bg);
-		font-size: 0.62rem;
-		font-weight: var(--fw-semibold);
-		line-height: 1rem;
-		text-align: center;
-		pointer-events: none;
-	}
-	.section-menu {
-		position: absolute;
-		top: calc(100% + var(--sp-1));
-		right: 0;
-		z-index: 40;
-		min-width: 12rem;
-		display: flex;
-		flex-direction: column;
-		padding: var(--sp-1);
-		border: 1px solid var(--border-strong);
-		border-radius: var(--r-md);
-		background: var(--bg-elevated);
-		box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.4));
-	}
-	.section-opt {
-		display: flex;
-		align-items: center;
-		gap: var(--sp-2);
-		width: 100%;
-		padding: var(--sp-2);
-		border: none;
-		border-radius: var(--r-sm);
-		background: none;
-		color: var(--text);
-		font-size: var(--fs-sm);
-		text-align: left;
-		cursor: pointer;
-	}
-	.section-opt:hover {
-		background: var(--bg-hover, var(--border));
-	}
-	.section-opt[aria-checked='true'] {
-		color: var(--accent, var(--text));
-	}
-	.section-check {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		width: 1.05rem;
-		height: 1.05rem;
-		flex: none;
-		border-radius: var(--r-sm);
-		border: 1.5px solid var(--border-strong);
-		font-size: 0.75rem;
-		line-height: 1;
-	}
-	.section-opt[aria-checked='true'] .section-check {
-		background: var(--accent);
-		border-color: var(--accent);
-		color: var(--bg);
-	}
-	.section-opt-label {
-		flex: 1 1 auto;
-	}
-	/* Label filter (CCT-360): colored dot per label in the popover; allow the
-	   menu to scroll once there are many labels. */
-	.label-menu {
-		max-height: 16rem;
-		overflow-y: auto;
-	}
-	/* The whole label entry row carries the label's hue tint (set inline via
-	   labelTint), so the filter menu reads at a glance by color. The inline
-	   background outranks the generic .section-opt:hover background, so the tint
-	   persists on hover; a faint inset ring marks the hovered/checked row. */
-	.label-opt {
-		margin-bottom: 2px;
-		border: 1px solid transparent;
-	}
-	.label-opt:last-child {
-		margin-bottom: 0;
-	}
-	.label-opt:hover {
-		box-shadow: inset 0 0 0 1px var(--text);
-	}
-	.label-opt .section-opt-label {
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-	/* On a tinted row the checkmark box's neutral border/ink would clash; let it
-	   ride the row's own foreground color instead. */
-	.label-opt .section-check {
-		border-color: currentColor;
-	}
-	.label-opt[aria-checked='true'] .section-check {
-		background: currentColor;
-		border-color: currentColor;
-	}
-	.label-clear {
-		color: var(--text-muted);
-	}
-	/* Fill all the space between the title and the Archived checkbox; the wrapper
-	   is the flex item / positioning context for the in-field clear button. */
-	.search-wrap {
-		flex: 1;
-		min-width: 0;
-		position: relative;
-		display: flex;
-	}
-	/* Toolbar-specific tweaks layered on the Input atom (`.input.search` beats the
-	   atom's `.input` base, so order in the bundle doesn't matter): compact height,
-	   elevated fill, and right padding that clears the in-field × button. */
-	.search-wrap :global(.input.search) {
-		flex: 1;
-		min-width: 0;
-		height: var(--control-height);
-		padding: var(--sp-1) calc(var(--sp-3) + 1.25rem) var(--sp-1) var(--sp-3);
-		font-size: var(--fs-sm);
-		background: var(--bg-elevated);
-	}
-	/* Hide any browser-native search clear; we provide our own cross. */
-	.search-wrap :global(.input.search)::-webkit-search-cancel-button {
-		display: none;
-	}
-	.search-wrap :global(.search-clear) {
-		position: absolute;
-		top: 50%;
-		right: var(--sp-2);
-		transform: translateY(-50%);
-		width: 1.25rem;
-		height: 1.25rem;
-		padding: 0;
-		border-radius: 50%;
-		background: var(--bg-elevated-2, var(--border));
-		color: var(--text-faint);
-	}
-	.search-wrap :global(.search-clear):hover {
-		color: var(--text);
-		background: var(--bg-elevated-2, var(--border));
-	}
-	/* Desktop: the New button shows its full "+ New" label. */
-	.new-label {
-		display: inline;
-	}
-	/* Mobile layout (CCT-369 rework): the toolbar is a wrapping flex row. Row 1
-	   holds the title + every square icon control + a square "+" New button; the
-	   search input wraps onto its own full-width second row. */
-	@media (max-width: 639px) {
-		.bar {
-			align-items: center;
-		}
-		/* Title eats the leftover space on row 1 so the square controls pack to the
-		   right edge instead of leaving a ragged gap. */
-		.bar > :global(.page-title) {
-			flex: 1 1 auto;
-			min-width: 0;
-		}
-		/* Search drops to its own row, spanning the full width. `order` pushes it
-		   after every row-1 control regardless of DOM position; the 100% basis
-		   forces the wrap. */
-		.search-wrap {
-			order: 10;
-			flex: 1 1 100%;
-			width: 100%;
-		}
-		/* "+ New" collapses to just "+" so it matches the square aspect ratio of the
-		   other controls and the whole set stays on one row. */
-		.bar > :global(.toolbar-new) {
-			width: var(--control-height);
-			padding: 0;
-			flex: none;
-		}
-		.new-label {
-			display: none;
-		}
-	}
 	/* Sticky bulk-action bar (CCT-172) shown while in select mode. */
 	.bulkbar {
 		position: sticky;
