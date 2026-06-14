@@ -8,8 +8,7 @@
 		key: string;
 		value: string;
 	}
-	import { Button, Field, Input, Text } from '@dorsk/tsumikit';
-	import IconButton from '$lib/components/molecules/IconButton.svelte';
+	import { Button, Field, IconButton, Input, Text } from '@dorsk/tsumikit';
 
 	let {
 		envRows = $bindable(),
@@ -46,7 +45,7 @@
 				aria-label="Secret value"
 				bind:value={row.value}
 			/>
-			<IconButton inline class="hover-danger" icon="x" label="Remove secret" onclick={() => removeEnvRow(i)} />
+			<IconButton inline class="hover-danger" icon="x" size={16} label="Remove secret" onclick={() => removeEnvRow(i)} />
 		</div>
 	{/each}
 	<Button control style="align-self:flex-start" onclick={addEnvRow}>+ Add secret</Button>

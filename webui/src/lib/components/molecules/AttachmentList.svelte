@@ -3,8 +3,7 @@
 	// the mid-chat composer. Renders one chip per file with a remove button and,
 	// when present, the cap error.
 	import { fmtSize, fileCapError } from '$lib/attachments';
-	import IconButton from '$lib/components/molecules/IconButton.svelte';
-	import { Text } from '@dorsk/tsumikit';
+	import { IconButton, Text } from '@dorsk/tsumikit';
 
 	let {
 		files,
@@ -21,7 +20,7 @@
 			<li>
 				<Text variant="code" truncate class="grow">{f.name}</Text>
 				<Text size="xs" tone="faint">{fmtSize(f.size)}</Text>
-				<IconButton inline class="hover-danger" icon="x" label="Remove" title="Remove" onclick={() => onremove(f.name)} />
+				<IconButton inline class="hover-danger" icon="x" size={16} label="Remove" title="Remove" onclick={() => onremove(f.name)} />
 			</li>
 		{/each}
 	</ul>

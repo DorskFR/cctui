@@ -13,8 +13,7 @@
 	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
 	import WorkingDir from '$lib/components/molecules/WorkingDir.svelte';
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
-	import IconButton from '$lib/components/molecules/IconButton.svelte';
-	import { Badge, Input, Select, SelectButton, Text } from '@dorsk/tsumikit';
+	import { Badge, IconButton, Input, Select, SelectButton, Text } from '@dorsk/tsumikit';
 
 	let {
 		session,
@@ -105,7 +104,7 @@
 
 <div class="dhead">
 	<div class="hrow">
-		<IconButton class="tapbtn back" icon="back" label="Back" onclick={onclose} />
+		<IconButton class="tapbtn back" icon="back" size={16} label="Back" onclick={onclose} />
 		<AdapterIcon adapter={session.adapter_id} size={20} />
 		<span class="dot {livenessClass}" title={session.hibernated ? 'hibernated' : session.liveness}></span>
 		<div class="dtitle">
@@ -135,11 +134,12 @@
 			onchange={(v) => fontScale.set(v)}
 		/>
 		{#if renaming}
-			<IconButton class="tapbtn" icon="check" label="Save" onclick={doRename} />
+			<IconButton class="tapbtn" icon="check" size={16} label="Save" onclick={doRename} />
 		{:else}
 			<IconButton
 				class="tapbtn"
 				icon="edit"
+				size={16}
 				label="Rename"
 				onclick={() => {
 					renaming = true;
@@ -150,6 +150,7 @@
 		<IconButton
 			class="tapbtn"
 			icon="link"
+			size={16}
 			label="Copy shareable link"
 			title="Copy a stable link to this session (paste in a PR — login-gated)"
 			onclick={oncopylink}
@@ -157,6 +158,7 @@
 		<IconButton
 			class="tapbtn"
 			icon="markdown"
+			size={16}
 			label="Copy conversation as Markdown"
 			title="Copy the whole conversation as Markdown (honors the view filters)"
 			onclick={oncopymarkdown}
@@ -164,6 +166,7 @@
 		<IconButton
 			class="tapbtn"
 			icon="download"
+			size={16}
 			label="Export conversation"
 			title="Download transcript as HTML (print it for a PDF)"
 			onclick={onexport}
@@ -171,6 +174,7 @@
 		<IconButton
 			class="tapbtn fork-action"
 			icon="fork"
+			size={16}
 			label="Fork conversation"
 			title="Fork into a new conversation (optionally change model)"
 			onclick={onfork}
@@ -180,14 +184,15 @@
 		<IconButton
 			class="tapbtn more"
 			icon="more"
+			size={16}
 			label="More actions"
 			aria-expanded={moreOpen}
 			title="More actions"
 			onclick={() => (moreOpen = !moreOpen)}
 		/>
 		{#if !archived}
-			<IconButton class="tapbtn interrupt" icon="stop" label="Interrupt turn" title="Interrupt the in-flight turn" onclick={oninterrupt} />
-			<IconButton class="tapbtn archive" icon="archive" label="Archive" onclick={onarchive} />
+			<IconButton class="tapbtn interrupt" icon="stop" size={16} label="Interrupt turn" title="Interrupt the in-flight turn" onclick={oninterrupt} />
+			<IconButton class="tapbtn archive" icon="archive" size={16} label="Archive" onclick={onarchive} />
 		{/if}
 	</div>
 	<div class="hmeta row row-wrap">
@@ -201,8 +206,8 @@
 					<Select class="mini-select" bind:value={pendingEffort} aria-label="Effort">
 						{#each codexEfforts as e (e)}<option value={e}>{e || 'default effort'}</option>{/each}
 					</Select>
-					<IconButton class="tapbtn" icon="check" label="Apply" onclick={applyModelChange} />
-					<IconButton class="tapbtn" icon="x" label="Cancel" onclick={() => (modelEditing = false)} />
+					<IconButton class="tapbtn" icon="check" size={16} label="Apply" onclick={applyModelChange} />
+					<IconButton class="tapbtn" icon="x" size={16} label="Cancel" onclick={() => (modelEditing = false)} />
 				</Badge>
 			{:else}
 				<Badge

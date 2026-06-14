@@ -4,9 +4,8 @@
 	// row (role badge, tool name, time, delivery state), the bubble, and the
 	// per-message action buttons, delegating retry/edit/save/copy to callbacks.
 	import { clockTime } from '$lib/format';
-	import IconButton from '$lib/components/molecules/IconButton.svelte';
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
-	import { Button, Text } from '@dorsk/tsumikit';
+	import { Button, IconButton, Text } from '@dorsk/tsumikit';
 	import type { Line } from './types';
 	import './bubble.css';
 
@@ -63,6 +62,7 @@
 				<IconButton
 					class="edit-pending"
 					icon="edit"
+					size={16}
 					label="Edit message"
 					title="Pull this message back into the composer to edit and resend"
 					onclick={() => onedit(ln.text ?? '', ln.ts)}
@@ -80,6 +80,7 @@
 				<IconButton
 					class="edit-pending"
 					icon="edit"
+					size={16}
 					label="Edit pending message"
 					title="Pull this still-pending message back into the composer to edit and resend"
 					onclick={() => onedit(ln.text ?? '', ln.ts)}
@@ -93,6 +94,7 @@
 			<IconButton
 				class="copy"
 				icon="image"
+				size={16}
 				label="Save as image"
 				title="Save this message as an image"
 				onclick={(e) => onsaveimage(e, ln)}
@@ -100,6 +102,7 @@
 			<IconButton
 				class="copy"
 				icon="markdown"
+				size={16}
 				label="Copy as Markdown"
 				title="Copy this message as Markdown"
 				onclick={() => oncopymarkdown(ln)}
