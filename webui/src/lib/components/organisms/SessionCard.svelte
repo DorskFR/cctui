@@ -32,7 +32,9 @@
 		allLabels = [],
 		onCreateLabel,
 		onAttachLabel,
-		onDetachLabel
+		onDetachLabel,
+		onUpdateLabel,
+		onDeleteLabel
 	}: {
 		session: SessionListItem;
 		child?: boolean;
@@ -70,6 +72,8 @@
 		onCreateLabel?: (name: string, color: string) => Promise<Label>;
 		onAttachLabel?: (id: string, labelId: string) => void | Promise<void>;
 		onDetachLabel?: (id: string, labelId: string) => void | Promise<void>;
+		onUpdateLabel?: (labelId: string, patch: { name?: string; color?: string }) => Promise<Label>;
+		onDeleteLabel?: (labelId: string) => void | Promise<void>;
 	} = $props();
 
 	const s = $derived(session);
@@ -277,47 +281,42 @@
 		{:else}
 			<!-- DETAILED / PROJ = stacked bands (Stack), each horizontal band a Cluster. -->
 			<Stack gap="var(--sp-2)" style={grid ? 'height:100%' : ''}>
-				<!-- 1. LEAD: gutter · dot · engine · title · [+] ···· status · perm · time -->
-				<Cluster wrap={false} gap="var(--sp-2)">
-					{@render gutter()}
-					{@render engine()}
-					{@render titleText()}
-					{#if labelEditable && s.labels.length === 0}
-						<LabelBadge
-							labels={[]}
-							editable
-							{allLabels}
-							onCreate={onCreateLabel}
-							onAttach={(lid) => onAttachLabel?.(s.id, lid)}
-							onDetach={(lid) => onDetachLabel?.(s.id, lid)}
-						/>
-					{/if}
-					<span style="flex:1 1 auto"></span>
+				<!-- 1. LEAD: gutter · dot · engine · title · labels ···· status · perm · time
+				     Labels live on this first row, right after the title. The lead group
+				     flex-wraps, so when the title + chips can't fit the row width the chips
+				     drop to a second line WITHOUT dragging the status/perm/time group with
+				     them — that group is pinned top-right (align-items:flex-start). -->
+				<Cluster wrap={false} gap="var(--sp-2)" style="align-items:flex-start">
+					<span class="lead">
+						{@render gutter()}
+						{@render engine()}
+						{@render titleText()}
+						{#if s.labels.length > 0 || labelEditable}
+							<LabelBadge
+								labels={s.labels}
+								editable={labelEditable}
+								{allLabels}
+								onCreate={onCreateLabel}
+								onAttach={(lid) => onAttachLabel?.(s.id, lid)}
+								onDetach={(lid) => onDetachLabel?.(s.id, lid)}
+								onUpdate={onUpdateLabel}
+								onDelete={onDeleteLabel}
+							/>
+						{/if}
+					</span>
 					{#if showStatusBadge}<Badge class={statusBadgeClass(s.status)} style="padding:0.05rem var(--sp-2)">{s.status}</Badge>{/if}
 					{#if pendingCount > 0}<Badge tone="warn" style="padding:0.05rem var(--sp-2)">{pendingCount} perm</Badge>{/if}
 					{@render time()}
 				</Cluster>
 
-				<!-- 2. LABELS: own row once ≥1 label is attached; chips + trailing `+`. -->
-				{#if s.labels.length > 0}
-					<LabelBadge
-						labels={s.labels}
-						editable={labelEditable}
-						{allLabels}
-						onCreate={onCreateLabel}
-						onAttach={(lid) => onAttachLabel?.(s.id, lid)}
-						onDetach={(lid) => onDetachLabel?.(s.id, lid)}
-					/>
-				{/if}
-
-				<!-- 3. PREVIEW: multi-line clamp (grid grows to fill). -->
+				<!-- 2. PREVIEW: multi-line clamp (grid grows to fill). -->
 				{#if s.match_snippet}
 					<div class="preview match" style={grid ? 'flex:1 1 auto' : ''}>🔍 {#if snippetHtml}{@html snippetHtml}{:else}{s.match_snippet}{/if}</div>
 				{:else if s.last_message_text}
 					<div class="preview last muted" style={grid ? 'flex:1 1 auto' : ''}>{s.last_message_text}</div>
 				{/if}
 
-				<!-- 4. FOOTER: path ···· tokens · Σ · model · logo. Wraps when tight so a
+				<!-- 3. FOOTER: path ···· tokens · Σ · model · logo. Wraps when tight so a
 				     long model can't shove the logo out (grid pins it to the bottom). -->
 				<Cluster gap="var(--sp-2)" style={grid ? 'margin-top:auto' : ''}>
 					<!-- Fish-style working-dir chip: leaf stays whole, ancestors abbreviate
@@ -429,6 +428,18 @@
 	   much middle content each card has. */
 	.sc-wrap.grid {
 		height: 100%;
+	}
+	/* Lead group of the detailed/grid header band: gutter · engine · title · labels.
+	   Wraps so the label chips fall to a second line when the title is long / the
+	   row is narrow, while the trailing status/perm/time group stays pinned to the
+	   first line (the band is align-items:flex-start). */
+	.lead {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: var(--sp-2);
+		flex: 1 1 auto;
+		min-width: 0;
 	}
 	/* ── Last-message preview (detailed / grid only) ────────────────────────────
 	   The compact row renders the message as a <Text truncate> inline; here it's a

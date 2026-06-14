@@ -523,6 +523,17 @@ export function useSessionActions() {
       invalLabels();
       return label;
     },
+    // Edit a specific label in place (rename and/or recolor) — keyed on id, so
+    // unlike `createLabel` it can rename without orphaning the old name.
+    updateLabel: async (
+      labelId: string,
+      patch: { name?: string; color?: string },
+    ): Promise<Label> => {
+      const label = await api.patch<Label>(`/labels/${labelId}`, patch);
+      invalLabels();
+      inval();
+      return label;
+    },
     deleteLabel: async (labelId: string) => {
       await api.del<void>(`/labels/${labelId}`);
       invalLabels();

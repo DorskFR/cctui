@@ -118,11 +118,11 @@ async fn main() -> anyhow::Result<()> {
         .route("/sessions/{id}/policy", post(routes::admin::set_session_policy))
         // Session labels (CCT-360): global label definitions + per-session
         // attach/detach.
+        .route("/labels", get(routes::admin::list_labels).post(routes::admin::create_label))
         .route(
-            "/labels",
-            get(routes::admin::list_labels).post(routes::admin::create_label),
+            "/labels/{id}",
+            axum::routing::patch(routes::admin::update_label).delete(routes::admin::delete_label),
         )
-        .route("/labels/{id}", axum::routing::delete(routes::admin::delete_label))
         .route("/sessions/{id}/labels", post(routes::admin::attach_label))
         .route(
             "/sessions/{id}/labels/{label_id}",

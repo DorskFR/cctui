@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { Label } from '@bindings/Label';
-	import { Badge, Icon, Input, Popover } from '@dorsk/tsumikit';
+	import { Badge, Button, Field, Icon, Input, Modal, Popover } from '@dorsk/tsumikit';
 	import Swatch from '$lib/components/atoms/Swatch.svelte';
 	import { LABEL_HUES, labelTint, storedHue, hueToColor } from '$lib/labels';
 
@@ -8,20 +8,22 @@
 	// filter-and-pick popover). Attached labels render as hue-tinted, removable
 	// Badges. When `editable`, a `tag` trigger opens ONE popover that is a combined
 	// filter/create box: a text input at the top filters the existing labels and,
-	// when nothing matches, becomes a "Create" affordance. Each row toggles
-	// attach/detach; the pencil expands an INLINE hue strip (in flow — no nested
-	// popover, so nothing is clipped behind the input the way the old ColorPicker
-	// pop-in-pop was) to recolor that label.
+	// when nothing matches, becomes a "Create" affordance directly beneath it. Each
+	// row toggles attach/detach; the pencil opens a proper edit Modal where the
+	// label can be renamed AND recolored (or deleted) — the old inline hue strip
+	// could only recolor.
 	//
-	// Recolor reuses POST /labels — get-or-create-by-name that refreshes the color,
-	// so re-posting the same name with a new hue recolors it everywhere.
+	// Recolor/rename go through PATCH /labels/{id} (`onUpdate`), keyed on id so a
+	// rename never orphans the old name. Create still uses POST /labels.
 	let {
 		labels,
 		editable = false,
 		allLabels = [],
 		onCreate,
 		onAttach,
-		onDetach
+		onDetach,
+		onUpdate,
+		onDelete
 	}: {
 		labels: Label[];
 		editable?: boolean;
@@ -29,22 +31,39 @@
 		onCreate?: (name: string, color: string) => Promise<Label>;
 		onAttach?: (labelId: string) => void | Promise<void>;
 		onDetach?: (labelId: string) => void | Promise<void>;
+		onUpdate?: (labelId: string, patch: { name?: string; color?: string }) => Promise<Label>;
+		onDelete?: (labelId: string) => void | Promise<void>;
 	} = $props();
+
+	// How many labels to show in the picker when not actively filtering. The list
+	// arrives most-recently-used-or-created first from the server, so this surfaces
+	// the handful you actually reach for instead of the entire history. Typing in
+	// the filter searches across ALL labels regardless of this cap.
+	const MAX_VISIBLE = 8;
 
 	let q = $state('');
 	let busy = $state(false);
-	// Which label's inline hue strip is expanded (null = none).
-	let editingId = $state<string | null>(null);
+
+	// The label being edited in the modal (null = closed), plus its draft fields.
+	let editing = $state<Label | null>(null);
+	let editName = $state('');
+	let editHue = $state<number | null>(null);
+	let editBusy = $state(false);
+	let editError = $state('');
 
 	const attachedIds = $derived(new Set(labels.map((l) => l.id)));
 	const query = $derived(q.trim());
 	const filtered = $derived(
-		query ? allLabels.filter((l) => l.name.toLowerCase().includes(query.toLowerCase())) : allLabels
+		query
+			? allLabels.filter((l) => l.name.toLowerCase().includes(query.toLowerCase()))
+			: allLabels.slice(0, MAX_VISIBLE)
 	);
 	const exactMatch = $derived(
 		allLabels.find((l) => l.name.toLowerCase() === query.toLowerCase()) ?? null
 	);
 	const showCreate = $derived(!!query && !exactMatch);
+	// Whether the cap is hiding labels (only relevant with no active filter).
+	const hiddenCount = $derived(query ? 0 : Math.max(0, allLabels.length - MAX_VISIBLE));
 
 	async function toggleExisting(l: Label) {
 		if (busy) return;
@@ -54,17 +73,6 @@
 			else await onAttach?.(l.id);
 		} finally {
 			busy = false;
-		}
-	}
-
-	async function recolor(l: Label, hue: number | null) {
-		if (busy || !onCreate) return;
-		busy = true;
-		try {
-			await onCreate(l.name, hueToColor(hue));
-		} finally {
-			busy = false;
-			editingId = null;
 		}
 	}
 
@@ -85,6 +93,53 @@
 		e.preventDefault();
 		if (exactMatch) toggleExisting(exactMatch);
 		else createAndAttach();
+	}
+
+	function openEdit(l: Label) {
+		editing = l;
+		editName = l.name;
+		editHue = storedHue(l.color);
+		editError = '';
+	}
+
+	function closeEdit() {
+		editing = null;
+		editError = '';
+	}
+
+	async function saveEdit() {
+		if (!editing || !onUpdate || editBusy) return;
+		const name = editName.trim();
+		if (!name) {
+			editError = 'Name is required.';
+			return;
+		}
+		editBusy = true;
+		editError = '';
+		try {
+			const patch: { name?: string; color?: string } = { color: hueToColor(editHue) };
+			if (name !== editing.name) patch.name = name;
+			await onUpdate(editing.id, patch);
+			closeEdit();
+		} catch (e) {
+			editError = e instanceof Error ? e.message : 'Could not save the label.';
+		} finally {
+			editBusy = false;
+		}
+	}
+
+	async function deleteEditing() {
+		if (!editing || !onDelete || editBusy) return;
+		editBusy = true;
+		editError = '';
+		try {
+			await onDelete(editing.id);
+			closeEdit();
+		} catch (e) {
+			editError = e instanceof Error ? e.message : 'Could not delete the label.';
+		} finally {
+			editBusy = false;
+		}
 	}
 </script>
 
@@ -120,7 +175,6 @@
 					triggerClass="tag-trigger"
 					onclose={() => {
 						q = '';
-						editingId = null;
 					}}
 				>
 					{#snippet trigger()}<Icon name="tag" />{/snippet}
@@ -128,6 +182,22 @@
 					<form class="filter" onsubmit={onSubmit}>
 						<Input size="sm" placeholder="Filter or create…" bind:value={q} maxlength={40} />
 					</form>
+
+					<!-- Create affordance sits directly under the input (where the typed
+					     name is), not at the bottom of the list. -->
+					{#if showCreate}
+						<button type="button" class="opt create" disabled={busy} onclick={createAndAttach}>
+							<span class="check" aria-hidden="true">+</span>
+							<span class="create-label">Create</span>
+							<Badge
+								size="sm"
+								class="label"
+								style="{labelTint({ name: query, color: '' })};border-radius:var(--r-sm)"
+							>
+								<span class="opt-name">{query}</span>
+							</Badge>
+						</button>
+					{/if}
 
 					<div class="list">
 						{#each filtered as l (l.id)}
@@ -146,55 +216,23 @@
 										<span class="opt-name">{l.name}</span>
 									</Badge>
 								</button>
-								<button
-									type="button"
-									class="edit"
-									class:on={editingId === l.id}
-									aria-label={`Recolor ${l.name}`}
-									aria-expanded={editingId === l.id}
-									disabled={busy}
-									onclick={() => (editingId = editingId === l.id ? null : l.id)}
-								>
-									<Icon name="edit" />
-								</button>
-							</div>
-							{#if editingId === l.id}
-								<div class="hues" role="radiogroup" aria-label={`Color for ${l.name}`}>
-									<Swatch
-										hue={null}
-										active={storedHue(l.color) == null}
-										title="Auto (name hash)"
-										aria-label="Auto color"
-										onclick={() => recolor(l, null)}>A</Swatch
+								{#if onUpdate}
+									<button
+										type="button"
+										class="edit"
+										aria-label={`Edit ${l.name}`}
+										disabled={busy}
+										onclick={() => openEdit(l)}
 									>
-									{#each LABEL_HUES as h (h)}
-										<Swatch
-											hue={h}
-											active={storedHue(l.color) === h}
-											title={`Hue ${h}`}
-											aria-label={`Hue ${h}`}
-											onclick={() => recolor(l, h)}
-										/>
-									{/each}
-								</div>
-							{/if}
+										<Icon name="edit" />
+									</button>
+								{/if}
+							</div>
 						{/each}
 
-						{#if showCreate}
-							<button type="button" class="opt create" disabled={busy} onclick={createAndAttach}>
-								<span class="check" aria-hidden="true">+</span>
-								<span class="create-label">Create</span>
-								<Badge
-									size="sm"
-									class="label"
-									style="{labelTint({ name: query, color: '' })};border-radius:var(--r-sm)"
-								>
-									<span class="opt-name">{query}</span>
-								</Badge>
-							</button>
-						{/if}
-
-						{#if filtered.length === 0 && !showCreate}
+						{#if hiddenCount > 0}
+							<p class="more">Type to search {hiddenCount} more…</p>
+						{:else if filtered.length === 0 && !showCreate}
 							<p class="empty">No labels yet — type to create one.</p>
 						{/if}
 					</div>
@@ -202,6 +240,67 @@
 			</span>
 		{/if}
 	</span>
+{/if}
+
+<!-- Edit modal: rename + recolor (+ delete) a single label, keyed on id. -->
+{#if editing}
+	<Modal title="Edit label" onclose={closeEdit}>
+		{#snippet body()}
+			<div class="edit-form">
+				<Field label="Name">
+					<Input
+						bind:value={editName}
+						maxlength={40}
+						placeholder="Label name"
+						onkeydown={(e: KeyboardEvent) => {
+							if (e.key === 'Enter') {
+								e.preventDefault();
+								saveEdit();
+							}
+						}}
+					/>
+				</Field>
+				<Field label="Color">
+					<div class="hues" role="radiogroup" aria-label="Label color">
+						<Swatch
+							hue={null}
+							active={editHue == null}
+							title="Auto (name hash)"
+							aria-label="Auto color"
+							onclick={() => (editHue = null)}>A</Swatch
+						>
+						{#each LABEL_HUES as h (h)}
+							<Swatch
+								hue={h}
+								active={editHue === h}
+								title={`Hue ${h}`}
+								aria-label={`Hue ${h}`}
+								onclick={() => (editHue = h)}
+							/>
+						{/each}
+					</div>
+				</Field>
+				<div class="preview-row">
+					<span class="preview-label">Preview</span>
+					<Badge
+						class="label"
+						style="{labelTint({ name: editName || 'label', color: hueToColor(editHue) })};border-radius:var(--r-sm)"
+					>
+						<span class="name">{editName || 'label'}</span>
+					</Badge>
+				</div>
+				{#if editError}<p class="edit-error">{editError}</p>{/if}
+			</div>
+		{/snippet}
+		{#snippet footer()}
+			{#if onDelete}
+				<Button variant="danger" disabled={editBusy} onclick={deleteEditing}>Delete</Button>
+			{/if}
+			<Button variant="primary" block disabled={editBusy || !editName.trim()} onclick={saveEdit}>
+				{#if editBusy}<span class="spin"></span>{:else}Save{/if}
+			</Button>
+		{/snippet}
+	</Modal>
 {/if}
 
 <style>
@@ -229,14 +328,15 @@
 		background: var(--bg-elevated-2);
 	}
 
-	/* The panel keeps a stable width so expanding a row's hue strip wraps the
-	   swatches instead of widening the popover (no horizontal layout shift). */
+	/* The panel keeps a stable width. The filter box and the list share the same
+	   horizontal padding so each row's content lines up flush with the input edges
+	   (the edit button no longer juts past the input). */
 	.filter,
-	.list {
+	.list,
+	.create {
 		box-sizing: border-box;
 		width: 15rem;
 	}
-	/* Filter/create box pinned at the top of the panel. */
 	.filter {
 		display: flex;
 		align-items: center;
@@ -253,12 +353,17 @@
 		gap: 0.05rem;
 		max-height: 14rem;
 		overflow-y: auto;
-		margin-top: var(--sp-1);
+		padding: 0 var(--sp-2) var(--sp-1);
 	}
 	.row {
 		display: flex;
-		align-items: center;
+		align-items: stretch;
 		gap: var(--sp-1);
+	}
+	/* Rows match the filter Input's height so the menu reads as an even stack. */
+	.opt,
+	.edit {
+		min-height: 2rem;
 	}
 	.opt {
 		display: flex;
@@ -281,6 +386,7 @@
 	}
 	.check {
 		display: inline-flex;
+		align-items: center;
 		width: 0.9rem;
 		flex: none;
 		color: var(--accent);
@@ -291,6 +397,11 @@
 	.opt :global(.label) {
 		min-width: 0;
 		overflow: hidden;
+	}
+	.create {
+		padding: var(--sp-1) var(--sp-2);
+		margin: 0 var(--sp-2);
+		color: var(--text-muted);
 	}
 	.create-label {
 		flex: none;
@@ -308,6 +419,7 @@
 		align-items: center;
 		justify-content: center;
 		flex: none;
+		width: 2rem;
 		padding: var(--sp-1);
 		border: none;
 		background: none;
@@ -315,24 +427,52 @@
 		cursor: pointer;
 		border-radius: var(--r-sm);
 	}
-	.edit.on {
-		color: var(--accent);
-	}
-	/* Inline hue strip — lives in flow, pushing the list down. Never overlays or
-	   gets clipped (the old nested ColorPicker popover did). */
-	.hues {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 4px;
-		padding: var(--sp-1) var(--sp-2) var(--sp-2) calc(0.9rem + 2 * var(--sp-2));
-	}
-	.create {
-		color: var(--text-muted);
-	}
-	.empty {
+	.empty,
+	.more {
 		margin: 0;
 		padding: var(--sp-2);
 		color: var(--text-muted);
 		font-size: var(--fs-sm);
+	}
+
+	/* Edit modal body. */
+	.edit-form {
+		display: flex;
+		flex-direction: column;
+		gap: var(--sp-3);
+		min-width: 16rem;
+	}
+	.hues {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 6px;
+	}
+	.preview-row {
+		display: flex;
+		align-items: center;
+		gap: var(--sp-2);
+	}
+	.preview-label {
+		color: var(--text-muted);
+		font-size: var(--fs-sm);
+	}
+	.edit-error {
+		margin: 0;
+		color: var(--danger, var(--text));
+		font-size: var(--fs-sm);
+	}
+	.spin {
+		display: inline-block;
+		width: 0.9em;
+		height: 0.9em;
+		border: 2px solid currentColor;
+		border-right-color: transparent;
+		border-radius: 50%;
+		animation: spin 0.6s linear infinite;
+	}
+	@keyframes spin {
+		to {
+			transform: rotate(360deg);
+		}
 	}
 </style>

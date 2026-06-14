@@ -490,6 +490,8 @@
 					onCreate={createSpawnLabel}
 					onAttach={attachSpawnLabel}
 					onDetach={detachSpawnLabel}
+					onUpdate={(labelId, patch) => actions.updateLabel(labelId, patch)}
+					onDelete={(labelId) => actions.deleteLabel(labelId)}
 				/>
 			</Field>
 		</div>

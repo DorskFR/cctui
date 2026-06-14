@@ -210,6 +210,17 @@ pub struct CreateLabelRequest {
     pub color: String,
 }
 
+/// Body for `PATCH /api/v1/labels/{id}` — rename and/or recolor an existing
+/// label by id. Either field may be omitted to leave it unchanged.
+#[derive(Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct UpdateLabelRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+}
+
 /// Body for `POST /api/v1/sessions/{id}/labels` — attach an existing label.
 #[derive(Debug, Serialize, Deserialize, TS)]
 #[ts(export)]
