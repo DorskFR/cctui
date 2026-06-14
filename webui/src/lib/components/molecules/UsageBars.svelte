@@ -1,7 +1,6 @@
 <script lang="ts">
 	import { useAccountUsage } from '$lib/queries';
-	import { relativeFuture } from '$lib/format';
-	import { Progress, Text } from '@dorsk/tsumikit';
+	import { Progress, Text, Timestamp } from '@dorsk/tsumikit';
 
 	// Severity breakpoints on window utilization (%). Below WARN → green ("ok"),
 	// WARN–HOT → amber ("warm"), at/above HOT → red ("hot"). Named so the bar
@@ -57,7 +56,7 @@
 			<div class="bar-row">
 				<Text size="xs" tone="muted" class="bar-label">{b.label}</Text>
 				<Text size="xs" class={`bar-pct${b.tone === 'warm' ? ' warm' : ''}${b.tone === 'hot' ? ' hot' : ''}`}>
-					{b.pct}%{#if b.resets}<Text tone="faint" class="bar-reset"> · resets {relativeFuture(b.resets)}</Text>{/if}
+					{b.pct}%{#if b.resets}<Text tone="faint" class="bar-reset"> · resets <Timestamp value={b.resets} mode="relative" tone="faint" /></Text>{/if}
 				</Text>
 				<Progress value={b.pct} label={`${b.label} usage`} class={`bar-track ${b.tone}`} />
 			</div>

@@ -48,13 +48,13 @@
 	{#if !searching}
 		{#if selecting}
 			<!-- Cancel selection. -->
-			<Button class="ctl btn-control-square" icon variant="ghost" title="Cancel selection" aria-label="Cancel selection" onclick={onCancelSelect}>
+			<Button class="ctl btn-control-square" icon title="Cancel selection" aria-label="Cancel selection" onclick={onCancelSelect}>
 				<Icon name="x" size={18} />
 			</Button>
 		{:else}
 			<!-- "Select multiple" wants a checklist/multi-select glyph the registry
 			     doesn't ship; feed Icon a raw list-checks svg via its children. -->
-			<Button class="ctl btn-control-square" icon variant="ghost" title="Select multiple to archive" aria-label="Select multiple to archive" onclick={onStartSelect}>
+			<Button class="ctl btn-control-square" icon title="Select multiple to archive" aria-label="Select multiple to archive" onclick={onStartSelect}>
 				<Icon label="Select multiple to archive" size={18}>
 					<path d="m3 17 2 2 4-4" />
 					<path d="m3 7 2 2 4-4" />

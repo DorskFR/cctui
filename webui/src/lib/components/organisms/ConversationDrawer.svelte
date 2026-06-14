@@ -6,7 +6,6 @@
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { renderMarkdown, highlightBlock } from '$lib/markdown';
 	import { highlightTerms } from '$lib/search';
-	import { timestampTooltip } from '$lib/format';
 	import { drafts, VIEW_OPTS } from '$lib/drafts';
 	import BackdropScrim from './conversation/BackdropScrim.svelte';
 	import ForkModal from './conversation/ForkModal.svelte';
@@ -262,16 +261,6 @@
 		}
 		return out;
 	});
-	function lineTooltip(ts: number): string {
-		// Mirror the session-list "x minutes ago" hover (CCT-345 / CCT-331).
-		const d = new Date(ts);
-		const msgTime = `This message: ${Number.isNaN(d.getTime()) ? '—' : d.toISOString()}`;
-		return [
-			msgTime,
-			timestampTooltip(session.registered_at, session.last_message_at, session.last_activity_at)
-		].join('\n');
-	}
-
 	// The assistant prose preceding the live question (CCT-213), rendered as
 	// markdown above the card so the user answers with context, not blind.
 	const askPreambleHtml = $derived(
@@ -434,7 +423,6 @@
 		{askPreambleHtml}
 		working={stream.working}
 		answering={stream.answering}
-		{lineTooltip}
 		isDupeOfLiveAsk={stream.isDupeOfLiveAsk}
 		onanswer={(t, p, qs) => stream.answerQuestion(t, p, qs)}
 		onretry={(ts) => stream.retryFailed(ts)}

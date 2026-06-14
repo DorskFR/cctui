@@ -23,6 +23,7 @@
 
 <div class="section-filter" use:clickOutside={() => (open = false)}>
 	<IconButton
+		variant="default"
 		class="btn-control-square"
 		icon="filter"
 		label="Filter sections"

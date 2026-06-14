@@ -8,7 +8,7 @@
 		type CreateAccount,
 	} from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
-	import { dateOnly, relativeTime, compact } from '$lib/format';
+	import { compact } from '$lib/format';
 	import UsageBars from '$lib/components/molecules/UsageBars.svelte';
 	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
 	import {
@@ -23,7 +23,8 @@
 		Modal,
 		Select,
 		Stack,
-		Text
+		Text,
+		Timestamp
 	} from '@dorsk/tsumikit';
 	import { providerLabel } from './accounts.logic';
 
@@ -220,8 +221,8 @@
 							<div><dt>Owner</dt><dd>{a.user_name ?? '—'}</dd></div>
 						{/if}
 						<div><dt>Requests</dt><dd>{compact(a.request_count)}</dd></div>
-						<div><dt>Last used</dt><dd>{relativeTime(a.last_used_at)}</dd></div>
-						<div><dt>Created</dt><dd>{dateOnly(a.created_at)}</dd></div>
+						<div><dt>Last used</dt><dd><Timestamp value={a.last_used_at} mode="relative" tone="inherit" /></dd></div>
+						<div><dt>Created</dt><dd><Timestamp value={a.created_at} mode="date" tone="inherit" /></dd></div>
 					</dl>
 				</Stack>
 				<Cluster as="footer" gap="var(--sp-1)" justify="flex-end" class="card-foot">

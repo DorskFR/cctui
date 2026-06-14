@@ -13,7 +13,21 @@
 		selected = $bindable()
 	}: { labels: Label[]; selected: Set<string> } = $props();
 
+	// The menu never scrolls (CCT): it shows at most CAP rows. With more labels
+	// than that we surface a filter input so any tag is reachable by typing; the
+	// default (empty-query) view is the first CAP labels — the most recent, since
+	// the caller hands them to us in recency order.
+	const CAP = 5;
+
 	let open = $state(false);
+	let query = $state('');
+
+	const hasFilter = $derived(labels.length > CAP);
+	const visible = $derived.by(() => {
+		const q = query.trim().toLowerCase();
+		const matches = q ? labels.filter((l) => l.name.toLowerCase().includes(q)) : labels;
+		return matches.slice(0, CAP);
+	});
 
 	function toggle(id: string) {
 		const next = new Set(selected);
@@ -21,11 +35,17 @@
 		else next.add(id);
 		selected = next;
 	}
+
+	function openMenu(next: boolean) {
+		open = next;
+		if (!next) query = ''; // fresh filter each time it reopens
+	}
 </script>
 
 {#if labels.length > 0}
-	<div class="label-filter" use:clickOutside={() => (open = false)}>
+	<div class="label-filter" use:clickOutside={() => openMenu(false)}>
 		<IconButton
+			variant="default"
 			class="btn-control-square"
 			icon="tag"
 			label="Filter by label"
@@ -33,12 +53,28 @@
 			aria-haspopup="true"
 			aria-expanded={open}
 			aria-pressed={selected.size > 0}
-			onclick={() => (open = !open)}
+			onclick={() => openMenu(!open)}
 		/>
 		{#if selected.size > 0}<span class="count-badge" aria-hidden="true">{selected.size}</span>{/if}
 		{#if open}
 			<div class="menu" role="menu" aria-label="Labels">
-				{#each labels as l (l.id)}
+				<!-- No scrolling: the list is capped at CAP rows. When there are more
+				     labels than that, a filter input makes the rest reachable. -->
+				{#if hasFilter}
+					<!-- svelte-ignore a11y_autofocus -->
+					<input
+						class="label-search"
+						type="search"
+						placeholder="Filter labels…"
+						aria-label="Filter labels"
+						autofocus
+						bind:value={query}
+						onkeydown={(e) => {
+							if (e.key === 'Escape') openMenu(false);
+						}}
+					/>
+				{/if}
+				{#each visible as l (l.id)}
 					<button
 						type="button"
 						role="menuitemcheckbox"
@@ -51,6 +87,9 @@
 						<span class="opt-label">{l.name}</span>
 					</button>
 				{/each}
+				{#if visible.length === 0}
+					<p class="label-empty">No matching labels</p>
+				{/if}
 				{#if selected.size > 0}
 					<button type="button" class="opt label-clear" onclick={() => (selected = new Set())}>
 						<span class="check" aria-hidden="true">✕</span>
@@ -91,8 +130,6 @@
 		right: 0;
 		z-index: 40;
 		min-width: 12rem;
-		max-height: 16rem;
-		overflow-y: auto;
 		display: flex;
 		flex-direction: column;
 		padding: var(--sp-1);
@@ -100,6 +137,28 @@
 		border-radius: var(--r-md);
 		background: var(--bg-elevated);
 		box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.4));
+	}
+	/* Filter input shown only when there are more labels than fit (CAP). Lets any
+	   tag be reached by typing, so the list itself never has to scroll. */
+	.label-search {
+		width: 100%;
+		margin-bottom: var(--sp-1);
+		padding: var(--sp-2);
+		border: 1px solid var(--border-strong);
+		border-radius: var(--r-sm);
+		background: var(--bg-elevated-2, var(--bg));
+		color: var(--text);
+		font-size: var(--fs-sm);
+	}
+	.label-search:focus {
+		outline: none;
+		border-color: var(--accent);
+	}
+	.label-empty {
+		margin: 0;
+		padding: var(--sp-2);
+		color: var(--text-muted);
+		font-size: var(--fs-sm);
 	}
 	.opt {
 		display: flex;

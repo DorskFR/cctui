@@ -9,7 +9,6 @@
 	import { ApiError } from '$lib/api';
 	import { ws } from '$lib/ws.svelte';
 	import SessionCard from '$lib/components/organisms/SessionCard.svelte';
-	import SubagentBadge from '$lib/components/molecules/SubagentBadge.svelte';
 	import ConversationDrawer from '$lib/components/organisms/ConversationDrawer.svelte';
 	import SpawnModal from '$lib/components/organisms/SpawnModal.svelte';
 	import SessionControls from '$lib/components/organisms/SessionControls.svelte';
@@ -445,7 +444,6 @@
 	const liveNest = $derived(nest(items));
 	const topLevel = $derived(liveNest.topLevel);
 	const childGroupsOf = $derived(liveNest.childGroups);
-	const hasCollapsibleSubagents = $derived(liveNest.hasCollapsible);
 
 	// Expand/collapse state for collapsible (>=3) subagent groups, keyed by
 	// `${parentId}/${group.key}`. Default collapsed.
@@ -576,43 +574,36 @@
 		<!-- Collapsible (>=3) groups surface as count badges outside the parent
 		     row layout; smaller groups render inline below. -->
 		<div class="parent-row" class:dense>
-			{#if collapsibleGroups.length > 0}
-				<div class="subagent-badge-rail">
-					{#each collapsibleGroups as g (g.key)}
-						<SubagentBadge
-							count={g.agents.length}
-							running={g.running}
-							open={expanded.has(groupId(s.id, g.key))}
-							label={g.label}
-							ontoggle={() => toggleGroup(s.id, g.key)}
-						/>
-					{/each}
-				</div>
-			{/if}
-			<div class="parent-card">
-				<SessionCard
-					session={s}
-					child={depth > 0}
-					compact={dense}
-					pendingCount={pending(s.id)}
-					onopen={(x) => (openSession = x)}
-					selectable={allowSelect && selecting}
-					selected={selected.has(s.id)}
-					onToggleSelect={toggleSelect}
-					swipeable
-					swipeLabel={s.status === 'archived' ? 'Unarchive' : 'Archive'}
-					onSwipe={swipeArchive}
-					onTogglePin={depth > 0 ? undefined : togglePin}
-					highlight={hl}
-					subagentCost={costRollup(s, subGroups)}
-					{allLabels}
-					onCreateLabel={createLabel}
-					onAttachLabel={depth > 0 ? undefined : attachLabel}
-					onDetachLabel={depth > 0 ? undefined : detachLabel}
-					onUpdateLabel={updateLabel}
-					onDeleteLabel={deleteLabel}
-				/>
-			</div>
+			<SessionCard
+				session={s}
+				child={depth > 0}
+				compact={dense}
+				pendingCount={pending(s.id)}
+				onopen={(x) => (openSession = x)}
+				selectable={allowSelect && selecting}
+				selected={selected.has(s.id)}
+				onToggleSelect={toggleSelect}
+				swipeable
+				swipeLabel={s.status === 'archived' ? 'Unarchive' : 'Archive'}
+				onSwipe={swipeArchive}
+				onTogglePin={depth > 0 ? undefined : togglePin}
+				highlight={hl}
+				subagentCost={costRollup(s, subGroups)}
+				subagentToggles={collapsibleGroups.map((g) => ({
+					key: g.key,
+					count: g.agents.length,
+					running: g.running,
+					open: expanded.has(groupId(s.id, g.key)),
+					label: g.label,
+					ontoggle: () => toggleGroup(s.id, g.key)
+				}))}
+				{allLabels}
+				onCreateLabel={createLabel}
+				onAttachLabel={depth > 0 ? undefined : attachLabel}
+				onDetachLabel={depth > 0 ? undefined : detachLabel}
+				onUpdateLabel={updateLabel}
+				onDeleteLabel={deleteLabel}
+			/>
 		</div>
 		{#if depth < 5}
 			{#each subGroups as g (g.key)}
@@ -651,83 +642,85 @@
 		{@const ns = nest(pageRows)}
 		{@const liveTop = ns.topLevel.filter((s) => s.status !== 'archived')}
 		{@const archTop = ns.topLevel.filter((s) => s.status === 'archived')}
-		<div class="stack" class:tight={dense} class:badge-gutter={ns.hasCollapsible}>
+		<div class="sections" class:tight={dense}>
 			{#if liveTop.length > 0}
-				<div class="group-header">Live <Text class="count">{liveTop.length}</Text></div>
-				{@render nestedRows(liveTop, ns.childGroups, false, searchTerms)}
+				<div class="section">
+					<div class="group-header">Live <Text class="count">{liveTop.length}</Text></div>
+					{@render nestedRows(liveTop, ns.childGroups, false, searchTerms)}
+				</div>
 			{/if}
 			{#if archTop.length > 0}
-				<div class="group-header">Archived <Text class="count">{archTop.length}</Text></div>
-				{@render nestedRows(archTop, ns.childGroups, false, searchTerms)}
+				<div class="section">
+					<div class="group-header">Archived <Text class="count">{archTop.length}</Text></div>
+					{@render nestedRows(archTop, ns.childGroups, false, searchTerms)}
+				</div>
 			{/if}
 			{@render loadMore()}
 		</div>
 	{/if}
 {:else}
-	<!-- Live buckets first… -->
-	{#if $sessions.isLoading}
-		<div class="empty"><span class="spin"></span></div>
-	{:else if groups.length === 0 && !showArchived}
-		<div class="empty">
-			<Text tone="muted">No sessions in the selected sections — toggle more from the section filter.</Text>
-		</div>
-	{:else}
-		<div
-			class="stack"
-			class:tight={dense && !cardView}
-			class:badge-gutter={!cardView && hasCollapsibleSubagents}
-		>
+	<!-- Live buckets first, then the paginated archive — all sections share one
+	     flex container so the inter-section gap is uniform (CCT-298). -->
+	<div class="sections" class:tight={dense && !cardView}>
+		{#if $sessions.isLoading}
+			<div class="empty"><span class="spin"></span></div>
+		{:else if groups.length === 0 && !showArchived}
+			<div class="empty">
+				<Text tone="muted">No sessions in the selected sections — toggle more from the section filter.</Text>
+			</div>
+		{:else}
 			{#each groups as g (g.key)}
-				{#if g.key === 'dispatched'}
-					<!-- Dispatched is a plain section header like Pinned/Completed, with a
-					     bulk "Archive all" action on the right (CCT-279 item 7). -->
-					<div class="group-header" data-bucket={g.key}>
-						{g.label} <Text class="count">{g.sessions.length}</Text>
-						<div class="spacer"></div>
-						<Button
-							size="sm"
-							variant="danger"
-							disabled={archiving}
-							title="Archive all dispatched conversations"
-							onclick={archiveAllDispatched}
-						>
-							{#if archiving}<span class="spin"></span>{/if}
-							Archive all
-						</Button>
-					</div>
-				{:else}
-					<div class="group-header" data-bucket={g.key}>
-						{g.label} <Text class="count">{g.sessions.length}</Text>
-					</div>
-				{/if}
 				{@const vis = g.sessions}
-				{#if cardView}
-					{@render cardGrid(vis)}
-				{:else}
-					{@render nestedRows(vis, childGroupsOf, true, [])}
-				{/if}
+				<div class="section">
+					{#if g.key === 'dispatched'}
+						<!-- Dispatched is a plain section header like Pinned/Completed, with a
+						     bulk "Archive all" action on the right (CCT-279 item 7). -->
+						<div class="group-header" data-bucket={g.key}>
+							{g.label} <Text class="count">{g.sessions.length}</Text>
+							<div class="spacer"></div>
+							<Button
+								size="sm"
+								variant="danger"
+								disabled={archiving}
+								title="Archive all dispatched conversations"
+								onclick={archiveAllDispatched}
+							>
+								{#if archiving}<span class="spin"></span>{/if}
+								Archive all
+							</Button>
+						</div>
+					{:else}
+						<div class="group-header" data-bucket={g.key}>
+							{g.label} <Text class="count">{g.sessions.length}</Text>
+						</div>
+					{/if}
+					{#if cardView}
+						{@render cardGrid(vis)}
+					{:else}
+						{@render nestedRows(vis, childGroupsOf, true, [])}
+					{/if}
+				</div>
 			{/each}
-		</div>
-	{/if}
+		{/if}
 
-	<!-- …then the paginated archive when requested. -->
-	{#if showArchived}
-		{@const ns = nest(pageRows)}
-		{@const archTop = ns.topLevel.filter(matchesLabelFilter)}
-		<div class="stack" class:tight={dense} class:badge-gutter={ns.hasCollapsible}>
-			<div class="group-header">Archived <Text class="count">{archTop.length}</Text></div>
-			{#if pageRows.length === 0 && !pageLoading}
-				<div class="empty"><Text tone="muted">No archived sessions.</Text></div>
-			{:else if cardView}
-				<!-- Card mode applies to archived sessions too (CCT-321 parity). -->
-				{@render cardGrid(archTop)}
-				{@render loadMore()}
-			{:else}
-				{@render nestedRows(archTop, ns.childGroups, false, searchTerms)}
-				{@render loadMore()}
-			{/if}
-		</div>
-	{/if}
+		{#if showArchived}
+			{@const ns = nest(pageRows)}
+			{@const archTop = ns.topLevel.filter(matchesLabelFilter)}
+			<div class="section">
+				<div class="group-header">Archived <Text class="count">{archTop.length}</Text></div>
+				{#if pageRows.length === 0 && !pageLoading}
+					<div class="empty"><Text tone="muted">No archived sessions.</Text></div>
+				{:else if cardView}
+					<!-- Card mode applies to archived sessions too (CCT-321 parity). -->
+					{@render cardGrid(archTop)}
+					{@render loadMore()}
+				{:else}
+					{@render nestedRows(archTop, ns.childGroups, false, searchTerms)}
+					{@render loadMore()}
+				{/if}
+			</div>
+		{/if}
+	</div>
 {/if}
 
 {#if liveOpen}
@@ -766,7 +759,21 @@
 		background: var(--bg-elevated);
 		box-shadow: var(--shadow-md);
 	}
-	.stack.tight {
+	/* Two-axis spacing (CCT-298): the outer container owns the inter-section gap;
+	   each .section owns its row gap. Every section break — Pinned, Working,
+	   Dispatched, Archived — is the same sp-6, with no header margins or
+	   sibling-combinator patches that broke whenever Archived was its own block. */
+	.sections {
+		display: flex;
+		flex-direction: column;
+		gap: var(--sp-6);
+	}
+	.section {
+		display: flex;
+		flex-direction: column;
+		gap: var(--sp-3);
+	}
+	.sections.tight .section {
 		gap: var(--sp-1);
 	}
 	/* Grid (card) view (CCT-305). Two widths driven by the density toggle:
@@ -830,28 +837,11 @@
 			gap: var(--sp-2);
 		}
 	}
-	/* Parent row (CCT-269): the card remains a normal full-width row. Count
-	   badge(s) are absolutely positioned before it so they don't affect row
-	   sizing or the alignment of card contents. */
+	/* Parent row (CCT-269): a normal full-width row. The collapse toggle badge(s)
+	   now live inside the card's leading gutter slot (SessionCard), so there's no
+	   external rail and no reserved left gutter to keep aligned across sections. */
 	.parent-row {
 		position: relative;
-	}
-	.parent-row .parent-card {
-		width: 100%;
-		min-width: 0;
-	}
-	.subagent-badge-rail {
-		position: absolute;
-		z-index: 2;
-		top: var(--sp-4);
-		right: calc(100% + var(--sp-2));
-		display: flex;
-		flex-direction: column;
-		align-items: flex-end;
-		gap: var(--sp-1);
-	}
-	.parent-row.dense .subagent-badge-rail {
-		top: var(--sp-2);
 	}
 	.agent-children {
 		margin-left: min(calc(var(--agent-depth) * var(--sp-4)), 5rem);
@@ -860,9 +850,6 @@
 		gap: var(--sp-1);
 	}
 	@media (max-width: 639px) {
-		.stack.badge-gutter {
-			padding-left: calc(1.5rem + var(--sp-2));
-		}
 		.agent-children {
 			margin-left: min(calc(var(--agent-depth) * var(--sp-2)), 2.5rem);
 		}
@@ -876,15 +863,11 @@
 		display: flex;
 		align-items: center;
 		gap: var(--sp-2);
-		margin-top: var(--sp-3);
 		font-size: var(--fs-sm);
 		font-weight: 600;
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
 		color: var(--text-muted);
-	}
-	.group-header:first-child {
-		margin-top: 0;
 	}
 	/* The count is a Text atom; target the passed class via :global. */
 	.group-header :global(.count) {

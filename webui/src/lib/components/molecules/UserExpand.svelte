@@ -3,16 +3,24 @@
 	import type { MachineRow } from '@bindings/MachineRow';
 	import type { UserTokenRow } from '@bindings/UserTokenRow';
 	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
-	import { Badge, Button, DataTable, Heading, IconButton, Switch, Text } from '@dorsk/tsumikit';
+	import {
+		Badge,
+		Button,
+		Card,
+		Cluster,
+		DataTable,
+		Heading,
+		IconButton,
+		Text,
+		Timestamp
+	} from '@dorsk/tsumikit';
 	import type { Column } from '@dorsk/tsumikit';
-	import ColorPicker from '$lib/components/molecules/ColorPicker.svelte';
+	import EditEntityModal from '$lib/components/molecules/EditEntityModal.svelte';
 	import { useMachines, useTokens, useUserActions } from '$lib/queries';
-	import { dateOnly, relativeTime } from '$lib/format';
 	import { toasts } from '$lib/toast.svelte';
 
-	// Inline expansion of a user row in the users table (CCT-222) — replaces
-	// the old UserDetail modal sheet so nothing jumps or overlays. Machines and
-	// tokens render as tsumikit DataTables (CCT-301) instead of hand-rolled rows.
+	// The selected user's machines and API tokens (CCT-301), each in its own
+	// labelled card with a DataTable — no nested master/detail tables.
 	let {
 		user,
 		onsecret
@@ -23,7 +31,6 @@
 
 	const revoked = $derived(!!user.revoked_at);
 
-	// Only mounted while expanded, so fetch eagerly.
 	const machines = useMachines(
 		() => user.id,
 		() => true
@@ -48,33 +55,26 @@
 
 	const machineCols: Column<MachineRow>[] = [
 		{ key: 'machine', label: 'Machine' },
-		{ key: 'key', label: 'Key' },
-		{ key: 'seen', label: 'Last seen', width: '12rem' },
-		{ key: 'actions', label: '', width: '8rem', align: 'right' }
+		{ key: 'status', label: 'Status', width: '8rem' },
+		{ key: 'seen', label: 'Last seen', width: '11rem' },
+		{ key: 'actions', label: '', width: '7rem', align: 'right' }
 	];
 	const tokenCols: Column<UserTokenRow>[] = [
-		{ key: 'label', label: 'Label' },
-		{ key: 'key', label: 'Key' },
-		{ key: 'created', label: 'Created', width: '14rem' },
-		{ key: 'actions', label: '', width: '16rem', align: 'right' }
+		{ key: 'label', label: 'Token' },
+		{ key: 'status', label: 'Status', width: '8rem' },
+		{ key: 'created', label: 'Created', width: '13rem' },
+		{ key: 'actions', label: '', width: '17rem', align: 'right' }
 	];
 
-	function toggleDispatch() {
-		const next = !user.can_dispatch;
-		guard(
-			actions
-				.setCanDispatch(user.id, next)
-				.then(() => toasts.ok(next ? 'Dispatch enabled' : 'Dispatch disabled'))
-		);
+	// Edit/create flows go through EditEntityModal (CCT-301) — no native prompt().
+	let mintOpen = $state(false);
+	let editMachine = $state<MachineRow | null>(null);
+	let editToken = $state<UserTokenRow | null>(null);
+
+	function mintToken(label: string | null) {
+		guard(actions.mintToken(user.id, label).then((r) => onsecret(`Token — ${user.name}`, r.token)));
 	}
-	function mintToken() {
-		const label = prompt('Token label (optional)', '')?.trim() || null;
-		guard(
-			actions.mintToken(user.id, label).then((r) => onsecret(`Token — ${user.name}`, r.token))
-		);
-	}
-	function relabelToken(tokenId: string, current: string | null) {
-		const label = prompt('Token label', current ?? '')?.trim() || null;
+	function relabelToken(tokenId: string, label: string | null) {
 		guard(actions.relabelToken(user.id, tokenId, label));
 	}
 	function revokeToken(tokenId: string) {
@@ -84,11 +84,7 @@
 		if (confirm('Delete this token? It is revoked and removed in one step.'))
 			guard(actions.purgeToken(user.id, tokenId));
 	}
-	function renameMachine(id: string, current: string | null, hue: number | null) {
-		const displayName = prompt('Machine display name', current ?? '')?.trim() || null;
-		guard(actions.updateMachine(user.id, id, displayName, hue));
-	}
-	function setHue(id: string, displayName: string | null, hue: number | null) {
+	function saveMachine(id: string, displayName: string | null, hue: number | null) {
 		guard(actions.updateMachine(user.id, id, displayName, hue));
 	}
 	function revokeMachine(id: string) {
@@ -101,177 +97,187 @@
 </script>
 
 {#snippet mcMachine(mc: MachineRow)}
-	{@const system = mc.kind === 'dispatch'}
-	<span class="row badge-line">
-		<!-- Clicking the badge opens the color popover (CCT-251). -->
-		<ColorPicker
-			value={mc.hue}
-			hues={HUES}
-			label="Badge color"
-			disabled={!!mc.revoked_at}
-			onchange={(h) => setHue(mc.id, mc.display_name, h)}
-		>
-			{#snippet trigger()}
-				<MachineBadge name={mc.display_name || mc.name} id={mc.id} hue={mc.hue} />
-			{/snippet}
-		</ColorPicker>
-		{#if !mc.revoked_at && !system}
+	<Cluster gap="var(--sp-1)" wrap={false}>
+		<MachineBadge name={mc.display_name || mc.name} id={mc.id} hue={mc.hue} />
+		{#if !mc.revoked_at}
 			<IconButton
 				inline
 				icon="edit"
 				size={14}
-				title="Rename machine"
-				label="Rename machine"
-				onclick={() => renameMachine(mc.id, mc.display_name, mc.hue)}
+				title="Edit machine"
+				label="Edit machine"
+				onclick={() => (editMachine = mc)}
 			/>
 		{/if}
-		{#if system}<Badge>dispatch</Badge>{/if}
-	</span>
+	</Cluster>
 {/snippet}
-{#snippet mcKey(mc: MachineRow)}
-	<Text size="xs" tone="faint" variant="code" truncate>{mc.key_preview ?? '••••••••'}</Text>
+{#snippet mcStatus(mc: MachineRow)}
+	{#if mc.revoked_at}
+		<Badge tone="danger">revoked</Badge>
+	{:else if mc.kind === 'dispatch'}
+		<Badge tone="neutral">system</Badge>
+	{:else}
+		<Badge tone="ok">enrolled</Badge>
+	{/if}
 {/snippet}
 {#snippet mcSeen(mc: MachineRow)}
-	<Text size="xs" tone="faint" truncate
-		>{mc.kind === 'dispatch' ? 'server-managed · ' : ''}seen {relativeTime(mc.last_seen_at)}</Text
-	>
+	<Text size="xs" tone="faint" truncate>{#if mc.last_seen_at}seen <Timestamp value={mc.last_seen_at} mode="relative" tone="inherit" />{/if}</Text>
 {/snippet}
 {#snippet mcActions(mc: MachineRow)}
-	<div class="row row-wrap mini">
-		{#if mc.revoked_at}
-			<Badge tone="danger">revoked</Badge>
-			<Button size="sm" variant="danger" onclick={() => purgeMachine(mc.id)}>Purge</Button>
-		{:else if mc.kind !== 'dispatch'}
-			<Button size="sm" variant="danger" onclick={() => revokeMachine(mc.id)}>Revoke</Button>
-		{/if}
-	</div>
+	{#if mc.revoked_at}
+		<Button size="sm" variant="danger" onclick={() => purgeMachine(mc.id)}>Purge</Button>
+	{:else if mc.kind !== 'dispatch'}
+		<Button size="sm" variant="danger" onclick={() => revokeMachine(mc.id)}>Revoke</Button>
+	{/if}
 {/snippet}
 
 {#snippet tkLabel(t: UserTokenRow)}
-	<Text truncate>{t.label || '(unlabeled)'}</Text>
+	<div class="stack tk-id">
+		<Text truncate>{t.label || '(unlabeled)'}</Text>
+		<Text size="xs" tone="faint" variant="code" truncate>{t.token_preview ?? '••••••••'}</Text>
+	</div>
 {/snippet}
-{#snippet tkKey(t: UserTokenRow)}
-	<Text size="xs" tone="faint" variant="code" truncate>{t.token_preview ?? '••••••••'}</Text>
+{#snippet tkStatus(t: UserTokenRow)}
+	{#if t.revoked_at}
+		<Badge tone="danger">revoked</Badge>
+	{:else}
+		<Badge tone="ok">active</Badge>
+	{/if}
 {/snippet}
 {#snippet tkCreated(t: UserTokenRow)}
 	<Text size="xs" tone="faint" truncate>
-		{dateOnly(t.created_at)}{t.expires_at ? ` · expires ${dateOnly(t.expires_at)}` : ''}
+		<Timestamp value={t.created_at} mode="date" tone="inherit" />{#if t.expires_at} · expires <Timestamp
+				value={t.expires_at}
+				mode="date"
+				tone="inherit"
+			/>{/if}
 	</Text>
 {/snippet}
 {#snippet tkActions(t: UserTokenRow)}
-	<div class="row row-wrap mini">
+	<div class="row mini">
 		{#if t.revoked_at}
-			<Badge tone="danger">revoked</Badge>
 			<Button size="sm" variant="danger" onclick={() => deleteToken(t.id)}>Delete</Button>
 		{:else}
-			<Button size="sm" onclick={() => relabelToken(t.id, t.label)}>Relabel</Button>
+			<Button size="sm" onclick={() => (editToken = t)}>Relabel</Button>
 			<Button size="sm" variant="danger" onclick={() => revokeToken(t.id)}>Revoke</Button>
-			<Button size="sm" variant="danger" onclick={() => deleteToken(t.id)}>Delete</Button>
 		{/if}
 	</div>
 {/snippet}
 
 <div class="stack expand">
-	<!-- Permissions (CCT-185) -->
-	<section class="stack sec">
-		<div class="sub-h"><Heading level={3} size="sm" tone="muted">Permissions</Heading></div>
-		<div class="row perm">
-			<div class="stack info">
-				<Text>Can dispatch</Text>
-				<Text size="xs" tone="faint">Allow this user to dispatch k8s worker sessions.</Text>
-			</div>
-			<Switch
-				checked={user.can_dispatch}
-				label="Can dispatch"
-				disabled={revoked}
-				onclick={toggleDispatch}
-			/>
-		</div>
-	</section>
-
 	<!-- Machines -->
-	<section class="stack sec">
-		<div class="sub-h"><Heading level={3} size="sm" tone="muted">Machines</Heading></div>
-		{#if $machines.isLoading}<span class="spin"></span>
-		{:else}
-			<DataTable
-				columns={machineCols}
-				rows={shownMachines}
-				rowKey={(m) => m.id}
-				empty="No machines."
-				cellSnippets={{ machine: mcMachine, key: mcKey, seen: mcSeen, actions: mcActions }}
-			/>
-		{/if}
-		{#if hiddenCount > 0}
-			<Text as="p" size="xs" tone="faint"
-				>{hiddenCount} ephemeral worker machine{hiddenCount === 1 ? '' : 's'} hidden.</Text
-			>
-		{/if}
-	</section>
-
-	<!-- Tokens: many per user, all resolving to this same user. Minting lives
-	     here (not on the user row) so it's clear what a "Token" is (CCT-251). -->
-	<section class="stack sec">
-		<div class="row sec-head">
-			<div class="sub-h"><Heading level={3} size="sm" tone="muted">Tokens</Heading></div>
-			<div class="spacer"></div>
-			{#if !revoked}
-				<Button size="sm" onclick={mintToken}>+ New token</Button>
+	<div class="sec-card">
+		<Card>
+			<div class="sec-head">
+				<Heading level={3} size="sm">Machines</Heading>
+				<Text as="p" size="xs" tone="faint"
+					>Daemons enrolled to this user — each connects with its own machine key.</Text
+				>
+			</div>
+			{#if $machines.isLoading}
+				<span class="spin"></span>
+			{:else}
+				<DataTable
+					columns={machineCols}
+					rows={shownMachines}
+					rowKey={(m) => m.id}
+					empty="No machines enrolled."
+					cellSnippets={{ machine: mcMachine, status: mcStatus, seen: mcSeen, actions: mcActions }}
+				/>
 			{/if}
-		</div>
-		{#if $tokens.isLoading}<span class="spin"></span>
-		{:else}
-			<DataTable
-				columns={tokenCols}
-				rows={tokenRows}
-				rowKey={(t) => t.id}
-				empty="No tokens."
-				cellSnippets={{ label: tkLabel, key: tkKey, created: tkCreated, actions: tkActions }}
-			/>
-		{/if}
-	</section>
+			{#if hiddenCount > 0}
+				<Text as="p" size="xs" tone="faint"
+					>{hiddenCount} ephemeral worker machine{hiddenCount === 1 ? '' : 's'} hidden.</Text
+				>
+			{/if}
+		</Card>
+	</div>
+
+	<!-- API tokens -->
+	<div class="sec-card">
+		<Card>
+			<div class="sec-head row">
+				<div class="stack">
+					<Heading level={3} size="sm">API tokens</Heading>
+					<Text as="p" size="xs" tone="faint"
+						>Bearer tokens that authenticate API and CLI requests as this user.</Text
+					>
+				</div>
+				<div class="spacer"></div>
+				{#if !revoked}
+					<Button size="sm" onclick={() => (mintOpen = true)}>+ New token</Button>
+				{/if}
+			</div>
+			{#if $tokens.isLoading}
+				<span class="spin"></span>
+			{:else}
+				<DataTable
+					columns={tokenCols}
+					rows={tokenRows}
+					rowKey={(t) => t.id}
+					empty="No tokens."
+					cellSnippets={{ label: tkLabel, status: tkStatus, created: tkCreated, actions: tkActions }}
+				/>
+			{/if}
+		</Card>
+	</div>
 </div>
+
+{#if editMachine}
+	{@const mc = editMachine}
+	<EditEntityModal
+		title="Edit machine"
+		fieldLabel="Display name"
+		name={mc.display_name}
+		placeholder={mc.name}
+		hint="Leave blank to use the machine's reported hostname."
+		color
+		hue={mc.hue}
+		hues={HUES}
+		onsave={(name, hue) => saveMachine(mc.id, name, hue)}
+		onclose={() => (editMachine = null)}
+	/>
+{/if}
+
+{#if editToken}
+	{@const t = editToken}
+	<EditEntityModal
+		title="Relabel token"
+		fieldLabel="Label"
+		name={t.label}
+		placeholder="(unlabeled)"
+		onsave={(label) => relabelToken(t.id, label)}
+		onclose={() => (editToken = null)}
+	/>
+{/if}
+
+{#if mintOpen}
+	<EditEntityModal
+		title="New API token"
+		fieldLabel="Label (optional)"
+		placeholder="e.g. laptop CLI"
+		saveLabel="Create token"
+		onsave={(label) => mintToken(label)}
+		onclose={() => (mintOpen = false)}
+	/>
+{/if}
 
 <style>
 	.expand {
 		gap: var(--sp-3);
-		padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-5);
-	}
-	.sec {
-		gap: var(--sp-2);
-	}
-	.sec + .sec {
-		padding-top: var(--sp-2);
-		border-top: 1px solid var(--border);
 	}
 	.sec-head {
-		gap: var(--sp-2);
-	}
-	/* Heading owns the size/colour; the wrapper adds the section-label chrome,
-	   which inherits down into the Heading's text (no atom reach-in needed). */
-	.sub-h {
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-	}
-	.info {
-		flex: 1 1 auto;
-		min-width: 0;
-		gap: 0;
-		overflow: hidden;
-	}
-	.badge-line {
 		gap: var(--sp-1);
-		position: relative;
-		flex-wrap: wrap;
+		align-items: flex-start;
+		margin-bottom: var(--sp-3);
+	}
+	.tk-id {
+		gap: 0;
 		min-width: 0;
-		align-items: center;
 	}
 	.mini {
 		flex: 0 0 auto;
 		gap: var(--sp-1);
 		justify-content: flex-end;
-	}
-	.perm {
-		gap: var(--sp-3);
 	}
 </style>

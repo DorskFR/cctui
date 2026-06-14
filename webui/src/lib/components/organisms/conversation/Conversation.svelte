@@ -21,7 +21,6 @@
 		askPreambleHtml,
 		working,
 		answering,
-		lineTooltip,
 		isDupeOfLiveAsk,
 		onanswer,
 		onretry,
@@ -42,7 +41,6 @@
 		askPreambleHtml: string | null;
 		working: boolean;
 		answering: boolean;
-		lineTooltip: (ts: number) => string;
 		isDupeOfLiveAsk: (a: AskQuestion[]) => boolean;
 		onanswer: (text: string, picks: number[][] | null, qs?: AskQuestion[] | null) => void;
 		onretry: (ts: number) => void;
@@ -133,7 +131,6 @@
 				<ConversationLine
 					{ln}
 					{archived}
-					tooltip={lineTooltip(ln.ts)}
 					{onretry}
 					onedit={onedit}
 					onsaveimage={saveLineImage}

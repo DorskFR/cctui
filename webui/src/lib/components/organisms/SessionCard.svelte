@@ -433,8 +433,8 @@
 {/snippet}
 
 {#snippet time()}
-	{#if s.last_message_at}<span style="flex:none;white-space:nowrap;font-size:var(--fs-xs)"
-			><Timestamp value={s.last_message_at} mode="relative" tone="faint" /></span
+	{#if s.last_message_at}<span style="flex:none;white-space:nowrap"
+			><Timestamp value={s.last_message_at} mode="relative" tone="faint" size="xs" /></span
 		>{/if}
 {/snippet}
 

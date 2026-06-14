@@ -3,16 +3,14 @@
 	// extracted from ConversationDrawer. Pure presentation: it renders the meta
 	// row (role badge, tool name, time, delivery state), the bubble, and the
 	// per-message action buttons, delegating retry/edit/save/copy to callbacks.
-	import { clockTime } from '$lib/format';
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
-	import { Button, IconButton, Text } from '@dorsk/tsumikit';
+	import { Button, IconButton, Text, Timestamp } from '@dorsk/tsumikit';
 	import type { Line } from './types';
 	import './bubble.css';
 
 	let {
 		ln,
 		archived,
-		tooltip,
 		onretry,
 		onedit,
 		onsaveimage,
@@ -20,8 +18,6 @@
 	}: {
 		ln: Line;
 		archived: boolean;
-		// Precomputed hover tooltip for this line's timestamp (CCT-345 / CCT-331).
-		tooltip: string;
 		onretry: (ts: number) => void;
 		onedit: (text: string, ts: number) => void;
 		onsaveimage: (e: MouseEvent, ln: Line) => void;
@@ -50,7 +46,7 @@
 		{#if ln.role === 'tool' || ln.role === 'result'}
 			<span class="who tool-name">{ln.role === 'result' ? '↳ ' : ''}{ln.tool ?? 'tool'}</span>
 		{/if}
-		<Text tone="faint" size="xs" title={tooltip}>{clockTime(ln.ts)}</Text>
+		<Timestamp value={ln.ts} mode="time" tone="faint" size="xs" />
 		{#if ln.failed}
 			<Text class="not-delivered" tone="danger" size="xs" title={ln.failed}>⚠ Not delivered</Text>
 			{#if !archived}

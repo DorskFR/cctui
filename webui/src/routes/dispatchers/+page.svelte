@@ -6,8 +6,7 @@
 		type UpsertDispatcher,
 	} from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
-	import { dateOnly } from '$lib/format';
-	import { Badge, Button, Field, Heading, Input, Modal, Select, Text } from '@dorsk/tsumikit';
+	import { Badge, Button, Field, Heading, Input, Modal, Select, Text, Timestamp } from '@dorsk/tsumikit';
 	import { summarize } from './dispatchers.logic';
 
 	const dispatchers = useUserDispatchers();
@@ -131,7 +130,7 @@
 						<td class="col-name"><Text weight="semibold">{d.name}</Text></td>
 						<td class="col-kind"><Badge>{d.kind}</Badge></td>
 						<td class="col-config faint truncate">{summarize(d)}</td>
-						<td class="col-created faint">{dateOnly(d.created_at)}</td>
+						<td class="col-created faint"><Timestamp value={d.created_at} mode="date" tone="inherit" /></td>
 						<td class="col-actions">
 							<div class="row acts">
 								<Button size="sm" onclick={() => openEdit(d)}>Edit</Button>
