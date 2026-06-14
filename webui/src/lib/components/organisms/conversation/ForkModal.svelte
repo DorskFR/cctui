@@ -4,8 +4,7 @@
 	// — also the "reopen as a new conversation" path for archived sessions and the
 	// supported "switch model" substitute for claude (no in-place switch, CCT-303).
 	import { compact } from '$lib/format';
-	import { Button, Heading, Text } from '@dorsk/tsumikit';
-	import Select from '$lib/components/atoms/Select.svelte';
+	import { Button, Heading, Select, Text } from '@dorsk/tsumikit';
 
 	let {
 		archived,
@@ -55,13 +54,13 @@
 	</Text>
 	<label class="fork-field">
 		<Text class="fork-label">Model</Text>
-		<Select style="flex:1;width:auto" bind:value={model}>
+		<Select class="fork-select" bind:value={model}>
 			{#each models as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
 		</Select>
 	</label>
 	<label class="fork-field">
 		<Text class="fork-label">Effort</Text>
-		<Select style="flex:1;width:auto" bind:value={effort}>
+		<Select class="fork-select" bind:value={effort}>
 			{#each efforts as e (e)}<option value={e}>{e || 'default'}</option>{/each}
 		</Select>
 	</label>
@@ -114,6 +113,11 @@
 	.fork-field :global(.fork-label) {
 		width: 4.5rem;
 		flex: 0 0 auto;
+	}
+	/* tsumikit's default Select wraps the <select> in .select-wrap; grow that
+	   wrapper to fill the flex row (the old bare select carried flex:1 itself). */
+	.fork-field :global(.fork-select) {
+		flex: 1;
 	}
 	.fork-actions {
 		justify-content: flex-end;

@@ -14,8 +14,7 @@
 	import WorkingDir from '$lib/components/molecules/WorkingDir.svelte';
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
 	import IconButton from '$lib/components/molecules/IconButton.svelte';
-	import { Badge, Input, SelectButton, Text } from '@dorsk/tsumikit';
-	import Select from '$lib/components/atoms/Select.svelte';
+	import { Badge, Input, Select, SelectButton, Text } from '@dorsk/tsumikit';
 
 	let {
 		session,
@@ -370,14 +369,22 @@
 	.hmeta {
 		gap: var(--sp-2);
 	}
-	/* Compact override on the Select atom (rendered inside Select, so :global;
-	   `.select.mini-select` outranks the atom's :where()-scoped `.select`). */
-	:global(.select.mini-select) {
+	/* Compact override on the tsumikit Select. Its default variant wraps the
+	   <select> in `.select-wrap` and our `mini-select` class lands on that
+	   wrapper, so shrink the wrapper and style the inner <select> via it. The
+	   chevron is hidden — there's no room for it in this compact inline badge. */
+	:global(.select-wrap.mini-select) {
+		width: auto;
+	}
+	:global(.select-wrap.mini-select .select) {
 		width: auto;
 		font-size: var(--fs-xs);
 		background: var(--bg-elevated-2);
 		border: 1px solid var(--border);
 		border-radius: var(--r-sm, 4px);
 		padding: 0 0.2rem;
+	}
+	:global(.select-wrap.mini-select .select-chevron) {
+		display: none;
 	}
 </style>

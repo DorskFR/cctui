@@ -20,10 +20,10 @@
 		Heading,
 		Input,
 		Link,
+		Select,
 		Stack,
 		Text
 	} from '@dorsk/tsumikit';
-	import Select from '$lib/components/atoms/Select.svelte';
 	import Modal from '$lib/components/molecules/Modal.svelte';
 	import { providerLabel } from './accounts.logic';
 
