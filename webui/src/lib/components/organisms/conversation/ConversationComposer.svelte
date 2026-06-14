@@ -1,8 +1,7 @@
 <script lang="ts">
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import AttachmentList from '$lib/components/molecules/AttachmentList.svelte';
-	import { Button, Text, Textarea } from '@dorsk/tsumikit';
-	import FileInput from '$lib/components/atoms/FileInput.svelte';
+	import { Button, FileButton, Text, Textarea } from '@dorsk/tsumikit';
 	import { drafts, composerKey, history as msgHistory } from '$lib/drafts';
 	import { mergeFiles, removeFileByName, fileCapError } from '$lib/attachments';
 	import { compact } from '$lib/format';
@@ -59,11 +58,6 @@
 		dragActive = active;
 	}
 	const removeAttachment = (name: string) => (attachments = removeFileByName(attachments, name));
-	function onPickAttachments(e: Event) {
-		const el = e.currentTarget as HTMLInputElement;
-		addFiles(Array.from(el.files ?? []));
-		el.value = '';
-	}
 
 	// Mask a large pasted block (CCT-297 #13): instead of dumping thousands of
 	// characters into the composer, collapse it into a `paste-N.txt` attachment
@@ -251,7 +245,7 @@
 <div class="composer" class:dropping={dragActive}>
 	{#if archived}
 		<div class="archived-actions">
-			<Text class="hint" tone="muted" size="sm">Session archived (read-only).</Text>
+			<div class="hint"><Text tone="muted" size="sm">Session archived (read-only).</Text></div>
 			<span class="archived-actions-btns">
 				<Button onclick={onNewFromScript}>New from same script</Button>
 				<Button onclick={onFork}>Fork</Button>
@@ -269,30 +263,35 @@
 		<div class="composer-row">
 			{#if supportsAttachments}
 				<!-- File picker (CCT-236). Drag-and-drop onto the conversation pane also
-				     adds attachments. -->
-				<label class="attach-btn" title="Attach files">
-					📎
-					<FileInput hidden multiple onchange={onPickAttachments} />
-				</label>
+				     adds attachments. Icon-only: the label is hidden (a11y-only) so the
+				     control stays a compact square matching the textarea/Send height. -->
+				<FileButton label="Attach files" multiple iconOnly onfiles={addFiles} />
 			{/if}
-			<Textarea
-				style="flex:1;min-width:0;min-height:var(--control-height);max-height:40vh;resize:none;overflow-y:auto"
-				rows={1}
-				placeholder={dragActive
-					? 'Drop files to attach'
-					: coarsePointer
-						? 'Message…'
-						: 'Message… (Enter to send)'}
-				bind:value={input}
-				bind:el={scroll.textarea}
-				onkeydown={onKey}
-				oninput={() => resetHistoryNav()}
-				onpaste={onPaste}
-				autoresize
-			/>
+			<!-- Starts at one row (Textarea's baked-in min-height) and grows with
+			     content (autoresize). The top handle drags a min-height floor so
+			     the user can pin a taller working area; content still grows past it
+			     (tsumikit 0.2.15). -->
+			<div class="composer-input">
+				<Textarea
+					rows={1}
+					autoresize
+					resize="top"
+					placeholder={dragActive
+						? 'Drop files to attach'
+						: coarsePointer
+							? 'Message…'
+							: 'Message… (Enter to send)'}
+					bind:value={input}
+					bind:el={scroll.textarea}
+					onkeydown={onKey}
+					oninput={() => resetHistoryNav()}
+					onpaste={onPaste}
+				/>
+			</div>
 			<Button
 				variant="primary"
-				class={`send${cacheCold ? ' cold' : ''}${coldImminent ? ' warning' : ''}`}
+				tone={cacheCold ? 'info' : coldImminent ? 'warn' : 'none'}
+				class="send"
 				disabled={uploading || (!input.trim() && attachments.length === 0)}
 				onclick={send}
 				title={cacheCold
@@ -341,6 +340,12 @@
 		   textarea keeps it contained. */
 		min-width: 0;
 	}
+	/* The Textarea now ships its own .textarea-wrap root, so the row flex lives on
+	   this layout wrapper rather than the textarea element. */
+	.composer-input {
+		flex: 1;
+		min-width: 0;
+	}
 	.attachments {
 		width: 100%;
 	}
@@ -357,55 +362,22 @@
 		gap: var(--sp-2);
 		margin-left: auto;
 	}
-	/* Composer attach button — uniform control height (CCT-250 item 1). */
-	.attach-btn {
+	/* Send button is a child Button; keep it from shrinking in the flex row. Its
+	   height comes from the Button atom's md size (2.5rem), matching the attach
+	   FileButton and the collapsed Textarea. The cold (blue) and final-minute
+	   warning (amber) cost states are Button `tone` (info/warn) — CCT-189/CCT-261. */
+	.composer-row :global(.send) {
 		flex: none;
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		width: var(--control-height);
-		height: var(--control-height);
-		border: 1px solid var(--border-strong);
-		border-radius: var(--r-md);
-		background: var(--bg);
-		cursor: pointer;
-		font-size: var(--fs-md);
 	}
-	.attach-btn:hover {
-		border-color: var(--c-blue);
-	}
-	/* The textarea + send button are rendered by child components (Textarea /
-	   Button), so these overrides target them via :global. The textarea sizing is
-	   passed inline at the call-site; the send-button states stay here. */
-	/* Send button matches the attach button + textarea collapsed height. */
-	:global(.send) {
-		flex: none;
-		min-height: var(--control-height);
-	}
-	/* Cold-cache burst (CCT-189): the next send re-writes the whole context to
-	   cache, so the normally-green Send button goes blue to flag the cost. */
-	:global(.send.cold) {
-		background: var(--c-blue);
-		box-shadow: 0 0 0 1px color-mix(in srgb, var(--c-blue) 40%, transparent);
-		color: #fff;
-	}
-	/* Final-minute warm-window countdown (CCT-261): amber to nudge a send before the
-	   cache cools. Loses to .cold (which only applies once already lapsed). */
-	:global(.send.warning) {
-		background: var(--c-amber);
-		box-shadow: 0 0 0 1px color-mix(in srgb, var(--c-amber) 40%, transparent);
-		color: #fff;
-	}
-	/* Fixed-width, tabular digits so "59s"→"0s" doesn't jitter the button. */
-	:global(.send .countdown) {
+	/* Fixed-width, tabular digits so "59s"→"0s" doesn't jitter the button. The
+	   countdown <span> is in this component's markup, so a scoped rule reaches it. */
+	.countdown {
 		display: inline-block;
 		min-width: 2.4ch;
 		text-align: right;
 		font-variant-numeric: tabular-nums;
 	}
-	/* Layout only (centered, full width); size/tone are the Text atom's. The class
-	   rides on a Text child, so :global. */
-	:global(.hint) {
+	.hint {
 		text-align: center;
 		width: 100%;
 	}

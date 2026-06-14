@@ -40,6 +40,7 @@ export type * from './StageFilesResponse';
 export type * from './TokenUsage';
 export type * from './TokenUsageWindows';
 export type * from './TuiCommand';
+export type * from './UpdateLabelRequest';
 export type * from './UpdateUserRequest';
 export type * from './UserRow';
 export type * from './UserTokenRow';

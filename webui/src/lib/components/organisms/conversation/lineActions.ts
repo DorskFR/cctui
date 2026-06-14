@@ -1,16 +1,12 @@
 // Per-message line actions (copy-as-Markdown, save-as-PNG) for the conversation
 // drawer, extracted from ConversationDrawer with no behavior change.
 import { toasts } from '$lib/toast.svelte';
+import { copyText } from '$lib/clipboard';
 import { lineMarkdown } from './format';
 import type { Line } from './types';
 
 export async function copyLineMarkdown(ln: Line) {
-	try {
-		await navigator.clipboard.writeText(lineMarkdown(ln));
-		toasts.ok('Copied as Markdown');
-	} catch {
-		toasts.err('Clipboard unavailable');
-	}
+	await copyText(lineMarkdown(ln), 'Copied as Markdown');
 }
 
 // Save a single message as a PNG (CCT-297 #18), rendered with the current theme.
@@ -24,16 +20,15 @@ export async function saveLineImage(e: MouseEvent, ln: Line) {
 	try {
 		const bg = getComputedStyle(document.body).getPropertyValue('--bg').trim() || '#1e1e1e';
 		const { toPng } = await import('html-to-image');
-		// Capture the ACTUAL on-screen node in place (CCT-327). Every prior attempt
-		// cloned the node off into a detached/visually-hidden element and fed THAT to
-		// html-to-image — which produced a blank PNG: html-to-image rasterises by
-		// serialising the node into an SVG <foreignObject>, reading each element's
-		// *computed* style. On a clone moved out of the live cascade, the
-		// `color-mix()`/CSS-variable theme tokens and `opacity:0` on the capture root
-		// all resolve to nothing → empty canvas. The visible node is already laid out
-		// with fonts loaded and every var/color-mix resolved, so capturing it
-		// directly paints the full content. We only hide the hover action buttons for
-		// the duration of the capture, then restore them.
+		// Capture the ACTUAL on-screen node in place — do NOT clone it off into a
+		// detached/hidden element first. html-to-image rasterises by serialising the
+		// node into an SVG <foreignObject>, reading each element's *computed* style;
+		// on a clone moved out of the live cascade the `color-mix()`/CSS-variable
+		// theme tokens (and any `opacity:0` on the capture root) resolve to nothing,
+		// yielding a blank PNG. The visible node is already laid out with fonts
+		// loaded and every var/color-mix resolved, so capturing it directly paints
+		// the full content. We only hide the hover action buttons for the duration
+		// of the capture, then restore them.
 		const actions = node.querySelector<HTMLElement>('.line-actions');
 		const prevActionsDisplay = actions?.style.display ?? '';
 		if (actions) actions.style.display = 'none';

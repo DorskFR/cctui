@@ -9,3 +9,6 @@ docs/superpowers/
 
 # ts-rs test export artifacts (real bindings live in webui/src/lib/bindings)
 /crates/*/bindings/
+
+# CLAUDE.md is ignored by the user's global gitignore; track it in this repo
+!CLAUDE.md

@@ -4,8 +4,7 @@
 	// (name, identity, repo, ticket, prompt, prompt file, model, timeout, effort).
 	// Dispatch runs a claude worker, so it uses the claude model/effort sets.
 	import EffortSlider from './EffortSlider.svelte';
-	import { Field, Input, Text, Textarea } from '@dorsk/tsumikit';
-	import Select from '$lib/components/atoms/Select.svelte';
+	import { Field, Input, Select, Text, Textarea } from '@dorsk/tsumikit';
 	import { claudeModels, claudeEfforts } from './options';
 	import { submitChordLabel, isSubmitChord } from '$lib/platform';
 	import type { Form } from './types';

@@ -1,23 +1,19 @@
 import { browser } from '$app/environment';
 
-// Global UI font scale (CCT-250 item 3, range fixed in CCT-305). The control
-// multiplies ONLY the font-size tokens (--fs-scale, consumed by every --fs-* in
-// variables.css) — NOT the document root font-size. Scaling the root grew every
-// rem-based chrome dimension (button heights, padding, the badges) in lockstep,
-// so bumping the size up ballooned the UI while text "barely grew" relative to
-// it (the CCT-305 regression). Driving --fs-scale instead leaves spacing /
+// Global UI font scale. The control multiplies ONLY the font-size tokens
+// (--fs-scale, consumed by every --fs-* in variables.css) — NOT the document
+// root font-size. Scaling the root would grow every rem-based chrome dimension
+// (button heights, padding, badges) in lockstep, ballooning the whole UI while
+// text barely grew relative to it. Driving --fs-scale instead leaves spacing /
 // control sizes / the px-pinned header fixed and enlarges only text, so the top
 // of the range gives big readable chat/session text rather than a giant UI.
 const KEY = 'cctui_font_scale';
 
-// Discrete scale levels (CCT-297 #11). A continuous slider let the value change
-// on every pixel of drag, reflowing the UI live ("UI seizure") and — since the
-// header hosted the control — sliding the thumb out from under the cursor. Five
-// fixed steps remove the per-pixel churn: one click = one stable relayout. Each
-// level is a text-size multiplier (--fs-scale). The range is deliberately wide
-// (CCT-311): "Smallest" drops well below 1× for dense scanning and "Largest"
-// jumps to 2× for genuinely big text — the earlier 0.85–1.5× span left both
-// ends too close to Normal.
+// Discrete scale levels. Fixed steps keep one click = one stable relayout,
+// avoiding the per-pixel reflow churn a continuous slider would cause. Each
+// level is a text-size multiplier (--fs-scale). The range is deliberately wide:
+// "Smallest" drops well below 1× for dense scanning and "Largest" jumps to 2×
+// for genuinely big text.
 export interface ScaleLevel {
 	id: string;
 	label: string;

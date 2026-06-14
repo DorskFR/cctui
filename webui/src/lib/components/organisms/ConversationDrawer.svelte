@@ -2,12 +2,12 @@
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import type { AgentEvent } from '@bindings/AgentEvent';
 	import { ws, USER_PREFIX } from '$lib/ws.svelte';
-	import { useConversation, useSessionActions, qk } from '$lib/queries';
+	import { useConversation, useSessionActions, useLabels, qk } from '$lib/queries';
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { renderMarkdown, highlightBlock } from '$lib/markdown';
 	import { highlightTerms } from '$lib/search';
-	import { timestampTooltip } from '$lib/format';
 	import { drafts, VIEW_OPTS } from '$lib/drafts';
+	import { Dropzone } from '@dorsk/tsumikit';
 	import BackdropScrim from './conversation/BackdropScrim.svelte';
 	import ForkModal from './conversation/ForkModal.svelte';
 	import DrawerHeader from './conversation/DrawerHeader.svelte';
@@ -105,6 +105,19 @@
 		() => true
 	);
 	const actions = useSessionActions();
+
+	// Labels (CCT-360) + pin (CCT-267) in the drawer header — the same global
+	// label set and mutations the session list uses, so editing a session's
+	// labels/star from the open conversation stays in sync with the list.
+	const labelsQuery = useLabels();
+	const allLabels = $derived($labelsQuery.data?.labels ?? []);
+	const createLabel = (name: string, color: string) => actions.createLabel(name, color);
+	const attachLabel = (sid: string, labelId: string) => actions.attachLabel(sid, labelId);
+	const detachLabel = (sid: string, labelId: string) => actions.detachLabel(sid, labelId);
+	const updateLabel = (labelId: string, patch: { name?: string; color?: string }) =>
+		actions.updateLabel(labelId, patch);
+	const deleteLabel = (labelId: string) => actions.deleteLabel(labelId);
+	const togglePin = (s: SessionListItem) => (s.pinned ? actions.unpin(s.id) : actions.pin(s.id));
 
 	// ── Sticky-bottom scroll controller (CCT-161) ──────────────────────────
 	// Shared by the viewport (binds the scroller) and the composer (binds the
@@ -262,16 +275,6 @@
 		}
 		return out;
 	});
-	function lineTooltip(ts: number): string {
-		// Mirror the session-list "x minutes ago" hover (CCT-345 / CCT-331).
-		const d = new Date(ts);
-		const msgTime = `This message: ${Number.isNaN(d.getTime()) ? '—' : d.toISOString()}`;
-		return [
-			msgTime,
-			timestampTooltip(session.registered_at, session.last_message_at, session.last_activity_at)
-		].join('\n');
-	}
-
 	// The assistant prose preceding the live question (CCT-213), rendered as
 	// markdown above the card so the user answers with context, not blind.
 	const askPreambleHtml = $derived(
@@ -348,27 +351,43 @@
 	// Mobile chat controls collapse behind text buttons that open popovers
 	// (CCT-311); null = no panel open. Desktop shows the controls inline.
 	let mobilePanel = $state<'filters' | 'format' | 'auto' | null>(null);
-	// Replaces the misleading "unarchive" (CCT-250 item 8): the agent-side worker
-	// is gone, so re-dispatch a fresh session seeded with this one's config.
+	// The agent-side worker is gone once archived, so re-dispatch a fresh session
+	// seeded with this one's config rather than trying to revive it.
 	function newFromScript() {
 		onNewFromScript?.(session);
 	}
 
 	// ── Drag-to-resize the desktop drawer (left border) ─────────────────────
 	let resizing = $state(false);
+	// Coalesce pointermoves to one width update per frame (mirrors tsumikit's
+	// Modal): pointer events fire faster than the refresh and each width change
+	// reflows + repaints the pane, so writing once per rAF caps that to the frame
+	// rate and keeps the drag smooth instead of jaggery.
+	let rafId = 0;
+	let lastX = 0;
 	function startResize(e: PointerEvent) {
 		resizing = true;
+		lastX = e.clientX;
 		(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
 		e.preventDefault();
 	}
 	function onResize(e: PointerEvent) {
 		if (!resizing) return;
-		const w = window.innerWidth - e.clientX;
-		view.paneWidth = Math.round(Math.max(PANE_MIN, Math.min(w, window.innerWidth)));
+		lastX = e.clientX;
+		if (rafId) return;
+		rafId = requestAnimationFrame(() => {
+			rafId = 0;
+			const w = window.innerWidth - lastX;
+			view.paneWidth = Math.round(Math.max(PANE_MIN, Math.min(w, window.innerWidth)));
+		});
 	}
 	function endResize(e: PointerEvent) {
 		if (!resizing) return;
 		resizing = false;
+		if (rafId) {
+			cancelAnimationFrame(rafId);
+			rafId = 0;
+		}
 		try {
 			(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
 		} catch {
@@ -394,7 +413,18 @@
 		onpointerup={endResize}
 		onpointercancel={endResize}
 	></div>
-	<DrawerHeader
+	<!-- The whole drawer is a file drop area (CCT-236): dragging files over it
+	     shows the tsumikit Dropzone overlay; on drop they're staged as composer
+	     attachments. overlay mode wraps the content without hijacking clicks. -->
+	<Dropzone
+		overlay
+		multiple
+		label="Drop files to attach"
+		disabled={!supportsAttachments || archived}
+		onfiles={(f) => composer?.addFiles(f)}
+		onactive={(a) => composer?.setDragActive(a)}
+	>
+		<DrawerHeader
 		{session}
 		{archived}
 		{isCodexSession}
@@ -409,6 +439,13 @@
 		onfork={fork.openDialog}
 		oninterrupt={sa.interrupt}
 		onarchive={sa.archive}
+		onTogglePin={togglePin}
+		{allLabels}
+		onCreateLabel={createLabel}
+		onAttachLabel={attachLabel}
+		onDetachLabel={detachLabel}
+		onUpdateLabel={updateLabel}
+		onDeleteLabel={deleteLabel}
 	/>
 
 	<DrawerToolbar
@@ -434,15 +471,11 @@
 		{askPreambleHtml}
 		working={stream.working}
 		answering={stream.answering}
-		{lineTooltip}
 		isDupeOfLiveAsk={stream.isDupeOfLiveAsk}
 		onanswer={(t, p, qs) => stream.answerQuestion(t, p, qs)}
 		onretry={(ts) => stream.retryFailed(ts)}
 		onedit={editPending}
 		onrespondperm={(rid, allow) => ws.respondPermission(id, rid, allow)}
-		onfiles={(f) => composer?.addFiles(f)}
-		ondragactive={(a) => composer?.setDragActive(a)}
-		dropDisabled={!supportsAttachments || archived}
 	/>
 
 	<ConversationComposer
@@ -458,6 +491,7 @@
 		onFork={fork.openDialog}
 		onResume={sa.resume}
 	/>
+	</Dropzone>
 </div>
 
 {#if fork.open}
@@ -501,6 +535,10 @@
 	.drawer.resizing {
 		user-select: none;
 		animation: none;
+		/* Make per-frame width changes cheap to paint while dragging (mirrors the
+		   Modal): hint the animated property and isolate layout/paint to the pane. */
+		will-change: width;
+		contain: layout paint;
 	}
 	/* Drag handle on the left border — desktop only (mobile is full-width). */
 	.resize-handle {
@@ -519,18 +557,23 @@
 			cursor: col-resize;
 			touch-action: none;
 		}
+		/* Persistent grip hint (mirrors tsumikit's Modal): a small pill centered on
+		   the handle, brightening to the accent on hover / while dragging. */
 		.resize-handle::after {
 			content: '';
 			position: absolute;
-			inset: 0 auto 0 5px;
-			width: 1px;
-			background: transparent;
+			top: 50%;
+			left: 50%;
+			transform: translate(-50%, -50%);
+			width: 3px;
+			height: 28px;
+			border-radius: 999px;
+			background: var(--border-strong);
 			transition: background 0.12s var(--ease);
 		}
 		.resize-handle:hover::after,
 		.drawer.resizing .resize-handle::after {
 			background: var(--accent);
-			box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent);
 		}
 	}
 	@keyframes slide {

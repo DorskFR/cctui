@@ -1,16 +1,12 @@
 <script lang="ts">
 	// The "Machine" branch of the spawn form, extracted from SpawnModal: machine
 	// select, working directory (CwdCombo), name, prompt, adapter picker, model,
-	// OAuth account, effort, permission mode, and file attachments. Spawns on an
-	// enrolled daemon.
+	// OAuth account, effort, permission mode. Spawns on an enrolled daemon. File
+	// attachments live in the parent's shared add-ons row (both targets share it).
 	import type { MachineRow } from '@bindings/MachineRow';
 	import type { OAuthAccount } from '$lib/queries';
-	import { MAX_FILE_BYTES, MAX_TOTAL_BYTES, MAX_FILES } from '$lib/attachments';
 	import BrandLogo from '$lib/components/atoms/BrandLogo.svelte';
-	import AttachmentList from '$lib/components/molecules/AttachmentList.svelte';
-	import { Field, Input, OptionButton, Text, Textarea } from '@dorsk/tsumikit';
-	import Select from '$lib/components/atoms/Select.svelte';
-	import FileInput from '$lib/components/atoms/FileInput.svelte';
+	import { Field, Input, OptionButton, Select, Text, Textarea } from '@dorsk/tsumikit';
 	import CwdCombo from './CwdCombo.svelte';
 	import EffortSlider from './EffortSlider.svelte';
 	import { claudeModels, codexModels, claudeEfforts, codexEfforts, modes } from './options';
@@ -22,18 +18,12 @@
 		machines,
 		recentDirs,
 		matchingAccounts,
-		files,
-		onpickfiles,
-		onremovefile,
 		onsubmit
 	}: {
 		form: Form;
 		machines: MachineRow[];
 		recentDirs: string[];
 		matchingAccounts: OAuthAccount[];
-		files: File[];
-		onpickfiles: (e: Event) => void;
-		onremovefile: (name: string) => void;
 		// Submit the whole spawn form from the prompt textarea (Ctrl/⌘+Enter).
 		onsubmit?: () => void;
 	} = $props();
@@ -163,19 +153,6 @@
 			</OptionButton>
 		{/each}
 	</div>
-</Field>
-
-<!-- File uploads (CCT-203), machine target only. Staged under
-     /tmp/cctui-uploads/<session>/ on the daemon and referenced in the prompt
-     so the worker can read them. -->
-<Field label="Attachments (optional)">
-	<FileInput id="sp-files" multiple onchange={onpickfiles} />
-	<Text tone="faint" size="xs">
-		Up to {MAX_FILES} files, {MAX_FILE_BYTES / 1024 / 1024} MB each /
-		{MAX_TOTAL_BYTES / 1024 / 1024} MB total. Drag-and-drop anywhere on this
-		dialog or pick. Staged on the machine and referenced in the prompt.
-	</Text>
-	<AttachmentList {files} onremove={onremovefile} />
 </Field>
 
 <style>

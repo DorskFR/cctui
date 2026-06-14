@@ -21,64 +21,6 @@ export function relativeTime(iso: string | null | undefined): string {
 	return new Date(iso).toLocaleDateString();
 }
 
-/**
- * Relative time toward a FUTURE instant: "resets in 2h 14m", "resets in 45m".
- * `relativeTime` only counts backward (it clamps `now - then` at 0), so feeding
- * it a future `resets_at` always yields "0s ago" — this is its forward twin for
- * reset/expiry timestamps (CCT-324). Returns "" on null/invalid, and "now" once
- * the instant is in the past (the window has rolled over).
- */
-export function relativeFuture(iso: string | null | undefined): string {
-	if (!iso) return '';
-	const then = new Date(iso).getTime();
-	if (Number.isNaN(then)) return '';
-	const secs = Math.floor((then - Date.now()) / 1000);
-	if (secs <= 0) return 'now';
-	const mins = Math.floor(secs / 60);
-	if (mins < 1) return 'in <1m';
-	if (mins < 60) return `in ${mins}m`;
-	const hrs = Math.floor(mins / 60);
-	if (hrs < 24) {
-		const rem = mins % 60;
-		return rem ? `in ${hrs}h ${rem}m` : `in ${hrs}h`;
-	}
-	const days = Math.floor(hrs / 24);
-	const remH = hrs % 24;
-	return remH ? `in ${days}d ${remH}h` : `in ${days}d`;
-}
-
-/** Full ISO-8601 of an ISO datetime (or "—" when null/invalid). */
-function isoOrDash(iso: string | null | undefined): string {
-	if (!iso) return '—';
-	const d = new Date(iso);
-	return Number.isNaN(d.getTime()) ? '—' : d.toISOString();
-}
-
-/**
- * Multi-line tooltip body for a relative timestamp (CCT-270): ISO start and
- * last-message datetimes, used as a native `title` so hover shows the richer
- * info with no layout shift. `lastActivity` is optional.
- */
-export function timestampTooltip(
-	startedAt: string | null | undefined,
-	lastMessageAt: string | null | undefined,
-	lastActivityAt?: string | null | undefined
-): string {
-	const lines = [`Started:      ${isoOrDash(startedAt)}`, `Last message: ${isoOrDash(lastMessageAt)}`];
-	if (lastActivityAt) lines.push(`Last activity: ${isoOrDash(lastActivityAt)}`);
-	return lines.join('\n');
-}
-
-/** Wall-clock HH:MM:SS from a unix-millis timestamp (matches the proto `AgentEvent.ts`). */
-export function clockTime(tsMs: number): string {
-	if (!Number.isFinite(tsMs)) return '';
-	return new Date(tsMs).toLocaleTimeString([], {
-		hour: '2-digit',
-		minute: '2-digit',
-		second: '2-digit'
-	});
-}
-
 /** Human uptime from seconds: "2d 3h", "4h 10m", "12m". */
 export function uptime(secs: number): string {
 	const d = Math.floor(secs / 86400);
@@ -87,13 +29,6 @@ export function uptime(secs: number): string {
 	if (d > 0) return `${d}d ${h}h`;
 	if (h > 0) return `${h}h ${m}m`;
 	return `${m}m`;
-}
-
-/** Short calendar date from ISO. */
-export function dateOnly(iso: string | null | undefined): string {
-	if (!iso) return '—';
-	const d = new Date(iso);
-	return Number.isNaN(d.getTime()) ? '—' : d.toLocaleDateString();
 }
 
 /** Map a session status to a badge color class (active = green, etc.). */
@@ -108,6 +43,24 @@ export function statusBadgeClass(status: string): string {
 		default:
 			return ''; // inactive / dead → neutral grey
 	}
+}
+
+/** Short model label for the detailed footer: drop the vendor prefix
+ *  ("claude-opus-4-8" → "opus-4-8", "gpt-5-codex" stays) so a long id stops
+ *  shoving the provider logo out of the row. */
+export function modelShort(model: string): string {
+	return model.replace(/^(claude|anthropic)-/i, '');
+}
+
+/** Model FAMILY only — the one word that survives in the compact list row
+ *  ("claude-opus-4-8" → "opus", "gpt-5-codex" → "gpt"). Falls back to the first
+ *  segment of the (prefix-stripped) id for engines we don't enumerate. */
+export function modelFamily(model: string): string {
+	const m = model.toLowerCase();
+	for (const fam of ['opus', 'sonnet', 'haiku', 'fable', 'gpt', 'o1', 'o3', 'o4', 'gemini', 'grok']) {
+		if (m.includes(fam)) return fam;
+	}
+	return modelShort(model).split(/[-\s]/)[0] || model;
 }
 
 /** Deterministic accent color for a machine label (badge tinting). */

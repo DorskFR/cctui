@@ -3,8 +3,8 @@
 	// the mid-chat composer. Renders one chip per file with a remove button and,
 	// when present, the cap error.
 	import { fmtSize, fileCapError } from '$lib/attachments';
-	import IconButton from '$lib/components/molecules/IconButton.svelte';
-	import { Text } from '@dorsk/tsumikit';
+	import { IconButton, Text } from '@dorsk/tsumikit';
+	import Error from '$lib/components/atoms/Error.svelte';
 
 	let {
 		files,
@@ -21,12 +21,12 @@
 			<li>
 				<Text variant="code" truncate class="grow">{f.name}</Text>
 				<Text size="xs" tone="faint">{fmtSize(f.size)}</Text>
-				<IconButton inline class="hover-danger" icon="x" label="Remove" title="Remove" onclick={() => onremove(f.name)} />
+				<IconButton inline class="hover-danger" icon="x"  label="Remove" title="Remove" onclick={() => onremove(f.name)} />
 			</li>
 		{/each}
 	</ul>
 {/if}
-{#if error}<Text size="xs" class="err">{error}</Text>{/if}
+{#if error}<Error>{error}</Error>{/if}
 
 <style>
 	.files {
@@ -55,14 +55,11 @@
 		padding: 2px var(--sp-2);
 		max-width: 100%;
 	}
-	/* The filename and the cap error are rendered by the Text atom, so their
-	   residual layout/colour chrome must be :global to reach those elements;
-	   ellipsis on the filename is handled by Text's `truncate` prop. */
+	/* The filename is rendered by the Text atom, so its residual layout chrome
+	   must be :global to reach that element; ellipsis is handled by Text's
+	   `truncate` prop. (The cap error is now the Error atom — no reach-in.) */
 	:global(.grow) {
 		flex: 1;
 		min-width: 0;
-	}
-	:global(.err) {
-		color: var(--c-red);
 	}
 </style>

@@ -7,15 +7,15 @@
 	// change model" chip, machine badge, cwd, token usage). Action side-effects
 	// are delegated to callbacks; the editing UI state lives here.
 	import type { SessionListItem } from '@bindings/SessionListItem';
+	import type { Label } from '@bindings/Label';
 	import { statusBadgeClass } from '$lib/format';
-	import { toasts } from '$lib/toast.svelte';
 	import { fontScale, SCALE_LEVELS } from '$lib/fontscale.svelte';
 	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
 	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
+	import LabelBadge from '$lib/components/molecules/LabelBadge.svelte';
+	import WorkingDir from '$lib/components/molecules/WorkingDir.svelte';
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
-	import IconButton from '$lib/components/molecules/IconButton.svelte';
-	import { Badge, Chip, Input, SelectButton, Text } from '@dorsk/tsumikit';
-	import Select from '$lib/components/atoms/Select.svelte';
+	import { Badge, IconButton, Input, Select, SelectButton, Text } from '@dorsk/tsumikit';
 
 	let {
 		session,
@@ -31,7 +31,16 @@
 		onexport,
 		onfork,
 		oninterrupt,
-		onarchive
+		onarchive,
+		onTogglePin,
+		// Label editing (CCT-360): same picker as the session card — when
+		// `onAttachLabel` is supplied the strip is interactive, else read-only.
+		allLabels = [],
+		onCreateLabel,
+		onAttachLabel,
+		onDetachLabel,
+		onUpdateLabel,
+		onDeleteLabel
 	}: {
 		session: SessionListItem;
 		archived: boolean;
@@ -47,7 +56,17 @@
 		onfork: () => void;
 		oninterrupt: () => void;
 		onarchive: () => void;
+		onTogglePin?: (s: SessionListItem) => void;
+		allLabels?: Label[];
+		onCreateLabel?: (name: string, color: string) => Promise<Label>;
+		onAttachLabel?: (id: string, labelId: string) => void | Promise<void>;
+		onDetachLabel?: (id: string, labelId: string) => void | Promise<void>;
+		onUpdateLabel?: (labelId: string, patch: { name?: string; color?: string }) => Promise<Label>;
+		onDeleteLabel?: (labelId: string) => void | Promise<void>;
 	} = $props();
+
+	// Label picker is interactive only when an attach handler is wired in.
+	const labelEditable = $derived(!!onAttachLabel);
 
 	const headTitle = $derived(session.name || session.working_dir);
 
@@ -88,14 +107,6 @@
 		onsetmodel(model, effort);
 	}
 
-	async function copyText(text: string) {
-		try {
-			await navigator.clipboard.writeText(text);
-			toasts.ok('Copied');
-		} catch {
-			toasts.err('Clipboard unavailable');
-		}
-	}
 
 	function closeMoreFromOutside(e: PointerEvent) {
 		if (!moreOpen) return;
@@ -114,14 +125,47 @@
 
 <div class="dhead">
 	<div class="hrow">
-		<IconButton class="tapbtn back" icon="back" label="Back" onclick={onclose} />
-		<AdapterIcon adapter={session.adapter_id} size={20} />
+		<IconButton class="tapbtn back" icon="back"  label="Back" onclick={onclose} />
+		{#if onTogglePin}
+			<span
+				class="star"
+				class:on={session.pinned}
+				role="button"
+				tabindex="0"
+				title={session.pinned ? 'Unpin' : 'Pin to top (exempt from auto-archive)'}
+				aria-pressed={session.pinned}
+				aria-label={session.pinned ? 'Unpin session' : 'Pin session'}
+				onclick={() => onTogglePin?.(session)}
+				onkeydown={(e: KeyboardEvent) => {
+					if (e.key === 'Enter' || e.key === ' ') {
+						e.preventDefault();
+						onTogglePin?.(session);
+					}
+				}}>{session.pinned ? '★' : '☆'}</span
+			>
+		{/if}
 		<span class="dot {livenessClass}" title={session.hibernated ? 'hibernated' : session.liveness}></span>
+		<MachineBadge name={session.machine_name} id={session.machine_id} hue={session.machine_hue} mono />
 		<div class="dtitle">
 			{#if renaming}
 				<Input bind:value={newName} onkeydown={(e: KeyboardEvent) => e.key === 'Enter' && doRename()} />
 			{:else}
 				<Text class="name" weight="semibold" size="md" truncate>{headTitle}</Text>
+				{#if session.labels.length === 0 && labelEditable}
+					<!-- No labels yet: the tag picker rides inline right after the title
+					     text rather than claiming an empty full-width row. Once labels
+					     exist the strip moves to its own row below (see .hlabels). -->
+					<LabelBadge
+						labels={[]}
+						editable
+						{allLabels}
+						onCreate={onCreateLabel}
+						onAttach={(lid) => onAttachLabel?.(session.id, lid)}
+						onDetach={(lid) => onDetachLabel?.(session.id, lid)}
+						onUpdate={onUpdateLabel}
+						onDelete={onDeleteLabel}
+					/>
+				{/if}
 			{/if}
 		</div>
 		<!-- Secondary actions (CCT-301 #7): inline on desktop, collapsed into the
@@ -144,11 +188,12 @@
 			onchange={(v) => fontScale.set(v)}
 		/>
 		{#if renaming}
-			<IconButton class="tapbtn" icon="check" label="Save" onclick={doRename} />
+			<IconButton class="tapbtn" icon="check"  label="Save" onclick={doRename} />
 		{:else}
 			<IconButton
 				class="tapbtn"
 				icon="edit"
+
 				label="Rename"
 				onclick={() => {
 					renaming = true;
@@ -159,6 +204,7 @@
 		<IconButton
 			class="tapbtn"
 			icon="link"
+
 			label="Copy shareable link"
 			title="Copy a stable link to this session (paste in a PR — login-gated)"
 			onclick={oncopylink}
@@ -166,6 +212,7 @@
 		<IconButton
 			class="tapbtn"
 			icon="markdown"
+
 			label="Copy conversation as Markdown"
 			title="Copy the whole conversation as Markdown (honors the view filters)"
 			onclick={oncopymarkdown}
@@ -173,6 +220,7 @@
 		<IconButton
 			class="tapbtn"
 			icon="download"
+
 			label="Export conversation"
 			title="Download transcript as HTML (print it for a PDF)"
 			onclick={onexport}
@@ -180,6 +228,7 @@
 		<IconButton
 			class="tapbtn fork-action"
 			icon="fork"
+
 			label="Fork conversation"
 			title="Fork into a new conversation (optionally change model)"
 			onclick={onfork}
@@ -189,56 +238,76 @@
 		<IconButton
 			class="tapbtn more"
 			icon="more"
+
 			label="More actions"
 			aria-expanded={moreOpen}
 			title="More actions"
 			onclick={() => (moreOpen = !moreOpen)}
 		/>
 		{#if !archived}
-			<IconButton class="tapbtn interrupt" icon="stop" label="Interrupt turn" title="Interrupt the in-flight turn" onclick={oninterrupt} />
-			<IconButton class="tapbtn archive" icon="archive" label="Archive" onclick={onarchive} />
+			<IconButton class="tapbtn interrupt" icon="stop"  label="Interrupt turn" title="Interrupt the in-flight turn" onclick={oninterrupt} />
+			<IconButton class="tapbtn archive" icon="archive"  label="Archive" onclick={onarchive} />
 		{/if}
 	</div>
+	{#if session.labels.length > 0}
+		<!-- Labels get their own full-width row in the header's column stack, so the
+		     strip can spread edge-to-edge and wrap freely instead of being boxed
+		     into the title row's leftover width (under the action buttons). The
+		     empty-state trigger lives inline by the title (above), so this row only
+		     appears once there's at least one label. -->
+		<div class="hlabels">
+			<LabelBadge
+				labels={session.labels}
+				editable={labelEditable}
+				{allLabels}
+				onCreate={onCreateLabel}
+				onAttach={(lid) => onAttachLabel?.(session.id, lid)}
+				onDetach={(lid) => onDetachLabel?.(session.id, lid)}
+				onUpdate={onUpdateLabel}
+				onDelete={onDeleteLabel}
+			/>
+		</div>
+	{/if}
 	<div class="hmeta row row-wrap">
 		{#if showStatusBadge}<Badge class={statusBadgeClass(session.status)}>{session.status}</Badge>{/if}
+		<WorkingDir path={session.working_dir} />
+		<div class="meta-trail">
+		<TokenUsage usage={session.token_usage} />
 		{#if isCodexSession && !archived}
 			{#if modelEditing}
-				<Chip class="row" style="gap:var(--sp-1);padding:0.05rem var(--sp-1)">
-					<Select class="mini-select" bind:value={pendingModel} aria-label="Model">
-						{#each codexModels as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
-					</Select>
-					<Select class="mini-select" bind:value={pendingEffort} aria-label="Effort">
-						{#each codexEfforts as e (e)}<option value={e}>{e || 'default effort'}</option>{/each}
-					</Select>
-					<IconButton class="tapbtn" icon="check" label="Apply" onclick={applyModelChange} />
-					<IconButton class="tapbtn" icon="x" label="Cancel" onclick={() => (modelEditing = false)} />
-				</Chip>
+				<!-- display:contents wrapper exists only to give the compact Selects a
+				     real scoped ancestor (.model-edit), so their width/fill reach-in
+				     isn't a document-wide :global leak. -->
+				<span class="model-edit">
+					<Badge class="row" style="gap:var(--sp-1);padding:0.05rem var(--sp-1)">
+						<Select compact chevron={false} bind:value={pendingModel} aria-label="Model">
+							{#each codexModels as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
+						</Select>
+						<Select compact chevron={false} bind:value={pendingEffort} aria-label="Effort">
+							{#each codexEfforts as e (e)}<option value={e}>{e || 'default effort'}</option>{/each}
+						</Select>
+						<IconButton class="tapbtn" icon="check"  label="Apply" onclick={applyModelChange} />
+						<IconButton class="tapbtn" icon="x"  label="Cancel" onclick={() => (modelEditing = false)} />
+					</Badge>
+				</span>
 			{:else}
-				<Chip
+				<Badge
 					as="button"
 					mono
 					title="Change model / effort for the next turn"
 					onclick={openModelEditor}
-				>{session.model ?? 'default'}{session.effort ? ` · ${session.effort}` : ''} ✎</Chip>
+				>{session.model ?? 'default'}{session.effort ? ` · ${session.effort}` : ''} ✎</Badge>
 			{/if}
 		{:else if session.model || session.effort}
-			<Chip
+			<Badge
 				as="button"
 				mono
 				title="Claude can't switch model in place — fork to change model"
 				onclick={onfork}
-			>{session.model ?? ''}{session.effort ? ` · ${session.effort}` : ''} ⑂</Chip>
+			>{session.model ?? ''}{session.effort ? ` · ${session.effort}` : ''} ⑂</Badge>
 		{/if}
-		<MachineBadge name={session.machine_name} id={session.machine_id} hue={session.machine_hue} mono />
-		<Chip
-			as="button"
-			mono
-			class="truncate"
-			style="flex:1;min-width:6rem;text-align:left"
-			title="Click to copy — {session.working_dir}"
-			onclick={() => copyText(session.working_dir)}
-		>📁 {session.working_dir} ⧉</Chip>
-		<TokenUsage usage={session.token_usage} />
+		<AdapterIcon adapter={session.adapter_id} size={20} />
+		</div>
 	</div>
 </div>
 
@@ -253,6 +322,11 @@
 		padding: var(--sp-2) var(--sp-3);
 		border-bottom: 1px solid var(--border);
 		background: var(--bg-elevated);
+		/* Collapse the secondary actions based on the DRAWER's own width, not the
+		   viewport (CCT-301 #7): a narrow-but-on-desktop drawer should fold its
+		   buttons into the ⋯ flyout so the title stays visible. The header is the
+		   size container the rules below query against. */
+		container: drawer-head / inline-size;
 	}
 	.hrow {
 		display: flex;
@@ -260,20 +334,25 @@
 		gap: var(--sp-2);
 		position: relative;
 	}
+	/* Labels on their own row so the strip spans the full header width. */
+	.hlabels {
+		display: flex;
+		min-width: 0;
+	}
 	/* Secondary actions: inline on desktop, ⋯ flyout on mobile (CCT-301 #7). */
 	.secondary {
 		display: contents;
 	}
 	/* Desktop shows every action inline, so the ⋯ flyout toggle is pointless
-	   there — only surface it when actions actually collapse (CCT-345). */
+	   there — only surface it when actions actually collapse. */
 	/* NB: `.more` is rendered by the IconButton child component, so the rule
 	   MUST be `:global` — a plain `.more` selector is scoped to THIS
 	   component and never matches the child <button>, which is why the kebab
-	   leaked onto desktop (CCT-323). */
+	   would otherwise show on desktop. */
 	.dhead :global(.tapbtn.more) {
 		display: none;
 	}
-	@media (max-width: 959px) {
+	@container drawer-head (max-width: 640px) {
 		.dhead :global(.tapbtn.more) {
 			display: inline-flex;
 		}
@@ -282,15 +361,15 @@
 			position: absolute;
 			top: calc(100% + var(--sp-1));
 			right: 0;
-			/* Above the message list + composer; the old z:5 let chat content sit on
-			   top of the flyout (CCT-345). */
+			/* Stack above the message list + composer so chat content can't sit on
+			   top of the flyout. */
 			z-index: 60;
 			flex-direction: column;
 			align-items: stretch;
-			/* Fixed, content-comfortable width: the rows are width:100%, which made a
-			   max-content panel width circular so it collapsed to min-width and the
-			   long labels overflowed off the right edge (CCT-345). Pin a width that
-			   fits the labels and never exceeds the viewport. */
+			/* Fixed, content-comfortable width: the rows are width:100%, so a
+			   max-content panel width would be circular and collapse to min-width,
+			   overflowing the long labels off the right edge. Pin a width that fits
+			   the labels and never exceeds the viewport. */
 			width: 17rem;
 			max-width: calc(100vw - 1.5rem);
 			gap: var(--sp-1);
@@ -303,14 +382,9 @@
 		.secondary.open {
 			display: flex;
 		}
-		/* Flyout rows are icon + text label, NOT the bordered 2.5rem icon-chip
-		   used in the desktop toolbar. Reusing the .tapbtn primitive drew an
-		   empty bordered square around each icon and broke alignment (CCT-323);
-		   here we flatten it into a borderless, auto-height, full-width row. */
-		/* NB: the `.dhead` prefix raises specificity ABOVE the base
-		   `.dhead :global(.tapbtn)` rule below (equal specificity but later in
-		   source) — without it the rows stayed pinned at the 2.5rem icon-chip
-		   width and the labels wrapped inside a 40px box (CCT-345). */
+		/* The `.dhead` prefix is required: it raises specificity above the base
+		   `.dhead :global(.tapbtn)` rule below (equal specificity, but that rule is
+		   later in source), so without it these flyout overrides never apply. */
 		.dhead .secondary :global(.tapbtn),
 		.dhead .secondary :global(.font-pick) {
 			width: 100%;
@@ -348,6 +422,16 @@
 	.dtitle {
 		flex: 1;
 		min-width: 0;
+		display: flex;
+		align-items: center;
+		gap: var(--sp-1);
+	}
+	/* Title text shrink-wraps/ellipsises so the inline tag trigger sits right
+	   after it; the dtitle box keeps flex:1 so the action buttons stay pinned
+	   to the right edge. */
+	.dtitle :global(.name) {
+		flex: 0 1 auto;
+		min-width: 0;
 	}
 	/* Bigger, easy-to-tap icon buttons with a tinted, outlined chip look. */
 	.dhead :global(.tapbtn) {
@@ -384,15 +468,46 @@
 	}
 	.hmeta {
 		gap: var(--sp-2);
+		align-items: center;
 	}
-	/* Compact override on the Select atom (rendered inside Select, so :global;
-	   `.select.mini-select` outranks the atom's :where()-scoped `.select`). */
-	:global(.select.mini-select) {
+	/* Push token usage · model · logo to the right edge, opposite the working
+	   dir, mirroring the session card footer. */
+	.meta-trail {
+		display: flex;
+		align-items: center;
+		gap: var(--sp-2);
+		flex: none;
+		margin-left: auto;
+	}
+	/* Star/pin toggle in the lead row (mirrors SessionCard). */
+	.star {
+		background: none;
+		border: none;
+		cursor: pointer;
+		user-select: none;
+		padding: 0;
+		line-height: 1;
+		font-size: 1.35rem;
+		color: var(--text-faint);
+		flex: none;
+	}
+	.star.on,
+	.star:hover {
+		color: var(--warn, #e0a800);
+	}
+	.model-edit {
+		display: contents;
+	}
+	/* tsumikit Select `compact` gives the dense padding/font and `chevron={false}`
+	   drops the chevron; only the inline auto-width + lighter fill remain, reached
+	   in scoped under .model-edit so the selectors can't leak. */
+	.model-edit :global(.select-wrap) {
 		width: auto;
-		font-size: var(--fs-xs);
+	}
+	.model-edit :global(.select) {
+		width: auto;
 		background: var(--bg-elevated-2);
-		border: 1px solid var(--border);
+		border-color: var(--border);
 		border-radius: var(--r-sm, 4px);
-		padding: 0 0.2rem;
 	}
 </style>

@@ -9,23 +9,19 @@
 	import { ApiError } from '$lib/api';
 	import { ws } from '$lib/ws.svelte';
 	import SessionCard from '$lib/components/organisms/SessionCard.svelte';
-	import SubagentBadge from '$lib/components/molecules/SubagentBadge.svelte';
 	import ConversationDrawer from '$lib/components/organisms/ConversationDrawer.svelte';
 	import SpawnModal from '$lib/components/organisms/SpawnModal.svelte';
-	import { Button, Heading, Input, Text } from '@dorsk/tsumikit';
-	import Select from '$lib/components/atoms/Select.svelte';
-	import IconButton from '$lib/components/molecules/IconButton.svelte';
-	import Icon from '$lib/components/atoms/Icon.svelte';
+	import SessionControls from '$lib/components/organisms/SessionControls.svelte';
+	import { AutoGrid, Button, Container, Text } from '@dorsk/tsumikit';
 	import { drafts, LIST_DENSITY, LIST_VIEW, LIST_SECTION, LIST_LABELS } from '$lib/drafts';
 	import { notify } from '$lib/notify.svelte';
 	import { tokenizeQuery } from '$lib/search';
 	import {
-		VIEW_OPTIONS,
-		SECTIONS,
 		parseSections,
 		PAGE,
 		INLINE_THRESHOLD,
 		nest,
+		archivedDescendantsOf,
 		costRollup,
 		groupId,
 		BUCKETS,
@@ -40,19 +36,6 @@
 		return (raw ?? '').split(',').filter(Boolean);
 	}
 
-	// Close a popover when a pointer/focus lands outside the node it's attached to.
-	function clickOutside(node: HTMLElement, onOutside: () => void) {
-		const handler = (e: Event) => {
-			if (!node.contains(e.target as Node)) onOutside();
-		};
-		document.addEventListener('pointerdown', handler, true);
-		return {
-			destroy() {
-				document.removeEventListener('pointerdown', handler, true);
-			}
-		};
-	}
-
 	let dense = $state(drafts.get(LIST_DENSITY) === 'compact');
 	$effect(() => {
 		drafts.set(LIST_DENSITY, dense ? 'compact' : 'normal');
@@ -62,30 +45,23 @@
 	//   list ⇄ grid (cardView) and compact ⇄ detailed (dense). The 2×2 matrix:
 	//     list  + compact  → one row per session
 	//     list  + detailed → multi-row per session
-	//     grid  + compact  → grid of cards constrained to the list container width
-	//                        (~2 columns), NOT full-bleed
-	//     grid  + detailed → the SAME cards, no column cap → spans the full window
+	//     grid  + compact  → 2-column grid of cards kept INSIDE the centered list
+	//                        container (same max-width as the rest of the UI)
+	//     grid  + detailed → the container max-width is released: section headings
+	//                        AND the grid span the full window; cards auto-fill up
+	//                        to a max width (never narrower than a compact card)
+	//                        and gain extra verticality (a taller message clamp)
 	//   Card MARKUP is identical across compact/detailed in grid (always the
-	//   detailed card); only the container width / column cap changes. Grid is
-	//   top-level only (subagents stay in list view / the drawer).
+	//   detailed card); only the container width / column template / message clamp
+	//   change. Grid is top-level only (subagents stay in list view / the drawer).
 	let cardView = $state(drafts.get(LIST_VIEW) === 'card');
 	$effect(() => {
 		drafts.set(LIST_VIEW, cardView ? 'card' : 'list');
 	});
 
-	// View picker (CCT-307): collapse the two awkward icon toggles (which still
-	// overflowed the toolbar) into one labelled picker offering the 4 explicit
-	// combinations. Persistence is unchanged — the picker just reads/writes the
-	// existing `cardView` (list ⇄ card) and `dense` (compact ⇄ detailed) state,
-	// each of which already round-trips through drafts above.
-	let viewMode = $derived(`${cardView ? 'card' : 'list'}-${dense ? 'compact' : 'detailed'}`);
-	function selectView(value: string) {
-		const opt = VIEW_OPTIONS.find((o) => o.value === value);
-		if (!opt) return;
-		cardView = opt.card;
-		dense = opt.dense;
-	}
-	let viewLabel = $derived(VIEW_OPTIONS.find((o) => o.value === viewMode)?.label ?? 'View');
+	// View picker (CCT-307): `cardView` (list ⇄ card) and `dense` (compact ⇄
+	// detailed) round-trip through drafts above; the ViewPicker molecule owns the
+	// picker UI and writes back to them via bindable props.
 
 // Section filter (CCT-322 / CCT-345): the sessions list is partitioned into
 	// four sections, each an INDEPENDENT on/off toggle (not a forced single
@@ -96,19 +72,12 @@
 	//   • dispatched → server-managed / ephemeral-worker sessions (CCT-231)
 	//   • archived   → also append the paginated archive browse (CCT-184)
 	// The chosen set is persisted (comma-joined) so it sticks across reloads.
+	// The SectionFilter molecule owns the popover + toggle UI and writes back the
+	// chosen set via its bindable prop; the page keeps the state (and persists it).
 	let sections = $state<Set<Section>>(parseSections(drafts.get(LIST_SECTION)));
-	let sectionMenuOpen = $state(false);
-	function toggleSection(v: Section) {
-		const next = new Set(sections);
-		if (next.has(v)) next.delete(v);
-		else next.add(v);
-		if (next.size === 0) return; // keep at least one on
-		sections = next;
-	}
 	$effect(() => {
 		drafts.set(LIST_SECTION, [...sections].join(','));
 	});
-	const sectionCount = $derived(sections.size);
 	// `showArchived` drives the paginated archive pager + search scope; archived is
 	// now just one of the enabled sections, so the existing pager wiring is reused.
 	const showArchived = $derived(sections.has('archived'));
@@ -260,14 +229,9 @@
 	// carrying at least one of them (OR semantics). Persisted across reloads.
 	const labelsQuery = useLabels();
 	const allLabels = $derived($labelsQuery.data?.labels ?? []);
+	// The LabelFilter molecule owns the popover + toggle UI; the page keeps the
+	// selected-id set (and persists it / prunes deleted ids below).
 	let labelFilter = $state(new Set<string>(parseLabelFilter(drafts.get(LIST_LABELS))));
-	let labelMenuOpen = $state(false);
-	function toggleLabelFilter(id: string) {
-		const next = new Set(labelFilter);
-		if (next.has(id)) next.delete(id);
-		else next.add(id);
-		labelFilter = next;
-	}
 	$effect(() => {
 		drafts.set(LIST_LABELS, [...labelFilter].join(','));
 	});
@@ -291,6 +255,9 @@
 	const createLabel = (name: string, color: string) => actions.createLabel(name, color);
 	const attachLabel = (id: string, labelId: string) => actions.attachLabel(id, labelId);
 	const detachLabel = (id: string, labelId: string) => actions.detachLabel(id, labelId);
+	const updateLabel = (labelId: string, patch: { name?: string; color?: string }) =>
+		actions.updateLabel(labelId, patch);
+	const deleteLabel = (labelId: string) => actions.deleteLabel(labelId);
 
 	// ── Search + archive browse (CCT-184) ──────────────────────────────────
 	// One paginated "pager" feeds two views, never both at once:
@@ -298,21 +265,10 @@
 	//     (unticked = live only, ticked = all). Split into Live / Archived.
 	//   • not searching + showArchived → browse the archive (empty q), paged.
 	// Live-only with no query needs no pager — the bucketed list owns it.
+	// `rawQuery` is the live input (debounced into `query`); the SearchBox molecule
+	// binds to it and owns the field UI (clear button, focus).
 	let rawQuery = $state('');
 	let query = $state('');
-	// Mobile (narrow viewports): the search input collapses to a magnifier
-	// button and expands over the toolbar on tap (CCT-241). Desktop ignores
-	// `searchOpen` entirely — the input always fills the bar there.
-	let searchOpen = $state(false);
-	let searchEl = $state<HTMLInputElement | null>(null);
-	function openSearch() {
-		searchOpen = true;
-		// Focus after the expand transition kicks in so the keyboard pops.
-		requestAnimationFrame(() => searchEl?.focus());
-	}
-	function onSearchBlur() {
-		if (!rawQuery.trim()) searchOpen = false;
-	}
 	$effect(() => {
 		const v = rawQuery.trim();
 		const t = setTimeout(() => (query = v), 200);
@@ -485,14 +441,32 @@
 
 	const items = $derived($sessions.data?.sessions ?? []);
 
+	// A starred parent should keep its full subagent group visible under Pinned
+	// even once the children are archived (CCT-297): the live list above excludes
+	// archived rows, so when anything is pinned we additionally pull the full
+	// (incl. archived) list and splice each pinned parent's archived descendants
+	// back into the nest. Gated on `pinnedIds.size` so the heavier full-list
+	// fetch only runs when there's actually a pin in play.
+	const pinnedIds = $derived(new Set(items.filter((s) => s.pinned).map((s) => s.id)));
+	const allSessions = useSessions(
+		() => true,
+		() => pinnedIds.size > 0
+	);
+	const archivedPool = $derived(
+		($allSessions.data?.sessions ?? []).filter((s) => s.status === 'archived')
+	);
+	const pinnedArchivedKids = $derived(archivedDescendantsOf(pinnedIds, archivedPool));
+	// Their ids, so the Archived browse below doesn't also list them as their own
+	// top-level rows — they already show nested under their pinned parent.
+	const pinnedArchivedKidIds = $derived(new Set(pinnedArchivedKids.map((s) => s.id)));
+
 	// Subagent grouping (CCT-225 / CCT-269), nesting (CCT-298 item 1), and the
 	// cost rollup (CCT-297 #19) are all pure data transforms — see
 	// sessions.logic.ts. The component keeps only the reactive derivations + the
 	// expand/collapse state below.
-	const liveNest = $derived(nest(items));
+	const liveNest = $derived(nest([...items, ...pinnedArchivedKids]));
 	const topLevel = $derived(liveNest.topLevel);
 	const childGroupsOf = $derived(liveNest.childGroups);
-	const hasCollapsibleSubagents = $derived(liveNest.hasCollapsible);
 
 	// Expand/collapse state for collapsible (>=3) subagent groups, keyed by
 	// `${parentId}/${group.key}`. Default collapsed.
@@ -539,149 +513,21 @@
 	);
 </script>
 
-<div class="bar row">
-	<Heading level={1} class="page-title">Sessions</Heading>
-	<IconButton class="search-toggle btn-control-square" icon="search" label="Search chats" onclick={openSearch} />
-	<div class="search-wrap" class:open={searchOpen}>
-		<Input
-			class="search"
-			type="search"
-			placeholder="Search all chats…"
-			bind:value={rawQuery}
-			bind:el={searchEl}
-			onblur={onSearchBlur}
-			onkeydown={(e) => {
-				if (e.key === 'Escape') {
-					rawQuery = '';
-					searchOpen = false;
-					(e.currentTarget as HTMLInputElement).blur();
-				}
-			}}
-		/>
-		{#if rawQuery}
-			<!-- In-field clear (CCT-297 #22). onmousedown preventDefault keeps the
-			     input from blurring (which on mobile would collapse it) before the
-			     click clears the query. -->
-			<IconButton
-				inline
-				class="search-clear"
-				icon="x"
-				size={13}
-				label="Clear search"
-				title="Clear search"
-				onmousedown={(e: MouseEvent) => e.preventDefault()}
-				onclick={() => {
-					rawQuery = '';
-					searchEl?.focus();
-				}}
-			/>
-		{/if}
-	</div>
-	<!-- Section filter (CCT-322 / CCT-345): ONE button opens a popover of four
-	     independent on/off toggles (Starred / Live / Dispatched / Archived) so any
-	     combination can be shown at once — not a forced single choice. -->
-	<div
-		class="section-pick"
-		use:clickOutside={() => (sectionMenuOpen = false)}
-	>
-		<IconButton
-			class="btn-control-square"
-			icon="filter"
-			label="Filter sections"
-			title="Filter sections ({sectionCount}/4)"
-			aria-haspopup="true"
-			aria-expanded={sectionMenuOpen}
-			aria-pressed={sectionCount < SECTIONS.length}
-			onclick={() => (sectionMenuOpen = !sectionMenuOpen)}
-		/>
-		{#if sectionCount < SECTIONS.length}<span class="section-count" aria-hidden="true">{sectionCount}</span>{/if}
-		{#if sectionMenuOpen}
-			<div class="section-menu" role="menu" aria-label="Sections">
-				{#each SECTIONS as sec (sec.value)}
-					<button
-						type="button"
-						role="menuitemcheckbox"
-						class="section-opt"
-						aria-checked={sections.has(sec.value)}
-						onclick={() => toggleSection(sec.value)}
-					>
-						<span class="section-check" aria-hidden="true">{sections.has(sec.value) ? '✓' : ''}</span>
-						<Icon name={sec.icon} size={15} />
-						<span class="section-opt-label">{sec.label}</span>
-					</button>
-				{/each}
-			</div>
-		{/if}
-	</div>
-	<!-- Label filter (CCT-360): one button opens a popover of label toggles; a
-	     session shows when it carries ANY selected label (OR). Hidden when no
-	     labels exist yet. -->
-	{#if allLabels.length > 0}
-		<div class="section-pick" use:clickOutside={() => (labelMenuOpen = false)}>
-			<IconButton
-				class="btn-control-square"
-				icon="tag"
-				label="Filter by label"
-				title={labelFilter.size > 0 ? `Filtering by ${labelFilter.size} label(s)` : 'Filter by label'}
-				aria-haspopup="true"
-				aria-expanded={labelMenuOpen}
-				aria-pressed={labelFilter.size > 0}
-				onclick={() => (labelMenuOpen = !labelMenuOpen)}
-			/>
-			{#if labelFilter.size > 0}<span class="section-count" aria-hidden="true">{labelFilter.size}</span>{/if}
-			{#if labelMenuOpen}
-				<div class="section-menu label-menu" role="menu" aria-label="Labels">
-					{#each allLabels as l (l.id)}
-						<button
-							type="button"
-							role="menuitemcheckbox"
-							class="section-opt"
-							aria-checked={labelFilter.has(l.id)}
-							onclick={() => toggleLabelFilter(l.id)}
-						>
-							<span class="section-check" aria-hidden="true">{labelFilter.has(l.id) ? '✓' : ''}</span>
-							<span class="label-dot" style="background:{l.color}"></span>
-							<span class="section-opt-label">{l.name}</span>
-						</button>
-					{/each}
-					{#if labelFilter.size > 0}
-						<button type="button" class="section-opt label-clear" onclick={() => (labelFilter = new Set())}>
-							<span class="section-check" aria-hidden="true">✕</span>
-							<span class="section-opt-label">Clear filter</span>
-						</button>
-					{/if}
-				</div>
-			{/if}
-		</div>
-	{/if}
-	<!-- View picker (CCT-307): one labelled control offering the 4 explicit
-	     layout × density combinations, replacing the two icon toggles that still
-	     overflowed the toolbar. A native <select> overlaid transparently on the
-	     trigger button (same pattern as the header theme/font pickers) gives the
-	     platform popup with zero outside-click bookkeeping. -->
-	<div class="view-pick btn-control" title="View: {viewLabel}" aria-label="View: {viewLabel}">
-		<span class="view-pick-icon" aria-hidden="true">{cardView ? '▦' : '☰'}</span>
-		<span class="view-pick-caret" aria-hidden="true">▾</span>
-		<Select
-			variant="ghost"
-			aria-label="Choose list view"
-			value={viewMode}
-			onchange={(e) => selectView((e.currentTarget as HTMLSelectElement).value)}
-		>
-			{#each VIEW_OPTIONS as o (o.value)}
-				<option value={o.value}>{o.label}</option>
-			{/each}
-		</Select>
-	</div>
-	{#if !searching}
-		{#if selecting}
-			<Button class="toolbar-select" control title="Cancel selection" aria-label="Cancel selection" onclick={exitSelect}>✕</Button>
-		{:else}
-			<Button class="toolbar-select" control title="Select multiple to archive" aria-label="Select multiple to archive" onclick={() => (selecting = true)}>☑</Button>
-		{/if}
-	{/if}
-	<Button class="toolbar-new" control variant="primary" onclick={() => (showSpawn = true)}>+ New</Button>
-</div>
+<SessionControls
+	bind:rawQuery
+	bind:sections
+	labels={allLabels}
+	bind:labelFilter
+	bind:cardView
+	bind:dense
+	{selecting}
+	{searching}
+	onStartSelect={() => (selecting = true)}
+	onCancelSelect={exitSelect}
+	onNew={() => (showSpawn = true)}
+	onUpdateLabel={updateLabel}
+	onDeleteLabel={deleteLabel}
+/>
 
 {#if selecting && !searching}
 		<div class="bulkbar row">
@@ -707,35 +553,38 @@
 <!-- Card (grid) view of the main list (CCT-297 item 16): top-level sessions laid
      out as detailed cards in a responsive grid. Subagents are omitted here (the
      list view + the drawer still show them); the point is at-a-glance status. -->
+{#snippet cardItems(rows: SessionListItem[])}
+	{#each rows as s (s.id)}
+		<SessionCard
+			session={s}
+			compact={dense}
+			grid
+			pendingCount={pending(s.id)}
+			onopen={(x) => (openSession = x)}
+			selectable={selecting}
+			selected={selected.has(s.id)}
+			onToggleSelect={toggleSelect}
+			swipeable
+			swipeLabel="Archive"
+			onSwipe={swipeArchive}
+			onTogglePin={togglePin}
+			subagentCost={costRollup(s, childGroupsOf.get(s.id) ?? [])}
+			{allLabels}
+			onCreateLabel={createLabel}
+			onAttachLabel={attachLabel}
+			onDetachLabel={detachLabel}
+			onUpdateLabel={updateLabel}
+			onDeleteLabel={deleteLabel}
+		/>
+	{/each}
+{/snippet}
+
 {#snippet cardGrid(rows: SessionListItem[])}
-	<!-- Grid (CCT-305 / CCT-321): the card uses the SAME canonical field model in
-	     both densities; `compact` (dense) only tightens spacing + clamps the
-	     preview to one line, and the grid narrows to a 2-column cap. Detailed cards
-	     are deliberately the largest (wider track + roomier card). `grid` keeps a
-	     uniform single-line cwd path so a row of cards stays the same height. -->
-	<div class="grid" class:narrow={dense}>
-		{#each rows as s (s.id)}
-			<SessionCard
-				session={s}
-				compact={dense}
-				grid
-				pendingCount={pending(s.id)}
-				onopen={(x) => (openSession = x)}
-				selectable={selecting}
-				selected={selected.has(s.id)}
-				onToggleSelect={toggleSelect}
-				swipeable
-				swipeLabel="Archive"
-				onSwipe={swipeArchive}
-				onTogglePin={togglePin}
-				subagentCost={costRollup(s, childGroupsOf.get(s.id) ?? [])}
-				{allLabels}
-				onCreateLabel={createLabel}
-				onAttachLabel={attachLabel}
-				onDetachLabel={detachLabel}
-			/>
-		{/each}
-	</div>
+	{#if dense}
+		<AutoGrid min="18rem" max="26.75rem" maxCols={2} gap="var(--sp-2)">{@render cardItems(rows)}</AutoGrid>
+	{:else}
+		<AutoGrid min="20rem" max="26.75rem" gap="var(--sp-3)">{@render cardItems(rows)}</AutoGrid>
+	{/if}
 {/snippet}
 
 {#snippet nestedRows(
@@ -751,41 +600,36 @@
 		<!-- Collapsible (>=3) groups surface as count badges outside the parent
 		     row layout; smaller groups render inline below. -->
 		<div class="parent-row" class:dense>
-			{#if collapsibleGroups.length > 0}
-				<div class="subagent-badge-rail">
-					{#each collapsibleGroups as g (g.key)}
-						<SubagentBadge
-							count={g.agents.length}
-							running={g.running}
-							open={expanded.has(groupId(s.id, g.key))}
-							label={g.label}
-							ontoggle={() => toggleGroup(s.id, g.key)}
-						/>
-					{/each}
-				</div>
-			{/if}
-			<div class="parent-card">
-				<SessionCard
-					session={s}
-					child={depth > 0}
-					compact={dense}
-					pendingCount={pending(s.id)}
-					onopen={(x) => (openSession = x)}
-					selectable={allowSelect && selecting}
-					selected={selected.has(s.id)}
-					onToggleSelect={toggleSelect}
-					swipeable
-					swipeLabel={s.status === 'archived' ? 'Unarchive' : 'Archive'}
-					onSwipe={swipeArchive}
-					onTogglePin={depth > 0 ? undefined : togglePin}
-					highlight={hl}
-					subagentCost={costRollup(s, subGroups)}
-					{allLabels}
-					onCreateLabel={createLabel}
-					onAttachLabel={depth > 0 ? undefined : attachLabel}
-					onDetachLabel={depth > 0 ? undefined : detachLabel}
-				/>
-			</div>
+			<SessionCard
+				session={s}
+				child={depth > 0}
+				compact={dense}
+				pendingCount={pending(s.id)}
+				onopen={(x) => (openSession = x)}
+				selectable={allowSelect && selecting}
+				selected={selected.has(s.id)}
+				onToggleSelect={toggleSelect}
+				swipeable
+				swipeLabel={s.status === 'archived' ? 'Unarchive' : 'Archive'}
+				onSwipe={swipeArchive}
+				onTogglePin={depth > 0 ? undefined : togglePin}
+				highlight={hl}
+				subagentCost={costRollup(s, subGroups)}
+				subagentToggles={collapsibleGroups.map((g) => ({
+					key: g.key,
+					count: g.agents.length,
+					running: g.running,
+					open: expanded.has(groupId(s.id, g.key)),
+					label: g.label,
+					ontoggle: () => toggleGroup(s.id, g.key)
+				}))}
+				{allLabels}
+				onCreateLabel={createLabel}
+				onAttachLabel={depth > 0 ? undefined : attachLabel}
+				onDetachLabel={depth > 0 ? undefined : detachLabel}
+				onUpdateLabel={updateLabel}
+				onDeleteLabel={deleteLabel}
+			/>
 		</div>
 		{#if depth < 5}
 			{#each subGroups as g (g.key)}
@@ -824,84 +668,98 @@
 		{@const ns = nest(pageRows)}
 		{@const liveTop = ns.topLevel.filter((s) => s.status !== 'archived')}
 		{@const archTop = ns.topLevel.filter((s) => s.status === 'archived')}
-		<div class="stack" class:tight={dense} class:badge-gutter={ns.hasCollapsible}>
+		<div class="sections" class:tight={dense}>
 			{#if liveTop.length > 0}
-				<div class="group-header">Live <Text class="count">{liveTop.length}</Text></div>
-				{@render nestedRows(liveTop, ns.childGroups, false, searchTerms)}
+				<div class="section">
+					<div class="group-header">Live <Text class="count">{liveTop.length}</Text></div>
+					{@render nestedRows(liveTop, ns.childGroups, false, searchTerms)}
+				</div>
 			{/if}
 			{#if archTop.length > 0}
-				<div class="group-header">Archived <Text class="count">{archTop.length}</Text></div>
-				{@render nestedRows(archTop, ns.childGroups, false, searchTerms)}
+				<div class="section">
+					<div class="group-header">Archived <Text class="count">{archTop.length}</Text></div>
+					{@render nestedRows(archTop, ns.childGroups, false, searchTerms)}
+				</div>
 			{/if}
 			{@render loadMore()}
 		</div>
 	{/if}
 {:else}
-	<!-- Live buckets first… -->
-	{#if $sessions.isLoading}
-		<div class="empty"><span class="spin"></span></div>
-	{:else if groups.length === 0 && !showArchived}
-		<div class="empty">
-			<Text tone="muted">No sessions in the selected sections — toggle more from the section filter.</Text>
-		</div>
+	<!-- Live buckets first, then the paginated archive — all sections share one
+	     flex container so the inter-section gap is uniform (CCT-298). -->
+	{#if cardView && !dense}
+		<Container fullWidth as="div">
+			<div class="sections">{@render liveSections()}</div>
+		</Container>
 	{:else}
-		<div
-			class="stack"
-			class:tight={dense && !cardView}
-			class:badge-gutter={!cardView && hasCollapsibleSubagents}
-		>
-			{#each groups as g (g.key)}
-				{#if g.key === 'dispatched'}
-					<!-- Dispatched is a plain section header like Pinned/Completed, with a
-					     bulk "Archive all" action on the right (CCT-279 item 7). -->
-					<div class="group-header" data-bucket={g.key}>
-						{g.label} <Text class="count">{g.sessions.length}</Text>
-						<div class="spacer"></div>
-						<Button
-							size="sm"
-							variant="danger"
-							disabled={archiving}
-							title="Archive all dispatched conversations"
-							onclick={archiveAllDispatched}
-						>
-							{#if archiving}<span class="spin"></span>{/if}
-							Archive all
-						</Button>
-					</div>
-				{:else}
-					<div class="group-header" data-bucket={g.key}>
-						{g.label} <Text class="count">{g.sessions.length}</Text>
-					</div>
-				{/if}
-				{@const vis = g.sessions}
-				{#if cardView}
-					{@render cardGrid(vis)}
-				{:else}
-					{@render nestedRows(vis, childGroupsOf, true, [])}
-				{/if}
-			{/each}
-		</div>
-	{/if}
-
-	<!-- …then the paginated archive when requested. -->
-	{#if showArchived}
-		{@const ns = nest(pageRows)}
-		{@const archTop = ns.topLevel.filter(matchesLabelFilter)}
-		<div class="stack" class:tight={dense} class:badge-gutter={ns.hasCollapsible}>
-			<div class="group-header">Archived <Text class="count">{archTop.length}</Text></div>
-			{#if pageRows.length === 0 && !pageLoading}
-				<div class="empty"><Text tone="muted">No archived sessions.</Text></div>
-			{:else if cardView}
-				<!-- Card mode applies to archived sessions too (CCT-321 parity). -->
-				{@render cardGrid(archTop)}
-				{@render loadMore()}
-			{:else}
-				{@render nestedRows(archTop, ns.childGroups, false, searchTerms)}
-				{@render loadMore()}
-			{/if}
-		</div>
+		<div class="sections" class:tight={dense && !cardView}>{@render liveSections()}</div>
 	{/if}
 {/if}
+
+{#snippet liveSections()}
+		{#if $sessions.isLoading}
+			<div class="empty"><span class="spin"></span></div>
+		{:else if groups.length === 0 && !showArchived}
+			<div class="empty">
+				<Text tone="muted">No sessions in the selected sections — toggle more from the section filter.</Text>
+			</div>
+		{:else}
+			{#each groups as g (g.key)}
+				{@const vis = g.sessions}
+				<div class="section">
+					{#if g.key === 'dispatched'}
+						<!-- Dispatched is a plain section header like Pinned/Completed, with a
+						     bulk "Archive all" action on the right (CCT-279 item 7). -->
+						<div class="group-header" data-bucket={g.key}>
+							{g.label} <Text class="count">{g.sessions.length}</Text>
+							<!-- In card mode the action sits right next to the title; in
+							     list mode it's pushed to the far right via the spacer. -->
+							{#if !cardView}<div class="spacer"></div>{/if}
+							<Button
+								size="sm"
+								variant="danger"
+								disabled={archiving}
+								title="Archive all dispatched conversations"
+								onclick={archiveAllDispatched}
+							>
+								{#if archiving}<span class="spin"></span>{/if}
+								Archive all
+							</Button>
+						</div>
+					{:else}
+						<div class="group-header" data-bucket={g.key}>
+							{g.label} <Text class="count">{g.sessions.length}</Text>
+						</div>
+					{/if}
+					{#if cardView}
+						{@render cardGrid(vis)}
+					{:else}
+						{@render nestedRows(vis, childGroupsOf, true, [])}
+					{/if}
+				</div>
+			{/each}
+		{/if}
+
+		{#if showArchived}
+			{@const ns = nest(pageRows)}
+			{@const archTop = ns.topLevel.filter(
+				(s) => matchesLabelFilter(s) && !pinnedArchivedKidIds.has(s.id)
+			)}
+			<div class="section">
+				<div class="group-header">Archived <Text class="count">{archTop.length}</Text></div>
+				{#if pageRows.length === 0 && !pageLoading}
+					<div class="empty"><Text tone="muted">No archived sessions.</Text></div>
+				{:else if cardView}
+					<!-- Card mode applies to archived sessions too (CCT-321 parity). -->
+					{@render cardGrid(archTop)}
+					{@render loadMore()}
+				{:else}
+					{@render nestedRows(archTop, ns.childGroups, false, searchTerms)}
+					{@render loadMore()}
+				{/if}
+			</div>
+		{/if}
+{/snippet}
 
 {#if liveOpen}
 	<ConversationDrawer
@@ -925,255 +783,6 @@
 {/if}
 
 <style>
-	.bar {
-		/* Sticky under the fixed app header so search/density/New stay reachable
-		   on long lists without scrolling back up (CCT-241). Also the positioning
-		   context for the mobile search overlay. */
-		position: sticky;
-		top: calc(var(--header-h) + var(--safe-top));
-		z-index: 6;
-		margin-bottom: var(--sp-4);
-		/* CCT-314: only pad the bottom. The earlier symmetric `var(--sp-2) 0`
-		   top-padding pushed the title ~8px lower than every other page's header
-		   (which have no sticky top padding), so Sessions looked misaligned. */
-		padding: 0 0 var(--sp-2);
-		gap: var(--sp-2);
-		/* CCT-250 item 1: center all toolbar controls on one baseline so the
-		   magnifier button lines up with the other buttons (was `stretch`,
-		   which only stretched text buttons → the icon-only search button sat
-		   at a different height). */
-		align-items: center;
-		/* CCT-308 item 3: the toolbar is a no-wrap flex row whose buttons are
-		   `flex:none` + `white-space:nowrap` (they can't shrink). Bumping the UI
-		   scale grew the title + button text past the viewport width; since the
-		   page clips horizontal overflow, the controls were pushed off-frame and
-		   unreachable. Let the toolbar wrap so controls reflow onto a second line
-		   instead of overflowing, keeping the title + every action in-frame at any
-		   scale. */
-		flex-wrap: wrap;
-		background: var(--bg);
-	}
-	/* The title is the Heading atom; a class on an atom can't match a plain
-	   scoped selector, so target it via :global. */
-	:global(.page-title) {
-		/* CCT-308 item 3: the title is toolbar chrome, not content — pin it to a
-		   fixed px size (1.75rem @16px = 28px) so the UI font scale doesn't grow
-		   it and shove the action buttons out of frame. */
-		font-size: 28px;
-		align-self: center;
-		flex: none;
-	}
-	/* View picker (CCT-307): a native <select> overlaid transparently on a
-	   labelled trigger (same pattern as the header theme/font pickers) so it gets
-	   the platform popup with no custom outside-click logic. One control instead
-	   of two icon toggles, so the toolbar no longer overflows. */
-	.view-pick {
-		position: relative;
-		display: inline-flex;
-		align-items: center;
-		gap: var(--sp-1);
-		flex: none;
-		white-space: nowrap;
-		cursor: pointer;
-	}
-	.view-pick-caret {
-		font-size: var(--fs-xs);
-		color: var(--text-faint);
-	}
-	/* Section filter (CCT-345): one square toolbar button that opens a popover of
-	   independent toggles. The wrapper is the positioning context for the popover
-	   and the small "active count" badge. */
-	.section-pick {
-		position: relative;
-		display: inline-flex;
-		align-items: center;
-		flex: none;
-		align-self: center;
-	}
-	/* Count badge shown when not all four sections are enabled (i.e. a filter is
-	   active), so the toolbar shows at a glance that the list is filtered. */
-	.section-count {
-		position: absolute;
-		top: -0.35rem;
-		right: -0.35rem;
-		min-width: 1rem;
-		height: 1rem;
-		padding: 0 0.25rem;
-		border-radius: 999px;
-		background: var(--accent);
-		color: var(--bg);
-		font-size: 0.62rem;
-		font-weight: var(--fw-semibold);
-		line-height: 1rem;
-		text-align: center;
-		pointer-events: none;
-	}
-	.section-menu {
-		position: absolute;
-		top: calc(100% + var(--sp-1));
-		right: 0;
-		z-index: 40;
-		min-width: 12rem;
-		display: flex;
-		flex-direction: column;
-		padding: var(--sp-1);
-		border: 1px solid var(--border-strong);
-		border-radius: var(--r-md);
-		background: var(--bg-elevated);
-		box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.4));
-	}
-	.section-opt {
-		display: flex;
-		align-items: center;
-		gap: var(--sp-2);
-		width: 100%;
-		padding: var(--sp-2);
-		border: none;
-		border-radius: var(--r-sm);
-		background: none;
-		color: var(--text);
-		font-size: var(--fs-sm);
-		text-align: left;
-		cursor: pointer;
-	}
-	.section-opt:hover {
-		background: var(--bg-hover, var(--border));
-	}
-	.section-opt[aria-checked='true'] {
-		color: var(--accent, var(--text));
-	}
-	.section-check {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		width: 1.05rem;
-		height: 1.05rem;
-		flex: none;
-		border-radius: var(--r-sm);
-		border: 1.5px solid var(--border-strong);
-		font-size: 0.75rem;
-		line-height: 1;
-	}
-	.section-opt[aria-checked='true'] .section-check {
-		background: var(--accent);
-		border-color: var(--accent);
-		color: var(--bg);
-	}
-	.section-opt-label {
-		flex: 1 1 auto;
-	}
-	/* Label filter (CCT-360): colored dot per label in the popover; allow the
-	   menu to scroll once there are many labels. */
-	.label-menu {
-		max-height: 16rem;
-		overflow-y: auto;
-	}
-	.label-dot {
-		width: 0.7rem;
-		height: 0.7rem;
-		border-radius: 999px;
-		flex: none;
-	}
-	.label-clear {
-		color: var(--text-muted);
-	}
-	/* Fill all the space between the title and the Archived checkbox; the wrapper
-	   is the flex item / positioning context for the in-field clear button. */
-	.search-wrap {
-		flex: 1;
-		min-width: 0;
-		position: relative;
-		display: flex;
-	}
-	/* Toolbar-specific tweaks layered on the Input atom (`.input.search` beats the
-	   atom's `.input` base, so order in the bundle doesn't matter): compact height,
-	   elevated fill, and right padding that clears the in-field × button. */
-	.search-wrap :global(.input.search) {
-		flex: 1;
-		min-width: 0;
-		height: var(--control-height);
-		padding: var(--sp-1) calc(var(--sp-3) + 1.25rem) var(--sp-1) var(--sp-3);
-		font-size: var(--fs-sm);
-		background: var(--bg-elevated);
-	}
-	/* Hide any browser-native search clear; we provide our own cross. */
-	.search-wrap :global(.input.search)::-webkit-search-cancel-button {
-		display: none;
-	}
-	.search-wrap :global(.search-clear) {
-		position: absolute;
-		top: 50%;
-		right: var(--sp-2);
-		transform: translateY(-50%);
-		width: 1.25rem;
-		height: 1.25rem;
-		padding: 0;
-		border-radius: 50%;
-		background: var(--bg-elevated-2, var(--border));
-		color: var(--text-faint);
-	}
-	.search-wrap :global(.search-clear):hover {
-		color: var(--text);
-		background: var(--bg-elevated-2, var(--border));
-	}
-	/* Desktop: the input always fills the bar; no toggle button. */
-	:global(.search-toggle) {
-		display: none;
-		align-self: center;
-	}
-	/* Mobile: collapsed to a magnifier; tapping it expands the input over the
-	   whole toolbar with a smooth width/opacity transition (CCT-241). */
-	@media (max-width: 639px) {
-		.bar {
-			display: grid;
-			grid-template-columns: auto minmax(0, 1fr) auto;
-			align-items: center;
-		}
-		.bar > :global(.page-title) {
-			grid-column: 1;
-		}
-		.bar > :global(.search-toggle),
-		.bar > .search-wrap {
-			grid-column: 2;
-		}
-		.bar > :global(.toolbar-new) {
-			grid-column: 3;
-			grid-row: 1;
-		}
-		/* Second row (CCT-322 mobile layout): section picker · view toggle · select
-		   toggle — the icon-only controls pack to the left instead of stretching
-		   across the wide 1fr search column (CCT-345). */
-		.section-pick,
-		.view-pick,
-		.bar > :global(.toolbar-select) {
-			grid-row: 2;
-			justify-self: start;
-		}
-		.section-pick {
-			grid-column: 1;
-		}
-		.view-pick {
-			grid-column: 2;
-			justify-self: start;
-		}
-		.bar > :global(.toolbar-select) {
-			grid-column: 3;
-		}
-		:global(.search-toggle) {
-			display: none;
-		}
-		.search-wrap {
-			position: static;
-			width: 100%;
-			opacity: 1;
-			pointer-events: auto;
-		}
-		.search-wrap.open {
-			width: 100%;
-			opacity: 1;
-			pointer-events: auto;
-		}
-	}
 	/* Sticky bulk-action bar (CCT-172) shown while in select mode. */
 	.bulkbar {
 		position: sticky;
@@ -1188,92 +797,28 @@
 		background: var(--bg-elevated);
 		box-shadow: var(--shadow-md);
 	}
-	.stack.tight {
-		gap: var(--sp-1);
-	}
-	/* Grid (card) view (CCT-305). Two widths driven by the density toggle:
-	   - detailed (default): full-bleed — escape the centered --content-max column
-	     and span the whole viewport with as many uniform cards as fit.
-	   - compact (.narrow): stay inside the normal list container width with a
-	     ~2-column cap, so it reads as a tighter version of the list rather than a
-	     full-window sprawl.
-	   Card MARKUP is identical between the two (always the detailed card); only
-	   the container width and the column template change. `align-items: stretch`
-	   makes every card in a row the same height so rows aren't ragged. */
-	.grid {
-		display: grid;
-		gap: var(--sp-3);
-		align-items: stretch;
-		/* full-bleed: escape the .container max-width and span the viewport */
-		width: 100vw;
-		position: relative;
-		left: 50%;
-		margin-left: -50vw;
-		box-sizing: border-box;
-		/* Detailed grid: as many columns as fit at a column width tuned for cards
-		   that read more vertical than horizontal (CCT-305 follow-up) — a narrower
-		   track than the old 20rem packs more columns across a wide window while
-		   keeping each card a portrait-ish rectangle. */
-		/* Detailed = the spacious view: a WIDE track so few, large cards fill the
-		   row. Must read bigger than compact (CCT-345 follow-up). */
-		grid-template-columns: repeat(auto-fill, minmax(34rem, 1fr));
-		padding-inline: max(var(--sp-4), var(--safe-left)) max(var(--sp-4), var(--safe-right));
-	}
-	/* Compact grid: denser than detailed — also full-bleed, but a NARROWER track so
-	   more, smaller cards pack across the row. minmax(0,1fr) lets cards shrink on
-	   narrow viewports; a single column kicks in below ~32rem via the media query. */
-	.grid.narrow {
-		gap: var(--sp-2);
-		grid-template-columns: repeat(auto-fill, minmax(21rem, 1fr));
-	}
-	/* Mobile card grid (CCT-305 follow-up). The two densities now diverge on phones,
-	   mirroring desktop's "compact = more in less space, detailed = more per card":
-	   - compact (.grid.narrow) → 2 narrow columns, each card half-viewport wide so
-	     it reads as a proper (vertical) card rather than a wide list row.
-	   - detailed (.grid) → a single full-viewport-width column, each card at least
-	     ~half the screen tall, giving a squarish-to-slightly-vertical aspect with
-	     plenty of room for the 3-line message preview.
-	   (The detailed-grid minmax(17rem) would otherwise resolve to a single column
-	   below ~36rem anyway, but we pin it explicitly and add the min-height.) */
-	@media (max-width: 639px) {
-		.grid {
-			grid-template-columns: 1fr;
-			gap: var(--sp-2);
-		}
-		/* CCT-312: the old `min-height: 48vh` forced every detailed mobile card to
-		   half the screen even when sparse, so cards read as "big and empty". Let
-		   them size to their content (still floored by the base 11rem) and let the
-		   message preview fill/cap the height instead (see `.last` in SessionCard). */
-		.grid:not(.narrow) :global(.sc.grid .preview) {
-			max-height: 42vh;
-		}
-		.grid.narrow {
-			grid-template-columns: repeat(2, minmax(0, 1fr));
-			gap: var(--sp-2);
-		}
-	}
-	/* Parent row (CCT-269): the card remains a normal full-width row. Count
-	   badge(s) are absolutely positioned before it so they don't affect row
-	   sizing or the alignment of card contents. */
-	.parent-row {
-		position: relative;
-	}
-	.parent-row .parent-card {
-		width: 100%;
-		min-width: 0;
-	}
-	.subagent-badge-rail {
-		position: absolute;
-		z-index: 2;
-		top: var(--sp-4);
-		right: calc(100% + var(--sp-2));
+	/* Two-axis spacing (CCT-298): the outer container owns the inter-section gap;
+	   each .section owns its row gap. Every section break — Pinned, Working,
+	   Dispatched, Archived — is the same sp-6, with no header margins or
+	   sibling-combinator patches that broke whenever Archived was its own block. */
+	.sections {
 		display: flex;
 		flex-direction: column;
-		align-items: flex-end;
+		gap: var(--sp-6);
+	}
+	.section {
+		display: flex;
+		flex-direction: column;
+		gap: var(--sp-3);
+	}
+	.sections.tight .section {
 		gap: var(--sp-1);
 	}
-	.parent-row.dense .subagent-badge-rail {
-		top: var(--sp-2);
+	/* Parent row (CCT-269): a normal full-width row. The collapse toggle badge(s)
+	   now live inside the card's leading gutter slot (SessionCard), so there's no
+	   external rail and no reserved left gutter to keep aligned across sections. */
+	.parent-row {
+		position: relative;
 	}
 	.agent-children {
 		margin-left: min(calc(var(--agent-depth) * var(--sp-4)), 5rem);
@@ -1282,9 +827,6 @@
 		gap: var(--sp-1);
 	}
 	@media (max-width: 639px) {
-		.stack.badge-gutter {
-			padding-left: calc(1.5rem + var(--sp-2));
-		}
 		.agent-children {
 			margin-left: min(calc(var(--agent-depth) * var(--sp-2)), 2.5rem);
 		}
@@ -1298,15 +840,11 @@
 		display: flex;
 		align-items: center;
 		gap: var(--sp-2);
-		margin-top: var(--sp-3);
 		font-size: var(--fs-sm);
 		font-weight: 600;
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
 		color: var(--text-muted);
-	}
-	.group-header:first-child {
-		margin-top: 0;
 	}
 	/* The count is a Text atom; target the passed class via :global. */
 	.group-header :global(.count) {

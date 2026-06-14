@@ -23,11 +23,23 @@
 		loadMachinePrefs,
 		saveMachinePrefs
 	} from '$lib/drafts';
-	import { dropzone } from '$lib/dropzone';
 	import { mergeFiles, removeFileByName, fileCapError } from '$lib/attachments';
-	import Modal from '$lib/components/molecules/Modal.svelte';
-	import { Button, Field, OptionButton, Text } from '@dorsk/tsumikit';
-	import LabelChips from '$lib/components/molecules/LabelChips.svelte';
+	import {
+		AutoGrid,
+		Badge,
+		Button,
+		Dropzone,
+		FileButton,
+		Field,
+		Icon,
+		Modal,
+		OptionButton,
+		Text
+	} from '@dorsk/tsumikit';
+	import { clickOutside } from '$lib/clickOutside';
+	import { labelTint, hueToColor } from '$lib/labels';
+	import AttachmentList from '$lib/components/molecules/AttachmentList.svelte';
+	import LabelMenu from '$lib/components/molecules/LabelMenu.svelte';
 	import EnvSecretsField from './spawn/EnvSecretsField.svelte';
 	import MachineFields from './spawn/MachineFields.svelte';
 	import DispatchFields from './spawn/DispatchFields.svelte';
@@ -174,6 +186,57 @@
 	function detachSpawnLabel(id: string) {
 		form.labels = form.labels.filter((x) => x !== id);
 	}
+	// "Add label" picker (the shared LabelMenu panel): toggle attach/detach and
+	// create-and-attach, mirroring LabelBadge's editable behaviour but driven
+	// from the add-ons action row instead of an inline tag trigger.
+	// "Add label" dropdown. The panel uses the native popover API so the platform
+	// renders it in the TOP LAYER — above the Modal's native <dialog> and outside
+	// its scrolling body. (A plain absolute/fixed menu would either grow the
+	// modal's scroll area and spawn scrollbars, or render behind the dialog.) We
+	// place it from the trigger's rect.
+	let labelMenuOpen = $state(false);
+	let labelTriggerEl = $state<HTMLElement | null>(null);
+	let labelMenuEl = $state<HTMLElement | null>(null);
+	let labelMenuPos = $state({ top: 0, left: 0 });
+	function openLabelMenu() {
+		if (!labelTriggerEl) return;
+		const r = labelTriggerEl.getBoundingClientRect();
+		// Initial guess (below the trigger); refined once the panel has a measured
+		// height so we can flip it above when it would overflow the viewport.
+		labelMenuPos = { top: r.bottom + 4, left: r.left };
+		labelMenuOpen = true;
+		labelMenuEl?.showPopover();
+		requestAnimationFrame(placeLabelMenu);
+	}
+	// Place the open panel: below the trigger by default, flipped above when it
+	// wouldn't fit below; clamped into the viewport horizontally.
+	function placeLabelMenu() {
+		if (!labelTriggerEl || !labelMenuEl) return;
+		const gap = 4;
+		const t = labelTriggerEl.getBoundingClientRect();
+		const m = labelMenuEl.getBoundingClientRect();
+		const spaceBelow = window.innerHeight - t.bottom;
+		const flipUp = spaceBelow < m.height + gap && t.top > spaceBelow;
+		const top = flipUp ? Math.max(gap, t.top - m.height - gap) : t.bottom + gap;
+		const left = Math.max(gap, Math.min(t.left, window.innerWidth - m.width - gap));
+		labelMenuPos = { top, left };
+	}
+	function closeLabelMenu() {
+		if (!labelMenuOpen) return;
+		labelMenuOpen = false;
+		labelMenuEl?.hidePopover();
+	}
+	const toggleLabelMenu = () => (labelMenuOpen ? closeLabelMenu() : openLabelMenu());
+	const attachedLabelIds = $derived(new Set(form.labels));
+	function toggleSpawnLabel(l: Label) {
+		if (form.labels.includes(l.id)) detachSpawnLabel(l.id);
+		else attachSpawnLabel(l.id);
+	}
+	async function createAndAttachSpawnLabel(name: string) {
+		if (!name.trim()) return;
+		const label = await createSpawnLabel(name, hueToColor(null));
+		attachSpawnLabel(label.id);
+	}
 
 	// Attach the chosen labels to a session once we know its id.
 	async function attachLabelsTo(sessionId: string, ids: string[]) {
@@ -255,9 +318,8 @@
 	const fileError = $derived(fileCapError(files));
 	const secretsValid = $derived(badEnvKeys.length === 0 && !fileError);
 
-	// Highlight the modal as a dropzone while a file drag hovers it (CCT-236).
-	let dragActive = $state(false);
 	const addFiles = (incoming: File[]) => (files = mergeFiles(files, incoming));
+	const addEnvRow = () => (envRows = [...envRows, { key: '', value: '' }]);
 
 	/** Collected env map: complete rows only (both key and value set). */
 	function envMap(): Record<string, string> {
@@ -267,10 +329,6 @@
 			if (k && r.value) out[k] = r.value;
 		}
 		return out;
-	}
-	function onPickFiles(e: Event) {
-		const picked = Array.from((e.currentTarget as HTMLInputElement).files ?? []);
-		addFiles(picked);
 	}
 	const removeFile = (name: string) => (files = removeFileByName(files, name));
 
@@ -428,18 +486,18 @@
 
 <Modal title="New session" {onclose} resizeKey="cctui_spawn_modal_width">
 	{#snippet body()}
-		<div
-			class="stack"
-			class:dropping={dragActive && target === 'machine'}
-			use:dropzone={{
-				onFiles: addFiles,
-				onActive: (a) => (dragActive = a),
-				disabled: target !== 'machine'
-			}}
+		<!-- The whole dialog is a file drop area (CCT-236): dragging files over it
+		     shows the tsumikit Dropzone overlay; on drop they're staged as
+		     attachments. overlay mode wraps the content without hijacking clicks,
+		     and is disabled on the dispatch target (no attachments there). -->
+		<Dropzone
+			overlay
+			multiple
+			label="Drop files to attach"
+			disabled={target !== 'machine'}
+			onfiles={addFiles}
 		>
-			{#if dragActive && target === 'machine'}
-				<div class="dropoverlay">Drop files to attach</div>
-			{/if}
+			<div class="stack">
 			{#if canDispatch}
 				<Field label="Run on">
 					<div class="targets">
@@ -471,30 +529,87 @@
 					machines={$machines.data ?? []}
 					{recentDirs}
 					{matchingAccounts}
-					{files}
-					onpickfiles={onPickFiles}
-					onremovefile={removeFile}
 					onsubmit={submit}
 				/>
 			{/if}
 
-			<!-- Environment secrets (CCT-202), both targets. -->
-			<EnvSecretsField bind:envRows invalid={badEnvKeys.length > 0} />
+			<!-- Shared add-ons: one row of equal-width buttons — Add label
+			     (CCT-360) · Add files (CCT-203, machine only) · Add env vars
+			     (CCT-202). Each control's content renders below in the same order
+			     (labels, files, env vars). All three are the canonical Button look
+			     (a FileButton matches the Button atom by design); two carry an
+			     icon. Grid blockifies the items so each fills its 1fr column. -->
+			<div class="addons">
+				<span class="addon-title">Optional settings</span>
+				<AutoGrid min="8rem" gap="var(--sp-2)" maxCols={3}>
+					<div
+						class="label-add"
+						bind:this={labelTriggerEl}
+						use:clickOutside={closeLabelMenu}
+					>
+						<Button
+							block
+							aria-haspopup="true"
+							aria-expanded={labelMenuOpen}
+							onclick={toggleLabelMenu}
+						>
+							<Icon name="tag" />Add label
+						</Button>
+						<!-- svelte-ignore a11y_no_static_element_interactions -->
+						<div
+							bind:this={labelMenuEl}
+							class="label-menu"
+							popover="manual"
+							role="menu"
+							aria-label="Labels"
+							tabindex="-1"
+							style:top="{labelMenuPos.top}px"
+							style:left="{labelMenuPos.left}px"
+							onkeydown={(e) => {
+								if (e.key === 'Escape') closeLabelMenu();
+							}}
+						>
+							{#if labelMenuOpen}
+								<LabelMenu
+									labels={allLabels}
+									selectedIds={attachedLabelIds}
+									cap={5}
+									autofocus
+									onToggle={toggleSpawnLabel}
+									onCreate={createAndAttachSpawnLabel}
+									onUpdate={(labelId, patch) => actions.updateLabel(labelId, patch)}
+									onDelete={(labelId) => actions.deleteLabel(labelId)}
+								/>
+							{/if}
+						</div>
+					</div>
+					{#if target === 'machine'}
+						<FileButton label="Add files" icon="file-text" multiple onfiles={addFiles} />
+					{/if}
+					<Button onclick={addEnvRow}><Icon name="plus" />Add env vars</Button>
+				</AutoGrid>
 
-			<!-- Labels (CCT-360), both targets. Defaults to the last-used set;
-			     attached to the session once it spawns. -->
-			<Field label="Labels (optional)">
-				<LabelChips
-					labels={selectedLabels}
-					editable
-					{allLabels}
-					portalMenu
-					onCreate={createSpawnLabel}
-					onAttach={attachSpawnLabel}
-					onDetach={detachSpawnLabel}
-				/>
-			</Field>
-		</div>
+				<!-- Each add-on's content, rendered where due: labels, files, env. -->
+				{#if selectedLabels.length}
+					<div class="addon-labels">
+						{#each selectedLabels as l (l.id)}
+							<Badge
+								style="{labelTint(l)};border-radius:var(--r-sm)"
+								removable
+								onremove={() => detachSpawnLabel(l.id)}
+							>
+								{l.name}
+							</Badge>
+						{/each}
+					</div>
+				{/if}
+				{#if target === 'machine'}
+					<AttachmentList {files} onremove={removeFile} />
+				{/if}
+				<EnvSecretsField bind:envRows invalid={badEnvKeys.length > 0} />
+			</div>
+			</div>
+		</Dropzone>
 	{/snippet}
 	{#snippet footer()}
 		<Button onclick={clearForm}>Clear</Button>
@@ -510,25 +625,45 @@
 		grid-template-columns: 1fr 1fr;
 		gap: var(--sp-2);
 	}
-	.stack {
-		position: relative;
-	}
-	.stack.dropping {
-		outline: 2px dashed var(--c-blue);
-		outline-offset: 4px;
-		border-radius: var(--r-md);
-	}
-	.dropoverlay {
-		position: absolute;
-		inset: 0;
-		z-index: 5;
+	/* Add-ons: a single wrapping row of "Add …" buttons, with each control's
+	   content stacked below. */
+	.addons {
 		display: flex;
-		align-items: center;
-		justify-content: center;
+		flex-direction: column;
+		gap: var(--sp-2);
+	}
+	.addon-title {
+		font-size: var(--fs-sm);
 		font-weight: var(--fw-medium);
-		color: var(--c-blue);
-		background: color-mix(in srgb, var(--c-blue) 12%, var(--bg));
+		color: var(--text-muted);
+	}
+	.addon-labels {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--sp-1);
+	}
+	/* "Add label" owns its own popover (a real Button trigger + a clickOutside
+	   menu, like LabelFilter) so it stays a plain Button — no Popover-trigger
+	   restyling. The wrapper is the grid item; the Button fills it (block). */
+	.label-add {
+		display: flex;
+	}
+	/* Native popover: the browser renders it in the top layer (above the modal's
+	   <dialog>, outside its scrolling body). Reset the UA popover defaults
+	   (centered, bordered) and place it from the trigger rect (top/left inline). */
+	.label-menu {
+		position: fixed;
+		inset: auto;
+		margin: 0;
+		padding: var(--sp-1);
+		display: flex;
+		flex-direction: column;
+		border: 1px solid var(--border-strong);
 		border-radius: var(--r-md);
-		pointer-events: none;
+		background: var(--bg-elevated);
+		box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.4));
+	}
+	.label-menu:not(:popover-open) {
+		display: none;
 	}
 </style>

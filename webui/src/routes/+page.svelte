@@ -3,7 +3,7 @@
 	import { apiOrigin } from '$lib/config';
 	import { toasts } from '$lib/toast.svelte';
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
-	import { Button, Heading, Text } from '@dorsk/tsumikit';
+	import { AutoGrid, Button, Card, Cluster, Heading, Stack, Text } from '@dorsk/tsumikit';
 	import { asUsage } from './home.logic';
 
 	const users = useUsers();
@@ -29,6 +29,15 @@
 	const needs = $derived($stats.data?.needs_input ?? 0);
 	const total = $derived($stats.data?.total ?? 0);
 
+	const statCards = $derived([
+		{ lbl: 'Live sessions', num: live },
+		{ lbl: 'Need input', num: needs, warn: needs > 0 },
+		{ lbl: 'Archived', num: archived },
+		{ lbl: 'Active users', num: activeUsers },
+		{ lbl: 'Revoked users', num: revokedUsers },
+		{ lbl: 'Total sessions', num: total }
+	]);
+
 	const enrollCmd = $derived(
 		`cctui-daemon enroll --server-url ${apiOrigin()} --token <user-token> --name "$(hostname)"`
 	);
@@ -43,97 +52,65 @@
 	}
 </script>
 
-<div class="title">
-	<Heading level={1}>Overview</Heading>
-</div>
+<Stack gap="var(--sp-6)">
+		<Heading level={1}>Overview</Heading>
 
-<div class="grid">
-	<div class="card stat">
-		<Text size="2xl" weight="bold" class="num">{live}</Text><Text size="sm" tone="muted">Live sessions</Text>
-	</div>
-	<div class="card stat">
-		<Text size="2xl" weight="bold" class="num {needs > 0 ? 'warn' : ''}">{needs}</Text><Text size="sm" tone="muted">Need input</Text>
-	</div>
-	<div class="card stat">
-		<Text size="2xl" weight="bold" class="num">{archived}</Text><Text size="sm" tone="muted">Archived</Text>
-	</div>
-	<div class="card stat">
-		<Text size="2xl" weight="bold" class="num">{activeUsers}</Text><Text size="sm" tone="muted">Active users</Text>
-	</div>
-	<div class="card stat">
-		<Text size="2xl" weight="bold" class="num">{revokedUsers}</Text><Text size="sm" tone="muted">Revoked users</Text>
-	</div>
-	<div class="card stat">
-		<Text size="2xl" weight="bold" class="num">{total}</Text><Text size="sm" tone="muted">Total sessions</Text>
-	</div>
-</div>
+		<AutoGrid min="10rem" gap="var(--sp-3)" maxCols={3}>
+			{#each statCards as c (c.lbl)}
+				<Card>
+					<Stack gap="var(--sp-1)" align="flex-start">
+						<Text
+							size="2xl"
+							weight="bold"
+							style="line-height: 1{c.warn ? '; color: var(--warn)' : ''}">{c.num}</Text
+						>
+						<Text size="sm" tone="muted">{c.lbl}</Text>
+					</Stack>
+				</Card>
+			{/each}
+		</AutoGrid>
 
-<div class="section-title">
-	<Heading level={2} size="lg">Token usage</Heading>
-</div>
-<div class="grid token-grid">
-	{#each tokenCards as c (c.lbl)}
-		<div class="card stat">
-			<TokenUsage usage={c.usage} />
-			<Text size="sm" tone="muted">{c.lbl}</Text>
-		</div>
-	{/each}
-</div>
+		<Stack gap="var(--sp-3)">
+			<Heading level={2} size="lg">Token usage</Heading>
+			<AutoGrid min="10rem" gap="var(--sp-3)"  maxCols={3}>
+				{#each tokenCards as c (c.lbl)}
+					<Card>
+						<Stack gap="var(--sp-1)" align="flex-start">
+							<TokenUsage usage={c.usage} showSum={false} size="lg" wrap />
+							<Text size="sm" tone="muted">{c.lbl}</Text>
+						</Stack>
+					</Card>
+				{/each}
+			</AutoGrid>
+		</Stack>
 
-<div class="card install stack">
-	<Text weight="bold">Enroll a machine</Text>
-	<Text as="p" tone="muted" size="sm">
-		Install <Text variant="code">cctui-daemon</Text> on the target host (from GitHub Releases), then
-		enroll it with a user token (create one on the Users page):
-	</Text>
-	<div class="row">
-		<Text variant="code" truncate class="cmd">{enrollCmd}</Text>
-		<Button size="sm" onclick={copyEnroll}>Copy</Button>
-	</div>
-	<Text as="p" tone="muted" size="sm">
-		Then run it as a service: <Text variant="code">cctui-daemon service install</Text>
-	</Text>
-</div>
+		<Card>
+			<Stack>
+				<Text weight="bold">Enroll a machine</Text>
+				<Text as="p" tone="muted" size="sm">
+					Install <Text variant="code">cctui-daemon</Text> on the target host (from GitHub Releases), then
+					enroll it with a user token (create one on the Users page):
+				</Text>
+				<Cluster wrap={false} align="center">
+					<!-- as="div": truncate needs a block element — text-overflow:ellipsis is
+					     ignored on an inline <span>, so the long command would spill. -->
+					<div class="cmd"><Text as="div" variant="code" truncate>{enrollCmd}</Text></div>
+					<Button size="sm" onclick={copyEnroll}>Copy</Button>
+				</Cluster>
+				<Text as="p" tone="muted" size="sm">
+					Then run it as a service: <Text variant="code">cctui-daemon service install</Text>
+				</Text>
+			</Stack>
+		</Card>
+</Stack>
 
 <style>
-	/* Typography from the Heading/Text atoms; only the page rhythm lives here. */
-	.title {
-		margin-bottom: var(--sp-4);
-	}
-	.grid {
-		display: grid;
-		grid-template-columns: repeat(2, 1fr);
-		gap: var(--sp-3);
-		margin-bottom: var(--sp-4);
-	}
-	@media (min-width: 640px) {
-		.grid {
-			grid-template-columns: repeat(3, 1fr);
-		}
-	}
-	.section-title {
-		margin-bottom: var(--sp-3);
-	}
-	.token-grid {
-		margin-bottom: var(--sp-4);
-	}
-	.stat {
-		display: flex;
-		flex-direction: column;
-		gap: var(--sp-1);
-		align-items: flex-start;
-	}
-	/* The stat figure tightens its line-box; the warn variant recolours it.
-	   :global — these ride on the Text atom whose scoped class can't see ours. */
-	.stat :global(.num) {
-		line-height: 1;
-	}
-	.stat :global(.num.warn) {
-		color: var(--warn);
-	}
-	/* The enroll command box is structural chrome around the Text atom. */
-	.install .row :global(.cmd) {
+	/* The enroll command box is structural chrome — a LOCAL element wrapping the
+	   Text atom, so it styles itself with scoped CSS (no :global reach-in). It owns
+	   the shrink (min-width:0 + flex:1) that lets the Text inside truncate. */
+	.cmd {
 		flex: 1;
+		min-width: 0;
 		padding: var(--sp-2) var(--sp-3);
 		background: var(--bg);
 		border: 1px solid var(--border-strong);

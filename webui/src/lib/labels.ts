@@ -1,31 +1,42 @@
-// Session-label helpers (CCT-360): a preset palette for the color picker and a
-// luminance-based text-color pick so a chip's text stays readable on any hue.
+// Session-label color model (CCT-360). Labels carry an HSL *hue* (0–360),
+// reusing the same hue infrastructure as MachineBadge / the ColorPicker /
+// Swatch atoms — no hardcoded hex. The hue is persisted in the label's opaque
+// `color` string (the server never parses it); an unset/unparseable value falls
+// back to a deterministic name hash, exactly like an "Auto" machine color.
 
-/** Curated preset swatches offered first in the label color picker. A custom
- *  hex can still be chosen via the native color input next to them. */
-export const LABEL_COLORS = [
-	'#e11d48', // rose
-	'#f97316', // orange
-	'#eab308', // amber
-	'#22c55e', // green
-	'#14b8a6', // teal
-	'#3b82f6', // blue
-	'#6366f1', // indigo
-	'#a855f7', // purple
-	'#ec4899', // pink
-	'#64748b' // slate
-];
+import { hashHue } from '$lib/format';
 
-/** Black or white text for a given `#rrggbb` background, chosen by perceived
- *  luminance (W3C relative-luminance approximation) so chip text stays legible. */
-export function labelTextColor(hex: string): string {
-	const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
-	if (!m) return '#ffffff';
-	const n = parseInt(m[1], 16);
-	const r = (n >> 16) & 0xff;
-	const g = (n >> 8) & 0xff;
-	const b = n & 0xff;
-	// Perceived luminance (sRGB-weighted). >0.6 → light background → dark text.
-	const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-	return lum > 0.6 ? '#1a1a1a' : '#ffffff';
+/** Preset hues offered by the label ColorPicker, matching the per-machine
+ *  palette (CCT-222/251). `null` (Auto) → deterministic name hash. */
+export const LABEL_HUES = [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330];
+
+/** The hue explicitly stored on a label, or `null` when unset ("Auto"). Used as
+ *  the ColorPicker `value` so the Auto swatch reads as selected when unset. */
+export function storedHue(color: string): number | null {
+	const n = parseInt(color, 10);
+	return Number.isFinite(n) ? ((n % 360) + 360) % 360 : null;
+}
+
+/** The hue to actually paint a label with: the stored hue, or a name hash when
+ *  unset. */
+export function labelHue(label: { name: string; color: string }): number {
+	return storedHue(label.color) ?? hashHue(label.name);
+}
+
+/** Persisted `color` string for a chosen hue (`null` = Auto/name hash → ""). */
+export function hueToColor(hue: number | null): string {
+	return hue == null ? '' : String(hue);
+}
+
+/** Inline tint for a label Badge, mirroring MachineBadge (CCT-272): the theme
+ *  supplies `<sat%> <light%>` pairs in the --mach-* tokens, and the per-label
+ *  hue resolves against them in a real custom property. Applied inline so it
+ *  crosses the Badge component boundary regardless of scope. */
+export function labelTint(label: { name: string; color: string }): string {
+	return (
+		`--mh:${labelHue(label)};` +
+		'background:hsl(var(--mh) var(--mach-bg-sl));' +
+		'color:hsl(var(--mh) var(--mach-fg-sl));' +
+		'border-color:hsl(var(--mh) var(--mach-border-sl))'
+	);
 }

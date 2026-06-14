@@ -6,7 +6,7 @@
 	import { fontScale, SCALE_LEVELS } from '$lib/fontscale.svelte';
 	import { notify } from '$lib/notify.svelte';
 	import { toasts } from '$lib/toast.svelte';
-	import { Button, SelectButton, Text } from '@dorsk/tsumikit';
+	import { IconButton, SelectButton, Text } from '@dorsk/tsumikit';
 	import NavLink from '$lib/components/atoms/NavLink.svelte';
 
 	const version = useVersion();
@@ -58,23 +58,28 @@
 		></span>
 		<div class="spacer"></div>
 		{#if $version.data}
-			<NavLink class="ver mono" href={$version.data.commit_url} target="_blank" rel="noopener">
-				srv v{$version.data.version} · ui v{__CLIENT_VERSION__}
+			<NavLink href={$version.data.commit_url} target="_blank" rel="noopener">
+				<Text size="xs" tone="faint" variant="code">
+					<span class="ver-cluster">
+						<span class="ver-part">srv v{$version.data.version}</span>
+						<span class="ver-part">ui v{__CLIENT_VERSION__}</span>
+					</span>
+				</Text>
 			</NavLink>
 		{/if}
-		<Button
-			variant="ghost"
-			class={`btn-icon${notify.enabled ? ' notify-on' : ''}`}
-			title={notify.enabled ? 'Notifications on — click to mute' : 'Notify me when a session needs input'}
+		<IconButton
+			emoji={notify.enabled ? '🔔' : '🔕'}
+			size={12}
+			label={notify.enabled ? 'Notifications on — click to mute' : 'Notify me when a session needs input'}
+			tone={notify.enabled ? 'accent' : 'none'}
+			pressed={notify.enabled}
 			onclick={toggleNotify}
 			oncontextmenu={(e: MouseEvent) => {
 				e.preventDefault();
 				notify.setSound(!notify.sound);
 				toasts.push(notify.sound ? 'Sound on' : 'Sound off', 'info');
 			}}
-		>
-			{notify.enabled ? '🔔' : '🔕'}
-		</Button>
+		/>
 		<!-- UI font size as 5 discrete levels (CCT-297 #11): a native <select>
 		     overlaid on an "A" glyph. Discrete steps avoid the live-reflow
 		     "seizure" the continuous slider caused. -->
@@ -135,14 +140,40 @@
 		   scale-immune. */
 		--content-max: 896px;
 	}
-	/* The two header icon buttons size off hardcoded rem (min-height/min-width),
-	   not the tokens above — pin them too so they don't grow with the scale. */
-	.hd :global(.btn) {
-		min-height: 40px;
-	}
+	/* All three toolbar controls (bell IconButton + the two SelectButtons) are
+	   icon-only `.btn-icon`s that size off hardcoded rem — pin them so they don't
+	   grow with the global scale. Use a FIXED square (not min-*) so the differing
+	   glyphs (bell SVG, "A", theme emoji) all share one footprint instead of each
+	   sizing to its own content — the cause of the lopsided look on mobile. */
 	.hd :global(.btn-icon) {
+		flex: none;
+		height: 36px;
+		width: 36px;
 		min-height: 36px;
 		min-width: 36px;
+		padding: 0;
+	}
+	/* SelectButton wraps its inner .btn-icon in this clip span; match the square
+	   AND refuse to flex-shrink — otherwise the header's flex row squishes the
+	   wrapper horizontally on narrow screens (the bell resists via its own
+	   min-width; the wrapper needs it spelled out too). */
+	.hd :global(.select-button) {
+		flex: none;
+		height: 36px;
+		width: 36px;
+		min-width: 36px;
+	}
+	/* Version chip wraps as a cluster: each "srv v…" / "ui v…" segment stays
+	   whole, and a line break only ever falls at the dot separator. */
+	.ver-cluster {
+		display: inline-flex;
+		flex-wrap: wrap;
+		justify-content: flex-end;
+		align-items: center;
+		gap: 0 var(--sp-2);
+	}
+	.ver-part {
+		white-space: nowrap;
 	}
 	.hd-inner {
 		height: var(--header-h);
@@ -167,16 +198,5 @@
 	}
 	.conn.mid {
 		background: var(--warn);
-	}
-	/* ver is the class on the NavLink atom, so reach it via :global. */
-	:global(.ver) {
-		font-size: var(--fs-xs);
-		color: var(--text-faint);
-	}
-	/* Notify button tint when enabled — passed as a class to the Button child, so
-	   it must be :global to reach it. The font-size + theme pickers are now the
-	   SelectButton primitive (which owns the overlay-select styling). */
-	:global(.notify-on) {
-		color: var(--accent);
 	}
 </style>

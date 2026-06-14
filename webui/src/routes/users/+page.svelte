@@ -1,12 +1,22 @@
 <script lang="ts">
 	import { useUsers, useUserActions, useMe } from '$lib/queries';
+	import type { UserRow } from '@bindings/UserRow';
 	import { toasts } from '$lib/toast.svelte';
-	import { dateOnly } from '$lib/format';
 	import UserExpand from '$lib/components/molecules/UserExpand.svelte';
 	import SecretReveal from '$lib/components/molecules/SecretReveal.svelte';
-	import { Badge, Button, Heading, Input, Switch, Text } from '@dorsk/tsumikit';
-	import IconButton from '$lib/components/molecules/IconButton.svelte';
-	import { SvelteSet } from 'svelte/reactivity';
+	import EditEntityModal from '$lib/components/molecules/EditEntityModal.svelte';
+	import {
+		Badge,
+		Button,
+		Card,
+		Field,
+		Heading,
+		IconButton,
+		Select,
+		Switch,
+		Text,
+		Timestamp
+	} from '@dorsk/tsumikit';
 	import { auth } from '$lib/auth.svelte';
 
 	const users = useUsers();
@@ -15,30 +25,28 @@
 	const guard = (p: Promise<unknown>) => p.catch((e: Error) => toasts.err(e.message));
 
 	let secret = $state<{ title: string; value: string } | null>(null);
-	// Tree state: which user rows are expanded inline (CCT-222 — no modals).
-	const expanded = new SvelteSet<string>();
-	let filter = $state('');
+	// Pick a user from the dropdown; their detail renders full-width below.
+	// No table-inside-a-table (CCT-301). Create/rename go through a modal, not
+	// native prompt() dialogs.
+	let selectedId = $state('');
+	let createOpen = $state(false);
+	let renameUser = $state<UserRow | null>(null);
 
 	function showSecret(title: string, value: string) {
 		secret = { title, value };
 	}
-	function toggle(id: string) {
-		if (expanded.has(id)) expanded.delete(id);
-		else expanded.add(id);
-	}
 
-	async function createUser() {
-		const name = prompt('New user name')?.trim();
+	async function createUser(name: string | null) {
 		if (!name) return;
 		try {
 			const r = await actions.create(name);
+			selectedId = r.id;
 			showSecret(`Key — ${r.name}`, r.key);
 		} catch (e) {
 			toasts.err((e as Error).message);
 		}
 	}
-	function rename(id: string, current: string) {
-		const name = prompt('New user name', current)?.trim();
+	function rename(id: string, name: string | null) {
 		if (name) guard(actions.rename(id, name).then(() => toasts.ok('Renamed')));
 	}
 	function revoke(id: string, name: string) {
@@ -60,31 +68,31 @@
 				.then(() => toasts.ok(disabled ? `${name} disabled` : `${name} enabled`))
 		);
 	}
+	function toggleDispatch(id: string, can: boolean) {
+		guard(
+			actions.setCanDispatch(id, can).then(() => toasts.ok(can ? 'Dispatch enabled' : 'Dispatch disabled'))
+		);
+	}
 	function purgeUser(id: string, name: string) {
 		if (!confirm(`Permanently delete ${name}? This cannot be undone.`)) return;
 		guard(
 			actions.purgeUser(id).then(() => {
 				toasts.ok('User deleted');
-				expanded.delete(id);
+				if (selectedId === id) selectedId = '';
 			})
 		);
 	}
 
-	// Active first, then revoked; within each, by creation order (stable).
-	const sorted = $derived(
-		[...($users.data ?? [])].sort((a, b) => Number(!!a.revoked_at) - Number(!!b.revoked_at))
-	);
-	const shown = $derived(
-		filter.trim()
-			? sorted.filter((u) => u.name.toLowerCase().includes(filter.trim().toLowerCase()))
-			: sorted
-	);
+	const all = $derived($users.data ?? []);
+	const active = $derived(all.filter((u) => !u.revoked_at));
+	const revoked = $derived(all.filter((u) => !!u.revoked_at));
+	const selected = $derived(all.find((u) => u.id === selectedId) ?? null);
 </script>
 
 <div class="bar row">
 	<Heading level={1}>Users</Heading>
 	<div class="spacer"></div>
-	<Button control variant="primary" onclick={createUser}>+ New user</Button>
+	<Button control variant="primary" onclick={() => (createOpen = true)}>+ New user</Button>
 </div>
 
 <!-- Who am I (CCT-251): role + identity + a non-secret preview of the stored
@@ -107,88 +115,117 @@
 	</div>
 {/if}
 
-{#if ($users.data ?? []).length > 6}
-	<Input placeholder="Filter users…" bind:value={filter} style="margin-bottom: var(--sp-3)" />
-{/if}
-
 {#if $users.isLoading}
 	<div class="empty"><span class="spin"></span></div>
-{:else if shown.length === 0}
-	<div class="empty"><Text tone="muted">{filter.trim() ? 'No matching users.' : 'No users yet.'}</Text></div>
 {:else}
-	<div class="card table-card">
-		<table class="users">
-			<thead>
-				<tr>
-					<th class="col-name">User</th>
-					<th class="col-status">Status</th>
-					<th class="col-created">Created</th>
-					<th class="col-actions">Actions</th>
-				</tr>
-			</thead>
-			<tbody>
-				{#each shown as u (u.id)}
-					{@const open = expanded.has(u.id)}
-					<tr class="user-row" class:open>
-						<td class="col-name">
-							<span class="row name-line">
-								<button class="name-btn row" onclick={() => toggle(u.id)} aria-expanded={open}>
-									<span class="caret" class:open>›</span>
-									<Text weight="semibold" truncate>{u.name}</Text>
-								</button>
-								{#if !u.revoked_at}
-									<IconButton
-										inline
-										class="pen"
-										icon="edit"
-										size={14}
-										title="Rename user"
-										label="Rename user"
-										onclick={() => rename(u.id, u.name)}
-									/>
-								{/if}
-							</span>
-						</td>
-						<td class="col-status">
-							{#if u.revoked_at}
-								<Badge tone="danger">revoked</Badge>
-							{:else if u.disabled_at}
-								<Badge tone="warn">disabled</Badge>
-							{:else}
-								<Badge tone="ok">active</Badge>
-								{#if !u.can_dispatch}
-									<Badge tone="warn">no dispatch</Badge>
-								{/if}
-							{/if}
-						</td>
-						<td class="col-created faint">{dateOnly(u.created_at)}</td>
-						<td class="col-actions">
-							<div class="row row-wrap acts">
-								{#if u.revoked_at}
-									<Button size="sm" variant="danger" onclick={() => purgeUser(u.id, u.name)}>Delete</Button>
-								{:else}
-									<Switch
-										checked={!u.disabled_at}
-										title={u.disabled_at ? 'Enable user' : 'Disable user (temporary)'}
-										label="Active"
-										onclick={() => toggleDisabled(u.id, u.name, !u.disabled_at)}
-									/>
-									<Button size="sm" variant="danger" onclick={() => revoke(u.id, u.name)}>Revoke</Button>
-								{/if}
-							</div>
-						</td>
-					</tr>
-					{#if open}
-						<tr class="expand-row">
-							<td colspan="4">
-								<UserExpand user={u} onsecret={showSecret} />
-							</td>
-						</tr>
-					{/if}
-				{/each}
-			</tbody>
-		</table>
+	<div class="picker">
+		<Field label="Select a user" for="user-select">
+			<Select id="user-select" bind:value={selectedId}>
+				<option value="">Select a user…</option>
+				<optgroup label="Active">
+					{#each active as u (u.id)}<option value={u.id}>{u.name}</option>{/each}
+				</optgroup>
+				{#if revoked.length}
+					<optgroup label="Revoked">
+						{#each revoked as u (u.id)}<option value={u.id}>{u.name}</option>{/each}
+					</optgroup>
+				{/if}
+			</Select>
+		</Field>
 	</div>
+
+	{#if selected}
+		{@const u = selected}
+		<div class="detail-card">
+			<Card>
+				<header class="head">
+					<Heading level={2}>{u.name}</Heading>
+					{#if u.revoked_at}
+						<Badge tone="danger">revoked</Badge>
+					{:else if u.disabled_at}
+						<Badge tone="warn">disabled</Badge>
+					{:else}
+						<Badge tone="ok">active</Badge>
+					{/if}
+					{#if !u.revoked_at}
+						<IconButton
+							inline
+							icon="edit"
+							size={14}
+							title="Rename user"
+							label="Rename user"
+							onclick={() => (renameUser = u)}
+						/>
+					{/if}
+				</header>
+
+				<dl class="props">
+					<div class="prop">
+						<dt><Text size="sm" tone="faint">Created</Text></dt>
+						<dd><Timestamp value={u.created_at} mode="date" size="sm" tone="inherit" /></dd>
+					</div>
+					<div class="prop">
+						<dt><Text size="sm" tone="faint">Active</Text></dt>
+						<dd>
+							<Switch
+								checked={!u.disabled_at}
+								label="Active"
+								title={u.disabled_at ? 'Enable user' : 'Disable user (temporary)'}
+								disabled={!!u.revoked_at}
+								onclick={() => toggleDisabled(u.id, u.name, !u.disabled_at)}
+							/>
+						</dd>
+					</div>
+					<div class="prop">
+						<dt><Text size="sm" tone="faint">Can dispatch</Text></dt>
+						<dd>
+							<Switch
+								checked={u.can_dispatch}
+								label="Can dispatch"
+								title="Allow this user to dispatch k8s worker sessions"
+								disabled={!!u.revoked_at}
+								onclick={() => toggleDispatch(u.id, !u.can_dispatch)}
+							/>
+						</dd>
+					</div>
+				</dl>
+
+				<footer class="acts">
+					{#if u.revoked_at}
+						<Button size="sm" variant="danger" onclick={() => purgeUser(u.id, u.name)}
+							>Delete permanently</Button
+						>
+					{:else}
+						<Button size="sm" variant="danger" onclick={() => revoke(u.id, u.name)}>Revoke</Button>
+					{/if}
+				</footer>
+			</Card>
+		</div>
+
+		<UserExpand user={selected} onsecret={showSecret} />
+	{/if}
+{/if}
+
+{#if createOpen}
+	<EditEntityModal
+		title="New user"
+		fieldLabel="User name"
+		placeholder="e.g. alice"
+		saveLabel="Create user"
+		onsave={(name) => createUser(name)}
+		onclose={() => (createOpen = false)}
+	/>
+{/if}
+
+{#if renameUser}
+	{@const u = renameUser}
+	<EditEntityModal
+		title="Rename user"
+		fieldLabel="User name"
+		name={u.name}
+		onsave={(name) => rename(u.id, name)}
+		onclose={() => (renameUser = null)}
+	/>
 {/if}
 
 {#if secret}
@@ -204,99 +241,50 @@
 		padding: var(--sp-2) var(--sp-3);
 		margin-bottom: var(--sp-4);
 		flex-wrap: wrap;
-	}
-	.table-card {
-		padding: 0;
-		overflow-x: auto;
-	}
-	table.users {
-		width: 100%;
-		border-collapse: collapse;
-		/* Fixed layout: column widths never shift when rows expand (no CLS). */
-		table-layout: fixed;
-	}
-	th {
-		text-align: left;
-		font-size: var(--fs-xs);
-		color: var(--text-muted);
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-		font-weight: var(--fw-semibold);
-		padding: var(--sp-2) var(--sp-3);
-		border-bottom: 1px solid var(--border);
-	}
-	td {
-		padding: var(--sp-2) var(--sp-3);
-		vertical-align: middle;
-	}
-	.user-row td {
-		border-top: 1px solid var(--border);
-	}
-	tbody tr:first-child td {
-		border-top: none;
-	}
-	.col-status {
-		width: 11rem;
-	}
-	.col-created {
-		width: 8rem;
-	}
-	.col-actions {
-		width: 12rem;
-	}
-	.name-line {
-		gap: var(--sp-1);
-		max-width: 100%;
-	}
-	.name-btn {
-		background: none;
-		border: none;
-		padding: 0;
-		gap: var(--sp-2);
-		cursor: pointer;
-		color: var(--text);
-		font: inherit;
-		min-width: 0;
-	}
-	.user-row :global(.pen) {
-		flex: none;
-		opacity: 0;
-		transition: opacity 0.12s var(--ease);
-	}
-	.user-row:hover :global(.pen),
-	.user-row :global(.pen:focus-visible) {
-		opacity: 1;
-	}
-	.caret {
-		flex: none;
-		color: var(--text-muted);
-		font-size: var(--fs-lg);
-		transition: transform 0.12s var(--ease);
-	}
-	.caret.open {
-		transform: rotate(90deg);
-	}
-	.col-status :global(.badge + .badge) {
-		margin-left: var(--sp-1);
-	}
-	.acts {
-		gap: var(--sp-2);
 		align-items: center;
 	}
-	.expand-row td {
-		padding: 0;
-		background: var(--bg-elevated);
-		border-top: 1px solid var(--border);
+	/* Select spans the full width — it's the primary navigation control. */
+	.picker {
+		margin-bottom: var(--sp-4);
 	}
-	@media (max-width: 720px) {
-		.col-created {
-			display: none;
-		}
-		.col-status {
-			width: 7rem;
-		}
-		.col-actions {
-			width: 10rem;
-		}
+	/* The detail card stays at its natural width (full-width only on narrow
+	   screens via max-width), like the accounts cards — it holds little info. */
+	.detail-card {
+		max-width: 30rem;
+		margin-bottom: var(--sp-4);
+	}
+	.head {
+		display: flex;
+		gap: var(--sp-2);
+		align-items: center;
+		flex-wrap: wrap;
+		padding-bottom: var(--sp-3);
+		border-bottom: 1px solid var(--border);
+	}
+	.props {
+		display: grid;
+		grid-template-columns: 1fr auto;
+		gap: var(--sp-3) var(--sp-4);
+		align-items: center;
+		margin: var(--sp-3) 0;
+	}
+	.prop {
+		display: contents;
+	}
+	.props dt {
+		margin: 0;
+	}
+	.props dd {
+		margin: 0;
+		display: flex;
+		align-items: center;
+		justify-content: flex-end;
+	}
+	.acts {
+		display: flex;
+		justify-content: flex-end;
+		gap: var(--sp-2);
+		padding-top: var(--sp-3);
+		border-top: 1px solid var(--border);
 	}
 </style>

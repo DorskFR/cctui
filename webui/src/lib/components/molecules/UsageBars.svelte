@@ -1,7 +1,6 @@
 <script lang="ts">
 	import { useAccountUsage } from '$lib/queries';
-	import { relativeFuture } from '$lib/format';
-	import { Text } from '@dorsk/tsumikit';
+	import { Progress, Text, Timestamp } from '@dorsk/tsumikit';
 
 	// Severity breakpoints on window utilization (%). Below WARN → green ("ok"),
 	// WARN–HOT → amber ("warm"), at/above HOT → red ("hot"). Named so the bar
@@ -41,6 +40,10 @@
 		return { label, pct, tone, resets: w?.resets_at ?? null };
 	}
 
+	// Map the severity name to the shared tsumikit tone vocabulary used by both
+	// Text (percent label) and Progress (fill), so they stay in lockstep.
+	const toneFor = (t: string) => (t === 'hot' ? 'danger' : t === 'warm' ? 'warn' : 'success');
+
 	const bars = $derived(
 		[
 			row('5h', usage?.five_hour),
@@ -55,18 +58,11 @@
 	<div class="bars">
 		{#each bars as b (b.label)}
 			<div class="bar-row">
-				<Text size="xs" tone="muted" class="bar-label">{b.label}</Text>
-				<Text size="xs" class={`bar-pct${b.tone === 'warm' ? ' warm' : ''}${b.tone === 'hot' ? ' hot' : ''}`}>
-					{b.pct}%{#if b.resets}<Text tone="faint" class="bar-reset"> · resets {relativeFuture(b.resets)}</Text>{/if}
+				<Text size="xs" tone="muted" numeric class="bar-label">{b.label}</Text>
+				<Text size="xs" numeric tone={toneFor(b.tone)} class="bar-pct">
+					{b.pct}%{#if b.resets}<Text tone="faint" class="bar-reset"> · resets <Timestamp value={b.resets} mode="relative" tone="faint" /></Text>{/if}
 				</Text>
-				<div class="bar-track">
-					<div
-						class="bar-fill"
-						class:warm={b.tone === 'warm'}
-						class:hot={b.tone === 'hot'}
-						style="width: {b.pct}%"
-					></div>
-				</div>
+				<Progress value={b.pct} label={`${b.label} usage`} tone={toneFor(b.tone)} class="bar-track" />
 			</div>
 		{/each}
 	</div>
@@ -88,40 +84,14 @@
 		align-items: baseline;
 		column-gap: var(--sp-2);
 	}
-	/* These elements are rendered by the Text atom (which owns their size/tone),
-	   so the residual layout + tone-colour chrome must be :global to reach them. */
-	:global(.bar-label) {
-		font-variant-numeric: tabular-nums;
-	}
-	:global(.bar-pct) {
+	/* Both are rendered by tsumikit atoms; the typography/colour now comes from
+	   Text's `numeric`/`tone` and Progress's `tone`, so only the residual grid
+	   placement is reached in here — scoped under .bar-row so it can't leak. */
+	.bar-row :global(.bar-pct) {
 		justify-self: end;
-		font-variant-numeric: tabular-nums;
-		color: var(--ok, #3fb950);
 	}
-	:global(.bar-pct.warm) {
-		color: var(--warn, #d29922);
-	}
-	:global(.bar-pct.hot) {
-		color: var(--danger, #f85149);
-	}
-	.bar-track {
+	.bar-row :global(.bar-track) {
 		grid-column: 1 / -1;
 		margin-top: 0.25rem;
-		height: 6px;
-		border-radius: 999px;
-		background: var(--bg-elevated-2);
-		overflow: hidden;
-	}
-	.bar-fill {
-		height: 100%;
-		border-radius: 999px;
-		background: var(--ok, #3fb950);
-		transition: width 0.2s var(--ease);
-	}
-	.bar-fill.warm {
-		background: var(--warn, #d29922);
-	}
-	.bar-fill.hot {
-		background: var(--danger, #f85149);
 	}
 </style>

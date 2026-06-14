@@ -1,10 +1,9 @@
-// Session-action hook, extracted from ConversationDrawer with no behavior
-// change. Collects the thin "do X to this session" wrappers that previously
-// lived as a wall of `doX` functions in the drawer: rename, archive, interrupt,
-// resume, in-place model switch, auto-approve toggle, and the export / copy
-// actions. Side-effects (toasts, lifecycle) live here; the header/composer stay
-// presentational and call these via callbacks. Mirrors the ForkController /
-// ScrollController controller pattern used by the rest of this drawer.
+// Session-action hook. Collects the thin "do X to this session" wrappers:
+// rename, archive, interrupt, resume, in-place model switch, auto-approve
+// toggle, and the export / copy actions. Side-effects (toasts, lifecycle) live
+// here; the header/composer stay presentational and call these via callbacks.
+// Follows the ForkController / ScrollController pattern used elsewhere in this
+// drawer.
 import type { SessionListItem } from '@bindings/SessionListItem';
 import type { AgentEvent } from '@bindings/AgentEvent';
 import type { ViewOpts } from './types';

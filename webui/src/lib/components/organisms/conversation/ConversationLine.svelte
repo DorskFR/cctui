@@ -3,18 +3,14 @@
 	// extracted from ConversationDrawer. Pure presentation: it renders the meta
 	// row (role badge, tool name, time, delivery state), the bubble, and the
 	// per-message action buttons, delegating retry/edit/save/copy to callbacks.
-	import { clockTime } from '$lib/format';
-	import { compact } from '$lib/format';
-	import IconButton from '$lib/components/molecules/IconButton.svelte';
-	import { Button, Text } from '@dorsk/tsumikit';
+	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
+	import { Badge, Button, IconButton, Text, Timestamp } from '@dorsk/tsumikit';
 	import type { Line } from './types';
-	import type { TokenUsage as TokenUsageT } from '@bindings/TokenUsage';
 	import './bubble.css';
 
 	let {
 		ln,
 		archived,
-		tooltip,
 		onretry,
 		onedit,
 		onsaveimage,
@@ -22,8 +18,6 @@
 	}: {
 		ln: Line;
 		archived: boolean;
-		// Precomputed hover tooltip for this line's timestamp (CCT-345 / CCT-331).
-		tooltip: string;
 		onretry: (ts: number) => void;
 		onedit: (text: string, ts: number) => void;
 		onsaveimage: (e: MouseEvent, ln: Line) => void;
@@ -37,20 +31,6 @@
 		const mins = Math.floor(secs / 60);
 		return `${mins}m ${secs % 60}s`;
 	}
-	function usageLabel(u: TokenUsageT | undefined): string {
-		if (!u) return '';
-		const total =
-			Number(u.tokens_in) +
-			Number(u.tokens_out) +
-			Number(u.cache_read_tokens) +
-			Number(u.cache_creation_tokens);
-		if (!total) return '';
-		const cache =
-			Number(u.cache_read_tokens) + Number(u.cache_creation_tokens) > 0
-				? ` · cache ${compact(Number(u.cache_read_tokens) + Number(u.cache_creation_tokens))}`
-				: '';
-		return `${compact(total)} tok${cache}`;
-	}
 </script>
 
 <div
@@ -60,13 +40,13 @@
 	class:failed={!!ln.failed}
 >
 	<div class="lmeta row">
-		<span class="badge-role" class:mcp={ln.mcp}
-			>{ln.mcp ? 'mcp' : ln.role === 'result' ? 'result' : ln.role}</span
+		<Badge size="sm" class={`badge-role${ln.mcp ? ' mcp' : ''}`}
+			>{ln.mcp ? 'mcp' : ln.role === 'result' ? 'result' : ln.role}</Badge
 		>
 		{#if ln.role === 'tool' || ln.role === 'result'}
 			<span class="who tool-name">{ln.role === 'result' ? '↳ ' : ''}{ln.tool ?? 'tool'}</span>
 		{/if}
-		<Text tone="faint" size="xs" title={tooltip}>{clockTime(ln.ts)}</Text>
+		<Timestamp value={ln.ts} mode="time" tone="faint" size="xs" />
 		{#if ln.failed}
 			<Text class="not-delivered" tone="danger" size="xs" title={ln.failed}>⚠ Not delivered</Text>
 			{#if !archived}
@@ -78,6 +58,7 @@
 				<IconButton
 					class="edit-pending"
 					icon="edit"
+
 					label="Edit message"
 					title="Pull this message back into the composer to edit and resend"
 					onclick={() => onedit(ln.text ?? '', ln.ts)}
@@ -95,6 +76,7 @@
 				<IconButton
 					class="edit-pending"
 					icon="edit"
+
 					label="Edit pending message"
 					title="Pull this still-pending message back into the composer to edit and resend"
 					onclick={() => onedit(ln.text ?? '', ln.ts)}
@@ -108,6 +90,7 @@
 			<IconButton
 				class="copy"
 				icon="image"
+
 				label="Save as image"
 				title="Save this message as an image"
 				onclick={(e) => onsaveimage(e, ln)}
@@ -115,6 +98,7 @@
 			<IconButton
 				class="copy"
 				icon="markdown"
+
 				label="Copy as Markdown"
 				title="Copy this message as Markdown"
 				onclick={() => oncopymarkdown(ln)}
@@ -129,9 +113,13 @@
 		<pre class="bubble mono code">{ln.text}</pre>
 	{/if}
 	{#if (ln.durationMs || ln.usage) && (ln.role === 'assistant' || ln.role === 'result')}
-		<Text as="div" class="line-foot" tone="faint" size="xs">
-			{[durationLabel(ln.durationMs), usageLabel(ln.usage)].filter(Boolean).join(' · ')}
-		</Text>
+		{@const dur = durationLabel(ln.durationMs)}
+		<div class="line-foot row">
+			<!-- How long the model took to reply (CCT) — kept alongside the per-reply
+			     token breakdown (no Σ; that's the conversation-wide aggregate). -->
+			{#if dur}<Text tone="faint" size="xs">⏱ {dur}</Text>{/if}
+			{#if ln.usage}<TokenUsage usage={ln.usage} showSum={false} />{/if}
+		</div>
 	{/if}
 </div>
 
@@ -162,39 +150,36 @@
 		white-space: nowrap;
 		max-width: 60%;
 	}
-	/* Role badge pill (CCT-161 item 2) — colored per role via --role-* tokens. */
-	.badge-role {
+	/* Role badge pill (CCT-161 item 2) — rides on the tsumikit Badge atom (pill
+	   shape, sizing); these overrides add the per-role tint via --role-* tokens
+	   and the uppercase treatment Badge doesn't carry. */
+	.line :global(.badge-role) {
 		--bc: var(--text-muted);
-		display: inline-flex;
-		align-items: center;
 		padding: 1px var(--sp-2);
-		border-radius: var(--r-pill);
-		font-size: 0.6875rem;
 		font-weight: var(--fw-semibold);
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
 		color: var(--bc);
 		background: color-mix(in srgb, var(--bc) 14%, transparent);
 		border: 1px solid color-mix(in srgb, var(--bc) 40%, transparent);
-		white-space: nowrap;
 	}
-	.line.user .badge-role {
+	.line.user :global(.badge-role) {
 		--bc: var(--role-user);
 	}
-	.line.assistant .badge-role {
+	.line.assistant :global(.badge-role) {
 		--bc: var(--role-assistant);
 	}
-	.line.system .badge-role {
+	.line.system :global(.badge-role) {
 		--bc: var(--role-system);
 	}
-	.line.tool .badge-role {
+	.line.tool :global(.badge-role) {
 		--bc: var(--role-tool);
 	}
-	.line.result .badge-role {
+	.line.result :global(.badge-role) {
 		--bc: var(--role-tool);
 	}
-	.line.tool.mcp .badge-role,
-	.badge-role.mcp {
+	.line.tool.mcp :global(.badge-role),
+	.line :global(.badge-role.mcp) {
 		--bc: var(--role-mcp);
 	}
 	/* Per-message action buttons (copy-as-Markdown + save-image, CCT-297 #17/#18),

@@ -3,20 +3,27 @@
 	import BrandLogo from '$lib/components/atoms/BrandLogo.svelte';
 
 	// Brand logo wrapped in the adapter-tinted span (Anthropic = amber,
-	// Codex = blue). Shared by the session card and the chat header.
+	// Codex = blue). Shared by the session card, the chat header, and the
+	// accounts grid (which passes `provider`: anthropic|openai).
 	let {
 		adapter,
+		provider,
 		size = 16
 	}: {
 		adapter?: AdapterId | null;
+		provider?: string | null;
 		size?: number;
 	} = $props();
 
-	const isCodex = $derived((adapter ?? 'claude-code').toString().startsWith('codex'));
+	const isCodex = $derived(
+		provider != null
+			? provider === 'openai'
+			: (adapter ?? 'claude-code').toString().startsWith('codex')
+	);
 </script>
 
-<span class="adapter" class:codex={isCodex} title={String(adapter ?? 'claude-code')}>
-	<BrandLogo {adapter} {size} />
+<span class="adapter" class:codex={isCodex} title={provider ?? String(adapter ?? 'claude-code')}>
+	<BrandLogo {adapter} {provider} {size} />
 </span>
 
 <style>

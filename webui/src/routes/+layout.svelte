@@ -8,6 +8,7 @@
 	import Toaster from '$lib/components/organisms/Toaster.svelte';
 	import Login from '$lib/components/organisms/Login.svelte';
 	import { installCodeCopy } from '$lib/codecopy';
+	import { Container } from '@dorsk/tsumikit';
 
 	let { children } = $props();
 
@@ -34,9 +35,9 @@
 		<div class="app">
 			<Header />
 			<main class="content">
-				<div class="container">
+				<Container>
 					{@render children?.()}
-				</div>
+				</Container>
 			</main>
 			<BottomNav />
 		</div>
