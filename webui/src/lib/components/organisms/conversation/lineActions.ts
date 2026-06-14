@@ -1,16 +1,12 @@
 // Per-message line actions (copy-as-Markdown, save-as-PNG) for the conversation
 // drawer, extracted from ConversationDrawer with no behavior change.
 import { toasts } from '$lib/toast.svelte';
+import { copyText } from '$lib/clipboard';
 import { lineMarkdown } from './format';
 import type { Line } from './types';
 
 export async function copyLineMarkdown(ln: Line) {
-	try {
-		await navigator.clipboard.writeText(lineMarkdown(ln));
-		toasts.ok('Copied as Markdown');
-	} catch {
-		toasts.err('Clipboard unavailable');
-	}
+	await copyText(lineMarkdown(ln), 'Copied as Markdown');
 }
 
 // Save a single message as a PNG (CCT-297 #18), rendered with the current theme.
