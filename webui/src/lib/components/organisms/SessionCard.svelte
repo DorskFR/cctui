@@ -117,9 +117,8 @@
 	const u = $derived(s.token_usage);
 	// Subagent cost rollup (CCT-297 #19): only meaningful when there are agents.
 	const rollup = $derived(subagentCost && subagentCost.count > 0 ? subagentCost : null);
-	// CCT-233: the active/inactive status badges are pure noise — liveness is
-	// already conveyed by the colored dot. Only keep the badge for the meaningful
-	// lifecycle states ("new", "archived").
+	// Liveness is conveyed by the colored dot, so the badge only carries the
+	// meaningful lifecycle states ("new", "archived"), not active/inactive.
 	const showStatusBadge = $derived(s.status === 'new' || s.status === 'archived');
 	// Label picker is only interactive on top-level rows with an attach handler.
 	const labelEditable = $derived(!!onAttachLabel && !child);

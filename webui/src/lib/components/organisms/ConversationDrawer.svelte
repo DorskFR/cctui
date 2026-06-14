@@ -337,8 +337,8 @@
 	// Mobile chat controls collapse behind text buttons that open popovers
 	// (CCT-311); null = no panel open. Desktop shows the controls inline.
 	let mobilePanel = $state<'filters' | 'format' | 'auto' | null>(null);
-	// Replaces the misleading "unarchive" (CCT-250 item 8): the agent-side worker
-	// is gone, so re-dispatch a fresh session seeded with this one's config.
+	// The agent-side worker is gone once archived, so re-dispatch a fresh session
+	// seeded with this one's config rather than trying to revive it.
 	function newFromScript() {
 		onNewFromScript?.(session);
 	}

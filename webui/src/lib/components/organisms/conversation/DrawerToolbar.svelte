@@ -22,11 +22,10 @@
 		ontoggleAuto: () => void;
 	} = $props();
 
-	// Cycle a tag: off → include → exclude → off (CCT-250 item 2).
-	// 'include' is EXCLUSIVE (CCT-297 #21): selecting "only this" for a type clears
-	// any other type's include so the active selection is unambiguous (previously
-	// several could be included at once, which read as "only the last one wins").
-	// 'exclude' stays additive — you can hide multiple types independently.
+	// Cycle a tag: off → include → exclude → off.
+	// 'include' is EXCLUSIVE: selecting "only this" for a type clears any other
+	// type's include so the active selection is unambiguous.
+	// 'exclude' is additive — you can hide multiple types independently.
 	function cycleTag(t: MsgType) {
 		const order = ['off', 'include', 'exclude'] as const;
 		const i = order.indexOf(view.typeFilter[t]);

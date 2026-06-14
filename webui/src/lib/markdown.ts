@@ -48,9 +48,8 @@ const PSEUDO_TAG =
 	/&lt;(\/?(?:system[- ]message|system-reminder|task-notification|command-name|command-message|local-command[^&]*|bash-input|bash-stdout|bash-stderr)[^&]*?)&gt;/gi;
 
 // ── Syntax highlighting ─────────────────────────────────────────────────────
-// Real grammar-driven highlighting via highlight.js (CCT-279 item 5), replacing
-// the old hand-rolled regex tokenizer. We register only the languages we care
-// about (the common-set bundle), so the dep stays lean. highlight.js emits
+// Grammar-driven highlighting via highlight.js. We register only the languages
+// we care about (the common-set bundle), so the dep stays lean. highlight.js emits
 // already-escaped HTML with `hljs-*` token classes; we map those to the existing
 // `--syn-*` theme variables in CSS so dark/light/sepia themes still drive the
 // colors (and the standalone export's baked palette keeps working). Unknown

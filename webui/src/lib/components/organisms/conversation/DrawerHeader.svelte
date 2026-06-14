@@ -254,11 +254,11 @@
 		display: contents;
 	}
 	/* Desktop shows every action inline, so the ⋯ flyout toggle is pointless
-	   there — only surface it when actions actually collapse (CCT-345). */
+	   there — only surface it when actions actually collapse. */
 	/* NB: `.more` is rendered by the IconButton child component, so the rule
 	   MUST be `:global` — a plain `.more` selector is scoped to THIS
 	   component and never matches the child <button>, which is why the kebab
-	   leaked onto desktop (CCT-323). */
+	   would otherwise show on desktop. */
 	.dhead :global(.tapbtn.more) {
 		display: none;
 	}
@@ -271,15 +271,15 @@
 			position: absolute;
 			top: calc(100% + var(--sp-1));
 			right: 0;
-			/* Above the message list + composer; the old z:5 let chat content sit on
-			   top of the flyout (CCT-345). */
+			/* Stack above the message list + composer so chat content can't sit on
+			   top of the flyout. */
 			z-index: 60;
 			flex-direction: column;
 			align-items: stretch;
-			/* Fixed, content-comfortable width: the rows are width:100%, which made a
-			   max-content panel width circular so it collapsed to min-width and the
-			   long labels overflowed off the right edge (CCT-345). Pin a width that
-			   fits the labels and never exceeds the viewport. */
+			/* Fixed, content-comfortable width: the rows are width:100%, so a
+			   max-content panel width would be circular and collapse to min-width,
+			   overflowing the long labels off the right edge. Pin a width that fits
+			   the labels and never exceeds the viewport. */
 			width: 17rem;
 			max-width: calc(100vw - 1.5rem);
 			gap: var(--sp-1);
@@ -292,14 +292,9 @@
 		.secondary.open {
 			display: flex;
 		}
-		/* Flyout rows are icon + text label, NOT the bordered 2.5rem icon-chip
-		   used in the desktop toolbar. Reusing the .tapbtn primitive drew an
-		   empty bordered square around each icon and broke alignment (CCT-323);
-		   here we flatten it into a borderless, auto-height, full-width row. */
-		/* NB: the `.dhead` prefix raises specificity ABOVE the base
-		   `.dhead :global(.tapbtn)` rule below (equal specificity but later in
-		   source) — without it the rows stayed pinned at the 2.5rem icon-chip
-		   width and the labels wrapped inside a 40px box (CCT-345). */
+		/* The `.dhead` prefix is required: it raises specificity above the base
+		   `.dhead :global(.tapbtn)` rule below (equal specificity, but that rule is
+		   later in source), so without it these flyout overrides never apply. */
 		.dhead .secondary :global(.tapbtn),
 		.dhead .secondary :global(.font-pick) {
 			width: 100%;

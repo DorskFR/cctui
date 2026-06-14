@@ -80,19 +80,19 @@
 		top: calc(var(--header-h) + var(--safe-top));
 		z-index: 6;
 		margin-bottom: var(--sp-4);
-		/* Only pad the bottom (CCT-314): symmetric top padding pushed the title
-		   below every other page's header. */
+		/* Pad the bottom only: top padding would drop the title below the header
+		   baseline every other page aligns to. */
 		padding: 0 0 var(--sp-2);
 		gap: var(--sp-2);
 		align-items: center;
 		/* Wrap so controls reflow onto a second line instead of overflowing when
-		   the UI scale grows the title/buttons (CCT-308 item 3). */
+		   the UI scale grows the title/buttons. */
 		flex-wrap: wrap;
 		background: var(--bg);
 	}
 	/* The title is the Heading atom; target it via :global. Pinned to a fixed px
-	   size (toolbar chrome, not content) so the UI font scale doesn't shove the
-	   action buttons out of frame (CCT-308 item 3). */
+	   size (it's toolbar chrome, not content) so the UI font scale doesn't push
+	   the action buttons out of frame. */
 	:global(.page-title) {
 		font-size: 28px;
 		align-self: center;
