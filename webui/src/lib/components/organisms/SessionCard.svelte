@@ -1,12 +1,12 @@
 <script lang="ts">
 	import type { SessionListItem } from '@bindings/SessionListItem';
-	import { relativeTime, statusBadgeClass, timestampTooltip } from '$lib/format';
+	import { relativeTime, statusBadgeClass, timestampTooltip, modelShort, modelFamily } from '$lib/format';
 	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
 	import LabelBadge from '$lib/components/molecules/LabelBadge.svelte';
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
 	import type { Label } from '@bindings/Label';
 	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
-	import { Badge, Card, Text } from '@dorsk/tsumikit';
+	import { Badge, Card, Cluster, Icon, Stack, Text } from '@dorsk/tsumikit';
 	import { escapeHtml } from '$lib/markdown';
 	import { highlightTerms } from '$lib/search';
 	import { copyText } from '$lib/clipboard';
@@ -104,6 +104,8 @@
 	// already conveyed by the colored dot. Only keep the badge for the meaningful
 	// lifecycle states ("new", "archived").
 	const showStatusBadge = $derived(s.status === 'new' || s.status === 'archived');
+	// Label picker is only interactive on top-level rows with an attach handler.
+	const labelEditable = $derived(!!onAttachLabel && !child);
 
 	// ── Swipe-to-archive (CCT-172, touch only) ──────────────────────────────
 	// Track a dominantly-horizontal left-swipe of the row; commit (archive) once
@@ -119,6 +121,26 @@
 	let cardW = $state(0); // row width captured at gesture start
 	const swipeThreshold = $derived(cardW ? cardW * 0.4 : Infinity);
 	const swipeProgress = $derived(Math.min(1, -swipeX / swipeThreshold));
+
+	// Surface state is passed inline on the Card element: the swipe
+	// transform/transition, the compact tighter padding, and the attention/selection
+	// tints. (Scoped CSS can't reach a child component's root element, so these can't
+	// live in the style block; they're card-instance state, not reusable rules, so
+	// inline is the right home.)
+	const cardStyle = $derived(
+		[
+			`transform: translateX(${swipeX}px)`,
+			`transition: ${swiping ? 'none' : 'transform 0.2s var(--ease)'}`,
+			dense ? 'padding: var(--sp-2) var(--sp-3)' : '',
+			grid && !dense ? 'min-height: 13rem' : grid ? 'min-height: 9rem' : '',
+			needsInput ? 'background: var(--attention-bg); border-left: 3px solid var(--attention-bar)' : '',
+			selected
+				? 'background: color-mix(in srgb, var(--accent) 12%, var(--bg-elevated)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent)'
+				: ''
+		]
+			.filter(Boolean)
+			.join('; ')
+	);
 
 	function handleClick() {
 		// A drag (even one that sprang back) shouldn't also open the session.
@@ -209,24 +231,16 @@
 	<!-- Tappable surface is the tsumikit Card as a <div> (NOT a <button>): the row
 	     hosts its own interactive controls (label color pickers, the +-popover,
 	     remove buttons), which can't legally nest inside a <button>. `tap` carries
-	     the hover/active affordance; role/tabindex/onkeydown restore button a11y. -->
+	     the hover/active affordance; role/tabindex/onkeydown restore button a11y.
+	     The layout is built ENTIRELY from kit primitives (Stack / Cluster) — no card
+	     class overrides; the only per-card styling is the surface state passed inline
+	     on the Card (scoped CSS can't reach a child component's root element). -->
 	<Card
 		as="div"
 		tap
 		role="button"
 		tabindex={0}
-		class={[
-			'sc stack',
-			child && 'child',
-			dense && 'dense',
-			grid && 'grid',
-			needsInput && 'attn',
-			selectable && 'selectable',
-			selected && 'selected'
-		]
-			.filter(Boolean)
-			.join(' ')}
-		style="transform: translateX({swipeX}px)"
+		style={cardStyle}
 		onclick={handleClick}
 		onkeydown={(e: KeyboardEvent) => {
 			if (e.key === 'Enter' || e.key === ' ') {
@@ -235,117 +249,175 @@
 			}
 		}}
 	>
-	<!-- Canonical field model (CCT-320/321): the SAME skeleton renders in all four
-	     variants (list/card × compact/detailed). Density only changes spacing, the
-	     preview line count, and grid sizing — never WHERE a field lives.
-	       1. Lead row: star · status dot · machine badge · title · [hand/perm/status] · spacer · subagent Σ chip
-	       2. Preview:  last-message / search snippet (compact = 1 line + …, detailed = multi-line)
-	       3. Meta row: model name + logo · token sum (ONCE) · timestamp · path -->
-	<!-- 1. LEAD ── [gutter] · dot · machine/subagent · title  ····  status · perm · time
-	     lead-left grows (pushing lead-right to the edge); lead-right is the upper
-	     half of the right scan-column (the lower half is the footer's logo). -->
-	<div class="row lead">
-		<div class="lead-left">
-			<!-- Gutter: one fixed slot — checkbox (select mode) / ↳ (child) / star. -->
-			{#if selectable}
-				<span class="gutter check" class:on={selected} aria-hidden="true">{selected ? '✓' : ''}</span>
-			{:else if child}
-				<span class="gutter indent" title="subagent" aria-hidden="true">↳</span>
-			{:else if onTogglePin}
-				<span
-					class="gutter star"
-					class:on={s.pinned}
-					role="button"
-					tabindex="0"
-					title={s.pinned ? 'Unpin' : 'Pin to top (exempt from auto-archive)'}
-					aria-pressed={s.pinned}
-					aria-label={s.pinned ? 'Unpin session' : 'Pin session'}
-					onpointerdown={(e) => e.stopPropagation()}
-					onclick={(e) => {
-						e.stopPropagation();
-						onTogglePin?.(s);
-					}}
-					onkeydown={(e) => {
-						if (e.key === 'Enter' || e.key === ' ') {
-							e.preventDefault();
+		{#if dense && !grid}
+			<!-- COMPACT LIST = ONE real row: a single no-wrap Cluster whose direct
+			     children are the surviving fields, left→right. No nested bands. -->
+			<Cluster wrap={false} gap="var(--sp-2)">
+				{@render gutter()}
+				{@render engine()}
+				{@render titleText()}
+				<!-- Message takes the slack and ellipsises aggressively. -->
+				{#if s.match_snippet || s.last_message_text}
+					<Text
+						truncate
+						tone={s.match_snippet ? 'default' : 'muted'}
+						size="xs"
+						style="flex:1 1 0;min-width:0"
+						>{s.match_snippet ? `🔍 ${s.match_snippet}` : s.last_message_text}</Text
+					>
+				{:else}
+					<span style="flex:1 1 auto"></span>
+				{/if}
+				<!-- Path collapses to a folder glyph (the basename already leads the title). -->
+				<span class="folder" title={s.working_dir} aria-hidden="true"><Icon name="folder" size={14} /></span>
+				{@render time()}
+				{#if s.model}<Text tone="muted" size="xs" style="flex:none;white-space:nowrap">{modelFamily(s.model)}</Text>{/if}
+				{@render logo()}
+			</Cluster>
+		{:else}
+			<!-- DETAILED / PROJ = stacked bands (Stack), each horizontal band a Cluster. -->
+			<Stack gap="var(--sp-2)" style={grid ? 'height:100%' : ''}>
+				<!-- 1. LEAD: gutter · dot · engine · title · [+] ···· status · perm · time -->
+				<Cluster wrap={false} gap="var(--sp-2)">
+					{@render gutter()}
+					{@render engine()}
+					{@render titleText()}
+					{#if labelEditable && s.labels.length === 0}
+						<LabelBadge
+							labels={[]}
+							editable
+							{allLabels}
+							onCreate={onCreateLabel}
+							onAttach={(lid) => onAttachLabel?.(s.id, lid)}
+							onDetach={(lid) => onDetachLabel?.(s.id, lid)}
+						/>
+					{/if}
+					<span style="flex:1 1 auto"></span>
+					{#if showStatusBadge}<Badge class={statusBadgeClass(s.status)} style="padding:0.05rem var(--sp-2)">{s.status}</Badge>{/if}
+					{#if pendingCount > 0}<Badge tone="warn" style="padding:0.05rem var(--sp-2)">{pendingCount} perm</Badge>{/if}
+					{@render time()}
+				</Cluster>
+
+				<!-- 2. LABELS: own row once ≥1 label is attached; chips + trailing `+`. -->
+				{#if s.labels.length > 0}
+					<LabelBadge
+						labels={s.labels}
+						editable={labelEditable}
+						{allLabels}
+						onCreate={onCreateLabel}
+						onAttach={(lid) => onAttachLabel?.(s.id, lid)}
+						onDetach={(lid) => onDetachLabel?.(s.id, lid)}
+					/>
+				{/if}
+
+				<!-- 3. PREVIEW: multi-line clamp (grid grows to fill). -->
+				{#if s.match_snippet}
+					<div class="preview match" style={grid ? 'flex:1 1 auto' : ''}>🔍 {#if snippetHtml}{@html snippetHtml}{:else}{s.match_snippet}{/if}</div>
+				{:else if s.last_message_text}
+					<div class="preview last muted" style={grid ? 'flex:1 1 auto' : ''}>{s.last_message_text}</div>
+				{/if}
+
+				<!-- 4. FOOTER: path ···· tokens · Σ · model · logo. Wraps when tight so a
+				     long model can't shove the logo out (grid pins it to the bottom). -->
+				<Cluster gap="var(--sp-2)" style={grid ? 'margin-top:auto' : ''}>
+					<!-- Copy-to-clipboard path chip. Flexes and truncates from the LEFT
+					     (direction:rtl) so the basename stays visible; a min floor keeps it
+					     from shrinking to nothing (the Cluster wraps the right group first). -->
+					<Badge
+						as="button"
+						mono
+						title="Click to copy — {s.working_dir}"
+						style="flex:0 1 auto;max-width:22rem;min-width:min(100%,14ch);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;text-align:left"
+						onpointerdown={(e: PointerEvent) => e.stopPropagation()}
+						onclick={(e: MouseEvent) => {
 							e.stopPropagation();
-							onTogglePin?.(s);
-						}
-					}}>{s.pinned ? '★' : '☆'}</span
-				>
-			{/if}
-			<span class="dot {livenessClass}"></span>
-			{#if child}
-				<Badge tone="info" style="padding:0.05rem var(--sp-2)">subagent</Badge>
-			{:else}
-				<MachineBadge name={s.machine_name} id={s.machine_id} hue={s.machine_hue} mono />
-			{/if}
-			<Text class="title" weight="semibold" truncate>{title}</Text>
-			<!-- Labels + add (CCT-360): right after the title. Read-only chips
-			     everywhere; the inline add/remove picker only on top-level rows with an
-			     attach handler. The popover is portaled out of this card. -->
-			{#if s.labels.length > 0 || (onAttachLabel && !child)}
-				<LabelBadge
-					labels={s.labels}
-					editable={!!onAttachLabel && !child}
-					{allLabels}
-					onCreate={onCreateLabel}
-					onAttach={(lid) => onAttachLabel?.(s.id, lid)}
-					onDetach={(lid) => onDetachLabel?.(s.id, lid)}
-				/>
-			{/if}
-		</div>
-		<div class="lead-right">
-			{#if showStatusBadge}<Badge class={statusBadgeClass(s.status)} style="padding:0.05rem var(--sp-2)">{s.status}</Badge>{/if}
-			{#if pendingCount > 0}<Badge tone="warn" style="padding:0.05rem var(--sp-2)">{pendingCount} perm</Badge>{/if}
-			{#if s.last_message_at}<Text
-					class="ago"
-					tone="faint"
-					size="xs"
-					title={timestampTooltip(s.registered_at, s.last_message_at, s.last_activity_at)}
-					>{relativeTime(s.last_message_at)}</Text
-				>{/if}
-		</div>
-	</div>
-
-	<!-- 3. PREVIEW ── last-message / search snippet. Compact = single ellipsised
-	     line; detailed/grid = multi-line clamp. `🔍` marks the search variant. -->
-	{#if s.match_snippet}
-		<div class="preview match">🔍 {#if snippetHtml}{@html snippetHtml}{:else}{s.match_snippet}{/if}</div>
-	{:else if s.last_message_text}
-		<div class="preview last muted">{s.last_message_text}</div>
-	{/if}
-
-	<!-- 4. FOOTER ── path  ····  tokens · Σ · model · logo. The right cluster is the
-	     lower half of the right scan-column; the logo is the rightmost anchor and the
-	     ONLY footer field kept in compact (path/tokens/Σ/model drop). Path flexes and
-	     truncates from the LEFT so the working-dir basename stays visible. -->
-	<div class="row meta">
-		<!-- Path is a copy-to-clipboard chip (stopPropagation so it never opens the
-		     drawer). Truncates from the LEFT so the basename stays visible. -->
-		<Badge
-			as="button"
-			mono
-			class="path"
-			title="Click to copy — {s.working_dir}"
-			onpointerdown={(e: PointerEvent) => e.stopPropagation()}
-			onclick={(e: MouseEvent) => {
-				e.stopPropagation();
-				copyText(s.working_dir);
-			}}>{s.working_dir}</Badge
-		>
-		<div class="meta-right">
-			<!-- Σ leads the token block; when this parent spawned subagents we pass the
-			     parent+subagents aggregate as the sum so Σ reflects the true cost. -->
-			<div class="tok">
-				<TokenUsage usage={u} cold={s.cache_cold} sum={rollup ? rollup.tokens : null} />
-			</div>
-			{#if s.model}<Text class="model" tone="muted" size="xs">{s.model}{s.effort ? ` · ${s.effort}` : ''}</Text>{/if}
-			<span class="logo"><AdapterIcon adapter={s.adapter_id} size={14} /></span>
-		</div>
-	</div>
+							copyText(s.working_dir);
+						}}>{s.working_dir}</Badge
+					>
+					<Cluster wrap={false} gap="var(--sp-2)" style="margin-left:auto;flex:none">
+						<TokenUsage usage={u} cold={s.cache_cold} sum={rollup ? rollup.tokens : null} />
+						{#if s.model}<Text tone="muted" size="xs" truncate style="max-width:14rem;flex:none">{modelShort(s.model)}{s.effort ? ` · ${s.effort}` : ''}</Text>{/if}
+						{@render logo()}
+					</Cluster>
+				</Cluster>
+			</Stack>
+		{/if}
 	</Card>
 </div>
+
+<!-- ── Shared field snippets (rendered into both the compact row and the detailed
+     bands so the markup isn't duplicated) ───────────────────────────────────── -->
+{#snippet gutter()}
+	{#if selectable}
+		<span class="gutter check" class:on={selected} aria-hidden="true">{selected ? '✓' : ''}</span>
+	{:else if child}
+		<span class="gutter indent" title="subagent" aria-hidden="true">↳</span>
+	{:else if onTogglePin}
+		<span
+			class="gutter star"
+			class:on={s.pinned}
+			role="button"
+			tabindex="0"
+			title={s.pinned ? 'Unpin' : 'Pin to top (exempt from auto-archive)'}
+			aria-pressed={s.pinned}
+			aria-label={s.pinned ? 'Unpin session' : 'Pin session'}
+			onpointerdown={(e) => e.stopPropagation()}
+			onclick={(e) => {
+				e.stopPropagation();
+				onTogglePin?.(s);
+			}}
+			onkeydown={(e) => {
+				if (e.key === 'Enter' || e.key === ' ') {
+					e.preventDefault();
+					e.stopPropagation();
+					onTogglePin?.(s);
+				}
+			}}>{s.pinned ? '★' : '☆'}</span
+		>
+	{/if}
+{/snippet}
+
+{#snippet engine()}
+	<span class="dot {livenessClass}"></span>
+	{#if child}
+		<Badge tone="info" style="padding:0.05rem var(--sp-2)">subagent</Badge>
+	{:else}
+		<MachineBadge name={s.machine_name} id={s.machine_id} hue={s.machine_hue} mono />
+	{/if}
+{/snippet}
+
+{#snippet titleText()}
+	<!-- Compact row: the title shows in full up to a max-width cap (~28ch, but never
+	     more than ~55% of the row) and ellipsises past it; the message preview gets
+	     `flex:1 1 0` so it grows into whatever space is left WITHOUT exerting shrink
+	     pressure on the title. A short title shrink-wraps to its content (no blank
+	     gap), a long title caps and the message fills the remainder. (A flat
+	     `min-width` floor was wrong both ways: it reserved space for short titles —
+	     blank gap — and `fit-content(18ch)` is an invalid min-width value so it was
+	     dropped, leaving the truncate class's min-width:0 → squished to nothing.)
+	     Detailed/grid bands keep the plain shrink-to-fit. -->
+	<Text
+		weight="semibold"
+		size={dense ? 'md' : 'lg'}
+		truncate
+		style={dense && !grid ? 'flex:0 1 auto;min-width:0;max-width:min(28ch,55%)' : 'flex:0 1 auto;min-width:0'}
+		>{title}</Text
+	>
+{/snippet}
+
+{#snippet time()}
+	{#if s.last_message_at}<Text
+			tone="faint"
+			size="xs"
+			style="flex:none;white-space:nowrap"
+			title={timestampTooltip(s.registered_at, s.last_message_at, s.last_activity_at)}
+			>{relativeTime(s.last_message_at)}</Text
+		>{/if}
+{/snippet}
+
+{#snippet logo()}
+	<span style="flex:none;display:inline-flex"><AdapterIcon adapter={s.adapter_id} size={14} /></span>
+{/snippet}
 
 <style>
 	/* Swipe wrapper (CCT-172): positioning context for the reveal layer behind
@@ -368,58 +440,24 @@
 	.sc-wrap.grid {
 		height: 100%;
 	}
-	/* ── Canonical preview clamp (CCT-320/321) ──────────────────────────────
-	   The last-message preview is the only field whose SIZE differs by variant;
-	   its POSITION (between lead row and meta row) is constant. Compact = single
-	   truncated line with a plain `…`; detailed = a multi-line clamp. No fade. */
+	/* ── Last-message preview (detailed / grid only) ────────────────────────────
+	   The compact row renders the message as a <Text truncate> inline; here it's a
+	   multi-line clamp. List clamps to 3 lines; grid grows (flex set inline) and
+	   clamps to 6. (This is a native element WE render, so plain scoped CSS works.) */
 	.preview {
 		min-width: 0;
-		white-space: nowrap;
 		overflow: hidden;
-		text-overflow: ellipsis;
 		font-size: var(--fs-sm);
-	}
-	.sc-wrap.dense .preview {
-		font-size: var(--fs-xs);
-	}
-	/* Detailed (list + card): multi-line clamp. List clamps to 3 lines; grid lets
-	   the preview grow to fill the card's free vertical space (still clamped). */
-	.sc-wrap:not(.dense) .preview {
 		white-space: normal;
 		display: -webkit-box;
 		-webkit-line-clamp: 3;
 		line-clamp: 3;
 		-webkit-box-orient: vertical;
 	}
-	/* Card grid: the card fills its cell; the preview flex-grows into the gap
-	   between the lead row and the pinned meta row so tall cards aren't empty. */
-	.sc.grid {
-		height: 100%;
-		min-height: 9rem;
-	}
-	.sc-wrap.grid .meta {
-		margin-top: auto;
-	}
-	.sc.grid:not(.dense) {
-		/* Detailed cards are the MOST spacious view (CCT-321): taller floor + more
-		   padding than compact cards, and the preview grows to fill. */
-		min-height: 13rem;
-		padding: var(--sp-4);
-	}
 	.sc-wrap.grid:not(.dense) .preview {
-		flex: 1 1 auto;
 		min-height: 0;
 		-webkit-line-clamp: 6;
 		line-clamp: 6;
-	}
-	/* Track the finger with no transition while swiping; ease back (spring) or
-	   off-screen (commit) when released. */
-	.sc-wrap .sc {
-		transition: transform 0.2s var(--ease);
-	}
-	.sc-wrap.swiping .sc {
-		transition: none;
-		user-select: none;
 	}
 	/* Colored layer revealed behind the row as it slides left. */
 	.swipe-reveal {
@@ -445,83 +483,9 @@
 	.swipe-reveal-inner.armed {
 		transform: scale(1.12);
 	}
-	.sc {
-		gap: var(--sp-2);
-		text-align: left;
-		width: 100%;
-		position: relative;
-		z-index: 1;
-	}
-	.sc.child {
-		/* Subagent rows: just a plain 1px border, no faded/clipped left-border
-		   accent (CCT-345). The indent already signals the parent relationship. */
-		border: 1px solid var(--border);
-		background: var(--bg-elevated);
-		color: var(--text);
-	}
-	.sc.dense {
-		padding: var(--sp-2) var(--sp-3);
-		gap: var(--sp-1);
-	}
 	/* Compact mode is a flat list — no indent for subagents. */
 	.sc-wrap.dense.child {
 		margin-left: 0;
-	}
-	.sc.dense.child {
-		border: 1px solid var(--border);
-	}
-	/* ── Compact list = one row per session ───────────────────────────────────
-	   Detailed stacks four bands (lead / labels / preview / footer). Compact
-	   FLATTENS them onto a single line by subtraction: `display:contents` dissolves
-	   the .lead and .meta band wrappers so their leaf groups (lead-left, lead-right,
-	   meta-right) become direct flex children of .sc alongside .preview, then `order`
-	   welds them into the canonical left→right run:
-	       lead-left · preview(flex) · lead-right(status·perm·time) · logo
-	   The inboard footer fields (path · tokens · Σ · model) and the label strip drop
-	   out — nothing re-orders, so every surviving field keeps its detailed position.
-	   Scope is list-compact only: grid-compact stays a stacked card. */
-	.sc.dense:not(.grid) {
-		flex-direction: row;
-		align-items: center;
-		flex-wrap: nowrap;
-		gap: var(--sp-2);
-	}
-	.sc-wrap.dense:not(.grid) .lead,
-	.sc-wrap.dense:not(.grid) .meta {
-		display: contents;
-	}
-	.sc-wrap.dense:not(.grid) .lead-left {
-		order: 1;
-		flex: 0 1 auto;
-		min-width: 0;
-	}
-	.sc-wrap.dense:not(.grid) .preview {
-		order: 2;
-		flex: 1 1 auto;
-	}
-	.sc-wrap.dense:not(.grid) .lead-right {
-		order: 3;
-		flex: none;
-	}
-	.sc-wrap.dense:not(.grid) .meta-right {
-		order: 4;
-		flex: none;
-	}
-	/* Subtracted in compact: path and the inboard cost fields — only the logo (the
-	   rightmost engine anchor) survives in .meta-right. */
-	.sc-wrap.dense:not(.grid) :global(.path),
-	.sc-wrap.dense:not(.grid) .meta-right .tok,
-	.sc-wrap.dense:not(.grid) .meta-right :global(.model) {
-		display: none;
-	}
-	.sc.attn {
-		background: var(--attention-bg);
-		border-left: 3px solid var(--attention-bar);
-	}
-	/* Multi-select (CCT-172) */
-	.sc.selected {
-		background: color-mix(in srgb, var(--accent) 12%, var(--bg-elevated));
-		border-color: color-mix(in srgb, var(--accent) 55%, transparent);
 	}
 	.check {
 		flex: none;
@@ -542,27 +506,6 @@
 		border-color: var(--accent);
 		color: var(--bg);
 	}
-	/* Lead row: [gutter · dot · machine/subagent · title] grows and pushes the
-	   right cluster [status · perm · time] to the edge. Nowrap — the title is the
-	   only thing that shrinks (min-width:0), so the right cluster never wraps below. */
-	.lead {
-		gap: var(--sp-2);
-		flex-wrap: nowrap;
-		align-items: center;
-	}
-	.lead-left {
-		display: flex;
-		align-items: center;
-		gap: var(--sp-2);
-		flex: 1 1 auto;
-		min-width: 0;
-	}
-	.lead-right {
-		display: flex;
-		align-items: center;
-		gap: var(--sp-2);
-		flex: none;
-	}
 	/* Fixed gutter slot: star / checkbox / ↳ all share it so titles align. */
 	.gutter {
 		flex: none;
@@ -571,18 +514,6 @@
 		color: var(--text-faint);
 		font-size: var(--fs-md);
 		line-height: 1;
-	}
-	.sc :global(.title) {
-		font-size: var(--fs-md);
-		/* Don't grow (CCT-360): size to content so inline labels + the add button
-		   sit right after the title; the trailing spacer absorbs free space. Still
-		   shrinks (min-width:0) to truncate long titles when the row is tight. */
-		flex: 0 1 auto;
-		min-width: 0;
-	}
-	/* Detailed views give the title more presence (CCT-321: clearly visible title). */
-	.sc:not(.dense) :global(.title) {
-		font-size: var(--fs-lg, 1.05rem);
 	}
 	.star {
 		background: none;
@@ -601,61 +532,11 @@
 	.star:hover {
 		color: var(--warn, #e0a800);
 	}
-	/* Footer row: path (grows, left) ···· [tokens · Σ · model · logo] (right cluster,
-	   the lower half of the right scan-column). Nowrap — the path is the only growable
-	   element and truncates first; the right cluster is content-sized and protected. */
-	.meta {
-		gap: var(--sp-2);
-		flex-wrap: nowrap;
-		align-items: center;
-	}
-	.meta-right {
-		display: flex;
-		align-items: center;
-		gap: var(--sp-2);
-		flex: none;
-		margin-left: auto;
-	}
-	.tok {
+	/* Compact-list folder glyph (a native span we render). */
+	.folder {
 		display: inline-flex;
 		flex: none;
-	}
-	/* Provider logo: the rightmost anchor, present in every variant. */
-	.logo {
-		display: inline-flex;
-		flex: none;
-	}
-	/* Model label: keep it from eating the row when names are long. */
-	.meta-right :global(.model) {
-		flex: none;
-		max-width: 14rem;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-	@media (max-width: 639px) {
-		.meta-right :global(.model) {
-			max-width: 8rem;
-		}
-	}
-	/* Relative-time hint ("4m ago") must never wrap to a second line (CCT-297 #15). */
-	.lead-right :global(.ago) {
-		flex: none;
-		white-space: nowrap;
-	}
-	/* Working-dir path chip: sized to its content and pinned LEFT — it does NOT
-	   stretch to the token cluster (which is pushed right by .meta-right's
-	   margin-auto). Capped by max-width and truncated from the LEFT (`direction:rtl`)
-	   so the basename — the part that identifies the session — stays visible. */
-	.meta :global(.path) {
-		flex: 0 1 auto;
-		max-width: 22rem;
-		min-width: 0;
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		direction: rtl;
-		text-align: left;
+		color: var(--text-faint);
 	}
 	/* Search match snippet (CCT-184): accent rule + clamp, sharing the .preview
 	   sizing above so the snippet sits in the same slot as the message preview. */

@@ -10,10 +10,22 @@
 	import { toasts } from '$lib/toast.svelte';
 	import { dateOnly, relativeTime, compact } from '$lib/format';
 	import UsageBars from '$lib/components/molecules/UsageBars.svelte';
-	import { Badge, Button, Field, Heading, Input, Link, Text } from '@dorsk/tsumikit';
+	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
+	import {
+		AutoGrid,
+		Button,
+		Card,
+		Cluster,
+		Field,
+		Heading,
+		Input,
+		Link,
+		Stack,
+		Text
+	} from '@dorsk/tsumikit';
 	import Select from '$lib/components/atoms/Select.svelte';
 	import Modal from '$lib/components/molecules/Modal.svelte';
-	import { usd, providerLabel } from './accounts.logic';
+	import { providerLabel } from './accounts.logic';
 
 	const accounts = useAccounts();
 	const actions = useAccountActions();
@@ -169,11 +181,10 @@
 	const rows = $derived([...($accounts.data ?? [])]);
 </script>
 
-<div class="bar row">
+<Cluster as="header" class="bar" justify="space-between" align="center">
 	<Heading level={1}>Accounts</Heading>
-	<div class="spacer"></div>
 	<Button control variant="primary" onclick={openCreate}>+ New account</Button>
-</div>
+</Cluster>
 
 <div class="intro">
 	<Text as="p" tone="muted" size="sm">
@@ -188,39 +199,38 @@
 {:else if rows.length === 0}
 	<div class="empty"><Text tone="muted">No accounts yet.</Text></div>
 {:else}
-	<div class="accounts-grid">
+	<AutoGrid min="22rem" gap="var(--sp-3)">
 		{#each rows as a (a.id)}
-			<article class="card account-card">
-				<div class="account-head row">
-					<div class="account-title">
+			<Card class="account-card">
+				<Stack gap="var(--sp-3)" class="card-body">
+					<Cluster gap="var(--sp-2)" align="center" wrap={false}>
+						<span class="provider-mark" title={providerLabel(a.provider)}>
+							<AdapterIcon provider={a.provider} size={22} />
+						</span>
 						<Heading level={2} size="lg" class="account-name">{a.name}</Heading>
-						<Text as="div" tone="muted" size="xs">{providerLabel(a.provider)}</Text>
-					</div>
-					<Badge>{providerLabel(a.provider)}</Badge>
-				</div>
-				{#if a.provider === 'anthropic'}
-					<div class="usage-block">
-						<Text as="div" tone="muted" size="xs" class="usage-head">Subscription usage</Text>
-						<UsageBars id={a.id} provider={a.provider} />
-					</div>
-				{/if}
-				<dl class="stats">
-					{#if isAdmin}
-						<div><dt>Owner</dt><dd>{a.user_name ?? '—'}</dd></div>
+					</Cluster>
+					{#if a.provider === 'anthropic'}
+						<div class="usage-block">
+							<Text as="div" tone="muted" size="xs" class="usage-head">Subscription usage</Text>
+							<UsageBars id={a.id} provider={a.provider} />
+						</div>
 					{/if}
-					<div><dt>Requests</dt><dd>{compact(a.request_count)}</dd></div>
-					<div><dt>Tokens</dt><dd>{compact(a.total_tokens)}</dd></div>
-					<div><dt>Cost</dt><dd>{usd(a.est_cost_usd)}</dd></div>
-					<div><dt>Last used</dt><dd>{relativeTime(a.last_used_at)}</dd></div>
-					<div><dt>Created</dt><dd>{dateOnly(a.created_at)}</dd></div>
-				</dl>
-				<div class="row acts">
+					<dl class="stats">
+						{#if isAdmin}
+							<div><dt>Owner</dt><dd>{a.user_name ?? '—'}</dd></div>
+						{/if}
+						<div><dt>Requests</dt><dd>{compact(a.request_count)}</dd></div>
+						<div><dt>Last used</dt><dd>{relativeTime(a.last_used_at)}</dd></div>
+						<div><dt>Created</dt><dd>{dateOnly(a.created_at)}</dd></div>
+					</dl>
+				</Stack>
+				<Cluster as="footer" gap="var(--sp-1)" justify="flex-end" class="card-foot">
 					<Button size="sm" onclick={() => openRename(a)}>Rename</Button>
 					<Button size="sm" variant="danger" onclick={() => remove(a)}>Delete</Button>
-				</div>
-			</article>
+				</Cluster>
+			</Card>
 		{/each}
-	</div>
+	</AutoGrid>
 {/if}
 
 {#if editing !== undefined}
@@ -315,32 +325,46 @@
 {/if}
 
 <style>
-	.bar {
+	:global(.bar) {
 		margin-bottom: var(--sp-2);
 	}
 	/* Typography from the Text atom; only the page rhythm lives here. */
 	.intro {
 		margin-bottom: var(--sp-4);
 	}
-	.accounts-grid {
-		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(min(100%, 22rem), 1fr));
-		gap: var(--sp-3);
+	/* Provider brand mark — keeps the AdapterIcon's own tint (amber/blue) but
+	   gives it a soft tile so it reads as an avatar, not inline text. */
+	.provider-mark {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		flex: none;
+		width: 2.25rem;
+		height: 2.25rem;
+		border-radius: var(--r-sm);
+		background: var(--bg-elevated-2);
+		border: 1px solid var(--border);
 	}
-	.account-card {
+	/* Cards stretch to the tallest in their row (AutoGrid), then the body grows
+	   so the footer's action buttons pin to the bottom edge — consistent across
+	   cards regardless of whether a usage block is present. */
+	:global(.account-card) {
 		display: flex;
 		flex-direction: column;
-		gap: var(--sp-3);
+		height: 100%;
 	}
-	.account-head {
-		align-items: flex-start;
-	}
-	.account-title {
-		flex: 1;
+	:global(.account-card .card-body) {
+		flex: 1 1 auto;
 		min-width: 0;
 	}
-	.account-title :global(.account-name) {
+	:global(.account-card .account-name) {
+		min-width: 0;
 		word-break: break-word;
+	}
+	:global(.account-card .card-foot) {
+		margin-top: var(--sp-3);
+		padding-top: var(--sp-3);
+		border-top: 1px solid var(--border);
 	}
 	.usage-block {
 		display: flex;
@@ -378,11 +402,6 @@
 		font-size: var(--fs-sm);
 		font-weight: var(--fw-medium);
 		overflow-wrap: anywhere;
-	}
-	.acts {
-		gap: var(--sp-1);
-		justify-content: flex-end;
-		flex-wrap: wrap;
 	}
 	.editor-body {
 		display: flex;

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { useAccountUsage } from '$lib/queries';
 	import { relativeFuture } from '$lib/format';
-	import { Text } from '@dorsk/tsumikit';
+	import { Progress, Text } from '@dorsk/tsumikit';
 
 	// Severity breakpoints on window utilization (%). Below WARN → green ("ok"),
 	// WARN–HOT → amber ("warm"), at/above HOT → red ("hot"). Named so the bar
@@ -59,14 +59,7 @@
 				<Text size="xs" class={`bar-pct${b.tone === 'warm' ? ' warm' : ''}${b.tone === 'hot' ? ' hot' : ''}`}>
 					{b.pct}%{#if b.resets}<Text tone="faint" class="bar-reset"> · resets {relativeFuture(b.resets)}</Text>{/if}
 				</Text>
-				<div class="bar-track">
-					<div
-						class="bar-fill"
-						class:warm={b.tone === 'warm'}
-						class:hot={b.tone === 'hot'}
-						style="width: {b.pct}%"
-					></div>
-				</div>
+				<Progress value={b.pct} label={`${b.label} usage`} class={`bar-track ${b.tone}`} />
 			</div>
 		{/each}
 	</div>
@@ -104,24 +97,17 @@
 	:global(.bar-pct.hot) {
 		color: var(--danger, #f85149);
 	}
-	.bar-track {
+	/* tsumikit Progress renders the track/fill; we only place it on its own row
+	   and retint the fill (--accent feeds Progress's inner .bar) by severity. */
+	:global(.bar-track) {
 		grid-column: 1 / -1;
 		margin-top: 0.25rem;
-		height: 6px;
-		border-radius: 999px;
-		background: var(--bg-elevated-2);
-		overflow: hidden;
+		--accent: var(--ok, #3fb950);
 	}
-	.bar-fill {
-		height: 100%;
-		border-radius: 999px;
-		background: var(--ok, #3fb950);
-		transition: width 0.2s var(--ease);
+	:global(.bar-track.warm) {
+		--accent: var(--warn, #d29922);
 	}
-	.bar-fill.warm {
-		background: var(--warn, #d29922);
-	}
-	.bar-fill.hot {
-		background: var(--danger, #f85149);
+	:global(.bar-track.hot) {
+		--accent: var(--danger, #f85149);
 	}
 </style>

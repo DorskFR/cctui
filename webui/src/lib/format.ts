@@ -110,6 +110,24 @@ export function statusBadgeClass(status: string): string {
 	}
 }
 
+/** Short model label for the detailed footer: drop the vendor prefix
+ *  ("claude-opus-4-8" → "opus-4-8", "gpt-5-codex" stays) so a long id stops
+ *  shoving the provider logo out of the row. */
+export function modelShort(model: string): string {
+	return model.replace(/^(claude|anthropic)-/i, '');
+}
+
+/** Model FAMILY only — the one word that survives in the compact list row
+ *  ("claude-opus-4-8" → "opus", "gpt-5-codex" → "gpt"). Falls back to the first
+ *  segment of the (prefix-stripped) id for engines we don't enumerate. */
+export function modelFamily(model: string): string {
+	const m = model.toLowerCase();
+	for (const fam of ['opus', 'sonnet', 'haiku', 'fable', 'gpt', 'o1', 'o3', 'o4', 'gemini', 'grok']) {
+		if (m.includes(fam)) return fam;
+	}
+	return modelShort(model).split(/[-\s]/)[0] || model;
+}
+
 /** Deterministic accent color for a machine label (badge tinting). */
 export function hashHue(s: string): number {
 	let h = 0;

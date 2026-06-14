@@ -1,12 +1,23 @@
 <script lang="ts">
-	// Tiny brand marks for the two adapters. `currentColor` so callers control
-	// the hue via CSS. Anthropic mark for claude-code, OpenAI blossom for codex.
+	// Tiny brand marks for the two adapters/providers. `currentColor` so callers
+	// control the hue via CSS. Anthropic mark for claude-code / anthropic, OpenAI
+	// blossom for codex / openai. Pass `provider` (account-side: anthropic|openai)
+	// or `adapter` (session-side: claude-code|codex…) — either resolves the mark.
 	let {
 		adapter,
+		provider,
 		size = 16
-	}: { adapter: string | null | undefined; size?: number } = $props();
+	}: {
+		adapter?: string | null;
+		provider?: string | null;
+		size?: number;
+	} = $props();
 
-	const isCodex = $derived((adapter ?? 'claude-code').toString().startsWith('codex'));
+	const isCodex = $derived(
+		provider != null
+			? provider === 'openai'
+			: (adapter ?? 'claude-code').toString().startsWith('codex')
+	);
 </script>
 
 {#if isCodex}

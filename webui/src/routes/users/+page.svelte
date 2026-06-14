@@ -1,12 +1,12 @@
 <script lang="ts">
 	import { useUsers, useUserActions, useMe } from '$lib/queries';
+	import type { UserRow } from '@bindings/UserRow';
 	import { toasts } from '$lib/toast.svelte';
 	import { dateOnly } from '$lib/format';
 	import UserExpand from '$lib/components/molecules/UserExpand.svelte';
 	import SecretReveal from '$lib/components/molecules/SecretReveal.svelte';
-	import { Badge, Button, Heading, Input, Switch, Text } from '@dorsk/tsumikit';
-	import IconButton from '$lib/components/molecules/IconButton.svelte';
-	import { SvelteSet } from 'svelte/reactivity';
+	import { Badge, Button, DataTable, Heading, IconButton, Input, Switch, Text } from '@dorsk/tsumikit';
+	import type { Column } from '@dorsk/tsumikit';
 	import { auth } from '$lib/auth.svelte';
 
 	const users = useUsers();
@@ -15,16 +15,17 @@
 	const guard = (p: Promise<unknown>) => p.catch((e: Error) => toasts.err(e.message));
 
 	let secret = $state<{ title: string; value: string } | null>(null);
-	// Tree state: which user rows are expanded inline (CCT-222 — no modals).
-	const expanded = new SvelteSet<string>();
+	// Master/detail (CCT-222 — no modals): clicking a row's caret selects it and
+	// reveals its detail panel below the table. DataTable renders flat rows, so
+	// the expansion lives under the table rather than interleaved.
+	let selectedId = $state<string | null>(null);
 	let filter = $state('');
 
 	function showSecret(title: string, value: string) {
 		secret = { title, value };
 	}
 	function toggle(id: string) {
-		if (expanded.has(id)) expanded.delete(id);
-		else expanded.add(id);
+		selectedId = selectedId === id ? null : id;
 	}
 
 	async function createUser() {
@@ -65,7 +66,7 @@
 		guard(
 			actions.purgeUser(id).then(() => {
 				toasts.ok('User deleted');
-				expanded.delete(id);
+				if (selectedId === id) selectedId = null;
 			})
 		);
 	}
@@ -79,7 +80,67 @@
 			? sorted.filter((u) => u.name.toLowerCase().includes(filter.trim().toLowerCase()))
 			: sorted
 	);
+	const selected = $derived(shown.find((u) => u.id === selectedId) ?? null);
+
+	const cols: Column<UserRow>[] = [
+		{ key: 'name', label: 'User', sortable: true, get: (u) => u.name },
+		{ key: 'status', label: 'Status', width: '12rem' },
+		{ key: 'created', label: 'Created', width: '8rem', sortable: true, get: (u) => u.created_at },
+		{ key: 'actions', label: 'Actions', width: '12rem', align: 'right' }
+	];
 </script>
+
+{#snippet cellName(u: UserRow)}
+	{@const open = selectedId === u.id}
+	<span class="row name-line">
+		<button class="name-btn row" onclick={() => toggle(u.id)} aria-expanded={open}>
+			<span class="caret" class:open>›</span>
+			<Text weight="semibold" truncate>{u.name}</Text>
+		</button>
+		{#if !u.revoked_at}
+			<span class="pen-wrap">
+				<IconButton
+					inline
+					icon="edit"
+					size={14}
+					title="Rename user"
+					label="Rename user"
+					onclick={() => rename(u.id, u.name)}
+				/>
+			</span>
+		{/if}
+	</span>
+{/snippet}
+{#snippet cellStatus(u: UserRow)}
+	{#if u.revoked_at}
+		<Badge tone="danger">revoked</Badge>
+	{:else if u.disabled_at}
+		<Badge tone="warn">disabled</Badge>
+	{:else}
+		<Badge tone="ok">active</Badge>
+		{#if !u.can_dispatch}
+			<Badge tone="warn">no dispatch</Badge>
+		{/if}
+	{/if}
+{/snippet}
+{#snippet cellCreated(u: UserRow)}
+	<Text size="sm" tone="faint">{dateOnly(u.created_at)}</Text>
+{/snippet}
+{#snippet cellActions(u: UserRow)}
+	<div class="row row-wrap acts">
+		{#if u.revoked_at}
+			<Button size="sm" variant="danger" onclick={() => purgeUser(u.id, u.name)}>Delete</Button>
+		{:else}
+			<Switch
+				checked={!u.disabled_at}
+				title={u.disabled_at ? 'Enable user' : 'Disable user (temporary)'}
+				label="Active"
+				onclick={() => toggleDisabled(u.id, u.name, !u.disabled_at)}
+			/>
+			<Button size="sm" variant="danger" onclick={() => revoke(u.id, u.name)}>Revoke</Button>
+		{/if}
+	</div>
+{/snippet}
 
 <div class="bar row">
 	<Heading level={1}>Users</Heading>
@@ -113,82 +174,20 @@
 
 {#if $users.isLoading}
 	<div class="empty"><span class="spin"></span></div>
-{:else if shown.length === 0}
-	<div class="empty"><Text tone="muted">{filter.trim() ? 'No matching users.' : 'No users yet.'}</Text></div>
 {:else}
-	<div class="card table-card">
-		<table class="users">
-			<thead>
-				<tr>
-					<th class="col-name">User</th>
-					<th class="col-status">Status</th>
-					<th class="col-created">Created</th>
-					<th class="col-actions">Actions</th>
-				</tr>
-			</thead>
-			<tbody>
-				{#each shown as u (u.id)}
-					{@const open = expanded.has(u.id)}
-					<tr class="user-row" class:open>
-						<td class="col-name">
-							<span class="row name-line">
-								<button class="name-btn row" onclick={() => toggle(u.id)} aria-expanded={open}>
-									<span class="caret" class:open>›</span>
-									<Text weight="semibold" truncate>{u.name}</Text>
-								</button>
-								{#if !u.revoked_at}
-									<IconButton
-										inline
-										class="pen"
-										icon="edit"
-										size={14}
-										title="Rename user"
-										label="Rename user"
-										onclick={() => rename(u.id, u.name)}
-									/>
-								{/if}
-							</span>
-						</td>
-						<td class="col-status">
-							{#if u.revoked_at}
-								<Badge tone="danger">revoked</Badge>
-							{:else if u.disabled_at}
-								<Badge tone="warn">disabled</Badge>
-							{:else}
-								<Badge tone="ok">active</Badge>
-								{#if !u.can_dispatch}
-									<Badge tone="warn">no dispatch</Badge>
-								{/if}
-							{/if}
-						</td>
-						<td class="col-created faint">{dateOnly(u.created_at)}</td>
-						<td class="col-actions">
-							<div class="row row-wrap acts">
-								{#if u.revoked_at}
-									<Button size="sm" variant="danger" onclick={() => purgeUser(u.id, u.name)}>Delete</Button>
-								{:else}
-									<Switch
-										checked={!u.disabled_at}
-										title={u.disabled_at ? 'Enable user' : 'Disable user (temporary)'}
-										label="Active"
-										onclick={() => toggleDisabled(u.id, u.name, !u.disabled_at)}
-									/>
-									<Button size="sm" variant="danger" onclick={() => revoke(u.id, u.name)}>Revoke</Button>
-								{/if}
-							</div>
-						</td>
-					</tr>
-					{#if open}
-						<tr class="expand-row">
-							<td colspan="4">
-								<UserExpand user={u} onsecret={showSecret} />
-							</td>
-						</tr>
-					{/if}
-				{/each}
-			</tbody>
-		</table>
-	</div>
+	<DataTable
+		columns={cols}
+		rows={shown}
+		rowKey={(u) => u.id}
+		empty={filter.trim() ? 'No matching users.' : 'No users yet.'}
+		stickyHeader
+		cellSnippets={{ name: cellName, status: cellStatus, created: cellCreated, actions: cellActions }}
+	/>
+	{#if selected}
+		<div class="card detail">
+			<UserExpand user={selected} onsecret={showSecret} />
+		</div>
+	{/if}
 {/if}
 
 {#if secret}
@@ -204,49 +203,16 @@
 		padding: var(--sp-2) var(--sp-3);
 		margin-bottom: var(--sp-4);
 		flex-wrap: wrap;
+		align-items: center;
 	}
-	.table-card {
+	.detail {
+		margin-top: var(--sp-3);
 		padding: 0;
-		overflow-x: auto;
-	}
-	table.users {
-		width: 100%;
-		border-collapse: collapse;
-		/* Fixed layout: column widths never shift when rows expand (no CLS). */
-		table-layout: fixed;
-	}
-	th {
-		text-align: left;
-		font-size: var(--fs-xs);
-		color: var(--text-muted);
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-		font-weight: var(--fw-semibold);
-		padding: var(--sp-2) var(--sp-3);
-		border-bottom: 1px solid var(--border);
-	}
-	td {
-		padding: var(--sp-2) var(--sp-3);
-		vertical-align: middle;
-	}
-	.user-row td {
-		border-top: 1px solid var(--border);
-	}
-	tbody tr:first-child td {
-		border-top: none;
-	}
-	.col-status {
-		width: 11rem;
-	}
-	.col-created {
-		width: 8rem;
-	}
-	.col-actions {
-		width: 12rem;
 	}
 	.name-line {
 		gap: var(--sp-1);
 		max-width: 100%;
+		align-items: center;
 	}
 	.name-btn {
 		background: none;
@@ -257,14 +223,16 @@
 		color: var(--text);
 		font: inherit;
 		min-width: 0;
+		align-items: center;
 	}
-	.user-row :global(.pen) {
+	.pen-wrap {
+		display: inline-flex;
 		flex: none;
 		opacity: 0;
 		transition: opacity 0.12s var(--ease);
 	}
-	.user-row:hover :global(.pen),
-	.user-row :global(.pen:focus-visible) {
+	.name-line:hover .pen-wrap,
+	.pen-wrap:focus-within {
 		opacity: 1;
 	}
 	.caret {
@@ -276,27 +244,9 @@
 	.caret.open {
 		transform: rotate(90deg);
 	}
-	.col-status :global(.badge + .badge) {
-		margin-left: var(--sp-1);
-	}
 	.acts {
 		gap: var(--sp-2);
 		align-items: center;
-	}
-	.expand-row td {
-		padding: 0;
-		background: var(--bg-elevated);
-		border-top: 1px solid var(--border);
-	}
-	@media (max-width: 720px) {
-		.col-created {
-			display: none;
-		}
-		.col-status {
-			width: 7rem;
-		}
-		.col-actions {
-			width: 10rem;
-		}
+		justify-content: flex-end;
 	}
 </style>
