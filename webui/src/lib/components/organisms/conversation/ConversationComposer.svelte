@@ -267,21 +267,24 @@
 				     control stays a compact square matching the textarea/Send height. -->
 				<FileButton label="Attach files" multiple iconOnly onfiles={addFiles} />
 			{/if}
-			<Textarea
-				style="flex:1;min-width:0;min-height:2.5rem;max-height:40vh;resize:none;overflow-y:auto"
-				rows={1}
-				placeholder={dragActive
-					? 'Drop files to attach'
-					: coarsePointer
-						? 'Message…'
-						: 'Message… (Enter to send)'}
-				bind:value={input}
-				bind:el={scroll.textarea}
-				onkeydown={onKey}
-				oninput={() => resetHistoryNav()}
-				onpaste={onPaste}
-				autoresize
-			/>
+			<!-- Starts at one row (Textarea's baked-in min-height); the user grows it
+			     with the top drag handle (resize="top"). -->
+			<div class="composer-input">
+				<Textarea
+					rows={1}
+					resize="top"
+					placeholder={dragActive
+						? 'Drop files to attach'
+						: coarsePointer
+							? 'Message…'
+							: 'Message… (Enter to send)'}
+					bind:value={input}
+					bind:el={scroll.textarea}
+					onkeydown={onKey}
+					oninput={() => resetHistoryNav()}
+					onpaste={onPaste}
+				/>
+			</div>
 			<Button
 				variant="primary"
 				tone={cacheCold ? 'info' : coldImminent ? 'warn' : 'none'}
@@ -332,6 +335,12 @@
 		align-items: flex-end;
 		/* Never let the row exceed the composer width — nowrap + min-width:0 on the
 		   textarea keeps it contained. */
+		min-width: 0;
+	}
+	/* The Textarea now ships its own .textarea-wrap root, so the row flex lives on
+	   this layout wrapper rather than the textarea element. */
+	.composer-input {
+		flex: 1;
 		min-width: 0;
 	}
 	.attachments {
