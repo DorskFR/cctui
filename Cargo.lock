@@ -427,7 +427,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-admin"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "cctui-proto",
@@ -442,7 +442,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-daemon"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -470,7 +470,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-dispatcher-docker"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "bollard",
@@ -495,7 +495,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-dispatcher-kube"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "cctui-proto",
@@ -521,7 +521,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-guard"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -537,7 +537,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-guard-proxy"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -553,7 +553,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-proto"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "chrono",
  "hex",
@@ -566,7 +566,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-server"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -602,7 +602,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-supervisor"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "caps",
@@ -618,7 +618,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-tui"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "cctui-proto",
