@@ -222,7 +222,7 @@
 			>{session.model ?? ''}{session.effort ? ` · ${session.effort}` : ''} ⑂</Badge>
 		{/if}
 		<MachineBadge name={session.machine_name} id={session.machine_id} hue={session.machine_hue} mono />
-		<WorkingDir path={session.working_dir} style="flex:0 1 auto;min-width:0;margin-right:auto" />
+		<WorkingDir path={session.working_dir} />
 		<TokenUsage usage={session.token_usage} />
 	</div>
 </div>

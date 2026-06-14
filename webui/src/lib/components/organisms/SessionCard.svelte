@@ -323,7 +323,7 @@
 					<!-- Fish-style working-dir chip: leaf stays whole, ancestors abbreviate
 					     as width shrinks (see WorkingDir). Flexes within the footer; the
 					     right-hand token/model group keeps its size. -->
-					<WorkingDir path={s.working_dir} style="flex:0 1 auto;max-width:22rem" />
+					<WorkingDir path={s.working_dir} style="max-width:22rem" />
 					<Cluster wrap={false} gap="var(--sp-2)" style="margin-left:auto;flex:none">
 						<TokenUsage usage={u} cold={s.cache_cold} sum={rollup ? rollup.tokens : null} />
 						{#if s.model}<Text tone="muted" size="xs" truncate style="max-width:14rem;flex:none">{modelShort(s.model)}{s.effort ? ` · ${s.effort}` : ''}</Text>{/if}

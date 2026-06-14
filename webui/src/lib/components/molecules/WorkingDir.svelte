@@ -46,21 +46,25 @@
 		return out;
 	});
 
-	let avail = $state(Infinity); // measured inner width, in px
+	let avail = $state(Infinity); // measured slot width, in px
 	let chPx = $state(8); // measured width of one mono char, in px
 
+	// The rail claims the flex slot and is what we measure; the colored Badge
+	// sizes to its content INSIDE it (left-aligned), so the leftover space is
+	// transparent — no empty box — and `avail` is independent of which candidate
+	// we picked (measuring the Badge itself would collapse to the chosen text).
+	let rail: HTMLSpanElement | undefined = $state();
 	let probe: HTMLSpanElement | undefined = $state();
 
 	$effect(() => {
-		if (!probe) return;
+		if (!rail) return;
 		const measure = () => {
-			const parent = probe!.parentElement;
-			if (parent) avail = parent.clientWidth;
-			chPx = probe!.getBoundingClientRect().width / 10 || chPx;
+			avail = rail!.clientWidth;
+			if (probe) chPx = probe.getBoundingClientRect().width / 10 || chPx;
 		};
 		measure();
 		const ro = new ResizeObserver(measure);
-		if (probe.parentElement) ro.observe(probe.parentElement);
+		ro.observe(rail);
 		return () => ro.disconnect();
 	});
 
@@ -73,23 +77,30 @@
 	});
 </script>
 
-<Badge
-	as="button"
-	{mono}
-	title="Click to copy — {path}"
-	style="display:inline-flex;align-items:center;gap:0.25em;min-width:0;max-width:100%;overflow:hidden;text-align:left;{style}"
-	onpointerdown={(e: PointerEvent) => e.stopPropagation()}
-	onclick={(e: MouseEvent) => {
-		e.stopPropagation();
-		copyText(path);
-	}}
+<!-- Transparent rail: claims the flex slot (grows to fill), measured for the
+     available width. The badge inside hugs its content. -->
+<span
+	bind:this={rail}
+	style="display:flex;align-items:center;min-width:0;overflow:hidden;flex:1 1 0;{style}"
 >
-	<span aria-hidden="true" style="flex:none">📁</span>
-	<span style="overflow:hidden;white-space:nowrap;text-overflow:clip">{shown}</span>
-	<!-- Offscreen 10-char ruler: gives us one mono char's px width for the fit math. -->
-	<span
-		bind:this={probe}
-		aria-hidden="true"
-		style="position:absolute;visibility:hidden;white-space:pre;pointer-events:none">{'0'.repeat(10)}</span
+	<Badge
+		as="button"
+		{mono}
+		title="Click to copy — {path}"
+		style="display:inline-flex;align-items:center;gap:0.25em;min-width:0;max-width:100%;overflow:hidden;text-align:left"
+		onpointerdown={(e: PointerEvent) => e.stopPropagation()}
+		onclick={(e: MouseEvent) => {
+			e.stopPropagation();
+			copyText(path);
+		}}
 	>
-</Badge>
+		<span aria-hidden="true" style="flex:none">📁</span>
+		<span style="overflow:hidden;white-space:nowrap;text-overflow:clip">{shown}</span>
+		<!-- Offscreen 10-char ruler: one mono char's px width for the fit math. -->
+		<span
+			bind:this={probe}
+			aria-hidden="true"
+			style="position:absolute;visibility:hidden;white-space:pre;pointer-events:none">{'0'.repeat(10)}</span
+		>
+	</Badge>
+</span>
