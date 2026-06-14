@@ -23,7 +23,9 @@
 		searching,
 		onStartSelect,
 		onCancelSelect,
-		onNew
+		onNew,
+		onUpdateLabel,
+		onDeleteLabel
 	}: {
 		rawQuery: string;
 		sections: Set<Section>;
@@ -36,6 +38,8 @@
 		onStartSelect: () => void;
 		onCancelSelect: () => void;
 		onNew: () => void;
+		onUpdateLabel?: (labelId: string, patch: { name?: string; color?: string }) => Promise<Label>;
+		onDeleteLabel?: (labelId: string) => void | Promise<void>;
 	} = $props();
 </script>
 
@@ -43,7 +47,7 @@
 	<Heading level={1} class="page-title">Sessions</Heading>
 	<SearchBox bind:value={rawQuery} />
 	<SectionFilter bind:sections />
-	<LabelFilter {labels} bind:selected={labelFilter} />
+	<LabelFilter {labels} bind:selected={labelFilter} onUpdate={onUpdateLabel} onDelete={onDeleteLabel} />
 	<ViewPicker bind:cardView bind:dense />
 	{#if !searching}
 		{#if selecting}

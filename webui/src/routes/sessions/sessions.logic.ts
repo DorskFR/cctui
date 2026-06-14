@@ -131,6 +131,36 @@ export function nest(rows: SessionListItem[]): Nest {
 	return { topLevel, childGroups, hasCollapsible };
 }
 
+// Collect the transitive archived descendants of a set of (pinned) parent ids
+// from the full session list. A starred parent should keep its whole subagent
+// group visible in the Pinned section even after the children were archived
+// (CCT-297): the live list excludes archived rows, so we splice these back into
+// the nest under their parent. BFS so archived sub-subagents come along too.
+export function archivedDescendantsOf(
+	parentIds: Set<string>,
+	archived: SessionListItem[]
+): SessionListItem[] {
+	if (parentIds.size === 0 || archived.length === 0) return [];
+	const byParent = new Map<string, SessionListItem[]>();
+	for (const a of archived) {
+		if (a.parent_id)
+			byParent.set(a.parent_id, [...(byParent.get(a.parent_id) ?? []), a]);
+	}
+	const out: SessionListItem[] = [];
+	const seen = new Set<string>();
+	const queue = [...parentIds];
+	while (queue.length) {
+		const pid = queue.shift() as string;
+		for (const child of byParent.get(pid) ?? []) {
+			if (seen.has(child.id)) continue;
+			seen.add(child.id);
+			out.push(child);
+			queue.push(child.id);
+		}
+	}
+	return out;
+}
+
 // Aggregated subagent usage for a parent (CCT-297 #19, tokens per CCT-301 #2):
 // the parent's own total tokens plus every subagent's, with the agent count.
 // Reported in tokens (not dollars). Null when there are no agents.

@@ -282,12 +282,16 @@ export const useVersion = () =>
     staleTime: 60_000,
   });
 
-export const useSessions = (archived: () => boolean) =>
+export const useSessions = (
+  archived: () => boolean,
+  enabled: () => boolean = () => true,
+) =>
   createQuery(
     toStore(() => ({
       queryKey: qk.sessions(archived()),
       queryFn: () => endpoints.sessions(archived()),
       refetchInterval: 15_000,
+      enabled: enabled(),
     })),
   );
 

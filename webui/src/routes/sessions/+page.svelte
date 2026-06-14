@@ -21,6 +21,7 @@
 		PAGE,
 		INLINE_THRESHOLD,
 		nest,
+		archivedDescendantsOf,
 		costRollup,
 		groupId,
 		BUCKETS,
@@ -437,11 +438,30 @@
 
 	const items = $derived($sessions.data?.sessions ?? []);
 
+	// A starred parent should keep its full subagent group visible under Pinned
+	// even once the children are archived (CCT-297): the live list above excludes
+	// archived rows, so when anything is pinned we additionally pull the full
+	// (incl. archived) list and splice each pinned parent's archived descendants
+	// back into the nest. Gated on `pinnedIds.size` so the heavier full-list
+	// fetch only runs when there's actually a pin in play.
+	const pinnedIds = $derived(new Set(items.filter((s) => s.pinned).map((s) => s.id)));
+	const allSessions = useSessions(
+		() => true,
+		() => pinnedIds.size > 0
+	);
+	const archivedPool = $derived(
+		($allSessions.data?.sessions ?? []).filter((s) => s.status === 'archived')
+	);
+	const pinnedArchivedKids = $derived(archivedDescendantsOf(pinnedIds, archivedPool));
+	// Their ids, so the Archived browse below doesn't also list them as their own
+	// top-level rows — they already show nested under their pinned parent.
+	const pinnedArchivedKidIds = $derived(new Set(pinnedArchivedKids.map((s) => s.id)));
+
 	// Subagent grouping (CCT-225 / CCT-269), nesting (CCT-298 item 1), and the
 	// cost rollup (CCT-297 #19) are all pure data transforms — see
 	// sessions.logic.ts. The component keeps only the reactive derivations + the
 	// expand/collapse state below.
-	const liveNest = $derived(nest(items));
+	const liveNest = $derived(nest([...items, ...pinnedArchivedKids]));
 	const topLevel = $derived(liveNest.topLevel);
 	const childGroupsOf = $derived(liveNest.childGroups);
 
@@ -502,6 +522,8 @@
 	onStartSelect={() => (selecting = true)}
 	onCancelSelect={exitSelect}
 	onNew={() => (showSpawn = true)}
+	onUpdateLabel={updateLabel}
+	onDeleteLabel={deleteLabel}
 />
 
 {#if selecting && !searching}
@@ -705,7 +727,9 @@
 
 		{#if showArchived}
 			{@const ns = nest(pageRows)}
-			{@const archTop = ns.topLevel.filter(matchesLabelFilter)}
+			{@const archTop = ns.topLevel.filter(
+				(s) => matchesLabelFilter(s) && !pinnedArchivedKidIds.has(s.id)
+			)}
 			<div class="section">
 				<div class="group-header">Archived <Text class="count">{archTop.length}</Text></div>
 				{#if pageRows.length === 0 && !pageLoading}
