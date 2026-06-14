@@ -29,6 +29,7 @@
 		highlight = [],
 		subagentCost = null,
 		subagentToggles = [],
+		stacked = false,
 		// Label editing (CCT-360): when `onAttachLabel` is supplied the card shows
 		// the inline add/remove picker; otherwise the chips render read-only.
 		allLabels = [],
@@ -80,6 +81,10 @@
 			label: string;
 			ontoggle: () => void;
 		}[];
+		// Stacked surface (CCT-297): in card view, a conversation that parents
+		// subagents is drawn as a stacked card (a pile peeking out bottom-right) so
+		// it reads as "has more behind it" at a glance.
+		stacked?: boolean;
 		// Label editing (CCT-360).
 		allLabels?: Label[];
 		onCreateLabel?: (name: string, color: string) => Promise<Label>;
@@ -148,9 +153,17 @@
 	// inline is the right home.)
 	const cardStyle = $derived(
 		[
-			`transform: translateX(${swipeX}px)`,
+			// Only apply the transform while actually swiped: a `transform` creates a
+			// stacking context, which would trap the stacked-card pseudo-elements
+			// (z-index:-1/-2) inside the card and paint them OVER its background
+			// instead of behind it (CCT-297). At rest (swipeX 0) we omit it so the
+			// stack peeks out behind as intended.
+			swipeX !== 0 ? `transform: translateX(${swipeX}px)` : '',
 			`transition: ${swiping ? 'none' : 'transform 0.2s var(--ease)'}`,
 			needsInput ? 'background: var(--attention-bg); border-left: 3px solid var(--attention-bar)' : '',
+			// Subagent (child) cards carry an info-tinted border so they read as part
+			// of the parent's stacked group (matches the "subagent" info badge).
+			child && !needsInput ? 'border-color: color-mix(in srgb, var(--info) 45%, var(--border))' : '',
 			selected
 				? 'background: color-mix(in srgb, var(--accent) 12%, var(--bg-elevated)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent)'
 				: ''
@@ -258,6 +271,8 @@
 	<Card
 		as="div"
 		tap
+		stacked={stacked}
+		stackTone="info"
 		padding={dense && !grid ? 'sm' : 'md'}
 		role="button"
 		tabindex={0}

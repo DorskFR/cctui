@@ -553,12 +553,19 @@
 <!-- Card (grid) view of the main list (CCT-297 item 16): top-level sessions laid
      out as detailed cards in a responsive grid. Subagents are omitted here (the
      list view + the drawer still show them); the point is at-a-glance status. -->
-{#snippet cardItems(rows: SessionListItem[])}
+{#snippet cardItems(
+	rows: SessionListItem[],
+	childGroups: Map<string, SubGroup[]>,
+	depth = 0
+)}
 	{#each rows as s (s.id)}
+		{@const subGroups = childGroups.get(s.id) ?? []}
 		<SessionCard
 			session={s}
+			child={depth > 0}
 			compact={dense}
 			grid
+			stacked={subGroups.length > 0}
 			pendingCount={pending(s.id)}
 			onopen={(x) => (openSession = x)}
 			selectable={selecting}
@@ -567,23 +574,40 @@
 			swipeable
 			swipeLabel="Archive"
 			onSwipe={swipeArchive}
-			onTogglePin={togglePin}
-			subagentCost={costRollup(s, childGroupsOf.get(s.id) ?? [])}
+			onTogglePin={depth > 0 ? undefined : togglePin}
+			subagentCost={costRollup(s, subGroups)}
+			subagentToggles={subGroups.map((g) => ({
+				key: g.key,
+				count: g.agents.length,
+				running: g.running,
+				open: expanded.has(groupId(s.id, g.key)),
+				label: g.label,
+				ontoggle: () => toggleGroup(s.id, g.key)
+			}))}
 			{allLabels}
 			onCreateLabel={createLabel}
-			onAttachLabel={attachLabel}
-			onDetachLabel={detachLabel}
+			onAttachLabel={depth > 0 ? undefined : attachLabel}
+			onDetachLabel={depth > 0 ? undefined : detachLabel}
 			onUpdateLabel={updateLabel}
 			onDeleteLabel={deleteLabel}
 		/>
+		<!-- Clicking a count badge expands that subagent group as cards inserted
+		     right after the parent card in the grid flow (CCT-297). -->
+		{#if depth < 5}
+			{#each subGroups as g (g.key)}
+				{#if expanded.has(groupId(s.id, g.key))}
+					{@render cardItems(g.agents, childGroups, depth + 1)}
+				{/if}
+			{/each}
+		{/if}
 	{/each}
 {/snippet}
 
-{#snippet cardGrid(rows: SessionListItem[])}
+{#snippet cardGrid(rows: SessionListItem[], childGroups: Map<string, SubGroup[]>)}
 	{#if dense}
-		<AutoGrid min="18rem" max="26.75rem" maxCols={2} gap="var(--sp-2)">{@render cardItems(rows)}</AutoGrid>
+		<AutoGrid min="18rem" max="26.75rem" maxCols={2} gap="var(--sp-2)">{@render cardItems(rows, childGroups)}</AutoGrid>
 	{:else}
-		<AutoGrid min="20rem" max="26.75rem" gap="var(--sp-3)">{@render cardItems(rows)}</AutoGrid>
+		<AutoGrid min="20rem" max="26.75rem" gap="var(--sp-3)">{@render cardItems(rows, childGroups)}</AutoGrid>
 	{/if}
 {/snippet}
 
@@ -732,7 +756,7 @@
 						</div>
 					{/if}
 					{#if cardView}
-						{@render cardGrid(vis)}
+						{@render cardGrid(vis, childGroupsOf)}
 					{:else}
 						{@render nestedRows(vis, childGroupsOf, true, [])}
 					{/if}
@@ -751,7 +775,7 @@
 					<div class="empty"><Text tone="muted">No archived sessions.</Text></div>
 				{:else if cardView}
 					<!-- Card mode applies to archived sessions too (CCT-321 parity). -->
-					{@render cardGrid(archTop)}
+					{@render cardGrid(archTop, ns.childGroups)}
 					{@render loadMore()}
 				{:else}
 					{@render nestedRows(archTop, ns.childGroups, false, searchTerms)}
