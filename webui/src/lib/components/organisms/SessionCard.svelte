@@ -1,13 +1,14 @@
 <script lang="ts">
 	import type { SessionListItem } from '@bindings/SessionListItem';
-	import { relativeTime, statusBadgeClass, timestampTooltip, modelShort, modelFamily } from '$lib/format';
+	import { statusBadgeClass, modelShort, modelFamily } from '$lib/format';
 	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
 	import LabelBadge from '$lib/components/molecules/LabelBadge.svelte';
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
 	import WorkingDir from '$lib/components/molecules/WorkingDir.svelte';
+	import SubagentBadge from '$lib/components/molecules/SubagentBadge.svelte';
 	import type { Label } from '@bindings/Label';
 	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
-	import { Badge, Card, Cluster, Stack, Text } from '@dorsk/tsumikit';
+	import { Badge, Card, Cluster, Stack, Text, Timestamp } from '@dorsk/tsumikit';
 	import { escapeHtml } from '$lib/markdown';
 	import { highlightTerms } from '$lib/search';
 
@@ -27,6 +28,7 @@
 		onTogglePin,
 		highlight = [],
 		subagentCost = null,
+		subagentToggles = [],
 		// Label editing (CCT-360): when `onAttachLabel` is supplied the card shows
 		// the inline add/remove picker; otherwise the chips render read-only.
 		allLabels = [],
@@ -67,6 +69,17 @@
 		// subagents, the parent's own tokens plus the aggregated tokens of all its
 		// subagents, with the subagent count. Reported in tokens (CCT-301 #2).
 		subagentCost?: { tokens: number; count: number } | null;
+		// Subagent group toggles (CCT-297 #?): collapsible (>=3 agent) groups this
+		// session parents, rendered as count badges in the leading gutter slot so
+		// they share the title's left edge instead of hanging in an external rail.
+		subagentToggles?: {
+			key: string;
+			count: number;
+			running: number;
+			open: boolean;
+			label: string;
+			ontoggle: () => void;
+		}[];
 		// Label editing (CCT-360).
 		allLabels?: Label[];
 		onCreateLabel?: (name: string, color: string) => Promise<Label>;
@@ -146,7 +159,10 @@
 			.join('; ')
 	);
 
-	function handleClick() {
+	function handleClick(e?: MouseEvent) {
+		// Clicks on a nested overlay control (e.g. the Timestamp details popover)
+		// bubble up to the card; they shouldn't also open the session.
+		if (e?.target instanceof Element && e.target.closest('[popovertarget],[popover]')) return;
 		// A drag (even one that sprang back) shouldn't also open the session.
 		if (didSwipe) {
 			didSwipe = false;
@@ -345,30 +361,46 @@
 {#snippet gutter()}
 	{#if selectable}
 		<span class="gutter check" class:on={selected} aria-hidden="true">{selected ? '✓' : ''}</span>
-	{:else if child}
-		<span class="gutter indent" title="subagent" aria-hidden="true">↳</span>
-	{:else if onTogglePin}
-		<span
-			class="gutter star"
-			class:on={s.pinned}
-			role="button"
-			tabindex="0"
-			title={s.pinned ? 'Unpin' : 'Pin to top (exempt from auto-archive)'}
-			aria-pressed={s.pinned}
-			aria-label={s.pinned ? 'Unpin session' : 'Pin session'}
-			onpointerdown={(e) => e.stopPropagation()}
-			onclick={(e) => {
-				e.stopPropagation();
-				onTogglePin?.(s);
-			}}
-			onkeydown={(e) => {
-				if (e.key === 'Enter' || e.key === ' ') {
-					e.preventDefault();
-					e.stopPropagation();
-					onTogglePin?.(s);
-				}
-			}}>{s.pinned ? '★' : '☆'}</span
-		>
+	{:else}
+		<!-- Toggle badges, ↳ indent, and star all share the one fixed gutter slot so
+		     titles line up. A parent can carry both a toggle and a star, so they sit
+		     side by side here rather than one excluding the other. -->
+		<span class="gutter-group">
+			{#each subagentToggles as t (t.key)}
+				<SubagentBadge
+					count={t.count}
+					running={t.running}
+					open={t.open}
+					label={t.label}
+					ontoggle={t.ontoggle}
+				/>
+			{/each}
+			{#if child}
+				<span class="gutter indent" title="subagent" aria-hidden="true">↳</span>
+			{:else if onTogglePin}
+				<span
+					class="gutter star"
+					class:on={s.pinned}
+					role="button"
+					tabindex="0"
+					title={s.pinned ? 'Unpin' : 'Pin to top (exempt from auto-archive)'}
+					aria-pressed={s.pinned}
+					aria-label={s.pinned ? 'Unpin session' : 'Pin session'}
+					onpointerdown={(e) => e.stopPropagation()}
+					onclick={(e) => {
+						e.stopPropagation();
+						onTogglePin?.(s);
+					}}
+					onkeydown={(e) => {
+						if (e.key === 'Enter' || e.key === ' ') {
+							e.preventDefault();
+							e.stopPropagation();
+							onTogglePin?.(s);
+						}
+					}}>{s.pinned ? '★' : '☆'}</span
+				>
+			{/if}
+		</span>
 	{/if}
 {/snippet}
 
@@ -401,12 +433,8 @@
 {/snippet}
 
 {#snippet time()}
-	{#if s.last_message_at}<Text
-			tone="faint"
-			size="xs"
-			style="flex:none;white-space:nowrap"
-			title={timestampTooltip(s.registered_at, s.last_message_at, s.last_activity_at)}
-			>{relativeTime(s.last_message_at)}</Text
+	{#if s.last_message_at}<span style="flex:none;white-space:nowrap;font-size:var(--fs-xs)"
+			><Timestamp value={s.last_message_at} mode="relative" tone="faint" /></span
 		>{/if}
 {/snippet}
 
@@ -527,6 +555,14 @@
 	/* Fixed gutter slot: star / checkbox / ↳ all share it so titles align. */
 	.gutter {
 		flex: none;
+	}
+	/* Holds the toggle badge(s) + star/↳ together in the single gutter slot so a
+	   parent that's both collapsible and pinnable shows both, side by side. */
+	.gutter-group {
+		flex: none;
+		display: inline-flex;
+		align-items: center;
+		gap: var(--sp-1);
 	}
 	.gutter.indent {
 		color: var(--text-faint);
