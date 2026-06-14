@@ -1,8 +1,7 @@
 <script lang="ts">
 	import type { HTMLButtonAttributes } from 'svelte/elements';
-	import { Button } from '@dorsk/tsumikit';
-	import Icon from '$lib/components/atoms/Icon.svelte';
-	import type { IconName } from '$lib/components/atoms/Icon.svelte';
+	import { Button, Icon } from '@dorsk/tsumikit';
+	import type { IconName } from '@dorsk/tsumikit';
 
 	type IconButtonProps = HTMLButtonAttributes & {
 		icon: IconName;

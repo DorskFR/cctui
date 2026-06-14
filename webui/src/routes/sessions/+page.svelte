@@ -12,10 +12,9 @@
 	import SubagentBadge from '$lib/components/molecules/SubagentBadge.svelte';
 	import ConversationDrawer from '$lib/components/organisms/ConversationDrawer.svelte';
 	import SpawnModal from '$lib/components/organisms/SpawnModal.svelte';
-	import { Button, Heading, Input, Text } from '@dorsk/tsumikit';
+	import { Button, Heading, Icon, Input, Text } from '@dorsk/tsumikit';
 	import Select from '$lib/components/atoms/Select.svelte';
 	import IconButton from '$lib/components/molecules/IconButton.svelte';
-	import Icon from '$lib/components/atoms/Icon.svelte';
 	import { drafts, LIST_DENSITY, LIST_VIEW, LIST_SECTION, LIST_LABELS } from '$lib/drafts';
 	import { notify } from '$lib/notify.svelte';
 	import { tokenizeQuery } from '$lib/search';
