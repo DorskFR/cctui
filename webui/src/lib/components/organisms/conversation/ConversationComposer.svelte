@@ -268,12 +268,14 @@
 				<FileButton label="Attach files" multiple iconOnly onfiles={addFiles} />
 			{/if}
 			<!-- Starts at one row (Textarea's baked-in min-height) and grows with
-			     content (autoresize). autoresize is mutually exclusive with the
-			     manual resize handle, so no resize prop here. -->
+			     content (autoresize). The top handle drags a min-height floor so
+			     the user can pin a taller working area; content still grows past it
+			     (tsumikit 0.2.15). -->
 			<div class="composer-input">
 				<Textarea
 					rows={1}
 					autoresize
+					resize="top"
 					placeholder={dragActive
 						? 'Drop files to attach'
 						: coarsePointer
