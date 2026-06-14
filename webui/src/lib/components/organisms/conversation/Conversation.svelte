@@ -3,7 +3,6 @@
 	import AskQuestionCard from '$lib/components/organisms/AskQuestionCard.svelte';
 	import { Button, Text } from '@dorsk/tsumikit';
 	import ConversationLine from './ConversationLine.svelte';
-	import { dropzone } from '$lib/dropzone';
 	import { copyLineMarkdown, saveLineImage } from './lineActions';
 	import type { ScrollController } from './scroll.svelte';
 	import type { AskQuestion, Line } from './types';
@@ -25,10 +24,7 @@
 		onanswer,
 		onretry,
 		onedit,
-		onrespondperm,
-		onfiles,
-		ondragactive,
-		dropDisabled
+		onrespondperm
 	}: {
 		scroll: ScrollController;
 		sessionId: string;
@@ -46,9 +42,6 @@
 		onretry: (ts: number) => void;
 		onedit: (text: string, ts: number) => void;
 		onrespondperm: (requestId: string, allow: boolean) => void;
-		onfiles: (files: File[]) => void;
-		ondragactive: (active: boolean) => void;
-		dropDisabled: boolean;
 	} = $props();
 
 	// ── Lazy render of large transcripts (CCT-279 item 1) ───────────────────
@@ -78,14 +71,7 @@
 	);
 </script>
 
-<div
-	class="conv-wrap"
-	use:dropzone={{
-		onFiles: onfiles,
-		onActive: (a) => ondragactive(a),
-		disabled: dropDisabled
-	}}
->
+<div class="conv-wrap">
 	<div
 		class="conv"
 		bind:this={scroll.scroller}

@@ -7,6 +7,7 @@
 	import { renderMarkdown, highlightBlock } from '$lib/markdown';
 	import { highlightTerms } from '$lib/search';
 	import { drafts, VIEW_OPTS } from '$lib/drafts';
+	import { Dropzone } from '@dorsk/tsumikit';
 	import BackdropScrim from './conversation/BackdropScrim.svelte';
 	import ForkModal from './conversation/ForkModal.svelte';
 	import DrawerHeader from './conversation/DrawerHeader.svelte';
@@ -399,7 +400,18 @@
 		onpointerup={endResize}
 		onpointercancel={endResize}
 	></div>
-	<DrawerHeader
+	<!-- The whole drawer is a file drop area (CCT-236): dragging files over it
+	     shows the tsumikit Dropzone overlay; on drop they're staged as composer
+	     attachments. overlay mode wraps the content without hijacking clicks. -->
+	<Dropzone
+		overlay
+		multiple
+		label="Drop files to attach"
+		disabled={!supportsAttachments || archived}
+		onfiles={(f) => composer?.addFiles(f)}
+		onactive={(a) => composer?.setDragActive(a)}
+	>
+		<DrawerHeader
 		{session}
 		{archived}
 		{isCodexSession}
@@ -444,9 +456,6 @@
 		onretry={(ts) => stream.retryFailed(ts)}
 		onedit={editPending}
 		onrespondperm={(rid, allow) => ws.respondPermission(id, rid, allow)}
-		onfiles={(f) => composer?.addFiles(f)}
-		ondragactive={(a) => composer?.setDragActive(a)}
-		dropDisabled={!supportsAttachments || archived}
 	/>
 
 	<ConversationComposer
@@ -462,6 +471,7 @@
 		onFork={fork.openDialog}
 		onResume={sa.resume}
 	/>
+	</Dropzone>
 </div>
 
 {#if fork.open}
