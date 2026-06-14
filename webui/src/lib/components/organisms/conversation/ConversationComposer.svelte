@@ -267,12 +267,13 @@
 				     control stays a compact square matching the textarea/Send height. -->
 				<FileButton label="Attach files" multiple iconOnly onfiles={addFiles} />
 			{/if}
-			<!-- Starts at one row (Textarea's baked-in min-height); the user grows it
-			     with the top drag handle (resize="top"). -->
+			<!-- Starts at one row (Textarea's baked-in min-height) and grows with
+			     content (autoresize). autoresize is mutually exclusive with the
+			     manual resize handle, so no resize prop here. -->
 			<div class="composer-input">
 				<Textarea
 					rows={1}
-					resize="top"
+					autoresize
 					placeholder={dragActive
 						? 'Drop files to attach'
 						: coarsePointer
