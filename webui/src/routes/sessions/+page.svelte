@@ -14,6 +14,7 @@
 	import SpawnModal from '$lib/components/organisms/SpawnModal.svelte';
 	import { Button, Heading, Icon, IconButton, Input, Select, Text } from '@dorsk/tsumikit';
 	import { drafts, LIST_DENSITY, LIST_VIEW, LIST_SECTION, LIST_LABELS } from '$lib/drafts';
+	import { labelTint } from '$lib/labels';
 	import { notify } from '$lib/notify.svelte';
 	import { tokenizeQuery } from '$lib/search';
 	import {
@@ -288,6 +289,9 @@
 	const createLabel = (name: string, color: string) => actions.createLabel(name, color);
 	const attachLabel = (id: string, labelId: string) => actions.attachLabel(id, labelId);
 	const detachLabel = (id: string, labelId: string) => actions.detachLabel(id, labelId);
+	const updateLabel = (labelId: string, patch: { name?: string; color?: string }) =>
+		actions.updateLabel(labelId, patch);
+	const deleteLabel = (labelId: string) => actions.deleteLabel(labelId);
 
 	// ── Search + archive browse (CCT-184) ──────────────────────────────────
 	// One paginated "pager" feeds two views, never both at once:
@@ -297,19 +301,9 @@
 	// Live-only with no query needs no pager — the bucketed list owns it.
 	let rawQuery = $state('');
 	let query = $state('');
-	// Mobile (narrow viewports): the search input collapses to a magnifier
-	// button and expands over the toolbar on tap (CCT-241). Desktop ignores
-	// `searchOpen` entirely — the input always fills the bar there.
-	let searchOpen = $state(false);
+	// The search input is always visible now (CCT-369): it fills the toolbar on
+	// desktop and spans its own full-width row on mobile — no collapse/expand.
 	let searchEl = $state<HTMLInputElement | null>(null);
-	function openSearch() {
-		searchOpen = true;
-		// Focus after the expand transition kicks in so the keyboard pops.
-		requestAnimationFrame(() => searchEl?.focus());
-	}
-	function onSearchBlur() {
-		if (!rawQuery.trim()) searchOpen = false;
-	}
 	$effect(() => {
 		const v = rawQuery.trim();
 		const t = setTimeout(() => (query = v), 200);
@@ -538,19 +532,16 @@
 
 <div class="bar row">
 	<Heading level={1} class="page-title">Sessions</Heading>
-	<IconButton class="search-toggle btn-control-square" icon="search"  label="Search chats" onclick={openSearch} />
-	<div class="search-wrap" class:open={searchOpen}>
+	<div class="search-wrap">
 		<Input
 			class="search"
 			type="search"
 			placeholder="Search all chats…"
 			bind:value={rawQuery}
 			bind:el={searchEl}
-			onblur={onSearchBlur}
 			onkeydown={(e) => {
 				if (e.key === 'Escape') {
 					rawQuery = '';
-					searchOpen = false;
 					(e.currentTarget as HTMLInputElement).blur();
 				}
 			}}
@@ -639,8 +630,7 @@
 							onclick={() => toggleLabelFilter(l.id)}
 						>
 							<span class="section-check" aria-hidden="true">{labelFilter.has(l.id) ? '✓' : ''}</span>
-							<span class="label-dot" style="background:{l.color}"></span>
-							<span class="section-opt-label">{l.name}</span>
+							<span class="label-chip" style="{labelTint(l)};border-radius:var(--r-sm)">{l.name}</span>
 						</button>
 					{/each}
 					{#if labelFilter.size > 0}
@@ -658,9 +648,8 @@
 	     overflowed the toolbar. A native <select> overlaid transparently on the
 	     trigger button (same pattern as the header theme/font pickers) gives the
 	     platform popup with zero outside-click bookkeeping. -->
-	<div class="view-pick btn-control" title="View: {viewLabel}" aria-label="View: {viewLabel}">
+	<div class="view-pick btn-control btn-control-square" title="View: {viewLabel}" aria-label="View: {viewLabel}">
 		<span class="view-pick-icon" aria-hidden="true">{cardView ? '▦' : '☰'}</span>
-		<span class="view-pick-caret" aria-hidden="true">▾</span>
 		<Select
 			variant="ghost"
 			aria-label="Choose list view"
@@ -674,12 +663,12 @@
 	</div>
 	{#if !searching}
 		{#if selecting}
-			<Button class="toolbar-select" control title="Cancel selection" aria-label="Cancel selection" onclick={exitSelect}>✕</Button>
+			<Button class="toolbar-select btn-control-square" control title="Cancel selection" aria-label="Cancel selection" onclick={exitSelect}>✕</Button>
 		{:else}
-			<Button class="toolbar-select" control title="Select multiple to archive" aria-label="Select multiple to archive" onclick={() => (selecting = true)}>☑</Button>
+			<Button class="toolbar-select btn-control-square" control title="Select multiple to archive" aria-label="Select multiple to archive" onclick={() => (selecting = true)}>☑</Button>
 		{/if}
 	{/if}
-	<Button class="toolbar-new" control variant="primary" onclick={() => (showSpawn = true)}>+ New</Button>
+	<Button class="toolbar-new" control variant="primary" title="New session" aria-label="New session" onclick={() => (showSpawn = true)}>+<span class="new-label"> New</span></Button>
 </div>
 
 {#if selecting && !searching}
@@ -732,6 +721,8 @@
 				onCreateLabel={createLabel}
 				onAttachLabel={attachLabel}
 				onDetachLabel={detachLabel}
+				onUpdateLabel={updateLabel}
+				onDeleteLabel={deleteLabel}
 			/>
 		{/each}
 	</div>
@@ -783,6 +774,8 @@
 					onCreateLabel={createLabel}
 					onAttachLabel={depth > 0 ? undefined : attachLabel}
 					onDetachLabel={depth > 0 ? undefined : detachLabel}
+					onUpdateLabel={updateLabel}
+					onDeleteLabel={deleteLabel}
 				/>
 			</div>
 		</div>
@@ -970,14 +963,10 @@
 		position: relative;
 		display: inline-flex;
 		align-items: center;
-		gap: var(--sp-1);
+		justify-content: center;
 		flex: none;
 		white-space: nowrap;
 		cursor: pointer;
-	}
-	.view-pick-caret {
-		font-size: var(--fs-xs);
-		color: var(--text-faint);
 	}
 	/* Section filter (CCT-345): one square toolbar button that opens a popover of
 	   independent toggles. The wrapper is the positioning context for the popover
@@ -1067,11 +1056,18 @@
 		max-height: 16rem;
 		overflow-y: auto;
 	}
-	.label-dot {
-		width: 0.7rem;
-		height: 0.7rem;
-		border-radius: 999px;
-		flex: none;
+	/* The label entry reuses the same hue-tinted chip the cards render, so the
+	   filter menu reads at a glance by color rather than a bare name. */
+	.label-chip {
+		flex: 1 1 auto;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		padding: 0.05rem var(--sp-2);
+		border: 1px solid;
+		font-size: var(--fs-xs);
+		font-weight: var(--fw-medium);
 	}
 	.label-clear {
 		color: var(--text-muted);
@@ -1115,62 +1111,40 @@
 		color: var(--text);
 		background: var(--bg-elevated-2, var(--border));
 	}
-	/* Desktop: the input always fills the bar; no toggle button. */
-	:global(.search-toggle) {
-		display: none;
-		align-self: center;
+	/* Desktop: the New button shows its full "+ New" label. */
+	.new-label {
+		display: inline;
 	}
-	/* Mobile: collapsed to a magnifier; tapping it expands the input over the
-	   whole toolbar with a smooth width/opacity transition (CCT-241). */
+	/* Mobile layout (CCT-369 rework): the toolbar is a wrapping flex row. Row 1
+	   holds the title + every square icon control + a square "+" New button; the
+	   search input wraps onto its own full-width second row. */
 	@media (max-width: 639px) {
 		.bar {
-			display: grid;
-			grid-template-columns: auto minmax(0, 1fr) auto;
 			align-items: center;
 		}
+		/* Title eats the leftover space on row 1 so the square controls pack to the
+		   right edge instead of leaving a ragged gap. */
 		.bar > :global(.page-title) {
-			grid-column: 1;
+			flex: 1 1 auto;
+			min-width: 0;
 		}
-		.bar > :global(.search-toggle),
-		.bar > .search-wrap {
-			grid-column: 2;
-		}
-		.bar > :global(.toolbar-new) {
-			grid-column: 3;
-			grid-row: 1;
-		}
-		/* Second row (CCT-322 mobile layout): section picker · view toggle · select
-		   toggle — the icon-only controls pack to the left instead of stretching
-		   across the wide 1fr search column (CCT-345). */
-		.section-pick,
-		.view-pick,
-		.bar > :global(.toolbar-select) {
-			grid-row: 2;
-			justify-self: start;
-		}
-		.section-pick {
-			grid-column: 1;
-		}
-		.view-pick {
-			grid-column: 2;
-			justify-self: start;
-		}
-		.bar > :global(.toolbar-select) {
-			grid-column: 3;
-		}
-		:global(.search-toggle) {
-			display: none;
-		}
+		/* Search drops to its own row, spanning the full width. `order` pushes it
+		   after every row-1 control regardless of DOM position; the 100% basis
+		   forces the wrap. */
 		.search-wrap {
-			position: static;
+			order: 10;
+			flex: 1 1 100%;
 			width: 100%;
-			opacity: 1;
-			pointer-events: auto;
 		}
-		.search-wrap.open {
-			width: 100%;
-			opacity: 1;
-			pointer-events: auto;
+		/* "+ New" collapses to just "+" so it matches the square aspect ratio of the
+		   other controls and the whole set stays on one row. */
+		.bar > :global(.toolbar-new) {
+			width: var(--control-height);
+			padding: 0;
+			flex: none;
+		}
+		.new-label {
+			display: none;
 		}
 	}
 	/* Sticky bulk-action bar (CCT-172) shown while in select mode. */
