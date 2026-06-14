@@ -664,9 +664,9 @@
 	</div>
 	{#if !searching}
 		{#if selecting}
-			<Button class="toolbar-select btn-control-square" control title="Cancel selection" aria-label="Cancel selection" onclick={exitSelect}>✕</Button>
+			<IconButton class="btn-control-square" icon="x" label="Cancel selection" onclick={exitSelect} />
 		{:else}
-			<Button class="toolbar-select btn-control-square" control title="Select multiple to archive" aria-label="Select multiple to archive" onclick={() => (selecting = true)}>☑</Button>
+			<IconButton class="btn-control-square" icon="check" label="Select multiple to archive" onclick={() => (selecting = true)} />
 		{/if}
 	{/if}
 	<Button class="toolbar-new" control variant="primary" title="New session" aria-label="New session" onclick={() => (showSpawn = true)}>+<span class="new-label"> New</span></Button>
