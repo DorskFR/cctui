@@ -1,8 +1,7 @@
 <script lang="ts">
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import AttachmentList from '$lib/components/molecules/AttachmentList.svelte';
-	import { Button, Text, Textarea } from '@dorsk/tsumikit';
-	import FileInput from '$lib/components/atoms/FileInput.svelte';
+	import { Button, FileButton, Text, Textarea } from '@dorsk/tsumikit';
 	import { drafts, composerKey, history as msgHistory } from '$lib/drafts';
 	import { mergeFiles, removeFileByName, fileCapError } from '$lib/attachments';
 	import { compact } from '$lib/format';
@@ -59,11 +58,6 @@
 		dragActive = active;
 	}
 	const removeAttachment = (name: string) => (attachments = removeFileByName(attachments, name));
-	function onPickAttachments(e: Event) {
-		const el = e.currentTarget as HTMLInputElement;
-		addFiles(Array.from(el.files ?? []));
-		el.value = '';
-	}
 
 	// Mask a large pasted block (CCT-297 #13): instead of dumping thousands of
 	// characters into the composer, collapse it into a `paste-N.txt` attachment
@@ -251,7 +245,7 @@
 <div class="composer" class:dropping={dragActive}>
 	{#if archived}
 		<div class="archived-actions">
-			<Text class="hint" tone="muted" size="sm">Session archived (read-only).</Text>
+			<div class="hint"><Text tone="muted" size="sm">Session archived (read-only).</Text></div>
 			<span class="archived-actions-btns">
 				<Button onclick={onNewFromScript}>New from same script</Button>
 				<Button onclick={onFork}>Fork</Button>
@@ -269,11 +263,15 @@
 		<div class="composer-row">
 			{#if supportsAttachments}
 				<!-- File picker (CCT-236). Drag-and-drop onto the conversation pane also
-				     adds attachments. -->
-				<label class="attach-btn" title="Attach files">
-					📎
-					<FileInput hidden multiple onchange={onPickAttachments} />
-				</label>
+				     adds attachments. Icon-only: the label is hidden (a11y-only) so the
+				     control stays a compact square matching the textarea/Send height. -->
+				<FileButton
+					class="attach-btn"
+					icon="file"
+					label="Attach files"
+					multiple
+					onfiles={addFiles}
+				/>
 			{/if}
 			<Textarea
 				style="flex:1;min-width:0;min-height:var(--control-height);max-height:40vh;resize:none;overflow-y:auto"
@@ -292,7 +290,8 @@
 			/>
 			<Button
 				variant="primary"
-				class={`send${cacheCold ? ' cold' : ''}${coldImminent ? ' warning' : ''}`}
+				tone={cacheCold ? 'info' : coldImminent ? 'warn' : 'none'}
+				class="send"
 				disabled={uploading || (!input.trim() && attachments.length === 0)}
 				onclick={send}
 				title={cacheCold
@@ -374,38 +373,23 @@
 	.attach-btn:hover {
 		border-color: var(--c-blue);
 	}
-	/* The textarea + send button are rendered by child components (Textarea /
-	   Button), so these overrides target them via :global. The textarea sizing is
-	   passed inline at the call-site; the send-button states stay here. */
-	/* Send button matches the attach button + textarea collapsed height. */
-	:global(.send) {
+	/* Send button is a child Button, so its layout (collapsed height) is reached
+	   in via :global, scoped under .composer-row so it can't leak. The cold (blue)
+	   and final-minute warning (amber) cost states are now Button `tone`
+	   (info/warn) — see CCT-189/CCT-261 — no colour override needed here. */
+	.composer-row :global(.send) {
 		flex: none;
 		min-height: var(--control-height);
 	}
-	/* Cold-cache burst (CCT-189): the next send re-writes the whole context to
-	   cache, so the normally-green Send button goes blue to flag the cost. */
-	:global(.send.cold) {
-		background: var(--c-blue);
-		box-shadow: 0 0 0 1px color-mix(in srgb, var(--c-blue) 40%, transparent);
-		color: #fff;
-	}
-	/* Final-minute warm-window countdown (CCT-261): amber to nudge a send before the
-	   cache cools. Loses to .cold (which only applies once already lapsed). */
-	:global(.send.warning) {
-		background: var(--c-amber);
-		box-shadow: 0 0 0 1px color-mix(in srgb, var(--c-amber) 40%, transparent);
-		color: #fff;
-	}
-	/* Fixed-width, tabular digits so "59s"→"0s" doesn't jitter the button. */
-	:global(.send .countdown) {
+	/* Fixed-width, tabular digits so "59s"→"0s" doesn't jitter the button. The
+	   countdown <span> is in this component's markup, so a scoped rule reaches it. */
+	.countdown {
 		display: inline-block;
 		min-width: 2.4ch;
 		text-align: right;
 		font-variant-numeric: tabular-nums;
 	}
-	/* Layout only (centered, full width); size/tone are the Text atom's. The class
-	   rides on a Text child, so :global. */
-	:global(.hint) {
+	.hint {
 		text-align: center;
 		width: 100%;
 	}

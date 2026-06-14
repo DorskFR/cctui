@@ -58,13 +58,16 @@
 		></span>
 		<div class="spacer"></div>
 		{#if $version.data}
-			<NavLink class="ver mono" href={$version.data.commit_url} target="_blank" rel="noopener">
-				srv v{$version.data.version} · ui v{__CLIENT_VERSION__}
+			<NavLink href={$version.data.commit_url} target="_blank" rel="noopener">
+				<Text size="xs" tone="faint" variant="code">
+					srv v{$version.data.version} · ui v{__CLIENT_VERSION__}
+				</Text>
 			</NavLink>
 		{/if}
 		<Button
 			variant="ghost"
-			class={`btn-icon${notify.enabled ? ' notify-on' : ''}`}
+			tone={notify.enabled ? 'accent' : 'none'}
+			class="btn-icon"
 			title={notify.enabled ? 'Notifications on — click to mute' : 'Notify me when a session needs input'}
 			onclick={toggleNotify}
 			oncontextmenu={(e: MouseEvent) => {
@@ -167,16 +170,5 @@
 	}
 	.conn.mid {
 		background: var(--warn);
-	}
-	/* ver is the class on the NavLink atom, so reach it via :global. */
-	:global(.ver) {
-		font-size: var(--fs-xs);
-		color: var(--text-faint);
-	}
-	/* Notify button tint when enabled — passed as a class to the Button child, so
-	   it must be :global to reach it. The font-size + theme pickers are now the
-	   SelectButton primitive (which owns the overlay-select styling). */
-	:global(.notify-on) {
-		color: var(--accent);
 	}
 </style>

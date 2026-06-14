@@ -30,54 +30,46 @@
 	const ariaLabel = $derived(`${open ? 'Collapse' : 'Expand'} ${title}`);
 </script>
 
-<Badge
-	as="button"
-	tone="info"
-	class={`badge-toggle${open ? ' open' : ''}${running > 0 ? ' running' : ''}`}
-	type="button"
-	{title}
-	aria-label={ariaLabel}
-	aria-expanded={open}
-	onclick={(e: MouseEvent) => {
-		e.stopPropagation();
-		ontoggle();
-	}}
->
-	{count}
-</Badge>
+<span class="subagent-badge">
+	<Badge
+		as="button"
+		tone="info"
+		size="sm"
+		active={open}
+		class={`badge-toggle${running > 0 ? ' running' : ''}`}
+		type="button"
+		{title}
+		aria-label={ariaLabel}
+		aria-expanded={open}
+		onclick={(e: MouseEvent) => {
+			e.stopPropagation();
+			ontoggle();
+		}}
+	>
+		{count}
+	</Badge>
+</span>
 
 <style>
-	/* The toggle specifics live as :global because the styled element is rendered
-	   by Badge (a child component), so scoped selectors wouldn't reach it. The
-	   `.badge-toggle` name is unique to this badge. */
-	:global(.badge-toggle) {
+	/* Colour/fill/hover/pill are tsumikit Badge's: tone="info" tints it, `active`
+	   (open) fills it, size="sm" is the compact form. Only the count-chip sizing,
+	   tabular digits, focus ring, and the running emphasis are reached in here —
+	   scoped under the wrapper so the selectors can't leak. */
+	.subagent-badge :global(.badge-toggle) {
 		justify-content: center;
 		min-width: 1.5rem;
 		height: 1.5rem;
-		padding: 0 var(--sp-2);
-		border-radius: var(--r-pill);
-		border-color: color-mix(in srgb, var(--info) 44%, transparent);
-		background: color-mix(in srgb, var(--info) 13%, transparent);
-		color: var(--info);
-		font-size: var(--fs-xs);
 		font-weight: var(--fw-semibold);
-		line-height: 1;
 		font-variant-numeric: tabular-nums;
-		cursor: pointer;
 	}
-	:global(.badge-toggle):hover {
-		border-color: color-mix(in srgb, var(--info) 62%, transparent);
-		background: color-mix(in srgb, var(--info) 20%, transparent);
-	}
-	:global(.badge-toggle):focus-visible {
+	.subagent-badge :global(.badge-toggle):focus-visible {
 		outline: 2px solid var(--info);
 		outline-offset: 2px;
 	}
-	:global(.badge-toggle.running) {
+	/* Running (and not expanded): a deeper tint than the idle pill, short of the
+	   full active fill. */
+	.subagent-badge :global(.badge-toggle.running:not(.active)) {
 		border-color: color-mix(in srgb, var(--info) 68%, transparent);
 		background: color-mix(in srgb, var(--info) 24%, transparent);
-	}
-	:global(.badge-toggle.open) {
-		box-shadow: 0 0 0 2px color-mix(in srgb, var(--info) 18%, transparent);
 	}
 </style>

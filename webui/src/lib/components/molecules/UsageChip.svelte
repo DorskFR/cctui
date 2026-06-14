@@ -56,9 +56,15 @@
 </script>
 
 {#if active && (fivePct !== null || sevenPct !== null)}
-	<span class="usage" class:hot={tone === 'hot'} class:warm={tone === 'warm'} title={tip}>
-		{#if fivePct !== null}<Text class="seg">5h {fivePct}%</Text>{/if}
-		{#if sevenPct !== null}<Text class="seg seg-week">7d {sevenPct}%</Text>{/if}
+	<span class="usage" title={tip}>
+		{#if fivePct !== null}<Text
+				numeric
+				weight={tone === 'hot' ? 'semibold' : 'normal'}
+				tone={tone === 'hot' ? 'danger' : tone === 'warm' ? 'warn' : 'muted'}>5h {fivePct}%</Text>{/if}
+		{#if sevenPct !== null}<Text
+				numeric
+				weight={tone === 'hot' ? 'semibold' : 'normal'}
+				tone={tone === 'hot' ? 'danger' : tone === 'warm' ? 'warn' : 'faint'}>7d {sevenPct}%</Text>{/if}
 	</span>
 {:else if active && $q.isLoading}
 	<span class="spin"></span>
@@ -67,29 +73,13 @@
 {/if}
 
 <style>
+	/* Segment colour/dimming/weight now come from Text's `tone`/`weight` props
+	   (severity → warn/danger, idle → muted/faint), so no :global reach-in. */
 	.usage {
 		display: inline-flex;
 		gap: 0.4rem;
 		align-items: center;
-		font-variant-numeric: tabular-nums;
 		font-size: 0.85em;
 		white-space: nowrap;
-	}
-	/* .seg is rendered by the Text atom, so these selectors must be :global to
-	   reach it (only opacity/colour chrome lives here; typography is Text's). */
-	:global(.seg) {
-		opacity: 0.85;
-	}
-	:global(.seg-week) {
-		opacity: 0.6;
-	}
-	.usage.warm :global(.seg) {
-		color: var(--warn, #d08700);
-		opacity: 1;
-	}
-	.usage.hot :global(.seg) {
-		color: var(--danger, #d33);
-		opacity: 1;
-		font-weight: 600;
 	}
 </style>

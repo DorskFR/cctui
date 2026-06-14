@@ -9,6 +9,7 @@
 		value: string;
 	}
 	import { Button, Field, IconButton, Input, Text } from '@dorsk/tsumikit';
+	import Error from '$lib/components/atoms/Error.svelte';
 
 	let {
 		envRows = $bindable(),
@@ -50,7 +51,7 @@
 	{/each}
 	<Button control style="align-self:flex-start" onclick={addEnvRow}>+ Add secret</Button>
 	{#if invalid}
-		<Text class="err" size="xs">Keys must match <Text variant="code">^[A-Z_][A-Z0-9_]*$</Text></Text>
+		<Error>Keys must match <Text variant="code">^[A-Z_][A-Z0-9_]*$</Text></Error>
 	{/if}
 </Field>
 
@@ -58,9 +59,5 @@
 	.row.gap {
 		display: flex;
 		gap: var(--sp-2);
-	}
-	/* Error colour; size is the Text atom's. Rides on a Text child, so :global. */
-	:global(.err) {
-		color: var(--c-red);
 	}
 </style>

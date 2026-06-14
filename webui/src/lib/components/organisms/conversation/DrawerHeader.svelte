@@ -199,16 +199,21 @@
 		{#if showStatusBadge}<Badge class={statusBadgeClass(session.status)}>{session.status}</Badge>{/if}
 		{#if isCodexSession && !archived}
 			{#if modelEditing}
-				<Badge class="row" style="gap:var(--sp-1);padding:0.05rem var(--sp-1)">
-					<Select class="mini-select" bind:value={pendingModel} aria-label="Model">
-						{#each codexModels as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
-					</Select>
-					<Select class="mini-select" bind:value={pendingEffort} aria-label="Effort">
-						{#each codexEfforts as e (e)}<option value={e}>{e || 'default effort'}</option>{/each}
-					</Select>
-					<IconButton class="tapbtn" icon="check"  label="Apply" onclick={applyModelChange} />
-					<IconButton class="tapbtn" icon="x"  label="Cancel" onclick={() => (modelEditing = false)} />
-				</Badge>
+				<!-- display:contents wrapper exists only to give the compact Selects a
+				     real scoped ancestor (.model-edit), so their width/fill reach-in
+				     isn't a document-wide :global leak. -->
+				<span class="model-edit">
+					<Badge class="row" style="gap:var(--sp-1);padding:0.05rem var(--sp-1)">
+						<Select compact chevron={false} bind:value={pendingModel} aria-label="Model">
+							{#each codexModels as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
+						</Select>
+						<Select compact chevron={false} bind:value={pendingEffort} aria-label="Effort">
+							{#each codexEfforts as e (e)}<option value={e}>{e || 'default effort'}</option>{/each}
+						</Select>
+						<IconButton class="tapbtn" icon="check"  label="Apply" onclick={applyModelChange} />
+						<IconButton class="tapbtn" icon="x"  label="Cancel" onclick={() => (modelEditing = false)} />
+					</Badge>
+				</span>
 			{:else}
 				<Badge
 					as="button"
@@ -369,22 +374,19 @@
 	.hmeta {
 		gap: var(--sp-2);
 	}
-	/* Compact override on the tsumikit Select. Its default variant wraps the
-	   <select> in `.select-wrap` and our `mini-select` class lands on that
-	   wrapper, so shrink the wrapper and style the inner <select> via it. The
-	   chevron is hidden — there's no room for it in this compact inline badge. */
-	:global(.select-wrap.mini-select) {
+	.model-edit {
+		display: contents;
+	}
+	/* tsumikit Select `compact` gives the dense padding/font and `chevron={false}`
+	   drops the chevron; only the inline auto-width + lighter fill remain, reached
+	   in scoped under .model-edit so the selectors can't leak. */
+	.model-edit :global(.select-wrap) {
 		width: auto;
 	}
-	:global(.select-wrap.mini-select .select) {
+	.model-edit :global(.select) {
 		width: auto;
-		font-size: var(--fs-xs);
 		background: var(--bg-elevated-2);
-		border: 1px solid var(--border);
+		border-color: var(--border);
 		border-radius: var(--r-sm, 4px);
-		padding: 0 0.2rem;
-	}
-	:global(.select-wrap.mini-select .select-chevron) {
-		display: none;
 	}
 </style>
