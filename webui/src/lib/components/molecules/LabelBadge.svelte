@@ -455,8 +455,8 @@
 	.edit-form {
 		display: flex;
 		flex-direction: column;
-		gap: var(--sp-2);
-		min-width: 0;
+		gap: var(--sp-3);
+		min-width: 16rem;
 	}
 	.hues {
 		display: flex;
