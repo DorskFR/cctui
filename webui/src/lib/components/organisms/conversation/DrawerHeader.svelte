@@ -126,53 +126,48 @@
 <div class="dhead">
 	<div class="hrow">
 		<IconButton class="tapbtn back" icon="back"  label="Back" onclick={onclose} />
-		<!-- Lead group: star · dot · machine · title · labels. Wraps so the label
-		     strip falls to its own row when the header is narrow, while the title
-		     stays visible and the trailing controls stay pinned on the first line
-		     (the title shrink-wraps with flex:0 1 auto; labels are last so they wrap
-		     first). The tag picker trigger therefore always trails the title, never
-		     mingles with the action buttons. -->
-		<span class="lead">
-			{#if onTogglePin}
-				<span
-					class="star"
-					class:on={session.pinned}
-					role="button"
-					tabindex="0"
-					title={session.pinned ? 'Unpin' : 'Pin to top (exempt from auto-archive)'}
-					aria-pressed={session.pinned}
-					aria-label={session.pinned ? 'Unpin session' : 'Pin session'}
-					onclick={() => onTogglePin?.(session)}
-					onkeydown={(e: KeyboardEvent) => {
-						if (e.key === 'Enter' || e.key === ' ') {
-							e.preventDefault();
-							onTogglePin?.(session);
-						}
-					}}>{session.pinned ? '★' : '☆'}</span
-				>
-			{/if}
-			<span class="dot {livenessClass}" title={session.hibernated ? 'hibernated' : session.liveness}></span>
-			<MachineBadge name={session.machine_name} id={session.machine_id} hue={session.machine_hue} mono />
-			<div class="dtitle" class:editing={renaming}>
-				{#if renaming}
-					<Input bind:value={newName} onkeydown={(e: KeyboardEvent) => e.key === 'Enter' && doRename()} />
-				{:else}
-					<Text class="name" weight="semibold" size="md" truncate>{headTitle}</Text>
+		{#if onTogglePin}
+			<span
+				class="star"
+				class:on={session.pinned}
+				role="button"
+				tabindex="0"
+				title={session.pinned ? 'Unpin' : 'Pin to top (exempt from auto-archive)'}
+				aria-pressed={session.pinned}
+				aria-label={session.pinned ? 'Unpin session' : 'Pin session'}
+				onclick={() => onTogglePin?.(session)}
+				onkeydown={(e: KeyboardEvent) => {
+					if (e.key === 'Enter' || e.key === ' ') {
+						e.preventDefault();
+						onTogglePin?.(session);
+					}
+				}}>{session.pinned ? '★' : '☆'}</span
+			>
+		{/if}
+		<span class="dot {livenessClass}" title={session.hibernated ? 'hibernated' : session.liveness}></span>
+		<MachineBadge name={session.machine_name} id={session.machine_id} hue={session.machine_hue} mono />
+		<div class="dtitle">
+			{#if renaming}
+				<Input bind:value={newName} onkeydown={(e: KeyboardEvent) => e.key === 'Enter' && doRename()} />
+			{:else}
+				<Text class="name" weight="semibold" size="md" truncate>{headTitle}</Text>
+				{#if session.labels.length === 0 && labelEditable}
+					<!-- No labels yet: the tag picker rides inline right after the title
+					     text rather than claiming an empty full-width row. Once labels
+					     exist the strip moves to its own row below (see .hlabels). -->
+					<LabelBadge
+						labels={[]}
+						editable
+						{allLabels}
+						onCreate={onCreateLabel}
+						onAttach={(lid) => onAttachLabel?.(session.id, lid)}
+						onDetach={(lid) => onDetachLabel?.(session.id, lid)}
+						onUpdate={onUpdateLabel}
+						onDelete={onDeleteLabel}
+					/>
 				{/if}
-			</div>
-			{#if session.labels.length > 0 || labelEditable}
-				<LabelBadge
-					labels={session.labels}
-					editable={labelEditable}
-					{allLabels}
-					onCreate={onCreateLabel}
-					onAttach={(lid) => onAttachLabel?.(session.id, lid)}
-					onDetach={(lid) => onDetachLabel?.(session.id, lid)}
-					onUpdate={onUpdateLabel}
-					onDelete={onDeleteLabel}
-				/>
 			{/if}
-		</span>
+		</div>
 		<!-- Secondary actions (CCT-301 #7): inline on desktop, collapsed into the
 		     ⋯ flyout on mobile so a long title + many buttons no longer overflow.
 		     Font-size is the left-most action; a single fork lives at the end of
@@ -254,6 +249,25 @@
 			<IconButton class="tapbtn archive" icon="archive"  label="Archive" onclick={onarchive} />
 		{/if}
 	</div>
+	{#if session.labels.length > 0}
+		<!-- Labels get their own full-width row in the header's column stack, so the
+		     strip can spread edge-to-edge and wrap freely instead of being boxed
+		     into the title row's leftover width (under the action buttons). The
+		     empty-state trigger lives inline by the title (above), so this row only
+		     appears once there's at least one label. -->
+		<div class="hlabels">
+			<LabelBadge
+				labels={session.labels}
+				editable={labelEditable}
+				{allLabels}
+				onCreate={onCreateLabel}
+				onAttach={(lid) => onAttachLabel?.(session.id, lid)}
+				onDetach={(lid) => onDetachLabel?.(session.id, lid)}
+				onUpdate={onUpdateLabel}
+				onDelete={onDeleteLabel}
+			/>
+		</div>
+	{/if}
 	<div class="hmeta row row-wrap">
 		{#if showStatusBadge}<Badge class={statusBadgeClass(session.status)}>{session.status}</Badge>{/if}
 		<WorkingDir path={session.working_dir} />
@@ -316,9 +330,14 @@
 	}
 	.hrow {
 		display: flex;
-		align-items: flex-start;
+		align-items: center;
 		gap: var(--sp-2);
 		position: relative;
+	}
+	/* Labels on their own row so the strip spans the full header width. */
+	.hlabels {
+		display: flex;
+		min-width: 0;
 	}
 	/* Secondary actions: inline on desktop, ⋯ flyout on mobile (CCT-301 #7). */
 	.secondary {
@@ -400,30 +419,19 @@
 			line-height: 1.2;
 		}
 	}
-	/* Lead group wraps (label strip drops to its own row when narrow) while the
-	   trailing action buttons stay pinned to the first line. */
-	.lead {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
-		column-gap: var(--sp-2);
-		row-gap: var(--sp-1);
-		flex: 1 1 auto;
-		min-width: 0;
-		/* One button-height tall so a single-line header reads centered against the
-		   back/action buttons (hrow is flex-start); when the label strip wraps the
-		   lead grows downward and the buttons stay aligned to the title line. */
-		min-height: 2.5rem;
-	}
-	/* Title shrink-wraps so labels can sit beside it and wrap first; it never
-	   eats the whole row (which would force labels to wrap even with space). */
 	.dtitle {
+		flex: 1;
+		min-width: 0;
+		display: flex;
+		align-items: center;
+		gap: var(--sp-1);
+	}
+	/* Title text shrink-wraps/ellipsises so the inline tag trigger sits right
+	   after it; the dtitle box keeps flex:1 so the action buttons stay pinned
+	   to the right edge. */
+	.dtitle :global(.name) {
 		flex: 0 1 auto;
 		min-width: 0;
-	}
-	/* While renaming, let the input claim the lead's free width. */
-	.dtitle.editing {
-		flex: 1 1 12rem;
 	}
 	/* Bigger, easy-to-tap icon buttons with a tinted, outlined chip look. */
 	.dhead :global(.tapbtn) {
