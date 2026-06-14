@@ -4,7 +4,7 @@
 	// row (role badge, tool name, time, delivery state), the bubble, and the
 	// per-message action buttons, delegating retry/edit/save/copy to callbacks.
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
-	import { Button, IconButton, Text, Timestamp } from '@dorsk/tsumikit';
+	import { Badge, Button, IconButton, Text, Timestamp } from '@dorsk/tsumikit';
 	import type { Line } from './types';
 	import './bubble.css';
 
@@ -40,8 +40,8 @@
 	class:failed={!!ln.failed}
 >
 	<div class="lmeta row">
-		<span class="badge-role" class:mcp={ln.mcp}
-			>{ln.mcp ? 'mcp' : ln.role === 'result' ? 'result' : ln.role}</span
+		<Badge size="sm" class={`badge-role${ln.mcp ? ' mcp' : ''}`}
+			>{ln.mcp ? 'mcp' : ln.role === 'result' ? 'result' : ln.role}</Badge
 		>
 		{#if ln.role === 'tool' || ln.role === 'result'}
 			<span class="who tool-name">{ln.role === 'result' ? '↳ ' : ''}{ln.tool ?? 'tool'}</span>
@@ -150,39 +150,36 @@
 		white-space: nowrap;
 		max-width: 60%;
 	}
-	/* Role badge pill (CCT-161 item 2) — colored per role via --role-* tokens. */
-	.badge-role {
+	/* Role badge pill (CCT-161 item 2) — rides on the tsumikit Badge atom (pill
+	   shape, sizing); these overrides add the per-role tint via --role-* tokens
+	   and the uppercase treatment Badge doesn't carry. */
+	.line :global(.badge-role) {
 		--bc: var(--text-muted);
-		display: inline-flex;
-		align-items: center;
 		padding: 1px var(--sp-2);
-		border-radius: var(--r-pill);
-		font-size: 0.6875rem;
 		font-weight: var(--fw-semibold);
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
 		color: var(--bc);
 		background: color-mix(in srgb, var(--bc) 14%, transparent);
 		border: 1px solid color-mix(in srgb, var(--bc) 40%, transparent);
-		white-space: nowrap;
 	}
-	.line.user .badge-role {
+	.line.user :global(.badge-role) {
 		--bc: var(--role-user);
 	}
-	.line.assistant .badge-role {
+	.line.assistant :global(.badge-role) {
 		--bc: var(--role-assistant);
 	}
-	.line.system .badge-role {
+	.line.system :global(.badge-role) {
 		--bc: var(--role-system);
 	}
-	.line.tool .badge-role {
+	.line.tool :global(.badge-role) {
 		--bc: var(--role-tool);
 	}
-	.line.result .badge-role {
+	.line.result :global(.badge-role) {
 		--bc: var(--role-tool);
 	}
-	.line.tool.mcp .badge-role,
-	.badge-role.mcp {
+	.line.tool.mcp :global(.badge-role),
+	.line :global(.badge-role.mcp) {
 		--bc: var(--role-mcp);
 	}
 	/* Per-message action buttons (copy-as-Markdown + save-image, CCT-297 #17/#18),

@@ -265,16 +265,10 @@
 				<!-- File picker (CCT-236). Drag-and-drop onto the conversation pane also
 				     adds attachments. Icon-only: the label is hidden (a11y-only) so the
 				     control stays a compact square matching the textarea/Send height. -->
-				<FileButton
-					class="attach-btn"
-					icon="file"
-					label="Attach files"
-					multiple
-					onfiles={addFiles}
-				/>
+				<FileButton label="Attach files" multiple iconOnly onfiles={addFiles} />
 			{/if}
 			<Textarea
-				style="flex:1;min-width:0;min-height:var(--control-height);max-height:40vh;resize:none;overflow-y:auto"
+				style="flex:1;min-width:0;min-height:2.5rem;max-height:40vh;resize:none;overflow-y:auto"
 				rows={1}
 				placeholder={dragActive
 					? 'Drop files to attach'
@@ -356,30 +350,12 @@
 		gap: var(--sp-2);
 		margin-left: auto;
 	}
-	/* Composer attach button — uniform control height (CCT-250 item 1). */
-	.attach-btn {
-		flex: none;
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		width: var(--control-height);
-		height: var(--control-height);
-		border: 1px solid var(--border-strong);
-		border-radius: var(--r-md);
-		background: var(--bg);
-		cursor: pointer;
-		font-size: var(--fs-md);
-	}
-	.attach-btn:hover {
-		border-color: var(--c-blue);
-	}
-	/* Send button is a child Button, so its layout (collapsed height) is reached
-	   in via :global, scoped under .composer-row so it can't leak. The cold (blue)
-	   and final-minute warning (amber) cost states are now Button `tone`
-	   (info/warn) — see CCT-189/CCT-261 — no colour override needed here. */
+	/* Send button is a child Button; keep it from shrinking in the flex row. Its
+	   height comes from the Button atom's md size (2.5rem), matching the attach
+	   FileButton and the collapsed Textarea. The cold (blue) and final-minute
+	   warning (amber) cost states are Button `tone` (info/warn) — CCT-189/CCT-261. */
 	.composer-row :global(.send) {
 		flex: none;
-		min-height: var(--control-height);
 	}
 	/* Fixed-width, tabular digits so "59s"→"0s" doesn't jitter the button. The
 	   countdown <span> is in this component's markup, so a scoped rule reaches it. */

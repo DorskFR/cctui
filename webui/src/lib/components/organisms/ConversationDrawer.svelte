@@ -345,19 +345,35 @@
 
 	// ── Drag-to-resize the desktop drawer (left border) ─────────────────────
 	let resizing = $state(false);
+	// Coalesce pointermoves to one width update per frame (mirrors tsumikit's
+	// Modal): pointer events fire faster than the refresh and each width change
+	// reflows + repaints the pane, so writing once per rAF caps that to the frame
+	// rate and keeps the drag smooth instead of jaggery.
+	let rafId = 0;
+	let lastX = 0;
 	function startResize(e: PointerEvent) {
 		resizing = true;
+		lastX = e.clientX;
 		(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
 		e.preventDefault();
 	}
 	function onResize(e: PointerEvent) {
 		if (!resizing) return;
-		const w = window.innerWidth - e.clientX;
-		view.paneWidth = Math.round(Math.max(PANE_MIN, Math.min(w, window.innerWidth)));
+		lastX = e.clientX;
+		if (rafId) return;
+		rafId = requestAnimationFrame(() => {
+			rafId = 0;
+			const w = window.innerWidth - lastX;
+			view.paneWidth = Math.round(Math.max(PANE_MIN, Math.min(w, window.innerWidth)));
+		});
 	}
 	function endResize(e: PointerEvent) {
 		if (!resizing) return;
 		resizing = false;
+		if (rafId) {
+			cancelAnimationFrame(rafId);
+			rafId = 0;
+		}
 		try {
 			(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
 		} catch {
@@ -489,6 +505,10 @@
 	.drawer.resizing {
 		user-select: none;
 		animation: none;
+		/* Make per-frame width changes cheap to paint while dragging (mirrors the
+		   Modal): hint the animated property and isolate layout/paint to the pane. */
+		will-change: width;
+		contain: layout paint;
 	}
 	/* Drag handle on the left border — desktop only (mobile is full-width). */
 	.resize-handle {
@@ -507,18 +527,23 @@
 			cursor: col-resize;
 			touch-action: none;
 		}
+		/* Persistent grip hint (mirrors tsumikit's Modal): a small pill centered on
+		   the handle, brightening to the accent on hover / while dragging. */
 		.resize-handle::after {
 			content: '';
 			position: absolute;
-			inset: 0 auto 0 5px;
-			width: 1px;
-			background: transparent;
+			top: 50%;
+			left: 50%;
+			transform: translate(-50%, -50%);
+			width: 3px;
+			height: 28px;
+			border-radius: 999px;
+			background: var(--border-strong);
 			transition: background 0.12s var(--ease);
 		}
 		.resize-handle:hover::after,
 		.drawer.resizing .resize-handle::after {
 			background: var(--accent);
-			box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent);
 		}
 	}
 	@keyframes slide {

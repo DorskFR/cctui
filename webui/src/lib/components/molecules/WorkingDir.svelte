@@ -12,12 +12,17 @@
 		path,
 		minLeaf = 18,
 		mono = true,
+		full = false,
 		style = ''
 	}: {
 		path: string;
 		/** Char floor the chip reserves so the (truncated) leaf is always legible. */
 		minLeaf?: number;
 		mono?: boolean;
+		/** Show the whole path at its natural width — skip the fit/abbreviate
+		 * algorithm entirely. The chip sizes to content (flex:none) so the caller
+		 * can let it wrap to the next row rather than shrink. */
+		full?: boolean;
 		style?: string;
 	} = $props();
 
@@ -76,6 +81,7 @@
 	});
 
 	const shown = $derived.by(() => {
+		if (full) return path.replace(/\/+$/, '') || '/';
 		// 1px safety so a sub-pixel rounding error never re-introduces a clip.
 		const budget = Math.max(0, avail - chrome - 1);
 		const fit = candidates.find((c) => c.length * chPx <= budget);
@@ -87,7 +93,7 @@
      available width. The badge inside hugs its content. -->
 <span
 	bind:this={rail}
-	style="display:flex;align-items:center;min-width:0;overflow:hidden;flex:1 1 0;{style}"
+	style="display:flex;align-items:center;min-width:0;{full ? 'flex:none' : 'overflow:hidden;flex:1 1 0'};{style}"
 >
 	<Badge
 		as="button"

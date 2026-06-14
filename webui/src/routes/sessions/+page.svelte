@@ -12,7 +12,7 @@
 	import ConversationDrawer from '$lib/components/organisms/ConversationDrawer.svelte';
 	import SpawnModal from '$lib/components/organisms/SpawnModal.svelte';
 	import SessionControls from '$lib/components/organisms/SessionControls.svelte';
-	import { Button, Text } from '@dorsk/tsumikit';
+	import { AutoGrid, Button, Container, Text } from '@dorsk/tsumikit';
 	import { drafts, LIST_DENSITY, LIST_VIEW, LIST_SECTION, LIST_LABELS } from '$lib/drafts';
 	import { notify } from '$lib/notify.svelte';
 	import { tokenizeQuery } from '$lib/search';
@@ -45,12 +45,15 @@
 	//   list ⇄ grid (cardView) and compact ⇄ detailed (dense). The 2×2 matrix:
 	//     list  + compact  → one row per session
 	//     list  + detailed → multi-row per session
-	//     grid  + compact  → grid of cards constrained to the list container width
-	//                        (~2 columns), NOT full-bleed
-	//     grid  + detailed → the SAME cards, no column cap → spans the full window
+	//     grid  + compact  → 2-column grid of cards kept INSIDE the centered list
+	//                        container (same max-width as the rest of the UI)
+	//     grid  + detailed → the container max-width is released: section headings
+	//                        AND the grid span the full window; cards auto-fill up
+	//                        to a max width (never narrower than a compact card)
+	//                        and gain extra verticality (a taller message clamp)
 	//   Card MARKUP is identical across compact/detailed in grid (always the
-	//   detailed card); only the container width / column cap changes. Grid is
-	//   top-level only (subagents stay in list view / the drawer).
+	//   detailed card); only the container width / column template / message clamp
+	//   change. Grid is top-level only (subagents stay in list view / the drawer).
 	let cardView = $state(drafts.get(LIST_VIEW) === 'card');
 	$effect(() => {
 		drafts.set(LIST_VIEW, cardView ? 'card' : 'list');
@@ -550,37 +553,38 @@
 <!-- Card (grid) view of the main list (CCT-297 item 16): top-level sessions laid
      out as detailed cards in a responsive grid. Subagents are omitted here (the
      list view + the drawer still show them); the point is at-a-glance status. -->
+{#snippet cardItems(rows: SessionListItem[])}
+	{#each rows as s (s.id)}
+		<SessionCard
+			session={s}
+			compact={dense}
+			grid
+			pendingCount={pending(s.id)}
+			onopen={(x) => (openSession = x)}
+			selectable={selecting}
+			selected={selected.has(s.id)}
+			onToggleSelect={toggleSelect}
+			swipeable
+			swipeLabel="Archive"
+			onSwipe={swipeArchive}
+			onTogglePin={togglePin}
+			subagentCost={costRollup(s, childGroupsOf.get(s.id) ?? [])}
+			{allLabels}
+			onCreateLabel={createLabel}
+			onAttachLabel={attachLabel}
+			onDetachLabel={detachLabel}
+			onUpdateLabel={updateLabel}
+			onDeleteLabel={deleteLabel}
+		/>
+	{/each}
+{/snippet}
+
 {#snippet cardGrid(rows: SessionListItem[])}
-	<!-- Grid (CCT-305 / CCT-321): the card uses the SAME canonical field model in
-	     both densities; `compact` (dense) only tightens spacing + clamps the
-	     preview to one line, and the grid narrows to a 2-column cap. Detailed cards
-	     are deliberately the largest (wider track + roomier card). `grid` keeps a
-	     uniform single-line cwd path so a row of cards stays the same height. -->
-	<div class="grid" class:narrow={dense}>
-		{#each rows as s (s.id)}
-			<SessionCard
-				session={s}
-				compact={dense}
-				grid
-				pendingCount={pending(s.id)}
-				onopen={(x) => (openSession = x)}
-				selectable={selecting}
-				selected={selected.has(s.id)}
-				onToggleSelect={toggleSelect}
-				swipeable
-				swipeLabel="Archive"
-				onSwipe={swipeArchive}
-				onTogglePin={togglePin}
-				subagentCost={costRollup(s, childGroupsOf.get(s.id) ?? [])}
-				{allLabels}
-				onCreateLabel={createLabel}
-				onAttachLabel={attachLabel}
-				onDetachLabel={detachLabel}
-				onUpdateLabel={updateLabel}
-				onDeleteLabel={deleteLabel}
-			/>
-		{/each}
-	</div>
+	{#if dense}
+		<AutoGrid min="18rem" max="26.75rem" maxCols={2} gap="var(--sp-2)">{@render cardItems(rows)}</AutoGrid>
+	{:else}
+		<AutoGrid min="20rem" max="26.75rem" gap="var(--sp-3)">{@render cardItems(rows)}</AutoGrid>
+	{/if}
 {/snippet}
 
 {#snippet nestedRows(
@@ -683,7 +687,16 @@
 {:else}
 	<!-- Live buckets first, then the paginated archive — all sections share one
 	     flex container so the inter-section gap is uniform (CCT-298). -->
-	<div class="sections" class:tight={dense && !cardView}>
+	{#if cardView && !dense}
+		<Container fullWidth as="div">
+			<div class="sections">{@render liveSections()}</div>
+		</Container>
+	{:else}
+		<div class="sections" class:tight={dense && !cardView}>{@render liveSections()}</div>
+	{/if}
+{/if}
+
+{#snippet liveSections()}
 		{#if $sessions.isLoading}
 			<div class="empty"><span class="spin"></span></div>
 		{:else if groups.length === 0 && !showArchived}
@@ -744,8 +757,7 @@
 				{/if}
 			</div>
 		{/if}
-	</div>
-{/if}
+{/snippet}
 
 {#if liveOpen}
 	<ConversationDrawer
@@ -799,67 +811,6 @@
 	}
 	.sections.tight .section {
 		gap: var(--sp-1);
-	}
-	/* Grid (card) view (CCT-305). Two widths driven by the density toggle:
-	   - detailed (default): full-bleed — escape the centered --content-max column
-	     and span the whole viewport with as many uniform cards as fit.
-	   - compact (.narrow): stay inside the normal list container width with a
-	     ~2-column cap, so it reads as a tighter version of the list rather than a
-	     full-window sprawl.
-	   Card MARKUP is identical between the two (always the detailed card); only
-	   the container width and the column template change. `align-items: stretch`
-	   makes every card in a row the same height so rows aren't ragged. */
-	.grid {
-		display: grid;
-		gap: var(--sp-3);
-		align-items: stretch;
-		/* full-bleed: escape the .container max-width and span the viewport */
-		width: 100vw;
-		position: relative;
-		left: 50%;
-		margin-left: -50vw;
-		box-sizing: border-box;
-		/* Detailed grid: as many columns as fit at a column width tuned for cards
-		   that read more vertical than horizontal (CCT-305 follow-up) — a narrower
-		   track than the old 20rem packs more columns across a wide window while
-		   keeping each card a portrait-ish rectangle. */
-		/* Detailed = the spacious view: a WIDE track so few, large cards fill the
-		   row. Must read bigger than compact (CCT-345 follow-up). */
-		grid-template-columns: repeat(auto-fill, minmax(34rem, 1fr));
-		padding-inline: max(var(--sp-4), var(--safe-left)) max(var(--sp-4), var(--safe-right));
-	}
-	/* Compact grid: denser than detailed — also full-bleed, but a NARROWER track so
-	   more, smaller cards pack across the row. minmax(0,1fr) lets cards shrink on
-	   narrow viewports; a single column kicks in below ~32rem via the media query. */
-	.grid.narrow {
-		gap: var(--sp-2);
-		grid-template-columns: repeat(auto-fill, minmax(21rem, 1fr));
-	}
-	/* Mobile card grid (CCT-305 follow-up). The two densities now diverge on phones,
-	   mirroring desktop's "compact = more in less space, detailed = more per card":
-	   - compact (.grid.narrow) → 2 narrow columns, each card half-viewport wide so
-	     it reads as a proper (vertical) card rather than a wide list row.
-	   - detailed (.grid) → a single full-viewport-width column, each card at least
-	     ~half the screen tall, giving a squarish-to-slightly-vertical aspect with
-	     plenty of room for the 3-line message preview.
-	   (The detailed-grid minmax(17rem) would otherwise resolve to a single column
-	   below ~36rem anyway, but we pin it explicitly and add the min-height.) */
-	@media (max-width: 639px) {
-		.grid {
-			grid-template-columns: 1fr;
-			gap: var(--sp-2);
-		}
-		/* CCT-312: the old `min-height: 48vh` forced every detailed mobile card to
-		   half the screen even when sparse, so cards read as "big and empty". Let
-		   them size to their content (still floored by the base 11rem) and let the
-		   message preview fill/cap the height instead (see `.last` in SessionCard). */
-		.grid:not(.narrow) :global(.sc.grid .preview) {
-			max-height: 42vh;
-		}
-		.grid.narrow {
-			grid-template-columns: repeat(2, minmax(0, 1fr));
-			gap: var(--sp-2);
-		}
 	}
 	/* Parent row (CCT-269): a normal full-width row. The collapse toggle badge(s)
 	   now live inside the card's leading gutter slot (SessionCard), so there's no

@@ -90,6 +90,9 @@
 	} = $props();
 
 	const s = $derived(session);
+	// Detailed card (grid, not compact) has room to spare, so its footer chips
+	// keep their natural size and wrap to a second row instead of shrinking.
+	const detailed = $derived(grid && !dense);
 	// Match snippet with search terms wrapped in <mark> (escape first → safe HTML).
 	const snippetHtml = $derived(
 		s.match_snippet && highlight.length
@@ -147,8 +150,6 @@
 		[
 			`transform: translateX(${swipeX}px)`,
 			`transition: ${swiping ? 'none' : 'transform 0.2s var(--ease)'}`,
-			dense ? 'padding: var(--sp-2) var(--sp-3)' : '',
-			grid && !dense ? 'min-height: 13rem' : grid ? 'min-height: 9rem' : '',
 			needsInput ? 'background: var(--attention-bg); border-left: 3px solid var(--attention-bar)' : '',
 			selected
 				? 'background: color-mix(in srgb, var(--accent) 12%, var(--bg-elevated)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent)'
@@ -257,6 +258,7 @@
 	<Card
 		as="div"
 		tap
+		padding={dense && !grid ? 'sm' : 'md'}
 		role="button"
 		tabindex={0}
 		style={cardStyle}
@@ -341,12 +343,12 @@
 				     long model can't shove the logo out (grid pins it to the bottom). -->
 				<Cluster gap="var(--sp-2)" style={grid ? 'margin-top:auto' : ''}>
 					<!-- Fish-style working-dir chip: leaf stays whole, ancestors abbreviate
-					     as width shrinks (see WorkingDir). Flexes within the footer; the
-					     right-hand token/model group keeps its size. -->
-					<WorkingDir path={s.working_dir} style="max-width:22rem" />
+					     as width shrinks (see WorkingDir). In detailed cards it keeps its
+					     natural width (no shrink) and the footer wraps; elsewhere it flexes. -->
+					<WorkingDir path={s.working_dir} full={detailed} style={detailed ? '' : 'max-width:22rem'} />
 					<Cluster wrap={false} gap="var(--sp-2)" style="margin-left:auto;flex:none">
 						<TokenUsage usage={u} cold={s.cache_cold} sum={rollup ? rollup.tokens : null} />
-						{#if s.model}<Text tone="muted" size="xs" truncate style="max-width:14rem;flex:none">{modelShort(s.model)}{s.effort ? ` · ${s.effort}` : ''}</Text>{/if}
+						{#if s.model}<Text tone="muted" size="xs" truncate={!detailed} style={detailed ? 'flex:none;white-space:nowrap' : 'max-width:14rem;flex:none'}>{modelShort(s.model)}{s.effort ? ` · ${s.effort}` : ''}</Text>{/if}
 						{@render logo()}
 					</Cluster>
 				</Cluster>
@@ -499,10 +501,12 @@
 		line-clamp: 3;
 		-webkit-box-orient: vertical;
 	}
+	/* Detailed card view is the spacious one (CCT-345): give the message preview
+	   far more verticality so the card reads tall, not wide. */
 	.sc-wrap.grid:not(.dense) .preview {
 		min-height: 0;
-		-webkit-line-clamp: 6;
-		line-clamp: 6;
+		-webkit-line-clamp: 12;
+		line-clamp: 12;
 	}
 	/* Colored layer revealed behind the row as it slides left. */
 	.swipe-reveal {
