@@ -625,12 +625,13 @@
 						<button
 							type="button"
 							role="menuitemcheckbox"
-							class="section-opt"
+							class="section-opt label-opt"
+							style={labelTint(l)}
 							aria-checked={labelFilter.has(l.id)}
 							onclick={() => toggleLabelFilter(l.id)}
 						>
 							<span class="section-check" aria-hidden="true">{labelFilter.has(l.id) ? '✓' : ''}</span>
-							<span class="label-chip" style="{labelTint(l)};border-radius:var(--r-sm)">{l.name}</span>
+							<span class="section-opt-label">{l.name}</span>
 						</button>
 					{/each}
 					{#if labelFilter.size > 0}
@@ -1056,18 +1057,33 @@
 		max-height: 16rem;
 		overflow-y: auto;
 	}
-	/* The label entry reuses the same hue-tinted chip the cards render, so the
-	   filter menu reads at a glance by color rather than a bare name. */
-	.label-chip {
-		flex: 1 1 auto;
-		min-width: 0;
+	/* The whole label entry row carries the label's hue tint (set inline via
+	   labelTint), so the filter menu reads at a glance by color. The inline
+	   background outranks the generic .section-opt:hover background, so the tint
+	   persists on hover; a faint inset ring marks the hovered/checked row. */
+	.label-opt {
+		margin-bottom: 2px;
+		border: 1px solid transparent;
+	}
+	.label-opt:last-child {
+		margin-bottom: 0;
+	}
+	.label-opt:hover {
+		box-shadow: inset 0 0 0 1px var(--text);
+	}
+	.label-opt .section-opt-label {
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-		padding: 0.05rem var(--sp-2);
-		border: 1px solid;
-		font-size: var(--fs-xs);
-		font-weight: var(--fw-medium);
+	}
+	/* On a tinted row the checkmark box's neutral border/ink would clash; let it
+	   ride the row's own foreground color instead. */
+	.label-opt .section-check {
+		border-color: currentColor;
+	}
+	.label-opt[aria-checked='true'] .section-check {
+		background: currentColor;
+		border-color: currentColor;
 	}
 	.label-clear {
 		color: var(--text-muted);

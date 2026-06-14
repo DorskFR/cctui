@@ -242,9 +242,19 @@
 	</span>
 {/if}
 
-<!-- Edit modal: rename + recolor (+ delete) a single label, keyed on id. -->
+<!-- Edit modal: rename + recolor (+ delete) a single label, keyed on id. The
+     native <dialog> stays in THIS subtree, so without swallowing pointer/click
+     events here a backdrop/close click bubbles up to the clickable session Card
+     and opens the conversation. -->
 {#if editing}
-	<Modal title="Edit label" onclose={closeEdit}>
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<span
+		class="modal-host"
+		onpointerdown={(e) => e.stopPropagation()}
+		onclick={(e) => e.stopPropagation()}
+		onkeydown={(e) => e.stopPropagation()}
+	>
+		<Modal title="Edit label" size="sm" onclose={closeEdit}>
 		{#snippet body()}
 			<div class="edit-form">
 				<Field label="Name">
@@ -301,6 +311,7 @@
 			</Button>
 		{/snippet}
 	</Modal>
+	</span>
 {/if}
 
 <style>
@@ -309,6 +320,11 @@
 		flex-wrap: wrap;
 		align-items: center;
 		gap: var(--sp-1);
+	}
+	/* No box of its own — purely an event boundary so the dialog's clicks don't
+	   bubble to the card. Events still follow the DOM tree under display:contents. */
+	.modal-host {
+		display: contents;
 	}
 	.name {
 		min-width: 0;

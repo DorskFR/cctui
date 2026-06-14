@@ -285,8 +285,12 @@
 				     Labels live on this first row, right after the title. The lead group
 				     flex-wraps, so when the title + chips can't fit the row width the chips
 				     drop to a second line WITHOUT dragging the status/perm/time group with
-				     them — that group is pinned top-right (align-items:flex-start). -->
-				<Cluster wrap={false} gap="var(--sp-2)" style="align-items:flex-start">
+				     them — that `.trail` group is pinned top-right (align="flex-start" on
+				     the Cluster, which it applies via a style: directive so a style="" on
+				     it would be silently overridden). Both groups carry the same min-height
+				     so on a single line everything reads vertically centered, while a wrapped
+				     label line sits cleanly below (row-gap) instead of overlapping. -->
+				<Cluster wrap={false} gap="var(--sp-2)" align="flex-start">
 					<span class="lead">
 						{@render gutter()}
 						{@render engine()}
@@ -304,9 +308,11 @@
 							/>
 						{/if}
 					</span>
-					{#if showStatusBadge}<Badge class={statusBadgeClass(s.status)} style="padding:0.05rem var(--sp-2)">{s.status}</Badge>{/if}
-					{#if pendingCount > 0}<Badge tone="warn" style="padding:0.05rem var(--sp-2)">{pendingCount} perm</Badge>{/if}
-					{@render time()}
+					<span class="trail">
+						{#if showStatusBadge}<Badge class={statusBadgeClass(s.status)} style="padding:0.05rem var(--sp-2)">{s.status}</Badge>{/if}
+						{#if pendingCount > 0}<Badge tone="warn" style="padding:0.05rem var(--sp-2)">{pendingCount} perm</Badge>{/if}
+						{@render time()}
+					</span>
 				</Cluster>
 
 				<!-- 2. PREVIEW: multi-line clamp (grid grows to fill). -->
@@ -431,15 +437,26 @@
 	}
 	/* Lead group of the detailed/grid header band: gutter · engine · title · labels.
 	   Wraps so the label chips fall to a second line when the title is long / the
-	   row is narrow, while the trailing status/perm/time group stays pinned to the
-	   first line (the band is align-items:flex-start). */
+	   row is narrow, while the trailing status/perm/time group (`.trail`) stays
+	   pinned to the first line. Both share `min-height` (one lg-title line) so a
+	   single-line row reads vertically centered; `row-gap` keeps a wrapped label
+	   line off the machine badge above it. */
 	.lead {
 		display: flex;
 		flex-wrap: wrap;
 		align-items: center;
-		gap: var(--sp-2);
+		column-gap: var(--sp-2);
+		row-gap: var(--sp-2);
 		flex: 1 1 auto;
 		min-width: 0;
+		min-height: 1.75rem;
+	}
+	.trail {
+		display: flex;
+		align-items: center;
+		gap: var(--sp-2);
+		flex: none;
+		min-height: 1.75rem;
 	}
 	/* ── Last-message preview (detailed / grid only) ────────────────────────────
 	   The compact row renders the message as a <Text truncate> inline; here it's a
