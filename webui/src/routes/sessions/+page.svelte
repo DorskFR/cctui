@@ -141,10 +141,18 @@
 	});
 
 	function setUrlSession(id: string | null, replace = false) {
-		const url = new URL(page.url);
+		// Build + idempotence-check against the LIVE document URL, not `page.url`.
+		// `page.url` (from `$app/state`) goes stale after a shallow pushState — it
+		// keeps reading whatever the last full navigation resolved (`/sessions`),
+		// even though the address bar already shows `/sessions/<uuid>`. Guarding on
+		// the stale `page.url` made the close path's target (`/sessions`) compare
+		// equal to it and short-circuit, so neither the back chevron nor the
+		// backdrop scrim ever cleared `/sessions/<uuid>` (CCT-351, follow-up to
+		// CCT-350). `location.href` is always the real current URL.
+		const url = new URL(location.href);
 		url.searchParams.delete('session');
 		url.pathname = id ? `/sessions/${encodeURIComponent(id)}` : '/sessions';
-		if (url.href === page.url.href) return;
+		if (url.href === location.href) return;
 		if (replace) replaceState(url, {});
 		else pushState(url, {});
 	}
