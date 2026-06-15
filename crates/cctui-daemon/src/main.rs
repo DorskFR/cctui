@@ -54,7 +54,16 @@ enum Cmd {
         /// Daemon socket to deliver to.
         #[arg(long)]
         sock: PathBuf,
+        /// Whip mode (🐎): after forwarding the question for UI visibility,
+        /// emit a `PreToolUse` deny decision so the form never renders and the
+        /// model is told to decide and keep working (CCT-352).
+        #[arg(long)]
+        deny: bool,
     },
+    /// Internal: the Claude Code `Stop` hook for whip mode (🐎, CCT-352). Reads
+    /// the hook JSON on stdin; exits 2 with guidance on stderr when the final
+    /// message reads as a graceful early exit / hand-back, else exits 0.
+    WhipStopHook,
     /// Check for a newer release, swap the binary in place, and restart
     /// the daemon service (if one is running) so it picks up the new binary.
     Update,
@@ -220,6 +229,7 @@ async fn main() -> anyhow::Result<()> {
             }
         },
         Cmd::Status => print_status(&path),
-        Cmd::AskHook { event, sock } => cctui_daemon::askhook::run(&event, &sock),
+        Cmd::AskHook { event, sock, deny } => cctui_daemon::askhook::run(&event, &sock, deny),
+        Cmd::WhipStopHook => std::process::exit(cctui_daemon::whipstop::run()),
     }
 }

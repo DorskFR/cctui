@@ -5,4 +5,4 @@
  * `full_access: bool`). Adapters map it to their own vocabulary; `None`
  * on a [`SessionSpec`] defers to the daemon's per-host default.
  */
-export type PermissionMode = "yolo" | "auto" | "ask";
+export type PermissionMode = "yolo" | "auto" | "ask" | "whip";

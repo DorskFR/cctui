@@ -26,7 +26,12 @@ use serde_json::{Value, json};
 ///
 /// Always returns `Ok(())` — a delivery failure must not break the user's
 /// prompt — but logs to stderr so failures are still diagnosable.
-pub fn run(event: &str, sock: &Path) -> anyhow::Result<()> {
+///
+/// `deny` (whip mode, CCT-352): after forwarding the question to the daemon
+/// for visibility, emit a `PreToolUse` `deny` decision on stdout so the form
+/// never renders and the model is told to decide and keep working instead of
+/// asking. Only meaningful for the `pre` event.
+pub fn run(event: &str, sock: &Path, deny: bool) -> anyhow::Result<()> {
     let mut input = String::new();
     if let Err(err) = std::io::stdin().read_to_string(&mut input) {
         eprintln!("cctui-daemon ask-hook: failed to read stdin: {err}");
@@ -75,6 +80,24 @@ pub fn run(event: &str, sock: &Path) -> anyhow::Result<()> {
     if let Err(err) = send(sock, &line.to_string()) {
         // The daemon may simply be down; that's not fatal for the user.
         eprintln!("cctui-daemon ask-hook: could not reach daemon at {}: {err}", sock.display());
+    }
+
+    // Whip mode: deny the tool so the form never renders. We forward the
+    // question above purely for UI visibility, then return a `deny` decision
+    // that Claude Code surfaces back to the model as the tool result.
+    if deny && event != "post" {
+        let decision = json!({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason":
+                    "Whip mode (🐎): AskUserQuestion is disabled. Do not ask the user to \
+                     choose, confirm, or review — decide using your best judgment and keep \
+                     working. Only stop when the task is genuinely complete or you hit a \
+                     concrete blocker you cannot resolve yourself.",
+            },
+        });
+        println!("{decision}");
     }
     Ok(())
 }

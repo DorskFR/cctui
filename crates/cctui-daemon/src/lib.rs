@@ -18,3 +18,4 @@ pub mod runtime;
 pub mod selfupdate;
 pub mod service;
 pub mod supervisor;
+pub mod whipstop;

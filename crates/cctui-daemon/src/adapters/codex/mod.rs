@@ -197,12 +197,7 @@ async fn command_pump(
                         // sandbox but disables approval prompts (approval=never).
                         let mut cfg = app_cfg.clone();
                         if let Some(mode) = spec.permission_mode {
-                            use cctui_proto::adapter::PermissionMode;
-                            let (sandbox, approval) = match mode {
-                                PermissionMode::Yolo => ("danger-full-access", "never"),
-                                PermissionMode::Auto => ("workspace-write", "never"),
-                                PermissionMode::Ask => ("workspace-write", "untrusted"),
-                            };
+                            let (sandbox, approval) = mode.codex_sandbox_approval();
                             sandbox.clone_into(&mut cfg.sandbox_mode);
                             approval.clone_into(&mut cfg.approval_policy);
                         }
@@ -253,12 +248,7 @@ async fn command_pump(
                         }
                         let mut cfg = app_cfg.clone();
                         if let Some(mode) = spec.permission_mode {
-                            use cctui_proto::adapter::PermissionMode;
-                            let (sandbox, approval) = match mode {
-                                PermissionMode::Yolo => ("danger-full-access", "never"),
-                                PermissionMode::Auto => ("workspace-write", "never"),
-                                PermissionMode::Ask => ("workspace-write", "untrusted"),
-                            };
+                            let (sandbox, approval) = mode.codex_sandbox_approval();
                             sandbox.clone_into(&mut cfg.sandbox_mode);
                             approval.clone_into(&mut cfg.approval_policy);
                         }

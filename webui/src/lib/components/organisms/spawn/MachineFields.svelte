@@ -33,7 +33,8 @@
 	const modeAccent: Record<string, string> = {
 		ask: 'var(--c-green)',
 		auto: 'var(--c-blue)',
-		yolo: 'var(--c-red)'
+		yolo: 'var(--c-red)',
+		whip: 'var(--c-red)'
 	};
 </script>
 

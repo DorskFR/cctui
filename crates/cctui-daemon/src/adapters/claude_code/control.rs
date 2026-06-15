@@ -921,14 +921,8 @@ impl Driver {
         // Per-spawn permission posture (CCT-149). `None` inherits whatever
         // the claude daemon was launched with (the user's global default).
         if let Some(mode) = spec.permission_mode {
-            use cctui_proto::adapter::PermissionMode;
-            let claude_mode = match mode {
-                PermissionMode::Yolo => "bypassPermissions",
-                PermissionMode::Auto => "acceptEdits",
-                PermissionMode::Ask => "default",
-            };
             args.push("--permission-mode".to_owned());
-            args.push(claude_mode.to_owned());
+            args.push(mode.claude_flag().to_owned());
         }
         // Inject the managed `AskUserQuestion` hook settings (CCT-167), scoped
         // to this fleet-spawned worker only — the user's hand-run `claude` is
@@ -969,7 +963,8 @@ impl Driver {
                 }
             }
         }
-        if let Some(settings) = ensure_hook_settings(&self.cfg.hook_socket_path) {
+        let whip = spec.permission_mode.is_some_and(cctui_proto::adapter::PermissionMode::is_whip);
+        if let Some(settings) = ensure_hook_settings(&self.cfg.hook_socket_path, whip) {
             let settings = settings.to_string_lossy().into_owned();
             args.push("--settings".to_owned());
             args.push(settings.clone());
@@ -1135,14 +1130,8 @@ impl Driver {
             args.push(name.clone());
         }
         if let Some(mode) = spec.permission_mode {
-            use cctui_proto::adapter::PermissionMode;
-            let claude_mode = match mode {
-                PermissionMode::Yolo => "bypassPermissions",
-                PermissionMode::Auto => "acceptEdits",
-                PermissionMode::Ask => "default",
-            };
             args.push("--permission-mode".to_owned());
-            args.push(claude_mode.to_owned());
+            args.push(mode.claude_flag().to_owned());
         }
         let mut respawn_flags = vec!["--agent".to_owned(), agent.to_owned()];
         if let Some(effort) = spec.effort.as_deref().map(str::trim).filter(|e| !e.is_empty()) {
@@ -1166,7 +1155,8 @@ impl Driver {
                 map.insert(short.clone(), (model.map(str::to_owned), effort.map(str::to_owned)));
             }
         }
-        if let Some(settings) = ensure_hook_settings(&self.cfg.hook_socket_path) {
+        let whip = spec.permission_mode.is_some_and(cctui_proto::adapter::PermissionMode::is_whip);
+        if let Some(settings) = ensure_hook_settings(&self.cfg.hook_socket_path, whip) {
             let settings = settings.to_string_lossy().into_owned();
             args.push("--settings".to_owned());
             args.push(settings.clone());
@@ -1983,11 +1973,11 @@ pub fn stage_mid_chat_files(
     stage_upload_files(session_id, uploads)
 }
 
-fn hook_settings_path() -> Option<PathBuf> {
+fn hook_settings_path(file: &str) -> Option<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-    Some(base.join("cctui").join("ask-hook-settings.json"))
+    Some(base.join("cctui").join(file))
 }
 
 /// Write (idempotently, on every spawn so it tracks binary upgrades) the
@@ -1996,26 +1986,54 @@ fn hook_settings_path() -> Option<PathBuf> {
 /// delivery socket (CCT-167). Returns the file path to inject via `--settings`,
 /// or `None` if we can't locate the binary / config dir (in which case spawning
 /// proceeds without the hook rather than failing).
-fn ensure_hook_settings(sock: &std::path::Path) -> Option<PathBuf> {
-    let path = hook_settings_path()?;
+///
+/// `whip` (CCT-352) toggles the 🐎 enforcement profile, written to a separate
+/// file so it never clobbers the default one: the `AskUserQuestion` PreToolUse
+/// hook gains `--deny` (it still notifies the UI, but returns a `deny` decision
+/// so the form never renders), and a `Stop` hook (`whip-stop-hook`) blocks
+/// stalling / hand-back language so the worker runs to genuine completion.
+fn ensure_hook_settings(sock: &std::path::Path, whip: bool) -> Option<PathBuf> {
+    let path = hook_settings_path(if whip {
+        "whip-hook-settings.json"
+    } else {
+        "ask-hook-settings.json"
+    })?;
     let exe = std::env::current_exe()
         .map_err(|err| tracing::warn!(%err, "ask-hook: cannot resolve current_exe"))
         .ok()?;
     let exe = exe.to_string_lossy();
     let sock = sock.to_string_lossy();
+    let deny = if whip { " --deny" } else { "" };
     let hook = |event: &str| {
+        let extra = if event == "pre" { deny } else { "" };
         json!([{
             "matcher": "AskUserQuestion",
             "hooks": [{
                 "type": "command",
-                "command": format!("{exe} ask-hook --event {event} --sock {sock}"),
+                "command": format!("{exe} ask-hook --event {event} --sock {sock}{extra}"),
                 "timeout": 5,
             }],
         }])
     };
-    let settings = json!({
-        "hooks": { "PreToolUse": hook("pre"), "PostToolUse": hook("post") },
-    });
+    let settings = if whip {
+        json!({
+            "hooks": {
+                "PreToolUse": hook("pre"),
+                "PostToolUse": hook("post"),
+                "Stop": [{
+                    "hooks": [{
+                        "type": "command",
+                        "command": format!("{exe} whip-stop-hook"),
+                        "timeout": 10,
+                    }],
+                }],
+            },
+        })
+    } else {
+        json!({
+            "hooks": { "PreToolUse": hook("pre"), "PostToolUse": hook("post") },
+        })
+    };
     if let Some(Err(err)) = path.parent().map(std::fs::create_dir_all) {
         tracing::warn!(%err, "ask-hook: cannot create settings dir");
         return None;

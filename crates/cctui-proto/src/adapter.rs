@@ -432,6 +432,42 @@ pub enum PermissionMode {
     /// Prompt on every action. claude `--permission-mode default`; codex
     /// `sandbox_mode=workspace-write` + `approval_policy=untrusted`.
     Ask,
+    /// "Whip" (🐎) — yolo on steroids (CCT-352). Same permission posture as
+    /// [`Self::Yolo`] (no prompts, no sandbox), plus two enforcement hooks
+    /// injected into the claude worker: `AskUserQuestion` is **banned** (a
+    /// `PreToolUse` deny), and a `Stop` hook blocks stalling / hand-back
+    /// language so the worker keeps going until the work is genuinely done or
+    /// it is genuinely blocked. Codex (no hook surface) maps it like yolo.
+    Whip,
+}
+
+impl PermissionMode {
+    /// The claude `--permission-mode` value for this posture.
+    #[must_use]
+    pub const fn claude_flag(self) -> &'static str {
+        match self {
+            Self::Yolo | Self::Whip => "bypassPermissions",
+            Self::Auto => "acceptEdits",
+            Self::Ask => "default",
+        }
+    }
+
+    /// The codex `(sandbox_mode, approval_policy)` pair for this posture.
+    #[must_use]
+    pub const fn codex_sandbox_approval(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Yolo | Self::Whip => ("danger-full-access", "never"),
+            Self::Auto => ("workspace-write", "never"),
+            Self::Ask => ("workspace-write", "untrusted"),
+        }
+    }
+
+    /// Whip (🐎) mode: ban `AskUserQuestion` and install the no-stall `Stop`
+    /// hook on top of the yolo posture.
+    #[must_use]
+    pub const fn is_whip(self) -> bool {
+        matches!(self, Self::Whip)
+    }
 }
 
 /// Parameters for spawning a brand-new session. Used by `AdapterCommand::Spawn`

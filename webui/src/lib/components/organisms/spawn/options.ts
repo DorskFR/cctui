@@ -6,7 +6,8 @@ import type { PermissionMode } from '@bindings/PermissionMode';
 export const modes: { v: PermissionMode; label: string; hint: string }[] = [
 	{ v: 'ask', label: 'Ask', hint: 'Prompt on every action' },
 	{ v: 'auto', label: 'Auto', hint: 'Auto-apply, sandbox on' },
-	{ v: 'yolo', label: 'Yolo', hint: 'No prompts, full access' }
+	{ v: 'yolo', label: 'Yolo', hint: 'No prompts, full access' },
+	{ v: 'whip', label: 'Whip 🐎', hint: 'Yolo + no asking, no stalling' }
 ];
 
 // Per-adapter effort levels, index 0 = "" (adapter default). Claude and codex
