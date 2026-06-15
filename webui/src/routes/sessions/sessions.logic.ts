@@ -208,3 +208,15 @@ export const groupOf = (s: SessionListItem): GroupKey => {
 	if (bucket === 'blocked') return 'blocked';
 	return isDispatched(s) ? 'dispatched' : bucket;
 };
+
+// Map a session to the single view section that owns it, mirroring the live
+// bucket→section mapping (pinned→starred, dispatched→dispatched, else→live)
+// plus the archive split. Used so search results respect the active section
+// toggles (CCT-354): a match is hidden when its owning section is disabled.
+export const sectionOf = (s: SessionListItem): Section => {
+	if (s.status === 'archived') return 'archived';
+	if (s.pinned) return 'starred';
+	return isDispatched(s) ? 'dispatched' : 'live';
+};
+export const inEnabledSections = (s: SessionListItem, sections: Set<Section>): boolean =>
+	sections.has(sectionOf(s));

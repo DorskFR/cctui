@@ -27,6 +27,7 @@
 		BUCKETS,
 		isDispatched,
 		groupOf,
+		inEnabledSections,
 		type Section,
 		type SubGroup
 	} from './sessions.logic';
@@ -714,8 +715,11 @@
 		     grouped even if they land in different status sections; then split
 		     the top-level rows into Live / Archived (CCT-298 item 1). -->
 		{@const ns = nest(pageRows)}
-		{@const liveTop = ns.topLevel.filter((s) => s.status !== 'archived')}
-		{@const archTop = ns.topLevel.filter((s) => s.status === 'archived')}
+		{@const scoped = ns.topLevel.filter(
+			(s) => inEnabledSections(s, sections) && matchesLabelFilter(s)
+		)}
+		{@const liveTop = scoped.filter((s) => s.status !== 'archived')}
+		{@const archTop = scoped.filter((s) => s.status === 'archived')}
 		<div class="sections" class:tight={dense}>
 			{#if liveTop.length > 0}
 				<div class="section">
@@ -728,6 +732,9 @@
 					<div class="group-header">Archived <Text class="count">{archTop.length}</Text></div>
 					{@render nestedRows(archTop, ns.childGroups, false, searchTerms)}
 				</div>
+			{/if}
+			{#if scoped.length === 0}
+				<div class="empty"><Text tone="muted">No matches in the selected sections — toggle more from the section filter.</Text></div>
 			{/if}
 			{@render loadMore()}
 		</div>
