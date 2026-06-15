@@ -160,7 +160,11 @@
 			// stack peeks out behind as intended.
 			swipeX !== 0 ? `transform: translateX(${swipeX}px)` : '',
 			`transition: ${swiping ? 'none' : 'transform 0.2s var(--ease)'}`,
-			needsInput ? 'background: var(--attention-bg); border-left: 3px solid var(--attention-bar)' : '',
+			// Opaque attention fill (not the translucent --attention-bg): a parent with
+			// subagents renders as a `stacked` Card, and a see-through front surface lets
+			// the back-stack pseudo-elements (z-index:-1/-2) bleed through the card body
+			// instead of only peeking at the edges (CCT-349).
+			needsInput ? 'background: var(--attention-bg-solid); border-left: 3px solid var(--attention-bar)' : '',
 			// Subagent (child) cards carry an info-tinted border so they read as part
 			// of the parent's stacked group (matches the "subagent" info badge).
 			child && !needsInput ? 'border-color: color-mix(in srgb, var(--info) 45%, var(--border))' : '',

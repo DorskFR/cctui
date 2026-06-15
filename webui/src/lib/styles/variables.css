@@ -86,6 +86,11 @@
 
   /* attention highlight (needs-input row) */
   --attention-bg: color-mix(in srgb, var(--c-amber) 12%, transparent);
+  /* Opaque variant for surfaces that must fully hide what's behind them — e.g. a
+     `stacked` Card whose back layers (z-index:-1/-2 pseudo-elements) would
+     otherwise bleed THROUGH a translucent attention fill (CCT-349). Same hue,
+     mixed over the elevated surface instead of transparent. */
+  --attention-bg-solid: color-mix(in srgb, var(--c-amber) 12%, var(--bg-elevated));
   --attention-bar: var(--c-amber);
 
   /* machine-badge tinting (CCT-271, fixed CCT-272) — the hue is per-machine

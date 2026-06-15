@@ -288,9 +288,14 @@
 					onpaste={onPaste}
 				/>
 			</div>
+			<!-- Stays a plain primary button across all cost states: layering a `tone`
+			     (info/warn) on `primary` recolored the LABEL to the tone hue over the
+			     accent fill (e.g. light-blue text on the green accent → unreadable,
+			     CCT-349). The cold/imminent state is signalled by the label itself
+			     (countdown · ❄️ · burst estimate) + the title tooltip, so the button
+			     keeps its expected high-contrast primary colors. -->
 			<Button
 				variant="primary"
-				tone={cacheCold ? 'info' : coldImminent ? 'warn' : 'none'}
 				class="send"
 				disabled={uploading || (!input.trim() && attachments.length === 0)}
 				onclick={send}
@@ -364,8 +369,9 @@
 	}
 	/* Send button is a child Button; keep it from shrinking in the flex row. Its
 	   height comes from the Button atom's md size (2.5rem), matching the attach
-	   FileButton and the collapsed Textarea. The cold (blue) and final-minute
-	   warning (amber) cost states are Button `tone` (info/warn) — CCT-189/CCT-261. */
+	   FileButton and the collapsed Textarea. The cold + final-minute cost states
+	   are conveyed by the button LABEL (countdown/❄️/burst) — not a `tone` recolor,
+	   which clashed with the primary fill (CCT-189/CCT-261/CCT-349). */
 	.composer-row :global(.send) {
 		flex: none;
 	}

@@ -67,11 +67,13 @@
 				</Text>
 			</NavLink>
 		{/if}
+		<!-- Plain ghost button: the on-state accent tint comes from `pressed`
+		     (aria-pressed → accent glyph), NOT a `tone` border — a tinted border
+		     read blurry/strange against the header's backdrop blur (CCT-349). -->
 		<IconButton
 			emoji={notify.enabled ? '🔔' : '🔕'}
 			size={12}
 			label={notify.enabled ? 'Notifications on — click to mute' : 'Notify me when a session needs input'}
-			tone={notify.enabled ? 'accent' : 'none'}
 			pressed={notify.enabled}
 			onclick={toggleNotify}
 			oncontextmenu={(e: MouseEvent) => {
