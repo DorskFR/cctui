@@ -195,7 +195,8 @@ pub async fn create_account(
          VALUES ($1, $2, $3, $4, $5, $6) \
          RETURNING id, name, provider, user_id, NULL::text AS user_name, \
                    expires_at, created_at, last_used_at, \
-                   request_count, bytes_transferred",
+                   request_count, bytes_transferred, \
+                   0::bigint AS total_tokens, 0::double precision AS est_cost_usd",
     )
     .bind(uid)
     .bind(req.name.trim())
@@ -237,7 +238,8 @@ pub async fn rename_account(
          WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2) \
          RETURNING id, name, provider, user_id, NULL::text AS user_name, \
                    expires_at, created_at, last_used_at, \
-                   request_count, bytes_transferred",
+                   request_count, bytes_transferred, \
+                   0::bigint AS total_tokens, 0::double precision AS est_cost_usd",
     )
     .bind(id)
     .bind(ctx.user_id)
@@ -597,7 +599,8 @@ pub async fn oauth_finish(
          VALUES ($1, $2, $3, $4, $5, $6, $7) \
          RETURNING id, name, provider, user_id, NULL::text AS user_name, \
                    expires_at, created_at, last_used_at, \
-                   request_count, bytes_transferred",
+                   request_count, bytes_transferred, \
+                   0::bigint AS total_tokens, 0::double precision AS est_cost_usd",
     )
     .bind(uid)
     .bind(req.name.trim())
