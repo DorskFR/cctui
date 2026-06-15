@@ -344,6 +344,17 @@
 		/* Never let the row exceed the composer width — nowrap + min-width:0 on the
 		   textarea keeps it contained. */
 		min-width: 0;
+		/* Single-row control height, tracking the Textarea's font-scaled single line
+		   so Send + the attach FileButton stay the same height as a rows=1 input at
+		   every font scale (CCT-353). The buttons' own floors are a fixed 2.5rem, but
+		   the textarea grows with --fs-base (form-control font is max(16px,--fs-base))
+		   while a 0.8125rem-label button does not — leaving Send shorter at the largest
+		   scale. Mirror the Textarea's metrics: line-box (max(16px,--fs-base) ×
+		   --lh-tight) + 2×--sp-2 vertical padding + 2px border, floored at 2.5rem. */
+		--composer-ctl-h: max(
+			2.5rem,
+			calc(max(16px, var(--fs-base)) * var(--lh-tight) + 2 * var(--sp-2) + 2px)
+		);
 	}
 	/* The Textarea now ships its own .textarea-wrap root, so the row flex lives on
 	   this layout wrapper rather than the textarea element. */
@@ -372,8 +383,12 @@
 	   FileButton and the collapsed Textarea. The cold + final-minute cost states
 	   are conveyed by the button LABEL (countdown/❄️/burst) — not a `tone` recolor,
 	   which clashed with the primary fill (CCT-189/CCT-261/CCT-349). */
-	.composer-row :global(.send) {
+	.composer-row :global(.send),
+	.composer-row :global(.file-btn) {
 		flex: none;
+		/* Track the font-scaled single-row height so all three composer controls
+		   (attach · textarea · Send) stay level at every scale (CCT-353). */
+		min-height: var(--composer-ctl-h);
 	}
 	/* Fixed-width, tabular digits so "59s"→"0s" doesn't jitter the button. The
 	   countdown <span> is in this component's markup, so a scoped rule reaches it. */

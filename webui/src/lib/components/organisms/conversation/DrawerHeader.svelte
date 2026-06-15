@@ -418,6 +418,14 @@
 			text-align: left;
 			line-height: 1.2;
 		}
+		/* The font-size control is a SelectButton whose `aria-label` lives on the
+		   inner <button>/<select>, not on the `.select-button`/`.font-pick` root the
+		   flyout styles — so `attr(aria-label)` resolves empty and the flyout row
+		   showed only the bare "A" glyph with no text. Give it an explicit label so
+		   the mobile menu entry reads like the others (CCT-353). */
+		.dhead .secondary :global(.font-pick)::after {
+			content: 'Adjust font size';
+		}
 	}
 	.dtitle {
 		flex: 1;

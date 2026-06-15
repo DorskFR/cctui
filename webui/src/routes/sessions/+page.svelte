@@ -623,10 +623,15 @@
 {/snippet}
 
 {#snippet cardGrid(rows: SessionListItem[], childGroups: Map<string, SubGroup[]>)}
+	<!-- Card track widths scale with the UI font (CCT-353): the chrome stays rem-pinned
+	     but card TEXT (working-dir chip, token readout, model) grows with --fs-scale, so
+	     at the largest scale fixed-rem cards overflowed. Multiplying min/max by the same
+	     factor widens cards as the text grows — and raising `min` naturally collapses to
+	     a single compact column / wider detailed cards at high zoom. -->
 	{#if dense}
-		<AutoGrid min="18rem" max="26.75rem" maxCols={2} gap="var(--sp-2)">{@render cardItems(rows, childGroups)}</AutoGrid>
+		<AutoGrid min="calc(18rem * var(--fs-scale))" max="calc(26.75rem * var(--fs-scale))" maxCols={2} gap="var(--sp-2)">{@render cardItems(rows, childGroups)}</AutoGrid>
 	{:else}
-		<AutoGrid min="20rem" max="26.75rem" gap="var(--sp-3)">{@render cardItems(rows, childGroups)}</AutoGrid>
+		<AutoGrid min="calc(20rem * var(--fs-scale))" max="calc(26.75rem * var(--fs-scale))" gap="var(--sp-3)">{@render cardItems(rows, childGroups)}</AutoGrid>
 	{/if}
 {/snippet}
 
