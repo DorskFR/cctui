@@ -122,9 +122,21 @@
 	// of skipping the list (CCT-345 / CCT-326). `mounted` is reactive so the
 	// drawer→URL effect re-runs once the initial sync is in place.
 	let mounted = $state(false);
+	// Derive the session id from the URL pathname rather than `page.params`.
+	// `setUrlSession` navigates with shallow routing (pushState/replaceState),
+	// which updates `page.url` but does NOT re-resolve the matched route — so
+	// `page.params.session` stays pinned to whatever the [session] route bound on
+	// the last full navigation. After closing the drawer pushes `/sessions`, the
+	// stale param would still read `<uuid>`, reopen the session, and re-push the
+	// URL (CCT-350: back chevron never clears /sessions/<uuid>). Parsing the live
+	// pathname keeps the URL→drawer effect honest under shallow routing.
+	function sessionIdFromUrl(): string | null {
+		const m = page.url.pathname.match(/^\/sessions\/([^/]+)/);
+		if (m) return decodeURIComponent(m[1]);
+		return page.url.searchParams.get('session');
+	}
 	onMount(() => {
-		lastUrlId =
-			(page.params.session as string | undefined) ?? page.url.searchParams.get('session') ?? null;
+		lastUrlId = sessionIdFromUrl();
 		mounted = true;
 	});
 
@@ -195,8 +207,7 @@
 	// the same flush, so conversations never opened. Depending only on the URL
 	// keeps this effect to its job: URL changes drive the drawer, not vice versa.
 	$effect(() => {
-		const legacyId = page.url.searchParams.get('session');
-		const id = (page.params.session as string | undefined) ?? legacyId;
+		const id = sessionIdFromUrl();
 		if (id === untrack(() => openSession?.id ?? null)) return;
 		if (id) void openById(id);
 		else openSession = null;
