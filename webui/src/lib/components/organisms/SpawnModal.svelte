@@ -613,8 +613,8 @@
 		</Dropzone>
 	{/snippet}
 	{#snippet footer()}
-		<Button onclick={clearForm}>Clear</Button>
-		<Button variant="primary" block disabled={busy || !valid} onclick={submit}>
+		<Button size="lg" onclick={clearForm}>Clear</Button>
+		<Button size="lg" variant="primary" block disabled={busy || !valid} onclick={submit}>
 			{#if busy}<span class="spin"></span>{:else}{target === 'machine' ? 'Spawn' : 'Dispatch'}{/if}
 		</Button>
 	{/snippet}
