@@ -18,6 +18,7 @@ export CCTUI_TOKEN
 .PHONY: run/server run/tui run/admin
 .PHONY: image/build image/push image/release
 .PHONY: worker/image/build worker/image/push worker/image/release
+.PHONY: dispatcher-kube/image/build dispatcher-kube/image/push dispatcher-kube/image/release
 .PHONY: local/up local/down local/logs local/pull local/ps
 .PHONY: bindings webui/install webui/dev webui/build
 
@@ -174,6 +175,23 @@ worker/image/push:  ## Push the worker image tags
 	docker push $(WORKER_IMAGE):latest
 
 worker/image/release: worker/image/build worker/image/push  ## Build + push the worker image
+
+# ── Kubernetes dispatcher image (standalone, enrolled) ─────────────────────
+# The dispatcher that spawns worker Jobs in-cluster (CCT-291). CI builds +
+# pushes it on tag (see .github/workflows/release.yml); these targets are the
+# same local fallback as image/*.
+DISPATCHER_KUBE_IMAGE ?= $(IMAGE_REGISTRY)/cctui-dispatcher-kube
+
+dispatcher-kube/image/build:  ## Build the kube dispatcher image ($(DISPATCHER_KUBE_IMAGE):$(IMAGE_VERSION) + :latest)
+	docker build -f deploy/dispatcher.Dockerfile \
+	  -t $(DISPATCHER_KUBE_IMAGE):$(IMAGE_VERSION) \
+	  -t $(DISPATCHER_KUBE_IMAGE):latest .
+
+dispatcher-kube/image/push:  ## Push the kube dispatcher image tags
+	docker push $(DISPATCHER_KUBE_IMAGE):$(IMAGE_VERSION)
+	docker push $(DISPATCHER_KUBE_IMAGE):latest
+
+dispatcher-kube/image/release: dispatcher-kube/image/build dispatcher-kube/image/push  ## Build + push the kube dispatcher image
 
 # ── Web UI image (standalone SPA) ──────────────────────────
 UI_IMAGE ?= $(IMAGE_REGISTRY)/cctui-ui

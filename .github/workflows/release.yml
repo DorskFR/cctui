@@ -190,3 +190,16 @@ jobs:
           tags: |
             ghcr.io/dorskfr/cctui-worker:${{ steps.ver.outputs.version }}
             ghcr.io/dorskfr/cctui-worker:latest
+
+      # The standalone, enrolled kubernetes dispatcher: connects out to the
+      # server and spawns worker Jobs in-cluster on dispatch. (CCT-291)
+      - name: Build + push dispatcher-kube image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: deploy/dispatcher.Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ghcr.io/dorskfr/cctui-dispatcher-kube:${{ steps.ver.outputs.version }}
+            ghcr.io/dorskfr/cctui-dispatcher-kube:latest
