@@ -37,6 +37,7 @@
 		Text
 	} from '@dorsk/tsumikit';
 	import { clickOutside } from '$lib/clickOutside';
+	import { dialogBackdropGuard } from '$lib/dialogBackdropGuard';
 	import { labelTint, hueToColor } from '$lib/labels';
 	import AttachmentList from '$lib/components/molecules/AttachmentList.svelte';
 	import LabelMenu from '$lib/components/molecules/LabelMenu.svelte';
@@ -497,7 +498,7 @@
 			disabled={target !== 'machine'}
 			onfiles={addFiles}
 		>
-			<div class="stack">
+			<div class="stack" use:dialogBackdropGuard>
 			{#if canDispatch}
 				<Field label="Run on">
 					<div class="targets">
