@@ -74,6 +74,52 @@ export function eventSig(e: AgentEvent): string {
 	}
 }
 
+// Re-anchor an AskUserQuestion turn to its causal narrative order (CCT-338).
+//
+// Claude flushes the AskUserQuestion tool_use block (and the assistant prose
+// preamble preceding it) only AFTER the turn advances — i.e. after the user has
+// already answered. Live events and DB rows are ordered by receive-time `ts`
+// (the server stamps `Utc::now()` on ingest; see normalize.rs), NOT by the
+// original transcript order. So once history is (re)fetched or the page is
+// reloaded, the persisted preamble + ask card sort AFTER the user's answer,
+// inverting the narrative:
+//   [answer] · [preamble] · [ask card] · [continuation]   (wrong)
+// The correct, durable order is:
+//   [preamble] · [ask card] · [answer] · [continuation]
+//
+// This is a pure, idempotent transform over the BUILT lines: a contiguous
+// `[preamble?, ask card]` block that is immediately preceded by a user/system
+// answer line is lifted to before that answer. When the order is already
+// correct (the live case, where preamble+card render before the optimistic
+// reply), no block matches and the input is returned unchanged.
+//
+// The preamble is the assistant prose immediately preceding the ask card; the
+// ask card is the only durable anchor we can match across sources (its question
+// text survives refetch/reload), so we key the block off the card and absorb at
+// most the assistant lines directly above it as its preamble.
+export function orderAskTurns(lines: Line[]): Line[] {
+	// Index of the answer that precedes an ask block, if the block is inverted.
+	const isAskCard = (l: Line) => l.role === 'tool' && !!l.ask;
+	const isAnswer = (l: Line) => l.role === 'user' || l.role === 'system';
+	const out = lines.slice();
+	for (let i = 0; i < out.length; i++) {
+		if (!isAskCard(out[i])) continue;
+		// Absorb the contiguous assistant preamble run directly above the card.
+		let start = i;
+		while (start > 0 && out[start - 1].role === 'assistant') start--;
+		// The block is [start .. i]; it is inverted iff the line directly above it
+		// is the user's answer (the answer landed before the late preamble + card).
+		const answerIdx = start - 1;
+		if (answerIdx < 0 || !isAnswer(out[answerIdx])) continue;
+		// Lift the block to before the answer (stable: relative order preserved).
+		const block = out.splice(start, i - start + 1);
+		out.splice(answerIdx, 0, ...block);
+		// Continue past the moved block (now ending where the answer used to be).
+		i = answerIdx + block.length;
+	}
+	return out;
+}
+
 // JSON.stringify only emits \n / \t inside string literals, so expanding them
 // for display is safe (display-only — the text is never parsed back).
 export function expandJsonEscapes(s: string): string {

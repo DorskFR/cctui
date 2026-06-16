@@ -15,7 +15,7 @@
 	import Conversation from './conversation/Conversation.svelte';
 	import ConversationComposer from './conversation/ConversationComposer.svelte';
 	import { MSG_TYPES, type MsgType, type ViewOpts, type Line } from './conversation/types';
-	import { looksMeta, parseAsk, parsePlan, eventSig, formatToolInput } from './conversation/format';
+	import { looksMeta, parseAsk, parsePlan, eventSig, formatToolInput, orderAskTurns } from './conversation/format';
 	import { ConversationStream } from './conversation/stream.svelte';
 	import { ScrollController } from './conversation/scroll.svelte';
 	import { ForkController } from './conversation/fork.svelte';
@@ -273,12 +273,19 @@
 			}
 			out.push(ln);
 		}
-		for (let i = 0; i < out.length; i++) {
-			if (out[i].role !== 'assistant') continue;
-			const prev = [...out.slice(0, i)].reverse().find((l) => l.role === 'user' || l.role === 'assistant');
-			if (prev && out[i].ts > prev.ts) out[i].durationMs = out[i].ts - prev.ts;
+		// Re-anchor any AskUserQuestion turn to its causal order before computing
+		// per-line durations, so a late-arriving preamble + ask card (stamped with
+		// receive-time ts after the user's answer) render above the answer rather
+		// than below it (CCT-338).
+		const ordered = orderAskTurns(out);
+		for (let i = 0; i < ordered.length; i++) {
+			if (ordered[i].role !== 'assistant') continue;
+			const prev = [...ordered.slice(0, i)]
+				.reverse()
+				.find((l) => l.role === 'user' || l.role === 'assistant');
+			if (prev && ordered[i].ts > prev.ts) ordered[i].durationMs = ordered[i].ts - prev.ts;
 		}
-		return out;
+		return ordered;
 	});
 	// The assistant prose preceding the live question (CCT-213), rendered as
 	// markdown above the card so the user answers with context, not blind.
