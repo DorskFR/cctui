@@ -15,7 +15,7 @@
 	import Conversation from './conversation/Conversation.svelte';
 	import ConversationComposer from './conversation/ConversationComposer.svelte';
 	import { MSG_TYPES, type MsgType, type ViewOpts, type Line } from './conversation/types';
-	import { looksMeta, parseAsk, eventSig, formatToolInput } from './conversation/format';
+	import { looksMeta, parseAsk, parsePlan, eventSig, formatToolInput } from './conversation/format';
 	import { ConversationStream } from './conversation/stream.svelte';
 	import { ScrollController } from './conversation/scroll.svelte';
 	import { ForkController } from './conversation/fork.svelte';
@@ -201,6 +201,11 @@
 					const ask = parseAsk(e.input);
 					if (ask) return { role: 'tool', ts: Number(e.ts), tool: e.tool, ask };
 				}
+				// ExitPlanMode (CCT-347): render the plan + continuations as a Plan card.
+				if (e.tool === 'ExitPlanMode') {
+					const plan = parsePlan(e.input);
+					if (plan) return { role: 'tool', ts: Number(e.ts), tool: e.tool, plan };
+				}
 				const isMcp = e.tool.startsWith('mcp__');
 				// MCP tool calls filter on the 'mcp' tag; other tool calls on 'tool'.
 				if (!typeVisible(isMcp ? 'mcp' : 'tool')) return null;
@@ -279,6 +284,10 @@
 	// markdown above the card so the user answers with context, not blind.
 	const askPreambleHtml = $derived(
 		stream.ask?.preamble ? hl(renderMarkdown(stream.ask.preamble)) : null
+	);
+	// The assistant prose preceding the live plan (CCT-347), same treatment.
+	const planPreambleHtml = $derived(
+		stream.plan?.preamble ? hl(renderMarkdown(stream.plan.preamble)) : null
 	);
 
 	// ── Scroll wiring (content-follow, session reset, composer-growth observer) ─
@@ -472,7 +481,10 @@
 		working={stream.working}
 		answering={stream.answering}
 		isDupeOfLiveAsk={stream.isDupeOfLiveAsk}
+		plan={stream.plan}
+		{planPreambleHtml}
 		onanswer={(t, p, qs) => stream.answerQuestion(t, p, qs)}
+		onanswerplan={(t, p) => stream.answerPlan(t, p)}
 		onretry={(ts) => stream.retryFailed(ts)}
 		onedit={editPending}
 		onrespondperm={(rid, allow) => ws.respondPermission(id, rid, allow)}

@@ -334,6 +334,23 @@ pub enum ServerEvent {
     AskResolved {
         session_id: String,
     },
+    /// The agent is blocked on an `ExitPlanMode` plan-approval prompt; carries
+    /// the plan markdown so clients render a live Plan card with the
+    /// continuation options before the transcript flushes the tool call
+    /// (CCT-347).
+    PlanRequest {
+        session_id: String,
+        plan: String,
+        /// Assistant prose preceding the plan in the same turn. `None` when
+        /// there was none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        preamble: Option<String>,
+    },
+    /// A previously-broadcast `PlanRequest` is resolved; clients dismiss the
+    /// live Plan card (CCT-347).
+    PlanResolved {
+        session_id: String,
+    },
     /// Outcome of a client-initiated command (currently `POST /sessions/spawn`).
     /// `command_id` matches the value returned by the spawn route so the
     /// originating client can surface success/failure instead of silently

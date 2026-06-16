@@ -254,6 +254,35 @@ pub enum AdapterEvent {
     AskResolved {
         local_id: String,
     },
+    /// The agent is in plan mode and has presented a plan via the
+    /// `ExitPlanMode` tool, rendering a single-select PTY approval prompt
+    /// (1 = accept + bypass, 2 = accept + manual approval, 3 = keep planning,
+    /// 4 = tell Claude what to change). Like [`AdapterEvent::AskQuestion`],
+    /// this is invisible to the control socket (it reports `state:"done"`
+    /// while pending) and the `tool_use` block only flushes to the transcript
+    /// after the turn advances — so the daemon's `ExitPlanMode` `PreToolUse`
+    /// hook delivers the plan the instant the prompt renders (CCT-347).
+    ///
+    /// Answered via a normal [`AdapterCommand::Reply`]: a digit pick (1-3)
+    /// drives the form natively (mirrors `AskUserQuestion`), and option 4
+    /// ("Tell Claude what to change") is free-text answered via the existing
+    /// dismiss-then-reply path.
+    PlanRequest {
+        local_id: String,
+        /// The plan markdown (`tool_input.plan`).
+        plan: String,
+        /// Assistant prose preceding the `ExitPlanMode` call in the same turn,
+        /// read from the transcript by the `ask-hook` subcommand. `None` when
+        /// the model called the tool with no preceding text.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        preamble: Option<String>,
+    },
+    /// A previously-emitted [`AdapterEvent::PlanRequest`] is no longer pending
+    /// (the `ExitPlanMode` `PostToolUse` hook fired, or the prompt was
+    /// answered / dismissed). Clients drop the live Plan card (CCT-347).
+    PlanResolved {
+        local_id: String,
+    },
     /// Outcome of a server-initiated command (currently `Spawn`). Not tied to
     /// a session — `command_id` correlates it with the HTTP spawn response so
     /// the server can rebroadcast it to the originating client (CCT-131).

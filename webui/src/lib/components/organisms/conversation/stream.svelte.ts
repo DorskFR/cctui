@@ -8,7 +8,7 @@
 // than read off the ws singleton from a $derived — a $derived reading the
 // singleton's keyed state does NOT re-run on mutation (see ws.svelte.ts header).
 import type { AgentEvent } from '@bindings/AgentEvent';
-import { ws, userMsgKey, type PermReq, type LiveAsk } from '$lib/ws.svelte';
+import { ws, userMsgKey, type PermReq, type LiveAsk, type LivePlan } from '$lib/ws.svelte';
 import { parseAsk } from './format';
 import type { AskQuestion } from './types';
 
@@ -36,6 +36,10 @@ export class ConversationStream {
 	// Live AskUserQuestion (CCT-164/179): delivered by the daemon's PreToolUse
 	// hook the instant the form renders. Null when none pending.
 	ask = $state<LiveAsk | null>(null);
+	// Live ExitPlanMode plan prompt (CCT-347): delivered by the daemon's
+	// PreToolUse hook the instant the plan-approval prompt renders. Null when
+	// none pending. Answered like an ask (digit picks 1-3 / free-text refine).
+	plan = $state<LivePlan | null>(null);
 	// Per-message delivery state (CCT-212 → CCT-214), mirrored from the ws
 	// singleton so a failed/in-flight send survives the drawer being reopened.
 	pendingReplies = $state<Set<number>>(new Set());
@@ -92,6 +96,13 @@ export class ConversationStream {
 			// A pending question means claude is waiting on the user, not working.
 			if (q) this.working = false;
 		});
+		const offPlan = ws.onPlan(sid, (p) => {
+			this.plan = p;
+			// A fresh plan (or a resolution) supersedes any in-flight answer lock.
+			this.answering = false;
+			// A pending plan means claude is waiting on the user, not working.
+			if (p) this.working = false;
+		});
 		// Mirror the singleton's per-session delivery state (CCT-214). Fires
 		// immediately with the current snapshot and on every ack / auto-retry.
 		const offDelivery = ws.onDelivery(sid, (snap) => {
@@ -106,6 +117,7 @@ export class ConversationStream {
 			offStream();
 			offPerms();
 			offAsk();
+			offPlan();
 			offDelivery();
 			ws.unsubscribe(sid);
 			ws.clearStream(sid);
@@ -222,6 +234,23 @@ export class ConversationStream {
 		// poll later (CCT-164).
 		this.ask = null;
 		ws.clearAsk(this.#opts.id());
+		this.#opts.invalidateSessions();
+	}
+
+	// Answer an ExitPlanMode plan prompt (CCT-347). A pure pick (1-3) drives the
+	// real PTY form natively via keystrokes (the daemon stores a synthetic
+	// single-select form in its pending-ask map); a free-text refinement (the
+	// "Tell Claude what to change" option) takes the dismiss-then-reply path with
+	// `picks = null`. Same trackedSend grammar as `answerQuestion`.
+	answerPlan(text: string, picks: number[][] | null) {
+		if (this.#opts.archived()) return;
+		const ts = this.#pushOptimisticReply(text);
+		const ok = ws.trackedSend(this.#opts.id(), text, ts, picks ?? undefined);
+		if (!ok) return;
+		this.answering = true;
+		this.working = true;
+		this.plan = null;
+		ws.clearPlan(this.#opts.id());
 		this.#opts.invalidateSessions();
 	}
 

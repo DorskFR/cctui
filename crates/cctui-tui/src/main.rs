@@ -620,6 +620,8 @@ fn handle_server_event(app: &mut App, event: ServerEvent) {
         | ServerEvent::AskQuestion { .. }
         | ServerEvent::MessageAck { .. }
         | ServerEvent::MachineLiveness { .. }
+        | ServerEvent::PlanRequest { .. }
+        | ServerEvent::PlanResolved { .. }
         | ServerEvent::AskResolved { .. } => {
             // Archive coverage is web-only (CCT-68); spawn feedback
             // (CommandResult, CCT-131) is surfaced in the web client and the

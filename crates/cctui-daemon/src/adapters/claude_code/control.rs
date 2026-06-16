@@ -541,6 +541,13 @@ impl Driver {
                             .events
                             .send(AdapterEvent::AskResolved { local_id: local_id.to_owned() })
                             .await;
+                        // A plan prompt is stored in the same pending map; emit
+                        // PlanResolved too so a live Plan card drops. Idempotent
+                        // (clients only clear their own kind) (CCT-347).
+                        let _ = self
+                            .events
+                            .send(AdapterEvent::PlanResolved { local_id: local_id.to_owned() })
+                            .await;
                         return Ok(());
                     }
                     Err(err) => {
@@ -570,6 +577,10 @@ impl Driver {
                         .events
                         .send(AdapterEvent::AskResolved { local_id: local_id.to_owned() })
                         .await;
+                    let _ = self
+                        .events
+                        .send(AdapterEvent::PlanResolved { local_id: local_id.to_owned() })
+                        .await;
                     // Give the TUI a beat to settle after the ESC before the
                     // reply lands.
                     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
@@ -582,6 +593,10 @@ impl Driver {
             // repeat of the free-text branch's own emit above (CCT-278).
             let _ =
                 self.events.send(AdapterEvent::AskResolved { local_id: local_id.to_owned() }).await;
+            let _ = self
+                .events
+                .send(AdapterEvent::PlanResolved { local_id: local_id.to_owned() })
+                .await;
         }
         let resp =
             socket::one_shot(sock, &json!({"proto":1,"op":"reply","short":short,"text":text}))
@@ -2052,7 +2067,11 @@ fn ensure_hook_settings(sock: &std::path::Path, whip: bool) -> Option<PathBuf> {
     let hook = |event: &str| {
         let extra = if event == "pre" { deny } else { "" };
         json!({
-            "matcher": "AskUserQuestion",
+            // AskUserQuestion + ExitPlanMode both fire this hook: the former
+            // surfaces a live question card, the latter a live Plan card
+            // (CCT-347). Both are single-select PTY prompts answered the same
+            // way (digit keystroke / dismiss-then-reply).
+            "matcher": "AskUserQuestion|ExitPlanMode",
             "hooks": [{
                 "type": "command",
                 "command": format!("{exe} ask-hook --event {event} --sock {sock}{extra}"),

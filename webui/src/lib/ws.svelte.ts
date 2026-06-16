@@ -45,6 +45,17 @@ export interface LiveAsk {
 }
 /** Live AskUserQuestion for a session, or null when none is pending. */
 type AskCb = (ask: LiveAsk | null) => void;
+/**
+ * A live ExitPlanMode plan-approval prompt (CCT-347). `plan` is the plan
+ * markdown the agent presented; `preamble` is the prose preceding the
+ * `ExitPlanMode` call, rendered above the Plan card for context.
+ */
+export interface LivePlan {
+	plan: string;
+	preamble?: string | null;
+}
+/** Live plan prompt for a session, or null when none is pending. */
+type PlanCb = (plan: LivePlan | null) => void;
 /** Server ack for a client-sent message (CCT-212). `ok=false` means the server
  * could not dispatch the reply to the session's daemon, so the client should
  * mark the message failed and offer a retry. */
@@ -141,9 +152,11 @@ class WsClient {
 	private perms = new Map<string, PermReq[]>();
 	/** pending AskUserQuestion, keyed by session id; not reactive (CCT-164) */
 	private asks = new Map<string, LiveAsk>();
+	private plans = new Map<string, LivePlan>();
 	private streamCbs = new Map<string, Set<StreamCb>>();
 	private permCbs = new Map<string, Set<PermCb>>();
 	private askCbs = new Map<string, Set<AskCb>>();
+	private planCbs = new Map<string, Set<PlanCb>>();
 	/**
 	 * Tracked outbound sends with their auto-retry state (CCT-214), keyed
 	 * sid → ts. Lives here (not in the drawer) so a failed/in-flight send and
@@ -278,6 +291,19 @@ class WsClient {
 				this.setAsk(sid, null);
 				break;
 			}
+			case 'plan_request': {
+				const sid = msg.session_id as string;
+				this.setPlan(sid, {
+					plan: msg.plan as string,
+					preamble: (msg.preamble as string | undefined) ?? null
+				});
+				break;
+			}
+			case 'plan_resolved': {
+				const sid = msg.session_id as string;
+				this.setPlan(sid, null);
+				break;
+			}
 			case 'message_ack': {
 				const ack: MessageAck = {
 					client_msg_id: msg.client_msg_id as string,
@@ -368,6 +394,14 @@ class WsClient {
 		if (set) for (const cb of set) cb(ask);
 	}
 
+	private setPlan(id: string, plan: LivePlan | null) {
+		if (plan === null) this.plans.delete(id);
+		else this.plans.set(id, plan);
+		this.changeTick++;
+		const set = this.planCbs.get(id);
+		if (set) for (const cb of set) cb(plan);
+	}
+
 	subscribe(id: string) {
 		if (!this.subscribed.has(id)) {
 			this.subscribed.add(id);
@@ -441,6 +475,26 @@ class WsClient {
 	 * answers, before the daemon's resolution event arrives) (CCT-164). */
 	clearAsk(id: string) {
 		if (this.asks.has(id)) this.setAsk(id, null);
+	}
+
+	/** Register a live plan-prompt listener for a session (CCT-347). Fires with
+	 * the current pending plan (or null) immediately and on every change.
+	 * Returns an unsubscribe fn. */
+	onPlan(id: string, cb: PlanCb): () => void {
+		let set = this.planCbs.get(id);
+		if (!set) {
+			set = new Set();
+			this.planCbs.set(id, set);
+		}
+		set.add(cb);
+		cb(this.plans.get(id) ?? null);
+		return () => set!.delete(cb);
+	}
+
+	/** Clear any live pending plan for a session (e.g. after the user answers,
+	 * before the daemon's resolution event arrives) (CCT-347). */
+	clearPlan(id: string) {
+		if (this.plans.has(id)) this.setPlan(id, null);
 	}
 
 	/** Send a typed message. Returns true if the frame went out, false if the

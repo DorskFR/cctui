@@ -44,6 +44,14 @@ export function parseAsk(input: unknown): AskQuestion[] | null {
 	return out.length ? out : null;
 }
 
+// Pull the plan markdown out of an ExitPlanMode tool input (CCT-347). The
+// peer of `parseAsk` — used to render a historic plan tool_call as a Plan card.
+export function parsePlan(input: unknown): string | null {
+	const plan = (input as { plan?: unknown })?.plan;
+	if (typeof plan !== 'string' || plan.trim().length === 0) return null;
+	return plan;
+}
+
 // Content signature of an event, used to dedup the live stream against fetched
 // history (the same logical event has a DIFFERENT `ts` in each source — history
 // stamps DB `created_at`, live carries the daemon ts — so ts can't be the key).

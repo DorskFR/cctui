@@ -34,6 +34,17 @@ pub struct PendingAsk {
     pub received_at: DateTime<Utc>,
 }
 
+/// A live `ExitPlanMode` plan-approval prompt the agent is blocked on
+/// (CCT-347). Held authoritatively per session so it can be replayed to a
+/// (re)subscribing client, exactly like [`PendingAsk`].
+#[derive(Debug, Clone)]
+pub struct PendingPlan {
+    pub session_id: String,
+    pub plan: String,
+    pub preamble: Option<String>,
+    pub received_at: DateTime<Utc>,
+}
+
 pub struct PermissionStore {
     /// Pending requests waiting for TUI decision: `request_id` → entry.
     /// Populated by the daemon-WS path when an adapter forwards a
@@ -45,6 +56,10 @@ pub struct PermissionStore {
     /// `AskResolved`; replayed to (re)subscribing clients so a prompt is never
     /// lost to a momentary unsubscribe (CCT-277).
     asks: HashMap<String, PendingAsk>,
+    /// Live `ExitPlanMode` plan prompts, keyed by `session_id` (CCT-347).
+    /// Populated on `PlanRequest`, dropped on `PlanResolved`; replayed to
+    /// (re)subscribing clients like `asks`.
+    plans: HashMap<String, PendingPlan>,
     /// Decisions recorded by TUI clients: `request_id` → (`session_id`,
     /// behavior, `decided_at`). Currently used only for the audit window
     /// covered by `reap_stale`.
@@ -62,6 +77,7 @@ impl PermissionStore {
         Self {
             pending: HashMap::new(),
             asks: HashMap::new(),
+            plans: HashMap::new(),
             decisions: HashMap::new(),
             auto_approve: std::collections::HashSet::new(),
         }
@@ -109,6 +125,24 @@ impl PermissionStore {
         self.asks.get(session_id).cloned()
     }
 
+    /// Record the live plan prompt for a session (CCT-347). A newer plan for
+    /// the same session replaces the prior one.
+    pub fn insert_plan(&mut self, plan: PendingPlan) {
+        self.plans.insert(plan.session_id.clone(), plan);
+    }
+
+    /// Drop the live plan for a session once it resolves. Idempotent.
+    pub fn remove_plan(&mut self, session_id: &str) {
+        self.plans.remove(session_id);
+    }
+
+    /// The session's currently-open plan prompt, if any — replayed to a
+    /// (re)subscribing client.
+    #[must_use]
+    pub fn pending_plan(&self, session_id: &str) -> Option<PendingPlan> {
+        self.plans.get(session_id).cloned()
+    }
+
     /// Enable/disable auto-approve for a session (CCT-151).
     pub fn set_auto_approve(&mut self, session_id: &str, enabled: bool) {
         if enabled {
@@ -134,6 +168,9 @@ impl PermissionStore {
         // (4×) before treating an entry as stale and dropping it from replay.
         let ask_cutoff = Utc::now() - chrono::Duration::seconds(max_age_secs.saturating_mul(4));
         self.asks.retain(|_, a| a.received_at > ask_cutoff);
+        // Plans, like asks, deserve a wide deliberation window before the leak
+        // backstop drops them from replay.
+        self.plans.retain(|_, p| p.received_at > ask_cutoff);
     }
 }
 

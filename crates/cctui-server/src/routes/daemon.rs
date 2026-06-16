@@ -498,6 +498,33 @@ async fn handle_event(
                 .send(cctui_proto::ws::ServerEvent::AskResolved { session_id: local_id.clone() });
             bump_heartbeat(state, &local_id).await;
         }
+        AdapterEvent::PlanRequest { local_id, plan, preamble } => {
+            // Live ExitPlanMode plan-approval prompt (CCT-347): park it
+            // authoritatively (so a (re)subscribing client still learns it) and
+            // broadcast so clients render the live Plan card. Mirrors the
+            // AskQuestion path; ephemeral, not persisted as a stream_event.
+            state.permission_store.write().await.insert_plan(
+                crate::routes::permissions::PendingPlan {
+                    session_id: local_id.clone(),
+                    plan: plan.clone(),
+                    preamble: preamble.clone(),
+                    received_at: chrono::Utc::now(),
+                },
+            );
+            let _ = state.tui_tx.send(cctui_proto::ws::ServerEvent::PlanRequest {
+                session_id: local_id.clone(),
+                plan,
+                preamble,
+            });
+            bump_heartbeat(state, &local_id).await;
+        }
+        AdapterEvent::PlanResolved { local_id } => {
+            state.permission_store.write().await.remove_plan(&local_id);
+            let _ = state
+                .tui_tx
+                .send(cctui_proto::ws::ServerEvent::PlanResolved { session_id: local_id.clone() });
+            bump_heartbeat(state, &local_id).await;
+        }
         AdapterEvent::Status {
             local_id,
             tempo,

@@ -1,12 +1,13 @@
 <script lang="ts">
 	import PermissionCard from '$lib/components/organisms/PermissionCard.svelte';
 	import AskQuestionCard from '$lib/components/organisms/AskQuestionCard.svelte';
+	import PlanCard from '$lib/components/organisms/PlanCard.svelte';
 	import { Button, Text } from '@dorsk/tsumikit';
 	import ConversationLine from './ConversationLine.svelte';
 	import { copyLineMarkdown, saveLineImage } from './lineActions';
 	import type { ScrollController } from './scroll.svelte';
 	import type { AskQuestion, Line } from './types';
-	import type { PermReq, LiveAsk } from '$lib/ws.svelte';
+	import type { PermReq, LiveAsk, LivePlan } from '$lib/ws.svelte';
 
 	let {
 		scroll,
@@ -18,10 +19,13 @@
 		ask,
 		liveAskQuestions,
 		askPreambleHtml,
+		plan,
+		planPreambleHtml,
 		working,
 		answering,
 		isDupeOfLiveAsk,
 		onanswer,
+		onanswerplan,
 		onretry,
 		onedit,
 		onrespondperm
@@ -35,10 +39,13 @@
 		ask: LiveAsk | null;
 		liveAskQuestions: AskQuestion[] | null;
 		askPreambleHtml: string | null;
+		plan: LivePlan | null;
+		planPreambleHtml: string | null;
 		working: boolean;
 		answering: boolean;
 		isDupeOfLiveAsk: (a: AskQuestion[]) => boolean;
 		onanswer: (text: string, picks: number[][] | null, qs?: AskQuestion[] | null) => void;
+		onanswerplan: (text: string, picks: number[][] | null) => void;
 		onretry: (ts: number) => void;
 		onedit: (text: string, ts: number) => void;
 		onrespondperm: (requestId: string, allow: boolean) => void;
@@ -69,6 +76,11 @@
 		!!ask?.preamble &&
 			lines.some((l) => l.role === 'assistant' && (l.text ?? '').trim() === ask!.preamble!.trim())
 	);
+	// Same suppression for the live plan's preamble (CCT-347).
+	const planPreambleInLines = $derived(
+		!!plan?.preamble &&
+			lines.some((l) => l.role === 'assistant' && (l.text ?? '').trim() === plan!.preamble!.trim())
+	);
 </script>
 
 <div class="conv-wrap">
@@ -83,7 +95,7 @@
 	>
 		{#if isLoading}
 			<div class="empty"><span class="spin"></span></div>
-		{:else if lines.length === 0 && perms.length === 0 && !ask}
+		{:else if lines.length === 0 && perms.length === 0 && !ask && !plan}
 			<div class="empty"><Text>No events yet.</Text></div>
 		{/if}
 
@@ -103,6 +115,14 @@
 					questions={ln.ask}
 					interactive={i === visibleLines.length - 1 && !archived && !answering && !ask}
 					onsubmit={(t, p) => onanswer(t, p, ln.ask)}
+				/>
+			{:else if ln.plan && plan}
+				<!-- Suppressed: a live plan prompt is rendered below (CCT-347). -->
+			{:else if ln.plan}
+				<PlanCard
+					plan={ln.plan}
+					interactive={i === visibleLines.length - 1 && !archived && !answering && !plan}
+					onsubmit={(t, p) => onanswerplan(t, p)}
 				/>
 			{:else if ln.role === 'reset'}
 				<div class="reset-divider" role="separator">
@@ -151,11 +171,26 @@
 			{/key}
 		{/if}
 
+		{#if plan}
+			<!-- Live ExitPlanMode plan-approval prompt (CCT-347): the daemon's hook
+			     forwards the plan markdown the instant the prompt renders, so render
+			     the interactive Plan card live. Answering sends a reply (digit pick
+			     1-3 natively, or free-text refine). -->
+			{#if planPreambleHtml && !planPreambleInLines}
+				<div class="line assistant ask-preamble">
+					<div class="bubble">{@html planPreambleHtml}</div>
+				</div>
+			{/if}
+			{#key plan.plan}
+				<PlanCard plan={plan.plan} interactive={!archived && !answering} onsubmit={(t, p) => onanswerplan(t, p)} />
+			{/key}
+		{/if}
+
 		{#each perms as p (p.request_id)}
 			<PermissionCard req={p} onrespond={(rid, allow) => onrespondperm(rid, allow)} />
 		{/each}
 
-		{#if working && !archived && !ask && perms.length === 0}
+		{#if working && !archived && !ask && !plan && perms.length === 0}
 			<!-- Activity indicator (CCT-208): proves the request is being processed,
 			     the equivalent of the TUI's "Running…" spinner. -->
 			<div class="working" role="status" aria-live="polite">

@@ -170,6 +170,15 @@ async fn handle_subscribe(
                 })
                 .await;
         }
+        if let Some(plan) = store.pending_plan(&session_id) {
+            let _ = event_tx
+                .send(ServerEvent::PlanRequest {
+                    session_id: plan.session_id,
+                    plan: plan.plan,
+                    preamble: plan.preamble,
+                })
+                .await;
+        }
     }
 
     if let Some(receiver) = receiver {

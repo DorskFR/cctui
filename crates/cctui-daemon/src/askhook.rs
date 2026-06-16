@@ -61,8 +61,37 @@ pub fn run(event: &str, sock: &Path, deny: bool) -> anyhow::Result<()> {
         return run_perm(sock, session_id, &payload);
     }
 
+    let tool_name = payload.get("tool_name").and_then(Value::as_str).unwrap_or_default();
+
     let line = if event == "post" {
-        json!({ "kind": "resolved", "session_id": session_id })
+        // One PostToolUse hook fires for both AskUserQuestion and ExitPlanMode;
+        // tell the daemon which kind resolved so it drops the right live card.
+        if tool_name == "ExitPlanMode" {
+            json!({ "kind": "plan_resolved", "session_id": session_id })
+        } else {
+            json!({ "kind": "resolved", "session_id": session_id })
+        }
+    } else if tool_name == "ExitPlanMode" {
+        // Plan-approval prompt (CCT-347). `tool_input.plan` carries the plan
+        // markdown; fall back to the most recent on-disk plan file if it's
+        // absent/truncated. Reuse `read_preamble` for the prose that preceded
+        // the `ExitPlanMode` call in the same turn.
+        let tool_input = payload.get("tool_input");
+        let plan = tool_input
+            .and_then(|t| t.get("plan"))
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .map(str::to_owned)
+            .or_else(read_latest_plan_file)
+            .unwrap_or_default();
+        let preamble =
+            payload.get("transcript_path").and_then(Value::as_str).and_then(read_preamble);
+        json!({
+            "kind": "plan",
+            "session_id": session_id,
+            "plan": plan,
+            "preamble": preamble,
+        })
     } else {
         let tool_input = payload.get("tool_input");
         let question = format_questions(tool_input);
@@ -96,7 +125,7 @@ pub fn run(event: &str, sock: &Path, deny: bool) -> anyhow::Result<()> {
     // Whip mode: deny the tool so the form never renders. We forward the
     // question above purely for UI visibility, then return a `deny` decision
     // that Claude Code surfaces back to the model as the tool result.
-    if deny && event != "post" {
+    if deny && event != "post" && tool_name != "ExitPlanMode" {
         let decision = json!({
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
@@ -178,6 +207,28 @@ fn request_decision(sock: &Path, line: &str) -> std::io::Result<Option<Value>> {
         return Ok(None);
     }
     Ok(serde_json::from_str(buf).ok())
+}
+
+/// Fallback for a missing/truncated `tool_input.plan` (CCT-347): read the most
+/// recently modified plan markdown Claude Code wrote under `~/.claude/plans`.
+/// The plan-file naming is slug-based and not exposed in the hook payload, so
+/// rather than guessing a slug we take the newest `*.md` — in practice the plan
+/// being presented is the one just written. `None` if the directory is absent
+/// or empty.
+fn read_latest_plan_file() -> Option<String> {
+    let dir = dirs::home_dir()?.join(".claude").join("plans");
+    let newest = std::fs::read_dir(&dir)
+        .ok()?
+        .filter_map(Result::ok)
+        .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("md"))
+        .filter_map(|e| {
+            let mtime = e.metadata().ok()?.modified().ok()?;
+            Some((mtime, e.path()))
+        })
+        .max_by_key(|(mtime, _)| *mtime)
+        .map(|(_, path)| path)?;
+    let body = std::fs::read_to_string(newest).ok()?;
+    if body.trim().is_empty() { None } else { Some(body) }
 }
 
 /// Read the assistant prose preceding the pending question from the transcript

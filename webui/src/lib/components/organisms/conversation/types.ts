@@ -59,6 +59,8 @@ export interface Line {
 	failed?: string;
 	// Parsed AskUserQuestion payload (CCT-146) — rendered as interactive cards.
 	ask?: AskQuestion[];
+	// Parsed ExitPlanMode plan markdown (CCT-347) — rendered as a Plan card.
+	plan?: string;
 	durationMs?: number;
 	messageId?: string;
 	usage?: TokenUsageT;

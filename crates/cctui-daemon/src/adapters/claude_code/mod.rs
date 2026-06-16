@@ -283,6 +283,18 @@ async fn handle_hook_connection(
                 AdapterEvent::AskResolved { local_id } => {
                     map.remove(local_id);
                 }
+                // A plan-approval prompt is a single-select form too (CCT-347):
+                // store a synthetic single question whose options are the known
+                // ExitPlanMode continuations so the reply path answers picks
+                // 1-3 natively via `ask_keystrokes`. Option 4 ("Tell Claude what
+                // to change") is free-text and takes the dismiss-then-reply
+                // fallback like any free-text ask answer.
+                AdapterEvent::PlanRequest { local_id, .. } => {
+                    map.insert(local_id.clone(), Some(plan_form_questions()));
+                }
+                AdapterEvent::PlanResolved { local_id } => {
+                    map.remove(local_id);
+                }
                 _ => {}
             }
         }
@@ -291,6 +303,24 @@ async fn handle_hook_connection(
         }
     }
     Ok(())
+}
+
+/// The synthetic single-select `questions` payload for an `ExitPlanMode`
+/// plan-approval prompt (CCT-347). The option set/order mirrors the CLI's PTY
+/// prompt (verified against the claude 2.x plan-mode form); it is hardcoded
+/// because the labels are rendered by the CLI, not carried in `tool_input`.
+/// Stored in `pending_asks` so the reply path can answer picks 1-3 natively via
+/// `ask_keystrokes` (a lone single-select submits straight from its digit).
+fn plan_form_questions() -> serde_json::Value {
+    serde_json::json!([{
+        "question": "Ready to code?",
+        "options": [
+            { "label": "Yes, and auto-accept edits" },
+            { "label": "Yes, and manually approve edits" },
+            { "label": "No, keep planning" },
+            { "label": "Tell Claude what to change" }
+        ]
+    }])
 }
 
 /// Parse one hook line and resolve it to an `AdapterEvent`. The hook reports
@@ -325,6 +355,19 @@ fn hook_line_to_event(line: &str, session_map: &SessionMap) -> Option<AdapterEve
             Some(AdapterEvent::AskQuestion { local_id, question, questions, preamble })
         }
         Some("resolved") => Some(AdapterEvent::AskResolved { local_id }),
+        Some("plan") => {
+            // ExitPlanMode plan-approval prompt (CCT-347). `plan` is the plan
+            // markdown; `preamble` the prose before the tool call, same shape
+            // as the ask path.
+            let plan = v.get("plan").and_then(|p| p.as_str()).unwrap_or_default().to_owned();
+            let preamble = v
+                .get("preamble")
+                .and_then(|p| p.as_str())
+                .filter(|s| !s.trim().is_empty())
+                .map(str::to_owned);
+            Some(AdapterEvent::PlanRequest { local_id, plan, preamble })
+        }
+        Some("plan_resolved") => Some(AdapterEvent::PlanResolved { local_id }),
         other => {
             tracing::warn!(?other, "ignoring ask-hook line with unknown kind");
             None
@@ -479,6 +522,54 @@ mod tests {
     #[test]
     fn flag_via_config_mode_other_value() {
         assert!(!use_claude_daemon_path(&serde_json::json!({"mode": "legacy"})));
+    }
+
+    #[test]
+    fn hook_line_plan_maps_to_plan_request() {
+        // CCT-347: an ExitPlanMode plan hook line carries the plan markdown +
+        // optional preamble and maps to PlanRequest.
+        let map: SessionMap = Arc::default();
+        let line = r##"{"kind":"plan","session_id":"s1","plan":"# Plan\n- step one","preamble":"Here is my plan."}"##;
+        match hook_line_to_event(line, &map) {
+            Some(AdapterEvent::PlanRequest { local_id, plan, preamble }) => {
+                assert_eq!(local_id, "s1");
+                assert_eq!(plan, "# Plan\n- step one");
+                assert_eq!(preamble.as_deref(), Some("Here is my plan."));
+            }
+            other => panic!("expected PlanRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hook_line_plan_blank_preamble_is_none() {
+        let map: SessionMap = Arc::default();
+        let line = r#"{"kind":"plan","session_id":"s1","plan":"do it","preamble":"   "}"#;
+        match hook_line_to_event(line, &map) {
+            Some(AdapterEvent::PlanRequest { preamble, .. }) => assert_eq!(preamble, None),
+            other => panic!("expected PlanRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hook_line_plan_resolved_maps_to_plan_resolved() {
+        let map: SessionMap = Arc::default();
+        let line = r#"{"kind":"plan_resolved","session_id":"s1"}"#;
+        match hook_line_to_event(line, &map) {
+            Some(AdapterEvent::PlanResolved { local_id }) => assert_eq!(local_id, "s1"),
+            other => panic!("expected PlanResolved, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plan_form_questions_is_single_select_with_four_options() {
+        // The synthetic plan form must be a lone single-select question (no
+        // multiSelect) so `ask_keystrokes` answers a digit pick natively
+        // without a review screen (CCT-347).
+        let qs = plan_form_questions();
+        let arr = qs.as_array().expect("array");
+        assert_eq!(arr.len(), 1, "exactly one synthetic question");
+        assert_eq!(arr[0]["options"].as_array().unwrap().len(), 4);
+        assert!(arr[0].get("multiSelect").is_none(), "single-select");
     }
 
     #[test]
