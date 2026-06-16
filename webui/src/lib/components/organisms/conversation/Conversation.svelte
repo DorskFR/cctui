@@ -137,11 +137,18 @@
 					<div class="bubble">{@html askPreambleHtml}</div>
 				</div>
 			{/if}
-			<AskQuestionCard
-				questions={liveAskQuestions ?? [{ question: ask.question, options: [] }]}
-				interactive={!archived && !answering}
-				onsubmit={(t, p) => onanswer(t, p, liveAskQuestions)}
-			/>
+			<!-- Re-key on the question text so a SUCCESSIVE ask gets a fresh card
+			     instance instead of reusing one whose per-question selection state
+			     (chosen/other/focused) was seeded from the PREVIOUS ask's prop and
+			     never re-seeded — which left the new answer un-submittable / stuck
+			     (CCT-350 item 1). -->
+			{#key ask.question}
+				<AskQuestionCard
+					questions={liveAskQuestions ?? [{ question: ask.question, options: [] }]}
+					interactive={!archived && !answering}
+					onsubmit={(t, p) => onanswer(t, p, liveAskQuestions)}
+				/>
+			{/key}
 		{/if}
 
 		{#each perms as p (p.request_id)}
