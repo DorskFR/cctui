@@ -50,6 +50,17 @@ pub fn run(event: &str, sock: &Path, deny: bool) -> anyhow::Result<()> {
         return Ok(());
     };
 
+    // Bidirectional tool-permission hook (CCT-342). For the `perm` event the
+    // hook BLOCKS: it forwards the pending tool call to the daemon and waits on
+    // the same connection for the human's decision, then prints the resulting
+    // `PreToolUse` `permissionDecision` so Claude Code allows/denies the tool
+    // without an attach + keystroke. On any failure (daemon down, timeout,
+    // deferred) it prints nothing and exits 0, so the normal permission prompt
+    // renders and the keystroke fallback path can answer it.
+    if event == "perm" {
+        return run_perm(sock, session_id, &payload);
+    }
+
     let line = if event == "post" {
         json!({ "kind": "resolved", "session_id": session_id })
     } else {
@@ -100,6 +111,73 @@ pub fn run(event: &str, sock: &Path, deny: bool) -> anyhow::Result<()> {
         println!("{decision}");
     }
     Ok(())
+}
+
+/// Handle the `perm` (PreToolUse permission) hook event (CCT-342).
+///
+/// `AskUserQuestion` is skipped here — it has its own `pre`/`post` hook and is
+/// not a tool-permission prompt. For every other tool we mint a correlation id,
+/// send a `perm-request` line to the daemon, and block reading the decision
+/// back on the same connection. The daemon writes one of:
+///   `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"|"deny"|"defer", …}}`
+/// which we print verbatim so Claude Code applies it. A `defer`, an empty
+/// reply, or any error → we print nothing (exit 0) and the normal permission
+/// flow continues, where the keystroke fallback can still answer.
+fn run_perm(sock: &Path, session_id: &str, payload: &Value) -> anyhow::Result<()> {
+    let tool = payload.get("tool_name").and_then(Value::as_str).unwrap_or_default();
+    // AskUserQuestion is answered via its own hook + the reply path, never as a
+    // permission. Defer immediately so we never block it here.
+    if tool == "AskUserQuestion" {
+        return Ok(());
+    }
+    let hook_id = format!("{session_id}-{}", std::process::id());
+    let request = json!({
+        "kind": "perm-request",
+        "session_id": session_id,
+        "hook_id": hook_id,
+        "tool": tool,
+        "input": payload.get("tool_input").cloned().unwrap_or(Value::Null),
+    });
+    match request_decision(sock, &request.to_string()) {
+        Ok(Some(decision)) => {
+            // Only emit a concrete allow/deny; a `defer` (or anything else)
+            // means "let the normal flow run", so print nothing.
+            let kind = decision
+                .get("hookSpecificOutput")
+                .and_then(|o| o.get("permissionDecision"))
+                .and_then(Value::as_str)
+                .unwrap_or("defer");
+            if kind == "allow" || kind == "deny" {
+                println!("{decision}");
+            }
+        }
+        Ok(None) => {} // daemon deferred / closed without a decision
+        Err(err) => {
+            eprintln!("cctui-daemon ask-hook: perm decision unavailable: {err}");
+        }
+    }
+    Ok(())
+}
+
+/// Send `line` to the daemon and block reading a single newline-delimited JSON
+/// decision back on the same connection (CCT-342). Returns `Ok(None)` if the
+/// daemon closes without a decision or the reply isn't JSON. The read has no
+/// explicit timeout: the daemon bounds its own wait and always writes a
+/// decision (`defer` on its timeout) before the hook's configured `timeout`
+/// ceiling, so this can't hang the turn indefinitely.
+fn request_decision(sock: &Path, line: &str) -> std::io::Result<Option<Value>> {
+    let mut stream = UnixStream::connect(sock)?;
+    stream.set_write_timeout(Some(Duration::from_secs(2)))?;
+    stream.write_all(line.as_bytes())?;
+    stream.write_all(b"\n")?;
+    stream.flush()?;
+    let mut buf = String::new();
+    stream.read_to_string(&mut buf)?;
+    let buf = buf.trim();
+    if buf.is_empty() {
+        return Ok(None);
+    }
+    Ok(serde_json::from_str(buf).ok())
 }
 
 /// Read the assistant prose preceding the pending question from the transcript

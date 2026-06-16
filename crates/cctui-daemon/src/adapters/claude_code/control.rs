@@ -193,10 +193,8 @@ impl LiveSnapshot {
         // The "process gone" phrase arrives wrapped in a longer sentence in the
         // `detail` field (e.g. "process gone while supervisor was down"), so we
         // match it as a substring rather than an exact token.
-        let detail_gone = self
-            .detail
-            .as_deref()
-            .is_some_and(|s| s.to_ascii_lowercase().contains("process gone"));
+        let detail_gone =
+            self.detail.as_deref().is_some_and(|s| s.to_ascii_lowercase().contains("process gone"));
         self.gone
             || self.dead
             || self.alive == Some(false)
@@ -274,6 +272,15 @@ pub struct Driver {
     /// path dismisses the form (attach+ESC) first so the user's actual text is
     /// what claude receives.
     pending_asks: super::PendingAsks,
+    /// Tool-permission `PreToolUse` hooks currently parked in the ask-hook
+    /// listener, long-polling for a human's decision (CCT-342). Keyed by the
+    /// session's stable `local_id`. The `PermissionResponse` handler resolves
+    /// the matching entry — handing the decision straight back to the blocked
+    /// hook (which returns an `allow`/`deny` decision to Claude Code) — instead
+    /// of attaching + injecting `1\r`/ESC keystrokes. The keystroke path is kept
+    /// only as the fallback for when no hook is registered (hook timed out, or
+    /// a prompt that surfaced via the legacy `tempo:"blocked"` signal).
+    pending_perm_hooks: super::PendingPermHooks,
     /// When the last periodic reconciliation re-tail ran (CCT-253). The
     /// reconciler re-reads each live session's transcript from a checkpoint
     /// behind the persisted offset so a gap left by a dropped send or
@@ -388,6 +395,7 @@ impl Driver {
             pending_perms: HashMap::new(),
             perm_seq: 0,
             pending_asks: super::PendingAsks::default(),
+            pending_perm_hooks: super::PendingPermHooks::default(),
             last_reconcile: Instant::now(),
             churned: false,
             spawn_model_effort: std::sync::Mutex::new(HashMap::new()),
@@ -411,6 +419,12 @@ impl Driver {
     /// to maintain (CCT-219).
     pub fn pending_asks(&self) -> super::PendingAsks {
         self.pending_asks.clone()
+    }
+
+    /// Clone handle to the shared pending tool-permission hook map, for the
+    /// ask-hook listener to register blocked `PreToolUse` hooks into (CCT-342).
+    pub fn pending_perm_hooks(&self) -> super::PendingPermHooks {
+        self.pending_perm_hooks.clone()
     }
 
     #[allow(clippy::cognitive_complexity)]
@@ -633,14 +647,32 @@ impl Driver {
                 tracing::info!(%short, %local_id, "resumed session via explicit command");
             }
             AdapterCommand::PermissionResponse { local_id, request_id, allow } => {
-                // The control socket's `permission-response` op is a no-op stub
-                // in current claude (acks ok:true but never resolves the
-                // prompt). Answer the way a human does instead: attach to the
-                // PTY and inject `1`+Enter (approve) or ESC (deny) — the same
-                // mechanism the interrupt path uses (CCT-210/CCT-211).
+                // Preferred path (CCT-342): a bidirectional `PreToolUse` hook is
+                // blocked in the listener long-polling for this decision. Hand
+                // it the human's allow/deny straight back — the hook returns the
+                // decision to Claude Code, so the tool runs/skips with no attach
+                // + keystroke at all. `take`n so a duplicate response can't
+                // double-fire on an already-resolved (and dropped) channel.
+                let hook =
+                    self.pending_perm_hooks.lock().ok().and_then(|mut map| map.remove(&local_id));
+                if let Some(tx) = hook {
+                    if tx.send(allow).is_ok() {
+                        tracing::info!(%local_id, %request_id, allow, "answered permission prompt via PreToolUse hook");
+                        return Ok(());
+                    }
+                    // The hook already gave up (its wait timed out and the
+                    // receiver was dropped). Fall through to the keystroke path,
+                    // which handles the now-rendered native prompt.
+                    tracing::debug!(%local_id, %request_id, "perm hook receiver gone; falling back to keystroke");
+                }
+                // Fallback (CCT-211): no hook registered (timed out, or the
+                // prompt surfaced only via the legacy `tempo:"blocked"`/`needs`
+                // signal). The control socket's `permission-response` op is a
+                // no-op stub, so answer the way a human does — attach to the PTY
+                // and inject `1`+Enter (approve) or ESC (deny).
                 let short = self.resolve_short(&local_id)?;
                 socket::attach_permission_response(&sock, &short, allow).await?;
-                tracing::info!(%short, %request_id, allow, "answered permission prompt via attach");
+                tracing::info!(%short, %request_id, allow, "answered permission prompt via attach (fallback)");
             }
             AdapterCommand::Remove { local_id } => {
                 let short = self.resolve_short_for_removal(&local_id)?;
@@ -1113,8 +1145,9 @@ impl Driver {
         let agent = "claude";
         // Use the server-pre-minted child id when supplied (CCT-345) so the id
         // the webui navigated to matches the worker the daemon launches.
-        let session_id =
-            forced_session_id.map(str::to_owned).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let session_id = forced_session_id
+            .map(str::to_owned)
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let short = session_id[..8].to_owned();
         let nonce: String = uuid::Uuid::new_v4().simple().to_string().chars().take(8).collect();
         let created_at = u64::try_from(
@@ -2018,20 +2051,40 @@ fn ensure_hook_settings(sock: &std::path::Path, whip: bool) -> Option<PathBuf> {
     let deny = if whip { " --deny" } else { "" };
     let hook = |event: &str| {
         let extra = if event == "pre" { deny } else { "" };
-        json!([{
+        json!({
             "matcher": "AskUserQuestion",
             "hooks": [{
                 "type": "command",
                 "command": format!("{exe} ask-hook --event {event} --sock {sock}{extra}"),
                 "timeout": 5,
             }],
-        }])
+        })
     };
+    // Bidirectional tool-permission hook (CCT-342). Scoped to the mutating /
+    // executing tools that actually trigger an interactive approval (read-only
+    // tools auto-allow, so blocking on them would needlessly stall the turn).
+    // Distinct from the `AskUserQuestion` matcher above so both PreToolUse hooks
+    // can coexist. The hook BLOCKS, long-polls the daemon for the human's
+    // decision, and returns an allow/deny `permissionDecision` — no keystroke in
+    // the common case. The `timeout` is deliberately high (the daemon resolves
+    // the hook with a `defer` well before this fires, on its own bounded wait);
+    // a hook that overran *its* timeout would be treated by Claude Code as a
+    // hard deny, which we must never do to a slow human.
+    let perm_matcher = "Bash|Edit|MultiEdit|Write|NotebookEdit|WebFetch|Task|KillShell|BashOutput";
+    let perm_hook = json!({
+        "matcher": perm_matcher,
+        "hooks": [{
+            "type": "command",
+            "command": format!("{exe} ask-hook --event perm --sock {sock}"),
+            "timeout": 600,
+        }],
+    });
+    let pre_hooks = json!([hook("pre"), perm_hook]);
     let settings = if whip {
         json!({
             "hooks": {
-                "PreToolUse": hook("pre"),
-                "PostToolUse": hook("post"),
+                "PreToolUse": pre_hooks,
+                "PostToolUse": [hook("post")],
                 "Stop": [{
                     "hooks": [{
                         "type": "command",
@@ -2043,7 +2096,7 @@ fn ensure_hook_settings(sock: &std::path::Path, whip: bool) -> Option<PathBuf> {
         })
     } else {
         json!({
-            "hooks": { "PreToolUse": hook("pre"), "PostToolUse": hook("post") },
+            "hooks": { "PreToolUse": pre_hooks, "PostToolUse": [hook("post")] },
         })
     };
     if let Some(Err(err)) = path.parent().map(std::fs::create_dir_all) {

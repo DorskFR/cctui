@@ -48,7 +48,9 @@ enum Cmd {
     /// question (or its resolution) to the running daemon over `--sock`.
     /// Observe-only: prints nothing and always exits 0.
     AskHook {
-        /// Hook phase: `pre` (question appeared) or `post` (answered).
+        /// Hook phase: `pre` (question appeared), `post` (answered), or `perm`
+        /// (a tool-permission `PreToolUse` hook that blocks and long-polls the
+        /// daemon for an allow/deny decision — CCT-342).
         #[arg(long)]
         event: String,
         /// Daemon socket to deliver to.
