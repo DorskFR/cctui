@@ -169,12 +169,16 @@ impl LiveSnapshot {
     }
 
     /// Whether claude reports this still-listed session as dead / "process
-    /// gone" (CCT-252). Parsed DEFENSIVELY across the plausible wire shapes
-    /// since no live known-dead sample was available when this was written:
+    /// gone" (CCT-252). Parsed DEFENSIVELY across the plausible wire shapes:
     ///   - boolean `gone` / `dead` flags,
     ///   - `alive: false`,
     ///   - a terminal `status`/`state`/`tempo` string
-    ///     (`gone`/`exited`/`dead`/`process gone`).
+    ///     (`gone`/`exited`/`dead`/`process gone`),
+    ///   - a `detail` that CONTAINS `process gone` — the live wire shape we
+    ///     actually observed is `state:"failed"`, `tempo:"idle"`,
+    ///     `detail:"process gone while supervisor was down"` (CCT-355). None of
+    ///     those fields exact-match a terminal token, so the session would
+    ///     otherwise linger showing that detail with a non-terminal status.
     ///
     /// `dying` is handled separately (it filters the session out entirely), so
     /// it is intentionally NOT folded in here.
@@ -186,9 +190,17 @@ impl LiveSnapshot {
                 TERMINAL.contains(&s.as_str())
             })
         };
+        // The "process gone" phrase arrives wrapped in a longer sentence in the
+        // `detail` field (e.g. "process gone while supervisor was down"), so we
+        // match it as a substring rather than an exact token.
+        let detail_gone = self
+            .detail
+            .as_deref()
+            .is_some_and(|s| s.to_ascii_lowercase().contains("process gone"));
         self.gone
             || self.dead
             || self.alive == Some(false)
+            || detail_gone
             || terminal_str(&self.status)
             || terminal_str(&self.state)
             || terminal_str(&self.tempo)
@@ -2349,9 +2361,22 @@ mod tests {
         s.state = Some("gone".into());
         assert!(s.is_dead(), "state:gone → dead");
         s.state = Some("working".into());
+        assert!(!s.is_dead(), "state:working → not dead");
+        s.state = None;
 
         s.tempo = Some("dead".into());
         assert!(s.is_dead(), "tempo:dead → dead");
+        s.tempo = None;
+
+        // CCT-355: the observed live shape — state:"failed", tempo:"idle",
+        // detail:"process gone while supervisor was down". The phrase is
+        // embedded in a sentence in `detail`, so it must match as a substring.
+        s.state = Some("failed".into());
+        s.tempo = Some("idle".into());
+        s.detail = Some("process gone while supervisor was down".into());
+        assert!(s.is_dead(), "detail containing 'process gone' → dead");
+        s.detail = Some("Working on the fix".into());
+        assert!(!s.is_dead(), "ordinary detail → not dead");
     }
 
     #[tokio::test]
