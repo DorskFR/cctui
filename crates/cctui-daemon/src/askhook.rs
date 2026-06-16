@@ -152,11 +152,32 @@ pub fn run(event: &str, sock: &Path, deny: bool) -> anyhow::Result<()> {
 /// which we print verbatim so Claude Code applies it. A `defer`, an empty
 /// reply, or any error → we print nothing (exit 0) and the normal permission
 /// flow continues, where the keystroke fallback can still answer.
+/// Whether the bidirectional permission hook should defer (return no decision,
+/// letting Claude Code's normal flow proceed) instead of parking for a human
+/// decision over the daemon socket.
+///
+/// Two cases defer:
+/// - `AskUserQuestion` — answered via its own pre/post hook + the reply path,
+///   never as a tool permission.
+/// - `permission_mode == "bypassPermissions"` (yolo) — the user has explicitly
+///   opted out of every prompt. Claude Code still fires PreToolUse hooks in this
+///   mode, so without this guard the hook would park every tool for a human
+///   decision and resurrect a permission prompt for every action, defeating
+///   bypass mode (CCT-356 regression of CCT-342). Only `default`/`acceptEdits`/
+///   `plan` modes — where a prompt would otherwise render — use the hook.
+fn perm_hook_defers(payload: &Value, tool: &str) -> bool {
+    if tool == "AskUserQuestion" {
+        return true;
+    }
+    payload.get("permission_mode").and_then(Value::as_str) == Some("bypassPermissions")
+}
+
 fn run_perm(sock: &Path, session_id: &str, payload: &Value) -> anyhow::Result<()> {
     let tool = payload.get("tool_name").and_then(Value::as_str).unwrap_or_default();
-    // AskUserQuestion is answered via its own hook + the reply path, never as a
-    // permission. Defer immediately so we never block it here.
-    if tool == "AskUserQuestion" {
+    // AskUserQuestion is answered via its own hook + the reply path, and in
+    // `bypassPermissions` (yolo) mode no prompt should ever render — see
+    // `perm_hook_defers`. Both cases defer immediately so we never park here.
+    if perm_hook_defers(payload, tool) {
         return Ok(());
     }
     let hook_id = format!("{session_id}-{}", std::process::id());
@@ -432,5 +453,33 @@ mod tests {
     fn scan_preamble_empty_or_garbage_is_none() {
         assert_eq!(scan_preamble(""), None);
         assert_eq!(scan_preamble("not json\n{also not\n"), None);
+    }
+
+    #[test]
+    fn perm_hook_defers_in_bypass_mode() {
+        // CCT-356: yolo (bypassPermissions) must never park a tool for a human
+        // decision — Claude still fires PreToolUse hooks but the user opted out
+        // of every prompt.
+        let bypass = json!({"permission_mode": "bypassPermissions"});
+        assert!(perm_hook_defers(&bypass, "Bash"));
+        assert!(perm_hook_defers(&bypass, "Edit"));
+        assert!(perm_hook_defers(&bypass, "Task"));
+    }
+
+    #[test]
+    fn perm_hook_parks_in_default_modes() {
+        // default/acceptEdits/plan (and a missing field) still go through the
+        // bidirectional hook so the prompt surfaces in the webui.
+        assert!(!perm_hook_defers(&json!({"permission_mode": "default"}), "Bash"));
+        assert!(!perm_hook_defers(&json!({"permission_mode": "acceptEdits"}), "Bash"));
+        assert!(!perm_hook_defers(&json!({"permission_mode": "plan"}), "Bash"));
+        assert!(!perm_hook_defers(&json!({}), "Bash"));
+    }
+
+    #[test]
+    fn perm_hook_always_defers_ask_user_question() {
+        // AskUserQuestion is never a tool permission, in any mode.
+        assert!(perm_hook_defers(&json!({"permission_mode": "default"}), "AskUserQuestion"));
+        assert!(perm_hook_defers(&json!({}), "AskUserQuestion"));
     }
 }
