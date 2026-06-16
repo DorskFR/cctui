@@ -388,6 +388,12 @@ pub enum ServerEvent {
         machine_id: uuid::Uuid,
         liveness: crate::models::MachineLiveness,
     },
+    /// An enrolled dispatcher's liveness tier just changed (CCT-285). Peer of
+    /// [`Self::MachineLiveness`], derived from `dispatchers.last_seen_at`.
+    DispatcherLiveness {
+        dispatcher_id: uuid::Uuid,
+        liveness: crate::models::MachineLiveness,
+    },
     /// A single archive file has just finished uploading (CCT-68).
     ArchiveUploaded {
         machine_id: uuid::Uuid,

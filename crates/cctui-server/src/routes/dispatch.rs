@@ -16,7 +16,7 @@ use axum::{Extension, Json};
 use cctui_proto::api::{ApiError, DispatchRequest, DispatchResponse};
 
 use crate::auth::{AuthContext, machine_token, mint_secret, sha256_hex};
-use crate::dispatchers::stored::StoredConfig;
+use crate::dispatchers::enrolled::EnrolledDispatcher;
 use crate::dispatchers::{DispatchError, DispatchSpec, Dispatcher};
 use crate::ntfy::{self, Notification};
 use crate::state::AppState;
@@ -156,37 +156,36 @@ async fn ensure_dispatch_machine(
     Ok((machine_id, token))
 }
 
-/// Resolve a dispatcher *name* for the caller: their own named dispatcher
-/// (CCT-235) takes precedence, falling back to the global env-configured
+/// Resolve a dispatcher *name* for the caller: their own enrolled dispatcher
+/// (CCT-285) takes precedence, falling back to the global env-configured http
 /// registry. Returns `Ok(None)` to mean "no such name anywhere" so the caller
-/// can 404 distinctly from a permission denial.
+/// can 404 distinctly from a permission denial. An enrolled dispatcher resolves
+/// to an [`EnrolledDispatcher`] that sends Dispatch commands over the WS hub.
 async fn resolve_dispatcher(
     state: &AppState,
     user_id: Option<uuid::Uuid>,
     name: &str,
 ) -> Result<Option<std::sync::Arc<dyn Dispatcher>>, DispatchError> {
     if let Some(uid) = user_id {
-        let row: Option<(String, serde_json::Value)> = sqlx::query_as(
-            "SELECT kind, config FROM dispatchers \
-             WHERE user_id = $1 AND name = $2 AND deleted_at IS NULL LIMIT 1",
+        let row: Option<(uuid::Uuid,)> = sqlx::query_as(
+            "SELECT id FROM dispatchers \
+             WHERE user_id = $1 AND name = $2 AND deleted_at IS NULL AND revoked_at IS NULL \
+             LIMIT 1",
         )
         .bind(uid)
         .bind(name)
         .fetch_optional(&state.pool)
         .await
         .map_err(|e| DispatchError::Backend(format!("dispatcher lookup: {e}")))?;
-        if let Some((kind, config)) = row {
-            let mut tagged = config;
-            if let Some(obj) = tagged.as_object_mut() {
-                obj.insert("kind".into(), serde_json::Value::String(kind));
-            }
-            let mut cfg: StoredConfig = serde_json::from_value(tagged)
-                .map_err(|e| DispatchError::Backend(format!("stored dispatcher config: {e}")))?;
-            cfg.decrypt_secrets(&crate::crypto::vault_key());
-            return cfg.build(name).await.map(Some);
+        if let Some((dispatcher_id,)) = row {
+            return Ok(Some(std::sync::Arc::new(EnrolledDispatcher::new(
+                name,
+                dispatcher_id,
+                state.clone(),
+            ))));
         }
     }
-    // Fall back to a global env-configured dispatcher.
+    // Fall back to a global env-configured http dispatcher (escape hatch).
     match state.dispatchers.get(name) {
         Ok(d) => Ok(Some(d)),
         Err(DispatchError::UnknownDispatcher(_)) => Ok(None),

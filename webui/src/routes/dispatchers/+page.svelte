@@ -3,72 +3,42 @@
 		useUserDispatchers,
 		useDispatcherActions,
 		type UserDispatcher,
-		type UpsertDispatcher,
 	} from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
 	import { Badge, Button, Field, Heading, Input, Modal, Select, Text, Timestamp } from '@dorsk/tsumikit';
-	import { summarize } from './dispatchers.logic';
+	import { livenessLabel, livenessTone } from './dispatchers.logic';
 
 	const dispatchers = useUserDispatchers();
 	const actions = useDispatcherActions();
 	const guard = (p: Promise<unknown>) => p.catch((e: Error) => toasts.err(e.message));
 
-	// Editor state. `editing` holds the id when updating, null when creating a
-	// fresh one, undefined when the editor is closed.
+	// Enroll editor state. `editing` holds the id when renaming, null when
+	// enrolling fresh, undefined when the editor is closed.
 	let editing = $state<string | null | undefined>(undefined);
 	let name = $state('');
-	let kind = $state<'http' | 'kubernetes'>('http');
-	// http fields
-	let url = $state('');
-	let token = $state('');
-	// kubernetes fields
-	let namespace = $state('');
-	let sourceCronjob = $state('');
-	let cctuiUrl = $state('');
+	let kind = $state<'kubernetes' | 'docker' | 'http'>('kubernetes');
+
+	// One-shot key reveal after enroll — the server never echoes it again.
+	let newKey = $state<string | null>(null);
 
 	function resetForm() {
 		name = '';
-		kind = 'http';
-		url = '';
-		token = '';
-		namespace = '';
-		sourceCronjob = '';
-		cctuiUrl = '';
+		kind = 'kubernetes';
 	}
 
-	function openCreate() {
+	function openEnroll() {
 		resetForm();
 		editing = null;
 	}
 
-	function openEdit(d: UserDispatcher) {
-		resetForm();
+	function openRename(d: UserDispatcher) {
 		editing = d.id;
 		name = d.name;
-		kind = (d.kind as 'http' | 'kubernetes') ?? 'http';
-		const c = d.config ?? {};
-		url = (c.url as string) ?? '';
-		// Never prefill the secret — the server only ever returns "<redacted>".
-		token = '';
-		namespace = (c.namespace as string) ?? '';
-		sourceCronjob = (c.source_cronjob as string) ?? '';
-		cctuiUrl = (c.cctui_url as string) ?? '';
+		kind = (d.kind as 'kubernetes' | 'docker' | 'http') ?? 'kubernetes';
 	}
 
 	function close() {
 		editing = undefined;
-	}
-
-	function buildPayload(): UpsertDispatcher {
-		const config: Record<string, unknown> =
-			kind === 'http'
-				? { url, ...(token ? { token } : {}) }
-				: {
-						namespace,
-						source_cronjob: sourceCronjob,
-						...(cctuiUrl ? { cctui_url: cctuiUrl } : {}),
-					};
-		return { name: name.trim(), kind, config };
 	}
 
 	async function save() {
@@ -76,20 +46,35 @@
 			toasts.err('Name is required');
 			return;
 		}
-		const body = buildPayload();
 		try {
-			if (editing) await actions.update(editing, body);
-			else await actions.create(body);
-			toasts.ok(editing ? 'Dispatcher updated' : 'Dispatcher created');
-			close();
+			if (editing) {
+				await actions.rename(editing, { name: name.trim() });
+				toasts.ok('Dispatcher renamed');
+				close();
+			} else {
+				const r = await actions.enroll({ name: name.trim(), kind });
+				toasts.ok('Dispatcher enrolled');
+				close();
+				newKey = r.dispatcher_key;
+			}
 		} catch (e) {
 			toasts.err((e as Error).message);
 		}
 	}
 
 	function remove(d: UserDispatcher) {
-		if (!confirm(`Delete dispatcher "${d.name}"?`)) return;
-		guard(actions.remove(d.id).then(() => toasts.ok('Deleted')));
+		if (!confirm(`Remove dispatcher "${d.name}"?`)) return;
+		guard(actions.remove(d.id).then(() => toasts.ok('Removed')));
+	}
+
+	async function copyKey() {
+		if (!newKey) return;
+		try {
+			await navigator.clipboard.writeText(newKey);
+			toasts.ok('Key copied');
+		} catch {
+			toasts.err('Copy failed — select and copy manually');
+		}
 	}
 
 	const rows = $derived([...($dispatchers.data ?? [])]);
@@ -98,20 +83,22 @@
 <div class="bar row">
 	<Heading level={1}>Dispatchers</Heading>
 	<div class="spacer"></div>
-	<Button control variant="primary" onclick={openCreate}>+ New dispatcher</Button>
+	<Button control variant="primary" onclick={openEnroll}>+ Enroll dispatcher</Button>
 </div>
 
 <div class="intro">
 	<Text as="p" tone="muted" size="sm">
-		Named targets for <Text variant="code">/dispatch</Text>. Reference one by its name; a name
-		here overrides a global dispatcher of the same name, for you only.
+		Standalone executor services enrolled to your account. Each dials out to the server over a
+		WebSocket and runs dispatched workers on its host. Reference one by its name in
+		<Text variant="code">/dispatch</Text>; a name here overrides a global dispatcher of the same
+		name, for you only.
 	</Text>
 </div>
 
 {#if $dispatchers.isLoading}
 	<div class="empty"><span class="spin"></span></div>
 {:else if rows.length === 0}
-	<div class="empty"><Text tone="muted">No dispatchers yet.</Text></div>
+	<div class="empty"><Text tone="muted">No dispatchers enrolled yet.</Text></div>
 {:else}
 	<div class="card table-card">
 		<table class="disp">
@@ -119,8 +106,9 @@
 				<tr>
 					<th class="col-name">Name</th>
 					<th class="col-kind">Type</th>
-					<th class="col-config">Config</th>
-					<th class="col-created">Created</th>
+					<th class="col-status">Status</th>
+					<th class="col-key faint">Key</th>
+					<th class="col-seen">Last seen</th>
 					<th class="col-actions">Actions</th>
 				</tr>
 			</thead>
@@ -129,12 +117,13 @@
 					<tr>
 						<td class="col-name"><Text weight="semibold">{d.name}</Text></td>
 						<td class="col-kind"><Badge>{d.kind}</Badge></td>
-						<td class="col-config faint truncate">{summarize(d)}</td>
-						<td class="col-created faint"><Timestamp value={d.created_at} mode="date" tone="inherit" /></td>
+						<td class="col-status"><Badge tone={livenessTone(d)}>{livenessLabel(d)}</Badge></td>
+						<td class="col-key faint truncate">{d.key_preview ?? '—'}</td>
+						<td class="col-seen faint"><Timestamp value={d.last_seen_at} mode="relative" tone="inherit" /></td>
 						<td class="col-actions">
 							<div class="row acts">
-								<Button size="sm" onclick={() => openEdit(d)}>Edit</Button>
-								<Button size="sm" variant="danger" onclick={() => remove(d)}>Delete</Button>
+								<Button size="sm" onclick={() => openRename(d)}>Rename</Button>
+								<Button size="sm" variant="danger" onclick={() => remove(d)}>Remove</Button>
 							</div>
 						</td>
 					</tr>
@@ -145,46 +134,50 @@
 {/if}
 
 {#if editing !== undefined}
-	<Modal title={editing ? 'Edit dispatcher' : 'New dispatcher'} onclose={close}>
+	<Modal title={editing ? 'Rename dispatcher' : 'Enroll dispatcher'} onclose={close}>
 		{#snippet body()}
 			<div class="editor-body">
 				<Field label="Name">
 					<Input bind:value={name} placeholder="my-worker" />
 				</Field>
-				<Field label="Type">
-					<Select bind:value={kind}>
-						<option value="http">http</option>
-						<option value="kubernetes">kubernetes</option>
-					</Select>
-				</Field>
-				{#if kind === 'http'}
-					<Field label="URL">
-						<Input bind:value={url} placeholder="https://dispatcher.example/dispatch" />
+				{#if !editing}
+					<Field label="Type">
+						<Select bind:value={kind}>
+							<option value="kubernetes">kubernetes</option>
+							<option value="docker">docker</option>
+							<option value="http">http</option>
+						</Select>
 					</Field>
-					<Field label="Bearer token">
-						<Input
-							type="password"
-							bind:value={token}
-							placeholder={editing ? 'leave blank to keep current' : 'optional'}
-						/>
-					</Field>
-				{:else}
-					<Field label="Namespace">
-						<Input bind:value={namespace} placeholder="workers" />
-					</Field>
-					<Field label="Source CronJob">
-						<Input bind:value={sourceCronjob} placeholder="worker-template" />
-					</Field>
-					<Field label="CCTUI URL (optional)">
-						<Input bind:value={cctuiUrl} placeholder="https://cctui.example.com" />
-					</Field>
+					<Text as="p" tone="muted" size="sm">
+						An enrollment key is generated and shown once. Configure your dispatcher binary with it
+						so it can dial out.
+					</Text>
 				{/if}
 			</div>
 		{/snippet}
 		{#snippet footer()}
 			<div class="spacer"></div>
 			<Button size="sm" onclick={close}>Cancel</Button>
-			<Button size="sm" variant="primary" onclick={save}>Save</Button>
+			<Button size="sm" variant="primary" onclick={save}>{editing ? 'Save' : 'Enroll'}</Button>
+		{/snippet}
+	</Modal>
+{/if}
+
+{#if newKey}
+	<Modal title="Dispatcher enrolled" onclose={() => (newKey = null)}>
+		{#snippet body()}
+			<div class="editor-body">
+				<Text as="p" tone="muted" size="sm">
+					Copy this enrollment key now — it is shown only once and cannot be retrieved later.
+					Configure your dispatcher binary with it.
+				</Text>
+				<div class="keybox"><code>{newKey}</code></div>
+			</div>
+		{/snippet}
+		{#snippet footer()}
+			<div class="spacer"></div>
+			<Button size="sm" onclick={copyKey}>Copy</Button>
+			<Button size="sm" variant="primary" onclick={() => (newKey = null)}>Done</Button>
 		{/snippet}
 	</Modal>
 {/if}
@@ -193,7 +186,6 @@
 	.bar {
 		margin-bottom: var(--sp-2);
 	}
-	/* Typography from the Text atom; only the page rhythm lives here. */
 	.intro {
 		margin-bottom: var(--sp-4);
 	}
@@ -227,11 +219,14 @@
 	.col-kind {
 		width: 8rem;
 	}
-	.col-created {
+	.col-status {
 		width: 8rem;
 	}
+	.col-seen {
+		width: 9rem;
+	}
 	.col-actions {
-		width: 12rem;
+		width: 13rem;
 	}
 	.acts {
 		gap: var(--sp-1);
@@ -241,8 +236,20 @@
 		flex-direction: column;
 		gap: var(--sp-3);
 	}
+	.keybox {
+		padding: var(--sp-2) var(--sp-3);
+		background: var(--surface-2, var(--surface));
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm, 4px);
+		overflow-x: auto;
+	}
+	.keybox code {
+		font-size: var(--fs-sm);
+		word-break: break-all;
+	}
 	@media (max-width: 720px) {
-		.col-created {
+		.col-seen,
+		.col-key {
 			display: none;
 		}
 	}

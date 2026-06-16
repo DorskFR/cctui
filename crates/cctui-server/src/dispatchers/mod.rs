@@ -1,37 +1,22 @@
 //! Pluggable [`Dispatcher`]s that turn a [`DispatchSpec`] into a launched
-//! session. Impls: [`http::HttpDispatcher`] (forward to an external endpoint),
-//! [`kube::KubeDispatcher`] (clone the claude-worker `CronJob` template into a
-//! one-shot k8s Job, in-process — retires the external python dispatcher,
-//! CCT-234) and [`docker::DockerDispatcher`] (run the worker image as a
-//! container via bollard, only when a docker socket is configured).
+//! session. Two impls remain after CCT-285:
+//!   * [`enrolled::EnrolledDispatcher`] — the primary model: a standalone
+//!     executor service (cctui-dispatcher-kube / -docker) that enrolled per
+//!     account and dials out over `/api/v1/dispatcher/ws`. The server sends a
+//!     key-checked [`cctui_proto::ws::DispatcherFrameDown::Dispatch`] over the
+//!     hub and awaits the [`cctui_proto::ws::DispatcherFrameUp::DispatchResult`]
+//!     reply. The server never needs kube/docker API access.
+//!   * [`http::HttpDispatcher`] — the escape hatch: forward a dispatch to a
+//!     fully external HTTP endpoint (env-configured global registry only).
 //!
-//! CORRECTED MODEL (CCT-248): the in-process `kube`/`docker` dispatchers below
-//! are a *transitional* shape and are slated for removal. The server is an
-//! orchestrator only — it must never need kube/docker API access. The intended
-//! model is that dispatchers are **standalone executor services enrolled per
-//! account as peers of a "machine"**: the server sends a key-checked Dispatch
-//! command over the wire (the [`http::HttpDispatcher`] forward-to-endpoint
-//! shape is the correct server-side pattern) and the enrolled dispatcher
-//! (CCT-246 docker / CCT-247 kubernetes) spawns the worker container/pod. The
-//! in-process `kube.rs`/`docker.rs` are deleted once CCT-246/247 land and soak;
-//! a plain [`http::HttpDispatcher`] stays as the escape hatch for fully
-//! external systems. See CCT-248 for the enrollment + dial-out-WS transport
-//! spec the rest of the epic builds on.
-//!
-//! Lifecycle: the route ([`crate::routes::dispatch`]) mints a session id,
-//! inserts a row in `sessions` (`origin = '<dispatcher_id>'`, status
-//! `new`), then calls [`Dispatcher::dispatch`]. The worker pod is
-//! responsible for taking that pre-minted id back to `/sessions/register`
-//! once cctui-daemon lands inside the image (separate ticket). Until
-//! then, dispatched sessions stay in `new` and remain visible in the
-//! sessions table as "in flight" via their `origin` + `dispatch_handle`.
+//! The in-process `kube`/`docker` dispatchers (CCT-234, transitional) were
+//! removed in CCT-285 — orchestration now lives entirely in the enrolled
+//! executor binaries.
 
 use async_trait::async_trait;
 
-pub mod docker;
+pub mod enrolled;
 pub mod http;
-pub mod kube;
-pub mod stored;
 
 #[derive(Debug, Clone)]
 pub struct DispatchHandle {
@@ -121,13 +106,11 @@ pub trait Dispatcher: Send + Sync {
 /// Resolves dispatcher id strings to concrete impls. Built once at
 /// startup and shared through `AppState`.
 ///
-/// CCT-248: in the corrected model, dispatch resolution targets an
-/// *enrolled* dispatcher (a per-account peer of a machine) and dispatches by
-/// sending a key-checked command over that dispatcher's live connection,
-/// rather than instantiating an in-process `Arc<dyn Dispatcher>` that talks to
-/// a runtime API directly. This in-process registry remains only for the env-
-/// configured plain-`http` escape hatch and the transitional `kube`/`docker`
-/// impls until CCT-246/247 land.
+/// CCT-285: dispatch resolution targets an *enrolled* dispatcher (a per-account
+/// peer of a machine) and dispatches by sending a key-checked command over that
+/// dispatcher's live WS connection ([`enrolled::EnrolledDispatcher`]). This
+/// in-process registry now holds only the env-configured plain-`http` escape
+/// hatch ([`http::HttpDispatcher`]).
 pub struct Registry {
     dispatchers: std::collections::HashMap<String, std::sync::Arc<dyn Dispatcher>>,
 }

@@ -32,10 +32,6 @@ dashmap = "6"
 async-trait.workspace = true
 reqwest.workspace = true
 ts-rs.workspace = true
-kube.workspace = true
-k8s-openapi.workspace = true
-bollard = "0.18"
-sha1 = "0.10"
 
 [dev-dependencies]
 reqwest.workspace = true

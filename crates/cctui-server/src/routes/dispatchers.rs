@@ -1,10 +1,14 @@
-//! Per-user named dispatcher CRUD (CCT-235): `GET/POST /api/v1/dispatchers`
-//! and `PATCH/DELETE /api/v1/dispatchers/{id}`.
+//! Per-user enrolled-dispatcher management (CCT-285): `GET /api/v1/dispatchers`
+//! (list with liveness), `PATCH /api/v1/dispatchers/{id}` (rename), and
+//! `DELETE /api/v1/dispatchers/{id}` (remove). Peer of the machines management
+//! surface.
+//!
+//! Enrollment itself (minting an identity + key) is `POST
+//! /api/v1/dispatcher/enroll` ([`crate::routes::dispatcher`]); a dispatcher key
+//! is returned once there and never echoed here.
 //!
 //! Auth: a user-scoped token operates on its own dispatchers; an admin token
-//! (no owning user) may list across all users. Secrets in the stored `config`
-//! (the http bearer token) are encrypted at rest and never echoed back — reads
-//! report a `<redacted>` sentinel, writes carry the cleartext in.
+//! (no owning user) may list across all users.
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -13,16 +17,21 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::auth::{AuthContext, TokenRole};
-use crate::dispatchers::stored::StoredConfig;
 use crate::state::AppState;
 
 #[derive(Debug, serde::Serialize)]
 pub struct DispatcherInfo {
     pub id: Uuid,
     pub name: String,
+    /// Reported by the binary at enroll: `kubernetes` | `docker` | `http`.
     pub kind: String,
-    /// Type-specific config with secrets redacted.
-    pub config: serde_json::Value,
+    /// Non-secret fragment of the enrollment key, for display.
+    pub key_preview: Option<String>,
+    /// Liveness tier derived from `last_seen_at` age.
+    pub liveness: cctui_proto::models::MachineLiveness,
+    /// Whether a live WS connection is currently registered for this dispatcher.
+    pub connected: bool,
+    pub last_seen_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -32,53 +41,36 @@ struct DispatcherRow {
     id: Uuid,
     name: String,
     kind: String,
-    config: serde_json::Value,
+    key_preview: Option<String>,
+    last_seen_at: DateTime<Utc>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
 
 impl DispatcherRow {
-    fn into_info(self) -> DispatcherInfo {
-        // Parse the stored (encrypted-at-rest) blob back into the typed shape so
-        // we can redact secrets uniformly. A blob that fails to parse falls back
-        // to an empty view rather than leaking the raw config.
-        let config = build_tagged(&self.kind, &self.config)
-            .map_or_else(|| serde_json::json!({}), |c| c.redacted_json());
+    fn into_info(self, state: &AppState) -> DispatcherInfo {
+        let connected = state.dispatcher_connections.contains_key(&self.id);
+        let liveness = crate::machine_liveness::derive(self.last_seen_at);
         DispatcherInfo {
             id: self.id,
             name: self.name,
             kind: self.kind,
-            config,
+            key_preview: self.key_preview,
+            liveness,
+            connected,
+            last_seen_at: self.last_seen_at,
             created_at: self.created_at,
             updated_at: self.updated_at,
         }
     }
 }
 
-/// Merge a stored `kind` + untagged `config` blob into the internally-tagged
-/// [`StoredConfig`] enum shape and deserialize it.
-fn build_tagged(kind: &str, config: &serde_json::Value) -> Option<StoredConfig> {
-    let mut tagged = config.clone();
-    if let Some(obj) = tagged.as_object_mut() {
-        obj.insert("kind".into(), serde_json::Value::String(kind.to_owned()));
-    } else {
-        return None;
-    }
-    serde_json::from_value(tagged).ok()
-}
-
 #[derive(Debug, serde::Deserialize)]
-pub struct UpsertDispatcher {
+pub struct RenameDispatcher {
     pub name: String,
-    /// `http` | `kubernetes`.
-    pub kind: String,
-    /// Type-specific params (untagged; `kind` selects the shape). Secrets are
-    /// cleartext on the way in and get encrypted before storage.
-    pub config: serde_json::Value,
 }
 
 fn db_err(e: sqlx::Error) -> (StatusCode, Json<serde_json::Value>) {
-    // Unique-violation on (user_id, name) → 409.
     if let sqlx::Error::Database(dbe) = &e
         && dbe.code().as_deref() == Some("23505")
     {
@@ -91,37 +83,26 @@ fn db_err(e: sqlx::Error) -> (StatusCode, Json<serde_json::Value>) {
     (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": "db error" })))
 }
 
-fn parse_config(
-    kind: &str,
-    config: &serde_json::Value,
-) -> Result<StoredConfig, (StatusCode, Json<serde_json::Value>)> {
-    build_tagged(kind, config).ok_or_else(|| {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": format!("invalid config for kind '{kind}' (expected http or kubernetes)")
-            })),
-        )
-    })
-}
+const SELECT_COLS: &str =
+    "id, name, kind, key_preview, last_seen_at, created_at, updated_at FROM dispatchers";
 
 pub async fn list_dispatchers(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
 ) -> Result<Json<Vec<DispatcherInfo>>, (StatusCode, Json<serde_json::Value>)> {
     let rows: Vec<DispatcherRow> = if let Some(uid) = ctx.user_id {
-        sqlx::query_as(
-            "SELECT id, name, kind, config, created_at, updated_at FROM dispatchers \
-             WHERE user_id = $1 AND deleted_at IS NULL ORDER BY name",
-        )
+        sqlx::query_as(&format!(
+            "SELECT {SELECT_COLS} \
+             WHERE user_id = $1 AND deleted_at IS NULL AND revoked_at IS NULL ORDER BY name"
+        ))
         .bind(uid)
         .fetch_all(&state.pool)
         .await
     } else if ctx.role == TokenRole::Admin {
-        sqlx::query_as(
-            "SELECT id, name, kind, config, created_at, updated_at FROM dispatchers \
-             WHERE deleted_at IS NULL ORDER BY name",
-        )
+        sqlx::query_as(&format!(
+            "SELECT {SELECT_COLS} \
+             WHERE deleted_at IS NULL AND revoked_at IS NULL ORDER BY name"
+        ))
         .fetch_all(&state.pool)
         .await
     } else {
@@ -129,84 +110,43 @@ pub async fn list_dispatchers(
     }
     .map_err(db_err)?;
 
-    Ok(Json(rows.into_iter().map(DispatcherRow::into_info).collect()))
-}
-
-pub async fn create_dispatcher(
-    State(state): State<AppState>,
-    Extension(ctx): Extension<AuthContext>,
-    Json(req): Json<UpsertDispatcher>,
-) -> Result<(StatusCode, Json<DispatcherInfo>), (StatusCode, Json<serde_json::Value>)> {
-    let uid = ctx.user_id.ok_or((
-        StatusCode::FORBIDDEN,
-        Json(serde_json::json!({ "error": "a user token is required to create dispatchers" })),
-    ))?;
-
-    let mut cfg = parse_config(&req.kind, &req.config)?;
-    cfg.encrypt_secrets(&crate::crypto::vault_key());
-    // Store the untagged blob (the `kind` column carries the tag).
-    let mut stored = serde_json::to_value(&cfg).map_err(|e| {
-        tracing::error!("serialize dispatcher config: {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": "config error" })))
-    })?;
-    if let Some(obj) = stored.as_object_mut() {
-        obj.remove("kind");
-    }
-
-    let row: DispatcherRow = sqlx::query_as(
-        "INSERT INTO dispatchers (user_id, name, kind, config) VALUES ($1, $2, $3, $4) \
-         RETURNING id, name, kind, config, created_at, updated_at",
-    )
-    .bind(uid)
-    .bind(&req.name)
-    .bind(cfg.kind())
-    .bind(&stored)
-    .fetch_one(&state.pool)
-    .await
-    .map_err(db_err)?;
-
-    Ok((StatusCode::CREATED, Json(row.into_info())))
+    Ok(Json(rows.into_iter().map(|r| r.into_info(&state)).collect()))
 }
 
 pub async fn update_dispatcher(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
-    Json(req): Json<UpsertDispatcher>,
+    Json(req): Json<RenameDispatcher>,
 ) -> Result<Json<DispatcherInfo>, (StatusCode, Json<serde_json::Value>)> {
-    let uid = ctx.user_id.ok_or((
-        StatusCode::FORBIDDEN,
-        Json(serde_json::json!({ "error": "a user token is required to edit dispatchers" })),
-    ))?;
-
-    let mut cfg = parse_config(&req.kind, &req.config)?;
-    cfg.encrypt_secrets(&crate::crypto::vault_key());
-    let mut stored = serde_json::to_value(&cfg).map_err(|e| {
-        tracing::error!("serialize dispatcher config: {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": "config error" })))
+    let uid = ctx.user_id.ok_or_else(|| {
+        (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({ "error": "a user token is required to edit dispatchers" })),
+        )
     })?;
-    if let Some(obj) = stored.as_object_mut() {
-        obj.remove("kind");
+    if req.name.trim().is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "name is required" })),
+        ));
     }
 
     let row: Option<DispatcherRow> = sqlx::query_as(
-        "UPDATE dispatchers SET name = $3, kind = $4, config = $5, updated_at = now() \
+        "UPDATE dispatchers SET name = $3, updated_at = now() \
          WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL \
-         RETURNING id, name, kind, config, created_at, updated_at",
+         RETURNING id, name, kind, key_preview, last_seen_at, created_at, updated_at",
     )
     .bind(id)
     .bind(uid)
-    .bind(&req.name)
-    .bind(cfg.kind())
-    .bind(&stored)
+    .bind(req.name.trim())
     .fetch_optional(&state.pool)
     .await
     .map_err(db_err)?;
 
-    row.map(|r| Json(r.into_info())).ok_or((
-        StatusCode::NOT_FOUND,
-        Json(serde_json::json!({ "error": "dispatcher not found" })),
-    ))
+    row.map(|r| Json(r.into_info(&state))).ok_or_else(|| {
+        (StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": "dispatcher not found" })))
+    })
 }
 
 pub async fn delete_dispatcher(
@@ -214,13 +154,15 @@ pub async fn delete_dispatcher(
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, (StatusCode, Json<serde_json::Value>)> {
-    let uid = ctx.user_id.ok_or((
-        StatusCode::FORBIDDEN,
-        Json(serde_json::json!({ "error": "a user token is required to delete dispatchers" })),
-    ))?;
+    let uid = ctx.user_id.ok_or_else(|| {
+        (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({ "error": "a user token is required to delete dispatchers" })),
+        )
+    })?;
 
     let res = sqlx::query(
-        "UPDATE dispatchers SET deleted_at = now() \
+        "UPDATE dispatchers SET revoked_at = COALESCE(revoked_at, now()), deleted_at = now() \
          WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL",
     )
     .bind(id)
@@ -235,5 +177,8 @@ pub async fn delete_dispatcher(
             Json(serde_json::json!({ "error": "dispatcher not found" })),
         ));
     }
+    // Drop any live connection so the dispatcher can't keep operating under a
+    // removed identity (it'll fail to re-auth on reconnect).
+    state.dispatcher_connections.remove(&id);
     Ok(StatusCode::NO_CONTENT)
 }

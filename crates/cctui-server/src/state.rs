@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use cctui_proto::models::MachineLiveness;
-use cctui_proto::ws::{DaemonFrameDown, ServerEvent};
+use cctui_proto::ws::{DaemonFrameDown, DispatcherFrameDown, DispatcherFrameUp, ServerEvent};
 use dashmap::DashMap;
 use sqlx::PgPool;
 use tokio::sync::{broadcast, mpsc};
@@ -40,6 +40,18 @@ pub type ListDirsOutcome = Result<Vec<String>, String>;
 pub type PendingListDirsRequests =
     Arc<DashMap<Uuid, tokio::sync::oneshot::Sender<ListDirsOutcome>>>;
 
+/// Per-dispatcher outbound channel into the connected enrolled dispatcher's WS
+/// task (CCT-285), keyed by dispatcher id. Peer of [`DaemonConnections`].
+/// Absent entry = dispatcher offline; a dispatch targeting it fails fast.
+pub type DispatcherConnections = Arc<DashMap<Uuid, mpsc::Sender<DispatcherFrameDown>>>;
+
+/// In-flight Dispatch/Status/Cancel round-trips awaiting a
+/// [`DispatcherFrameUp`] reply, keyed by the request id minted by the dispatch
+/// path. The dispatcher WS read loop fires the oneshot when the matching reply
+/// arrives (CCT-285); mirrors `pending_stage_requests`.
+pub type PendingDispatcherRequests =
+    Arc<DashMap<Uuid, tokio::sync::oneshot::Sender<DispatcherFrameUp>>>;
+
 #[derive(Clone)]
 pub struct AppState {
     pub pool: PgPool,
@@ -53,6 +65,13 @@ pub struct AppState {
     pub archive: Arc<ArchiveStore>,
     pub skills: Arc<SkillStore>,
     pub daemon_connections: DaemonConnections,
+    /// Connected enrolled dispatchers (CCT-285), keyed by dispatcher id.
+    pub dispatcher_connections: DispatcherConnections,
+    /// In-flight Dispatch/Status/Cancel round-trips awaiting a dispatcher reply.
+    pub pending_dispatcher_requests: PendingDispatcherRequests,
+    /// Last broadcast liveness tier per enrolled dispatcher (CCT-285), peer of
+    /// [`Self::machine_liveness`].
+    pub dispatcher_liveness: Arc<DashMap<Uuid, MachineLiveness>>,
     pub dispatchers: Arc<DispatcherRegistry>,
     /// In-flight mid-chat file-stage requests awaiting a daemon reply (CCT-236).
     pub pending_stage_requests: PendingStageRequests,

@@ -11,8 +11,8 @@
 //! way session status changes are pushed — so a killed daemon flips its machine
 //! to offline within one liveness window without waiting for a failed dispatch.
 
-use chrono::{DateTime, Utc};
 use cctui_proto::models::MachineLiveness;
+use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::state::AppState;
@@ -40,16 +40,12 @@ pub fn derive(last_seen_at: DateTime<Utc>) -> MachineLiveness {
 /// [`ServerEvent::MachineLiveness`] iff it changed from the last known tier.
 /// Idempotent within a tier — only an actual transition hits the wire.
 pub fn record_and_broadcast(state: &AppState, machine_id: Uuid, tier: MachineLiveness) {
-    let changed = state
-        .machine_liveness
-        .insert(machine_id, tier)
-        .is_none_or(|prev| prev != tier);
+    let changed = state.machine_liveness.insert(machine_id, tier).is_none_or(|prev| prev != tier);
     if changed {
         tracing::info!(%machine_id, ?tier, "machine liveness changed");
-        let _ = state.tui_tx.send(cctui_proto::ws::ServerEvent::MachineLiveness {
-            machine_id,
-            liveness: tier,
-        });
+        let _ = state
+            .tui_tx
+            .send(cctui_proto::ws::ServerEvent::MachineLiveness { machine_id, liveness: tier });
     }
 }
 
@@ -72,6 +68,45 @@ pub async fn sweep(state: &AppState) {
     };
     for (id, last_seen_at) in rows {
         record_and_broadcast(state, id, derive(last_seen_at));
+    }
+}
+
+/// Record `tier` for an enrolled `dispatcher_id` and broadcast a
+/// [`ServerEvent::DispatcherLiveness`] iff it changed (CCT-285). Peer of
+/// [`record_and_broadcast`].
+pub fn record_and_broadcast_dispatcher(
+    state: &AppState,
+    dispatcher_id: Uuid,
+    tier: MachineLiveness,
+) {
+    let changed =
+        state.dispatcher_liveness.insert(dispatcher_id, tier).is_none_or(|prev| prev != tier);
+    if changed {
+        tracing::info!(%dispatcher_id, ?tier, "dispatcher liveness changed");
+        let _ = state.tui_tx.send(cctui_proto::ws::ServerEvent::DispatcherLiveness {
+            dispatcher_id,
+            liveness: tier,
+        });
+    }
+}
+
+/// Re-derive every live dispatcher's tier from its persisted `last_seen_at` and
+/// broadcast any transitions (CCT-285). Peer of [`sweep`].
+pub async fn sweep_dispatchers(state: &AppState) {
+    let rows: Vec<(Uuid, DateTime<Utc>)> = match sqlx::query_as(
+        "SELECT id, last_seen_at FROM dispatchers WHERE deleted_at IS NULL AND revoked_at IS NULL",
+    )
+    .fetch_all(&state.pool)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(err) => {
+            tracing::warn!(%err, "dispatcher liveness sweep query failed");
+            return;
+        }
+    };
+    for (id, last_seen_at) in rows {
+        record_and_broadcast_dispatcher(state, id, derive(last_seen_at));
     }
 }
 

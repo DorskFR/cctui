@@ -620,6 +620,7 @@ fn handle_server_event(app: &mut App, event: ServerEvent) {
         | ServerEvent::AskQuestion { .. }
         | ServerEvent::MessageAck { .. }
         | ServerEvent::MachineLiveness { .. }
+        | ServerEvent::DispatcherLiveness { .. }
         | ServerEvent::PlanRequest { .. }
         | ServerEvent::PlanResolved { .. }
         | ServerEvent::AskResolved { .. } => {

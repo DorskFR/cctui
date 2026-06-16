@@ -11,15 +11,16 @@ pub struct HttpDispatcherConfig {
 }
 
 /// One dispatcher registration, parsed from `CCTUI_DISPATCHERS` — a JSON array
-/// of `{ "kind": "http"|"kube"|"docker", ... }` (CCT-234). Supersedes the
-/// http-only `CCTUI_HTTP_DISPATCHERS` (still parsed for back-compat); both lists
-/// are merged at startup. `kind` is the discriminant.
+/// of `{ "kind": "http", ... }`. Supersedes the http-only
+/// `CCTUI_HTTP_DISPATCHERS` (still parsed for back-compat); both lists are
+/// merged at startup. The in-process `kube`/`docker` kinds were removed in
+/// CCT-285 — those backends are now standalone enrolled executor services
+/// (`/api/v1/dispatcher/{enroll,auth,ws}`), so only the `http` escape hatch
+/// remains here. `kind` is the discriminant.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum DispatcherConfig {
     Http(HttpDispatcherConfig),
-    Kube(crate::dispatchers::kube::KubeDispatcherConfig),
-    Docker(crate::dispatchers::docker::DockerDispatcherConfig),
 }
 
 #[derive(Debug, Clone)]

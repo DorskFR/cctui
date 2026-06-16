@@ -29,23 +29,35 @@ import type { LabelListResponse } from "@bindings/LabelListResponse";
  * hidden from the "new machines" list in the UI (CCT-183 / CCT-185). */
 export const SYSTEM_MACHINE_KINDS = new Set(["dispatch", "ephemeral"]);
 
-/** A user-defined named dispatcher (CCT-235). `config` is the type-specific
- *  blob with secrets redacted (the http `token` reads back as `"<redacted>"`
- *  when set, or absent when unset). */
+/** An enrolled dispatcher (CCT-285): a standalone executor service enrolled per
+ *  account that dials out over `/api/v1/dispatcher/ws`. Identity record only —
+ *  the enrollment key is shown once at enroll time and never echoed here. */
 export interface UserDispatcher {
   id: string;
   name: string;
+  /** Reported by the binary at enroll: `kubernetes` | `docker` | `http`. */
   kind: string;
-  config: Record<string, unknown>;
+  /** Non-secret fragment of the enrollment key, for display. */
+  key_preview: string | null;
+  /** Liveness tier derived from `last_seen_at`: `online` | `stale` | `offline`. */
+  liveness: string;
+  /** Whether a live WS connection is currently registered. */
+  connected: boolean;
+  last_seen_at: string;
   created_at: string;
   updated_at: string;
 }
 
-/** Create/update payload — `config` carries cleartext secrets on the way in. */
-export interface UpsertDispatcher {
+/** Rename payload for an enrolled dispatcher. */
+export interface RenameDispatcher {
   name: string;
-  kind: string;
-  config: Record<string, unknown>;
+}
+
+/** Response to a dispatcher enroll — `dispatcher_key` is shown ONCE. */
+export interface EnrollDispatcherResponse {
+  dispatcher_id: string;
+  dispatcher_key: string;
+  server_version: string;
 }
 
 /** A named OAuth account in the vault (CCT-232/CCT-237). Tokens are never
@@ -221,12 +233,12 @@ export const endpoints = {
     api.post<DispatchResponse>("/sessions/dispatch", body),
   /** Configured dispatcher ids (e.g. `["claude-worker"]`); empty when none. */
   dispatchers: () => api.get<string[]>("/sessions/dispatchers"),
-  /** The caller's own named dispatchers (CCT-235) with config secrets
-   *  redacted. Used by the management UI. */
+  /** The caller's enrolled dispatchers (CCT-285) with liveness. */
   userDispatchers: () => api.get<UserDispatcher[]>("/dispatchers"),
-  createDispatcher: (body: UpsertDispatcher) =>
-    api.post<UserDispatcher>("/dispatchers", body),
-  updateDispatcher: (id: string, body: UpsertDispatcher) =>
+  /** Enroll a dispatcher; the key is returned ONCE and never echoed again. */
+  enrollDispatcher: (body: { name: string; kind?: string }) =>
+    api.post<EnrollDispatcherResponse>("/dispatcher/enroll", body),
+  updateDispatcher: (id: string, body: RenameDispatcher) =>
     api.patch<UserDispatcher>(`/dispatchers/${id}`, body),
   deleteDispatcher: (id: string) => api.del<void>(`/dispatchers/${id}`),
   /** The caller's own OAuth accounts (CCT-232). Tokens never returned. */
@@ -721,8 +733,8 @@ export function useUserActions() {
   };
 }
 
-/** CRUD for the caller's own named dispatchers (CCT-235). Invalidates both the
- *  management list and the merged dispatch picker after a mutation. */
+/** Enroll / rename / remove the caller's enrolled dispatchers (CCT-285).
+ *  Invalidates both the management list and the merged dispatch picker. */
 export function useDispatcherActions() {
   const qc = useQueryClient();
   const inval = () => {
@@ -730,12 +742,12 @@ export function useDispatcherActions() {
     qc.invalidateQueries({ queryKey: ["dispatchers"] });
   };
   return {
-    create: async (body: UpsertDispatcher) => {
-      const r = await endpoints.createDispatcher(body);
+    enroll: async (body: { name: string; kind?: string }) => {
+      const r = await endpoints.enrollDispatcher(body);
       inval();
       return r;
     },
-    update: async (id: string, body: UpsertDispatcher) => {
+    rename: async (id: string, body: RenameDispatcher) => {
       const r = await endpoints.updateDispatcher(id, body);
       inval();
       return r;

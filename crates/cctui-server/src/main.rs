@@ -55,6 +55,9 @@ async fn main() -> anyhow::Result<()> {
         archive,
         skills,
         daemon_connections: Arc::new(dashmap::DashMap::new()),
+        dispatcher_connections: Arc::new(dashmap::DashMap::new()),
+        pending_dispatcher_requests: Arc::new(dashmap::DashMap::new()),
+        dispatcher_liveness: Arc::new(dashmap::DashMap::new()),
         dispatchers,
         pending_stage_requests: Arc::new(dashmap::DashMap::new()),
         pending_listdirs_requests: Arc::new(dashmap::DashMap::new()),
@@ -83,15 +86,15 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/sessions/dispatch", post(routes::dispatch::dispatch))
         .route("/sessions/dispatchers", get(routes::dispatch::list_dispatchers))
-        .route(
-            "/dispatchers",
-            get(routes::dispatchers::list_dispatchers).post(routes::dispatchers::create_dispatcher),
-        )
+        // Enrolled-dispatcher management (CCT-285): list with liveness, rename,
+        // remove. Enrollment itself is `POST /dispatcher/enroll` below.
+        .route("/dispatchers", get(routes::dispatchers::list_dispatchers))
         .route(
             "/dispatchers/{id}",
             patch(routes::dispatchers::update_dispatcher)
                 .delete(routes::dispatchers::delete_dispatcher),
         )
+        .route("/dispatcher/enroll", post(routes::dispatcher::enroll))
         .route("/sessions/archive", post(routes::admin::archive_sessions))
         .route("/sessions/unarchive", post(routes::admin::unarchive_sessions))
         .route("/sessions/pin", post(routes::admin::pin_sessions))
@@ -220,6 +223,11 @@ async fn main() -> anyhow::Result<()> {
         // user-token-only `api_router` group.
         .route("/api/v1/daemon/auth", post(routes::daemon::auth))
         .route("/api/v1/daemon/ws", get(routes::daemon::ws))
+        // Enrolled-dispatcher endpoints (CCT-285). Carry their own key auth
+        // (dispatcher-key Bearer / `?token=`), so they live outside the
+        // user-token `api_router` group, like the daemon endpoints.
+        .route("/api/v1/dispatcher/auth", post(routes::dispatcher::auth))
+        .route("/api/v1/dispatcher/ws", get(routes::dispatcher::ws))
         .route("/api/v1/triggers/{kind}", post(routes::triggers::ingest))
         // OAuth passthrough gateway (CCT-232). Auths via the session-scoped
         // token in the request's own Authorization header — NOT the user-token
@@ -264,14 +272,11 @@ async fn init_skill_store() -> Arc<skill_store::SkillStore> {
     store
 }
 
-/// Construct the [`dispatchers::Registry`] from config (CCT-234).
-///
-/// Merges the legacy `CCTUI_HTTP_DISPATCHERS` (http-only, back-compat) with the
-/// kind-tagged `CCTUI_DISPATCHERS`. Native kube/docker dispatchers do a connect
-/// probe at startup: if the backend is unreachable (e.g. no docker socket in the
-/// k8s pod, or no kube config off-cluster) the instance is logged and skipped
-/// rather than aborting boot — the rest of the registry still comes up.
-#[allow(clippy::cognitive_complexity)]
+/// Construct the [`dispatchers::Registry`] of env-configured HTTP dispatchers
+/// (the escape hatch, CCT-285). The in-process kube/docker dispatchers were
+/// removed — real orchestration is done by enrolled executor binaries that dial
+/// out over `/api/v1/dispatcher/ws`. Merges the legacy `CCTUI_HTTP_DISPATCHERS`
+/// with the kind-tagged `CCTUI_DISPATCHERS` (now http-only).
 async fn init_dispatchers(config: &Config) -> Arc<dispatchers::Registry> {
     use config::DispatcherConfig;
 
@@ -287,38 +292,13 @@ async fn init_dispatchers(config: &Config) -> Arc<dispatchers::Registry> {
     }
 
     for d in &config.dispatchers {
-        match d {
-            DispatcherConfig::Http(c) => {
-                tracing::info!(id = %c.id, url = %c.url, "http dispatcher registered");
-                registry = registry.with(Arc::new(dispatchers::http::HttpDispatcher::new(
-                    &c.id,
-                    &c.url,
-                    c.token.clone(),
-                )));
-            }
-            DispatcherConfig::Kube(c) => {
-                match dispatchers::kube::KubeDispatcher::try_new(c).await {
-                    Ok(k) => {
-                        tracing::info!(id = %c.id, namespace = %c.namespace, source_cronjob = %c.source_cronjob, "kube dispatcher registered");
-                        registry = registry.with(Arc::new(k));
-                    }
-                    Err(e) => {
-                        tracing::warn!(id = %c.id, "kube dispatcher skipped (no kube client): {e}")
-                    }
-                }
-            }
-            DispatcherConfig::Docker(c) => {
-                match dispatchers::docker::DockerDispatcher::try_new(c).await {
-                    Ok(k) => {
-                        tracing::info!(id = %c.id, image = %c.image, "docker dispatcher registered");
-                        registry = registry.with(Arc::new(k));
-                    }
-                    Err(e) => {
-                        tracing::warn!(id = %c.id, "docker dispatcher skipped (no docker socket): {e}")
-                    }
-                }
-            }
-        }
+        let DispatcherConfig::Http(c) = d;
+        tracing::info!(id = %c.id, url = %c.url, "http dispatcher registered");
+        registry = registry.with(Arc::new(dispatchers::http::HttpDispatcher::new(
+            &c.id,
+            &c.url,
+            c.token.clone(),
+        )));
     }
 
     Arc::new(registry)
@@ -395,6 +375,7 @@ async fn reaper_task(state: AppState) {
         // own — the acceptance case "killing a daemon flips it offline within
         // one liveness window without a dispatch attempt".
         machine_liveness::sweep(&state).await;
+        machine_liveness::sweep_dispatchers(&state).await;
 
         {
             let mut pstore = state.permission_store.write().await;

@@ -5,6 +5,7 @@ pub mod archive;
 pub mod credentials;
 pub mod daemon;
 pub mod dispatch;
+pub mod dispatcher;
 pub mod dispatchers;
 pub mod enroll;
 pub mod fs;

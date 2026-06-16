@@ -2,12 +2,16 @@
 // outside the component and are unit-testable on their own.
 import type { UserDispatcher } from '$lib/queries';
 
-/** One-line summary of a dispatcher's config, shown in the table's Config column. */
-export function summarize(d: UserDispatcher): string {
-	const c = d.config ?? {};
-	if (d.kind === 'http') {
-		const tok = c.token ? ' · token set' : '';
-		return `${(c.url as string) ?? ''}${tok}`;
-	}
-	return `${(c.namespace as string) ?? ''}/${(c.source_cronjob as string) ?? ''}`;
+/** Human-readable liveness label, factoring in whether a WS is connected. */
+export function livenessLabel(d: UserDispatcher): string {
+	if (d.connected) return 'connected';
+	return d.liveness; // online | stale | offline (last_seen-derived)
+}
+
+/** Tone for the liveness badge — `connected`/`online` positive, `stale`
+ *  cautionary, `offline` neutral. */
+export function livenessTone(d: UserDispatcher): 'ok' | 'warn' | 'neutral' {
+	if (d.connected || d.liveness === 'online') return 'ok';
+	if (d.liveness === 'stale') return 'warn';
+	return 'neutral';
 }

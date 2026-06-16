@@ -11,4 +11,9 @@ export type ServerEvent = { "type": "stream", session_id: string, data: AgentEve
  * render the reasoning above the live prompt instead of leaving the
  * user to answer blind (CCT-213). `None` when there was none.
  */
-preamble: string | null, } | { "type": "ask_resolved", session_id: string, } | { "type": "command_result", command_id: string, ok: boolean, error: string | null, } | { "type": "message_ack", session_id: string, client_msg_id: string, ok: boolean, error: string | null, } | { "type": "archive_manifest", machine_id: string, count: number, } | { "type": "machine_liveness", machine_id: string, liveness: MachineLiveness, } | { "type": "archive_uploaded", machine_id: string, project_dir: string, session_id: string, size_bytes: number, sha256: string, };
+preamble: string | null, } | { "type": "ask_resolved", session_id: string, } | { "type": "plan_request", session_id: string, plan: string, 
+/**
+ * Assistant prose preceding the plan in the same turn. `None` when
+ * there was none.
+ */
+preamble: string | null, } | { "type": "plan_resolved", session_id: string, } | { "type": "command_result", command_id: string, ok: boolean, error: string | null, } | { "type": "message_ack", session_id: string, client_msg_id: string, ok: boolean, error: string | null, } | { "type": "archive_manifest", machine_id: string, count: number, } | { "type": "machine_liveness", machine_id: string, liveness: MachineLiveness, } | { "type": "dispatcher_liveness", dispatcher_id: string, liveness: MachineLiveness, } | { "type": "archive_uploaded", machine_id: string, project_dir: string, session_id: string, size_bytes: number, sha256: string, };
