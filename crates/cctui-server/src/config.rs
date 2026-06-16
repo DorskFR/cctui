@@ -11,16 +11,22 @@ pub struct HttpDispatcherConfig {
 }
 
 /// One dispatcher registration, parsed from `CCTUI_DISPATCHERS` — a JSON array
-/// of `{ "kind": "http", ... }`. Supersedes the http-only
-/// `CCTUI_HTTP_DISPATCHERS` (still parsed for back-compat); both lists are
-/// merged at startup. The in-process `kube`/`docker` kinds were removed in
-/// CCT-285 — those backends are now standalone enrolled executor services
-/// (`/api/v1/dispatcher/{enroll,auth,ws}`), so only the `http` escape hatch
-/// remains here. `kind` is the discriminant.
+/// of `{ "kind": "http"|"kube"|"docker", ... }` (CCT-234). Supersedes the
+/// http-only `CCTUI_HTTP_DISPATCHERS` (still parsed for back-compat); both lists
+/// are merged at startup. `kind` is the discriminant.
+///
+/// CCT-360: the in-process `kube`/`docker` variants were prematurely deleted in
+/// CCT-285, which broke prod (the deployment sets `CCTUI_DISPATCHERS` with a
+/// `kube` entry and the server panicked parsing the unknown kind). They are
+/// restored here, coexisting with the enrolled executor transport
+/// (`/api/v1/dispatcher/{enroll,auth,ws}`), and will be removed for good at the
+/// CCT-291/292 flip once prod migrates fully to the enrolled dispatchers.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum DispatcherConfig {
     Http(HttpDispatcherConfig),
+    Kube(crate::dispatchers::kube::KubeDispatcherConfig),
+    Docker(crate::dispatchers::docker::DockerDispatcherConfig),
 }
 
 #[derive(Debug, Clone)]
@@ -121,5 +127,45 @@ impl Config {
             .filter(|s| !s.is_empty())
             .map(|s| s.trim().to_string())
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// CCT-360 regression: prod sets `CCTUI_DISPATCHERS` with a `kind:"kube"`
+    /// entry. CCT-285 dropped the `Kube`/`Docker` variants, so this parse
+    /// panicked and crash-looped the server. Assert all three kinds parse.
+    #[test]
+    fn cctui_dispatchers_parses_kube_docker_and_http() {
+        let raw = r#"[
+            {"kind":"kube","id":"claude-worker","namespace":"ai","source_cronjob":"claude-worker-base","cctui_url":"http://x:8700"},
+            {"kind":"docker","id":"docker-worker","image":"worker:latest"},
+            {"kind":"http","id":"ext","url":"http://x:9000"}
+        ]"#;
+        let parsed: Vec<DispatcherConfig> =
+            serde_json::from_str(raw).expect("CCTUI_DISPATCHERS must parse kube/docker/http");
+        assert_eq!(parsed.len(), 3);
+        match &parsed[0] {
+            DispatcherConfig::Kube(c) => {
+                assert_eq!(c.id, "claude-worker");
+                assert_eq!(c.namespace, "ai");
+                assert_eq!(c.source_cronjob, "claude-worker-base");
+                assert_eq!(c.cctui_url.as_deref(), Some("http://x:8700"));
+            }
+            other => panic!("expected Kube, got {other:?}"),
+        }
+        match &parsed[1] {
+            DispatcherConfig::Docker(c) => {
+                assert_eq!(c.id, "docker-worker");
+                assert_eq!(c.image, "worker:latest");
+            }
+            other => panic!("expected Docker, got {other:?}"),
+        }
+        match &parsed[2] {
+            DispatcherConfig::Http(c) => assert_eq!(c.id, "ext"),
+            other => panic!("expected Http, got {other:?}"),
+        }
     }
 }

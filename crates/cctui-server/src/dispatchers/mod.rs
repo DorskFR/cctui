@@ -1,22 +1,32 @@
 //! Pluggable [`Dispatcher`]s that turn a [`DispatchSpec`] into a launched
-//! session. Two impls remain after CCT-285:
-//!   * [`enrolled::EnrolledDispatcher`] — the primary model: a standalone
-//!     executor service (cctui-dispatcher-kube / -docker) that enrolled per
-//!     account and dials out over `/api/v1/dispatcher/ws`. The server sends a
-//!     key-checked [`cctui_proto::ws::DispatcherFrameDown::Dispatch`] over the
-//!     hub and awaits the [`cctui_proto::ws::DispatcherFrameUp::DispatchResult`]
-//!     reply. The server never needs kube/docker API access.
+//! session. Impls:
+//!   * [`enrolled::EnrolledDispatcher`] — the primary, target model: a
+//!     standalone executor service (cctui-dispatcher-kube / -docker) that
+//!     enrolled per account and dials out over `/api/v1/dispatcher/ws`. The
+//!     server sends a key-checked
+//!     [`cctui_proto::ws::DispatcherFrameDown::Dispatch`] over the hub and
+//!     awaits the [`cctui_proto::ws::DispatcherFrameUp::DispatchResult`] reply.
+//!     The server never needs kube/docker API access.
 //!   * [`http::HttpDispatcher`] — the escape hatch: forward a dispatch to a
 //!     fully external HTTP endpoint (env-configured global registry only).
+//!   * [`kube::KubeDispatcher`] / [`docker::DockerDispatcher`] — the
+//!     transitional in-process dispatchers (CCT-234) that clone a claude-worker
+//!     CronJob into a one-shot k8s Job / run the worker image as a container.
 //!
-//! The in-process `kube`/`docker` dispatchers (CCT-234, transitional) were
-//! removed in CCT-285 — orchestration now lives entirely in the enrolled
-//! executor binaries.
+//! CCT-360: the in-process `kube`/`docker` dispatchers were prematurely deleted
+//! in CCT-285 (PR #179), which crash-looped prod — the deployment configures
+//! `CCTUI_DISPATCHERS` with a `kind:"kube"` entry and the server panicked
+//! parsing the now-unknown kind. They are restored here and **coexist** with
+//! the enrolled transport: both registries are consulted at dispatch time.
+//! Both in-process impls are removed at the CCT-291/292 flip once prod fully
+//! migrates to the enrolled executor binaries.
 
 use async_trait::async_trait;
 
+pub mod docker;
 pub mod enrolled;
 pub mod http;
+pub mod kube;
 
 #[derive(Debug, Clone)]
 pub struct DispatchHandle {
