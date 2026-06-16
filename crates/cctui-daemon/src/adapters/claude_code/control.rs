@@ -453,7 +453,8 @@ impl Driver {
                     // Capture the correlation id before `cmd` is moved so we can
                     // report the outcome back to the originating client (CCT-131).
                     let command_id = match &cmd {
-                        AdapterCommand::Spawn { command_id, .. } => *command_id,
+                        AdapterCommand::Spawn { command_id, .. }
+                        | AdapterCommand::Interrupt { command_id, .. } => *command_id,
                         _ => None,
                     };
                     let res = self.handle_command(cmd).await;
@@ -641,7 +642,7 @@ impl Driver {
                 let resp = socket::one_shot(&sock, &req).await?;
                 tracing::debug!(?resp, %short, "kill ack");
             }
-            AdapterCommand::Interrupt { local_id } => {
+            AdapterCommand::Interrupt { local_id, .. } => {
                 // Keep-alive turn interrupt (CCT-210): the control socket has
                 // no turn-interrupt op, so attach to the worker PTY and inject
                 // an ESC keystroke — the same key that aborts a turn in the

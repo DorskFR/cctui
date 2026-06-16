@@ -566,9 +566,11 @@ export function useSessionActions() {
       await api.post<void>(`/sessions/${id}/kill`);
       inval();
     },
-    interrupt: async (id: string) => {
-      await api.post<void>(`/sessions/${id}/interrupt`);
-    },
+    /** Stop the in-flight turn (CCT-210). Returns a `command_id` to await on
+     *  the ws (CCT-339) so the caller can tell whether the agent actually
+     *  accepted the interrupt instead of firing-and-forgetting. */
+    interrupt: async (id: string) =>
+      api.post<SpawnResponse>(`/sessions/${id}/interrupt`),
     // In-place model/effort switch (CCT-303). Codex applies it on the live
     // thread and echoes the resolved values back via Status; claude rejects
     // it (the UI offers fork-to-change-model for claude instead).

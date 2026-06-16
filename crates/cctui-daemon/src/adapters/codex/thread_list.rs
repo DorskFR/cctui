@@ -38,7 +38,7 @@ use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use super::app_server::{AppServerConfig, SessionRegistry};
+use super::app_server::{AppServerConfig, SessionRecord, SessionRegistry};
 
 /// Set of thread ids the inventory has surfaced (id → last seen
 /// `status.type`). This is the inventory's own dedup state; since CCT-276 it is
@@ -204,47 +204,7 @@ impl ThreadListInventory {
     /// Spawn a short-lived stdio app-server, run initialize → thread/list, and
     /// return the parsed entries. The process is reaped before returning.
     async fn poll_once(&self) -> anyhow::Result<Vec<ThreadEntry>> {
-        let mut cmd = Command::new(&self.cfg.app.bin);
-        cmd.arg("app-server")
-            // No turn is started, so sandbox mode only matters because codex
-            // refuses to boot when it cannot create the bwrap namespace on
-            // some kernels — pass the configured (host-default) mode through.
-            .arg("-c")
-            .arg(format!("sandbox_mode=\"{}\"", self.cfg.app.sandbox_mode))
-            .env("PATH", crate::childenv::child_path())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
-        let mut child = cmd.spawn()?;
-        let mut stdin = child.stdin.take().context_stdin()?;
-        let stdout = child.stdout.take().context_stdout()?;
-
-        write_line(&mut stdin, &initialize_req()).await?;
-        write_line(&mut stdin, &thread_list_req(self.cfg.page_size)).await?;
-
-        let result = tokio::time::timeout(Duration::from_secs(20), async {
-            let mut lines = BufReader::new(stdout).lines();
-            while let Some(line) = lines.next_line().await? {
-                let trimmed = line.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                let Ok(v) = serde_json::from_str::<Value>(trimmed) else { continue };
-                if v.get("id").and_then(Value::as_i64) == Some(2) {
-                    return anyhow::Ok(v.get("result").cloned().unwrap_or(Value::Null));
-                }
-            }
-            anyhow::bail!("thread/list response not received before EOF")
-        })
-        .await;
-
-        // Close stdin and reap regardless of how the read went.
-        drop(stdin);
-        let _ = child.start_kill();
-        let _ = child.wait().await;
-
-        let result = result.map_err(|_| anyhow::anyhow!("thread/list timed out"))??;
-        Ok(parse_thread_list(&result))
+        poll_threads(&self.cfg.app, self.cfg.page_size).await
     }
 
     async fn reconcile(&self, entries: Vec<ThreadEntry>) {
@@ -302,6 +262,113 @@ impl ThreadListInventory {
         if let Some(evt) = status_event(&entry.id, entry.status.as_deref()) {
             let _ = self.events.send(evt).await;
         }
+    }
+}
+
+/// Spawn a short-lived stdio `codex app-server`, run initialize →
+/// `thread/list`, and return the parsed entries. The process is reaped before
+/// returning. Shared by the periodic inventory poll and the startup
+/// rediscovery (CCT-339).
+async fn poll_threads(app: &AppServerConfig, page_size: u32) -> anyhow::Result<Vec<ThreadEntry>> {
+    let mut cmd = Command::new(&app.bin);
+    cmd.arg("app-server")
+        // No turn is started, so sandbox mode only matters because codex
+        // refuses to boot when it cannot create the bwrap namespace on
+        // some kernels — pass the configured (host-default) mode through.
+        .arg("-c")
+        .arg(format!("sandbox_mode=\"{}\"", app.sandbox_mode))
+        .env("PATH", crate::childenv::child_path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child = cmd.spawn()?;
+    let mut stdin = child.stdin.take().context_stdin()?;
+    let stdout = child.stdout.take().context_stdout()?;
+
+    write_line(&mut stdin, &initialize_req()).await?;
+    write_line(&mut stdin, &thread_list_req(page_size)).await?;
+
+    let result = tokio::time::timeout(Duration::from_secs(20), async {
+        let mut lines = BufReader::new(stdout).lines();
+        while let Some(line) = lines.next_line().await? {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let Ok(v) = serde_json::from_str::<Value>(trimmed) else { continue };
+            if v.get("id").and_then(Value::as_i64) == Some(2) {
+                return anyhow::Ok(v.get("result").cloned().unwrap_or(Value::Null));
+            }
+        }
+        anyhow::bail!("thread/list response not received before EOF")
+    })
+    .await;
+
+    // Close stdin and reap regardless of how the read went.
+    drop(stdin);
+    let _ = child.start_kill();
+    let _ = child.wait().await;
+
+    let result = result.map_err(|_| anyhow::anyhow!("thread/list timed out"))??;
+    Ok(parse_thread_list(&result))
+}
+
+/// `appServer`-source threads from a `thread/list` snapshot are the ones cctui
+/// itself drove before the daemon restarted. Re-seed the durable
+/// [`SessionRegistry`] with a [`SessionRecord`] for each so a later command
+/// (send/rename/set-model) revives the thread via `thread/resume` instead of
+/// reporting `Missing` (CCT-339). Picks `cfg`/cwd from the resolved entry so the
+/// resume relaunches in the right directory under the daemon's current config.
+#[must_use]
+pub fn owned_records(
+    entries: &[ThreadEntry],
+    app: &AppServerConfig,
+) -> Vec<(String, SessionRecord)> {
+    entries
+        .iter()
+        .filter(|e| e.source.as_deref() == Some("appServer"))
+        .map(|e| {
+            (
+                e.id.clone(),
+                SessionRecord {
+                    cfg: app.clone(),
+                    cwd: e.cwd.clone().unwrap_or_default(),
+                    name: e.name.clone(),
+                },
+            )
+        })
+        .collect()
+}
+
+/// On adapter startup, rediscover cctui-owned (`appServer`-source) codex threads
+/// from `thread/list` and seed the durable registry so in-flight sessions stay
+/// drivable across a daemon restart / self-update (CCT-339). Best-effort: a
+/// probe failure (codex missing, sandbox/userns, auth) just leaves the registry
+/// empty, exactly as before this change.
+pub async fn rediscover_owned(cfg: &ThreadListConfig, registry: &SessionRegistry) {
+    let entries = match poll_threads(&cfg.app, cfg.page_size).await {
+        Ok(entries) => entries,
+        Err(err) => {
+            tracing::debug!(%err, "codex: startup thread rediscovery probe failed");
+            return;
+        }
+    };
+    let records = owned_records(&entries, &cfg.app);
+    if records.is_empty() {
+        return;
+    }
+    let mut guard = registry.lock().await;
+    let mut count = 0_usize;
+    for (id, record) in records {
+        // Don't clobber a record a live session already inserted in the race
+        // between rediscovery and a freshly spawned session.
+        guard.entry(id).or_insert_with(|| {
+            count += 1;
+            record
+        });
+    }
+    if count > 0 {
+        tracing::info!(count, "codex: rediscovered owned threads, seeded for resume");
     }
 }
 
@@ -515,6 +582,80 @@ mod tests {
         let evt = rx.recv().await.unwrap();
         assert!(matches!(evt, AdapterEvent::Status { state: Some(s), .. } if s == "working"));
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn owned_records_seeds_only_app_server_threads() {
+        // CCT-339: startup rediscovery re-seeds the durable registry from the
+        // `thread/list` snapshot, but only for cctui-driven (`appServer`-source)
+        // threads — CLI/vscode/exec sessions are not ours to resume.
+        let entries = vec![
+            ThreadEntry {
+                id: "mine".into(),
+                preview: None,
+                name: Some("nm".into()),
+                cwd: Some("/repo".into()),
+                source: Some("appServer".into()),
+                status: Some("idle".into()),
+            },
+            ThreadEntry {
+                id: "cli-one".into(),
+                preview: None,
+                name: None,
+                cwd: Some("/elsewhere".into()),
+                source: Some("cli".into()),
+                status: Some("active".into()),
+            },
+        ];
+        let recs = owned_records(&entries, &AppServerConfig::default());
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].0, "mine");
+        assert_eq!(recs[0].1.cwd, "/repo");
+        assert_eq!(recs[0].1.name.as_deref(), Some("nm"));
+    }
+
+    #[tokio::test]
+    async fn rediscover_seeds_registry_without_clobbering_live() {
+        use super::super::app_server::SessionRecord;
+        let registry = SessionRegistry::default();
+        // A live session already registered this id with a name; rediscovery
+        // must not overwrite it.
+        registry.lock().await.insert(
+            "live".into(),
+            SessionRecord {
+                cfg: AppServerConfig::default(),
+                cwd: "/live".into(),
+                name: Some("keep-me".into()),
+            },
+        );
+        let entries = vec![
+            ThreadEntry {
+                id: "live".into(),
+                preview: None,
+                name: Some("from-inventory".into()),
+                cwd: Some("/other".into()),
+                source: Some("appServer".into()),
+                status: None,
+            },
+            ThreadEntry {
+                id: "rediscovered".into(),
+                preview: None,
+                name: None,
+                cwd: Some("/repo".into()),
+                source: Some("appServer".into()),
+                status: None,
+            },
+        ];
+        // Drive the seeding directly (poll_threads needs a real codex binary).
+        let mut guard = registry.lock().await;
+        for (id, record) in owned_records(&entries, &AppServerConfig::default()) {
+            guard.entry(id).or_insert(record);
+        }
+        drop(guard);
+        let guard = registry.lock().await;
+        assert_eq!(guard.get("live").and_then(|r| r.name.as_deref()), Some("keep-me"));
+        assert_eq!(guard.get("live").map(|r| r.cwd.as_str()), Some("/live"));
+        assert_eq!(guard.get("rediscovered").map(|r| r.cwd.as_str()), Some("/repo"));
     }
 
     #[tokio::test]

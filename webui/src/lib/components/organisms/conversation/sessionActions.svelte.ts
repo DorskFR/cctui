@@ -17,7 +17,7 @@ import { downloadConversationHtml, conversationToMarkdown } from '$lib/export';
 export interface SessionActionApi {
 	rename: (id: string, name: string) => Promise<unknown>;
 	archive: (id: string) => Promise<unknown>;
-	interrupt: (id: string) => Promise<unknown>;
+	interrupt: (id: string) => Promise<{ command_id: string }>;
 	resume: (id: string) => Promise<unknown>;
 	setModel: (id: string, model: string, effort: string) => Promise<unknown>;
 	setAutoApprove: (id: string, want: boolean) => Promise<unknown>;
@@ -68,8 +68,20 @@ export class SessionActions {
 
 	interrupt = async () => {
 		try {
-			await this.#opts.actions.interrupt(this.#opts.id());
-			toasts.ok('Interrupted');
+			const res = await this.#opts.actions.interrupt(this.#opts.id());
+			// Wait for the adapter to echo back whether the agent actually
+			// accepted the interrupt (CCT-339), rather than fire-and-forget.
+			// A timeout is not a hard failure — the interrupt may still have
+			// landed — so phrase it as unconfirmed. Interrupts settle fast, so
+			// a short wait suffices.
+			const ack = await ws.awaitCommand(res.command_id, 8_000);
+			if (ack.ok) {
+				toasts.ok('Interrupted');
+			} else if (ack.timedOut) {
+				toasts.push('Interrupt sent — no confirmation yet', 'info');
+			} else {
+				toasts.err(ack.error ?? 'Interrupt not acknowledged');
+			}
 		} catch (e) {
 			toasts.err((e as Error).message);
 		}

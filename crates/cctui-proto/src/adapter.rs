@@ -384,6 +384,12 @@ pub enum AdapterCommand {
     /// app-server.
     Interrupt {
         local_id: String,
+        /// Correlation id minted by the server's interrupt route, echoed back
+        /// in an [`AdapterEvent::CommandResult`] so the originating client can
+        /// see whether the agent actually accepted the interrupt (CCT-339).
+        /// `None` for non-HTTP callers.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        command_id: Option<Uuid>,
     },
     /// Revive an exited-but-resumable conversation without sending a reply.
     /// Claude-code maps this to the same `dispatch --resume <sessionId>`

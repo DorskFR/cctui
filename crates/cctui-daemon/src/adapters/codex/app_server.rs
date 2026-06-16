@@ -471,6 +471,29 @@ impl Default for AppServerConfig {
 }
 
 impl AppServerConfig {
+    /// The `-c key="value"` overrides passed to `codex app-server` for a spawn.
+    /// This is the COMPLETE set of config knobs cctui sets — kept as a single
+    /// function so the "Fast mode is never silently enabled" guarantee (CCT-339)
+    /// is testable. Codex's "Fast mode" is a separate per-thread setting; cctui
+    /// never sets it here (no `fast`/`model_fast`/`reasoning_fast` key), so a
+    /// spawned session always uses the user's normal model/effort, never the
+    /// degraded fast path. Reasoning effort and model are the only opt-in
+    /// quality knobs, both surfaced explicitly in the spawn picker (CCT-299/303).
+    #[must_use]
+    pub fn config_overrides(&self) -> Vec<(String, String)> {
+        let mut args = vec![
+            ("approval_policy".to_owned(), self.approval_policy.clone()),
+            ("sandbox_mode".to_owned(), self.sandbox_mode.clone()),
+        ];
+        if let Some(effort) = self.reasoning_effort.as_deref() {
+            args.push(("model_reasoning_effort".to_owned(), effort.to_owned()));
+        }
+        if let Some(model) = self.model.as_deref() {
+            args.push(("model".to_owned(), model.to_owned()));
+        }
+        args
+    }
+
     pub fn from_value(v: &Value) -> Self {
         let mut cfg = Self::default();
         if let Some(b) = v.get("codex_bin").and_then(Value::as_str) {
@@ -603,16 +626,9 @@ impl CodexSession {
         }
 
         let mut cmd = Command::new(&self.cfg.bin);
-        cmd.arg("app-server")
-            .arg("-c")
-            .arg(format!("approval_policy=\"{}\"", self.cfg.approval_policy))
-            .arg("-c")
-            .arg(format!("sandbox_mode=\"{}\"", self.cfg.sandbox_mode));
-        if let Some(effort) = self.cfg.reasoning_effort.as_deref() {
-            cmd.arg("-c").arg(format!("model_reasoning_effort=\"{effort}\""));
-        }
-        if let Some(model) = self.cfg.model.as_deref() {
-            cmd.arg("-c").arg(format!("model=\"{model}\""));
+        cmd.arg("app-server");
+        for (key, value) in self.cfg.config_overrides() {
+            cmd.arg("-c").arg(format!("{key}=\"{value}\""));
         }
         let mut child = cmd
             .current_dir(cwd_path)
@@ -1514,6 +1530,54 @@ mod tests {
         assert_eq!(cfg.sandbox_mode, "danger-full-access");
         // Default sandbox_mode is the safe, sandboxed mode.
         assert_eq!(AppServerConfig::default().sandbox_mode, "workspace-write");
+    }
+
+    #[test]
+    fn config_overrides_never_enable_fast_mode() {
+        // CCT-339: assert the COMPLETE set of `-c` knobs cctui sets — Fast mode
+        // must never sneak in, on a default spawn or with model/effort set.
+        for cfg in [
+            AppServerConfig::default(),
+            AppServerConfig {
+                reasoning_effort: Some("high".to_owned()),
+                model: Some("gpt-5-codex".to_owned()),
+                ..AppServerConfig::default()
+            },
+        ] {
+            let overrides = cfg.config_overrides();
+            let keys: Vec<&str> = overrides.iter().map(|(k, _)| k.as_str()).collect();
+            assert!(
+                !keys.iter().any(|k| k.to_lowercase().contains("fast")),
+                "no fast-mode knob may be set, got {keys:?}"
+            );
+            // Only the four known, intentional knobs are ever set.
+            for k in &keys {
+                assert!(
+                    matches!(
+                        *k,
+                        "approval_policy" | "sandbox_mode" | "model_reasoning_effort" | "model"
+                    ),
+                    "unexpected codex config knob {k:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn config_overrides_default_and_with_quality_knobs() {
+        let base = AppServerConfig::default().config_overrides();
+        assert_eq!(base.len(), 2);
+        assert!(base.contains(&("approval_policy".to_owned(), "untrusted".to_owned())));
+        assert!(base.contains(&("sandbox_mode".to_owned(), "workspace-write".to_owned())));
+
+        let with = AppServerConfig {
+            reasoning_effort: Some("high".to_owned()),
+            model: Some("gpt-5-codex".to_owned()),
+            ..AppServerConfig::default()
+        }
+        .config_overrides();
+        assert!(with.contains(&("model_reasoning_effort".to_owned(), "high".to_owned())));
+        assert!(with.contains(&("model".to_owned(), "gpt-5-codex".to_owned())));
     }
 
     // --- v2 notification mapping (codex-cli 0.135 wire payloads) ----------

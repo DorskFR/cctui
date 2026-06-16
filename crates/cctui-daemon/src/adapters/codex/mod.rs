@@ -117,6 +117,17 @@ async fn run_default(ctx: AdapterCtx) -> anyhow::Result<()> {
     // app-server `registry` so cctui-driven threads aren't double-emitted.
     // Falls back silently to log-tail-only when the poll can't run (codex
     // missing, sandbox/userns, auth). Disable with `inventory = false`.
+    // CCT-339: before driving any commands, rediscover the codex threads cctui
+    // itself owned before this daemon (re)started — a self-update / release
+    // rollout restarts the daemon and drops the in-memory registry, leaving
+    // in-flight `appServer`-source threads unrevivable. Seeding the durable
+    // registry from `thread/list` lets the next reply/rename/set-model resume
+    // them via `thread/resume`, mirroring the claude-code backfill/reconnect.
+    if thread_list::ThreadListConfig::enabled(&ctx.config) {
+        let cfg = thread_list::ThreadListConfig::from_value(&ctx.config);
+        thread_list::rediscover_owned(&cfg, &registry).await;
+    }
+
     let inventory_handle = if thread_list::ThreadListConfig::enabled(&ctx.config) {
         // CCT-276: the inventory's `seen` set is its own dedup state only — it
         // is no longer shared with the log-tail to suppress rollout files, so a
@@ -313,16 +324,36 @@ async fn command_pump(
                         )
                         .await;
                     }
-                    AdapterCommand::Interrupt { local_id } => {
-                        forward(
-                            &live,
-                            &registry,
-                            &events,
-                            &shutdown,
-                            &local_id,
-                            SessionCommand::Interrupt,
-                        )
-                        .await;
+                    AdapterCommand::Interrupt { local_id, command_id } => {
+                        // CCT-339: surface whether the app-server actually
+                        // received the interrupt. `turn/interrupt` only makes
+                        // sense for a LIVE session (a hibernated thread has no
+                        // in-flight turn to abort), so delivery to the live
+                        // command channel == accepted; anything else is a
+                        // no-op we report as a failure so the webui can say so.
+                        let delivered = matches!(
+                            route_or_prepare_resume(
+                                &live,
+                                &registry,
+                                &local_id,
+                                SessionCommand::Interrupt,
+                            )
+                            .await,
+                            RouteAction::Delivered
+                        );
+                        if let Some(command_id) = command_id {
+                            let (ok, error) = if delivered {
+                                (true, None)
+                            } else {
+                                (false, Some("no live codex session to interrupt".to_owned()))
+                            };
+                            let _ = events
+                                .send(AdapterEvent::CommandResult { command_id, ok, error })
+                                .await;
+                        }
+                        if !delivered {
+                            tracing::warn!(%local_id, "codex: interrupt for non-live session");
+                        }
                     }
                     AdapterCommand::Rename { local_id, name } => {
                         forward(

@@ -1305,18 +1305,30 @@ pub async fn kill_session(
 /// claude adapter injects an ESC keystroke into the worker PTY via `attach`,
 /// the codex adapter sends `turn/interrupt` without terminating. The DB row
 /// stays active and in the registry so the session keeps going.
+///
+/// Mints a `command_id` (CCT-339) so the adapter can echo back an
+/// [`AdapterEvent::CommandResult`] → `ServerEvent::CommandResult`; the webui
+/// awaits it to surface whether the agent actually accepted the interrupt
+/// instead of firing-and-forgetting. Returns the id in the response body.
 pub async fn interrupt_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
-) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+) -> Result<(StatusCode, Json<cctui_proto::api::SpawnResponse>), (StatusCode, Json<ApiError>)> {
+    let command_id = uuid::Uuid::new_v4();
     let _ = crate::daemon_dispatch::dispatch(
         &state,
         &session_id,
-        cctui_proto::adapter::AdapterCommand::Interrupt { local_id: session_id.clone() },
+        cctui_proto::adapter::AdapterCommand::Interrupt {
+            local_id: session_id.clone(),
+            command_id: Some(command_id),
+        },
     )
     .await;
-    tracing::info!(session_id = %session_id, "session interrupted");
-    Ok(StatusCode::NO_CONTENT)
+    tracing::info!(session_id = %session_id, %command_id, "session interrupted");
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(cctui_proto::api::SpawnResponse { command_id, status: "dispatched".into() }),
+    ))
 }
 
 /// `POST /api/v1/sessions/{id}/resume` — explicitly revive an exited durable
