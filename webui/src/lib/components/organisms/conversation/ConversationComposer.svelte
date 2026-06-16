@@ -64,10 +64,68 @@
 	// (the Claude Code trick), keeping the textarea readable.
 	const PASTE_MASK_CHARS = 2000;
 	let pasteCounter = 1;
+	let clipboardCounter = 1;
+
+	// Common clipboard MIME types → file extensions. A pasted screenshot has no
+	// filename, so we synthesize `clipboard-N.<ext>`; anything unmapped falls back
+	// to the MIME subtype (sanitised) or `.bin`.
+	const MIME_EXT: Record<string, string> = {
+		'image/png': 'png',
+		'image/jpeg': 'jpg',
+		'image/gif': 'gif',
+		'image/webp': 'webp',
+		'image/bmp': 'bmp',
+		'image/svg+xml': 'svg',
+		'image/tiff': 'tiff',
+		'application/pdf': 'pdf'
+	};
+	function extForType(type: string): string {
+		if (MIME_EXT[type]) return MIME_EXT[type];
+		const sub = type.split('/')[1]?.split(';')[0];
+		return sub ? sub.replace(/[^a-z0-9]/gi, '') || 'bin' : 'bin';
+	}
+	// Give a clipboard blob a stable, unique filename if it has none (pasted
+	// screenshots/images arrive nameless), so dedupe-by-name doesn't collapse them.
+	function namedClipboardFile(f: File): File {
+		if (f.name && f.name.trim()) return f;
+		const ext = extForType(f.type || 'application/octet-stream');
+		return new File([f], `clipboard-${clipboardCounter++}.${ext}`, {
+			type: f.type || 'application/octet-stream'
+		});
+	}
+	// Extract binary files from a paste (copied files OR a pasted image/screenshot).
+	// Prefer `items` (some browsers expose pasted screenshots only there, not in
+	// `.files`), then fall back to `.files`.
+	function clipboardBinaryFiles(cd: DataTransfer): File[] {
+		const out: File[] = [];
+		for (const item of Array.from(cd.items ?? [])) {
+			if (item.kind !== 'file') continue;
+			const f = item.getAsFile();
+			if (f) out.push(namedClipboardFile(f));
+		}
+		if (out.length === 0) {
+			for (const f of Array.from(cd.files ?? [])) out.push(namedClipboardFile(f));
+		}
+		return out;
+	}
+
 	function onPaste(e: ClipboardEvent) {
 		if (!supportsAttachments || archived) return;
 		const cd = e.clipboardData;
-		if (!cd || (cd.files && cd.files.length > 0)) return; // real files → existing path
+		if (!cd) return;
+		// Binary clipboard content (pasted screenshot/image or copied file) → attach
+		// it via the same staged-upload path as the 📎 picker and drag-and-drop.
+		const files = clipboardBinaryFiles(cd);
+		if (files.length > 0) {
+			e.preventDefault();
+			addFiles(files);
+			toasts.ok(
+				files.length === 1
+					? `Attached ${files[0].name}`
+					: `Attached ${files.length} files from clipboard`
+			);
+			return;
+		}
 		const text = cd.getData('text/plain');
 		if (!text || text.length < PASTE_MASK_CHARS) return; // small → normal paste
 		e.preventDefault();
