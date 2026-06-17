@@ -2,6 +2,8 @@ import { browser } from '$app/environment';
 import { wsBase } from './config';
 import { auth } from './auth.svelte';
 import type { AgentEvent } from '@bindings/AgentEvent';
+import type { GithubEventKind } from '@bindings/GithubEventKind';
+import type { GithubEventPayload } from '@bindings/GithubEventPayload';
 
 export interface PermReq {
 	session_id: string;
@@ -30,6 +32,13 @@ export function userMsgKey(ev: AgentEvent): string | null {
 type Status = 'connecting' | 'open' | 'closed';
 type StreamCb = (ev: AgentEvent) => void;
 type PermCb = (list: PermReq[]) => void;
+/** A live GitHub inbox nudge (GH-CONN-5): "something about a tracked PR
+ * changed" — the `/github` inbox refetches the affected rows in response. */
+export interface GithubEvent {
+	kind: GithubEventKind;
+	payload: GithubEventPayload;
+}
+type GithubCb = (ev: GithubEvent) => void;
 /**
  * A live AskUserQuestion. `question` is the flattened text (always present);
  * `questions` is the raw `tool_input.questions` array (header/options/
@@ -157,6 +166,9 @@ class WsClient {
 	private permCbs = new Map<string, Set<PermCb>>();
 	private askCbs = new Map<string, Set<AskCb>>();
 	private planCbs = new Map<string, Set<PlanCb>>();
+	/** GitHub inbox listeners (GH-CONN-5 / GH-UI-1); not session-keyed — one
+	 * broadcast channel the mounted inbox subscribes to. Not reactive. */
+	private githubCbs = new Set<GithubCb>();
 	/**
 	 * Tracked outbound sends with their auto-retry state (CCT-214), keyed
 	 * sid → ts. Lives here (not in the drawer) so a failed/in-flight send and
@@ -323,6 +335,14 @@ class WsClient {
 				}
 				break;
 			}
+			case 'github_event': {
+				const ev: GithubEvent = {
+					kind: msg.kind as GithubEventKind,
+					payload: msg.payload as GithubEventPayload
+				};
+				for (const cb of this.githubCbs) cb(ev);
+				break;
+			}
 			case 'status':
 			case 'session_registered':
 			case 'session_deregistered':
@@ -442,6 +462,16 @@ class WsClient {
 		}
 		set.add(cb);
 		return () => set!.delete(cb);
+	}
+
+	/** Register a live GitHub inbox listener (GH-UI-1). Fires on every
+	 * `github_event` broadcast; the inbox uses it to refetch the affected
+	 * rows. Returns an unsubscribe fn. Mirrors `onStream`'s callback shape so
+	 * the inbox keeps its refresh in component-local `$state`, never reading a
+	 * keyed `$state` off this singleton via `$derived`. */
+	onGithubEvent(cb: GithubCb): () => void {
+		this.githubCbs.add(cb);
+		return () => this.githubCbs.delete(cb);
 	}
 
 	/** Register a pending-permissions listener for a session. Fires with the

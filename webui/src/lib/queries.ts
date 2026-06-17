@@ -24,6 +24,7 @@ import type { MeResponse } from "@bindings/MeResponse";
 import type { CapabilitiesResponse } from "@bindings/CapabilitiesResponse";
 import type { ConnectorInfo } from "@bindings/ConnectorInfo";
 import type { CreateConnector } from "@bindings/CreateConnector";
+import type { PullInboxItem } from "@bindings/PullInboxItem";
 import type { Label } from "@bindings/Label";
 import type { LabelListResponse } from "@bindings/LabelListResponse";
 
@@ -272,6 +273,9 @@ export const endpoints = {
     api.post<ConnectorInfo>("/github/connectors", body),
   deleteGithubConnector: (id: string) =>
     api.del<void>(`/github/connectors/${id}`),
+  /** The PR inbox (GH-UI-1): synced PRs, each with its derived attention
+   *  bucket + CI/review summary, scoped to the caller's connectors. */
+  githubPulls: () => api.get<PullInboxItem[]>("/github/pulls"),
   /** Every spawnable machine across all active users — for the spawn picker.
    * Excludes server-managed machines (`ephemeral` worker pods and the per-user
    * `dispatch` machine): those aren't somewhere you'd start an interactive
@@ -473,6 +477,21 @@ export function useGithubConnectorActions() {
     },
   };
 }
+
+export type { PullInboxItem };
+
+/** GitHub PR inbox (GH-UI-1). Polled as a safety net; live `GithubEvent`
+ *  pushes drive most refreshes (the inbox view invalidates this key on each
+ *  event). Only fetched while the GitHub view is mounted. */
+export const useGithubPulls = (enabled: () => boolean = () => true) =>
+  createQuery(
+    toStore(() => ({
+      queryKey: ["github-pulls"],
+      queryFn: endpoints.githubPulls,
+      enabled: enabled(),
+      refetchInterval: 60_000,
+    })),
+  );
 
 export const useAllMachines = (enabled: () => boolean) =>
   createQuery(

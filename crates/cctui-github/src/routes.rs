@@ -15,15 +15,15 @@
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::response::IntoResponse;
 use axum::{Extension, Json};
-use cctui_proto::github::{CallerIdentity, ConnectorInfo, CreateConnector, GithubCredentialKind};
+use cctui_proto::github::{
+    CallerIdentity, CheckSummary, ConnectorInfo, CreateConnector, GithubCredentialKind,
+    PullInboxItem, ReviewSummary,
+};
 use uuid::Uuid;
 
+use crate::attention::{self, Viewer};
 use crate::{GithubState, crypto};
-
-const STUB: (StatusCode, &str) =
-    (StatusCode::NOT_IMPLEMENTED, "github integration not yet implemented");
 
 type ApiError = (StatusCode, Json<serde_json::Value>);
 
@@ -214,7 +214,166 @@ pub async fn delete_connector(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `GET /api/v1/github/pulls` — list tracked pull requests (stub until GH-CONN-3).
-pub async fn list_pulls(State(_state): State<GithubState>) -> impl IntoResponse {
-    STUB
+/// One synced PR row plus the owning connector's cached login, scoped to the
+/// caller. `viewer_login` is `None` until the connector's first reconcile pass.
+struct PullRow {
+    connector_id: Uuid,
+    viewer_login: Option<String>,
+    repo: String,
+    number: i64,
+    title: String,
+    state: String,
+    merged: bool,
+    draft: bool,
+    author: String,
+    head_sha: String,
+    head_ref: String,
+    base_ref: String,
+    mergeable_state: Option<String>,
+    gh_updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl sqlx::FromRow<'_, sqlx::postgres::PgRow> for PullRow {
+    fn from_row(row: &sqlx::postgres::PgRow) -> Result<Self, sqlx::Error> {
+        use sqlx::Row;
+        Ok(Self {
+            connector_id: row.try_get("connector_id")?,
+            viewer_login: row.try_get("viewer_login")?,
+            repo: row.try_get("repo")?,
+            number: row.try_get("number")?,
+            title: row.try_get("title")?,
+            state: row.try_get("state")?,
+            merged: row.try_get("merged")?,
+            draft: row.try_get("draft")?,
+            author: row.try_get("author")?,
+            head_sha: row.try_get("head_sha")?,
+            head_ref: row.try_get("head_ref")?,
+            base_ref: row.try_get("base_ref")?,
+            mergeable_state: row.try_get("mergeable_state")?,
+            gh_updated_at: row.try_get("gh_updated_at")?,
+        })
+    }
+}
+
+/// `GET /api/v1/github/pulls` — the live PR inbox (GH-UI-1).
+///
+/// Reads the synced CONN-3 rows back, scoped to the caller's connectors (admin
+/// sees all), derives each PR's attention bucket (GH-CONN-6) and a small
+/// CI/review summary, and returns one flat list the webui groups by `bucket`.
+/// No GitHub call is made — the viewer's login is read from the cached
+/// `viewer_login` the reconcile poll backfills.
+pub async fn list_pulls(
+    State(state): State<GithubState>,
+    Extension(ctx): Extension<CallerIdentity>,
+) -> Result<Json<Vec<PullInboxItem>>, ApiError> {
+    let pulls: Vec<PullRow> = sqlx::query_as(
+        "SELECT p.connector_id, c.viewer_login, p.repo, p.number, p.title, \
+                p.state, p.merged, p.draft, p.author, p.head_sha, p.head_ref, \
+                p.base_ref, p.mergeable_state, p.gh_updated_at \
+         FROM github.pulls p \
+         JOIN github.connectors c ON c.id = p.connector_id \
+         WHERE $1::uuid IS NULL OR c.user_id = $1 \
+         ORDER BY p.gh_updated_at DESC",
+    )
+    .bind(ctx.user_id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("github pulls list db error: {e}");
+        err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
+    })?;
+
+    let mut items = Vec::with_capacity(pulls.len());
+    for p in pulls {
+        // Checks key off the head SHA; reviews off the PR number. Both scoped to
+        // the same connector so multi-account inboxes don't cross-contaminate.
+        let checks: Vec<(String, Option<String>)> = sqlx::query_as(
+            "SELECT status, conclusion FROM github.checks \
+             WHERE connector_id = $1 AND repo = $2 AND head_sha = $3",
+        )
+        .bind(p.connector_id)
+        .bind(&p.repo)
+        .bind(&p.head_sha)
+        .fetch_all(&state.pool)
+        .await
+        .unwrap_or_default();
+
+        let reviews: Vec<(String,)> = sqlx::query_as(
+            "SELECT state FROM github.reviews \
+             WHERE connector_id = $1 AND repo = $2 AND pull_number = $3",
+        )
+        .bind(p.connector_id)
+        .bind(&p.repo)
+        .bind(p.number)
+        .fetch_all(&state.pool)
+        .await
+        .unwrap_or_default();
+
+        // Viewer relationship: authored when the PR's author is the connector's
+        // own login. The reconcile scope is "author:@me OR review-requested:@me",
+        // so a tracked PR the viewer didn't author is one they owe a review on.
+        let viewer = match p.viewer_login.as_deref() {
+            Some(login) if login.eq_ignore_ascii_case(&p.author) => {
+                Viewer { authored: true, review_requested: false }
+            }
+            Some(_) => Viewer { authored: false, review_requested: true },
+            None => Viewer::default(),
+        };
+        let bucket = attention::derive_bucket_from_rows(
+            &p.state, p.merged, p.draft, &checks, &reviews, viewer,
+        );
+
+        items.push(PullInboxItem {
+            connector_id: p.connector_id,
+            repo: p.repo,
+            number: p.number,
+            title: p.title,
+            state: p.state,
+            merged: p.merged,
+            draft: p.draft,
+            author: p.author,
+            head_ref: p.head_ref,
+            base_ref: p.base_ref,
+            mergeable_state: p.mergeable_state,
+            gh_updated_at: p.gh_updated_at.to_rfc3339(),
+            bucket,
+            checks: summarize_checks(&checks),
+            reviews: summarize_reviews(&reviews),
+        });
+    }
+    Ok(Json(items))
+}
+
+/// Aggregate CI check rows into the inbox's [`CheckSummary`]. Lockstep with
+/// [`crate::classifier_feed`]'s failing-conclusion set.
+fn summarize_checks(checks: &[(String, Option<String>)]) -> CheckSummary {
+    let mut s = CheckSummary::default();
+    for (status, conclusion) in checks {
+        if status != "completed" {
+            s.pending += 1;
+            continue;
+        }
+        match conclusion.as_deref() {
+            Some("failure" | "timed_out" | "cancelled" | "action_required" | "startup_failure") => {
+                s.failed += 1;
+            }
+            _ => s.passed += 1,
+        }
+    }
+    s
+}
+
+/// Aggregate review rows into the inbox's [`ReviewSummary`].
+fn summarize_reviews(reviews: &[(String,)]) -> ReviewSummary {
+    let mut s = ReviewSummary::default();
+    for (st,) in reviews {
+        if st.eq_ignore_ascii_case("changes_requested") {
+            s.changes_requested += 1;
+        } else if st.eq_ignore_ascii_case("approved") {
+            s.approved += 1;
+        } else if st.eq_ignore_ascii_case("commented") {
+            s.commented += 1;
+        }
+    }
+    s
 }

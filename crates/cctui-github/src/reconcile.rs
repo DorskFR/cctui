@@ -71,6 +71,17 @@ pub trait SearchClient: Send + Sync {
         query: &str,
         etag: Option<&str>,
     ) -> anyhow::Result<SearchOutcome>;
+
+    /// Resolve the credential's own GitHub login (`GET /user` → `login`), cached
+    /// on the connector so the inbox can split authored vs. review-requested PRs
+    /// (GH-UI-1 / GH-CONN-6) without a per-request GitHub call.
+    ///
+    /// Best-effort: a `None` result (network error, token without user scope,
+    /// or — for the test fake — no implementation) just leaves `viewer_login`
+    /// unchanged. The default returns `None` so test fakes need not implement it.
+    async fn viewer_login(&self, _credential: &str) -> anyhow::Result<Option<String>> {
+        Ok(None)
+    }
 }
 
 /// Build the GitHub issue-search query string for one connector scope.
@@ -195,6 +206,26 @@ async fn reconcile_connector(
     credential: &str,
     query: &str,
 ) -> anyhow::Result<usize> {
+    // Cache the credential's own login once so the inbox can derive attention
+    // buckets (GH-CONN-6) without a per-request GitHub call. Skip if already
+    // known; best-effort, never fatal.
+    let known: Option<String> =
+        sqlx::query_scalar("SELECT viewer_login FROM github.connectors WHERE id = $1")
+            .bind(connector_id)
+            .fetch_optional(&state.pool)
+            .await
+            .ok()
+            .flatten();
+    if known.is_none() {
+        if let Ok(Some(login)) = client.viewer_login(credential).await {
+            let _ = sqlx::query("UPDATE github.connectors SET viewer_login = $1 WHERE id = $2")
+                .bind(&login)
+                .bind(connector_id)
+                .execute(&state.pool)
+                .await;
+        }
+    }
+
     let cache_key = (connector_id, query.to_string());
     let prior = etags.lock().await.get(&cache_key).cloned();
 
@@ -342,6 +373,22 @@ impl SearchClient for HttpSearchClient {
         }
         Ok(SearchOutcome::Modified { pulls, etag })
     }
+
+    async fn viewer_login(&self, credential: &str) -> anyhow::Result<Option<String>> {
+        let resp = self
+            .http
+            .get(format!("{API_BASE}/user"))
+            .header(reqwest::header::USER_AGENT, USER_AGENT)
+            .header(reqwest::header::AUTHORIZATION, format!("Bearer {credential}"))
+            .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            return Ok(None);
+        }
+        let v: serde_json::Value = resp.json().await?;
+        Ok(v.get("login").and_then(|l| l.as_str()).map(str::to_string))
+    }
 }
 
 /// Compute how long to back off from a rate-limited response, or `None` if it
@@ -466,7 +513,10 @@ mod tests {
     #[test]
     fn build_query_no_repos_is_global() {
         let q = build_query(&[]);
-        assert_eq!(q, "is:pr is:open (author:@me OR review-requested:@me OR team-review-requested:@me)");
+        assert_eq!(
+            q,
+            "is:pr is:open (author:@me OR review-requested:@me OR team-review-requested:@me)"
+        );
     }
 
     #[test]
@@ -484,9 +534,10 @@ mod tests {
             serde_json::from_str(r#"{ "repository_url": "https://api.github.com/repos/o/r" }"#)
                 .unwrap();
         assert!(search_hit_repo_number(&no_number).is_none());
-        let bad_repo: serde_json::Value =
-            serde_json::from_str(r#"{ "number": 1, "repository_url": "https://x/repos/justowner" }"#)
-                .unwrap();
+        let bad_repo: serde_json::Value = serde_json::from_str(
+            r#"{ "number": 1, "repository_url": "https://x/repos/justowner" }"#,
+        )
+        .unwrap();
         assert!(search_hit_repo_number(&bad_repo).is_none());
     }
 
@@ -527,10 +578,7 @@ mod tests {
             if etag == Some("etag-v1") {
                 return Ok(SearchOutcome::NotModified);
             }
-            Ok(SearchOutcome::Modified {
-                pulls: vec![],
-                etag: Some("etag-v1".to_string()),
-            })
+            Ok(SearchOutcome::Modified { pulls: vec![], etag: Some("etag-v1".to_string()) })
         }
     }
 

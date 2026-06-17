@@ -293,3 +293,70 @@ impl AttentionBucket {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// GH-UI-1: the `/github` PR-inbox API view.
+//
+// `GET /api/v1/github/pulls` reads the synced CONN-3 rows back, derives each
+// PR's attention bucket (GH-CONN-6) and a small CI/review summary, and returns
+// one flat list the webui groups by `bucket`. No credential or raw payload is
+// represented; the summaries are pre-aggregated so the inbox renders a row
+// without a second round-trip.
+// ---------------------------------------------------------------------------
+
+/// Aggregated CI state for a PR's head SHA — the counts a row badge needs
+/// without shipping every individual check.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CheckSummary {
+    /// Checks that completed successfully (or neutral/skipped).
+    pub passed: u32,
+    /// Checks that completed with a failing conclusion.
+    pub failed: u32,
+    /// Checks not yet completed (`queued` / `in_progress`).
+    pub pending: u32,
+}
+
+/// Aggregated review state for a PR — the strongest outstanding signal plus
+/// raw counts, mirroring the classifier's collapse.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ReviewSummary {
+    /// Number of submitted reviews requesting changes.
+    pub changes_requested: u32,
+    /// Number of submitted approvals.
+    pub approved: u32,
+    /// Number of plain comment reviews.
+    pub commented: u32,
+}
+
+/// One row in the `/github` PR inbox: the synced PR plus its derived attention
+/// bucket and pre-aggregated CI/review summaries.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PullInboxItem {
+    /// The connector that tracks this PR (multi-account scoping in the UI).
+    pub connector_id: Uuid,
+    /// `owner/name` slug.
+    pub repo: String,
+    /// PR number within the repo.
+    pub number: i64,
+    pub title: String,
+    /// `open` | `closed`.
+    pub state: String,
+    pub merged: bool,
+    pub draft: bool,
+    pub author: String,
+    pub head_ref: String,
+    pub base_ref: String,
+    /// GitHub's `mergeable_state`, when known.
+    pub mergeable_state: Option<String>,
+    /// GitHub's last-update timestamp (ISO-8601) — the inbox sorts on it.
+    pub gh_updated_at: String,
+    /// The most-actionable attention bucket (GH-CONN-6 derivation).
+    pub bucket: AttentionBucket,
+    /// Pre-aggregated CI state for the head SHA.
+    pub checks: CheckSummary,
+    /// Pre-aggregated review state.
+    pub reviews: ReviewSummary,
+}
