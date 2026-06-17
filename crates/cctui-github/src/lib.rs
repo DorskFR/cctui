@@ -17,10 +17,13 @@ use axum::Router;
 use axum::routing::{delete, get, post};
 use sqlx::{Connection, Executor, PgPool};
 
+mod classifier_feed;
 mod crypto;
 mod routes;
 mod store;
+mod webhook;
 
+pub use classifier_feed::{derive_status, pr_href, publish as publish_pr_status};
 pub use store::{
     EventTx, upsert_check, upsert_pull, upsert_review, upsert_review_comment, upsert_review_thread,
 };
@@ -160,6 +163,6 @@ pub fn routes(pool: PgPool, events: EventTx) -> Router {
         .route("/github/connectors", get(routes::list_connectors).post(routes::create_connector))
         .route("/github/connectors/{id}", delete(routes::delete_connector))
         .route("/github/pulls", get(routes::list_pulls))
-        .route("/triggers/github", post(routes::webhook))
+        .route("/triggers/github", post(webhook::webhook))
         .with_state(state)
 }

@@ -3,8 +3,9 @@
 //! GH-CONN-1 lands real connector CRUD on `/api/v1/github/connectors`: create
 //! (encrypts the credential at rest with the vault key, same as the OAuth-account
 //! vault), list, and delete. The credential is **never** returned — list/get only
-//! surface a masked preview + whether a webhook secret is set. The remaining
-//! handlers (`pulls`, `triggers/github`) stay `501` stubs until later GH-* stories.
+//! surface a masked preview + whether a webhook secret is set. The `pulls`
+//! handler stays a `501` stub until a later GH-* story; the webhook ingress
+//! (`triggers/github`) is implemented in [`crate::webhook`] (GH-CONN-2).
 //!
 //! Auth: the nested GitHub router is wrapped (in `cctui-server::main`) with the
 //! same auth middleware as the rest of `/api/v1`, plus a thin layer that maps the
@@ -16,9 +17,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
-use cctui_proto::github::{
-    CallerIdentity, ConnectorInfo, CreateConnector, GithubCredentialKind,
-};
+use cctui_proto::github::{CallerIdentity, ConnectorInfo, CreateConnector, GithubCredentialKind};
 use uuid::Uuid;
 
 use crate::{GithubState, crypto};
@@ -54,8 +53,9 @@ fn resolve_owner(ctx: &CallerIdentity, explicit: Option<Uuid>) -> Result<Uuid, A
         return Ok(uid);
     }
     if ctx.is_admin {
-        return explicit
-            .ok_or_else(|| err(StatusCode::BAD_REQUEST, "user_id required when using the admin token"));
+        return explicit.ok_or_else(|| {
+            err(StatusCode::BAD_REQUEST, "user_id required when using the admin token")
+        });
     }
     Err(err(StatusCode::FORBIDDEN, "user or admin token required"))
 }
@@ -216,10 +216,5 @@ pub async fn delete_connector(
 
 /// `GET /api/v1/github/pulls` — list tracked pull requests (stub until GH-CONN-3).
 pub async fn list_pulls(State(_state): State<GithubState>) -> impl IntoResponse {
-    STUB
-}
-
-/// `POST /api/v1/triggers/github` — GitHub webhook ingress (stub until GH-CONN-2).
-pub async fn webhook(State(_state): State<GithubState>) -> impl IntoResponse {
     STUB
 }
