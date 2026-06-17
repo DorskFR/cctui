@@ -19,6 +19,11 @@ use sqlx::{Connection, Executor, PgPool};
 
 mod crypto;
 mod routes;
+mod store;
+
+pub use store::{
+    upsert_check, upsert_pull, upsert_review, upsert_review_comment, upsert_review_thread,
+};
 
 /// The dedicated Postgres schema that holds **all** GitHub-integration state.
 const SCHEMA: &str = "github";

@@ -92,3 +92,111 @@ pub struct ConnectorInfo {
     /// ISO-8601 creation timestamp.
     pub created_at: String,
 }
+
+// ---------------------------------------------------------------------------
+// GH-CONN-3: synced PR state, CI checks, and posted reviews/threads/comments.
+//
+// These types are the parsed shape the webhook (GH-CONN-2) and reconcile
+// (GH-CONN-4) paths produce and hand to `cctui-github`'s typed upsert
+// functions, plus the API row views the inbox (GH-UI-1) reads back. They carry
+// GitHub's own ids so upserts are idempotent regardless of which path observed
+// the change first. No credential or webhook payload is ever represented here.
+// ---------------------------------------------------------------------------
+
+/// A parsed pull request, ready to upsert into `github.pulls`.
+///
+/// Produced by both the webhook (`pull_request` event) and the reconcile poll;
+/// the upsert keys on `(connector, repo, number)` so they converge on one row.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PullUpsert {
+    /// GitHub's stable global node id (GraphQL) for later API calls.
+    pub node_id: String,
+    /// `owner/name` slug the PR lives in.
+    pub repo: String,
+    /// The human-facing PR number within the repo.
+    pub number: i64,
+    pub title: String,
+    /// `open` | `closed`.
+    pub state: String,
+    pub merged: bool,
+    pub draft: bool,
+    /// GitHub's `mergeable_state`; `None` until GitHub computes it.
+    pub mergeable_state: Option<String>,
+    pub author: String,
+    /// Head commit SHA; CI checks key off this.
+    pub head_sha: String,
+    pub base_ref: String,
+    pub head_ref: String,
+    /// GitHub's own creation timestamp (ISO-8601).
+    pub gh_created_at: String,
+    /// GitHub's own last-update timestamp (ISO-8601).
+    pub gh_updated_at: String,
+}
+
+/// A parsed CI check (check_run or legacy commit status) for a head SHA.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CheckUpsert {
+    pub repo: String,
+    pub head_sha: String,
+    /// GitHub's check_run id, or `status:<context>` for legacy commit statuses.
+    pub external_id: String,
+    pub name: String,
+    /// `queued` | `in_progress` | `completed`.
+    pub status: String,
+    /// `success` | `failure` | … ; `None` while running.
+    pub conclusion: Option<String>,
+    pub details_url: Option<String>,
+}
+
+/// A parsed submitted PR review (the posted side).
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ReviewUpsert {
+    pub repo: String,
+    pub pull_number: i64,
+    /// GitHub's review id (the upsert key, scoped to the connector).
+    pub review_id: i64,
+    pub reviewer: String,
+    /// `approved` | `changes_requested` | `commented` | `dismissed` | `pending`.
+    pub state: String,
+    pub body: Option<String>,
+    pub commit_id: Option<String>,
+    /// ISO-8601; `None` for a pending review.
+    pub submitted_at: Option<String>,
+}
+
+/// A parsed review thread (a conversation anchored on a diff line).
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ReviewThreadUpsert {
+    pub repo: String,
+    pub pull_number: i64,
+    /// GitHub's review-thread node id (the upsert key).
+    pub thread_node_id: String,
+    pub path: String,
+    /// `LEFT` | `RIGHT` diff side, when anchored.
+    pub side: Option<String>,
+    pub line: Option<i64>,
+    pub resolved: bool,
+}
+
+/// A parsed individual review comment.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ReviewCommentUpsert {
+    pub repo: String,
+    pub pull_number: i64,
+    /// GitHub's review-comment id (the upsert key, scoped to the connector).
+    pub comment_id: i64,
+    /// Correlates to a `review_threads` row when known.
+    pub thread_node_id: Option<String>,
+    pub author: String,
+    pub body: String,
+    pub path: Option<String>,
+    pub side: Option<String>,
+    pub line: Option<i64>,
+    pub gh_created_at: String,
+    pub gh_updated_at: String,
+}
