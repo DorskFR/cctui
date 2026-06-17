@@ -184,16 +184,71 @@ async fn reconcile_once(
     for (connector_id, enc_credential, repos) in rows {
         let Some(credential) = crypto::deobfuscate(&enc_credential, &key) else {
             tracing::warn!(%connector_id, "github reconcile: undecryptable credential, skipping");
+            record_poll_result(
+                &state.pool,
+                connector_id,
+                &Err(anyhow::anyhow!("connector credential could not be decrypted")),
+            )
+            .await;
             continue;
         };
         let query = build_query(&repos);
-        if let Err(e) =
-            reconcile_connector(state, client, etags, connector_id, &credential, &query).await
-        {
+        let result =
+            reconcile_connector(state, client, etags, connector_id, &credential, &query).await;
+        if let Err(e) = &result {
             tracing::warn!(%connector_id, "github reconcile connector error: {e}");
         }
+        record_poll_result(&state.pool, connector_id, &result).await;
     }
     Ok(())
+}
+
+/// Record the outcome of one connector's poll attempt on the connector row so
+/// the webui can show poll health (CCT-396). `last_polled_at` is always stamped;
+/// `last_error` holds the error text on failure and is cleared on success. The
+/// error string is GitHub/decrypt status text — it never contains the
+/// credential. Best-effort: a write failure is logged, not propagated.
+async fn record_poll_result(pool: &PgPool, connector_id: Uuid, result: &anyhow::Result<usize>) {
+    let last_error = result.as_ref().err().map(std::string::ToString::to_string);
+    if let Err(e) = sqlx::query(
+        "UPDATE github.connectors SET last_polled_at = now(), last_error = $1 WHERE id = $2",
+    )
+    .bind(last_error)
+    .bind(connector_id)
+    .execute(pool)
+    .await
+    {
+        tracing::warn!(%connector_id, "github reconcile: failed to record poll status: {e}");
+    }
+}
+
+/// Run the reconcile poll for a single connector immediately (CCT-396's manual
+/// "Refresh now"), independent of the scheduled loop. Uses a throwaway ETag
+/// cache so it always performs a full fetch rather than short-circuiting on the
+/// loop's cached `304`. Records the attempt's status like the loop does.
+pub async fn sync_now(state: &GithubState, connector_id: Uuid) {
+    let key = crypto::vault_key();
+    let row: Option<(String, Vec<String>)> =
+        sqlx::query_as("SELECT encrypted_credential, repos FROM github.connectors WHERE id = $1")
+            .bind(connector_id)
+            .fetch_optional(&state.pool)
+            .await
+            .ok()
+            .flatten();
+    let Some((enc_credential, repos)) = row else { return };
+    let result = match crypto::deobfuscate(&enc_credential, &key) {
+        Some(credential) => {
+            let client = HttpSearchClient::new();
+            let etags: EtagCache = Arc::new(Mutex::new(HashMap::new()));
+            let query = build_query(&repos);
+            reconcile_connector(state, &client, &etags, connector_id, &credential, &query).await
+        }
+        None => Err(anyhow::anyhow!("connector credential could not be decrypted")),
+    };
+    if let Err(e) = &result {
+        tracing::warn!(%connector_id, "github manual sync error: {e}");
+    }
+    record_poll_result(&state.pool, connector_id, &result).await;
 }
 
 /// Reconcile a single connector: conditional search, then upsert each matched

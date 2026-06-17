@@ -27,4 +27,15 @@ user_id: string,
 /**
  * ISO-8601 creation timestamp.
  */
-created_at: string, };
+created_at: string, 
+/**
+ * ISO-8601 time of the last reconcile-poll attempt, or `None` if the
+ * connector has not been polled yet (CCT-396).
+ */
+last_polled_at: string | null, 
+/**
+ * The last reconcile-poll error (e.g. a bad/insufficient-scope PAT), or
+ * `None` when the last poll succeeded. Surfaced in the connector list so a
+ * misconfigured credential is visible without reading the server log.
+ */
+last_error: string | null, };

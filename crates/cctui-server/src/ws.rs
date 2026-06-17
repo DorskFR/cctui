@@ -322,5 +322,5 @@ async fn handle_tui_ws(socket: WebSocket, state: AppState) {
     spawn_send_task(sink, rx);
     run_tui_socket(stream, state, tx).await;
 
-    tracing::info!("TUI WebSocket disconnected");
+    tracing::debug!("TUI WebSocket disconnected");
 }

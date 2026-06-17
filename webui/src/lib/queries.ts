@@ -285,6 +285,11 @@ export const endpoints = {
     api.post<ConnectorInfo>("/github/connectors", body),
   deleteGithubConnector: (id: string) =>
     api.del<void>(`/github/connectors/${id}`),
+  /** Run the reconcile poll for one connector immediately (CCT-396), instead of
+   *  waiting for the scheduled tick. Returns the updated connector view, whose
+   *  `last_polled_at`/`last_error` reflect this attempt. */
+  syncGithubConnector: (id: string) =>
+    api.post<ConnectorInfo>(`/github/connectors/${id}/sync`, {}),
   /** The PR inbox (GH-UI-1): synced PRs, each with its derived attention
    *  bucket + CI/review summary, scoped to the caller's connectors. */
   githubPulls: () => api.get<PullInboxItem[]>("/github/pulls"),
@@ -632,6 +637,13 @@ export function useGithubConnectorActions() {
     remove: async (id: string) => {
       await endpoints.deleteGithubConnector(id);
       inval();
+    },
+    sync: async (id: string) => {
+      const r = await endpoints.syncGithubConnector(id);
+      // The poll may upsert PRs and changes poll status; refresh the inbox too.
+      inval();
+      qc.invalidateQueries({ queryKey: ["github-pulls"] });
+      return r;
     },
   };
 }

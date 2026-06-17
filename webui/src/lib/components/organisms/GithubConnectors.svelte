@@ -97,6 +97,21 @@
 		}
 	}
 
+	let syncingId = $state<string | null>(null);
+
+	async function refresh(id: string) {
+		syncingId = id;
+		try {
+			const c = await actions.sync(id);
+			if (c.last_error) toasts.err(`Poll failed: ${c.last_error}`);
+			else toasts.ok('Refreshed from GitHub');
+		} catch (e) {
+			toasts.err(e instanceof Error ? e.message : 'Failed to refresh');
+		} finally {
+			syncingId = null;
+		}
+	}
+
 	async function remove(id: string, label: string) {
 		if (!confirm(`Remove the GitHub connector "${label}"? Its credential is deleted.`)) return;
 		try {
@@ -145,9 +160,26 @@
 							{/if}
 							<Text tone="muted" size="xs">
 								Added <Timestamp value={c.created_at} mode="relative" />
+								{#if c.last_polled_at}
+									· polled <Timestamp value={c.last_polled_at} mode="relative" />
+								{:else}
+									· not polled yet
+								{/if}
 							</Text>
+							{#if c.last_error}
+								<Text tone="danger" size="sm">⚠ Last poll failed: {c.last_error}</Text>
+							{/if}
 						</Stack>
-						<Button size="sm" variant="danger" onclick={() => remove(c.id, c.name)}>Remove</Button>
+						<Cluster gap="var(--sp-2)" align="center">
+							<Button
+								size="sm"
+								disabled={syncingId === c.id}
+								onclick={() => refresh(c.id)}
+							>
+								{syncingId === c.id ? 'Refreshing…' : 'Refresh now'}
+							</Button>
+							<Button size="sm" variant="danger" onclick={() => remove(c.id, c.name)}>Remove</Button>
+						</Cluster>
 					</Cluster>
 				</Card>
 			{/each}
@@ -180,9 +212,29 @@
 				<Field label="Credential (stored encrypted; never shown again)">
 					<Input bind:value={credential} type="password" placeholder="github_pat_…" />
 				</Field>
+				{#if credentialKind === 'pat'}
+					<Text as="p" tone="muted" size="xs">
+						Create a <strong>fine-grained PAT</strong> at GitHub → Settings → Developer settings →
+						Personal access tokens → Fine-grained tokens. Grant it the repositories you list below
+						and these <strong>repository permissions (read-only)</strong>: <strong>Pull requests</strong>,
+						<strong>Contents</strong>, <strong>Commit statuses</strong>, and <strong>Checks</strong>.
+						No account/org permissions are needed. cctui polls every ~5 min for PRs you authored or
+						were asked to review; use “Refresh now” to poll on demand.
+					</Text>
+				{:else}
+					<Text as="p" tone="muted" size="xs">
+						Paste a GitHub App <strong>installation access token</strong>. The app needs read access
+						to Pull requests, Contents, Commit statuses, and Checks on the installed repositories.
+					</Text>
+				{/if}
 				<Field label="Repos (space/comma-separated owner/name, optional)">
-					<Input bind:value={reposText} placeholder="acme/api acme/web" />
+					<Input bind:value={reposText} placeholder="dorskfr/kusaritoi dorskfr/cctui" />
 				</Field>
+				<Text as="p" tone="muted" size="xs">
+					Each entry is an <strong>owner/name</strong> slug (e.g. <code>dorskfr/cctui</code>), separated
+					by spaces or commas — not a username and not a URL. A bare <code>owner</code> tracks every
+					repo that owner exposes to the token. Leave empty to track every repo the token can see.
+				</Text>
 				<Field label="Webhook secret (optional, stored encrypted)">
 					<Input bind:value={webhookSecret} type="password" />
 				</Field>

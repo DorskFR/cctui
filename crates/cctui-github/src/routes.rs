@@ -86,6 +86,8 @@ struct ConnectorRow {
     encrypted_webhook_secret: Option<String>,
     repos: Vec<String>,
     created_at: chrono::DateTime<chrono::Utc>,
+    last_polled_at: Option<chrono::DateTime<chrono::Utc>>,
+    last_error: Option<String>,
 }
 
 impl ConnectorRow {
@@ -105,6 +107,8 @@ impl ConnectorRow {
             repos: self.repos,
             user_id: self.user_id,
             created_at: self.created_at.to_rfc3339(),
+            last_polled_at: self.last_polled_at.map(|t| t.to_rfc3339()),
+            last_error: self.last_error,
         }
     }
 }
@@ -121,12 +125,15 @@ impl sqlx::FromRow<'_, sqlx::postgres::PgRow> for ConnectorRow {
             encrypted_webhook_secret: row.try_get("encrypted_webhook_secret")?,
             repos: row.try_get("repos")?,
             created_at: row.try_get("created_at")?,
+            last_polled_at: row.try_get("last_polled_at")?,
+            last_error: row.try_get("last_error")?,
         })
     }
 }
 
 const SELECT_COLS: &str = "id, user_id, name, credential_kind, encrypted_credential, \
-                           encrypted_webhook_secret, repos, created_at";
+                           encrypted_webhook_secret, repos, created_at, last_polled_at, \
+                           last_error";
 
 /// `GET /api/v1/github/connectors` — the caller's connectors (credential masked).
 /// Admin sees every connector.
@@ -228,6 +235,30 @@ pub async fn delete_connector(
         return Err(err(StatusCode::NOT_FOUND, "no such connector"));
     }
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /api/v1/github/connectors/{id}/sync` — run the reconcile poll for one
+/// connector immediately, instead of waiting for the next scheduled tick
+/// (CCT-396). Scoped to the caller (admin may sync any). Returns the updated
+/// connector view, whose `last_polled_at`/`last_error` reflect this attempt — so
+/// a bad credential surfaces right away rather than only in the server log.
+pub async fn sync_connector(
+    State(state): State<GithubState>,
+    Extension(ctx): Extension<CallerIdentity>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<ConnectorInfo>, ApiError> {
+    scope_connector(&state, &ctx, id).await?;
+    crate::reconcile::sync_now(&state, id).await;
+    let row: Option<ConnectorRow> =
+        sqlx::query_as(&format!("SELECT {SELECT_COLS} FROM github.connectors WHERE id = $1"))
+            .bind(id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(|e| {
+                tracing::error!("github connector sync reload db error: {e}");
+                err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
+            })?;
+    row.map(|r| Json(r.into_info())).ok_or_else(|| err(StatusCode::NOT_FOUND, "no such connector"))
 }
 
 /// One synced PR row plus the owning connector's cached login, scoped to the

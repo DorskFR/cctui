@@ -213,6 +213,7 @@ pub fn routes(
     Router::new()
         .route("/github/connectors", get(routes::list_connectors).post(routes::create_connector))
         .route("/github/connectors/{id}", delete(routes::delete_connector))
+        .route("/github/connectors/{id}/sync", post(routes::sync_connector))
         .route("/github/pulls", get(routes::list_pulls))
         .route(
             "/github/pulls/{connector_id}/{owner}/{name}/{number}/diff",
