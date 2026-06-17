@@ -132,6 +132,26 @@ pub async fn spawn_session(
         }
     }
 
+    // Self-hosted custom Claude models (CCT-LITELLM): when the picked `--model`
+    // is one the operator declared (endpoint + allow-list both set), route the
+    // session through the dedicated Anthropic-compatible endpoint by injecting
+    // `ANTHROPIC_BASE_URL` (+ a bearer token; a dummy when the proxy is open).
+    // The model name still rides on `--model` — the endpoint maps it to its
+    // backing model. Native families resolve to `None` here and are untouched.
+    // This overrides any base-url an account just minted: selecting a custom
+    // model is an explicit "route this session there" intent.
+    if adapter_id == "claude-code" {
+        if let Some(model) = req.model.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
+            if let Some((base, token)) = state.config.claude_litellm_route(model) {
+                env.insert("ANTHROPIC_BASE_URL".into(), base.to_owned());
+                env.insert(
+                    "ANTHROPIC_AUTH_TOKEN".into(),
+                    token.unwrap_or("sk-dummy").to_owned(),
+                );
+            }
+        }
+    }
+
     let bootstrap = if uploads.is_empty() {
         serde_json::Value::Null
     } else {

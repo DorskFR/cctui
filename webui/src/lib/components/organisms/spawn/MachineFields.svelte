@@ -5,6 +5,7 @@
 	// attachments live in the parent's shared add-ons row (both targets share it).
 	import type { MachineRow } from '@bindings/MachineRow';
 	import type { OAuthAccount } from '$lib/queries';
+	import { useCapabilities } from '$lib/queries';
 	import BrandLogo from '$lib/components/atoms/BrandLogo.svelte';
 	import { Field, Input, OptionButton, Select, Text, Textarea } from '@dorsk/tsumikit';
 	import CwdCombo from './CwdCombo.svelte';
@@ -27,6 +28,18 @@
 		// Submit the whole spawn form from the prompt textarea (Ctrl/⌘+Enter).
 		onsubmit?: () => void;
 	} = $props();
+
+	// Self-hosted Claude models declared by the server operator (CCT-LITELLM):
+	// appended to the native families so e.g. a local Qwen via LiteLLM is
+	// selectable. The list is empty unless the server has both an endpoint and a
+	// model list configured; selecting one makes the server inject
+	// ANTHROPIC_BASE_URL at spawn. Only offered for the claude-code adapter (the
+	// dispatch/k8s path has no such injection).
+	const caps = useCapabilities();
+	const claudeModelOptions = $derived([
+		...claudeModels,
+		...($caps.data?.claude_litellm_models ?? []).map((m) => ({ v: m.model, label: m.label }))
+	]);
 
 	// Per-mode accent: ask = green (safe), auto = blue (sandboxed),
 	// yolo = red (no prompts, full access).
@@ -104,7 +117,7 @@
 		</Select>
 	{:else}
 		<Select id="sp-model-m" bind:value={form.model_claude}>
-			{#each claudeModels as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
+			{#each claudeModelOptions as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
 		</Select>
 	{/if}
 </Field>
