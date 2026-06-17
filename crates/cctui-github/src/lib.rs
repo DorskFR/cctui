@@ -20,12 +20,14 @@ use sqlx::{Connection, Executor, PgPool};
 mod attention;
 mod classifier_feed;
 mod crypto;
+mod reconcile;
 mod routes;
 mod store;
 mod webhook;
 
 pub use attention::{Viewer, derive_bucket, derive_bucket_from_rows};
 pub use classifier_feed::{derive_status, pr_href, publish as publish_pr_status, refresh};
+pub use reconcile::{interval_secs as reconcile_interval_secs, spawn as spawn_reconcile};
 pub use store::{
     EventTx, upsert_check, upsert_pull, upsert_review, upsert_review_comment, upsert_review_thread,
 };

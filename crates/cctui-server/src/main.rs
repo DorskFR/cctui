@@ -267,6 +267,17 @@ async fn main() -> anyhow::Result<()> {
             .layer(Extension(auth_config.clone())),
     );
 
+    // GH-CONN-4: the reconcile poll loop. A background task (mirroring
+    // `reaper_task`) that heals missed webhooks and hydrates first install by
+    // polling GitHub for "PRs involving me" per connector. Behind the `github`
+    // feature; disabled when `CCTUI_GITHUB_RECONCILE_SECS=0`.
+    #[cfg(feature = "github")]
+    cctui_github::spawn_reconcile(
+        state.pool.clone(),
+        state.tui_tx.clone(),
+        state.pr_status_cache.clone(),
+    );
+
     tokio::spawn(reaper_task(state));
 
     let listener = tokio::net::TcpListener::bind(config.bind_addr()).await?;

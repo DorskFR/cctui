@@ -524,11 +524,13 @@ name = "cctui-github"
 version = "0.4.17"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "cctui-proto",
  "chrono",
  "hex",
  "hmac",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2",
