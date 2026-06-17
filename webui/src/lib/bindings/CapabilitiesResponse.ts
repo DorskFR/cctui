@@ -4,7 +4,8 @@ import type { LiteLlmModelInfo } from "./LiteLlmModelInfo";
 
 /**
  * The capability envelope. One field per optional integration; the webui reads
- * `github.enabled` to decide whether to mount the lazy `/github` route + nav.
+ * `github.available` to mount the lazy `/github` route + nav, and
+ * `github.enabled` to decide between the inbox and the first-run setup state.
  */
 export type CapabilitiesResponse = { github: GithubCapability, 
 /**

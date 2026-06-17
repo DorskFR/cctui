@@ -734,3 +734,96 @@ pub struct PullInboxItem {
     /// Pre-aggregated review state.
     pub reviews: ReviewSummary,
 }
+
+// ---------------------------------------------------------------------------
+// GH-VIEW-5: publish a review (batched) + pull-down of existing GitHub threads.
+//
+// Publishing resolves each draft comment's GH-VIEW-2 anchor against the *current*
+// head SHA and submits ONE `POST /repos/{o}/{r}/pulls/{n}/reviews` with the
+// batched comments + verdict — never per-comment spam. A comment whose anchor no
+// longer resolves (line gone from the diff) is skipped and reported; a draft made
+// against a stale head SHA (force-push) refuses to publish rather than mis-place.
+// No credential or token is represented here.
+// ---------------------------------------------------------------------------
+
+/// Request body for `POST .../{number}/publish-review` — publish a draft as one
+/// batched GitHub review. The draft (and its verdict) is named by `draft_id`; an
+/// optional `summary` becomes the review body.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PublishReviewRequest {
+    /// The open draft to publish.
+    pub draft_id: Uuid,
+    /// Optional review summary (the `body` of the submitted review).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    /// The head SHA the reviewer was viewing the diff against when they hit
+    /// Publish. The server compares it to the PR's *current* head SHA; a mismatch
+    /// means the PR was force-pushed/rebased since the draft was authored, so the
+    /// publish is refused (rather than mis-placing comments onto rotated lines).
+    /// `None` skips the guard (the caller accepts re-anchoring against current).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_head_sha: Option<String>,
+}
+
+/// One draft comment that could not be anchored at publish time, so it was left
+/// out of the submitted review. The webui surfaces these so the reviewer knows a
+/// comment did not post (rather than silently dropping it).
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SkippedComment {
+    /// The draft comment's id.
+    pub comment_id: Uuid,
+    /// The file path it was anchored on.
+    pub path: String,
+    /// 1-based line on its side.
+    pub line: u32,
+    /// Why it could not be anchored (the [`AnchorError`] reason).
+    pub reason: AnchorError,
+}
+
+/// Outcome of a successful publish: the GitHub review id, how many comments were
+/// submitted, and which draft comments were skipped (un-anchorable).
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PublishReviewResult {
+    /// GitHub's submitted review id.
+    pub review_id: i64,
+    /// How many comments were included in the batched submission.
+    pub submitted: u32,
+    /// Draft comments left out because their anchor no longer resolved.
+    pub skipped: Vec<SkippedComment>,
+}
+
+/// One pulled-down GitHub review comment (the posted side, CONN-3
+/// `github.review_comments`), rendered inline alongside local drafts.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ReviewThreadCommentInfo {
+    /// GitHub's review-comment id.
+    pub comment_id: i64,
+    pub author: String,
+    pub body: String,
+    pub created_at: String,
+}
+
+/// One pulled-down GitHub review thread (CONN-3 `github.review_threads`) plus its
+/// comments, anchored on a diff line. Distinct from a local draft: it is already
+/// posted on GitHub. The webui renders it inline, visually separate from drafts.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ReviewThreadInfo {
+    pub thread_node_id: String,
+    /// Head-side path the thread is anchored on, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// `LEFT` | `RIGHT` diff side, when anchored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub side: Option<String>,
+    /// 1-based line on `side`, when anchored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<i64>,
+    pub resolved: bool,
+    /// The thread's comments, oldest first.
+    pub comments: Vec<ReviewThreadCommentInfo>,
+}

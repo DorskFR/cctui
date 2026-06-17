@@ -31,6 +31,9 @@ import type { CreateReviewDraft } from "@bindings/CreateReviewDraft";
 import type { UpdateReviewDraft } from "@bindings/UpdateReviewDraft";
 import type { CreateDraftComment } from "@bindings/CreateDraftComment";
 import type { UpdateDraftComment } from "@bindings/UpdateDraftComment";
+import type { PublishReviewRequest } from "@bindings/PublishReviewRequest";
+import type { PublishReviewResult } from "@bindings/PublishReviewResult";
+import type { ReviewThreadInfo } from "@bindings/ReviewThreadInfo";
 import type { Label } from "@bindings/Label";
 import type { LabelListResponse } from "@bindings/LabelListResponse";
 
@@ -359,6 +362,30 @@ export const endpoints = {
     api.del<ReviewDraftInfo>(
       `/github/pulls/${connectorId}/${repo}/${number}/drafts/${draftId}/comments/${commentId}`,
     ),
+  /** Publish a draft as ONE batched GitHub review (GH-VIEW-5): resolves each
+   *  comment's anchor against the current head SHA, refuses on a stale head SHA,
+   *  skips un-anchorable comments, submits the batch + verdict. */
+  publishGithubReview: (
+    connectorId: string,
+    repo: string,
+    number: number,
+    body: PublishReviewRequest,
+  ) =>
+    api.post<PublishReviewResult>(
+      `/github/pulls/${connectorId}/${repo}/${number}/publish-review`,
+      body,
+    ),
+  /** Pulled-down existing OPEN GitHub review threads for a PR (GH-VIEW-5),
+   *  rendered inline alongside local drafts. `sync` first refreshes from GitHub. */
+  githubThreads: (
+    connectorId: string,
+    repo: string,
+    number: number,
+    sync = false,
+  ) =>
+    api.get<ReviewThreadInfo[]>(
+      `/github/pulls/${connectorId}/${repo}/${number}/threads${sync ? "?sync=1" : ""}`,
+    ),
   /** Every spawnable machine across all active users — for the spawn picker.
    * Excludes server-managed machines (`ephemeral` worker pods and the per-user
    * `dispatch` machine): those aren't somewhere you'd start an interactive
@@ -622,6 +649,30 @@ export const useGithubDrafts = (
       queryFn: () => endpoints.githubDrafts(connectorId(), repo(), number()),
       enabled: enabled() && !!connectorId() && !!repo(),
       staleTime: 0,
+    })),
+  );
+
+/** The query key for a PR's pulled-down GitHub review threads (GH-VIEW-5). */
+export const githubThreadsKey = (
+  connectorId: string,
+  repo: string,
+  number: number,
+) => ["github-threads", connectorId, repo, number] as const;
+
+/** A PR's existing OPEN GitHub review threads (the posted side), rendered inline
+ *  alongside local drafts. Synced lazily; the viewer can force a `sync` refresh. */
+export const useGithubThreads = (
+  connectorId: () => string,
+  repo: () => string,
+  number: () => number,
+  enabled: () => boolean = () => true,
+) =>
+  createQuery(
+    toStore(() => ({
+      queryKey: githubThreadsKey(connectorId(), repo(), number()),
+      queryFn: () => endpoints.githubThreads(connectorId(), repo(), number()),
+      enabled: enabled() && !!connectorId() && !!repo(),
+      staleTime: 30_000,
     })),
   );
 

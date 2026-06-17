@@ -23,6 +23,7 @@ mod classifier_feed;
 mod crypto;
 mod diff;
 mod drafts;
+mod publish;
 mod reconcile;
 mod routes;
 mod store;
@@ -32,12 +33,16 @@ pub use anchor::resolve as resolve_comment_anchor;
 pub use attention::{Viewer, derive_bucket, derive_bucket_from_rows};
 pub use classifier_feed::{derive_status, pr_href, publish as publish_pr_status, refresh};
 pub use drafts::{
-    DraftError, add_comment, delete_comment, delete_draft, list_drafts, open_user_draft,
-    update_comment, update_verdict,
+    DraftError, add_comment, delete_comment, delete_draft, list_drafts, mark_published,
+    open_user_draft, update_comment, update_verdict,
+};
+pub use publish::{
+    PublishError, ReviewPayload, ReviewSubmitClient, assemble_review_payload, verdict_event,
 };
 pub use reconcile::{interval_secs as reconcile_interval_secs, spawn as spawn_reconcile};
 pub use store::{
-    EventTx, upsert_check, upsert_pull, upsert_review, upsert_review_comment, upsert_review_thread,
+    EventTx, list_open_threads, upsert_check, upsert_pull, upsert_review, upsert_review_comment,
+    upsert_review_thread,
 };
 
 /// The dedicated Postgres schema that holds **all** GitHub-integration state.
@@ -221,6 +226,14 @@ pub fn routes(
         .route(
             "/github/pulls/{connector_id}/{owner}/{name}/{number}/drafts/{draft_id}/comments/{comment_id}",
             axum::routing::patch(routes::update_draft_comment).delete(routes::delete_draft_comment),
+        )
+        .route(
+            "/github/pulls/{connector_id}/{owner}/{name}/{number}/publish-review",
+            post(routes::publish_review),
+        )
+        .route(
+            "/github/pulls/{connector_id}/{owner}/{name}/{number}/threads",
+            get(routes::list_threads),
         )
         .route("/triggers/github", post(webhook::webhook))
         .with_state(state)

@@ -278,6 +278,73 @@ pub async fn upsert_review_comment(
     Ok(id)
 }
 
+/// List the PR's OPEN (unresolved) pulled-down GitHub review threads + their
+/// comments, scoped to a connector. Read side of GH-VIEW-5's pull-down: the
+/// webui renders these inline alongside local drafts (visually distinct).
+///
+/// Threads are ordered by `(path, line)` so they group by file in the viewer;
+/// comments within a thread are oldest-first.
+///
+/// # Errors
+/// Returns an error on a database error.
+pub async fn list_open_threads(
+    pool: &PgPool,
+    connector_id: Uuid,
+    repo: &str,
+    number: i64,
+) -> Result<Vec<cctui_proto::github::ReviewThreadInfo>, sqlx::Error> {
+    use sqlx::Row;
+
+    let thread_rows = sqlx::query(
+        "SELECT thread_node_id, path, side, line, resolved \
+         FROM github.review_threads \
+         WHERE connector_id = $1 AND repo = $2 AND pull_number = $3 AND resolved = FALSE \
+         ORDER BY path, line",
+    )
+    .bind(connector_id)
+    .bind(repo)
+    .bind(number)
+    .fetch_all(pool)
+    .await?;
+
+    let mut threads = Vec::with_capacity(thread_rows.len());
+    for row in &thread_rows {
+        let thread_node_id: String = row.try_get("thread_node_id")?;
+        let comments = sqlx::query(
+            "SELECT comment_id, author, body, gh_created_at \
+             FROM github.review_comments \
+             WHERE connector_id = $1 AND thread_node_id = $2 \
+             ORDER BY gh_created_at, comment_id",
+        )
+        .bind(connector_id)
+        .bind(&thread_node_id)
+        .fetch_all(pool)
+        .await?
+        .iter()
+        .map(|c| {
+            Ok::<_, sqlx::Error>(cctui_proto::github::ReviewThreadCommentInfo {
+                comment_id: c.try_get("comment_id")?,
+                author: c.try_get("author")?,
+                body: c.try_get("body")?,
+                created_at: c
+                    .try_get::<chrono::DateTime<chrono::Utc>, _>("gh_created_at")?
+                    .to_rfc3339(),
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+        threads.push(cctui_proto::github::ReviewThreadInfo {
+            thread_node_id,
+            path: row.try_get("path")?,
+            side: row.try_get("side")?,
+            line: row.try_get("line")?,
+            resolved: row.try_get("resolved")?,
+            comments,
+        });
+    }
+    Ok(threads)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -18,8 +18,9 @@ use axum::http::StatusCode;
 use axum::{Extension, Json};
 use cctui_proto::github::{
     CallerIdentity, CheckSummary, ConnectorInfo, CreateConnector, CreateDraftComment,
-    CreateReviewDraft, GithubCredentialKind, PullDiff, PullInboxItem, ReviewDraftInfo,
-    ReviewSummary, ReviewVerdict, UpdateDraftComment, UpdateReviewDraft,
+    CreateReviewDraft, GithubCredentialKind, PublishReviewRequest, PublishReviewResult, PullDiff,
+    PullInboxItem, ReviewDraftInfo, ReviewSummary, ReviewVerdict, UpdateDraftComment,
+    UpdateReviewDraft,
 };
 use std::sync::Arc;
 use uuid::Uuid;
@@ -27,7 +28,17 @@ use uuid::Uuid;
 use crate::attention::{self, Viewer};
 use crate::diff::{self, HttpDiffClient};
 use crate::drafts::{self, DraftError};
+use crate::publish::{self, ReviewSubmitClient};
+use crate::store;
 use crate::{GithubState, crypto};
+
+/// Query string for `GET .../threads`: `?sync=1` pulls fresh threads from GitHub
+/// before reading back; otherwise the synced rows are served as-is.
+#[derive(serde::Deserialize)]
+pub struct ThreadsQuery {
+    #[serde(default)]
+    sync: Option<bool>,
+}
 
 type ApiError = (StatusCode, Json<serde_json::Value>);
 
@@ -602,6 +613,221 @@ pub async fn delete_draft_comment(
         .await
         .map(Json)
         .map_err(draft_err)
+}
+
+// ---------------------------------------------------------------------------
+// GH-VIEW-5: publish a draft as one batched GitHub review + pull-down of
+// existing open GitHub review threads.
+// ---------------------------------------------------------------------------
+
+/// `POST .../{number}/publish-review` — submit the named draft as ONE batched
+/// `POST /repos/{o}/{r}/pulls/{n}/reviews` (docs §6.2). Resolves each draft
+/// comment's GH-VIEW-2 anchor against the PR's current head SHA, refuses if the
+/// reviewer's `expected_head_sha` no longer matches (force-push), skips
+/// un-anchorable comments (reporting them), submits the rest with the draft's
+/// verdict, then marks the draft published and stores the returned GitHub ids.
+pub async fn publish_review(
+    State(state): State<GithubState>,
+    Extension(ctx): Extension<CallerIdentity>,
+    Path((connector_id, owner, name, number)): Path<PullRef>,
+    Json(req): Json<PublishReviewRequest>,
+) -> Result<Json<PublishReviewResult>, ApiError> {
+    scope_connector(&state, &ctx, connector_id).await?;
+    let repo = format!("{owner}/{name}");
+
+    // Load the draft (header + comments), scoped to the caller.
+    let drafts = drafts::list_drafts(&state.pool, connector_id, &repo, number, ctx.user_id)
+        .await
+        .map_err(draft_err)?;
+    let Some(draft) = drafts.into_iter().find(|d| d.id == req.draft_id) else {
+        return Err(err(StatusCode::NOT_FOUND, "no such draft"));
+    };
+    if draft.status != cctui_proto::github::DraftStatus::Draft {
+        return Err(err(StatusCode::CONFLICT, "draft already published"));
+    }
+
+    // Resolve the pull's current head SHA + the connector credential (same query
+    // shape as the diff proxy).
+    let row: Option<(String, String)> = sqlx::query_as(
+        "SELECT p.head_sha, c.encrypted_credential \
+         FROM github.pulls p JOIN github.connectors c ON c.id = p.connector_id \
+         WHERE p.connector_id = $1 AND p.repo = $2 AND p.number = $3 \
+           AND ($4::uuid IS NULL OR c.user_id = $4)",
+    )
+    .bind(connector_id)
+    .bind(&repo)
+    .bind(number)
+    .bind(ctx.user_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("github publish-review db error: {e}");
+        err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
+    })?;
+    let Some((head_sha, enc_credential)) = row else {
+        return Err(err(StatusCode::NOT_FOUND, "no such pull"));
+    };
+
+    let key = crypto::vault_key();
+    let Some(credential) = crypto::deobfuscate(&enc_credential, &key) else {
+        return Err(err(StatusCode::INTERNAL_SERVER_ERROR, "connector credential unavailable"));
+    };
+
+    // Fetch the current diff (cache-warm or from GitHub) to anchor comments.
+    let diff = if let Some(cached) = state.diff_cache.get(&head_sha) {
+        cached
+    } else {
+        let client = HttpDiffClient::new();
+        let built = diff::build_pull_diff(&client, &credential, &repo, number, &head_sha)
+            .await
+            .map_err(|e| {
+                tracing::warn!(%connector_id, repo, number, "github diff fetch failed: {e}");
+                err(StatusCode::BAD_GATEWAY, "failed to fetch diff from github")
+            })?;
+        let arc = std::sync::Arc::new(built);
+        state.diff_cache.put(arc.clone());
+        arc
+    };
+
+    // Assemble the single batched payload, refusing on a stale head SHA.
+    let payload = publish::assemble_review_payload(
+        &draft,
+        &diff,
+        req.summary.clone(),
+        req.expected_head_sha.as_deref(),
+    )
+    .map_err(|e| match e {
+        publish::PublishError::StaleHeadSha { selection_sha, diff_sha } => err(
+            StatusCode::CONFLICT,
+            &format!(
+                "pull was updated since this draft (drafted against {selection_sha}, now {diff_sha}); \
+                 re-review against the current head"
+            ),
+        ),
+        publish::PublishError::EmptyReview => {
+            err(StatusCode::BAD_REQUEST, "nothing to publish: add a comment or a summary")
+        }
+    })?;
+
+    // Submit ONE batched review.
+    let client = publish::HttpReviewClient::new();
+    let body = publish::review_request_json(&payload, &head_sha);
+    let submitted =
+        client.submit_review(&credential, &repo, number, &body).await.map_err(|e| {
+            tracing::warn!(%connector_id, repo, number, "github submit review failed: {e}");
+            err(StatusCode::BAD_GATEWAY, "failed to submit review to github")
+        })?;
+
+    // Pair returned GitHub comment ids with the source draft comments (same order
+    // as the submitted comments array). A short/empty id list just leaves those
+    // comments without a backfilled github_comment_id — non-fatal.
+    let backfill: Vec<(Uuid, i64)> = payload
+        .comments
+        .iter()
+        .zip(submitted.comment_ids.iter())
+        .map(|(c, gid)| (c.draft_comment_id, *gid))
+        .collect();
+
+    drafts::mark_published(&state.pool, connector_id, &repo, number, draft.id, &backfill)
+        .await
+        .map_err(draft_err)?;
+
+    #[allow(clippy::cast_possible_truncation)]
+    let submitted_count = payload.comments.len() as u32;
+    Ok(Json(PublishReviewResult {
+        review_id: submitted.review_id,
+        submitted: submitted_count,
+        skipped: payload.skipped,
+    }))
+}
+
+/// `GET .../{number}/threads` — the PR's pulled-down OPEN GitHub review threads
+/// (CONN-3 rows), so the viewer renders them inline alongside local drafts. If
+/// `?sync=1`, first pull the latest threads from GitHub and upsert them, then
+/// read back; otherwise serve the synced rows directly.
+pub async fn list_threads(
+    State(state): State<GithubState>,
+    Extension(ctx): Extension<CallerIdentity>,
+    Path((connector_id, owner, name, number)): Path<PullRef>,
+    axum::extract::Query(q): axum::extract::Query<ThreadsQuery>,
+) -> Result<Json<Vec<cctui_proto::github::ReviewThreadInfo>>, ApiError> {
+    scope_connector(&state, &ctx, connector_id).await?;
+    let repo = format!("{owner}/{name}");
+
+    if q.sync.unwrap_or(false) {
+        if let Err(e) = sync_threads(&state, &ctx, connector_id, &repo, number).await {
+            // A sync failure (network, rate limit) is non-fatal: fall through and
+            // serve whatever is already synced rather than failing the read.
+            tracing::warn!(%connector_id, repo, number, "github thread pull-down failed: {e}");
+        }
+    }
+
+    store::list_open_threads(&state.pool, connector_id, &repo, number).await.map(Json).map_err(
+        |e| {
+            tracing::error!("github list threads db error: {e}");
+            err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
+        },
+    )
+}
+
+/// Pull the PR's open GitHub review threads/comments and upsert them into
+/// `github.review_threads` / `review_comments` (CONN-3 fns).
+async fn sync_threads(
+    state: &GithubState,
+    ctx: &CallerIdentity,
+    connector_id: Uuid,
+    repo: &str,
+    number: i64,
+) -> anyhow::Result<()> {
+    let row: Option<(String,)> = sqlx::query_as(
+        "SELECT c.encrypted_credential FROM github.connectors c \
+         WHERE c.id = $1 AND ($2::uuid IS NULL OR c.user_id = $2)",
+    )
+    .bind(connector_id)
+    .bind(ctx.user_id)
+    .fetch_optional(&state.pool)
+    .await?;
+    let Some((enc_credential,)) = row else {
+        anyhow::bail!("connector not found");
+    };
+    let key = crypto::vault_key();
+    let Some(credential) = crypto::deobfuscate(&enc_credential, &key) else {
+        anyhow::bail!("connector credential unavailable");
+    };
+
+    let client = publish::HttpReviewClient::new();
+    let threads = client.fetch_review_threads(&credential, repo, number).await?;
+    for t in threads {
+        let thread = cctui_proto::github::ReviewThreadUpsert {
+            repo: repo.to_string(),
+            pull_number: number,
+            thread_node_id: t.thread_node_id.clone(),
+            // The threads table stores `path` NOT NULL; an unanchored thread
+            // (rare for inline review comments) stores an empty path.
+            path: t.path.clone().unwrap_or_default(),
+            side: t.side.clone(),
+            line: t.line,
+            resolved: t.resolved,
+        };
+        store::upsert_review_thread(&state.pool, &state.events, connector_id, &thread).await?;
+        for c in &t.comments {
+            let comment = cctui_proto::github::ReviewCommentUpsert {
+                repo: repo.to_string(),
+                pull_number: number,
+                comment_id: c.comment_id,
+                thread_node_id: Some(t.thread_node_id.clone()),
+                author: c.author.clone(),
+                body: c.body.clone(),
+                path: t.path.clone(),
+                side: t.side.clone(),
+                line: t.line,
+                gh_created_at: c.created_at.clone(),
+                gh_updated_at: c.created_at.clone(),
+            };
+            store::upsert_review_comment(&state.pool, &state.events, connector_id, &comment).await?;
+        }
+    }
+    Ok(())
 }
 
 /// Aggregate review rows into the inbox's [`ReviewSummary`].

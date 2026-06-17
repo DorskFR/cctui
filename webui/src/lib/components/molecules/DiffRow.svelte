@@ -127,6 +127,20 @@
 	/>
 {:else if row.kind === 'compose'}
 	<DraftCommentRow composing {busy} onsave={onsaveComment} oncancel={oncancelComment} />
+{:else if row.kind === 'thread'}
+	<!-- GH-VIEW-5: an existing GitHub review thread (posted), distinct from drafts. -->
+	<div class="thread">
+		<Cluster gap="var(--sp-2)" align="center">
+			<Badge tone="neutral">GitHub</Badge>
+			{#if row.thread.resolved}<Text tone="muted" size="xs">resolved</Text>{/if}
+		</Cluster>
+		{#each row.thread.comments as c (c.comment_id)}
+			<div class="tc">
+				<Text size="xs" weight="semibold">{c.author}</Text>
+				<Text size="sm">{c.body}</Text>
+			</div>
+		{/each}
+	</div>
 {:else if row.kind === 'binary'}
 	<div class="note"><Badge tone="neutral">binary</Badge> Binary file not shown</div>
 {:else if row.kind === 'truncated'}
@@ -245,5 +259,18 @@
 		display: flex;
 		gap: var(--sp-2);
 		align-items: center;
+	}
+	.thread {
+		padding: var(--sp-2) var(--sp-3);
+		display: flex;
+		flex-direction: column;
+		gap: var(--sp-1);
+		background: var(--surface-1, rgba(127, 127, 127, 0.04));
+		border-left: 3px solid var(--syn-meta, #8b949e);
+	}
+	.tc {
+		display: flex;
+		flex-direction: column;
+		gap: 1px;
 	}
 </style>

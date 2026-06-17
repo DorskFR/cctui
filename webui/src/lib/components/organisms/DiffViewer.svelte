@@ -25,15 +25,24 @@
 		navIndex,
 		weaveComments,
 		indexComments,
+		indexThreads,
 		lineAnchor,
 		type DiffRow,
 		type CommentAnchorKey
 	} from '$lib/diff/rows';
 	import { langForPath } from '$lib/diff/highlight';
 	import DiffRowView from '../molecules/DiffRow.svelte';
-	import { Badge, Cluster, Stack, Text } from '@dorsk/tsumikit';
-	import { endpoints, useGithubDrafts, githubDraftsKey } from '$lib/queries';
+	import { Badge, Button, Cluster, Select, Stack, Text, Textarea } from '@dorsk/tsumikit';
+	import {
+		endpoints,
+		useGithubDrafts,
+		githubDraftsKey,
+		useGithubThreads,
+		githubThreadsKey
+	} from '$lib/queries';
 	import { useQueryClient } from '@tanstack/svelte-query';
+	import type { ReviewVerdict } from '@bindings/ReviewVerdict';
+	import type { PublishReviewResult } from '@bindings/PublishReviewResult';
 
 	interface Props {
 		diff: PullDiff;
@@ -71,10 +80,67 @@
 		new Map(drafts.flatMap((d) => d.comments.map((c) => [c.id, d.id] as const)))
 	);
 
+	// Pulled-down existing GitHub review threads (GH-VIEW-5), rendered inline and
+	// visually distinct from local drafts.
+	const threadsQuery = useGithubThreads(
+		() => connectorId ?? '',
+		() => diff.repo,
+		() => number ?? 0,
+		() => commentable
+	);
+	const threads = $derived($threadsQuery.data ?? []);
+	const threadIndex = $derived(indexThreads(threads));
+
 	const qc = useQueryClient();
 	function refreshDrafts() {
 		if (connectorId && number != null)
 			qc.invalidateQueries({ queryKey: githubDraftsKey(connectorId, diff.repo, number) });
+	}
+	function refreshThreads() {
+		if (connectorId && number != null)
+			qc.invalidateQueries({ queryKey: githubThreadsKey(connectorId, diff.repo, number) });
+	}
+
+	// ---- GH-VIEW-5: publish the open draft as one batched GitHub review --------
+	let verdict = $state<ReviewVerdict>('comment');
+	let summary = $state('');
+	let publishing = $state(false);
+	let publishResult = $state<PublishReviewResult | null>(null);
+	let publishError = $state<string | null>(null);
+	// Keep the picker in sync with the open draft's stored verdict.
+	$effect(() => {
+		if (openDraft) verdict = openDraft.verdict;
+	});
+	const canPublish = $derived(
+		commentable && !!openDraft && (openDraft.comments.length > 0 || summary.trim().length > 0)
+	);
+
+	async function publishReview() {
+		if (!connectorId || number == null || !openDraft) return;
+		publishing = true;
+		publishError = null;
+		publishResult = null;
+		try {
+			// Sync the verdict first if the reviewer changed it in the picker.
+			if (verdict !== openDraft.verdict)
+				await endpoints.updateGithubDraft(connectorId, diff.repo, number, openDraft.id, { verdict });
+			publishResult = await endpoints.publishGithubReview(connectorId, diff.repo, number, {
+				draft_id: openDraft.id,
+				summary: summary.trim() ? summary.trim() : null,
+				// The head SHA the reviewer was viewing — the server refuses if the PR
+				// has rotated past it (force-push) rather than mis-placing comments.
+				expected_head_sha: diff.head_sha
+			});
+			summary = '';
+			refreshDrafts();
+			refreshThreads();
+		} catch (e) {
+			// The server returns a clear message for stale-SHA / empty-review / anchor
+			// failures; surface it verbatim (it carries no secrets).
+			publishError = e instanceof Error ? e.message : 'Failed to publish review';
+		} finally {
+			publishing = false;
+		}
 	}
 
 	// Which line the reviewer is currently composing a comment on (GH-VIEW-4).
@@ -147,7 +213,9 @@
 	let collapsedFiles = $state(new Set<string>());
 
 	const baseRows = $derived<DiffRow[]>(flattenDiff(diff, expanded, collapsedFiles));
-	const rows = $derived<DiffRow[]>(weaveComments(baseRows, commentIndex, composeAt));
+	const rows = $derived<DiffRow[]>(
+		weaveComments(baseRows, commentIndex, composeAt, threadIndex)
+	);
 	const nav = $derived(navIndex(rows));
 
 	// Cache the resolved language per file path so each row doesn't re-resolve.
@@ -291,6 +359,58 @@
 		</Text>
 	{/if}
 
+	{#if commentable}
+		<!-- GH-VIEW-5: publish the open draft as ONE batched GitHub review. -->
+		<div class="publish">
+			<Cluster gap="var(--sp-2)" align="center" justify="space-between">
+				<Cluster gap="var(--sp-2)" align="center">
+					<Text size="sm" tone="muted">
+						{openDraft ? `${openDraft.comments.length} draft comment(s)` : 'No open draft'}
+					</Text>
+					<Select bind:value={verdict} disabled={!openDraft || publishing}>
+						<option value="comment">Comment</option>
+						<option value="approve">Approve</option>
+						<option value="request_changes">Request changes</option>
+					</Select>
+				</Cluster>
+				<Button
+					size="sm"
+					variant="primary"
+					onclick={publishReview}
+					disabled={!canPublish || publishing}
+				>
+					{publishing ? 'Publishing…' : 'Publish review'}
+				</Button>
+			</Cluster>
+			<Textarea
+				bind:value={summary}
+				rows={2}
+				placeholder="Optional review summary…"
+				disabled={!openDraft || publishing}
+			/>
+			{#if publishError}
+				<Text tone="danger" size="sm">{publishError}</Text>
+			{:else if publishResult}
+				<Text tone="success" size="sm">
+					Published {publishResult.submitted} comment(s){publishResult.skipped.length
+						? `, skipped ${publishResult.skipped.length} un-anchorable`
+						: ''}.
+				</Text>
+				{#each publishResult.skipped as s (s.comment_id)}
+					<Text tone="warn" size="xs">
+						skipped {s.path}:{s.line} — {s.reason.kind === 'stale_head_sha'
+							? 'PR moved (force-push)'
+							: s.reason.kind === 'file_not_found'
+								? 'file no longer in diff'
+								: s.reason.kind === 'line_not_in_diff'
+									? 'line no longer in diff'
+									: 'invalid range'}
+					</Text>
+				{/each}
+			{/if}
+		</div>
+	{/if}
+
 	<!-- svelte-ignore a11y_no_noninteractive_tabindex a11y_no_noninteractive_element_interactions -->
 	<div
 		class="scroll"
@@ -352,6 +472,15 @@
 		top: 0;
 		left: 0;
 		width: 100%;
+	}
+	.publish {
+		display: flex;
+		flex-direction: column;
+		gap: var(--sp-2);
+		padding: var(--sp-2);
+		border: 1px solid var(--border, rgba(127, 127, 127, 0.25));
+		border-radius: var(--radius, 6px);
+		background: var(--surface-1, rgba(127, 127, 127, 0.04));
 	}
 	.lens {
 		border: 1px solid var(--border, rgba(127, 127, 127, 0.25));

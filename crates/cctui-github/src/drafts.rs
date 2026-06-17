@@ -383,6 +383,60 @@ mod db {
             .ok_or(DraftError::NotFound)
     }
 
+    /// Mark a draft `published` and write each posted comment's GitHub id back.
+    ///
+    /// Used by GH-VIEW-5 after a successful batched submission. `comment_ids`
+    /// pairs a `review_draft_comments.id` with the GitHub review-comment id it
+    /// posted as. The status flip + id backfill happen in one transaction so a
+    /// half-applied publish never leaves a `draft` row with GitHub ids (or vice
+    /// versa). Returns the refreshed (now published) draft.
+    pub async fn mark_published(
+        pool: &PgPool,
+        connector_id: Uuid,
+        repo: &str,
+        number: i64,
+        draft_id: Uuid,
+        comment_ids: &[(Uuid, i64)],
+    ) -> Result<ReviewDraftInfo, DraftError> {
+        let mut tx = pool.begin().await.map_err(|_| DraftError::Db)?;
+
+        let res = sqlx::query(
+            "UPDATE github.review_drafts SET status = 'published', updated_at = now() \
+             WHERE id = $1 AND connector_id = $2 AND repo = $3 AND pull_number = $4 \
+               AND status = 'draft'",
+        )
+        .bind(draft_id)
+        .bind(connector_id)
+        .bind(repo)
+        .bind(number)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| DraftError::Db)?;
+        if res.rows_affected() == 0 {
+            return Err(DraftError::NotFound);
+        }
+
+        for (comment_id, github_comment_id) in comment_ids {
+            sqlx::query(
+                "UPDATE github.review_draft_comments SET github_comment_id = $1, updated_at = now() \
+                 WHERE id = $2 AND draft_id = $3",
+            )
+            .bind(github_comment_id)
+            .bind(comment_id)
+            .bind(draft_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| DraftError::Db)?;
+        }
+
+        tx.commit().await.map_err(|_| DraftError::Db)?;
+
+        load_draft(pool, connector_id, repo, number, draft_id)
+            .await
+            .map_err(|_| DraftError::Db)?
+            .ok_or(DraftError::NotFound)
+    }
+
     /// Delete one draft comment. Returns the refreshed draft.
     pub async fn delete_comment(
         pool: &PgPool,
@@ -417,8 +471,8 @@ mod db {
 }
 
 pub use db::{
-    DraftError, add_comment, delete_comment, delete_draft, list_drafts, open_user_draft,
-    update_comment, update_verdict,
+    DraftError, add_comment, delete_comment, delete_draft, list_drafts, mark_published,
+    open_user_draft, update_comment, update_verdict,
 };
 
 #[cfg(test)]

@@ -20,6 +20,7 @@ import type { DiffFile } from "@bindings/DiffFile";
 import type { DiffLine } from "@bindings/DiffLine";
 import type { DiffSide } from "@bindings/DiffSide";
 import type { DraftCommentInfo } from "@bindings/DraftCommentInfo";
+import type { ReviewThreadInfo } from "@bindings/ReviewThreadInfo";
 
 /** A unique key for a file within the diff (its head-side path is unique). */
 export type FileKey = string;
@@ -71,6 +72,13 @@ export type DiffRow =
       fileKey: FileKey;
       side: DiffSide;
       line: number;
+    }
+  | {
+      // GH-VIEW-5: an EXISTING GitHub review thread (already posted), woven in
+      // under the diff line it anchors to — visually distinct from local drafts.
+      kind: "thread";
+      fileKey: FileKey;
+      thread: ReviewThreadInfo;
     };
 
 /** The (path, side, line) anchor a comment/compose row targets — the GH-VIEW-2
@@ -242,21 +250,44 @@ export function indexComments(
   return m;
 }
 
+/** Build a lookup of pulled-down GitHub review threads keyed by `path|side|line`
+ *  (GH-VIEW-5). GitHub anchors use `LEFT`/`RIGHT` + the head-side path; we map
+ *  those to the viewer's `old`/`new` side so threads weave next to drafts. A
+ *  thread missing a path/line (rare) is dropped — it has nowhere to anchor. */
+export function indexThreads(
+  threads: ReviewThreadInfo[],
+): Map<string, ReviewThreadInfo[]> {
+  const m = new Map<string, ReviewThreadInfo[]>();
+  for (const t of threads) {
+    if (t.path == null || t.line == null) continue;
+    const side: DiffSide = t.side === "LEFT" ? "old" : "new";
+    const k = `${t.path}|${side}|${t.line}`;
+    const arr = m.get(k);
+    if (arr) arr.push(t);
+    else m.set(k, [t]);
+  }
+  return m;
+}
+
 /**
- * Weave inline comment + composer rows into the flattened diff (GH-VIEW-4).
+ * Weave inline comment + composer + GitHub-thread rows into the flattened diff
+ * (GH-VIEW-4 / GH-VIEW-5).
  *
  * After each `line` row that has an anchor, append any existing draft comments
- * for that `(path, side, line)`, then — if it's the line the reviewer clicked
- * to comment on (`composeAt`) — the composer row. Pure: the diff structure and
- * the draft set fully determine the output, so a re-weave is a cheap recompute
+ * for that `(path, side, line)`, then any pulled-down GitHub threads on that
+ * line (distinct from drafts), then — if it's the line the reviewer clicked to
+ * comment on (`composeAt`) — the composer row. Pure: the diff structure and the
+ * draft/thread set fully determine the output, so a re-weave is a cheap recompute
  * the virtualizer re-renders.
  */
 export function weaveComments(
   base: DiffRow[],
   commentIndex: Map<string, DraftCommentInfo[]>,
   composeAt: CommentAnchorKey | null,
+  threadIndex?: Map<string, ReviewThreadInfo[]>,
 ): DiffRow[] {
-  if (commentIndex.size === 0 && !composeAt) return base;
+  const hasThreads = !!threadIndex && threadIndex.size > 0;
+  if (commentIndex.size === 0 && !composeAt && !hasThreads) return base;
   const out: DiffRow[] = [];
   for (const row of base) {
     out.push(row);
@@ -268,6 +299,11 @@ export function weaveComments(
     if (existing) {
       for (const c of existing)
         out.push({ kind: "comment", fileKey: row.fileKey, comment: c });
+    }
+    const threads = threadIndex?.get(key);
+    if (threads) {
+      for (const t of threads)
+        out.push({ kind: "thread", fileKey: row.fileKey, thread: t });
     }
     if (
       composeAt &&
