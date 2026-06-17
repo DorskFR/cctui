@@ -11,7 +11,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 COPY migrations/ migrations/
 
-RUN cargo build --release -p cctui-server
+RUN cargo build --release -p cctui-server --features github
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y ca-certificates libssl3 && rm -rf /var/lib/apt/lists/*
