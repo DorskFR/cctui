@@ -84,6 +84,39 @@ pub async fn uninstall(pool: &PgPool) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Whether the GitHub integration is operational, plus the repos it tracks.
+///
+/// Returned to core's `GET /api/v1/capabilities` handler (which builds the
+/// outer `{ github: … }` envelope) so the webui can capability-gate the nav
+/// item, the lazy `/github` route, and the contextual actions
+/// (docs/github-integration.md §7.4). The crate owns this query because it is
+/// the only code that knows the `github` schema's shape; core merely forwards
+/// the result when the `github` feature is compiled in.
+pub struct GithubCapability {
+    /// `true` when the `github` schema exists **and** at least one connector is
+    /// configured. Compiling the crate in is necessary but not sufficient — a
+    /// feature-on build with no connector still reports `false`.
+    pub enabled: bool,
+    /// `owner/name` slugs of the repos the integration tracks. Empty until a
+    /// later GH-* story populates connector repos; the field exists now so the
+    /// capability shape is stable across stories.
+    pub repos: Vec<String>,
+}
+
+/// Compute the live GitHub [`GithubCapability`] from the database.
+///
+/// `enabled` requires both that the `github` schema exists (the crate's
+/// migrations ran) and that at least one connector row is present. A schema
+/// that is absent — or a query error — degrades gracefully to "disabled"
+/// rather than failing the whole `/capabilities` response.
+pub async fn capability(pool: &PgPool) -> GithubCapability {
+    let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {SCHEMA}.connectors"))
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+    GithubCapability { enabled: count > 0, repos: Vec::new() }
+}
+
 /// The GitHub route surface, mounted by `cctui-server` under `/api/v1`.
 ///
 /// Returns a self-contained [`Router`] with its own [`GithubState`] already

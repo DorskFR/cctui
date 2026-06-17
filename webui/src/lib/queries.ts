@@ -21,6 +21,7 @@ import type { RotateResponse } from "@bindings/RotateResponse";
 import type { MintTokenResponse } from "@bindings/MintTokenResponse";
 import type { VersionInfo } from "@bindings/VersionInfo";
 import type { MeResponse } from "@bindings/MeResponse";
+import type { CapabilitiesResponse } from "@bindings/CapabilitiesResponse";
 import type { Label } from "@bindings/Label";
 import type { LabelListResponse } from "@bindings/LabelListResponse";
 
@@ -138,6 +139,7 @@ export interface OAuthFinish {
 /** Centralised query keys so invalidation stays consistent. */
 export const qk = {
   version: ["version"] as const,
+  capabilities: ["capabilities"] as const,
   sessions: (archived: boolean) => ["sessions", { archived }] as const,
   sessionStats: ["session-stats"] as const,
   tokenStats: ["token-stats"] as const,
@@ -155,6 +157,9 @@ export const qk = {
 /** Raw typed fetchers — also usable outside of components. */
 export const endpoints = {
   version: () => api.get<VersionInfo>("/version"),
+  /** Which optional integrations this server has, and whether each is live
+   * (CCT-375). Drives capability-gated UI: the lazy `/github` route + nav. */
+  capabilities: () => api.get<CapabilitiesResponse>("/capabilities"),
   /** Who the stored bearer token resolves to (CCT-251). */
   me: () => api.get<MeResponse>("/me"),
   sessions: (archived: boolean) =>
@@ -284,6 +289,15 @@ export const useMe = () =>
   createQuery({
     queryKey: ["me"],
     queryFn: endpoints.me,
+    staleTime: 5 * 60_000,
+  });
+
+/** Server capability flags (CCT-375). Long stale time — capabilities only
+ * change on install/uninstall, which is rare and owner-driven. */
+export const useCapabilities = () =>
+  createQuery({
+    queryKey: qk.capabilities,
+    queryFn: endpoints.capabilities,
     staleTime: 5 * 60_000,
   });
 

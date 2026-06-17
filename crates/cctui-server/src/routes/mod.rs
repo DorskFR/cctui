@@ -2,6 +2,7 @@ pub mod accounts;
 pub mod admin;
 pub mod admin_auth;
 pub mod archive;
+pub mod capabilities;
 pub mod credentials;
 pub mod daemon;
 pub mod dispatch;

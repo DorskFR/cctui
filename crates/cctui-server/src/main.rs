@@ -158,6 +158,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/machines/{machine_id}/commands/pending", get(routes::spawn::get_machine_commands))
         .route("/machines/{machine_id}/fs/dirs", get(routes::fs::list_dirs))
         .route("/me", get(routes::me::me))
+        .route("/capabilities", get(routes::capabilities::capabilities))
         .route("/enroll", post(routes::enroll::enroll))
         .route("/deenroll", post(routes::enroll::deenroll))
         .route(

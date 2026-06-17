@@ -1,14 +1,21 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import NavLink from '$lib/components/atoms/NavLink.svelte';
+	import { useCapabilities } from '$lib/queries';
 
-	const items = [
+	const caps = useCapabilities();
+
+	// The `/github` item is mounted only when the server reports the GitHub
+	// capability enabled (CCT-375). Hidden → the lazy route chunk is never even
+	// reachable for non-GitHub users.
+	const items = $derived([
 		{ href: '/', label: 'Overview', icon: '◧' },
 		{ href: '/sessions', label: 'Sessions', icon: '◰' },
 		{ href: '/users', label: 'Users', icon: '◍' },
 		{ href: '/dispatchers', label: 'Dispatchers', icon: '◈' },
-		{ href: '/accounts', label: 'Accounts', icon: '◉' }
-	];
+		{ href: '/accounts', label: 'Accounts', icon: '◉' },
+		...($caps.data?.github.enabled ? [{ href: '/github', label: 'GitHub', icon: '◐' }] : [])
+	]);
 	const active = (href: string) =>
 		href === '/' ? page.url.pathname === '/' : page.url.pathname.startsWith(href);
 </script>
