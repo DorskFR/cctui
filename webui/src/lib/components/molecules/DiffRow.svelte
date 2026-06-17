@@ -8,8 +8,11 @@
 -->
 <script lang="ts">
 	import type { DiffRow } from '$lib/diff/rows';
+	import { lineAnchor } from '$lib/diff/rows';
 	import { highlightLine } from '$lib/diff/highlight';
 	import { Badge, Cluster, Text } from '@dorsk/tsumikit';
+	import DraftCommentRow from './DraftCommentRow.svelte';
+	import type { DiffSide } from '@bindings/DiffSide';
 
 	interface Props {
 		row: DiffRow;
@@ -21,9 +24,38 @@
 		ontoggleFile?: (fileKey: string) => void;
 		/** A file is folded (only its header shows). */
 		fileCollapsed?: boolean;
+		/** Whether inline draft commenting is available (GH-VIEW-4). */
+		commentable?: boolean;
+		/** A mutation is in flight (disables comment actions). */
+		busy?: boolean;
+		/** The reviewer clicked the gutter to comment on this line. */
+		oncommentLine?: (fileKey: string, side: DiffSide, line: number) => void;
+		/** Save the composed/edited comment body. */
+		onsaveComment?: (body: string) => void;
+		/** Delete an existing draft comment. */
+		ondeleteComment?: (commentId: string) => void;
+		/** Edit an existing draft comment's body. */
+		oneditComment?: (commentId: string, body: string) => void;
+		/** Dismiss the open composer. */
+		oncancelComment?: () => void;
 	}
-	const { row, lang, active = false, onexpand, ontoggleFile, fileCollapsed = false }: Props =
-		$props();
+	const {
+		row,
+		lang,
+		active = false,
+		onexpand,
+		ontoggleFile,
+		fileCollapsed = false,
+		commentable = false,
+		busy = false,
+		oncommentLine,
+		onsaveComment,
+		ondeleteComment,
+		oneditComment,
+		oncancelComment
+	}: Props = $props();
+
+	const anchor = $derived(row.kind === 'line' ? lineAnchor(row.line) : null);
 
 	const statusTone: Record<string, 'ok' | 'danger' | 'warn' | 'neutral'> = {
 		added: 'ok',
@@ -67,15 +99,34 @@
 		⋯ {row.count} unchanged {row.count === 1 ? 'line' : 'lines'} — click to expand
 	</button>
 {:else if row.kind === 'line'}
-	<div class="line k-{row.line.kind}" class:active>
+	<div class="line k-{row.line.kind}" class:active class:commentable>
 		<span class="num old">{row.line.old_line ?? ''}</span>
 		<span class="num new">{row.line.new_line ?? ''}</span>
-		<span class="marker"
-			>{row.line.kind === 'add' ? '+' : row.line.kind === 'del' ? '−' : ' '}</span
-		>
+		{#if commentable && anchor}
+			<button
+				type="button"
+				class="add-comment"
+				title="Add a draft comment on this line"
+				disabled={busy}
+				onclick={() => oncommentLine?.(row.fileKey, anchor.side, anchor.line)}>+</button
+			>
+		{:else}
+			<span class="marker"
+				>{row.line.kind === 'add' ? '+' : row.line.kind === 'del' ? '−' : ' '}</span
+			>
+		{/if}
 		<!-- eslint-disable-next-line svelte/no-at-html-tags -->
 		<code class="content">{@html highlightLine(row.line.content, lang)}</code>
 	</div>
+{:else if row.kind === 'comment'}
+	<DraftCommentRow
+		comment={row.comment}
+		{busy}
+		onsave={(body) => oneditComment?.(row.comment.id, body)}
+		ondelete={ondeleteComment}
+	/>
+{:else if row.kind === 'compose'}
+	<DraftCommentRow composing {busy} onsave={onsaveComment} oncancel={oncancelComment} />
 {:else if row.kind === 'binary'}
 	<div class="note"><Badge tone="neutral">binary</Badge> Binary file not shown</div>
 {:else if row.kind === 'truncated'}
@@ -165,6 +216,25 @@
 	.marker {
 		text-align: center;
 		user-select: none;
+	}
+	.add-comment {
+		border: 0;
+		background: transparent;
+		color: var(--syn-meta, #8b949e);
+		cursor: pointer;
+		font: inherit;
+		padding: 0;
+		text-align: center;
+		opacity: 0;
+		transition: opacity 0.1s;
+	}
+	.line.commentable:hover .add-comment {
+		opacity: 1;
+		color: var(--accent, #4c8bf5);
+		font-weight: bold;
+	}
+	.add-comment:disabled {
+		cursor: default;
 	}
 	.content {
 		overflow: hidden;

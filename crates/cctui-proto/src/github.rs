@@ -564,6 +564,146 @@ pub enum AnchorError {
     InvalidRange,
 }
 
+// ---------------------------------------------------------------------------
+// GH-VIEW-4: the native review-draft store (docs/github-integration.md §6.2).
+//
+// A reviewer adds inline comments **instantly** — no GitHub round-trip — into a
+// local draft, anchored on the GH-VIEW-2 (path, side, line[, start_line])
+// coordinates, then refines them before GH-VIEW-5 publishes the open draft as
+// one batched `POST .../reviews`. These types are the wire shape of the draft
+// CRUD routes under `/api/v1/github`. No credential or token is represented.
+// ---------------------------------------------------------------------------
+
+/// Who authored a review draft: a human reviewer or a review agent session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum DraftAuthorKind {
+    /// A human reviewer (the owning user). One open draft per user+pull.
+    User,
+    /// A review agent — `session_id` names the cctui session that wrote it
+    /// (GH-AGENT-2's MCP review tool stages drafts this way).
+    Agent,
+}
+
+/// The pending review verdict a draft will submit when published (GH-VIEW-5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewVerdict {
+    /// Plain comments, no approval state change (GitHub `COMMENT`).
+    Comment,
+    /// Approve the PR (GitHub `APPROVE`).
+    Approve,
+    /// Request changes (GitHub `REQUEST_CHANGES`).
+    RequestChanges,
+}
+
+/// Whether a draft is still local/editable or has been published to GitHub.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum DraftStatus {
+    /// Local-only, still editable (the inline-commenting state GH-VIEW-4 owns).
+    Draft,
+    /// Submitted to GitHub as one batched review (GH-VIEW-5).
+    Published,
+}
+
+/// Request body for `POST /api/v1/github/pulls/{connector_id}/{owner}/{name}/{number}/drafts`
+/// — open (or reuse) the caller's draft for a PR.
+///
+/// The verdict defaults to `comment`; a user reusing their open draft keeps the
+/// existing row (one open draft per user+pull). The PR ref is taken from the path.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CreateReviewDraft {
+    /// The pending verdict; defaults to `comment` when omitted.
+    #[serde(default)]
+    pub verdict: Option<ReviewVerdict>,
+}
+
+/// Patch body for `PATCH .../drafts/{draft_id}` — change the verdict.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct UpdateReviewDraft {
+    pub verdict: ReviewVerdict,
+}
+
+/// Request body for `POST .../drafts/{draft_id}/comments` — add one inline draft
+/// comment anchored on the reviewer's diff selection (GH-VIEW-2 coordinates).
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CreateDraftComment {
+    /// Head-side file path the comment anchors on.
+    pub path: String,
+    /// Which side the selected line lives on.
+    pub side: DiffSide,
+    /// 1-based line on `side` (the END line for a multi-line range).
+    pub line: u32,
+    /// Inclusive start line for a multi-line range; `None` for a single line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_line: Option<u32>,
+    /// The comment text.
+    pub body: String,
+    /// When replying to an existing GitHub thread, the parent comment id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_reply_to: Option<i64>,
+}
+
+/// Patch body for `PATCH .../drafts/{draft_id}/comments/{comment_id}` — edit the
+/// body of an existing draft comment in place (the anchor is immutable).
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct UpdateDraftComment {
+    pub body: String,
+}
+
+/// One inline draft comment, anchored to a diff line.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct DraftCommentInfo {
+    pub id: Uuid,
+    pub draft_id: Uuid,
+    pub path: String,
+    pub side: DiffSide,
+    pub line: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_line: Option<u32>,
+    pub body: String,
+    /// GitHub's comment id once published; `None` while still a draft.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github_comment_id: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_reply_to: Option<i64>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// API view of a review draft plus its inline comments, returned by the draft
+/// CRUD routes. The webui renders the comments inline in the diff viewer.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ReviewDraftInfo {
+    pub id: Uuid,
+    pub connector_id: Uuid,
+    pub repo: String,
+    pub number: i64,
+    pub author_kind: DraftAuthorKind,
+    /// The owning user, when `author_kind` is `user`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author_user_id: Option<Uuid>,
+    /// The authoring session, when `author_kind` is `agent`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author_session_id: Option<String>,
+    pub verdict: ReviewVerdict,
+    pub status: DraftStatus,
+    pub created_at: String,
+    pub updated_at: String,
+    /// The draft's inline comments, oldest first.
+    pub comments: Vec<DraftCommentInfo>,
+}
+
 /// One row in the `/github` PR inbox: the synced PR plus its derived attention
 /// bucket and pre-aggregated CI/review summaries.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

@@ -17,14 +17,16 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
 use cctui_proto::github::{
-    CallerIdentity, CheckSummary, ConnectorInfo, CreateConnector, GithubCredentialKind,
-    PullDiff, PullInboxItem, ReviewSummary,
+    CallerIdentity, CheckSummary, ConnectorInfo, CreateConnector, CreateDraftComment,
+    CreateReviewDraft, GithubCredentialKind, PullDiff, PullInboxItem, ReviewDraftInfo,
+    ReviewSummary, ReviewVerdict, UpdateDraftComment, UpdateReviewDraft,
 };
 use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::attention::{self, Viewer};
 use crate::diff::{self, HttpDiffClient};
+use crate::drafts::{self, DraftError};
 use crate::{GithubState, crypto};
 
 type ApiError = (StatusCode, Json<serde_json::Value>);
@@ -425,6 +427,181 @@ fn summarize_checks(checks: &[(String, Option<String>)]) -> CheckSummary {
         }
     }
     s
+}
+
+// ---------------------------------------------------------------------------
+// GH-VIEW-4: review-draft CRUD.
+//
+// All draft routes share the `(connector_id, owner, name, number)` PR locator
+// the diff proxy uses. Every handler first checks the caller owns the connector
+// (admin sees all) so a user can never read or mutate another user's drafts,
+// then delegates to `crate::drafts`. Draft comments are added *instantly* — no
+// GitHub round-trip — which is exactly why a draft store exists (docs §6.2).
+// ---------------------------------------------------------------------------
+
+/// Resolve the PR locator from path parts + assert the caller may act on the
+/// connector. Returns the `owner/name` repo slug. A user may act only on its own
+/// connectors; the admin token may act on any. A connector the caller can't see
+/// is reported as `404` (not `403`) so its existence isn't leaked.
+async fn scope_connector(
+    state: &GithubState,
+    ctx: &CallerIdentity,
+    connector_id: Uuid,
+) -> Result<(), ApiError> {
+    if ctx.user_id.is_none() && !ctx.is_admin {
+        return Err(err(StatusCode::FORBIDDEN, "user or admin token required"));
+    }
+    let owned: Option<bool> = sqlx::query_scalar(
+        "SELECT true FROM github.connectors \
+         WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)",
+    )
+    .bind(connector_id)
+    .bind(ctx.user_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("github connector scope db error: {e}");
+        err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
+    })?;
+    if owned.is_none() {
+        return Err(err(StatusCode::NOT_FOUND, "no such connector"));
+    }
+    Ok(())
+}
+
+/// Map a [`DraftError`] to an HTTP response.
+fn draft_err(e: DraftError) -> ApiError {
+    match e {
+        DraftError::NotFound => err(StatusCode::NOT_FOUND, "no such draft"),
+        DraftError::Db => err(StatusCode::INTERNAL_SERVER_ERROR, "database error"),
+    }
+}
+
+type PullRef = (Uuid, String, String, i64);
+type DraftRef = (Uuid, String, String, i64, Uuid);
+type CommentRef = (Uuid, String, String, i64, Uuid, Uuid);
+
+/// `GET .../{connector_id}/{owner}/{name}/{number}/drafts` — the caller's drafts
+/// for a PR (each with its inline comments).
+pub async fn list_drafts(
+    State(state): State<GithubState>,
+    Extension(ctx): Extension<CallerIdentity>,
+    Path((connector_id, owner, name, number)): Path<PullRef>,
+) -> Result<Json<Vec<ReviewDraftInfo>>, ApiError> {
+    scope_connector(&state, &ctx, connector_id).await?;
+    let repo = format!("{owner}/{name}");
+    drafts::list_drafts(&state.pool, connector_id, &repo, number, ctx.user_id)
+        .await
+        .map(Json)
+        .map_err(draft_err)
+}
+
+/// `POST .../{number}/drafts` — open (or reuse) the caller's open draft for a PR.
+/// The admin token has no user identity, so it cannot author a user draft.
+pub async fn create_draft(
+    State(state): State<GithubState>,
+    Extension(ctx): Extension<CallerIdentity>,
+    Path((connector_id, owner, name, number)): Path<PullRef>,
+    Json(req): Json<CreateReviewDraft>,
+) -> Result<(StatusCode, Json<ReviewDraftInfo>), ApiError> {
+    scope_connector(&state, &ctx, connector_id).await?;
+    let Some(uid) = ctx.user_id else {
+        return Err(err(StatusCode::BAD_REQUEST, "a user identity is required to author a draft"));
+    };
+    let repo = format!("{owner}/{name}");
+    let verdict = req.verdict.unwrap_or(ReviewVerdict::Comment);
+    drafts::open_user_draft(&state.pool, connector_id, &repo, number, uid, verdict)
+        .await
+        .map(|d| (StatusCode::CREATED, Json(d)))
+        .map_err(draft_err)
+}
+
+/// `PATCH .../drafts/{draft_id}` — change the draft's verdict.
+pub async fn update_draft(
+    State(state): State<GithubState>,
+    Extension(ctx): Extension<CallerIdentity>,
+    Path((connector_id, owner, name, number, draft_id)): Path<DraftRef>,
+    Json(req): Json<UpdateReviewDraft>,
+) -> Result<Json<ReviewDraftInfo>, ApiError> {
+    scope_connector(&state, &ctx, connector_id).await?;
+    let repo = format!("{owner}/{name}");
+    drafts::update_verdict(&state.pool, connector_id, &repo, number, draft_id, req.verdict)
+        .await
+        .map(Json)
+        .map_err(draft_err)
+}
+
+/// `DELETE .../drafts/{draft_id}` — discard a draft (and its comments).
+pub async fn delete_draft(
+    State(state): State<GithubState>,
+    Extension(ctx): Extension<CallerIdentity>,
+    Path((connector_id, owner, name, number, draft_id)): Path<DraftRef>,
+) -> Result<StatusCode, ApiError> {
+    scope_connector(&state, &ctx, connector_id).await?;
+    let repo = format!("{owner}/{name}");
+    drafts::delete_draft(&state.pool, connector_id, &repo, number, draft_id)
+        .await
+        .map(|()| StatusCode::NO_CONTENT)
+        .map_err(draft_err)
+}
+
+/// `POST .../drafts/{draft_id}/comments` — add an inline draft comment anchored
+/// on the reviewer's diff selection. Instant: no GitHub round-trip.
+pub async fn create_draft_comment(
+    State(state): State<GithubState>,
+    Extension(ctx): Extension<CallerIdentity>,
+    Path((connector_id, owner, name, number, draft_id)): Path<DraftRef>,
+    Json(req): Json<CreateDraftComment>,
+) -> Result<(StatusCode, Json<ReviewDraftInfo>), ApiError> {
+    scope_connector(&state, &ctx, connector_id).await?;
+    if req.body.trim().is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "comment body required"));
+    }
+    let repo = format!("{owner}/{name}");
+    drafts::add_comment(&state.pool, connector_id, &repo, number, draft_id, &req)
+        .await
+        .map(|d| (StatusCode::CREATED, Json(d)))
+        .map_err(draft_err)
+}
+
+/// `PATCH .../drafts/{draft_id}/comments/{comment_id}` — edit a comment's body.
+pub async fn update_draft_comment(
+    State(state): State<GithubState>,
+    Extension(ctx): Extension<CallerIdentity>,
+    Path((connector_id, owner, name, number, draft_id, comment_id)): Path<CommentRef>,
+    Json(req): Json<UpdateDraftComment>,
+) -> Result<Json<ReviewDraftInfo>, ApiError> {
+    scope_connector(&state, &ctx, connector_id).await?;
+    if req.body.trim().is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "comment body required"));
+    }
+    let repo = format!("{owner}/{name}");
+    drafts::update_comment(
+        &state.pool,
+        connector_id,
+        &repo,
+        number,
+        draft_id,
+        comment_id,
+        &req.body,
+    )
+    .await
+    .map(Json)
+    .map_err(draft_err)
+}
+
+/// `DELETE .../drafts/{draft_id}/comments/{comment_id}` — remove a draft comment.
+pub async fn delete_draft_comment(
+    State(state): State<GithubState>,
+    Extension(ctx): Extension<CallerIdentity>,
+    Path((connector_id, owner, name, number, draft_id, comment_id)): Path<CommentRef>,
+) -> Result<Json<ReviewDraftInfo>, ApiError> {
+    scope_connector(&state, &ctx, connector_id).await?;
+    let repo = format!("{owner}/{name}");
+    drafts::delete_comment(&state.pool, connector_id, &repo, number, draft_id, comment_id)
+        .await
+        .map(Json)
+        .map_err(draft_err)
 }
 
 /// Aggregate review rows into the inbox's [`ReviewSummary`].

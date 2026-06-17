@@ -18,6 +18,8 @@
 import type { PullDiff } from "@bindings/PullDiff";
 import type { DiffFile } from "@bindings/DiffFile";
 import type { DiffLine } from "@bindings/DiffLine";
+import type { DiffSide } from "@bindings/DiffSide";
+import type { DraftCommentInfo } from "@bindings/DraftCommentInfo";
 
 /** A unique key for a file within the diff (its head-side path is unique). */
 export type FileKey = string;
@@ -54,7 +56,44 @@ export type DiffRow =
       kind: "binary" | "truncated" | "empty";
       fileKey: FileKey;
       file: DiffFile;
+    }
+  | {
+      // GH-VIEW-4: an existing inline draft comment, woven in directly under the
+      // diff line it anchors to.
+      kind: "comment";
+      fileKey: FileKey;
+      comment: DraftCommentInfo;
+    }
+  | {
+      // GH-VIEW-4: the new-comment composer, shown under the line the reviewer
+      // clicked. Carries the anchor coordinates the draft store needs.
+      kind: "compose";
+      fileKey: FileKey;
+      side: DiffSide;
+      line: number;
     };
+
+/** The (path, side, line) anchor a comment/compose row targets — the GH-VIEW-2
+ *  coordinates. `side`/`line` identify the diff line a comment hangs under. */
+export interface CommentAnchorKey {
+  path: string;
+  side: DiffSide;
+  line: number;
+}
+
+/** Which side+line a rendered diff line lives on, for anchoring a comment. A
+ *  line carries both numbers when it's context; `add` is new-side only, `del`
+ *  old-side only. Returns the most specific anchor the line offers. */
+export function lineAnchor(
+  line: DiffLine,
+): { side: DiffSide; line: number } | null {
+  if (line.kind === "del") {
+    return line.old_line != null ? { side: "old", line: line.old_line } : null;
+  }
+  // add + context anchor on the new side (context also has an old number, but
+  // GitHub/cctui anchor a click on the head side by default).
+  return line.new_line != null ? { side: "new", line: line.new_line } : null;
+}
 
 /** Runs of unchanged context longer than this (away from a change) collapse into
  * a single lazy-expand marker; the edge lines stay visible for orientation. */
@@ -185,6 +224,66 @@ function formatHunkHeader(hunk: {
   new_lines: number;
 }): string {
   return `@@ -${hunk.old_start},${hunk.old_lines} +${hunk.new_start},${hunk.new_lines} @@`;
+}
+
+/** Build a lookup of draft comments keyed by `path|side|line` so weaving is
+ *  O(1) per diff line. Multiple comments can hang under one line (oldest first,
+ *  matching the server's `ORDER BY created_at`). */
+export function indexComments(
+  comments: DraftCommentInfo[],
+): Map<string, DraftCommentInfo[]> {
+  const m = new Map<string, DraftCommentInfo[]>();
+  for (const c of comments) {
+    const k = `${c.path}|${c.side}|${c.line}`;
+    const arr = m.get(k);
+    if (arr) arr.push(c);
+    else m.set(k, [c]);
+  }
+  return m;
+}
+
+/**
+ * Weave inline comment + composer rows into the flattened diff (GH-VIEW-4).
+ *
+ * After each `line` row that has an anchor, append any existing draft comments
+ * for that `(path, side, line)`, then — if it's the line the reviewer clicked
+ * to comment on (`composeAt`) — the composer row. Pure: the diff structure and
+ * the draft set fully determine the output, so a re-weave is a cheap recompute
+ * the virtualizer re-renders.
+ */
+export function weaveComments(
+  base: DiffRow[],
+  commentIndex: Map<string, DraftCommentInfo[]>,
+  composeAt: CommentAnchorKey | null,
+): DiffRow[] {
+  if (commentIndex.size === 0 && !composeAt) return base;
+  const out: DiffRow[] = [];
+  for (const row of base) {
+    out.push(row);
+    if (row.kind !== "line") continue;
+    const a = lineAnchor(row.line);
+    if (!a) continue;
+    const key = `${row.fileKey}|${a.side}|${a.line}`;
+    const existing = commentIndex.get(key);
+    if (existing) {
+      for (const c of existing)
+        out.push({ kind: "comment", fileKey: row.fileKey, comment: c });
+    }
+    if (
+      composeAt &&
+      composeAt.path === row.fileKey &&
+      composeAt.side === a.side &&
+      composeAt.line === a.line
+    ) {
+      out.push({
+        kind: "compose",
+        fileKey: row.fileKey,
+        side: a.side,
+        line: a.line,
+      });
+    }
+  }
+  return out;
 }
 
 /** Row indices of each file/hunk header, for keyboard next/prev navigation. */

@@ -22,6 +22,7 @@ mod attention;
 mod classifier_feed;
 mod crypto;
 mod diff;
+mod drafts;
 mod reconcile;
 mod routes;
 mod store;
@@ -30,6 +31,10 @@ mod webhook;
 pub use anchor::resolve as resolve_comment_anchor;
 pub use attention::{Viewer, derive_bucket, derive_bucket_from_rows};
 pub use classifier_feed::{derive_status, pr_href, publish as publish_pr_status, refresh};
+pub use drafts::{
+    DraftError, add_comment, delete_comment, delete_draft, list_drafts, open_user_draft,
+    update_comment, update_verdict,
+};
 pub use reconcile::{interval_secs as reconcile_interval_secs, spawn as spawn_reconcile};
 pub use store::{
     EventTx, upsert_check, upsert_pull, upsert_review, upsert_review_comment, upsert_review_thread,
@@ -186,6 +191,22 @@ pub fn routes(
         .route(
             "/github/pulls/{connector_id}/{owner}/{name}/{number}/diff",
             get(routes::pull_diff),
+        )
+        .route(
+            "/github/pulls/{connector_id}/{owner}/{name}/{number}/drafts",
+            get(routes::list_drafts).post(routes::create_draft),
+        )
+        .route(
+            "/github/pulls/{connector_id}/{owner}/{name}/{number}/drafts/{draft_id}",
+            axum::routing::patch(routes::update_draft).delete(routes::delete_draft),
+        )
+        .route(
+            "/github/pulls/{connector_id}/{owner}/{name}/{number}/drafts/{draft_id}/comments",
+            post(routes::create_draft_comment),
+        )
+        .route(
+            "/github/pulls/{connector_id}/{owner}/{name}/{number}/drafts/{draft_id}/comments/{comment_id}",
+            axum::routing::patch(routes::update_draft_comment).delete(routes::delete_draft_comment),
         )
         .route("/triggers/github", post(webhook::webhook))
         .with_state(state)

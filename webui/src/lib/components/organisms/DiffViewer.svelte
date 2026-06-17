@@ -18,14 +18,29 @@
 -->
 <script lang="ts">
 	import type { PullDiff } from '@bindings/PullDiff';
+	import type { DiffSide } from '@bindings/DiffSide';
 	import { createVirtualizer } from '@tanstack/svelte-virtual';
-	import { flattenDiff, navIndex, type DiffRow } from '$lib/diff/rows';
+	import {
+		flattenDiff,
+		navIndex,
+		weaveComments,
+		indexComments,
+		lineAnchor,
+		type DiffRow,
+		type CommentAnchorKey
+	} from '$lib/diff/rows';
 	import { langForPath } from '$lib/diff/highlight';
 	import DiffRowView from '../molecules/DiffRow.svelte';
 	import { Badge, Cluster, Stack, Text } from '@dorsk/tsumikit';
+	import { endpoints, useGithubDrafts, githubDraftsKey } from '$lib/queries';
+	import { useQueryClient } from '@tanstack/svelte-query';
 
 	interface Props {
 		diff: PullDiff;
+		/** PR locator for inline draft commenting (GH-VIEW-4). When omitted the
+		 *  viewer renders read-only (e.g. an embedded preview). */
+		connectorId?: string;
+		number?: number;
 		/** Optional per-commit lens controls (GH-VIEW-3 lenses). `commits` is the
 		 *  PR's commit list; selecting one re-fetches that commit's diff via the
 		 *  proxy. When absent only the cumulative lens shows. */
@@ -33,13 +48,106 @@
 		commits?: { sha: string; subject: string }[];
 		onlens?: (lens: string) => void;
 	}
-	const { diff, lens = 'cumulative', commits = [], onlens }: Props = $props();
+	const { diff, connectorId, number, lens = 'cumulative', commits = [], onlens }: Props = $props();
+
+	// Inline draft commenting is available when we have a PR locator (GH-VIEW-4).
+	const commentable = $derived(!!connectorId && number != null);
+
+	// The caller's review drafts for this PR (+ their inline comments). The first
+	// draft is the "open" one we add comments to; opened lazily on first comment.
+	const draftsQuery = useGithubDrafts(
+		() => connectorId ?? '',
+		() => diff.repo,
+		() => number ?? 0,
+		() => commentable
+	);
+	const drafts = $derived($draftsQuery.data ?? []);
+	const openDraft = $derived(drafts.find((d) => d.status === 'draft'));
+	const allComments = $derived(drafts.flatMap((d) => d.comments));
+	const commentIndex = $derived(indexComments(allComments));
+	// Map a comment id back to its owning draft, so edit/delete target the right
+	// draft even when the PR has multiple (e.g. a human + an agent draft).
+	const draftOfComment = $derived(
+		new Map(drafts.flatMap((d) => d.comments.map((c) => [c.id, d.id] as const)))
+	);
+
+	const qc = useQueryClient();
+	function refreshDrafts() {
+		if (connectorId && number != null)
+			qc.invalidateQueries({ queryKey: githubDraftsKey(connectorId, diff.repo, number) });
+	}
+
+	// Which line the reviewer is currently composing a comment on (GH-VIEW-4).
+	let composeAt = $state<CommentAnchorKey | null>(null);
+	let busy = $state(false);
+
+	function startCompose(path: string, side: DiffSide, line: number) {
+		composeAt = { path, side, line };
+	}
+	function cancelCompose() {
+		composeAt = null;
+	}
+
+	/** Ensure an open draft exists, then add the composed comment to it. The
+	 *  comment lands INSTANTLY — one POST, no GitHub round-trip (docs §6.2). */
+	async function saveComment(body: string) {
+		if (!connectorId || number == null || !composeAt) return;
+		busy = true;
+		try {
+			let draftId = openDraft?.id;
+			if (!draftId) {
+				const d = await endpoints.openGithubDraft(connectorId, diff.repo, number, {
+					verdict: null
+				});
+				draftId = d.id;
+			}
+			await endpoints.addGithubDraftComment(connectorId, diff.repo, number, draftId, {
+				path: composeAt.path,
+				side: composeAt.side,
+				line: composeAt.line,
+				start_line: null,
+				body,
+				in_reply_to: null
+			});
+			composeAt = null;
+			refreshDrafts();
+		} finally {
+			busy = false;
+		}
+	}
+
+	async function editComment(commentId: string, body: string) {
+		const draftId = draftOfComment.get(commentId);
+		if (!connectorId || number == null || !draftId) return;
+		busy = true;
+		try {
+			await endpoints.updateGithubDraftComment(connectorId, diff.repo, number, draftId, commentId, {
+				body
+			});
+			refreshDrafts();
+		} finally {
+			busy = false;
+		}
+	}
+
+	async function deleteComment(commentId: string) {
+		const draftId = draftOfComment.get(commentId);
+		if (!connectorId || number == null || !draftId) return;
+		busy = true;
+		try {
+			await endpoints.deleteGithubDraftComment(connectorId, diff.repo, number, draftId, commentId);
+			refreshDrafts();
+		} finally {
+			busy = false;
+		}
+	}
 
 	// Lazy-expanded collapsed regions + folded files — caller-free UI state.
 	let expanded = $state(new Set<string>());
 	let collapsedFiles = $state(new Set<string>());
 
-	const rows = $derived<DiffRow[]>(flattenDiff(diff, expanded, collapsedFiles));
+	const baseRows = $derived<DiffRow[]>(flattenDiff(diff, expanded, collapsedFiles));
+	const rows = $derived<DiffRow[]>(weaveComments(baseRows, commentIndex, composeAt));
 	const nav = $derived(navIndex(rows));
 
 	// Cache the resolved language per file path so each row doesn't re-resolve.
@@ -121,6 +229,16 @@
 				else return;
 				break;
 			}
+			case 'c': {
+				// GH-VIEW-4: open the inline composer on the cursor's diff line.
+				if (!commentable) return;
+				const r = rows[cursor];
+				if (r?.kind !== 'line') return;
+				const a = lineAnchor(r.line);
+				if (!a) return;
+				startCompose(r.fileKey, a.side, a.line);
+				break;
+			}
 			default:
 				return;
 		}
@@ -197,13 +315,20 @@
 						fileCollapsed={collapsedFiles.has(rows[vrow.index].fileKey)}
 						onexpand={expand}
 						ontoggleFile={toggleFile}
+						{commentable}
+						{busy}
+						oncommentLine={startCompose}
+						onsaveComment={saveComment}
+						oneditComment={editComment}
+						ondeleteComment={deleteComment}
+						oncancelComment={cancelCompose}
 					/>
 				</div>
 			{/each}
 		</div>
 	</div>
 	<Text tone="muted" size="xs">
-		j/k line · n/p hunk · ]/[ file · o expand/fold
+		j/k line · n/p hunk · ]/[ file · o expand/fold{commentable ? ' · c comment' : ''}
 	</Text>
 </Stack>
 

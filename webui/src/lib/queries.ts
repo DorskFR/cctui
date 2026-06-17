@@ -26,6 +26,11 @@ import type { ConnectorInfo } from "@bindings/ConnectorInfo";
 import type { CreateConnector } from "@bindings/CreateConnector";
 import type { PullInboxItem } from "@bindings/PullInboxItem";
 import type { PullDiff } from "@bindings/PullDiff";
+import type { ReviewDraftInfo } from "@bindings/ReviewDraftInfo";
+import type { CreateReviewDraft } from "@bindings/CreateReviewDraft";
+import type { UpdateReviewDraft } from "@bindings/UpdateReviewDraft";
+import type { CreateDraftComment } from "@bindings/CreateDraftComment";
+import type { UpdateDraftComment } from "@bindings/UpdateDraftComment";
 import type { Label } from "@bindings/Label";
 import type { LabelListResponse } from "@bindings/LabelListResponse";
 
@@ -283,6 +288,77 @@ export const endpoints = {
    *  virtualizes. `repo` is `owner/name`, so it spans two path segments. */
   githubPullDiff: (connectorId: string, repo: string, number: number) =>
     api.get<PullDiff>(`/github/pulls/${connectorId}/${repo}/${number}/diff`),
+  /** Review drafts (GH-VIEW-4): the caller's local draft(s) for a PR, each with
+   *  its inline comments. Comments are added INSTANTLY with no GitHub round-trip
+   *  and published later as one batched review (GH-VIEW-5). `repo` is
+   *  `owner/name`, so it spans two path segments. */
+  githubDrafts: (connectorId: string, repo: string, number: number) =>
+    api.get<ReviewDraftInfo[]>(
+      `/github/pulls/${connectorId}/${repo}/${number}/drafts`,
+    ),
+  openGithubDraft: (
+    connectorId: string,
+    repo: string,
+    number: number,
+    body: CreateReviewDraft,
+  ) =>
+    api.post<ReviewDraftInfo>(
+      `/github/pulls/${connectorId}/${repo}/${number}/drafts`,
+      body,
+    ),
+  updateGithubDraft: (
+    connectorId: string,
+    repo: string,
+    number: number,
+    draftId: string,
+    body: UpdateReviewDraft,
+  ) =>
+    api.patch<ReviewDraftInfo>(
+      `/github/pulls/${connectorId}/${repo}/${number}/drafts/${draftId}`,
+      body,
+    ),
+  deleteGithubDraft: (
+    connectorId: string,
+    repo: string,
+    number: number,
+    draftId: string,
+  ) =>
+    api.del<void>(
+      `/github/pulls/${connectorId}/${repo}/${number}/drafts/${draftId}`,
+    ),
+  addGithubDraftComment: (
+    connectorId: string,
+    repo: string,
+    number: number,
+    draftId: string,
+    body: CreateDraftComment,
+  ) =>
+    api.post<ReviewDraftInfo>(
+      `/github/pulls/${connectorId}/${repo}/${number}/drafts/${draftId}/comments`,
+      body,
+    ),
+  updateGithubDraftComment: (
+    connectorId: string,
+    repo: string,
+    number: number,
+    draftId: string,
+    commentId: string,
+    body: UpdateDraftComment,
+  ) =>
+    api.patch<ReviewDraftInfo>(
+      `/github/pulls/${connectorId}/${repo}/${number}/drafts/${draftId}/comments/${commentId}`,
+      body,
+    ),
+  deleteGithubDraftComment: (
+    connectorId: string,
+    repo: string,
+    number: number,
+    draftId: string,
+    commentId: string,
+  ) =>
+    api.del<ReviewDraftInfo>(
+      `/github/pulls/${connectorId}/${repo}/${number}/drafts/${draftId}/comments/${commentId}`,
+    ),
   /** Every spawnable machine across all active users — for the spawn picker.
    * Excludes server-managed machines (`ephemeral` worker pods and the per-user
    * `dispatch` machine): those aren't somewhere you'd start an interactive
@@ -519,6 +595,33 @@ export const useGithubPullDiff = (
       queryFn: () => endpoints.githubPullDiff(connectorId(), repo(), number()),
       enabled: enabled() && !!connectorId() && !!repo(),
       staleTime: 5 * 60_000,
+    })),
+  );
+
+export type { ReviewDraftInfo };
+
+/** The query key for a PR's review drafts (GH-VIEW-4). */
+export const githubDraftsKey = (
+  connectorId: string,
+  repo: string,
+  number: number,
+) => ["github-drafts", connectorId, repo, number] as const;
+
+/** The caller's review drafts (+ inline comments) for one PR. Short stale time:
+ *  drafts are local and mutated by the same client, which invalidates this key
+ *  on every change so the inline render stays in lockstep. */
+export const useGithubDrafts = (
+  connectorId: () => string,
+  repo: () => string,
+  number: () => number,
+  enabled: () => boolean = () => true,
+) =>
+  createQuery(
+    toStore(() => ({
+      queryKey: githubDraftsKey(connectorId(), repo(), number()),
+      queryFn: () => endpoints.githubDrafts(connectorId(), repo(), number()),
+      enabled: enabled() && !!connectorId() && !!repo(),
+      staleTime: 0,
     })),
   );
 

@@ -69,7 +69,7 @@
 				{#if $diff.data.files.length === 0}
 					<Text tone="muted">This pull request has no file changes.</Text>
 				{:else}
-					<DiffViewer diff={$diff.data} />
+					<DiffViewer diff={$diff.data} {connectorId} {number} />
 				{/if}
 			{/if}
 		</Stack>
