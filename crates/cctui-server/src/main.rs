@@ -211,7 +211,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/users/{id}/tokens", post(routes::daemon::mint_user_token))
         .layer(middleware::from_fn(auth::auth_middleware))
-        .layer(Extension(auth_config));
+        .layer(Extension(auth_config.clone()));
 
     // Optional GitHub integration (CCT-373 / GH-PKG-1). Behind the `github`
     // Cargo feature: run its embedded migrations and merge its routes. A build
@@ -253,9 +253,18 @@ async fn main() -> anyhow::Result<()> {
 
     // Merge the GitHub routes (their own state is already applied) under
     // `/api/v1`. Done after `with_state` because they carry `GithubState`, not
-    // the server's `AppState`.
+    // the server's `AppState`. The GitHub router lives outside `api_router`'s
+    // layers, so we re-apply the same auth middleware here, plus a thin layer
+    // that maps the server-private `AuthContext` into the proto `CallerIdentity`
+    // the GitHub crate extracts (it cannot depend on `cctui-server`).
     #[cfg(feature = "github")]
-    let app = app.nest("/api/v1", cctui_github::routes(state.pool.clone()));
+    let app = app.nest(
+        "/api/v1",
+        cctui_github::routes(state.pool.clone())
+            .layer(middleware::from_fn(github_identity))
+            .layer(middleware::from_fn(auth::auth_middleware))
+            .layer(Extension(auth_config.clone())),
+    );
 
     tokio::spawn(reaper_task(state));
 
@@ -263,6 +272,25 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("listening on {}", config.bind_addr());
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+/// Map the server-private [`auth::AuthContext`] (inserted by `auth_middleware`)
+/// into the proto [`cctui_proto::github::CallerIdentity`] the GitHub crate
+/// extracts. The GitHub crate must not depend on `cctui-server`, so it cannot
+/// see `AuthContext`; this thin layer bridges the two without a dependency cycle.
+#[cfg(feature = "github")]
+async fn github_identity(
+    mut request: axum::extract::Request,
+    next: middleware::Next,
+) -> axum::response::Response {
+    if let Some(ctx) = request.extensions().get::<auth::AuthContext>() {
+        let identity = cctui_proto::github::CallerIdentity {
+            user_id: ctx.user_id,
+            is_admin: ctx.role == auth::TokenRole::Admin,
+        };
+        request.extensions_mut().insert(identity);
+    }
+    next.run(request).await
 }
 
 async fn init_archive_store() -> Arc<archive_store::ArchiveStore> {

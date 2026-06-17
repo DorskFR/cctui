@@ -22,6 +22,8 @@ import type { MintTokenResponse } from "@bindings/MintTokenResponse";
 import type { VersionInfo } from "@bindings/VersionInfo";
 import type { MeResponse } from "@bindings/MeResponse";
 import type { CapabilitiesResponse } from "@bindings/CapabilitiesResponse";
+import type { ConnectorInfo } from "@bindings/ConnectorInfo";
+import type { CreateConnector } from "@bindings/CreateConnector";
 import type { Label } from "@bindings/Label";
 import type { LabelListResponse } from "@bindings/LabelListResponse";
 
@@ -263,6 +265,13 @@ export const endpoints = {
     }),
   oauthFinish: (body: OAuthFinish) =>
     api.post<OAuthAccount>("/accounts/oauth/finish", body),
+  /** GitHub connectors (GH-CONN-1). The credential is encrypted at rest and
+   *  never returned — list/create only ever surface a masked preview. */
+  githubConnectors: () => api.get<ConnectorInfo[]>("/github/connectors"),
+  createGithubConnector: (body: CreateConnector) =>
+    api.post<ConnectorInfo>("/github/connectors", body),
+  deleteGithubConnector: (id: string) =>
+    api.del<void>(`/github/connectors/${id}`),
   /** Every spawnable machine across all active users — for the spawn picker.
    * Excludes server-managed machines (`ephemeral` worker pods and the per-user
    * `dispatch` machine): those aren't somewhere you'd start an interactive
@@ -431,6 +440,39 @@ export const useAccountUsage = (
       retry: false,
     })),
   );
+
+export type { ConnectorInfo, CreateConnector };
+
+/** GitHub connectors (GH-CONN-1). Only fetched while the GitHub view is mounted
+ *  (caller gates `enabled` on the capability). Credentials are never returned. */
+export const useGithubConnectors = (enabled: () => boolean = () => true) =>
+  createQuery(
+    toStore(() => ({
+      queryKey: ["github-connectors"],
+      queryFn: endpoints.githubConnectors,
+      enabled: enabled(),
+    })),
+  );
+
+export function useGithubConnectorActions() {
+  const qc = useQueryClient();
+  // Connector changes flip the capability (repos/enabled), so refresh both.
+  const inval = () => {
+    qc.invalidateQueries({ queryKey: ["github-connectors"] });
+    qc.invalidateQueries({ queryKey: qk.capabilities });
+  };
+  return {
+    create: async (body: CreateConnector) => {
+      const r = await endpoints.createGithubConnector(body);
+      inval();
+      return r;
+    },
+    remove: async (id: string) => {
+      await endpoints.deleteGithubConnector(id);
+      inval();
+    },
+  };
+}
 
 export const useAllMachines = (enabled: () => boolean) =>
   createQuery(

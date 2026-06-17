@@ -14,9 +14,10 @@
 //! tickets.
 
 use axum::Router;
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use sqlx::{Connection, Executor, PgPool};
 
+mod crypto;
 mod routes;
 
 /// The dedicated Postgres schema that holds **all** GitHub-integration state.
@@ -123,7 +124,16 @@ pub async fn capability(pool: &PgPool) -> GithubCapability {
         .fetch_one(pool)
         .await
         .unwrap_or(0);
-    GithubCapability { enabled: count > 0, repos: Vec::new() }
+    // Distinct repo slugs across all connectors, so the webui can show what the
+    // integration tracks. Best-effort: a query error degrades to an empty list
+    // rather than failing the capability probe.
+    let repos: Vec<String> = sqlx::query_scalar(&format!(
+        "SELECT DISTINCT unnest(repos) FROM {SCHEMA}.connectors ORDER BY 1"
+    ))
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    GithubCapability { enabled: count > 0, repos }
 }
 
 /// The GitHub route surface, mounted by `cctui-server` under `/api/v1`.
@@ -137,6 +147,7 @@ pub fn routes(pool: PgPool) -> Router {
     let state = GithubState { pool };
     Router::new()
         .route("/github/connectors", get(routes::list_connectors).post(routes::create_connector))
+        .route("/github/connectors/{id}", delete(routes::delete_connector))
         .route("/github/pulls", get(routes::list_pulls))
         .route("/triggers/github", post(routes::webhook))
         .with_state(state)
