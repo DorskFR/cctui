@@ -212,6 +212,12 @@ async fn main() -> anyhow::Result<()> {
         .layer(middleware::from_fn(auth::auth_middleware))
         .layer(Extension(auth_config));
 
+    // Optional GitHub integration (CCT-373 / GH-PKG-1). Behind the `github`
+    // Cargo feature: run its embedded migrations and merge its routes. A build
+    // without the feature contains zero GitHub code, routes, or schema.
+    #[cfg(feature = "github")]
+    cctui_github::migrate(&state.pool).await?;
+
     let app = Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/admin", get(routes::web::index))
@@ -243,6 +249,12 @@ async fn main() -> anyhow::Result<()> {
         // subject to CORS preflight.
         .layer(tower_http::cors::CorsLayer::permissive())
         .with_state(state.clone());
+
+    // Merge the GitHub routes (their own state is already applied) under
+    // `/api/v1`. Done after `with_state` because they carry `GithubState`, not
+    // the server's `AppState`.
+    #[cfg(feature = "github")]
+    let app = app.nest("/api/v1", cctui_github::routes(state.pool.clone()));
 
     tokio::spawn(reaper_task(state));
 

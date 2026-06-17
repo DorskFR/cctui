@@ -5,6 +5,7 @@ members = [
     "crates/cctui-daemon",
     "crates/cctui-dispatcher-docker",
     "crates/cctui-dispatcher-kube",
+    "crates/cctui-github",
     "crates/cctui-guard",
     "crates/cctui-guard-proxy",
     "crates/cctui-proto",
@@ -35,6 +36,7 @@ missing_panics_doc = "allow"
 
 [workspace.dependencies]
 cctui-proto = { path = "crates/cctui-proto" }
+cctui-github = { path = "crates/cctui-github" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4", "serde"] }

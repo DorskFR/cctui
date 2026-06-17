@@ -520,6 +520,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "cctui-github"
+version = "0.4.15"
+dependencies = [
+ "anyhow",
+ "axum",
+ "cctui-proto",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tracing",
+]
+
+[[package]]
 name = "cctui-guard"
 version = "0.4.15"
 dependencies = [
@@ -573,6 +586,7 @@ dependencies = [
  "axum",
  "base64",
  "bollard",
+ "cctui-github",
  "cctui-proto",
  "chrono",
  "dashmap",
