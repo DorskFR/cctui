@@ -135,6 +135,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/manifest/daemon", get(routes::manifest::daemon_manifest))
         .route("/daemon/binary/{target}", get(routes::manifest::download_daemon_binary))
         .route("/prompts", get(routes::prompts::list_prompts).post(routes::prompts::create_prompt))
+        .route("/prompts/resolve", get(routes::prompts::resolve_prompt))
         .route(
             "/prompts/{id}",
             get(routes::prompts::get_prompt).delete(routes::prompts::delete_prompt),
@@ -261,10 +262,14 @@ async fn main() -> anyhow::Result<()> {
     #[cfg(feature = "github")]
     let app = app.nest(
         "/api/v1",
-        cctui_github::routes(state.pool.clone(), state.tui_tx.clone(), state.pr_status_cache.clone())
-            .layer(middleware::from_fn(github_identity))
-            .layer(middleware::from_fn(auth::auth_middleware))
-            .layer(Extension(auth_config.clone())),
+        cctui_github::routes(
+            state.pool.clone(),
+            state.tui_tx.clone(),
+            state.pr_status_cache.clone(),
+        )
+        .layer(middleware::from_fn(github_identity))
+        .layer(middleware::from_fn(auth::auth_middleware))
+        .layer(Extension(auth_config.clone())),
     );
 
     // GH-CONN-4: the reconcile poll loop. A background task (mirroring

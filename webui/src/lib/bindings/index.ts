@@ -48,6 +48,7 @@ export type * from './MessageRequest';
 export type * from './MintTokenRequest';
 export type * from './MintTokenResponse';
 export type * from './PermissionMode';
+export type * from './Prompt';
 export type * from './PublishReviewRequest';
 export type * from './PublishReviewResult';
 export type * from './PullDiff';

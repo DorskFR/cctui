@@ -17,14 +17,16 @@
 	import { useGithubPullDiff } from '$lib/queries';
 	import { ws } from '$lib/ws.svelte';
 	import { useQueryClient } from '@tanstack/svelte-query';
-	import { Modal, Stack, Text } from '@dorsk/tsumikit';
+	import { Button, Cluster, Modal, Stack, Text } from '@dorsk/tsumikit';
 	import DiffViewer from './DiffViewer.svelte';
 
 	interface Props {
 		pull: PullInboxItem;
 		onclose: () => void;
+		/** Spawn a "Review with agent" session pre-seeded with this PR (CCT-390). */
+		onreviewagent?: (pull: PullInboxItem) => void;
 	}
-	const { pull, onclose }: Props = $props();
+	const { pull, onclose, onreviewagent }: Props = $props();
 
 	const connectorId = $derived(pull.connector_id);
 	const repo = $derived(pull.repo);
@@ -61,6 +63,11 @@
 >
 	{#snippet body()}
 		<Stack gap="var(--sp-2)">
+			{#if onreviewagent}
+				<Cluster justify="flex-end">
+					<Button size="sm" onclick={() => onreviewagent(pull)}>Review with agent</Button>
+				</Cluster>
+			{/if}
 			{#if $diff.isLoading}
 				<Text tone="muted">Loading diff…</Text>
 			{:else if $diff.isError}

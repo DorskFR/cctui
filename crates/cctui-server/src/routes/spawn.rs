@@ -144,10 +144,7 @@ pub async fn spawn_session(
         if let Some(model) = req.model.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
             if let Some((base, token)) = state.config.claude_litellm_route(model) {
                 env.insert("ANTHROPIC_BASE_URL".into(), base.to_owned());
-                env.insert(
-                    "ANTHROPIC_AUTH_TOKEN".into(),
-                    token.unwrap_or("sk-dummy").to_owned(),
-                );
+                env.insert("ANTHROPIC_AUTH_TOKEN".into(), token.unwrap_or("sk-dummy").to_owned());
             }
         }
     }

@@ -1,6 +1,6 @@
 import { createQuery, useQueryClient } from "@tanstack/svelte-query";
 import { toStore } from "svelte/store";
-import { api } from "./api";
+import { api, ApiError } from "./api";
 import type { SessionListResponse } from "@bindings/SessionListResponse";
 import type { SessionStats } from "@bindings/SessionStats";
 import type { TokenUsageWindows } from "@bindings/TokenUsageWindows";
@@ -25,6 +25,7 @@ import type { CapabilitiesResponse } from "@bindings/CapabilitiesResponse";
 import type { ConnectorInfo } from "@bindings/ConnectorInfo";
 import type { CreateConnector } from "@bindings/CreateConnector";
 import type { PullInboxItem } from "@bindings/PullInboxItem";
+import type { Prompt } from "@bindings/Prompt";
 import type { PullDiff } from "@bindings/PullDiff";
 import type { ReviewDraftInfo } from "@bindings/ReviewDraftInfo";
 import type { CreateReviewDraft } from "@bindings/CreateReviewDraft";
@@ -287,6 +288,23 @@ export const endpoints = {
   /** The PR inbox (GH-UI-1): synced PRs, each with its derived attention
    *  bucket + CI/review summary, scoped to the caller's connectors. */
   githubPulls: () => api.get<PullInboxItem[]>("/github/pulls"),
+  /** Resolve the effective repo-scoped prompt of `kind` (default `review`) for
+   *  `owner/repo`, richelieu-style most-specific-wins (CCT-390): a prompt scoped
+   *  to `owner/repo` beats one scoped to the whole owner, which beats a global
+   *  one. Returns `null` when no candidate matches (404) so the caller can seed
+   *  an empty prompt rather than treating it as an error. */
+  resolveReviewPrompt: async (
+    owner: string,
+    repo: string,
+    kind = "review",
+  ): Promise<Prompt | null> => {
+    try {
+      return await api.get<Prompt>("/prompts/resolve", { owner, repo, kind });
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) return null;
+      throw e;
+    }
+  },
   /** The structured diff for one PR (GH-VIEW-1): the server proxies + caches
    *  GitHub's files (paginated, with a blob fallback for truncated patches) and
    *  returns the parsed files→hunks→lines tree the diff viewer (GH-VIEW-3)

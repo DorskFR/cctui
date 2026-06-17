@@ -148,9 +148,8 @@ impl Config {
                 .ok()
                 .filter(|s| !s.trim().is_empty())
                 .map(|s| {
-                    serde_json::from_str(&s).expect(
-                        "CCTUI_CLAUDE_LITELLM_MODELS must be a JSON array of {model,label}",
-                    )
+                    serde_json::from_str(&s)
+                        .expect("CCTUI_CLAUDE_LITELLM_MODELS must be a JSON array of {model,label}")
                 })
                 .unwrap_or_default(),
         }

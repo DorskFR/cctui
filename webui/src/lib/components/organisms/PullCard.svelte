@@ -14,8 +14,10 @@
 		onopen?: (pull: PullInboxItem) => void;
 		/** Open the virtualized diff viewer for this PR (GH-VIEW-3). */
 		onreview?: (pull: PullInboxItem) => void;
+		/** Spawn a "Review with agent" session pre-seeded with this PR (CCT-390). */
+		onreviewagent?: (pull: PullInboxItem) => void;
 	}
-	const { pull, onopen, onreview }: Props = $props();
+	const { pull, onopen, onreview, onreviewagent }: Props = $props();
 
 	const href = $derived(`https://github.com/${pull.repo}/pull/${pull.number}`);
 
@@ -26,6 +28,10 @@
 	function review(e: MouseEvent) {
 		e.stopPropagation();
 		onreview?.(pull);
+	}
+	function reviewAgent(e: MouseEvent) {
+		e.stopPropagation();
+		onreviewagent?.(pull);
 	}
 	function onkeydown(e: KeyboardEvent) {
 		if (e.key === 'Enter' || e.key === ' ') {
@@ -47,6 +53,9 @@
 			<Cluster gap="var(--sp-2)" align="center">
 				{#if onreview}
 					<Button size="sm" onclick={review}>Review diff</Button>
+				{/if}
+				{#if onreviewagent}
+					<Button size="sm" onclick={reviewAgent}>Review with agent</Button>
 				{/if}
 				<Text tone="muted" size="xs">
 					<Timestamp value={pull.gh_updated_at} mode="relative" />

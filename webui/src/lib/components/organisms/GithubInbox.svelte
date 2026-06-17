@@ -21,6 +21,10 @@
 	// modal here keeps the inbox's PR context while the diff viewer is open.
 	let reviewing = $state<PullInboxItem | null>(null);
 
+	// "Review with agent" intent (CCT-390): emitted from a row or the diff viewer
+	// and handled by GithubView (resolves the repo-scoped prompt → spawn modal).
+	const { onreviewagent }: { onreviewagent?: (pull: PullInboxItem) => void } = $props();
+
 	const pulls = useGithubPulls();
 	const qc = useQueryClient();
 
@@ -85,7 +89,11 @@
 				<Heading level={3}>{g.label} ({g.pulls.length})</Heading>
 				<Stack gap="var(--sp-2)">
 					{#each g.pulls as p (`${p.connector_id}:${p.repo}:${p.number}`)}
-						<PullCard pull={p} onreview={(pr) => (reviewing = pr)} />
+						<PullCard
+							pull={p}
+							onreview={(pr) => (reviewing = pr)}
+							{onreviewagent}
+						/>
 					{/each}
 				</Stack>
 			</Stack>
@@ -94,5 +102,14 @@
 </Stack>
 
 {#if reviewing}
-	<PullDiffModal pull={reviewing} onclose={() => (reviewing = null)} />
+	<PullDiffModal
+		pull={reviewing}
+		onclose={() => (reviewing = null)}
+		onreviewagent={onreviewagent
+			? (pr) => {
+					reviewing = null;
+					onreviewagent(pr);
+				}
+			: undefined}
+	/>
 {/if}
