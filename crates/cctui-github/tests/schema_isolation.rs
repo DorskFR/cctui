@@ -75,6 +75,31 @@ async fn migrations_tracked_in_github_schema() {
     cctui_github::migrate(&pool).await.expect("re-migrate idempotent");
 }
 
+/// Regression for the prod-breaking search_path leak: after `migrate()`, an
+/// *unqualified* core query must still resolve against `public`. The original
+/// bug returned the search_path-pinned connection to the pool, so a reused
+/// connection saw `search_path = github` and failed core queries with
+/// "relation \"users\" does not exist". We acquire more connections than the
+/// pool holds to force reuse of the migration connection (if it leaked back).
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL"]
+async fn migrate_does_not_leak_search_path_into_pool() {
+    let Some(pool) = pool().await else { return };
+
+    cctui_github::migrate(&pool).await.expect("migrate");
+
+    // `public.users` exists (created in `pool()`); an UNQUALIFIED `users` must
+    // resolve to it. Loop past max_connections (4) so a leaked, github-pinned
+    // connection would be handed back and break this.
+    for i in 0..12 {
+        let row = pool
+            .fetch_one("SELECT count(*) FROM users")
+            .await
+            .unwrap_or_else(|e| panic!("unqualified core query #{i} failed (search_path leak?): {e}"));
+        let _: i64 = row.get(0);
+    }
+}
+
 /// `uninstall()` drops everything github while leaving core intact, even with a
 /// live `github`->core FK and a referenced core row.
 #[tokio::test]

@@ -15,7 +15,7 @@
 
 use axum::Router;
 use axum::routing::{get, post};
-use sqlx::{Executor, PgPool};
+use sqlx::{Connection, Executor, PgPool};
 
 mod routes;
 
@@ -46,8 +46,13 @@ pub struct GithubState {
 /// fully independent of core's `public._sqlx_migrations`, and a single
 /// [`uninstall`] (`DROP SCHEMA github CASCADE`) removes every trace of it.
 ///
-/// The pinned `search_path` is acquired with [`PgPool::acquire`] and only
-/// applies to that one connection, so other pool users are unaffected.
+/// The `search_path` pin is session-scoped, so the migration connection is
+/// **detached from the pool and closed** afterwards rather than returned to it.
+/// `SET search_path` survives on a pooled connection, so handing it back would
+/// poison whichever core query next reused it (core's unqualified `sessions`,
+/// `machines`, … would resolve against `github` and fail with "relation does
+/// not exist"). Discarding the connection makes the pin strictly local; the
+/// pool simply opens a fresh, default-`search_path` connection next time.
 ///
 /// # Errors
 /// Returns an error if the schema cannot be created or a migration fails.
@@ -61,6 +66,10 @@ pub async fn migrate(pool: &PgPool) -> anyhow::Result<()> {
     let mut conn = pool.acquire().await?;
     conn.execute(format!("SET search_path TO {SCHEMA}").as_str()).await?;
     MIGRATOR.run(&mut conn).await?;
+
+    // Detach + close so the search_path-pinned connection never re-enters the
+    // pool and poisons a core query. (See the doc comment above.)
+    conn.detach().close().await?;
 
     tracing::info!("cctui-github: migrate() — {SCHEMA} schema up to date");
     Ok(())
