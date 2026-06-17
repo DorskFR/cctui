@@ -6,16 +6,24 @@
 //! §7 for the plugin design (dedicated `github` Postgres schema, one-directional
 //! FKs into core, `DROP SCHEMA github CASCADE` uninstall).
 //!
-//! This crate (GH-PKG-1) is the skeleton: it exposes [`migrate`] and [`routes`]
-//! and wires the route surface from §9. The `github` schema + `search_path`-
-//! isolated migrator (GH-PKG-2) and the real handler bodies (later GH-* tickets)
-//! land on top of this.
+//! GH-PKG-2 lands the `github` schema and a `search_path`-isolated migrator:
+//! the crate's embedded migrations (and sqlx's own `_sqlx_migrations`
+//! bookkeeping) live entirely inside `github.*`, so they are independent of
+//! core's migration history and are removed wholesale by [`uninstall`]'s
+//! `DROP SCHEMA github CASCADE`. The real handler bodies land in later GH-*
+//! tickets.
 
 use axum::Router;
 use axum::routing::{get, post};
-use sqlx::PgPool;
+use sqlx::{Executor, PgPool};
 
 mod routes;
+
+/// The dedicated Postgres schema that holds **all** GitHub-integration state.
+const SCHEMA: &str = "github";
+
+/// The crate's embedded migrations, applied inside the `github` schema.
+static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
 /// Per-crate shared state.
 ///
@@ -27,20 +35,52 @@ pub struct GithubState {
     pub pool: PgPool,
 }
 
-/// Run the crate's embedded migrations against the `github` Postgres schema.
+/// Run the crate's embedded migrations against the dedicated `github` Postgres
+/// schema.
 ///
-/// GH-PKG-1 is the skeleton: the `search_path`-isolated migrator and the schema
-/// itself are owned by GH-PKG-2, so this is currently a no-op. The call site in
-/// `cctui-server`'s `main.rs` is wired now so GH-PKG-2 only has to fill in the
-/// body.
+/// The schema is created if absent, then the migrator runs on a connection
+/// whose `search_path` is pinned to `github`. sqlx resolves the unqualified
+/// objects in each migration — *including its own `_sqlx_migrations`
+/// bookkeeping table* — against that `search_path`, so all of it lands in
+/// `github.*` rather than `public.*`. The GitHub migration history is therefore
+/// fully independent of core's `public._sqlx_migrations`, and a single
+/// [`uninstall`] (`DROP SCHEMA github CASCADE`) removes every trace of it.
+///
+/// The pinned `search_path` is acquired with [`PgPool::acquire`] and only
+/// applies to that one connection, so other pool users are unaffected.
 ///
 /// # Errors
-/// Returns an error if a future migration fails to apply.
-// `async` is kept deliberately: GH-PKG-2 fills the body with `.await`ing
-// migrator calls, and the `main.rs` call site already `.await`s this.
-#[allow(clippy::unused_async)]
-pub async fn migrate(_pool: &PgPool) -> anyhow::Result<()> {
-    tracing::info!("cctui-github: migrate() — no schema yet (owned by GH-PKG-2)");
+/// Returns an error if the schema cannot be created or a migration fails.
+pub async fn migrate(pool: &PgPool) -> anyhow::Result<()> {
+    // Create the schema up front so the pinned `search_path` resolves. The
+    // identifier is a hard-coded constant, so the lack of binding is safe.
+    pool.execute(format!("CREATE SCHEMA IF NOT EXISTS {SCHEMA}").as_str()).await?;
+
+    // Pin one connection's search_path to `github`. The migrator creates
+    // `_sqlx_migrations` and every migration's tables relative to it.
+    let mut conn = pool.acquire().await?;
+    conn.execute(format!("SET search_path TO {SCHEMA}").as_str()).await?;
+    MIGRATOR.run(&mut conn).await?;
+
+    tracing::info!("cctui-github: migrate() — {SCHEMA} schema up to date");
+    Ok(())
+}
+
+/// Remove the GitHub integration's entire database footprint.
+///
+/// `DROP SCHEMA github CASCADE` drops every `github.*` table, its
+/// `_sqlx_migrations` history, and all the **outbound** FK constraints that
+/// `github.*` rows hold into core. Because core never references `github.*`
+/// (the one-directional-FK invariant, docs/github-integration.md §7.2), core
+/// tables are left completely intact — no stale rows, no dangling constraints.
+///
+/// Idempotent: a no-op if the schema was never created.
+///
+/// # Errors
+/// Returns an error if the `DROP SCHEMA` statement fails.
+pub async fn uninstall(pool: &PgPool) -> anyhow::Result<()> {
+    pool.execute(format!("DROP SCHEMA IF EXISTS {SCHEMA} CASCADE").as_str()).await?;
+    tracing::info!("cctui-github: uninstall() — {SCHEMA} schema dropped");
     Ok(())
 }
 

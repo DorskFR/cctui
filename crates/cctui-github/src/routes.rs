@@ -12,7 +12,8 @@ use axum::response::IntoResponse;
 
 use crate::GithubState;
 
-const STUB: (StatusCode, &str) = (StatusCode::NOT_IMPLEMENTED, "github integration not yet implemented");
+const STUB: (StatusCode, &str) =
+    (StatusCode::NOT_IMPLEMENTED, "github integration not yet implemented");
 
 /// `GET /api/v1/github/connectors` — list configured connectors.
 pub async fn list_connectors(State(_state): State<GithubState>) -> impl IntoResponse {
