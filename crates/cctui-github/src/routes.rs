@@ -18,11 +18,13 @@ use axum::http::StatusCode;
 use axum::{Extension, Json};
 use cctui_proto::github::{
     CallerIdentity, CheckSummary, ConnectorInfo, CreateConnector, GithubCredentialKind,
-    PullInboxItem, ReviewSummary,
+    PullDiff, PullInboxItem, ReviewSummary,
 };
+use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::attention::{self, Viewer};
+use crate::diff::{self, HttpDiffClient};
 use crate::{GithubState, crypto};
 
 type ApiError = (StatusCode, Json<serde_json::Value>);
@@ -342,6 +344,68 @@ pub async fn list_pulls(
         });
     }
     Ok(Json(items))
+}
+
+/// `GET /api/v1/github/pulls/{connector_id}/{owner}/{name}/{number}/diff` —
+/// the server-side diff proxy (GH-VIEW-1, docs §6.2).
+///
+/// `{ref}` is the same `(connector_id, repo, number)` locator the inbox uses
+/// (GH-UI-1). `repo` is `owner/name`, so it spans two path segments. Resolves
+/// the stored pull to its `head_sha` + the owning connector's credential, serves
+/// the per-head-SHA cache if warm, else fetches from GitHub (paginated files +
+/// truncated-file blob fallback), caches, and returns the structured [`PullDiff`].
+/// GitHub-only: no daemon, no checkout.
+pub async fn pull_diff(
+    State(state): State<GithubState>,
+    Extension(ctx): Extension<CallerIdentity>,
+    Path((connector_id, owner, name, number)): Path<(Uuid, String, String, i64)>,
+) -> Result<Json<Arc<PullDiff>>, ApiError> {
+    let repo = format!("{owner}/{name}");
+
+    // Resolve the stored pull, scoped to the caller's connector (admin sees all).
+    // We need the head SHA (cache key) and the connector's encrypted credential.
+    let row: Option<(String, String)> = sqlx::query_as(
+        "SELECT p.head_sha, c.encrypted_credential \
+         FROM github.pulls p JOIN github.connectors c ON c.id = p.connector_id \
+         WHERE p.connector_id = $1 AND p.repo = $2 AND p.number = $3 \
+           AND ($4::uuid IS NULL OR c.user_id = $4)",
+    )
+    .bind(connector_id)
+    .bind(&repo)
+    .bind(number)
+    .bind(ctx.user_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("github pull diff db error: {e}");
+        err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
+    })?;
+
+    let Some((head_sha, enc_credential)) = row else {
+        return Err(err(StatusCode::NOT_FOUND, "no such pull"));
+    };
+
+    // Per-head-SHA cache: a repeated load of an unchanged PR skips GitHub.
+    if let Some(cached) = state.diff_cache.get(&head_sha) {
+        return Ok(Json(cached));
+    }
+
+    let key = crypto::vault_key();
+    let Some(credential) = crypto::deobfuscate(&enc_credential, &key) else {
+        return Err(err(StatusCode::INTERNAL_SERVER_ERROR, "connector credential unavailable"));
+    };
+
+    let client = HttpDiffClient::new();
+    let built = diff::build_pull_diff(&client, &credential, &repo, number, &head_sha)
+        .await
+        .map_err(|e| {
+            // Never log the credential; the GitHub error text is safe.
+            tracing::warn!(%connector_id, repo, number, "github diff fetch failed: {e}");
+            err(StatusCode::BAD_GATEWAY, "failed to fetch diff from github")
+        })?;
+    let arc = Arc::new(built);
+    state.diff_cache.put(arc.clone());
+    Ok(Json(arc))
 }
 
 /// Aggregate CI check rows into the inbox's [`CheckSummary`]. Lockstep with

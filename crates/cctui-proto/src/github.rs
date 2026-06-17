@@ -330,6 +330,121 @@ pub struct ReviewSummary {
     pub commented: u32,
 }
 
+// ---------------------------------------------------------------------------
+// GH-VIEW-1: the structured diff the server proxies from GitHub.
+//
+// `GET /api/v1/github/pulls/{connector_id}/{owner}/{name}/{number}/diff` fetches
+// the PR's changed files from GitHub (paginated `pulls/{n}/files`, with a blob
+// fallback for files GitHub truncates), parses each file's unified `patch` into
+// hunks → lines, and returns this structured tree. The webui (GH-VIEW-3)
+// virtualizes it. No daemon, no checkout: the data source is GitHub only
+// (docs/github-integration.md §6.2). The result is cached per head SHA, so a
+// repeated load of an unchanged PR costs no GitHub round-trip.
+//
+// No credential or raw token is ever represented here — only the diff content.
+// ---------------------------------------------------------------------------
+
+/// One line within a diff hunk.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct DiffLine {
+    /// `context` (unchanged) | `add` | `del`.
+    pub kind: DiffLineKind,
+    /// Line text **without** the leading ` `/`+`/`-` marker.
+    pub content: String,
+    /// 1-based line number on the old (base) side; `None` for an added line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub old_line: Option<u32>,
+    /// 1-based line number on the new (head) side; `None` for a deleted line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_line: Option<u32>,
+}
+
+/// The role of a [`DiffLine`] within its hunk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum DiffLineKind {
+    /// An unchanged context line (present on both sides).
+    Context,
+    /// A line added on the head side.
+    Add,
+    /// A line removed from the base side.
+    Del,
+}
+
+/// One hunk (`@@ -a,b +c,d @@`) of a file's diff.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct DiffHunk {
+    /// 1-based starting line on the old (base) side.
+    pub old_start: u32,
+    /// Number of old-side lines the hunk covers.
+    pub old_lines: u32,
+    /// 1-based starting line on the new (head) side.
+    pub new_start: u32,
+    /// Number of new-side lines the hunk covers.
+    pub new_lines: u32,
+    /// The hunk's section heading (the text after the second `@@`), when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header: Option<String>,
+    pub lines: Vec<DiffLine>,
+}
+
+/// One changed file in a PR diff: its path(s), change status, and parsed hunks.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct DiffFile {
+    /// Current path (head side). For a delete this is the removed path.
+    pub path: String,
+    /// Previous path when the file was renamed/moved; `None` otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_path: Option<String>,
+    /// GitHub's `status`: `added` | `modified` | `removed` | `renamed` |
+    /// `copied` | `changed` | `unchanged`.
+    pub status: String,
+    pub additions: u32,
+    pub deletions: u32,
+    /// Parsed hunks. Empty for a binary file or a file whose patch could not be
+    /// fetched even via the blob fallback (`truncated` is then `true`).
+    pub hunks: Vec<DiffHunk>,
+    /// GitHub flagged the inline patch as omitted (too large) **and** the blob
+    /// fallback did not (or could not) reconstruct it — the webui shows a
+    /// "load full file" affordance rather than a misleading empty diff.
+    pub truncated: bool,
+    /// A binary file has no textual patch; the webui renders a binary badge.
+    pub binary: bool,
+    /// The file's blob SHA on the head side (GitHub's `sha`), for blob-keyed
+    /// "reviewed" marks (GH-VIEW-6) and the blob fallback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blob_sha: Option<String>,
+}
+
+/// The structured diff for one PR, returned by `pulls/{ref}/diff`.
+///
+/// Cached server-side keyed on `head_sha`, so a repeated load of an unchanged
+/// PR is served from memory with no GitHub round-trip (docs §6.2). When the head
+/// SHA rotates (a new push), the cache entry is naturally superseded.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PullDiff {
+    pub repo: String,
+    pub number: i64,
+    /// The head SHA this diff was computed against (the cache key).
+    pub head_sha: String,
+    /// Total changed-file count across the whole PR (even when `huge` truncates
+    /// `files`), so the UI can show "showing N of M files".
+    pub total_files: u32,
+    /// Total changed-line count (additions + deletions) across the PR.
+    pub total_changes: u64,
+    /// `true` when the PR exceeds the large-diff threshold (docs §11, the
+    /// 100k-plus-line case GitHub serves unreliably): `files` is then capped and
+    /// the webui shows a "huge diff" affordance / per-file lazy load instead of
+    /// rendering everything at once.
+    pub huge: bool,
+    pub files: Vec<DiffFile>,
+}
+
 /// One row in the `/github` PR inbox: the synced PR plus its derived attention
 /// bucket and pre-aggregated CI/review summaries.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

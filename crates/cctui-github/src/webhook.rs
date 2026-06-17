@@ -494,6 +494,7 @@ mod tests {
             pool: pool.clone(),
             events: tx,
             pr_cache: cctui_proto::classifier::PrStatusCache::new(),
+            diff_cache: crate::diff::DiffCache::new(),
         };
         let body = br#"{
             "repository": { "full_name": "o/r" },

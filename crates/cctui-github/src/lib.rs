@@ -20,6 +20,7 @@ use sqlx::{Connection, Executor, PgPool};
 mod attention;
 mod classifier_feed;
 mod crypto;
+mod diff;
 mod reconcile;
 mod routes;
 mod store;
@@ -57,6 +58,10 @@ pub struct GithubState {
     /// state into it after each upsert. A `cctui-proto` type, so this stays
     /// one-directional — the crate never depends on `cctui-server`.
     pub pr_cache: cctui_proto::classifier::PrStatusCache,
+    /// Per-head-SHA diff cache (GH-VIEW-1). In-memory by design — it holds no
+    /// `github.*` rows, so `DROP SCHEMA github CASCADE` (uninstall) leaves
+    /// nothing stale, and a restart simply re-fetches once.
+    pub diff_cache: diff::DiffCache,
 }
 
 /// Run the crate's embedded migrations against the dedicated `github` Postgres
@@ -171,11 +176,15 @@ pub fn routes(
     events: EventTx,
     pr_cache: cctui_proto::classifier::PrStatusCache,
 ) -> Router {
-    let state = GithubState { pool, events, pr_cache };
+    let state = GithubState { pool, events, pr_cache, diff_cache: diff::DiffCache::new() };
     Router::new()
         .route("/github/connectors", get(routes::list_connectors).post(routes::create_connector))
         .route("/github/connectors/{id}", delete(routes::delete_connector))
         .route("/github/pulls", get(routes::list_pulls))
+        .route(
+            "/github/pulls/{connector_id}/{owner}/{name}/{number}/diff",
+            get(routes::pull_diff),
+        )
         .route("/triggers/github", post(webhook::webhook))
         .with_state(state)
 }

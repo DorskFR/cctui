@@ -138,7 +138,7 @@ pub fn spawn(
     events: store::EventTx,
     pr_cache: cctui_proto::classifier::PrStatusCache,
 ) {
-    let state = GithubState { pool, events, pr_cache };
+    let state = GithubState { pool, events, pr_cache, diff_cache: crate::diff::DiffCache::new() };
     let secs = interval_secs();
     if secs == 0 {
         tracing::info!("cctui-github: reconcile loop disabled (interval = 0)");
@@ -216,14 +216,14 @@ async fn reconcile_connector(
             .await
             .ok()
             .flatten();
-    if known.is_none() {
-        if let Ok(Some(login)) = client.viewer_login(credential).await {
-            let _ = sqlx::query("UPDATE github.connectors SET viewer_login = $1 WHERE id = $2")
-                .bind(&login)
-                .bind(connector_id)
-                .execute(&state.pool)
-                .await;
-        }
+    if known.is_none()
+        && let Ok(Some(login)) = client.viewer_login(credential).await
+    {
+        let _ = sqlx::query("UPDATE github.connectors SET viewer_login = $1 WHERE id = $2")
+            .bind(&login)
+            .bind(connector_id)
+            .execute(&state.pool)
+            .await;
     }
 
     let cache_key = (connector_id, query.to_string());
