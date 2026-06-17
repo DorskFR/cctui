@@ -6,20 +6,26 @@
 -->
 <script lang="ts">
 	import type { PullInboxItem } from '$lib/queries';
-	import { Badge, Card, Cluster, Stack, Text, Timestamp } from '@dorsk/tsumikit';
+	import { Badge, Button, Card, Cluster, Stack, Text, Timestamp } from '@dorsk/tsumikit';
 
 	interface Props {
 		pull: PullInboxItem;
-		/** Open the PR on GitHub (the diff viewer lands in a later story). */
+		/** Open the PR on GitHub. */
 		onopen?: (pull: PullInboxItem) => void;
+		/** Open the virtualized diff viewer for this PR (GH-VIEW-3). */
+		onreview?: (pull: PullInboxItem) => void;
 	}
-	const { pull, onopen }: Props = $props();
+	const { pull, onopen, onreview }: Props = $props();
 
 	const href = $derived(`https://github.com/${pull.repo}/pull/${pull.number}`);
 
 	function open() {
 		if (onopen) onopen(pull);
 		else window.open(href, '_blank', 'noopener');
+	}
+	function review(e: MouseEvent) {
+		e.stopPropagation();
+		onreview?.(pull);
 	}
 	function onkeydown(e: KeyboardEvent) {
 		if (e.key === 'Enter' || e.key === ' ') {
@@ -38,9 +44,14 @@
 					<Badge tone="neutral">draft</Badge>
 				{/if}
 			</Cluster>
-			<Text tone="muted" size="xs">
-				<Timestamp value={pull.gh_updated_at} mode="relative" />
-			</Text>
+			<Cluster gap="var(--sp-2)" align="center">
+				{#if onreview}
+					<Button size="sm" onclick={review}>Review diff</Button>
+				{/if}
+				<Text tone="muted" size="xs">
+					<Timestamp value={pull.gh_updated_at} mode="relative" />
+				</Text>
+			</Cluster>
 		</Cluster>
 
 		<Cluster gap="var(--sp-2)" align="center">

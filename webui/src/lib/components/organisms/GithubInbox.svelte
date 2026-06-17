@@ -15,6 +15,11 @@
 	import { Card, Heading, Stack, Text } from '@dorsk/tsumikit';
 	import SearchBox from '../molecules/SearchBox.svelte';
 	import PullCard from './PullCard.svelte';
+	import PullDiffModal from './PullDiffModal.svelte';
+
+	// The PR whose virtualized diff (GH-VIEW-3) is open, or null. Hosting the
+	// modal here keeps the inbox's PR context while the diff viewer is open.
+	let reviewing = $state<PullInboxItem | null>(null);
 
 	const pulls = useGithubPulls();
 	const qc = useQueryClient();
@@ -80,10 +85,14 @@
 				<Heading level={3}>{g.label} ({g.pulls.length})</Heading>
 				<Stack gap="var(--sp-2)">
 					{#each g.pulls as p (`${p.connector_id}:${p.repo}:${p.number}`)}
-						<PullCard pull={p} />
+						<PullCard pull={p} onreview={(pr) => (reviewing = pr)} />
 					{/each}
 				</Stack>
 			</Stack>
 		{/each}
 	{/if}
 </Stack>
+
+{#if reviewing}
+	<PullDiffModal pull={reviewing} onclose={() => (reviewing = null)} />
+{/if}

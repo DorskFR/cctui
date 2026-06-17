@@ -25,6 +25,7 @@ import type { CapabilitiesResponse } from "@bindings/CapabilitiesResponse";
 import type { ConnectorInfo } from "@bindings/ConnectorInfo";
 import type { CreateConnector } from "@bindings/CreateConnector";
 import type { PullInboxItem } from "@bindings/PullInboxItem";
+import type { PullDiff } from "@bindings/PullDiff";
 import type { Label } from "@bindings/Label";
 import type { LabelListResponse } from "@bindings/LabelListResponse";
 
@@ -276,6 +277,12 @@ export const endpoints = {
   /** The PR inbox (GH-UI-1): synced PRs, each with its derived attention
    *  bucket + CI/review summary, scoped to the caller's connectors. */
   githubPulls: () => api.get<PullInboxItem[]>("/github/pulls"),
+  /** The structured diff for one PR (GH-VIEW-1): the server proxies + caches
+   *  GitHub's files (paginated, with a blob fallback for truncated patches) and
+   *  returns the parsed files→hunks→lines tree the diff viewer (GH-VIEW-3)
+   *  virtualizes. `repo` is `owner/name`, so it spans two path segments. */
+  githubPullDiff: (connectorId: string, repo: string, number: number) =>
+    api.get<PullDiff>(`/github/pulls/${connectorId}/${repo}/${number}/diff`),
   /** Every spawnable machine across all active users — for the spawn picker.
    * Excludes server-managed machines (`ephemeral` worker pods and the per-user
    * `dispatch` machine): those aren't somewhere you'd start an interactive
@@ -490,6 +497,28 @@ export const useGithubPulls = (enabled: () => boolean = () => true) =>
       queryFn: endpoints.githubPulls,
       enabled: enabled(),
       refetchInterval: 60_000,
+    })),
+  );
+
+export type { PullDiff };
+
+/** The structured diff for one PR (GH-VIEW-1 → GH-VIEW-3). Keyed on the PR's
+ *  locator; the server caches per head SHA so a re-open of an unchanged PR costs
+ *  no GitHub round-trip. Long stale time: a diff only changes on a new push,
+ *  which arrives as a live `GithubEvent` the viewer reacts to (it invalidates
+ *  this key). Only fetched while the viewer is mounted (caller gates `enabled`). */
+export const useGithubPullDiff = (
+  connectorId: () => string,
+  repo: () => string,
+  number: () => number,
+  enabled: () => boolean = () => true,
+) =>
+  createQuery(
+    toStore(() => ({
+      queryKey: ["github-pull-diff", connectorId(), repo(), number()],
+      queryFn: () => endpoints.githubPullDiff(connectorId(), repo(), number()),
+      enabled: enabled() && !!connectorId() && !!repo(),
+      staleTime: 5 * 60_000,
     })),
   );
 
