@@ -270,10 +270,12 @@
 						<strong>Pull requests</strong> and <strong>Contents</strong> (<strong>Metadata</strong> is
 						required and granted automatically). No account/org permissions are needed.
 						<strong>For private org repos</strong> the token must be approved by an org owner /
-						SSO-authorized — and if the search keeps returning a 422 even then, use a
-						<strong>classic PAT</strong> with <code>repo</code> scope: fine-grained tokens have
-						limited support for the issue-search <code>@me</code>/user qualifiers. cctui polls every
-						~5 min for PRs you authored or were asked to review; use “Refresh now” to poll on demand.
+						SSO-authorized. A fine-grained PAT works only when you <strong>list explicit repos
+						below</strong> (cctui lists each repo's PRs directly); to track your
+						<strong>whole account</strong> with no repos listed, use a <strong>classic PAT</strong>
+						with <code>repo</code> scope, since fine-grained tokens can't run the cross-repo issue
+						search. cctui polls every ~5 min for PRs you authored or were asked to review; use “Refresh
+						now” to poll on demand.
 					</Text>
 				{:else}
 					<Text as="p" tone="muted" size="xs">

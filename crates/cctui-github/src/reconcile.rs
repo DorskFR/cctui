@@ -83,6 +83,43 @@ pub trait SearchClient: Send + Sync {
     async fn viewer_login(&self, _credential: &str) -> anyhow::Result<Option<String>> {
         Ok(None)
     }
+
+    /// List the open PRs in one `owner/name` repo that involve `viewer_login`
+    /// (authored OR review-requested directly), via `GET /repos/{repo}/pulls`.
+    ///
+    /// This is the **fine-grained-PAT-compatible** path (CCT-396): the issue
+    /// search API rejects user qualifiers for fine-grained tokens with a 422,
+    /// but listing a repo's pulls only needs `Pull requests: read`, so we fetch
+    /// the repo's open PRs and filter to the viewer ourselves. Only usable when
+    /// the connector lists explicit `owner/name` repos. The default returns an
+    /// empty list so test fakes need not implement it.
+    async fn list_repo_pulls_involving(
+        &self,
+        _credential: &str,
+        _repo: &str,
+        _viewer_login: &str,
+    ) -> anyhow::Result<Vec<PullUpsert>> {
+        Ok(Vec::new())
+    }
+}
+
+/// Whether a `GET /repos/{repo}/pulls` PR object involves `login` directly:
+/// authored by them, or with a review requested of them (case-insensitive).
+/// Team review requests are out of scope for v1 (mirrors the dropped
+/// `team-review-requested` search qualifier).
+#[must_use]
+pub fn pull_involves_viewer(pr: &serde_json::Value, login: &str) -> bool {
+    let author = pr.get("user").and_then(|u| u.get("login")).and_then(|l| l.as_str());
+    if author.is_some_and(|a| a.eq_ignore_ascii_case(login)) {
+        return true;
+    }
+    pr.get("requested_reviewers")
+        .and_then(|r| r.as_array())
+        .is_some_and(|reviewers| {
+            reviewers.iter().any(|r| {
+                r.get("login").and_then(|l| l.as_str()).is_some_and(|l| l.eq_ignore_ascii_case(login))
+            })
+        })
 }
 
 /// Build the GitHub issue-search query string for one connector scope.
@@ -294,6 +331,22 @@ async fn reconcile_connector(
         None
     };
 
+    // Fine-grained-PAT-compatible path (CCT-396): when every tracked repo is an
+    // explicit `owner/name` slug AND we know the viewer login, list each repo's
+    // open PRs and filter client-side rather than using the issue search API,
+    // which 422s user qualifiers for fine-grained tokens. A connector with no
+    // repos, a bare-`owner` slug, or no resolved login falls through to search
+    // (which works for classic PATs).
+    let all_explicit = !repos.is_empty() && repos.iter().all(|r| r.trim().contains('/'));
+    if let (true, Some(login)) = (all_explicit, viewer_login.as_deref()) {
+        let mut pulls = Vec::new();
+        for repo in repos {
+            let repo = repo.trim();
+            pulls.extend(client.list_repo_pulls_involving(credential, repo, login).await?);
+        }
+        return Ok(upsert_pulls(&state.pool, state, connector_id, &pulls).await);
+    }
+
     let query = build_query(repos, viewer_login.as_deref().unwrap_or("@me"));
     let cache_key = (connector_id, query.clone());
     let prior = etags.lock().await.get(&cache_key).cloned();
@@ -463,6 +516,55 @@ impl SearchClient for HttpSearchClient {
         let v: serde_json::Value = resp.json().await?;
         Ok(v.get("login").and_then(|l| l.as_str()).map(str::to_string))
     }
+
+    async fn list_repo_pulls_involving(
+        &self,
+        credential: &str,
+        repo: &str,
+        viewer_login: &str,
+    ) -> anyhow::Result<Vec<PullUpsert>> {
+        let mut pulls = Vec::new();
+        // Paginate `GET /repos/{repo}/pulls?state=open`; stop at a short page or
+        // a sane cap so a huge repo can't run away. The list objects carry
+        // head/base/user/requested_reviewers — enough to filter + upsert (the
+        // detailed `mergeable_state` stays None until a single-PR fetch, which is
+        // exactly the "None until GitHub computes it" contract).
+        for page in 1..=10u32 {
+            let url = format!("{API_BASE}/repos/{repo}/pulls");
+            let resp = self
+                .http
+                .get(&url)
+                .query(&[
+                    ("state", "open"),
+                    ("per_page", "100"),
+                    ("page", &page.to_string()),
+                ])
+                .header(reqwest::header::USER_AGENT, USER_AGENT)
+                .header(reqwest::header::AUTHORIZATION, format!("Bearer {credential}"))
+                .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+                .send()
+                .await?;
+            let status = resp.status();
+            if !status.is_success() {
+                let body = resp.text().await.unwrap_or_default();
+                let detail = github_error_message(&body);
+                anyhow::bail!("github list pulls for {repo} returned {status}{detail}");
+            }
+            let items: Vec<serde_json::Value> = resp.json().await?;
+            let count = items.len();
+            for pr in &items {
+                if pull_involves_viewer(pr, viewer_login)
+                    && let Some(parsed) = parse_pull_object(repo, pr)
+                {
+                    pulls.push(parsed);
+                }
+            }
+            if count < 100 {
+                break;
+            }
+        }
+        Ok(pulls)
+    }
 }
 
 /// Compute how long to back off from a rate-limited response, or `None` if it
@@ -625,6 +727,28 @@ mod tests {
     fn build_query_no_repos_is_global() {
         let q = build_query(&[], "@me");
         assert_eq!(q, "is:pr is:open (author:@me OR review-requested:@me)");
+    }
+
+    #[test]
+    fn pull_involves_viewer_matches_author_and_reviewer() {
+        let authored: serde_json::Value =
+            serde_json::from_str(r#"{ "user": { "login": "Octocat" } }"#).unwrap();
+        // Author match is case-insensitive.
+        assert!(pull_involves_viewer(&authored, "octocat"));
+        assert!(!pull_involves_viewer(&authored, "someone"));
+
+        let review_requested: serde_json::Value = serde_json::from_str(
+            r#"{ "user": { "login": "other" },
+                 "requested_reviewers": [{ "login": "me" }, { "login": "x" }] }"#,
+        )
+        .unwrap();
+        assert!(pull_involves_viewer(&review_requested, "ME"));
+
+        let unrelated: serde_json::Value = serde_json::from_str(
+            r#"{ "user": { "login": "other" }, "requested_reviewers": [{ "login": "x" }] }"#,
+        )
+        .unwrap();
+        assert!(!pull_involves_viewer(&unrelated, "me"));
     }
 
     #[test]
