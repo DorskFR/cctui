@@ -10,6 +10,7 @@
 use crate::adapter::SessionChild;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 use ts_rs::TS;
 
 /// The four session buckets clients group on. Serialized `snake_case`
@@ -59,6 +60,92 @@ pub struct PrStatus<'a> {
     pub checks_failed: u32,
     pub checks_pending: u32,
     pub review: &'a str,
+}
+
+/// Owned counterpart of [`PrStatus`], suitable for storing in the shared
+/// best-effort PR status cache ([`PrStatusCache`]).
+///
+/// [`PrStatus`] borrows its strings so the classifier hot path allocates
+/// nothing, but the cache must own its entries (the connector that wrote them
+/// has long since returned). Call [`OwnedPrStatus::as_ref`] to obtain a borrowed
+/// [`PrStatus`] for [`classify`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnedPrStatus {
+    pub state: String,
+    pub checks_passed: u32,
+    pub checks_failed: u32,
+    pub checks_pending: u32,
+    pub review: String,
+}
+
+impl OwnedPrStatus {
+    /// Borrow this owned status as a [`PrStatus`] for classification.
+    #[must_use]
+    pub fn as_ref(&self) -> PrStatus<'_> {
+        PrStatus {
+            state: &self.state,
+            checks_passed: self.checks_passed,
+            checks_failed: self.checks_failed,
+            checks_pending: self.checks_pending,
+            review: &self.review,
+        }
+    }
+}
+
+/// Shared, core-owned, best-effort PR status cache keyed by `SessionChild.href`.
+///
+/// This is the **seam** between the optional GitHub connector and the
+/// classifier (docs/github-integration.md §6.1, GH-CLS-1). The cache lives in
+/// core (`AppState`) and the classifier reads it; the GitHub connector, when
+/// compiled in, *pushes* enriched check/review state into it. Core/classifier
+/// never depend on `cctui-github` — the dependency is strictly one-directional
+/// (docs §7.5). When GitHub is absent the cache simply stays empty: sessions
+/// still render and `SessionChild` links remain opaque core metadata, so the
+/// `Review` bucket never arises spuriously and behaviour is byte-for-byte the
+/// feature-off baseline.
+#[derive(Debug, Clone, Default)]
+pub struct PrStatusCache {
+    inner: Arc<RwLock<HashMap<String, OwnedPrStatus>>>,
+}
+
+impl PrStatusCache {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Insert or replace the cached status for `href` (a `SessionChild.href`).
+    /// Called by the GitHub connector after an upsert.
+    pub fn upsert(&self, href: impl Into<String>, status: OwnedPrStatus) {
+        if let Ok(mut map) = self.inner.write() {
+            map.insert(href.into(), status);
+        }
+    }
+
+    /// Drop the cached status for `href`, if any.
+    pub fn remove(&self, href: &str) {
+        if let Ok(mut map) = self.inner.write() {
+            map.remove(href);
+        }
+    }
+
+    /// Take an owned snapshot of the cache for a classification pass.
+    ///
+    /// [`classify`] borrows [`PrStatus`] out of a `HashMap`, so the caller holds
+    /// this snapshot for the duration of the pass and builds the borrowed map
+    /// via [`Self::borrow_map`]. A poisoned lock degrades to an empty snapshot
+    /// rather than panicking — losing enrichment, never blocking the list.
+    #[must_use]
+    pub fn snapshot(&self) -> HashMap<String, OwnedPrStatus> {
+        self.inner.read().map(|m| m.clone()).unwrap_or_default()
+    }
+
+    /// Build the borrowed `PrStatus` map that [`classify`] expects from an owned
+    /// snapshot (see [`Self::snapshot`]).
+    #[must_use]
+    pub fn borrow_map(snapshot: &HashMap<String, OwnedPrStatus>) -> HashMap<String, PrStatus<'_>> {
+        snapshot.iter().map(|(k, v)| (k.clone(), v.as_ref())).collect()
+    }
 }
 
 impl PrStatus<'_> {
@@ -195,7 +282,7 @@ mod tests {
             href: "https://github.com/o/r/pull/1".into(),
             kind: "pr".into(),
         }];
-        let mut cache = HashMap::new();
+        let mut cache: HashMap<String, PrStatus<'_>> = HashMap::new();
         cache.insert(
             "https://github.com/o/r/pull/1".into(),
             PrStatus {
@@ -219,7 +306,7 @@ mod tests {
             href: "https://github.com/o/r/pull/1".into(),
             kind: "pr".into(),
         }];
-        let mut cache = HashMap::new();
+        let mut cache: HashMap<String, PrStatus<'_>> = HashMap::new();
         cache.insert(
             "https://github.com/o/r/pull/1".into(),
             PrStatus {
@@ -244,7 +331,7 @@ mod tests {
             href: "https://github.com/o/r/pull/1".into(),
             kind: "pr".into(),
         }];
-        let mut cache = HashMap::new();
+        let mut cache: HashMap<String, PrStatus<'_>> = HashMap::new();
         cache.insert(
             "https://github.com/o/r/pull/1".into(),
             PrStatus {
@@ -259,6 +346,47 @@ mod tests {
         s.state = Some("done");
         s.children = &children;
         assert_eq!(classify(&s, &cache), Bucket::Done);
+    }
+
+    #[test]
+    fn cache_seam_enriches_then_degrades() {
+        // The seam GH-CLS-1 builds on: the connector upserts owned status into
+        // the shared cache; the classifier borrows a snapshot of it.
+        let children = [SessionChild {
+            id: "1".into(),
+            href: "https://github.com/o/r/pull/7".into(),
+            kind: "pr".into(),
+        }];
+        let mut s = snap();
+        s.state = Some("working");
+        s.children = &children;
+
+        let cache = PrStatusCache::new();
+
+        // Degradation: GitHub absent / nothing published yet → empty snapshot,
+        // no Review bucket, behaviour identical to the feature-off baseline.
+        let snap0 = cache.snapshot();
+        assert!(snap0.is_empty());
+        assert_eq!(classify(&s, &PrStatusCache::borrow_map(&snap0)), Bucket::Working);
+
+        // Connector publishes a CI-red status for the PR this session opened.
+        cache.upsert(
+            "https://github.com/o/r/pull/7",
+            OwnedPrStatus {
+                state: "OPEN".into(),
+                checks_passed: 3,
+                checks_failed: 1,
+                checks_pending: 0,
+                review: "REVIEW_REQUIRED".into(),
+            },
+        );
+        let snap1 = cache.snapshot();
+        assert_eq!(classify(&s, &PrStatusCache::borrow_map(&snap1)), Bucket::Review);
+
+        // Connector drops the entry (e.g. PR merged & pruned) → back to baseline.
+        cache.remove("https://github.com/o/r/pull/7");
+        let snap2 = cache.snapshot();
+        assert_eq!(classify(&s, &PrStatusCache::borrow_map(&snap2)), Bucket::Working);
     }
 
     #[test]

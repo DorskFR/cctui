@@ -66,6 +66,7 @@ async fn main() -> anyhow::Result<()> {
         http_client: reqwest::Client::new(),
         pending_oauth_logins: Arc::new(dashmap::DashMap::new()),
         account_usage_cache: Arc::new(dashmap::DashMap::new()),
+        pr_status_cache: cctui_proto::classifier::PrStatusCache::new(),
     };
 
     let api_router = Router::new()
@@ -260,7 +261,7 @@ async fn main() -> anyhow::Result<()> {
     #[cfg(feature = "github")]
     let app = app.nest(
         "/api/v1",
-        cctui_github::routes(state.pool.clone(), state.tui_tx.clone())
+        cctui_github::routes(state.pool.clone(), state.tui_tx.clone(), state.pr_status_cache.clone())
             .layer(middleware::from_fn(github_identity))
             .layer(middleware::from_fn(auth::auth_middleware))
             .layer(Extension(auth_config.clone())),

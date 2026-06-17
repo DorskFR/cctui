@@ -23,7 +23,7 @@ use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use uuid::Uuid;
 
-use crate::{GithubState, crypto, store};
+use crate::{GithubState, classifier_feed, crypto, store};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -119,6 +119,16 @@ async fn dispatch(
         "pull_request" | "pull_request_review_thread" => {
             let pull = parse_pull(&v).ok_or(DispatchError::BadPayload)?;
             store::upsert_pull(&state.pool, &state.events, connector_id, &pull).await?;
+            // GH-CLS-1: enrich the classifier cache for the session that opened
+            // this PR.
+            classifier_feed::refresh(
+                &state.pool,
+                &state.pr_cache,
+                connector_id,
+                &pull.repo,
+                pull.number,
+            )
+            .await;
             Ok(Handled::Accepted)
         }
         "pull_request_review" => {
@@ -128,6 +138,14 @@ async fn dispatch(
             }
             let review = parse_review(&v).ok_or(DispatchError::BadPayload)?;
             store::upsert_review(&state.pool, &state.events, connector_id, &review).await?;
+            classifier_feed::refresh(
+                &state.pool,
+                &state.pr_cache,
+                connector_id,
+                &review.repo,
+                review.pull_number,
+            )
+            .await;
             Ok(Handled::Accepted)
         }
         "pull_request_review_comment" | "issue_comment" => {
@@ -139,11 +157,13 @@ async fn dispatch(
         "check_suite" | "check_run" => {
             let check = parse_check(event, &v).ok_or(DispatchError::BadPayload)?;
             store::upsert_check(&state.pool, &state.events, connector_id, &check).await?;
+            refresh_pulls_at_sha(state, connector_id, &check.repo, &check.head_sha).await;
             Ok(Handled::Accepted)
         }
         "status" => {
             let check = parse_status(&v).ok_or(DispatchError::BadPayload)?;
             store::upsert_check(&state.pool, &state.events, connector_id, &check).await?;
+            refresh_pulls_at_sha(state, connector_id, &check.repo, &check.head_sha).await;
             Ok(Handled::Accepted)
         }
         "push" => {
@@ -155,6 +175,26 @@ async fn dispatch(
             Ok(Handled::Accepted)
         }
         _ => Ok(Handled::Ignored),
+    }
+}
+
+/// GH-CLS-1: a check/status event keys on a head SHA, not a PR number, so map
+/// the SHA back to the open PR(s) on it and refresh each one's classifier
+/// status. Best-effort: a query error refreshes nothing (the cache keeps its
+/// prior view) rather than failing the webhook.
+async fn refresh_pulls_at_sha(state: &GithubState, connector_id: Uuid, repo: &str, head_sha: &str) {
+    let numbers: Vec<(i64,)> = sqlx::query_as(
+        "SELECT number FROM github.pulls \
+         WHERE connector_id = $1 AND repo = $2 AND head_sha = $3",
+    )
+    .bind(connector_id)
+    .bind(repo)
+    .bind(head_sha)
+    .fetch_all(&state.pool)
+    .await
+    .unwrap_or_default();
+    for (number,) in numbers {
+        classifier_feed::refresh(&state.pool, &state.pr_cache, connector_id, repo, number).await;
     }
 }
 
@@ -450,7 +490,11 @@ mod tests {
             .get(0);
 
         let (tx, _rx) = tokio::sync::broadcast::channel(8);
-        let state = GithubState { pool: pool.clone(), events: tx };
+        let state = GithubState {
+            pool: pool.clone(),
+            events: tx,
+            pr_cache: cctui_proto::classifier::PrStatusCache::new(),
+        };
         let body = br#"{
             "repository": { "full_name": "o/r" },
             "pull_request": {

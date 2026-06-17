@@ -92,10 +92,9 @@ async fn migrate_does_not_leak_search_path_into_pool() {
     // resolve to it. Loop past max_connections (4) so a leaked, github-pinned
     // connection would be handed back and break this.
     for i in 0..12 {
-        let row = pool
-            .fetch_one("SELECT count(*) FROM users")
-            .await
-            .unwrap_or_else(|e| panic!("unqualified core query #{i} failed (search_path leak?): {e}"));
+        let row = pool.fetch_one("SELECT count(*) FROM users").await.unwrap_or_else(|e| {
+            panic!("unqualified core query #{i} failed (search_path leak?): {e}")
+        });
         let _: i64 = row.get(0);
     }
 }

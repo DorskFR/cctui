@@ -17,11 +17,13 @@ use axum::Router;
 use axum::routing::{delete, get, post};
 use sqlx::{Connection, Executor, PgPool};
 
+mod classifier_feed;
 mod crypto;
 mod routes;
 mod store;
 mod webhook;
 
+pub use classifier_feed::{derive_status, pr_href, publish as publish_pr_status, refresh};
 pub use store::{
     EventTx, upsert_check, upsert_pull, upsert_review, upsert_review_comment, upsert_review_thread,
 };
@@ -46,6 +48,11 @@ static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 pub struct GithubState {
     pub pool: PgPool,
     pub events: EventTx,
+    /// The core-owned, best-effort PR status cache the session classifier reads
+    /// (GH-CLS-1, docs §6.1). The webhook publishes a PR's derived check/review
+    /// state into it after each upsert. A `cctui-proto` type, so this stays
+    /// one-directional — the crate never depends on `cctui-server`.
+    pub pr_cache: cctui_proto::classifier::PrStatusCache,
 }
 
 /// Run the crate's embedded migrations against the dedicated `github` Postgres
@@ -155,8 +162,12 @@ pub async fn capability(pool: &PgPool) -> GithubCapability {
 ///
 /// Paths mirror §9 of the design doc; handler bodies are placeholders until the
 /// later GH-* tickets.
-pub fn routes(pool: PgPool, events: EventTx) -> Router {
-    let state = GithubState { pool, events };
+pub fn routes(
+    pool: PgPool,
+    events: EventTx,
+    pr_cache: cctui_proto::classifier::PrStatusCache,
+) -> Router {
+    let state = GithubState { pool, events, pr_cache };
     Router::new()
         .route("/github/connectors", get(routes::list_connectors).post(routes::create_connector))
         .route("/github/connectors/{id}", delete(routes::delete_connector))

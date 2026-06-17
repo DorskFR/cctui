@@ -99,6 +99,15 @@ pub struct AppState {
     /// serve a cached value and only re-fetch upstream past a TTL — the accounts
     /// view polls lazily and many clients share one cache entry per account.
     pub account_usage_cache: AccountUsageCache,
+    /// Best-effort PR status cache the session classifier reads (GH-CLS-1,
+    /// docs/github-integration.md §6.1). Core-owned and always present; the
+    /// optional GitHub connector (feature `github`) pushes enriched check/review
+    /// state into it. Empty when GitHub is absent — sessions still render and no
+    /// `Review` bucket arises, so feature-off behaviour is unchanged. Only the
+    /// `github`-feature route reads it today, so it is dead in a feature-off
+    /// build (the field still exists so `AppState` has one shape either way).
+    #[cfg_attr(not(feature = "github"), allow(dead_code))]
+    pub pr_status_cache: cctui_proto::classifier::PrStatusCache,
 }
 
 /// A cached usage fetch: when it was fetched and the JSON payload (the raw
