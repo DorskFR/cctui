@@ -3,6 +3,7 @@ export type * from './AdapterId';
 export type * from './AgentEvent';
 export type * from './ApiError';
 export type * from './AttachLabelRequest';
+export type * from './AttentionBucket';
 export type * from './Attention';
 export type * from './AutoApproveRequest';
 export type * from './Bucket';

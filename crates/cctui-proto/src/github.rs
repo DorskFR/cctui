@@ -241,3 +241,55 @@ pub struct GithubEventPayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pull_number: Option<i64>,
 }
+
+// ---------------------------------------------------------------------------
+// GH-CONN-6: per-PR attention bucket.
+//
+// The connector derives one bucket per tracked PR (mirroring the session
+// classifier's [`crate::classifier::Bucket`] vocabulary) so the `/github`
+// inbox (GH-UI-1) can group PRs by "what do I need to do about this". The
+// derivation is pure logic over the synced PR state + its checks + reviews +
+// the viewer's relationship to the PR (authored / review-requested); see
+// `cctui-github`'s `attention` module for the rules and tests.
+// ---------------------------------------------------------------------------
+
+/// What attention a tracked PR needs from the viewer, mirroring the session
+/// classifier's bucket vocabulary (docs/github-integration.md §6.1).
+///
+/// Serialized `snake_case` so the webui inbox groups on the on-wire token. A
+/// PR lands in exactly one bucket; the derivation (in `cctui-github`) picks the
+/// single most-actionable one. The order here is the natural priority the inbox
+/// renders top-to-bottom.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum AttentionBucket {
+    /// Someone else's PR where the viewer (or a team they're on) is
+    /// review-requested and hasn't yet reviewed — the viewer owes a review.
+    NeedsMyReview,
+    /// The viewer's own PR a reviewer asked changes on — the ball is back with
+    /// the viewer to address feedback.
+    MyPrChangesRequested,
+    /// The viewer's own PR with at least one failing CI check — fix the build.
+    MyPrCiRed,
+    /// The viewer's own PR with green (or no) CI and no outstanding
+    /// change-requests — ready to merge (or chase the last approval).
+    MyPrMergeable,
+    /// Nothing actionable right now: closed/merged PRs, others' PRs the viewer
+    /// isn't reviewing, or the viewer's PR still waiting on others' review.
+    Waiting,
+}
+
+impl AttentionBucket {
+    /// Stable label suitable for UI rendering / inbox section headers.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::NeedsMyReview => "Needs my review",
+            Self::MyPrChangesRequested => "My PR — changes requested",
+            Self::MyPrCiRed => "My PR — CI red",
+            Self::MyPrMergeable => "My PR — mergeable",
+            Self::Waiting => "Waiting",
+        }
+    }
+}
