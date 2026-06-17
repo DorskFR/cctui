@@ -10,6 +10,8 @@
 	import type { Label } from '@bindings/Label';
 	import { statusBadgeClass } from '$lib/format';
 	import { fontScale, SCALE_LEVELS } from '$lib/fontscale.svelte';
+	import { settings } from '$lib/settings.svelte';
+	import { isArchiveChord } from '$lib/platform';
 	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
 	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
 	import LabelBadge from '$lib/components/molecules/LabelBadge.svelte';
@@ -32,6 +34,7 @@
 		onfork,
 		oninterrupt,
 		onarchive,
+		onstoparchive,
 		onTogglePin,
 		// Label editing (CCT-360): same picker as the session card — when
 		// `onAttachLabel` is supplied the strip is interactive, else read-only.
@@ -56,6 +59,8 @@
 		onfork: () => void;
 		oninterrupt: () => void;
 		onarchive: () => void;
+		// Stop-then-archive, fired by the ⌘/Ctrl+E keyboard chord.
+		onstoparchive: () => void;
 		onTogglePin?: (s: SessionListItem) => void;
 		allLabels?: Label[];
 		onCreateLabel?: (name: string, color: string) => Promise<Label>;
@@ -115,6 +120,16 @@
 		moreOpen = false;
 	}
 	function onWinKey(e: KeyboardEvent) {
+		// Archive chord (⌘ E / Ctrl+E): interrupt any running turn and archive the
+		// session, which then dismisses the drawer. Opt-out via Settings. Skipped
+		// while renaming (so the chord can't fire mid-edit) and on already-archived
+		// sessions (nothing to archive). Window-level so it works regardless of
+		// whether focus is in the composer.
+		if (!archived && !renaming && settings.archiveShortcut && isArchiveChord(e)) {
+			e.preventDefault();
+			onstoparchive();
+			return;
+		}
 		if (e.key !== 'Escape' || renaming) return;
 		if (moreOpen) moreOpen = false;
 		else onclose();

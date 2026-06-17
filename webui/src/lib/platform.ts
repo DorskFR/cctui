@@ -21,3 +21,14 @@ export function submitChordLabel(): string {
 export function isSubmitChord(e: KeyboardEvent): boolean {
 	return e.key === 'Enter' && (e.metaKey || e.ctrlKey);
 }
+
+/** True when a keydown carries the platform "archive" chord — ⌘+E on Mac,
+ *  Ctrl+E elsewhere (Beeper/Slack-style). Deliberately platform-EXCLUSIVE (not
+ *  "either modifier" like the submit chord) so it doesn't clobber the other
+ *  platform's native Ctrl+E text-editing binding (move-to-end-of-line on macOS).
+ *  Alt/Shift combos are excluded so it never fires on a wider chord. */
+export function isArchiveChord(e: KeyboardEvent): boolean {
+	if (e.altKey || e.shiftKey) return false;
+	if (e.key !== 'e' && e.key !== 'E') return false;
+	return isMac() ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
+}

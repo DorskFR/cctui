@@ -455,6 +455,7 @@
 		onfork={fork.openDialog}
 		oninterrupt={sa.interrupt}
 		onarchive={sa.archive}
+		onstoparchive={sa.stopAndArchive}
 		onTogglePin={togglePin}
 		{allLabels}
 		onCreateLabel={createLabel}

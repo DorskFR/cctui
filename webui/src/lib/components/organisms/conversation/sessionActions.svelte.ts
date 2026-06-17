@@ -87,6 +87,24 @@ export class SessionActions {
 		}
 	};
 
+	// Keyboard "archive" chord (⌘/Ctrl+E, CCT-???): interrupt any in-flight turn
+	// first, then archive. The interrupt is best-effort and fire-and-forget here
+	// — archiving dismisses the drawer regardless, so we don't block it on the 8s
+	// ack the manual Stop button waits for. Only fires the interrupt when the
+	// session is actually warm (`liveness === 'active'`); a dead/stale session
+	// has nothing to stop.
+	stopAndArchive = async () => {
+		const s = this.#opts.session();
+		if (s.liveness === 'active') {
+			try {
+				await this.#opts.actions.interrupt(this.#opts.id());
+			} catch {
+				// Best effort — proceed to archive even if the interrupt request fails.
+			}
+		}
+		await this.archive();
+	};
+
 	resume = async () => {
 		try {
 			await this.#opts.actions.resume(this.#opts.id());

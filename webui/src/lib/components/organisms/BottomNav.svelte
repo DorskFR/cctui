@@ -14,7 +14,8 @@
 		{ href: '/users', label: 'Users', icon: '◍' },
 		{ href: '/dispatchers', label: 'Dispatchers', icon: '◈' },
 		{ href: '/accounts', label: 'Accounts', icon: '◉' },
-		...($caps.data?.github.enabled ? [{ href: '/github', label: 'GitHub', icon: '◐' }] : [])
+		...($caps.data?.github.enabled ? [{ href: '/github', label: 'GitHub', icon: '◐' }] : []),
+		{ href: '/settings', label: 'Settings', icon: '⚙' }
 	]);
 	const active = (href: string) =>
 		href === '/' ? page.url.pathname === '/' : page.url.pathname.startsWith(href);
