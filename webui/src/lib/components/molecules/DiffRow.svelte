@@ -42,6 +42,9 @@
 		oneditComment?: (commentId: string, body: string) => void;
 		/** Dismiss the open composer. */
 		oncancelComment?: () => void;
+		/** GH-AGENT-3: ask the linked review agent about this line's block. When
+		 *  set, a gutter "Ask" button appears beside the comment button. */
+		onaskLine?: (fileKey: string, side: DiffSide, line: number, snippet: string) => void;
 	}
 	const {
 		row,
@@ -58,7 +61,8 @@
 		onsaveComment,
 		ondeleteComment,
 		oneditComment,
-		oncancelComment
+		oncancelComment,
+		onaskLine
 	}: Props = $props();
 
 	const anchor = $derived(row.kind === 'line' ? lineAnchor(row.line) : null);
@@ -141,6 +145,16 @@
 				disabled={busy}
 				onclick={() => oncommentLine?.(row.fileKey, anchor.side, anchor.line)}>+</button
 			>
+			{#if onaskLine}
+				<button
+					type="button"
+					class="ask-agent"
+					title="Ask the review agent about this line"
+					disabled={busy}
+					onclick={() =>
+						onaskLine?.(row.fileKey, anchor.side, anchor.line, row.line.content)}>?</button
+				>
+			{/if}
 		{:else}
 			<span class="marker"
 				>{row.line.kind === 'add' ? '+' : row.line.kind === 'del' ? '−' : ' '}</span
@@ -279,7 +293,8 @@
 		text-align: center;
 		user-select: none;
 	}
-	.add-comment {
+	.add-comment,
+	.ask-agent {
 		border: 0;
 		background: transparent;
 		color: var(--syn-meta, #8b949e);
@@ -290,12 +305,14 @@
 		opacity: 0;
 		transition: opacity 0.1s;
 	}
-	.line.commentable:hover .add-comment {
+	.line.commentable:hover .add-comment,
+	.line.commentable:hover .ask-agent {
 		opacity: 1;
 		color: var(--accent, #4c8bf5);
 		font-weight: bold;
 	}
-	.add-comment:disabled {
+	.add-comment:disabled,
+	.ask-agent:disabled {
 		cursor: default;
 	}
 	.content {

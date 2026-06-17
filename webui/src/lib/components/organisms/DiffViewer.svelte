@@ -31,6 +31,7 @@
 		type CommentAnchorKey
 	} from '$lib/diff/rows';
 	import { langForPath } from '$lib/diff/highlight';
+	import type { BlockSelection } from '$lib/diff/ask';
 	import DiffRowView from '../molecules/DiffRow.svelte';
 	import { Badge, Button, Cluster, Select, Stack, Text, Textarea } from '@dorsk/tsumikit';
 	import {
@@ -58,8 +59,23 @@
 		lens?: string; // 'cumulative' | a commit SHA
 		commits?: { sha: string; subject: string }[];
 		onlens?: (lens: string) => void;
+		/** GH-AGENT-3: "Ask the agent about this block". When provided, the diff
+		 *  viewer surfaces an action (button per line + the `a` key) that hands the
+		 *  reviewer's selected block — path, side, line, and the snippet TEXT — to
+		 *  the host, which injects it into the linked review session. No checkout:
+		 *  the agent gets the snippet inline (docs §6.3). */
+		onask?: (sel: BlockSelection) => void;
 	}
-	const { diff, connectorId, number, lens = 'cumulative', commits = [], onlens }: Props = $props();
+	const {
+		diff,
+		connectorId,
+		number,
+		lens = 'cumulative',
+		commits = [],
+		onlens,
+		onask
+	}: Props = $props();
+	const askable = $derived(!!onask);
 
 	// Inline draft commenting is available when we have a PR locator (GH-VIEW-4).
 	const commentable = $derived(!!connectorId && number != null);
@@ -273,6 +289,22 @@
 		}
 	}
 
+	// GH-AGENT-3: hand the diff line under `row` to the host as a block selection
+	// (path + side + line + the line's text), so it can "Ask the agent about this
+	// block". Single-line for now (the viewer's selection unit is one line).
+	function askBlock(row: DiffRow) {
+		if (!onask || row.kind !== 'line') return;
+		const a = lineAnchor(row.line);
+		if (!a) return;
+		onask({
+			path: row.fileKey,
+			side: a.side,
+			line: a.line,
+			startLine: null,
+			snippet: row.line.content
+		});
+	}
+
 	// Lazy-expanded collapsed regions + folded files — caller-free UI state.
 	let expanded = $state(new Set<string>());
 	let collapsedFiles = $state(new Set<string>());
@@ -378,6 +410,14 @@
 				const a = lineAnchor(r.line);
 				if (!a) return;
 				startCompose(r.fileKey, a.side, a.line);
+				break;
+			}
+			case 'a': {
+				// GH-AGENT-3: ask the linked review agent about the cursor's line.
+				if (!askable) return;
+				const r = rows[cursor];
+				if (r?.kind !== 'line') return;
+				askBlock(r);
 				break;
 			}
 			default:
@@ -522,6 +562,10 @@
 						oneditComment={editComment}
 						ondeleteComment={deleteComment}
 						oncancelComment={cancelCompose}
+						onaskLine={askable
+							? (fileKey, side, line, snippet) =>
+									onask?.({ path: fileKey, side, line, startLine: null, snippet })
+							: undefined}
 					/>
 				</div>
 			{/each}
@@ -530,7 +574,7 @@
 	<Text tone="muted" size="xs">
 		j/k line · n/p hunk · ]/[ file · o expand/fold{commentable
 			? ' · c comment · v reviewed'
-			: ''}
+			: ''}{askable ? ' · a ask agent' : ''}
 	</Text>
 </Stack>
 
