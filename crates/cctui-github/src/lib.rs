@@ -17,13 +17,11 @@ use axum::Router;
 use axum::routing::{delete, get, post};
 use sqlx::{Connection, Executor, PgPool};
 
-mod classifier_feed;
 mod crypto;
 mod routes;
 mod store;
 mod webhook;
 
-pub use classifier_feed::{derive_status, pr_href, publish as publish_pr_status};
 pub use store::{
     EventTx, upsert_check, upsert_pull, upsert_review, upsert_review_comment, upsert_review_thread,
 };
