@@ -200,3 +200,44 @@ pub struct ReviewCommentUpsert {
     pub gh_created_at: String,
     pub gh_updated_at: String,
 }
+
+/// Which GitHub object kind a [`crate::ws::ServerEvent::GithubEvent`] is about.
+///
+/// One value per `*Upsert` store function, so the inbox can route a change to
+/// the right view without inspecting the payload shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum GithubEventKind {
+    /// A pull request's tracked state changed (`github.pulls`).
+    Pull,
+    /// A CI check's status/conclusion changed (`github.checks`).
+    Check,
+    /// A submitted review changed (`github.reviews`).
+    Review,
+    /// A review thread changed (`github.review_threads`).
+    ReviewThread,
+    /// A review comment changed (`github.review_comments`).
+    ReviewComment,
+}
+
+/// Credential-free locator for the GitHub object a
+/// [`crate::ws::ServerEvent::GithubEvent`] refers to.
+///
+/// Deliberately minimal: enough for the client to know which PR/repo to
+/// refetch over HTTP, never the row body, a token, or a raw webhook payload.
+/// `pull_number` is `None` for object kinds (currently `Check`) keyed on a head
+/// SHA rather than a PR number; the client maps the SHA to a PR via its cache.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct GithubEventPayload {
+    /// The connector that produced the change, so multi-account clients can
+    /// scope the refresh.
+    pub connector_id: Uuid,
+    /// `owner/name` slug the object lives in.
+    pub repo: String,
+    /// The affected PR number, when the object is PR-scoped. `None` for
+    /// SHA-keyed checks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pull_number: Option<i64>,
+}

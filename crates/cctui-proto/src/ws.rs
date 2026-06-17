@@ -402,6 +402,19 @@ pub enum ServerEvent {
         size_bytes: i64,
         sha256: String,
     },
+    /// A piece of synced GitHub state was just upserted by the `github`
+    /// connector (webhook or reconcile poll), so the `/github` inbox can
+    /// refresh the affected PR without a full poll (docs §6.1 "Live push").
+    ///
+    /// Carried as one envelope rather than a variant per object so new GitHub
+    /// object kinds don't churn the wire enum; `kind` tells the client what
+    /// changed and `payload` is a small, credential-free locator (repo +
+    /// stable ids — never tokens or raw webhook bodies). Clients refetch the
+    /// affected rows over HTTP; the event is only a "something changed" nudge.
+    GithubEvent {
+        kind: crate::github::GithubEventKind,
+        payload: crate::github::GithubEventPayload,
+    },
 }
 
 #[cfg(test)]

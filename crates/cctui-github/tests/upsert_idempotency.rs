@@ -45,10 +45,7 @@ async fn setup() -> Option<(sqlx::PgPool, Uuid)> {
 }
 
 async fn count(pool: &sqlx::PgPool, table: &str) -> i64 {
-    pool.fetch_one(format!("SELECT count(*) FROM github.{table}").as_str())
-        .await
-        .unwrap()
-        .get(0)
+    pool.fetch_one(format!("SELECT count(*) FROM github.{table}").as_str()).await.unwrap().get(0)
 }
 
 fn pull() -> PullUpsert {
@@ -75,12 +72,25 @@ fn pull() -> PullUpsert {
 async fn upserts_are_idempotent_and_update_in_place() {
     let Some((pool, cid)) = setup().await else { return };
 
+    // A live broadcast subscriber so we can assert every upsert pushes a
+    // GithubEvent for the `/github` inbox (docs §6.1).
+    let (events, mut rx) = tokio::sync::broadcast::channel(64);
+
     // Pull: same key twice = one row, second wins on mutable fields, stable id.
     let mut p = pull();
-    let id1 = cctui_github::upsert_pull(&pool, cid, &p).await.unwrap();
+    let id1 = cctui_github::upsert_pull(&pool, &events, cid, &p).await.unwrap();
+    // First upsert broadcasts a Pull event carrying the credential-free locator.
+    match rx.try_recv().unwrap() {
+        cctui_proto::ws::ServerEvent::GithubEvent { kind, payload } => {
+            assert_eq!(kind, cctui_proto::github::GithubEventKind::Pull);
+            assert_eq!(payload.repo, "o/r");
+            assert_eq!(payload.pull_number, Some(42));
+        }
+        other => panic!("expected GithubEvent, got {other:?}"),
+    }
     p.title = "second".into();
     p.head_sha = "sha2".into();
-    let id2 = cctui_github::upsert_pull(&pool, cid, &p).await.unwrap();
+    let id2 = cctui_github::upsert_pull(&pool, &events, cid, &p).await.unwrap();
     assert_eq!(id1, id2, "same (connector,repo,number) must reuse the row");
     assert_eq!(count(&pool, "pulls").await, 1);
     let title: String = pool
@@ -100,10 +110,10 @@ async fn upserts_are_idempotent_and_update_in_place() {
         conclusion: None,
         details_url: None,
     };
-    cctui_github::upsert_check(&pool, cid, &c).await.unwrap();
+    cctui_github::upsert_check(&pool, &events, cid, &c).await.unwrap();
     c.status = "completed".into();
     c.conclusion = Some("success".into());
-    cctui_github::upsert_check(&pool, cid, &c).await.unwrap();
+    cctui_github::upsert_check(&pool, &events, cid, &c).await.unwrap();
     assert_eq!(count(&pool, "checks").await, 1, "same check key = one row");
 
     // Review.
@@ -117,8 +127,8 @@ async fn upserts_are_idempotent_and_update_in_place() {
         commit_id: Some("sha2".into()),
         submitted_at: Some("2026-06-17T02:00:00Z".into()),
     };
-    cctui_github::upsert_review(&pool, cid, &r).await.unwrap();
-    cctui_github::upsert_review(&pool, cid, &r).await.unwrap();
+    cctui_github::upsert_review(&pool, &events, cid, &r).await.unwrap();
+    cctui_github::upsert_review(&pool, &events, cid, &r).await.unwrap();
     assert_eq!(count(&pool, "reviews").await, 1);
 
     // Review thread.
@@ -131,8 +141,8 @@ async fn upserts_are_idempotent_and_update_in_place() {
         line: Some(10),
         resolved: false,
     };
-    cctui_github::upsert_review_thread(&pool, cid, &t).await.unwrap();
-    cctui_github::upsert_review_thread(&pool, cid, &t).await.unwrap();
+    cctui_github::upsert_review_thread(&pool, &events, cid, &t).await.unwrap();
+    cctui_github::upsert_review_thread(&pool, &events, cid, &t).await.unwrap();
     assert_eq!(count(&pool, "review_threads").await, 1);
 
     // Review comment.
@@ -149,7 +159,7 @@ async fn upserts_are_idempotent_and_update_in_place() {
         gh_created_at: "2026-06-17T02:00:00Z".into(),
         gh_updated_at: "2026-06-17T02:00:00Z".into(),
     };
-    cctui_github::upsert_review_comment(&pool, cid, &cm).await.unwrap();
-    cctui_github::upsert_review_comment(&pool, cid, &cm).await.unwrap();
+    cctui_github::upsert_review_comment(&pool, &events, cid, &cm).await.unwrap();
+    cctui_github::upsert_review_comment(&pool, &events, cid, &cm).await.unwrap();
     assert_eq!(count(&pool, "review_comments").await, 1);
 }

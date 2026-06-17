@@ -260,7 +260,7 @@ async fn main() -> anyhow::Result<()> {
     #[cfg(feature = "github")]
     let app = app.nest(
         "/api/v1",
-        cctui_github::routes(state.pool.clone())
+        cctui_github::routes(state.pool.clone(), state.tui_tx.clone())
             .layer(middleware::from_fn(github_identity))
             .layer(middleware::from_fn(auth::auth_middleware))
             .layer(Extension(auth_config.clone())),

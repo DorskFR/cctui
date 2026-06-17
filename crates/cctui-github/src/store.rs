@@ -14,10 +14,41 @@
 //! credential-free `*Upsert` values.
 
 use cctui_proto::github::{
-    CheckUpsert, PullUpsert, ReviewCommentUpsert, ReviewThreadUpsert, ReviewUpsert,
+    CheckUpsert, GithubEventKind, GithubEventPayload, PullUpsert, ReviewCommentUpsert,
+    ReviewThreadUpsert, ReviewUpsert,
 };
+use cctui_proto::ws::ServerEvent;
 use sqlx::PgPool;
+use tokio::sync::broadcast;
 use uuid::Uuid;
+
+/// Broadcast handle for live `/github` inbox push (docs §6.1).
+///
+/// Each upsert sends a small, credential-free [`ServerEvent::GithubEvent`] on
+/// success so the webui refreshes without polling. Held by
+/// [`crate::GithubState`] and passed into the store functions. `cctui-github`
+/// depends only on `cctui-proto` (which owns `ServerEvent`), never on
+/// `cctui-server`.
+pub type EventTx = broadcast::Sender<ServerEvent>;
+
+/// Send a "something changed" nudge for a just-upserted GitHub object.
+///
+/// Best-effort: a send error just means no client is currently subscribed,
+/// which is fine — the inbox reconciles on its next subscribe. The locator is
+/// credential-free (no token, no row body, no raw payload), so nothing
+/// sensitive crosses the wire.
+fn broadcast_event(
+    events: &EventTx,
+    kind: GithubEventKind,
+    connector_id: Uuid,
+    repo: &str,
+    pull_number: Option<i64>,
+) {
+    let _ = events.send(ServerEvent::GithubEvent {
+        kind,
+        payload: GithubEventPayload { connector_id, repo: repo.to_string(), pull_number },
+    });
+}
 
 /// Parse an ISO-8601 timestamp from a parsed GitHub object. GitHub always sends
 /// RFC-3339, so a parse failure means the upstream parser handed us garbage —
@@ -39,6 +70,7 @@ fn parse_opt_ts(s: Option<&str>) -> Result<Option<chrono::DateTime<chrono::Utc>>
 /// Returns an error on a timestamp parse failure or a database error.
 pub async fn upsert_pull(
     pool: &PgPool,
+    events: &EventTx,
     connector_id: Uuid,
     p: &PullUpsert,
 ) -> Result<Uuid, sqlx::Error> {
@@ -75,6 +107,7 @@ pub async fn upsert_pull(
     .bind(parse_ts(&p.gh_updated_at)?)
     .fetch_one(pool)
     .await?;
+    broadcast_event(events, GithubEventKind::Pull, connector_id, &p.repo, Some(p.number));
     Ok(id)
 }
 
@@ -85,6 +118,7 @@ pub async fn upsert_pull(
 /// Returns an error on a database error.
 pub async fn upsert_check(
     pool: &PgPool,
+    events: &EventTx,
     connector_id: Uuid,
     c: &CheckUpsert,
 ) -> Result<Uuid, sqlx::Error> {
@@ -109,6 +143,9 @@ pub async fn upsert_check(
     .bind(&c.details_url)
     .fetch_one(pool)
     .await?;
+    // Checks are keyed on a head SHA, not a PR number; the client maps the SHA
+    // back to a PR via its cache, so `pull_number` is `None` here.
+    broadcast_event(events, GithubEventKind::Check, connector_id, &c.repo, None);
     Ok(id)
 }
 
@@ -119,6 +156,7 @@ pub async fn upsert_check(
 /// Returns an error on a timestamp parse failure or a database error.
 pub async fn upsert_review(
     pool: &PgPool,
+    events: &EventTx,
     connector_id: Uuid,
     r: &ReviewUpsert,
 ) -> Result<Uuid, sqlx::Error> {
@@ -145,6 +183,7 @@ pub async fn upsert_review(
     .bind(parse_opt_ts(r.submitted_at.as_deref())?)
     .fetch_one(pool)
     .await?;
+    broadcast_event(events, GithubEventKind::Review, connector_id, &r.repo, Some(r.pull_number));
     Ok(id)
 }
 
@@ -155,6 +194,7 @@ pub async fn upsert_review(
 /// Returns an error on a database error.
 pub async fn upsert_review_thread(
     pool: &PgPool,
+    events: &EventTx,
     connector_id: Uuid,
     t: &ReviewThreadUpsert,
 ) -> Result<Uuid, sqlx::Error> {
@@ -179,6 +219,13 @@ pub async fn upsert_review_thread(
     .bind(t.resolved)
     .fetch_one(pool)
     .await?;
+    broadcast_event(
+        events,
+        GithubEventKind::ReviewThread,
+        connector_id,
+        &t.repo,
+        Some(t.pull_number),
+    );
     Ok(id)
 }
 
@@ -189,6 +236,7 @@ pub async fn upsert_review_thread(
 /// Returns an error on a timestamp parse failure or a database error.
 pub async fn upsert_review_comment(
     pool: &PgPool,
+    events: &EventTx,
     connector_id: Uuid,
     c: &ReviewCommentUpsert,
 ) -> Result<Uuid, sqlx::Error> {
@@ -220,6 +268,13 @@ pub async fn upsert_review_comment(
     .bind(parse_ts(&c.gh_updated_at)?)
     .fetch_one(pool)
     .await?;
+    broadcast_event(
+        events,
+        GithubEventKind::ReviewComment,
+        connector_id,
+        &c.repo,
+        Some(c.pull_number),
+    );
     Ok(id)
 }
 

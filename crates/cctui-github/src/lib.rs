@@ -22,7 +22,7 @@ mod routes;
 mod store;
 
 pub use store::{
-    upsert_check, upsert_pull, upsert_review, upsert_review_comment, upsert_review_thread,
+    EventTx, upsert_check, upsert_pull, upsert_review, upsert_review_comment, upsert_review_thread,
 };
 
 /// The dedicated Postgres schema that holds **all** GitHub-integration state.
@@ -36,9 +36,15 @@ static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 /// The GitHub routes operate entirely on the Postgres pool — their stores, diff
 /// cache, and review drafts live in the `github` schema. They never touch the
 /// server's `AppState`, which keeps this crate independent of `cctui-server`.
+///
+/// `events` is a clone of the server's client-WS broadcast sender (typed on
+/// `cctui_proto::ws::ServerEvent`, which proto owns — so no dependency on
+/// `cctui-server`). The store functions broadcast a `GithubEvent` on every
+/// successful upsert for live `/github` inbox push (docs §6.1).
 #[derive(Clone)]
 pub struct GithubState {
     pub pool: PgPool,
+    pub events: EventTx,
 }
 
 /// Run the crate's embedded migrations against the dedicated `github` Postgres
@@ -148,8 +154,8 @@ pub async fn capability(pool: &PgPool) -> GithubCapability {
 ///
 /// Paths mirror §9 of the design doc; handler bodies are placeholders until the
 /// later GH-* tickets.
-pub fn routes(pool: PgPool) -> Router {
-    let state = GithubState { pool };
+pub fn routes(pool: PgPool, events: EventTx) -> Router {
+    let state = GithubState { pool, events };
     Router::new()
         .route("/github/connectors", get(routes::list_connectors).post(routes::create_connector))
         .route("/github/connectors/{id}", delete(routes::delete_connector))
