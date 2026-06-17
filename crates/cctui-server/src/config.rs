@@ -29,6 +29,16 @@ pub enum DispatcherConfig {
     Docker(crate::dispatchers::docker::DockerDispatcherConfig),
 }
 
+/// One operator-declared, self-hosted Claude model, parsed from
+/// `CCTUI_CLAUDE_LITELLM_MODELS` (a JSON array of these). `model` is the code
+/// passed to `claude --model` (and the name a litellm endpoint routes on);
+/// `label` is the free-form display name shown in the spawn picker.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct LiteLlmModel {
+    pub model: String,
+    pub label: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub host: String,
@@ -72,6 +82,21 @@ pub struct Config {
     /// URL, e.g. `https://ntfy.example.com/cctui-dispatch`). No default: when
     /// unset, push notifications stay off.
     pub ntfy_url: Option<String>,
+    /// Base URL of a self-hosted, Anthropic-compatible endpoint (e.g. a LiteLLM
+    /// proxy in front of Ollama) dedicated to Claude Code. When set together
+    /// with `claude_litellm_models`, the listed models become selectable in the
+    /// spawn picker and a session launched under one of them gets
+    /// `ANTHROPIC_BASE_URL` (and the token below) injected so `claude` routes
+    /// here instead of the real Anthropic API. From `CCTUI_CLAUDE_LITELLM_ENDPOINT`.
+    pub claude_litellm_endpoint: Option<String>,
+    /// Bearer token injected as `ANTHROPIC_AUTH_TOKEN` for the custom endpoint
+    /// (`CCTUI_CLAUDE_LITELLM_TOKEN`). Optional: an open proxy accepts any value,
+    /// so when unset we inject a dummy. Never exposed to clients.
+    pub claude_litellm_token: Option<String>,
+    /// Operator-declared self-hosted Claude models (`CCTUI_CLAUDE_LITELLM_MODELS`,
+    /// JSON array of `{model,label}`). Only surfaced to clients when
+    /// `claude_litellm_endpoint` is also set — see [`Config::claude_litellm_visible_models`].
+    pub claude_litellm_models: Vec<LiteLlmModel>,
 }
 
 impl Config {
@@ -113,11 +138,50 @@ impl Config {
                 .map_or(2 * 60 * 60, |hours| hours * 60 * 60),
             ntfy_token: env::var("CCTUI_NTFY_TOKEN").ok().filter(|s| !s.trim().is_empty()),
             ntfy_url: env::var("CCTUI_NTFY_URL").ok().filter(|s| !s.trim().is_empty()),
+            claude_litellm_endpoint: env::var("CCTUI_CLAUDE_LITELLM_ENDPOINT")
+                .ok()
+                .filter(|s| !s.trim().is_empty()),
+            claude_litellm_token: env::var("CCTUI_CLAUDE_LITELLM_TOKEN")
+                .ok()
+                .filter(|s| !s.trim().is_empty()),
+            claude_litellm_models: env::var("CCTUI_CLAUDE_LITELLM_MODELS")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+                .map(|s| {
+                    serde_json::from_str(&s).expect(
+                        "CCTUI_CLAUDE_LITELLM_MODELS must be a JSON array of {model,label}",
+                    )
+                })
+                .unwrap_or_default(),
         }
     }
 
     pub fn bind_addr(&self) -> String {
         format!("{}:{}", self.host, self.port)
+    }
+
+    /// The custom Claude models to surface to clients. Non-empty **only when
+    /// both** the endpoint and the model list are configured — that conjunction
+    /// is the feature gate. When either is missing the feature stays dark and
+    /// the spawn picker shows only the native families.
+    pub fn claude_litellm_visible_models(&self) -> &[LiteLlmModel] {
+        if self.claude_litellm_endpoint.is_some() && !self.claude_litellm_models.is_empty() {
+            &self.claude_litellm_models
+        } else {
+            &[]
+        }
+    }
+
+    /// Resolve a `--model` code to the `(base_url, token)` that a session
+    /// launched under it should route through. Returns `Some` only when the
+    /// feature is fully configured **and** `model` is in the allow-list, so a
+    /// caller can never point an arbitrary model at the endpoint.
+    pub fn claude_litellm_route(&self, model: &str) -> Option<(&str, Option<&str>)> {
+        let endpoint = self.claude_litellm_endpoint.as_deref()?;
+        self.claude_litellm_models
+            .iter()
+            .any(|m| m.model == model)
+            .then_some((endpoint, self.claude_litellm_token.as_deref()))
     }
 
     pub fn admin_tokens() -> Vec<String> {
@@ -167,5 +231,61 @@ mod tests {
             DispatcherConfig::Http(c) => assert_eq!(c.id, "ext"),
             other => panic!("expected Http, got {other:?}"),
         }
+    }
+
+    /// `CCTUI_CLAUDE_LITELLM_MODELS` is a JSON array of `{model,label}`; the
+    /// label is free-form (spaces, parens) so JSON — not a delimited string —
+    /// is the format. Assert it parses.
+    #[test]
+    fn claude_litellm_models_parse() {
+        let raw = r#"[{"model":"qwen3-coder","label":"Qwen3-Coder (local)"}]"#;
+        let parsed: Vec<LiteLlmModel> =
+            serde_json::from_str(raw).expect("CCTUI_CLAUDE_LITELLM_MODELS must parse");
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].model, "qwen3-coder");
+        assert_eq!(parsed[0].label, "Qwen3-Coder (local)");
+    }
+
+    /// The feature is gated on BOTH the endpoint and the model list. With only
+    /// one set, nothing is surfaced and no model resolves to a route.
+    #[test]
+    fn claude_litellm_gating() {
+        let base = Config {
+            host: "0.0.0.0".into(),
+            port: 8700,
+            database_url: String::new(),
+            external_url: String::new(),
+            inactive_after_secs: 0,
+            archive_after_secs: 0,
+            github_token: None,
+            http_dispatchers: vec![],
+            dispatchers: vec![],
+            ephemeral_machine_ttl_secs: 0,
+            ntfy_token: None,
+            ntfy_url: None,
+            claude_litellm_endpoint: None,
+            claude_litellm_token: None,
+            claude_litellm_models: vec![LiteLlmModel {
+                model: "qwen3-coder".into(),
+                label: "Qwen3-Coder".into(),
+            }],
+        };
+
+        // Models set but endpoint missing → dark.
+        assert!(base.claude_litellm_visible_models().is_empty());
+        assert!(base.claude_litellm_route("qwen3-coder").is_none());
+
+        // Both set → surfaced, and only the allow-listed model resolves.
+        let cfg = Config {
+            claude_litellm_endpoint: Some("https://litellm.example/".into()),
+            claude_litellm_token: Some("tok".into()),
+            ..base
+        };
+        assert_eq!(cfg.claude_litellm_visible_models().len(), 1);
+        assert_eq!(
+            cfg.claude_litellm_route("qwen3-coder"),
+            Some(("https://litellm.example/", Some("tok")))
+        );
+        assert!(cfg.claude_litellm_route("opus").is_none());
     }
 }

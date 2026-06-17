@@ -30,12 +30,27 @@ pub struct GithubCapability {
     pub repos: Vec<String>,
 }
 
+/// One self-hosted Claude model the server offers, mirrored to the webui's spawn
+/// picker (CCT-LITELLM). `model` is the `--model` code; `label` is the display
+/// name. Present only when the operator configured both an endpoint and a model
+/// list (otherwise the list is empty and the picker shows only native families).
+/// The endpoint URL and its auth token are deliberately NOT exposed — they're
+/// injected server-side at spawn.
+#[derive(Serialize, TS)]
+#[ts(export)]
+pub struct LiteLlmModelInfo {
+    pub model: String,
+    pub label: String,
+}
+
 /// The capability envelope. One field per optional integration; the webui reads
 /// `github.enabled` to decide whether to mount the lazy `/github` route + nav.
 #[derive(Serialize, TS)]
 #[ts(export)]
 pub struct CapabilitiesResponse {
     pub github: GithubCapability,
+    /// Operator-declared self-hosted Claude models (empty unless configured).
+    pub claude_litellm_models: Vec<LiteLlmModelInfo>,
 }
 
 /// `GET /api/v1/capabilities`.
@@ -49,5 +64,12 @@ pub async fn capabilities(State(state): State<AppState>) -> Json<CapabilitiesRes
     #[cfg(not(feature = "github"))]
     let github = GithubCapability { enabled: false, repos: Vec::new() };
 
-    Json(CapabilitiesResponse { github })
+    let claude_litellm_models = state
+        .config
+        .claude_litellm_visible_models()
+        .iter()
+        .map(|m| LiteLlmModelInfo { model: m.model.clone(), label: m.label.clone() })
+        .collect();
+
+    Json(CapabilitiesResponse { github, claude_litellm_models })
 }

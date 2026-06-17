@@ -14,6 +14,6 @@ passed: number,
  */
 failed: number, 
 /**
- * Checks not yet completed (queued / in_progress).
+ * Checks not yet completed (`queued` / `in_progress`).
  */
 pending: number, };
