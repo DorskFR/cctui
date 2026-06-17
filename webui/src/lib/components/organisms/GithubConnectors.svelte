@@ -215,16 +215,22 @@
 				{#if credentialKind === 'pat'}
 					<Text as="p" tone="muted" size="xs">
 						Create a <strong>fine-grained PAT</strong> at GitHub → Settings → Developer settings →
-						Personal access tokens → Fine-grained tokens. Grant it the repositories you list below
-						and these <strong>repository permissions (read-only)</strong>: <strong>Pull requests</strong>,
-						<strong>Contents</strong>, <strong>Commit statuses</strong>, and <strong>Checks</strong>.
-						No account/org permissions are needed. cctui polls every ~5 min for PRs you authored or
-						were asked to review; use “Refresh now” to poll on demand.
+						Personal access tokens → Fine-grained tokens. Under <em>Repository access</em> select the
+						repos you list below, then grant these <strong>repository permissions (read-only)</strong>:
+						<strong>Pull requests</strong> and <strong>Contents</strong> (<strong>Metadata</strong> is
+						required and granted automatically). For an org's private repos the token must also be
+						<strong>approved by an org owner / SSO-authorized</strong>, or GitHub rejects the search
+						with a 422. No account/org permissions are needed. cctui polls every ~5 min for PRs you
+						authored or were asked to review; use “Refresh now” to poll on demand.
 					</Text>
 				{:else}
 					<Text as="p" tone="muted" size="xs">
-						Paste a GitHub App <strong>installation access token</strong>. The app needs read access
-						to Pull requests, Contents, Commit statuses, and Checks on the installed repositories.
+						Paste a GitHub App <strong>installation access token</strong> (the short-lived
+						<code>ghs_…</code> token from <code>POST /app/installations/&#123;id&#125;/access_tokens</code>,
+						not the app's private key). The installation must cover the repos you list below and grant
+						read access to <strong>Pull requests</strong> and <strong>Contents</strong> (Metadata is
+						implied). Note these tokens expire after ~1 hour — a PAT is simpler for a long-lived
+						connector.
 					</Text>
 				{/if}
 				<Field label="Repos (space/comma-separated owner/name, optional)">

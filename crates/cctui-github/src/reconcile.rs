@@ -8,10 +8,11 @@
 //! types the webhook uses, and upserts them (which broadcasts a `ServerEvent`).
 //!
 //! Scope of "involves me" (docs/github-integration.md §8.2, recommended v1):
-//! **authored + review-requested, direct & team**. That maps to GitHub's issue
-//! search qualifiers `author:@me`, `review-requested:@me`, and
-//! `team-review-requested:@me`, restricted to each connector's `repo:` slugs and
-//! to `is:pr is:open`.
+//! **authored + review-requested (direct)**. That maps to GitHub's issue search
+//! qualifiers `author:@me` and `review-requested:@me`, restricted to each
+//! connector's `repo:` slugs and to `is:pr is:open`. We do not use
+//! `team-review-requested:@me`: that qualifier takes a *team name*, not `@me`, so
+//! GitHub 422s the whole search (CCT-396 follow-up).
 //!
 //! Rate-limit hygiene (docs §6.1 / §11 — "not optional"):
 //! - **Conditional requests (`ETag`).** Each query's last `ETag` is cached
@@ -107,8 +108,13 @@ pub fn build_query(repos: &[String]) -> String {
         }
         q.push_str(r);
     }
-    // The "involves me" scope: authored + review-requested (direct & team).
-    q.push_str(" (author:@me OR review-requested:@me OR team-review-requested:@me)");
+    // The "involves me" scope: authored + review-requested. We deliberately do
+    // NOT use `team-review-requested:@me` — that qualifier takes a *team name*
+    // (`org/team`), not `@me`, so GitHub rejects the whole search with a 422
+    // Validation Failed (CCT-396 follow-up). `review-requested:@me` already
+    // covers reviews requested of the viewer directly; team-requested-only PRs
+    // are out of scope for v1 rather than breaking the entire poll.
+    q.push_str(" (author:@me OR review-requested:@me)");
     q
 }
 
@@ -411,7 +417,12 @@ impl SearchClient for HttpSearchClient {
             .and_then(|v| v.to_str().ok())
             .map(str::to_string);
         if !status.is_success() {
-            anyhow::bail!("github search returned {status}");
+            // Surface GitHub's own validation message (e.g. which qualifier or
+            // repo it rejected) so the connector's `last_error` is actionable.
+            // The search-error body is safe to log — it carries no secret.
+            let body = resp.text().await.unwrap_or_default();
+            let detail = github_error_message(&body);
+            anyhow::bail!("github search returned {status}{detail}");
         }
         let body: serde_json::Value = resp.json().await?;
         let items = body.get("items").and_then(|i| i.as_array()).cloned().unwrap_or_default();
@@ -478,6 +489,32 @@ fn rate_limit_backoff(resp: &reqwest::Response) -> Option<Duration> {
     // A 403 without rate-limit headers is some other auth/permission error;
     // surface it as a normal failure (not a back-off) by returning None.
     None
+}
+
+/// Render a GitHub error response body into a short ` (…)` suffix for an error
+/// message, or an empty string if it carries nothing useful. GitHub returns
+/// `{"message": "...", "errors": [{"message": "..."}, ...]}`; we surface the
+/// top-level message plus any nested `errors[].message` (e.g. the specific
+/// qualifier a search rejected). Returns at most a few hundred chars.
+fn github_error_message(body: &str) -> String {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else { return String::new() };
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(msg) = v.get("message").and_then(|m| m.as_str()) {
+        parts.push(msg.to_string());
+    }
+    if let Some(errors) = v.get("errors").and_then(|e| e.as_array()) {
+        for e in errors {
+            if let Some(m) = e.get("message").and_then(|m| m.as_str()) {
+                parts.push(m.to_string());
+            }
+        }
+    }
+    if parts.is_empty() {
+        return String::new();
+    }
+    let mut joined = parts.join("; ");
+    joined.truncate(300);
+    format!(" ({joined})")
 }
 
 /// Extract `(owner/name, number)` from a search-issues hit. The `repository_url`
@@ -553,7 +590,9 @@ mod tests {
         assert!(q.contains("repo:o/r"));
         assert!(q.contains("author:@me"));
         assert!(q.contains("review-requested:@me"));
-        assert!(q.contains("team-review-requested:@me"));
+        // `team-review-requested:@me` is invalid (takes a team name, not @me) and
+        // 422s the whole search — it must NOT be emitted (CCT-396 follow-up).
+        assert!(!q.contains("team-review-requested"));
     }
 
     #[test]
@@ -568,10 +607,16 @@ mod tests {
     #[test]
     fn build_query_no_repos_is_global() {
         let q = build_query(&[]);
-        assert_eq!(
-            q,
-            "is:pr is:open (author:@me OR review-requested:@me OR team-review-requested:@me)"
-        );
+        assert_eq!(q, "is:pr is:open (author:@me OR review-requested:@me)");
+    }
+
+    #[test]
+    fn github_error_message_surfaces_validation_detail() {
+        let body = r#"{"message":"Validation Failed","errors":[{"message":"Invalid query"}]}"#;
+        assert_eq!(github_error_message(body), " (Validation Failed; Invalid query)");
+        // Non-JSON or empty bodies yield no suffix.
+        assert_eq!(github_error_message("not json"), "");
+        assert_eq!(github_error_message("{}"), "");
     }
 
     #[test]
