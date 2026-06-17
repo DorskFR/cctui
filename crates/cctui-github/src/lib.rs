@@ -23,6 +23,7 @@ mod classifier_feed;
 mod crypto;
 mod diff;
 mod drafts;
+mod mcp;
 mod publish;
 mod reconcile;
 mod routes;
@@ -34,8 +35,8 @@ pub use anchor::resolve as resolve_comment_anchor;
 pub use attention::{Viewer, derive_bucket, derive_bucket_from_rows};
 pub use classifier_feed::{derive_status, pr_href, publish as publish_pr_status, refresh};
 pub use drafts::{
-    DraftError, add_comment, delete_comment, delete_draft, list_drafts, mark_published,
-    open_user_draft, update_comment, update_verdict,
+    DraftError, SummaryUpdate, add_comment, delete_comment, delete_draft, list_drafts,
+    mark_published, open_agent_draft, open_user_draft, set_summary, update_comment, update_verdict,
 };
 pub use publish::{
     PublishError, ReviewPayload, ReviewSubmitClient, assemble_review_payload, verdict_event,
@@ -255,4 +256,23 @@ pub fn routes(
         )
         .route("/triggers/github", post(webhook::webhook))
         .with_state(state)
+}
+
+/// The agent-facing MCP review endpoint (GH-AGENT-2), mounted **separately** from
+/// [`routes`].
+///
+/// `POST /api/v1/github/mcp` is an HTTP MCP server a review-agent session reaches
+/// via its `~/.mcp.json` entry. It authenticates the bearer **session token**
+/// itself (resolving `public.session_tokens` → `session_id`), so — unlike the
+/// rest of the GitHub router — it must NOT be wrapped in the server's
+/// `auth_middleware` / `github_identity` layers (those validate user/machine
+/// tokens and would 401 a session token). The server merges this router without
+/// those layers.
+pub fn mcp_routes(
+    pool: PgPool,
+    events: EventTx,
+    pr_cache: cctui_proto::classifier::PrStatusCache,
+) -> Router {
+    let state = GithubState { pool, events, pr_cache, diff_cache: diff::DiffCache::new() };
+    Router::new().route("/github/mcp", post(mcp::handler)).with_state(state)
 }

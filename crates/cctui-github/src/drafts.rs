@@ -96,6 +96,16 @@ mod db {
         Db,
     }
 
+    /// The fields of a `review_summary` write, bundled so [`set_summary`] keeps a
+    /// small argument list (GH-AGENT-2). `append` concatenates onto any existing
+    /// summary instead of replacing it.
+    #[derive(Debug, Clone, Copy)]
+    pub struct SummaryUpdate<'a> {
+        pub summary: &'a str,
+        pub verdict: ReviewVerdict,
+        pub append: bool,
+    }
+
     fn comment_from_row(row: &sqlx::postgres::PgRow) -> Result<DraftCommentInfo, sqlx::Error> {
         let start: Option<i64> = row.try_get("start_line")?;
         Ok(DraftCommentInfo {
@@ -199,6 +209,112 @@ mod db {
             .await
             .map_err(|_| DraftError::Db)?
             .ok_or(DraftError::Db)
+    }
+
+    /// Open (or reuse) a **review agent's** open draft for a PR, keyed on the
+    /// authoring session id (GH-AGENT-2). The agent identity comes from the
+    /// session token (resolved to `session_id` before this call) — it becomes
+    /// the draft's `author_session_id`, so a draft is always attributable to the
+    /// session that staged it. One open agent draft per (connector, pull,
+    /// session): a second open reuses the existing row rather than spawning a
+    /// duplicate, so repeated `review_comment` calls accrete into one draft.
+    ///
+    /// Unlike the user path there is no partial unique index to lean on (an
+    /// agent draft is not constrained in the migration so it can stage alongside
+    /// the human), so we reuse explicitly: look up the open row first, insert
+    /// only if absent.
+    pub async fn open_agent_draft(
+        pool: &PgPool,
+        connector_id: Uuid,
+        repo: &str,
+        number: i64,
+        session_id: &str,
+        verdict: ReviewVerdict,
+    ) -> Result<ReviewDraftInfo, DraftError> {
+        let existing: Option<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM github.review_drafts \
+             WHERE connector_id = $1 AND repo = $2 AND pull_number = $3 \
+               AND author_kind = 'agent' AND author_session_id = $4 AND status = 'draft' \
+             ORDER BY created_at LIMIT 1",
+        )
+        .bind(connector_id)
+        .bind(repo)
+        .bind(number)
+        .bind(session_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|_| DraftError::Db)?;
+
+        let id = match existing {
+            Some(id) => id,
+            None => sqlx::query_scalar(
+                "INSERT INTO github.review_drafts \
+                    (connector_id, repo, pull_number, author_kind, author_session_id, verdict) \
+                 VALUES ($1, $2, $3, 'agent', $4, $5) RETURNING id",
+            )
+            .bind(connector_id)
+            .bind(repo)
+            .bind(number)
+            .bind(session_id)
+            .bind(verdict_str(verdict))
+            .fetch_one(pool)
+            .await
+            .map_err(|_| DraftError::Db)?,
+        };
+
+        load_draft(pool, connector_id, repo, number, id)
+            .await
+            .map_err(|_| DraftError::Db)?
+            .ok_or(DraftError::Db)
+    }
+
+    /// Set (or append to) a draft's summary and set its verdict. Used by the
+    /// agent `review_summary` tool. `append = true` concatenates onto any
+    /// existing summary (blank-line separated) so an agent can build the review
+    /// body over several turns; `append = false` replaces it. Returns the draft
+    /// id and the resulting summary text. Scoped to the draft + its open status:
+    /// a published draft is immutable.
+    pub async fn set_summary(
+        pool: &PgPool,
+        connector_id: Uuid,
+        repo: &str,
+        number: i64,
+        draft_id: Uuid,
+        update: &SummaryUpdate<'_>,
+    ) -> Result<(Uuid, String), DraftError> {
+        let SummaryUpdate { summary, verdict, append } = *update;
+        // `COALESCE` the prior summary so append starts clean on a NULL; the
+        // blank-line separator is only inserted when there is prior text.
+        let sql = if append {
+            "UPDATE github.review_drafts \
+             SET summary = CASE \
+                 WHEN summary IS NULL OR summary = '' THEN $1 \
+                 ELSE summary || E'\\n\\n' || $1 END, \
+                 verdict = $2, updated_at = now() \
+             WHERE id = $3 AND connector_id = $4 AND repo = $5 AND pull_number = $6 \
+               AND status = 'draft' \
+             RETURNING summary"
+        } else {
+            "UPDATE github.review_drafts \
+             SET summary = $1, verdict = $2, updated_at = now() \
+             WHERE id = $3 AND connector_id = $4 AND repo = $5 AND pull_number = $6 \
+               AND status = 'draft' \
+             RETURNING summary"
+        };
+        let new_summary: Option<String> = sqlx::query_scalar(sql)
+            .bind(summary)
+            .bind(verdict_str(verdict))
+            .bind(draft_id)
+            .bind(connector_id)
+            .bind(repo)
+            .bind(number)
+            .fetch_optional(pool)
+            .await
+            .map_err(|_| DraftError::Db)?;
+        match new_summary {
+            Some(s) => Ok((draft_id, s)),
+            None => Err(DraftError::NotFound),
+        }
     }
 
     /// List the caller's open + published drafts for a PR (header + comments).
@@ -471,8 +587,8 @@ mod db {
 }
 
 pub use db::{
-    DraftError, add_comment, delete_comment, delete_draft, list_drafts, mark_published,
-    open_user_draft, update_comment, update_verdict,
+    DraftError, SummaryUpdate, add_comment, delete_comment, delete_draft, list_drafts,
+    mark_published, open_agent_draft, open_user_draft, set_summary, update_comment, update_verdict,
 };
 
 #[cfg(test)]

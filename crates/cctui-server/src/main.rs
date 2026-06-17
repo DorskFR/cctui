@@ -272,6 +272,19 @@ async fn main() -> anyhow::Result<()> {
         .layer(Extension(auth_config.clone())),
     );
 
+    // GH-AGENT-2: the agent MCP review endpoint authenticates the bearer session
+    // token on its own (it is not a user/machine token `auth_middleware` knows),
+    // so it is merged WITHOUT the auth/identity layers above.
+    #[cfg(feature = "github")]
+    let app = app.nest(
+        "/api/v1",
+        cctui_github::mcp_routes(
+            state.pool.clone(),
+            state.tui_tx.clone(),
+            state.pr_status_cache.clone(),
+        ),
+    );
+
     // GH-CONN-4: the reconcile poll loop. A background task (mirroring
     // `reaper_task`) that heals missed webhooks and hydrates first install by
     // polling GitHub for "PRs involving me" per connector. Behind the `github`
