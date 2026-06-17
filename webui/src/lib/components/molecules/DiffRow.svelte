@@ -24,6 +24,10 @@
 		ontoggleFile?: (fileKey: string) => void;
 		/** A file is folded (only its header shows). */
 		fileCollapsed?: boolean;
+		/** GH-VIEW-6: this file is marked reviewed (its blob SHA still matches). */
+		reviewed?: boolean;
+		/** Toggle this file's blob-keyed reviewed mark. */
+		ontoggleReviewed?: (fileKey: string) => void;
 		/** Whether inline draft commenting is available (GH-VIEW-4). */
 		commentable?: boolean;
 		/** A mutation is in flight (disables comment actions). */
@@ -46,6 +50,8 @@
 		onexpand,
 		ontoggleFile,
 		fileCollapsed = false,
+		reviewed = false,
+		ontoggleReviewed,
 		commentable = false,
 		busy = false,
 		oncommentLine,
@@ -72,6 +78,7 @@
 		type="button"
 		class="file"
 		class:active
+		class:reviewed
 		onclick={() => ontoggleFile?.(row.fileKey)}
 		title={fileCollapsed ? 'Expand file' : 'Collapse file'}
 	>
@@ -89,6 +96,30 @@
 					><span class="add">+{row.file.additions}</span>
 					<span class="del">−{row.file.deletions}</span></Text
 				>
+				<!-- GH-VIEW-6: blob-keyed reviewed toggle. stopPropagation so it
+				     doesn't also fold the file. -->
+				<span
+					class="reviewed-toggle"
+					class:on={reviewed}
+					role="checkbox"
+					aria-checked={reviewed}
+					aria-label={reviewed ? 'Mark file unreviewed' : 'Mark file reviewed'}
+					title={reviewed ? 'Reviewed — click to unmark' : 'Mark reviewed'}
+					tabindex="0"
+					onclick={(e) => {
+						e.stopPropagation();
+						ontoggleReviewed?.(row.fileKey);
+					}}
+					onkeydown={(e) => {
+						if (e.key === 'Enter' || e.key === ' ') {
+							e.preventDefault();
+							e.stopPropagation();
+							ontoggleReviewed?.(row.fileKey);
+						}
+					}}
+				>
+					{reviewed ? '☑ reviewed' : '☐ reviewed'}
+				</span>
 			</Cluster>
 		</Cluster>
 	</button>
@@ -163,6 +194,23 @@
 		cursor: pointer;
 		font: inherit;
 		color: inherit;
+	}
+	.file.reviewed {
+		/* Distinguish a reviewed file: dimmed header + a left accent rail. */
+		opacity: 0.6;
+		border-left: 3px solid var(--ok, #2ea043);
+	}
+	.reviewed-toggle {
+		font-size: 0.7rem;
+		font-family: var(--font-mono, monospace);
+		padding: 0 var(--sp-1);
+		border-radius: var(--radius, 6px);
+		cursor: pointer;
+		white-space: nowrap;
+		color: var(--text-muted, #8b949e);
+	}
+	.reviewed-toggle.on {
+		color: var(--ok, #2ea043);
 	}
 	.file.active,
 	.hunk.active,

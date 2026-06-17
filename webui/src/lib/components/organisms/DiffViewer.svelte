@@ -38,7 +38,9 @@
 		useGithubDrafts,
 		githubDraftsKey,
 		useGithubThreads,
-		githubThreadsKey
+		githubThreadsKey,
+		useGithubViewed,
+		githubViewedKey
 	} from '$lib/queries';
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import type { ReviewVerdict } from '@bindings/ReviewVerdict';
@@ -99,6 +101,69 @@
 	function refreshThreads() {
 		if (connectorId && number != null)
 			qc.invalidateQueries({ queryKey: githubThreadsKey(connectorId, diff.repo, number) });
+	}
+
+	// ---- GH-VIEW-6: blob-keyed "reviewed" marks --------------------------------
+	// Mark a file reviewed keyed to its CURRENT blob SHA. On reload after a push,
+	// a file stays reviewed only while its current blob SHA still equals the
+	// stored mark — so a push re-flags ONLY the files that actually changed; the
+	// unchanged ones stay reviewed. The re-flag is this pure comparison, done at
+	// render time against the live diff, not a server-side rewrite of the marks.
+	const viewedQuery = useGithubViewed(
+		() => connectorId ?? '',
+		() => diff.repo,
+		() => number ?? 0,
+		() => commentable
+	);
+	// path -> blob_sha that was marked reviewed.
+	const markedSha = $derived(
+		new Map(($viewedQuery.data ?? []).map((m) => [m.path, m.blob_sha] as const))
+	);
+	// The set of file paths that are CURRENTLY reviewed: a mark exists AND the
+	// file's current blob SHA still matches it (else the file changed → re-flag).
+	const reviewedPaths = $derived(
+		new Set(
+			diff.files
+				.filter((f) => f.blob_sha != null && markedSha.get(f.path) === f.blob_sha)
+				.map((f) => f.path)
+		)
+	);
+	const reviewedCount = $derived(reviewedPaths.size);
+
+	function refreshViewed() {
+		if (connectorId && number != null)
+			qc.invalidateQueries({ queryKey: githubViewedKey(connectorId, diff.repo, number) });
+	}
+
+	async function toggleReviewed(path: string) {
+		if (!connectorId || number == null) return;
+		const file = diff.files.find((f) => f.path === path);
+		if (!file?.blob_sha) return; // can't blob-key a file with no head blob SHA
+		busy = true;
+		try {
+			if (reviewedPaths.has(path)) {
+				await endpoints.unmarkGithubViewed(connectorId, diff.repo, number, {
+					path,
+					blob_sha: null
+				});
+				// Un-reviewing a file unfolds it again.
+				const next = new Set(collapsedFiles);
+				next.delete(path);
+				collapsedFiles = next;
+			} else {
+				await endpoints.markGithubViewed(connectorId, diff.repo, number, {
+					path,
+					blob_sha: file.blob_sha
+				});
+				// Reviewed files collapse to keep the surface focused on what's left.
+				const next = new Set(collapsedFiles);
+				next.add(path);
+				collapsedFiles = next;
+			}
+			refreshViewed();
+		} finally {
+			busy = false;
+		}
 	}
 
 	// ---- GH-VIEW-5: publish the open draft as one batched GitHub review --------
@@ -297,6 +362,14 @@
 				else return;
 				break;
 			}
+			case 'v': {
+				// GH-VIEW-6: toggle the reviewed mark on the file under the cursor.
+				if (!commentable) return;
+				const r = rows[cursor];
+				if (!r) return;
+				void toggleReviewed(r.fileKey);
+				break;
+			}
 			case 'c': {
 				// GH-VIEW-4: open the inline composer on the cursor's diff line.
 				if (!commentable) return;
@@ -332,6 +405,11 @@
 			<Text tone="muted" size="sm"
 				>{diff.total_files} files · {diff.total_changes} changed lines</Text
 			>
+			{#if commentable}
+				<Badge tone={reviewedCount === diff.files.length ? 'ok' : 'neutral'}>
+					{reviewedCount} of {diff.files.length} files reviewed
+				</Badge>
+			{/if}
 			{#if diff.huge}
 				<Badge tone="warn">huge diff — showing {diff.files.length} of {diff.total_files} files</Badge
 				>
@@ -433,6 +511,8 @@
 						lang={langFor(rows[vrow.index].fileKey)}
 						active={vrow.index === cursor}
 						fileCollapsed={collapsedFiles.has(rows[vrow.index].fileKey)}
+						reviewed={reviewedPaths.has(rows[vrow.index].fileKey)}
+						ontoggleReviewed={commentable ? toggleReviewed : undefined}
 						onexpand={expand}
 						ontoggleFile={toggleFile}
 						{commentable}
@@ -448,7 +528,9 @@
 		</div>
 	</div>
 	<Text tone="muted" size="xs">
-		j/k line · n/p hunk · ]/[ file · o expand/fold{commentable ? ' · c comment' : ''}
+		j/k line · n/p hunk · ]/[ file · o expand/fold{commentable
+			? ' · c comment · v reviewed'
+			: ''}
 	</Text>
 </Stack>
 

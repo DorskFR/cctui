@@ -704,6 +704,44 @@ pub struct ReviewDraftInfo {
     pub comments: Vec<DraftCommentInfo>,
 }
 
+// ---------------------------------------------------------------------------
+// GH-VIEW-6: blob-keyed "reviewed" marks (docs §6.2).
+//
+// A reviewer marks a file reviewed keyed to its blob SHA (`DiffFile.blob_sha`).
+// On a later push the diff reloads with fresh blob SHAs; the webui keeps a file
+// "reviewed" only when its current blob SHA still matches the stored mark, so a
+// push re-flags ONLY the files that actually changed. Marks are per user+PR,
+// persisted in `github.viewed_marks`.
+// ---------------------------------------------------------------------------
+
+/// Request body for `POST .../{number}/mark-viewed` and `.../unmark-viewed`.
+///
+/// The file path plus the blob SHA the reviewer saw. The path is the per-file
+/// identity; the blob SHA is the content the mark is keyed to.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct MarkViewedRequest {
+    /// Head-side file path being (un)marked.
+    pub path: String,
+    /// The blob SHA the reviewer saw for this path (from `DiffFile.blob_sha`).
+    /// Required on mark; ignored on unmark (the path is the identity there).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blob_sha: Option<String>,
+}
+
+/// One blob-keyed "reviewed" mark for a file in a PR, scoped to the caller.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ViewedMarkInfo {
+    /// Head-side file path the mark applies to.
+    pub path: String,
+    /// The blob SHA the file had when marked reviewed. The webui treats a file
+    /// as reviewed only while its current `DiffFile.blob_sha` equals this — a
+    /// later push that changes the file rotates its blob SHA and re-flags it.
+    pub blob_sha: String,
+    pub marked_at: String,
+}
+
 /// One row in the `/github` PR inbox: the synced PR plus its derived attention
 /// bucket and pre-aggregated CI/review summaries.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

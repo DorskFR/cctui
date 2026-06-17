@@ -18,9 +18,9 @@ use axum::http::StatusCode;
 use axum::{Extension, Json};
 use cctui_proto::github::{
     CallerIdentity, CheckSummary, ConnectorInfo, CreateConnector, CreateDraftComment,
-    CreateReviewDraft, GithubCredentialKind, PublishReviewRequest, PublishReviewResult, PullDiff,
-    PullInboxItem, ReviewDraftInfo, ReviewSummary, ReviewVerdict, UpdateDraftComment,
-    UpdateReviewDraft,
+    CreateReviewDraft, GithubCredentialKind, MarkViewedRequest, PublishReviewRequest,
+    PublishReviewResult, PullDiff, PullInboxItem, ReviewDraftInfo, ReviewSummary, ReviewVerdict,
+    UpdateDraftComment, UpdateReviewDraft, ViewedMarkInfo,
 };
 use std::sync::Arc;
 use uuid::Uuid;
@@ -30,6 +30,7 @@ use crate::diff::{self, HttpDiffClient};
 use crate::drafts::{self, DraftError};
 use crate::publish::{self, ReviewSubmitClient};
 use crate::store;
+use crate::viewed::{self, ViewedError};
 use crate::{GithubState, crypto};
 
 /// Query string for `GET .../threads`: `?sync=1` pulls fresh threads from GitHub
@@ -712,11 +713,10 @@ pub async fn publish_review(
     // Submit ONE batched review.
     let client = publish::HttpReviewClient::new();
     let body = publish::review_request_json(&payload, &head_sha);
-    let submitted =
-        client.submit_review(&credential, &repo, number, &body).await.map_err(|e| {
-            tracing::warn!(%connector_id, repo, number, "github submit review failed: {e}");
-            err(StatusCode::BAD_GATEWAY, "failed to submit review to github")
-        })?;
+    let submitted = client.submit_review(&credential, &repo, number, &body).await.map_err(|e| {
+        tracing::warn!(%connector_id, repo, number, "github submit review failed: {e}");
+        err(StatusCode::BAD_GATEWAY, "failed to submit review to github")
+    })?;
 
     // Pair returned GitHub comment ids with the source draft comments (same order
     // as the submitted comments array). A short/empty id list just leaves those
@@ -824,10 +824,92 @@ async fn sync_threads(
                 gh_created_at: c.created_at.clone(),
                 gh_updated_at: c.created_at.clone(),
             };
-            store::upsert_review_comment(&state.pool, &state.events, connector_id, &comment).await?;
+            store::upsert_review_comment(&state.pool, &state.events, connector_id, &comment)
+                .await?;
         }
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// GH-VIEW-6: blob-keyed "reviewed" marks.
+//
+// A reviewer marks a file reviewed keyed to its blob SHA (`DiffFile.blob_sha`).
+// Marks are scoped to the caller (user identity required — the admin token has
+// no user, so it cannot own marks) + the connector + the PR ref. The webui pairs
+// each mark's blob SHA with the current diff: a file stays reviewed only while
+// its current blob SHA still matches, so a push re-flags only changed files.
+// All three handlers share the `(connector_id, owner, name, number)` locator.
+// ---------------------------------------------------------------------------
+
+/// Map a [`ViewedError`] to an HTTP response.
+fn viewed_err(e: ViewedError) -> ApiError {
+    match e {
+        ViewedError::NotFound => err(StatusCode::NOT_FOUND, "file was not marked reviewed"),
+        ViewedError::Db => err(StatusCode::INTERNAL_SERVER_ERROR, "database error"),
+    }
+}
+
+/// `GET .../{number}/viewed` — the caller's blob-keyed reviewed marks for a PR.
+pub async fn list_viewed(
+    State(state): State<GithubState>,
+    Extension(ctx): Extension<CallerIdentity>,
+    Path((connector_id, owner, name, number)): Path<PullRef>,
+) -> Result<Json<Vec<ViewedMarkInfo>>, ApiError> {
+    scope_connector(&state, &ctx, connector_id).await?;
+    let Some(uid) = ctx.user_id else {
+        // No user identity (admin token) → no marks to own; an empty list is the
+        // honest answer rather than an error.
+        return Ok(Json(Vec::new()));
+    };
+    let repo = format!("{owner}/{name}");
+    viewed::list(&state.pool, uid, connector_id, &repo, number).await.map(Json).map_err(viewed_err)
+}
+
+/// `POST .../{number}/mark-viewed` — mark a file reviewed keyed to its blob SHA.
+/// Idempotent: re-marking the same path updates the stored blob SHA in place.
+pub async fn mark_viewed(
+    State(state): State<GithubState>,
+    Extension(ctx): Extension<CallerIdentity>,
+    Path((connector_id, owner, name, number)): Path<PullRef>,
+    Json(req): Json<MarkViewedRequest>,
+) -> Result<StatusCode, ApiError> {
+    scope_connector(&state, &ctx, connector_id).await?;
+    let Some(uid) = ctx.user_id else {
+        return Err(err(StatusCode::BAD_REQUEST, "a user identity is required to mark a file"));
+    };
+    if req.path.trim().is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "path required"));
+    }
+    let Some(blob_sha) = req.blob_sha.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
+        return Err(err(StatusCode::BAD_REQUEST, "blob_sha required to mark a file reviewed"));
+    };
+    let repo = format!("{owner}/{name}");
+    viewed::mark(&state.pool, uid, connector_id, &repo, number, req.path.trim(), blob_sha)
+        .await
+        .map(|()| StatusCode::NO_CONTENT)
+        .map_err(viewed_err)
+}
+
+/// `POST .../{number}/unmark-viewed` — clear a file's reviewed mark.
+pub async fn unmark_viewed(
+    State(state): State<GithubState>,
+    Extension(ctx): Extension<CallerIdentity>,
+    Path((connector_id, owner, name, number)): Path<PullRef>,
+    Json(req): Json<MarkViewedRequest>,
+) -> Result<StatusCode, ApiError> {
+    scope_connector(&state, &ctx, connector_id).await?;
+    let Some(uid) = ctx.user_id else {
+        return Err(err(StatusCode::BAD_REQUEST, "a user identity is required to unmark a file"));
+    };
+    if req.path.trim().is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "path required"));
+    }
+    let repo = format!("{owner}/{name}");
+    viewed::unmark(&state.pool, uid, connector_id, &repo, number, req.path.trim())
+        .await
+        .map(|()| StatusCode::NO_CONTENT)
+        .map_err(viewed_err)
 }
 
 /// Aggregate review rows into the inbox's [`ReviewSummary`].

@@ -34,6 +34,8 @@ import type { UpdateDraftComment } from "@bindings/UpdateDraftComment";
 import type { PublishReviewRequest } from "@bindings/PublishReviewRequest";
 import type { PublishReviewResult } from "@bindings/PublishReviewResult";
 import type { ReviewThreadInfo } from "@bindings/ReviewThreadInfo";
+import type { ViewedMarkInfo } from "@bindings/ViewedMarkInfo";
+import type { MarkViewedRequest } from "@bindings/MarkViewedRequest";
 import type { Label } from "@bindings/Label";
 import type { LabelListResponse } from "@bindings/LabelListResponse";
 
@@ -386,6 +388,34 @@ export const endpoints = {
     api.get<ReviewThreadInfo[]>(
       `/github/pulls/${connectorId}/${repo}/${number}/threads${sync ? "?sync=1" : ""}`,
     ),
+  /** The caller's blob-keyed "reviewed" marks for a PR (GH-VIEW-6). Each mark's
+   *  `blob_sha` is paired with the current diff: a file stays reviewed only
+   *  while its current `DiffFile.blob_sha` still matches, so a push re-flags
+   *  only changed files. */
+  githubViewed: (connectorId: string, repo: string, number: number) =>
+    api.get<ViewedMarkInfo[]>(
+      `/github/pulls/${connectorId}/${repo}/${number}/viewed`,
+    ),
+  markGithubViewed: (
+    connectorId: string,
+    repo: string,
+    number: number,
+    body: MarkViewedRequest,
+  ) =>
+    api.post<void>(
+      `/github/pulls/${connectorId}/${repo}/${number}/mark-viewed`,
+      body,
+    ),
+  unmarkGithubViewed: (
+    connectorId: string,
+    repo: string,
+    number: number,
+    body: MarkViewedRequest,
+  ) =>
+    api.post<void>(
+      `/github/pulls/${connectorId}/${repo}/${number}/unmark-viewed`,
+      body,
+    ),
   /** Every spawnable machine across all active users — for the spawn picker.
    * Excludes server-managed machines (`ephemeral` worker pods and the per-user
    * `dispatch` machine): those aren't somewhere you'd start an interactive
@@ -673,6 +703,31 @@ export const useGithubThreads = (
       queryFn: () => endpoints.githubThreads(connectorId(), repo(), number()),
       enabled: enabled() && !!connectorId() && !!repo(),
       staleTime: 30_000,
+    })),
+  );
+
+/** The query key for a PR's blob-keyed reviewed marks (GH-VIEW-6). */
+export const githubViewedKey = (
+  connectorId: string,
+  repo: string,
+  number: number,
+) => ["github-viewed", connectorId, repo, number] as const;
+
+/** The caller's blob-keyed reviewed marks for a PR (GH-VIEW-6). The viewer
+ *  pairs each mark's blob SHA with the current diff to decide which files are
+ *  still reviewed after a push. */
+export const useGithubViewed = (
+  connectorId: () => string,
+  repo: () => string,
+  number: () => number,
+  enabled: () => boolean = () => true,
+) =>
+  createQuery(
+    toStore(() => ({
+      queryKey: githubViewedKey(connectorId(), repo(), number()),
+      queryFn: () => endpoints.githubViewed(connectorId(), repo(), number()),
+      enabled: enabled() && !!connectorId() && !!repo(),
+      staleTime: 0,
     })),
   );
 

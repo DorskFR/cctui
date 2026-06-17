@@ -27,6 +27,7 @@ mod publish;
 mod reconcile;
 mod routes;
 mod store;
+mod viewed;
 mod webhook;
 
 pub use anchor::resolve as resolve_comment_anchor;
@@ -43,6 +44,10 @@ pub use reconcile::{interval_secs as reconcile_interval_secs, spawn as spawn_rec
 pub use store::{
     EventTx, list_open_threads, upsert_check, upsert_pull, upsert_review, upsert_review_comment,
     upsert_review_thread,
+};
+pub use viewed::{
+    ViewedError, is_still_reviewed, list as list_viewed_marks, mark as mark_viewed,
+    unmark as unmark_viewed,
 };
 
 /// The dedicated Postgres schema that holds **all** GitHub-integration state.
@@ -170,10 +175,11 @@ pub struct GithubCapability {
 /// the whole `/capabilities` response.
 pub async fn capability(pool: &PgPool) -> GithubCapability {
     // Whether this query succeeds is itself the "schema exists" probe.
-    let count: Option<i64> = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {SCHEMA}.connectors"))
-        .fetch_one(pool)
-        .await
-        .ok();
+    let count: Option<i64> =
+        sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {SCHEMA}.connectors"))
+            .fetch_one(pool)
+            .await
+            .ok();
     let Some(count) = count else {
         // Schema/tables not present → integration not installed/reachable.
         return GithubCapability { available: false, enabled: false, repos: Vec::new() };
@@ -234,6 +240,18 @@ pub fn routes(
         .route(
             "/github/pulls/{connector_id}/{owner}/{name}/{number}/threads",
             get(routes::list_threads),
+        )
+        .route(
+            "/github/pulls/{connector_id}/{owner}/{name}/{number}/viewed",
+            get(routes::list_viewed),
+        )
+        .route(
+            "/github/pulls/{connector_id}/{owner}/{name}/{number}/mark-viewed",
+            post(routes::mark_viewed),
+        )
+        .route(
+            "/github/pulls/{connector_id}/{owner}/{name}/{number}/unmark-viewed",
+            post(routes::unmark_viewed),
         )
         .route("/triggers/github", post(webhook::webhook))
         .with_state(state)
