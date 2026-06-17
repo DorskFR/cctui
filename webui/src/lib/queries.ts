@@ -24,6 +24,7 @@ import type { MeResponse } from "@bindings/MeResponse";
 import type { CapabilitiesResponse } from "@bindings/CapabilitiesResponse";
 import type { ConnectorInfo } from "@bindings/ConnectorInfo";
 import type { CreateConnector } from "@bindings/CreateConnector";
+import type { UpdateConnector } from "@bindings/UpdateConnector";
 import type { PullInboxItem } from "@bindings/PullInboxItem";
 import type { Prompt } from "@bindings/Prompt";
 import type { PullDiff } from "@bindings/PullDiff";
@@ -283,6 +284,8 @@ export const endpoints = {
   githubConnectors: () => api.get<ConnectorInfo[]>("/github/connectors"),
   createGithubConnector: (body: CreateConnector) =>
     api.post<ConnectorInfo>("/github/connectors", body),
+  updateGithubConnector: (id: string, body: UpdateConnector) =>
+    api.patch<ConnectorInfo>(`/github/connectors/${id}`, body),
   deleteGithubConnector: (id: string) =>
     api.del<void>(`/github/connectors/${id}`),
   /** Run the reconcile poll for one connector immediately (CCT-396), instead of
@@ -608,7 +611,7 @@ export const useAccountUsage = (
     })),
   );
 
-export type { ConnectorInfo, CreateConnector };
+export type { ConnectorInfo, CreateConnector, UpdateConnector };
 
 /** GitHub connectors (GH-CONN-1). Only fetched while the GitHub view is mounted
  *  (caller gates `enabled` on the capability). Credentials are never returned. */
@@ -631,6 +634,11 @@ export function useGithubConnectorActions() {
   return {
     create: async (body: CreateConnector) => {
       const r = await endpoints.createGithubConnector(body);
+      inval();
+      return r;
+    },
+    update: async (id: string, body: UpdateConnector) => {
+      const r = await endpoints.updateGithubConnector(id, body);
       inval();
       return r;
     },

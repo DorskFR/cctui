@@ -210,6 +210,82 @@ pub async fn create_connector(
     }
 }
 
+/// `PATCH /api/v1/github/connectors/{id}` — update a connector's name, tracked
+/// repos, credential, and/or webhook secret. Only the fields present in the body
+/// change. Rotating the credential clears the cached `viewer_login` (and the
+/// stale `last_error`) so the next poll re-resolves against the new token. A
+/// user may edit only its own connectors; admin may edit any.
+pub async fn update_connector(
+    State(state): State<GithubState>,
+    Extension(ctx): Extension<CallerIdentity>,
+    Path(id): Path<Uuid>,
+    Json(req): Json<cctui_proto::github::UpdateConnector>,
+) -> Result<Json<ConnectorInfo>, ApiError> {
+    scope_connector(&state, &ctx, id).await?;
+
+    if let Some(name) = req.name.as_deref()
+        && name.trim().is_empty()
+    {
+        return Err(err(StatusCode::BAD_REQUEST, "name cannot be empty"));
+    }
+
+    let key = crypto::vault_key();
+    // Build the SET clause from the present fields only. `COALESCE($n, col)`
+    // leaves a column unchanged when the bind is NULL.
+    let new_name = req.name.as_deref().map(str::trim).map(str::to_string);
+    let new_repos = req.repos.as_ref().map(|rs| {
+        rs.iter().map(|r| r.trim().to_string()).filter(|r| !r.is_empty()).collect::<Vec<_>>()
+    });
+    // Only rotate the credential when a non-empty one is supplied.
+    let new_credential = req
+        .credential
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| crypto::obfuscate(s, &key));
+    let rotating = new_credential.is_some();
+    // Webhook secret: Some("") clears, Some(non-empty) sets, None leaves as-is.
+    // `set_webhook` flags whether to touch the column at all.
+    let (set_webhook, new_webhook) = match req.webhook_secret.as_deref().map(str::trim) {
+        None => (false, None),
+        Some("") => (true, None),
+        Some(s) => (true, Some(crypto::obfuscate(s, &key))),
+    };
+
+    let row: Result<ConnectorRow, sqlx::Error> = sqlx::query_as(&format!(
+        "UPDATE github.connectors SET \
+            name = COALESCE($2, name), \
+            repos = COALESCE($3, repos), \
+            encrypted_credential = COALESCE($4, encrypted_credential), \
+            encrypted_webhook_secret = CASE WHEN $5 THEN $6 ELSE encrypted_webhook_secret END, \
+            viewer_login = CASE WHEN $7 THEN NULL ELSE viewer_login END, \
+            last_error = CASE WHEN $7 THEN NULL ELSE last_error END, \
+            updated_at = now() \
+         WHERE id = $1 RETURNING {SELECT_COLS}"
+    ))
+    .bind(id)
+    .bind(new_name)
+    .bind(new_repos)
+    .bind(new_credential)
+    .bind(set_webhook)
+    .bind(new_webhook)
+    .bind(rotating)
+    .fetch_one(&state.pool)
+    .await;
+
+    match row {
+        Ok(r) => Ok(Json(r.into_info())),
+        Err(sqlx::Error::RowNotFound) => Err(err(StatusCode::NOT_FOUND, "no such connector")),
+        Err(sqlx::Error::Database(db)) if db.is_unique_violation() => {
+            Err(err(StatusCode::CONFLICT, "a connector with that name already exists"))
+        }
+        Err(e) => {
+            tracing::error!("github connector update db error: {e}");
+            Err(err(StatusCode::INTERNAL_SERVER_ERROR, "database error"))
+        }
+    }
+}
+
 /// `DELETE /api/v1/github/connectors/{id}` — delete a connector and its
 /// encrypted credential. A user may delete only its own; admin may delete any.
 pub async fn delete_connector(

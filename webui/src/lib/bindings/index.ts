@@ -80,6 +80,7 @@ export type * from './StageFilesResponse';
 export type * from './TokenUsage';
 export type * from './TokenUsageWindows';
 export type * from './TuiCommand';
+export type * from './UpdateConnector';
 export type * from './UpdateDraftComment';
 export type * from './UpdateLabelRequest';
 export type * from './UpdateReviewDraft';

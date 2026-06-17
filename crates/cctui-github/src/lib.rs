@@ -14,7 +14,7 @@
 //! tickets.
 
 use axum::Router;
-use axum::routing::{delete, get, post};
+use axum::routing::{get, post};
 use sqlx::{Connection, Executor, PgPool};
 
 mod anchor;
@@ -212,7 +212,10 @@ pub fn routes(
     let state = GithubState { pool, events, pr_cache, diff_cache: diff::DiffCache::new() };
     Router::new()
         .route("/github/connectors", get(routes::list_connectors).post(routes::create_connector))
-        .route("/github/connectors/{id}", delete(routes::delete_connector))
+        .route(
+            "/github/connectors/{id}",
+            axum::routing::patch(routes::update_connector).delete(routes::delete_connector),
+        )
         .route("/github/connectors/{id}/sync", post(routes::sync_connector))
         .route("/github/pulls", get(routes::list_pulls))
         .route(

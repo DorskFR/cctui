@@ -12,7 +12,9 @@
 		useGithubConnectorActions,
 		useMe,
 		useUsers,
-		type CreateConnector
+		type ConnectorInfo,
+		type CreateConnector,
+		type UpdateConnector
 	} from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
 	import {
@@ -43,6 +45,8 @@
 	const activeUsers = $derived(($users.data ?? []).filter((u) => !u.revoked_at));
 
 	let showModal = $state(false);
+	// null = create mode; an id = editing that connector.
+	let editingId = $state<string | null>(null);
 	let name = $state('');
 	let credentialKind = $state<CredentialKind>('pat');
 	let credential = $state('');
@@ -51,11 +55,14 @@
 	let ownerId = $state('');
 	let saving = $state(false);
 
+	const editing = $derived(editingId !== null);
+
 	$effect(() => {
 		if (isAdmin && !ownerId && activeUsers.length > 0) ownerId = activeUsers[0].id;
 	});
 
 	function openCreate() {
+		editingId = null;
 		name = '';
 		credentialKind = 'pat';
 		credential = '';
@@ -64,34 +71,63 @@
 		showModal = true;
 	}
 
-	async function create() {
-		if (!name.trim() || !credential.trim()) {
-			toasts.err('Name and credential are required');
+	function openEdit(c: ConnectorInfo) {
+		editingId = c.id;
+		name = c.name;
+		credentialKind = c.credential_kind;
+		credential = ''; // blank = keep the stored credential
+		reposText = c.repos.join(' ');
+		webhookSecret = '';
+		showModal = true;
+	}
+
+	function parseRepos(): string[] {
+		return reposText
+			.split(/[\s,]+/)
+			.map((r) => r.trim())
+			.filter(Boolean);
+	}
+
+	async function save() {
+		if (!name.trim()) {
+			toasts.err('Name is required');
 			return;
 		}
-		if (isAdmin && !ownerId) {
+		if (!editing && !credential.trim()) {
+			toasts.err('A credential is required for a new connector');
+			return;
+		}
+		if (!editing && isAdmin && !ownerId) {
 			toasts.err('Pick an owning user');
 			return;
 		}
 		saving = true;
 		try {
-			const repos = reposText
-				.split(/[\s,]+/)
-				.map((r) => r.trim())
-				.filter(Boolean);
-			const body: CreateConnector = {
-				name: name.trim(),
-				credential_kind: credentialKind,
-				credential: credential.trim(),
-				repos,
-				webhook_secret: webhookSecret.trim() || null,
-				user_id: isAdmin ? ownerId : null
-			};
-			await actions.create(body);
-			toasts.ok(`Connector ${body.name} added`);
+			if (editing && editingId) {
+				const body: UpdateConnector = {
+					name: name.trim(),
+					repos: parseRepos(),
+					// Blank credential/webhook = leave the stored ones unchanged.
+					credential: credential.trim() || null,
+					webhook_secret: webhookSecret.trim() || null
+				};
+				await actions.update(editingId, body);
+				toasts.ok(`Connector ${name.trim()} updated`);
+			} else {
+				const body: CreateConnector = {
+					name: name.trim(),
+					credential_kind: credentialKind,
+					credential: credential.trim(),
+					repos: parseRepos(),
+					webhook_secret: webhookSecret.trim() || null,
+					user_id: isAdmin ? ownerId : null
+				};
+				await actions.create(body);
+				toasts.ok(`Connector ${body.name} added`);
+			}
 			showModal = false;
 		} catch (e) {
-			toasts.err(e instanceof Error ? e.message : 'Failed to add connector');
+			toasts.err(e instanceof Error ? e.message : 'Failed to save connector');
 		} finally {
 			saving = false;
 		}
@@ -178,6 +214,7 @@
 							>
 								{syncingId === c.id ? 'Refreshing…' : 'Refresh now'}
 							</Button>
+							<Button size="sm" onclick={() => openEdit(c)}>Edit</Button>
 							<Button size="sm" variant="danger" onclick={() => remove(c.id, c.name)}>Remove</Button>
 						</Cluster>
 					</Cluster>
@@ -188,10 +225,13 @@
 </Stack>
 
 {#if showModal}
-	<Modal title="Add GitHub connector" onclose={() => (showModal = false)}>
+	<Modal
+		title={editing ? 'Edit GitHub connector' : 'Add GitHub connector'}
+		onclose={() => (showModal = false)}
+	>
 		{#snippet body()}
 			<Stack gap="var(--sp-3)">
-				{#if isAdmin}
+				{#if isAdmin && !editing}
 					<Field label="Owner">
 						<Select bind:value={ownerId}>
 							{#each activeUsers as u (u.id)}
@@ -203,14 +243,24 @@
 				<Field label="Name">
 					<Input bind:value={name} placeholder="personal" />
 				</Field>
-				<Field label="Credential type">
-					<Select bind:value={credentialKind}>
-						<option value="pat">Fine-grained PAT</option>
-						<option value="app_installation">GitHub App installation token</option>
-					</Select>
-				</Field>
-				<Field label="Credential (stored encrypted; never shown again)">
-					<Input bind:value={credential} type="password" placeholder="github_pat_…" />
+				{#if !editing}
+					<Field label="Credential type">
+						<Select bind:value={credentialKind}>
+							<option value="pat">Fine-grained PAT</option>
+							<option value="app_installation">GitHub App installation token</option>
+						</Select>
+					</Field>
+				{/if}
+				<Field
+					label={editing
+						? 'New credential (leave blank to keep current)'
+						: 'Credential (stored encrypted; never shown again)'}
+				>
+					<Input
+						bind:value={credential}
+						type="password"
+						placeholder={editing ? 'leave blank to keep current' : 'github_pat_…'}
+					/>
 				</Field>
 				{#if credentialKind === 'pat'}
 					<Text as="p" tone="muted" size="xs">
@@ -218,10 +268,12 @@
 						Personal access tokens → Fine-grained tokens. Under <em>Repository access</em> select the
 						repos you list below, then grant these <strong>repository permissions (read-only)</strong>:
 						<strong>Pull requests</strong> and <strong>Contents</strong> (<strong>Metadata</strong> is
-						required and granted automatically). For an org's private repos the token must also be
-						<strong>approved by an org owner / SSO-authorized</strong>, or GitHub rejects the search
-						with a 422. No account/org permissions are needed. cctui polls every ~5 min for PRs you
-						authored or were asked to review; use “Refresh now” to poll on demand.
+						required and granted automatically). No account/org permissions are needed.
+						<strong>For private org repos</strong> the token must be approved by an org owner /
+						SSO-authorized — and if the search keeps returning a 422 even then, use a
+						<strong>classic PAT</strong> with <code>repo</code> scope: fine-grained tokens have
+						limited support for the issue-search <code>@me</code>/user qualifiers. cctui polls every
+						~5 min for PRs you authored or were asked to review; use “Refresh now” to poll on demand.
 					</Text>
 				{:else}
 					<Text as="p" tone="muted" size="xs">
@@ -246,8 +298,8 @@
 				</Field>
 				<Cluster justify="flex-end" gap="var(--sp-2)">
 					<Button size="sm" onclick={() => (showModal = false)}>Cancel</Button>
-					<Button size="sm" variant="primary" disabled={saving} onclick={create}>
-						{saving ? 'Saving…' : 'Add connector'}
+					<Button size="sm" variant="primary" disabled={saving} onclick={save}>
+						{saving ? 'Saving…' : editing ? 'Save changes' : 'Add connector'}
 					</Button>
 				</Cluster>
 			</Stack>

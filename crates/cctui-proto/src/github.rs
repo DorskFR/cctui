@@ -71,6 +71,32 @@ pub struct CreateConnector {
     pub user_id: Option<Uuid>,
 }
 
+/// Request body for `PATCH /api/v1/github/connectors/{id}`.
+///
+/// Every field is optional: only the present ones are changed (rename, re-scope
+/// repos, rotate the credential, set/clear the webhook secret). A `credential`
+/// is only re-encrypted when present and non-empty — omit it to keep the stored
+/// one. Rotating the credential clears the cached `viewer_login` so the next
+/// poll re-resolves it against the new token.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct UpdateConnector {
+    /// New human-readable label, if renaming.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Replacement set of `owner/name` slugs, if re-scoping. Replaces the whole
+    /// list (not merged); an empty list tracks every repo the token can see.
+    #[serde(default)]
+    pub repos: Option<Vec<String>>,
+    /// A replacement credential to rotate to. Omitted/empty = keep the current.
+    #[serde(default)]
+    pub credential: Option<String>,
+    /// Webhook secret: `Some(non-empty)` sets it, `Some("")` clears it, `None`
+    /// leaves it unchanged.
+    #[serde(default)]
+    pub webhook_secret: Option<String>,
+}
+
 /// API view of a connector. The credential and webhook secret are **never**
 /// present — only a non-secret [`ConnectorInfo::credential_preview`] mask, so the
 /// webui and agents can confirm a connector exists without ever seeing the token.

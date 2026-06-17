@@ -93,8 +93,14 @@ pub trait SearchClient: Send + Sync {
 /// can see. Bare `owner` slugs (no `/name`) become a `user:`/`org:`-style
 /// `repo:owner/*`-equivalent fallback via the `user:` qualifier so an
 /// owner-wide connector still works.
+/// `viewer` is the value used in the `author:`/`review-requested:` qualifiers.
+/// Prefer the connector's resolved GitHub **login**: a fine-grained PAT often
+/// can't resolve the `@me` alias in the legacy issue-search API and 422s with
+/// "the listed users cannot be searched" (CCT-396 follow-up), whereas the
+/// explicit login works. Falls back to `@me` only when the login isn't known
+/// yet (classic PATs accept `@me` fine).
 #[must_use]
-pub fn build_query(repos: &[String]) -> String {
+pub fn build_query(repos: &[String], viewer: &str) -> String {
     let mut q = String::from("is:pr is:open");
     for r in repos {
         let r = r.trim();
@@ -111,10 +117,9 @@ pub fn build_query(repos: &[String]) -> String {
     // The "involves me" scope: authored + review-requested. We deliberately do
     // NOT use `team-review-requested:@me` — that qualifier takes a *team name*
     // (`org/team`), not `@me`, so GitHub rejects the whole search with a 422
-    // Validation Failed (CCT-396 follow-up). `review-requested:@me` already
-    // covers reviews requested of the viewer directly; team-requested-only PRs
-    // are out of scope for v1 rather than breaking the entire poll.
-    q.push_str(" (author:@me OR review-requested:@me)");
+    // Validation Failed. `review-requested` already covers reviews requested of
+    // the viewer directly; team-requested-only PRs are out of scope for v1.
+    q.push_str(&format!(" (author:{viewer} OR review-requested:{viewer})"));
     q
 }
 
@@ -198,9 +203,8 @@ async fn reconcile_once(
             .await;
             continue;
         };
-        let query = build_query(&repos);
         let result =
-            reconcile_connector(state, client, etags, connector_id, &credential, &query).await;
+            reconcile_connector(state, client, etags, connector_id, &credential, &repos).await;
         if let Err(e) = &result {
             tracing::warn!(%connector_id, "github reconcile connector error: {e}");
         }
@@ -246,8 +250,7 @@ pub async fn sync_now(state: &GithubState, connector_id: Uuid) {
         Some(credential) => {
             let client = HttpSearchClient::new();
             let etags: EtagCache = Arc::new(Mutex::new(HashMap::new()));
-            let query = build_query(&repos);
-            reconcile_connector(state, &client, &etags, connector_id, &credential, &query).await
+            reconcile_connector(state, &client, &etags, connector_id, &credential, &repos).await
         }
         None => Err(anyhow::anyhow!("connector credential could not be decrypted")),
     };
@@ -265,11 +268,12 @@ async fn reconcile_connector(
     etags: &EtagCache,
     connector_id: Uuid,
     credential: &str,
-    query: &str,
+    repos: &[String],
 ) -> anyhow::Result<usize> {
     // Cache the credential's own login once so the inbox can derive attention
     // buckets (GH-CONN-6) without a per-request GitHub call. Skip if already
-    // known; best-effort, never fatal.
+    // known; best-effort, never fatal. We ALSO use it to build the search query
+    // with the explicit login instead of `@me` (see [`build_query`]).
     let known: Option<String> =
         sqlx::query_scalar("SELECT viewer_login FROM github.connectors WHERE id = $1")
             .bind(connector_id)
@@ -277,20 +281,24 @@ async fn reconcile_connector(
             .await
             .ok()
             .flatten();
-    if known.is_none()
-        && let Ok(Some(login)) = client.viewer_login(credential).await
-    {
+    let viewer_login = if let Some(login) = known {
+        Some(login)
+    } else if let Ok(Some(login)) = client.viewer_login(credential).await {
         let _ = sqlx::query("UPDATE github.connectors SET viewer_login = $1 WHERE id = $2")
             .bind(&login)
             .bind(connector_id)
             .execute(&state.pool)
             .await;
-    }
+        Some(login)
+    } else {
+        None
+    };
 
-    let cache_key = (connector_id, query.to_string());
+    let query = build_query(repos, viewer_login.as_deref().unwrap_or("@me"));
+    let cache_key = (connector_id, query.clone());
     let prior = etags.lock().await.get(&cache_key).cloned();
 
-    match client.search(credential, query, prior.as_deref()).await? {
+    match client.search(credential, &query, prior.as_deref()).await? {
         SearchOutcome::NotModified => Ok(0),
         SearchOutcome::RateLimited { retry_after } => {
             tracing::info!(
@@ -585,19 +593,28 @@ mod tests {
 
     #[test]
     fn build_query_includes_involves_me_scope() {
-        let q = build_query(&["o/r".into()]);
+        // With a resolved login, the qualifiers use it (not @me) so a
+        // fine-grained PAT can run the search (CCT-396 follow-up).
+        let q = build_query(&["o/r".into()], "octocat");
         assert!(q.contains("is:pr is:open"));
         assert!(q.contains("repo:o/r"));
-        assert!(q.contains("author:@me"));
-        assert!(q.contains("review-requested:@me"));
-        // `team-review-requested:@me` is invalid (takes a team name, not @me) and
-        // 422s the whole search — it must NOT be emitted (CCT-396 follow-up).
+        assert!(q.contains("author:octocat"));
+        assert!(q.contains("review-requested:octocat"));
+        // `team-review-requested` is invalid (takes a team name) and 422s the
+        // whole search — it must NOT be emitted.
         assert!(!q.contains("team-review-requested"));
     }
 
     #[test]
+    fn build_query_falls_back_to_me_without_login() {
+        let q = build_query(&["o/r".into()], "@me");
+        assert!(q.contains("author:@me"));
+        assert!(q.contains("review-requested:@me"));
+    }
+
+    #[test]
     fn build_query_handles_owner_only_and_empty() {
-        let q = build_query(&["owner".into(), "  ".into(), "o/r".into()]);
+        let q = build_query(&["owner".into(), "  ".into(), "o/r".into()], "@me");
         assert!(q.contains("user:owner"));
         assert!(q.contains("repo:o/r"));
         // Blank slug is skipped, not emitted as a bare qualifier.
@@ -606,7 +623,7 @@ mod tests {
 
     #[test]
     fn build_query_no_repos_is_global() {
-        let q = build_query(&[]);
+        let q = build_query(&[], "@me");
         assert_eq!(q, "is:pr is:open (author:@me OR review-requested:@me)");
     }
 
@@ -690,7 +707,7 @@ mod tests {
         let etags: EtagCache = Arc::new(Mutex::new(HashMap::new()));
         let client = FakeClient;
         let cid = Uuid::nil();
-        let q = build_query(&["o/r".into()]);
+        let q = build_query(&["o/r".into()], "@me");
 
         // We cannot call reconcile_connector without a GithubState/pool, so test
         // the ETag cache transition directly against the client + cache, which
