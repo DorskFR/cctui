@@ -329,14 +329,34 @@
 	let scrollEl = $state<HTMLDivElement>();
 	let cursor = $state(0); // current keyboard row index
 
-	const virtualizer = $derived(
-		createVirtualizer<HTMLDivElement, HTMLDivElement>({
+	// Create the virtualizer ONCE. It must not be re-created reactively: the
+	// `getScrollElement` closure is not a tracked dependency, so re-creating it
+	// (the old `$derived(createVirtualizer(...))`) only happened when `rows.length`
+	// changed — and for a PR with no drafts/threads that never changes after
+	// mount. The single instance was then built at first render while `scrollEl`
+	// (bound via `bind:this`) was still undefined, so it captured a null scroll
+	// element, never measured the viewport, and rendered a scrollbar (height from
+	// the estimate) with zero on-screen rows. We instead re-apply options in an
+	// `$effect` that runs AFTER mount, once the scroll element exists.
+	const virtualizer = createVirtualizer<HTMLDivElement, HTMLDivElement>({
+		count: rows.length,
+		getScrollElement: () => scrollEl ?? null,
+		estimateSize: () => 21,
+		overscan: 20
+	});
+	$effect(() => {
+		// Track row count + scroll element so a settled query (new rows) or the
+		// post-mount `bind:this` assignment re-applies options → the virtualizer
+		// picks up the now-mounted scroll element and measures the viewport.
+		void rows.length;
+		void scrollEl;
+		$virtualizer.setOptions({
 			count: rows.length,
 			getScrollElement: () => scrollEl ?? null,
 			estimateSize: () => 21,
 			overscan: 20
-		})
-	);
+		});
+	});
 
 	function expand(regionId: string) {
 		const next = new Set(expanded);
@@ -540,6 +560,7 @@
 	>
 		<div class="spacer" style="height: {$virtualizer.getTotalSize()}px;">
 			{#each $virtualizer.getVirtualItems() as vrow (vrow.index)}
+				{#if rows[vrow.index]}
 				<div
 					class="vrow"
 					style="transform: translateY({vrow.start}px);"
@@ -568,6 +589,7 @@
 							: undefined}
 					/>
 				</div>
+				{/if}
 			{/each}
 		</div>
 	</div>
