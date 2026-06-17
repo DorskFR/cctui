@@ -445,6 +445,125 @@ pub struct PullDiff {
     pub files: Vec<DiffFile>,
 }
 
+// ---------------------------------------------------------------------------
+// GH-VIEW-2: comment anchoring (rendered diff → GitHub review-comment coords).
+//
+// A reviewer selects a line (or a range) in the rendered diff; the webui draft
+// UI (GH-VIEW-4) stores that selection as a [`DiffSelection`] and the publish
+// path (GH-VIEW-5) turns it into a [`CommentAnchor`] — exactly the
+// `line`/`side`/`start_line`/`start_side`/`commit_id` shape GitHub's
+// `POST /repos/{o}/{r}/pulls/{n}/reviews` comments expect. Both the draft store
+// and the publisher share these types so a comment lands on the SAME line it was
+// drafted against. The anchoring logic itself lives in `cctui-github::anchor`.
+//
+// No credential or token is represented here — only diff coordinates.
+// ---------------------------------------------------------------------------
+
+/// Which side of the diff a selected line lives on, in cctui's own vocabulary
+/// (a rendered split/unified view has an old column and a new column). Maps to
+/// GitHub's `LEFT` (base/old) and `RIGHT` (head/new) review-comment sides.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum DiffSide {
+    /// The base (old) side — a deleted or unchanged line's old-side number.
+    /// GitHub calls this `LEFT`.
+    Old,
+    /// The head (new) side — an added or unchanged line's new-side number.
+    /// GitHub calls this `RIGHT`.
+    New,
+}
+
+impl DiffSide {
+    /// GitHub's review-comment `side` token (`LEFT`/`RIGHT`).
+    #[must_use]
+    pub fn github_token(self) -> &'static str {
+        match self {
+            DiffSide::Old => "LEFT",
+            DiffSide::New => "RIGHT",
+        }
+    }
+}
+
+/// A reviewer's selection in the rendered diff, before it is resolved to a
+/// GitHub anchor. This is what the draft UI (GH-VIEW-4) persists per comment:
+/// the file path, the side, and the (display) line — optionally a multi-line
+/// range whose `start_line..=line` is inclusive. `head_sha` records the SHA the
+/// selection was made against, so a later force-push (head SHA rotated) can
+/// invalidate stale anchors (docs §11).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct DiffSelection {
+    /// The file's head-side path (the current path; for a rename this is the new
+    /// name — GitHub anchors comments on the new path).
+    pub path: String,
+    /// Which side the selected line is on.
+    pub side: DiffSide,
+    /// 1-based line number on the selected side (old-side number when `side` is
+    /// `Old`, new-side number when `New`).
+    pub line: u32,
+    /// For a multi-line selection, the (inclusive) start line on the same side.
+    /// `None` for a single-line comment. Must be `<= line` and on the same side.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_line: Option<u32>,
+    /// The head SHA the selection was made against. A diff whose `head_sha`
+    /// differs (force-push) makes this selection stale — see [`anchor`] resolve.
+    pub head_sha: String,
+}
+
+/// A fully resolved GitHub review-comment anchor — the precise shape a
+/// `POST .../reviews` comment entry needs. Produced by resolving a
+/// [`DiffSelection`] against the [`PullDiff`] it targets. Every field maps 1:1
+/// to GitHub's review-comment API.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CommentAnchor {
+    /// GitHub comment `path` (head-side path).
+    pub path: String,
+    /// GitHub `commit_id` — the head SHA the comment is anchored to.
+    pub commit_id: String,
+    /// GitHub `line` — the (1-based) line on `side`. For a multi-line comment
+    /// this is the END line of the range.
+    pub line: u32,
+    /// GitHub `side` — `LEFT` (base) or `RIGHT` (head).
+    pub side: DiffSide,
+    /// GitHub `start_line` — the START line of a multi-line range. `None` for a
+    /// single-line comment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_line: Option<u32>,
+    /// GitHub `start_side` — the side of `start_line`. Always equals `side`
+    /// here (cctui never anchors a range across the two columns). `None` when
+    /// `start_line` is `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_side: Option<DiffSide>,
+}
+
+/// Why a [`DiffSelection`] could not be resolved to a [`CommentAnchor`]. The
+/// webui surfaces these so a reviewer knows a draft is un-anchorable rather than
+/// silently publishing it onto the wrong line.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum AnchorError {
+    /// The diff's `head_sha` differs from the selection's — the PR was
+    /// force-pushed (or otherwise re-based) since the draft was made, so the
+    /// line numbers no longer refer to the same content (docs §11).
+    StaleHeadSha {
+        /// The SHA the selection was made against.
+        selection_sha: String,
+        /// The SHA the diff is now at.
+        diff_sha: String,
+    },
+    /// No file in the diff matches the selection's `path`.
+    FileNotFound,
+    /// The selected line is not inside any hunk of the file (GitHub only accepts
+    /// comments on lines that appear in the diff).
+    LineNotInDiff,
+    /// A multi-line range whose `start_line` is greater than `line`, or whose
+    /// endpoints are not both diffable on the same side.
+    InvalidRange,
+}
+
 /// One row in the `/github` PR inbox: the synced PR plus its derived attention
 /// bucket and pre-aggregated CI/review summaries.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

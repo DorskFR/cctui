@@ -17,6 +17,7 @@ use axum::Router;
 use axum::routing::{delete, get, post};
 use sqlx::{Connection, Executor, PgPool};
 
+mod anchor;
 mod attention;
 mod classifier_feed;
 mod crypto;
@@ -26,6 +27,7 @@ mod routes;
 mod store;
 mod webhook;
 
+pub use anchor::resolve as resolve_comment_anchor;
 pub use attention::{Viewer, derive_bucket, derive_bucket_from_rows};
 pub use classifier_feed::{derive_status, pr_href, publish as publish_pr_status, refresh};
 pub use reconcile::{interval_secs as reconcile_interval_secs, spawn as spawn_reconcile};
