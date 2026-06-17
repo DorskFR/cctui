@@ -5,10 +5,18 @@
  */
 export type GithubCapability = { 
 /**
- * `true` only when the crate is compiled in **and** the `github` schema
- * exists **and** at least one connector is configured. A feature-on build
- * with no connector reports `false`; a feature-off build always reports
- * `false`.
+ * `true` when the crate is compiled in **and** the `github` schema exists —
+ * the integration is installed and reachable, even with zero connectors.
+ * The webui gates the nav item + `/github` route on this so the connector
+ * setup UI is reachable to add the first connector (CCT-395). A feature-off
+ * build always reports `false`.
+ */
+available: boolean, 
+/**
+ * `true` only when `available` **and** at least one connector is
+ * configured. A feature-on build with no connector reports `false`; a
+ * feature-off build always reports `false`. Gates data features (the
+ * inbox); `available && !enabled` is the "add your first account" state.
  */
 enabled: boolean, 
 /**

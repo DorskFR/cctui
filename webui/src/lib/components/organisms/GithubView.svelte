@@ -11,12 +11,17 @@
 	import { Heading, Stack, Tabs, type TabItem } from '@dorsk/tsumikit';
 	import GithubInbox from './GithubInbox.svelte';
 	import GithubConnectors from './GithubConnectors.svelte';
+	import { useCapabilities } from '$lib/queries';
+
+	const caps = useCapabilities();
 
 	const tabs: TabItem[] = [
 		{ id: 'inbox', label: 'Inbox' },
 		{ id: 'connectors', label: 'Connectors' }
 	];
-	let tab = $state('inbox');
+	// First run (available but no connector yet) lands on Connectors so the
+	// user can add their first GitHub account; once enabled, default to Inbox.
+	let tab = $state($caps.data?.github.enabled === false ? 'connectors' : 'inbox');
 </script>
 
 <Stack gap="var(--sp-4)">

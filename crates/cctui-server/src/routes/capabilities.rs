@@ -20,10 +20,16 @@ use crate::state::AppState;
 #[derive(Serialize, TS)]
 #[ts(export)]
 pub struct GithubCapability {
-    /// `true` only when the crate is compiled in **and** the `github` schema
-    /// exists **and** at least one connector is configured. A feature-on build
-    /// with no connector reports `false`; a feature-off build always reports
-    /// `false`.
+    /// `true` when the crate is compiled in **and** the `github` schema exists —
+    /// the integration is installed and reachable, even with zero connectors.
+    /// The webui gates the nav item + `/github` route on this so the connector
+    /// setup UI is reachable to add the first connector (CCT-395). A feature-off
+    /// build always reports `false`.
+    pub available: bool,
+    /// `true` only when `available` **and** at least one connector is
+    /// configured. A feature-on build with no connector reports `false`; a
+    /// feature-off build always reports `false`. Gates data features (the
+    /// inbox); `available && !enabled` is the "add your first account" state.
     pub enabled: bool,
     /// `owner/name` slugs the integration tracks (empty until a later GH-*
     /// story populates them).
@@ -44,7 +50,8 @@ pub struct LiteLlmModelInfo {
 }
 
 /// The capability envelope. One field per optional integration; the webui reads
-/// `github.enabled` to decide whether to mount the lazy `/github` route + nav.
+/// `github.available` to mount the lazy `/github` route + nav, and
+/// `github.enabled` to decide between the inbox and the first-run setup state.
 #[derive(Serialize, TS)]
 #[ts(export)]
 pub struct CapabilitiesResponse {
@@ -59,10 +66,10 @@ pub async fn capabilities(State(state): State<AppState>) -> Json<CapabilitiesRes
     #[cfg(feature = "github")]
     let github = {
         let cap = cctui_github::capability(&state.pool).await;
-        GithubCapability { enabled: cap.enabled, repos: cap.repos }
+        GithubCapability { available: cap.available, enabled: cap.enabled, repos: cap.repos }
     };
     #[cfg(not(feature = "github"))]
-    let github = GithubCapability { enabled: false, repos: Vec::new() };
+    let github = GithubCapability { available: false, enabled: false, repos: Vec::new() };
 
     let claude_litellm_models = state
         .config

@@ -138,9 +138,17 @@ pub async fn uninstall(pool: &PgPool) -> anyhow::Result<()> {
 /// the only code that knows the `github` schema's shape; core merely forwards
 /// the result when the `github` feature is compiled in.
 pub struct GithubCapability {
+    /// `true` when the crate is compiled in **and** the `github` schema exists
+    /// (the migrator ran) — i.e. the integration is *installed and reachable*,
+    /// regardless of whether any connector is configured yet. The webui gates
+    /// the **nav item + `/github` route** on this, so the connector setup UI is
+    /// reachable to add the *first* connector (CCT-395). Without this split,
+    /// `enabled` (which needs a connector) gated the only UI that can create a
+    /// connector — an unreachable first run.
+    pub available: bool,
     /// `true` when the `github` schema exists **and** at least one connector is
-    /// configured. Compiling the crate in is necessary but not sufficient — a
-    /// feature-on build with no connector still reports `false`.
+    /// configured. The webui gates **data features** (the live inbox) on this;
+    /// `available && !enabled` is the "add your first GitHub account" state.
     pub enabled: bool,
     /// `owner/name` slugs of the repos the integration tracks. Empty until a
     /// later GH-* story populates connector repos; the field exists now so the
@@ -150,15 +158,21 @@ pub struct GithubCapability {
 
 /// Compute the live GitHub [`GithubCapability`] from the database.
 ///
-/// `enabled` requires both that the `github` schema exists (the crate's
-/// migrations ran) and that at least one connector row is present. A schema
-/// that is absent — or a query error — degrades gracefully to "disabled"
-/// rather than failing the whole `/capabilities` response.
+/// `available` is `true` when the `connectors` query succeeds (the `github`
+/// schema and its tables exist — the migrator ran). `enabled` additionally
+/// requires at least one connector row. If the schema is absent or the query
+/// errors, both degrade to `false` (and `repos` is empty) rather than failing
+/// the whole `/capabilities` response.
 pub async fn capability(pool: &PgPool) -> GithubCapability {
-    let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {SCHEMA}.connectors"))
+    // Whether this query succeeds is itself the "schema exists" probe.
+    let count: Option<i64> = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {SCHEMA}.connectors"))
         .fetch_one(pool)
         .await
-        .unwrap_or(0);
+        .ok();
+    let Some(count) = count else {
+        // Schema/tables not present → integration not installed/reachable.
+        return GithubCapability { available: false, enabled: false, repos: Vec::new() };
+    };
     // Distinct repo slugs across all connectors, so the webui can show what the
     // integration tracks. Best-effort: a query error degrades to an empty list
     // rather than failing the capability probe.
@@ -168,7 +182,7 @@ pub async fn capability(pool: &PgPool) -> GithubCapability {
     .fetch_all(pool)
     .await
     .unwrap_or_default();
-    GithubCapability { enabled: count > 0, repos }
+    GithubCapability { available: true, enabled: count > 0, repos }
 }
 
 /// The GitHub route surface, mounted by `cctui-server` under `/api/v1`.
