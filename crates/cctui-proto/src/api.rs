@@ -398,6 +398,13 @@ pub struct SpawnRequest {
     /// passthrough gateway under that account. `None` → no gateway injection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<String>,
+    /// Provider of the selected `account` (CCT-399): `anthropic` |
+    /// `anthropic-compatible` | `openai` | `openai-compatible`. Disambiguates a
+    /// name shared across providers so the account drives the base URL + family
+    /// unambiguously (instead of inferring the family from `adapter_id`). `None`
+    /// → fall back to the adapter-derived family.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
 }
 
 impl std::fmt::Debug for SpawnRequest {
@@ -412,6 +419,8 @@ impl std::fmt::Debug for SpawnRequest {
             .field("permission_mode", &self.permission_mode)
             .field("effort", &self.effort)
             .field("model", &self.model)
+            .field("account", &self.account)
+            .field("provider", &self.provider)
             .field("env", &format_args!("<{} secret(s) redacted>", self.env.len()))
             .finish()
     }
@@ -482,6 +491,18 @@ pub struct DispatchRequest {
     /// Free-form, opaque to cctui. Forwarded to the runtime as-is.
     #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
     pub payload: serde_json::Value,
+    /// Named account to run the dispatched session under (CCT-399). When set the
+    /// server mints a session-scoped gateway token bound to `(session_id,
+    /// account)` and merges the gateway base-url + token into `payload.env`, so a
+    /// dispatched worker routes through the passthrough gateway exactly like a
+    /// machine spawn. `None` → no gateway injection (the worker's own auth).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    /// Provider of the selected `account` (CCT-399), disambiguating a shared
+    /// name across providers. `None` → assume the claude-code (anthropic) family,
+    /// matching the k8s claude-worker the dispatch path runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

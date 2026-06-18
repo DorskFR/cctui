@@ -38,6 +38,11 @@ async fn main() -> anyhow::Result<()> {
 
     let config = Config::from_env();
     let pool = db::connect(&config.database_url).await?;
+    // One-release back-compat shim (CCT-399): if the retired
+    // CCTUI_CLAUDE_LITELLM_* env vars are set, synthesize a managed (read-only)
+    // anthropic-compatible account per user so existing deployments keep working
+    // until they migrate to first-class accounts.
+    routes::accounts::sync_litellm_shim(&pool, &config).await;
     let auth_config = auth::AuthConfig::new(Config::admin_tokens(), pool.clone());
     let (tui_tx, _) = tokio::sync::broadcast::channel(256);
 

@@ -58,12 +58,81 @@ fn resolve_owner(
     }
 }
 
-/// API view of an account — secrets (tokens) deliberately absent.
+/// One-release back-compat shim (CCT-399): if `CCTUI_CLAUDE_LITELLM_*` is set,
+/// synthesize a server-owned **managed** anthropic-compatible account per user so
+/// existing deployments keep working after the env-var path is retired. Managed
+/// accounts are read-only over the API (rename/delete excluded). Idempotent:
+/// re-upserted on every restart against the partial unique index
+/// `(user_id, provider) WHERE managed`. A no-op unless both the endpoint and the
+/// model list are configured. To be removed in a follow-up release.
+pub async fn sync_litellm_shim(pool: &sqlx::PgPool, config: &crate::config::Config) {
+    let Some(endpoint) = config.claude_litellm_endpoint.as_deref() else { return };
+    let models = config.claude_litellm_visible_models();
+    if models.is_empty() {
+        return;
+    }
+    let key = crate::crypto::vault_key();
+    let cred = config.claude_litellm_token.as_deref().unwrap_or("sk-dummy");
+    let enc_access = crate::crypto::obfuscate(cred, &key);
+    let models_json = serde_json::to_value(
+        models
+            .iter()
+            .map(|m| AccountModel { model: m.model.clone(), label: m.label.clone() })
+            .collect::<Vec<_>>(),
+    )
+    .unwrap_or(serde_json::Value::Null);
+
+    // One managed account per user, keyed by (user_id, provider) WHERE managed.
+    let users: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM users WHERE revoked_at IS NULL")
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+    for uid in users {
+        let res = sqlx::query(
+            "INSERT INTO oauth_accounts \
+                (user_id, name, provider, encrypted_access_token, base_url, models, \
+                 auth_scheme, managed) \
+             VALUES ($1, 'litellm (legacy)', 'anthropic-compatible', $2, $3, $4, 'bearer', TRUE) \
+             ON CONFLICT (user_id, provider) WHERE managed DO UPDATE \
+               SET encrypted_access_token = EXCLUDED.encrypted_access_token, \
+                   base_url = EXCLUDED.base_url, models = EXCLUDED.models",
+        )
+        .bind(uid)
+        .bind(&enc_access)
+        .bind(endpoint)
+        .bind(&models_json)
+        .execute(pool)
+        .await;
+        if let Err(e) = res {
+            tracing::warn!(%uid, "litellm shim upsert failed: {e}");
+        }
+    }
+    tracing::info!("CCTUI_CLAUDE_LITELLM_* shim: synced managed compatible accounts (CCT-399)");
+}
+
+/// One selectable model on a compatible-endpoint account (CCT-399): `model` is
+/// the `--model` code, `label` the display name. Safe to return over the API —
+/// model names are not secret (unlike the base URL + credential).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AccountModel {
+    pub model: String,
+    pub label: String,
+}
+
+/// API view of an account — secrets (tokens), the base URL, and the auth scheme
+/// are deliberately absent (CCT-399). Only `models` (safe) is surfaced.
 #[derive(Debug, serde::Serialize, sqlx::FromRow)]
 pub struct AccountInfo {
     pub id: Uuid,
     pub name: String,
     pub provider: String,
+    /// Selectable models for a compatible endpoint (CCT-399). `None`/empty for
+    /// native subscription accounts (they use the harness's native families).
+    /// JSONB at rest; safe to return — names aren't secret.
+    pub models: Option<serde_json::Value>,
+    /// `true` for a server-synthesized (managed) account — read-only over the
+    /// API (the back-compat shim for `CCTUI_CLAUDE_LITELLM_*`, CCT-399).
+    pub managed: bool,
     /// Owning user (CCT-251) — admins see all accounts, so the owner matters.
     pub user_id: Uuid,
     /// Owner's name for display; only populated on the list query's join.
@@ -86,18 +155,34 @@ pub struct AccountInfo {
 #[derive(Debug, serde::Deserialize)]
 pub struct CreateAccount {
     pub name: String,
-    /// `anthropic` | `openai`.
+    /// `anthropic` | `openai` (native subscription) | `anthropic-compatible` |
+    /// `openai-compatible` (CCT-399).
     pub provider: String,
-    /// OAuth refresh token (pasted by the user). Stored encrypted; the gateway
-    /// exchanges it for access tokens on demand.
-    pub refresh_token: String,
-    /// Optional initial access token (skips the first refresh round-trip).
+    /// OAuth refresh token (subscription accounts). Optional for compatible
+    /// endpoints, which store only a static credential (in `access_token`).
+    /// Stored encrypted; the gateway exchanges it for access tokens on demand.
+    #[serde(default)]
+    pub refresh_token: Option<String>,
+    /// Initial access token (subscription) OR the static credential (a compatible
+    /// endpoint's bearer/api key, CCT-399). Stored encrypted; never read back.
     #[serde(default)]
     pub access_token: Option<String>,
     /// Optional access-token expiry (unix seconds). When absent the gateway
-    /// refreshes on first use.
+    /// refreshes on first use (subscription) / never refreshes (compatible).
     #[serde(default)]
     pub expires_at: Option<i64>,
+    /// Compatible-endpoint base URL (CCT-399), e.g. a LiteLLM/vLLM/Ollama-proxy.
+    /// Required for `*-compatible` providers; ignored for native ones. Never
+    /// returned over the API.
+    #[serde(default)]
+    pub base_url: Option<String>,
+    /// Selectable models for a compatible endpoint (CCT-399).
+    #[serde(default)]
+    pub models: Option<Vec<AccountModel>>,
+    /// Credential scheme for a compatible endpoint: `bearer` | `api_key`
+    /// (CCT-399). Defaults to `bearer`. Native accounts are always `oauth`.
+    #[serde(default)]
+    pub auth_scheme: Option<String>,
     /// Owning user — required (and only honoured) when authenticated with the
     /// admin token, which has no user identity of its own (CCT-251).
     #[serde(default)]
@@ -129,7 +214,7 @@ pub async fn list_accounts(
     // blended per-million rate (input/output/cache weighted) — an estimate, not
     // a meter (these are subscription accounts).
     let rows: Vec<AccountInfo> = sqlx::query_as(
-        "SELECT a.id, a.name, a.provider, a.user_id, u.name AS user_name, \
+        "SELECT a.id, a.name, a.provider, a.models, a.managed, a.user_id, u.name AS user_name, \
                 a.expires_at, a.created_at, a.last_used_at, \
                 a.request_count, a.bytes_transferred, \
                 (COALESCE(t.input_tokens,0) + COALESCE(t.output_tokens,0) \
@@ -177,23 +262,80 @@ pub async fn create_account(
     if req.name.trim().is_empty() {
         return Err(err(StatusCode::BAD_REQUEST, "name required"));
     }
-    if !matches!(req.provider.as_str(), "anthropic" | "openai") {
-        return Err(err(StatusCode::BAD_REQUEST, "provider must be anthropic|openai"));
-    }
-    if req.refresh_token.trim().is_empty() {
-        return Err(err(StatusCode::BAD_REQUEST, "refresh_token required"));
+    let compatible = matches!(
+        req.provider.as_str(),
+        "anthropic-compatible" | "openai-compatible"
+    );
+    if !matches!(
+        req.provider.as_str(),
+        "anthropic" | "openai" | "anthropic-compatible" | "openai-compatible"
+    ) {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "provider must be anthropic|openai|anthropic-compatible|openai-compatible",
+        ));
     }
 
     let key = crate::crypto::vault_key();
-    let enc_refresh = crate::crypto::obfuscate(&req.refresh_token, &key);
-    let enc_access = req.access_token.as_deref().map(|t| crate::crypto::obfuscate(t, &key));
+    // Native subscription accounts: an OAuth refresh token, auth_scheme = oauth.
+    // Compatible endpoints (CCT-399): a base URL + a static credential stored in
+    // encrypted_access_token, no refresh token, auth_scheme = bearer|api_key.
+    let (enc_refresh, enc_access, base_url, auth_scheme): (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        String,
+    );
+    if compatible {
+        let base = req.base_url.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        let Some(base) = base else {
+            return Err(err(StatusCode::BAD_REQUEST, "base_url required for a compatible endpoint"));
+        };
+        // SSRF is explicitly out of scope for this single-operator, self-hosted
+        // deployment (CCT-399 decision); a light scheme check only. Prefer https.
+        if !(base.starts_with("http://") || base.starts_with("https://")) {
+            return Err(err(StatusCode::BAD_REQUEST, "base_url must be an http(s) URL"));
+        }
+        let scheme = req.auth_scheme.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        let scheme = scheme.unwrap_or("bearer");
+        if !matches!(scheme, "bearer" | "api_key") {
+            return Err(err(StatusCode::BAD_REQUEST, "auth_scheme must be bearer|api_key"));
+        }
+        // A static credential is optional (an open proxy accepts any value); when
+        // absent we still store a dummy so the gateway has a bearer to forward.
+        let cred = req
+            .access_token
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("sk-dummy");
+        enc_refresh = None;
+        enc_access = Some(crate::crypto::obfuscate(cred, &key));
+        base_url = Some(base.to_owned());
+        auth_scheme = scheme.to_owned();
+    } else {
+        let refresh = req.refresh_token.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        let Some(refresh) = refresh else {
+            return Err(err(StatusCode::BAD_REQUEST, "refresh_token required"));
+        };
+        enc_refresh = Some(crate::crypto::obfuscate(refresh, &key));
+        enc_access = req.access_token.as_deref().map(|t| crate::crypto::obfuscate(t, &key));
+        base_url = None;
+        auth_scheme = "oauth".to_owned();
+    }
     let expires_at = req.expires_at.and_then(|s| DateTime::<Utc>::from_timestamp(s, 0));
+    let models = req
+        .models
+        .as_ref()
+        .filter(|m| !m.is_empty())
+        .map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null));
 
     let row: Result<AccountInfo, sqlx::Error> = sqlx::query_as(
         "INSERT INTO oauth_accounts \
-            (user_id, name, provider, encrypted_refresh_token, encrypted_access_token, expires_at) \
-         VALUES ($1, $2, $3, $4, $5, $6) \
-         RETURNING id, name, provider, user_id, NULL::text AS user_name, \
+            (user_id, name, provider, encrypted_refresh_token, encrypted_access_token, \
+             expires_at, base_url, models, auth_scheme) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
+         RETURNING id, name, provider, models, managed, user_id, NULL::text AS user_name, \
                    expires_at, created_at, last_used_at, \
                    request_count, bytes_transferred, \
                    0::bigint AS total_tokens, 0::double precision AS est_cost_usd",
@@ -204,6 +346,9 @@ pub async fn create_account(
     .bind(&enc_refresh)
     .bind(&enc_access)
     .bind(expires_at)
+    .bind(&base_url)
+    .bind(&models)
+    .bind(&auth_scheme)
     .fetch_one(&state.pool)
     .await;
 
@@ -235,8 +380,8 @@ pub async fn rename_account(
     // Admin (`ctx.user_id` = NULL) may rename any account; a user only its own.
     let row: Option<AccountInfo> = sqlx::query_as(
         "UPDATE oauth_accounts SET name = $3 \
-         WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2) \
-         RETURNING id, name, provider, user_id, NULL::text AS user_name, \
+         WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2) AND NOT managed \
+         RETURNING id, name, provider, models, managed, user_id, NULL::text AS user_name, \
                    expires_at, created_at, last_used_at, \
                    request_count, bytes_transferred, \
                    0::bigint AS total_tokens, 0::double precision AS est_cost_usd",
@@ -264,7 +409,8 @@ pub async fn delete_account(
     }
     // Admin (`ctx.user_id` = NULL) may delete any account; a user only its own.
     let res = sqlx::query(
-        "DELETE FROM oauth_accounts WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)",
+        "DELETE FROM oauth_accounts WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2) \
+         AND NOT managed",
     )
     .bind(id)
     .bind(ctx.user_id)
@@ -597,7 +743,7 @@ pub async fn oauth_finish(
             (user_id, name, provider, encrypted_refresh_token, encrypted_access_token, \
              expires_at, provider_account_id) \
          VALUES ($1, $2, $3, $4, $5, $6, $7) \
-         RETURNING id, name, provider, user_id, NULL::text AS user_name, \
+         RETURNING id, name, provider, models, managed, user_id, NULL::text AS user_name, \
                    expires_at, created_at, last_used_at, \
                    request_count, bytes_transferred, \
                    0::bigint AS total_tokens, 0::double precision AS est_cost_usd",

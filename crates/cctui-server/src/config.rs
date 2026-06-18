@@ -171,17 +171,6 @@ impl Config {
         }
     }
 
-    /// Resolve a `--model` code to the `(base_url, token)` that a session
-    /// launched under it should route through. Returns `Some` only when the
-    /// feature is fully configured **and** `model` is in the allow-list, so a
-    /// caller can never point an arbitrary model at the endpoint.
-    pub fn claude_litellm_route(&self, model: &str) -> Option<(&str, Option<&str>)> {
-        let endpoint = self.claude_litellm_endpoint.as_deref()?;
-        self.claude_litellm_models
-            .iter()
-            .any(|m| m.model == model)
-            .then_some((endpoint, self.claude_litellm_token.as_deref()))
-    }
 
     pub fn admin_tokens() -> Vec<String> {
         env::var("CCTUI_ADMIN_TOKENS")
@@ -245,8 +234,9 @@ mod tests {
         assert_eq!(parsed[0].label, "Qwen3-Coder (local)");
     }
 
-    /// The feature is gated on BOTH the endpoint and the model list. With only
-    /// one set, nothing is surfaced and no model resolves to a route.
+    /// The shim is gated on BOTH the endpoint and the model list (CCT-399): with
+    /// only one set, nothing is surfaced (`claude_litellm_visible_models` empty),
+    /// so the back-compat shim is a no-op.
     #[test]
     fn claude_litellm_gating() {
         let base = Config {
@@ -272,19 +262,13 @@ mod tests {
 
         // Models set but endpoint missing → dark.
         assert!(base.claude_litellm_visible_models().is_empty());
-        assert!(base.claude_litellm_route("qwen3-coder").is_none());
 
-        // Both set → surfaced, and only the allow-listed model resolves.
+        // Both set → surfaced (the shim then synthesizes managed accounts).
         let cfg = Config {
             claude_litellm_endpoint: Some("https://litellm.example/".into()),
             claude_litellm_token: Some("tok".into()),
             ..base
         };
         assert_eq!(cfg.claude_litellm_visible_models().len(), 1);
-        assert_eq!(
-            cfg.claude_litellm_route("qwen3-coder"),
-            Some(("https://litellm.example/", Some("tok")))
-        );
-        assert!(cfg.claude_litellm_route("opus").is_none());
     }
 }

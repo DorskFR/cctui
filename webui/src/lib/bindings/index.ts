@@ -38,7 +38,6 @@ export type * from './GithubEventKind';
 export type * from './GithubEventPayload';
 export type * from './LabelListResponse';
 export type * from './Label';
-export type * from './LiteLlmModelInfo';
 export type * from './Liveness';
 export type * from './MachineLiveness';
 export type * from './MachineRow';

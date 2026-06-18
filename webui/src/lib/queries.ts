@@ -80,10 +80,25 @@ export interface EnrollDispatcherResponse {
 /** A named OAuth account in the vault (CCT-232/CCT-237). Tokens are never
  *  returned by the API — only name/provider/expiry/last-used + lightweight
  *  usage stats. `provider` is `anthropic` (claude) or `openai` (codex). */
+/** One selectable model on a compatible-endpoint account (CCT-399). */
+export interface AccountModel {
+  model: string;
+  label: string;
+}
+
 export interface OAuthAccount {
   id: string;
   name: string;
+  /** `anthropic` | `openai` (native) | `anthropic-compatible` |
+   *  `openai-compatible` (a base-url-overridden endpoint, CCT-399). */
   provider: string;
+  /** Selectable models for a compatible endpoint (CCT-399); null/empty for
+   *  native subscription accounts (which use the harness's native families).
+   *  Safe to surface — model names aren't secret (unlike base URL + credential). */
+  models: AccountModel[] | null;
+  /** True for a server-synthesized account (the CCTUI_CLAUDE_LITELLM_* shim) —
+   *  read-only: rename/delete are rejected server-side (CCT-399). */
+  managed: boolean;
   /** Owning user (CCT-251) — shown to admins, who see all accounts. */
   user_id: string;
   user_name: string | null;
@@ -127,9 +142,18 @@ export interface AccountUsage {
 export interface CreateAccount {
   name: string;
   provider: string;
-  refresh_token: string;
+  /** OAuth refresh token (native subscription accounts). */
+  refresh_token?: string;
+  /** Initial access token (native) OR the static credential for a compatible
+   *  endpoint's bearer/api key (CCT-399). */
   access_token?: string;
   expires_at?: number;
+  /** Compatible-endpoint base URL (CCT-399); required for `*-compatible`. */
+  base_url?: string;
+  /** Selectable models for a compatible endpoint (CCT-399). */
+  models?: AccountModel[];
+  /** `bearer` | `api_key` for a compatible endpoint (CCT-399). */
+  auth_scheme?: string;
   /** Owner — required when authenticated with the admin token (CCT-251). */
   user_id?: string;
 }

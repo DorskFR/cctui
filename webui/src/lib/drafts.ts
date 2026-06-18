@@ -70,6 +70,10 @@ export interface MachineSpawnPrefs {
 	effort_claude: string;
 	effort_codex: string;
 	account: string;
+	// CCT-399: the chosen account's provider (disambiguator) + the compatible
+	// account's free-form model, remembered alongside the account.
+	account_provider: string;
+	model_account: string;
 	working_dir: string;
 }
 const machinePrefsKey = (machineId: string) => `cctui_spawn_prefs_${machineId}`;

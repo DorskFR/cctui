@@ -35,4 +35,18 @@ reply_url: string | null,
 /**
  * Free-form, opaque to cctui. Forwarded to the runtime as-is.
  */
-payload: JsonValue, };
+payload: JsonValue, 
+/**
+ * Named account to run the dispatched session under (CCT-399). When set the
+ * server mints a session-scoped gateway token bound to `(session_id,
+ * account)` and merges the gateway base-url + token into `payload.env`, so a
+ * dispatched worker routes through the passthrough gateway exactly like a
+ * machine spawn. `None` → no gateway injection (the worker's own auth).
+ */
+account: string | null, 
+/**
+ * Provider of the selected `account` (CCT-399), disambiguating a shared
+ * name across providers. `None` → assume the claude-code (anthropic) family,
+ * matching the k8s claude-worker the dispatch path runs.
+ */
+provider: string | null, };

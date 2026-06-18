@@ -90,34 +90,76 @@ fn openai_upstream() -> String {
         .unwrap_or_else(|_| "https://chatgpt.com/backend-api/codex".into())
 }
 
+/// The provider *family* of an account: which harness/env vars it drives.
+/// Both native subscription accounts (`anthropic`/`openai`) and compatible
+/// endpoints (`anthropic-compatible`/`openai-compatible`) collapse to one of
+/// these two families (CCT-399).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Family {
+    Anthropic,
+    Openai,
+}
+
+impl Family {
+    /// Derive the family from a stored `provider` value. Anything containing
+    /// `openai` is the OpenAI/Codex family; everything else is Anthropic.
+    pub fn from_provider(provider: &str) -> Self {
+        if provider.contains("openai") { Self::Openai } else { Self::Anthropic }
+    }
+    /// Derive the family from a spawn adapter id (`codex*` → openai, else
+    /// anthropic). Used only as a fallback disambiguator when the caller names
+    /// an account but not its provider.
+    pub fn from_adapter(adapter_id: &str) -> Self {
+        if adapter_id.starts_with("codex") { Self::Openai } else { Self::Anthropic }
+    }
+}
+
 /// Resolve a named account for a user and mint a session-scoped gateway token
 /// bound to `(session_id, account)`, returning the env vars to inject into the
 /// worker so its agent traffic flows through this gateway under that account
-/// (CCT-232). The raw OAuth tokens never leave the server — only the opaque
-/// session token does. Returns:
+/// (CCT-232 / CCT-399). The raw credentials never leave the server — only the
+/// opaque session token does. The account drives the base URL + family, NOT the
+/// adapter id (CCT-399): an explicit `provider` disambiguates name collisions
+/// across providers; absent it, the adapter id is the fallback family hint.
+/// Returns:
 ///   * `Ok(Some(env))` — account found, token minted, env ready
-///   * `Ok(None)` — the caller has no account by that `(name, provider)`
+///   * `Ok(None)` — the caller has no matching account
 ///   * `Err(_)` — a database failure
 pub async fn mint_session_env(
     state: &AppState,
     user_id: Uuid,
     account_name: &str,
+    provider: Option<&str>,
     adapter_id: &str,
     session_id: &str,
 ) -> Result<Option<std::collections::BTreeMap<String, String>>, sqlx::Error> {
-    let provider = match adapter_id {
-        a if a.starts_with("codex") => "openai",
-        _ => "anthropic",
+    // Resolve the account by (user, name), optionally constrained to an explicit
+    // provider. With no provider hint we still disambiguate by family (derived
+    // from the adapter) so a `personal` anthropic and a `personal` openai don't
+    // collide on the machine-spawn path.
+    let row: Option<(Uuid, String)> = if let Some(p) = provider {
+        sqlx::query_as(
+            "SELECT id, provider FROM oauth_accounts \
+             WHERE user_id = $1 AND name = $2 AND provider = $3",
+        )
+        .bind(user_id)
+        .bind(account_name)
+        .bind(p)
+        .fetch_optional(&state.pool)
+        .await?
+    } else {
+        let want = Family::from_adapter(adapter_id);
+        let candidates: Vec<(Uuid, String)> = sqlx::query_as(
+            "SELECT id, provider FROM oauth_accounts WHERE user_id = $1 AND name = $2",
+        )
+        .bind(user_id)
+        .bind(account_name)
+        .fetch_all(&state.pool)
+        .await?;
+        candidates.into_iter().find(|(_, prov)| Family::from_provider(prov) == want)
     };
-    let account_id: Option<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM oauth_accounts WHERE user_id = $1 AND name = $2 AND provider = $3",
-    )
-    .bind(user_id)
-    .bind(account_name)
-    .bind(provider)
-    .fetch_optional(&state.pool)
-    .await?;
-    let Some(account_id) = account_id else { return Ok(None) };
+    let Some((account_id, prov)) = row else { return Ok(None) };
+    let family = Family::from_provider(&prov);
 
     // Mint a fresh opaque session token (same shape/entropy as other secrets)
     // and store only its hash, mapped to the session + account.
@@ -134,12 +176,15 @@ pub async fn mint_session_env(
 
     let base = state.config.external_url.trim_end_matches('/');
     let mut env = std::collections::BTreeMap::new();
-    if provider == "anthropic" {
-        env.insert("ANTHROPIC_BASE_URL".into(), format!("{base}/gateway/anthropic"));
-        env.insert("ANTHROPIC_AUTH_TOKEN".into(), token);
-    } else {
-        env.insert("OPENAI_BASE_URL".into(), format!("{base}/gateway/openai"));
-        env.insert("OPENAI_API_KEY".into(), token);
+    match family {
+        Family::Anthropic => {
+            env.insert("ANTHROPIC_BASE_URL".into(), format!("{base}/gateway/anthropic"));
+            env.insert("ANTHROPIC_AUTH_TOKEN".into(), token);
+        }
+        Family::Openai => {
+            env.insert("OPENAI_BASE_URL".into(), format!("{base}/gateway/openai"));
+            env.insert("OPENAI_API_KEY".into(), token);
+        }
     }
     Ok(Some(env))
 }
@@ -157,22 +202,51 @@ pub async fn revoke_session_tokens(state: &AppState, session_id: &str) {
 }
 
 /// Raw account row as selected from the join (before decrypt).
-type AccountRow =
-    (Uuid, String, Option<String>, String, Option<chrono::DateTime<Utc>>, Option<String>);
+type AccountRow = (
+    Uuid,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<chrono::DateTime<Utc>>,
+    Option<String>,
+    Option<String>,
+    String,
+);
 /// Raw account row by id (no id column, before decrypt).
-type ReloadRow = (String, Option<String>, String, Option<chrono::DateTime<Utc>>, Option<String>);
+type ReloadRow = (
+    String,
+    Option<String>,
+    Option<String>,
+    Option<chrono::DateTime<Utc>>,
+    Option<String>,
+    Option<String>,
+    String,
+);
 
 /// Loaded account row (decrypted in-process; never serialized out).
 struct Account {
     id: Uuid,
     provider: String,
     access_token: Option<String>,
-    refresh_token: String,
+    /// `None` for compatible endpoints (static credential, no refresh).
+    refresh_token: Option<String>,
     expires_at: Option<chrono::DateTime<Utc>>,
     /// For Codex/OpenAI accounts: the `chatgpt_account_id` claim, sent upstream
     /// as the `Chatgpt-Account-Id` header (CCT-244). NULL for anthropic / manual
     /// refresh-token accounts.
     provider_account_id: Option<String>,
+    /// Compatible-endpoint upstream base URL (CCT-399). NULL → built-in upstream.
+    base_url: Option<String>,
+    /// `oauth` (refreshing subscription) | `bearer` | `api_key` (static, CCT-399).
+    auth_scheme: String,
+}
+
+impl Account {
+    /// A static-credential compatible account forwards its stored credential
+    /// verbatim and skips the OAuth refresh round-trip (CCT-399).
+    fn is_static(&self) -> bool {
+        self.auth_scheme != "oauth"
+    }
 }
 
 /// Resolve the session token (the upstream bearer the worker sent) to its
@@ -181,7 +255,7 @@ async fn resolve_account(state: &AppState, session_token: &str) -> Option<Accoun
     let hash = crate::auth::sha256_hex(session_token);
     let row: Option<AccountRow> = sqlx::query_as(
         "SELECT a.id, a.provider, a.encrypted_access_token, a.encrypted_refresh_token, \
-                    a.expires_at, a.provider_account_id \
+                    a.expires_at, a.provider_account_id, a.base_url, a.auth_scheme \
              FROM session_tokens t JOIN oauth_accounts a ON a.id = t.account_id \
              WHERE t.token_hash = $1 AND t.revoked_at IS NULL",
     )
@@ -190,11 +264,21 @@ async fn resolve_account(state: &AppState, session_token: &str) -> Option<Accoun
     .await
     .ok()
     .flatten();
-    let (id, provider, enc_access, enc_refresh, expires_at, provider_account_id) = row?;
+    let (id, provider, enc_access, enc_refresh, expires_at, provider_account_id, base_url, auth_scheme) =
+        row?;
     let key = crate::crypto::vault_key();
     let access_token = enc_access.and_then(|e| crate::crypto::deobfuscate(&e, &key));
-    let refresh_token = crate::crypto::deobfuscate(&enc_refresh, &key)?;
-    Some(Account { id, provider, access_token, refresh_token, expires_at, provider_account_id })
+    let refresh_token = enc_refresh.and_then(|e| crate::crypto::deobfuscate(&e, &key));
+    Some(Account {
+        id,
+        provider,
+        access_token,
+        refresh_token,
+        expires_at,
+        provider_account_id,
+        base_url,
+        auth_scheme,
+    })
 }
 
 #[derive(serde::Deserialize)]
@@ -210,13 +294,21 @@ struct TokenResponse {
 /// pair. Caller MUST hold the account's refresh mutex. Returns the new access
 /// token.
 async fn refresh_account(state: &AppState, acct: &Account) -> Result<String, StatusCode> {
+    // Static-credential compatible accounts never refresh — the stored access
+    // token (the bearer/api key) is forwarded verbatim (CCT-399).
+    if acct.is_static() {
+        return acct.access_token.clone().ok_or(StatusCode::BAD_GATEWAY);
+    }
+    let Some(refresh_token) = acct.refresh_token.as_deref() else {
+        return Err(StatusCode::BAD_GATEWAY);
+    };
     // Anthropic refreshes with a JSON body; OpenAI/Codex with a form-encoded
     // body (matches the codex CLI + CLIProxyAPI — CCT-244).
     let request = match acct.provider.as_str() {
         "anthropic" => {
             let body = serde_json::json!({
                 "grant_type": "refresh_token",
-                "refresh_token": acct.refresh_token,
+                "refresh_token": refresh_token,
                 "client_id": anthropic_client_id(),
             });
             state.http_client.post(anthropic_token_url()).json(&body)
@@ -224,7 +316,7 @@ async fn refresh_account(state: &AppState, acct: &Account) -> Result<String, Sta
         "openai" => {
             let form = [
                 ("grant_type", "refresh_token"),
-                ("refresh_token", acct.refresh_token.as_str()),
+                ("refresh_token", refresh_token),
                 ("client_id", &openai_client_id()),
                 ("scope", "openid profile email"),
             ];
@@ -284,6 +376,15 @@ async fn refresh_account(state: &AppState, acct: &Account) -> Result<String, Sta
 /// the skew window. Serialized per account so concurrent sessions don't
 /// double-refresh a single-use refresh token.
 async fn current_access_token(state: &AppState, acct: &Account) -> Result<String, StatusCode> {
+    // Static-credential compatible accounts: forward the stored credential
+    // verbatim, no expiry tracking, no refresh (CCT-399).
+    if acct.is_static() {
+        return acct
+            .access_token
+            .clone()
+            .filter(|t| !t.is_empty())
+            .ok_or(StatusCode::UNAUTHORIZED);
+    }
     let fresh = matches!(&acct.access_token, Some(t) if !t.is_empty())
         && acct
             .expires_at
@@ -316,7 +417,7 @@ async fn current_access_token(state: &AppState, acct: &Account) -> Result<String
 async fn reload_account(state: &AppState, id: Uuid) -> Option<Account> {
     let row: Option<ReloadRow> = sqlx::query_as(
         "SELECT provider, encrypted_access_token, encrypted_refresh_token, expires_at, \
-                    provider_account_id \
+                    provider_account_id, base_url, auth_scheme \
              FROM oauth_accounts WHERE id = $1",
     )
     .bind(id)
@@ -324,15 +425,18 @@ async fn reload_account(state: &AppState, id: Uuid) -> Option<Account> {
     .await
     .ok()
     .flatten();
-    let (provider, enc_access, enc_refresh, expires_at, provider_account_id) = row?;
+    let (provider, enc_access, enc_refresh, expires_at, provider_account_id, base_url, auth_scheme) =
+        row?;
     let key = crate::crypto::vault_key();
     Some(Account {
         id,
         provider,
         access_token: enc_access.and_then(|e| crate::crypto::deobfuscate(&e, &key)),
-        refresh_token: crate::crypto::deobfuscate(&enc_refresh, &key)?,
+        refresh_token: enc_refresh.and_then(|e| crate::crypto::deobfuscate(&e, &key)),
         expires_at,
         provider_account_id,
+        base_url,
+        auth_scheme,
     })
 }
 
@@ -367,11 +471,16 @@ async fn passthrough(
     let acct = resolve_account(&state, &session_token).await.ok_or(StatusCode::UNAUTHORIZED)?;
     let access_token = current_access_token(&state, &acct).await?;
 
+    // Per-account upstream (CCT-399): a compatible endpoint overrides the
+    // built-in upstream with its stored `base_url`; native subscription accounts
+    // fall back to the built-in `api.anthropic.com`/`chatgpt.com`.
+    let upstream = acct.base_url.as_deref().filter(|u| !u.trim().is_empty()).unwrap_or(upstream_base);
+
     // Build the upstream URL: strip the gateway prefix, keep path + query.
     let path = req.uri().path();
     let tail = path.strip_prefix(prefix).unwrap_or(path);
     let query = req.uri().query().map(|q| format!("?{q}")).unwrap_or_default();
-    let url = format!("{}{tail}{query}", upstream_base.trim_end_matches('/'));
+    let url = format!("{}{tail}{query}", upstream.trim_end_matches('/'));
 
     let method = reqwest::Method::from_bytes(req.method().as_str().as_bytes())
         .map_err(|_| StatusCode::BAD_REQUEST)?;
@@ -519,4 +628,25 @@ pub async fn fetch_account_usage(
         StatusCode::BAD_GATEWAY
     })?;
     Ok(Some(json))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Family;
+
+    #[test]
+    fn family_from_provider_maps_native_and_compatible() {
+        // CCT-399: both native and `-compatible` providers collapse to a family.
+        assert!(matches!(Family::from_provider("anthropic"), Family::Anthropic));
+        assert!(matches!(Family::from_provider("anthropic-compatible"), Family::Anthropic));
+        assert!(matches!(Family::from_provider("openai"), Family::Openai));
+        assert!(matches!(Family::from_provider("openai-compatible"), Family::Openai));
+    }
+
+    #[test]
+    fn family_from_adapter_is_the_fallback_hint() {
+        assert!(matches!(Family::from_adapter("codex"), Family::Openai));
+        assert!(matches!(Family::from_adapter("codex-foo"), Family::Openai));
+        assert!(matches!(Family::from_adapter("claude-code"), Family::Anthropic));
+    }
 }

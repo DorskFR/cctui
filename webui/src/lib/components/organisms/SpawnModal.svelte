@@ -45,6 +45,7 @@
 	import MachineFields from './spawn/MachineFields.svelte';
 	import DispatchFields from './spawn/DispatchFields.svelte';
 	import type { Form, Target } from './spawn/types';
+	import { adapterForProvider, isCompatibleProvider } from './spawn/options';
 
 	let {
 		onclose,
@@ -81,7 +82,9 @@
 		prompt_file: '',
 		model_claude: '',
 		model_codex: '',
+		model_account: '',
 		account: '',
+		account_provider: '',
 		effort_claude: '',
 		effort_codex: '',
 		timeout: '',
@@ -148,6 +151,8 @@
 		if (p.effort_claude != null) form.effort_claude = p.effort_claude;
 		if (p.effort_codex != null) form.effort_codex = p.effort_codex;
 		if (p.account != null) form.account = p.account;
+		if (p.account_provider != null) form.account_provider = p.account_provider;
+		if (p.model_account != null) form.model_account = p.model_account;
 		if (p.working_dir) form.working_dir = p.working_dir;
 	});
 
@@ -283,15 +288,17 @@
 		}
 	}
 
-	const wantProvider = $derived(form.adapter_id === 'codex' ? 'openai' : 'anthropic');
-	const matchingAccounts = $derived(
-		($accounts.data ?? []).filter((a) => a.provider === wantProvider)
+	// Account is the primary axis (CCT-399): MachineFields offers every account
+	// and derives the harness + model list from the chosen one (no per-adapter
+	// pre-filter). Stale-selection cleanup lives in MachineFields.
+	const allAccounts = $derived($accounts.data ?? []);
+	const selectedAccount = $derived(
+		form.account
+			? (allAccounts.find(
+					(a) => a.name === form.account && a.provider === form.account_provider
+				) ?? allAccounts.find((a) => a.name === form.account))
+			: undefined
 	);
-	$effect(() => {
-		if (form.account && !matchingAccounts.some((a) => a.name === form.account)) {
-			form.account = '';
-		}
-	});
 
 	const actions = useSessionActions();
 	let busy = $state(false);
@@ -343,18 +350,28 @@
 	const valid = $derived((target === 'machine' ? spawnValid : dispatchValid) && secretsValid);
 
 	async function spawnOnMachine() {
+		// The account drives the harness + model (CCT-399); "Default" falls back
+		// to the adapter-first selection.
+		const adapter = selectedAccount ? adapterForProvider(selectedAccount.provider) : form.adapter_id;
+		const compatible = !!selectedAccount && isCompatibleProvider(selectedAccount.provider);
+		const model = compatible
+			? form.model_account || null
+			: (adapter === 'codex' ? form.model_codex : form.model_claude) || null;
 		const body: SpawnRequest = {
 			machine_id: form.machine_id,
 			working_dir: form.working_dir.trim(),
-			adapter_id: form.adapter_id,
+			adapter_id: adapter,
 			name: form.name.trim() || null,
 			prompt: form.prompt.trim() || null,
 			prompt_name: null,
 			permission_mode: form.permission_mode,
-			effort: (form.adapter_id === 'codex' ? form.effort_codex : form.effort_claude) || null,
-			model: (form.adapter_id === 'codex' ? form.model_codex : form.model_claude) || null,
+			effort: (adapter === 'codex' ? form.effort_codex : form.effort_claude) || null,
+			model,
 			env: envMap(),
-			account: form.account.trim() || null
+			account: form.account.trim() || null,
+			// Disambiguate a name shared across providers so the server resolves
+			// the exact account (CCT-399).
+			provider: selectedAccount?.provider || null
 		};
 		// Capture label intent before the form is reset on success (CCT-360).
 		const labelIds = [...form.labels];
@@ -377,6 +394,8 @@
 			effort_claude: form.effort_claude,
 			effort_codex: form.effort_codex,
 			account: form.account,
+			account_provider: form.account_provider,
+			model_account: form.model_account,
 			working_dir: form.working_dir.trim()
 		});
 		toasts.push('Spawning…', 'info');
@@ -426,7 +445,11 @@
 		if (form.ticket.trim()) payload.context = { issue_id: form.ticket.trim() };
 		if (form.prompt.trim()) payload.prompt = form.prompt.trim();
 		if (form.prompt_file.trim()) payload.prompt_file = form.prompt_file.trim();
-		if (form.model_claude.trim()) payload.model = form.model_claude.trim();
+		// The model is account-driven for a compatible account (CCT-399), else the
+		// claude family.
+		const dispatchCompatible = !!selectedAccount && isCompatibleProvider(selectedAccount.provider);
+		const dispatchModel = dispatchCompatible ? form.model_account.trim() : form.model_claude.trim();
+		if (dispatchModel) payload.model = dispatchModel;
 		if (form.effort_claude.trim()) payload.effort = form.effort_claude.trim();
 		// Environment secrets (CCT-202): the external dispatcher turns `env` into
 		// pod env / an ephemeral Secret. The server redacts these from its dispatch
@@ -442,6 +465,10 @@
 			session_id: pendingDispatchId,
 			timeout: Number.isFinite(timeout) ? timeout : null,
 			reply_url: null,
+			// Account routing on the dispatch path (CCT-399): the server mints the
+			// gateway token + merges its base-url/token into payload.env.
+			account: form.account.trim() || null,
+			provider: selectedAccount?.provider || null,
 			// `payload` is opaque (JsonValue) server-side; our local shape carries a
 			// nested `env` object, so cast at the boundary.
 			payload: payload as DispatchRequest['payload']
@@ -523,13 +550,13 @@
 			{/if}
 
 			{#if target === 'dispatch'}
-				<DispatchFields bind:form {dispatcherIds} onsubmit={submit} />
+				<DispatchFields bind:form {dispatcherIds} accounts={allAccounts} onsubmit={submit} />
 			{:else}
 				<MachineFields
 					bind:form
 					machines={$machines.data ?? []}
 					{recentDirs}
-					{matchingAccounts}
+					accounts={allAccounts}
 					onsubmit={submit}
 				/>
 			{/if}

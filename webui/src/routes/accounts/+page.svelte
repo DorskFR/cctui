@@ -47,8 +47,17 @@
 	// fresh one, undefined when the editor is closed.
 	let editing = $state<string | null | undefined>(undefined);
 	let name = $state('');
-	let provider = $state<'anthropic' | 'openai'>('anthropic');
+	let provider = $state<
+		'anthropic' | 'openai' | 'anthropic-compatible' | 'openai-compatible'
+	>('anthropic');
 	let refreshToken = $state('');
+	// Compatible-endpoint fields (CCT-399): base URL, a static credential, the
+	// auth scheme, and a tiny model-list editor (model code + display label).
+	let baseUrl = $state('');
+	let credential = $state('');
+	let authScheme = $state<'bearer' | 'api_key'>('bearer');
+	let modelRows = $state<{ model: string; label: string }[]>([{ model: '', label: '' }]);
+	const isCompatible = $derived(provider.endsWith('-compatible'));
 
 	// "Sign in with Claude" OAuth flow state (CCT-243).
 	let oauthNonce = $state<string | null>(null);
@@ -60,6 +69,10 @@
 		name = '';
 		provider = 'anthropic';
 		refreshToken = '';
+		baseUrl = '';
+		credential = '';
+		authScheme = 'bearer';
+		modelRows = [{ model: '', label: '' }];
 		oauthNonce = null;
 		oauthCode = '';
 		oauthBusy = false;
@@ -134,7 +147,7 @@
 		resetForm();
 		editing = a.id;
 		name = a.name;
-		provider = (a.provider as 'anthropic' | 'openai') ?? 'anthropic';
+		provider = (a.provider as typeof provider) ?? 'anthropic';
 	}
 
 	function close() {
@@ -151,20 +164,40 @@
 				await actions.rename(editing, name.trim());
 				toasts.ok('Account renamed');
 			} else {
-				if (!refreshToken.trim()) {
-					toasts.err('Refresh token is required');
-					return;
-				}
 				if (isAdmin && !ownerId) {
 					toasts.err('Pick the owning user first');
 					return;
 				}
-				const body: CreateAccount = {
-					name: name.trim(),
-					provider,
-					refresh_token: refreshToken.trim(),
-					...(isAdmin ? { user_id: ownerId } : {}),
-				};
+				let body: CreateAccount;
+				if (isCompatible) {
+					if (!baseUrl.trim()) {
+						toasts.err('Base URL is required for a compatible endpoint');
+						return;
+					}
+					const models = modelRows
+						.map((r) => ({ model: r.model.trim(), label: r.label.trim() || r.model.trim() }))
+						.filter((r) => r.model);
+					body = {
+						name: name.trim(),
+						provider,
+						base_url: baseUrl.trim(),
+						auth_scheme: authScheme,
+						...(credential.trim() ? { access_token: credential.trim() } : {}),
+						...(models.length ? { models } : {}),
+						...(isAdmin ? { user_id: ownerId } : {}),
+					};
+				} else {
+					if (!refreshToken.trim()) {
+						toasts.err('Refresh token is required');
+						return;
+					}
+					body = {
+						name: name.trim(),
+						provider,
+						refresh_token: refreshToken.trim(),
+						...(isAdmin ? { user_id: ownerId } : {}),
+					};
+				}
 				await actions.create(body);
 				toasts.ok('Account added');
 			}
@@ -226,8 +259,12 @@
 					</dl>
 				</Stack>
 				<Cluster as="footer" gap="var(--sp-1)" justify="flex-end" class="card-foot">
-					<Button size="sm" onclick={() => openRename(a)}>Rename</Button>
-					<Button size="sm" variant="danger" onclick={() => remove(a)}>Delete</Button>
+					{#if a.managed}
+						<Text tone="faint" size="xs">Managed (read-only)</Text>
+					{:else}
+						<Button size="sm" onclick={() => openRename(a)}>Rename</Button>
+						<Button size="sm" variant="danger" onclick={() => remove(a)}>Delete</Button>
+					{/if}
 				</Cluster>
 			</Card>
 		{/each}
@@ -261,55 +298,100 @@
 						>
 							<option value="anthropic">Claude (anthropic)</option>
 							<option value="openai">Codex (openai)</option>
+							<option value="anthropic-compatible">Anthropic-compatible endpoint</option>
+							<option value="openai-compatible">OpenAI-compatible endpoint</option>
 						</Select>
 					</Field>
-					<!-- Sign in with Claude / ChatGPT: authorize upstream, paste back. -->
-					{#if !oauthNonce}
-						<Button
-							size="sm"
-							variant="primary"
-							style="align-self: flex-start"
-							disabled={oauthBusy}
-							onclick={startOAuthLogin}
-						>
-							{oauthBusy
-								? 'Opening…'
-								: provider === 'openai'
-									? 'Sign in with ChatGPT'
-									: 'Sign in with Claude'}
-						</Button>
-					{:else}
-						<Field label={provider === 'openai' ? 'URL from ChatGPT' : 'Code from claude.ai'}>
-							<Input
-								bind:value={oauthCode}
-								placeholder={provider === 'openai'
-									? 'paste the http://localhost:1455/auth/callback?... URL'
-									: 'paste the code#state shown after authorizing'}
-							/>
+
+					{#if isCompatible}
+						<!-- Compatible endpoint (CCT-399): base URL + a static credential +
+						     a model list. No OAuth; the gateway forwards the credential and
+						     skips refresh. -->
+						<Field label="Base URL">
+							<Input bind:value={baseUrl} placeholder="https://litellm.example/v1" />
 						</Field>
-						{#if provider === 'openai'}
-							<Text as="p" tone="muted" size="sm">
-								The browser tab will fail to load localhost:1455 — that's expected.
-								Copy the full URL from its address bar and paste it above.
-							</Text>
-						{/if}
-						<Text as="p" tone="muted" size="sm">
-							Didn't get {provider === 'openai' ? 'a URL' : 'a code'}?
-							<Link onclick={startOAuthLogin}
-								>Open {provider === 'openai' ? 'ChatGPT' : 'claude.ai'} again</Link
-							>
-						</Text>
-					{/if}
-					<details bind:open={showAdvanced} class="adv">
-						<summary><Text tone="muted" size="sm">Advanced: paste a refresh token instead</Text></summary>
-						<Field label="OAuth refresh token" class="adv-fld">
+						<Field label="Auth scheme">
+							<Select bind:value={authScheme}>
+								<option value="bearer">Bearer token</option>
+								<option value="api_key">API key</option>
+							</Select>
+						</Field>
+						<Field label="Credential (optional)">
 							<Input
 								type="password"
-								bind:value={refreshToken}
-								placeholder="paste the OAuth refresh token"
+								bind:value={credential}
+								placeholder="bearer / API key (blank for an open proxy)"
 							/>
 						</Field>
-					</details>
+						<div class="models">
+							<Text as="div" tone="muted" size="sm">Models</Text>
+							{#each modelRows as row, i (i)}
+								<div class="model-row">
+									<Input bind:value={row.model} placeholder="model code (e.g. qwen3-coder)" />
+									<Input bind:value={row.label} placeholder="label (optional)" />
+									<Button
+										size="sm"
+										variant="danger"
+										onclick={() => (modelRows = modelRows.filter((_, j) => j !== i))}
+										disabled={modelRows.length === 1}>✕</Button
+									>
+								</div>
+							{/each}
+							<Button
+								size="sm"
+								onclick={() => (modelRows = [...modelRows, { model: '', label: '' }])}
+								>+ Add model</Button
+							>
+						</div>
+					{:else}
+						<!-- Sign in with Claude / ChatGPT: authorize upstream, paste back. -->
+						{#if !oauthNonce}
+							<Button
+								size="sm"
+								variant="primary"
+								style="align-self: flex-start"
+								disabled={oauthBusy}
+								onclick={startOAuthLogin}
+							>
+								{oauthBusy
+									? 'Opening…'
+									: provider === 'openai'
+										? 'Sign in with ChatGPT'
+										: 'Sign in with Claude'}
+							</Button>
+						{:else}
+							<Field label={provider === 'openai' ? 'URL from ChatGPT' : 'Code from claude.ai'}>
+								<Input
+									bind:value={oauthCode}
+									placeholder={provider === 'openai'
+										? 'paste the http://localhost:1455/auth/callback?... URL'
+										: 'paste the code#state shown after authorizing'}
+								/>
+							</Field>
+							{#if provider === 'openai'}
+								<Text as="p" tone="muted" size="sm">
+									The browser tab will fail to load localhost:1455 — that's expected.
+									Copy the full URL from its address bar and paste it above.
+								</Text>
+							{/if}
+							<Text as="p" tone="muted" size="sm">
+								Didn't get {provider === 'openai' ? 'a URL' : 'a code'}?
+								<Link onclick={startOAuthLogin}
+									>Open {provider === 'openai' ? 'ChatGPT' : 'claude.ai'} again</Link
+								>
+							</Text>
+						{/if}
+						<details bind:open={showAdvanced} class="adv">
+							<summary><Text tone="muted" size="sm">Advanced: paste a refresh token instead</Text></summary>
+							<Field label="OAuth refresh token" class="adv-fld">
+								<Input
+									type="password"
+									bind:value={refreshToken}
+									placeholder="paste the OAuth refresh token"
+								/>
+							</Field>
+						</details>
+					{/if}
 				{/if}
 			</div>
 		{/snippet}
@@ -411,6 +493,17 @@
 	}
 	.adv summary {
 		cursor: pointer;
+	}
+	.models {
+		display: flex;
+		flex-direction: column;
+		gap: var(--sp-2);
+	}
+	.model-row {
+		display: grid;
+		grid-template-columns: 1fr 1fr auto;
+		gap: var(--sp-2);
+		align-items: center;
 	}
 	.adv :global(.adv-fld) {
 		margin-top: var(--sp-2);

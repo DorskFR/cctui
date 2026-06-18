@@ -45,4 +45,12 @@ env: { [key in string]?: string },
  * equivalents) into `env` so the worker's traffic flows through the
  * passthrough gateway under that account. `None` → no gateway injection.
  */
-account: string | null, };
+account: string | null, 
+/**
+ * Provider of the selected `account` (CCT-399): `anthropic` |
+ * `anthropic-compatible` | `openai` | `openai-compatible`. Disambiguates a
+ * name shared across providers so the account drives the base URL + family
+ * unambiguously (instead of inferring the family from `adapter_id`). `None`
+ * → fall back to the adapter-derived family.
+ */
+provider: string | null, };

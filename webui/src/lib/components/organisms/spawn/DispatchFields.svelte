@@ -5,20 +5,48 @@
 	// Dispatch runs a claude worker, so it uses the claude model/effort sets.
 	import EffortSlider from './EffortSlider.svelte';
 	import { Field, Input, Select, Text, Textarea } from '@dorsk/tsumikit';
-	import { claudeModels, claudeEfforts } from './options';
+	import { claudeModels, claudeEfforts, adapterForProvider, isCompatibleProvider } from './options';
 	import { submitChordLabel, isSubmitChord } from '$lib/platform';
+	import type { OAuthAccount } from '$lib/queries';
 	import type { Form } from './types';
 
 	let {
 		form = $bindable(),
 		dispatcherIds,
+		accounts,
 		onsubmit
 	}: {
 		form: Form;
 		dispatcherIds: string[];
+		// The caller's accounts (CCT-399). Dispatch runs a claude worker, so only
+		// Claude-family accounts can route through it.
+		accounts: OAuthAccount[];
 		// Submit the spawn form from the prompt textarea (Ctrl/⌘+Enter).
 		onsubmit?: () => void;
 	} = $props();
+
+	// Dispatch runs a claude worker → only Claude-family accounts apply (CCT-399).
+	const dispatchAccounts = $derived(accounts.filter((a) => adapterForProvider(a.provider) === 'claude-code'));
+	const selectedAccount = $derived(
+		form.account
+			? (dispatchAccounts.find((a) => a.name === form.account && a.provider === form.account_provider) ??
+					dispatchAccounts.find((a) => a.name === form.account))
+			: undefined
+	);
+	const accountModelOptions = $derived((selectedAccount?.models ?? []).map((m) => ({ v: m.model, label: m.label })));
+	const usesAccountModels = $derived(!!selectedAccount && isCompatibleProvider(selectedAccount.provider));
+
+	$effect(() => {
+		if (form.account && !dispatchAccounts.some((a) => a.name === form.account)) {
+			form.account = '';
+			form.account_provider = '';
+		}
+	});
+
+	function onAccountChange(value: string) {
+		form.account = value;
+		form.account_provider = value ? (dispatchAccounts.find((a) => a.name === value)?.provider ?? '') : '';
+	}
 </script>
 
 {#if dispatcherIds.length > 1}
@@ -71,13 +99,30 @@
 	<Text tone="faint" size="xs">A file under the worker's /prompts. Overrides the inline prompt.</Text>
 </Field>
 
+{#if dispatchAccounts.length}
+	<Field label="Account (optional)" for="sp-account-d">
+		<Select id="sp-account-d" value={form.account} onchange={(e) => onAccountChange((e.currentTarget as HTMLSelectElement).value)}>
+			<option value="">Default (no account)</option>
+			{#each dispatchAccounts as a (a.id)}<option value={a.name}>{a.name} ({a.provider})</option>{/each}
+		</Select>
+		<Text tone="faint" size="xs">Routes the worker through the passthrough gateway under this account.</Text>
+	</Field>
+{/if}
+
 <div class="row gap">
 	<div class="grow">
 		<Field label="Model" for="sp-model">
-			<!-- Dispatch runs a claude worker → claude families. -->
-			<Select id="sp-model" bind:value={form.model_claude}>
-				{#each claudeModels as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
-			</Select>
+			{#if usesAccountModels}
+				<Select id="sp-model" bind:value={form.model_account}>
+					{#if !accountModelOptions.length}<option value="">Default</option>{/if}
+					{#each accountModelOptions as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
+				</Select>
+			{:else}
+				<!-- Dispatch runs a claude worker → claude families. -->
+				<Select id="sp-model" bind:value={form.model_claude}>
+					{#each claudeModels as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
+				</Select>
+			{/if}
 		</Field>
 	</div>
 	<div class="grow">

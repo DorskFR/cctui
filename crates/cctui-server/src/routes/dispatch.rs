@@ -322,6 +322,52 @@ pub async fn dispatch(
         if let Some(obj) = forwarded_payload.as_object_mut() {
             obj.insert("cctui_machine_key".into(), serde_json::Value::String(key));
         }
+
+        // Account-scoped routing on the dispatch path (CCT-399): if the caller
+        // picked a named account, mint a session-scoped gateway token bound to
+        // this (session, account) and merge the gateway base-url + token into
+        // `payload.env` so the worker pod routes through the passthrough gateway
+        // under that account — closing the gap where dispatch never called
+        // `mint_session_env`. The dispatch path runs a claude-worker, so the
+        // family falls back to anthropic when no provider is given.
+        if let Some(account_name) = req.account.as_deref().filter(|a| !a.trim().is_empty()) {
+            match crate::routes::gateway::mint_session_env(
+                &state,
+                uid,
+                account_name,
+                req.provider.as_deref().filter(|p| !p.trim().is_empty()),
+                "claude-code",
+                &session_id,
+            )
+            .await
+            {
+                Ok(Some(gateway_env)) => {
+                    if let Some(obj) = forwarded_payload.as_object_mut() {
+                        let env = obj
+                            .entry("env")
+                            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+                        if let Some(env_obj) = env.as_object_mut() {
+                            for (k, v) in gateway_env {
+                                env_obj.insert(k, serde_json::Value::String(v));
+                            }
+                        }
+                    }
+                }
+                Ok(None) => {
+                    return Err((
+                        StatusCode::NOT_FOUND,
+                        Json(ApiError { error: format!("no account named {account_name:?}") }),
+                    ));
+                }
+                Err(e) => {
+                    tracing::error!("mint_session_env (dispatch) failed: {e}");
+                    return Err((
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ApiError { error: "could not provision account session".into() }),
+                    ));
+                }
+            }
+        }
     }
 
     let spec = DispatchSpec {

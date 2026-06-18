@@ -30,3 +30,17 @@ export const codexModels = [
 	{ v: 'gpt-5.5-codex', label: 'GPT-5.5 Codex' },
 	{ v: 'gpt-5.4-codex', label: 'GPT-5.4 Codex' }
 ];
+
+// The harness/adapter an account's provider locks to (CCT-399): anything in the
+// openai family runs Codex; everything else (anthropic / anthropic-compatible)
+// runs Claude Code. Mirrors the server's `Family::from_provider`.
+export const adapterForProvider = (provider: string): 'claude-code' | 'codex' =>
+	provider.includes('openai') ? 'codex' : 'claude-code';
+
+// A compatible-endpoint account carries its own model list; a native
+// subscription account uses the harness's native families.
+export const isCompatibleProvider = (provider: string): boolean =>
+	provider.endsWith('-compatible');
+
+export const adapterLabel = (adapter: string): string =>
+	adapter === 'codex' ? 'Codex' : 'Claude Code';

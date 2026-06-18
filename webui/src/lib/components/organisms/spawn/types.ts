@@ -23,9 +23,16 @@ export interface Form {
 	// (CCT-274). Dispatch (k8s) runs a claude worker → model_claude.
 	model_claude: string;
 	model_codex: string;
-	// Named OAuth account to run under (CCT-237), resolved per-adapter at spawn.
-	// Empty = no gateway injection (the worker's own auth).
+	// Named account to run under (CCT-237/CCT-399). Empty = "Default (no
+	// account)" → the worker's own auth, adapter-first flow. When set, the
+	// account drives the model list + locks the harness, and `account_provider`
+	// disambiguates a name shared across providers at spawn.
 	account: string;
+	account_provider: string;
+	// Free-form model for a compatible-endpoint account (CCT-399): the picker is
+	// driven by the account's declared models rather than the per-adapter family
+	// lists, so it gets its own field (preserved across account switches).
+	model_account: string;
 	// Effort is per-adapter (claude and codex have different level sets), so each
 	// gets its own slider + form field and they're preserved across an adapter
 	// switch. Dispatch (k8s) runs a claude worker → uses effort_claude.
