@@ -202,6 +202,32 @@ export const BUCKETS: { key: GroupKey; label: string }[] = [
 ];
 export const isDispatched = (s: SessionListItem) =>
 	s.machine_kind != null && SYSTEM_MACHINE_KINDS.has(s.machine_kind);
+
+// ── Stale Working sessions (CCT-365) ────────────────────────────────────────
+// A session in the Working bucket whose latest activity (`last_heartbeat`, also
+// bumped by subagent work up the parent chain — CCT-366) is older than this
+// threshold is *not* actively working: it's blocked-undetected, waiting on us,
+// or the connection dropped. We signal it as stale (dimmed card + dot) rather
+// than presenting it as live. This is a DERIVED, time-based display signal
+// (like the liveness tiers) computed client-side from `last_heartbeat`, NOT a
+// persisted state — it re-evaluates on the UI clock tick and clears the instant
+// fresh activity arrives. It is a separate, longer-horizon signal from the 90s
+// `inactive_after_secs` tempo window on the server (which drives `liveness`).
+//
+// Single named constant for now; CCT-357 (Settings/Preferences) will promote it
+// to a per-user/per-account setting.
+export const STALE_WORKING_AFTER_MS = 30 * 60 * 1000; // 30 minutes
+
+// Whether a session should be signalled stale: a Working-bucket session whose
+// last heartbeat is older than the threshold. `now` is passed in so callers can
+// drive re-evaluation off a clock tick. Non-Working buckets are never stale
+// (blocked/review/done already carry their own signal), and a session with no
+// heartbeat timestamp (stub rows) is treated as not-stale.
+export function isStaleWorking(s: SessionListItem, now: number): boolean {
+	if (groupOf(s) !== 'working') return false;
+	if (!s.last_heartbeat) return false;
+	return now - new Date(s.last_heartbeat).getTime() > STALE_WORKING_AFTER_MS;
+}
 export const groupOf = (s: SessionListItem): GroupKey => {
 	if (s.pinned) return 'pinned';
 	const bucket = s.bucket ?? 'working';

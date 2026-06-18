@@ -189,6 +189,16 @@ pub struct SessionListItem {
     /// Many-to-many (`labels` / `session_labels` tables); empty when unlabeled.
     #[serde(default)]
     pub labels: Vec<Label>,
+    /// Last activity timestamp from `sessions.last_heartbeat` (CCT-365). Bumped
+    /// per real work event, and — since CCT-366 — also by subagent activity up
+    /// the `parent_id` chain. Surfaced so clients can derive a long-horizon
+    /// "stale" display signal (Working session with no activity for >30min)
+    /// purely from the clock, the same way liveness tiers are time-derived.
+    /// Distinct from `last_activity_at`, which is the last *assistant turn*
+    /// (token-usage row) used for cache-expiry prediction. `None` only on stub
+    /// rows that never carry liveness.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_heartbeat: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// A reusable, user-defined colored label (CCT-360). Labels are global (shared

@@ -122,4 +122,15 @@ pinned: boolean,
  * User-defined colored labels attached to this session (CCT-360).
  * Many-to-many (`labels` / `session_labels` tables); empty when unlabeled.
  */
-labels: Array<Label>, };
+labels: Array<Label>, 
+/**
+ * Last activity timestamp from `sessions.last_heartbeat` (CCT-365). Bumped
+ * per real work event, and — since CCT-366 — also by subagent activity up
+ * the `parent_id` chain. Surfaced so clients can derive a long-horizon
+ * "stale" display signal (Working session with no activity for >30min)
+ * purely from the clock, the same way liveness tiers are time-derived.
+ * Distinct from `last_activity_at`, which is the last *assistant turn*
+ * (token-usage row) used for cache-expiry prediction. `None` only on stub
+ * rows that never carry liveness.
+ */
+last_heartbeat: string | null, };

@@ -11,6 +11,8 @@
 	import { Badge, Card, Cluster, Stack, Text, Timestamp } from '@dorsk/tsumikit';
 	import { escapeHtml } from '$lib/markdown';
 	import { highlightTerms } from '$lib/search';
+	import { isStaleWorking } from '../../../routes/sessions/sessions.logic';
+	import { onMount } from 'svelte';
 
 	let {
 		session,
@@ -113,14 +115,26 @@
 	const needsInput = $derived(s.attention === 'needs_input' && s.status !== 'archived');
 	// Hibernated (CCT-228): worker exited but resumable — a reply revives it
 	// (daemon resume-on-reply). Red dot, mirroring claude's own agents view.
+	// Stale Working sessions (CCT-365): a derived, time-based display signal that
+	// re-evaluates on a clock tick (60s — the 30-min horizon doesn't need finer)
+	// and clears the instant fresh activity (a newer `last_heartbeat`, bumped by
+	// subagent work too per CCT-366) arrives. Not a persisted state.
+	let now = $state(Date.now());
+	onMount(() => {
+		const t = setInterval(() => (now = Date.now()), 60_000);
+		return () => clearInterval(t);
+	});
+	const stale = $derived(isStaleWorking(s, now));
 	const livenessClass = $derived(
 		s.hibernated
 			? 'dot-hibernated'
-			: s.liveness === 'active'
-				? 'dot-active'
-				: s.liveness === 'stale'
-					? 'dot-stale'
-					: 'dot-dead'
+			: stale
+				? 'dot-stale'
+				: s.liveness === 'active'
+					? 'dot-active'
+					: s.liveness === 'stale'
+						? 'dot-stale'
+						: 'dot-dead'
 	);
 	const u = $derived(s.token_usage);
 	// Subagent cost rollup (CCT-297 #19): only meaningful when there are agents.
@@ -242,6 +256,7 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
 	class="sc-wrap"
+	class:stale
 	class:child
 	class:dense
 	class:grid
@@ -427,6 +442,9 @@
 
 {#snippet engine()}
 	<span class="dot {livenessClass}"></span>
+	{#if stale}
+		<Badge tone="warn" style="padding:0.05rem var(--sp-2)" title="No activity for over 30 minutes">stale</Badge>
+	{/if}
 	{#if child}
 		<Badge tone="info" style="padding:0.05rem var(--sp-2)">subagent</Badge>
 	{:else}
@@ -476,6 +494,12 @@
 	.sc-wrap.child {
 		width: auto;
 		margin-left: var(--sp-4);
+	}
+	/* Stale Working session (CCT-365): dim the whole card so a long-idle session
+	   reads as "needs attention, not live" at a glance. Paired with the amber
+	   dot + "stale" badge. Re-evaluated on the clock tick; clears on activity. */
+	.sc-wrap.stale {
+		opacity: 0.6;
 	}
 	/* Grid cards (CCT-305): the wrapper and the card fill the grid cell's full
 	   height so every card in a row matches (the grid stretches the cells), and

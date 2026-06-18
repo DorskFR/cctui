@@ -619,11 +619,25 @@ async fn update_status_signals(
     Ok(())
 }
 
+/// Bump `last_heartbeat` for a session and, when it is a subagent, the whole
+/// `parent_id` chain up to the root (CCT-366). A subagent's work should keep
+/// its parent(s) "alive" so the parent card doesn't read idle/stale (CCT-365)
+/// while a child churns. Done as a single recursive CTE UPDATE — one round-trip
+/// regardless of nesting depth, since subagents are chatty. Heartbeat only: no
+/// token/usage aggregates touched, so there's no double-counting.
 async fn bump_heartbeat(state: &AppState, local_id: &str) {
-    if let Err(err) = sqlx::query("UPDATE sessions SET last_heartbeat = now() WHERE id = $1")
-        .bind(local_id)
-        .execute(&state.pool)
-        .await
+    if let Err(err) = sqlx::query(
+        r"WITH RECURSIVE chain AS (
+            SELECT id, parent_id FROM sessions WHERE id = $1
+            UNION ALL
+            SELECT s.id, s.parent_id FROM sessions s JOIN chain c ON s.id = c.parent_id
+        )
+        UPDATE sessions SET last_heartbeat = now()
+        WHERE id IN (SELECT id FROM chain)",
+    )
+    .bind(local_id)
+    .execute(&state.pool)
+    .await
     {
         tracing::warn!(%err, %local_id, "heartbeat bump failed");
     }

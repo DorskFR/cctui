@@ -601,6 +601,7 @@ fn handle_server_event(app: &mut App, event: ServerEvent) {
                     hibernated: false,
                     pinned: false,
                     labels: Vec::new(),
+                    last_heartbeat: None,
                 });
                 app.update_aggregates();
             }

@@ -220,6 +220,7 @@ pub async fn list_sessions(
                         hibernated: false,
                         pinned: false,
                         labels: Vec::new(),
+                        last_heartbeat: Some(handle.session.last_heartbeat),
                     },
                 )
             })
@@ -303,6 +304,7 @@ pub async fn list_sessions(
                 hibernated: false,
                 pinned: false,
                 labels: Vec::new(),
+                last_heartbeat: Some(row.last_heartbeat),
             },
         ));
     }
@@ -969,6 +971,7 @@ pub async fn search_sessions(
                     hibernated: false,
                     pinned: false,
                     labels: Vec::new(),
+                    last_heartbeat: Some(row.last_heartbeat),
                 },
             )
         })
@@ -1053,6 +1056,7 @@ pub async fn get_session(
                 hibernated: false,
                 pinned: false,
                 labels: Vec::new(),
+                last_heartbeat: Some(handle.session.last_heartbeat),
             };
             return Ok(Json(item));
         }
@@ -1115,6 +1119,7 @@ pub async fn get_session(
         hibernated: false,
         pinned: false,
         labels: Vec::new(),
+        last_heartbeat: Some(row.last_heartbeat),
     };
     Ok(Json(item))
 }

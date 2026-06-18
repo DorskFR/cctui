@@ -876,6 +876,7 @@ function optimisticDispatchCard(
     hibernated: false,
     pinned: false,
     labels: [],
+    last_heartbeat: null,
   };
 }
 
