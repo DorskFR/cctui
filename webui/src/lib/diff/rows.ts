@@ -46,6 +46,16 @@ export type DiffRow =
       line: DiffLine;
     }
   | {
+      // Side-by-side ("split") view: one diff row carrying the old-side line on
+      // the left and the new-side line on the right. Context pairs the same line
+      // on both sides; a change block zips removals (left) against additions
+      // (right), leaving the surplus side `null` (an empty filler cell).
+      kind: "pair";
+      fileKey: FileKey;
+      left: DiffLine | null;
+      right: DiffLine | null;
+    }
+  | {
       kind: "collapsed";
       fileKey: FileKey;
       /** Stable id so expanding one region doesn't disturb others. */
@@ -143,10 +153,16 @@ export function orderFiles(files: DiffFile[]): DiffFile[] {
  * file header row shows). Both are passed in so the caller owns the UI state and
  * a re-flatten is a cheap pure recompute.
  */
+/** How the diff body is laid out: `unified` (one column, vertical) or `split`
+ *  (side-by-side old/new). File/hunk/collapsed/binary rows are identical; only
+ *  the code lines differ — `unified` emits `line` rows, `split` emits `pair`. */
+export type DiffViewMode = "unified" | "split";
+
 export function flattenDiff(
   diff: PullDiff,
   expanded: Set<string>,
   collapsedFiles: Set<string>,
+  mode: DiffViewMode = "unified",
 ): DiffRow[] {
   const rows: DiffRow[] = [];
   const ordered = orderFiles(diff.files);
@@ -176,7 +192,7 @@ export function flattenDiff(
         header: hunk.header ?? formatHunkHeader(hunk),
         hunkIndex,
       });
-      appendHunkLines(rows, fileKey, hunkIndex, hunk.lines, expanded);
+      appendHunkLines(rows, fileKey, hunkIndex, hunk.lines, expanded, mode);
     });
   });
 
@@ -191,13 +207,29 @@ function appendHunkLines(
   hunkIndex: number,
   lines: DiffLine[],
   expanded: Set<string>,
+  mode: DiffViewMode = "unified",
 ): void {
+  // In split mode a context line pairs with itself (same line both sides) and a
+  // change block zips removals against additions; in unified each line is a row.
+  const emitContext = (l: DiffLine) =>
+    mode === "split"
+      ? rows.push({ kind: "pair", fileKey, left: l, right: l })
+      : rows.push({ kind: "line", fileKey, line: l });
+
   let i = 0;
   let regionN = 0;
   while (i < lines.length) {
     if (lines[i].kind !== "context") {
-      rows.push({ kind: "line", fileKey, line: lines[i] });
-      i++;
+      // Gather the maximal run of change lines (del/add) starting at i.
+      let j = i;
+      while (j < lines.length && lines[j].kind !== "context") j++;
+      if (mode === "split") {
+        emitChangePairs(rows, fileKey, lines.slice(i, j));
+      } else {
+        for (let k = i; k < j; k++)
+          rows.push({ kind: "line", fileKey, line: lines[k] });
+      }
+      i = j;
       continue;
     }
     // Gather the maximal run of context lines starting at i.
@@ -213,15 +245,34 @@ function appendHunkLines(
     const regionId = `${fileKey}#${hunkIndex}.${regionN++}`;
 
     if (run.length <= COLLAPSE_THRESHOLD || expanded.has(regionId)) {
-      for (const l of run) rows.push({ kind: "line", fileKey, line: l });
+      for (const l of run) emitContext(l);
     } else {
-      for (let k = 0; k < head; k++)
-        rows.push({ kind: "line", fileKey, line: run[k] });
+      for (let k = 0; k < head; k++) emitContext(run[k]);
       rows.push({ kind: "collapsed", fileKey, regionId, count: hidden });
-      for (let k = run.length - tail; k < run.length; k++)
-        rows.push({ kind: "line", fileKey, line: run[k] });
+      for (let k = run.length - tail; k < run.length; k++) emitContext(run[k]);
     }
     i = j;
+  }
+}
+
+/** Zip a change block (removals then additions) into side-by-side `pair` rows:
+ *  the k-th removal sits left of the k-th addition; the surplus side is `null`
+ *  (an empty filler cell). Order-agnostic — separates dels from adds first. */
+function emitChangePairs(
+  rows: DiffRow[],
+  fileKey: FileKey,
+  block: DiffLine[],
+): void {
+  const dels = block.filter((l) => l.kind === "del");
+  const adds = block.filter((l) => l.kind === "add");
+  const n = Math.max(dels.length, adds.length);
+  for (let k = 0; k < n; k++) {
+    rows.push({
+      kind: "pair",
+      fileKey,
+      left: dels[k] ?? null,
+      right: adds[k] ?? null,
+    });
   }
 }
 
@@ -289,34 +340,39 @@ export function weaveComments(
   const hasThreads = !!threadIndex && threadIndex.size > 0;
   if (commentIndex.size === 0 && !composeAt && !hasThreads) return base;
   const out: DiffRow[] = [];
-  for (const row of base) {
-    out.push(row);
-    if (row.kind !== "line") continue;
-    const a = lineAnchor(row.line);
-    if (!a) continue;
-    const key = `${row.fileKey}|${a.side}|${a.line}`;
+  // Weave any comment/thread/compose rows anchored at one (path, side, line).
+  const weaveAt = (fileKey: FileKey, a: { side: DiffSide; line: number }) => {
+    const key = `${fileKey}|${a.side}|${a.line}`;
     const existing = commentIndex.get(key);
     if (existing) {
-      for (const c of existing)
-        out.push({ kind: "comment", fileKey: row.fileKey, comment: c });
+      for (const c of existing) out.push({ kind: "comment", fileKey, comment: c });
     }
     const threads = threadIndex?.get(key);
     if (threads) {
-      for (const t of threads)
-        out.push({ kind: "thread", fileKey: row.fileKey, thread: t });
+      for (const t of threads) out.push({ kind: "thread", fileKey, thread: t });
     }
     if (
       composeAt &&
-      composeAt.path === row.fileKey &&
+      composeAt.path === fileKey &&
       composeAt.side === a.side &&
       composeAt.line === a.line
     ) {
-      out.push({
-        kind: "compose",
-        fileKey: row.fileKey,
-        side: a.side,
-        line: a.line,
-      });
+      out.push({ kind: "compose", fileKey, side: a.side, line: a.line });
+    }
+  };
+  for (const row of base) {
+    out.push(row);
+    if (row.kind === "line") {
+      const a = lineAnchor(row.line);
+      if (a) weaveAt(row.fileKey, a);
+    } else if (row.kind === "pair") {
+      // Split view: a pair carries an old-side and a new-side line; anchor
+      // comments under each. A context pair shares one line object across both
+      // sides, so old (left) and new (right) anchors both apply.
+      const la = row.left ? lineAnchor(row.left) : null;
+      if (la && la.side === "old") weaveAt(row.fileKey, la);
+      const ra = row.right ? lineAnchor(row.right) : null;
+      if (ra && ra.side === "new") weaveAt(row.fileKey, ra);
     }
   }
   return out;

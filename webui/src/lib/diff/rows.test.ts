@@ -26,6 +26,9 @@ function ctx(n: number): DiffLine {
 function add(n: number): DiffLine {
   return { kind: "add", content: `add ${n}`, old_line: null, new_line: n };
 }
+function del(n: number): DiffLine {
+  return { kind: "del", content: `del ${n}`, old_line: n, new_line: null };
+}
 
 function hunk(lines: DiffLine[]): DiffHunk {
   return {
@@ -141,6 +144,65 @@ describe("flattenDiff (single surface + collapse)", () => {
     const rows = flattenDiff(d, new Set(), new Set());
     expect(rows.some((r) => r.kind === "binary")).toBe(true);
     expect(rows.some((r) => r.kind === "truncated")).toBe(true);
+  });
+});
+
+describe("flattenDiff (split / side-by-side mode)", () => {
+  it("pairs context lines onto both sides", () => {
+    const d = diffOf([file("src/a.ts", { hunks: [hunk([ctx(1), ctx(2)])] })]);
+    const rows = flattenDiff(d, new Set(), new Set(), "split");
+    const pairs = rows.filter((r) => r.kind === "pair");
+    expect(pairs).toHaveLength(2);
+    // A context pair carries the same line object on both sides.
+    expect(
+      pairs.every(
+        (p) => p.kind === "pair" && p.left === p.right && p.left !== null,
+      ),
+    ).toBe(true);
+    // No unified `line` rows in split mode.
+    expect(rows.some((r) => r.kind === "line")).toBe(false);
+  });
+
+  it("zips a balanced change block: del left, add right, same row", () => {
+    const d = diffOf([
+      file("src/a.ts", { hunks: [hunk([del(1), del(2), add(1), add(2)])] }),
+    ]);
+    const pairs = flattenDiff(d, new Set(), new Set(), "split").filter(
+      (r) => r.kind === "pair",
+    );
+    expect(pairs).toHaveLength(2);
+    expect(pairs[0].kind === "pair" && pairs[0].left?.kind).toBe("del");
+    expect(pairs[0].kind === "pair" && pairs[0].right?.kind).toBe("add");
+    expect(pairs[1].kind === "pair" && pairs[1].left?.kind).toBe("del");
+    expect(pairs[1].kind === "pair" && pairs[1].right?.kind).toBe("add");
+  });
+
+  it("leaves the surplus side null for an uneven change block", () => {
+    // 1 removal, 3 additions → row0 del|add, rows 1-2 null|add.
+    const d = diffOf([
+      file("src/a.ts", { hunks: [hunk([del(1), add(1), add(2), add(3)])] }),
+    ]);
+    const pairs = flattenDiff(d, new Set(), new Set(), "split").filter(
+      (r) => r.kind === "pair",
+    );
+    expect(pairs).toHaveLength(3);
+    expect(pairs[0].kind === "pair" && pairs[0].left?.kind).toBe("del");
+    expect(pairs[1].kind === "pair" && pairs[1].left).toBeNull();
+    expect(pairs[2].kind === "pair" && pairs[2].left).toBeNull();
+    expect(pairs.every((p) => p.kind === "pair" && p.right?.kind === "add")).toBe(
+      true,
+    );
+  });
+
+  it("still collapses long context runs in split mode", () => {
+    const lines = [
+      add(1),
+      ...Array.from({ length: 20 }, (_, i) => ctx(i + 2)),
+      add(30),
+    ];
+    const d = diffOf([file("src/a.ts", { hunks: [hunk(lines)] })]);
+    const rows = flattenDiff(d, new Set(), new Set(), "split");
+    expect(rows.filter((r) => r.kind === "collapsed")).toHaveLength(1);
   });
 });
 

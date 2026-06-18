@@ -20,6 +20,7 @@
 	import type { PullDiff } from '@bindings/PullDiff';
 	import type { DiffSide } from '@bindings/DiffSide';
 	import { createVirtualizer } from '@tanstack/svelte-virtual';
+	import { untrack } from 'svelte';
 	import {
 		flattenDiff,
 		navIndex,
@@ -28,6 +29,7 @@
 		indexThreads,
 		lineAnchor,
 		type DiffRow,
+		type DiffViewMode,
 		type CommentAnchorKey
 	} from '$lib/diff/rows';
 	import { langForPath } from '$lib/diff/highlight';
@@ -305,11 +307,46 @@
 		});
 	}
 
+	// Resolve the cursor row to a commentable/askable line, working for both the
+	// unified (`line`) and split (`pair`) layouts. For a pair prefer the new side
+	// (right), falling back to the old side (left) — matching where a single
+	// keystroke most usefully lands.
+	function cursorLine(): {
+		fileKey: string;
+		anchor: { side: DiffSide; line: number };
+		snippet: string;
+	} | null {
+		const r = rows[cursor];
+		if (!r) return null;
+		if (r.kind === 'line') {
+			const a = lineAnchor(r.line);
+			return a ? { fileKey: r.fileKey, anchor: a, snippet: r.line.content } : null;
+		}
+		if (r.kind === 'pair') {
+			const cell = r.right ?? r.left;
+			if (!cell) return null;
+			const a = lineAnchor(cell);
+			return a ? { fileKey: r.fileKey, anchor: a, snippet: cell.content } : null;
+		}
+		return null;
+	}
+
 	// Lazy-expanded collapsed regions + folded files — caller-free UI state.
 	let expanded = $state(new Set<string>());
 	let collapsedFiles = $state(new Set<string>());
+	// Unified (vertical) vs side-by-side (split) layout — reviewer's choice,
+	// persisted across PRs so the preference sticks for the session.
+	let viewMode = $state<DiffViewMode>(loadViewMode());
+	function loadViewMode(): DiffViewMode {
+		if (typeof localStorage === 'undefined') return 'unified';
+		return localStorage.getItem('cctui.diff.viewMode') === 'split' ? 'split' : 'unified';
+	}
+	function setViewMode(m: DiffViewMode) {
+		viewMode = m;
+		if (typeof localStorage !== 'undefined') localStorage.setItem('cctui.diff.viewMode', m);
+	}
 
-	const baseRows = $derived<DiffRow[]>(flattenDiff(diff, expanded, collapsedFiles));
+	const baseRows = $derived<DiffRow[]>(flattenDiff(diff, expanded, collapsedFiles, viewMode));
 	const rows = $derived<DiffRow[]>(
 		weaveComments(baseRows, commentIndex, composeAt, threadIndex)
 	);
@@ -348,13 +385,23 @@
 		// Track row count + scroll element so a settled query (new rows) or the
 		// post-mount `bind:this` assignment re-applies options → the virtualizer
 		// picks up the now-mounted scroll element and measures the viewport.
-		void rows.length;
-		void scrollEl;
-		$virtualizer.setOptions({
-			count: rows.length,
-			getScrollElement: () => scrollEl ?? null,
-			estimateSize: () => 21,
-			overscan: 20
+		const count = rows.length;
+		const el = scrollEl;
+		// CRITICAL: `untrack` the store read/write. `$virtualizer.setOptions` both
+		// READS the virtualizer store (subscribing this effect to it) and triggers
+		// its `onChange` (a store `set`). Without untrack, every row measurement
+		// (`use:measure` → `measureElement`, whose real heights differ from the
+		// 21px estimate → `onChange`) updates the store → re-runs this effect →
+		// setOptions → onChange → … → `effect_update_depth_exceeded`. That loop
+		// crashed the viewer right after the first viewport (~50 rows). We only
+		// want this effect to re-run on `count`/`el` changes (read above, tracked).
+		untrack(() => {
+			$virtualizer.setOptions({
+				count,
+				getScrollElement: () => el ?? null,
+				estimateSize: () => 21,
+				overscan: 20
+			});
 		});
 	});
 
@@ -425,19 +472,23 @@
 			case 'c': {
 				// GH-VIEW-4: open the inline composer on the cursor's diff line.
 				if (!commentable) return;
-				const r = rows[cursor];
-				if (r?.kind !== 'line') return;
-				const a = lineAnchor(r.line);
-				if (!a) return;
-				startCompose(r.fileKey, a.side, a.line);
+				const t = cursorLine();
+				if (!t) return;
+				startCompose(t.fileKey, t.anchor.side, t.anchor.line);
 				break;
 			}
 			case 'a': {
 				// GH-AGENT-3: ask the linked review agent about the cursor's line.
 				if (!askable) return;
-				const r = rows[cursor];
-				if (r?.kind !== 'line') return;
-				askBlock(r);
+				const t = cursorLine();
+				if (!t) return;
+				onask?.({
+					path: t.fileKey,
+					side: t.anchor.side,
+					line: t.anchor.line,
+					startLine: null,
+					snippet: t.snippet
+				});
 				break;
 			}
 			default:
@@ -475,19 +526,38 @@
 				>
 			{/if}
 		</Cluster>
-		{#if LENSES.length > 1}
+		<Cluster gap="var(--sp-3)" align="center">
 			<Cluster gap="var(--sp-1)" align="center">
-				<Text tone="muted" size="xs">Lens:</Text>
-				{#each LENSES as l (l.id)}
-					<button
-						type="button"
-						class="lens"
-						class:on={lens === l.id}
-						onclick={() => onlens?.(l.id)}>{l.label}</button
-					>
-				{/each}
+				<Text tone="muted" size="xs">View:</Text>
+				<button
+					type="button"
+					class="lens"
+					class:on={viewMode === 'unified'}
+					title="Unified (vertical) diff"
+					onclick={() => setViewMode('unified')}>Unified</button
+				>
+				<button
+					type="button"
+					class="lens"
+					class:on={viewMode === 'split'}
+					title="Side-by-side (split) diff"
+					onclick={() => setViewMode('split')}>Split</button
+				>
 			</Cluster>
-		{/if}
+			{#if LENSES.length > 1}
+				<Cluster gap="var(--sp-1)" align="center">
+					<Text tone="muted" size="xs">Lens:</Text>
+					{#each LENSES as l (l.id)}
+						<button
+							type="button"
+							class="lens"
+							class:on={lens === l.id}
+							onclick={() => onlens?.(l.id)}>{l.label}</button
+						>
+					{/each}
+				</Cluster>
+			{/if}
+		</Cluster>
 	</Cluster>
 
 	{#if diff.huge}

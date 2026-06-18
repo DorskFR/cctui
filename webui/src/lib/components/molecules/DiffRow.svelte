@@ -66,6 +66,13 @@
 	}: Props = $props();
 
 	const anchor = $derived(row.kind === 'line' ? lineAnchor(row.line) : null);
+	// Split view: per-side anchors. A pair's left is the old side, right the new.
+	const leftAnchor = $derived(
+		row.kind === 'pair' && row.left ? lineAnchor(row.left) : null
+	);
+	const rightAnchor = $derived(
+		row.kind === 'pair' && row.right ? lineAnchor(row.right) : null
+	);
 
 	const statusTone: Record<string, 'ok' | 'danger' | 'warn' | 'neutral'> = {
 		added: 'ok',
@@ -162,6 +169,72 @@
 		{/if}
 		<!-- eslint-disable-next-line svelte/no-at-html-tags -->
 		<code class="content">{@html highlightLine(row.line.content, lang)}</code>
+	</div>
+{:else if row.kind === 'pair'}
+	<!-- Side-by-side: old line (left) | new line (right). A null cell is an empty
+	     filler (one side of an uneven change block). -->
+	<div class="pair" class:active>
+		<div
+			class="half left k-{row.left?.kind ?? 'empty'}"
+			class:commentable={commentable && leftAnchor?.side === 'old'}
+		>
+			{#if row.left}
+				<span class="num old">{row.left.old_line ?? ''}</span>
+				{#if commentable && leftAnchor?.side === 'old'}
+					<button
+						type="button"
+						class="add-comment"
+						title="Add a draft comment on this line"
+						disabled={busy}
+						onclick={() => oncommentLine?.(row.fileKey, 'old', leftAnchor.line)}>+</button
+					>
+				{:else}
+					<span class="marker">{row.left.kind === 'del' ? '−' : ' '}</span>
+				{/if}
+				<!-- eslint-disable-next-line svelte/no-at-html-tags -->
+				<code class="content">{@html highlightLine(row.left.content, lang)}</code>
+			{:else}
+				<span class="num old"></span>
+				<span class="marker"></span>
+				<span class="content"></span>
+			{/if}
+		</div>
+		<div
+			class="half right k-{row.right?.kind ?? 'empty'}"
+			class:commentable={commentable && rightAnchor?.side === 'new'}
+		>
+			{#if row.right}
+				{@const rightContent = row.right.content}
+				<span class="num new">{row.right.new_line ?? ''}</span>
+				{#if commentable && rightAnchor?.side === 'new'}
+					<button
+						type="button"
+						class="add-comment"
+						title="Add a draft comment on this line"
+						disabled={busy}
+						onclick={() => oncommentLine?.(row.fileKey, 'new', rightAnchor.line)}>+</button
+					>
+					{#if onaskLine}
+						<button
+							type="button"
+							class="ask-agent"
+							title="Ask the review agent about this line"
+							disabled={busy}
+							onclick={() =>
+								onaskLine?.(row.fileKey, 'new', rightAnchor.line, rightContent)}>?</button
+						>
+					{/if}
+				{:else}
+					<span class="marker">{row.right.kind === 'add' ? '+' : ' '}</span>
+				{/if}
+				<!-- eslint-disable-next-line svelte/no-at-html-tags -->
+				<code class="content">{@html highlightLine(row.right.content, lang)}</code>
+			{:else}
+				<span class="num new"></span>
+				<span class="marker"></span>
+				<span class="content"></span>
+			{/if}
+		</div>
 	</div>
 {:else if row.kind === 'comment'}
 	<DraftCommentRow
@@ -282,6 +355,36 @@
 	.line.k-del {
 		background: var(--diff-del-bg, rgba(248, 81, 73, 0.15));
 	}
+	/* Split (side-by-side) view: old half | new half. */
+	.pair {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+	}
+	.pair.active {
+		outline: 2px solid var(--accent, #4c8bf5);
+		outline-offset: -2px;
+	}
+	.half {
+		display: grid;
+		grid-template-columns: 3.5em 1em 1fr;
+		font-family: var(--font-mono, monospace);
+		font-size: 0.82rem;
+		line-height: 1.5;
+		white-space: pre;
+		overflow: hidden;
+	}
+	.half.right {
+		border-left: 1px solid var(--border, rgba(127, 127, 127, 0.25));
+	}
+	.half.k-add {
+		background: var(--diff-add-bg, rgba(46, 160, 67, 0.15));
+	}
+	.half.k-del {
+		background: var(--diff-del-bg, rgba(248, 81, 73, 0.15));
+	}
+	.half.k-empty {
+		background: var(--surface-1, rgba(127, 127, 127, 0.04));
+	}
 	.num {
 		color: var(--syn-meta, #8b949e);
 		text-align: right;
@@ -306,7 +409,9 @@
 		transition: opacity 0.1s;
 	}
 	.line.commentable:hover .add-comment,
-	.line.commentable:hover .ask-agent {
+	.line.commentable:hover .ask-agent,
+	.half.commentable:hover .add-comment,
+	.half.commentable:hover .ask-agent {
 		opacity: 1;
 		color: var(--accent, #4c8bf5);
 		font-weight: bold;
