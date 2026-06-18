@@ -1036,19 +1036,16 @@ impl Driver {
         // (CCT-203). A staging failure is fatal to the spawn — silently dropping
         // an attachment the user expects the worker to read would be worse.
         let staged = stage_uploads(&session_id, &spec.bootstrap)?;
-        let launch_prompt = if staged.is_empty() {
-            spec.prompt.clone()
-        } else {
-            let mut header = String::from("Attached files:\n");
-            for p in &staged {
-                header.push_str("- ");
-                header.push_str(p);
-                header.push('\n');
-            }
-            Some(match spec.prompt.as_deref().map(str::trim) {
-                Some(b) if !b.is_empty() => format!("{header}\n{b}"),
-                _ => header,
-            })
+        // Prepend a delimited `<session-context>` block to the SPAWN prompt only
+        // (CCT-361): give the agent the same at-a-glance context a human sees in
+        // the UI — name, model·effort, permission posture, env var NAMES (never
+        // values — those live only in `env_json` below), cwd, and the staged
+        // file list (folded in here from the old client-side `Attached files:`
+        // append). Subsequent messages are untouched.
+        let session_context = build_session_context(spec, cwd, &staged);
+        let launch_prompt = match spec.prompt.as_deref().map(str::trim) {
+            Some(b) if !b.is_empty() => Some(format!("{session_context}\n\n{b}")),
+            _ => Some(session_context),
         };
         if let Some(prompt) = &launch_prompt {
             args.push("--".to_owned());
@@ -1946,6 +1943,44 @@ const fn kill_signal_name(signal: i32) -> &'static str {
 /// bootstrap yields an empty vec. Errors (bad base64, unwritable dir) abort the
 /// spawn so the user learns the attachment didn't land rather than the worker
 /// silently starting without it.
+/// Build the spawn-time `<session-context>` block (CCT-361) prepended to the
+/// initial prompt. Mirrors what a human sees on the session card — name,
+/// model·effort, permission posture, env var NAMES, cwd, and staged files.
+/// Env var VALUES are never included (only `spec.env` keys, sorted by the
+/// `BTreeMap`). Empty fields are omitted so the block stays tight.
+fn build_session_context(
+    spec: &cctui_proto::adapter::SessionSpec,
+    cwd: &str,
+    staged: &[String],
+) -> String {
+    let mut b = String::from("<session-context>\n");
+    if let Some(name) = spec.name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+        b.push_str(&format!("session: {name}\n"));
+    }
+    if let Some(model) = spec.model.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
+        match spec.effort.as_deref().map(str::trim).filter(|e| !e.is_empty()) {
+            Some(effort) => b.push_str(&format!("model: {model} · effort: {effort}\n")),
+            None => b.push_str(&format!("model: {model}\n")),
+        }
+    }
+    if let Some(mode) = spec.permission_mode {
+        b.push_str(&format!("permission-mode: {}\n", mode.normalized_label()));
+    }
+    b.push_str(&format!("cwd: {cwd}\n"));
+    if !spec.env.is_empty() {
+        let names = spec.env.keys().cloned().collect::<Vec<_>>().join(", ");
+        b.push_str(&format!("env (names only): {names}\n"));
+    }
+    if !staged.is_empty() {
+        b.push_str("attached files:\n");
+        for p in staged {
+            b.push_str(&format!("  - {p}\n"));
+        }
+    }
+    b.push_str("</session-context>");
+    b
+}
+
 fn stage_uploads(session_id: &str, bootstrap: &serde_json::Value) -> anyhow::Result<Vec<String>> {
     if bootstrap.is_null() {
         return Ok(Vec::new());
@@ -2310,6 +2345,38 @@ mod tests {
     #[test]
     fn stage_uploads_null_bootstrap_is_empty() {
         assert!(stage_uploads("sid", &serde_json::Value::Null).unwrap().is_empty());
+    }
+
+    #[test]
+    fn session_context_block_lists_env_names_not_values() {
+        use cctui_proto::adapter::{AdapterId, PermissionMode, SessionSpec};
+        let mut env = std::collections::BTreeMap::new();
+        env.insert("CCTUI_GITHUB_TOKEN".to_owned(), "super-secret".to_owned());
+        env.insert("REGISTRY_USER".to_owned(), "admin".to_owned());
+        let spec = SessionSpec {
+            adapter_id: AdapterId::new("claude-code"),
+            working_dir: Some("/work/cctui".to_owned()),
+            prompt: Some("refactor it".to_owned()),
+            name: Some("refactor the dispatcher".to_owned()),
+            permission_mode: Some(PermissionMode::Auto),
+            effort: Some("high".to_owned()),
+            model: Some("opus".to_owned()),
+            env,
+            bootstrap: serde_json::Value::Null,
+        };
+        let block = build_session_context(&spec, "/work/cctui", &["a.rs".to_owned()]);
+        assert!(block.starts_with("<session-context>\n"));
+        assert!(block.ends_with("</session-context>"));
+        assert!(block.contains("session: refactor the dispatcher"));
+        assert!(block.contains("model: opus · effort: high"));
+        // acceptEdits/Auto normalizes to `auto`.
+        assert!(block.contains("permission-mode: auto"));
+        assert!(block.contains("cwd: /work/cctui"));
+        assert!(block.contains("env (names only): CCTUI_GITHUB_TOKEN, REGISTRY_USER"));
+        assert!(block.contains("  - a.rs"));
+        // VALUES must never leak.
+        assert!(!block.contains("super-secret"));
+        assert!(!block.contains("admin"));
     }
 
     #[test]

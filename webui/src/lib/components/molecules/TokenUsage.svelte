@@ -43,12 +43,18 @@
 <!-- Cluster owns the layout (row, single gap, optional wrap); each segment is its
      own Text atom, carrying tone/weight/size as props rather than CSS overrides. -->
 <Cluster gap="0.4rem" align="baseline" {wrap}>
-	{#if showSum && total > 0}<Text variant="code" {size} tone="accent" weight="semibold"
+	{#if showSum && total > 0}<Text
+			variant="code"
+			{size}
+			tone="accent"
+			weight="semibold"
+			style="cursor:help"
+			title="Σ — cumulative session usage (↑ + ↓ + ⚡), summed over every turn. This is lifetime billing-style throughput, NOT the current context size: ⚡ re-counts the cached context on each turn so Σ climbs well past what /context reports as loaded right now."
 			>Σ{compact(total)}</Text
 		>{/if}
-	<Text variant="code" {size} tone="faint">↑{compact(Number(usage.tokens_in))}</Text>
-	<Text variant="code" {size} tone="faint">↓{compact(Number(usage.tokens_out))}</Text>
-	{#if cacheTotal > 0}<Text variant="code" {size} tone="faint">⚡{compact(cacheTotal)}</Text>{/if}
+	<Text variant="code" {size} tone="faint" style="cursor:help" title="↑ — new (uncached) input tokens, summed over the session. Small because each turn re-sends the bulk of the context as a cache read (⚡), not fresh input.">↑{compact(Number(usage.tokens_in))}</Text>
+	<Text variant="code" {size} tone="faint" style="cursor:help" title="↓ — output (generated) tokens, summed over the session.">↓{compact(Number(usage.tokens_out))}</Text>
+	{#if cacheTotal > 0}<Text variant="code" {size} tone="faint" style="cursor:help" title="⚡ — cache read + create tokens, counted every turn. The whole context is re-read from cache each turn, so this accumulates ≈ window size × turns and dominates Σ. It is cumulative throughput, not current context occupancy.">⚡{compact(cacheTotal)}</Text>{/if}
 	{#if cold}<Text
 			variant="code"
 			{size}

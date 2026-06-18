@@ -503,6 +503,20 @@ impl PermissionMode {
     pub const fn is_whip(self) -> bool {
         matches!(self, Self::Whip)
     }
+
+    /// Coarse `default` / `auto` / `yolo` label surfaced to the agent in the
+    /// spawn-time `<session-context>` block (CCT-361). `Ask` (prompt on every
+    /// action, claude `default`) reads as `default`; `Auto` (`acceptEdits`) as
+    /// `auto`; `Yolo`/`Whip` (`bypassPermissions`) as `yolo`. The whip-specific
+    /// enforcement hooks aren't part of this coarse posture label.
+    #[must_use]
+    pub const fn normalized_label(self) -> &'static str {
+        match self {
+            Self::Ask => "default",
+            Self::Auto => "auto",
+            Self::Yolo | Self::Whip => "yolo",
+        }
+    }
 }
 
 /// Parameters for spawning a brand-new session. Used by `AdapterCommand::Spawn`

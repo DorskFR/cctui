@@ -347,6 +347,7 @@
 					<span class="trail">
 						{#if showStatusBadge}<Badge class={statusBadgeClass(s.status)} style="padding:0.05rem var(--sp-2)">{s.status}</Badge>{/if}
 						{#if pendingCount > 0}<Badge tone="warn" style="padding:0.05rem var(--sp-2)">{pendingCount} perm</Badge>{/if}
+						{#if s.auto_approve}<Badge tone="warn" style="padding:0.05rem var(--sp-2)" title="Auto-approve enabled — this session approves tool use without asking">⚡</Badge>{/if}
 						{@render time()}
 					</span>
 				</Cluster>
