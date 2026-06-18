@@ -189,9 +189,27 @@ pub struct CreateAccount {
     pub user_id: Option<Uuid>,
 }
 
+/// `PATCH /api/v1/accounts/{id}` payload (CCT-402). A partial update: `name`
+/// renames (back-compat — the only field native accounts allow). For a
+/// non-managed compatible endpoint the operator may also edit `models`,
+/// `base_url`, `auth_scheme`, and rotate the static credential (`access_token`).
+/// All optional; an absent field leaves that column unchanged. base_url/credential
+/// are never returned, so the editor re-supplies base_url when changing it and
+/// leaves the credential blank to keep the stored one.
 #[derive(Debug, serde::Deserialize)]
-pub struct RenameAccount {
-    pub name: String,
+pub struct UpdateAccount {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub auth_scheme: Option<String>,
+    #[serde(default)]
+    pub models: Option<Vec<AccountModel>>,
+    /// New static credential for a compatible endpoint; blank/absent keeps the
+    /// stored one.
+    #[serde(default)]
+    pub access_token: Option<String>,
 }
 
 fn err(code: StatusCode, msg: &str) -> (StatusCode, Json<serde_json::Value>) {
@@ -364,22 +382,104 @@ pub async fn create_account(
     }
 }
 
-/// `PATCH /api/v1/accounts/{id}` — rename.
+/// `PATCH /api/v1/accounts/{id}` — rename, and (CCT-402) edit a non-managed
+/// compatible endpoint's models / base URL / auth scheme / credential without
+/// recreating it. Native subscription accounts only honour `name`.
 pub async fn rename_account(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
-    Json(req): Json<RenameAccount>,
+    Json(req): Json<UpdateAccount>,
 ) -> Result<Json<AccountInfo>, (StatusCode, Json<serde_json::Value>)> {
     if ctx.role != TokenRole::Admin && require_user(&ctx).is_err() {
         return Err(err(StatusCode::FORBIDDEN, "user or admin token required"));
     }
-    if req.name.trim().is_empty() {
+    if let Some(name) = req.name.as_deref()
+        && name.trim().is_empty()
+    {
         return Err(err(StatusCode::BAD_REQUEST, "name required"));
     }
-    // Admin (`ctx.user_id` = NULL) may rename any account; a user only its own.
+
+    // Resolve the target (scoped to the caller; admin sees all) so we can tell a
+    // compatible endpoint from a native one and reject editing managed accounts.
+    let provider: Option<(String,)> = sqlx::query_as(
+        "SELECT provider FROM oauth_accounts \
+         WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2) AND NOT managed",
+    )
+    .bind(id)
+    .bind(ctx.user_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("db error: {e}");
+        err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
+    })?;
+    let Some((provider,)) = provider else {
+        return Err(err(StatusCode::NOT_FOUND, "no such account"));
+    };
+    let compatible = matches!(
+        provider.as_str(),
+        "anthropic-compatible" | "openai-compatible"
+    );
+
+    // Compatible-only fields are rejected for native accounts so the edit form
+    // can't silently no-op against a subscription account.
+    if !compatible
+        && (req.base_url.is_some()
+            || req.auth_scheme.is_some()
+            || req.models.is_some()
+            || req.access_token.is_some())
+    {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "only the name is editable for a native subscription account",
+        ));
+    }
+
+    let key = crate::crypto::vault_key();
+    // Normalise the optional compatible-endpoint fields. base_url/auth_scheme are
+    // validated like create; a blank credential keeps the stored one (NULL bind →
+    // COALESCE no-op in SQL). models replaces the list wholesale when provided.
+    let base_url = match req.base_url.as_deref().map(str::trim) {
+        Some(b) if !b.is_empty() => {
+            if !(b.starts_with("http://") || b.starts_with("https://")) {
+                return Err(err(StatusCode::BAD_REQUEST, "base_url must be an http(s) URL"));
+            }
+            Some(b.to_owned())
+        }
+        _ => None,
+    };
+    let auth_scheme = match req.auth_scheme.as_deref().map(str::trim) {
+        Some(s) if !s.is_empty() => {
+            if !matches!(s, "bearer" | "api_key") {
+                return Err(err(StatusCode::BAD_REQUEST, "auth_scheme must be bearer|api_key"));
+            }
+            Some(s.to_owned())
+        }
+        _ => None,
+    };
+    let models = req
+        .models
+        .as_ref()
+        .map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null));
+    let enc_access = req
+        .access_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|c| crate::crypto::obfuscate(c, &key));
+    let name = req.name.as_deref().map(str::trim).map(str::to_owned);
+
+    // COALESCE keeps each column when its bind is NULL, so an absent field is a
+    // no-op. Admin (`ctx.user_id` = NULL) may edit any account; a user only its
+    // own. Managed accounts are excluded.
     let row: Option<AccountInfo> = sqlx::query_as(
-        "UPDATE oauth_accounts SET name = $3 \
+        "UPDATE oauth_accounts SET \
+            name = COALESCE($3, name), \
+            base_url = COALESCE($4, base_url), \
+            auth_scheme = COALESCE($5, auth_scheme), \
+            models = COALESCE($6, models), \
+            encrypted_access_token = COALESCE($7, encrypted_access_token) \
          WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2) AND NOT managed \
          RETURNING id, name, provider, models, managed, user_id, NULL::text AS user_name, \
                    expires_at, created_at, last_used_at, \
@@ -388,7 +488,11 @@ pub async fn rename_account(
     )
     .bind(id)
     .bind(ctx.user_id)
-    .bind(req.name.trim())
+    .bind(&name)
+    .bind(&base_url)
+    .bind(&auth_scheme)
+    .bind(&models)
+    .bind(&enc_access)
     .fetch_optional(&state.pool)
     .await
     .map_err(|e| {

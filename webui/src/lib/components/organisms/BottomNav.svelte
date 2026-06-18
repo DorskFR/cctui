@@ -5,17 +5,18 @@
 
 	const caps = useCapabilities();
 
-	// The `/github` item is mounted when the integration is *available* (crate
-	// compiled in + schema present), NOT when it's enabled — so the connector
-	// setup UI is reachable to add the first connector (CCT-395). Hidden when
-	// unavailable → the lazy route chunk is never reachable for non-GitHub users.
+	// The `/github` item is mounted only when the integration is *enabled* (a
+	// connector is configured), NOT merely available (CCT-403) — first-run
+	// connector setup now lives under Accounts, so there's no chicken-and-egg.
+	// This frees nav space for the many users who don't use GitHub. Dispatchers
+	// also moved under Accounts, which is now the single home for everything that
+	// connects to something external.
 	const items = $derived([
 		{ href: '/', label: 'Overview', icon: '◧' },
 		{ href: '/sessions', label: 'Sessions', icon: '◰' },
 		{ href: '/users', label: 'Users', icon: '◍' },
-		{ href: '/dispatchers', label: 'Dispatchers', icon: '◈' },
 		{ href: '/accounts', label: 'Accounts', icon: '◉' },
-		...($caps.data?.github.available ? [{ href: '/github', label: 'GitHub', icon: '◐' }] : []),
+		...($caps.data?.github.enabled ? [{ href: '/github', label: 'GitHub', icon: '◐' }] : []),
 		{ href: '/settings', label: 'Settings', icon: '⚙' }
 	]);
 	const active = (href: string) =>

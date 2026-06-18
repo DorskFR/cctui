@@ -158,6 +158,19 @@ export interface CreateAccount {
   user_id?: string;
 }
 
+/** Partial edit payload (CCT-402). Every field optional; an absent field leaves
+ *  that column unchanged. `name` works for any account; the compatible-endpoint
+ *  fields are only honoured for a non-managed `*-compatible` account. A blank
+ *  `base_url`/`access_token` keeps the stored value (they are never read back). */
+export interface UpdateAccount {
+  name?: string;
+  base_url?: string;
+  auth_scheme?: string;
+  models?: AccountModel[];
+  /** New static credential; omit/blank to keep the stored one. */
+  access_token?: string;
+}
+
 /** "Sign in with Claude" OAuth start payload/response (CCT-243). */
 export interface OAuthStartResponse {
   nonce: string;
@@ -290,8 +303,8 @@ export const endpoints = {
   accounts: () => api.get<OAuthAccount[]>("/accounts"),
   createAccount: (body: CreateAccount) =>
     api.post<OAuthAccount>("/accounts", body),
-  renameAccount: (id: string, name: string) =>
-    api.patch<OAuthAccount>(`/accounts/${id}`, { name }),
+  updateAccount: (id: string, body: UpdateAccount) =>
+    api.patch<OAuthAccount>(`/accounts/${id}`, body),
   deleteAccount: (id: string) => api.del<void>(`/accounts/${id}`),
   /** Current subscription usage for an account (CCT-306). Free + tokenless;
    *  the server slow-refreshes a cache so polling never spams upstream. */
@@ -1156,8 +1169,8 @@ export function useAccountActions() {
       inval();
       return r;
     },
-    rename: async (id: string, name: string) => {
-      const r = await endpoints.renameAccount(id, name);
+    update: async (id: string, body: UpdateAccount) => {
+      const r = await endpoints.updateAccount(id, body);
       inval();
       return r;
     },

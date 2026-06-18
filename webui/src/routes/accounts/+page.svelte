@@ -2,15 +2,19 @@
 	import {
 		useAccounts,
 		useAccountActions,
+		useCapabilities,
 		useMe,
 		useUsers,
 		type OAuthAccount,
 		type CreateAccount,
+		type UpdateAccount,
 	} from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
 	import { compact } from '$lib/format';
 	import UsageBars from '$lib/components/molecules/UsageBars.svelte';
 	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
+	import GithubConnectors from '$lib/components/organisms/GithubConnectors.svelte';
+	import DispatchersPanel from '$lib/components/organisms/DispatchersPanel.svelte';
 	import {
 		AutoGrid,
 		Button,
@@ -23,10 +27,23 @@
 		Modal,
 		Select,
 		Stack,
+		Tabs,
 		Text,
-		Timestamp
+		Timestamp,
+		type TabItem
 	} from '@dorsk/tsumikit';
 	import { providerLabel } from './accounts.logic';
+
+	const caps = useCapabilities();
+	// Accounts is the single home for everything external (CCT-403): AI provider
+	// accounts, GitHub connectors, and dispatchers. The Connectors tab only
+	// appears when the integration is compiled in (`available`).
+	let tab = $state('ai');
+	const tabs = $derived<TabItem[]>([
+		{ id: 'ai', label: 'AI accounts' },
+		...($caps.data?.github.available ? [{ id: 'connectors', label: 'Connectors' }] : []),
+		{ id: 'dispatchers', label: 'Dispatchers' }
+	]);
 
 	const accounts = useAccounts();
 	const actions = useAccountActions();
@@ -55,7 +72,9 @@
 	// auth scheme, and a tiny model-list editor (model code + display label).
 	let baseUrl = $state('');
 	let credential = $state('');
-	let authScheme = $state<'bearer' | 'api_key'>('bearer');
+	// `keep` is an edit-only sentinel: leave the stored scheme untouched (it is
+	// never read back, CCT-402). Create always picks bearer/api_key.
+	let authScheme = $state<'bearer' | 'api_key' | 'keep'>('bearer');
 	let modelRows = $state<{ model: string; label: string }[]>([{ model: '', label: '' }]);
 	const isCompatible = $derived(provider.endsWith('-compatible'));
 
@@ -143,11 +162,21 @@
 		editing = null;
 	}
 
-	function openRename(a: OAuthAccount) {
+	function openEdit(a: OAuthAccount) {
 		resetForm();
 		editing = a.id;
 		name = a.name;
 		provider = (a.provider as typeof provider) ?? 'anthropic';
+		// Compatible endpoints can edit their model list in place (CCT-402). The
+		// base URL, credential, and scheme are never read back, so they start
+		// blank/"keep" — supplying one overwrites, leaving it keeps the stored value.
+		if (provider.endsWith('-compatible')) {
+			const ms = a.models ?? [];
+			modelRows = ms.length
+				? ms.map((m) => ({ model: m.model, label: m.label }))
+				: [{ model: '', label: '' }];
+			authScheme = 'keep';
+		}
 	}
 
 	function close() {
@@ -161,8 +190,18 @@
 		}
 		try {
 			if (editing) {
-				await actions.rename(editing, name.trim());
-				toasts.ok('Account renamed');
+				const body: UpdateAccount = { name: name.trim() };
+				if (isCompatible) {
+					const models = modelRows
+						.map((r) => ({ model: r.model.trim(), label: r.label.trim() || r.model.trim() }))
+						.filter((r) => r.model);
+					body.models = models;
+					if (baseUrl.trim()) body.base_url = baseUrl.trim();
+					if (credential.trim()) body.access_token = credential.trim();
+					if (authScheme !== 'keep') body.auth_scheme = authScheme;
+				}
+				await actions.update(editing, body);
+				toasts.ok('Account updated');
 			} else {
 				if (isAdmin && !ownerId) {
 					toasts.err('Pick the owning user first');
@@ -215,20 +254,21 @@
 	const rows = $derived([...($accounts.data ?? [])]);
 </script>
 
-<Cluster as="header" class="bar" justify="space-between" align="center">
-	<Heading level={1}>Accounts</Heading>
-	<Button control variant="primary" onclick={openCreate}>+ New account</Button>
-</Cluster>
+<Heading level={1} class="page-title">Accounts</Heading>
 
-<div class="intro">
-	<Text as="p" tone="muted" size="sm">
-		Named OAuth accounts for Claude and Codex. Pick one per job at spawn time; the
-		session runs through a passthrough gateway under that account. Tokens are
-		stored encrypted and never shown again.
-	</Text>
-</div>
+<Tabs {tabs} bind:value={tab} label="Account sections">
+	{#snippet panel(id)}
+		{#if id === 'ai'}
+			<Cluster class="bar" justify="space-between" align="center" gap="var(--sp-3)">
+				<Text as="p" tone="muted" size="sm" class="intro">
+					Named accounts for Claude and Codex, plus self-hosted OpenAI/Anthropic-compatible
+					endpoints. Pick one per job at spawn time; the session runs through a passthrough
+					gateway under that account. Tokens are stored encrypted and never shown again.
+				</Text>
+				<Button control variant="primary" onclick={openCreate}>+ New account</Button>
+			</Cluster>
 
-{#if $accounts.isLoading}
+			{#if $accounts.isLoading}
 	<div class="empty"><span class="spin"></span></div>
 {:else if rows.length === 0}
 	<div class="empty"><Text tone="muted">No accounts yet.</Text></div>
@@ -262,32 +302,39 @@
 					{#if a.managed}
 						<Text tone="faint" size="xs">Managed (read-only)</Text>
 					{:else}
-						<Button size="sm" onclick={() => openRename(a)}>Rename</Button>
+						<Button size="sm" onclick={() => openEdit(a)}>Edit</Button>
 						<Button size="sm" variant="danger" onclick={() => remove(a)}>Delete</Button>
 					{/if}
 				</Cluster>
 			</Card>
 		{/each}
 	</AutoGrid>
-{/if}
+			{/if}
+		{:else if id === 'connectors'}
+			<GithubConnectors />
+		{:else if id === 'dispatchers'}
+			<DispatchersPanel heading={false} />
+		{/if}
+	{/snippet}
+</Tabs>
 
 {#if editing !== undefined}
-	<Modal title={editing ? 'Rename account' : 'New account'} onclose={close}>
+	<Modal title={editing ? 'Edit account' : 'New account'} onclose={close}>
 		{#snippet body()}
 			<div class="editor-body">
 				<Field label="Name">
 					<Input bind:value={name} placeholder="personal" />
 				</Field>
+				{#if !editing && isAdmin}
+					<Field label="Owner">
+						<Select bind:value={ownerId}>
+							{#each activeUsers as u (u.id)}
+								<option value={u.id}>{u.name}</option>
+							{/each}
+						</Select>
+					</Field>
+				{/if}
 				{#if !editing}
-					{#if isAdmin}
-						<Field label="Owner">
-							<Select bind:value={ownerId}>
-								{#each activeUsers as u (u.id)}
-									<option value={u.id}>{u.name}</option>
-								{/each}
-							</Select>
-						</Field>
-					{/if}
 					<Field label="Provider">
 						<Select
 							bind:value={provider}
@@ -302,16 +349,25 @@
 							<option value="openai-compatible">OpenAI-compatible endpoint</option>
 						</Select>
 					</Field>
+				{/if}
 
-					{#if isCompatible}
+				{#if isCompatible}
 						<!-- Compatible endpoint (CCT-399): base URL + a static credential +
 						     a model list. No OAuth; the gateway forwards the credential and
-						     skips refresh. -->
+						     skips refresh. On edit (CCT-402) the model list is editable in
+						     place; base URL / credential / scheme are write-only — blank or
+						     "keep" leaves the stored value untouched. -->
 						<Field label="Base URL">
-							<Input bind:value={baseUrl} placeholder="https://litellm.example/v1" />
+							<Input
+								bind:value={baseUrl}
+								placeholder={editing ? 'leave blank to keep current' : 'https://litellm.example/v1'}
+							/>
 						</Field>
 						<Field label="Auth scheme">
 							<Select bind:value={authScheme}>
+								{#if editing}
+									<option value="keep">Keep current</option>
+								{/if}
 								<option value="bearer">Bearer token</option>
 								<option value="api_key">API key</option>
 							</Select>
@@ -320,7 +376,9 @@
 							<Input
 								type="password"
 								bind:value={credential}
-								placeholder="bearer / API key (blank for an open proxy)"
+								placeholder={editing
+									? 'leave blank to keep current'
+									: 'bearer / API key (blank for an open proxy)'}
 							/>
 						</Field>
 						<div class="models">
@@ -343,7 +401,7 @@
 								>+ Add model</Button
 							>
 						</div>
-					{:else}
+					{:else if !editing}
 						<!-- Sign in with Claude / ChatGPT: authorize upstream, paste back. -->
 						{#if !oauthNonce}
 							<Button
@@ -392,7 +450,6 @@
 							</Field>
 						</details>
 					{/if}
-				{/if}
 			</div>
 		{/snippet}
 		{#snippet footer()}
@@ -408,12 +465,16 @@
 {/if}
 
 <style>
-	:global(.bar) {
-		margin-bottom: var(--sp-2);
+	:global(.page-title) {
+		margin-bottom: var(--sp-3);
 	}
-	/* Typography from the Text atom; only the page rhythm lives here. */
-	.intro {
-		margin-bottom: var(--sp-4);
+	:global(.bar) {
+		margin-bottom: var(--sp-3);
+	}
+	/* Intro copy shares the header row with the New-account button; it's passed
+	   to a Text atom (renders inside it), so cap its width globally. */
+	:global(.bar .intro) {
+		max-width: 60ch;
 	}
 	/* Provider brand mark — keeps the AdapterIcon's own tint (amber/blue) but
 	   gives it a soft tile so it reads as an avatar, not inline text. */
