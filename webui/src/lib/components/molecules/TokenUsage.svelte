@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { TokenUsage } from '@bindings/TokenUsage';
 	import { compact } from '$lib/format';
-	import { Cluster, Text } from '@dorsk/tsumikit';
+	import { Cluster, Text, Tooltip } from '@dorsk/tsumikit';
 
 	// Canonical token-usage readout — the SINGLE token block, shared by the session
 	// list/card, the chat header, and each assistant/result line in the conversation.
@@ -18,6 +18,10 @@
 	//     lines never want it to break; the overview stats pass wrap so the larger
 	//     `size` can fold inside a narrow card instead of spilling.
 	// `size` rides through to each Text segment — defaults to the compact `xs`.
+	//
+	// The clarity hints (CCT-356) render via the tsumikit Tooltip (CCT-400) — no
+	// native `title=`, so the bubble escapes overflow/transform clipping and reads
+	// the same everywhere.
 	let {
 		usage,
 		cold = false,
@@ -38,28 +42,51 @@
 		Number(usage.cache_read_tokens) + Number(usage.cache_creation_tokens)
 	);
 	const total = $derived(sum ?? Number(usage.tokens_in) + Number(usage.tokens_out) + cacheTotal);
+
+	const sumHint =
+		'Σ — cumulative session usage (↑ + ↓ + ⚡), summed over every turn. This is lifetime billing-style throughput, NOT the current context size: ⚡ re-counts the cached context on each turn so Σ climbs well past what /context reports as loaded right now.';
+	const inHint =
+		'↑ — new (uncached) input tokens, summed over the session. Small because each turn re-sends the bulk of the context as a cache read (⚡), not fresh input.';
+	const outHint = '↓ — output (generated) tokens, summed over the session.';
+	const cacheHint =
+		'⚡ — cache read + create tokens, counted every turn. The whole context is re-read from cache each turn, so this accumulates ≈ window size × turns and dominates Σ. It is cumulative throughput, not current context occupancy.';
+	const coldHint = 'Cache went cold — the next send re-bills the full context';
 </script>
 
 <!-- Cluster owns the layout (row, single gap, optional wrap); each segment is its
-     own Text atom, carrying tone/weight/size as props rather than CSS overrides. -->
+     own Text atom, carrying tone/weight/size as props rather than CSS overrides.
+     Each hint is a tsumikit Tooltip wrapping its Text trigger (CCT-400). -->
 <Cluster gap="0.4rem" align="baseline" {wrap}>
-	{#if showSum && total > 0}<Text
-			variant="code"
-			{size}
-			tone="accent"
-			weight="semibold"
-			style="cursor:help"
-			title="Σ — cumulative session usage (↑ + ↓ + ⚡), summed over every turn. This is lifetime billing-style throughput, NOT the current context size: ⚡ re-counts the cached context on each turn so Σ climbs well past what /context reports as loaded right now."
-			>Σ{compact(total)}</Text
-		>{/if}
-	<Text variant="code" {size} tone="faint" style="cursor:help" title="↑ — new (uncached) input tokens, summed over the session. Small because each turn re-sends the bulk of the context as a cache read (⚡), not fresh input.">↑{compact(Number(usage.tokens_in))}</Text>
-	<Text variant="code" {size} tone="faint" style="cursor:help" title="↓ — output (generated) tokens, summed over the session.">↓{compact(Number(usage.tokens_out))}</Text>
-	{#if cacheTotal > 0}<Text variant="code" {size} tone="faint" style="cursor:help" title="⚡ — cache read + create tokens, counted every turn. The whole context is re-read from cache each turn, so this accumulates ≈ window size × turns and dominates Σ. It is cumulative throughput, not current context occupancy.">⚡{compact(cacheTotal)}</Text>{/if}
-	{#if cold}<Text
-			variant="code"
-			{size}
-			tone="faint"
-			title="Cache went cold — the next send re-bills the full context"
-			style="font-size: 0.85em; cursor: help">❄️</Text
-		>{/if}
+	{#if showSum && total > 0}<Tooltip text={sumHint}>
+			{#snippet trigger()}<Text
+					variant="code"
+					{size}
+					tone="accent"
+					weight="semibold"
+					style="cursor:help">Σ{compact(total)}</Text
+				>{/snippet}
+		</Tooltip>{/if}
+	<Tooltip text={inHint}>
+		{#snippet trigger()}<Text variant="code" {size} tone="faint" style="cursor:help"
+				>↑{compact(Number(usage.tokens_in))}</Text
+			>{/snippet}
+	</Tooltip>
+	<Tooltip text={outHint}>
+		{#snippet trigger()}<Text variant="code" {size} tone="faint" style="cursor:help"
+				>↓{compact(Number(usage.tokens_out))}</Text
+			>{/snippet}
+	</Tooltip>
+	{#if cacheTotal > 0}<Tooltip text={cacheHint}>
+			{#snippet trigger()}<Text variant="code" {size} tone="faint" style="cursor:help"
+					>⚡{compact(cacheTotal)}</Text
+				>{/snippet}
+		</Tooltip>{/if}
+	{#if cold}<Tooltip text={coldHint}>
+			{#snippet trigger()}<Text
+					variant="code"
+					{size}
+					tone="faint"
+					style="font-size: 0.85em; cursor: help">❄️</Text
+				>{/snippet}
+		</Tooltip>{/if}
 </Cluster>
