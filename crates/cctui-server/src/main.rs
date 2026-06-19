@@ -1,5 +1,6 @@
 mod archive_store;
 mod auth;
+mod authz;
 mod config;
 mod crypto;
 mod daemon_dispatch;
@@ -20,7 +21,9 @@ mod ws;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use authz::{Authn, Authz, Routes};
 use axum::extract::DefaultBodyLimit;
+use axum::http::Method;
 use axum::routing::{any, delete, get, patch, post, put};
 use axum::{Extension, Router, middleware};
 use config::Config;
@@ -79,163 +82,20 @@ async fn main() -> anyhow::Result<()> {
         pr_status_cache: cctui_proto::classifier::PrStatusCache::new(),
     };
 
-    let api_router = Router::new()
-        // Behind `auth_middleware` (CCT-418): version info requires a valid
-        // principal — no unauthenticated endpoint survives except `/health`.
-        .route("/version", get(routes::web::version))
-        .route("/sessions/register", post(routes::sessions::register))
-        .route("/sessions/{id}/deregister", post(routes::sessions::deregister))
-        .route(
-            "/sessions/spawn",
-            // Multipart spawn with file uploads (CCT-203): the route enforces a
-            // 20 MB total cap itself; allow a little headroom over it for
-            // multipart framing + base64 isn't applied until after parsing.
-            post(routes::spawn::spawn_session).layer(DefaultBodyLimit::max(24 * 1024 * 1024)),
-        )
-        .route(
-            // Mid-chat file attachments (CCT-236) — same multipart shape + caps
-            // as spawn, same body-limit headroom.
-            "/sessions/{id}/files",
-            post(routes::spawn::stage_session_files).layer(DefaultBodyLimit::max(24 * 1024 * 1024)),
-        )
-        .route("/sessions/dispatch", post(routes::dispatch::dispatch))
-        .route("/sessions/dispatchers", get(routes::dispatch::list_dispatchers))
-        // Enrolled-dispatcher management (CCT-285): list with liveness, rename,
-        // remove. Enrollment itself is `POST /dispatcher/enroll` below.
-        .route("/dispatchers", get(routes::dispatchers::list_dispatchers))
-        .route(
-            "/dispatchers/{id}",
-            patch(routes::dispatchers::update_dispatcher)
-                .delete(routes::dispatchers::delete_dispatcher),
-        )
-        .route("/dispatcher/enroll", post(routes::dispatcher::enroll))
-        .route("/sessions/archive", post(routes::admin::archive_sessions))
-        .route("/sessions/unarchive", post(routes::admin::unarchive_sessions))
-        .route("/sessions/pin", post(routes::admin::pin_sessions))
-        .route("/sessions/unpin", post(routes::admin::unpin_sessions))
-        .route("/sessions", get(routes::admin::list_sessions))
-        .route("/sessions/stats", get(routes::admin::session_stats))
-        .route("/sessions/stats/tokens", get(routes::admin::session_token_stats))
-        .route("/sessions/search", get(routes::admin::search_sessions))
-        .route("/sessions/recent-dirs", get(routes::admin::recent_dirs))
-        .route("/sessions/{id}", get(routes::admin::get_session))
-        .route("/sessions/{id}", patch(routes::admin::rename_session))
-        .route("/sessions/{id}/conversation", get(routes::admin::get_conversation))
-        .route("/sessions/{id}/message", post(routes::admin::send_message))
-        .route("/sessions/{id}/kill", post(routes::admin::kill_session))
-        .route("/sessions/{id}/interrupt", post(routes::admin::interrupt_session))
-        .route("/sessions/{id}/resume", post(routes::admin::resume_session))
-        .route("/sessions/{id}/set-model", post(routes::admin::set_model))
-        .route("/sessions/{id}/fork", post(routes::admin::fork_session))
-        .route("/sessions/{id}/auto-approve", post(routes::admin::set_auto_approve))
-        .route("/sessions/{id}/archive", post(routes::admin::archive_session))
-        .route("/sessions/{id}/unarchive", post(routes::admin::unarchive_session))
-        .route("/sessions/{id}/pin", post(routes::admin::pin_session))
-        .route("/sessions/{id}/unpin", post(routes::admin::unpin_session))
-        .route("/sessions/{id}/policy", post(routes::admin::set_session_policy))
-        // Session labels (CCT-360): global label definitions + per-session
-        // attach/detach.
-        .route("/labels", get(routes::admin::list_labels).post(routes::admin::create_label))
-        .route(
-            "/labels/{id}",
-            axum::routing::patch(routes::admin::update_label).delete(routes::admin::delete_label),
-        )
-        .route("/sessions/{id}/labels", post(routes::admin::attach_label))
-        .route(
-            "/sessions/{id}/labels/{label_id}",
-            axum::routing::delete(routes::admin::detach_label),
-        )
-        .route("/manifest/daemon", get(routes::manifest::daemon_manifest))
-        .route("/daemon/binary/{target}", get(routes::manifest::download_daemon_binary))
-        .route("/prompts", get(routes::prompts::list_prompts).post(routes::prompts::create_prompt))
-        .route("/prompts/resolve", get(routes::prompts::resolve_prompt))
-        .route(
-            "/prompts/{id}",
-            get(routes::prompts::get_prompt).delete(routes::prompts::delete_prompt),
-        )
-        .route(
-            "/keys",
-            get(routes::credentials::list_api_keys).post(routes::credentials::create_api_key),
-        )
-        .route("/keys/{id}", delete(routes::credentials::delete_api_key))
-        .route("/keys/{id}/value", get(routes::credentials::get_api_key_value))
-        .route(
-            "/accounts",
-            get(routes::accounts::list_accounts).post(routes::accounts::create_account),
-        )
-        .route("/accounts/oauth/start", post(routes::accounts::oauth_start))
-        .route("/accounts/oauth/finish", post(routes::accounts::oauth_finish))
-        .route(
-            "/accounts/{id}",
-            patch(routes::accounts::rename_account).delete(routes::accounts::delete_account),
-        )
-        .route("/accounts/{id}/usage", get(routes::accounts::account_usage))
-        .route("/machines/{machine_id}/commands/pending", get(routes::spawn::get_machine_commands))
-        .route("/machines/{machine_id}/fs/dirs", get(routes::fs::list_dirs))
-        .route("/me", get(routes::me::me))
-        .route("/capabilities", get(routes::capabilities::capabilities))
-        .route("/enroll", post(routes::enroll::enroll))
-        .route("/deenroll", post(routes::enroll::deenroll))
-        .route(
-            "/admin/users",
-            post(routes::admin_auth::create_user).get(routes::admin_auth::list_users),
-        )
-        .route(
-            "/admin/users/{id}",
-            delete(routes::admin_auth::revoke_user).patch(routes::admin_auth::update_user),
-        )
-        .route("/admin/users/{id}/purge", delete(routes::admin_auth::purge_user))
-        .route("/admin/users/{id}/rotate", post(routes::admin_auth::rotate_user))
-        .route("/admin/users/{id}/machines", get(routes::admin_auth::list_user_machines))
-        .route("/admin/users/{id}/tokens", get(routes::admin_auth::list_user_tokens))
-        .route(
-            "/admin/users/{id}/tokens/{token_id}",
-            patch(routes::admin_auth::relabel_user_token)
-                .delete(routes::admin_auth::revoke_user_token),
-        )
-        .route(
-            "/admin/users/{id}/tokens/{token_id}/purge",
-            delete(routes::admin_auth::delete_user_token),
-        )
-        .route(
-            "/admin/machines/{id}",
-            delete(routes::admin_auth::revoke_machine).patch(routes::admin_auth::rename_machine),
-        )
-        .route("/admin/machines/{id}/rotate", post(routes::admin_auth::rotate_machine))
-        .route("/admin/machines/{id}/purge", delete(routes::admin_auth::delete_machine))
-        .route("/archive/index", get(routes::archive::index))
-        .route("/archive/status", get(routes::archive::get_status))
-        .route(
-            "/archive/manifest",
-            post(routes::archive::post_manifest).layer(DefaultBodyLimit::max(8 * 1024 * 1024)),
-        )
-        .route(
-            "/archive/{project_dir}/{session_id}",
-            put(routes::archive::put)
-                .head(routes::archive::head)
-                .get(routes::archive::get)
-                .layer(DefaultBodyLimit::max(100 * 1024 * 1024)),
-        )
-        .route("/permissions/pending", get(routes::permissions::list_pending))
-        .route("/skills/index", get(routes::skills::index))
-        .route(
-            "/skills/{name}",
-            put(routes::skills::put)
-                .get(routes::skills::get)
-                .layer(DefaultBodyLimit::max(50 * 1024 * 1024)),
-        )
-        .route("/users/{id}/tokens", post(routes::daemon::mint_user_token))
-        // CCT-410: per-user scope (ceiling) + per-key (grant) management.
-        .route(
-            "/users/{id}/acls",
-            get(routes::admin_auth::get_user_acls).patch(routes::admin_auth::set_user_acls),
-        )
-        .route(
-            "/users/{id}/keys",
-            get(routes::admin_auth::list_user_keys).post(routes::admin_auth::mint_user_key),
-        )
-        .route("/users/{id}/keys/{kid}", delete(routes::admin_auth::revoke_user_key))
-        .route("/users/{id}/keys/{kid}/acls", patch(routes::admin_auth::set_key_acls))
+    let (api_router, api_descriptors) = build_api_routes().into_parts();
+
+    // The descriptor list is the route table / source of truth, consumed by
+    // the coverage test. At runtime it is informational only.
+    debug_assert!(!api_descriptors.is_empty());
+    let _ = &api_descriptors;
+
+    let api_router = api_router
+        // Authorization runs AFTER authentication: `authz_layer` reads the
+        // per-route policy attached by `Routes::add` and the `AuthContext`
+        // inserted by `auth_middleware`, then enforces (default-deny if no
+        // policy is attached). Layer order: the LAST `.layer` is outermost
+        // (runs first), so `auth_middleware` runs before `authz_layer`.
+        .layer(middleware::from_fn(authz::authz_layer))
         .layer(middleware::from_fn(auth::auth_middleware))
         .layer(Extension(auth_config.clone()));
 
@@ -323,6 +183,595 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("listening on {}", config.bind_addr());
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+/// Build the `/api/v1` route table from the descriptor list (CCT-419). Every
+/// route declares both an [`Authn`] (recorded; the proven `auth_middleware`
+/// path still performs authentication) and an [`Authz`] (enforced by
+/// `authz::authz_layer`, default-deny for any un-policied route). Each route's
+/// declared policy mirrors its CURRENT enforcement exactly: routes with
+/// in-handler owner checks or `god_view_uid()` SQL filters declare
+/// `Authenticated` and keep that filter in the handler (the type system can't
+/// express a self-scoped filter); scope-gated routes declare the matching
+/// `Scope`. The returned [`Routes`] is the single source of truth walked by the
+/// coverage test.
+#[allow(clippy::too_many_lines)]
+fn build_api_routes() -> Routes {
+    use Authz::{Authenticated, Scope as ScopeAz};
+    const GET: Method = Method::GET;
+    Routes::new()
+        // Version info requires a valid principal — no unauthenticated endpoint
+        // survives except `/health`.
+        .add(&[GET], "/version", get(routes::web::version), Authn::Bearer, Authenticated)
+        .add(
+            &[Method::POST],
+            "/sessions/register",
+            post(routes::sessions::register),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[Method::POST],
+            "/sessions/{id}/deregister",
+            post(routes::sessions::deregister),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[Method::POST],
+            "/sessions/spawn",
+            // Multipart spawn with file uploads (CCT-203): the route enforces a
+            // 20 MB total cap itself; allow a little headroom over it for
+            // multipart framing + base64 isn't applied until after parsing.
+            post(routes::spawn::spawn_session).layer(DefaultBodyLimit::max(24 * 1024 * 1024)),
+            Authn::Bearer,
+            // In-handler machine-owner check (`is_admin || user_id == owner`).
+            Authenticated,
+        )
+        .add(
+            // Mid-chat file attachments (CCT-236) — same multipart shape + caps
+            // as spawn, same body-limit headroom.
+            &[Method::POST],
+            "/sessions/{id}/files",
+            post(routes::spawn::stage_session_files).layer(DefaultBodyLimit::max(24 * 1024 * 1024)),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[Method::POST],
+            "/sessions/dispatch",
+            post(routes::dispatch::dispatch),
+            Authn::Bearer,
+            ScopeAz(auth::Scope::Dispatch),
+        )
+        .add(
+            &[GET],
+            "/sessions/dispatchers",
+            get(routes::dispatch::list_dispatchers),
+            Authn::Bearer,
+            // god_view_uid() SQL filter in the handler.
+            Authenticated,
+        )
+        // Enrolled-dispatcher management (CCT-285): list with liveness, rename,
+        // remove. Enrollment itself is `POST /dispatcher/enroll` below.
+        .add(
+            &[GET],
+            "/dispatchers",
+            get(routes::dispatchers::list_dispatchers),
+            Authn::Bearer,
+            // god_view_uid() filter.
+            Authenticated,
+        )
+        .add(
+            &[Method::PATCH, Method::DELETE],
+            "/dispatchers/{id}",
+            patch(routes::dispatchers::update_dispatcher)
+                .delete(routes::dispatchers::delete_dispatcher),
+            Authn::Bearer,
+            ScopeAz(auth::Scope::Enroll),
+        )
+        .add(
+            &[Method::POST],
+            "/dispatcher/enroll",
+            post(routes::dispatcher::enroll),
+            Authn::Bearer,
+            ScopeAz(auth::Scope::Enroll),
+        )
+        // Batch session mutations: owner-filtered in the handler
+        // (`filter_owned_ids`), so any authenticated principal is allowed and
+        // only their own ids are acted on.
+        .add(
+            &[Method::POST],
+            "/sessions/archive",
+            post(routes::admin::archive_sessions),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[Method::POST],
+            "/sessions/unarchive",
+            post(routes::admin::unarchive_sessions),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[Method::POST],
+            "/sessions/pin",
+            post(routes::admin::pin_sessions),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[Method::POST],
+            "/sessions/unpin",
+            post(routes::admin::unpin_sessions),
+            Authn::Bearer,
+            Authenticated,
+        )
+        // Self-scoped list/stats/search endpoints — `god_view_uid()` filter in
+        // the handler (admin sees all rows, others only their own).
+        .add(&[GET], "/sessions", get(routes::admin::list_sessions), Authn::Bearer, Authenticated)
+        .add(
+            &[GET],
+            "/sessions/stats",
+            get(routes::admin::session_stats),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[GET],
+            "/sessions/stats/tokens",
+            get(routes::admin::session_token_stats),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[GET],
+            "/sessions/search",
+            get(routes::admin::search_sessions),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[GET],
+            "/sessions/recent-dirs",
+            get(routes::admin::recent_dirs),
+            Authn::Bearer,
+            Authenticated,
+        )
+        // Per-session routes — in-handler `authorize_session` owner check
+        // (CCT-417). `Authenticated` here keeps that check authoritative (it
+        // returns the JSON error body clients expect); the `Resource(Session)`
+        // guard in `authz.rs` mirrors the same rule and is unit-tested for when
+        // CCT-420 flips these onto it.
+        .add(
+            &[GET],
+            "/sessions/{id}",
+            get(routes::admin::get_session),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[Method::PATCH],
+            "/sessions/{id}",
+            patch(routes::admin::rename_session),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[GET],
+            "/sessions/{id}/conversation",
+            get(routes::admin::get_conversation),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[Method::POST],
+            "/sessions/{id}/message",
+            post(routes::admin::send_message),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[Method::POST],
+            "/sessions/{id}/kill",
+            post(routes::admin::kill_session),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[Method::POST],
+            "/sessions/{id}/interrupt",
+            post(routes::admin::interrupt_session),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[Method::POST],
+            "/sessions/{id}/resume",
+            post(routes::admin::resume_session),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[Method::POST],
+            "/sessions/{id}/set-model",
+            post(routes::admin::set_model),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[Method::POST],
+            "/sessions/{id}/fork",
+            post(routes::admin::fork_session),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[Method::POST],
+            "/sessions/{id}/auto-approve",
+            post(routes::admin::set_auto_approve),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[Method::POST],
+            "/sessions/{id}/archive",
+            post(routes::admin::archive_session),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[Method::POST],
+            "/sessions/{id}/unarchive",
+            post(routes::admin::unarchive_session),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[Method::POST],
+            "/sessions/{id}/pin",
+            post(routes::admin::pin_session),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[Method::POST],
+            "/sessions/{id}/unpin",
+            post(routes::admin::unpin_session),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[Method::POST],
+            "/sessions/{id}/policy",
+            post(routes::admin::set_session_policy),
+            Authn::Bearer,
+            Authenticated,
+        )
+        // Session labels (CCT-360): global label definitions (no owner) +
+        // per-session attach/detach (authorize_session in the handler).
+        .add(
+            &[GET, Method::POST],
+            "/labels",
+            get(routes::admin::list_labels).post(routes::admin::create_label),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[Method::PATCH, Method::DELETE],
+            "/labels/{id}",
+            axum::routing::patch(routes::admin::update_label).delete(routes::admin::delete_label),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[Method::POST],
+            "/sessions/{id}/labels",
+            post(routes::admin::attach_label),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[Method::DELETE],
+            "/sessions/{id}/labels/{label_id}",
+            axum::routing::delete(routes::admin::detach_label),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[GET],
+            "/manifest/daemon",
+            get(routes::manifest::daemon_manifest),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[GET],
+            "/daemon/binary/{target}",
+            get(routes::manifest::download_daemon_binary),
+            Authn::Bearer,
+            Authenticated,
+        )
+        // Prompts: god_view_uid() filter in the handler.
+        .add(
+            &[GET, Method::POST],
+            "/prompts",
+            get(routes::prompts::list_prompts).post(routes::prompts::create_prompt),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[GET],
+            "/prompts/resolve",
+            get(routes::prompts::resolve_prompt),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[GET, Method::DELETE],
+            "/prompts/{id}",
+            get(routes::prompts::get_prompt).delete(routes::prompts::delete_prompt),
+            Authn::Bearer,
+            Authenticated,
+        )
+        // Provider keys: god_view_uid() filter in the handler.
+        .add(
+            &[GET, Method::POST],
+            "/keys",
+            get(routes::credentials::list_api_keys).post(routes::credentials::create_api_key),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[Method::DELETE],
+            "/keys/{id}",
+            delete(routes::credentials::delete_api_key),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[GET],
+            "/keys/{id}/value",
+            get(routes::credentials::get_api_key_value),
+            Authn::Bearer,
+            Authenticated,
+        )
+        // Accounts: require_human() + god_view_uid()/resolve_owner in handler.
+        .add(
+            &[GET, Method::POST],
+            "/accounts",
+            get(routes::accounts::list_accounts).post(routes::accounts::create_account),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[Method::POST],
+            "/accounts/oauth/start",
+            post(routes::accounts::oauth_start),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[Method::POST],
+            "/accounts/oauth/finish",
+            post(routes::accounts::oauth_finish),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[Method::PATCH, Method::DELETE],
+            "/accounts/{id}",
+            patch(routes::accounts::rename_account).delete(routes::accounts::delete_account),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[GET],
+            "/accounts/{id}/usage",
+            get(routes::accounts::account_usage),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[GET],
+            "/machines/{machine_id}/commands/pending",
+            get(routes::spawn::get_machine_commands),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[GET],
+            "/machines/{machine_id}/fs/dirs",
+            get(routes::fs::list_dirs),
+            Authn::Bearer,
+            // In-handler machine-owner check.
+            Authenticated,
+        )
+        .add(&[GET], "/me", get(routes::me::me), Authn::Bearer, Authenticated)
+        .add(
+            &[GET],
+            "/capabilities",
+            get(routes::capabilities::capabilities),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[Method::POST],
+            "/enroll",
+            post(routes::enroll::enroll),
+            Authn::Bearer,
+            ScopeAz(auth::Scope::Enroll),
+        )
+        .add(
+            &[Method::POST],
+            "/deenroll",
+            post(routes::enroll::deenroll),
+            Authn::Bearer,
+            // In-handler: requires a machine token (machine_id present).
+            Authenticated,
+        )
+        // Admin surface (CCT-410): every route is `forbid_or` (Scope::Admin).
+        .add(
+            &[Method::POST, GET],
+            "/admin/users",
+            post(routes::admin_auth::create_user).get(routes::admin_auth::list_users),
+            Authn::Bearer,
+            ScopeAz(auth::Scope::Admin),
+        )
+        .add(
+            &[Method::DELETE, Method::PATCH],
+            "/admin/users/{id}",
+            delete(routes::admin_auth::revoke_user).patch(routes::admin_auth::update_user),
+            Authn::Bearer,
+            ScopeAz(auth::Scope::Admin),
+        )
+        .add(
+            &[Method::DELETE],
+            "/admin/users/{id}/purge",
+            delete(routes::admin_auth::purge_user),
+            Authn::Bearer,
+            ScopeAz(auth::Scope::Admin),
+        )
+        .add(
+            &[Method::POST],
+            "/admin/users/{id}/rotate",
+            post(routes::admin_auth::rotate_user),
+            Authn::Bearer,
+            ScopeAz(auth::Scope::Admin),
+        )
+        .add(
+            &[GET],
+            "/admin/users/{id}/machines",
+            get(routes::admin_auth::list_user_machines),
+            Authn::Bearer,
+            ScopeAz(auth::Scope::Admin),
+        )
+        .add(
+            &[GET],
+            "/admin/users/{id}/tokens",
+            get(routes::admin_auth::list_user_tokens),
+            Authn::Bearer,
+            ScopeAz(auth::Scope::Admin),
+        )
+        .add(
+            &[Method::PATCH, Method::DELETE],
+            "/admin/users/{id}/tokens/{token_id}",
+            patch(routes::admin_auth::relabel_user_token)
+                .delete(routes::admin_auth::revoke_user_token),
+            Authn::Bearer,
+            ScopeAz(auth::Scope::Admin),
+        )
+        .add(
+            &[Method::DELETE],
+            "/admin/users/{id}/tokens/{token_id}/purge",
+            delete(routes::admin_auth::delete_user_token),
+            Authn::Bearer,
+            ScopeAz(auth::Scope::Admin),
+        )
+        .add(
+            &[Method::DELETE, Method::PATCH],
+            "/admin/machines/{id}",
+            delete(routes::admin_auth::revoke_machine).patch(routes::admin_auth::rename_machine),
+            Authn::Bearer,
+            ScopeAz(auth::Scope::Admin),
+        )
+        .add(
+            &[Method::POST],
+            "/admin/machines/{id}/rotate",
+            post(routes::admin_auth::rotate_machine),
+            Authn::Bearer,
+            ScopeAz(auth::Scope::Admin),
+        )
+        .add(
+            &[Method::DELETE],
+            "/admin/machines/{id}/purge",
+            delete(routes::admin_auth::delete_machine),
+            Authn::Bearer,
+            ScopeAz(auth::Scope::Admin),
+        )
+        // Archive: machine/scope checks performed in the handlers.
+        .add(&[GET], "/archive/index", get(routes::archive::index), Authn::Bearer, Authenticated)
+        .add(
+            &[GET],
+            "/archive/status",
+            get(routes::archive::get_status),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[Method::POST],
+            "/archive/manifest",
+            post(routes::archive::post_manifest).layer(DefaultBodyLimit::max(8 * 1024 * 1024)),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[Method::PUT, Method::HEAD, GET],
+            "/archive/{project_dir}/{session_id}",
+            put(routes::archive::put)
+                .head(routes::archive::head)
+                .get(routes::archive::get)
+                .layer(DefaultBodyLimit::max(100 * 1024 * 1024)),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[GET],
+            "/permissions/pending",
+            get(routes::permissions::list_pending),
+            Authn::Bearer,
+            // In-handler owner join on session machine_uuid -> machines.user_id.
+            Authenticated,
+        )
+        .add(&[GET], "/skills/index", get(routes::skills::index), Authn::Bearer, Authenticated)
+        .add(
+            &[Method::PUT, GET],
+            "/skills/{name}",
+            put(routes::skills::put)
+                .get(routes::skills::get)
+                .layer(DefaultBodyLimit::max(50 * 1024 * 1024)),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[Method::POST],
+            "/users/{id}/tokens",
+            post(routes::daemon::mint_user_token),
+            Authn::Bearer,
+            // In-handler: admin may mint for anyone; a user only for itself.
+            Authenticated,
+        )
+        // CCT-410: per-user scope (ceiling) + per-key (grant) management — all
+        // admin-only (`forbid_or`).
+        .add(
+            &[GET, Method::PATCH],
+            "/users/{id}/acls",
+            get(routes::admin_auth::get_user_acls).patch(routes::admin_auth::set_user_acls),
+            Authn::Bearer,
+            ScopeAz(auth::Scope::Admin),
+        )
+        .add(
+            &[GET, Method::POST],
+            "/users/{id}/keys",
+            get(routes::admin_auth::list_user_keys).post(routes::admin_auth::mint_user_key),
+            Authn::Bearer,
+            ScopeAz(auth::Scope::Admin),
+        )
+        .add(
+            &[Method::DELETE],
+            "/users/{id}/keys/{kid}",
+            delete(routes::admin_auth::revoke_user_key),
+            Authn::Bearer,
+            ScopeAz(auth::Scope::Admin),
+        )
+        .add(
+            &[Method::PATCH],
+            "/users/{id}/keys/{kid}/acls",
+            patch(routes::admin_auth::set_key_acls),
+            Authn::Bearer,
+            ScopeAz(auth::Scope::Admin),
+        )
 }
 
 /// Map the server-private [`auth::AuthContext`] (inserted by `auth_middleware`)

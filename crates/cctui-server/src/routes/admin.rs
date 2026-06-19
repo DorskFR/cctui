@@ -618,12 +618,14 @@ pub async fn session_token_stats(
     }))
 }
 
+/// The 15-column token-stats row (the `query_as` row below), indexed
+/// positionally by [`field`] to keep the window construction terse without a
+/// 15-field named struct.
+type TokenStatsRow = (i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64);
+
 /// Index a 15-tuple positionally (the `query_as` row above). Keeps the window
 /// construction terse without a 15-field named struct.
-fn field(
-    t: &(i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64),
-    i: usize,
-) -> i64 {
+fn field(t: &TokenStatsRow, i: usize) -> i64 {
     match i {
         0 => t.0,
         1 => t.1,

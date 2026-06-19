@@ -1032,16 +1032,16 @@ pub async fn account_usage(
     };
 
     // Serve a fresh-enough cached value without touching upstream.
-    if let Some(hit) = state.account_usage_cache.get(&id) {
-        if hit.fetched_at.elapsed() < USAGE_CACHE_TTL.to_std().unwrap_or_default() {
-            let age_secs = hit.fetched_at.elapsed().as_secs();
-            return Ok(Json(AccountUsage {
-                account_id: id,
-                provider,
-                usage: hit.usage.clone(),
-                age_secs,
-            }));
-        }
+    if let Some(hit) = state.account_usage_cache.get(&id)
+        && hit.fetched_at.elapsed() < USAGE_CACHE_TTL.to_std().unwrap_or_default()
+    {
+        let age_secs = hit.fetched_at.elapsed().as_secs();
+        return Ok(Json(AccountUsage {
+            account_id: id,
+            provider,
+            usage: hit.usage.clone(),
+            age_secs,
+        }));
     }
 
     // Stale or absent → fetch upstream (anthropic only; Codex returns None).
