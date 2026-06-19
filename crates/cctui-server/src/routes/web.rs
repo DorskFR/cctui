@@ -1,9 +1,6 @@
 use axum::Json;
-use axum::http::header;
-use axum::response::IntoResponse;
 use serde::Serialize;
 
-static INDEX_HTML: &str = include_str!("../../web/index.html");
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const GIT_HASH: &str = env!("CCTUI_GIT_HASH");
 const REPO_URL: &str = "https://github.com/DorskFR/cctui";
@@ -15,13 +12,6 @@ pub struct VersionInfo {
     pub git_hash: &'static str,
     pub repo_url: &'static str,
     pub commit_url: String,
-}
-
-pub async fn index() -> impl IntoResponse {
-    (
-        [(header::CONTENT_TYPE, "text/html; charset=utf-8"), (header::CACHE_CONTROL, "no-cache")],
-        INDEX_HTML,
-    )
 }
 
 pub async fn version() -> Json<VersionInfo> {

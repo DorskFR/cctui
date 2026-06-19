@@ -7,14 +7,15 @@
 //! resolution logic is a pure function ([`most_specific`]) so it is unit-tested
 //! without a database.
 
-use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use axum::{Extension, Json};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
+use crate::auth::AuthContext;
 use crate::state::AppState;
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, TS)]
@@ -66,17 +67,27 @@ pub struct ResolveQuery {
 const SELECT_COLS: &str = "id, name, content, description, kind, scope_owner, scope_repo, \
      created_at, updated_at";
 
-pub async fn list_prompts(State(state): State<AppState>) -> Result<Json<Vec<Prompt>>, StatusCode> {
-    let rows: Vec<Prompt> =
-        sqlx::query_as(&format!("SELECT {SELECT_COLS} FROM prompts ORDER BY name"))
-            .fetch_all(&state.pool)
-            .await
-            .map_err(db_err)?;
+/// Owner-scoped list: a non-admin sees only the prompts they own; an admin sees
+/// all (including legacy NULL-owner rows). The `$1::uuid IS NULL` god-view
+/// binding collapses both cases.
+pub async fn list_prompts(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+) -> Result<Json<Vec<Prompt>>, StatusCode> {
+    let rows: Vec<Prompt> = sqlx::query_as(&format!(
+        "SELECT {SELECT_COLS} FROM prompts \
+         WHERE $1::uuid IS NULL OR user_id = $1 ORDER BY name"
+    ))
+    .bind(ctx.god_view_uid())
+    .fetch_all(&state.pool)
+    .await
+    .map_err(db_err)?;
     Ok(Json(rows))
 }
 
 pub async fn create_prompt(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Json(req): Json<CreatePrompt>,
 ) -> Result<(StatusCode, Json<Prompt>), StatusCode> {
     // A repo scope requires an owner (mirrors the DB CHECK) — reject early with a
@@ -86,8 +97,8 @@ pub async fn create_prompt(
     }
     let kind = req.kind.as_deref().unwrap_or("general");
     let row: Prompt = sqlx::query_as(&format!(
-        "INSERT INTO prompts (name, content, description, kind, scope_owner, scope_repo) \
-         VALUES ($1, $2, $3, $4, $5, $6) RETURNING {SELECT_COLS}"
+        "INSERT INTO prompts (name, content, description, kind, scope_owner, scope_repo, user_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING {SELECT_COLS}"
     ))
     .bind(&req.name)
     .bind(&req.content)
@@ -95,6 +106,7 @@ pub async fn create_prompt(
     .bind(kind)
     .bind(&req.scope_owner)
     .bind(&req.scope_repo)
+    .bind(ctx.user_id)
     .fetch_one(&state.pool)
     .await
     .map_err(db_err)?;
@@ -103,14 +115,17 @@ pub async fn create_prompt(
 
 pub async fn get_prompt(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Prompt>, StatusCode> {
-    let row: Option<Prompt> =
-        sqlx::query_as(&format!("SELECT {SELECT_COLS} FROM prompts WHERE id = $1"))
-            .bind(id)
-            .fetch_optional(&state.pool)
-            .await
-            .map_err(db_err)?;
+    let row: Option<Prompt> = sqlx::query_as(&format!(
+        "SELECT {SELECT_COLS} FROM prompts WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)"
+    ))
+    .bind(id)
+    .bind(ctx.god_view_uid())
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(db_err)?;
     row.map(Json).ok_or(StatusCode::NOT_FOUND)
 }
 
@@ -118,16 +133,19 @@ pub async fn get_prompt(
 /// applying most-specific-wins. Returns 404 when no candidate matches.
 pub async fn resolve_prompt(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Query(q): Query<ResolveQuery>,
 ) -> Result<Json<Prompt>, StatusCode> {
     let kind = q.kind.as_deref().unwrap_or("review");
     // Pull every candidate whose scope *could* apply to this repo: the exact
     // repo, the owner-wide, or the global one. The DB only narrows the search;
     // the precedence decision is made by the pure `most_specific` below so it is
-    // testable and the rule lives in one place.
+    // testable and the rule lives in one place. Owner-scoped (CCT-418): a
+    // non-admin only resolves their own prompts; an admin (or env token, NULL
+    // god-view) resolves across all owners.
     let candidates: Vec<Prompt> = sqlx::query_as(&format!(
         "SELECT {SELECT_COLS} FROM prompts \
-         WHERE kind = $1 AND ( \
+         WHERE kind = $1 AND ($4::uuid IS NULL OR user_id = $4) AND ( \
              (scope_owner IS NULL AND scope_repo IS NULL) OR \
              (scope_owner = $2 AND scope_repo IS NULL) OR \
              (scope_owner = $2 AND scope_repo = $3) )"
@@ -135,6 +153,7 @@ pub async fn resolve_prompt(
     .bind(kind)
     .bind(&q.owner)
     .bind(&q.repo)
+    .bind(ctx.god_view_uid())
     .fetch_all(&state.pool)
     .await
     .map_err(db_err)?;
@@ -171,15 +190,24 @@ fn most_specific(candidates: Vec<Prompt>, owner: &str, repo: &str) -> Option<Pro
         .map(|(_, p)| p)
 }
 
+/// `DELETE /prompts/{id}` — owner-or-admin only. The god-view binding scopes the
+/// `DELETE` so a non-admin can never remove another user's (or a legacy
+/// NULL-owner) prompt; 0 rows affected → 404.
 pub async fn delete_prompt(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, StatusCode> {
-    sqlx::query("DELETE FROM prompts WHERE id = $1")
-        .bind(id)
-        .execute(&state.pool)
-        .await
-        .map_err(db_err)?;
+    let res =
+        sqlx::query("DELETE FROM prompts WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)")
+            .bind(id)
+            .bind(ctx.god_view_uid())
+            .execute(&state.pool)
+            .await
+            .map_err(db_err)?;
+    if res.rows_affected() == 0 {
+        return Err(StatusCode::NOT_FOUND);
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

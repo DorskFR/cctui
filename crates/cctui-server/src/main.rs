@@ -80,6 +80,9 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let api_router = Router::new()
+        // Behind `auth_middleware` (CCT-418): version info requires a valid
+        // principal — no unauthenticated endpoint survives except `/health`.
+        .route("/version", get(routes::web::version))
         .route("/sessions/register", post(routes::sessions::register))
         .route("/sessions/{id}/deregister", post(routes::sessions::deregister))
         .route(
@@ -244,9 +247,6 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/health", get(|| async { "ok" }))
-        .route("/admin", get(routes::web::index))
-        .route("/admin/", get(routes::web::index))
-        .route("/api/v1/version", get(routes::web::version))
         .route("/api/v1/ws", get(ws::tui_ws))
         // Daemon-facing endpoints. `auth` and `ws` carry their own auth
         // (machine-key Bearer / `?token=` query) so they live outside the

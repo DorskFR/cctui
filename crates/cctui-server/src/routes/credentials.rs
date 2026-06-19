@@ -1,9 +1,10 @@
-use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use axum::{Extension, Json};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
+use crate::auth::AuthContext;
 use crate::state::AppState;
 
 #[derive(Debug, serde::Serialize, sqlx::FromRow)]
@@ -21,34 +22,44 @@ pub struct CreateApiKey {
     pub key: String,
 }
 
+/// `GET /keys` — provider keys visible to the caller. Owner-scoped: a non-admin
+/// sees only the keys they own; an admin sees all (including legacy NULL-owner
+/// rows). The `$1::uuid IS NULL` god-view binding collapses both cases.
 pub async fn list_api_keys(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
 ) -> Result<Json<Vec<ApiKeyInfo>>, StatusCode> {
-    let rows: Vec<ApiKeyInfo> =
-        sqlx::query_as("SELECT id, name, provider, created_at FROM api_keys ORDER BY name")
-            .fetch_all(&state.pool)
-            .await
-            .map_err(|e| {
-                tracing::error!("db error: {e}");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
+    let rows: Vec<ApiKeyInfo> = sqlx::query_as(
+        "SELECT id, name, provider, created_at FROM api_keys \
+         WHERE $1::uuid IS NULL OR user_id = $1 ORDER BY name",
+    )
+    .bind(ctx.god_view_uid())
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("db error: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
     Ok(Json(rows))
 }
 
+/// `POST /keys` — store a provider key owned by the caller.
 pub async fn create_api_key(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Json(req): Json<CreateApiKey>,
 ) -> Result<(StatusCode, Json<ApiKeyInfo>), StatusCode> {
     let vault_key = crate::crypto::vault_key();
     let encrypted = crate::crypto::obfuscate(&req.key, &vault_key);
 
     let row: ApiKeyInfo = sqlx::query_as(
-        "INSERT INTO api_keys (name, provider, encrypted_key) VALUES ($1, $2, $3) \
+        "INSERT INTO api_keys (name, provider, encrypted_key, user_id) VALUES ($1, $2, $3, $4) \
          RETURNING id, name, provider, created_at",
     )
     .bind(&req.name)
     .bind(&req.provider)
     .bind(&encrypted)
+    .bind(ctx.user_id)
     .fetch_one(&state.pool)
     .await
     .map_err(|e| {
@@ -58,32 +69,48 @@ pub async fn create_api_key(
     Ok((StatusCode::CREATED, Json(row)))
 }
 
+/// `DELETE /keys/{id}` — owner-or-admin only. The god-view binding scopes the
+/// `DELETE` so a non-admin can never remove another user's (or a legacy
+/// admin-owned NULL) key; 0 rows affected → 404.
 pub async fn delete_api_key(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, StatusCode> {
-    sqlx::query("DELETE FROM api_keys WHERE id = $1").bind(id).execute(&state.pool).await.map_err(
-        |e| {
-            tracing::error!("db error: {e}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        },
-    )?;
+    let res =
+        sqlx::query("DELETE FROM api_keys WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)")
+            .bind(id)
+            .bind(ctx.god_view_uid())
+            .execute(&state.pool)
+            .await
+            .map_err(|e| {
+                tracing::error!("db error: {e}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+    if res.rows_affected() == 0 {
+        return Err(StatusCode::NOT_FOUND);
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Get the decrypted key value (admin only — use carefully)
+/// `GET /keys/{id}/value` — the decrypted key. Owner-or-admin only; a row the
+/// caller doesn't own is invisible (404), never 403, so existence isn't leaked.
 pub async fn get_api_key_value(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let row: Option<(String,)> = sqlx::query_as("SELECT encrypted_key FROM api_keys WHERE id = $1")
-        .bind(id)
-        .fetch_optional(&state.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("db error: {e}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    let row: Option<(String,)> = sqlx::query_as(
+        "SELECT encrypted_key FROM api_keys WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)",
+    )
+    .bind(id)
+    .bind(ctx.god_view_uid())
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("db error: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     let (encrypted,) = row.ok_or(StatusCode::NOT_FOUND)?;
     let vault_key = crate::crypto::vault_key();
