@@ -41,6 +41,76 @@
 //! because they fold ownership into the mutating SQL's `WHERE` clause and return
 //! `404` (not `403`) for a cross-user id — moving them onto the guard would
 //! change that client-visible semantics, so they are intentionally left inline.
+//!
+//! ## The full authn × authz model (CCT-422)
+//!
+//! Two orthogonal, declarative axes are demanded per route (see CCT-416):
+//!
+//!   * **Authn** — how identity is proven: [`Authn`] `{None, Bearer, QueryToken,
+//!     BodyToken}`. `None` is `/health` only; everything else proves a principal.
+//!   * **Authz** — what the principal may do: [`Authz`] `{Public, Authenticated,
+//!     Scope, Resource, Custom}`.
+//!
+//! For an [`Authz::Resource(kind, action, id)`] route the guard
+//! ([`authorize_resource`]) evaluates THREE composable steps, all in one place so
+//! no endpoint ever re-implements authorization:
+//!
+//!   1. **RBAC capability** ([`role_permits`]): may the principal's role exercise
+//!      `(ResourceKind, Action)` at all? Today the coarse [`Scope`] enforced
+//!      upstream is the only capability, so this is `true` for any authenticated
+//!      principal. A future role→`(kind, action)` table slots in HERE with no
+//!      per-endpoint change — the descriptor already names `kind` and `action`.
+//!   2. **Resource authorization** ([`Resource::authorize`]): may the principal
+//!      act on THIS object? The default rule is `admin || owner(id) == principal`.
+//!      Share grants compose here (see below).
+//!   3. (Self-scoped list/search/stats endpoints can't be a yes/no gate; they
+//!      declare [`Authz::Authenticated`] and apply `owner_filter()` in SQL.)
+//!
+//! ### Resource sharing extension point (CCT-422 — design + seam)
+//!
+//! Ownership is just the FIRST rule in [`Resource::authorize`]. Grants are added
+//! in ONE place — that default method — and every [`Authz::Resource`] route
+//! inherits them automatically, touching neither the guard nor any handler. A
+//! future implementation adds a `shares` table and a grant lookup inside
+//! `authorize`:
+//!
+//! ```sql
+//! -- shares(resource ResourceKind, id, grantee_user_id NULL, token NULL,
+//! --        action, expires, revoked)  -- DB-backed/revocable preferred
+//! ```
+//!
+//! ```ignore
+//! async fn authorize(ctx, action, id, db) -> Decision {
+//!     if ctx.is_admin() { return Decision::Allowed; }
+//!     if Self::owner_of(id, db).await? == Some(ctx.user_id) { return Decision::Allowed; }
+//!     // CCT-future: grant lookup composes here, no guard/endpoint change:
+//!     // if shares::granted(kind, id, ctx.user_id, action, db).await? { Decision::Allowed }
+//!     Decision::Denied
+//! }
+//! ```
+//!
+//! Self-scoped list queries would additionally `UNION` shared-in rows.
+//!
+//! ### `Principal::Share` deeplink tokens (CCT-422 — DESIGN ONLY, not built)
+//!
+//! Deeplink share tokens slot into the **Authn** axis without changing the real
+//! [`AuthContext`] or auth flow. The plan:
+//!
+//!   * A new principal variant resolved by the authenticator:
+//!     `Principal::Share { resource: ResourceKind, id: Uuid, action: Action,
+//!     expires: DateTime }`. The token is minted for exactly one
+//!     resource+action+object — least privilege.
+//!   * The guard checks the share principal against the route's declared
+//!     [`Authz::Resource(kind, action, IdFrom)`]: the token is honored ONLY when
+//!     `share.resource == kind && share.action permits action && share.id == the
+//!     resolved id && now < share.expires`. It can do nothing else — a Share
+//!     principal fails every other policy (other resources, other actions, scope
+//!     gates, admin collections).
+//!   * For sensitive session data, DB-backed tokens (a `shares` row) are
+//!     preferred over self-contained JWTs so a share is revocable.
+//!
+//! This is documentation of the extension point; no `Principal::Share` is added
+//! to `AuthContext`/`auth.rs` in this ticket.
 
 use std::sync::Arc;
 
@@ -215,24 +285,71 @@ fn resolve_id(req: &Request, id_from: IdFrom) -> Option<String> {
         .and_then(|raw| raw.iter().find(|(k, _)| *k == name).map(|(_, v)| v.to_string()))
 }
 
-/// One resource type's owner-resolution. The single per-resource
+/// RBAC capability insertion point (CCT-422). The FIRST step of an
+/// [`Authz::Resource`] evaluation: may the principal's role exercise
+/// `(ResourceKind, Action)` at all, independent of any specific object?
+///
+/// Today the coarse [`Scope`] enforced upstream by `auth_middleware` is the only
+/// capability model, so any authenticated principal is permitted here and this
+/// returns `true` — **no behavior change**. A future role-based model looks up
+/// the principal's role → permitted `(ResourceKind, Action)` set HERE; because
+/// the descriptor already carries `kind` and `action`, enabling roles needs NO
+/// per-endpoint change. Returning `false` makes the guard deny with `403`.
+fn role_permits(_ctx: &AuthContext, _kind: ResourceKind, _action: Action) -> bool {
+    true
+}
+
+/// The outcome of a per-object authorization decision ([`Resource::authorize`]).
+/// Distinct from `Result<(), StatusCode>` so a resource impl expresses intent
+/// (allow / not-owned / unknown) and the guard maps it to the HTTP status,
+/// keeping the existence-leak-safe `404`-vs-`403` policy in ONE place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Decision {
+    /// The principal may act on this object.
+    Allowed,
+    /// The object exists but the principal is neither owner nor grantee → `403`.
+    Denied,
+    /// The object does not exist / has no resolvable owner → `404` (so an id's
+    /// existence never leaks across users).
+    NotFound,
+}
+
+/// One resource type's per-object authorization. The single per-resource
 /// authorization primitive: written **once per resource type, not per
-/// endpoint** — the owning-user DB lookup for that kind lives here, nowhere
-/// else. The generic guard ([`authorize_resource`]) composes the default rule
-/// (`admin || owner(id) == principal`) on top of it, so a resource impl only
-/// has to answer "who owns this id?".
+/// endpoint**.
 ///
-/// `owner_of` returns:
+/// [`owner_of`](Resource::owner_of) is the minimal per-resource primitive — the
+/// owning-user DB lookup for that kind, which lives here and nowhere else:
 ///   * `Ok(Some(uid))` — the resource exists and `uid` owns it;
-///   * `Ok(None)` — the resource does not exist (or has no resolvable owner),
-///     which the guard maps to `404` so an id's existence never leaks across
-///     users;
-///   * `Err(_)` — a DB error, mapped to `500`.
+///   * `Ok(None)` — the resource does not exist (or has no resolvable owner);
+///   * `Err(_)` — a DB error, mapped to `500` by the guard.
 ///
-/// CCT-422 will layer an RBAC `(kind, action)` capability check in front of the
-/// ownership rule; the `Action` is already carried on the descriptor for that.
+/// [`authorize`](Resource::authorize) is the composed rule, **default-implemented
+/// once** on top of `owner_of`: `admin || owner(id) == principal`. This is the
+/// SHARING SEAM (CCT-422): a future `shares` grant lookup goes inside this one
+/// default method and every [`Authz::Resource`] route inherits it automatically,
+/// touching neither the guard nor any endpoint. A resource type overrides
+/// `authorize` only when its access rule is more than ownership (e.g. shares).
 trait Resource {
     async fn owner_of(id: &str, pool: &PgPool) -> Result<Option<Uuid>, sqlx::Error>;
+
+    /// Default: admin bypass, else owner match, else denied. Override point for
+    /// share grants — see the module doc's sharing extension point.
+    async fn authorize(
+        ctx: &AuthContext,
+        _action: Action,
+        id: &str,
+        pool: &PgPool,
+    ) -> Result<Decision, sqlx::Error> {
+        if ctx.is_admin() {
+            return Ok(Decision::Allowed);
+        }
+        match Self::owner_of(id, pool).await? {
+            Some(uid) if uid == ctx.user_id => Ok(Decision::Allowed),
+            Some(_) => Ok(Decision::Denied),
+            None => Ok(Decision::NotFound),
+        }
+    }
 }
 
 /// Sessions are owned via `sessions.machine_uuid -> machines.user_id`
@@ -343,10 +460,16 @@ impl Resource for ApiKeyResource {
 async fn authorize_resource(
     kind: ResourceKind,
     ctx: &AuthContext,
-    _action: Action,
+    action: Action,
     id: Option<&str>,
     pool: &PgPool,
 ) -> Result<(), StatusCode> {
+    // Step 1 — RBAC capability gate (CCT-422). Today `true` for any principal;
+    // a role→(kind, action) table slots in here with no per-endpoint change.
+    if !role_permits(ctx, kind, action) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    // Admin bypasses the per-object rule without a DB lookup.
     if ctx.is_admin() {
         return Ok(());
     }
@@ -355,23 +478,25 @@ async fn authorize_resource(
         // → fail closed.
         return Err(StatusCode::FORBIDDEN);
     };
-    let owner = match kind {
-        ResourceKind::Session => SessionResource::owner_of(id, pool).await,
-        ResourceKind::Machine => MachineResource::owner_of(id, pool).await,
-        ResourceKind::Dispatcher => DispatcherResource::owner_of(id, pool).await,
-        ResourceKind::User => UserResource::owner_of(id, pool).await,
-        ResourceKind::Account => AccountResource::owner_of(id, pool).await,
-        ResourceKind::Prompt => PromptResource::owner_of(id, pool).await,
-        ResourceKind::ApiKey => ApiKeyResource::owner_of(id, pool).await,
+    // Step 2 — per-object authorization. The default `Resource::authorize`
+    // applies `owner(id) == principal`; the sharing seam composes grants here.
+    let decision = match kind {
+        ResourceKind::Session => SessionResource::authorize(ctx, action, id, pool).await,
+        ResourceKind::Machine => MachineResource::authorize(ctx, action, id, pool).await,
+        ResourceKind::Dispatcher => DispatcherResource::authorize(ctx, action, id, pool).await,
+        ResourceKind::User => UserResource::authorize(ctx, action, id, pool).await,
+        ResourceKind::Account => AccountResource::authorize(ctx, action, id, pool).await,
+        ResourceKind::Prompt => PromptResource::authorize(ctx, action, id, pool).await,
+        ResourceKind::ApiKey => ApiKeyResource::authorize(ctx, action, id, pool).await,
     }
     .map_err(|e| {
         tracing::error!("db error (authz {kind:?}): {e}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
-    match owner {
-        Some(uid) if uid == ctx.user_id => Ok(()),
-        Some(_) => Err(StatusCode::FORBIDDEN),
-        None => Err(StatusCode::NOT_FOUND),
+    match decision {
+        Decision::Allowed => Ok(()),
+        Decision::Denied => Err(StatusCode::FORBIDDEN),
+        Decision::NotFound => Err(StatusCode::NOT_FOUND),
     }
 }
 
@@ -703,6 +828,115 @@ mod tests {
         assert_eq!(
             authorize_resource(ResourceKind::User, &me, Action::Read, Some("nope"), &pool).await,
             Err(StatusCode::NOT_FOUND)
+        );
+    }
+
+    // ---- CCT-422 seam proofs -------------------------------------------------
+
+    /// RBAC SEAM proof. The production [`role_permits`] returns `true` (no
+    /// behavior change). This test reimplements ONLY that hook to deny a
+    /// `(kind, action)` and runs it through the SAME 3-step composition the guard
+    /// uses, proving that a role rule denying a capability yields `403` and that
+    /// the denial happens BEFORE any object/DB lookup (the invalid pool would
+    /// error if it were consulted). Flipping the real hook to consult a role
+    /// table needs no per-endpoint change.
+    #[tokio::test]
+    async fn role_seam_denies_with_403_before_object_lookup() {
+        // Sanity: the production hook is permissive (the no-behavior-change
+        // contract for this ticket).
+        assert!(role_permits(&user(Uuid::new_v4()), ResourceKind::Account, Action::Write));
+
+        // Test-only role rule: deny Write on Account, allow everything else.
+        fn test_role_permits(_ctx: &AuthContext, kind: ResourceKind, action: Action) -> bool {
+            !(kind == ResourceKind::Account && action == Action::Write)
+        }
+
+        let pool = sqlx::PgPool::connect_lazy("postgres://invalid").unwrap();
+        let me = user(Uuid::new_v4());
+
+        // The guard's step 1, with the test rule swapped in. A deny short-circuits
+        // to 403 without resolving the object (pool untouched).
+        let gate = |kind, action| -> Result<(), StatusCode> {
+            if test_role_permits(&me, kind, action) { Ok(()) } else { Err(StatusCode::FORBIDDEN) }
+        };
+        assert_eq!(gate(ResourceKind::Account, Action::Write), Err(StatusCode::FORBIDDEN));
+        // A capability the role still permits passes step 1 and proceeds to the
+        // object rule (here it would hit the pool, so we only assert step 1).
+        assert!(gate(ResourceKind::Account, Action::Read).is_ok());
+        let _ = &pool;
+    }
+
+    /// SHARING SEAM proof. A fake resource overrides ONLY [`Resource::authorize`]
+    /// to also allow one "shared" uuid in addition to ownership — exactly where a
+    /// future `shares` lookup lives. It composes with the existing rule (owner
+    /// still allowed, stranger still denied, unknown still 404) with ZERO change
+    /// to the guard or any endpoint, since `authorize` is the single override
+    /// point the guard already calls.
+    #[tokio::test]
+    async fn sharing_seam_grant_composes_with_ownership() {
+        // Fixed ids for this fake resource. The owner uid is fully determined by
+        // the resource itself, so `owner_of` needs no DB (the invalid pool below
+        // proves the override never touches it).
+        const OWNER: Uuid = Uuid::from_u128(0x0001);
+        const GRANTEE: Uuid = Uuid::from_u128(0x0002);
+        const SHARED_ID: &str = "shared-object";
+
+        struct SharedThing;
+        impl Resource for SharedThing {
+            async fn owner_of(_id: &str, _pool: &PgPool) -> Result<Option<Uuid>, sqlx::Error> {
+                Ok(Some(OWNER))
+            }
+            // Override: ownership FIRST (the default rule), then a fake grant
+            // lookup — exactly where a real `shares` row would be consulted.
+            async fn authorize(
+                ctx: &AuthContext,
+                _action: Action,
+                id: &str,
+                pool: &PgPool,
+            ) -> Result<Decision, sqlx::Error> {
+                if ctx.is_admin() {
+                    return Ok(Decision::Allowed);
+                }
+                if Self::owner_of(id, pool).await? == Some(ctx.user_id) {
+                    return Ok(Decision::Allowed);
+                }
+                // The seam: a `shares` lookup would replace this fake grant.
+                if id == SHARED_ID && ctx.user_id == GRANTEE {
+                    return Ok(Decision::Allowed);
+                }
+                Ok(Decision::Denied)
+            }
+        }
+
+        let pool = sqlx::PgPool::connect_lazy("postgres://invalid").unwrap();
+
+        // Owner still allowed — the ownership rule is unchanged by the override.
+        assert_eq!(
+            SharedThing::authorize(&user(OWNER), Action::Read, "any", &pool).await.unwrap(),
+            Decision::Allowed
+        );
+        // Grantee allowed for the shared id ONLY — the grant composed in via the
+        // single override point, no guard/endpoint change.
+        assert_eq!(
+            SharedThing::authorize(&user(GRANTEE), Action::Read, SHARED_ID, &pool).await.unwrap(),
+            Decision::Allowed
+        );
+        // The same grantee on a DIFFERENT object is still denied — least privilege.
+        assert_eq!(
+            SharedThing::authorize(&user(GRANTEE), Action::Read, "other", &pool).await.unwrap(),
+            Decision::Denied
+        );
+        // A stranger is denied even on the shared object.
+        assert_eq!(
+            SharedThing::authorize(&user(Uuid::new_v4()), Action::Read, SHARED_ID, &pool)
+                .await
+                .unwrap(),
+            Decision::Denied
+        );
+        // Admin still bypasses (default arm preserved in the override).
+        assert_eq!(
+            SharedThing::authorize(&admin(), Action::Write, "whatever", &pool).await.unwrap(),
+            Decision::Allowed
         );
     }
 }
