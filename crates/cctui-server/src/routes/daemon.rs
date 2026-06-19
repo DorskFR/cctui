@@ -28,7 +28,7 @@ use serde_json::json;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::auth::{AuthContext, TokenRole, mint_secret, sha256_hex, user_token};
+use crate::auth::{AuthContext, mint_secret, sha256_hex, user_token};
 use crate::state::AppState;
 
 /// Evict a daemon whose WS produced no frame within this window. A healthy
@@ -49,23 +49,17 @@ pub async fn auth(
     let ctx = state.auth_config.validate(&req.machine_key).await.ok_or_else(|| {
         (StatusCode::UNAUTHORIZED, Json(ApiError { error: "invalid machine key".into() }))
     })?;
-    if ctx.role != TokenRole::Machine {
+    let Some(machine_id) = ctx.machine_id else {
         return Err((
             StatusCode::FORBIDDEN,
             Json(ApiError { error: "machine token required".into() }),
-        ));
-    }
-    let (Some(machine_id), Some(user_id)) = (ctx.machine_id, ctx.user_id) else {
-        return Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError { error: "machine context missing ids".into() }),
         ));
     };
     Ok(Json(DaemonAuthResponse {
         session_token: req.machine_key,
         expires_at: Utc::now() + chrono::Duration::hours(24),
         machine_id,
-        user_id,
+        user_id: ctx.user_id,
     }))
 }
 
@@ -80,11 +74,10 @@ pub async fn ws(
     // accept `?token=` on the query string. CLI daemons can use either.
     let token = extract_token_from_uri(&uri).ok_or(StatusCode::UNAUTHORIZED)?;
     let ctx = state.auth_config.validate(&token).await.ok_or(StatusCode::UNAUTHORIZED)?;
-    if ctx.role != TokenRole::Machine {
+    let Some(machine_id) = ctx.machine_id else {
         return Err(StatusCode::FORBIDDEN);
-    }
-    let machine_id = ctx.machine_id.ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
-    let user_id = ctx.user_id.ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    };
+    let user_id = ctx.user_id;
     Ok(ws.on_upgrade(move |socket| handle(socket, state, machine_id, user_id)).into_response())
 }
 
@@ -842,11 +835,8 @@ pub async fn mint_user_token(
     Path(user_id): Path<Uuid>,
     Json(req): Json<MintTokenRequest>,
 ) -> Result<Json<MintTokenResponse>, (StatusCode, Json<ApiError>)> {
-    let allowed = match (ctx.role, ctx.user_id) {
-        (TokenRole::Admin, _) => true,
-        (TokenRole::User, Some(uid)) => uid == user_id,
-        _ => false,
-    };
+    // Admin may mint for anyone; a user only for itself (CCT-410).
+    let allowed = ctx.is_admin() || ctx.user_id == user_id;
     if !allowed {
         return Err((
             StatusCode::FORBIDDEN,
@@ -872,6 +862,27 @@ pub async fn mint_user_token(
         tracing::error!("db error: {e}");
         (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
     })?;
+
+    // Mirror into the unified api_keys table (CCT-410) with grant = owner's
+    // ceiling, so the token behaves identically through the new auth path.
+    let grant = crate::auth::ceiling_of(&state.pool, user_id).await;
+    if let Err(e) = crate::auth::register_key(
+        &state.pool,
+        crate::auth::NewKey {
+            user_id,
+            key_hash: &hash,
+            key_preview: Some(&preview),
+            label: req.label.as_deref(),
+            kind: "user",
+            machine_id: None,
+            dispatcher_id: None,
+        },
+        grant,
+    )
+    .await
+    {
+        tracing::warn!("failed to register user token in api_keys: {e}");
+    }
 
     Ok(Json(MintTokenResponse { token, label: req.label, expires_at: req.expires_at }))
 }

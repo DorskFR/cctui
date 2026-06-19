@@ -19,7 +19,7 @@ use dashmap::DashMap;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::auth::{AuthContext, TokenRole, require_user};
+use crate::auth::{AuthContext, Scope};
 use crate::routes::gateway;
 use crate::state::AppState;
 
@@ -49,13 +49,29 @@ fn resolve_owner(
     ctx: &AuthContext,
     explicit: Option<Uuid>,
 ) -> Result<Uuid, (StatusCode, Json<serde_json::Value>)> {
-    match (ctx.role, ctx.user_id) {
-        (TokenRole::User, Some(uid)) => Ok(uid),
-        (TokenRole::Admin, _) => explicit.ok_or_else(|| {
-            err(StatusCode::BAD_REQUEST, "user_id required when using the admin token")
-        }),
-        _ => Err(err(StatusCode::FORBIDDEN, "user or admin token required")),
+    // A machine key has no business creating accounts (CCT-410): require a
+    // human identity (read scope, no machine id). An admin acts cross-user by
+    // naming the owner explicitly; a user acts as itself.
+    if ctx.machine_id.is_some() || !ctx.has(Scope::Read) {
+        return Err(err(StatusCode::FORBIDDEN, "user or admin token required"));
     }
+    if ctx.is_admin() {
+        explicit.ok_or_else(|| {
+            err(StatusCode::BAD_REQUEST, "user_id required when using the admin token")
+        })
+    } else {
+        Ok(ctx.user_id)
+    }
+}
+
+/// Gate the account read/mutation routes to a human identity (a user or admin
+/// token, never a machine key), matching the pre-CCT-410 `require_user`/admin
+/// behavior. Admin then sees/acts across all owners via `god_view_uid`.
+fn require_human(ctx: &AuthContext) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    if ctx.machine_id.is_some() || !ctx.has(Scope::Read) {
+        return Err(err(StatusCode::FORBIDDEN, "user or admin token required"));
+    }
+    Ok(())
 }
 
 /// One-release back-compat shim (CCT-399): if `CCTUI_CLAUDE_LITELLM_*` is set,
@@ -235,9 +251,7 @@ pub async fn list_accounts(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
 ) -> Result<Json<Vec<AccountInfo>>, (StatusCode, Json<serde_json::Value>)> {
-    if ctx.role != TokenRole::Admin && require_user(&ctx).is_err() {
-        return Err(err(StatusCode::FORBIDDEN, "user or admin token required"));
-    }
+    require_human(&ctx)?;
     // Per-account token totals + a rough USD cost estimate (CCT-273). Tokens
     // are recorded per session (`session_token_usage`); `session_tokens` bridges
     // a session to the account it ran under. SUM() over bigint returns NUMERIC,
@@ -273,7 +287,7 @@ pub async fn list_accounts(
          WHERE $1::uuid IS NULL OR a.user_id = $1 \
          ORDER BY a.provider, a.name",
     )
-    .bind(ctx.user_id)
+    .bind(ctx.god_view_uid())
     .fetch_all(&state.pool)
     .await
     .map_err(|e| {
@@ -411,9 +425,7 @@ pub async fn rename_account(
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateAccount>,
 ) -> Result<Json<AccountInfo>, (StatusCode, Json<serde_json::Value>)> {
-    if ctx.role != TokenRole::Admin && require_user(&ctx).is_err() {
-        return Err(err(StatusCode::FORBIDDEN, "user or admin token required"));
-    }
+    require_human(&ctx)?;
     if let Some(name) = req.name.as_deref()
         && name.trim().is_empty()
     {
@@ -427,7 +439,7 @@ pub async fn rename_account(
          WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2) AND NOT managed",
     )
     .bind(id)
-    .bind(ctx.user_id)
+    .bind(ctx.god_view_uid())
     .fetch_optional(&state.pool)
     .await
     .map_err(|e| {
@@ -517,7 +529,7 @@ pub async fn rename_account(
                    0::bigint AS total_tokens, 0::double precision AS est_cost_usd",
     )
     .bind(id)
-    .bind(ctx.user_id)
+    .bind(ctx.god_view_uid())
     .bind(&name)
     .bind(&base_url)
     .bind(&auth_scheme)
@@ -540,16 +552,14 @@ pub async fn delete_account(
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, (StatusCode, Json<serde_json::Value>)> {
-    if ctx.role != TokenRole::Admin && require_user(&ctx).is_err() {
-        return Err(err(StatusCode::FORBIDDEN, "user or admin token required"));
-    }
+    require_human(&ctx)?;
     // Admin (`ctx.user_id` = NULL) may delete any account; a user only its own.
     let res = sqlx::query(
         "DELETE FROM oauth_accounts WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2) \
          AND NOT managed",
     )
     .bind(id)
-    .bind(ctx.user_id)
+    .bind(ctx.god_view_uid())
     .execute(&state.pool)
     .await
     .map_err(|e| {
@@ -782,9 +792,7 @@ pub async fn oauth_finish(
     Extension(ctx): Extension<AuthContext>,
     Json(req): Json<OAuthFinish>,
 ) -> Result<(StatusCode, Json<AccountInfo>), (StatusCode, Json<serde_json::Value>)> {
-    if ctx.role != TokenRole::Admin && require_user(&ctx).is_err() {
-        return Err(err(StatusCode::FORBIDDEN, "user or admin token required"));
-    }
+    require_human(&ctx)?;
     if req.name.trim().is_empty() {
         return Err(err(StatusCode::BAD_REQUEST, "name required"));
     }
@@ -796,7 +804,7 @@ pub async fn oauth_finish(
     // the flow on behalf of the owner stored in the record, so it may finish
     // any pending login (CCT-251). The account lands on the stored owner.
     let pending = match state.pending_oauth_logins.get(&req.nonce) {
-        Some(p) if ctx.role == TokenRole::Admin || ctx.user_id == Some(p.user_id) => p.clone(),
+        Some(p) if ctx.is_admin() || ctx.user_id == p.user_id => p.clone(),
         _ => return Err(err(StatusCode::BAD_REQUEST, "unknown or expired login")),
     };
     let uid = pending.user_id;
@@ -956,9 +964,7 @@ pub async fn account_usage(
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<AccountUsage>, (StatusCode, Json<serde_json::Value>)> {
-    if ctx.role != TokenRole::Admin && require_user(&ctx).is_err() {
-        return Err(err(StatusCode::FORBIDDEN, "user or admin token required"));
-    }
+    require_human(&ctx)?;
     // Authorize + resolve provider in one go. Admin (`ctx.user_id` = NULL) may
     // read any account; a user only its own.
     let provider: Option<String> = sqlx::query_scalar(
@@ -966,7 +972,7 @@ pub async fn account_usage(
          WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)",
     )
     .bind(id)
-    .bind(ctx.user_id)
+    .bind(ctx.god_view_uid())
     .fetch_optional(&state.pool)
     .await
     .map_err(|e| {

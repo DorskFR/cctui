@@ -219,7 +219,7 @@ pub async fn list_dispatchers(
         "SELECT name FROM dispatchers \
          WHERE ($1::uuid IS NULL OR user_id = $1) AND deleted_at IS NULL",
     )
-    .bind(ctx.user_id)
+    .bind(ctx.god_view_uid())
     .fetch_all(&state.pool)
     .await
     {
@@ -236,7 +236,7 @@ pub async fn dispatch(
     Extension(ctx): Extension<AuthContext>,
     Json(req): Json<DispatchRequest>,
 ) -> Result<(StatusCode, Json<DispatchResponse>), (StatusCode, Json<ApiError>)> {
-    let dispatcher = match resolve_dispatcher(&state, ctx.user_id, &req.dispatcher).await {
+    let dispatcher = match resolve_dispatcher(&state, ctx.god_view_uid(), &req.dispatcher).await {
         Ok(Some(d)) => d,
         Ok(None) => {
             let known = state.dispatchers.ids().join(", ");
@@ -265,7 +265,7 @@ pub async fn dispatch(
 
     // Alert that a dispatch arrived (CCT-198). Built from the *original* payload
     // (before the machine key is injected) and no-ops unless ntfy is configured.
-    let caller = caller_label(&state, ctx.user_id).await;
+    let caller = caller_label(&state, ctx.god_view_uid()).await;
     let summary = summarize(&req.payload);
     ntfy::notify(
         &state.config,
@@ -296,34 +296,21 @@ pub async fn dispatch(
     // daemon runs AS this one machine without a per-pod enroll. The web UI and
     // automation dispatch with a user token (user_id present); the admin token (no
     // owning user) dispatches without the shared identity.
+    // Dispatch permission is now the `dispatch` scope (CCT-410), enforced
+    // uniformly for every caller. The migration backfilled `dispatch` into
+    // user_acls only where the legacy `can_dispatch` flag was set, so this is
+    // transparent: a user previously toggled off has no `dispatch` scope and is
+    // still denied. Admin holds the scope by ceiling.
+    ctx.requires(crate::auth::Scope::Dispatch).map_err(|s| {
+        tracing::warn!(uid = %ctx.user_id, "dispatch denied: caller lacks dispatch scope");
+        (s, Json(ApiError { error: "dispatch is not permitted for this token".into() }))
+    })?;
+
     let mut forwarded_payload = req.payload.clone();
-    if let Some(uid) = ctx.user_id {
-        // Per-user dispatch permission (CCT-185). Applies to any caller that
-        // owns a user (User token or worker Machine key inheriting its owner);
-        // the admin env token has no `user_id` and skips the gate. The flag
-        // defaults TRUE, so this only blocks users an admin has explicitly
-        // toggled off. Missing row (deleted mid-request) → treat as denied.
-        let can_dispatch = sqlx::query_scalar::<_, bool>(
-            "SELECT can_dispatch FROM users WHERE id = $1 AND revoked_at IS NULL",
-        )
-        .bind(uid)
-        .fetch_optional(&state.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("can_dispatch lookup failed: {e}");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError { error: "could not check dispatch permission".into() }),
-            )
-        })?
-        .unwrap_or(false);
-        if !can_dispatch {
-            tracing::warn!(%uid, "dispatch denied: user lacks dispatch permission");
-            return Err((
-                StatusCode::FORBIDDEN,
-                Json(ApiError { error: "dispatch is disabled for this user".into() }),
-            ));
-        }
+    // The shared dispatch-machine identity + account routing apply to a real
+    // owning user (the web UI / automation dispatch with a user token). An admin token
+    // (`god_view_uid` is `None`) dispatches without the shared identity.
+    if let Some(uid) = ctx.god_view_uid() {
         let (_, key) = ensure_dispatch_machine(&state, uid).await.map_err(|e| {
             tracing::error!("ensure_dispatch_machine failed: {e}");
             (

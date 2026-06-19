@@ -16,7 +16,7 @@ use axum::{Extension, Json};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-use crate::auth::{AuthContext, TokenRole};
+use crate::auth::{AuthContext, Scope};
 use crate::state::AppState;
 
 #[derive(Debug, serde::Serialize)]
@@ -90,24 +90,16 @@ pub async fn list_dispatchers(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
 ) -> Result<Json<Vec<DispatcherInfo>>, (StatusCode, Json<serde_json::Value>)> {
-    let rows: Vec<DispatcherRow> = if let Some(uid) = ctx.user_id {
-        sqlx::query_as(&format!(
-            "SELECT {SELECT_COLS} \
-             WHERE user_id = $1 AND deleted_at IS NULL AND revoked_at IS NULL ORDER BY name"
-        ))
-        .bind(uid)
-        .fetch_all(&state.pool)
-        .await
-    } else if ctx.role == TokenRole::Admin {
-        sqlx::query_as(&format!(
-            "SELECT {SELECT_COLS} \
-             WHERE deleted_at IS NULL AND revoked_at IS NULL ORDER BY name"
-        ))
-        .fetch_all(&state.pool)
-        .await
-    } else {
-        Ok(Vec::new())
-    }
+    // Uniform god-view (CCT-410): admin (`god_view_uid` = NULL) sees all
+    // dispatchers; a user sees only their own.
+    let rows: Vec<DispatcherRow> = sqlx::query_as(&format!(
+        "SELECT {SELECT_COLS} \
+         WHERE ($1::uuid IS NULL OR user_id = $1) \
+         AND deleted_at IS NULL AND revoked_at IS NULL ORDER BY name"
+    ))
+    .bind(ctx.god_view_uid())
+    .fetch_all(&state.pool)
+    .await
     .map_err(db_err)?;
 
     Ok(Json(rows.into_iter().map(|r| r.into_info(&state)).collect()))
@@ -119,11 +111,8 @@ pub async fn update_dispatcher(
     Path(id): Path<Uuid>,
     Json(req): Json<RenameDispatcher>,
 ) -> Result<Json<DispatcherInfo>, (StatusCode, Json<serde_json::Value>)> {
-    let uid = ctx.user_id.ok_or_else(|| {
-        (
-            StatusCode::FORBIDDEN,
-            Json(serde_json::json!({ "error": "a user token is required to edit dispatchers" })),
-        )
+    ctx.requires(Scope::Enroll).map_err(|s| {
+        (s, Json(serde_json::json!({ "error": "the enroll scope is required to edit dispatchers" })))
     })?;
     if req.name.trim().is_empty() {
         return Err((
@@ -134,11 +123,11 @@ pub async fn update_dispatcher(
 
     let row: Option<DispatcherRow> = sqlx::query_as(
         "UPDATE dispatchers SET name = $3, updated_at = now() \
-         WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL \
+         WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2) AND deleted_at IS NULL \
          RETURNING id, name, kind, key_preview, last_seen_at, created_at, updated_at",
     )
     .bind(id)
-    .bind(uid)
+    .bind(ctx.god_view_uid())
     .bind(req.name.trim())
     .fetch_optional(&state.pool)
     .await
@@ -154,19 +143,16 @@ pub async fn delete_dispatcher(
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, (StatusCode, Json<serde_json::Value>)> {
-    let uid = ctx.user_id.ok_or_else(|| {
-        (
-            StatusCode::FORBIDDEN,
-            Json(serde_json::json!({ "error": "a user token is required to delete dispatchers" })),
-        )
+    ctx.requires(Scope::Enroll).map_err(|s| {
+        (s, Json(serde_json::json!({ "error": "the enroll scope is required to delete dispatchers" })))
     })?;
 
     let res = sqlx::query(
         "UPDATE dispatchers SET revoked_at = COALESCE(revoked_at, now()), deleted_at = now() \
-         WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL",
+         WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2) AND deleted_at IS NULL",
     )
     .bind(id)
-    .bind(uid)
+    .bind(ctx.god_view_uid())
     .execute(&state.pool)
     .await
     .map_err(db_err)?;

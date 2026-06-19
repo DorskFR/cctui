@@ -44,6 +44,10 @@ async fn main() -> anyhow::Result<()> {
     // until they migrate to first-class accounts.
     routes::accounts::sync_litellm_shim(&pool, &config).await;
     let auth_config = auth::AuthConfig::new(Config::admin_tokens(), pool.clone());
+    // CCT-410: resolve CCTUI_ADMIN_TOKENS to a seeded admin user + api_keys rows
+    // with {admin} ceiling/grant, so the break-glass token is a real identity
+    // rather than a user_id=None ghost. Idempotent, best-effort.
+    auth_config.seed_admin().await;
     let (tui_tx, _) = tokio::sync::broadcast::channel(256);
 
     let archive = init_archive_store().await;
@@ -217,6 +221,17 @@ async fn main() -> anyhow::Result<()> {
                 .layer(DefaultBodyLimit::max(50 * 1024 * 1024)),
         )
         .route("/users/{id}/tokens", post(routes::daemon::mint_user_token))
+        // CCT-410: per-user scope (ceiling) + per-key (grant) management.
+        .route(
+            "/users/{id}/acls",
+            get(routes::admin_auth::get_user_acls).patch(routes::admin_auth::set_user_acls),
+        )
+        .route(
+            "/users/{id}/keys",
+            get(routes::admin_auth::list_user_keys).post(routes::admin_auth::mint_user_key),
+        )
+        .route("/users/{id}/keys/{kid}", delete(routes::admin_auth::revoke_user_key))
+        .route("/users/{id}/keys/{kid}/acls", patch(routes::admin_auth::set_key_acls))
         .layer(middleware::from_fn(auth::auth_middleware))
         .layer(Extension(auth_config.clone()));
 
@@ -320,8 +335,8 @@ async fn github_identity(
 ) -> axum::response::Response {
     if let Some(ctx) = request.extensions().get::<auth::AuthContext>() {
         let identity = cctui_proto::github::CallerIdentity {
-            user_id: ctx.user_id,
-            is_admin: ctx.role == auth::TokenRole::Admin,
+            user_id: Some(ctx.user_id),
+            is_admin: ctx.is_admin(),
         };
         request.extensions_mut().insert(identity);
     }

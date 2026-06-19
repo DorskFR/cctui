@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
+use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -12,19 +13,92 @@ use uuid::Uuid;
 /// Cache TTL for positive auth lookups. Bounds revocation latency.
 const CACHE_TTL: Duration = Duration::from_secs(30);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TokenRole {
+/// The deliberately small scope set (CCT-410). Split later if needed; can't
+/// easily un-split. `admin` implies the cross-user god-view; the rest are
+/// capability flags intersected per request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Scope {
+    Read,
+    Dispatch,
+    Enroll,
     Admin,
-    User,
-    Machine,
 }
 
+impl Scope {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Dispatch => "dispatch",
+            Self::Enroll => "enroll",
+            Self::Admin => "admin",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "read" => Some(Self::Read),
+            "dispatch" => Some(Self::Dispatch),
+            "enroll" => Some(Self::Enroll),
+            "admin" => Some(Self::Admin),
+            _ => None,
+        }
+    }
+
+    /// Every scope, for the seeded admin ceiling/grant and for building UI lists.
+    #[must_use]
+    pub const fn all() -> [Self; 4] {
+        [Self::Read, Self::Dispatch, Self::Enroll, Self::Admin]
+    }
+}
+
+impl fmt::Display for Scope {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Resolved identity for one authenticated request. Everyone is a real user
+/// (CCT-410): `user_id` is always present, admin is just a user holding the
+/// `admin` scope. `scopes` is the effective set = key_acls ∩ user_acls.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct AuthContext {
-    pub role: TokenRole,
-    pub user_id: Option<Uuid>,
+    pub user_id: Uuid,
+    /// The resolved key's id. Carried for auditing / future per-key routing;
+    /// not every consumer reads it.
+    #[allow(dead_code)]
+    pub key_id: Uuid,
+    /// Set when the resolved key is a machine key, so the archive/skills
+    /// machine paths keep working. `None` for user/dispatcher/admin keys.
     pub machine_id: Option<Uuid>,
+    pub scopes: BTreeSet<Scope>,
+}
+
+impl AuthContext {
+    #[must_use]
+    pub fn has(&self, scope: Scope) -> bool {
+        self.scopes.contains(&scope)
+    }
+
+    #[must_use]
+    pub fn is_admin(&self) -> bool {
+        self.has(Scope::Admin)
+    }
+
+    /// Require a scope; 403 otherwise. The single guard all routes collapse to.
+    pub fn requires(&self, scope: Scope) -> Result<(), StatusCode> {
+        if self.has(scope) { Ok(()) } else { Err(StatusCode::FORBIDDEN) }
+    }
+
+    /// The uniform god-view binding: `None` for an admin (sees all rows),
+    /// `Some(user_id)` for everyone else. Routes bind this into the existing
+    /// `WHERE $1::uuid IS NULL OR user_id = $1` predicate so admin "act on any
+    /// owned resource" needs no per-route special-casing.
+    #[must_use]
+    pub fn god_view_uid(&self) -> Option<Uuid> {
+        if self.is_admin() { None } else { Some(self.user_id) }
+    }
 }
 
 #[derive(Clone)]
@@ -45,11 +119,82 @@ impl AuthConfig {
         Self { admin_tokens, pool, cache: Arc::new(Mutex::new(HashMap::new())) }
     }
 
-    /// Purge a cached entry by its key hash. Call after revoke/rotate so the
-    /// change takes effect immediately rather than after TTL.
+    /// Resolve `CCTUI_ADMIN_TOKENS` to a seeded admin **user** with `{admin}`
+    /// ceiling, and an `auth_keys` row (with `{admin}` grant) per env token, so
+    /// the break-glass token is a real identity — never a `user_id=None` ghost
+    /// (CCT-410). Idempotent: re-run safe on every startup. Best-effort — a
+    /// transient DB error is logged, never fatal, because env-token validation
+    /// also still works through the cheap env short-circuit in `validate()`.
+    pub async fn seed_admin(&self) {
+        if self.admin_tokens.is_empty() {
+            return;
+        }
+        let admin_user_id = Uuid::nil(); // stable, reserved id for the seeded admin
+        if let Err(e) = sqlx::query(
+            "INSERT INTO users (id, name, key_hash) VALUES ($1, 'admin', $2) \
+             ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(admin_user_id)
+        // A sentinel key_hash that can never match a real sha256 (different
+        // length) so the legacy users.key_hash path never resolves to it.
+        .bind("seeded-admin-no-legacy-hash")
+        .execute(&self.pool)
+        .await
+        {
+            tracing::warn!("seed_admin: create user failed: {e}");
+            return;
+        }
+        for scope in Scope::all() {
+            let _ = sqlx::query(
+                "INSERT INTO user_acls (user_id, scope) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+            )
+            .bind(admin_user_id)
+            .bind(scope.as_str())
+            .execute(&self.pool)
+            .await;
+        }
+        for token in &self.admin_tokens {
+            let hash = sha256_hex(token);
+            let key_id: Option<(Uuid,)> = sqlx::query_as(
+                "INSERT INTO auth_keys (user_id, key_hash, label, kind) \
+                 VALUES ($1, $2, 'admin (env)', 'admin') \
+                 ON CONFLICT (key_hash) DO UPDATE SET label = EXCLUDED.label \
+                 RETURNING id",
+            )
+            .bind(admin_user_id)
+            .bind(&hash)
+            .fetch_optional(&self.pool)
+            .await
+            .unwrap_or(None);
+            if let Some((kid,)) = key_id {
+                for scope in Scope::all() {
+                    let _ = sqlx::query(
+                        "INSERT INTO key_acls (key_id, scope) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                    )
+                    .bind(kid)
+                    .bind(scope.as_str())
+                    .execute(&self.pool)
+                    .await;
+                }
+            }
+        }
+        tracing::info!(count = self.admin_tokens.len(), "seeded admin user + env keys");
+    }
+
+    /// Purge a cached entry by its key hash. Call after revoke/rotate/scope-edit
+    /// so the change takes effect immediately rather than after TTL.
     pub fn purge(&self, key_hash: &str) {
         if let Ok(mut cache) = self.cache.lock() {
             cache.remove(key_hash);
+        }
+    }
+
+    /// Drop the entire cache. Used after an ACL edit (user or key scope change)
+    /// since we don't track which token hashes a given key/user owns in cache;
+    /// the cache repopulates within one request and TTL is short anyway.
+    pub fn purge_all(&self) {
+        if let Ok(mut cache) = self.cache.lock() {
+            cache.clear();
         }
     }
 
@@ -70,89 +215,237 @@ impl AuthConfig {
         }
     }
 
-    pub async fn validate(&self, token: &str) -> Option<AuthContext> {
-        // Env-based admin takes precedence (cheap, no DB hit).
-        if self.admin_tokens.iter().any(|t| t == token) {
-            return Some(AuthContext { role: TokenRole::Admin, user_id: None, machine_id: None });
-        }
+    /// Load the effective scopes for a (key_id, user_id) pair = key_acls ∩
+    /// user_acls. Re-intersected on every (cache-miss) auth so a demotion of
+    /// the user's ceiling immediately limits the key (the drift-killer).
+    async fn effective_scopes(&self, key_id: Uuid, user_id: Uuid) -> BTreeSet<Scope> {
+        let grant: Vec<(String,)> =
+            sqlx::query_as("SELECT scope FROM key_acls WHERE key_id = $1")
+                .bind(key_id)
+                .fetch_all(&self.pool)
+                .await
+                .unwrap_or_default();
+        let ceiling: Vec<(String,)> =
+            sqlx::query_as("SELECT scope FROM user_acls WHERE user_id = $1")
+                .bind(user_id)
+                .fetch_all(&self.pool)
+                .await
+                .unwrap_or_default();
+        let ceiling: BTreeSet<Scope> =
+            ceiling.iter().filter_map(|(s,)| Scope::parse(s)).collect();
+        grant
+            .iter()
+            .filter_map(|(s,)| Scope::parse(s))
+            .filter(|s| ceiling.contains(s))
+            .collect()
+    }
 
+    pub async fn validate(&self, token: &str) -> Option<AuthContext> {
         let hash = sha256_hex(token);
         if let Some(ctx) = self.cache_get(&hash) {
             return Some(ctx);
         }
 
-        // Machine lookup (joined with users so a revoked user also revokes all machines).
+        // --- New unified path: auth_keys + ACLs (CCT-410). Tried first. ---
+        if let Some(ctx) = self.validate_api_key(&hash).await {
+            self.cache_put(hash, ctx.clone());
+            return Some(ctx);
+        }
+
+        // --- Dual-read fallback to the legacy tables (transparency window). ---
+        // No token is invalidated mid-cutover: a credential that hasn't been
+        // backfilled (or a freshly-rotated legacy hash) still resolves here,
+        // with scopes synthesized from its owner's ceiling.
+        if let Some(ctx) = self.validate_legacy(&hash).await {
+            self.cache_put(hash, ctx.clone());
+            return Some(ctx);
+        }
+
+        // Last resort: an env admin token whose seeded auth_keys row hasn't
+        // landed yet (DB hiccup at startup). Resolve to the seeded admin user.
+        if self.admin_tokens.iter().any(|t| t == token) {
+            return Some(AuthContext {
+                user_id: Uuid::nil(),
+                key_id: Uuid::nil(),
+                machine_id: None,
+                scopes: Scope::all().into_iter().collect(),
+            });
+        }
+
+        None
+    }
+
+    /// Resolve a token hash against the unified `auth_keys` table, gating on the
+    /// owning user being live (revoked/disabled cascades) and the key itself
+    /// being live (not revoked/expired). Scopes = key_acls ∩ user_acls.
+    async fn validate_api_key(&self, hash: &str) -> Option<AuthContext> {
+        #[derive(sqlx::FromRow)]
+        struct KeyRow {
+            id: Uuid,
+            user_id: Uuid,
+            machine_id: Option<Uuid>,
+        }
+        let row = sqlx::query_as::<_, KeyRow>(
+            "SELECT k.id, k.user_id, k.machine_id FROM auth_keys k \
+             JOIN users u ON u.id = k.user_id \
+             WHERE k.key_hash = $1 \
+             AND k.revoked_at IS NULL \
+             AND (k.expires_at IS NULL OR k.expires_at > now()) \
+             AND u.revoked_at IS NULL AND u.disabled_at IS NULL",
+        )
+        .bind(hash)
+        .fetch_optional(&self.pool)
+        .await
+        .unwrap_or(None)?;
+        let KeyRow { id: key_id, user_id, machine_id } = row;
+        let scopes = self.effective_scopes(key_id, user_id).await;
+        if let Some(mid) = machine_id {
+            self.touch_machine(mid);
+        }
+        Some(AuthContext { user_id, key_id, machine_id, scopes })
+    }
+
+    /// Legacy resolution (machines.key_hash, users.key_hash, user_tokens).
+    /// Synthesizes a key identity from the legacy row and scopes from the
+    /// owner's ceiling so a not-yet-backfilled token behaves identically.
+    async fn validate_legacy(&self, hash: &str) -> Option<AuthContext> {
+        // Machine key.
         let row: Option<(Uuid, Uuid)> = sqlx::query_as(
             "SELECT m.id, m.user_id FROM machines m \
              JOIN users u ON u.id = m.user_id \
              WHERE m.key_hash = $1 AND m.revoked_at IS NULL \
              AND u.revoked_at IS NULL AND u.disabled_at IS NULL",
         )
-        .bind(&hash)
+        .bind(hash)
         .fetch_optional(&self.pool)
         .await
         .unwrap_or(None);
-
         if let Some((machine_id, user_id)) = row {
-            let ctx = AuthContext {
-                role: TokenRole::Machine,
-                user_id: Some(user_id),
+            let scopes = self.ceiling_scopes(user_id).await;
+            self.touch_machine(machine_id);
+            return Some(AuthContext {
+                user_id,
+                key_id: machine_id,
                 machine_id: Some(machine_id),
-            };
-            self.cache_put(hash.clone(), ctx.clone());
-            // Best-effort last_seen update.
-            let pool = self.pool.clone();
-            tokio::spawn(async move {
-                let _ = sqlx::query("UPDATE machines SET last_seen_at = now() WHERE id = $1")
-                    .bind(machine_id)
-                    .execute(&pool)
-                    .await;
+                scopes,
             });
-            return Some(ctx);
         }
 
-        // User lookup. Two surfaces:
-        //   1. `users.key_hash` — original single-token-per-user model (008).
-        //   2. `user_tokens` — many tokens per user, labelled, revocable (014).
+        // Legacy users.key_hash.
         let row: Option<(Uuid,)> = sqlx::query_as(
             "SELECT id FROM users \
-                 WHERE key_hash = $1 AND revoked_at IS NULL AND disabled_at IS NULL",
+             WHERE key_hash = $1 AND revoked_at IS NULL AND disabled_at IS NULL",
         )
-        .bind(&hash)
+        .bind(hash)
         .fetch_optional(&self.pool)
         .await
         .unwrap_or(None);
-
         if let Some((user_id,)) = row {
-            let ctx =
-                AuthContext { role: TokenRole::User, user_id: Some(user_id), machine_id: None };
-            self.cache_put(hash, ctx.clone());
-            return Some(ctx);
+            let scopes = self.ceiling_scopes(user_id).await;
+            return Some(AuthContext { user_id, key_id: user_id, machine_id: None, scopes });
         }
 
-        let row: Option<(Uuid,)> = sqlx::query_as(
-            "SELECT t.user_id FROM user_tokens t \
+        // user_tokens.
+        let row: Option<(Uuid, Uuid)> = sqlx::query_as(
+            "SELECT t.id, t.user_id FROM user_tokens t \
              JOIN users u ON u.id = t.user_id \
              WHERE t.token_hash = $1 \
              AND t.revoked_at IS NULL \
              AND (t.expires_at IS NULL OR t.expires_at > now()) \
-             AND u.revoked_at IS NULL \
-             AND u.disabled_at IS NULL",
+             AND u.revoked_at IS NULL AND u.disabled_at IS NULL",
         )
-        .bind(&hash)
+        .bind(hash)
         .fetch_optional(&self.pool)
         .await
         .unwrap_or(None);
-
-        if let Some((user_id,)) = row {
-            let ctx =
-                AuthContext { role: TokenRole::User, user_id: Some(user_id), machine_id: None };
-            self.cache_put(hash, ctx.clone());
-            return Some(ctx);
+        if let Some((token_id, user_id)) = row {
+            let scopes = self.ceiling_scopes(user_id).await;
+            return Some(AuthContext { user_id, key_id: token_id, machine_id: None, scopes });
         }
 
         None
     }
+
+    /// A legacy token's effective scopes = the owner's full ceiling (a legacy
+    /// key carries no narrowing grant of its own, matching pre-CCT-410 behavior
+    /// where any of a user's tokens did everything the user could do).
+    async fn ceiling_scopes(&self, user_id: Uuid) -> BTreeSet<Scope> {
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT scope FROM user_acls WHERE user_id = $1")
+                .bind(user_id)
+                .fetch_all(&self.pool)
+                .await
+                .unwrap_or_default();
+        rows.iter().filter_map(|(s,)| Scope::parse(s)).collect()
+    }
+
+    fn touch_machine(&self, machine_id: Uuid) {
+        let pool = self.pool.clone();
+        tokio::spawn(async move {
+            let _ = sqlx::query("UPDATE machines SET last_seen_at = now() WHERE id = $1")
+                .bind(machine_id)
+                .execute(&pool)
+                .await;
+        });
+    }
+}
+
+/// Register a freshly-minted key into the unified `auth_keys` table with a
+/// `key_acls` grant (CCT-410). Returns the new key id. Used by the enroll /
+/// mint flows so new credentials live in the new model from day one (the
+/// legacy tables are still written by those flows during the cutover window).
+/// `key ⊆ user` is the caller's responsibility — pass scopes already
+/// intersected with the owner's ceiling.
+/// A key to insert into `auth_keys`, minus the scope grant.
+pub struct NewKey<'a> {
+    pub user_id: Uuid,
+    pub key_hash: &'a str,
+    pub key_preview: Option<&'a str>,
+    pub label: Option<&'a str>,
+    pub kind: &'a str,
+    pub machine_id: Option<Uuid>,
+    pub dispatcher_id: Option<Uuid>,
+}
+
+pub async fn register_key(
+    pool: &PgPool,
+    key: NewKey<'_>,
+    scopes: impl IntoIterator<Item = Scope>,
+) -> Result<Uuid, sqlx::Error> {
+    let key_id: (Uuid,) = sqlx::query_as(
+        "INSERT INTO auth_keys (user_id, key_hash, key_preview, label, kind, machine_id, dispatcher_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7) \
+         ON CONFLICT (key_hash) DO UPDATE SET label = EXCLUDED.label \
+         RETURNING id",
+    )
+    .bind(key.user_id)
+    .bind(key.key_hash)
+    .bind(key.key_preview)
+    .bind(key.label)
+    .bind(key.kind)
+    .bind(key.machine_id)
+    .bind(key.dispatcher_id)
+    .fetch_one(pool)
+    .await?;
+    for scope in scopes {
+        sqlx::query("INSERT INTO key_acls (key_id, scope) VALUES ($1, $2) ON CONFLICT DO NOTHING")
+            .bind(key_id.0)
+            .bind(scope.as_str())
+            .execute(pool)
+            .await?;
+    }
+    Ok(key_id.0)
+}
+
+/// The owner's current ceiling scopes — the default grant for a new machine /
+/// dispatcher / primary key so it behaves like the owner (transparency).
+pub async fn ceiling_of(pool: &PgPool, user_id: Uuid) -> BTreeSet<Scope> {
+    let rows: Vec<(String,)> = sqlx::query_as("SELECT scope FROM user_acls WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+    rows.iter().filter_map(|(s,)| Scope::parse(s)).collect()
 }
 
 pub async fn auth_middleware(request: Request, next: Next) -> Result<Response, StatusCode> {
@@ -175,22 +468,6 @@ pub async fn auth_middleware(request: Request, next: Next) -> Result<Response, S
     let mut request = request;
     request.extensions_mut().insert(ctx);
     Ok(next.run(request).await)
-}
-
-/// Require Admin role; 403 otherwise.
-pub const fn require_admin(ctx: &AuthContext) -> Result<(), StatusCode> {
-    match ctx.role {
-        TokenRole::Admin => Ok(()),
-        _ => Err(StatusCode::FORBIDDEN),
-    }
-}
-
-/// Require User role; 403 otherwise. Admin is not accepted — only humans enrol machines.
-pub const fn require_user(ctx: &AuthContext) -> Result<Uuid, StatusCode> {
-    match (ctx.role, ctx.user_id) {
-        (TokenRole::User, Some(uid)) => Ok(uid),
-        _ => Err(StatusCode::FORBIDDEN),
-    }
 }
 
 /// Generate a new secret. 64 hex chars = 256 bits of entropy.
@@ -220,8 +497,6 @@ pub fn sha256_hex(input: &str) -> String {
 /// 256-bit secret stays hidden — `cctui_u_ab1234…ef34`.
 #[must_use]
 pub fn token_preview(token: &str) -> String {
-    // Tokens are `cctui_u_` (8) + 64 hex; if something shorter slips through,
-    // just mask all but the last 4 rather than panicking on the slice.
     if token.len() <= 16 {
         return "•".repeat(token.len().saturating_sub(4))
             + token.get(token.len().saturating_sub(4)..).unwrap_or("");
@@ -233,27 +508,37 @@ pub fn token_preview(token: &str) -> String {
 mod tests {
     use super::*;
 
-    fn config_with_env_only() -> AuthConfig {
-        // Pool is required but never touched for env-token paths.
-        // Build a cheaply-invalid lazy pool — tests that hit DB are integration-gated.
-        let pool = PgPool::connect_lazy("postgres://invalid").unwrap();
-        AuthConfig::new(vec!["admin-secret".into()], pool)
+    #[test]
+    fn scope_roundtrips() {
+        for s in Scope::all() {
+            assert_eq!(Scope::parse(s.as_str()), Some(s));
+        }
+        assert_eq!(Scope::parse("nope"), None);
     }
 
-    #[tokio::test]
-    async fn env_admin_resolves() {
-        let cfg = config_with_env_only();
-        let ctx = cfg.validate("admin-secret").await.unwrap();
-        assert_eq!(ctx.role, TokenRole::Admin);
-        assert!(ctx.user_id.is_none());
-    }
+    #[test]
+    fn admin_god_view_is_unscoped() {
+        let admin = AuthContext {
+            user_id: Uuid::nil(),
+            key_id: Uuid::nil(),
+            machine_id: None,
+            scopes: Scope::all().into_iter().collect(),
+        };
+        assert!(admin.is_admin());
+        assert_eq!(admin.god_view_uid(), None);
+        assert!(admin.requires(Scope::Enroll).is_ok());
 
-    #[tokio::test]
-    async fn unknown_env_token_rejected() {
-        let cfg = config_with_env_only();
-        // A token that is neither the admin secret nor a DB-backed credential
-        // resolves to nothing now that the legacy agent env path is gone.
-        assert!(cfg.validate("agent-secret").await.is_none());
+        let uid = Uuid::new_v4();
+        let user = AuthContext {
+            user_id: uid,
+            key_id: Uuid::new_v4(),
+            machine_id: None,
+            scopes: [Scope::Read].into_iter().collect(),
+        };
+        assert!(!user.is_admin());
+        assert_eq!(user.god_view_uid(), Some(uid));
+        assert!(user.requires(Scope::Read).is_ok());
+        assert_eq!(user.requires(Scope::Dispatch), Err(StatusCode::FORBIDDEN));
     }
 
     #[test]
@@ -277,19 +562,22 @@ mod tests {
         assert!(preview.starts_with("cctui_u_"));
         assert!(preview.contains('…'));
         assert!(token.ends_with(&preview[preview.len() - 4..]));
-        // The full secret must never be recoverable from the preview.
         assert!(preview.len() < token.len());
         assert!(!token.contains(&preview));
     }
 
     #[tokio::test]
     async fn cache_roundtrip() {
-        let cfg = config_with_env_only();
-        let ctx =
-            AuthContext { role: TokenRole::User, user_id: Some(Uuid::nil()), machine_id: None };
+        let pool = PgPool::connect_lazy("postgres://invalid").unwrap();
+        let cfg = AuthConfig::new(vec!["admin-secret".into()], pool);
+        let ctx = AuthContext {
+            user_id: Uuid::nil(),
+            key_id: Uuid::nil(),
+            machine_id: None,
+            scopes: [Scope::Read].into_iter().collect(),
+        };
         cfg.cache_put("h".into(), ctx);
-        let got = cfg.cache_get("h").unwrap();
-        assert_eq!(got.role, TokenRole::User);
+        assert!(cfg.cache_get("h").is_some());
         cfg.purge("h");
         assert!(cfg.cache_get("h").is_none());
     }

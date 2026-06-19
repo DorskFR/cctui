@@ -6,7 +6,7 @@ use cctui_proto::ws::{AgentEvent, ServerEvent, TuiCommand};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 
-use crate::auth::TokenRole;
+use crate::auth::Scope;
 use crate::state::AppState;
 
 fn extract_token_from_uri(uri: &Uri) -> Option<String> {
@@ -31,7 +31,9 @@ pub async fn tui_ws(
     let token = extract_token_from_uri(&uri).ok_or(StatusCode::UNAUTHORIZED)?;
     let auth_ctx = state.auth_config.validate(&token).await.ok_or(StatusCode::UNAUTHORIZED)?;
 
-    if !matches!(auth_ctx.role, TokenRole::Admin | TokenRole::User) {
+    // The TUI/webui socket is for human identities (a user or admin token), not
+    // a machine key. Gate on the `read` scope and the absence of a machine id.
+    if auth_ctx.machine_id.is_some() || !auth_ctx.has(Scope::Read) {
         return Err(StatusCode::FORBIDDEN);
     }
 

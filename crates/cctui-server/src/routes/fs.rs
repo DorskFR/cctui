@@ -15,7 +15,7 @@ use cctui_proto::api::ApiError;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::auth::{AuthContext, TokenRole};
+use crate::auth::AuthContext;
 use crate::daemon_dispatch;
 use crate::state::AppState;
 
@@ -49,8 +49,7 @@ pub async fn list_dirs(
     let Some((owner,)) = row else {
         return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "machine not found".into() })));
     };
-    let permitted =
-        matches!(ctx.role, TokenRole::Admin) || ctx.user_id.is_some_and(|uid| uid == owner);
+    let permitted = ctx.is_admin() || ctx.user_id == owner;
     if !permitted {
         return Err((StatusCode::FORBIDDEN, Json(ApiError { error: "not your machine".into() })));
     }

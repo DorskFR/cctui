@@ -15,12 +15,13 @@ use uuid::Uuid;
 use cctui_proto::api::ApiError;
 
 use crate::auth::{
-    AuthConfig, AuthContext, machine_token, mint_secret, require_admin, sha256_hex, user_token,
+    AuthConfig, AuthContext, Scope, machine_token, mint_secret, sha256_hex, user_token,
 };
 use crate::state::AppState;
 
 fn forbid_or(ctx: &AuthContext) -> Result<(), (StatusCode, Json<ApiError>)> {
-    require_admin(ctx).map_err(|s| (s, Json(ApiError { error: "admin token required".into() })))
+    ctx.requires(Scope::Admin)
+        .map_err(|s| (s, Json(ApiError { error: "admin token required".into() })))
 }
 
 fn db_err(e: &sqlx::Error) -> (StatusCode, Json<ApiError>) {
@@ -152,6 +153,38 @@ pub async fn create_user(
         .execute(&state.pool)
         .await
         .map_err(|e| db_err(&e))?;
+    // Seed the new user's ceiling (CCT-410): the default capability set a fresh
+    // user gets — read + enroll + dispatch (NOT admin). Matches the legacy
+    // default where can_dispatch=TRUE and any user token could enroll/dispatch.
+    let default_ceiling = [Scope::Read, Scope::Enroll, Scope::Dispatch];
+    for scope in default_ceiling {
+        let _ = sqlx::query(
+            "INSERT INTO user_acls (user_id, scope) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        )
+        .bind(id)
+        .bind(scope.as_str())
+        .execute(&state.pool)
+        .await;
+    }
+    // Register the primary key in the unified table with grant = ceiling.
+    let preview = crate::auth::token_preview(&token);
+    if let Err(e) = crate::auth::register_key(
+        &state.pool,
+        crate::auth::NewKey {
+            user_id: id,
+            key_hash: &hash,
+            key_preview: Some(&preview),
+            label: Some("primary"),
+            kind: "user",
+            machine_id: None,
+            dispatcher_id: None,
+        },
+        default_ceiling,
+    )
+    .await
+    {
+        tracing::warn!("failed to register primary key in auth_keys: {e}");
+    }
     tracing::info!(user_id = %id, name = %req.name, "user created");
     Ok(Json(CreateUserResponse { id, name: req.name, key: token }))
 }
@@ -585,4 +618,320 @@ async fn purge_user_cache(auth: &AuthConfig, user_id: Uuid, pool: &sqlx::PgPool)
     if let Some((h,)) = user_hash {
         auth.purge(&h);
     }
+}
+
+// ===========================================================================
+// CCT-410: per-user scope (ceiling) + per-key (grant) management for the
+// Users page. Cross-user actions require the `admin` scope; a user may always
+// manage its OWN ceiling (read-only) and its OWN keys (mint/revoke/edit scopes).
+// Edits are plain INSERT/DELETE on the acl tables, constrained key ⊆ user, and
+// the auth cache is purged so a change takes effect immediately for live keys.
+// ===========================================================================
+
+/// Allow if the caller is admin, or is acting on its own account.
+fn self_or_admin(ctx: &AuthContext, target: Uuid) -> Result<(), (StatusCode, Json<ApiError>)> {
+    if ctx.is_admin() || ctx.user_id == target {
+        Ok(())
+    } else {
+        Err((StatusCode::FORBIDDEN, Json(ApiError { error: "admin scope required".into() })))
+    }
+}
+
+async fn load_user_acls(pool: &sqlx::PgPool, user_id: Uuid) -> Result<Vec<Scope>, sqlx::Error> {
+    let rows: Vec<(String,)> = sqlx::query_as("SELECT scope FROM user_acls WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_all(pool)
+        .await?;
+    Ok(rows.iter().filter_map(|(s,)| Scope::parse(s)).collect())
+}
+
+#[derive(Serialize, TS)]
+#[ts(export)]
+pub struct UserAclsResponse {
+    pub user_id: Uuid,
+    /// The user's ceiling (what its keys may be granted), as scope strings.
+    pub scopes: Vec<String>,
+}
+
+/// `GET /users/{id}/acls` — the user's ceiling. Self or admin.
+pub async fn get_user_acls(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(user_id): Path<Uuid>,
+) -> Result<Json<UserAclsResponse>, (StatusCode, Json<ApiError>)> {
+    self_or_admin(&ctx, user_id)?;
+    let scopes = load_user_acls(&state.pool, user_id).await.map_err(|e| db_err(&e))?;
+    Ok(Json(UserAclsResponse {
+        user_id,
+        scopes: scopes.iter().map(ToString::to_string).collect(),
+    }))
+}
+
+#[derive(Deserialize, TS)]
+#[ts(export)]
+pub struct SetAclsRequest {
+    /// The full desired scope set (replaces the existing rows). Strings from the
+    /// `read|dispatch|enroll|admin` set; unknown values are rejected.
+    pub scopes: Vec<String>,
+}
+
+fn parse_scopes(raw: &[String]) -> Result<Vec<Scope>, (StatusCode, Json<ApiError>)> {
+    raw.iter()
+        .map(|s| {
+            Scope::parse(s).ok_or_else(|| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(ApiError { error: format!("unknown scope: {s}") }),
+                )
+            })
+        })
+        .collect()
+}
+
+/// `PATCH /users/{id}/acls` — replace the user's ceiling. Admin only (granting a
+/// user new capabilities is privileged). Setting the ceiling re-intersects all
+/// of the user's keys at the next request (the drift-killer), so demotion is
+/// immediate; the cache is purged to skip the TTL.
+pub async fn set_user_acls(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(user_id): Path<Uuid>,
+    Json(req): Json<SetAclsRequest>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    forbid_or(&ctx)?; // admin only
+    let scopes = parse_scopes(&req.scopes)?;
+    let mut tx = state.pool.begin().await.map_err(|e| db_err(&e))?;
+    sqlx::query("DELETE FROM user_acls WHERE user_id = $1")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| db_err(&e))?;
+    for scope in &scopes {
+        sqlx::query("INSERT INTO user_acls (user_id, scope) VALUES ($1, $2)")
+            .bind(user_id)
+            .bind(scope.as_str())
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| db_err(&e))?;
+    }
+    // Keep the legacy can_dispatch flag in sync (CCT-410): the dispatch scope
+    // supersedes it, but other code paths / older clients may still read it.
+    let can_dispatch = scopes.contains(&Scope::Dispatch);
+    sqlx::query("UPDATE users SET can_dispatch = $1 WHERE id = $2")
+        .bind(can_dispatch)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| db_err(&e))?;
+    tx.commit().await.map_err(|e| db_err(&e))?;
+    // A ceiling change affects every key the user owns; we don't track which
+    // hashes are cached, so drop the whole cache (short TTL, repopulates fast).
+    state.auth_config.purge_all();
+    tracing::info!(%user_id, ?scopes, "user ceiling updated");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Serialize, sqlx::FromRow, TS)]
+#[ts(export)]
+pub struct ApiKeyRow {
+    pub id: Uuid,
+    pub label: Option<String>,
+    pub key_preview: Option<String>,
+    pub kind: String,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub revoked_at: Option<DateTime<Utc>>,
+    /// The key's granted scopes (key_acls), filled by the handler.
+    #[sqlx(skip)]
+    pub scopes: Vec<String>,
+}
+
+/// `GET /users/{id}/keys` — the user's auth_keys with their granted scopes. Self
+/// or admin.
+pub async fn list_user_keys(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(user_id): Path<Uuid>,
+) -> Result<Json<Vec<ApiKeyRow>>, (StatusCode, Json<ApiError>)> {
+    self_or_admin(&ctx, user_id)?;
+    let mut rows: Vec<ApiKeyRow> = sqlx::query_as(
+        "SELECT id, label, key_preview, kind, created_at, expires_at, revoked_at \
+         FROM auth_keys WHERE user_id = $1 ORDER BY created_at",
+    )
+    .bind(user_id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| db_err(&e))?;
+    for row in &mut rows {
+        let scopes: Vec<(String,)> =
+            sqlx::query_as("SELECT scope FROM key_acls WHERE key_id = $1")
+                .bind(row.id)
+                .fetch_all(&state.pool)
+                .await
+                .unwrap_or_default();
+        row.scopes = scopes.into_iter().map(|(s,)| s).collect();
+    }
+    Ok(Json(rows))
+}
+
+#[derive(Deserialize, TS)]
+#[ts(export)]
+pub struct MintKeyRequest {
+    pub label: Option<String>,
+    /// Scopes to grant — must be ⊆ the owner's ceiling (enforced server-side).
+    pub scopes: Vec<String>,
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Serialize, TS)]
+#[ts(export)]
+pub struct MintKeyResponse {
+    pub id: Uuid,
+    /// The plaintext token — returned ONCE, never recoverable after.
+    pub key: String,
+    pub scopes: Vec<String>,
+}
+
+/// `POST /users/{id}/keys` — mint a scoped key for the user. Self or admin. The
+/// grant is intersected with the owner's ceiling (`key ⊆ user`, the drift
+/// rule): requesting a scope the user doesn't hold is silently dropped.
+pub async fn mint_user_key(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(user_id): Path<Uuid>,
+    Json(req): Json<MintKeyRequest>,
+) -> Result<Json<MintKeyResponse>, (StatusCode, Json<ApiError>)> {
+    self_or_admin(&ctx, user_id)?;
+    let requested = parse_scopes(&req.scopes)?;
+    let ceiling = load_user_acls(&state.pool, user_id).await.map_err(|e| db_err(&e))?;
+    let granted: Vec<Scope> =
+        requested.into_iter().filter(|s| ceiling.contains(s)).collect();
+
+    let token = user_token(&mint_secret());
+    let hash = sha256_hex(&token);
+    let preview = crate::auth::token_preview(&token);
+
+    // Legacy mirror so the dual-read path also sees it during cutover.
+    sqlx::query(
+        "INSERT INTO user_tokens (user_id, token_hash, label, expires_at, token_preview) \
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(user_id)
+    .bind(&hash)
+    .bind(req.label.as_deref())
+    .bind(req.expires_at)
+    .bind(&preview)
+    .execute(&state.pool)
+    .await
+    .map_err(|e| db_err(&e))?;
+
+    let key_id = crate::auth::register_key(
+        &state.pool,
+        crate::auth::NewKey {
+            user_id,
+            key_hash: &hash,
+            key_preview: Some(&preview),
+            label: req.label.as_deref(),
+            kind: "user",
+            machine_id: None,
+            dispatcher_id: None,
+        },
+        granted.clone(),
+    )
+    .await
+    .map_err(|e| db_err(&e))?;
+    if let Some(exp) = req.expires_at {
+        let _ = sqlx::query("UPDATE auth_keys SET expires_at = $1 WHERE id = $2")
+            .bind(exp)
+            .bind(key_id)
+            .execute(&state.pool)
+            .await;
+    }
+    tracing::info!(%user_id, %key_id, ?granted, "key minted");
+    Ok(Json(MintKeyResponse {
+        id: key_id,
+        key: token,
+        scopes: granted.iter().map(ToString::to_string).collect(),
+    }))
+}
+
+/// `PATCH /users/{id}/keys/{kid}/acls` — edit a key's granted scopes IN PLACE
+/// (the secret/hash is untouched, so the token keeps working). Self or admin.
+/// Constrained `key ⊆ user` at edit time; cache purged so it takes effect now.
+pub async fn set_key_acls(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path((user_id, key_id)): Path<(Uuid, Uuid)>,
+    Json(req): Json<SetAclsRequest>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    self_or_admin(&ctx, user_id)?;
+    // The key must belong to the named user.
+    let owns: Option<(Uuid,)> =
+        sqlx::query_as("SELECT id FROM auth_keys WHERE id = $1 AND user_id = $2")
+            .bind(key_id)
+            .bind(user_id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(|e| db_err(&e))?;
+    if owns.is_none() {
+        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "key not found".into() })));
+    }
+    let requested = parse_scopes(&req.scopes)?;
+    let ceiling = load_user_acls(&state.pool, user_id).await.map_err(|e| db_err(&e))?;
+    let granted: Vec<Scope> = requested.into_iter().filter(|s| ceiling.contains(s)).collect();
+
+    let mut tx = state.pool.begin().await.map_err(|e| db_err(&e))?;
+    sqlx::query("DELETE FROM key_acls WHERE key_id = $1")
+        .bind(key_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| db_err(&e))?;
+    for scope in &granted {
+        sqlx::query("INSERT INTO key_acls (key_id, scope) VALUES ($1, $2)")
+            .bind(key_id)
+            .bind(scope.as_str())
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| db_err(&e))?;
+    }
+    tx.commit().await.map_err(|e| db_err(&e))?;
+    state.auth_config.purge_all();
+    tracing::info!(%user_id, %key_id, ?granted, "key scopes edited");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `DELETE /users/{id}/keys/{kid}` — revoke a key (sets revoked_at; cascades
+/// drop its key_acls on hard-delete, but revoke preserves the audit row). Self
+/// or admin. Also revokes the legacy mirror rows by hash so the dual-read path
+/// stops accepting it. Cache purged so it stops working immediately.
+pub async fn revoke_user_key(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path((user_id, key_id)): Path<(Uuid, Uuid)>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    self_or_admin(&ctx, user_id)?;
+    let row: Option<(String,)> = sqlx::query_as(
+        "UPDATE auth_keys SET revoked_at = now() \
+         WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL RETURNING key_hash",
+    )
+    .bind(key_id)
+    .bind(user_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| db_err(&e))?;
+    let Some((hash,)) = row else {
+        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "key not found".into() })));
+    };
+    // Revoke the legacy mirrors sharing this hash (transparency cutover).
+    let _ = sqlx::query("UPDATE user_tokens SET revoked_at = now() WHERE token_hash = $1")
+        .bind(&hash)
+        .execute(&state.pool)
+        .await;
+    let _ = sqlx::query("UPDATE machines SET revoked_at = now() WHERE key_hash = $1")
+        .bind(&hash)
+        .execute(&state.pool)
+        .await;
+    state.auth_config.purge(&hash);
+    tracing::info!(%user_id, %key_id, "key revoked");
+    Ok(StatusCode::NO_CONTENT)
 }

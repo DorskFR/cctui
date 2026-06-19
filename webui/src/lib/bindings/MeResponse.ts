@@ -2,13 +2,23 @@
 
 export type MeResponse = { 
 /**
- * `admin` | `user` | `machine`.
+ * Coarse role hint for the UI: `admin` | `user` | `machine`. Derived from
+ * scopes + machine id (CCT-410); authority itself lives in `scopes`.
  */
-role: string, user_id: string | null, 
+role: string, 
 /**
- * Resolved from `users.name` when the token maps to a user.
+ * Always present now — everyone is a real user (CCT-410). Kept `Option`
+ * for webui wire-compat; never `null` in practice.
+ */
+user_id: string | null, 
+/**
+ * Resolved from `users.name`.
  */
 user_name: string | null, machine_id: string | null, 
+/**
+ * Effective scopes (key_acls ∩ user_acls) for this request.
+ */
+scopes: Array<string>, 
 /**
  * Non-secret fragment of the token this request authenticated with,
  * e.g. `cctui_u_ab1234…ef34`.

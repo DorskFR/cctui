@@ -26,7 +26,7 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::auth::{
-    AuthContext, machine_token, mint_secret, require_user, sha256_hex, token_preview,
+    AuthContext, Scope, machine_token, mint_secret, sha256_hex, token_preview,
 };
 use crate::state::AppState;
 
@@ -62,8 +62,11 @@ pub async fn enroll(
     Extension(ctx): Extension<AuthContext>,
     Json(req): Json<EnrollRequest>,
 ) -> Result<Json<EnrollResponse>, (StatusCode, Json<ApiError>)> {
-    let user_id = require_user(&ctx)
-        .map_err(|s| (s, Json(ApiError { error: "user token required".into() })))?;
+    // Enrolling a dispatcher requires the `enroll` scope (CCT-410); admin holds
+    // it by ceiling. The dispatcher is owned by the caller's user.
+    ctx.requires(Scope::Enroll)
+        .map_err(|s| (s, Json(ApiError { error: "the enroll scope is required".into() })))?;
+    let user_id = ctx.user_id;
 
     if req.name.trim().is_empty() {
         return Err((StatusCode::BAD_REQUEST, Json(ApiError { error: "name required".into() })));
@@ -99,6 +102,30 @@ pub async fn enroll(
         tracing::error!("db error: {e}");
         (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
     })?;
+
+    // Mirror the enrollment key into the unified api_keys table (CCT-410). The
+    // dispatcher WS still authenticates via the dispatchers.key_hash path, so
+    // this is for inventory/management parity; grant {dispatch} ∩ ceiling.
+    let mut grant = crate::auth::ceiling_of(&state.pool, user_id).await;
+    grant.retain(|s| matches!(s, Scope::Read | Scope::Dispatch));
+    let preview = token_preview(&token);
+    if let Err(e) = crate::auth::register_key(
+        &state.pool,
+        crate::auth::NewKey {
+            user_id,
+            key_hash: &key_hash,
+            key_preview: Some(&preview),
+            label: Some(req.name.trim()),
+            kind: "dispatcher",
+            machine_id: None,
+            dispatcher_id: Some(dispatcher_id),
+        },
+        grant,
+    )
+    .await
+    {
+        tracing::warn!("failed to register dispatcher key in api_keys: {e}");
+    }
 
     tracing::info!(%user_id, %dispatcher_id, name = %req.name, kind, "dispatcher enrolled");
 

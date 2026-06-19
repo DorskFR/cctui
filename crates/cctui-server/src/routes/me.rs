@@ -13,18 +13,23 @@ use serde::Serialize;
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::auth::{AuthContext, TokenRole, token_preview};
+use crate::auth::{AuthContext, token_preview};
 use crate::state::AppState;
 
 #[derive(Serialize, TS)]
 #[ts(export)]
 pub struct MeResponse {
-    /// `admin` | `user` | `machine`.
+    /// Coarse role hint for the UI: `admin` | `user` | `machine`. Derived from
+    /// scopes + machine id (CCT-410); authority itself lives in `scopes`.
     pub role: String,
+    /// Always present now — everyone is a real user (CCT-410). Kept `Option`
+    /// for webui wire-compat; never `null` in practice.
     pub user_id: Option<Uuid>,
-    /// Resolved from `users.name` when the token maps to a user.
+    /// Resolved from `users.name`.
     pub user_name: Option<String>,
     pub machine_id: Option<Uuid>,
+    /// Effective scopes (key_acls ∩ user_acls) for this request.
+    pub scopes: Vec<String>,
     /// Non-secret fragment of the token this request authenticated with,
     /// e.g. `cctui_u_ab1234…ef34`.
     pub token_preview: String,
@@ -35,10 +40,12 @@ pub async fn me(
     Extension(ctx): Extension<AuthContext>,
     headers: HeaderMap,
 ) -> Result<Json<MeResponse>, StatusCode> {
-    let role = match ctx.role {
-        TokenRole::Admin => "admin",
-        TokenRole::User => "user",
-        TokenRole::Machine => "machine",
+    let role = if ctx.is_admin() {
+        "admin"
+    } else if ctx.machine_id.is_some() {
+        "machine"
+    } else {
+        "user"
     };
     // The middleware already validated this header; re-read it only to build
     // the display preview (the AuthContext deliberately doesn't carry secrets).
@@ -49,24 +56,22 @@ pub async fn me(
         .map(token_preview)
         .unwrap_or_default();
 
-    let user_name = match ctx.user_id {
-        Some(uid) => sqlx::query_as::<_, (String,)>("SELECT name FROM users WHERE id = $1")
-            .bind(uid)
-            .fetch_optional(&state.pool)
-            .await
-            .map_err(|e| {
-                tracing::error!("db error: {e}");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?
-            .map(|(n,)| n),
-        None => None,
-    };
+    let user_name = sqlx::query_as::<_, (String,)>("SELECT name FROM users WHERE id = $1")
+        .bind(ctx.user_id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("db error: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .map(|(n,)| n);
 
     Ok(Json(MeResponse {
         role: role.into(),
-        user_id: ctx.user_id,
+        user_id: Some(ctx.user_id),
         user_name,
         machine_id: ctx.machine_id,
+        scopes: ctx.scopes.iter().map(|s| s.to_string()).collect(),
         token_preview: preview,
     }))
 }

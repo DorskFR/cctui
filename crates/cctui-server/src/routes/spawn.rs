@@ -25,7 +25,7 @@ use cctui_proto::api::{ApiError, SpawnRequest, SpawnResponse};
 use cctui_proto::ws::DaemonFrameDown;
 use uuid::Uuid;
 
-use crate::auth::{AuthContext, TokenRole};
+use crate::auth::AuthContext;
 use crate::registry::MachineCommand;
 use crate::state::AppState;
 use crate::uploads::parse_upload_multipart;
@@ -84,8 +84,7 @@ pub async fn spawn_session(
     let Some((owner,)) = row else {
         return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "machine not found".into() })));
     };
-    let permitted =
-        matches!(ctx.role, TokenRole::Admin) || ctx.user_id.is_some_and(|uid| uid == owner);
+    let permitted = ctx.is_admin() || ctx.user_id == owner;
     if !permitted {
         return Err((StatusCode::FORBIDDEN, Json(ApiError { error: "not your machine".into() })));
     }
@@ -107,7 +106,7 @@ pub async fn spawn_session(
         // Accounts are user-owned. The admin token has no user identity, so it
         // resolves the account against the target machine's owner (CCT-251) —
         // the session runs on that user's machine with that user's account.
-        let uid = ctx.user_id.unwrap_or(owner);
+        let uid = ctx.god_view_uid().unwrap_or(owner);
         // Resolve the model through this account's alias map (CCT-406) before it
         // reaches the worker — a no-op when the account has no matching alias.
         if let Some(m) = model.as_deref() {

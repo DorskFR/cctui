@@ -14,7 +14,7 @@ use tokio_util::io::{ReaderStream, StreamReader};
 use uuid::Uuid;
 
 use crate::archive_store::ArchiveError;
-use crate::auth::{AuthContext, TokenRole};
+use crate::auth::{AuthContext, Scope};
 use crate::state::AppState;
 
 #[derive(Deserialize)]
@@ -29,21 +29,16 @@ pub struct PutResponse {
     pub line_count: u32,
 }
 
-const fn require_machine(ctx: &AuthContext) -> Result<Uuid, StatusCode> {
-    match (ctx.role, ctx.machine_id) {
-        (TokenRole::Machine, Some(mid)) => Ok(mid),
-        _ => Err(StatusCode::FORBIDDEN),
-    }
+fn require_machine(ctx: &AuthContext) -> Result<Uuid, StatusCode> {
+    ctx.machine_id.ok_or(StatusCode::FORBIDDEN)
 }
 
-/// Read access: a Machine token can read any archive belonging to the same
-/// user (so `cctui-admin pull` from host B can fetch archives uploaded by
-/// host A). Users/admins are not accepted — pulls happen on enrolled hosts.
-const fn require_user_scope(ctx: &AuthContext) -> Result<Uuid, StatusCode> {
-    match (ctx.role, ctx.user_id) {
-        (TokenRole::Machine | TokenRole::User, Some(uid)) => Ok(uid),
-        _ => Err(StatusCode::FORBIDDEN),
-    }
+/// Read access: any authenticated identity with the `read` scope (a machine
+/// pulling archives across hosts, or a user). Returns the owning user for
+/// scoping.
+fn require_user_scope(ctx: &AuthContext) -> Result<Uuid, StatusCode> {
+    ctx.requires(Scope::Read)?;
+    Ok(ctx.user_id)
 }
 
 type IndexRow = (Uuid, String, String, String, i64, Option<i32>, chrono::DateTime<chrono::Utc>);
@@ -259,8 +254,8 @@ pub async fn get_status(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
 ) -> Result<Json<ArchiveStatusResponse>, StatusCode> {
-    let is_admin = ctx.role == TokenRole::Admin;
-    let user_id = if is_admin { None } else { Some(require_user_scope(&ctx)?) };
+    require_user_scope(&ctx)?;
+    let user_id = ctx.god_view_uid();
 
     let base = "SELECT m.machine_id, m.project_dir, m.session_id, \
                 m.size_bytes, m.mtime, \
@@ -330,8 +325,8 @@ pub async fn index(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
 ) -> Result<Json<Vec<ArchiveIndexEntry>>, StatusCode> {
-    let is_admin = ctx.role == TokenRole::Admin;
-    let user_id = if is_admin { None } else { Some(require_user_scope(&ctx)?) };
+    require_user_scope(&ctx)?;
+    let user_id = ctx.god_view_uid();
     let rows: Vec<IndexRow> = if let Some(uid) = user_id {
         sqlx::query_as(
             "SELECT a.machine_id, a.project_dir, a.session_id, a.sha256, a.size_bytes, \

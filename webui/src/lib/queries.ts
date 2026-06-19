@@ -19,6 +19,9 @@ import type { UserTokenRow } from "@bindings/UserTokenRow";
 import type { CreateUserResponse } from "@bindings/CreateUserResponse";
 import type { RotateResponse } from "@bindings/RotateResponse";
 import type { MintTokenResponse } from "@bindings/MintTokenResponse";
+import type { UserAclsResponse } from "@bindings/UserAclsResponse";
+import type { ApiKeyRow } from "@bindings/ApiKeyRow";
+import type { MintKeyResponse } from "@bindings/MintKeyResponse";
 import type { VersionInfo } from "@bindings/VersionInfo";
 import type { MeResponse } from "@bindings/MeResponse";
 import type { CapabilitiesResponse } from "@bindings/CapabilitiesResponse";
@@ -213,6 +216,9 @@ export const qk = {
   users: ["users"] as const,
   machines: (userId: string) => ["users", userId, "machines"] as const,
   tokens: (userId: string) => ["users", userId, "tokens"] as const,
+  // CCT-410: per-user ceiling + per-key grants.
+  userAcls: (userId: string) => ["users", userId, "acls"] as const,
+  userKeys: (userId: string) => ["users", userId, "keys"] as const,
   labels: ["labels"] as const,
 };
 
@@ -270,6 +276,11 @@ export const endpoints = {
     api.get<MachineRow[]>(`/admin/users/${userId}/machines`),
   tokens: (userId: string) =>
     api.get<UserTokenRow[]>(`/admin/users/${userId}/tokens`),
+  /** A user's scope ceiling (CCT-410). Self or admin. */
+  userAcls: (userId: string) =>
+    api.get<UserAclsResponse>(`/users/${userId}/acls`),
+  /** A user's api_keys with their granted scopes (CCT-410). Self or admin. */
+  userKeys: (userId: string) => api.get<ApiKeyRow[]>(`/users/${userId}/keys`),
   /** Spawn on a machine. Always `multipart/form-data` (CCT-203): the JSON
    *  `SpawnRequest` rides in the `request` part and any attached files ride as
    *  file parts the daemon stages under /tmp/cctui-uploads. */
@@ -609,6 +620,26 @@ export const useUsers = (enabled: () => boolean = () => true) =>
       queryKey: qk.users,
       queryFn: endpoints.users,
       enabled: enabled(),
+    })),
+  );
+
+/** A user's scope ceiling (CCT-410). Self or admin. */
+export const useUserAcls = (userId: () => string) =>
+  createQuery(
+    toStore(() => ({
+      queryKey: qk.userAcls(userId()),
+      queryFn: () => endpoints.userAcls(userId()),
+      enabled: !!userId(),
+    })),
+  );
+
+/** A user's api_keys with granted scopes (CCT-410). Self or admin. */
+export const useUserKeys = (userId: () => string) =>
+  createQuery(
+    toStore(() => ({
+      queryKey: qk.userKeys(userId()),
+      queryFn: () => endpoints.userKeys(userId()),
+      enabled: !!userId(),
     })),
   );
 
@@ -1126,6 +1157,38 @@ export function useUserActions() {
     },
     purgeMachine: async (userId: string, id: string) => {
       await api.del<void>(`/admin/machines/${id}/purge`);
+      invalUser(userId);
+    },
+    // CCT-410: edit a user's ceiling (admin only). Re-intersects every key at
+    // the next request; the server purges the auth cache so it's immediate.
+    setUserScopes: async (userId: string, scopes: string[]) => {
+      await api.patch<void>(`/users/${userId}/acls`, { scopes });
+      invalUser(userId);
+      invalUsers();
+    },
+    // Mint a scoped key (self or admin). The grant is clamped to ⊆ the owner's
+    // ceiling server-side; the plaintext is returned ONCE.
+    mintKey: async (
+      userId: string,
+      label: string | null,
+      scopes: string[],
+    ): Promise<MintKeyResponse> => {
+      const r = await api.post<MintKeyResponse>(`/users/${userId}/keys`, {
+        label,
+        scopes,
+        expires_at: null,
+      });
+      invalUser(userId);
+      return r;
+    },
+    // Edit a key's granted scopes IN PLACE — the secret is untouched, so the
+    // token keeps working (CCT-410). Takes effect immediately (cache purge).
+    setKeyScopes: async (userId: string, keyId: string, scopes: string[]) => {
+      await api.patch<void>(`/users/${userId}/keys/${keyId}/acls`, { scopes });
+      invalUser(userId);
+    },
+    revokeKey: async (userId: string, keyId: string) => {
+      await api.del<void>(`/users/${userId}/keys/${keyId}`);
       invalUser(userId);
     },
   };

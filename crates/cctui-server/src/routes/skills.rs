@@ -8,24 +8,25 @@ use futures_util::TryStreamExt;
 use tokio_util::io::{ReaderStream, StreamReader};
 use uuid::Uuid;
 
-use crate::auth::{AuthContext, TokenRole};
+use crate::auth::AuthContext;
 use crate::skill_store::{SkillError, validate_name};
 use crate::state::AppState;
 
 const DEFAULT_CONTENT_TYPE: &str = "application/zstd";
 
-const fn require_machine(ctx: &AuthContext) -> Result<(Uuid, Uuid), StatusCode> {
-    match (ctx.role, ctx.machine_id, ctx.user_id) {
-        (TokenRole::Machine, Some(mid), Some(uid)) => Ok((mid, uid)),
-        _ => Err(StatusCode::FORBIDDEN),
+/// A skill upload is a machine-key action (the daemon publishes its skills).
+fn require_machine(ctx: &AuthContext) -> Result<(Uuid, Uuid), StatusCode> {
+    match ctx.machine_id {
+        Some(mid) => Ok((mid, ctx.user_id)),
+        None => Err(StatusCode::FORBIDDEN),
     }
 }
 
-const fn require_user_scope(ctx: &AuthContext) -> Result<Uuid, StatusCode> {
-    match (ctx.role, ctx.user_id) {
-        (TokenRole::Machine | TokenRole::User, Some(uid)) => Ok(uid),
-        _ => Err(StatusCode::FORBIDDEN),
-    }
+/// Reading the skill index/blobs needs any authenticated identity (machine or
+/// human) with the `read` scope; it returns the owning user for scoping.
+fn require_user_scope(ctx: &AuthContext) -> Result<Uuid, StatusCode> {
+    ctx.requires(crate::auth::Scope::Read)?;
+    Ok(ctx.user_id)
 }
 
 type Row = (String, String, String, i64, Option<Uuid>, chrono::DateTime<chrono::Utc>, String);

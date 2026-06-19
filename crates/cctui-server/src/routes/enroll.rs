@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use cctui_proto::api::ApiError;
 
-use crate::auth::{AuthContext, machine_token, mint_secret, require_user, sha256_hex};
+use crate::auth::{AuthContext, Scope, machine_token, mint_secret, sha256_hex};
 use crate::state::AppState;
 
 #[derive(Deserialize)]
@@ -37,8 +37,12 @@ pub async fn enroll(
     Extension(ctx): Extension<AuthContext>,
     Json(req): Json<EnrollRequest>,
 ) -> Result<Json<EnrollResponse>, (StatusCode, Json<ApiError>)> {
-    let user_id = require_user(&ctx)
-        .map_err(|s| (s, Json(ApiError { error: "user token required".into() })))?;
+    // Enrolling a machine requires the `enroll` scope (CCT-410). Admin holds it
+    // by ceiling, so admin can now enroll (previously a `require_user` 403 —
+    // bug #3 in the ticket). The machine is owned by the caller's user.
+    ctx.requires(Scope::Enroll)
+        .map_err(|s| (s, Json(ApiError { error: "the enroll scope is required".into() })))?;
+    let user_id = ctx.user_id;
 
     if req.hostname.trim().is_empty() {
         return Err((
@@ -75,6 +79,30 @@ pub async fn enroll(
         tracing::error!("db error: {e}");
         (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
     })?;
+
+    // Register the machine key in the unified api_keys table (CCT-410) with a
+    // grant = the owner's full ceiling, so it behaves exactly like the owner
+    // (matching the legacy machine-key semantics). The legacy machines.key_hash
+    // is still written above for the dual-read cutover window.
+    let grant = crate::auth::ceiling_of(&state.pool, user_id).await;
+    let preview = crate::auth::token_preview(&token);
+    if let Err(e) = crate::auth::register_key(
+        &state.pool,
+        crate::auth::NewKey {
+            user_id,
+            key_hash: &key_hash,
+            key_preview: Some(&preview),
+            label: Some(&req.hostname),
+            kind: "machine",
+            machine_id: Some(machine_id),
+            dispatcher_id: None,
+        },
+        grant,
+    )
+    .await
+    {
+        tracing::warn!("failed to register machine key in api_keys: {e}");
+    }
 
     // Default the new machine to the claude-code adapter so the daemon
     // gets a meaningful Reconcile out of the box and either harness can be

@@ -3,6 +3,7 @@
 	import type { UserRow } from '@bindings/UserRow';
 	import { toasts } from '$lib/toast.svelte';
 	import UserExpand from '$lib/components/molecules/UserExpand.svelte';
+	import UserScopes from '$lib/components/molecules/UserScopes.svelte';
 	import SecretReveal from '$lib/components/molecules/SecretReveal.svelte';
 	import EditEntityModal from '$lib/components/molecules/EditEntityModal.svelte';
 	import {
@@ -19,8 +20,9 @@
 	} from '@dorsk/tsumikit';
 	import { auth } from '$lib/auth.svelte';
 
-	const users = useUsers();
 	const me = useMe();
+	// Only an admin may list all users; a non-admin uses the self-service view.
+	const users = useUsers(() => $me.data?.role === 'admin');
 	const actions = useUserActions();
 	const guard = (p: Promise<unknown>) => p.catch((e: Error) => toasts.err(e.message));
 
@@ -68,11 +70,6 @@
 				.then(() => toasts.ok(disabled ? `${name} disabled` : `${name} enabled`))
 		);
 	}
-	function toggleDispatch(id: string, can: boolean) {
-		guard(
-			actions.setCanDispatch(id, can).then(() => toasts.ok(can ? 'Dispatch enabled' : 'Dispatch disabled'))
-		);
-	}
 	function purgeUser(id: string, name: string) {
 		if (!confirm(`Permanently delete ${name}? This cannot be undone.`)) return;
 		guard(
@@ -92,7 +89,9 @@
 <div class="bar row">
 	<Heading level={1}>Users</Heading>
 	<div class="spacer"></div>
-	<Button control variant="primary" onclick={() => (createOpen = true)}>+ New user</Button>
+	{#if $me.data?.role === 'admin'}
+		<Button control variant="primary" onclick={() => (createOpen = true)}>+ New user</Button>
+	{/if}
 </div>
 
 <!-- Who am I (CCT-251): role + identity + a non-secret preview of the stored
@@ -115,7 +114,16 @@
 	</div>
 {/if}
 
-{#if $users.isLoading}
+{#if $me.data && $me.data.role !== 'admin'}
+	<!-- Self-service (CCT-410): a non-admin user manages its own keys here (mint
+	     a dispatch-only key for automation, etc.) without an admin token. The ceiling is
+	     read-only for them; only an admin can grant new capabilities. -->
+	{#if $me.data.user_id}
+		<div class="detail-card">
+			<UserScopes userId={$me.data.user_id} isAdmin={false} isSelf={true} onsecret={showSecret} />
+		</div>
+	{/if}
+{:else if $users.isLoading}
 	<div class="empty"><span class="spin"></span></div>
 {:else}
 	<div class="picker">
@@ -176,19 +184,10 @@
 							/>
 						</dd>
 					</div>
-					<div class="prop">
-						<dt><Text size="sm" tone="faint">Can dispatch</Text></dt>
-						<dd>
-							<Switch
-								checked={u.can_dispatch}
-								label="Can dispatch"
-								title="Allow this user to dispatch k8s worker sessions"
-								disabled={!!u.revoked_at}
-								onclick={() => toggleDispatch(u.id, !u.can_dispatch)}
-							/>
-						</dd>
-					</div>
 				</dl>
+					<Text size="xs" tone="faint"
+						>Dispatch permission is now the <Text variant="code">dispatch</Text> scope below.</Text
+					>
 
 				<footer class="acts">
 					{#if u.revoked_at}
@@ -200,6 +199,15 @@
 					{/if}
 				</footer>
 			</Card>
+		</div>
+
+		<div class="detail-card">
+			<UserScopes
+				userId={u.id}
+				isAdmin={$me.data?.role === 'admin'}
+				isSelf={$me.data?.user_id === u.id}
+				onsecret={showSecret}
+			/>
 		</div>
 
 		<UserExpand user={selected} onsecret={showSecret} />
