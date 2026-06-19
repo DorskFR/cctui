@@ -236,7 +236,7 @@ trait Resource {
 }
 
 /// Sessions are owned via `sessions.machine_uuid -> machines.user_id`
-/// (CCT-417). Mirrors `routes::admin::authorize_session` and `ws::ws_owns_session`.
+/// (CCT-417). Mirrors `ws::ws_owns_session`.
 struct SessionResource;
 impl Resource for SessionResource {
     async fn owner_of(id: &str, pool: &PgPool) -> Result<Option<Uuid>, sqlx::Error> {

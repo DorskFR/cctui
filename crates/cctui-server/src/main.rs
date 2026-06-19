@@ -288,59 +288,65 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::POST],
             "/sessions/archive",
-            post(routes::admin::archive_sessions),
+            post(routes::sessions::archive_sessions),
             Authn::Bearer,
             Authenticated,
         )
         .add(
             &[Method::POST],
             "/sessions/unarchive",
-            post(routes::admin::unarchive_sessions),
+            post(routes::sessions::unarchive_sessions),
             Authn::Bearer,
             Authenticated,
         )
         .add(
             &[Method::POST],
             "/sessions/pin",
-            post(routes::admin::pin_sessions),
+            post(routes::sessions::pin_sessions),
             Authn::Bearer,
             Authenticated,
         )
         .add(
             &[Method::POST],
             "/sessions/unpin",
-            post(routes::admin::unpin_sessions),
+            post(routes::sessions::unpin_sessions),
             Authn::Bearer,
             Authenticated,
         )
         // Self-scoped list/stats/search endpoints — `owner_filter()` filter in
         // the handler (admin sees all rows, others only their own).
-        .add(&[GET], "/sessions", get(routes::admin::list_sessions), Authn::Bearer, Authenticated)
+        .add(
+            &[GET],
+            "/sessions",
+            get(routes::sessions::list_sessions),
+            Authn::Bearer,
+            Authenticated,
+        )
         .add(
             &[GET],
             "/sessions/stats",
-            get(routes::admin::session_stats),
+            get(routes::stats::session_stats),
             Authn::Bearer,
             Authenticated,
         )
         .add(
             &[GET],
             "/sessions/stats/tokens",
-            get(routes::admin::session_token_stats),
+            get(routes::stats::session_token_stats),
             Authn::Bearer,
             Authenticated,
         )
         .add(
             &[GET],
             "/sessions/search",
-            get(routes::admin::search_sessions),
+            get(routes::sessions::search_sessions),
             Authn::Bearer,
             Authenticated,
         )
         .add(
             &[GET],
             "/sessions/recent-dirs",
-            get(routes::admin::recent_dirs),
+            get(routes::stats::recent_dirs),
             Authn::Bearer,
             Authenticated,
         )
@@ -350,102 +356,108 @@ fn build_api_routes() -> Routes {
         // handler (404 unknown / 403 cross-user). Reads → `Action::Read`,
         // mutations/control → `Action::Write` (the action is recorded for
         // CCT-422 RBAC; the owner rule is identical for both today).
-        .add(&[GET], "/sessions/{id}", get(routes::admin::get_session), Authn::Bearer, sess_read())
+        .add(
+            &[GET],
+            "/sessions/{id}",
+            get(routes::sessions::get_session),
+            Authn::Bearer,
+            sess_read(),
+        )
         .add(
             &[Method::PATCH],
             "/sessions/{id}",
-            patch(routes::admin::rename_session),
+            patch(routes::sessions::rename_session),
             Authn::Bearer,
             sess_write(),
         )
         .add(
             &[GET],
             "/sessions/{id}/conversation",
-            get(routes::admin::get_conversation),
+            get(routes::sessions::get_conversation),
             Authn::Bearer,
             sess_read(),
         )
         .add(
             &[Method::POST],
             "/sessions/{id}/message",
-            post(routes::admin::send_message),
+            post(routes::sessions::send_message),
             Authn::Bearer,
             sess_write(),
         )
         .add(
             &[Method::POST],
             "/sessions/{id}/kill",
-            post(routes::admin::kill_session),
+            post(routes::sessions::kill_session),
             Authn::Bearer,
             sess_write(),
         )
         .add(
             &[Method::POST],
             "/sessions/{id}/interrupt",
-            post(routes::admin::interrupt_session),
+            post(routes::sessions::interrupt_session),
             Authn::Bearer,
             sess_write(),
         )
         .add(
             &[Method::POST],
             "/sessions/{id}/resume",
-            post(routes::admin::resume_session),
+            post(routes::sessions::resume_session),
             Authn::Bearer,
             sess_write(),
         )
         .add(
             &[Method::POST],
             "/sessions/{id}/set-model",
-            post(routes::admin::set_model),
+            post(routes::sessions::set_model),
             Authn::Bearer,
             sess_write(),
         )
         .add(
             &[Method::POST],
             "/sessions/{id}/fork",
-            post(routes::admin::fork_session),
+            post(routes::sessions::fork_session),
             Authn::Bearer,
             sess_write(),
         )
         .add(
             &[Method::POST],
             "/sessions/{id}/auto-approve",
-            post(routes::admin::set_auto_approve),
+            post(routes::sessions::set_auto_approve),
             Authn::Bearer,
             sess_write(),
         )
         .add(
             &[Method::POST],
             "/sessions/{id}/archive",
-            post(routes::admin::archive_session),
+            post(routes::sessions::archive_session),
             Authn::Bearer,
             sess_write(),
         )
         .add(
             &[Method::POST],
             "/sessions/{id}/unarchive",
-            post(routes::admin::unarchive_session),
+            post(routes::sessions::unarchive_session),
             Authn::Bearer,
             sess_write(),
         )
         .add(
             &[Method::POST],
             "/sessions/{id}/pin",
-            post(routes::admin::pin_session),
+            post(routes::sessions::pin_session),
             Authn::Bearer,
             sess_write(),
         )
         .add(
             &[Method::POST],
             "/sessions/{id}/unpin",
-            post(routes::admin::unpin_session),
+            post(routes::sessions::unpin_session),
             Authn::Bearer,
             sess_write(),
         )
         .add(
             &[Method::POST],
             "/sessions/{id}/policy",
-            post(routes::admin::set_session_policy),
+            post(routes::sessions::set_session_policy),
             Authn::Bearer,
             sess_write(),
         )
@@ -454,28 +466,28 @@ fn build_api_routes() -> Routes {
         .add(
             &[GET, Method::POST],
             "/labels",
-            get(routes::admin::list_labels).post(routes::admin::create_label),
+            get(routes::labels::list_labels).post(routes::labels::create_label),
             Authn::Bearer,
             Authenticated,
         )
         .add(
             &[Method::PATCH, Method::DELETE],
             "/labels/{id}",
-            axum::routing::patch(routes::admin::update_label).delete(routes::admin::delete_label),
+            axum::routing::patch(routes::labels::update_label).delete(routes::labels::delete_label),
             Authn::Bearer,
             Authenticated,
         )
         .add(
             &[Method::POST],
             "/sessions/{id}/labels",
-            post(routes::admin::attach_label),
+            post(routes::labels::attach_label),
             Authn::Bearer,
             sess_write(),
         )
         .add(
             &[Method::DELETE],
             "/sessions/{id}/labels/{label_id}",
-            axum::routing::delete(routes::admin::detach_label),
+            axum::routing::delete(routes::labels::detach_label),
             Authn::Bearer,
             sess_write(),
         )

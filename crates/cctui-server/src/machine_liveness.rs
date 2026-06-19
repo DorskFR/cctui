@@ -18,7 +18,7 @@ use uuid::Uuid;
 use crate::state::AppState;
 
 /// `Online` (green) within the active window, `Stale` (orange) up to the dead
-/// window, `Offline` beyond it. Mirrors `routes::admin::LIVENESS_*` so machine
+/// window, `Offline` beyond it. Mirrors `routes::sessions::LIVENESS_*` so machine
 /// and session dots age out on the same schedule.
 const ONLINE_SECS: i64 = 5 * 60;
 const OFFLINE_SECS: i64 = 60 * 60;
