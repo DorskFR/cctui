@@ -130,6 +130,10 @@ pub struct AccountInfo {
     /// native subscription accounts (they use the harness's native families).
     /// JSONB at rest; safe to return — names aren't secret.
     pub models: Option<serde_json::Value>,
+    /// Per-account logical→concrete model alias map (CCT-406), e.g.
+    /// `{"opus": "claude-opus-4-8[1m]"}`. Applies to every provider; resolved
+    /// server-side at spawn. JSONB object at rest; safe to return.
+    pub model_aliases: Option<serde_json::Value>,
     /// `true` for a server-synthesized (managed) account — read-only over the
     /// API (the back-compat shim for `CCTUI_CLAUDE_LITELLM_*`, CCT-399).
     pub managed: bool,
@@ -179,6 +183,10 @@ pub struct CreateAccount {
     /// Selectable models for a compatible endpoint (CCT-399).
     #[serde(default)]
     pub models: Option<Vec<AccountModel>>,
+    /// Logical→concrete model alias map (CCT-406), e.g.
+    /// `{"opus": "claude-opus-4-8[1m]"}`. Honoured for every provider.
+    #[serde(default)]
+    pub model_aliases: Option<std::collections::HashMap<String, String>>,
     /// Credential scheme for a compatible endpoint: `bearer` | `api_key`
     /// (CCT-399). Defaults to `bearer`. Native accounts are always `oauth`.
     #[serde(default)]
@@ -206,6 +214,11 @@ pub struct UpdateAccount {
     pub auth_scheme: Option<String>,
     #[serde(default)]
     pub models: Option<Vec<AccountModel>>,
+    /// Replacement model alias map (CCT-406). Provided → replaces the stored map
+    /// wholesale (an empty object clears it); absent → unchanged. Editable for
+    /// every provider, unlike the compatible-only fields above.
+    #[serde(default)]
+    pub model_aliases: Option<std::collections::HashMap<String, String>>,
     /// New static credential for a compatible endpoint; blank/absent keeps the
     /// stored one.
     #[serde(default)]
@@ -232,7 +245,7 @@ pub async fn list_accounts(
     // blended per-million rate (input/output/cache weighted) — an estimate, not
     // a meter (these are subscription accounts).
     let rows: Vec<AccountInfo> = sqlx::query_as(
-        "SELECT a.id, a.name, a.provider, a.models, a.managed, a.user_id, u.name AS user_name, \
+        "SELECT a.id, a.name, a.provider, a.models, a.model_aliases, a.managed, a.user_id, u.name AS user_name, \
                 a.expires_at, a.created_at, a.last_used_at, \
                 a.request_count, a.bytes_transferred, \
                 (COALESCE(t.input_tokens,0) + COALESCE(t.output_tokens,0) \
@@ -347,13 +360,19 @@ pub async fn create_account(
         .as_ref()
         .filter(|m| !m.is_empty())
         .map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null));
+    // Alias map (CCT-406): an empty map stores NULL (no remapping).
+    let model_aliases = req
+        .model_aliases
+        .as_ref()
+        .filter(|m| !m.is_empty())
+        .map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null));
 
     let row: Result<AccountInfo, sqlx::Error> = sqlx::query_as(
         "INSERT INTO oauth_accounts \
             (user_id, name, provider, encrypted_refresh_token, encrypted_access_token, \
-             expires_at, base_url, models, auth_scheme) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
-         RETURNING id, name, provider, models, managed, user_id, NULL::text AS user_name, \
+             expires_at, base_url, models, auth_scheme, model_aliases) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
+         RETURNING id, name, provider, models, model_aliases, managed, user_id, NULL::text AS user_name, \
                    expires_at, created_at, last_used_at, \
                    request_count, bytes_transferred, \
                    0::bigint AS total_tokens, 0::double precision AS est_cost_usd",
@@ -367,6 +386,7 @@ pub async fn create_account(
     .bind(&base_url)
     .bind(&models)
     .bind(&auth_scheme)
+    .bind(&model_aliases)
     .fetch_one(&state.pool)
     .await;
 
@@ -462,6 +482,15 @@ pub async fn rename_account(
         .models
         .as_ref()
         .map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null));
+    // Aliases (CCT-406): COALESCE can't distinguish "clear" from "unchanged"
+    // (both would bind NULL), so carry an explicit provided-flag — provided +
+    // empty clears the column, provided + non-empty replaces it.
+    let aliases_provided = req.model_aliases.is_some();
+    let model_aliases = req
+        .model_aliases
+        .as_ref()
+        .filter(|m| !m.is_empty())
+        .map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null));
     let enc_access = req
         .access_token
         .as_deref()
@@ -479,9 +508,10 @@ pub async fn rename_account(
             base_url = COALESCE($4, base_url), \
             auth_scheme = COALESCE($5, auth_scheme), \
             models = COALESCE($6, models), \
-            encrypted_access_token = COALESCE($7, encrypted_access_token) \
+            encrypted_access_token = COALESCE($7, encrypted_access_token), \
+            model_aliases = CASE WHEN $8 THEN $9 ELSE model_aliases END \
          WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2) AND NOT managed \
-         RETURNING id, name, provider, models, managed, user_id, NULL::text AS user_name, \
+         RETURNING id, name, provider, models, model_aliases, managed, user_id, NULL::text AS user_name, \
                    expires_at, created_at, last_used_at, \
                    request_count, bytes_transferred, \
                    0::bigint AS total_tokens, 0::double precision AS est_cost_usd",
@@ -493,6 +523,8 @@ pub async fn rename_account(
     .bind(&auth_scheme)
     .bind(&models)
     .bind(&enc_access)
+    .bind(aliases_provided)
+    .bind(&model_aliases)
     .fetch_optional(&state.pool)
     .await
     .map_err(|e| {

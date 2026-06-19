@@ -96,6 +96,10 @@ export interface OAuthAccount {
    *  native subscription accounts (which use the harness's native families).
    *  Safe to surface — model names aren't secret (unlike base URL + credential). */
   models: AccountModel[] | null;
+  /** Per-account logical→concrete model alias map (CCT-406), e.g.
+   *  `{ opus: "claude-opus-4-8[1m]" }`. Applies to every provider; resolved
+   *  server-side at spawn. null/empty means no remapping. */
+  model_aliases: Record<string, string> | null;
   /** True for a server-synthesized account (the CCTUI_CLAUDE_LITELLM_* shim) —
    *  read-only: rename/delete are rejected server-side (CCT-399). */
   managed: boolean;
@@ -152,6 +156,8 @@ export interface CreateAccount {
   base_url?: string;
   /** Selectable models for a compatible endpoint (CCT-399). */
   models?: AccountModel[];
+  /** Logical→concrete model alias map (CCT-406); honoured for every provider. */
+  model_aliases?: Record<string, string>;
   /** `bearer` | `api_key` for a compatible endpoint (CCT-399). */
   auth_scheme?: string;
   /** Owner — required when authenticated with the admin token (CCT-251). */
@@ -167,6 +173,9 @@ export interface UpdateAccount {
   base_url?: string;
   auth_scheme?: string;
   models?: AccountModel[];
+  /** Replacement alias map (CCT-406); provided replaces wholesale (empty clears),
+   *  absent leaves it unchanged. Editable for every provider. */
+  model_aliases?: Record<string, string>;
   /** New static credential; omit/blank to keep the stored one. */
   access_token?: string;
 }

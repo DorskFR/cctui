@@ -189,6 +189,53 @@ pub async fn mint_session_env(
     Ok(Some(env))
 }
 
+/// Resolve a logical model name through a named account's alias map (CCT-406).
+///
+/// Mirrors [`mint_session_env`]'s `(user, name, provider|family)` account
+/// resolution so spawn maps the *same* row the gateway binds the session to,
+/// then looks `model` up in that account's `model_aliases` JSON object. Returns
+/// the mapped concrete model (e.g. `opus` → `claude-opus-4-8[1m]`) or the input
+/// unchanged when there's no account, no alias map, or no matching key. A DB
+/// error degrades gracefully to the unmapped model rather than failing spawn.
+pub async fn resolve_account_model(
+    state: &AppState,
+    user_id: Uuid,
+    account_name: &str,
+    provider: Option<&str>,
+    adapter_id: &str,
+    model: &str,
+) -> String {
+    let row: Option<(Option<serde_json::Value>, String)> = if let Some(p) = provider {
+        sqlx::query_as(
+            "SELECT model_aliases, provider FROM oauth_accounts \
+             WHERE user_id = $1 AND name = $2 AND provider = $3",
+        )
+        .bind(user_id)
+        .bind(account_name)
+        .bind(p)
+        .fetch_optional(&state.pool)
+        .await
+        .unwrap_or(None)
+    } else {
+        let want = Family::from_adapter(adapter_id);
+        let candidates: Vec<(Option<serde_json::Value>, String)> = sqlx::query_as(
+            "SELECT model_aliases, provider FROM oauth_accounts WHERE user_id = $1 AND name = $2",
+        )
+        .bind(user_id)
+        .bind(account_name)
+        .fetch_all(&state.pool)
+        .await
+        .unwrap_or_default();
+        candidates.into_iter().find(|(_, prov)| Family::from_provider(prov) == want)
+    };
+    row.and_then(|(aliases, _)| aliases)
+        .as_ref()
+        .and_then(|v| v.get(model))
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+        .map_or_else(|| model.to_owned(), str::to_owned)
+}
+
 /// Revoke every session token bound to a session (CCT-232) — called when a
 /// session ends so the gateway can no longer be used under that token.
 pub async fn revoke_session_tokens(state: &AppState, session_id: &str) {

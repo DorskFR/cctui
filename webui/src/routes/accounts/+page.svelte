@@ -76,7 +76,23 @@
 	// never read back, CCT-402). Create always picks bearer/api_key.
 	let authScheme = $state<'bearer' | 'api_key' | 'keep'>('bearer');
 	let modelRows = $state<{ model: string; label: string }[]>([{ model: '', label: '' }]);
+	// Per-account model alias map (CCT-406): logical name → concrete model code,
+	// e.g. opus → claude-opus-4-8[1m]. Applies to every provider; resolved
+	// server-side at spawn. Edited as rows, sent as an object.
+	let aliasRows = $state<{ alias: string; model: string }[]>([]);
 	const isCompatible = $derived(provider.endsWith('-compatible'));
+
+	/** Collapse the alias rows into the `{alias: model}` object the API expects,
+	 *  dropping incomplete rows. */
+	function aliasObject(): Record<string, string> {
+		const out: Record<string, string> = {};
+		for (const r of aliasRows) {
+			const a = r.alias.trim();
+			const m = r.model.trim();
+			if (a && m) out[a] = m;
+		}
+		return out;
+	}
 
 	// "Sign in with Claude" OAuth flow state (CCT-243).
 	let oauthNonce = $state<string | null>(null);
@@ -92,6 +108,7 @@
 		credential = '';
 		authScheme = 'bearer';
 		modelRows = [{ model: '', label: '' }];
+		aliasRows = [];
 		oauthNonce = null;
 		oauthCode = '';
 		oauthBusy = false;
@@ -177,6 +194,8 @@
 				: [{ model: '', label: '' }];
 			authScheme = 'keep';
 		}
+		// Aliases are editable for every provider (CCT-406).
+		aliasRows = Object.entries(a.model_aliases ?? {}).map(([alias, model]) => ({ alias, model }));
 	}
 
 	function close() {
@@ -188,9 +207,11 @@
 			toasts.err('Name is required');
 			return;
 		}
+		const model_aliases = aliasObject();
 		try {
 			if (editing) {
-				const body: UpdateAccount = { name: name.trim() };
+				// Always send the alias map so clearing the last row clears it.
+				const body: UpdateAccount = { name: name.trim(), model_aliases };
 				if (isCompatible) {
 					const models = modelRows
 						.map((r) => ({ model: r.model.trim(), label: r.label.trim() || r.model.trim() }))
@@ -223,6 +244,7 @@
 						auth_scheme: authScheme,
 						...(credential.trim() ? { access_token: credential.trim() } : {}),
 						...(models.length ? { models } : {}),
+						...(Object.keys(model_aliases).length ? { model_aliases } : {}),
 						...(isAdmin ? { user_id: ownerId } : {}),
 					};
 				} else {
@@ -234,6 +256,7 @@
 						name: name.trim(),
 						provider,
 						refresh_token: refreshToken.trim(),
+						...(Object.keys(model_aliases).length ? { model_aliases } : {}),
 						...(isAdmin ? { user_id: ownerId } : {}),
 					};
 				}
@@ -449,6 +472,32 @@
 								/>
 							</Field>
 						</details>
+					{/if}
+
+					<!-- Model aliases (CCT-406): logical name -> concrete model code,
+					     resolved server-side at spawn; works for every provider. -->
+					{#if editing || isCompatible}
+						<div class="models">
+							<Text as="div" tone="muted" size="sm">Model aliases</Text>
+							<Text as="div" tone="faint" size="xs">
+								Map a logical name to the model this account launches (e.g.
+								<code>opus</code> -> <code>claude-opus-4-8[1m]</code>).
+							</Text>
+							{#each aliasRows as row, i (i)}
+								<div class="model-row">
+									<Input bind:value={row.alias} placeholder="logical name (e.g. opus)" />
+									<Input bind:value={row.model} placeholder="model code (e.g. claude-opus-4-8[1m])" />
+									<Button
+										size="sm"
+										variant="danger"
+										onclick={() => (aliasRows = aliasRows.filter((_, j) => j !== i))}>✕</Button
+									>
+								</div>
+							{/each}
+							<Button size="sm" onclick={() => (aliasRows = [...aliasRows, { alias: '', model: '' }])}
+								>+ Add alias</Button
+							>
+						</div>
 					{/if}
 			</div>
 		{/snippet}

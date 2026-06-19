@@ -99,11 +99,30 @@ pub async fn spawn_session(
     // command_id keys the (token → account) mapping for revocation.
     let command_id = Uuid::new_v4();
     let mut env = req.env.clone();
+    // The session's model before any per-account remapping (CCT-406). When a
+    // named account is selected below, its alias map can rewrite this to a
+    // concrete model id (e.g. `opus` → `claude-opus-4-8[1m]`).
+    let mut model = req.model.clone().filter(|m| !m.trim().is_empty());
     if let Some(account_name) = req.account.as_deref().filter(|a| !a.trim().is_empty()) {
         // Accounts are user-owned. The admin token has no user identity, so it
         // resolves the account against the target machine's owner (CCT-251) —
         // the session runs on that user's machine with that user's account.
         let uid = ctx.user_id.unwrap_or(owner);
+        // Resolve the model through this account's alias map (CCT-406) before it
+        // reaches the worker — a no-op when the account has no matching alias.
+        if let Some(m) = model.as_deref() {
+            model = Some(
+                crate::routes::gateway::resolve_account_model(
+                    &state,
+                    uid,
+                    account_name,
+                    req.provider.as_deref().filter(|p| !p.trim().is_empty()),
+                    &adapter_id,
+                    m,
+                )
+                .await,
+            );
+        }
         // The account drives the base URL + family (CCT-399); the explicit
         // `provider` disambiguates a name shared across providers, falling back
         // to the adapter-derived family when absent.
@@ -154,7 +173,7 @@ pub async fn spawn_session(
         name: req.name.clone(),
         permission_mode: req.permission_mode,
         effort: req.effort.clone().filter(|e| !e.trim().is_empty()),
-        model: req.model.clone().filter(|m| !m.trim().is_empty()),
+        model,
         env,
         bootstrap,
     };
