@@ -13,8 +13,11 @@
 		busy = true;
 		err = '';
 		try {
-			// Validate the token against an admin-only read before persisting it.
-			const res = await fetch(`${apiBase()}/admin/users`, {
+			// Validate the token against `/me` (open to any authenticated caller —
+			// admin, user, or machine) before persisting it. Probing an admin-only
+			// route here used to reject valid user tokens despite the prompt
+			// offering "admin or user token" (CCT-407).
+			const res = await fetch(`${apiBase()}/me`, {
 				headers: { Authorization: `Bearer ${token.trim()}` }
 			});
 			if (res.status === 401 || res.status === 403) {

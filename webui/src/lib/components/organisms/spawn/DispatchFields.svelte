@@ -49,7 +49,7 @@
 	}
 </script>
 
-{#if dispatcherIds.length > 1}
+{#if dispatcherIds.length >= 1}
 	<Field label="Dispatcher" for="sp-dispatcher">
 		<Select id="sp-dispatcher" bind:value={form.dispatcher}>
 			{#each dispatcherIds as d (d)}<option value={d}>{d}</option>{/each}

@@ -156,34 +156,42 @@ async fn ensure_dispatch_machine(
     Ok((machine_id, token))
 }
 
-/// Resolve a dispatcher *name* for the caller: their own enrolled dispatcher
-/// (CCT-285) takes precedence, falling back to the global env-configured http
-/// registry. Returns `Ok(None)` to mean "no such name anywhere" so the caller
-/// can 404 distinctly from a permission denial. An enrolled dispatcher resolves
-/// to an [`EnrolledDispatcher`] that sends Dispatch commands over the WS hub.
+/// Resolve a dispatcher *name* for the caller: an enrolled dispatcher (CCT-285)
+/// takes precedence, falling back to the global env-configured http registry.
+/// Returns `Ok(None)` to mean "no such name anywhere" so the caller can 404
+/// distinctly from a permission denial. An enrolled dispatcher resolves to an
+/// [`EnrolledDispatcher`] that sends Dispatch commands over the WS hub.
+///
+/// Ownership scoping mirrors machines & connectors (CCT-407): a user token sees
+/// only its own enrolled dispatchers (`user_id = caller`); the admin token
+/// (`user_id` is `None` — the only authenticated role without a user) gets the
+/// same god-view it has elsewhere and resolves by name across ALL owners. Names
+/// are unique per `(user_id, name)` but not globally, so the admin path takes a
+/// deterministic `ORDER BY created_at LIMIT 1` — acceptable until dispatchers
+/// are addressable by id; if two users enroll the same name, admin hits the
+/// oldest.
 async fn resolve_dispatcher(
     state: &AppState,
     user_id: Option<uuid::Uuid>,
     name: &str,
 ) -> Result<Option<std::sync::Arc<dyn Dispatcher>>, DispatchError> {
-    if let Some(uid) = user_id {
-        let row: Option<(uuid::Uuid,)> = sqlx::query_as(
-            "SELECT id FROM dispatchers \
-             WHERE user_id = $1 AND name = $2 AND deleted_at IS NULL AND revoked_at IS NULL \
-             LIMIT 1",
-        )
-        .bind(uid)
-        .bind(name)
-        .fetch_optional(&state.pool)
-        .await
-        .map_err(|e| DispatchError::Backend(format!("dispatcher lookup: {e}")))?;
-        if let Some((dispatcher_id,)) = row {
-            return Ok(Some(std::sync::Arc::new(EnrolledDispatcher::new(
-                name,
-                dispatcher_id,
-                state.clone(),
-            ))));
-        }
+    let row: Option<(uuid::Uuid,)> = sqlx::query_as(
+        "SELECT id FROM dispatchers \
+         WHERE ($1::uuid IS NULL OR user_id = $1) AND name = $2 \
+         AND deleted_at IS NULL AND revoked_at IS NULL \
+         ORDER BY created_at LIMIT 1",
+    )
+    .bind(user_id)
+    .bind(name)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| DispatchError::Backend(format!("dispatcher lookup: {e}")))?;
+    if let Some((dispatcher_id,)) = row {
+        return Ok(Some(std::sync::Arc::new(EnrolledDispatcher::new(
+            name,
+            dispatcher_id,
+            state.clone(),
+        ))));
     }
     // Fall back to a global env-configured http dispatcher (escape hatch).
     match state.dispatchers.get(name) {
@@ -194,22 +202,26 @@ async fn resolve_dispatcher(
 }
 
 /// `GET /api/v1/sessions/dispatchers` — the names of every dispatcher the
-/// caller can target: their own named dispatchers (CCT-235) merged with the
+/// caller can target: their enrolled dispatchers (CCT-235) merged with the
 /// global env-configured registry. The web UI uses this to populate the
 /// dispatch picker. Any authenticated caller may read it (no role gate,
 /// matching dispatch itself — see CCT-185 for per-user gating).
+///
+/// Ownership scoping matches [`resolve_dispatcher`] (CCT-407): a user sees its
+/// own enrolled dispatchers; the admin token (`user_id` is `None`) sees ALL of
+/// them, so the picker offers everything an admin can actually dispatch to.
 pub async fn list_dispatchers(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
 ) -> Json<Vec<String>> {
     let mut ids = state.dispatchers.ids();
-    if let Some(uid) = ctx.user_id
-        && let Ok(names) = sqlx::query_scalar::<_, String>(
-            "SELECT name FROM dispatchers WHERE user_id = $1 AND deleted_at IS NULL",
-        )
-        .bind(uid)
-        .fetch_all(&state.pool)
-        .await
+    if let Ok(names) = sqlx::query_scalar::<_, String>(
+        "SELECT name FROM dispatchers \
+         WHERE ($1::uuid IS NULL OR user_id = $1) AND deleted_at IS NULL",
+    )
+    .bind(ctx.user_id)
+    .fetch_all(&state.pool)
+    .await
     {
         ids.extend(names);
     }
