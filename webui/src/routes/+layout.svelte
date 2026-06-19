@@ -2,6 +2,7 @@
 	import '$lib/styles/app.css';
 	import { QueryClient, QueryClientProvider } from '@tanstack/svelte-query';
 	import { auth } from '$lib/auth.svelte';
+	import { settings } from '$lib/settings.svelte';
 	import { ws } from '$lib/ws.svelte';
 	import Header from '$lib/components/organisms/Header.svelte';
 	import BottomNav from '$lib/components/organisms/BottomNav.svelte';
@@ -27,6 +28,13 @@
 	$effect(() => {
 		if (auth.isAuthed) ws.connect();
 		else ws.disconnect();
+	});
+
+	// Pull server-persisted user settings once a token is established (CCT-426).
+	// `load()` is idempotent (runs once) and tolerates 401/offline by keeping the
+	// localStorage-cached / default state, so it's safe to call on every auth flip.
+	$effect(() => {
+		if (auth.isAuthed) void settings.load();
 	});
 </script>
 

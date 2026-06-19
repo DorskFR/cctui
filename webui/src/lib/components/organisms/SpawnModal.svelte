@@ -46,6 +46,7 @@
 	import DispatchFields from './spawn/DispatchFields.svelte';
 	import type { Form, Target } from './spawn/types';
 	import { adapterForProvider, isCompatibleProvider } from './spawn/options';
+	import { settings } from '$lib/settings.svelte';
 
 	let {
 		onclose,
@@ -65,30 +66,35 @@
 	const dispatcherIds = $derived($dispatchers.data ?? []);
 	const canDispatch = $derived(dispatcherIds.length > 0);
 
-	// Spawn target + form shape live in ./spawn/types.
-	let target = $state<Target>('machine');
+	// Spawn target + form shape live in ./spawn/types. Default target comes from
+	// settings (CCT-426); a prefill (re-dispatch) is always a machine spawn.
+	let target = $state<Target>(prefill ? 'machine' : settings.state.newSession.defaultTarget);
 
+	// New-session defaults are now seeded from server-persisted settings (CCT-426)
+	// rather than hardcoded; last-used per-machine prefs still take precedence when
+	// `rememberLastUsed` is on (see load()/the prefs effect below).
+	const sNew = settings.state.newSession;
 	const blank: Form = {
 		machine_id: '',
-		adapter_id: 'claude-code',
+		adapter_id: sNew.defaultAdapter || 'claude-code',
 		working_dir: '',
 		name: '',
 		prompt: '',
-		permission_mode: 'yolo',
+		permission_mode: (sNew.defaultPermissionMode || 'yolo') as Form['permission_mode'],
 		dispatcher: '',
 		identity: '',
 		repo: '',
 		ticket: '',
 		prompt_file: '',
-		model_claude: '',
-		model_codex: '',
+		model_claude: sNew.defaultModelClaude || '',
+		model_codex: sNew.defaultModelCodex || '',
 		model_account: '',
-		account: '',
+		account: sNew.defaultAccount || '',
 		account_provider: '',
-		effort_claude: '',
-		effort_codex: '',
+		effort_claude: sNew.defaultEffortClaude || '',
+		effort_codex: sNew.defaultEffortCodex || '',
 		timeout: '',
-		labels: []
+		labels: [...sNew.defaultLabels]
 	};
 	interface SpawnDraftPayload extends Partial<Form> {
 		envRows?: EnvRow[];
@@ -126,8 +132,15 @@
 	$effect(() => {
 		const list = $machines.data ?? [];
 		if (form.machine_id || !list.length) return;
+		// Precedence (CCT-426): "remember last used" on → last-used machine wins,
+		// settings default is the first-use fallback; off → settings default wins.
+		// Either way, fall back to the first available machine.
+		const remember = settings.state.newSession.rememberLastUsed;
 		const last = drafts.get(LAST_MACHINE);
-		form.machine_id = list.some((m) => m.id === last) ? last : list[0].id;
+		const def = settings.state.newSession.defaultMachineId;
+		const order = remember ? [last, def] : [def, last];
+		const pick = order.find((id) => id && list.some((m) => m.id === id));
+		form.machine_id = pick ?? list[0].id;
 	});
 
 	// Remember spawn settings PER MACHINE (CCT-274): when the selected machine
@@ -143,6 +156,9 @@
 		if (!id || id === prefsLoadedFor) return;
 		prefsLoadedFor = id;
 		if (prefill || loadedDraft) return;
+		// CCT-426: when "remember last used" is off, ignore the per-machine cache —
+		// the settings defaults seeded into `blank` are the source for a fresh form.
+		if (!settings.state.newSession.rememberLastUsed) return;
 		const p = loadMachinePrefs(id);
 		if (!p) return;
 		if (p.adapter_id) form.adapter_id = p.adapter_id;
@@ -159,9 +175,9 @@
 	// default the dispatcher to the first configured one once loaded
 	$effect(() => {
 		if (form.dispatcher || !dispatcherIds.length) return;
-		form.dispatcher = dispatcherIds.includes(form.dispatcher)
-			? form.dispatcher
-			: dispatcherIds[0];
+		// Prefer the settings default dispatcher (CCT-426), else the first configured.
+		const def = settings.state.newSession.defaultDispatcherId;
+		form.dispatcher = def && dispatcherIds.includes(def) ? def : dispatcherIds[0];
 	});
 
 	// recent working dirs on the selected machine, from the server (last 5).

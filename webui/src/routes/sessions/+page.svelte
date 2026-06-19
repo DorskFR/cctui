@@ -15,6 +15,7 @@
 	import { AutoGrid, Button, Container, Text } from '@dorsk/tsumikit';
 	import { drafts, LIST_DENSITY, LIST_VIEW, LIST_SECTION, LIST_LABELS } from '$lib/drafts';
 	import { notify } from '$lib/notify.svelte';
+	import { settings } from '$lib/settings.svelte';
 	import { tokenizeQuery } from '$lib/search';
 	import {
 		parseSections,
@@ -513,10 +514,27 @@
 		if (key === 'dispatched') return sections.has('dispatched');
 		return sections.has('live');
 	};
+	// Client-side sort of each bucket's top-level rows by the user's preference
+	// (CCT-426). 'activity' keeps the server order (last_message_at desc); the
+	// pinned bucket stays its own group above the rest, so pinned-first is intact.
+	const sortRows = (rows: SessionListItem[]): SessionListItem[] => {
+		const sort = settings.state.sessionList.sort;
+		if (sort === 'activity') return rows;
+		const ts = (v: string | null | undefined) => (v ? new Date(v).getTime() : 0);
+		const sorted = [...rows];
+		if (sort === 'created') {
+			sorted.sort((a, b) => ts(b.registered_at) - ts(a.registered_at));
+		} else if (sort === 'name') {
+			const label = (s: SessionListItem) =>
+				(s.name || s.working_dir?.split('/').filter(Boolean).pop() || s.id).toLowerCase();
+			sorted.sort((a, b) => label(a).localeCompare(label(b)));
+		}
+		return sorted;
+	};
 	const groups = $derived(
 		BUCKETS.filter((b) => bucketInSection(b.key)).map((b) => ({
 			...b,
-			sessions: topLevel.filter((s) => groupOf(s) === b.key && matchesLabelFilter(s))
+			sessions: sortRows(topLevel.filter((s) => groupOf(s) === b.key && matchesLabelFilter(s)))
 		})).filter((g) => g.sessions.length > 0)
 	);
 

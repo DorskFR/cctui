@@ -1,76 +1,216 @@
 import { browser } from '$app/environment';
+import { api } from './api';
+import { auth } from './auth.svelte';
+import type { SettingsPayload } from '@bindings/SettingsPayload';
 
-// Global, client-side app preferences. Persisted as a single JSON blob in
-// localStorage (one key, not one-per-toggle) so new switches can be added
-// without minting a new storage key each time. These are device/operator
-// preferences — not server state — mirroring the theme / fontScale singletons.
+// Server-persisted, user-scoped app settings (CCT-426, epic CCT-357). The whole
+// preference catalogue lives in a single JSON blob behind GET/PUT
+// /api/v1/settings, mirrored into localStorage for instant paint + offline
+// fallback. The `settings` singleton is the single source of truth for the
+// webui; the legacy theme/fontScale/notify singletons remain the runtime
+// drivers for those three and are simply MIRRORED into this blob (the Settings
+// panel drives both).
 const KEY = 'cctui_settings';
 
-// The shape persisted to localStorage. Every field is a simple boolean toggle
-// surfaced on the Settings page; add a field here + a default + a SETTING_DEFS
-// entry to introduce a new global toggle.
-export interface SettingsState {
+// Bumped when the persisted shape changes; `migrate()` walks an older payload up
+// to this version. v1 is the initial schema (no migrations yet).
+export const CURRENT_VERSION = 1;
+
+// Debounce window for the PUT — coalesces a burst of toggles into one write.
+const SAVE_DEBOUNCE_MS = 400;
+
+export interface NewSessionSettings {
+	/** ON: the last-used spawn config (per-machine prefs / draft) wins, with
+	 *  these defaults as the first-use fallback. OFF: seed purely from defaults. */
+	rememberLastUsed: boolean;
+	defaultTarget: 'machine' | 'dispatch';
+	defaultMachineId: string | null;
+	defaultDispatcherId: string | null;
+	defaultAdapter: string;
+	defaultModelClaude: string;
+	defaultModelCodex: string;
+	defaultEffortClaude: string;
+	defaultEffortCodex: string;
+	defaultPermissionMode: string;
+	defaultAccount: string | null;
+	defaultLabels: string[];
+}
+
+export interface SessionListSettings {
+	sort: 'activity' | 'created' | 'name';
+	view: 'list' | 'card';
+	density: 'compact' | 'normal';
+	section: string;
+	labelFilter: string[];
+}
+
+export interface DisplaySettings {
+	theme: string;
+	fontScale: number;
 	// Cmd/Ctrl+E in an open conversation interrupts any in-flight turn and then
-	// archives the session (Beeper/Slack-style archive chord). Disable to turn
-	// the shortcut off entirely.
+	// archives the session (Beeper/Slack-style archive chord). Preserved from the
+	// previous localStorage-only Settings (CCT-426).
 	archiveShortcut: boolean;
+	notifyEnabled: boolean;
+	notifySound: boolean;
+}
+
+export interface SettingsState {
+	newSession: NewSessionSettings;
+	sessionList: SessionListSettings;
+	display: DisplaySettings;
+	// Reserved for a future keyboard-shortcuts surface (no UI yet, CCT-426).
+	shortcutsEnabled: boolean;
+	keymap: Record<string, string>;
 }
 
 const DEFAULTS: SettingsState = {
-	archiveShortcut: true
+	newSession: {
+		rememberLastUsed: true,
+		defaultTarget: 'machine',
+		defaultMachineId: null,
+		defaultDispatcherId: null,
+		defaultAdapter: 'claude-code',
+		defaultModelClaude: '',
+		defaultModelCodex: '',
+		defaultEffortClaude: '',
+		defaultEffortCodex: '',
+		defaultPermissionMode: 'yolo',
+		defaultAccount: null,
+		defaultLabels: []
+	},
+	sessionList: {
+		sort: 'activity',
+		view: 'list',
+		density: 'normal',
+		section: '',
+		labelFilter: []
+	},
+	display: {
+		theme: 'dark',
+		fontScale: 1,
+		archiveShortcut: true,
+		notifyEnabled: false,
+		notifySound: true
+	},
+	shortcutsEnabled: false,
+	keymap: {}
 };
 
-export interface SettingDef {
-	key: keyof SettingsState;
-	label: string;
-	description: string;
+// Deep-merge a partial saved blob over DEFAULTS so a value missing from an older
+// payload (a field added in a later release) falls back to its default rather
+// than becoming undefined. One level of nesting covers the catalogue shape.
+function mergeDefaults(partial: Partial<SettingsState> | null | undefined): SettingsState {
+	const p = partial ?? {};
+	return {
+		newSession: { ...DEFAULTS.newSession, ...(p.newSession ?? {}) },
+		sessionList: { ...DEFAULTS.sessionList, ...(p.sessionList ?? {}) },
+		display: { ...DEFAULTS.display, ...(p.display ?? {}) },
+		shortcutsEnabled: p.shortcutsEnabled ?? DEFAULTS.shortcutsEnabled,
+		keymap: p.keymap ?? DEFAULTS.keymap
+	};
 }
 
-// Ordered list driving the Settings page UI. Keep in sync with SettingsState /
-// DEFAULTS — one entry per toggle, top to bottom.
-export const SETTING_DEFS: SettingDef[] = [
-	{
-		key: 'archiveShortcut',
-		label: 'Archive shortcut',
-		description:
-			'In an open conversation, ⌘ E (Mac) / Ctrl + E interrupts any running turn and archives the session.'
-	}
-];
+// Client-side payload migration chain, mirroring the server's idea: walk an
+// older `data` blob up to CURRENT_VERSION. v1 is a passthrough — add a `case`
+// per version bump. Pure; never throws.
+function migrate(data: unknown, version: number): Partial<SettingsState> {
+	let d = (data ?? {}) as Partial<SettingsState>;
+	let v = version;
+	// while (v < CURRENT_VERSION) { switch (v) { case 1: d = …; v = 2; break; } }
+	void v;
+	return d;
+}
 
 class Settings {
-	state = $state<SettingsState>({ ...DEFAULTS });
+	state = $state<SettingsState>(mergeDefaults(null));
+
+	private saveTimer: ReturnType<typeof setTimeout> | null = null;
+	private loaded = false;
 
 	constructor() {
 		if (browser) {
+			// Synchronous seed from the localStorage cache for instant paint (also the
+			// offline fallback). Tolerate corrupt/blocked storage — never throw during
+			// module init (which would blank the whole UI).
 			try {
 				const raw = localStorage.getItem(KEY);
-				if (raw) {
-					const parsed = JSON.parse(raw) as Partial<SettingsState>;
-					// Merge over defaults so a value the saved blob is missing (a toggle
-					// added in a later release) falls back to its default instead of
-					// becoming undefined.
-					this.state = { ...DEFAULTS, ...parsed };
-				}
+				if (raw) this.state = mergeDefaults(JSON.parse(raw) as Partial<SettingsState>);
 			} catch {
-				// Corrupt/blocked storage — fall back to defaults rather than throwing
-				// during module init (which would blank the whole UI).
-				this.state = { ...DEFAULTS };
+				this.state = mergeDefaults(null);
 			}
 		}
 	}
 
+	/** Pull the server copy once auth is known, run the migration chain, merge
+	 *  over defaults, and refresh the cache. Tolerates failure (401/offline) by
+	 *  keeping the cached/default state. Safe to call repeatedly; runs once. */
+	async load(): Promise<void> {
+		if (!browser || this.loaded || !auth.token) return;
+		this.loaded = true;
+		try {
+			const payload = await api.get<SettingsPayload>('/settings');
+			const migrated = migrate(payload.data, payload.version ?? CURRENT_VERSION);
+			this.state = mergeDefaults(migrated);
+			this.writeCache();
+		} catch {
+			// 401 / offline / decode error — keep the cached or default state.
+		}
+	}
+
+	private writeCache() {
+		if (browser) {
+			try {
+				localStorage.setItem(KEY, JSON.stringify(this.state));
+			} catch {
+				/* quota / blocked storage — the in-memory state still holds it */
+			}
+		}
+	}
+
+	private scheduleSave() {
+		if (!browser || !auth.token) return;
+		if (this.saveTimer) clearTimeout(this.saveTimer);
+		this.saveTimer = setTimeout(() => {
+			this.saveTimer = null;
+			const body: SettingsPayload = {
+				version: CURRENT_VERSION,
+				data: this.state as unknown as SettingsPayload['data']
+			};
+			// Fire-and-forget; the cache already holds the value if the PUT drops.
+			void api.put('/settings', body).catch(() => {});
+		}, SAVE_DEBOUNCE_MS);
+	}
+
+	/** Persist after a mutation: cache immediately, debounce the server PUT. */
+	private persist() {
+		this.writeCache();
+		this.scheduleSave();
+	}
+
+	// Section setters — replace a whole group (or a subset of its fields) and
+	// persist. Components mutate via these so every write goes through the cache +
+	// debounced save path.
+	setNewSession(patch: Partial<NewSessionSettings>) {
+		this.state.newSession = { ...this.state.newSession, ...patch };
+		this.persist();
+	}
+	setSessionList(patch: Partial<SessionListSettings>) {
+		this.state.sessionList = { ...this.state.sessionList, ...patch };
+		this.persist();
+	}
+	setDisplay(patch: Partial<DisplaySettings>) {
+		this.state.display = { ...this.state.display, ...patch };
+		this.persist();
+	}
+
+	toggleArchiveShortcut() {
+		this.setDisplay({ archiveShortcut: !this.state.display.archiveShortcut });
+	}
+
 	// Convenience reader for the most-used toggle (keeps call sites terse).
 	get archiveShortcut(): boolean {
-		return this.state.archiveShortcut;
-	}
-
-	set(key: keyof SettingsState, value: boolean) {
-		this.state[key] = value;
-		if (browser) localStorage.setItem(KEY, JSON.stringify(this.state));
-	}
-
-	toggle(key: keyof SettingsState) {
-		this.set(key, !this.state[key]);
+		return this.state.display.archiveShortcut;
 	}
 }
 
