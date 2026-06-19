@@ -21,8 +21,7 @@
 		codexEfforts,
 		modes,
 		adapterForProvider,
-		isCompatibleProvider,
-		adapterLabel
+		isCompatibleProvider
 	} from './options';
 	import { submitChordLabel, isSubmitChord } from '$lib/platform';
 	import type { Form } from './types';
@@ -115,7 +114,7 @@
 <Field label="Prompt (optional)" for="sp-prompt">
 	<Textarea
 		id="sp-prompt"
-		style="min-height:8rem;max-height:60vh;resize:none;overflow-y:auto"
+		style="min-height:8rem;max-height:14rem;resize:vertical;overflow-y:auto"
 		placeholder="Initial prompt…"
 		bind:value={form.prompt}
 		autoresize
@@ -129,9 +128,12 @@
 	<Text size="xs" tone="faint" style="display:block;margin-top:var(--sp-1)">{submitChordLabel()} to create</Text>
 </Field>
 
-<!-- Account → Model → Harness (CCT-399). The account is the primary axis: it
-     locks the harness and drives the model list. "Default (no account)" keeps
-     the old adapter-first flow below. -->
+<!-- Account → Harness → Model (CCT-399/CCT-404). The account is the primary
+     axis: it locks the harness and drives the model list. The field ORDER is
+     stable regardless of selection (CCT-404) — picking an account doesn't
+     reflow the form, it just locks the harness cards (read-only + a lock badge)
+     rather than swapping them for a different control. "Default (no account)"
+     keeps the adapter-first flow. -->
 <Field label="Account" for="sp-account">
 	<Select id="sp-account" value={form.account} onchange={(e) => onAccountChange((e.currentTarget as HTMLSelectElement).value)}>
 		<option value="">Default (no account)</option>
@@ -146,72 +148,66 @@
 	{/if}
 </Field>
 
-{#if selectedAccount}
-	<!-- Model: driven by the account (compatible → its models; native → families). -->
-	<Field label="Model" for="sp-model-acct">
-		{#if usesAccountModels}
-			<Select id="sp-model-acct" bind:value={form.model_account}>
-				{#if !accountModelOptions.length}
-					<option value="">Default</option>
-				{/if}
-				{#each accountModelOptions as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
-			</Select>
-		{:else if effectiveAdapter === 'codex'}
-			<Select id="sp-model-acct" bind:value={form.model_codex}>
-				{#each codexModels as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
-			</Select>
-		{:else}
-			<Select id="sp-model-acct" bind:value={form.model_claude}>
-				{#each claudeModels as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
-			</Select>
-		{/if}
-	</Field>
+<!-- Harness: same two cards always; locked (disabled + a 🔒 badge on the active
+     card) when an account fixes the harness, so the layout never shifts. -->
+<Field label="Harness">
+	<div class="adapters">
+		<OptionButton
+			row
+			disabled={!!selectedAccount}
+			selected={(selectedAccount ? effectiveAdapter : form.adapter_id) === 'claude-code'}
+			style="--opt-accent: var(--c-amber)"
+			onclick={() => {
+				if (!selectedAccount) form.adapter_id = 'claude-code';
+			}}
+		>
+			<BrandLogo adapter="claude-code" size={18} />
+			<Text>Claude Code</Text>
+			{#if selectedAccount && effectiveAdapter === 'claude-code'}
+				<span class="lock" title="Locked by the selected account">🔒</span>
+			{/if}
+		</OptionButton>
+		<OptionButton
+			row
+			disabled={!!selectedAccount}
+			selected={(selectedAccount ? effectiveAdapter : form.adapter_id) === 'codex'}
+			style="--opt-accent: var(--c-blue)"
+			onclick={() => {
+				if (!selectedAccount) form.adapter_id = 'codex';
+			}}
+		>
+			<BrandLogo adapter="codex" size={18} />
+			<Text>Codex</Text>
+			{#if selectedAccount && effectiveAdapter === 'codex'}
+				<span class="lock" title="Locked by the selected account">🔒</span>
+			{/if}
+		</OptionButton>
+	</div>
+	{#if selectedAccount}
+		<Text tone="faint" size="xs">Harness is locked by the selected account.</Text>
+	{/if}
+</Field>
 
-	<!-- Harness: locked + read-only when an account is chosen. -->
-	<Field label="Harness">
-		<div class="locked-harness">
-			<BrandLogo adapter={effectiveAdapter} size={18} />
-			<Text>{adapterLabel(effectiveAdapter)}</Text>
-			<Text tone="faint" size="xs">locked by account</Text>
-		</div>
-	</Field>
-{:else}
-	<!-- Default (no account): adapter-first flow. -->
-	<Field label="Harness">
-		<div class="adapters">
-			<OptionButton
-				row
-				selected={form.adapter_id === 'claude-code'}
-				style="--opt-accent: var(--c-amber)"
-				onclick={() => (form.adapter_id = 'claude-code')}
-			>
-				<BrandLogo adapter="claude-code" size={18} />
-				<Text>Claude Code</Text>
-			</OptionButton>
-			<OptionButton
-				row
-				selected={form.adapter_id === 'codex'}
-				style="--opt-accent: var(--c-blue)"
-				onclick={() => (form.adapter_id = 'codex')}
-			>
-				<BrandLogo adapter="codex" size={18} />
-				<Text>Codex</Text>
-			</OptionButton>
-		</div>
-	</Field>
-
-	<Field label="Model" for="sp-model-m">
-		{#if form.adapter_id === 'codex'}
-			<Select id="sp-model-m" bind:value={form.model_codex}>
-				{#each codexModels as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
-			</Select>
-		{:else}
-			<Select id="sp-model-m" bind:value={form.model_claude}>
-				{#each claudeModels as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
-			</Select>
-		{/if}
-	</Field>
-{/if}
+<!-- Model: driven by the effective harness — the account's own models for a
+     compatible endpoint, else the harness's native families. -->
+<Field label="Model" for="sp-model">
+	{#if usesAccountModels}
+		<Select id="sp-model" bind:value={form.model_account}>
+			{#if !accountModelOptions.length}
+				<option value="">Default</option>
+			{/if}
+			{#each accountModelOptions as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
+		</Select>
+	{:else if effectiveAdapter === 'codex'}
+		<Select id="sp-model" bind:value={form.model_codex}>
+			{#each codexModels as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
+		</Select>
+	{:else}
+		<Select id="sp-model" bind:value={form.model_claude}>
+			{#each claudeModels as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
+		</Select>
+	{/if}
+</Field>
 
 <!-- Per-adapter effort: keyed off the effective harness so an account-locked
      codex still shows codex efforts. -->
@@ -252,14 +248,12 @@
 		grid-template-columns: 1fr 1fr;
 		gap: var(--sp-2);
 	}
-	.locked-harness {
-		display: flex;
-		align-items: center;
-		gap: var(--sp-2);
-		padding: var(--sp-2) var(--sp-3);
-		border: 1px solid var(--border);
-		border-radius: var(--r-sm);
-		background: var(--bg-elevated-2);
+	/* The 🔒 badge lives inside an OptionButton (a component), so reach it
+	   globally; margin-left:auto pins it to the card's trailing corner. */
+	.adapters :global(.lock) {
+		margin-left: auto;
+		font-size: 0.85em;
+		opacity: 0.7;
 	}
 	.modes {
 		display: grid;
