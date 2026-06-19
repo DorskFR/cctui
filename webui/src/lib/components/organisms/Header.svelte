@@ -93,13 +93,29 @@
 			options={SCALE_LEVELS.map((l) => ({ value: l.id, label: l.label }))}
 			onchange={(v) => fontScale.set(v)}
 		/>
-		<!-- Theme picker (CCT-250 item 5): pick any palette directly. -->
+		<!-- Theme picker (CCT-250 item 5): pick any palette directly. Grouped into
+		     light/dark sections (TSU-1 / CCT-401) so the long list stays scannable. -->
 		<SelectButton
 			glyph={theme.icon}
 			label="Theme"
 			title={`Theme: ${theme.label}`}
 			value={theme.current}
-			options={THEMES.map((t) => ({ value: t.id, label: `${t.icon} ${t.label}` }))}
+			groups={[
+				{
+					label: '— light',
+					options: THEMES.filter((t) => t.mode === 'light').map((t) => ({
+						value: t.id,
+						label: `${t.icon}  ${t.label}`
+					}))
+				},
+				{
+					label: '— dark',
+					options: THEMES.filter((t) => t.mode === 'dark').map((t) => ({
+						value: t.id,
+						label: `${t.icon}  ${t.label}`
+					}))
+				}
+			]}
 			onchange={(v) => theme.set(v as typeof theme.current)}
 		/>
 	</div>
