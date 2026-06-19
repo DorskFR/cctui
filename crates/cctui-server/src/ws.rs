@@ -6,8 +6,32 @@ use cctui_proto::ws::{AgentEvent, ServerEvent, TuiCommand};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 
-use crate::auth::Scope;
+use crate::auth::{AuthContext, Scope};
 use crate::state::AppState;
+
+/// Authorize a WS command against a session for the connected principal,
+/// mirroring the HTTP ownership gate (`spawn.rs`/`admin.rs`): admins always
+/// pass; everyone else must own the session (resolved via
+/// `machine_uuid -> machines.user_id`). A session whose owner can't be resolved
+/// is denied for non-admins rather than leaked. Returns `true` when permitted.
+async fn ws_owns_session(state: &AppState, ctx: &AuthContext, session_id: &str) -> bool {
+    if ctx.is_admin() {
+        return true;
+    }
+    let owner: Option<Option<uuid::Uuid>> = sqlx::query_scalar(
+        "SELECT m.user_id \
+         FROM sessions s LEFT JOIN machines m ON m.id = s.machine_uuid \
+         WHERE s.id = $1",
+    )
+    .bind(session_id)
+    .fetch_optional(&state.pool)
+    .await
+    .unwrap_or_else(|e| {
+        tracing::error!(%session_id, "db error (ws session authz): {e}");
+        None
+    });
+    owner.flatten() == Some(ctx.user_id)
+}
 
 fn extract_token_from_uri(uri: &Uri) -> Option<String> {
     uri.query().and_then(|q| {
@@ -37,7 +61,7 @@ pub async fn tui_ws(
         return Err(StatusCode::FORBIDDEN);
     }
 
-    Ok(ws.on_upgrade(move |socket| handle_tui_ws(socket, state)))
+    Ok(ws.on_upgrade(move |socket| handle_tui_ws(socket, state, auth_ctx)))
 }
 
 fn spawn_send_task(
@@ -202,6 +226,7 @@ async fn handle_subscribe(
 async fn run_tui_socket(
     mut stream: futures_util::stream::SplitStream<WebSocket>,
     state: AppState,
+    ctx: AuthContext,
     event_tx: mpsc::Sender<ServerEvent>,
 ) {
     // Relay tasks keyed by session id, so a resubscribe replaces (not stacks)
@@ -226,6 +251,13 @@ async fn run_tui_socket(
 
         match cmd {
             TuiCommand::Subscribe { session_id } => {
+                // Only stream a session this principal owns (admin bypasses).
+                // Pending-ask/permission replay lives inside handle_subscribe,
+                // so gating here keeps the whole replay path owner-scoped too.
+                if !ws_owns_session(&state, &ctx, &session_id).await {
+                    tracing::debug!(session_id = %session_id, user_id = %ctx.user_id, "tui_ws: subscribe denied (not owner)");
+                    continue;
+                }
                 handle_subscribe(session_id, &state, &event_tx, &mut sub_handles).await;
             }
             TuiCommand::Unsubscribe { session_id } => {
@@ -236,10 +268,33 @@ async fn run_tui_socket(
                 }
             }
             TuiCommand::Message { session_id, content, client_msg_id, ask_picks } => {
+                if !ws_owns_session(&state, &ctx, &session_id).await {
+                    tracing::debug!(session_id = %session_id, user_id = %ctx.user_id, "tui_ws: message denied (not owner)");
+                    // Ack the failure when the client opted in, so it doesn't
+                    // hang waiting on a delivery state for a denied send.
+                    if let Some(client_msg_id) = client_msg_id {
+                        let _ = event_tx
+                            .send(ServerEvent::MessageAck {
+                                session_id,
+                                client_msg_id,
+                                ok: false,
+                                error: Some("forbidden".into()),
+                            })
+                            .await;
+                    }
+                    continue;
+                }
                 handle_message(&state, &event_tx, session_id, content, client_msg_id, ask_picks)
                     .await;
             }
             TuiCommand::PermissionResponse { session_id, request_id, behavior } => {
+                // Authorize against the session id the client supplied. The
+                // store's record_decision may re-resolve to a stored session id
+                // below, but the principal must own the one they're acting on.
+                if !ws_owns_session(&state, &ctx, &session_id).await {
+                    tracing::debug!(session_id = %session_id, user_id = %ctx.user_id, "tui_ws: permission-response denied (not owner)");
+                    continue;
+                }
                 tracing::info!(
                     session_id = %session_id,
                     request_id = %request_id,
@@ -293,14 +348,48 @@ async fn run_tui_socket(
     }
 }
 
+/// The `session_id` a server-initiated event pertains to, if any. Events with a
+/// session id are owner-scoped on the relay (CCT-417); the rest
+/// (`CommandResult`, machine-level/manifest events) are not session-scoped and
+/// pass through. `MessageAck` is already point-to-point (sent only to the
+/// originating socket via `event_tx`, not broadcast), but we still scope it
+/// defensively.
+fn event_session_id(event: &ServerEvent) -> Option<&str> {
+    match event {
+        ServerEvent::Stream { session_id, .. }
+        | ServerEvent::Status { session_id, .. }
+        | ServerEvent::SessionDeregistered { session_id }
+        | ServerEvent::PermissionRequest { session_id, .. }
+        | ServerEvent::PermissionResolved { session_id, .. }
+        | ServerEvent::AskQuestion { session_id, .. }
+        | ServerEvent::AskResolved { session_id }
+        | ServerEvent::PlanRequest { session_id, .. }
+        | ServerEvent::PlanResolved { session_id }
+        | ServerEvent::MessageAck { session_id, .. } => Some(session_id),
+        // `SessionRegistered` carries a whole Session; resolving its owner from
+        // the broadcast path is heavier and it is list-metadata, not the
+        // conversation surface this ticket scopes — left as-is.
+        _ => None,
+    }
+}
+
 fn spawn_server_event_relay(
     mut receiver: tokio::sync::broadcast::Receiver<ServerEvent>,
+    state: AppState,
+    ctx: AuthContext,
     event_tx: mpsc::Sender<ServerEvent>,
 ) {
     tokio::spawn(async move {
         loop {
             match receiver.recv().await {
                 Ok(event) => {
+                    // Drop session-scoped events for sessions this principal
+                    // doesn't own (admin bypasses). Non-session events pass.
+                    if let Some(session_id) = event_session_id(&event)
+                        && !ws_owns_session(&state, &ctx, session_id).await
+                    {
+                        continue;
+                    }
                     if event_tx.send(event).await.is_err() {
                         break;
                     }
@@ -314,15 +403,16 @@ fn spawn_server_event_relay(
     });
 }
 
-async fn handle_tui_ws(socket: WebSocket, state: AppState) {
+async fn handle_tui_ws(socket: WebSocket, state: AppState, ctx: AuthContext) {
     let (sink, stream) = socket.split();
     let (tx, rx) = mpsc::channel::<ServerEvent>(256);
 
-    // Relay server-initiated events (e.g. permission requests) to this TUI client
-    spawn_server_event_relay(state.tui_tx.subscribe(), tx.clone());
+    // Relay server-initiated events (e.g. permission requests) to this TUI
+    // client, scoped to sessions the principal owns (admin sees all, CCT-417).
+    spawn_server_event_relay(state.tui_tx.subscribe(), state.clone(), ctx.clone(), tx.clone());
 
     spawn_send_task(sink, rx);
-    run_tui_socket(stream, state, tx).await;
+    run_tui_socket(stream, state, ctx, tx).await;
 
     tracing::debug!("TUI WebSocket disconnected");
 }

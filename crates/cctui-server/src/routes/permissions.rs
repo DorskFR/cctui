@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use axum::Json;
 use axum::extract::State;
+use axum::{Extension, Json};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use tokio::sync::RwLock;
 
+use crate::auth::AuthContext;
 use crate::state::AppState;
 
 // --- Permission store (in-memory) ---
@@ -187,11 +188,47 @@ pub struct PendingPermissionView {
 
 /// List all currently-pending permission requests (for web client
 /// reconciliation on (re)connect).
-pub async fn list_pending(State(state): State<AppState>) -> Json<Vec<PendingPermissionView>> {
-    let store = state.permission_store.read().await;
+pub async fn list_pending(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+) -> Json<Vec<PendingPermissionView>> {
+    let pending = {
+        let store = state.permission_store.read().await;
+        store.list_pending()
+    };
+
+    // Scope pending prompts to sessions the caller owns (admin sees all),
+    // resolving ownership via each item's session_id (CCT-417). One batched
+    // `machine_uuid -> machines.user_id` lookup over the distinct session ids.
+    let pending: Vec<PendingPermission> = if ctx.is_admin() {
+        pending
+    } else {
+        let session_ids: Vec<String> = pending
+            .iter()
+            .map(|p| p.session_id.clone())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        let owned: std::collections::HashSet<String> = sqlx::query_scalar::<_, String>(
+            "SELECT s.id FROM sessions s \
+             LEFT JOIN machines m ON m.id = s.machine_uuid \
+             WHERE s.id = ANY($1) AND m.user_id = $2",
+        )
+        .bind(&session_ids)
+        .bind(ctx.user_id)
+        .fetch_all(&state.pool)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!("db error (pending permissions authz): {e}");
+            Vec::new()
+        })
+        .into_iter()
+        .collect();
+        pending.into_iter().filter(|p| owned.contains(&p.session_id)).collect()
+    };
+
     Json(
-        store
-            .list_pending()
+        pending
             .into_iter()
             .map(|p| PendingPermissionView {
                 session_id: p.session_id,

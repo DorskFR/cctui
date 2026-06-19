@@ -5,6 +5,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use chrono::{DateTime, Duration, Utc};
 use serde::Deserialize;
+use uuid::Uuid;
 
 use cctui_proto::api::{
     ApiError, AttachLabelRequest, CreateLabelRequest, Label, LabelListResponse, MessageRequest,
@@ -14,7 +15,74 @@ use cctui_proto::api::{
 use cctui_proto::classifier::{Bucket, ClassifyInput, PrStatus, classify};
 use cctui_proto::models::{Attention, Liveness, SessionStatus};
 
+use axum::Extension;
+
+use crate::auth::AuthContext;
 use crate::state::AppState;
+
+/// Resolve a session's owning user (via `machine_uuid -> machines.user_id`) and
+/// gate access against the caller, copying the `spawn.rs` ownership pattern.
+/// Returns:
+/// - `Ok(())` when the caller is an admin or owns the session;
+/// - `Err(404)` when the session is unknown or has no resolvable owner (a 404
+///   rather than 403 avoids leaking the existence of other users' sessions,
+///   matching `spawn.rs`/`fork_session` not-found shapes);
+/// - `Err(403)` when the session exists and is owned by someone else.
+///
+/// Admins (`god_view_uid() == None`) always pass without a DB lookup.
+async fn authorize_session(
+    state: &AppState,
+    ctx: &AuthContext,
+    session_id: &str,
+) -> Result<(), (StatusCode, Json<ApiError>)> {
+    if ctx.is_admin() {
+        return Ok(());
+    }
+    let owner: Option<Option<Uuid>> = sqlx::query_scalar(
+        "SELECT m.user_id \
+         FROM sessions s LEFT JOIN machines m ON m.id = s.machine_uuid \
+         WHERE s.id = $1",
+    )
+    .bind(session_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("db error (session authz): {e}");
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+    })?;
+    match owner.flatten() {
+        Some(uid) if uid == ctx.user_id => Ok(()),
+        Some(_) => {
+            Err((StatusCode::FORBIDDEN, Json(ApiError { error: "not your session".into() })))
+        }
+        // Unknown session, or one whose machine/owner can't be resolved: 404 so
+        // we don't leak which session ids exist for other users.
+        None => Err((StatusCode::NOT_FOUND, Json(ApiError { error: "session not found".into() }))),
+    }
+}
+
+/// Resolve the owning user for a batch of session ids in one query, then keep
+/// only the ids the caller may act on (admins keep every requested id). Used by
+/// the batch archive/pin routes so a caller can't sweep other users' sessions.
+async fn filter_owned_ids(
+    state: &AppState,
+    ctx: &AuthContext,
+    ids: &[String],
+) -> Result<Vec<String>, sqlx::Error> {
+    if ctx.is_admin() {
+        return Ok(ids.to_vec());
+    }
+    let owned: Vec<String> = sqlx::query_scalar(
+        "SELECT s.id \
+         FROM sessions s LEFT JOIN machines m ON m.id = s.machine_uuid \
+         WHERE s.id = ANY($1) AND m.user_id = $2",
+    )
+    .bind(ids)
+    .bind(ctx.user_id)
+    .fetch_all(&state.pool)
+    .await?;
+    Ok(owned)
+}
 
 /// Derived-status thresholds. A session is considered:
 /// - `Active` if its last heartbeat is within this window;
@@ -141,27 +209,37 @@ pub struct RecentDirsParams {
 /// `machine_id`, returns the most recent dirs across all machines.
 pub async fn recent_dirs(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Query(params): Query<RecentDirsParams>,
 ) -> Result<Json<Vec<String>>, (StatusCode, Json<ApiError>)> {
+    // Scope to the caller's own sessions (admin sees all) via the
+    // machine_uuid -> machines.user_id join, bound to god_view_uid().
+    let uid = ctx.god_view_uid();
     let rows: Vec<(String,)> = match params.machine_id.as_deref() {
         Some(machine_id) => {
             sqlx::query_as(
-                "SELECT working_dir FROM sessions \
-             WHERE machine_id = $1 AND working_dir <> '' \
-             GROUP BY working_dir \
-             ORDER BY MAX(registered_at) DESC LIMIT 5",
+                "SELECT s.working_dir FROM sessions s \
+             LEFT JOIN machines m ON m.id = s.machine_uuid \
+             WHERE s.machine_id = $1 AND s.working_dir <> '' \
+             AND ($2::uuid IS NULL OR m.user_id = $2) \
+             GROUP BY s.working_dir \
+             ORDER BY MAX(s.registered_at) DESC LIMIT 5",
             )
             .bind(machine_id)
+            .bind(uid)
             .fetch_all(&state.pool)
             .await
         }
         None => {
             sqlx::query_as(
-                "SELECT working_dir FROM sessions \
-             WHERE working_dir <> '' \
-             GROUP BY working_dir \
-             ORDER BY MAX(registered_at) DESC LIMIT 5",
+                "SELECT s.working_dir FROM sessions s \
+             LEFT JOIN machines m ON m.id = s.machine_uuid \
+             WHERE s.working_dir <> '' \
+             AND ($1::uuid IS NULL OR m.user_id = $1) \
+             GROUP BY s.working_dir \
+             ORDER BY MAX(s.registered_at) DESC LIMIT 5",
             )
+            .bind(uid)
             .fetch_all(&state.pool)
             .await
         }
@@ -176,14 +254,49 @@ pub async fn recent_dirs(
 #[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
 pub async fn list_sessions(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Query(params): Query<ListParams>,
 ) -> Result<Json<SessionListResponse>, (StatusCode, Json<ApiError>)> {
+    let uid = ctx.god_view_uid();
+    let db_err = |e: sqlx::Error| {
+        tracing::error!("db error: {e}");
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+    };
+
     // Live sessions from in-memory registry — keep registered_at for sorting.
+    // Non-admins only see registry entries they own. The registry's
+    // `machine_id` is freeform (UUID or hostname), so ownership can't be read
+    // off the handle directly — resolve it from the DB: which of the live ids
+    // are owned by this caller. A live session with no resolvable owner is
+    // EXCLUDED for non-admins rather than leaked.
+    let owned_live_ids: Option<HashSet<String>> = if ctx.is_admin() {
+        None
+    } else {
+        let live_ids: Vec<String> = {
+            let registry = state.registry.read().await;
+            registry.list().into_iter().map(|h| h.session.id.clone()).collect()
+        };
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT s.id FROM sessions s \
+             LEFT JOIN machines m ON m.id = s.machine_uuid \
+             WHERE s.id = ANY($1) AND m.user_id = $2",
+        )
+        .bind(&live_ids)
+        .bind(ctx.user_id)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(db_err)?;
+        Some(rows.into_iter().map(|(id,)| id).collect())
+    };
+
     let mut with_ts: Vec<(DateTime<Utc>, SessionListItem)> = {
         let registry = state.registry.read().await;
         registry
             .list()
             .into_iter()
+            .filter(|handle| {
+                owned_live_ids.as_ref().is_none_or(|owned| owned.contains(&handle.session.id))
+            })
             .map(|handle| {
                 (
                     handle.session.registered_at,
@@ -237,30 +350,35 @@ pub async fn list_sessions(
     // ALL non-archived sessions are always returned (no cap) so live/working
     // sessions are never silently truncated. The LIMIT 25 cap applies only to
     // the archived tail, and only when archived history is requested (the
-    // webui paginates the archive list separately).
-    let db_err = |e: sqlx::Error| {
-        tracing::error!("db error: {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-    };
+    // webui paginates the archive list separately). The `$1::uuid IS NULL OR
+    // m.user_id = $1` predicate scopes rows to the caller (NULL for admin).
     let non_archived_query = format!(
         "SELECT {cols} \
          FROM sessions s \
          LEFT JOIN machines m ON m.id = s.machine_uuid \
          WHERE s.status != 'archived' \
+         AND ($1::uuid IS NULL OR m.user_id = $1) \
          ORDER BY s.registered_at DESC",
     );
-    let mut rows: Vec<DbSession> =
-        sqlx::query_as(&non_archived_query).fetch_all(&state.pool).await.map_err(db_err)?;
+    let mut rows: Vec<DbSession> = sqlx::query_as(&non_archived_query)
+        .bind(uid)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(db_err)?;
     if params.include_archived {
         let archived_query = format!(
             "SELECT {cols} \
              FROM sessions s \
              LEFT JOIN machines m ON m.id = s.machine_uuid \
              WHERE s.status = 'archived' \
+             AND ($1::uuid IS NULL OR m.user_id = $1) \
              ORDER BY s.registered_at DESC LIMIT 25",
         );
-        let archived: Vec<DbSession> =
-            sqlx::query_as(&archived_query).fetch_all(&state.pool).await.map_err(db_err)?;
+        let archived: Vec<DbSession> = sqlx::query_as(&archived_query)
+            .bind(uid)
+            .fetch_all(&state.pool)
+            .await
+            .map_err(db_err)?;
         rows.extend(archived);
     }
 
@@ -322,26 +440,54 @@ pub async fn list_sessions(
 /// non-archived session's persisted signals.
 pub async fn session_stats(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
 ) -> Result<Json<SessionStats>, (StatusCode, Json<ApiError>)> {
     let db_err = |e: sqlx::Error| {
         tracing::error!("db error (session stats): {e}");
         (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
     };
+    let uid = ctx.god_view_uid();
 
+    // All counts scoped to the caller (NULL = admin sees all) via the
+    // machine_uuid -> machines.user_id join.
     let (total, archived): (i64, i64) = sqlx::query_as(
-        "SELECT COUNT(*), COUNT(*) FILTER (WHERE status = 'archived') FROM sessions",
+        "SELECT COUNT(*), COUNT(*) FILTER (WHERE s.status = 'archived') \
+         FROM sessions s LEFT JOIN machines m ON m.id = s.machine_uuid \
+         WHERE ($1::uuid IS NULL OR m.user_id = $1)",
     )
+    .bind(uid)
     .fetch_one(&state.pool)
     .await
     .map_err(db_err)?;
 
     // Live = sessions currently in the registry whose derived status is
-    // active/new (matches how the list surfaces "live").
+    // active/new (matches how the list surfaces "live"). Scope to the caller's
+    // owned live ids for non-admins (resolved from the DB, like list_sessions).
+    let owned_live_ids: Option<HashSet<String>> = if ctx.is_admin() {
+        None
+    } else {
+        let live_ids: Vec<String> = {
+            let registry = state.registry.read().await;
+            registry.list().into_iter().map(|h| h.session.id.clone()).collect()
+        };
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT s.id FROM sessions s \
+             LEFT JOIN machines m ON m.id = s.machine_uuid \
+             WHERE s.id = ANY($1) AND m.user_id = $2",
+        )
+        .bind(&live_ids)
+        .bind(ctx.user_id)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(db_err)?;
+        Some(rows.into_iter().map(|(id,)| id).collect())
+    };
     let live: i64 = {
         let registry = state.registry.read().await;
         registry
             .list()
             .into_iter()
+            .filter(|h| owned_live_ids.as_ref().is_none_or(|owned| owned.contains(&h.session.id)))
             .filter(|h| {
                 matches!(
                     derive_status(h.session.registered_at, h.session.last_heartbeat),
@@ -354,10 +500,13 @@ pub async fn session_stats(
     };
 
     // needs_input: classify every non-archived session from its persisted
-    // signals and count the Blocked bucket.
+    // signals and count the Blocked bucket — scoped to the caller.
     let signal_rows: Vec<(Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT tempo, agent_state, activity FROM sessions WHERE status != 'archived'",
+        "SELECT s.tempo, s.agent_state, s.activity \
+         FROM sessions s LEFT JOIN machines m ON m.id = s.machine_uuid \
+         WHERE s.status != 'archived' AND ($1::uuid IS NULL OR m.user_id = $1)",
     )
+    .bind(uid)
     .fetch_all(&state.pool)
     .await
     .map_err(db_err)?;
@@ -405,8 +554,10 @@ fn day_start_for_offset(now: DateTime<Utc>, tz_offset_minutes: i32) -> DateTime<
 /// shows (`↑input ↓output ⚡cache_read`). Global, like `session_stats`.
 pub async fn session_token_stats(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Query(params): Query<TokenStatsParams>,
 ) -> Result<Json<TokenUsageWindows>, (StatusCode, Json<ApiError>)> {
+    let uid = ctx.god_view_uid();
     let now = Utc::now();
     let hour = now - Duration::hours(1);
     let today = day_start_for_offset(now, params.tz_offset);
@@ -434,14 +585,17 @@ pub async fn session_token_stats(
             COALESCE(SUM(input_tokens)       FILTER (WHERE created_at >= $5), 0)::bigint, \
             COALESCE(SUM(output_tokens)      FILTER (WHERE created_at >= $5), 0)::bigint, \
             COALESCE(SUM(cache_read_tokens)  FILTER (WHERE created_at >= $5), 0)::bigint \
-         FROM session_token_usage \
-         WHERE created_at >= $5",
+         FROM session_token_usage stu \
+         LEFT JOIN sessions s ON s.id = stu.session_id \
+         LEFT JOIN machines m ON m.id = s.machine_uuid \
+         WHERE stu.created_at >= $5 AND ($6::uuid IS NULL OR m.user_id = $6)",
     )
     .bind(hour)
     .bind(today)
     .bind(day)
     .bind(week)
     .bind(month)
+    .bind(uid)
     .fetch_one(&state.pool)
     .await
     .map_err(|e| {
@@ -860,8 +1014,10 @@ fn make_snippet(text: &str, needles: &[String]) -> String {
 #[allow(clippy::too_many_lines)]
 pub async fn search_sessions(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Query(params): Query<SearchParams>,
 ) -> Result<Json<SessionListResponse>, (StatusCode, Json<ApiError>)> {
+    let uid = ctx.god_view_uid();
     let terms = tokenize_query(params.q.trim());
     let browse = terms.is_empty();
     // No terms + live-only scope: nothing to do — the bucketed list owns the
@@ -875,10 +1031,13 @@ pub async fn search_sessions(
 
     let rows: Vec<DbSession> = if browse {
         // Browse the archive: archived sessions only, newest first, paginated.
+        // `$3` scopes to the caller (NULL = admin).
         let sql = format!(
-            "{SEARCH_SELECT} WHERE s.status = 'archived' ORDER BY s.registered_at DESC LIMIT $1 OFFSET $2"
+            "{SEARCH_SELECT} WHERE s.status = 'archived' \
+             AND ($3::uuid IS NULL OR m.user_id = $3) \
+             ORDER BY s.registered_at DESC LIMIT $1 OFFSET $2"
         );
-        sqlx::query_as(&sql).bind(limit).bind(offset).fetch_all(&state.pool).await
+        sqlx::query_as(&sql).bind(limit).bind(offset).bind(uid).fetch_all(&state.pool).await
     } else {
         // AND across terms: a session matches only if EVERY term hits somewhere
         // — its transcript (trgm-accelerated EXISTS) or its id / name / dir.
@@ -916,8 +1075,13 @@ pub async fn search_sessions(
             })
             .collect();
         let (li, oi) = (patterns.len() + 1 + extra, patterns.len() + 2 + extra);
+        // Owner filter (NULL = admin) is the final positional bind, after
+        // limit/offset.
+        let ui = oi + 1;
         let sql = format!(
-            "{SEARCH_SELECT} WHERE ({scope}) AND {} ORDER BY s.registered_at DESC LIMIT ${li} OFFSET ${oi}",
+            "{SEARCH_SELECT} WHERE ({scope}) AND {} \
+             AND (${ui}::uuid IS NULL OR m.user_id = ${ui}) \
+             ORDER BY s.registered_at DESC LIMIT ${li} OFFSET ${oi}",
             clauses.join(" AND "),
         );
         let mut query = sqlx::query_as::<_, DbSession>(&sql);
@@ -927,7 +1091,7 @@ pub async fn search_sessions(
         if !params.include_archived {
             query = query.bind(live_ids);
         }
-        query.bind(limit).bind(offset).fetch_all(&state.pool).await
+        query.bind(limit).bind(offset).bind(uid).fetch_all(&state.pool).await
     }
     .map_err(|e| {
         tracing::error!("db error (session search): {e}");
@@ -1016,8 +1180,10 @@ pub async fn search_sessions(
 
 pub async fn get_session(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
 ) -> Result<Json<SessionListItem>, (StatusCode, Json<ApiError>)> {
+    authorize_session(&state, &ctx, &session_id).await?;
     // Live session — serve straight from the registry.
     {
         let registry = state.registry.read().await;
@@ -1126,8 +1292,10 @@ pub async fn get_session(
 
 pub async fn get_conversation(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
 ) -> Result<Json<Vec<serde_json::Value>>, (StatusCode, Json<ApiError>)> {
+    authorize_session(&state, &ctx, &session_id).await?;
     let adapter: Option<String> =
         sqlx::query_scalar("SELECT adapter_id FROM sessions WHERE id = $1")
             .bind(&session_id)
@@ -1209,9 +1377,11 @@ pub async fn get_conversation(
 
 pub async fn send_message(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
     Json(req): Json<MessageRequest>,
-) -> StatusCode {
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    authorize_session(&state, &ctx, &session_id).await?;
     let dispatch = crate::daemon_dispatch::dispatch(
         &state,
         &session_id,
@@ -1231,14 +1401,16 @@ pub async fn send_message(
             _ => tracing::warn!(%session_id, %err, "daemon dispatch failed"),
         }
     }
-    StatusCode::ACCEPTED
+    Ok(StatusCode::ACCEPTED)
 }
 
 pub async fn rename_session(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
     Json(req): Json<RenameRequest>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    authorize_session(&state, &ctx, &session_id).await?;
     let name = req.name.trim();
     if name.is_empty() {
         return Err((
@@ -1273,8 +1445,10 @@ pub async fn rename_session(
 
 pub async fn kill_session(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    authorize_session(&state, &ctx, &session_id).await?;
     // Best-effort: also dispatch to the daemon so the running worker is
     // actually killed via the `claude daemon` socket. The DB update
     // below remains source-of-truth.
@@ -1317,8 +1491,10 @@ pub async fn kill_session(
 /// instead of firing-and-forgetting. Returns the id in the response body.
 pub async fn interrupt_session(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
 ) -> Result<(StatusCode, Json<cctui_proto::api::SpawnResponse>), (StatusCode, Json<ApiError>)> {
+    authorize_session(&state, &ctx, &session_id).await?;
     let command_id = uuid::Uuid::new_v4();
     let _ = crate::daemon_dispatch::dispatch(
         &state,
@@ -1341,8 +1517,10 @@ pub async fn interrupt_session(
 /// this is not a fork.
 pub async fn resume_session(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    authorize_session(&state, &ctx, &session_id).await?;
     // Pass the working_dir so the daemon can resume even after archiving ran
     // `claude rm` (which deletes the on-disk job state.json but keeps the
     // conversation transcript) — the daemon falls back to local_id + this cwd.
@@ -1385,9 +1563,11 @@ pub async fn resume_session(
 /// the change once the daemon echoes Status, matching the interrupt pattern.
 pub async fn set_model(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
     Json(req): Json<cctui_proto::api::SetModelRequest>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    authorize_session(&state, &ctx, &session_id).await?;
     let norm = |s: Option<String>| s.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
     let model = norm(req.model);
     let effort = norm(req.effort);
@@ -1424,9 +1604,11 @@ pub async fn set_model(
 /// re-flip it. Returns a `command_id` the webui can await like a spawn (CCT-131).
 pub async fn fork_session(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
     Json(req): Json<cctui_proto::api::ForkRequest>,
 ) -> Result<(StatusCode, Json<cctui_proto::api::ForkResponse>), (StatusCode, Json<ApiError>)> {
+    authorize_session(&state, &ctx, &session_id).await?;
     let norm = |s: Option<String>| s.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
 
     // Resolve the parent: adapter + machine + cwd. The fork inherits the
@@ -1515,12 +1697,14 @@ pub async fn fork_session(
 /// answered `allow` immediately. In-memory; reset on server restart.
 pub async fn set_auto_approve(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
     Json(req): Json<cctui_proto::api::AutoApproveRequest>,
-) -> StatusCode {
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    authorize_session(&state, &ctx, &session_id).await?;
     state.permission_store.write().await.set_auto_approve(&session_id, req.enabled);
     tracing::info!(session_id = %session_id, enabled = req.enabled, "auto-approve toggled");
-    StatusCode::NO_CONTENT
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Archive a session: dismiss it from the default list. Best-effort dispatches
@@ -1532,8 +1716,10 @@ pub async fn set_auto_approve(
 /// `unarchive_session`, though the underlying claude job is gone by then.
 pub async fn archive_session(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    authorize_session(&state, &ctx, &session_id).await?;
     archive_one(&state, &session_id).await.map_err(|e| {
         tracing::error!("db error: {e}");
         (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
@@ -1587,8 +1773,10 @@ async fn archive_one(state: &AppState, session_id: &str) -> Result<(), sqlx::Err
 /// status from activity.
 pub async fn unarchive_session(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    authorize_session(&state, &ctx, &session_id).await?;
     unarchive_one(&state, &session_id).await.map_err(|e| {
         tracing::error!("db error: {e}");
         (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
@@ -1610,8 +1798,10 @@ async fn unarchive_one(state: &AppState, session_id: &str) -> Result<(), sqlx::E
 /// Pinning an already-archived session also un-archives it so it reappears.
 pub async fn pin_session(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    authorize_session(&state, &ctx, &session_id).await?;
     pin_one(&state, &session_id).await.map_err(|e| {
         tracing::error!("db error: {e}");
         (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
@@ -1639,8 +1829,10 @@ async fn pin_one(state: &AppState, session_id: &str) -> Result<(), sqlx::Error> 
 /// for auto-archive again.
 pub async fn unpin_session(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    authorize_session(&state, &ctx, &session_id).await?;
     unpin_one(&state, &session_id).await.map_err(|e| {
         tracing::error!("db error: {e}");
         (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
@@ -1659,9 +1851,20 @@ async fn unpin_one(state: &AppState, session_id: &str) -> Result<(), sqlx::Error
 
 /// `POST /api/v1/sessions/pin` — pin many sessions in one request. Mirrors the
 /// batch archive route; per-id failures are logged but don't abort the batch.
-pub async fn pin_sessions(State(state): State<AppState>, Json(req): Json<BatchIds>) -> StatusCode {
+pub async fn pin_sessions(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Json(req): Json<BatchIds>,
+) -> StatusCode {
+    let ids = match filter_owned_ids(&state, &ctx, &req.ids).await {
+        Ok(ids) => ids,
+        Err(e) => {
+            tracing::error!("db error (batch pin authz): {e}");
+            return StatusCode::INTERNAL_SERVER_ERROR;
+        }
+    };
     let mut ok = 0usize;
-    for id in &req.ids {
+    for id in &ids {
         match pin_one(&state, id).await {
             Ok(()) => ok += 1,
             Err(e) => tracing::error!(session_id = %id, "batch pin db error: {e}"),
@@ -1674,10 +1877,18 @@ pub async fn pin_sessions(State(state): State<AppState>, Json(req): Json<BatchId
 /// `POST /api/v1/sessions/unpin` — the batch mirror of `unpin_session`.
 pub async fn unpin_sessions(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Json(req): Json<BatchIds>,
 ) -> StatusCode {
+    let ids = match filter_owned_ids(&state, &ctx, &req.ids).await {
+        Ok(ids) => ids,
+        Err(e) => {
+            tracing::error!("db error (batch unpin authz): {e}");
+            return StatusCode::INTERNAL_SERVER_ERROR;
+        }
+    };
     let mut ok = 0usize;
-    for id in &req.ids {
+    for id in &ids {
         match unpin_one(&state, id).await {
             Ok(()) => ok += 1,
             Err(e) => tracing::error!(session_id = %id, "batch unpin db error: {e}"),
@@ -1699,10 +1910,18 @@ pub struct BatchIds {
 /// re-archiving an already-archived id is a no-op.
 pub async fn archive_sessions(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Json(req): Json<BatchIds>,
 ) -> StatusCode {
+    let ids = match filter_owned_ids(&state, &ctx, &req.ids).await {
+        Ok(ids) => ids,
+        Err(e) => {
+            tracing::error!("db error (batch archive authz): {e}");
+            return StatusCode::INTERNAL_SERVER_ERROR;
+        }
+    };
     let mut ok = 0usize;
-    for id in &req.ids {
+    for id in &ids {
         match archive_one(&state, id).await {
             Ok(()) => ok += 1,
             Err(e) => tracing::error!(session_id = %id, "batch archive db error: {e}"),
@@ -1715,10 +1934,18 @@ pub async fn archive_sessions(
 /// `POST /api/v1/sessions/unarchive` — the batch mirror of `unarchive_session`.
 pub async fn unarchive_sessions(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Json(req): Json<BatchIds>,
 ) -> StatusCode {
+    let ids = match filter_owned_ids(&state, &ctx, &req.ids).await {
+        Ok(ids) => ids,
+        Err(e) => {
+            tracing::error!("db error (batch unarchive authz): {e}");
+            return StatusCode::INTERNAL_SERVER_ERROR;
+        }
+    };
     let mut ok = 0usize;
-    for id in &req.ids {
+    for id in &ids {
         match unarchive_one(&state, id).await {
             Ok(()) => ok += 1,
             Err(e) => tracing::error!(session_id = %id, "batch unarchive db error: {e}"),
@@ -1729,6 +1956,13 @@ pub async fn unarchive_sessions(
 }
 
 // --- Session labels (CCT-360) ---
+//
+// Label *definitions* (list/create/update/delete below) are a global, shared
+// vocabulary: they carry no per-user data (just name + color) and are not owned
+// by any user, so requiring authentication (the `auth_middleware` all these
+// routes sit behind) is sufficient — there is no cross-user data to leak here.
+// The per-session attach/detach routes, by contrast, ARE ownership-gated via
+// `authorize_session` since they mutate a specific session (CCT-417).
 
 fn db_err(e: sqlx::Error) -> (StatusCode, Json<ApiError>) {
     tracing::error!("db error: {e}");
@@ -1856,9 +2090,11 @@ pub async fn delete_label(
 /// Idempotent (re-attaching the same label is a no-op).
 pub async fn attach_label(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
     Json(req): Json<AttachLabelRequest>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    authorize_session(&state, &ctx, &session_id).await?;
     let label_id = parse_label_id(&req.label_id)?;
     sqlx::query(
         "INSERT INTO session_labels (session_id, label_id) VALUES ($1, $2) \
@@ -1876,8 +2112,10 @@ pub async fn attach_label(
 /// session (leaves the label definition intact for other sessions).
 pub async fn detach_label(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path((session_id, label_id)): Path<(String, String)>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    authorize_session(&state, &ctx, &session_id).await?;
     let label_id = parse_label_id(&label_id)?;
     sqlx::query("DELETE FROM session_labels WHERE session_id = $1 AND label_id = $2")
         .bind(&session_id)
@@ -1895,12 +2133,16 @@ fn parse_label_id(raw: &str) -> Result<uuid::Uuid, (StatusCode, Json<ApiError>)>
 
 pub async fn set_session_policy(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
     Json(rules): Json<Vec<crate::policy::PolicyRule>>,
-) -> StatusCode {
-    let mut registry = state.registry.write().await;
-    registry.set_policy(&session_id, rules);
-    StatusCode::OK
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    authorize_session(&state, &ctx, &session_id).await?;
+    {
+        let mut registry = state.registry.write().await;
+        registry.set_policy(&session_id, rules);
+    }
+    Ok(StatusCode::OK)
 }
 
 /// CCT-110: normalize a session's last-message text for the sessions
