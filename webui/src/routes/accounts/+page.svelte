@@ -83,16 +83,18 @@
 	// Per-account soft limits (CCT-411): cap cctui's own share of the 5h/7d usage
 	// windows so it leaves headroom for the human sharing the subscription. Empty
 	// input = no cap on that window. Kept as strings so blank ⇒ null.
-	let soft5h = $state('');
-	let soft7d = $state('');
-	let softBypass = $state('');
+	// `<Input type="number">` makes Svelte coerce `bind:value` to `number | null`
+	// (null when the field is cleared), so these hold numbers, not strings.
+	let soft5h = $state<number | null>(null);
+	let soft7d = $state<number | null>(null);
+	let softBypass = $state<number | null>(null);
 	const isCompatible = $derived(provider.endsWith('-compatible'));
 
-	/** Parse a soft-limit input: blank ⇒ null, else a clamped integer. */
-	function softNum(v: string): number | null {
-		const t = v.trim();
-		if (!t) return null;
-		const n = Math.round(Number(t));
+	/** Normalise a soft-limit input: empty ⇒ null, else a clamped non-negative
+	 *  integer. Tolerates either the number a number-input binds or a stray string. */
+	function softNum(v: number | string | null | undefined): number | null {
+		if (v === null || v === undefined || v === '') return null;
+		const n = Math.round(Number(v));
 		return Number.isFinite(n) ? Math.max(0, n) : null;
 	}
 
@@ -132,9 +134,9 @@
 		authScheme = 'bearer';
 		modelRows = [{ model: '', label: '' }];
 		aliasRows = [];
-		soft5h = '';
-		soft7d = '';
-		softBypass = '';
+		soft5h = null;
+		soft7d = null;
+		softBypass = null;
 		oauthNonce = null;
 		oauthCode = '';
 		oauthBusy = false;
@@ -223,9 +225,9 @@
 		// Aliases are editable for every provider (CCT-406).
 		aliasRows = Object.entries(a.model_aliases ?? {}).map(([alias, model]) => ({ alias, model }));
 		// Soft limits are editable for every provider (CCT-411).
-		soft5h = a.soft_limit_5h_pct == null ? '' : String(a.soft_limit_5h_pct);
-		soft7d = a.soft_limit_7d_pct == null ? '' : String(a.soft_limit_7d_pct);
-		softBypass = a.soft_limit_bypass_minutes == null ? '' : String(a.soft_limit_bypass_minutes);
+		soft5h = a.soft_limit_5h_pct;
+		soft7d = a.soft_limit_7d_pct;
+		softBypass = a.soft_limit_bypass_minutes;
 	}
 
 	function close() {
