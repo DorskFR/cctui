@@ -33,7 +33,7 @@ pub async fn list_api_keys(
         "SELECT id, name, provider, created_at FROM api_keys \
          WHERE $1::uuid IS NULL OR user_id = $1 ORDER BY name",
     )
-    .bind(ctx.god_view_uid())
+    .bind(ctx.owner_filter())
     .fetch_all(&state.pool)
     .await
     .map_err(|e| {
@@ -80,7 +80,7 @@ pub async fn delete_api_key(
     let res =
         sqlx::query("DELETE FROM api_keys WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)")
             .bind(id)
-            .bind(ctx.god_view_uid())
+            .bind(ctx.owner_filter())
             .execute(&state.pool)
             .await
             .map_err(|e| {
@@ -104,7 +104,7 @@ pub async fn get_api_key_value(
         "SELECT encrypted_key FROM api_keys WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)",
     )
     .bind(id)
-    .bind(ctx.god_view_uid())
+    .bind(ctx.owner_filter())
     .fetch_optional(&state.pool)
     .await
     .map_err(|e| {

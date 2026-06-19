@@ -29,11 +29,18 @@
 //! method; it does not re-implement authentication. The new runtime behavior is
 //! the [`Authz`] evaluation plus default-deny.
 //!
-//! In-handler ownership checks (the CCT-417 session checks, the
-//! `god_view_uid()` list filters, the per-resource owner gates) are also left
-//! in place. Routes whose authorization cannot be expressed as a yes/no gate
-//! (self-scoped list/filter endpoints) declare [`Authz::Authenticated`] and
-//! keep their filter in the handler — they are enumerated in the coverage test.
+//! CCT-420 centralizes per-OBJECT ownership into the [`Resource`] guard: the
+//! single-object session routes and the machine-scoped fs route declare
+//! [`Authz::Resource`], and the in-handler owner checks are gone (the guard is
+//! authoritative). Routes whose authorization cannot be expressed as a yes/no
+//! gate — self-scoped list/search/stats endpoints (the `owner_filter()` SQL
+//! filter) and batch endpoints (`filter_owned_ids`) — declare
+//! [`Authz::Authenticated`] and keep their filter in the handler; they are
+//! enumerated in the coverage test. A handful of single-object routes
+//! (accounts/dispatchers/prompts/keys) also stay `Authenticated`/`Scope`
+//! because they fold ownership into the mutating SQL's `WHERE` clause and return
+//! `404` (not `403`) for a cross-user id — moving them onto the guard would
+//! change that client-visible semantics, so they are intentionally left inline.
 
 use std::sync::Arc;
 
@@ -104,9 +111,12 @@ impl IdFrom {
     }
 }
 
-/// The kinds of resource the per-object guard knows about. Extended as routes
-/// migrate onto [`Authz::Resource`] (CCT-420); only `Session` is wired this
-/// ticket, so the other kinds are not yet constructed.
+/// The kinds of resource the per-object guard knows about. Each has a
+/// [`Resource`] owner-resolution impl (CCT-420). `Session` and `Machine` are
+/// wired onto HTTP routes; the rest are implemented for completeness and are
+/// reachable via the guard once their routes adopt it (their single-object
+/// routes currently fold ownership into the SQL `WHERE` clause — see the module
+/// doc).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum ResourceKind {
@@ -125,10 +135,11 @@ pub enum ResourceKind {
 #[allow(dead_code)]
 pub type AuthzFn = fn(&AuthContext, Option<&str>) -> Result<(), StatusCode>;
 
-/// What a principal may do on a route. `Public`, `Resource`, and `Custom` are
-/// part of the framework's surface but not yet used by any migrated `/api/v1`
-/// route (sessions keep their in-handler check; `/health` is on the outer app),
-/// so those variants are constructed only in tests this ticket.
+/// What a principal may do on a route. `Resource` is now used by the migrated
+/// per-object routes (sessions + the machine fs route, CCT-420). `Public` and
+/// `Custom` remain part of the framework's surface but are unused by any
+/// `/api/v1` route (`/health` is `Public` on the outer app; no `Custom` rule
+/// exists yet), so they are constructed only in tests.
 #[derive(Clone)]
 #[allow(dead_code)]
 pub enum Authz {
@@ -141,7 +152,7 @@ pub enum Authz {
     /// A capability gate, no object: `ctx.requires(scope)`.
     Scope(Scope),
     /// A per-object gate. The id is resolved from the request via [`IdFrom`]
-    /// and checked by [`Resource::authorize`].
+    /// and checked by [`authorize_resource`].
     Resource(ResourceKind, Action, IdFrom),
     /// Small audited escape hatch.
     Custom(AuthzFn),
@@ -178,7 +189,7 @@ impl Authz {
             Self::Public | Self::Authenticated => Ok(()),
             Self::Scope(s) => ctx.requires(*s),
             Self::Resource(kind, action, _id_from) => {
-                Resource::authorize(*kind, ctx, *action, id.as_deref(), pool).await
+                authorize_resource(*kind, ctx, *action, id.as_deref(), pool).await
             }
             // The escape hatch receives the resolved id where one exists.
             Self::Custom(f) => f(ctx, id.as_deref()),
@@ -204,49 +215,31 @@ fn resolve_id(req: &Request, id_from: IdFrom) -> Option<String> {
         .and_then(|raw| raw.iter().find(|(k, _)| *k == name).map(|(_, v)| v.to_string()))
 }
 
-/// The single per-resource authorization chokepoint. Default rule:
-/// `admin || owner(id) == principal`. Written once per resource type, not per
-/// endpoint. CCT-420 generalizes this to every resource and renames
-/// `god_view_uid`; for CCT-419 it implements [`ResourceKind::Session`] (matching
-/// the CCT-417 `authorize_session` semantics) so the framework is real and
-/// testable.
-pub struct Resource;
+/// One resource type's owner-resolution. The single per-resource
+/// authorization primitive: written **once per resource type, not per
+/// endpoint** — the owning-user DB lookup for that kind lives here, nowhere
+/// else. The generic guard ([`authorize_resource`]) composes the default rule
+/// (`admin || owner(id) == principal`) on top of it, so a resource impl only
+/// has to answer "who owns this id?".
+///
+/// `owner_of` returns:
+///   * `Ok(Some(uid))` — the resource exists and `uid` owns it;
+///   * `Ok(None)` — the resource does not exist (or has no resolvable owner),
+///     which the guard maps to `404` so an id's existence never leaks across
+///     users;
+///   * `Err(_)` — a DB error, mapped to `500`.
+///
+/// CCT-422 will layer an RBAC `(kind, action)` capability check in front of the
+/// ownership rule; the `Action` is already carried on the descriptor for that.
+trait Resource {
+    async fn owner_of(id: &str, pool: &PgPool) -> Result<Option<Uuid>, sqlx::Error>;
+}
 
-impl Resource {
-    pub async fn authorize(
-        kind: ResourceKind,
-        ctx: &AuthContext,
-        _action: Action,
-        id: Option<&str>,
-        pool: &PgPool,
-    ) -> Result<(), StatusCode> {
-        if ctx.is_admin() {
-            return Ok(());
-        }
-        let Some(id) = id else {
-            // A per-object policy with no resolvable id cannot be satisfied
-            // safely → fail closed.
-            return Err(StatusCode::FORBIDDEN);
-        };
-        match kind {
-            ResourceKind::Session => Self::authorize_session(ctx, id, pool).await,
-            // Other kinds are not migrated onto the guard this ticket; their
-            // routes keep their in-handler owner checks and declare
-            // `Authenticated`. Reaching here for them is a programming error,
-            // so fail closed.
-            _ => Err(StatusCode::FORBIDDEN),
-        }
-    }
-
-    /// Mirrors `routes::admin::authorize_session`: owner via
-    /// `sessions.machine_uuid -> machines.user_id`. Owner match → ok; a session
-    /// owned by someone else → 403; an unknown/unresolvable session → 404 (so
-    /// session-id existence does not leak across users).
-    async fn authorize_session(
-        ctx: &AuthContext,
-        id: &str,
-        pool: &PgPool,
-    ) -> Result<(), StatusCode> {
+/// Sessions are owned via `sessions.machine_uuid -> machines.user_id`
+/// (CCT-417). Mirrors `routes::admin::authorize_session` and `ws::ws_owns_session`.
+struct SessionResource;
+impl Resource for SessionResource {
+    async fn owner_of(id: &str, pool: &PgPool) -> Result<Option<Uuid>, sqlx::Error> {
         let owner: Option<Option<Uuid>> = sqlx::query_scalar(
             "SELECT m.user_id \
              FROM sessions s LEFT JOIN machines m ON m.id = s.machine_uuid \
@@ -254,17 +247,140 @@ impl Resource {
         )
         .bind(id)
         .fetch_optional(pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("db error (authz session): {e}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-        match owner.flatten() {
-            Some(uid) if uid == ctx.user_id => Ok(()),
-            Some(_) => Err(StatusCode::FORBIDDEN),
-            None => Err(StatusCode::NOT_FOUND),
-        }
+        .await?;
+        Ok(owner.flatten())
     }
+}
+
+/// Machines are owned directly (`machines.user_id`). Used by the machine-scoped
+/// filesystem route (`fs::list_dirs`). The id is the machine UUID as text.
+struct MachineResource;
+impl Resource for MachineResource {
+    async fn owner_of(id: &str, pool: &PgPool) -> Result<Option<Uuid>, sqlx::Error> {
+        let Ok(uuid) = Uuid::parse_str(id) else {
+            // A non-UUID id can never name a real machine → treat as absent
+            // (404), matching the in-handler `Uuid::parse_str` + not-found path.
+            return Ok(None);
+        };
+        sqlx::query_scalar("SELECT user_id FROM machines WHERE id = $1")
+            .bind(uuid)
+            .fetch_optional(pool)
+            .await
+    }
+}
+
+/// Dispatchers are owned directly (`dispatchers.user_id`).
+struct DispatcherResource;
+impl Resource for DispatcherResource {
+    async fn owner_of(id: &str, pool: &PgPool) -> Result<Option<Uuid>, sqlx::Error> {
+        let Ok(uuid) = Uuid::parse_str(id) else { return Ok(None) };
+        sqlx::query_scalar("SELECT user_id FROM dispatchers WHERE id = $1 AND deleted_at IS NULL")
+            .bind(uuid)
+            .fetch_optional(pool)
+            .await
+    }
+}
+
+/// A user resource's owner is the user itself: the path id IS the owner uid.
+struct UserResource;
+impl Resource for UserResource {
+    async fn owner_of(id: &str, _pool: &PgPool) -> Result<Option<Uuid>, sqlx::Error> {
+        Ok(Uuid::parse_str(id).ok())
+    }
+}
+
+/// OAuth accounts are owned directly (`oauth_accounts.user_id`).
+struct AccountResource;
+impl Resource for AccountResource {
+    async fn owner_of(id: &str, pool: &PgPool) -> Result<Option<Uuid>, sqlx::Error> {
+        let Ok(uuid) = Uuid::parse_str(id) else { return Ok(None) };
+        sqlx::query_scalar("SELECT user_id FROM oauth_accounts WHERE id = $1")
+            .bind(uuid)
+            .fetch_optional(pool)
+            .await
+    }
+}
+
+/// Prompts are owned directly (`prompts.user_id`, CCT-418). A legacy NULL-owner
+/// row resolves to `None` → 404 for non-admins (admins short-circuit earlier).
+struct PromptResource;
+impl Resource for PromptResource {
+    async fn owner_of(id: &str, pool: &PgPool) -> Result<Option<Uuid>, sqlx::Error> {
+        let Ok(uuid) = Uuid::parse_str(id) else { return Ok(None) };
+        let owner: Option<Option<Uuid>> =
+            sqlx::query_scalar("SELECT user_id FROM prompts WHERE id = $1")
+                .bind(uuid)
+                .fetch_optional(pool)
+                .await?;
+        Ok(owner.flatten())
+    }
+}
+
+/// Stored provider keys are owned directly (`api_keys.user_id`, CCT-418).
+struct ApiKeyResource;
+impl Resource for ApiKeyResource {
+    async fn owner_of(id: &str, pool: &PgPool) -> Result<Option<Uuid>, sqlx::Error> {
+        let Ok(uuid) = Uuid::parse_str(id) else { return Ok(None) };
+        let owner: Option<Option<Uuid>> =
+            sqlx::query_scalar("SELECT user_id FROM api_keys WHERE id = $1")
+                .bind(uuid)
+                .fetch_optional(pool)
+                .await?;
+        Ok(owner.flatten())
+    }
+}
+
+/// The single per-object authorization chokepoint, evaluated by [`authz_layer`]
+/// for an [`Authz::Resource`] policy. Resolves the resource's owner via the
+/// per-kind [`Resource`] impl, then applies the default rule:
+/// `admin || owner(id) == principal`.
+///
+/// * admin → ok without a DB lookup;
+/// * owner match → ok;
+/// * a resource owned by someone else → `403`;
+/// * an unknown / unresolvable resource (owner `None`) → `404`, so a resource
+///   id's existence never leaks across users.
+async fn authorize_resource(
+    kind: ResourceKind,
+    ctx: &AuthContext,
+    _action: Action,
+    id: Option<&str>,
+    pool: &PgPool,
+) -> Result<(), StatusCode> {
+    if ctx.is_admin() {
+        return Ok(());
+    }
+    let Some(id) = id else {
+        // A per-object policy with no resolvable id cannot be satisfied safely
+        // → fail closed.
+        return Err(StatusCode::FORBIDDEN);
+    };
+    let owner = match kind {
+        ResourceKind::Session => SessionResource::owner_of(id, pool).await,
+        ResourceKind::Machine => MachineResource::owner_of(id, pool).await,
+        ResourceKind::Dispatcher => DispatcherResource::owner_of(id, pool).await,
+        ResourceKind::User => UserResource::owner_of(id, pool).await,
+        ResourceKind::Account => AccountResource::owner_of(id, pool).await,
+        ResourceKind::Prompt => PromptResource::owner_of(id, pool).await,
+        ResourceKind::ApiKey => ApiKeyResource::owner_of(id, pool).await,
+    }
+    .map_err(|e| {
+        tracing::error!("db error (authz {kind:?}): {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    match owner {
+        Some(uid) if uid == ctx.user_id => Ok(()),
+        Some(_) => Err(StatusCode::FORBIDDEN),
+        None => Err(StatusCode::NOT_FOUND),
+    }
+}
+
+/// Public re-export of the session owner lookup so the WS path (`ws.rs`) can
+/// reuse the exact same ownership query as the HTTP guard (one authorizer, two
+/// transports — CCT-416). Returns the owning user, or `None` for an
+/// unknown/unresolvable session.
+pub async fn session_owner(id: &str, pool: &PgPool) -> Result<Option<Uuid>, sqlx::Error> {
+    SessionResource::owner_of(id, pool).await
 }
 
 /// A single registered route. The descriptor list of all of these is the route
@@ -472,44 +588,121 @@ mod tests {
         assert!(scoped.iter().any(|(_, s)| s == "enroll"), "no enroll-scoped route");
     }
 
-    #[tokio::test]
-    async fn resource_session_guard_admin_short_circuits() {
-        // The `Resource(Session)` guard admits an admin without touching the DB
-        // (mirrors `authorize_session`). Non-admin paths require a live pool and
-        // are covered by the in-handler `authorize_session` tests.
-        let pool = sqlx::PgPool::connect_lazy("postgres://invalid").unwrap();
-        let admin = AuthContext {
+    fn admin() -> AuthContext {
+        AuthContext {
             user_id: Uuid::nil(),
             key_id: Uuid::nil(),
             machine_id: None,
             scopes: Scope::all().into_iter().collect(),
-        };
-        assert!(
-            Resource::authorize(
+        }
+    }
+
+    fn user(uid: Uuid) -> AuthContext {
+        AuthContext {
+            user_id: uid,
+            key_id: Uuid::new_v4(),
+            machine_id: None,
+            scopes: std::iter::once(Scope::Read).collect(),
+        }
+    }
+
+    /// Every `ResourceKind` short-circuits to OK for an admin WITHOUT touching
+    /// the DB (the invalid pool would error if any kind queried it). This is the
+    /// admin-bypass arm of the guard's default rule for all seven kinds.
+    #[tokio::test]
+    async fn resource_guard_admin_bypasses_every_kind() {
+        let pool = sqlx::PgPool::connect_lazy("postgres://invalid").unwrap();
+        let admin = admin();
+        for kind in [
+            ResourceKind::Session,
+            ResourceKind::Machine,
+            ResourceKind::Dispatcher,
+            ResourceKind::User,
+            ResourceKind::Account,
+            ResourceKind::Prompt,
+            ResourceKind::ApiKey,
+        ] {
+            assert!(
+                authorize_resource(kind, &admin, Action::Write, Some("any-id"), &pool)
+                    .await
+                    .is_ok(),
+                "admin should bypass {kind:?}"
+            );
+        }
+    }
+
+    /// A per-object policy with no resolvable id fails closed (403) for a
+    /// non-admin, without a DB lookup.
+    #[tokio::test]
+    async fn resource_guard_missing_id_fails_closed() {
+        let pool = sqlx::PgPool::connect_lazy("postgres://invalid").unwrap();
+        assert_eq!(
+            authorize_resource(
                 ResourceKind::Session,
-                &admin,
+                &user(Uuid::new_v4()),
+                Action::Read,
+                None,
+                &pool
+            )
+            .await,
+            Err(StatusCode::FORBIDDEN)
+        );
+    }
+
+    /// A non-UUID id for a UUID-keyed resource resolves to "unknown" → 404
+    /// (existence-leak-safe), and does NOT touch the DB (the invalid pool would
+    /// error otherwise). Covers the unknown-resource arm for every UUID-keyed
+    /// kind.
+    #[tokio::test]
+    async fn resource_guard_unknown_id_is_404() {
+        let pool = sqlx::PgPool::connect_lazy("postgres://invalid").unwrap();
+        let u = user(Uuid::new_v4());
+        for kind in [
+            ResourceKind::Machine,
+            ResourceKind::Dispatcher,
+            ResourceKind::Account,
+            ResourceKind::Prompt,
+            ResourceKind::ApiKey,
+        ] {
+            assert_eq!(
+                authorize_resource(kind, &u, Action::Read, Some("not-a-uuid"), &pool).await,
+                Err(StatusCode::NOT_FOUND),
+                "non-UUID id for {kind:?} should be 404"
+            );
+        }
+    }
+
+    /// The `User` resource needs no DB (the id IS the owner), so it exercises
+    /// the full owner-match / cross-user / unknown matrix of the default rule
+    /// without a live pool: owner allowed, another user 403, an unparseable id
+    /// 404.
+    #[tokio::test]
+    async fn resource_guard_user_kind_full_matrix() {
+        let pool = sqlx::PgPool::connect_lazy("postgres://invalid").unwrap();
+        let uid = Uuid::new_v4();
+        let me = user(uid);
+        // Owner acts on itself → ok.
+        assert!(
+            authorize_resource(
+                ResourceKind::User,
+                &me,
                 Action::Write,
-                Some("sess-1"),
-                &pool,
+                Some(&uid.to_string()),
+                &pool
             )
             .await
             .is_ok()
         );
-        // A per-object policy with no resolvable id fails closed.
-        let user = AuthContext {
-            user_id: Uuid::new_v4(),
-            key_id: Uuid::new_v4(),
-            machine_id: None,
-            scopes: std::iter::once(Scope::Read).collect(),
-        };
+        // Another user → 403 (resource exists, owned by someone else).
+        let other = Uuid::new_v4().to_string();
         assert_eq!(
-            Resource::authorize(ResourceKind::Session, &user, Action::Read, None, &pool).await,
+            authorize_resource(ResourceKind::User, &me, Action::Read, Some(&other), &pool).await,
             Err(StatusCode::FORBIDDEN)
         );
-        // An un-migrated resource kind also fails closed for non-admins.
+        // An id that can't name a user → 404.
         assert_eq!(
-            Resource::authorize(ResourceKind::Account, &user, Action::Read, Some("x"), &pool).await,
-            Err(StatusCode::FORBIDDEN)
+            authorize_resource(ResourceKind::User, &me, Action::Read, Some("nope"), &pool).await,
+            Err(StatusCode::NOT_FOUND)
         );
     }
 }

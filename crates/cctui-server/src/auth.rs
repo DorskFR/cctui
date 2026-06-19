@@ -91,12 +91,20 @@ impl AuthContext {
         if self.has(scope) { Ok(()) } else { Err(StatusCode::FORBIDDEN) }
     }
 
-    /// The uniform god-view binding: `None` for an admin (sees all rows),
-    /// `Some(user_id)` for everyone else. Routes bind this into the existing
-    /// `WHERE $1::uuid IS NULL OR user_id = $1` predicate so admin "act on any
-    /// owned resource" needs no per-route special-casing.
+    /// The uniform owner FILTER for self-scoped list/search/stats queries — NOT
+    /// a magic value. It returns:
+    ///   * `None` for an admin — the filter is **disabled**, so the query sees
+    ///     every row (the god-view);
+    ///   * `Some(user_id)` for everyone else — the filter scopes rows to the
+    ///     caller.
+    ///
+    /// Routes bind it into the existing `WHERE $1::uuid IS NULL OR user_id = $1`
+    /// predicate: a `NULL` bind (admin) makes the predicate always true; a
+    /// `Some` bind narrows to the caller's rows. This expresses row filtering,
+    /// which the per-object `Resource` guard (a yes/no gate) cannot — so
+    /// list/batch endpoints keep using this rather than the guard (CCT-420).
     #[must_use]
-    pub fn god_view_uid(&self) -> Option<Uuid> {
+    pub fn owner_filter(&self) -> Option<Uuid> {
         if self.is_admin() { None } else { Some(self.user_id) }
     }
 }
@@ -219,25 +227,19 @@ impl AuthConfig {
     /// user_acls. Re-intersected on every (cache-miss) auth so a demotion of
     /// the user's ceiling immediately limits the key (the drift-killer).
     async fn effective_scopes(&self, key_id: Uuid, user_id: Uuid) -> BTreeSet<Scope> {
-        let grant: Vec<(String,)> =
-            sqlx::query_as("SELECT scope FROM key_acls WHERE key_id = $1")
-                .bind(key_id)
-                .fetch_all(&self.pool)
-                .await
-                .unwrap_or_default();
+        let grant: Vec<(String,)> = sqlx::query_as("SELECT scope FROM key_acls WHERE key_id = $1")
+            .bind(key_id)
+            .fetch_all(&self.pool)
+            .await
+            .unwrap_or_default();
         let ceiling: Vec<(String,)> =
             sqlx::query_as("SELECT scope FROM user_acls WHERE user_id = $1")
                 .bind(user_id)
                 .fetch_all(&self.pool)
                 .await
                 .unwrap_or_default();
-        let ceiling: BTreeSet<Scope> =
-            ceiling.iter().filter_map(|(s,)| Scope::parse(s)).collect();
-        grant
-            .iter()
-            .filter_map(|(s,)| Scope::parse(s))
-            .filter(|s| ceiling.contains(s))
-            .collect()
+        let ceiling: BTreeSet<Scope> = ceiling.iter().filter_map(|(s,)| Scope::parse(s)).collect();
+        grant.iter().filter_map(|(s,)| Scope::parse(s)).filter(|s| ceiling.contains(s)).collect()
     }
 
     pub async fn validate(&self, token: &str) -> Option<AuthContext> {
@@ -370,12 +372,11 @@ impl AuthConfig {
     /// key carries no narrowing grant of its own, matching pre-CCT-410 behavior
     /// where any of a user's tokens did everything the user could do).
     async fn ceiling_scopes(&self, user_id: Uuid) -> BTreeSet<Scope> {
-        let rows: Vec<(String,)> =
-            sqlx::query_as("SELECT scope FROM user_acls WHERE user_id = $1")
-                .bind(user_id)
-                .fetch_all(&self.pool)
-                .await
-                .unwrap_or_default();
+        let rows: Vec<(String,)> = sqlx::query_as("SELECT scope FROM user_acls WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_all(&self.pool)
+            .await
+            .unwrap_or_default();
         rows.iter().filter_map(|(s,)| Scope::parse(s)).collect()
     }
 
@@ -517,7 +518,7 @@ mod tests {
     }
 
     #[test]
-    fn admin_god_view_is_unscoped() {
+    fn admin_owner_filter_is_unscoped() {
         let admin = AuthContext {
             user_id: Uuid::nil(),
             key_id: Uuid::nil(),
@@ -525,7 +526,7 @@ mod tests {
             scopes: Scope::all().into_iter().collect(),
         };
         assert!(admin.is_admin());
-        assert_eq!(admin.god_view_uid(), None);
+        assert_eq!(admin.owner_filter(), None);
         assert!(admin.requires(Scope::Enroll).is_ok());
 
         let uid = Uuid::new_v4();
@@ -536,7 +537,7 @@ mod tests {
             scopes: [Scope::Read].into_iter().collect(),
         };
         assert!(!user.is_admin());
-        assert_eq!(user.god_view_uid(), Some(uid));
+        assert_eq!(user.owner_filter(), Some(uid));
         assert!(user.requires(Scope::Read).is_ok());
         assert_eq!(user.requires(Scope::Dispatch), Err(StatusCode::FORBIDDEN));
     }

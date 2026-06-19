@@ -90,14 +90,14 @@ pub async fn list_dispatchers(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
 ) -> Result<Json<Vec<DispatcherInfo>>, (StatusCode, Json<serde_json::Value>)> {
-    // Uniform god-view (CCT-410): admin (`god_view_uid` = NULL) sees all
+    // Uniform god-view (CCT-410): admin (`owner_filter` = NULL) sees all
     // dispatchers; a user sees only their own.
     let rows: Vec<DispatcherRow> = sqlx::query_as(&format!(
         "SELECT {SELECT_COLS} \
          WHERE ($1::uuid IS NULL OR user_id = $1) \
          AND deleted_at IS NULL AND revoked_at IS NULL ORDER BY name"
     ))
-    .bind(ctx.god_view_uid())
+    .bind(ctx.owner_filter())
     .fetch_all(&state.pool)
     .await
     .map_err(db_err)?;
@@ -112,7 +112,12 @@ pub async fn update_dispatcher(
     Json(req): Json<RenameDispatcher>,
 ) -> Result<Json<DispatcherInfo>, (StatusCode, Json<serde_json::Value>)> {
     ctx.requires(Scope::Enroll).map_err(|s| {
-        (s, Json(serde_json::json!({ "error": "the enroll scope is required to edit dispatchers" })))
+        (
+            s,
+            Json(
+                serde_json::json!({ "error": "the enroll scope is required to edit dispatchers" }),
+            ),
+        )
     })?;
     if req.name.trim().is_empty() {
         return Err((
@@ -127,7 +132,7 @@ pub async fn update_dispatcher(
          RETURNING id, name, kind, key_preview, last_seen_at, created_at, updated_at",
     )
     .bind(id)
-    .bind(ctx.god_view_uid())
+    .bind(ctx.owner_filter())
     .bind(req.name.trim())
     .fetch_optional(&state.pool)
     .await
@@ -152,7 +157,7 @@ pub async fn delete_dispatcher(
          WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2) AND deleted_at IS NULL",
     )
     .bind(id)
-    .bind(ctx.god_view_uid())
+    .bind(ctx.owner_filter())
     .execute(&state.pool)
     .await
     .map_err(db_err)?;

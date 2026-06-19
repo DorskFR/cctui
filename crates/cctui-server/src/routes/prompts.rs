@@ -78,7 +78,7 @@ pub async fn list_prompts(
         "SELECT {SELECT_COLS} FROM prompts \
          WHERE $1::uuid IS NULL OR user_id = $1 ORDER BY name"
     ))
-    .bind(ctx.god_view_uid())
+    .bind(ctx.owner_filter())
     .fetch_all(&state.pool)
     .await
     .map_err(db_err)?;
@@ -122,7 +122,7 @@ pub async fn get_prompt(
         "SELECT {SELECT_COLS} FROM prompts WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)"
     ))
     .bind(id)
-    .bind(ctx.god_view_uid())
+    .bind(ctx.owner_filter())
     .fetch_optional(&state.pool)
     .await
     .map_err(db_err)?;
@@ -153,7 +153,7 @@ pub async fn resolve_prompt(
     .bind(kind)
     .bind(&q.owner)
     .bind(&q.repo)
-    .bind(ctx.god_view_uid())
+    .bind(ctx.owner_filter())
     .fetch_all(&state.pool)
     .await
     .map_err(db_err)?;
@@ -201,7 +201,7 @@ pub async fn delete_prompt(
     let res =
         sqlx::query("DELETE FROM prompts WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)")
             .bind(id)
-            .bind(ctx.god_view_uid())
+            .bind(ctx.owner_filter())
             .execute(&state.pool)
             .await
             .map_err(db_err)?;

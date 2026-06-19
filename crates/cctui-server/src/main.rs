@@ -21,7 +21,7 @@ mod ws;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use authz::{Authn, Authz, Routes};
+use authz::{Action, Authn, Authz, IdFrom, ResourceKind, Routes};
 use axum::extract::DefaultBodyLimit;
 use axum::http::Method;
 use axum::routing::{any, delete, get, patch, post, put};
@@ -190,7 +190,7 @@ async fn main() -> anyhow::Result<()> {
 /// path still performs authentication) and an [`Authz`] (enforced by
 /// `authz::authz_layer`, default-deny for any un-policied route). Each route's
 /// declared policy mirrors its CURRENT enforcement exactly: routes with
-/// in-handler owner checks or `god_view_uid()` SQL filters declare
+/// in-handler owner checks or `owner_filter()` SQL filters declare
 /// `Authenticated` and keep that filter in the handler (the type system can't
 /// express a self-scoped filter); scope-gated routes declare the matching
 /// `Scope`. The returned [`Routes`] is the single source of truth walked by the
@@ -199,6 +199,11 @@ async fn main() -> anyhow::Result<()> {
 fn build_api_routes() -> Routes {
     use Authz::{Authenticated, Scope as ScopeAz};
     const GET: Method = Method::GET;
+    // Per-session ownership guard (CCT-420): `machine_uuid -> machines.user_id`,
+    // id sourced from the `{id}` path param. `read`/`write` differ only in the
+    // recorded `Action` (for CCT-422 RBAC); the owner rule is identical today.
+    let sess_read = || Authz::Resource(ResourceKind::Session, Action::Read, IdFrom::Path("id"));
+    let sess_write = || Authz::Resource(ResourceKind::Session, Action::Write, IdFrom::Path("id"));
     Routes::new()
         // Version info requires a valid principal — no unauthenticated endpoint
         // survives except `/health`.
@@ -249,7 +254,7 @@ fn build_api_routes() -> Routes {
             "/sessions/dispatchers",
             get(routes::dispatch::list_dispatchers),
             Authn::Bearer,
-            // god_view_uid() SQL filter in the handler.
+            // owner_filter() SQL filter in the handler.
             Authenticated,
         )
         // Enrolled-dispatcher management (CCT-285): list with liveness, rename,
@@ -259,7 +264,7 @@ fn build_api_routes() -> Routes {
             "/dispatchers",
             get(routes::dispatchers::list_dispatchers),
             Authn::Bearer,
-            // god_view_uid() filter.
+            // owner_filter() filter.
             Authenticated,
         )
         .add(
@@ -308,7 +313,7 @@ fn build_api_routes() -> Routes {
             Authn::Bearer,
             Authenticated,
         )
-        // Self-scoped list/stats/search endpoints — `god_view_uid()` filter in
+        // Self-scoped list/stats/search endpoints — `owner_filter()` filter in
         // the handler (admin sees all rows, others only their own).
         .add(&[GET], "/sessions", get(routes::admin::list_sessions), Authn::Bearer, Authenticated)
         .add(
@@ -339,115 +344,110 @@ fn build_api_routes() -> Routes {
             Authn::Bearer,
             Authenticated,
         )
-        // Per-session routes — in-handler `authorize_session` owner check
-        // (CCT-417). `Authenticated` here keeps that check authoritative (it
-        // returns the JSON error body clients expect); the `Resource(Session)`
-        // guard in `authz.rs` mirrors the same rule and is unit-tested for when
-        // CCT-420 flips these onto it.
-        .add(
-            &[GET],
-            "/sessions/{id}",
-            get(routes::admin::get_session),
-            Authn::Bearer,
-            Authenticated,
-        )
+        // Per-session routes — ownership enforced by the `Resource(Session)`
+        // guard (CCT-420). The `authz_layer` resolves `machine_uuid ->
+        // machines.user_id` and applies `admin || owner == caller` before the
+        // handler (404 unknown / 403 cross-user). Reads → `Action::Read`,
+        // mutations/control → `Action::Write` (the action is recorded for
+        // CCT-422 RBAC; the owner rule is identical for both today).
+        .add(&[GET], "/sessions/{id}", get(routes::admin::get_session), Authn::Bearer, sess_read())
         .add(
             &[Method::PATCH],
             "/sessions/{id}",
             patch(routes::admin::rename_session),
             Authn::Bearer,
-            Authenticated,
+            sess_write(),
         )
         .add(
             &[GET],
             "/sessions/{id}/conversation",
             get(routes::admin::get_conversation),
             Authn::Bearer,
-            Authenticated,
+            sess_read(),
         )
         .add(
             &[Method::POST],
             "/sessions/{id}/message",
             post(routes::admin::send_message),
             Authn::Bearer,
-            Authenticated,
+            sess_write(),
         )
         .add(
             &[Method::POST],
             "/sessions/{id}/kill",
             post(routes::admin::kill_session),
             Authn::Bearer,
-            Authenticated,
+            sess_write(),
         )
         .add(
             &[Method::POST],
             "/sessions/{id}/interrupt",
             post(routes::admin::interrupt_session),
             Authn::Bearer,
-            Authenticated,
+            sess_write(),
         )
         .add(
             &[Method::POST],
             "/sessions/{id}/resume",
             post(routes::admin::resume_session),
             Authn::Bearer,
-            Authenticated,
+            sess_write(),
         )
         .add(
             &[Method::POST],
             "/sessions/{id}/set-model",
             post(routes::admin::set_model),
             Authn::Bearer,
-            Authenticated,
+            sess_write(),
         )
         .add(
             &[Method::POST],
             "/sessions/{id}/fork",
             post(routes::admin::fork_session),
             Authn::Bearer,
-            Authenticated,
+            sess_write(),
         )
         .add(
             &[Method::POST],
             "/sessions/{id}/auto-approve",
             post(routes::admin::set_auto_approve),
             Authn::Bearer,
-            Authenticated,
+            sess_write(),
         )
         .add(
             &[Method::POST],
             "/sessions/{id}/archive",
             post(routes::admin::archive_session),
             Authn::Bearer,
-            Authenticated,
+            sess_write(),
         )
         .add(
             &[Method::POST],
             "/sessions/{id}/unarchive",
             post(routes::admin::unarchive_session),
             Authn::Bearer,
-            Authenticated,
+            sess_write(),
         )
         .add(
             &[Method::POST],
             "/sessions/{id}/pin",
             post(routes::admin::pin_session),
             Authn::Bearer,
-            Authenticated,
+            sess_write(),
         )
         .add(
             &[Method::POST],
             "/sessions/{id}/unpin",
             post(routes::admin::unpin_session),
             Authn::Bearer,
-            Authenticated,
+            sess_write(),
         )
         .add(
             &[Method::POST],
             "/sessions/{id}/policy",
             post(routes::admin::set_session_policy),
             Authn::Bearer,
-            Authenticated,
+            sess_write(),
         )
         // Session labels (CCT-360): global label definitions (no owner) +
         // per-session attach/detach (authorize_session in the handler).
@@ -470,14 +470,14 @@ fn build_api_routes() -> Routes {
             "/sessions/{id}/labels",
             post(routes::admin::attach_label),
             Authn::Bearer,
-            Authenticated,
+            sess_write(),
         )
         .add(
             &[Method::DELETE],
             "/sessions/{id}/labels/{label_id}",
             axum::routing::delete(routes::admin::detach_label),
             Authn::Bearer,
-            Authenticated,
+            sess_write(),
         )
         .add(
             &[GET],
@@ -493,7 +493,7 @@ fn build_api_routes() -> Routes {
             Authn::Bearer,
             Authenticated,
         )
-        // Prompts: god_view_uid() filter in the handler.
+        // Prompts: owner_filter() filter in the handler.
         .add(
             &[GET, Method::POST],
             "/prompts",
@@ -515,7 +515,7 @@ fn build_api_routes() -> Routes {
             Authn::Bearer,
             Authenticated,
         )
-        // Provider keys: god_view_uid() filter in the handler.
+        // Provider keys: owner_filter() filter in the handler.
         .add(
             &[GET, Method::POST],
             "/keys",
@@ -537,7 +537,7 @@ fn build_api_routes() -> Routes {
             Authn::Bearer,
             Authenticated,
         )
-        // Accounts: require_human() + god_view_uid()/resolve_owner in handler.
+        // Accounts: require_human() + owner_filter()/resolve_owner in handler.
         .add(
             &[GET, Method::POST],
             "/accounts",
@@ -585,8 +585,9 @@ fn build_api_routes() -> Routes {
             "/machines/{machine_id}/fs/dirs",
             get(routes::fs::list_dirs),
             Authn::Bearer,
-            // In-handler machine-owner check.
-            Authenticated,
+            // Machine-owner guard (CCT-420): `machines.user_id`, id from the
+            // `{machine_id}` path param.
+            Authz::Resource(ResourceKind::Machine, Action::Read, IdFrom::Path("machine_id")),
         )
         .add(&[GET], "/me", get(routes::me::me), Authn::Bearer, Authenticated)
         .add(

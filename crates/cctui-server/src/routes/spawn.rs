@@ -106,7 +106,7 @@ pub async fn spawn_session(
         // Accounts are user-owned. The admin token has no user identity, so it
         // resolves the account against the target machine's owner (CCT-251) —
         // the session runs on that user's machine with that user's account.
-        let uid = ctx.god_view_uid().unwrap_or(owner);
+        let uid = ctx.owner_filter().unwrap_or(owner);
         // Resolve the model through this account's alias map (CCT-406) before it
         // reaches the worker — a no-op when the account has no matching alias.
         if let Some(m) = model.as_deref() {

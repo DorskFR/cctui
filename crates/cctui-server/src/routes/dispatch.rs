@@ -219,7 +219,7 @@ pub async fn list_dispatchers(
         "SELECT name FROM dispatchers \
          WHERE ($1::uuid IS NULL OR user_id = $1) AND deleted_at IS NULL",
     )
-    .bind(ctx.god_view_uid())
+    .bind(ctx.owner_filter())
     .fetch_all(&state.pool)
     .await
     {
@@ -236,7 +236,7 @@ pub async fn dispatch(
     Extension(ctx): Extension<AuthContext>,
     Json(req): Json<DispatchRequest>,
 ) -> Result<(StatusCode, Json<DispatchResponse>), (StatusCode, Json<ApiError>)> {
-    let dispatcher = match resolve_dispatcher(&state, ctx.god_view_uid(), &req.dispatcher).await {
+    let dispatcher = match resolve_dispatcher(&state, ctx.owner_filter(), &req.dispatcher).await {
         Ok(Some(d)) => d,
         Ok(None) => {
             let known = state.dispatchers.ids().join(", ");
@@ -265,7 +265,7 @@ pub async fn dispatch(
 
     // Alert that a dispatch arrived (CCT-198). Built from the *original* payload
     // (before the machine key is injected) and no-ops unless ntfy is configured.
-    let caller = caller_label(&state, ctx.god_view_uid()).await;
+    let caller = caller_label(&state, ctx.owner_filter()).await;
     let summary = summarize(&req.payload);
     ntfy::notify(
         &state.config,
@@ -309,8 +309,8 @@ pub async fn dispatch(
     let mut forwarded_payload = req.payload.clone();
     // The shared dispatch-machine identity + account routing apply to a real
     // owning user (the web UI / automation dispatch with a user token). An admin token
-    // (`god_view_uid` is `None`) dispatches without the shared identity.
-    if let Some(uid) = ctx.god_view_uid() {
+    // (`owner_filter` is `None`) dispatches without the shared identity.
+    if let Some(uid) = ctx.owner_filter() {
         let (_, key) = ensure_dispatch_machine(&state, uid).await.map_err(|e| {
             tracing::error!("ensure_dispatch_machine failed: {e}");
             (

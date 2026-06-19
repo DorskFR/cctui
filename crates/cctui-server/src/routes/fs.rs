@@ -8,14 +8,13 @@
 //! no path restriction beyond that, since machine owners can already spawn
 //! arbitrary commands.
 
+use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::{Extension, Json};
 use cctui_proto::api::ApiError;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::auth::AuthContext;
 use crate::daemon_dispatch;
 use crate::state::AppState;
 
@@ -29,30 +28,20 @@ pub struct ListDirsResponse {
     pub dirs: Vec<String>,
 }
 
+// Machine ownership is enforced by the `Resource(Machine, Read, IdFrom::Path
+// ("machine_id"))` guard in `authz.rs` (CCT-420): the `authz_layer` middleware
+// resolves `machines.user_id` and applies `admin || owner == caller` BEFORE this
+// handler runs (404 unknown machine / 403 not-your-machine / admin bypass — the
+// exact semantics of the old in-handler check). The handler now only needs the
+// machine id to talk to the daemon.
 pub async fn list_dirs(
     State(state): State<AppState>,
-    Extension(ctx): Extension<AuthContext>,
     Path(machine_id): Path<String>,
     Query(params): Query<ListDirsParams>,
 ) -> Result<Json<ListDirsResponse>, (StatusCode, Json<ApiError>)> {
     let machine_uuid = Uuid::parse_str(&machine_id).map_err(|_| {
         (StatusCode::BAD_REQUEST, Json(ApiError { error: "machine_id must be a uuid".into() }))
     })?;
-    let row: Option<(Uuid,)> = sqlx::query_as("SELECT user_id FROM machines WHERE id = $1")
-        .bind(machine_uuid)
-        .fetch_optional(&state.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("db error: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-        })?;
-    let Some((owner,)) = row else {
-        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "machine not found".into() })));
-    };
-    let permitted = ctx.is_admin() || ctx.user_id == owner;
-    if !permitted {
-        return Err((StatusCode::FORBIDDEN, Json(ApiError { error: "not your machine".into() })));
-    }
 
     match daemon_dispatch::list_dirs(&state, machine_uuid, params.path).await {
         Ok(dirs) => Ok(Json(ListDirsResponse { dirs })),

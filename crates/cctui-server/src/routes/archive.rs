@@ -255,7 +255,7 @@ pub async fn get_status(
     Extension(ctx): Extension<AuthContext>,
 ) -> Result<Json<ArchiveStatusResponse>, StatusCode> {
     require_user_scope(&ctx)?;
-    let user_id = ctx.god_view_uid();
+    let user_id = ctx.owner_filter();
 
     let base = "SELECT m.machine_id, m.project_dir, m.session_id, \
                 m.size_bytes, m.mtime, \
@@ -326,7 +326,7 @@ pub async fn index(
     Extension(ctx): Extension<AuthContext>,
 ) -> Result<Json<Vec<ArchiveIndexEntry>>, StatusCode> {
     require_user_scope(&ctx)?;
-    let user_id = ctx.god_view_uid();
+    let user_id = ctx.owner_filter();
     let rows: Vec<IndexRow> = if let Some(uid) = user_id {
         sqlx::query_as(
             "SELECT a.machine_id, a.project_dir, a.session_id, a.sha256, a.size_bytes, \

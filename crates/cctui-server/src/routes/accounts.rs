@@ -66,7 +66,7 @@ fn resolve_owner(
 
 /// Gate the account read/mutation routes to a human identity (a user or admin
 /// token, never a machine key), matching the pre-CCT-410 `require_user`/admin
-/// behavior. Admin then sees/acts across all owners via `god_view_uid`.
+/// behavior. Admin then sees/acts across all owners via `owner_filter`.
 fn require_human(ctx: &AuthContext) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
     if ctx.machine_id.is_some() || !ctx.has(Scope::Read) {
         return Err(err(StatusCode::FORBIDDEN, "user or admin token required"));
@@ -318,7 +318,7 @@ pub async fn list_accounts(
          WHERE $1::uuid IS NULL OR a.user_id = $1 \
          ORDER BY a.provider, a.name",
     )
-    .bind(ctx.god_view_uid())
+    .bind(ctx.owner_filter())
     .fetch_all(&state.pool)
     .await
     .map_err(|e| {
@@ -475,7 +475,7 @@ pub async fn rename_account(
          WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2) AND NOT managed",
     )
     .bind(id)
-    .bind(ctx.god_view_uid())
+    .bind(ctx.owner_filter())
     .fetch_optional(&state.pool)
     .await
     .map_err(|e| {
@@ -573,7 +573,7 @@ pub async fn rename_account(
                    0::bigint AS total_tokens, 0::double precision AS est_cost_usd",
     )
     .bind(id)
-    .bind(ctx.god_view_uid())
+    .bind(ctx.owner_filter())
     .bind(&name)
     .bind(&base_url)
     .bind(&auth_scheme)
@@ -607,7 +607,7 @@ pub async fn delete_account(
          AND NOT managed",
     )
     .bind(id)
-    .bind(ctx.god_view_uid())
+    .bind(ctx.owner_filter())
     .execute(&state.pool)
     .await
     .map_err(|e| {
@@ -1020,7 +1020,7 @@ pub async fn account_usage(
          WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)",
     )
     .bind(id)
-    .bind(ctx.god_view_uid())
+    .bind(ctx.owner_filter())
     .fetch_optional(&state.pool)
     .await
     .map_err(|e| {

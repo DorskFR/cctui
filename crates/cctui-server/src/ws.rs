@@ -18,19 +18,14 @@ async fn ws_owns_session(state: &AppState, ctx: &AuthContext, session_id: &str) 
     if ctx.is_admin() {
         return true;
     }
-    let owner: Option<Option<uuid::Uuid>> = sqlx::query_scalar(
-        "SELECT m.user_id \
-         FROM sessions s LEFT JOIN machines m ON m.id = s.machine_uuid \
-         WHERE s.id = $1",
-    )
-    .bind(session_id)
-    .fetch_optional(&state.pool)
-    .await
-    .unwrap_or_else(|e| {
+    // Reuse the exact same ownership query as the HTTP `Resource(Session)` guard
+    // (`machine_uuid -> machines.user_id`) so the two transports never drift
+    // (CCT-416/CCT-420). A DB error or unknown session resolves to "not owned".
+    let owner = crate::authz::session_owner(session_id, &state.pool).await.unwrap_or_else(|e| {
         tracing::error!(%session_id, "db error (ws session authz): {e}");
         None
     });
-    owner.flatten() == Some(ctx.user_id)
+    owner == Some(ctx.user_id)
 }
 
 fn extract_token_from_uri(uri: &Uri) -> Option<String> {
