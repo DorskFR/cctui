@@ -118,6 +118,12 @@ export interface OAuthAccount {
   total_tokens: number;
   /** Rough USD cost estimate from tokens (per-provider blended rate, CCT-273). */
   est_cost_usd: number;
+  /** Per-account soft limits on cctui's own share of the usage windows (CCT-411).
+   *  null on a window ⇒ no cap. `bypass_minutes`: ignore a window's cap when it
+   *  resets within that many minutes. */
+  soft_limit_5h_pct: number | null;
+  soft_limit_7d_pct: number | null;
+  soft_limit_bypass_minutes: number | null;
 }
 
 /** One usage window from Anthropic's free OAuth usage API (CCT-306):
@@ -165,6 +171,10 @@ export interface CreateAccount {
   auth_scheme?: string;
   /** Owner — required when authenticated with the admin token (CCT-251). */
   user_id?: string;
+  /** Per-account soft limits (CCT-411); omit/null for no cap. */
+  soft_limit_5h_pct?: number | null;
+  soft_limit_7d_pct?: number | null;
+  soft_limit_bypass_minutes?: number | null;
 }
 
 /** Partial edit payload (CCT-402). Every field optional; an absent field leaves
@@ -181,6 +191,13 @@ export interface UpdateAccount {
   model_aliases?: Record<string, string>;
   /** New static credential; omit/blank to keep the stored one. */
   access_token?: string;
+  /** Replacement soft-limit config (CCT-411). Provided → replaces all three
+   *  columns (a null field clears it); absent → unchanged. */
+  soft_limits?: {
+    soft_limit_5h_pct: number | null;
+    soft_limit_7d_pct: number | null;
+    soft_limit_bypass_minutes: number | null;
+  };
 }
 
 /** "Sign in with Claude" OAuth start payload/response (CCT-243). */

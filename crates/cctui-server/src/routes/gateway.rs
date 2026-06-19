@@ -258,6 +258,9 @@ type AccountRow = (
     Option<String>,
     Option<String>,
     String,
+    Option<i32>,
+    Option<i32>,
+    Option<i32>,
 );
 /// Raw account row by id (no id column, before decrypt).
 type ReloadRow = (
@@ -286,6 +289,10 @@ struct Account {
     base_url: Option<String>,
     /// `oauth` (refreshing subscription) | `bearer` | `api_key` (static, CCT-399).
     auth_scheme: String,
+    /// Per-account soft limits on cctui's own share of the usage windows
+    /// (CCT-411). Enforced in `passthrough` against the cached usage. All NULL ⇒
+    /// no soft limit (prior behaviour).
+    soft_limits: crate::soft_limit::SoftLimits,
 }
 
 impl Account {
@@ -302,7 +309,8 @@ async fn resolve_account(state: &AppState, session_token: &str) -> Option<Accoun
     let hash = crate::auth::sha256_hex(session_token);
     let row: Option<AccountRow> = sqlx::query_as(
         "SELECT a.id, a.provider, a.encrypted_access_token, a.encrypted_refresh_token, \
-                    a.expires_at, a.provider_account_id, a.base_url, a.auth_scheme \
+                    a.expires_at, a.provider_account_id, a.base_url, a.auth_scheme, \
+                    a.soft_limit_5h_pct, a.soft_limit_7d_pct, a.soft_limit_bypass_minutes \
              FROM session_tokens t JOIN oauth_accounts a ON a.id = t.account_id \
              WHERE t.token_hash = $1 AND t.revoked_at IS NULL",
     )
@@ -311,8 +319,19 @@ async fn resolve_account(state: &AppState, session_token: &str) -> Option<Accoun
     .await
     .ok()
     .flatten();
-    let (id, provider, enc_access, enc_refresh, expires_at, provider_account_id, base_url, auth_scheme) =
-        row?;
+    let (
+        id,
+        provider,
+        enc_access,
+        enc_refresh,
+        expires_at,
+        provider_account_id,
+        base_url,
+        auth_scheme,
+        soft_5h,
+        soft_7d,
+        soft_bypass,
+    ) = row?;
     let key = crate::crypto::vault_key();
     let access_token = enc_access.and_then(|e| crate::crypto::deobfuscate(&e, &key));
     let refresh_token = enc_refresh.and_then(|e| crate::crypto::deobfuscate(&e, &key));
@@ -325,6 +344,11 @@ async fn resolve_account(state: &AppState, session_token: &str) -> Option<Accoun
         provider_account_id,
         base_url,
         auth_scheme,
+        soft_limits: crate::soft_limit::SoftLimits {
+            pct_5h: soft_5h,
+            pct_7d: soft_7d,
+            bypass_minutes: soft_bypass,
+        },
     })
 }
 
@@ -426,11 +450,7 @@ async fn current_access_token(state: &AppState, acct: &Account) -> Result<String
     // Static-credential compatible accounts: forward the stored credential
     // verbatim, no expiry tracking, no refresh (CCT-399).
     if acct.is_static() {
-        return acct
-            .access_token
-            .clone()
-            .filter(|t| !t.is_empty())
-            .ok_or(StatusCode::UNAUTHORIZED);
+        return acct.access_token.clone().filter(|t| !t.is_empty()).ok_or(StatusCode::UNAUTHORIZED);
     }
     let fresh = matches!(&acct.access_token, Some(t) if !t.is_empty())
         && acct
@@ -484,6 +504,10 @@ async fn reload_account(state: &AppState, id: Uuid) -> Option<Account> {
         provider_account_id,
         base_url,
         auth_scheme,
+        // `reload_account` only services the token-refresh / usage-fetch paths,
+        // never the soft-limit gate (which runs off `resolve_account`), so the
+        // caps are irrelevant here — default them.
+        soft_limits: crate::soft_limit::SoftLimits::default(),
     })
 }
 
@@ -516,12 +540,35 @@ async fn passthrough(
         .to_string();
 
     let acct = resolve_account(&state, &session_token).await.ok_or(StatusCode::UNAUTHORIZED)?;
+
+    // Soft limit (CCT-411): cap cctui's own share of the account's usage windows
+    // so it leaves headroom for the human sharing the subscription. Reuses the
+    // existing usage cache — NO upstream fetch on the hot path; absent/stale usage
+    // fails open (allow). Only the configured windows gate; bypass near reset.
+    if !acct.soft_limits.is_unset() {
+        let cached =
+            state.account_usage_cache.get(&acct.id).map(|h| h.usage.clone()).unwrap_or(None);
+        if let crate::soft_limit::Decision::Block { retry_after_secs, reason } =
+            crate::soft_limit::evaluate_soft_limit(cached.as_ref(), &acct.soft_limits, Utc::now())
+        {
+            tracing::info!(account = %acct.id, retry_after_secs, "soft limit hit: {reason}");
+            let resp = Response::builder()
+                .status(StatusCode::TOO_MANY_REQUESTS)
+                .header(http::header::RETRY_AFTER, retry_after_secs.to_string())
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::json!({ "error": reason }).to_string()))
+                .map_err(|_| StatusCode::TOO_MANY_REQUESTS)?;
+            return Ok(resp);
+        }
+    }
+
     let access_token = current_access_token(&state, &acct).await?;
 
     // Per-account upstream (CCT-399): a compatible endpoint overrides the
     // built-in upstream with its stored `base_url`; native subscription accounts
     // fall back to the built-in `api.anthropic.com`/`chatgpt.com`.
-    let upstream = acct.base_url.as_deref().filter(|u| !u.trim().is_empty()).unwrap_or(upstream_base);
+    let upstream =
+        acct.base_url.as_deref().filter(|u| !u.trim().is_empty()).unwrap_or(upstream_base);
 
     // Build the upstream URL: strip the gateway prefix, keep path + query.
     let path = req.uri().path();

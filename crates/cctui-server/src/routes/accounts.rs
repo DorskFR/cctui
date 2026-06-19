@@ -170,6 +170,12 @@ pub struct AccountInfo {
     /// blended rate (CCT-273). An estimate only — OAuth/subscription accounts
     /// aren't metered per token; this is a usage-weight signal, not a bill.
     pub est_cost_usd: f64,
+    /// Per-account soft limits on cctui's own share of the subscription windows
+    /// (CCT-411). NULL ⇒ no soft limit on that window. Safe to return — they're
+    /// config, not secrets.
+    pub soft_limit_5h_pct: Option<i32>,
+    pub soft_limit_7d_pct: Option<i32>,
+    pub soft_limit_bypass_minutes: Option<i32>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -211,6 +217,13 @@ pub struct CreateAccount {
     /// admin token, which has no user identity of its own (CCT-251).
     #[serde(default)]
     pub user_id: Option<Uuid>,
+    /// Per-account soft limits (CCT-411). All optional; absent ⇒ NULL (no cap).
+    #[serde(default)]
+    pub soft_limit_5h_pct: Option<i32>,
+    #[serde(default)]
+    pub soft_limit_7d_pct: Option<i32>,
+    #[serde(default)]
+    pub soft_limit_bypass_minutes: Option<i32>,
 }
 
 /// `PATCH /api/v1/accounts/{id}` payload (CCT-402). A partial update: `name`
@@ -239,6 +252,23 @@ pub struct UpdateAccount {
     /// stored one.
     #[serde(default)]
     pub access_token: Option<String>,
+    /// Replacement soft-limit config (CCT-411). Provided → each of the three
+    /// columns is set to its value (a null field clears that column); absent →
+    /// all three unchanged. Editable for every provider, like model aliases.
+    #[serde(default)]
+    pub soft_limits: Option<SoftLimitPatch>,
+}
+
+/// The three soft-limit columns as a patchable block (CCT-411). A field left
+/// `null`/absent inside a provided block clears that column.
+#[derive(Debug, serde::Deserialize)]
+pub struct SoftLimitPatch {
+    #[serde(default)]
+    pub soft_limit_5h_pct: Option<i32>,
+    #[serde(default)]
+    pub soft_limit_7d_pct: Option<i32>,
+    #[serde(default)]
+    pub soft_limit_bypass_minutes: Option<i32>,
 }
 
 fn err(code: StatusCode, msg: &str) -> (StatusCode, Json<serde_json::Value>) {
@@ -262,6 +292,7 @@ pub async fn list_accounts(
         "SELECT a.id, a.name, a.provider, a.models, a.model_aliases, a.managed, a.user_id, u.name AS user_name, \
                 a.expires_at, a.created_at, a.last_used_at, \
                 a.request_count, a.bytes_transferred, \
+                a.soft_limit_5h_pct, a.soft_limit_7d_pct, a.soft_limit_bypass_minutes, \
                 (COALESCE(t.input_tokens,0) + COALESCE(t.output_tokens,0) \
                  + COALESCE(t.cache_read_tokens,0) + COALESCE(t.cache_creation_tokens,0))::bigint \
                   AS total_tokens, \
@@ -307,10 +338,7 @@ pub async fn create_account(
     if req.name.trim().is_empty() {
         return Err(err(StatusCode::BAD_REQUEST, "name required"));
     }
-    let compatible = matches!(
-        req.provider.as_str(),
-        "anthropic-compatible" | "openai-compatible"
-    );
+    let compatible = matches!(req.provider.as_str(), "anthropic-compatible" | "openai-compatible");
     if !matches!(
         req.provider.as_str(),
         "anthropic" | "openai" | "anthropic-compatible" | "openai-compatible"
@@ -334,7 +362,10 @@ pub async fn create_account(
     if compatible {
         let base = req.base_url.as_deref().map(str::trim).filter(|s| !s.is_empty());
         let Some(base) = base else {
-            return Err(err(StatusCode::BAD_REQUEST, "base_url required for a compatible endpoint"));
+            return Err(err(
+                StatusCode::BAD_REQUEST,
+                "base_url required for a compatible endpoint",
+            ));
         };
         // SSRF is explicitly out of scope for this single-operator, self-hosted
         // deployment (CCT-399 decision); a light scheme check only. Prefer https.
@@ -384,11 +415,13 @@ pub async fn create_account(
     let row: Result<AccountInfo, sqlx::Error> = sqlx::query_as(
         "INSERT INTO oauth_accounts \
             (user_id, name, provider, encrypted_refresh_token, encrypted_access_token, \
-             expires_at, base_url, models, auth_scheme, model_aliases) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
+             expires_at, base_url, models, auth_scheme, model_aliases, \
+             soft_limit_5h_pct, soft_limit_7d_pct, soft_limit_bypass_minutes) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) \
          RETURNING id, name, provider, models, model_aliases, managed, user_id, NULL::text AS user_name, \
                    expires_at, created_at, last_used_at, \
                    request_count, bytes_transferred, \
+                   soft_limit_5h_pct, soft_limit_7d_pct, soft_limit_bypass_minutes, \
                    0::bigint AS total_tokens, 0::double precision AS est_cost_usd",
     )
     .bind(uid)
@@ -401,6 +434,9 @@ pub async fn create_account(
     .bind(&models)
     .bind(&auth_scheme)
     .bind(&model_aliases)
+    .bind(req.soft_limit_5h_pct)
+    .bind(req.soft_limit_7d_pct)
+    .bind(req.soft_limit_bypass_minutes)
     .fetch_one(&state.pool)
     .await;
 
@@ -449,10 +485,7 @@ pub async fn rename_account(
     let Some((provider,)) = provider else {
         return Err(err(StatusCode::NOT_FOUND, "no such account"));
     };
-    let compatible = matches!(
-        provider.as_str(),
-        "anthropic-compatible" | "openai-compatible"
-    );
+    let compatible = matches!(provider.as_str(), "anthropic-compatible" | "openai-compatible");
 
     // Compatible-only fields are rejected for native accounts so the edit form
     // can't silently no-op against a subscription account.
@@ -490,10 +523,8 @@ pub async fn rename_account(
         }
         _ => None,
     };
-    let models = req
-        .models
-        .as_ref()
-        .map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null));
+    let models =
+        req.models.as_ref().map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null));
     // Aliases (CCT-406): COALESCE can't distinguish "clear" from "unchanged"
     // (both would bind NULL), so carry an explicit provided-flag — provided +
     // empty clears the column, provided + non-empty replaces it.
@@ -510,6 +541,15 @@ pub async fn rename_account(
         .filter(|s| !s.is_empty())
         .map(|c| crate::crypto::obfuscate(c, &key));
     let name = req.name.as_deref().map(str::trim).map(str::to_owned);
+    // Soft limits (CCT-411): like aliases, carry a provided-flag so a provided
+    // block replaces all three columns (a null field clears one) while an absent
+    // block leaves them untouched.
+    let soft_provided = req.soft_limits.is_some();
+    let (soft_5h, soft_7d, soft_bypass) = req
+        .soft_limits
+        .as_ref()
+        .map(|s| (s.soft_limit_5h_pct, s.soft_limit_7d_pct, s.soft_limit_bypass_minutes))
+        .unwrap_or((None, None, None));
 
     // COALESCE keeps each column when its bind is NULL, so an absent field is a
     // no-op. Admin (`ctx.user_id` = NULL) may edit any account; a user only its
@@ -521,11 +561,15 @@ pub async fn rename_account(
             auth_scheme = COALESCE($5, auth_scheme), \
             models = COALESCE($6, models), \
             encrypted_access_token = COALESCE($7, encrypted_access_token), \
-            model_aliases = CASE WHEN $8 THEN $9 ELSE model_aliases END \
+            model_aliases = CASE WHEN $8 THEN $9 ELSE model_aliases END, \
+            soft_limit_5h_pct = CASE WHEN $10 THEN $11 ELSE soft_limit_5h_pct END, \
+            soft_limit_7d_pct = CASE WHEN $10 THEN $12 ELSE soft_limit_7d_pct END, \
+            soft_limit_bypass_minutes = CASE WHEN $10 THEN $13 ELSE soft_limit_bypass_minutes END \
          WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2) AND NOT managed \
          RETURNING id, name, provider, models, model_aliases, managed, user_id, NULL::text AS user_name, \
                    expires_at, created_at, last_used_at, \
                    request_count, bytes_transferred, \
+                   soft_limit_5h_pct, soft_limit_7d_pct, soft_limit_bypass_minutes, \
                    0::bigint AS total_tokens, 0::double precision AS est_cost_usd",
     )
     .bind(id)
@@ -537,6 +581,10 @@ pub async fn rename_account(
     .bind(&enc_access)
     .bind(aliases_provided)
     .bind(&model_aliases)
+    .bind(soft_provided)
+    .bind(soft_5h)
+    .bind(soft_7d)
+    .bind(soft_bypass)
     .fetch_optional(&state.pool)
     .await
     .map_err(|e| {

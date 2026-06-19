@@ -80,7 +80,30 @@
 	// e.g. opus → claude-opus-4-8[1m]. Applies to every provider; resolved
 	// server-side at spawn. Edited as rows, sent as an object.
 	let aliasRows = $state<{ alias: string; model: string }[]>([]);
+	// Per-account soft limits (CCT-411): cap cctui's own share of the 5h/7d usage
+	// windows so it leaves headroom for the human sharing the subscription. Empty
+	// input = no cap on that window. Kept as strings so blank ⇒ null.
+	let soft5h = $state('');
+	let soft7d = $state('');
+	let softBypass = $state('');
 	const isCompatible = $derived(provider.endsWith('-compatible'));
+
+	/** Parse a soft-limit input: blank ⇒ null, else a clamped integer. */
+	function softNum(v: string): number | null {
+		const t = v.trim();
+		if (!t) return null;
+		const n = Math.round(Number(t));
+		return Number.isFinite(n) ? Math.max(0, n) : null;
+	}
+
+	/** The soft-limit block to send on save (always sent so clearing works). */
+	function softLimits() {
+		return {
+			soft_limit_5h_pct: softNum(soft5h),
+			soft_limit_7d_pct: softNum(soft7d),
+			soft_limit_bypass_minutes: softNum(softBypass)
+		};
+	}
 
 	/** Collapse the alias rows into the `{alias: model}` object the API expects,
 	 *  dropping incomplete rows. */
@@ -109,6 +132,9 @@
 		authScheme = 'bearer';
 		modelRows = [{ model: '', label: '' }];
 		aliasRows = [];
+		soft5h = '';
+		soft7d = '';
+		softBypass = '';
 		oauthNonce = null;
 		oauthCode = '';
 		oauthBusy = false;
@@ -196,6 +222,10 @@
 		}
 		// Aliases are editable for every provider (CCT-406).
 		aliasRows = Object.entries(a.model_aliases ?? {}).map(([alias, model]) => ({ alias, model }));
+		// Soft limits are editable for every provider (CCT-411).
+		soft5h = a.soft_limit_5h_pct == null ? '' : String(a.soft_limit_5h_pct);
+		soft7d = a.soft_limit_7d_pct == null ? '' : String(a.soft_limit_7d_pct);
+		softBypass = a.soft_limit_bypass_minutes == null ? '' : String(a.soft_limit_bypass_minutes);
 	}
 
 	function close() {
@@ -210,8 +240,12 @@
 		const model_aliases = aliasObject();
 		try {
 			if (editing) {
-				// Always send the alias map so clearing the last row clears it.
-				const body: UpdateAccount = { name: name.trim(), model_aliases };
+				// Always send the alias map + soft limits so clearing them sticks.
+				const body: UpdateAccount = {
+					name: name.trim(),
+					model_aliases,
+					soft_limits: softLimits()
+				};
 				if (isCompatible) {
 					const models = modelRows
 						.map((r) => ({ model: r.model.trim(), label: r.label.trim() || r.model.trim() }))
@@ -245,6 +279,7 @@
 						...(credential.trim() ? { access_token: credential.trim() } : {}),
 						...(models.length ? { models } : {}),
 						...(Object.keys(model_aliases).length ? { model_aliases } : {}),
+						...softLimits(),
 						...(isAdmin ? { user_id: ownerId } : {}),
 					};
 				} else {
@@ -257,6 +292,7 @@
 						provider,
 						refresh_token: refreshToken.trim(),
 						...(Object.keys(model_aliases).length ? { model_aliases } : {}),
+						...softLimits(),
 						...(isAdmin ? { user_id: ownerId } : {}),
 					};
 				}
@@ -309,7 +345,12 @@
 					{#if a.provider === 'anthropic'}
 						<div class="usage-block">
 							<Text as="div" tone="muted" size="xs" class="usage-head">Subscription usage</Text>
-							<UsageBars id={a.id} provider={a.provider} />
+							<UsageBars
+								id={a.id}
+								provider={a.provider}
+								cap5h={a.soft_limit_5h_pct}
+								cap7d={a.soft_limit_7d_pct}
+							/>
 						</div>
 					{/if}
 					<dl class="stats">
@@ -499,6 +540,36 @@
 							>
 						</div>
 					{/if}
+
+					<!-- Soft limits (CCT-411): cap cctui's own share of the 5h/7d usage
+					     windows so a shared subscription keeps headroom for the human.
+					     Blank ⇒ no cap on that window. Anthropic-only (it has the usage
+					     API), but harmless to set on others. -->
+					{#if provider === 'anthropic' || provider === 'anthropic-compatible'}
+						<div class="models">
+							<Text as="div" tone="muted" size="sm">Soft limits</Text>
+							<Text as="div" tone="faint" size="xs">
+								Cap cctui's own share of each usage window (%). Over the cap, cctui's
+								spawned workers get a 429 instead of consuming more — leaving headroom
+								for your own Claude Code. Blank = no cap. Bypass ignores a cap when the
+								window resets within that many minutes.
+							</Text>
+							<div class="soft-grid">
+								<label class="soft-field">
+									<Text as="div" tone="faint" size="xs">5h cap %</Text>
+									<Input type="number" bind:value={soft5h} placeholder="e.g. 80" />
+								</label>
+								<label class="soft-field">
+									<Text as="div" tone="faint" size="xs">7d cap %</Text>
+									<Input type="number" bind:value={soft7d} placeholder="e.g. 80" />
+								</label>
+								<label class="soft-field">
+									<Text as="div" tone="faint" size="xs">Bypass (min)</Text>
+									<Input type="number" bind:value={softBypass} placeholder="e.g. 30" />
+								</label>
+							</div>
+						</div>
+					{/if}
 			</div>
 		{/snippet}
 		{#snippet footer()}
@@ -558,6 +629,17 @@
 		margin-top: var(--sp-3);
 		padding-top: var(--sp-3);
 		border-top: 1px solid var(--border);
+	}
+	.soft-grid {
+		display: grid;
+		grid-template-columns: repeat(3, 1fr);
+		gap: var(--sp-2);
+	}
+	.soft-field {
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+		min-width: 0;
 	}
 	.usage-block {
 		display: flex;

@@ -12,6 +12,7 @@ mod policy;
 mod registry;
 mod routes;
 mod skill_store;
+mod soft_limit;
 mod state;
 mod uploads;
 mod ws;
