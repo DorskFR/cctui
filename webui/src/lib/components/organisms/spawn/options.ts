@@ -31,6 +31,20 @@ export const codexModels = [
 	{ v: 'gpt-5.4-codex', label: 'GPT-5.4 Codex' }
 ];
 
+// Annotate native-family options with the per-account alias target (CCT-406)
+// so the picker reads e.g. "Opus (claude-opus-4-8[1m])" instead of a bare
+// "Opus" — making it obvious which concrete model the family resolves to (and
+// that the alias is in effect) for the selected account. A no-op when the
+// account has no matching alias for that family.
+export const withAliasTargets = (
+	models: { v: string; label: string }[],
+	aliases: Record<string, string> | null | undefined
+): { v: string; label: string }[] =>
+	models.map((m) => {
+		const target = m.v ? aliases?.[m.v]?.trim() : undefined;
+		return target ? { v: m.v, label: `${m.label} (${target})` } : m;
+	});
+
 // The harness/adapter an account's provider locks to (CCT-399): anything in the
 // openai family runs Codex; everything else (anthropic / anthropic-compatible)
 // runs Claude Code. Mirrors the server's `Family::from_provider`.

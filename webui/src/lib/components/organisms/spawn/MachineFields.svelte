@@ -21,7 +21,8 @@
 		codexEfforts,
 		modes,
 		adapterForProvider,
-		isCompatibleProvider
+		isCompatibleProvider,
+		withAliasTargets
 	} from './options';
 	import { submitChordLabel, isSubmitChord } from '$lib/platform';
 	import type { Form } from './types';
@@ -66,6 +67,10 @@
 	);
 	const usesAccountModels = $derived(
 		!!selectedAccount && isCompatibleProvider(selectedAccount.provider)
+	);
+	// Native claude families annotated with the selected account's alias targets.
+	const claudeModelOptions = $derived(
+		withAliasTargets(claudeModels, selectedAccount?.model_aliases)
 	);
 
 	// Clear a stale account selection if it no longer exists (e.g. accounts
@@ -204,7 +209,7 @@
 		</Select>
 	{:else}
 		<Select id="sp-model" bind:value={form.model_claude}>
-			{#each claudeModels as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
+			{#each claudeModelOptions as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
 		</Select>
 	{/if}
 </Field>

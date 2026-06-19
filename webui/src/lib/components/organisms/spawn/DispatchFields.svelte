@@ -5,7 +5,7 @@
 	// Dispatch runs a claude worker, so it uses the claude model/effort sets.
 	import EffortSlider from './EffortSlider.svelte';
 	import { Field, Input, Select, Text, Textarea } from '@dorsk/tsumikit';
-	import { claudeModels, claudeEfforts, adapterForProvider, isCompatibleProvider } from './options';
+	import { claudeModels, claudeEfforts, adapterForProvider, isCompatibleProvider, withAliasTargets } from './options';
 	import { submitChordLabel, isSubmitChord } from '$lib/platform';
 	import type { OAuthAccount } from '$lib/queries';
 	import type { Form } from './types';
@@ -35,6 +35,8 @@
 	);
 	const accountModelOptions = $derived((selectedAccount?.models ?? []).map((m) => ({ v: m.model, label: m.label })));
 	const usesAccountModels = $derived(!!selectedAccount && isCompatibleProvider(selectedAccount.provider));
+	// Native claude families annotated with the selected account's alias targets.
+	const claudeModelOptions = $derived(withAliasTargets(claudeModels, selectedAccount?.model_aliases));
 
 	$effect(() => {
 		if (form.account && !dispatchAccounts.some((a) => a.name === form.account)) {
@@ -120,7 +122,7 @@
 			{:else}
 				<!-- Dispatch runs a claude worker → claude families. -->
 				<Select id="sp-model" bind:value={form.model_claude}>
-					{#each claudeModels as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
+					{#each claudeModelOptions as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
 				</Select>
 			{/if}
 		</Field>
