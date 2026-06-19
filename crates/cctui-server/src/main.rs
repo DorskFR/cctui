@@ -90,12 +90,12 @@ async fn main() -> anyhow::Result<()> {
     let _ = &api_descriptors;
 
     let api_router = api_router
-        // Authorization runs AFTER authentication: `authz_layer` reads the
-        // per-route policy attached by `Routes::add` and the `AuthContext`
-        // inserted by `auth_middleware`, then enforces (default-deny if no
-        // policy is attached). Layer order: the LAST `.layer` is outermost
-        // (runs first), so `auth_middleware` runs before `authz_layer`.
-        .layer(middleware::from_fn(authz::authz_layer))
+        // Authentication runs as a global layer; AUTHORIZATION is enforced
+        // per-route inside each route's `route_layer` (attached by
+        // `Routes::add`), which runs INSIDE this `auth_middleware` so the
+        // `AuthContext` it inserts is already present when the policy evaluates.
+        // (A global authz layer would run OUTSIDE the matched route and could
+        // not see its policy — the 0.7.0 default-deny regression.)
         .layer(middleware::from_fn(auth::auth_middleware))
         .layer(Extension(auth_config.clone()));
 

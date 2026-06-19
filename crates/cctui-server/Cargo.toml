@@ -47,3 +47,7 @@ sha1 = "0.10"
 reqwest.workspace = true
 tokio = { version = "1", features = ["full"] }
 tempfile = "3"
+# Request-level regression test for the authz layer ordering (CCT-423): drive a
+# real request through the assembled router via `ServiceExt::oneshot`.
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

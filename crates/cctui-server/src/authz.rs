@@ -115,9 +115,9 @@
 use std::sync::Arc;
 
 use axum::Router;
-use axum::extract::Request;
+use axum::extract::{Request, State};
 use axum::http::{Method, StatusCode};
-use axum::middleware::Next;
+use axum::middleware::{self, Next};
 use axum::response::Response;
 use axum::routing::MethodRouter;
 use sqlx::PgPool;
@@ -249,7 +249,7 @@ impl Authz {
         &self,
         ctx: &AuthContext,
         id: Option<String>,
-        pool: &PgPool,
+        pool: Option<&PgPool>,
     ) -> Result<(), StatusCode> {
         match self {
             // The authenticated `/api/v1` group never carries `Public` routes;
@@ -259,6 +259,9 @@ impl Authz {
             Self::Public | Self::Authenticated => Ok(()),
             Self::Scope(s) => ctx.requires(*s),
             Self::Resource(kind, action, _id_from) => {
+                // The caller supplies the pool for every `Resource` policy; its
+                // absence is a wiring bug, not a client error.
+                let pool = pool.ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
                 authorize_resource(*kind, ctx, *action, id.as_deref(), pool).await
             }
             // The escape hatch receives the resolved id where one exists.
@@ -553,10 +556,14 @@ impl Routes {
         authz: Authz,
     ) -> Self {
         let policy = Arc::new(authz.clone());
-        // Attach the policy to exactly this route's requests. `route_layer`
-        // runs only for requests matched to this route, so the extension keys
-        // the policy by matched path without a separate lookup table.
-        let handler = handler.route_layer(axum::Extension(RoutePolicy(policy)));
+        // Enforce this route's policy via `route_layer`, which runs ONLY for
+        // requests matched to this route — and, crucially, INSIDE the outer
+        // `auth_middleware` (so `AuthContext` is already populated) yet with the
+        // policy captured directly as layer state. A global `.layer` would run
+        // OUTSIDE the router before the matched route is entered, so it could
+        // never see a per-route extension — the 0.7.0 default-deny regression.
+        let handler =
+            handler.route_layer(middleware::from_fn_with_state(policy, enforce_route));
         self.router = self.router.route(path, handler);
         for method in methods {
             self.descriptors.push(RouteDescriptor {
@@ -582,33 +589,44 @@ impl Default for Routes {
     }
 }
 
-/// Per-route extension carrying the route's policy to [`authz_layer`].
-#[derive(Clone)]
-struct RoutePolicy(Arc<Authz>);
-
-/// Default-deny authorization layer. Runs AFTER `auth_middleware` on the
-/// `/api/v1` group: looks up the route's [`Authz`] (attached by [`Routes::add`])
-/// and the [`AuthContext`], then enforces. A request reaching this layer with
-/// no attached policy is rejected `403` — the fail-closed backstop.
-pub async fn authz_layer(request: Request, next: Next) -> Result<Response, StatusCode> {
-    let Some(policy) = request.extensions().get::<RoutePolicy>().map(|p| p.0.clone()) else {
-        // No policy resolved for a matched route → default deny.
-        return Err(StatusCode::FORBIDDEN);
-    };
-    // Every `/api/v1` route is authenticated by `auth_middleware`, which inserts
-    // the context; its absence means the principal was not established.
+/// Per-route authorization enforcement, attached by [`Routes::add`] via
+/// `route_layer` with the route's [`Authz`] captured as layer state. It runs
+/// INSIDE the matched route, after the outer `auth_middleware` has populated
+/// [`AuthContext`], so both the policy and the principal are available.
+///
+/// A 0.7.0 regression layered this as a single GLOBAL `authz_layer` reading the
+/// policy from a per-route extension; the global layer ran OUTSIDE the router,
+/// before the matched route's extension was inserted, so it default-denied every
+/// authenticated request (403). Capturing the policy as `route_layer` state
+/// removes the ordering hazard entirely: there is no cross-layer handoff.
+async fn enforce_route(
+    State(policy): State<Arc<Authz>>,
+    request: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    // Every `/api/v1` route is authenticated by the outer `auth_middleware`,
+    // which inserts the context; its absence means the principal was not
+    // established.
     let ctx = request.extensions().get::<AuthContext>().cloned().ok_or(StatusCode::UNAUTHORIZED)?;
-    let pool = request
-        .extensions()
-        .get::<crate::auth::AuthConfig>()
-        .map(|c| c.pool.clone())
-        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
 
     // Resolve any path-sourced id BEFORE awaiting so the enforce future borrows
     // nothing from the (non-`Send`) request.
     let id = policy.id_from().and_then(|id_from| resolve_id(&request, id_from));
 
-    policy.enforce(&ctx, id, &pool).await?;
+    // The pool is needed ONLY for per-object [`Authz::Resource`] policies; the
+    // scope/authenticated/custom arms never touch it, so look it up lazily.
+    let pool = match &*policy {
+        Authz::Resource(..) => Some(
+            request
+                .extensions()
+                .get::<crate::auth::AuthConfig>()
+                .map(|c| c.pool.clone())
+                .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?,
+        ),
+        _ => None,
+    };
+
+    policy.enforce(&ctx, id, pool.as_ref()).await?;
     Ok(next.run(request).await)
 }
 
@@ -938,5 +956,71 @@ mod tests {
             SharedThing::authorize(&admin(), Action::Write, "whatever", &pool).await.unwrap(),
             Decision::Allowed
         );
+    }
+
+    // ---- request-level layer-ordering regression (CCT-423) -------------------
+
+    /// Build a one-route `Router<()>` wired EXACTLY as [`Routes::add`] does — the
+    /// route's policy enforced via `route_layer(from_fn_with_state(.., enforce_route))`
+    /// — optionally under a global layer that mimics `auth_middleware` by
+    /// inserting an [`AuthContext`]. This reproduces the production layer stack so
+    /// a real request exercises the ordering that the 0.7.0 global-`authz_layer`
+    /// design got wrong (it ran before the per-route policy existed → blanket 403).
+    fn one_route_app(policy: Authz, ctx: Option<AuthContext>) -> Router {
+        use axum::routing::get;
+        let route = get(|| async { "ok" })
+            .route_layer(middleware::from_fn_with_state(Arc::new(policy), enforce_route));
+        let app = Router::new().route("/r", route);
+        match ctx {
+            Some(ctx) => app.layer(middleware::from_fn(move |mut req: Request, next: Next| {
+                let ctx = ctx.clone();
+                async move {
+                    req.extensions_mut().insert(ctx);
+                    next.run(req).await
+                }
+            })),
+            None => app,
+        }
+    }
+
+    async fn status_of(app: Router, uri: &str) -> StatusCode {
+        use axum::body::Body;
+        use tower::ServiceExt;
+        app.oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+            .status()
+    }
+
+    /// THE regression test. With a principal established (auth ran), an
+    /// `Authenticated` route returns 200 through the assembled stack. Under the
+    /// 0.7.0 wiring this was a blanket 403 because the global authz layer ran
+    /// outside the matched route and never saw the per-route policy. Nothing in
+    /// the old suite drove a real request through the combined layers, so CI
+    /// stayed green; this asserts at the request level.
+    #[tokio::test]
+    async fn authenticated_route_allows_real_request() {
+        let app = one_route_app(Authz::Authenticated, Some(user(Uuid::new_v4())));
+        assert_eq!(status_of(app, "/r").await, StatusCode::OK);
+    }
+
+    /// The policy is genuinely enforced, not merely present: with NO principal
+    /// (auth did not run / failed) the per-route layer rejects with 401.
+    #[tokio::test]
+    async fn route_without_principal_is_401() {
+        let app = one_route_app(Authz::Authenticated, None);
+        assert_eq!(status_of(app, "/r").await, StatusCode::UNAUTHORIZED);
+    }
+
+    /// A scope gate is evaluated per-request through the stack: a `Read`-only
+    /// principal hitting an `admin`-scoped route is forbidden, while an admin
+    /// passes. Proves enforcement actually consults the captured policy.
+    #[tokio::test]
+    async fn scope_gate_enforced_through_stack() {
+        let denied = one_route_app(Authz::Scope(Scope::Admin), Some(user(Uuid::new_v4())));
+        assert_eq!(status_of(denied, "/r").await, StatusCode::FORBIDDEN);
+
+        let allowed = one_route_app(Authz::Scope(Scope::Admin), Some(admin()));
+        assert_eq!(status_of(allowed, "/r").await, StatusCode::OK);
     }
 }

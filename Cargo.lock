@@ -601,6 +601,7 @@ dependencies = [
  "futures-util",
  "hex",
  "http",
+ "http-body-util",
  "k8s-openapi",
  "kube",
  "reqwest",
