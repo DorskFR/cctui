@@ -16,6 +16,7 @@ pub mod me;
 pub mod permissions;
 pub mod prompts;
 pub mod sessions;
+pub mod settings;
 pub mod skills;
 pub mod spawn;
 pub mod stats;

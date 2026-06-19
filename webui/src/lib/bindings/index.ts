@@ -76,6 +76,7 @@ export type * from './SessionStatus';
 export type * from './Session';
 export type * from './SetAclsRequest';
 export type * from './SetModelRequest';
+export type * from './SettingsPayload';
 export type * from './SkippedComment';
 export type * from './SpawnRequest';
 export type * from './SpawnResponse';

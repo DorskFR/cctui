@@ -602,6 +602,14 @@ fn build_api_routes() -> Routes {
             Authz::Resource(ResourceKind::Machine, Action::Read, IdFrom::Path("machine_id")),
         )
         .add(&[GET], "/me", get(routes::me::me), Authn::Bearer, Authenticated)
+        .add(&[GET], "/settings", get(routes::settings::get_settings), Authn::Bearer, Authenticated)
+        .add(
+            &[Method::PUT],
+            "/settings",
+            put(routes::settings::put_settings),
+            Authn::Bearer,
+            Authenticated,
+        )
         .add(
             &[GET],
             "/capabilities",
