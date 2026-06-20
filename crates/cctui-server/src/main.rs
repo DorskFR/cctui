@@ -16,6 +16,7 @@ mod skill_store;
 mod soft_limit;
 mod state;
 mod uploads;
+mod webhook;
 mod ws;
 
 use std::path::PathBuf;
@@ -1007,6 +1008,11 @@ async fn reaper_task(state: AppState) {
         // one liveness window without a dispatch attempt".
         machine_liveness::sweep(&state).await;
         machine_liveness::sweep_dispatchers(&state).await;
+
+        // Completion webhooks (CCT-294): fire a server-side callback for any
+        // dispatched session that has reached a terminal state — the
+        // crash-coverage path the worker's REPLY_URL exit trap can miss.
+        webhook::sweep(&state).await;
 
         {
             let mut pstore = state.permission_store.write().await;

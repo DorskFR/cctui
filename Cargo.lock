@@ -600,6 +600,7 @@ dependencies = [
  "dashmap",
  "futures-util",
  "hex",
+ "hmac",
  "http",
  "http-body-util",
  "k8s-openapi",

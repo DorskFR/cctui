@@ -498,6 +498,22 @@ pub struct DispatchRequest {
     /// The worker POSTs its deterministic result here (CCT-119).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply_url: Option<String>,
+    /// Server-side completion-webhook target (CCT-294): the eventual
+    /// replacement for `reply_url`. When set, the SERVER (not the worker) POSTs
+    /// the completion payload here once the dispatched session reaches a
+    /// terminal state — INCLUDING crash cases the worker's exit trap can miss
+    /// (OOM/SIGKILL, daemon never connected, connection lost past the grace
+    /// window). The wire shape matches the `reply_url` contract (`task_id`,
+    /// `status`, `error`/verdict) so flows migrate by swapping the URL. This is
+    /// additive: `reply_url` keeps working during migration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notify_url: Option<String>,
+    /// Optional per-target HMAC secret (CCT-294). When set, the server signs the
+    /// completion-webhook body with HMAC-SHA256 and sends the hex digest in an
+    /// `X-CCTUI-Signature: sha256=<hex>` header so the receiver can verify the
+    /// POST originated from cctui. Never logged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notify_secret: Option<String>,
     /// Free-form, opaque to cctui. Forwarded to the runtime as-is.
     #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
     pub payload: serde_json::Value,

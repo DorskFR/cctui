@@ -508,6 +508,29 @@ pub async fn dispatch(
         }
     }
 
+    // Register a server-emitted completion webhook (CCT-294) when the caller
+    // supplied `notify_url`. The server fires it once the dispatched session
+    // reaches a terminal state — covering crash cases the worker's REPLY_URL
+    // exit trap can miss. Scoped to a real owning user (admin-token dispatches
+    // carry no owner, so they keep the REPLY_URL trap only). Best-effort: a
+    // registration failure never blocks the dispatch. The `task_id` echoed back
+    // is the dispatch payload's `task_id` if present, else the session id.
+    if let (Some(uid), Some(notify_url)) =
+        (ctx.owner_filter(), req.notify_url.as_deref().filter(|u| !u.trim().is_empty()))
+    {
+        let task_id =
+            req.payload.get("task_id").and_then(serde_json::Value::as_str).unwrap_or(&session_id);
+        crate::webhook::register(
+            &state,
+            &session_id,
+            uid,
+            notify_url,
+            req.notify_secret.as_deref().filter(|s| !s.trim().is_empty()),
+            task_id,
+        )
+        .await;
+    }
+
     let spec = DispatchSpec {
         session_id: &session_id,
         timeout_minutes: req.timeout,
