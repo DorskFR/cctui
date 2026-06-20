@@ -1,6 +1,6 @@
 use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{State, WebSocketUpgrade};
-use axum::http::{StatusCode, Uri};
+use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use cctui_proto::ws::{AgentEvent, ServerEvent, TuiCommand};
 use futures_util::{SinkExt, StreamExt};
@@ -28,26 +28,18 @@ async fn ws_owns_session(state: &AppState, ctx: &AuthContext, session_id: &str) 
     owner == Some(ctx.user_id)
 }
 
-fn extract_token_from_uri(uri: &Uri) -> Option<String> {
-    uri.query().and_then(|q| {
-        q.split('&').find_map(|param| {
-            let mut parts = param.split('=');
-            match (parts.next(), parts.next()) {
-                (Some("token"), Some(token)) => Some(token.to_string()),
-                _ => None,
-            }
-        })
-    })
-}
-
 // --- TUI WebSocket ---
 
 pub async fn tui_ws(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
-    uri: Uri,
+    headers: axum::http::HeaderMap,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let token = extract_token_from_uri(&uri).ok_or(StatusCode::UNAUTHORIZED)?;
+    // Browser WS upgrades are same-origin GETs that carry the `HttpOnly` auth
+    // cookie automatically, so the token no longer rides the query string where
+    // it would leak into access logs (CCT-423). `bearer_or_cookie` also accepts
+    // an `Authorization` header for non-browser clients.
+    let token = crate::auth::bearer_or_cookie(&headers).ok_or(StatusCode::UNAUTHORIZED)?;
     let auth_ctx = state.auth_config.validate(&token).await.ok_or(StatusCode::UNAUTHORIZED)?;
 
     // The TUI/webui socket is for human identities (a user or admin token), not

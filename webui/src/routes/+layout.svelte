@@ -24,7 +24,13 @@
 		}
 	});
 
-	// Keep the websocket alive whenever we hold a token.
+	// Probe the `HttpOnly` auth cookie once on load to learn whether we're already
+	// signed in (CCT-423) — the token isn't readable from JS.
+	$effect(() => {
+		void auth.init();
+	});
+
+	// Keep the websocket alive whenever we hold a valid cookie session.
 	$effect(() => {
 		if (auth.isAuthed) ws.connect();
 		else ws.disconnect();
@@ -49,7 +55,7 @@
 			</main>
 			<BottomNav />
 		</div>
-	{:else}
+	{:else if !auth.checking}
 		<Login />
 	{/if}
 	<Toaster />

@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { auth } from '$lib/auth.svelte';
-	import { apiBase } from '$lib/config';
 	import { Button, Card, Field, Input, Text } from '@dorsk/tsumikit';
 
 	let token = $state('');
@@ -13,20 +12,11 @@
 		busy = true;
 		err = '';
 		try {
-			// Validate the token against `/me` (open to any authenticated caller —
-			// admin, user, or machine) before persisting it. Probing an admin-only
-			// route here used to reject valid user tokens despite the prompt
-			// offering "admin or user token" (CCT-407).
-			const res = await fetch(`${apiBase()}/me`, {
-				headers: { Authorization: `Bearer ${token.trim()}` }
-			});
-			if (res.status === 401 || res.status === 403) {
-				err = 'Invalid or unauthorized token.';
-			} else if (!res.ok) {
-				err = `Server error (${res.status}).`;
-			} else {
-				auth.set(token.trim());
-			}
+			// `auth.login` validates the token server-side and, on success, sets the
+			// `HttpOnly` auth cookie (CCT-423). A bad token resolves to 401 → false.
+			// Any authenticated principal (admin, user, machine) is accepted (CCT-407).
+			const ok = await auth.login(token.trim());
+			if (!ok) err = 'Invalid or unauthorized token.';
 		} catch {
 			err = 'Could not reach the server.';
 		} finally {

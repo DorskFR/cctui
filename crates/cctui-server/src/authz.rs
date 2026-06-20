@@ -46,8 +46,10 @@
 //!
 //! Two orthogonal, declarative axes are demanded per route (see CCT-416):
 //!
-//!   * **Authn** — how identity is proven: [`Authn`] `{None, Bearer, QueryToken,
-//!     BodyToken}`. `None` is `/health` only; everything else proves a principal.
+//!   * **Authn** — how identity is proven: [`Authn`] `{None, Bearer, BodyToken}`.
+//!     `None` is `/health` only; everything else proves a principal. `Bearer`
+//!     resolves from the `Authorization` header or the `HttpOnly` auth cookie
+//!     (CCT-423).
 //!   * **Authz** — what the principal may do: [`Authz`] `{Public, Authenticated,
 //!     Scope, Resource, Custom}`.
 //!
@@ -128,25 +130,20 @@ use crate::state::AppState;
 
 /// How identity is proven for a route.
 ///
-/// `QueryToken` and `BodyToken` describe the self-authenticating endpoints'
-/// methods for the route table / coverage test even though those endpoints keep
-/// their inline auth this ticket, so the variants are not constructed in the
-/// `/api/v1` descriptor list (only `Bearer`/`None` are).
+/// `BodyToken` describes the self-authenticating endpoints' method for the route
+/// table / coverage test even though those endpoints keep their inline auth, so
+/// the variant is not constructed in the `/api/v1` descriptor list (only
+/// `Bearer`/`None` are).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum Authn {
     /// No identity required. Only `/health`.
     None,
     /// `Authorization: Bearer <token>` — the regular `auth_middleware` path,
-    /// and the gateway's provider-key bearer.
+    /// and the gateway's provider-key bearer. Since CCT-423 this also resolves
+    /// from the `HttpOnly` auth cookie (browser + WS upgrade), so the former
+    /// `QueryToken` (`?token=` on the WS URI) variant is gone.
     Bearer,
-    /// `?token=` on the WS upgrade URI. WebSocket upgrades from browsers cannot
-    /// carry an `Authorization` header, so the token rides the query string.
-    ///
-    /// Retained deliberately: WS still authenticates via `?token=` until
-    /// CCT-423 moves it onto an `HttpOnly` cookie (then this variant goes away
-    /// and `Bearer` resolves from header-or-cookie). See the CCT-419 design note.
-    QueryToken,
     /// A token carried in the request body (daemon/dispatcher `auth`, triggers).
     /// The field name differs per endpoint, so these keep their inline
     /// self-authentication rather than folding into a generic body authenticator.

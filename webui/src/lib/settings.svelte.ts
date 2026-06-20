@@ -146,7 +146,7 @@ class Settings {
 	 *  over defaults, and refresh the cache. Tolerates failure (401/offline) by
 	 *  keeping the cached/default state. Safe to call repeatedly; runs once. */
 	async load(): Promise<void> {
-		if (!browser || this.loaded || !auth.token) return;
+		if (!browser || this.loaded || !auth.isAuthed) return;
 		this.loaded = true;
 		try {
 			const payload = await api.get<SettingsPayload>('/settings');
@@ -169,7 +169,7 @@ class Settings {
 	}
 
 	private scheduleSave() {
-		if (!browser || !auth.token) return;
+		if (!browser || !auth.isAuthed) return;
 		if (this.saveTimer) clearTimeout(this.saveTimer);
 		this.saveTimer = setTimeout(() => {
 			this.saveTimer = null;

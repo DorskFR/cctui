@@ -191,7 +191,7 @@ class WsClient {
 	private want = false;
 
 	connect() {
-		if (!browser || !auth.token) return;
+		if (!browser || !auth.isAuthed) return;
 		this.want = true;
 		this.open();
 	}
@@ -199,7 +199,9 @@ class WsClient {
 	private open() {
 		if (this.socket && this.socket.readyState <= WebSocket.OPEN) return;
 		this.status = 'connecting';
-		const url = `${wsBase()}/ws?token=${encodeURIComponent(auth.token)}`;
+		// Same-origin WS upgrade: the browser attaches the `HttpOnly` auth cookie
+		// automatically, so the token no longer rides the query string (CCT-423).
+		const url = `${wsBase()}/ws`;
 		const sock = new WebSocket(url);
 		this.socket = sock;
 

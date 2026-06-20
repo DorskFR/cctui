@@ -110,7 +110,7 @@
 			>
 		{/if}
 		<div class="spacer"></div>
-		<Button onclick={() => auth.clear()}>⏻ Log out</Button>
+		<Button onclick={() => void auth.logout()}>⏻ Log out</Button>
 	</div>
 {/if}
 

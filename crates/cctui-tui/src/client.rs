@@ -97,13 +97,24 @@ impl ServerClient {
     pub async fn connect_ws(
         &self,
     ) -> Result<(mpsc::Sender<TuiCommand>, mpsc::Receiver<ServerEvent>)> {
+        // Authenticate the WS upgrade via the `Authorization` header rather than a
+        // `?token=` query param so the token never lands in server access logs
+        // (CCT-423). `bearer_or_cookie` on the server accepts either the header
+        // (native clients like this TUI) or the `HttpOnly` cookie (browsers).
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        use tokio_tungstenite::tungstenite::http::header::AUTHORIZATION;
+
         let ws_url = format!(
-            "{}/api/v1/ws?token={}",
+            "{}/api/v1/ws",
             self.base_url.replacen("http://", "ws://", 1).replacen("https://", "wss://", 1),
-            self.token
+        );
+        let mut request = ws_url.into_client_request().context("build ws request")?;
+        request.headers_mut().insert(
+            AUTHORIZATION,
+            format!("Bearer {}", self.token).parse().context("build auth header")?,
         );
 
-        let (ws_stream, _) = connect_async(&ws_url).await.context("connect websocket")?;
+        let (ws_stream, _) = connect_async(request).await.context("connect websocket")?;
         let (mut ws_sink, mut ws_source) = ws_stream.split();
 
         let (cmd_tx, mut cmd_rx) = mpsc::channel::<TuiCommand>(64);

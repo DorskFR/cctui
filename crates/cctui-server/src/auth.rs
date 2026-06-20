@@ -456,19 +456,73 @@ pub async fn auth_middleware(request: Request, next: Next) -> Result<Response, S
         .cloned()
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let token = request
-        .headers()
-        .get(http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .ok_or(StatusCode::UNAUTHORIZED)?
-        .to_string();
+    // Resolve the credential from the `Authorization: Bearer` header (API /
+    // daemon / TUI clients) or, failing that, the `HttpOnly` auth cookie set by
+    // `/api/v1/auth/login` for browser clients (CCT-423). Both prove the same
+    // token; the cookie keeps it out of URLs and JS-readable storage.
+    let token = bearer_or_cookie(request.headers()).ok_or(StatusCode::UNAUTHORIZED)?;
 
     let ctx = auth_config.validate(&token).await.ok_or(StatusCode::UNAUTHORIZED)?;
 
     let mut request = request;
     request.extensions_mut().insert(ctx);
     Ok(next.run(request).await)
+}
+
+/// Name of the `HttpOnly` cookie that carries the user/admin token for browser
+/// clients (CCT-423). Browsers send it automatically on same-origin requests
+/// and WS upgrades, so the token never appears in a URL or in `localStorage`.
+pub const AUTH_COOKIE: &str = "cctui_auth";
+
+/// Pull the auth token from the `Cookie` header, if the `cctui_auth` cookie is
+/// present. Tolerates the usual `a=1; b=2` cookie-pair formatting.
+#[must_use]
+pub fn token_from_cookies(headers: &http::HeaderMap) -> Option<String> {
+    let raw = headers.get(http::header::COOKIE)?.to_str().ok()?;
+    raw.split(';').find_map(|pair| {
+        let (k, v) = pair.trim().split_once('=')?;
+        (k.trim() == AUTH_COOKIE).then(|| v.trim().to_string())
+    })
+}
+
+/// Resolve a credential from the `Authorization: Bearer` header, falling back to
+/// the auth cookie. The single token-extraction path shared by `auth_middleware`
+/// and the WS upgrade so the two transports never diverge.
+#[must_use]
+pub fn bearer_or_cookie(headers: &http::HeaderMap) -> Option<String> {
+    headers
+        .get(http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(str::to_string)
+        .or_else(|| token_from_cookies(headers))
+}
+
+/// Whether the request reached us over TLS, so the `Secure` cookie attribute is
+/// safe to set. We sit behind a TLS-terminating proxy in prod, so trust
+/// `x-forwarded-proto`; absent (local http dev) we omit `Secure` so the cookie
+/// still works.
+#[must_use]
+pub fn request_is_https(headers: &http::HeaderMap) -> bool {
+    headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|p| p.eq_ignore_ascii_case("https"))
+}
+
+/// `Set-Cookie` value that stores `token` in the `HttpOnly` auth cookie.
+#[must_use]
+pub fn set_auth_cookie(token: &str, https: bool) -> String {
+    // 1 year; the token is long-lived and revocation is server-side.
+    let v = format!("{AUTH_COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000");
+    if https { format!("{v}; Secure") } else { v }
+}
+
+/// `Set-Cookie` value that immediately expires the auth cookie (logout).
+#[must_use]
+pub fn clear_auth_cookie(https: bool) -> String {
+    let v = format!("{AUTH_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0");
+    if https { format!("{v}; Secure") } else { v }
 }
 
 /// Generate a new secret. 64 hex chars = 256 bits of entropy.

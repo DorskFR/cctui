@@ -32,17 +32,19 @@ function buildUrl(path: string, query?: RequestOpts['query']): string {
 
 async function request<T>({ method = 'GET', path, body, query }: RequestOpts): Promise<T> {
 	const headers = new Headers();
-	if (auth.token) headers.set('Authorization', `Bearer ${auth.token}`);
 	if (body !== undefined) headers.set('Content-Type', 'application/json');
 
+	// Auth rides the `HttpOnly` cookie (CCT-423); `credentials: 'include'` makes
+	// the browser attach it (works same-origin without CORS credential config).
 	const res = await fetch(buildUrl(path, query), {
 		method,
 		headers,
+		credentials: 'include',
 		body: body !== undefined ? JSON.stringify(body) : undefined
 	});
 
 	if (res.status === 401) {
-		auth.clear();
+		auth.markLoggedOut();
 		throw new ApiError(401, 'Unauthorized');
 	}
 	if (!res.ok) {
@@ -67,12 +69,16 @@ async function request<T>({ method = 'GET', path, body, query }: RequestOpts): P
  *  auth + error handling of {@link request}. */
 async function postForm<T>(path: string, form: FormData): Promise<T> {
 	const headers = new Headers();
-	if (auth.token) headers.set('Authorization', `Bearer ${auth.token}`);
 
-	const res = await fetch(buildUrl(path), { method: 'POST', headers, body: form });
+	const res = await fetch(buildUrl(path), {
+		method: 'POST',
+		headers,
+		credentials: 'include',
+		body: form
+	});
 
 	if (res.status === 401) {
-		auth.clear();
+		auth.markLoggedOut();
 		throw new ApiError(401, 'Unauthorized');
 	}
 	if (!res.ok) {

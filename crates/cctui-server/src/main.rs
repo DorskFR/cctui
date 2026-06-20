@@ -109,6 +109,11 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/api/v1/ws", get(ws::tui_ws))
+        // Browser auth-cookie endpoints (CCT-423). Self-authenticating: `login`
+        // validates the presented token and sets the `HttpOnly` cookie, `logout`
+        // clears it — both live outside the `auth_middleware` group.
+        .route("/api/v1/auth/login", post(routes::auth::login))
+        .route("/api/v1/auth/logout", post(routes::auth::logout))
         // Daemon-facing endpoints. `auth` and `ws` carry their own auth
         // (machine-key Bearer / `?token=` query) so they live outside the
         // user-token-only `api_router` group.
@@ -127,11 +132,11 @@ async fn main() -> anyhow::Result<()> {
         .route("/gateway/anthropic/{*path}", any(routes::gateway::anthropic))
         .route("/gateway/openai/{*path}", any(routes::gateway::openai))
         .nest("/api/v1", api_router)
-        // The standalone web UI is served from a different origin and talks to
-        // this API cross-origin. Auth is via the `Authorization` Bearer header
-        // (no cookies), so a credential-less permissive policy is safe and
-        // avoids per-origin config. WS upgrades auth via `?token=` and are not
-        // subject to CORS preflight.
+        // The web UI is served same-origin in prod, so the `HttpOnly` auth
+        // cookie (CCT-423) flows without any cross-origin credential config.
+        // The permissive policy remains safe for the API/daemon Bearer callers
+        // (no credentialed cross-origin cookie reliance). WS upgrades read the
+        // cookie on the same-origin upgrade and are not subject to CORS preflight.
         .layer(tower_http::cors::CorsLayer::permissive())
         .with_state(state.clone());
 
