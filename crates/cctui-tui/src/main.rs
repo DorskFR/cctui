@@ -587,6 +587,7 @@ fn handle_server_event(app: &mut App, event: ServerEvent) {
                     machine_name: None,
                     machine_hue: None,
                     machine_kind: None,
+                    account_name: None,
                     last_message_text: None,
                     last_message_at: None,
                     registered_at: Some(session.registered_at),
