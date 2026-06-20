@@ -53,4 +53,13 @@ account: string | null,
  * unambiguously (instead of inferring the family from `adapter_id`). `None`
  * → fall back to the adapter-derived family.
  */
-provider: string | null, };
+provider: string | null, 
+/**
+ * Stage this spawn as a draft instead of dispatching it (CCT-394). When
+ * true the server validates + persists a `draft` session row carrying the
+ * spawn payload in `metadata.draft` and does NOT mint account env or
+ * dispatch to the daemon. A later `POST /sessions/{id}/launch` mints env
+ * fresh and dispatches the real spawn. `env` is ignored for a draft (no
+ * secrets at rest — re-entered at launch time).
+ */
+save_draft: boolean, };

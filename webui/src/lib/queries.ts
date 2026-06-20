@@ -324,6 +324,14 @@ export const endpoints = {
     api.post<ForkResponse>(`/sessions/${sessionId}/fork`, body),
   resume: (sessionId: string) =>
     api.post<void>(`/sessions/${sessionId}/resume`, {}),
+  /** Launch a draft session (CCT-394): env is entered fresh here (never stored
+   *  in the draft), account gateway tokens minted server-side at dispatch. The
+   *  draft row is removed and a live session is born from the daemon. */
+  launchDraft: (sessionId: string, env: Record<string, string> = {}) =>
+    api.post<SpawnResponse>(`/sessions/${sessionId}/launch`, { env }),
+  /** Discard (delete) a draft session row (CCT-394). */
+  discardDraft: (sessionId: string) =>
+    api.post<void>(`/sessions/${sessionId}/discard`, {}),
   dispatch: (body: DispatchRequest) =>
     api.post<DispatchResponse>("/sessions/dispatch", body),
   /** Configured dispatcher ids (e.g. `["claude-worker"]`); empty when none. */
@@ -1046,6 +1054,17 @@ export function useSessionActions() {
     },
     spawn: (body: SpawnRequest, files: File[] = []) =>
       endpoints.spawn(body, files),
+    // Draft sessions (CCT-394): launch promotes a draft to a live spawn (env
+    // entered fresh), discard deletes it. Both refetch the roster.
+    launchDraft: async (id: string, env: Record<string, string> = {}) => {
+      const res = await endpoints.launchDraft(id, env);
+      inval();
+      return res;
+    },
+    discardDraft: async (id: string) => {
+      await endpoints.discardDraft(id);
+      inval();
+    },
     // Fork a conversation into a new session (CCT-302). Optionally overrides
     // model/effort (the "fork to change model" path for claude). The new
     // session links back to the parent and registers shortly after; refetch.

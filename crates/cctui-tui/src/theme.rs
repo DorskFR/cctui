@@ -50,7 +50,8 @@ pub const fn status_style(status: cctui_proto::models::SessionStatus) -> Style {
         cctui_proto::models::SessionStatus::Active => ACTIVE,
         cctui_proto::models::SessionStatus::New => NEW,
         cctui_proto::models::SessionStatus::Inactive
-        | cctui_proto::models::SessionStatus::Archived => INACTIVE,
+        | cctui_proto::models::SessionStatus::Archived
+        | cctui_proto::models::SessionStatus::Draft => INACTIVE,
     }
 }
 
@@ -60,5 +61,6 @@ pub const fn status_icon(status: cctui_proto::models::SessionStatus) -> &'static
         cctui_proto::models::SessionStatus::New => "◎",
         cctui_proto::models::SessionStatus::Inactive => "○",
         cctui_proto::models::SessionStatus::Archived => "▢",
+        cctui_proto::models::SessionStatus::Draft => "◌",
     }
 }

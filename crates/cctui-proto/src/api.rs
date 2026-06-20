@@ -422,6 +422,14 @@ pub struct SpawnRequest {
     /// → fall back to the adapter-derived family.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
+    /// Stage this spawn as a draft instead of dispatching it (CCT-394). When
+    /// true the server validates + persists a `draft` session row carrying the
+    /// spawn payload in `metadata.draft` and does NOT mint account env or
+    /// dispatch to the daemon. A later `POST /sessions/{id}/launch` mints env
+    /// fresh and dispatches the real spawn. `env` is ignored for a draft (no
+    /// secrets at rest — re-entered at launch time).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub save_draft: bool,
 }
 
 impl std::fmt::Debug for SpawnRequest {
@@ -448,6 +456,18 @@ impl std::fmt::Debug for SpawnRequest {
 pub struct SpawnResponse {
     pub command_id: Uuid,
     pub status: String,
+}
+
+/// Body for `POST /api/v1/sessions/{id}/launch` (CCT-394) — promote a draft
+/// session to a live spawn. The stored draft holds prompt + config only; env
+/// secrets are entered fresh here (never persisted at rest) and account gateway
+/// tokens are minted at launch so they're never stale. An empty map is fine for
+/// drafts that need no manual secrets.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct LaunchRequest {
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub env: std::collections::BTreeMap<String, String>,
 }
 
 /// Response to `POST /api/v1/sessions/{id}/fork` (CCT-345). Like

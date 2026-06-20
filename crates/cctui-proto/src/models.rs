@@ -12,6 +12,10 @@ use ts_rs::TS;
 /// - `Archived`: explicitly dismissed (manually or by the TTL reaper).
 ///   Hidden from the default list. A genuinely revived session (new
 ///   activity) returns to `Active`; an archived dead session stays hidden.
+/// - `Draft`: staged-but-not-dispatched session (CCT-394). Carries its spawn
+///   payload in `metadata.draft` but has no `command_id`, no daemon dispatch,
+///   and no heartbeat — excluded from liveness/reaping. An explicit Launch
+///   mints env fresh, dispatches a normal spawn, and removes the draft.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[ts(export)]
 #[serde(rename_all = "snake_case")]
@@ -20,6 +24,7 @@ pub enum SessionStatus {
     Active,
     Inactive,
     Archived,
+    Draft,
 }
 
 /// Coarse liveness tier for the sessions-list status dot.
@@ -127,6 +132,8 @@ mod tests {
         assert_eq!(json, r#""inactive""#);
         let json = serde_json::to_string(&SessionStatus::New).unwrap();
         assert_eq!(json, r#""new""#);
+        let json = serde_json::to_string(&SessionStatus::Draft).unwrap();
+        assert_eq!(json, r#""draft""#);
     }
 
     #[test]

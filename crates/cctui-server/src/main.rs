@@ -397,6 +397,22 @@ fn build_api_routes() -> Routes {
             Authn::Bearer,
             sess_write(),
         )
+        // Draft sessions (CCT-394): launch promotes a draft to a live spawn
+        // (env entered fresh in the body), discard deletes the draft row.
+        .add(
+            &[Method::POST],
+            "/sessions/{id}/launch",
+            post(routes::spawn::launch_draft),
+            Authn::Bearer,
+            sess_write(),
+        )
+        .add(
+            &[Method::POST],
+            "/sessions/{id}/discard",
+            post(routes::spawn::discard_draft),
+            Authn::Bearer,
+            sess_write(),
+        )
         .add(
             &[Method::POST],
             "/sessions/{id}/interrupt",
@@ -926,8 +942,9 @@ async fn reaper_task(state: AppState) {
                     i64::try_from(state.config.archive_after_secs).unwrap_or(i64::MAX),
                 );
             match sqlx::query(
+                // Drafts (CCT-394) are staged-not-running — never auto-archive them.
                 "UPDATE sessions SET status = 'archived' \
-                 WHERE status != 'archived' AND pinned = false AND last_heartbeat < $1",
+                 WHERE status NOT IN ('archived', 'draft') AND pinned = false AND last_heartbeat < $1",
             )
             .bind(cutoff)
             .execute(&state.pool)

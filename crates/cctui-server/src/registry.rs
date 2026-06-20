@@ -6,7 +6,7 @@ use cctui_proto::models::{Session, SessionStatus, TokenUsage};
 use cctui_proto::ws::AgentEvent;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{RwLock, broadcast};
+use tokio::sync::{broadcast, RwLock};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -137,8 +137,9 @@ impl Registry {
                 SessionStatus::Active => elapsed > inactive_after_secs,
                 SessionStatus::New => elapsed > NEW_TTL_SECS,
                 // Archived sessions are deregistered, so this is defensive;
-                // either way there's nothing to demote.
-                SessionStatus::Inactive | SessionStatus::Archived => false,
+                // either way there's nothing to demote. Drafts (CCT-394) are
+                // never registered in memory, so this arm is also defensive.
+                SessionStatus::Inactive | SessionStatus::Archived | SessionStatus::Draft => false,
             };
             if should_demote {
                 handle.session.status = SessionStatus::Inactive;

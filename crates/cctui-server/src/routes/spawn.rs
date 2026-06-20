@@ -21,7 +21,7 @@ use axum::http::StatusCode;
 use axum::{Extension, Json};
 
 use cctui_proto::adapter::{AdapterCommand, AdapterId, BootstrapUploads, SessionSpec};
-use cctui_proto::api::{ApiError, SpawnRequest, SpawnResponse};
+use cctui_proto::api::{ApiError, LaunchRequest, SpawnRequest, SpawnResponse};
 use cctui_proto::ws::DaemonFrameDown;
 use uuid::Uuid;
 
@@ -60,6 +60,27 @@ pub async fn spawn_session(
                 .map_err(|e| bad_request(format!("invalid SpawnRequest JSON: {e}")))
         })?;
 
+    // Draft (CCT-394): stage the spawn payload as a `draft` session row and stop
+    // — no env minted, no daemon dispatch, no model turn. Launched later via
+    // `POST /sessions/{id}/launch`.
+    if req.save_draft {
+        return save_draft(&state, &ctx, &req).await;
+    }
+
+    dispatch_spawn(&state, &ctx, req, uploads).await
+}
+
+/// Dispatch a spawn to the targeted daemon. Shared by the immediate spawn path
+/// and the draft-launch path (CCT-394) so account env is minted + the command
+/// dispatched identically. Validates env keys + machine ownership, mints any
+/// account gateway env, and pushes `AdapterCommand::Spawn` over the WS.
+#[allow(clippy::too_many_lines)]
+async fn dispatch_spawn(
+    state: &AppState,
+    ctx: &AuthContext,
+    req: SpawnRequest,
+    uploads: Vec<cctui_proto::adapter::BootstrapFile>,
+) -> Result<(StatusCode, Json<SpawnResponse>), (StatusCode, Json<ApiError>)> {
     // Validate env keys (CCT-202): shell-style `^[A-Z_][A-Z0-9_]*$`.
     for key in req.env.keys() {
         let ok = !key.is_empty()
@@ -112,7 +133,7 @@ pub async fn spawn_session(
         if let Some(m) = model.as_deref() {
             model = Some(
                 crate::routes::gateway::resolve_account_model(
-                    &state,
+                    state,
                     uid,
                     account_name,
                     req.provider.as_deref().filter(|p| !p.trim().is_empty()),
@@ -126,7 +147,7 @@ pub async fn spawn_session(
         // `provider` disambiguates a name shared across providers, falling back
         // to the adapter-derived family when absent.
         match crate::routes::gateway::mint_session_env(
-            &state,
+            state,
             uid,
             account_name,
             req.provider.as_deref().filter(|p| !p.trim().is_empty()),
@@ -202,6 +223,164 @@ pub async fn spawn_session(
 
     tracing::info!(machine = %req.machine_id, %command_id, %adapter_id, "spawn dispatched");
     Ok((StatusCode::ACCEPTED, Json(SpawnResponse { command_id, status: "dispatched".into() })))
+}
+
+/// Resolve `req.machine_id` (a UUID) to the owning user, enforcing
+/// `admin || caller == owner`. Returns the machine UUID on success.
+async fn resolve_owned_machine(
+    state: &AppState,
+    ctx: &AuthContext,
+    machine_id: &str,
+) -> Result<Uuid, (StatusCode, Json<ApiError>)> {
+    let machine_uuid =
+        Uuid::parse_str(machine_id).map_err(|_| bad_request("machine_id must be a uuid"))?;
+    let row: Option<(Uuid,)> = sqlx::query_as("SELECT user_id FROM machines WHERE id = $1")
+        .bind(machine_uuid)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("db error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+        })?;
+    let Some((owner,)) = row else {
+        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "machine not found".into() })));
+    };
+    if !(ctx.is_admin() || ctx.user_id == owner) {
+        return Err((StatusCode::FORBIDDEN, Json(ApiError { error: "not your machine".into() })));
+    }
+    Ok(machine_uuid)
+}
+
+/// Persist a spawn payload as a `draft` session row (CCT-394). No env is stored
+/// (re-entered at launch), no daemon dispatch happens, and the row is excluded
+/// from liveness/reaping via its sticky `draft` status. Returns the new draft
+/// session id in `command_id` with `status = "draft"`.
+async fn save_draft(
+    state: &AppState,
+    ctx: &AuthContext,
+    req: &SpawnRequest,
+) -> Result<(StatusCode, Json<SpawnResponse>), (StatusCode, Json<ApiError>)> {
+    let machine_uuid = resolve_owned_machine(state, ctx, &req.machine_id).await?;
+    let adapter_id = req.adapter_id.clone().unwrap_or_else(|| "claude-code".to_owned());
+
+    // Store the spawn config (NOT env — secrets never persisted) under
+    // `metadata.draft` so Launch/Edit can reconstruct the SpawnRequest.
+    let mut payload = req.clone();
+    payload.env.clear();
+    payload.save_draft = false;
+    let draft_json = serde_json::to_value(&payload).map_err(|e| {
+        tracing::error!("serializing draft payload: {e}");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError { error: "could not encode draft".into() }),
+        )
+    })?;
+    let metadata = serde_json::json!({ "draft": draft_json });
+
+    let draft_id = Uuid::new_v4();
+    let name = req.name.as_deref().filter(|n| !n.trim().is_empty());
+    let model = req.model.as_deref().filter(|m| !m.trim().is_empty());
+    let effort = req.effort.as_deref().filter(|e| !e.trim().is_empty());
+    sqlx::query(
+        r"INSERT INTO sessions
+            (id, machine_id, machine_uuid, working_dir, status, registered_at, last_heartbeat,
+             metadata, adapter_id, session_name, model, effort)
+          VALUES ($1, $2, $3, $4, 'draft', now(), now(), $5, $6, $7, $8, $9)",
+    )
+    .bind(draft_id)
+    .bind(&req.machine_id)
+    .bind(machine_uuid)
+    .bind(&req.working_dir)
+    .bind(&metadata)
+    .bind(&adapter_id)
+    .bind(name)
+    .bind(model)
+    .bind(effort)
+    .execute(&state.pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("db error (save draft): {e}");
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+    })?;
+
+    tracing::info!(machine = %req.machine_id, draft = %draft_id, "draft session saved");
+    Ok((StatusCode::CREATED, Json(SpawnResponse { command_id: draft_id, status: "draft".into() })))
+}
+
+/// `POST /api/v1/sessions/{id}/launch` (CCT-394). Promote a draft to a live
+/// spawn: read the stored payload, merge the freshly-entered env, dispatch the
+/// real spawn (minting account gateway env), then delete the draft row. The
+/// live session appears via the daemon's normal registration.
+pub async fn launch_draft(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(session_id): Path<String>,
+    Json(launch): Json<LaunchRequest>,
+) -> Result<(StatusCode, Json<SpawnResponse>), (StatusCode, Json<ApiError>)> {
+    let row: Option<(String, serde_json::Value)> =
+        sqlx::query_as("SELECT status, metadata FROM sessions WHERE id = $1")
+            .bind(&session_id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(|e| {
+                tracing::error!("db error (launch lookup): {e}");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ApiError { error: "database error".into() }),
+                )
+            })?;
+    let Some((status, metadata)) = row else {
+        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "draft not found".into() })));
+    };
+    if status != "draft" {
+        return Err(bad_request("session is not a draft"));
+    }
+    let mut req: SpawnRequest = metadata
+        .get("draft")
+        .cloned()
+        .ok_or_else(|| bad_request("draft row missing payload"))
+        .and_then(|v| {
+            serde_json::from_value(v)
+                .map_err(|e| bad_request(format!("corrupt draft payload: {e}")))
+        })?;
+    // Env is entered fresh at launch; account gateway env is minted in dispatch.
+    req.env = launch.env;
+    req.save_draft = false;
+
+    let res = dispatch_spawn(&state, &ctx, req, Vec::new()).await?;
+
+    // Drop the draft only after a successful dispatch; the live session is born
+    // from the daemon's registration with its own id.
+    if let Err(e) = sqlx::query("DELETE FROM sessions WHERE id = $1 AND status = 'draft'")
+        .bind(&session_id)
+        .execute(&state.pool)
+        .await
+    {
+        tracing::warn!(%session_id, "draft launched but row delete failed: {e}");
+    }
+    tracing::info!(draft = %session_id, "draft launched");
+    Ok(res)
+}
+
+/// `POST /api/v1/sessions/{id}/discard` (CCT-394). Delete a draft session row.
+/// Only acts on `draft` rows so it can never delete a real session.
+pub async fn discard_draft(
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    let res = sqlx::query("DELETE FROM sessions WHERE id = $1 AND status = 'draft'")
+        .bind(&session_id)
+        .execute(&state.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("db error (discard draft): {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+        })?;
+    if res.rows_affected() == 0 {
+        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "draft not found".into() })));
+    }
+    tracing::info!(draft = %session_id, "draft discarded");
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// `POST /api/v1/sessions/{id}/files` — `multipart/form-data` (CCT-236).

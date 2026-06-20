@@ -462,6 +462,78 @@
 
 	const items = $derived($sessions.data?.sessions ?? []);
 
+	// Draft/staged sessions (CCT-394): buffered spawns not yet launched. They
+	// live in the same list payload (status='draft') but are pulled OUT of the
+	// classifier buckets below and rendered in their own Drafts section with
+	// Launch/Edit/Discard. Excluded from the live nest so they never show as
+	// "Working".
+	const draftRows = $derived(items.filter((s) => s.status === 'draft'));
+	let launchingDraft = $state<string | null>(null);
+
+	// Read the stored spawn payload off a draft row's metadata.
+	function draftPayload(s: SessionListItem): Record<string, unknown> {
+		const m = s.metadata as Record<string, unknown> | null;
+		const d = m?.draft;
+		return d && typeof d === 'object' ? (d as Record<string, unknown>) : {};
+	}
+	function draftPromptPreview(s: SessionListItem): string {
+		const p = draftPayload(s).prompt;
+		return typeof p === 'string' ? p : '';
+	}
+
+	// Launch a draft: the server mints account env fresh at dispatch and removes
+	// the draft row; the live session appears via the daemon's registration.
+	async function launchDraft(s: SessionListItem) {
+		launchingDraft = s.id;
+		try {
+			await actions.launchDraft(s.id);
+			toasts.ok('Draft launched');
+		} catch (e) {
+			toasts.err(`Launch failed: ${(e as Error).message}`);
+		} finally {
+			launchingDraft = null;
+		}
+	}
+
+	async function discardDraft(s: SessionListItem) {
+		if (!confirm('Discard this draft?')) return;
+		try {
+			await actions.discardDraft(s.id);
+			toasts.ok('Draft discarded');
+		} catch (e) {
+			toasts.err((e as Error).message);
+		}
+	}
+
+	// Edit a draft: discard it and reopen the spawn modal prefilled from its
+	// stored config, so saving/launching from there replaces it (no duplicate).
+	async function editDraft(s: SessionListItem) {
+		const d = draftPayload(s);
+		const adapter = (typeof d.adapter_id === 'string' && d.adapter_id) || s.adapter_id || 'claude-code';
+		const modelField = adapter === 'codex' ? 'model_codex' : 'model_claude';
+		const effortField = adapter === 'codex' ? 'effort_codex' : 'effort_claude';
+		const str = (v: unknown) => (typeof v === 'string' ? v : '');
+		const prefill: Record<string, string> = {
+			machine_id: str(d.machine_id) || s.machine_id,
+			working_dir: str(d.working_dir) || s.working_dir,
+			adapter_id: adapter,
+			name: str(d.name),
+			prompt: str(d.prompt),
+			account: str(d.account),
+			account_provider: str(d.provider),
+			[modelField]: str(d.model),
+			[effortField]: str(d.effort)
+		};
+		try {
+			await actions.discardDraft(s.id);
+		} catch (e) {
+			toasts.err(`Could not edit draft: ${(e as Error).message}`);
+			return;
+		}
+		spawnPrefill = prefill;
+		showSpawn = true;
+	}
+
 	// A starred parent should keep its full subagent group visible under Pinned
 	// even once the children are archived (CCT-297): the live list above excludes
 	// archived rows, so when anything is pinned we additionally pull the full
@@ -485,7 +557,9 @@
 	// cost rollup (CCT-297 #19) are all pure data transforms — see
 	// sessions.logic.ts. The component keeps only the reactive derivations + the
 	// expand/collapse state below.
-	const liveNest = $derived(nest([...items, ...pinnedArchivedKids]));
+	const liveNest = $derived(
+		nest([...items.filter((s) => s.status !== 'draft'), ...pinnedArchivedKids])
+	);
 	const topLevel = $derived(liveNest.topLevel);
 	const childGroupsOf = $derived(liveNest.childGroups);
 
@@ -771,7 +845,7 @@
 {#snippet liveSections()}
 		{#if $sessions.isLoading}
 			<div class="empty"><span class="spin"></span></div>
-		{:else if groups.length === 0 && !showArchived}
+		{:else if groups.length === 0 && !showArchived && !(sections.has('drafts') && draftRows.length > 0)}
 			<div class="empty">
 				<Text tone="muted">No sessions in the selected sections — toggle more from the section filter.</Text>
 			</div>
@@ -809,6 +883,41 @@
 					{/if}
 				</div>
 			{/each}
+		{/if}
+
+		{#if sections.has('drafts') && draftRows.length > 0}
+			<div class="section">
+				<div class="group-header">Drafts <Text class="count">{draftRows.length}</Text></div>
+				{#each draftRows as s (s.id)}
+					<div class="draft-row">
+						<div class="draft-main">
+							<div class="draft-title">
+								{s.name || s.working_dir?.split('/').filter(Boolean).pop() || 'Untitled draft'}
+								<Text class="draft-meta" size="sm" tone="muted">
+									{s.adapter_id ?? 'claude-code'} · {s.machine_name ?? s.machine_id}
+								</Text>
+							</div>
+							{#if draftPromptPreview(s)}
+								<div class="draft-prompt">
+									<Text size="sm" tone="muted">{draftPromptPreview(s)}</Text>
+								</div>
+							{/if}
+						</div>
+						<div class="draft-actions">
+							<Button
+								variant="primary"
+								disabled={launchingDraft === s.id}
+								onclick={() => launchDraft(s)}
+							>
+								{#if launchingDraft === s.id}<span class="spin"></span>{/if}
+								Launch
+							</Button>
+							<Button onclick={() => editDraft(s)}>Edit</Button>
+							<Button variant="danger" onclick={() => discardDraft(s)}>Discard</Button>
+						</div>
+					</div>
+				{/each}
+			</div>
 		{/if}
 
 		{#if showArchived}
@@ -916,6 +1025,39 @@
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
 		color: var(--text-muted);
+	}
+	/* Draft rows (CCT-394): a compact staged-spawn row with Launch/Edit/Discard. */
+	.draft-row {
+		display: flex;
+		align-items: center;
+		gap: var(--sp-3);
+		padding: var(--sp-2) var(--sp-3);
+		border: 1px dashed var(--border-strong);
+		border-radius: var(--r-md);
+		background: var(--bg-elevated);
+	}
+	.draft-main {
+		flex: 1;
+		min-width: 0;
+		display: flex;
+		flex-direction: column;
+		gap: var(--sp-1);
+	}
+	.draft-title {
+		display: flex;
+		align-items: baseline;
+		gap: var(--sp-2);
+		font-weight: 600;
+	}
+	.draft-prompt {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.draft-actions {
+		display: flex;
+		gap: var(--sp-2);
+		flex-shrink: 0;
 	}
 	/* The count is a Text atom; target the passed class via :global. */
 	.group-header :global(.count) {

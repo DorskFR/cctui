@@ -15,15 +15,17 @@ export const VIEW_OPTIONS = [
 ] as const;
 
 // ── Section filter (CCT-322 / CCT-345) ──────────────────────────────────────
-export type Section = 'starred' | 'live' | 'dispatched' | 'archived';
-export const SECTIONS: { value: Section; label: string; icon: 'star' | 'live' | 'send' | 'archive' }[] = [
+export type Section = 'starred' | 'live' | 'dispatched' | 'drafts' | 'archived';
+export const SECTIONS: { value: Section; label: string; icon: 'star' | 'live' | 'send' | 'file-text' | 'archive' }[] = [
 	{ value: 'starred', label: 'Starred', icon: 'star' },
 	{ value: 'live', label: 'Live', icon: 'live' },
 	{ value: 'dispatched', label: 'Dispatched', icon: 'send' },
+	// Draft/staged sessions (CCT-394) — buffered spawns not yet launched.
+	{ value: 'drafts', label: 'Drafts', icon: 'file-text' },
 	{ value: 'archived', label: 'Archived', icon: 'archive' }
 ];
 export const isSection = (v: string): v is Section =>
-	v === 'starred' || v === 'live' || v === 'dispatched' || v === 'archived';
+	v === 'starred' || v === 'live' || v === 'dispatched' || v === 'drafts' || v === 'archived';
 export const parseSections = (raw: string | null): Set<Section> => {
 	const set = new Set<Section>((raw ?? '').split(',').filter(isSection));
 	// Never strand the user on an empty list (would render nothing).
@@ -240,6 +242,7 @@ export const groupOf = (s: SessionListItem): GroupKey => {
 // plus the archive split. Used so search results respect the active section
 // toggles (CCT-354): a match is hidden when its owning section is disabled.
 export const sectionOf = (s: SessionListItem): Section => {
+	if (s.status === 'draft') return 'drafts';
 	if (s.status === 'archived') return 'archived';
 	if (s.pinned) return 'starred';
 	return isDispatched(s) ? 'dispatched' : 'live';

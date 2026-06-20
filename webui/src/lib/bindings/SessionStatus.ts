@@ -11,5 +11,9 @@
  * - `Archived`: explicitly dismissed (manually or by the TTL reaper).
  *   Hidden from the default list. A genuinely revived session (new
  *   activity) returns to `Active`; an archived dead session stays hidden.
+ * - `Draft`: staged-but-not-dispatched session (CCT-394). Carries its spawn
+ *   payload in `metadata.draft` but has no `command_id`, no daemon dispatch,
+ *   and no heartbeat — excluded from liveness/reaping. An explicit Launch
+ *   mints env fresh, dispatches a normal spawn, and removes the draft.
  */
-export type SessionStatus = "new" | "active" | "inactive" | "archived";
+export type SessionStatus = "new" | "active" | "inactive" | "archived" | "draft";

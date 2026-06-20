@@ -365,7 +365,10 @@
 	);
 	const valid = $derived((target === 'machine' ? spawnValid : dispatchValid) && secretsValid);
 
-	async function spawnOnMachine() {
+	// Build the SpawnRequest from the current machine-target form. Shared by the
+	// immediate spawn and the "Save as draft" path (CCT-394); `save_draft` and
+	// `env` are overridden by the caller as needed.
+	function buildSpawnBody(): SpawnRequest {
 		// The account drives the harness + model (CCT-399); "Default" falls back
 		// to the adapter-first selection.
 		const adapter = selectedAccount ? adapterForProvider(selectedAccount.provider) : form.adapter_id;
@@ -373,7 +376,7 @@
 		const model = compatible
 			? form.model_account || null
 			: (adapter === 'codex' ? form.model_codex : form.model_claude) || null;
-		const body: SpawnRequest = {
+		return {
 			machine_id: form.machine_id,
 			working_dir: form.working_dir.trim(),
 			adapter_id: adapter,
@@ -387,8 +390,29 @@
 			account: form.account.trim() || null,
 			// Disambiguate a name shared across providers so the server resolves
 			// the exact account (CCT-399).
-			provider: selectedAccount?.provider || null
+			provider: selectedAccount?.provider || null,
+			save_draft: false
 		};
+	}
+
+	// Save the current form as a draft (CCT-394) instead of dispatching. No env
+	// is sent (re-entered at launch); the draft appears in the Drafts section.
+	async function saveDraft() {
+		const body: SpawnRequest = { ...buildSpawnBody(), env: {}, save_draft: true };
+		await actions.spawn(body, []);
+		drafts.set(LAST_MACHINE, form.machine_id);
+		drafts.set(LAST_SPAWN_NAME, form.name.trim());
+		toasts.ok('Saved as draft');
+		drafts.clear(SPAWN_DRAFT);
+		form = { ...blank, machine_id: form.machine_id, dispatcher: form.dispatcher };
+		envRows = [];
+		files = [];
+		onspawned();
+		onclose();
+	}
+
+	async function spawnOnMachine() {
+		const body: SpawnRequest = buildSpawnBody();
 		// Capture label intent before the form is reset on success (CCT-360).
 		const labelIds = [...form.labels];
 		const labelCwd = form.working_dir.trim();
@@ -519,6 +543,22 @@
 			else await dispatchToK8s();
 		} catch (e) {
 			toasts.err(`${target === 'machine' ? 'Spawn' : 'Dispatch'} failed: ${(e as Error).message}`);
+		} finally {
+			busy = false;
+		}
+	}
+
+	// Drafts (CCT-394) are a machine-spawn concept; a draft only needs a target +
+	// prompt, not the full dispatch contract, so it's valid whenever the spawn
+	// form is. Buffer-only, so secrets needn't be valid yet (entered at launch).
+	const draftValid = $derived(target === 'machine' && spawnValid);
+	async function submitDraft() {
+		if (!draftValid || busy) return;
+		busy = true;
+		try {
+			await saveDraft();
+		} catch (e) {
+			toasts.err(`Save draft failed: ${(e as Error).message}`);
 		} finally {
 			busy = false;
 		}
@@ -661,6 +701,11 @@
 	{/snippet}
 	{#snippet footer()}
 		<Button size="lg" onclick={clearForm}>Clear</Button>
+		{#if target === 'machine'}
+			<Button size="lg" disabled={busy || !draftValid} onclick={submitDraft}>
+				Save as draft
+			</Button>
+		{/if}
 		<Button size="lg" variant="primary" block disabled={busy || !valid} onclick={submit}>
 			{#if busy}<span class="spin"></span>{:else}{target === 'machine' ? 'Spawn' : 'Dispatch'}{/if}
 		</Button>

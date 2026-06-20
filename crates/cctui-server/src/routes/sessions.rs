@@ -1,9 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
-use axum::Extension;
-use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use axum::{Extension, Json};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
@@ -219,6 +218,8 @@ fn sticky_status(row_status: &str) -> Option<SessionStatus> {
     match row_status {
         "archived" => Some(SessionStatus::Archived),
         "ended" | "failed" => Some(SessionStatus::Inactive),
+        // Draft (CCT-394): staged-not-running, never re-derived from heartbeat.
+        "draft" => Some(SessionStatus::Draft),
         _ => None,
     }
 }
@@ -676,8 +677,7 @@ async fn enrich_and_sort(
             tracing::error!("db error (account lookup): {e}");
             (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
         })?;
-        let mut by_session: std::collections::HashMap<String, String> =
-            rows.into_iter().collect();
+        let mut by_session: std::collections::HashMap<String, String> = rows.into_iter().collect();
         for (_, s) in &mut with_ts {
             if let Some(name) = by_session.remove(&s.id) {
                 s.account_name = Some(name);
