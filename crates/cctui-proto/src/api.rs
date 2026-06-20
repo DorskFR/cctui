@@ -199,6 +199,13 @@ pub struct SessionListItem {
     /// rows that never carry liveness.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_heartbeat: Option<chrono::DateTime<chrono::Utc>>,
+    /// OAuth account this session runs under (CCT-430), resolved from the most
+    /// recent non-revoked `session_tokens` row joined to `oauth_accounts`.
+    /// Surfaced so clients can show which account is driving the session (key
+    /// icon + name tooltip). `None` for sessions with no minted gateway token
+    /// (e.g. local sessions that never routed through the cctui gateway).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_name: Option<String>,
 }
 
 /// A reusable, user-defined colored label (CCT-360). Labels are global (shared

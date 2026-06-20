@@ -14,6 +14,7 @@
 	import { isArchiveChord } from '$lib/platform';
 	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
 	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
+	import AccountBadge from '$lib/components/molecules/AccountBadge.svelte';
 	import LabelBadge from '$lib/components/molecules/LabelBadge.svelte';
 	import WorkingDir from '$lib/components/molecules/WorkingDir.svelte';
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
@@ -161,6 +162,7 @@
 		{/if}
 		<span class="dot {livenessClass}" title={session.hibernated ? 'hibernated' : session.liveness}></span>
 		<MachineBadge name={session.machine_name} id={session.machine_id} hue={session.machine_hue} mono />
+		<AccountBadge name={session.account_name} />
 		<div class="dtitle">
 			{#if renaming}
 				<Input bind:value={newName} onkeydown={(e: KeyboardEvent) => e.key === 'Enter' && doRename()} />

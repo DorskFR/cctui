@@ -481,6 +481,10 @@
 			session_id: pendingDispatchId,
 			timeout: Number.isFinite(timeout) ? timeout : null,
 			reply_url: null,
+			// Server-side completion webhook (CCT-294) is not driven from the
+			// spawn modal; leave unset so the dispatch contract is satisfied.
+			notify_url: null,
+			notify_secret: null,
 			// Account routing on the dispatch path (CCT-399): the server mints the
 			// gateway token + merges its base-url/token into payload.env.
 			account: form.account.trim() || null,

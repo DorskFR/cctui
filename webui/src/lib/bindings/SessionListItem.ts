@@ -133,4 +133,12 @@ labels: Array<Label>,
  * (token-usage row) used for cache-expiry prediction. `None` only on stub
  * rows that never carry liveness.
  */
-last_heartbeat: string | null, };
+last_heartbeat: string | null, 
+/**
+ * OAuth account this session runs under (CCT-430), resolved from the most
+ * recent non-revoked `session_tokens` row joined to `oauth_accounts`.
+ * Surfaced so clients can show which account is driving the session (key
+ * icon + name tooltip). `None` for sessions with no minted gateway token
+ * (e.g. local sessions that never routed through the cctui gateway).
+ */
+account_name: string | null, };

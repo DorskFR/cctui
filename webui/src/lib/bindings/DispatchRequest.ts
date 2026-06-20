@@ -33,6 +33,24 @@ timeout: number | null,
  */
 reply_url: string | null, 
 /**
+ * Server-side completion-webhook target (CCT-294): the eventual
+ * replacement for `reply_url`. When set, the SERVER (not the worker) POSTs
+ * the completion payload here once the dispatched session reaches a
+ * terminal state — INCLUDING crash cases the worker's exit trap can miss
+ * (OOM/SIGKILL, daemon never connected, connection lost past the grace
+ * window). The wire shape matches the `reply_url` contract (`task_id`,
+ * `status`, `error`/verdict) so flows migrate by swapping the URL. This is
+ * additive: `reply_url` keeps working during migration.
+ */
+notify_url: string | null, 
+/**
+ * Optional per-target HMAC secret (CCT-294). When set, the server signs the
+ * completion-webhook body with HMAC-SHA256 and sends the hex digest in an
+ * `X-CCTUI-Signature: sha256=<hex>` header so the receiver can verify the
+ * POST originated from cctui. Never logged.
+ */
+notify_secret: string | null, 
+/**
  * Free-form, opaque to cctui. Forwarded to the runtime as-is.
  */
 payload: JsonValue, 

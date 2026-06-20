@@ -947,6 +947,7 @@ function optimisticDispatchCard(
     pinned: false,
     labels: [],
     last_heartbeat: null,
+    account_name: body.account ?? null,
   };
 }
 

@@ -2,6 +2,7 @@
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import { statusBadgeClass, modelShort, modelFamily } from '$lib/format';
 	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
+	import AccountBadge from '$lib/components/molecules/AccountBadge.svelte';
 	import LabelBadge from '$lib/components/molecules/LabelBadge.svelte';
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
 	import WorkingDir from '$lib/components/molecules/WorkingDir.svelte';
@@ -449,6 +450,7 @@
 		<Badge tone="info" style="padding:0.05rem var(--sp-2)">subagent</Badge>
 	{:else}
 		<MachineBadge name={s.machine_name} id={s.machine_id} hue={s.machine_hue} mono />
+		<AccountBadge name={s.account_name} />
 	{/if}
 {/snippet}
 

@@ -347,6 +347,7 @@ pub async fn list_sessions(
                         pinned: false,
                         labels: Vec::new(),
                         last_heartbeat: Some(handle.session.last_heartbeat),
+                        account_name: None,
                     },
                 )
             })
@@ -436,6 +437,7 @@ pub async fn list_sessions(
                 pinned: false,
                 labels: Vec::new(),
                 last_heartbeat: Some(row.last_heartbeat),
+                account_name: None,
             },
         ));
     }
@@ -650,6 +652,35 @@ async fn enrich_and_sort(
         for (_, s) in &mut with_ts {
             if let Some(labels) = by_session.remove(&s.id) {
                 s.labels = labels;
+            }
+        }
+    }
+
+    // Account each session runs under (CCT-430). `sessions.account_id` is
+    // unused legacy; the real binding lives in `session_tokens` (minted at
+    // dispatch/gateway). Resolve the most recent non-revoked token per session
+    // to its `oauth_accounts.name` in one batched query. `None` for sessions
+    // that never routed through the gateway (e.g. plain local sessions).
+    if !session_ids.is_empty() {
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT DISTINCT ON (st.session_id) st.session_id, oa.name \
+             FROM session_tokens st \
+             JOIN oauth_accounts oa ON oa.id = st.account_id \
+             WHERE st.session_id = ANY($1) AND st.revoked_at IS NULL \
+             ORDER BY st.session_id, st.created_at DESC",
+        )
+        .bind(&session_ids)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("db error (account lookup): {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+        })?;
+        let mut by_session: std::collections::HashMap<String, String> =
+            rows.into_iter().collect();
+        for (_, s) in &mut with_ts {
+            if let Some(name) = by_session.remove(&s.id) {
+                s.account_name = Some(name);
             }
         }
     }
@@ -937,6 +968,7 @@ pub async fn search_sessions(
                     pinned: false,
                     labels: Vec::new(),
                     last_heartbeat: Some(row.last_heartbeat),
+                    account_name: None,
                 },
             )
         })
@@ -1022,6 +1054,7 @@ pub async fn get_session(
                 pinned: false,
                 labels: Vec::new(),
                 last_heartbeat: Some(handle.session.last_heartbeat),
+                account_name: None,
             };
             return Ok(Json(item));
         }
@@ -1085,6 +1118,7 @@ pub async fn get_session(
         pinned: false,
         labels: Vec::new(),
         last_heartbeat: Some(row.last_heartbeat),
+        account_name: None,
     };
     Ok(Json(item))
 }
