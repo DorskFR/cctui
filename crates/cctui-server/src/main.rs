@@ -10,6 +10,7 @@ mod machine_liveness;
 mod normalize;
 mod ntfy;
 mod policy;
+mod rebuild;
 mod registry;
 mod routes;
 mod skill_store;
@@ -749,6 +750,19 @@ fn build_api_routes() -> Routes {
             Authn::Bearer,
             Authenticated,
         )
+        // Rebuild a transcript from stored stream_events (CCT-363). `rebuild`
+        // is a literal first segment, so it must NOT collide with the
+        // `{project_dir}/{session_id}` matcher below — keep session_id in the
+        // query string rather than a second path segment.
+        .add(
+            &[Method::POST],
+            "/archive/rebuild",
+            post(routes::archive::rebuild),
+            Authn::Bearer,
+            Authenticated,
+        )
+        // Export the caller's archives as a coach-ingestable tar.gz (CCT-364).
+        .add(&[GET], "/archive/export", get(routes::archive::export), Authn::Bearer, Authenticated)
         .add(
             &[Method::PUT, Method::HEAD, GET],
             "/archive/{project_dir}/{session_id}",

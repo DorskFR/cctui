@@ -5,7 +5,7 @@ use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use cctui_proto::api::{
     ArchiveIndexEntry, ArchiveStatusEntry, ArchiveStatusResponse, ArchiveSyncState,
-    ManifestPostRequest,
+    ExportManifestEntry, ManifestPostRequest,
 };
 use cctui_proto::ws::ServerEvent;
 use futures_util::TryStreamExt;
@@ -41,7 +41,8 @@ fn require_user_scope(ctx: &AuthContext) -> Result<Uuid, StatusCode> {
     Ok(ctx.user_id)
 }
 
-type IndexRow = (Uuid, String, String, String, i64, Option<i32>, chrono::DateTime<chrono::Utc>);
+type IndexRow =
+    (Uuid, String, String, String, i64, Option<i32>, chrono::DateTime<chrono::Utc>, String);
 
 #[derive(Deserialize)]
 pub struct GetQuery {
@@ -130,12 +131,12 @@ pub async fn put(
 
     sqlx::query(
         "INSERT INTO archive_index \
-         (machine_id, project_dir, session_id, sha256, size_bytes, line_count) \
-         VALUES ($1,$2,$3,$4,$5,$6) \
+         (machine_id, project_dir, session_id, sha256, size_bytes, line_count, source) \
+         VALUES ($1,$2,$3,$4,$5,$6,'synced') \
          ON CONFLICT (machine_id, session_id) DO UPDATE SET \
              sha256 = EXCLUDED.sha256, size_bytes = EXCLUDED.size_bytes, \
              line_count = EXCLUDED.line_count, uploaded_at = now(), \
-             project_dir = EXCLUDED.project_dir",
+             project_dir = EXCLUDED.project_dir, source = 'synced'",
     )
     .bind(machine_id)
     .bind(&project_dir)
@@ -330,7 +331,7 @@ pub async fn index(
     let rows: Vec<IndexRow> = if let Some(uid) = user_id {
         sqlx::query_as(
             "SELECT a.machine_id, a.project_dir, a.session_id, a.sha256, a.size_bytes, \
-                        a.line_count, a.uploaded_at \
+                        a.line_count, a.uploaded_at, a.source \
                  FROM archive_index a \
                  JOIN machines m ON m.id = a.machine_id \
                  WHERE m.user_id = $1 \
@@ -342,7 +343,7 @@ pub async fn index(
     } else {
         sqlx::query_as(
             "SELECT a.machine_id, a.project_dir, a.session_id, a.sha256, a.size_bytes, \
-                        a.line_count, a.uploaded_at \
+                        a.line_count, a.uploaded_at, a.source \
                  FROM archive_index a \
                  ORDER BY a.uploaded_at DESC",
         )
@@ -357,16 +358,24 @@ pub async fn index(
     let entries = rows
         .into_iter()
         .map(
-            |(machine_id, project_dir, session_id, sha256, size_bytes, line_count, uploaded_at)| {
-                ArchiveIndexEntry {
-                    machine_id,
-                    project_dir,
-                    session_id,
-                    sha256,
-                    size_bytes,
-                    line_count,
-                    uploaded_at,
-                }
+            |(
+                machine_id,
+                project_dir,
+                session_id,
+                sha256,
+                size_bytes,
+                line_count,
+                uploaded_at,
+                source,
+            )| ArchiveIndexEntry {
+                machine_id,
+                project_dir,
+                session_id,
+                sha256,
+                size_bytes,
+                line_count,
+                uploaded_at,
+                source,
             },
         )
         .collect();
@@ -441,4 +450,198 @@ pub async fn get(
     resp.headers_mut().insert("X-CCTUI-SHA256", sha256.parse().unwrap());
     resp.headers_mut().insert("X-CCTUI-Machine-Id", machine_id.to_string().parse().unwrap());
     Ok(resp.into_response())
+}
+
+#[derive(Deserialize)]
+pub struct RebuildQuery {
+    pub session_id: String,
+}
+
+#[derive(Serialize)]
+pub struct RebuildResponse {
+    pub machine_id: Uuid,
+    pub project_dir: String,
+    pub session_id: String,
+    pub sha256: String,
+    pub size_bytes: u64,
+    pub line_count: u32,
+    pub source: &'static str,
+}
+
+/// Reconstruct a transcript for one session from stored `stream_events` and
+/// write it into the archive flagged `source = rebuilt` (CCT-363). The caller
+/// must own the session (its machine belongs to the caller's user).
+#[allow(clippy::similar_names)]
+pub async fn rebuild(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Query(q): Query<RebuildQuery>,
+) -> Result<Json<RebuildResponse>, StatusCode> {
+    let user_id = require_user_scope(&ctx)?;
+
+    // Ownership: the session's machine must belong to this user. `owner_filter`
+    // is `None` for admins, who may rebuild any session.
+    if ctx.owner_filter().is_some() {
+        let owned: Option<(i64,)> = sqlx::query_as(
+            "SELECT 1 FROM sessions s JOIN machines m ON m.id::text = s.machine_id \
+             WHERE s.id = $1 AND m.user_id = $2",
+        )
+        .bind(&q.session_id)
+        .bind(user_id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("archive rebuild ownership check: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+        if owned.is_none() {
+            return Err(StatusCode::NOT_FOUND);
+        }
+    }
+
+    let (machine_id, project_dir, stats) =
+        crate::rebuild::rebuild_session(&state.pool, &state.archive, &q.session_id).await.map_err(
+            |e| {
+                use crate::rebuild::RebuildError;
+                match e {
+                    RebuildError::NotFound | RebuildError::Empty => StatusCode::NOT_FOUND,
+                    RebuildError::BadMachineId => StatusCode::UNPROCESSABLE_ENTITY,
+                    other => {
+                        tracing::error!("archive rebuild failed: {other}");
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    }
+                }
+            },
+        )?;
+
+    let _ = state.tui_tx.send(ServerEvent::ArchiveUploaded {
+        machine_id,
+        project_dir: project_dir.clone(),
+        session_id: q.session_id.clone(),
+        size_bytes: i64::try_from(stats.size_bytes).unwrap_or(i64::MAX),
+        sha256: stats.sha256.clone(),
+    });
+
+    Ok(Json(RebuildResponse {
+        machine_id,
+        project_dir,
+        session_id: q.session_id,
+        sha256: stats.sha256,
+        size_bytes: stats.size_bytes,
+        line_count: stats.line_count,
+        source: "rebuilt",
+    }))
+}
+
+/// Stream all of the caller's archives as a `tar.gz` reproducing the coach's
+/// expected on-disk layout (`claude/projects/<dir>/<session>.jsonl`), plus a
+/// top-level `manifest.json` labelling each entry's provenance (CCT-364).
+///
+/// Prefers `synced` over `rebuilt` when both somehow exist for the same
+/// (machine, session). Built in-memory: archives are per-user and small; a
+/// future streaming/zstd path can replace this if bundles grow large.
+pub async fn export(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+) -> Result<Response, StatusCode> {
+    require_user_scope(&ctx)?;
+    let user_id = ctx.owner_filter();
+
+    // Order by source so `synced` (sorts before `rebuilt`) wins the dedupe.
+    let base = "SELECT a.machine_id, a.project_dir, a.session_id, a.sha256, a.size_bytes, \
+                a.source \
+         FROM archive_index a JOIN machines m ON m.id = a.machine_id";
+    let rows: Vec<(Uuid, String, String, String, i64, String)> = if let Some(uid) = user_id {
+        sqlx::query_as(&format!("{base} WHERE m.user_id = $1 ORDER BY a.session_id, a.source"))
+            .bind(uid)
+            .fetch_all(&state.pool)
+            .await
+    } else {
+        sqlx::query_as(&format!("{base} ORDER BY a.session_id, a.source"))
+            .fetch_all(&state.pool)
+            .await
+    }
+    .map_err(|e| {
+        tracing::error!("archive export db error: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let archive = state.archive.clone();
+    let bytes = tokio::task::spawn_blocking(move || build_bundle(&archive, rows))
+        .await
+        .map_err(|e| {
+            tracing::error!("archive export join error: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .map_err(|e| {
+            tracing::error!("archive export build error: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    let mut resp = Response::new(Body::from(bytes));
+    resp.headers_mut().insert(header::CONTENT_TYPE, "application/gzip".parse().unwrap());
+    resp.headers_mut().insert(
+        header::CONTENT_DISPOSITION,
+        "attachment; filename=\"cctui-export.tar.gz\"".parse().unwrap(),
+    );
+    Ok(resp.into_response())
+}
+
+/// Build the gzipped tar bundle synchronously (runs on a blocking thread).
+/// Dedupes per session, preferring the first-seen row (callers order `synced`
+/// before `rebuilt`). Missing files are skipped, not fatal.
+fn build_bundle(
+    archive: &crate::archive_store::ArchiveStore,
+    rows: Vec<(Uuid, String, String, String, i64, String)>,
+) -> std::io::Result<Vec<u8>> {
+    use std::collections::HashSet;
+    use std::io::Read;
+
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut manifest: Vec<ExportManifestEntry> = Vec::new();
+    let enc = GzEncoder::new(Vec::new(), Compression::default());
+    let mut tar = tar::Builder::new(enc);
+
+    for (machine_id, project_dir, session_id, sha256, size_bytes, source) in rows {
+        if !seen.insert(session_id.clone()) {
+            continue; // already took the preferred (synced) copy
+        }
+        let path = archive.path_of(machine_id, &project_dir, &session_id);
+        let Ok(mut file) = std::fs::File::open(&path) else {
+            continue; // indexed but file gone — skip
+        };
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf)?;
+
+        let entry_path = format!("claude/projects/{project_dir}/{session_id}.jsonl");
+        let mut header = tar::Header::new_gnu();
+        header.set_size(buf.len() as u64);
+        header.set_mode(0o644);
+        header.set_mtime(0);
+        header.set_cksum();
+        tar.append_data(&mut header, &entry_path, buf.as_slice())?;
+
+        manifest.push(ExportManifestEntry {
+            path: entry_path,
+            machine_id,
+            session_id,
+            sha256,
+            size_bytes,
+            source,
+        });
+    }
+
+    let manifest_json = serde_json::to_vec_pretty(&manifest).unwrap_or_default();
+    let mut header = tar::Header::new_gnu();
+    header.set_size(manifest_json.len() as u64);
+    header.set_mode(0o644);
+    header.set_mtime(0);
+    header.set_cksum();
+    tar.append_data(&mut header, "manifest.json", manifest_json.as_slice())?;
+
+    let enc = tar.into_inner()?;
+    enc.finish()
 }

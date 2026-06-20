@@ -153,6 +153,7 @@ async fn main() -> anyhow::Result<()> {
                 server_url,
                 machine_key: resp.machine_key,
                 machine_id: Some(resp.machine_id),
+                archive: cctui_daemon::config::ArchiveSyncConfig::default(),
             };
             cfg.save_to(&path)?;
             println!("enrolled as {} → {}", resp.machine_id, path.display());
@@ -171,6 +172,11 @@ async fn main() -> anyhow::Result<()> {
             // into the supervisor; both flow to the server-routed updater.
             let update_server_url = cfg.server_url.clone();
             let update_machine_key = cfg.machine_key.clone();
+            // Separate clones for the archive-sync loop (the update_* ones may be
+            // moved into the self-update task below).
+            let sync_server_url = cfg.server_url.clone();
+            let sync_machine_key = cfg.machine_key.clone();
+            let sync_archive_cfg = cfg.archive.clone();
             let supervisor = Supervisor::new(client, cfg.machine_key, adapters::registry());
             let shutdown = CancellationToken::new();
             // Translate Ctrl-C / SIGTERM into shutdown.
@@ -190,6 +196,23 @@ async fn main() -> anyhow::Result<()> {
                 );
             } else {
                 tracing::info!("auto-update disabled");
+            }
+            // Opt-in archive sync (CCT-362): mirror local Claude transcripts to
+            // the server on an interval. Off unless `archive.enabled` is set.
+            if sync_archive_cfg.enabled {
+                let projects_root = dirs::home_dir()
+                    .unwrap_or_else(|| std::path::PathBuf::from("."))
+                    .join(".claude")
+                    .join("projects");
+                let interval =
+                    std::time::Duration::from_secs(sync_archive_cfg.sync_interval_secs.max(60));
+                tokio::spawn(cctui_daemon::sync::run(
+                    sync_server_url,
+                    sync_machine_key,
+                    projects_root,
+                    interval,
+                    shutdown.clone(),
+                ));
             }
             supervisor.run(shutdown).await;
             Ok(())

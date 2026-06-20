@@ -66,6 +66,15 @@ enum Command {
         #[command(subcommand)]
         cmd: SkillsCmd,
     },
+    /// Export all of this user's archived sessions into a coach-ingestable
+    /// `~/.claude`-shaped tree (CCT-364). With `--out <dir>` the bundle is
+    /// extracted in place; with `--out <file.tar.gz>` the raw bundle is saved.
+    Export {
+        /// Target directory (extracted) or `*.tar.gz` file (saved as-is).
+        /// Defaults to `./cctui-export` (extracted).
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+    },
     /// Pull an archived session's raw JSONL onto this host so Claude can
     /// resume it. Auth uses the local machine.json (fallback: --token as a
     /// user token).
@@ -210,6 +219,9 @@ async fn main() -> Result<()> {
         }
         Command::Skills { cmd } => {
             skills_cmd(&client, &cli.server, cli.token.as_deref(), cmd).await
+        }
+        Command::Export { out } => {
+            export_cmd(&client, &cli.server, cli.token.as_deref(), out).await
         }
         Command::Pull { session_id, machine, remap, out_root, force } => {
             pull_cmd(
@@ -379,6 +391,43 @@ async fn archive_cmd(
             print_archives(&rows);
         }
     }
+    Ok(())
+}
+
+/// Download the user's export bundle (`GET /api/v1/archive/export`) and either
+/// save it as-is (when `out` ends in `.tar.gz`/`.tgz`) or extract it into a
+/// directory the coach can be pointed at (CCT-364).
+async fn export_cmd(
+    client: &Client,
+    server: &str,
+    token: Option<&str>,
+    out: Option<std::path::PathBuf>,
+) -> Result<()> {
+    let (server_url, tok) = resolve_read_auth(server, token)?;
+    let url = format!("{server_url}/api/v1/archive/export");
+    let resp = client.get(&url).bearer_auth(&tok).send().await?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        bail!("{status}: {body}");
+    }
+    let bytes = resp.bytes().await.context("read export body")?;
+
+    let out = out.unwrap_or_else(|| std::path::PathBuf::from("cctui-export"));
+    let name = out.to_string_lossy();
+    if name.ends_with(".tar.gz") || name.ends_with(".tgz") {
+        std::fs::write(&out, &bytes).with_context(|| format!("write {}", out.display()))?;
+        println!("wrote bundle: {} ({} bytes)", out.display(), bytes.len());
+        return Ok(());
+    }
+
+    // Extract into the directory.
+    std::fs::create_dir_all(&out).with_context(|| format!("mkdir {}", out.display()))?;
+    let dec = flate2::read::GzDecoder::new(std::io::Cursor::new(bytes.as_ref()));
+    let mut tar = tar::Archive::new(dec);
+    tar.unpack(&out).with_context(|| format!("extract into {}", out.display()))?;
+    println!("extracted into: {}", out.display());
+    println!("point the coach at this directory (it contains claude/projects/…).");
     Ok(())
 }
 
@@ -574,16 +623,17 @@ fn print_skills(rows: &[SkillIndexEntry]) {
 
 fn print_archives(rows: &[ArchiveIndexEntry]) {
     println!(
-        "{:<38}  {:<38}  {:<40}  {:>10}  uploaded",
-        "machine_id", "session_id", "project_dir", "bytes"
+        "{:<38}  {:<38}  {:<32}  {:>10}  {:<8}  uploaded",
+        "machine_id", "session_id", "project_dir", "bytes", "source"
     );
     for r in rows {
         println!(
-            "{:<38}  {:<38}  {:<40}  {:>10}  {}",
+            "{:<38}  {:<38}  {:<32}  {:>10}  {:<8}  {}",
             r.machine_id,
             r.session_id,
-            truncate(&r.project_dir, 40),
+            truncate(&r.project_dir, 32),
             r.size_bytes,
+            r.source,
             r.uploaded_at.format("%Y-%m-%d %H:%M:%S"),
         );
     }

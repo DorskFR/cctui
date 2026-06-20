@@ -586,6 +586,30 @@ pub struct ArchiveIndexEntry {
     pub size_bytes: i64,
     pub line_count: Option<i32>,
     pub uploaded_at: chrono::DateTime<chrono::Utc>,
+    /// Provenance: `synced` (byte-exact upload from the daemon, CCT-362) or
+    /// `rebuilt` (reconstructed server-side from `stream_events`, CCT-363).
+    /// Defaults to `synced` for rows that predate the column.
+    #[serde(default = "default_source")]
+    pub source: String,
+}
+
+fn default_source() -> String {
+    "synced".to_owned()
+}
+
+/// One file in a session-export bundle manifest (CCT-364). Lets external
+/// analysis tools (and the user) see each entry's provenance and integrity
+/// hash without re-reading every file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExportManifestEntry {
+    /// Path within the bundle, e.g. `claude/projects/<dir>/<session>.jsonl`.
+    pub path: String,
+    pub machine_id: Uuid,
+    pub session_id: String,
+    pub sha256: String,
+    pub size_bytes: i64,
+    /// `synced` or `rebuilt` (mirrors [`ArchiveIndexEntry::source`]).
+    pub source: String,
 }
 
 /// One entry of a machine's expected-files manifest. Uploaded on agent
