@@ -8,9 +8,15 @@ import { prettyJson } from '$lib/markdown';
 import type { AskQuestion, Line } from './types';
 
 // Some "user" turns are really harness/system messages directed at the agent
-// (timer wake-ups, task-completion notifications, injected reminders) rather
-// than something the human typed. The adapter layer marks these authoritatively
-// via `meta`; this tag fallback only covers events stored before `meta` existed.
+// (timer wake-ups, task-completion notifications, injected reminders, skill
+// preambles, hook feedback) rather than something the human typed. We classify
+// these structurally, by the fixed marker the harness/Claude prefixes them with.
+//
+// We deliberately ignore the stored `meta` bit (Claude's `isMeta`): cctui
+// delivers a human's composer reply through Claude's control-socket `reply` op,
+// which Claude records `isMeta:true`, so trusting it reclassified genuine human
+// turns to `system` and made them appear to vanish on reload (CCT-413). Keep
+// this list in sync with `META_MARKERS` in the daemon's transcript parser.
 export const META_TAGS = [
 	'<task-notification',
 	'<system-reminder',
@@ -19,7 +25,11 @@ export const META_TAGS = [
 	'<local-command',
 	'<bash-input',
 	'<bash-stdout',
-	'<bash-stderr'
+	'<bash-stderr',
+	'[SYSTEM NOTIFICATION',
+	'Base directory for this skill:',
+	'Stop hook feedback:',
+	'# Autonomous loop'
 ];
 export function looksMeta(text: string): boolean {
 	const t = text.trimStart();

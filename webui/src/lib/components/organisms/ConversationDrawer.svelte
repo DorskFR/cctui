@@ -163,8 +163,8 @@
 	// Render markdown honoring the table formatting toggle (CCT-250 item 2).
 	const mdRender = (s: string) => hl(renderMarkdown(s, { tables: view.prettyTables }));
 	// History stores user turns as a `text` event prefixed with USER_PREFIX; some
-	// "user" turns are really harness/system messages (marked via `meta`, with a
-	// tag fallback for pre-`meta` rows) and render in a distinct hue.
+	// "user" turns are really harness/system messages (detected structurally via
+	// `looksMeta`) and render in a distinct hue.
 	function userOrSystem(content: string, ts: number, meta: boolean): Line | null {
 		const role = meta ? 'system' : 'user';
 		if (!typeVisible(role)) return null;
@@ -179,7 +179,10 @@
 				if (!e.content.trim()) return null;
 				if (e.content.startsWith(USER_PREFIX)) {
 					const content = e.content.slice(USER_PREFIX.length).trimStart();
-					return userOrSystem(content, Number(e.ts), e.meta || looksMeta(content));
+					// Classify structurally from content, not the stored `meta` bit —
+					// cctui-injected human replies carry a spurious `isMeta:true` and
+					// must stay `user` on reload (CCT-413).
+					return userOrSystem(content, Number(e.ts), looksMeta(content));
 				}
 				if (!typeVisible('assistant')) return null;
 				return {

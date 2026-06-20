@@ -442,14 +442,20 @@ fn parse_assistant(local_id: &str, line: &Value, out: &mut Vec<AdapterEvent>) {
     }
 }
 
-/// Harness tags that wrap content injected *to* the agent (not typed by the
+/// Markers that prefix content injected *to* the agent (not typed by the
 /// human): background-task notifications, slash-command expansions, bash
-/// passthrough, injected reminders. Claude's top-level `isMeta` flag covers
-/// some of these (system-reminder, autonomous-loop wake-ups) but not all
-/// (task-notification, `<command-name>` are `isMeta:false`), so we OR the two
-/// signals together. These tokens are fixed strings Claude Code emits, so the
-/// match is exact, not a fuzzy guess.
-const META_TAGS: [&str; 8] = [
+/// passthrough, injected reminders, skill preambles, hook feedback. These are
+/// fixed strings Claude Code / the cctui harness emit, so the match is exact,
+/// not a fuzzy guess.
+///
+/// We deliberately do NOT trust Claude's top-level `isMeta` flag (CCT-413):
+/// cctui delivers a human's composer reply through Claude's control-socket
+/// `reply` op, and Claude records that non-interactively-injected turn with
+/// `isMeta:true` even though it is genuine human input. Trusting `isMeta`
+/// reclassified those turns from `user` to `system` on reload, so they appeared
+/// to vanish. Classifying purely by these structural markers keeps real human
+/// prose visible while still hiding machine-injected content.
+const META_MARKERS: [&str; 12] = [
     "<task-notification",
     "<system-reminder",
     "<command-name",
@@ -458,16 +464,18 @@ const META_TAGS: [&str; 8] = [
     "<bash-input",
     "<bash-stdout",
     "<bash-stderr",
+    "[SYSTEM NOTIFICATION",
+    "Base directory for this skill:",
+    "Stop hook feedback:",
+    "# Autonomous loop",
 ];
 
 /// Whether a user-role transcript message is really a system/agent-directed
-/// message rather than human input. `is_meta_line` is Claude's top-level
-/// `isMeta`; `text` is the message body.
-fn user_text_is_meta(is_meta_line: bool, text: &str) -> bool {
-    is_meta_line || {
-        let t = text.trim_start();
-        META_TAGS.iter().any(|tag| t.starts_with(tag))
-    }
+/// message rather than human input, decided solely from the message body
+/// (`text`). See [`META_MARKERS`] for why Claude's `isMeta` flag is ignored.
+fn user_text_is_meta(text: &str) -> bool {
+    let t = text.trim_start();
+    META_MARKERS.iter().any(|m| t.starts_with(m))
 }
 
 /// Extract the summary text from a `/compact` line. The content lives under
@@ -494,11 +502,10 @@ fn parse_user(local_id: &str, line: &Value, out: &mut Vec<AdapterEvent>) {
     let Some(content) = line.get("message").and_then(|m| m.get("content")) else {
         return;
     };
-    let is_meta_line = line.get("isMeta").and_then(Value::as_bool).unwrap_or(false);
     if let Some(text) = content.as_str() {
         out.push(AdapterEvent::Message {
             local_id: local_id.to_owned(),
-            payload: json!({"role": "user", "text": text, "meta": user_text_is_meta(is_meta_line, text)}),
+            payload: json!({"role": "user", "text": text, "meta": user_text_is_meta(text)}),
         });
         return;
     }
@@ -509,7 +516,7 @@ fn parse_user(local_id: &str, line: &Value, out: &mut Vec<AdapterEvent>) {
                 let text = block.get("text").and_then(Value::as_str).unwrap_or_default();
                 out.push(AdapterEvent::Message {
                     local_id: local_id.to_owned(),
-                    payload: json!({"role": "user", "text": text, "meta": user_text_is_meta(is_meta_line, text)}),
+                    payload: json!({"role": "user", "text": text, "meta": user_text_is_meta(text)}),
                 });
             }
             Some("tool_result") => {
@@ -904,10 +911,16 @@ mod tests {
             &[
                 // genuine human input → not meta
                 r#"{"type":"user","message":{"content":"do the thing"}}"#,
-                // harness tag, isMeta absent → meta via tag match
+                // harness tag, isMeta absent → meta via marker match
                 r#"{"type":"user","message":{"content":"<task-notification><status>completed</status></task-notification>"}}"#,
-                // injected reminder marked by Claude's isMeta, no tag
+                // injected reminder, no angle-bracket tag → meta via prose marker
                 r##"{"type":"user","isMeta":true,"message":{"content":[{"type":"text","text":"# Autonomous loop check"}]}}"##,
+                // CCT-413: a human composer reply that cctui delivered through
+                // Claude's control-socket `reply` op gets recorded `isMeta:true`,
+                // but it is genuine human input with no machine marker → not meta.
+                r#"{"type":"user","isMeta":true,"message":{"content":[{"type":"text","text":"resume coverart e2e verification"}]}}"#,
+                // skill preamble injection, no tag → meta via prose marker
+                r#"{"type":"user","isMeta":true,"message":{"content":"Base directory for this skill: /home/dorsk/.claude/skills/x"}}"#,
             ],
         );
         let (events, _) = tail_once(&path, "s", 0).unwrap();
@@ -920,7 +933,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(metas, vec![false, true, true]);
+        assert_eq!(metas, vec![false, true, true, false, true]);
     }
 
     #[test]
