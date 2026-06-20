@@ -960,6 +960,46 @@ async fn reaper_task(state: AppState) {
             }
         }
 
+        // Ephemeral dispatch keys (CCT-296): per-session credentials handed to
+        // worker pods. Revoke a key once its bound session reaches the terminal
+        // `archived` state (blast radius dies with the session, ahead of TTL),
+        // and hard-delete keys past their `expires_at` so the table stays clean.
+        // The auth path already rejects revoked/expired keys; this just keeps
+        // the rows from accumulating and tightens revocation to session end.
+        match sqlx::query(
+            "UPDATE auth_keys SET revoked_at = now() \
+             WHERE kind = 'ephemeral' AND revoked_at IS NULL AND session_id IN \
+               (SELECT id FROM sessions WHERE status = 'archived')",
+        )
+        .execute(&state.pool)
+        .await
+        {
+            Ok(res) if res.rows_affected() > 0 => {
+                tracing::info!(
+                    count = res.rows_affected(),
+                    "revoked ephemeral dispatch keys for archived sessions"
+                );
+            }
+            Ok(_) => {}
+            Err(err) => tracing::warn!(%err, "ephemeral key revoke sweep failed"),
+        }
+        match sqlx::query(
+            "DELETE FROM auth_keys \
+             WHERE kind = 'ephemeral' AND expires_at IS NOT NULL AND expires_at < now()",
+        )
+        .execute(&state.pool)
+        .await
+        {
+            Ok(res) if res.rows_affected() > 0 => {
+                tracing::info!(
+                    count = res.rows_affected(),
+                    "deleted expired ephemeral dispatch keys"
+                );
+            }
+            Ok(_) => {}
+            Err(err) => tracing::warn!(%err, "expired ephemeral key delete sweep failed"),
+        }
+
         // Machine liveness (CCT-255): re-derive every machine's tier from its
         // `last_seen_at` and broadcast any transitions. The 30s cadence means a
         // daemon that stops heartbeating ages online → stale → offline on its

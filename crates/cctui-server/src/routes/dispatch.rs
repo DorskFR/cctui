@@ -156,6 +156,68 @@ async fn ensure_dispatch_machine(
     Ok((machine_id, token))
 }
 
+/// Mint a per-session EPHEMERAL machine credential for a dispatched worker
+/// (CCT-296), bound to the pre-minted `session_id` and the user's shared
+/// `dispatch` machine (`machine_id`), expiring at the session deadline + grace.
+///
+/// This replaces the shared per-user `dispatch_key` (CCT-191) as the credential
+/// handed to the worker pod: a leaked worker key now authenticates only its own
+/// session and dies with it, instead of impersonating every dispatched session
+/// of the user. It is an additive `auth_keys` row (CCT-410) — the auth path
+/// already enforces `expires_at` and carries `machine_id` transparently, so the
+/// daemon accepts it exactly like any other machine key — with `kind`
+/// `'ephemeral'` and `session_id` set so the reaper can revoke it on the
+/// session's terminal state. Scopes mirror the owner's ceiling (same as the
+/// shared dispatch key did via the legacy machine path). Returns the plaintext
+/// token to inject as `CCTUI_MACHINE_KEY`.
+async fn mint_ephemeral_dispatch_key(
+    state: &AppState,
+    user_id: uuid::Uuid,
+    machine_id: uuid::Uuid,
+    session_id: &str,
+    timeout_minutes: Option<u32>,
+) -> anyhow::Result<String> {
+    let secret = mint_secret();
+    let token = machine_token(&secret);
+    let key_hash = sha256_hex(&token);
+    // TTL = session deadline + grace. Fall back to a generous default when the
+    // dispatch carries no timeout so the key still outlives a long run, then is
+    // swept by the reaper. Grace covers post-deadline teardown/heartbeat.
+    const GRACE_SECS: i64 = 30 * 60;
+    const DEFAULT_TTL_SECS: i64 = 24 * 60 * 60;
+    let lifetime = timeout_minutes
+        .map_or(DEFAULT_TTL_SECS, |m| i64::from(m).saturating_mul(60))
+        .saturating_add(GRACE_SECS);
+    let expires_at = chrono::Utc::now() + chrono::Duration::seconds(lifetime);
+
+    let scopes = crate::auth::ceiling_of(&state.pool, user_id).await;
+    let key_id: (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO auth_keys \
+           (user_id, key_hash, key_preview, label, kind, machine_id, session_id, expires_at) \
+         VALUES ($1, $2, $3, $4, 'ephemeral', $5, $6, $7) \
+         ON CONFLICT (key_hash) DO UPDATE SET label = EXCLUDED.label \
+         RETURNING id",
+    )
+    .bind(user_id)
+    .bind(&key_hash)
+    .bind(crate::auth::token_preview(&token))
+    .bind(format!("dispatch session {session_id}"))
+    .bind(machine_id)
+    .bind(session_id)
+    .bind(expires_at)
+    .fetch_one(&state.pool)
+    .await?;
+    for scope in scopes {
+        sqlx::query("INSERT INTO key_acls (key_id, scope) VALUES ($1, $2) ON CONFLICT DO NOTHING")
+            .bind(key_id.0)
+            .bind(scope.as_str())
+            .execute(&state.pool)
+            .await?;
+    }
+    tracing::info!(%user_id, %machine_id, %session_id, "minted ephemeral dispatch key");
+    Ok(token)
+}
+
 /// Resolve a dispatcher *name* for the caller: an enrolled dispatcher (CCT-285)
 /// takes precedence, falling back to the global env-configured http registry.
 /// Returns `Ok(None)` to mean "no such name anywhere" so the caller can 404
@@ -311,13 +373,29 @@ pub async fn dispatch(
     // owning user (the web UI / automation dispatch with a user token). An admin token
     // (`owner_filter` is `None`) dispatches without the shared identity.
     if let Some(uid) = ctx.owner_filter() {
-        let (_, key) = ensure_dispatch_machine(&state, uid).await.map_err(|e| {
-            tracing::error!("ensure_dispatch_machine failed: {e}");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError { error: "could not resolve dispatch machine".into() }),
-            )
-        })?;
+        // The shared `dispatch` machine still groups every dispatched session
+        // under one logical machine (UI grouping unchanged, CCT-191) — but the
+        // credential handed to the pod is now a PER-SESSION ephemeral key
+        // (CCT-296), so a leaked worker key only impersonates its own session
+        // and expires with it. `ensure_dispatch_machine` is kept for the row
+        // (and `dispatch_key` rotation) it owns.
+        let (machine_id, _shared_key) =
+            ensure_dispatch_machine(&state, uid).await.map_err(|e| {
+                tracing::error!("ensure_dispatch_machine failed: {e}");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ApiError { error: "could not resolve dispatch machine".into() }),
+                )
+            })?;
+        let key = mint_ephemeral_dispatch_key(&state, uid, machine_id, &session_id, req.timeout)
+            .await
+            .map_err(|e| {
+                tracing::error!("mint_ephemeral_dispatch_key failed: {e}");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ApiError { error: "could not mint dispatch credential".into() }),
+                )
+            })?;
         if let Some(obj) = forwarded_payload.as_object_mut() {
             obj.insert("cctui_machine_key".into(), serde_json::Value::String(key));
         }
