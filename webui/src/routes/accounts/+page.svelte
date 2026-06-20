@@ -368,8 +368,8 @@
 					{#if a.managed}
 						<Text tone="faint" size="xs">Managed (read-only)</Text>
 					{:else}
-						<Button size="sm" onclick={() => openEdit(a)}>Edit</Button>
-						<Button size="sm" variant="danger" onclick={() => remove(a)}>Delete</Button>
+						<Button onclick={() => openEdit(a)}>Edit</Button>
+						<Button variant="danger" onclick={() => remove(a)}>Delete</Button>
 					{/if}
 				</Cluster>
 			</Card>
@@ -454,7 +454,6 @@
 									<Input bind:value={row.model} placeholder="model code (e.g. qwen3-coder)" />
 									<Input bind:value={row.label} placeholder="label (optional)" />
 									<Button
-										size="sm"
 										variant="danger"
 										onclick={() => (modelRows = modelRows.filter((_, j) => j !== i))}
 										disabled={modelRows.length === 1}>✕</Button
@@ -462,7 +461,6 @@
 								</div>
 							{/each}
 							<Button
-								size="sm"
 								onclick={() => (modelRows = [...modelRows, { model: '', label: '' }])}
 								>+ Add model</Button
 							>
@@ -471,7 +469,6 @@
 						<!-- Sign in with Claude / ChatGPT: authorize upstream, paste back. -->
 						{#if !oauthNonce}
 							<Button
-								size="sm"
 								variant="primary"
 								style="align-self: flex-start"
 								disabled={oauthBusy}
@@ -531,13 +528,12 @@
 									<Input bind:value={row.alias} placeholder="logical name (e.g. opus)" />
 									<Input bind:value={row.model} placeholder="model code (e.g. claude-opus-4-8[1m])" />
 									<Button
-										size="sm"
 										variant="danger"
 										onclick={() => (aliasRows = aliasRows.filter((_, j) => j !== i))}>✕</Button
 									>
 								</div>
 							{/each}
-							<Button size="sm" onclick={() => (aliasRows = [...aliasRows, { alias: '', model: '' }])}
+							<Button onclick={() => (aliasRows = [...aliasRows, { alias: '', model: '' }])}
 								>+ Add alias</Button
 							>
 						</div>
@@ -576,11 +572,11 @@
 		{/snippet}
 		{#snippet footer()}
 			<div class="spacer"></div>
-			<Button size="sm" onclick={close}>Cancel</Button>
+			<Button onclick={close}>Cancel</Button>
 			{#if !editing && oauthNonce && !showAdvanced}
-				<Button size="sm" variant="primary" disabled={oauthBusy} onclick={finishOAuthLogin}>Save</Button>
+				<Button variant="primary" disabled={oauthBusy} onclick={finishOAuthLogin}>Save</Button>
 			{:else}
-				<Button size="sm" variant="primary" onclick={save}>Save</Button>
+				<Button variant="primary" onclick={save}>Save</Button>
 			{/if}
 		{/snippet}
 	</Modal>

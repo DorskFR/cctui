@@ -59,6 +59,12 @@
 		justify-content: center;
 		min-width: 1.5rem;
 		height: 1.5rem;
+		/* Resolve the digit size through a --fs-* token (CCT-408) so the global
+		   font-scale picker grows the counter in step with surrounding session
+		   text. min-width/height stay rem-pinned chrome, so the chip keeps its
+		   compact footprint while only the glyph scales; tsumikit's size="sm"
+		   font-size (not a --fs-* token) is what left it frozen before. */
+		font-size: var(--fs-sm);
 		font-weight: var(--fw-semibold);
 		font-variant-numeric: tabular-nums;
 	}

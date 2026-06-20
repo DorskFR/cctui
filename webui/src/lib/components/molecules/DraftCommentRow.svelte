@@ -66,10 +66,10 @@
 				autofocus
 			/>
 			<Cluster gap="var(--sp-2)">
-				<Button size="sm" onclick={save} disabled={busy || !text.trim()}>
+				<Button onclick={save} disabled={busy || !text.trim()}>
 					{composing ? 'Add comment' : 'Save'}
 				</Button>
-				<Button size="sm" variant="ghost" onclick={cancel} disabled={busy}>Cancel</Button>
+				<Button variant="ghost" onclick={cancel} disabled={busy}>Cancel</Button>
 			</Cluster>
 		</Stack>
 	{:else if comment}

@@ -76,6 +76,26 @@ export class ConversationStream {
 			const key = userMsgKey(ev);
 			if (key !== null && this.live.some((e) => userMsgKey(e) === key)) return;
 			this.live = [...this.live, ev];
+			// A pending live ask/plan is superseded the instant the agent streams a
+			// fresh substantive (non-user, non-heartbeat) event past it (CCT-414):
+			// the question was skipped/answered out-of-band and the turn moved on, so
+			// the daemon's AskResolved/onAsk(null) — which a half-open ws can miss —
+			// is no longer the only thing that clears the form. While a prompt is
+			// genuinely pending claude is blocked and emits nothing, so this can't
+			// race a still-open question. Remember it resolved so its late transcript
+			// line stays suppressed (CCT-230). User echoes (key !== null) never clear
+			// a prompt — a free-typed send doesn't dismiss an ask (CCT-208).
+			if (ev.type !== 'heartbeat' && key === null) {
+				if (this.ask) {
+					this.markAsksResolved(this.liveAskQuestions, this.ask.question);
+					this.ask = null;
+					ws.clearAsk(this.#opts.id());
+				}
+				if (this.plan) {
+					this.plan = null;
+					ws.clearPlan(this.#opts.id());
+				}
+			}
 			// Drive the activity indicator (CCT-208): a turn ends on `turn_end`; any
 			// substantive agent/tool/user event means work is in progress.
 			if (ev.type === 'turn_end') this.working = false;

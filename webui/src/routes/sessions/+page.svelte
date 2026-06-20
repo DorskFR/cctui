@@ -570,10 +570,9 @@
 {#if selecting && !searching}
 		<div class="bulkbar row">
 			<Text class="count" size="sm" weight="semibold" tone="muted">{selected.size} selected</Text>
-			<Button size="sm" onclick={selectAll}>Select all</Button>
+			<Button onclick={selectAll}>Select all</Button>
 			<div class="spacer"></div>
 			<Button
-				size="sm"
 				variant="danger"
 				disabled={selected.size === 0 || archiving}
 				onclick={archiveSelected}
@@ -717,7 +716,7 @@
 		<div class="loadmore"><span class="spin"></span></div>
 		{:else if !pageDone && pageRows.length > 0}
 			<div class="loadmore">
-				<Button size="sm" onclick={() => loadPage(false)}>Load more</Button>
+				<Button onclick={() => loadPage(false)}>Load more</Button>
 			</div>
 		{/if}
 {/snippet}
@@ -789,7 +788,6 @@
 							     list mode it's pushed to the far right via the spacer. -->
 							{#if !cardView}<div class="spacer"></div>{/if}
 							<Button
-								size="sm"
 								variant="danger"
 								disabled={archiving}
 								title="Archive all dispatched conversations"

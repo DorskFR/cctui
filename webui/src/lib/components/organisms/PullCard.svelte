@@ -52,10 +52,10 @@
 			</Cluster>
 			<Cluster gap="var(--sp-2)" align="center">
 				{#if onreview}
-					<Button size="sm" onclick={review}>Review diff</Button>
+					<Button onclick={review}>Review diff</Button>
 				{/if}
 				{#if onreviewagent}
-					<Button size="sm" onclick={reviewAgent}>Review with agent</Button>
+					<Button onclick={reviewAgent}>Review with agent</Button>
 				{/if}
 				<Text tone="muted" size="xs">
 					<Timestamp value={pull.gh_updated_at} mode="relative" />

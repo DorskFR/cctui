@@ -123,7 +123,7 @@
 					/>
 				{/each}
 			</div>
-			<Button size="sm" variant="primary" onclick={mint} disabled={newScopes.size === 0}>+ Mint key</Button>
+			<Button variant="primary" onclick={mint} disabled={newScopes.size === 0}>+ Mint key</Button>
 		</div>
 
 		{#if liveKeys.length}

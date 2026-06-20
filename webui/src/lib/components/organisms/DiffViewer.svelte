@@ -582,7 +582,6 @@
 					</Select>
 				</Cluster>
 				<Button
-					size="sm"
 					variant="primary"
 					onclick={publishReview}
 					disabled={!canPublish || publishing}

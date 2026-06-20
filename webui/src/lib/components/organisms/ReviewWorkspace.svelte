@@ -124,7 +124,7 @@
 						Select a diff line and “Ask the agent” to discuss a block
 					{/if}
 				</Text>
-				<Button size="sm" onclick={promoteAnswer} disabled={!canPromote}>
+				<Button onclick={promoteAnswer} disabled={!canPromote}>
 					{promoting ? 'Promoting…' : 'Promote answer to draft'}
 				</Button>
 			</Cluster>

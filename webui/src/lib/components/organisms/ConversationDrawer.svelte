@@ -187,8 +187,8 @@
 					ts: Number(e.ts),
 					html: mdRender(e.content),
 					text: e.content,
-					messageId: e.message_id,
-					usage: e.usage
+					messageId: e.message_id ?? undefined,
+					usage: e.usage ?? undefined
 				};
 			}
 			case 'reply':

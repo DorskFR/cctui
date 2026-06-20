@@ -125,9 +125,9 @@
 {/snippet}
 {#snippet mcActions(mc: MachineRow)}
 	{#if mc.revoked_at}
-		<Button size="sm" variant="danger" onclick={() => purgeMachine(mc.id)}>Purge</Button>
+		<Button variant="danger" onclick={() => purgeMachine(mc.id)}>Purge</Button>
 	{:else if mc.kind !== 'dispatch'}
-		<Button size="sm" variant="danger" onclick={() => revokeMachine(mc.id)}>Revoke</Button>
+		<Button variant="danger" onclick={() => revokeMachine(mc.id)}>Revoke</Button>
 	{/if}
 {/snippet}
 
@@ -156,10 +156,10 @@
 {#snippet tkActions(t: UserTokenRow)}
 	<div class="row mini">
 		{#if t.revoked_at}
-			<Button size="sm" variant="danger" onclick={() => deleteToken(t.id)}>Delete</Button>
+			<Button variant="danger" onclick={() => deleteToken(t.id)}>Delete</Button>
 		{:else}
-			<Button size="sm" onclick={() => (editToken = t)}>Relabel</Button>
-			<Button size="sm" variant="danger" onclick={() => revokeToken(t.id)}>Revoke</Button>
+			<Button onclick={() => (editToken = t)}>Relabel</Button>
+			<Button variant="danger" onclick={() => revokeToken(t.id)}>Revoke</Button>
 		{/if}
 	</div>
 {/snippet}
@@ -205,7 +205,7 @@
 				</div>
 				<div class="spacer"></div>
 				{#if !revoked}
-					<Button size="sm" onclick={() => (mintOpen = true)}>+ New token</Button>
+					<Button onclick={() => (mintOpen = true)}>+ New token</Button>
 				{/if}
 			</div>
 			{#if $tokens.isLoading}

@@ -95,7 +95,7 @@
 					<!-- as="div": truncate needs a block element — text-overflow:ellipsis is
 					     ignored on an inline <span>, so the long command would spill. -->
 					<div class="cmd"><Text as="div" variant="code" truncate>{enrollCmd}</Text></div>
-					<Button size="sm" onclick={copyEnroll}>Copy</Button>
+					<Button onclick={copyEnroll}>Copy</Button>
 				</Cluster>
 				<Text as="p" tone="muted" size="sm">
 					Then run it as a service: <Text variant="code">cctui-daemon service install</Text>

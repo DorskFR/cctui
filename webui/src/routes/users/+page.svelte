@@ -110,7 +110,7 @@
 			>
 		{/if}
 		<div class="spacer"></div>
-		<Button size="sm" onclick={() => auth.clear()}>⏻ Log out</Button>
+		<Button onclick={() => auth.clear()}>⏻ Log out</Button>
 	</div>
 {/if}
 
@@ -191,11 +191,11 @@
 
 				<footer class="acts">
 					{#if u.revoked_at}
-						<Button size="sm" variant="danger" onclick={() => purgeUser(u.id, u.name)}
+						<Button variant="danger" onclick={() => purgeUser(u.id, u.name)}
 							>Delete permanently</Button
 						>
 					{:else}
-						<Button size="sm" variant="danger" onclick={() => revoke(u.id, u.name)}>Revoke</Button>
+						<Button variant="danger" onclick={() => revoke(u.id, u.name)}>Revoke</Button>
 					{/if}
 				</footer>
 			</Card>

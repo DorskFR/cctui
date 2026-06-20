@@ -65,7 +65,7 @@
 		<Stack gap="var(--sp-2)">
 			{#if onreviewagent}
 				<Cluster justify="flex-end">
-					<Button size="sm" onclick={() => onreviewagent(pull)}>Review with agent</Button>
+					<Button onclick={() => onreviewagent(pull)}>Review with agent</Button>
 				</Cluster>
 			{/if}
 			{#if $diff.isLoading}

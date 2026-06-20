@@ -208,14 +208,13 @@
 						</Stack>
 						<Cluster gap="var(--sp-2)" align="center">
 							<Button
-								size="sm"
 								disabled={syncingId === c.id}
 								onclick={() => refresh(c.id)}
 							>
 								{syncingId === c.id ? 'Refreshing…' : 'Refresh now'}
 							</Button>
-							<Button size="sm" onclick={() => openEdit(c)}>Edit</Button>
-							<Button size="sm" variant="danger" onclick={() => remove(c.id, c.name)}>Remove</Button>
+							<Button onclick={() => openEdit(c)}>Edit</Button>
+							<Button variant="danger" onclick={() => remove(c.id, c.name)}>Remove</Button>
 						</Cluster>
 					</Cluster>
 				</Card>
@@ -299,8 +298,8 @@
 					<Input bind:value={webhookSecret} type="password" />
 				</Field>
 				<Cluster justify="flex-end" gap="var(--sp-2)">
-					<Button size="sm" onclick={() => (showModal = false)}>Cancel</Button>
-					<Button size="sm" variant="primary" disabled={saving} onclick={save}>
+					<Button onclick={() => (showModal = false)}>Cancel</Button>
+					<Button variant="primary" disabled={saving} onclick={save}>
 						{saving ? 'Saving…' : editing ? 'Save changes' : 'Add connector'}
 					</Button>
 				</Cluster>
