@@ -41,6 +41,15 @@ enum Cmd {
         /// `CCTUI_URL` injected into spawned workers (defaults to `server_url`).
         #[arg(long)]
         worker_cctui_url: Option<String>,
+        /// OAuth account name to bind as this dispatcher's default (CCT-427).
+        /// A dispatch with no explicit account routes its model traffic through
+        /// the cctui gateway under this account.
+        #[arg(long)]
+        account: Option<String>,
+        /// Provider hint disambiguating an account name shared across providers
+        /// (e.g. `anthropic` vs `openai`). Only meaningful with `--account`.
+        #[arg(long)]
+        provider: Option<String>,
     },
     /// Connect to the configured server and serve dispatch commands.
     Run,
@@ -85,9 +94,19 @@ async fn main() -> anyhow::Result<()> {
     let path = cli.config.unwrap_or_else(Config::default_path);
 
     match cli.cmd {
-        Cmd::Enroll { server_url, token, name, namespace, source_cronjob, worker_cctui_url } => {
+        Cmd::Enroll {
+            server_url,
+            token,
+            name,
+            namespace,
+            source_cronjob,
+            worker_cctui_url,
+            account,
+            provider,
+        } => {
             let client = ServerClient::new(&server_url);
-            let resp = client.enroll(&token, &name).await?;
+            let resp =
+                client.enroll(&token, &name, account.as_deref(), provider.as_deref()).await?;
             let cfg = Config {
                 server_url,
                 dispatcher_key: resp.dispatcher_key,

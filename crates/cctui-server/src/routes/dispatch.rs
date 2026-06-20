@@ -218,6 +218,55 @@ async fn mint_ephemeral_dispatch_key(
     Ok(token)
 }
 
+/// The account a dispatch should route through, after applying the CCT-427
+/// fallback precedence: an explicit `req.account` always wins; otherwise the
+/// dispatcher's bound default account (if any) is used. Each carries the
+/// optional provider hint that disambiguates a name shared across providers.
+///
+/// Pure so the precedence is unit-testable without a DB. `None` means "no
+/// account at all" — dispatch then behaves as it did before any account
+/// routing existed (no gateway env injected).
+fn resolve_dispatch_account(
+    explicit_account: Option<&str>,
+    explicit_provider: Option<&str>,
+    default_account: Option<&(String, Option<String>)>,
+) -> Option<(String, Option<String>)> {
+    if let Some(name) = explicit_account.map(str::trim).filter(|a| !a.is_empty()) {
+        return Some((
+            name.to_string(),
+            explicit_provider.map(str::trim).filter(|p| !p.is_empty()).map(str::to_string),
+        ));
+    }
+    default_account.cloned()
+}
+
+/// The OAuth account a dispatcher is bound to (CCT-427), resolved to the
+/// `(name, provider)` `mint_session_env` consumes. Returns `None` when the
+/// dispatcher row carries no `default_account_id` or it points at a deleted
+/// account (the `ON DELETE SET NULL` FK clears the binding). A DB error
+/// degrades to `None` so a lookup hiccup never blocks an otherwise-valid
+/// dispatch.
+async fn dispatcher_default_account(
+    state: &AppState,
+    dispatcher_name: &str,
+    user_id: uuid::Uuid,
+) -> Option<(String, Option<String>)> {
+    sqlx::query_as::<_, (String, Option<String>)>(
+        "SELECT oa.name, d.default_account_provider \
+         FROM dispatchers d \
+         JOIN oauth_accounts oa ON oa.id = d.default_account_id \
+         WHERE d.name = $1 AND d.user_id = $2 \
+           AND d.deleted_at IS NULL AND d.revoked_at IS NULL \
+         ORDER BY d.created_at LIMIT 1",
+    )
+    .bind(dispatcher_name)
+    .bind(user_id)
+    .fetch_optional(&state.pool)
+    .await
+    .ok()
+    .flatten()
+}
+
 /// Resolve a dispatcher *name* for the caller: an enrolled dispatcher (CCT-285)
 /// takes precedence, falling back to the global env-configured http registry.
 /// Returns `Ok(None)` to mean "no such name anywhere" so the caller can 404
@@ -400,19 +449,31 @@ pub async fn dispatch(
             obj.insert("cctui_machine_key".into(), serde_json::Value::String(key));
         }
 
-        // Account-scoped routing on the dispatch path (CCT-399): if the caller
-        // picked a named account, mint a session-scoped gateway token bound to
-        // this (session, account) and merge the gateway base-url + token into
-        // `payload.env` so the worker pod routes through the passthrough gateway
-        // under that account — closing the gap where dispatch never called
-        // `mint_session_env`. The dispatch path runs a claude-worker, so the
-        // family falls back to anthropic when no provider is given.
-        if let Some(account_name) = req.account.as_deref().filter(|a| !a.trim().is_empty()) {
+        // Account-scoped routing on the dispatch path (CCT-399 / CCT-427): mint
+        // a session-scoped gateway token bound to this (session, account) and
+        // merge the gateway base-url + token into `payload.env` so the worker
+        // pod routes through the passthrough gateway under that account. The
+        // account is the explicit `req.account` if the caller picked one, else
+        // the dispatcher's bound default account (CCT-427) — an empty
+        // `req.account` falls back, an explicit one always overrides. With no
+        // account either way, dispatch injects no gateway env (unchanged). The
+        // dispatch path runs a claude-worker, so the family falls back to
+        // anthropic when no provider is given.
+        let default_account = if req.account.as_deref().map(str::trim).is_none_or(str::is_empty) {
+            dispatcher_default_account(&state, &req.dispatcher, uid).await
+        } else {
+            None
+        };
+        if let Some((account_name, account_provider)) = resolve_dispatch_account(
+            req.account.as_deref(),
+            req.provider.as_deref(),
+            default_account.as_ref(),
+        ) {
             match crate::routes::gateway::mint_session_env(
                 &state,
                 uid,
-                account_name,
-                req.provider.as_deref().filter(|p| !p.trim().is_empty()),
+                &account_name,
+                account_provider.as_deref().filter(|p| !p.trim().is_empty()),
                 "claude-code",
                 &session_id,
             )
@@ -506,4 +567,54 @@ pub async fn dispatch(
             status: handle.status.unwrap_or_else(|| "dispatched".into()),
         }),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_dispatch_account;
+
+    // Helper: the bound default account a dispatcher carries (CCT-427).
+    fn bound(name: &str, provider: Option<&str>) -> (String, Option<String>) {
+        (name.to_string(), provider.map(str::to_string))
+    }
+
+    #[test]
+    fn explicit_account_is_used_verbatim() {
+        // An explicit `req.account` routes through that account regardless of any
+        // dispatcher binding (the override case).
+        let got = resolve_dispatch_account(Some("work"), Some("anthropic"), None);
+        assert_eq!(got, Some(("work".into(), Some("anthropic".into()))));
+    }
+
+    #[test]
+    fn explicit_account_overrides_bound_default() {
+        // CCT-427: explicit account wins over the dispatcher's default, and uses
+        // the explicit provider hint (not the bound one).
+        let default = bound("automation-account", Some("openai"));
+        let got = resolve_dispatch_account(Some("work"), Some("anthropic"), Some(&default));
+        assert_eq!(got, Some(("work".into(), Some("anthropic".into()))));
+    }
+
+    #[test]
+    fn empty_account_falls_back_to_bound_default() {
+        // CCT-427: an empty / whitespace `req.account` falls back to the
+        // dispatcher's bound default account (name + its provider hint).
+        let default = bound("automation-account", Some("anthropic"));
+        assert_eq!(
+            resolve_dispatch_account(None, None, Some(&default)),
+            Some(("automation-account".into(), Some("anthropic".into())))
+        );
+        assert_eq!(
+            resolve_dispatch_account(Some("   "), None, Some(&default)),
+            Some(("automation-account".into(), Some("anthropic".into())))
+        );
+    }
+
+    #[test]
+    fn no_account_and_no_binding_is_none() {
+        // Unbound dispatcher + no explicit account: no gateway env injected
+        // (behaves as before any account routing existed).
+        assert_eq!(resolve_dispatch_account(None, None, None), None);
+        assert_eq!(resolve_dispatch_account(Some(""), None, None), None);
+    }
 }

@@ -331,7 +331,7 @@ export const endpoints = {
   /** The caller's enrolled dispatchers (CCT-285) with liveness. */
   userDispatchers: () => api.get<UserDispatcher[]>("/dispatchers"),
   /** Enroll a dispatcher; the key is returned ONCE and never echoed again. */
-  enrollDispatcher: (body: { name: string; kind?: string }) =>
+  enrollDispatcher: (body: { name: string; kind?: string; account?: string; provider?: string }) =>
     api.post<EnrollDispatcherResponse>("/dispatcher/enroll", body),
   updateDispatcher: (id: string, body: RenameDispatcher) =>
     api.patch<UserDispatcher>(`/dispatchers/${id}`, body),
@@ -1220,7 +1220,7 @@ export function useDispatcherActions() {
     qc.invalidateQueries({ queryKey: ["dispatchers"] });
   };
   return {
-    enroll: async (body: { name: string; kind?: string }) => {
+    enroll: async (body: { name: string; kind?: string; account?: string; provider?: string }) => {
       const r = await endpoints.enrollDispatcher(body);
       inval();
       return r;

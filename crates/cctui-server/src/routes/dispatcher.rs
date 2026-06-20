@@ -25,9 +25,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::auth::{
-    AuthContext, Scope, machine_token, mint_secret, sha256_hex, token_preview,
-};
+use crate::auth::{AuthContext, Scope, machine_token, mint_secret, sha256_hex, token_preview};
 use crate::state::AppState;
 
 /// Evict a dispatcher whose WS produced no frame within this window. A healthy
@@ -45,6 +43,15 @@ pub struct EnrollRequest {
     /// it (the executor owns runtime semantics).
     #[serde(default)]
     pub kind: Option<String>,
+    /// Optional OAuth account name to bind as the dispatcher's default
+    /// (CCT-427). Resolved to `oauth_accounts.id` for the enrolling user; a
+    /// dispatch with no explicit account routes through it.
+    #[serde(default)]
+    pub account: Option<String>,
+    /// Optional provider hint disambiguating an account name shared across
+    /// providers. Recorded as `default_account_provider`.
+    #[serde(default)]
+    pub provider: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -78,9 +85,55 @@ pub async fn enroll(
     let key_hash = sha256_hex(&token);
     let kind = req.kind.as_deref().filter(|k| !k.trim().is_empty()).unwrap_or("http");
 
+    // CCT-427: resolve an optional default-account binding to an account id the
+    // caller owns. The provider hint (when given) disambiguates a name shared
+    // across providers; absent it, we take the single matching row and 409 on
+    // ambiguity so the binding is never silently wrong. A named account that
+    // doesn't resolve is a 404 — the operator typo'd it.
+    let account = req.account.as_deref().map(str::trim).filter(|a| !a.is_empty());
+    let provider = req.provider.as_deref().map(str::trim).filter(|p| !p.is_empty());
+    let default_account_id: Option<Uuid> = if let Some(name) = account {
+        let rows: Vec<(Uuid, String)> = sqlx::query_as(
+            "SELECT id, provider FROM oauth_accounts \
+             WHERE user_id = $1 AND name = $2 AND ($3::text IS NULL OR provider = $3)",
+        )
+        .bind(user_id)
+        .bind(name)
+        .bind(provider)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("account lookup failed: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+        })?;
+        match rows.as_slice() {
+            [] => {
+                return Err((
+                    StatusCode::NOT_FOUND,
+                    Json(ApiError { error: format!("no account named {name:?}") }),
+                ));
+            }
+            [(id, _)] => Some(*id),
+            _ => {
+                return Err((
+                    StatusCode::CONFLICT,
+                    Json(ApiError {
+                        error: format!(
+                            "account {name:?} exists for multiple providers; pass --provider"
+                        ),
+                    }),
+                ));
+            }
+        }
+    } else {
+        None
+    };
+
     sqlx::query(
-        "INSERT INTO dispatchers (id, user_id, name, kind, key_hash, key_preview) \
-         VALUES ($1, $2, $3, $4, $5, $6)",
+        "INSERT INTO dispatchers \
+           (id, user_id, name, kind, key_hash, key_preview, \
+            default_account_id, default_account_provider) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
     .bind(dispatcher_id)
     .bind(user_id)
@@ -88,6 +141,8 @@ pub async fn enroll(
     .bind(kind)
     .bind(&key_hash)
     .bind(token_preview(&token))
+    .bind(default_account_id)
+    .bind(provider)
     .execute(&state.pool)
     .await
     .map_err(|e| {

@@ -20,6 +20,15 @@ pub struct ServerClient {
 struct EnrollBody<'a> {
     name: &'a str,
     kind: &'a str,
+    /// Optional OAuth account name to bind as this dispatcher's default
+    /// (CCT-427). Dispatches with no explicit account route through it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    account: Option<&'a str>,
+    /// Optional provider hint disambiguating an account name shared across
+    /// providers (e.g. an `anthropic` and an `openai` account with the same
+    /// name). Recorded alongside the binding.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<&'a str>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -37,13 +46,19 @@ impl ServerClient {
     /// Enroll this dispatcher to the caller's account (peer of a machine,
     /// `kind='kubernetes'`). The server mints an id + key the same way as the
     /// machine enroll; the key is persisted to `dispatcher.toml`.
-    pub async fn enroll(&self, user_token: &str, name: &str) -> anyhow::Result<EnrollResponse> {
+    pub async fn enroll(
+        &self,
+        user_token: &str,
+        name: &str,
+        account: Option<&str>,
+        provider: Option<&str>,
+    ) -> anyhow::Result<EnrollResponse> {
         let url = format!("{}/api/v1/dispatcher/enroll", self.base_url.trim_end_matches('/'));
         let resp = self
             .http
             .post(&url)
             .bearer_auth(user_token)
-            .json(&EnrollBody { name, kind: "kubernetes" })
+            .json(&EnrollBody { name, kind: "kubernetes", account, provider })
             .send()
             .await?;
         let status = resp.status();
