@@ -542,12 +542,18 @@ async fn passthrough(
     let acct = resolve_account(&state, &session_token).await.ok_or(StatusCode::UNAUTHORIZED)?;
 
     // Soft limit (CCT-411): cap cctui's own share of the account's usage windows
-    // so it leaves headroom for the human sharing the subscription. Reuses the
-    // existing usage cache — NO upstream fetch on the hot path; absent/stale usage
-    // fails open (allow). Only the configured windows gate; bypass near reset.
+    // so it leaves headroom for the human sharing the subscription. Only the
+    // configured windows gate; bypass near reset.
+    //
+    // The original code read ONLY the usage cache, which is warmed solely by the
+    // accounts-page route. Headless dispatch never opens that page, so the cache
+    // was perpetually cold → `evaluate_soft_limit(None, …)` → Allow on every
+    // request, and a capped account would run all the way to 100% (the regression
+    // we hit). So on the dispatch path we refresh the cache from upstream when it
+    // is cold/stale (throttled by the same TTL so we never spam Anthropic's
+    // rate-limited endpoint), and only then evaluate. Fetch errors fail open.
     if !acct.soft_limits.is_unset() {
-        let cached =
-            state.account_usage_cache.get(&acct.id).map(|h| h.usage.clone()).unwrap_or(None);
+        let cached = usage_for_soft_limit(&state, acct.id).await;
         if let crate::soft_limit::Decision::Block { retry_after_secs, reason } =
             crate::soft_limit::evaluate_soft_limit(cached.as_ref(), &acct.soft_limits, Utc::now())
         {
@@ -679,6 +685,47 @@ pub fn anthropic_usage_user_agent() -> String {
     std::env::var("CCTUI_ANTHROPIC_USAGE_USER_AGENT").unwrap_or_else(|_| "claude-code/2.1.0".into())
 }
 
+/// Whether the soft-limit check must refresh usage from upstream before deciding.
+///
+/// CCT-411 regression guard: a cold (`None`) or stale cache must trigger a
+/// refresh. The original soft limit treated a cold cache as "no data → allow",
+/// which let a capped account run to 100% whenever no human was viewing it.
+fn usage_cache_stale(entry_age: Option<std::time::Duration>, ttl: std::time::Duration) -> bool {
+    match entry_age {
+        None => true,
+        Some(age) => age >= ttl,
+    }
+}
+
+/// Usage payload for the soft-limit check on the dispatch hot path.
+///
+/// Serves the per-account usage cache, refreshing it from upstream when it is
+/// cold or older than [`accounts::USAGE_CACHE_TTL`] (≤ once per TTL per account,
+/// so the rate-limited endpoint is never spammed). On a fetch error it falls back
+/// to the last cached value, else `None` (fail open). Unlike the accounts-page
+/// route, this exists so the cap holds even when no human is viewing the account.
+async fn usage_for_soft_limit(state: &AppState, account_id: Uuid) -> Option<serde_json::Value> {
+    let ttl = crate::routes::accounts::USAGE_CACHE_TTL.to_std().unwrap_or_default();
+    let entry_age = state.account_usage_cache.get(&account_id).map(|h| h.fetched_at.elapsed());
+    if !usage_cache_stale(entry_age, ttl) {
+        return state.account_usage_cache.get(&account_id).and_then(|h| h.usage.clone());
+    }
+    match fetch_account_usage(state, account_id).await {
+        Ok(usage) => {
+            state.account_usage_cache.insert(
+                account_id,
+                crate::state::CachedUsage {
+                    fetched_at: std::time::Instant::now(),
+                    usage: usage.clone(),
+                },
+            );
+            usage
+        }
+        // Upstream hiccup (429/refresh fail): fall back to the last cached value.
+        Err(_) => state.account_usage_cache.get(&account_id).and_then(|h| h.usage.clone()),
+    }
+}
+
 /// Fetch the Anthropic OAuth usage windows for an account (CCT-306).
 ///
 /// Reloads + decrypts the account, ensures a fresh access token (refreshing under
@@ -726,7 +773,29 @@ pub async fn fetch_account_usage(
 
 #[cfg(test)]
 mod tests {
-    use super::Family;
+    use super::{usage_cache_stale, Family};
+    use std::time::Duration;
+
+    #[test]
+    fn cold_usage_cache_is_stale() {
+        // THE CCT-411 regression: no cached usage must force a refresh, not be
+        // treated as "no data → allow". This is what let a capped account hit 100%
+        // on the headless dispatch path where the accounts page never warms it.
+        assert!(usage_cache_stale(None, Duration::from_secs(180)));
+    }
+
+    #[test]
+    fn fresh_usage_cache_is_not_stale() {
+        assert!(!usage_cache_stale(Some(Duration::from_secs(10)), Duration::from_secs(180)));
+    }
+
+    #[test]
+    fn expired_usage_cache_is_stale() {
+        // At/over the TTL → refresh (so a capped account re-checks within one TTL).
+        assert!(usage_cache_stale(Some(Duration::from_secs(180)), Duration::from_secs(180)));
+        assert!(usage_cache_stale(Some(Duration::from_secs(600)), Duration::from_secs(180)));
+    }
+
 
     #[test]
     fn family_from_provider_maps_native_and_compatible() {

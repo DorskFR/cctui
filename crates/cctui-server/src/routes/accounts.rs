@@ -984,7 +984,7 @@ fn urlencoding(s: &str) -> String {
 /// Anthropic's usage endpoint rate-limits per access token (safe at ~180s); we
 /// cache for a few minutes so a viewed accounts page + slow background poll never
 /// spams it, and many clients share one entry per account.
-const USAGE_CACHE_TTL: Duration = Duration::minutes(3);
+pub(crate) const USAGE_CACHE_TTL: Duration = Duration::minutes(3);
 
 /// Usage windows surfaced per account (CCT-306). `usage` mirrors Anthropic's free
 /// OAuth usage payload (`five_hour`/`seven_day` utilization + reset timestamps);
