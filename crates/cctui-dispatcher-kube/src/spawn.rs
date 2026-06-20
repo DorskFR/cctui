@@ -27,8 +27,13 @@ use std::time::Duration;
 
 use cctui_proto::ws::WireDispatchSpec;
 use k8s_openapi::api::batch::v1::{CronJob, Job};
-use kube::api::{Api, DeleteParams, PostParams, PropagationPolicy};
+use k8s_openapi::api::core::v1::Pod;
+use kube::api::{Api, DeleteParams, ListParams, PostParams, PropagationPolicy};
 use kube::{Client, Error as KubeError};
+
+/// A pod wedged `Pending` longer than this (no schedulable node / image still
+/// failing to pull) is reported `Failed` rather than `Running` (CCT-429).
+const PENDING_FAILURE_SECS: i64 = 300;
 use serde_json::{Value, json};
 use sha1::{Digest, Sha1};
 
@@ -323,17 +328,114 @@ impl Spawner {
         }
     }
 
-    pub async fn status(&self, handle: &str) -> anyhow::Result<HandleState> {
+    /// Lifecycle of a Job handle, plus a human reason when it FAILED (CCT-429).
+    ///
+    /// The Job's `conditions` only carry a terminal `Failed` once `backoffLimit`
+    /// / `activeDeadlineSeconds` trips — which can be slow or never (an
+    /// unschedulable pod sits `Pending` forever). So when the Job isn't terminal
+    /// yet we inspect its pods directly and treat a doomed pod state
+    /// (CrashLoopBackOff / OOMKilled / image-pull failure / stuck-`Pending`) as
+    /// `Failed` with a reason, so the server's death-detector fires promptly
+    /// instead of reading the workload as alive until the backoff budget runs.
+    pub async fn status(&self, handle: &str) -> anyhow::Result<(HandleState, Option<String>)> {
         let name = handle.strip_prefix("jobs/").unwrap_or(handle);
-        match self.jobs().get(name).await {
-            Ok(job) => Ok(match Self::job_terminal_state(&job) {
-                Some("Complete") => HandleState::Complete,
-                Some("Failed") => HandleState::Failed,
-                _ => HandleState::Running,
-            }),
-            Err(KubeError::Api(e)) if e.code == 404 => Ok(HandleState::Gone),
+        let job = match self.jobs().get(name).await {
+            Ok(j) => j,
+            Err(KubeError::Api(e)) if e.code == 404 => return Ok((HandleState::Gone, None)),
             Err(e) => anyhow::bail!("reading Job {name}: {e}"),
+        };
+        match Self::job_terminal_state(&job) {
+            Some("Complete") => return Ok((HandleState::Complete, None)),
+            Some("Failed") => {
+                let reason = Self::job_failed_reason(&job);
+                return Ok((HandleState::Failed, reason.or(self.pod_failure_reason(name).await)));
+            }
+            _ => {}
         }
+        // Job not terminal — look for a doomed pod the Job condition won't
+        // surface until backoff is exhausted.
+        match self.pod_failure_reason(name).await {
+            Some(reason) => Ok((HandleState::Failed, Some(reason))),
+            None => Ok((HandleState::Running, None)),
+        }
+    }
+
+    fn pods(&self) -> Api<Pod> {
+        Api::namespaced(self.client.clone(), &self.namespace)
+    }
+
+    /// The `Failed` Job condition's reason/message, if present.
+    fn job_failed_reason(job: &Job) -> Option<String> {
+        let conditions = job.status.as_ref().and_then(|s| s.conditions.as_ref())?;
+        conditions.iter().find(|c| c.type_ == "Failed" && c.status == "True").map(|c| {
+            c.message
+                .clone()
+                .or_else(|| c.reason.clone())
+                .unwrap_or_else(|| "job failed".to_owned())
+        })
+    }
+
+    /// Inspect the Job's pods for a terminal-but-not-yet-Job-Failed condition
+    /// (CCT-429): a crash-looping / OOMKilled / un-pullable container, or a pod
+    /// wedged `Pending` past [`PENDING_FAILURE_SECS`]. Returns a reason string
+    /// when one is found, else `None` (still legitimately running/starting). A
+    /// listing error degrades to `None` so a transient API hiccup never
+    /// misreports a live workload as dead.
+    async fn pod_failure_reason(&self, job_name: &str) -> Option<String> {
+        let lp = ListParams::default().labels(&format!("job-name={job_name}"));
+        let pods = self.pods().list(&lp).await.ok()?;
+        for pod in pods {
+            let status = pod.status.as_ref()?;
+            // Any container (init or main) stuck waiting on a doomed reason, or
+            // terminated by OOM, is fatal for this pod.
+            let waiting_or_oom = status
+                .init_container_statuses
+                .iter()
+                .chain(status.container_statuses.iter())
+                .flatten()
+                .find_map(|cs| {
+                    let st = cs.state.as_ref()?;
+                    if let Some(w) = &st.waiting {
+                        if let Some(r) = &w.reason {
+                            if matches!(
+                                r.as_str(),
+                                "CrashLoopBackOff"
+                                    | "ImagePullBackOff"
+                                    | "ErrImagePull"
+                                    | "CreateContainerError"
+                                    | "CreateContainerConfigError"
+                                    | "InvalidImageName"
+                            ) {
+                                return Some(r.clone());
+                            }
+                        }
+                    }
+                    if let Some(t) = &st.terminated {
+                        if t.reason.as_deref() == Some("OOMKilled") {
+                            return Some("OOMKilled".to_owned());
+                        }
+                    }
+                    None
+                });
+            if let Some(reason) = waiting_or_oom {
+                return Some(reason);
+            }
+            // Pod wedged Pending (unschedulable / image still pulling) past the
+            // grace window: treat as failed so an unschedulable Job doesn't read
+            // as alive forever.
+            if status.phase.as_deref() == Some("Pending") {
+                if let Some(created) = pod.metadata.creation_timestamp.as_ref() {
+                    let age = chrono::Utc::now().signed_duration_since(created.0).num_seconds();
+                    if age >= PENDING_FAILURE_SECS {
+                        return Some(format!("pod pending for {age}s (unschedulable?)"));
+                    }
+                }
+            }
+            if status.phase.as_deref() == Some("Failed") {
+                return Some(status.reason.clone().unwrap_or_else(|| "pod failed".to_owned()));
+            }
+        }
+        None
     }
 
     pub async fn cancel(&self, handle: &str) -> anyhow::Result<()> {

@@ -335,7 +335,7 @@ impl Dispatcher for KubeDispatcher {
         match self.jobs().get(name).await {
             Ok(job) => Ok(match Self::job_terminal_state(&job) {
                 Some("Complete") => HandleStatus::Complete,
-                Some("Failed") => HandleStatus::Failed,
+                Some("Failed") => HandleStatus::Failed(None),
                 _ => HandleStatus::Running,
             }),
             Err(kube::Error::Api(e)) if e.code == 404 => Ok(HandleStatus::Gone),

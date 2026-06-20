@@ -185,20 +185,37 @@ impl Spawner {
         Ok(SpawnOutcome { handle: format!("container/{name}"), status: "dispatched".to_owned() })
     }
 
-    pub async fn status(&self, handle: &str) -> anyhow::Result<HandleState> {
+    /// Lifecycle of a container handle, plus a human reason when it FAILED — a
+    /// non-zero exit, or a wedged restart loop (CCT-429). The server lifts the
+    /// reason into the completion webhook's `error`.
+    pub async fn status(&self, handle: &str) -> anyhow::Result<(HandleState, Option<String>)> {
         let name = handle.strip_prefix("container/").unwrap_or(handle);
         match self.docker.inspect_container(name, None).await {
             Ok(c) => {
                 let state = c.state.as_ref();
                 let running = state.and_then(|s| s.running).unwrap_or(false);
-                if running {
-                    return Ok(HandleState::Running);
+                // A container Docker is restarting (restart policy looping on a
+                // crashing process) is doomed, not live.
+                let restarting = state.and_then(|s| s.restarting).unwrap_or(false);
+                if restarting {
+                    return Ok((HandleState::Failed, Some("container restart-looping".to_owned())));
                 }
+                if running {
+                    return Ok((HandleState::Running, None));
+                }
+                let oom = state.and_then(|s| s.oom_killed).unwrap_or(false);
                 let exit = state.and_then(|s| s.exit_code).unwrap_or(0);
-                Ok(if exit == 0 { HandleState::Complete } else { HandleState::Failed })
+                if oom {
+                    return Ok((HandleState::Failed, Some("OOMKilled".to_owned())));
+                }
+                Ok(if exit == 0 {
+                    (HandleState::Complete, None)
+                } else {
+                    (HandleState::Failed, Some(format!("container exited with code {exit}")))
+                })
             }
             Err(bollard::errors::Error::DockerResponseServerError { status_code: 404, .. }) => {
-                Ok(HandleState::Gone)
+                Ok((HandleState::Gone, None))
             }
             Err(e) => anyhow::bail!("inspecting container {name}: {e}"),
         }

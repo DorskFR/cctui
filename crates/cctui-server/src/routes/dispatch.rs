@@ -281,7 +281,7 @@ async fn dispatcher_default_account(
 /// deterministic `ORDER BY created_at LIMIT 1` — acceptable until dispatchers
 /// are addressable by id; if two users enroll the same name, admin hits the
 /// oldest.
-async fn resolve_dispatcher(
+pub(crate) async fn resolve_dispatcher(
     state: &AppState,
     user_id: Option<uuid::Uuid>,
     name: &str,
@@ -554,6 +554,30 @@ pub async fn dispatch(
                     priority: 3,
                 },
             );
+            // Persist the opaque handle so the completion-webhook sweep can ask
+            // this dispatcher whether the workload later died without a
+            // conclusion (CCT-429). Owner-scoped re-resolution in the sweep uses
+            // the dispatcher *name* + the session's owning user, so only the
+            // name/handle/namespace are stored. Best-effort: a failure here must
+            // never block an otherwise-valid dispatch.
+            let store = sqlx::query(
+                "INSERT INTO dispatch_handles (session_id, dispatcher_name, handle, namespace) \
+                 VALUES ($1, $2, $3, $4) \
+                 ON CONFLICT (session_id) DO UPDATE SET \
+                   dispatcher_name = EXCLUDED.dispatcher_name, \
+                   handle = EXCLUDED.handle, \
+                   namespace = EXCLUDED.namespace, \
+                   created_at = now()",
+            )
+            .bind(&session_id)
+            .bind(origin)
+            .bind(&h.handle)
+            .bind(h.namespace.as_deref())
+            .execute(&state.pool)
+            .await;
+            if let Err(e) = store {
+                tracing::warn!(%session_id, "failed to persist dispatch handle: {e}");
+            }
             h
         }
         Err(e) => {

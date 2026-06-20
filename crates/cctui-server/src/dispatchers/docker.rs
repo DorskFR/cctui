@@ -194,7 +194,11 @@ impl Dispatcher for DockerDispatcher {
                     return Ok(HandleStatus::Running);
                 }
                 let exit = state.and_then(|s| s.exit_code).unwrap_or(0);
-                Ok(if exit == 0 { HandleStatus::Complete } else { HandleStatus::Failed })
+                Ok(if exit == 0 {
+                    HandleStatus::Complete
+                } else {
+                    HandleStatus::Failed(Some(format!("container exited with code {exit}")))
+                })
             }
             Err(bollard::errors::Error::DockerResponseServerError { status_code: 404, .. }) => {
                 Ok(HandleStatus::Gone)

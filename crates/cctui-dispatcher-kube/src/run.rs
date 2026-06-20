@@ -142,11 +142,14 @@ impl Runner {
             }
             DispatcherFrameDown::Status { request_id, handle } => {
                 match self.spawner.status(&handle).await {
-                    Ok(state) => DispatcherFrameUp::StatusResult {
+                    Ok((state, reason)) => DispatcherFrameUp::StatusResult {
                         request_id,
                         handle,
                         state: Some(state.as_str().to_owned()),
-                        error: None,
+                        // For a Failed state this carries the human reason
+                        // (CrashLoopBackOff / OOMKilled / …, CCT-429); the
+                        // server lifts it into the completion webhook's `error`.
+                        error: reason,
                     },
                     Err(err) => DispatcherFrameUp::StatusResult {
                         request_id,

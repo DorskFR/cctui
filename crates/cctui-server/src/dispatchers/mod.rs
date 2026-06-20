@@ -81,8 +81,11 @@ pub enum HandleStatus {
     Running,
     /// The Job/container finished successfully.
     Complete,
-    /// The Job/container failed (backoff exhausted, deadline, non-zero exit).
-    Failed,
+    /// The Job/container failed (backoff exhausted, deadline, non-zero exit,
+    /// CrashLoopBackOff, OOMKilled, unschedulable). Carries the dispatcher's
+    /// human reason when it has one, surfaced in the completion webhook's
+    /// `error` field (CCT-429).
+    Failed(Option<String>),
     /// No Job/container with this handle exists (already GC'd or never created).
     Gone,
 }

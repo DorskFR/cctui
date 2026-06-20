@@ -141,11 +141,12 @@ impl Runner {
             }
             DispatcherFrameDown::Status { request_id, handle } => {
                 match self.spawner.status(&handle).await {
-                    Ok(state) => DispatcherFrameUp::StatusResult {
+                    Ok((state, reason)) => DispatcherFrameUp::StatusResult {
                         request_id,
                         handle,
                         state: Some(state.as_str().to_owned()),
-                        error: None,
+                        // Carries the failure reason for a Failed state (CCT-429).
+                        error: reason,
                     },
                     Err(err) => DispatcherFrameUp::StatusResult {
                         request_id,

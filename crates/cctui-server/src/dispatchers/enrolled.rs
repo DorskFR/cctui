@@ -130,15 +130,19 @@ impl Dispatcher for EnrolledDispatcher {
             .await?;
         match reply {
             DispatcherFrameUp::StatusResult { state, error, .. } => {
-                if let Some(err) = error {
-                    return Err(DispatchError::Backend(err));
+                // `error` alongside a `failed` state is the failure *reason*
+                // (CrashLoopBackOff / OOMKilled / non-zero exit, CCT-429), not a
+                // transport error — only treat it as a hard error when the
+                // dispatcher reported no state at all (couldn't introspect).
+                match state.as_deref() {
+                    Some("complete") => Ok(HandleStatus::Complete),
+                    Some("failed") => Ok(HandleStatus::Failed(error)),
+                    Some("gone") => Ok(HandleStatus::Gone),
+                    Some(_) => Ok(HandleStatus::Running),
+                    None => Err(DispatchError::Backend(
+                        error.unwrap_or_else(|| "dispatcher returned no status".into()),
+                    )),
                 }
-                Ok(match state.as_deref() {
-                    Some("complete") => HandleStatus::Complete,
-                    Some("failed") => HandleStatus::Failed,
-                    Some("gone") => HandleStatus::Gone,
-                    _ => HandleStatus::Running,
-                })
             }
             other => Err(DispatchError::Backend(format!("unexpected dispatcher reply: {other:?}"))),
         }
