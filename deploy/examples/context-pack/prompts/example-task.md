@@ -42,6 +42,18 @@ says `autonomy: auto-merge`; otherwise the finalized PR routes to a human via
 copy/layout to a human taste sign-off. Human review becomes a glance at the
 evidence, not a re-run of the app.
 
+Between finalize and review, a **deliverable-acceptance agent** (see the
+`acceptance-agent` skill) re-confirms the change end-to-end against the *deployed*
+PR. It runs in a **separate, clean context** — handed the ratified Intent+
+Acceptance success condition but never the diff or the implementer's evidence — so
+it cannot mark its own homework. It drives the per-PR preview env (Playwright for
+a UI surface, HTTP for an API surface) and attaches an independent `pass|fail`
+verdict; a `fail` blocks merge regardless of what the implementer asserted. It is
+not a guarded step in *this* prompt — it is a distinct dispatch granted only the
+`net-preview` net-allow (plus `net-model`) and no code-write / remote-write
+capability; standing up the preview env it drives is infra, out of scope for the
+pack.
+
 The fifth step handles **inbound review comments** without capitulating (see the
 `comment-handling` skill): each comment is classified — `mechanical` (auto-fix,
 re-run the oracle, keep it evidence-backed) vs `judgment` (propose or defend,

@@ -560,3 +560,58 @@ entering an edit/revert loop under repeated pushback.
 > separate server change tracked outside this contract; the worker-side behaviour
 > (classify + defend-don't-cave) is what the `comment-handling` skill specifies
 > and is reusable the moment that loop exists.
+
+## Deliverable-acceptance agent + preview environments
+
+The evidence gate proves the deliverable on artifacts the **implementer** assembled
+— necessary, but the implementer shares its own blind spots and an incentive to
+declare success, and its evidence is built from the source tree, not a running
+deployment. The one oracle neither the guard, the cross-model review, nor the
+implementer's own evidence covers is *does the change actually do the intended
+thing, end to end, in a running deployment*. Today a human fills that gap by
+checking out the branch and exercising it in the dev stack — the primary
+bottleneck in both flows. This step moves that check into the pipeline as an
+attached **independent verdict**, so the human reviews a result instead of
+re-running the app.
+
+It is the **deployed-end mirror** of the bracketing gates: `intent-acceptance`
+states the success condition up front, the evidence gate makes the implementer
+prove it at finalize, and the **deliverable-acceptance agent** re-confirms it
+against the live deployment from a clean context. The pattern lives in the example
+pack as the `acceptance-agent` skill.
+
+**Clean context — it cannot mark its own homework.** The acceptance run is
+executed in a context that **never saw the implementation**: it is handed the
+ratified Intent+Acceptance artifact only (the `acceptance[]` conditions and the
+`surfaces[]`), **not** the diff, the implementer's transcript, or the implementer's
+`evidence[]`. It re-derives a concrete test plan from each acceptance condition by
+itself and drives the **deployed preview** — Playwright for a `frontend` /
+`brand-visible` surface, HTTP for a `backend` / `external-api` / `payments`
+surface, a payload replay for a `webhook` — never the source tree. It can only
+emit a verdict + evidence; it cannot push, edit code, or merge. Separating the
+grader from the author is the whole point — that is the structural reason this
+verdict is worth more than the implementer's self-assertion.
+
+It runs **when the change has observable deployed behaviour** (any medium/high
+blast-radius surface — exactly the classes a human used to check out and test). A
+`pure-calc`-only change is skipped: there is nothing deployed to drive and the
+deterministic golden test already is the end-to-end proof. The output is an
+`acceptance_run` block — a per-condition `pass|fail` plus the screenshot /
+transcript / driver-output that backs it, in the same `{kind, surface, summary,
+detail}` evidence shape so it renders on the PR body alongside the implementer's.
+A `fail` blocks the merge regardless of what the implementer asserted; the agent
+**never** edits code to make an assertion pass. The independent verdict and the
+implementer's evidence gate are **composed** — both must be green for an
+unattended merge.
+
+> **Per-PR preview environments (infra — not the context pack).** The skill
+> assumes a deployed preview exists at a `PREVIEW_BASE_URL` and drives whatever it
+> is handed; **standing up that environment is infra, not part of the pack.** It
+> needs the cluster (k8s + ArgoCD) to deploy *this PR's* build to an isolated,
+> ephemeral namespace on PR open and tear it down on close (e.g. an ArgoCD
+> `ApplicationSet` over a PR generator), plus the dispatch wiring that injects the
+> resulting URL into a fresh, clean-context acceptance run. That provisioning +
+> dispatch loop lives in the infra repo / the dispatch layer and is tracked
+> outside this contract; the repo-resident half — the clean-context driver and the
+> verdict contract — is what the `acceptance-agent` skill specifies and is reusable
+> the moment a preview URL is provided.

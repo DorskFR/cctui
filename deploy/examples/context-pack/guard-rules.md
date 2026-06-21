@@ -33,3 +33,10 @@ This fixture is NEUTRAL — every host is a placeholder (`example.com`,
 # with its provider's actual sandbox host.
 [net-external-sandbox]: sandbox.example.com:443
 [net-payments-sandbox]: api.sandbox.stripe.example.com:443
+
+# The deployed per-PR preview the acceptance-agent drives (Playwright/HTTP).
+# The clean-context acceptance run reaches ONLY the preview deployment (plus
+# net-model and, for an external/payments surface, that surface's sandbox set
+# above) — never the source host or a third party's production host. A real
+# pack points this at its preview-env host pattern.
+[net-preview]: preview.example.com:443
