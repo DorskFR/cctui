@@ -703,8 +703,8 @@ impl Driver {
                 Self::await_worker_exit(&sock, &short).await;
                 self.claude_rm(&short).await?;
             }
-            AdapterCommand::Spawn { spec, .. } => {
-                self.spawn(&sock, &spec).await?;
+            AdapterCommand::Spawn { spec, session_id, .. } => {
+                self.spawn(&sock, &spec, session_id.map(|id| id.to_string())).await?;
             }
             AdapterCommand::Fork { parent_local_id, spec, session_id, .. } => {
                 self.fork(&sock, &parent_local_id, &spec, session_id.as_deref()).await?;
@@ -942,6 +942,7 @@ impl Driver {
         &self,
         sock: &std::path::Path,
         spec: &cctui_proto::adapter::SessionSpec,
+        forced_session_id: Option<String>,
     ) -> anyhow::Result<()> {
         let cwd = spec
             .working_dir
@@ -953,7 +954,12 @@ impl Driver {
         }
 
         let agent = "claude";
-        let session_id = uuid::Uuid::new_v4().to_string();
+        // Use the server-pre-minted session id when supplied (CCT-446) so the
+        // id the server bound the gateway session token to matches the id the
+        // worker registers as (otherwise `account_name` never resolves). Falls
+        // back to a fresh uuid for non-account / non-HTTP spawns.
+        let session_id =
+            forced_session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         // `short` is the first uuid group (8 hex chars); `nonce` is 8 fresh
         // hex chars. Both satisfy the daemon's /^[a-f0-9]{8}$/ validator.
         let short = &session_id[..8];

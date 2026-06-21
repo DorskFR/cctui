@@ -115,9 +115,22 @@ async fn dispatch_spawn(
     // OAuth account selection (CCT-232): if the caller picked a named account,
     // mint a session-scoped gateway token bound to it and inject the gateway
     // base-url + token into the worker env. Raw OAuth tokens never leave the
-    // server. The session id isn't known until the worker registers, so the
-    // command_id keys the (token → account) mapping for revocation.
+    // server.
+    //
+    // CCT-446: for claude-code we pre-mint the session id here and hand it to
+    // the worker as `--session-id` (mirroring the fork path), so the token can
+    // be bound to the *real* session id the worker registers as — rather than
+    // the command_id, which the worker never knows and so never reconciles
+    // (leaving `account_name` perpetually null + the key icon dead). codex
+    // mints its own thread id and ignores the pre-minted id, so its tokens
+    // still fall back to command_id keying (account_name stays unresolved for
+    // codex until a codex-side reconcile lands).
     let command_id = Uuid::new_v4();
+    let is_claude = adapter_id == "claude-code";
+    let pre_session_id = is_claude.then(Uuid::new_v4);
+    // The id the gateway session token is bound to: the pre-minted real session
+    // id for claude, else the command_id (legacy behaviour).
+    let token_session_id = pre_session_id.unwrap_or(command_id).to_string();
     let mut env = req.env.clone();
     // The session's model before any per-account remapping (CCT-406). When a
     // named account is selected below, its alias map can rewrite this to a
@@ -152,7 +165,7 @@ async fn dispatch_spawn(
             account_name,
             req.provider.as_deref().filter(|p| !p.trim().is_empty()),
             &adapter_id,
-            &command_id.to_string(),
+            &token_session_id,
         )
         .await
         {
@@ -202,7 +215,11 @@ async fn dispatch_spawn(
     // client surface success/failure instead of silently polling.
     let frame = DaemonFrameDown::Command {
         adapter_id: adapter_id.clone(),
-        command: Box::new(AdapterCommand::Spawn { spec, command_id: Some(command_id) }),
+        command: Box::new(AdapterCommand::Spawn {
+            spec,
+            command_id: Some(command_id),
+            session_id: pre_session_id,
+        }),
     };
 
     let sender = state.daemon_connections.get(&machine_uuid).map(|r| r.clone());

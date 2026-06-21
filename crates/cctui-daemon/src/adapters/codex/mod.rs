@@ -175,7 +175,9 @@ async fn command_pump(
             cmd = commands.recv() => {
                 let Some(cmd) = cmd else { return };
                 match cmd {
-                    AdapterCommand::Spawn { spec, command_id } => {
+                    // codex mints its own thread id, so the server-pre-minted
+                    // `session_id` (CCT-446) is ignored here.
+                    AdapterCommand::Spawn { spec, command_id, .. } => {
                         let Some(working_dir) = spec.working_dir.clone() else {
                             tracing::error!("codex spawn: working_dir required");
                             if let Some(command_id) = command_id {

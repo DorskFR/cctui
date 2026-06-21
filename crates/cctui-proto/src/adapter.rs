@@ -329,6 +329,15 @@ pub enum AdapterCommand {
         /// commands not initiated via the HTTP spawn route.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         command_id: Option<Uuid>,
+        /// Session id pre-minted by the server (CCT-446), mirroring
+        /// [`AdapterCommand::Fork`]'s `session_id`. When `Some`, the claude
+        /// adapter launches the worker with this as `--session-id` instead of
+        /// minting its own, so the id the server bound the gateway session
+        /// token to (`session_tokens.session_id`) matches the id the worker
+        /// registers as — without it `account_name` never resolves. Adapters
+        /// that mint their own id (codex) ignore it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<Uuid>,
     },
     /// Fork an existing conversation into a brand-new session, optionally
     /// changing the model/effort at fork time (CCT-302). Each adapter maps it
