@@ -90,6 +90,12 @@ pub struct AppState {
     pub account_locks: Arc<DashMap<Uuid, Arc<tokio::sync::Mutex<()>>>>,
     /// Shared outbound HTTP client for the gateway passthrough (CCT-232).
     pub http_client: reqwest::Client,
+    /// Optional Langfuse tracing sink for the `/gateway` proxy (CCT-443).
+    /// `None` unless the `CCTUI_LANGFUSE_*` env is configured — when absent the
+    /// gateway never reconstructs the body, so there is zero overhead and no
+    /// behaviour change. When present, each gateway call fires a fire-and-forget
+    /// trace beside the proxied request (never in its critical path).
+    pub langfuse: Option<Arc<crate::langfuse::LangfuseClient>>,
     /// Pending "Sign in with Claude" OAuth logins (CCT-243), keyed by nonce.
     /// In-memory, TTL-bounded, scoped to the authenticated user. Entries are
     /// single-use (deleted on finish) and lazily swept on access.

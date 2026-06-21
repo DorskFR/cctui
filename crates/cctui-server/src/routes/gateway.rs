@@ -24,6 +24,7 @@ use axum::extract::{Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::Response;
 use chrono::Utc;
+use futures_util::StreamExt;
 use uuid::Uuid;
 
 use crate::state::AppState;
@@ -246,6 +247,20 @@ pub async fn revoke_session_tokens(state: &AppState, session_id: &str) {
     .bind(session_id)
     .execute(&state.pool)
     .await;
+}
+
+/// Look up the `session_id` bound to a (live) gateway session token — used only
+/// to tag Langfuse traces (CCT-443). `None` for unknown/revoked tokens.
+async fn session_id_for_token(state: &AppState, session_token: &str) -> Option<String> {
+    let hash = crate::auth::sha256_hex(session_token);
+    sqlx::query_scalar::<_, String>(
+        "SELECT session_id FROM session_tokens WHERE token_hash = $1 AND revoked_at IS NULL",
+    )
+    .bind(&hash)
+    .fetch_optional(&state.pool)
+    .await
+    .ok()
+    .flatten()
 }
 
 /// Raw account row as selected from the join (before decrypt).
@@ -612,9 +627,27 @@ async fn passthrough(
         headers.insert("chatgpt-account-id", hv);
     }
 
-    // Stream the request body through without buffering.
-    let body_stream = req.into_body().into_data_stream();
-    let upstream_body = reqwest::Body::wrap_stream(body_stream);
+    // Langfuse tracing sink (CCT-443): only when configured AND this call is
+    // sampled do we reconstruct the bodies — otherwise the gateway stays a pure
+    // zero-copy passthrough (request streamed, response streamed). When tracing,
+    // we buffer the request body (it is the prompt, already fully in flight) so it
+    // can be both forwarded upstream and used as the generation input.
+    let langfuse = state.langfuse.clone().filter(|lf| lf.should_sample());
+    let trace_session_id =
+        if langfuse.is_some() { session_id_for_token(&state, &session_token).await } else { None };
+
+    // Stream the request body through without buffering (default), OR buffer it
+    // once for the trace input when Langfuse is sampling this call.
+    let (upstream_body, traced_request) = if langfuse.is_some() {
+        let bytes = axum::body::to_bytes(req.into_body(), usize::MAX)
+            .await
+            .map_err(|_| StatusCode::BAD_REQUEST)?;
+        let parsed = serde_json::from_slice::<serde_json::Value>(&bytes).ok();
+        (reqwest::Body::from(bytes), parsed)
+    } else {
+        let body_stream = req.into_body().into_data_stream();
+        (reqwest::Body::wrap_stream(body_stream), None)
+    };
 
     let upstream = state
         .http_client
@@ -661,7 +694,53 @@ async fn passthrough(
             builder = builder.header(hn, hv);
         }
     }
-    let resp_stream = upstream.bytes_stream();
+    // Fast path (Langfuse off / unsampled): stream the response straight through.
+    let Some(langfuse) = langfuse else {
+        let resp_stream = upstream.bytes_stream();
+        return builder.body(Body::from_stream(resp_stream)).map_err(|e| {
+            tracing::error!("gateway response build error: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        });
+    };
+
+    // Tracing path: tee the response body. Each chunk is forwarded to the client
+    // verbatim AND copied into an accumulator task over a bounded channel. The
+    // copy is best-effort — if the trace task lags, `try_send` drops the chunk
+    // (we lose the trace, never the proxied bytes). When the upstream stream ends
+    // the channel closes and the task reconstructs + fires the fire-and-forget
+    // trace. Nothing here blocks or delays the client stream.
+    let model = traced_request
+        .as_ref()
+        .and_then(|r| r.get("model"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let ctx = crate::langfuse::TraceContext {
+        session_id: trace_session_id,
+        account_id: Some(acct.id.to_string()),
+        model,
+    };
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
+    tokio::spawn(async move {
+        let mut buf = Vec::new();
+        while let Some(chunk) = rx.recv().await {
+            buf.extend_from_slice(&chunk);
+        }
+        let (output, usage) = crate::langfuse::reconstruct_anthropic(&buf);
+        langfuse.trace(crate::langfuse::TracePayload {
+            ctx,
+            request: traced_request,
+            output,
+            usage,
+        });
+    });
+
+    let resp_stream = upstream.bytes_stream().map(move |chunk| {
+        if let Ok(bytes) = &chunk {
+            // Drop on backpressure rather than block the proxied response.
+            let _ = tx.try_send(bytes.to_vec());
+        }
+        chunk
+    });
     builder.body(Body::from_stream(resp_stream)).map_err(|e| {
         tracing::error!("gateway response build error: {e}");
         StatusCode::INTERNAL_SERVER_ERROR
@@ -773,7 +852,7 @@ pub async fn fetch_account_usage(
 
 #[cfg(test)]
 mod tests {
-    use super::{usage_cache_stale, Family};
+    use super::{Family, usage_cache_stale};
     use std::time::Duration;
 
     #[test]
@@ -795,7 +874,6 @@ mod tests {
         assert!(usage_cache_stale(Some(Duration::from_secs(180)), Duration::from_secs(180)));
         assert!(usage_cache_stale(Some(Duration::from_secs(600)), Duration::from_secs(180)));
     }
-
 
     #[test]
     fn family_from_provider_maps_native_and_compatible() {

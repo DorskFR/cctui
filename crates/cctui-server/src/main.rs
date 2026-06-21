@@ -6,6 +6,7 @@ mod crypto;
 mod daemon_dispatch;
 mod db;
 mod dispatchers;
+mod langfuse;
 mod machine_liveness;
 mod normalize;
 mod ntfy;
@@ -79,6 +80,10 @@ async fn main() -> anyhow::Result<()> {
         machine_liveness: Arc::new(dashmap::DashMap::new()),
         account_locks: Arc::new(dashmap::DashMap::new()),
         http_client: reqwest::Client::new(),
+        // Optional Langfuse tracing sink (CCT-443). `None` (dark) unless the
+        // CCTUI_LANGFUSE_* env is fully set — zero overhead on the gateway path.
+        langfuse: langfuse::LangfuseConfig::from_env()
+            .map(|c| Arc::new(langfuse::LangfuseClient::new(c, reqwest::Client::new()))),
         pending_oauth_logins: Arc::new(dashmap::DashMap::new()),
         account_usage_cache: Arc::new(dashmap::DashMap::new()),
         pr_status_cache: cctui_proto::classifier::PrStatusCache::new(),
