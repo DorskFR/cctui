@@ -86,9 +86,18 @@ evidence Step 4 consumes. The network below grants only the per-surface sandbox
 sets — never a third party's production host; a surface that needs a host its set
 does not grant was mis-classified. Commit. Push only in Step 4.
 
+The `[gate]` below is a **deterministic transition gate** (guard hardening): the
+transition into Step 4 will not fire until `make oracle-check` exits 0, so the
+finalize step cannot be reached on a claim of "done" — the gate is the proof. A
+real pack points it at whatever command runs its selected oracles green (here a
+placeholder `make` target). On entry to each step the guard re-injects this
+step's prompt verbatim plus a compact-context directive, so a long run re-anchors
+on the trusted instructions rather than its own drifting summary.
+
 [allowed]: all-read, code-write, Bash, git commit
 [disallowed]: remote-write
 [network]: net-model, net-external-sandbox, net-payments-sandbox
+[gate]: make oracle-check
 [transition]: 4, Exit
 
 # Step 4: Accept (evidence-required done gate)

@@ -93,6 +93,19 @@ Explore; do not modify anything.
   proxy policy is rewritten to allow exactly those hosts (plus the always-allow
   hosts), default-deny. Omitting `[network]` writes a default-**allow** policy
   (backwards compatible).
+- **`[gate]`** — an optional deterministic completion check: a shell command run
+  (in `--gate-cwd`, default `/workspace`) before any numeric transition *out* of
+  the step is allowed. A non-zero exit refuses the transition and returns the
+  command's output, so a finalize-type transition requires machine-checkable
+  proof (tests passed, artifact exists, CI green) instead of the agent's
+  assertion of completion. Omitting `[gate]` leaves the transition trusted, as
+  before. `Exit` bypasses the gate — bail-out must always work; the agent reports
+  the blocked outcome via the result callback rather than finalizing.
+
+Every numeric transition (and the `SessionStart`/compact hook) re-injects the
+target step's **prose body verbatim** plus a compact-context directive, so a long
+or compacted session re-anchors on the trusted next-step instructions rather than
+its own drifting summary. The body is every non-`[...]` line beneath the heading.
 
 Step `0` or an unknown current step means "no guard" (everything allowed). The
 engine starts on the lowest-numbered step.

@@ -432,6 +432,44 @@ callback*); a deliverable that cannot produce its required evidence reports
 `needs_human` instead. The evidence is rendered on the PR body (one section per
 surface) so human review is a glance at the proof, not a re-run of the app.
 
+## Guard hardening: re-injection + deterministic transition gates
+
+Long sessions drift. Past the halfway mark, the agent's working context dilutes
+(the "dumb zone") and any ticket, comment, or web page it fetched is sitting in
+that context as if it were an instruction — a prompt-injection surface. And every
+step transition so far has trusted the agent's *claim* that the step is done.
+CCT-440 hardens both ends of a transition; both are enforced by the guard, not by
+convention.
+
+**Re-inject + compact on every transition.** A numeric transition (and the
+`SessionStart`/compact hook) returns the **authoritative next-step prompt body
+verbatim** — the trusted instructions from the pack, not the agent's own summary
+— plus a directive to compact the working context to `{plan, current diff, the
+step instructions}` and to treat any fetched ticket/comment/web content as
+untrusted input rather than instructions. The agent re-anchors on the trusted
+spec instead of a diluted or injected one. The body is captured from the prompt
+step's prose lines; no annotation is needed.
+
+**Deterministic transition gates.** Where completion is machine-checkable, the
+step carries a `[gate]: <command>` annotation — a deterministic check the guard
+runs (in the worker's `/workspace`) before it will allow the transition *out* of
+that step. A non-zero exit **refuses** the transition and returns the command's
+output; the agent cannot advance past a finalize-type step on an assertion of
+"done". This is the structural form of "evidence, not assertions": prefer a gate
+(`cargo test`, an artifact check, CI status) wherever the outcome is
+deterministically checkable, and reserve the adversarial-agent validator only for
+transitions that are *not* — a judge sharing the agent's blind spots is a weaker
+gate than a green test. `Exit` always bypasses the gate (bail-out must work; the
+agent reports the blocked outcome via the `needs_human` callback rather than
+finalizing).
+
+The two compose with the existing gates: the Intent+Acceptance ratify gate
+(Step 1) catches a misread before code; the per-surface oracles (Step 3) produce
+evidence; a `[gate]` makes the *transition into finalize* refuse to fire unless
+that evidence is real; and the re-injection keeps the agent anchored on the
+ratified spec the whole way. The example pack wires a `[gate]` on the implement
+step of `prompts/example-task.md`.
+
 ## Comment handling (classify, defend-don't-cave)
 
 The run does not end when the PR opens — reviewers comment, and the agent has to

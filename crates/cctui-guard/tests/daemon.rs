@@ -75,6 +75,26 @@ fn test_parse_steps() {
 }
 
 #[test]
+fn test_parse_steps_body_and_gate() {
+    // CCT-440: the prose body (non-annotation lines) is captured for re-injection,
+    // and a `[gate]` annotation carries the deterministic completion check.
+    let md = "# Step 1: Implement\n\
+              Make the change.\n\
+              Run the tests.\n\
+              [allowed]: *\n\
+              [gate]: cargo test\n\
+              [transition]: 2\n";
+    let steps = parse_steps(md);
+    assert_eq!(steps[&1].body, "Make the change.\nRun the tests.", "body excludes annotations");
+    assert_eq!(steps[&1].gate, "cargo test", "gate captured");
+
+    // No gate ⇒ empty (trusted transition, as before).
+    let steps2 = parse_steps("# Step 1: X\nbody\n[allowed]: *\n[transition]: Exit");
+    assert_eq!(steps2[&1].gate, "");
+    assert_eq!(steps2[&1].body, "body");
+}
+
+#[test]
 fn test_parse_steps_case_insensitive() {
     let steps = parse_steps("### STEP 5: Upper case\n[allowed]: *\n[transition]: 6");
     assert!(steps.contains_key(&5), "case insensitive STEP");
@@ -395,7 +415,8 @@ fn make_engine(rules_text: &str, prompt_text: &str) -> TestEngine {
     let policy_file = dir.path().join("guard-proxy").join("policy.json");
     let steps = parse_steps(prompt_text);
     let tool_sets = parse_guard_rules_str(rules_text);
-    let engine = WorkflowEngine::new(steps, tool_sets, state_file, policy_file, vec![]);
+    let gate_cwd = dir.path().to_path_buf();
+    let engine = WorkflowEngine::new(steps, tool_sets, state_file, policy_file, vec![], gate_cwd);
     TestEngine { engine, _dir: dir }
 }
 
@@ -547,6 +568,7 @@ fn test_proxy_policy_expansion() {
         state_file,
         policy_file.clone(),
         vec![],
+        dir.path().to_path_buf(),
     );
 
     // Engine initialized on step 1, which has [network]: net-anthropic, net-github.

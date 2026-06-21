@@ -40,6 +40,11 @@ struct Cli {
     /// `--always-allow automation.example.com:443`.
     #[arg(long = "always-allow")]
     always_allow: Vec<String>,
+
+    /// Working directory the deterministic transition `[gate]` command runs in
+    /// (the worker's task tree).
+    #[arg(long = "gate-cwd", default_value = "/workspace")]
+    gate_cwd: PathBuf,
 }
 
 #[tokio::main]
@@ -76,6 +81,7 @@ async fn main() -> anyhow::Result<()> {
         cli.state,
         cli.policy_out,
         cli.always_allow,
+        cli.gate_cwd,
     ));
 
     let app = router(engine);

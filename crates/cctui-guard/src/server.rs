@@ -30,15 +30,18 @@ async fn get_state(State(engine): State<Engine>) -> impl IntoResponse {
     Json(engine.get_state())
 }
 
-/// `SessionStart`/compact hook — returns context text for re-injection.
+/// `SessionStart`/compact hook — returns context text for re-injection. Carries
+/// the authoritative step prompt body + a compact-context directive so a long or
+/// compacted session re-anchors on trusted instructions rather than its own
+/// drifting summary (CCT-440).
 async fn post_state(State(engine): State<Engine>) -> impl IntoResponse {
     let state = engine.get_state();
-    let step = state.get("step").cloned().unwrap_or_else(|| json!(0));
-    let title = state.get("title").and_then(Value::as_str).unwrap_or("");
+    let step_num = state.get("step").and_then(Value::as_i64).unwrap_or(0);
     let allowed = state.get("allowed").and_then(Value::as_str).unwrap_or("");
     let disallowed = state.get("disallowed").and_then(Value::as_str).unwrap_or("");
+    let reinject = u32::try_from(step_num).map(|n| engine.reinjection(n)).unwrap_or_default();
     let body = format!(
-        "[Workflow Guard] You are currently on Step {step}: {title}.\n\
+        "{reinject}\n\n\
          Allowed: {allowed}\n\
          Disallowed: {disallowed}\n\
          To transition steps: curl -s -X POST http://127.0.0.1:9999/transition \

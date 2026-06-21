@@ -14,6 +14,18 @@ pub struct Step {
     pub disallowed: String,
     pub transition: String,
     pub network: String,
+    /// The authoritative prose instructions of the step (every line after the
+    /// heading that is not a `[...]` annotation), trimmed. Re-injected verbatim
+    /// on transition and on the `SessionStart`/compact hook so a long or diluted
+    /// session re-anchors on the trusted next-step prompt rather than its own
+    /// drifting summary (CCT-440).
+    pub body: String,
+    /// Optional `[gate]: <shell command>` — a deterministic completion check the
+    /// guard runs (in its `--gate-cwd`) before allowing the transition *out* of
+    /// this step. Non-zero exit refuses the transition. Empty ⇒ no gate (the
+    /// transition is trusted, as before). This is how finalize-type transitions
+    /// require machine-checkable proof instead of the agent's assertion (CCT-440).
+    pub gate: String,
 }
 
 /// Strip a leading run of `#` characters, then the rest of an ASCII-whitespace
@@ -75,6 +87,9 @@ fn parse_step_heading(line: &str) -> Option<(u32, String)> {
 #[must_use]
 pub fn parse_steps(markdown: &str) -> BTreeMap<u32, Step> {
     let mut steps: BTreeMap<u32, Step> = BTreeMap::new();
+    // Accumulate each step's prose body lines separately; joined + trimmed once
+    // the step is closed (next heading or end of input).
+    let mut bodies: BTreeMap<u32, Vec<String>> = BTreeMap::new();
     let mut current: Option<u32> = None;
 
     for line in markdown.split('\n') {
@@ -83,6 +98,7 @@ pub fn parse_steps(markdown: &str) -> BTreeMap<u32, Step> {
         if let Some((num, title)) = parse_step_heading(stripped) {
             current = Some(num);
             steps.insert(num, Step { title, ..Step::default() });
+            bodies.insert(num, Vec::new());
             continue;
         }
 
@@ -101,7 +117,18 @@ pub fn parse_steps(markdown: &str) -> BTreeMap<u32, Step> {
                 step.transition = value();
             } else if lower.starts_with("[network]") {
                 step.network = value();
+            } else if lower.starts_with("[gate]") {
+                step.gate = value();
+            } else if let Some(body) = bodies.get_mut(&cur) {
+                // Any non-annotation line is part of the prose body.
+                body.push(stripped.to_string());
             }
+        }
+    }
+
+    for (num, lines) in bodies {
+        if let Some(step) = steps.get_mut(&num) {
+            step.body = lines.join("\n").trim().to_string();
         }
     }
 

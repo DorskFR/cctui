@@ -60,6 +60,7 @@ async fn spawn() -> (String, tempfile::TempDir) {
         state_file,
         policy_file,
         vec!["callback.example.com:443".to_string()],
+        dir.path().to_path_buf(),
     ));
 
     let app = router(engine);
@@ -186,4 +187,67 @@ async fn allow_transition_deny_flow() {
         "deny",
         "after exit: everything denied"
     );
+}
+
+/// CCT-440: a `[gate]` on a step is a deterministic completion check. The
+/// transition *out* of the step is refused until the gate command exits 0, and
+/// a successful advance re-injects the next step's authoritative prompt body.
+#[tokio::test]
+async fn gated_transition_requires_proof_and_reinjects() {
+    let dir = tempfile::tempdir().unwrap();
+    let state_file = dir.path().join("state");
+    // Marker file the gate checks for — absent at first, so the gate fails.
+    let marker = dir.path().join("done.txt");
+    let prompt = format!(
+        "# Step 1: Implement\n\
+         Make the change.\n\
+         [allowed]: *\n\
+         [gate]: test -f {}\n\
+         [transition]: 2, Exit\n\
+         \n\
+         # Step 2: Finalize\n\
+         Open the PR with the assembled evidence.\n\
+         [allowed]: *\n\
+         [transition]: Exit\n",
+        marker.display()
+    );
+
+    let engine = Arc::new(WorkflowEngine::new(
+        parse_steps(&prompt),
+        parse_guard_rules_str(RULES),
+        state_file,
+        dir.path().join("nopolicy").join("policy.json"),
+        vec![],
+        dir.path().to_path_buf(),
+    ));
+
+    // Gate not yet satisfied → transition refused, still on Step 1.
+    let refused = engine.transition(&json!(2));
+    assert_eq!(refused["ok"], false, "gate fails ⇒ transition refused");
+    assert_eq!(refused["step"], 1, "stays on the current step");
+    assert!(
+        refused["error"].as_str().unwrap().contains("transition gate failed"),
+        "error explains the gate failure: {refused}"
+    );
+
+    // Satisfy the gate, then the transition succeeds and re-injects Step 2.
+    std::fs::write(&marker, "ok").unwrap();
+    let ok = engine.transition(&json!(2));
+    assert_eq!(ok["ok"], true, "gate passes ⇒ transition allowed: {ok}");
+    assert_eq!(ok["step"], 2);
+    let reinject = ok["reinject"].as_str().unwrap();
+    assert!(reinject.contains("Open the PR"), "re-injects the next-step prompt body");
+    assert!(reinject.contains("Compact your working context"), "carries the compact directive");
+
+    // Exit ignores the gate — bail-out must always work (back on a gated step).
+    let engine2 = Arc::new(WorkflowEngine::new(
+        parse_steps(&prompt),
+        parse_guard_rules_str(RULES),
+        dir.path().join("state2"),
+        dir.path().join("nopolicy2").join("policy.json"),
+        vec![],
+        dir.path().join("empty"), // gate would fail here, but Exit skips it
+    ));
+    let exit = engine2.transition(&json!("exit"));
+    assert_eq!(exit["ok"], true, "Exit always allowed regardless of gate");
 }
