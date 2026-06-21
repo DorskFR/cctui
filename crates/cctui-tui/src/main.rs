@@ -626,7 +626,9 @@ fn handle_server_event(app: &mut App, event: ServerEvent) {
         | ServerEvent::PlanRequest { .. }
         | ServerEvent::PlanResolved { .. }
         | ServerEvent::GithubEvent { .. }
-        | ServerEvent::AskResolved { .. } => {
+        | ServerEvent::AskResolved { .. }
+        | ServerEvent::SoftLimitReached { .. }
+        | ServerEvent::SoftLimitCleared { .. } => {
             // Archive coverage is web-only (CCT-68); spawn feedback
             // (CommandResult, CCT-131) is surfaced in the web client and the
             // TUI doesn't drive the spawn flow. Live AskUserQuestion prompts
@@ -635,7 +637,9 @@ fn handle_server_event(app: &mut App, event: ServerEvent) {
             // (CCT-212) is opt-in via `client_msg_id`, which the TUI never
             // sends, so the server won't emit one to it. MachineLiveness
             // (CCT-255) drives a web-only per-machine badge; the TUI doesn't
-            // render machine liveness, so nothing to do here.
+            // render machine liveness, so nothing to do here. SoftLimit
+            // Reached/Cleared (CCT-444) drive the web-only per-chat
+            // account-switch banner; the TUI doesn't render it.
         }
         ServerEvent::PermissionResolved { session_id, request_id } => {
             // Drop any queued entry that matches; if it's the head and the
