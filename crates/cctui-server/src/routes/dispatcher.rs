@@ -75,8 +75,37 @@ pub async fn enroll(
         .map_err(|s| (s, Json(ApiError { error: "the enroll scope is required".into() })))?;
     let user_id = ctx.user_id;
 
-    if req.name.trim().is_empty() {
+    let name = req.name.trim();
+    if name.is_empty() {
         return Err((StatusCode::BAD_REQUEST, Json(ApiError { error: "name required".into() })));
+    }
+
+    // CCT-451: dispatcher names are globally unique among live (non-deleted)
+    // dispatchers. Reject a name already in use up-front with a clear message,
+    // rather than letting a re-enrollment under a DIFFERENT principal create a
+    // shadow row — owner-scoped resolution then routes the caller to one row
+    // while the live WS connection is on the other → "dispatcher offline" 502 on
+    // every dispatch (the 2026-06-21 outage). Matches the dispatchers_name_live
+    // unique index; the INSERT below still catches the race via 23505.
+    let name_taken: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT user_id FROM dispatchers WHERE name = $1 AND deleted_at IS NULL LIMIT 1",
+    )
+    .bind(name)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("dispatcher name uniqueness check failed: {e}");
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+    })?;
+    if name_taken.is_some() {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(ApiError {
+                error: format!(
+                    "a dispatcher named {name:?} is already enrolled; revoke or delete it before re-enrolling"
+                ),
+            }),
+        ));
     }
 
     let dispatcher_id = Uuid::new_v4();
@@ -137,7 +166,7 @@ pub async fn enroll(
     )
     .bind(dispatcher_id)
     .bind(user_id)
-    .bind(req.name.trim())
+    .bind(name)
     .bind(kind)
     .bind(&key_hash)
     .bind(token_preview(&token))
@@ -170,7 +199,7 @@ pub async fn enroll(
             user_id,
             key_hash: &key_hash,
             key_preview: Some(&preview),
-            label: Some(req.name.trim()),
+            label: Some(name),
             kind: "dispatcher",
             machine_id: None,
             dispatcher_id: Some(dispatcher_id),
@@ -182,7 +211,7 @@ pub async fn enroll(
         tracing::warn!("failed to register dispatcher key in api_keys: {e}");
     }
 
-    tracing::info!(%user_id, %dispatcher_id, name = %req.name, kind, "dispatcher enrolled");
+    tracing::info!(%user_id, %dispatcher_id, name, kind, "dispatcher enrolled");
 
     Ok(Json(EnrollResponse {
         dispatcher_id,
