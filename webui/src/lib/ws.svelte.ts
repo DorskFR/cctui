@@ -65,6 +65,20 @@ export interface LivePlan {
 }
 /** Live plan prompt for a session, or null when none is pending. */
 type PlanCb = (plan: LivePlan | null) => void;
+/**
+ * A session's per-account soft-limit block (CCT-444). The gateway refused a
+ * request because cctui's own share of `account_name`'s usage window is at cap;
+ * the conversation stalled with a 429. The webui surfaces a per-chat banner
+ * offering to continue on another same-provider account.
+ */
+export interface SoftLimit {
+	account_id: string;
+	account_name: string;
+	reason: string;
+	retry_after_secs: number;
+}
+/** Live soft-limit block for a session, or null when none is active. */
+type SoftLimitCb = (sl: SoftLimit | null) => void;
 /** Server ack for a client-sent message (CCT-212). `ok=false` means the server
  * could not dispatch the reply to the session's daemon, so the client should
  * mark the message failed and offer a retry. */
@@ -162,10 +176,12 @@ class WsClient {
 	/** pending AskUserQuestion, keyed by session id; not reactive (CCT-164) */
 	private asks = new Map<string, LiveAsk>();
 	private plans = new Map<string, LivePlan>();
+	private softLimits = new Map<string, SoftLimit>();
 	private streamCbs = new Map<string, Set<StreamCb>>();
 	private permCbs = new Map<string, Set<PermCb>>();
 	private askCbs = new Map<string, Set<AskCb>>();
 	private planCbs = new Map<string, Set<PlanCb>>();
+	private softLimitCbs = new Map<string, Set<SoftLimitCb>>();
 	/** GitHub inbox listeners (GH-CONN-5 / GH-UI-1); not session-keyed — one
 	 * broadcast channel the mounted inbox subscribes to. Not reactive. */
 	private githubCbs = new Set<GithubCb>();
@@ -318,6 +334,21 @@ class WsClient {
 				this.setPlan(sid, null);
 				break;
 			}
+			case 'soft_limit_reached': {
+				const sid = msg.session_id as string;
+				this.setSoftLimit(sid, {
+					account_id: msg.account_id as string,
+					account_name: msg.account_name as string,
+					reason: msg.reason as string,
+					retry_after_secs: msg.retry_after_secs as number
+				});
+				break;
+			}
+			case 'soft_limit_cleared': {
+				const sid = msg.session_id as string;
+				this.setSoftLimit(sid, null);
+				break;
+			}
 			case 'message_ack': {
 				const ack: MessageAck = {
 					client_msg_id: msg.client_msg_id as string,
@@ -424,6 +455,14 @@ class WsClient {
 		if (set) for (const cb of set) cb(plan);
 	}
 
+	private setSoftLimit(id: string, sl: SoftLimit | null) {
+		if (sl === null) this.softLimits.delete(id);
+		else this.softLimits.set(id, sl);
+		this.changeTick++;
+		const set = this.softLimitCbs.get(id);
+		if (set) for (const cb of set) cb(sl);
+	}
+
 	subscribe(id: string) {
 		if (!this.subscribed.has(id)) {
 			this.subscribed.add(id);
@@ -527,6 +566,28 @@ class WsClient {
 	 * before the daemon's resolution event arrives) (CCT-347). */
 	clearPlan(id: string) {
 		if (this.plans.has(id)) this.setPlan(id, null);
+	}
+
+	/** Register a live soft-limit listener for a session (CCT-444). Fires with
+	 * the current block (or null) immediately and on every change. Returns an
+	 * unsubscribe fn. Mirrors `onAsk`/`onPlan` so the banner keeps its state in
+	 * component-local `$state`, never reading a keyed `$state` off this singleton
+	 * via `$derived`. */
+	onSoftLimit(id: string, cb: SoftLimitCb): () => void {
+		let set = this.softLimitCbs.get(id);
+		if (!set) {
+			set = new Set();
+			this.softLimitCbs.set(id, set);
+		}
+		set.add(cb);
+		cb(this.softLimits.get(id) ?? null);
+		return () => set!.delete(cb);
+	}
+
+	/** Clear any live soft-limit block for a session (e.g. immediately after the
+	 * user switches accounts, before the server's `soft_limit_cleared` arrives). */
+	clearSoftLimit(id: string) {
+		if (this.softLimits.has(id)) this.setSoftLimit(id, null);
 	}
 
 	/** Send a typed message. Returns true if the frame went out, false if the

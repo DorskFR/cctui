@@ -8,9 +8,17 @@
 // than read off the ws singleton from a $derived — a $derived reading the
 // singleton's keyed state does NOT re-run on mutation (see ws.svelte.ts header).
 import type { AgentEvent } from '@bindings/AgentEvent';
-import { ws, userMsgKey, type PermReq, type LiveAsk, type LivePlan } from '$lib/ws.svelte';
+import {
+	ws,
+	userMsgKey,
+	type PermReq,
+	type LiveAsk,
+	type LivePlan,
+	type SoftLimit
+} from '$lib/ws.svelte';
 import { parseAsk } from './format';
 import type { AskQuestion } from './types';
+import { endpoints } from '$lib/queries';
 
 export interface StreamOpts {
 	// The open session id (reactive getter).
@@ -40,6 +48,11 @@ export class ConversationStream {
 	// PreToolUse hook the instant the plan-approval prompt renders. Null when
 	// none pending. Answered like an ask (digit picks 1-3 / free-text refine).
 	plan = $state<LivePlan | null>(null);
+	// Per-account soft-limit block (CCT-444): the gateway refused this session's
+	// request because cctui's share of the account window is at cap. Drives the
+	// per-chat "soft limit reached → continue on another account" banner. Null
+	// when no block is active.
+	softLimit = $state<SoftLimit | null>(null);
 	// Per-message delivery state (CCT-212 → CCT-214), mirrored from the ws
 	// singleton so a failed/in-flight send survives the drawer being reopened.
 	pendingReplies = $state<Set<number>>(new Set());
@@ -123,6 +136,9 @@ export class ConversationStream {
 			// A pending plan means claude is waiting on the user, not working.
 			if (p) this.working = false;
 		});
+		const offSoftLimit = ws.onSoftLimit(sid, (sl) => {
+			this.softLimit = sl;
+		});
 		// Mirror the singleton's per-session delivery state (CCT-214). Fires
 		// immediately with the current snapshot and on every ack / auto-retry.
 		const offDelivery = ws.onDelivery(sid, (snap) => {
@@ -138,6 +154,7 @@ export class ConversationStream {
 			offPerms();
 			offAsk();
 			offPlan();
+			offSoftLimit();
 			offDelivery();
 			ws.unsubscribe(sid);
 			ws.clearStream(sid);
@@ -271,6 +288,20 @@ export class ConversationStream {
 		this.working = true;
 		this.plan = null;
 		ws.clearPlan(this.#opts.id());
+		this.#opts.invalidateSessions();
+	}
+
+	// Switch this session's account after a soft-limit block (CCT-444). The
+	// gateway resolves the worker's opaque token to an account per request, so a
+	// switch is a pure server-side rebind — the worker keeps running and its next
+	// upstream call lands on the target. Dismiss the banner optimistically; the
+	// server's `soft_limit_cleared` confirms a moment later. On failure (e.g.
+	// provider mismatch → 409) the banner stays and the error is surfaced.
+	async switchAccount(account: string): Promise<void> {
+		const id = this.#opts.id();
+		await endpoints.switchAccount(id, account);
+		this.softLimit = null;
+		ws.clearSoftLimit(id);
 		this.#opts.invalidateSessions();
 	}
 

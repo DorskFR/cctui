@@ -324,6 +324,12 @@ export const endpoints = {
     api.post<ForkResponse>(`/sessions/${sessionId}/fork`, body),
   resume: (sessionId: string) =>
     api.post<void>(`/sessions/${sessionId}/resume`, {}),
+  /** Rebind a session to another account after a soft-limit block (CCT-444).
+   *  Pure server-side rebind of the session's active gateway token; the worker
+   *  keeps running and its next upstream call lands on `account` (a name or id).
+   *  Rejects a cross-provider target (409). */
+  switchAccount: (sessionId: string, account: string) =>
+    api.post<void>(`/sessions/${sessionId}/switch-account`, { account }),
   /** Launch a draft session (CCT-394): env is entered fresh here (never stored
    *  in the draft), account gateway tokens minted server-side at dispatch. The
    *  draft row is removed and a live session is born from the daemon. */

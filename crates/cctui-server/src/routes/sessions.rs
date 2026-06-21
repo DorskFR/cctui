@@ -1335,6 +1335,120 @@ pub async fn interrupt_session(
     ))
 }
 
+/// Body of `POST /sessions/{id}/switch-account` (CCT-444). `account` names the
+/// target by either its `oauth_accounts.name` or its UUID.
+#[derive(Deserialize)]
+pub struct SwitchAccountRequest {
+    pub account: String,
+}
+
+/// `POST /api/v1/sessions/{id}/switch-account` — rebind a session to another
+/// account when it hit a soft limit (CCT-444).
+///
+/// The worker's upstream bearer (`ANTHROPIC_AUTH_TOKEN=cctui_s_…`) is an opaque
+/// gateway token; the gateway resolves it to an account per request via a DB
+/// lookup (`session_tokens.token_hash → oauth_accounts`). So switching accounts
+/// is a **pure server-side rebind**: point the session's active token row at the
+/// target account. The worker keeps running with the same env token and its very
+/// next upstream request resolves to the new account — no restart, no re-exec,
+/// no context loss.
+///
+/// Constraints (v1): the target must belong to the same owner and be the **same
+/// provider family** as the current account (the worker's harness already
+/// negotiated the auth scheme; cross-provider switching is out of scope → 409).
+/// On success the soft-limit block is cleared and a `SoftLimitCleared` event
+/// fires so the per-chat banner dismisses.
+pub async fn switch_account(
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+    Json(req): Json<SwitchAccountRequest>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    let err = |code: StatusCode, msg: &str| (code, Json(ApiError { error: msg.into() }));
+    let db = |e: sqlx::Error| {
+        tracing::error!("db error (switch-account): {e}");
+        err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
+    };
+
+    // The session's currently-bound (active, most-recent) account.
+    let current: Option<(uuid::Uuid, String, uuid::Uuid)> = sqlx::query_as(
+        "SELECT a.id, a.provider, a.user_id \
+         FROM session_tokens t JOIN oauth_accounts a ON a.id = t.account_id \
+         WHERE t.session_id = $1 AND t.revoked_at IS NULL \
+         ORDER BY t.created_at DESC LIMIT 1",
+    )
+    .bind(&session_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(db)?;
+    let Some((current_account_id, current_provider, owner_id)) = current else {
+        return Err(err(
+            StatusCode::NOT_FOUND,
+            "session has no active gateway account binding to switch",
+        ));
+    };
+
+    // Resolve the target, scoped to the same owner. Accept a UUID or a name.
+    let target: Option<(uuid::Uuid, String)> = if let Ok(tid) =
+        uuid::Uuid::parse_str(req.account.trim())
+    {
+        sqlx::query_as("SELECT id, provider FROM oauth_accounts WHERE id = $1 AND user_id = $2")
+            .bind(tid)
+            .bind(owner_id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(db)?
+    } else {
+        sqlx::query_as("SELECT id, provider FROM oauth_accounts WHERE name = $1 AND user_id = $2")
+            .bind(req.account.trim())
+            .bind(owner_id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(db)?
+    };
+    let Some((target_id, target_provider)) = target else {
+        return Err(err(StatusCode::NOT_FOUND, "no such account for this session's owner"));
+    };
+
+    if target_id == current_account_id {
+        return Err(err(StatusCode::CONFLICT, "session is already on that account"));
+    }
+
+    // Same provider family only (CCT-444 v1): the worker's harness already
+    // negotiated the auth scheme, so a cross-family rebind would break it.
+    use crate::routes::gateway::Family;
+    if Family::from_provider(&current_provider) != Family::from_provider(&target_provider) {
+        return Err(err(
+            StatusCode::CONFLICT,
+            "target account is a different provider; cross-provider switching is not supported",
+        ));
+    }
+
+    // The rebind itself: point the active token row(s) at the target account.
+    // Single statement; the worker's next upstream request resolves to it.
+    let updated = sqlx::query(
+        "UPDATE session_tokens SET account_id = $2 \
+         WHERE session_id = $1 AND revoked_at IS NULL",
+    )
+    .bind(&session_id)
+    .bind(target_id)
+    .execute(&state.pool)
+    .await
+    .map_err(db)?;
+    if updated.rows_affected() == 0 {
+        return Err(err(StatusCode::NOT_FOUND, "no active token row to rebind"));
+    }
+
+    // Dismiss the per-chat soft-limit banner.
+    crate::routes::gateway::clear_soft_limit_block(&state, &session_id);
+    tracing::info!(
+        session_id = %session_id,
+        from = %current_account_id,
+        to = %target_id,
+        "switched session account (soft-limit rebind)"
+    );
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// `POST /api/v1/sessions/{id}/resume` — explicitly revive an exited durable
 /// conversation in place. The adapter reuses the original transcript identity;
 /// this is not a fork.

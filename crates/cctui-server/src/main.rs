@@ -87,6 +87,7 @@ async fn main() -> anyhow::Result<()> {
         pending_oauth_logins: Arc::new(dashmap::DashMap::new()),
         account_usage_cache: Arc::new(dashmap::DashMap::new()),
         pr_status_cache: cctui_proto::classifier::PrStatusCache::new(),
+        soft_limit_blocked: Arc::new(dashmap::DashMap::new()),
     };
 
     let (api_router, api_descriptors) = build_api_routes().into_parts();
@@ -437,6 +438,13 @@ fn build_api_routes() -> Routes {
             &[Method::POST],
             "/sessions/{id}/set-model",
             post(routes::sessions::set_model),
+            Authn::Bearer,
+            sess_write(),
+        )
+        .add(
+            &[Method::POST],
+            "/sessions/{id}/switch-account",
+            post(routes::sessions::switch_account),
             Authn::Bearer,
             sess_write(),
         )

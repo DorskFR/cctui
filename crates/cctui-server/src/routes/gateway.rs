@@ -263,6 +263,70 @@ async fn session_id_for_token(state: &AppState, session_token: &str) -> Option<S
     .flatten()
 }
 
+/// Resolve a session token to its `(session_id, account_name)` — used by the
+/// soft-limit signalling path (CCT-444) to tag the per-session WS event with the
+/// human account name (the `Account` struct carries no name). `None` for
+/// unknown/revoked tokens.
+async fn session_and_account_name_for_token(
+    state: &AppState,
+    session_token: &str,
+) -> Option<(String, String)> {
+    let hash = crate::auth::sha256_hex(session_token);
+    sqlx::query_as::<_, (String, String)>(
+        "SELECT t.session_id, a.name \
+         FROM session_tokens t JOIN oauth_accounts a ON a.id = t.account_id \
+         WHERE t.token_hash = $1 AND t.revoked_at IS NULL",
+    )
+    .bind(&hash)
+    .fetch_optional(&state.pool)
+    .await
+    .ok()
+    .flatten()
+}
+
+/// Record a soft-limit block against a session and broadcast it (CCT-444).
+///
+/// Idempotent per block episode: the first refused passthrough for a session
+/// flips `soft_limit_blocked` and emits [`ServerEvent::SoftLimitReached`]; the
+/// worker's repeated Retry-After retries (still blocked) are no-ops, so the WS
+/// stream isn't spammed. The webui shows the banner; the matching clear arrives
+/// from [`clear_soft_limit_block`] on the next success or an account switch.
+fn mark_soft_limit_block(
+    state: &AppState,
+    session_id: &str,
+    account_id: Uuid,
+    account_name: &str,
+    reason: &str,
+    retry_after_secs: i64,
+) {
+    if session_id.is_empty() {
+        return;
+    }
+    // Only broadcast on the clear→blocked transition.
+    if state.soft_limit_blocked.insert(session_id.to_owned(), ()).is_none() {
+        let _ = state.tui_tx.send(cctui_proto::ws::ServerEvent::SoftLimitReached {
+            session_id: session_id.to_owned(),
+            account_id,
+            account_name: account_name.to_owned(),
+            reason: reason.to_owned(),
+            retry_after_secs,
+        });
+    }
+}
+
+/// Clear a session's soft-limit block and broadcast the dismissal (CCT-444).
+/// Only emits on the blocked→clear transition (no-op if it wasn't blocked).
+pub fn clear_soft_limit_block(state: &AppState, session_id: &str) {
+    if session_id.is_empty() {
+        return;
+    }
+    if state.soft_limit_blocked.remove(session_id).is_some() {
+        let _ = state
+            .tui_tx
+            .send(cctui_proto::ws::ServerEvent::SoftLimitCleared { session_id: session_id.into() });
+    }
+}
+
 /// Raw account row as selected from the join (before decrypt).
 type AccountRow = (
     Uuid,
@@ -579,6 +643,20 @@ async fn passthrough(
             crate::soft_limit::evaluate_soft_limit(cached.as_ref(), &acct.soft_limits, Utc::now())
         {
             tracing::info!(account = %acct.id, retry_after_secs, "soft limit hit: {reason}");
+            // Surface the block as a per-session signal so the webui can offer
+            // "continue on another account" (CCT-444). Best-effort + dedup'd.
+            if let Some((session_id, account_name)) =
+                session_and_account_name_for_token(&state, &session_token).await
+            {
+                mark_soft_limit_block(
+                    &state,
+                    &session_id,
+                    acct.id,
+                    &account_name,
+                    &reason,
+                    retry_after_secs,
+                );
+            }
             let resp = Response::builder()
                 .status(StatusCode::TOO_MANY_REQUESTS)
                 .header(http::header::RETRY_AFTER, retry_after_secs.to_string())
@@ -687,6 +765,20 @@ async fn passthrough(
     // 529, SSE content-type — all verbatim) and stream the body.
     let status =
         StatusCode::from_u16(upstream.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+
+    // A successful upstream call clears any soft-limit block on this session
+    // (CCT-444): after the user switches accounts (or a window resets) the next
+    // 2xx dismisses the banner. Only touch the DB when something is actually
+    // blocked, and reuse the trace lookup when Langfuse already resolved it.
+    if status.is_success() && !state.soft_limit_blocked.is_empty() {
+        let session_id = match &trace_session_id {
+            Some(sid) => Some(sid.clone()),
+            None => session_id_for_token(&state, &session_token).await,
+        };
+        if let Some(sid) = session_id {
+            clear_soft_limit_block(&state, &sid);
+        }
+    }
     let mut builder = Response::builder().status(status);
     for (name, value) in upstream.headers() {
         let n = name.as_str().to_ascii_lowercase();

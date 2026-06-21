@@ -2,7 +2,7 @@
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import type { AgentEvent } from '@bindings/AgentEvent';
 	import { ws, USER_PREFIX } from '$lib/ws.svelte';
-	import { useConversation, useSessionActions, useLabels, qk } from '$lib/queries';
+	import { useConversation, useSessionActions, useLabels, useAccounts, qk } from '$lib/queries';
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { renderMarkdown, highlightBlock } from '$lib/markdown';
 	import { highlightTerms } from '$lib/search';
@@ -13,6 +13,7 @@
 	import DrawerHeader from './conversation/DrawerHeader.svelte';
 	import DrawerToolbar from './conversation/DrawerToolbar.svelte';
 	import Conversation from './conversation/Conversation.svelte';
+	import SoftLimitBanner from './SoftLimitBanner.svelte';
 	import ConversationComposer from './conversation/ConversationComposer.svelte';
 	import { MSG_TYPES, type MsgType, type ViewOpts, type Line } from './conversation/types';
 	import { looksMeta, parseAsk, parsePlan, eventSig, formatToolInput, orderAskTurns } from './conversation/format';
@@ -144,6 +145,10 @@
 	});
 	// Catch up after the tab regains focus (the ws may have gone half-open).
 	$effect(() => stream.installVisibilityRefresh());
+
+	// Accounts for the soft-limit account picker (CCT-444). Lazy: only fetched
+	// while a block is actually active, so the common case pays nothing.
+	const accounts = useAccounts(() => stream.softLimit !== null);
 
 	// History (fetched) + live (ws) events, merged in order, with live events
 	// already present in history dropped so a reconnect/focus refetch and the
@@ -477,6 +482,14 @@
 
 	{#if needsInput}
 		<div class="attn-banner">✋ Waiting for your input</div>
+	{/if}
+
+	{#if stream.softLimit}
+		<SoftLimitBanner
+			softLimit={stream.softLimit}
+			accounts={$accounts.data ?? []}
+			onswitch={(acct) => stream.switchAccount(acct)}
+		/>
 	{/if}
 
 	<Conversation

@@ -415,6 +415,26 @@ pub enum ServerEvent {
         kind: crate::github::GithubEventKind,
         payload: crate::github::GithubEventPayload,
     },
+    /// A session's gateway request was just refused by the per-account soft
+    /// limit (CCT-444): cctui's own share of the account's usage window is at
+    /// cap, so the worker got a 429 and the conversation stalled. Broadcast on
+    /// the clear→blocked transition so the webui can show a per-chat banner
+    /// offering to continue on another same-provider account. `reason` is the
+    /// human-readable 429 body; `retry_after_secs` mirrors the `Retry-After`.
+    SoftLimitReached {
+        session_id: String,
+        account_id: uuid::Uuid,
+        account_name: String,
+        reason: String,
+        retry_after_secs: i64,
+    },
+    /// A session's soft-limit block has cleared (CCT-444): either a later
+    /// passthrough succeeded, or the user rebound the session to another
+    /// account via `POST /sessions/{id}/switch-account`. Clients dismiss the
+    /// per-chat soft-limit banner.
+    SoftLimitCleared {
+        session_id: String,
+    },
 }
 
 #[cfg(test)]

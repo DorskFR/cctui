@@ -114,6 +114,13 @@ pub struct AppState {
     /// build (the field still exists so `AppState` has one shape either way).
     #[cfg_attr(not(feature = "github"), allow(dead_code))]
     pub pr_status_cache: cctui_proto::classifier::PrStatusCache,
+    /// Sessions currently refused by the per-account soft limit (CCT-444), keyed
+    /// by `session_id`. The gateway sets the entry when a passthrough is blocked
+    /// and clears it on the next success (or on an explicit account switch), and
+    /// only broadcasts the [`ServerEvent::SoftLimitReached`]/`SoftLimitCleared`
+    /// on the actual transition so the worker's repeated Retry-After retries
+    /// don't spam the WS stream.
+    pub soft_limit_blocked: Arc<DashMap<String, ()>>,
 }
 
 /// A cached usage fetch: when it was fetched and the JSON payload (the raw
