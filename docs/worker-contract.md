@@ -245,3 +245,38 @@ the tool/network sets the guard enforces). Therefore the pack URL+ref is
 *prompt file within* the pack but **never the pack itself**. A configured-but-
 unfetchable pack fails the boot closed — silently proceeding without it would
 weaken the sandbox.
+
+## Intent+Acceptance ratify gate
+
+An implementation prompt should make its **first** step an Intent+Acceptance
+ratify gate — a structural pause that surfaces what the agent thinks "done"
+means before it writes any code. The pattern lives in the example pack as the
+`intent-acceptance` skill plus the first step of `prompts/example-task.md`; a
+real pack adapts it to its dispatch types.
+
+After gathering context (task, linked discussion, relevant code), the agent
+emits a small **Intent+Acceptance artifact**:
+
+```yaml
+intent: >
+  <one or two sentences: the outcome that means "done">
+acceptance:
+  - <checkable success condition>
+  - <checkable success condition>
+surfaces: [<class>, ...]   # pure-calc | frontend | backend | external-api
+                           # | webhook | payments | brand-visible
+blast_radius: <low|medium|high>   # max over surfaces
+ratify: <auto|human>              # auto only when blast_radius == low
+```
+
+The gate is enforced by the guard, not by convention: the early step's
+`[transition]` is the only path into the implement step, so the agent cannot
+reach implementation without passing through it. Ratification routes back to the
+human via the **`needs_human`** result-callback status (see *Result callback*)
+carrying the artifact; a corrected intent replaces the artifact and becomes the
+spec. Changes whose surfaces are **all** low blast radius (`pure-calc`)
+auto-ratify and skip the round-trip.
+
+The artifact is **persisted and reused verbatim** as the acceptance script at
+the end of the run — the success condition promised up front is the one the
+deliverable is checked against — and is attached to the session + PR.
