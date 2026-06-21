@@ -30,10 +30,11 @@ async fn get_state(State(engine): State<Engine>) -> impl IntoResponse {
     Json(engine.get_state())
 }
 
-/// `SessionStart`/compact hook — returns context text for re-injection. Carries
-/// the authoritative step prompt body + a compact-context directive so a long or
-/// compacted session re-anchors on trusted instructions rather than its own
-/// drifting summary (CCT-440).
+/// `SessionStart`/compact hook — returns context text for re-injection. Always
+/// carries the authoritative step prompt body so a long or compacted session
+/// re-anchors on trusted instructions rather than its own drifting summary
+/// (CCT-440); the compact-context directive is included only for steps that
+/// opt in via `[compact]` (CCT-450).
 async fn post_state(State(engine): State<Engine>) -> impl IntoResponse {
     let state = engine.get_state();
     let step_num = state.get("step").and_then(Value::as_i64).unwrap_or(0);

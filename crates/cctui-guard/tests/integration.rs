@@ -237,7 +237,10 @@ async fn gated_transition_requires_proof_and_reinjects() {
     assert_eq!(ok["step"], 2);
     let reinject = ok["reinject"].as_str().unwrap();
     assert!(reinject.contains("Open the PR"), "re-injects the next-step prompt body");
-    assert!(reinject.contains("Compact your working context"), "carries the compact directive");
+    assert!(
+        !reinject.contains("Compact your working context"),
+        "CCT-450: no compact directive unless the step opts in via [compact]: {reinject}"
+    );
 
     // Exit ignores the gate — bail-out must always work (back on a gated step).
     let engine2 = Arc::new(WorkflowEngine::new(
@@ -250,4 +253,56 @@ async fn gated_transition_requires_proof_and_reinjects() {
     ));
     let exit = engine2.transition(&json!("exit"));
     assert_eq!(exit["ok"], true, "Exit always allowed regardless of gate");
+}
+
+/// CCT-450: the step is always re-injected, but the compact-context directive is
+/// opt-in per step via `[compact]` — so large-context models keep their context
+/// unless a prompt explicitly asks to trim it.
+#[tokio::test]
+async fn compact_directive_is_opt_in_per_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let prompt = "# Step 1: Plan\n\
+         Sketch the approach.\n\
+         [allowed]: *\n\
+         [transition]: 2, 3\n\
+         \n\
+         # Step 2: Implement\n\
+         Write the code.\n\
+         [compact]\n\
+         [allowed]: *\n\
+         [transition]: Exit\n\
+         \n\
+         # Step 3: Implement (no compaction)\n\
+         Write the code, keeping full context.\n\
+         [allowed]: *\n\
+         [transition]: Exit\n";
+
+    let make = |state_name: &str| {
+        Arc::new(WorkflowEngine::new(
+            parse_steps(prompt),
+            parse_guard_rules_str(RULES),
+            dir.path().join(state_name),
+            dir.path().join("nopolicy").join("policy.json"),
+            vec![],
+            dir.path().to_path_buf(),
+        ))
+    };
+
+    // Step 2 declares [compact] → directive present.
+    let to_compact = make("state-compact").transition(&json!(2));
+    let r2 = to_compact["reinject"].as_str().unwrap();
+    assert!(r2.contains("Write the code"), "re-injects the step body");
+    assert!(
+        r2.contains("Compact your working context"),
+        "step with [compact] carries the directive: {r2}"
+    );
+
+    // Step 3 omits [compact] → body re-injected, but no compaction directive.
+    let to_plain = make("state-plain").transition(&json!(3));
+    let r3 = to_plain["reinject"].as_str().unwrap();
+    assert!(r3.contains("keeping full context"), "re-injects the step body");
+    assert!(
+        !r3.contains("Compact your working context"),
+        "step without [compact] does NOT force compaction: {r3}"
+    );
 }

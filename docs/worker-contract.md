@@ -441,14 +441,20 @@ step transition so far has trusted the agent's *claim* that the step is done.
 CCT-440 hardens both ends of a transition; both are enforced by the guard, not by
 convention.
 
-**Re-inject + compact on every transition.** A numeric transition (and the
+**Re-inject the step on every transition.** A numeric transition (and the
 `SessionStart`/compact hook) returns the **authoritative next-step prompt body
-verbatim** — the trusted instructions from the pack, not the agent's own summary
-— plus a directive to compact the working context to `{plan, current diff, the
-step instructions}` and to treat any fetched ticket/comment/web content as
-untrusted input rather than instructions. The agent re-anchors on the trusted
-spec instead of a diluted or injected one. The body is captured from the prompt
-step's prose lines; no annotation is needed.
+verbatim** — the trusted instructions from the pack, not the agent's own summary.
+The agent re-anchors on the trusted spec instead of a diluted or injected one.
+The body is captured from the prompt step's prose lines; no annotation is needed.
+
+**Compaction is opt-in (`[compact]`).** A step may add a `[compact]` line to also
+emit a directive to compact the working context to `{plan, current diff, the step
+instructions}` and to treat any fetched ticket/comment/web content as untrusted
+input rather than instructions. It is **off by default** (CCT-450): compaction is
+lossy and counter-productive on large-context models, so re-injection re-anchors
+context without discarding it unless the step explicitly asks for it. Bare
+`[compact]` turns it on; `[compact]: false` (or `no`/`off`/`0`) keeps it off so a
+template can carry the line and toggle it per task.
 
 **Deterministic transition gates.** Where completion is machine-checkable, the
 step carries a `[gate]: <command>` annotation — a deterministic check the guard

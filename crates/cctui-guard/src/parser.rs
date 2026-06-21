@@ -26,6 +26,14 @@ pub struct Step {
     /// transition is trusted, as before). This is how finalize-type transitions
     /// require machine-checkable proof instead of the agent's assertion (CCT-440).
     pub gate: String,
+    /// Opt-in `[compact]` marker. When set, the step's re-injection text also
+    /// carries a "compact your working context" directive; when unset (the
+    /// default) re-injection only re-anchors on the authoritative step body and
+    /// leaves the session's accumulated context alone. Compaction is lossy and
+    /// counter-productive on large-context models, so it is off unless a step
+    /// explicitly asks for it (CCT-450). Bare `[compact]` ⇒ on; `[compact]: false`
+    /// (or `no`/`off`/`0`) ⇒ off; `[compact]: true` ⇒ on.
+    pub compact: bool,
 }
 
 /// Strip a leading run of `#` characters, then the rest of an ASCII-whitespace
@@ -119,6 +127,12 @@ pub fn parse_steps(markdown: &str) -> BTreeMap<u32, Step> {
                 step.network = value();
             } else if lower.starts_with("[gate]") {
                 step.gate = value();
+            } else if lower.starts_with("[compact]") {
+                // Bare `[compact]` (no value) opts in; an explicit value lets a
+                // prompt template toggle it off without deleting the line.
+                let v = value();
+                step.compact = v.is_empty()
+                    || matches!(v.to_ascii_lowercase().as_str(), "true" | "yes" | "on" | "1");
             } else if let Some(body) = bodies.get_mut(&cur) {
                 // Any non-annotation line is part of the prose body.
                 body.push(stripped.to_string());

@@ -103,9 +103,15 @@ Explore; do not modify anything.
   the blocked outcome via the result callback rather than finalizing.
 
 Every numeric transition (and the `SessionStart`/compact hook) re-injects the
-target step's **prose body verbatim** plus a compact-context directive, so a long
-or compacted session re-anchors on the trusted next-step instructions rather than
-its own drifting summary. The body is every non-`[...]` line beneath the heading.
+target step's **prose body verbatim**, so a long or compacted session re-anchors
+on the trusted next-step instructions rather than its own drifting summary. The
+body is every non-`[...]` line beneath the heading.
+
+A compact-context directive is appended **only** for steps that opt in with a
+`[compact]` line (bare ⇒ on; `[compact]: false`/`no`/`off`/`0` ⇒ off). It is off
+by default because compaction is lossy and counter-productive on large-context
+models — re-injection re-anchors context without discarding it unless a step
+explicitly asks to trim.
 
 Step `0` or an unknown current step means "no guard" (everything allowed). The
 engine starts on the lowest-numbered step.

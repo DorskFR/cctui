@@ -119,12 +119,15 @@ transition; fix the violation rather than suppress it, and codify a recurring on
 as a one-rule change in the same diff (the ratchet). A real pack points the gate
 at whatever command runs its selected oracles + consistency gates green (here a
 placeholder `make` target). On entry to each step the guard re-injects this
-step's prompt verbatim plus a compact-context directive, so a long run re-anchors
-on the trusted instructions rather than its own drifting summary.
+step's prompt verbatim, so a long run re-anchors on the trusted instructions
+rather than its own drifting summary. Add a `[compact]` line to a step to also
+ask the agent to trim its working context (off by default — leave it out on
+large-context models where compaction loses more than it saves).
 
 [allowed]: all-read, code-write, Bash, git commit
 [disallowed]: remote-write
 [network]: net-model, net-external-sandbox, net-payments-sandbox
+[compact]: false
 [gate]: make oracle-check
 [transition]: 4, Exit
 
