@@ -1,4 +1,4 @@
-# Example dispatch prompt (guarded, four steps)
+# Example dispatch prompt (guarded, five steps)
 
 A neutral example showing the prompt-step format `cctui-guard` parses. Set
 `TASK_PROMPT_FILE=example-task.md` to dispatch it; it resolves under
@@ -35,6 +35,14 @@ says `autonomy: auto-merge`; otherwise the finalized PR routes to a human via
 `needs_human`. A `brand_gate: true` plan additionally routes the rendered
 copy/layout to a human taste sign-off. Human review becomes a glance at the
 evidence, not a re-run of the app.
+
+The fifth step handles **inbound review comments** without capitulating (see the
+`comment-handling` skill): each comment is classified — `mechanical` (auto-fix,
+re-run the oracle, keep it evidence-backed) vs `judgment` (propose or defend,
+never silently rewrite good code) vs `unclear` (ask / escalate) — and an
+unresolved judgment thread escalates `needs_human` rather than churning. The
+human merge gate from Step 4 still holds, so this step answers and fixes but
+never merges.
 
 # Step 1: Intent + Acceptance (ratify before implement)
 
@@ -103,4 +111,30 @@ the brand-visible evidence.
 [allowed]: all-read, remote-write, Bash
 [disallowed]:
 [network]: net-model, net-vcs
+[transition]: 5, Exit
+
+# Step 5: Address review comments (classify, defend-don't-cave)
+
+Run **once per inbound review comment** on the open PR (see the
+`comment-handling` skill). Classify each comment deterministically on *what* it
+asks for, not who raised it or how forcefully:
+
+- `mechanical` (lint, rename, dead code, a **demonstrated** bug) → fix it, re-run
+  the surface's oracle so the fix stays evidence-backed, reply with the commit,
+  resolve the thread.
+- `judgment` (taste, scope, architecture, "is this worth it") → **propose or
+  defend, never silently comply**. Reply with a reason tied to the ratified
+  Intent/Acceptance and the evidence; the default is to hold. A change that
+  alters scope/surfaces re-opens Step 1, it is not absorbed silently.
+- `unclear` / contradicts the ratified Acceptance → ask the disambiguating
+  question, or report `status: "needs_human"` for the spec dispute.
+
+Do not enter an edit/revert loop under repeated pushback: after one reasoned
+round-trip on an open judgment thread, report `status: "needs_human"` carrying
+both positions. The human merge gate from Step 4 is never bypassed — this step
+answers and fixes, it does not merge.
+
+[allowed]: all-read, code-write, Bash, git commit, github-write
+[disallowed]:
+[network]: net-model, net-vcs, net-external-sandbox, net-payments-sandbox
 [transition]: Exit

@@ -431,3 +431,55 @@ on a code-touching flow **must** carry a non-empty `evidence[]` (see *Result
 callback*); a deliverable that cannot produce its required evidence reports
 `needs_human` instead. The evidence is rendered on the PR body (one section per
 surface) so human review is a glance at the proof, not a re-run of the app.
+
+## Comment handling (classify, defend-don't-cave)
+
+The run does not end when the PR opens — reviewers comment, and the agent has to
+act on those comments without **capitulating** to them. The dangerous failure
+mode is not ignoring a comment but rewriting good, evidence-backed code because a
+comment was *raised*: LLMs flip a correct answer to an incorrect one under mild
+pushback at a measurable rate (~15% in published sycophancy evals), and the
+*format* of the objection (confident tone, authority framing) drives the cave
+more than its substance. The pattern lives in the example pack as the
+`comment-handling` skill; a real pack adapts it to its review tooling.
+
+The skill is the inbound mirror of the evidence gate — the gate proved the
+deliverable right when the PR opened; this keeps it right while the PR is
+reviewed. It runs **per inbound comment** and is deterministic on the comment's
+class, so the agent cannot talk itself into "just make the change" for a judgment
+comment any more than it could into a softer merge gate:
+
+```yaml
+comment:
+  class: <mechanical|judgment|unclear>   # pure function of WHAT is asked, not WHO
+  action: <auto-fix|defend-or-propose|escalate>
+```
+
+- **`mechanical`** (objective, one right answer — lint, rename, dead code, a
+  *demonstrated* bug) → **auto-fix**, re-run the surface's oracle so the fix stays
+  evidence-backed, reply with the commit, resolve the thread. A bug *asserted*
+  without a failing case is `judgment` (ask for the repro), not `mechanical`.
+- **`judgment`** (taste, scope, architecture, "is this worth it") → **propose or
+  defend, never silently comply**. Reply with a reason that ties back to the
+  ratified Intent/Acceptance and the evidence; the default for a judgment comment
+  on code that already passed the gate is to **hold**. A proposal that alters
+  scope/surfaces re-opens the `intent-acceptance` gate — it is not silently
+  absorbed.
+- **`unclear`** / contradicts the ratified Acceptance → **ask or `needs_human`**;
+  a spec dispute is resolved by a human, not by changing code.
+
+Two structural guards keep this safe: the **human merge gate is never bypassed**
+(the skill answers and fixes; it does not merge — a capitulating agent still
+cannot ship, so the only thing caving can damage is quality), and an unresolved
+judgment thread **escalates** rather than churns — after one reasoned round-trip
+the agent reports `status: "needs_human"` carrying both positions instead of
+entering an edit/revert loop under repeated pushback.
+
+> **Auto-address loop (server-side, not yet wired).** The webhook ingress
+> (`crate::webhook` in `cctui-github`) already parses + stores
+> `pull_request_review` / `pull_request_review_comment` events but does **not**
+> dispatch a worker from them — there is no event→dispatch mechanism in the
+> connector today. Wiring the review-comment event to dispatch this skill is a
+> separate server change tracked outside this contract; the worker-side behaviour
+> (classify + defend-don't-cave) is what the `comment-handling` skill specifies
+> and is reusable the moment that loop exists.
