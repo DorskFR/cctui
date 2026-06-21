@@ -185,16 +185,11 @@
 				{/if}
 			{/if}
 		</div>
-		<!-- Secondary actions (CCT-301 #7): inline on desktop, collapsed into the
-		     ⋯ flyout on mobile so a long title + many buttons no longer overflow.
-		     Font-size is the left-most action; a single fork lives at the end of
-		     the group (CCT-345). -->
-		<div class="secondary" class:open={moreOpen || renaming}>
-		<!-- UI font size (CCT-301 #6): the SAME discrete "A" control as the main
-		     window header (CCT-297 #11), promoted out of the formatting bar up to
-		     this top-level row so scaling is reachable without scanning the
-		     JSON/Diff/Tables toggles. Both write the single global fontScale.
-		     `font-pick` is kept as a hook for the mobile flyout flattening. -->
+		<!-- UI font size (CCT-301 #6 / CCT-445): the SAME discrete "A" control as
+		     the main window header (CCT-297 #11). It stays a standalone icon button
+		     at all widths — it does NOT fold into the ⋯ flyout on mobile, sitting
+		     just left of it instead (CCT-445). Both write the single global
+		     fontScale. -->
 		<SelectButton
 			class="font-pick"
 			glyph="A"
@@ -204,6 +199,10 @@
 			options={SCALE_LEVELS.map((l) => ({ value: l.id, label: l.label }))}
 			onchange={(v) => fontScale.set(v)}
 		/>
+		<!-- Secondary actions (CCT-301 #7): inline on desktop, collapsed into the
+		     ⋯ flyout on mobile so a long title + many buttons no longer overflow.
+		     A single fork lives at the end of the group (CCT-345). -->
+		<div class="secondary" class:open={moreOpen || renaming}>
 		{#if renaming}
 			<IconButton class="tapbtn" icon="check"  label="Save" onclick={doRename} />
 		{:else}
@@ -402,8 +401,7 @@
 		/* The `.dhead` prefix is required: it raises specificity above the base
 		   `.dhead :global(.tapbtn)` rule below (equal specificity, but that rule is
 		   later in source), so without it these flyout overrides never apply. */
-		.dhead .secondary :global(.tapbtn),
-		.dhead .secondary :global(.font-pick) {
+		.dhead .secondary :global(.tapbtn) {
 			width: 100%;
 			min-width: 0;
 			height: auto;
@@ -416,16 +414,14 @@
 			border: none;
 			border-radius: var(--r-sm);
 		}
-		.dhead .secondary :global(.tapbtn):hover,
-		.dhead .secondary :global(.font-pick):hover {
+		.dhead .secondary :global(.tapbtn):hover {
 			background: var(--bg-elevated-3, var(--bg-elevated-2));
 		}
 		/* Plain inline icon glyph inside a row — no chip box. */
 		.dhead .secondary :global(.tapbtn svg) {
 			flex: none;
 		}
-		.dhead .secondary :global(.tapbtn)::after,
-		.dhead .secondary :global(.font-pick)::after {
+		.dhead .secondary :global(.tapbtn)::after {
 			content: attr(aria-label);
 			font-size: var(--fs-sm);
 			font-weight: var(--fw-medium);
@@ -434,14 +430,6 @@
 			white-space: normal;
 			text-align: left;
 			line-height: 1.2;
-		}
-		/* The font-size control is a SelectButton whose `aria-label` lives on the
-		   inner <button>/<select>, not on the `.select-button`/`.font-pick` root the
-		   flyout styles — so `attr(aria-label)` resolves empty and the flyout row
-		   showed only the bare "A" glyph with no text. Give it an explicit label so
-		   the mobile menu entry reads like the others (CCT-353). */
-		.dhead .secondary :global(.font-pick)::after {
-			content: 'Adjust font size';
 		}
 	}
 	.dtitle {
