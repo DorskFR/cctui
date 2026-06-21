@@ -36,6 +36,12 @@ A pack wires this to its real preview/build + browser-driver; the role is fixed:
 <headless browser: navigate → interact → screenshot/video>
 ```
 
+This pack's concrete harness is the **`visual-evidence`** skill — in-pod
+Playwright booting the changed UI against a record/replay HAR fixture (no live
+backend), capturing element-clip screenshots, a `toHaveScreenshot` before/after
+diff, and a computed-style snapshot. When the plan lists `render-check`, run
+`visual-evidence` to produce its evidence.
+
 - **Local network only.** `frontend` takes the model net plus the loopback dev
   server; it does **not** get a third-party `[network]` set. A frontend change
   that needs to call an external party also touches `external-api` — re-classify.

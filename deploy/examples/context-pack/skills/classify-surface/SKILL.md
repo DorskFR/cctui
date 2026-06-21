@@ -48,7 +48,9 @@ autonomy (any `human-gate` surface forces `human-gate` overall).
 | `brand-visible` | — | `human-gate` | **yes** | `screenshot`, `diff` |
 
 The oracle names are pack-defined verification skills; a real pack wires them to
-its actual test/render/round-trip tooling. The fixture lists them by role.
+its actual test/render/round-trip tooling. The fixture lists them by role — e.g.
+this pack's `render-check` is wired to the concrete `visual-evidence` harness
+(in-pod Playwright + record/replay fixtures).
 
 ## The two routing decisions
 
