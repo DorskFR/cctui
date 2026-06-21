@@ -10,7 +10,7 @@
 //! the same mechanics.
 //!
 //! Semantics preserved verbatim from the in-process dispatcher:
-//! - Job name = `claude-worker-<sha1(session_id)[:12]>` so a repeat dispatch of
+//! - Job name = `cctui-worker-<sha1(session_id)[:12]>` so a repeat dispatch of
 //!   the same session maps to the same Job (CCT-168 collision fix).
 //! - 409 on create → read the existing Job: in-flight ⇒ `deduplicated`;
 //!   terminal (Complete/Failed) ⇒ delete + recreate ⇒ `redispatched` (CCT-207).
@@ -95,12 +95,15 @@ impl Spawner {
         Api::namespaced(self.client.clone(), &self.namespace)
     }
 
-    /// `claude-worker-<sha1(session_id)[:12]>` — deterministic so a repeat
-    /// dispatch maps to the same Job (idempotency key, CCT-168/207).
+    /// `cctui-worker-<sha1(session_id)[:12]>` — deterministic so a repeat
+    /// dispatch maps to the same Job (idempotency key, CCT-168/207). The prefix
+    /// is `cctui-worker-` (the legacy `claude-worker-` name was renamed under the
+    /// cctui unification, CCT-452); derived solely here, so dedup/status/delete
+    /// all stay consistent.
     fn job_name(session_id: &str) -> String {
         let digest = Sha1::digest(session_id.as_bytes());
         let hex = hex::encode(digest);
-        format!("claude-worker-{}", &hex[..12])
+        format!("cctui-worker-{}", &hex[..12])
     }
 
     /// Coerce an arbitrary string into a valid k8s label value (≤63 chars,
@@ -494,7 +497,7 @@ mod tests {
         let a = Spawner::job_name("triage:PROJ:2026060116");
         let b = Spawner::job_name("triage:PROJ:2026060116");
         assert_eq!(a, b);
-        assert!(a.starts_with("claude-worker-"));
+        assert!(a.starts_with("cctui-worker-"));
         assert!(a.len() <= 63);
         assert!(a.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'));
         assert_ne!(a, Spawner::job_name("triage:PROJ:2026060117"));

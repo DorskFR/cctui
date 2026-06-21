@@ -206,12 +206,14 @@ phase_network() {
 # an empty, worker-owned /workspace) when neither var is set.
 phase_workspace() {
     mkdir -p /workspace
+    _ws_overlay=0
     if [ -n "${WARM_REPO_DIR:-}" ] && [ -d "$WARM_REPO_DIR" ]; then
         mkdir -p /overlay/upper /overlay/work
         if mount -t overlay overlay \
                 -o "lowerdir=${WARM_REPO_DIR},upperdir=/overlay/upper,workdir=/overlay/work" \
                 /workspace 2>/dev/null; then
             log "workspace: overlayfs on WARM_REPO_DIR=$WARM_REPO_DIR"
+            _ws_overlay=1
         else
             log "workspace: overlayfs unavailable, rsync-copying WARM_REPO_DIR"
             rsync -a "${WARM_REPO_DIR%/}/" /workspace/
@@ -228,7 +230,15 @@ phase_workspace() {
     else
         log "workspace: empty /workspace (no WARM_REPO_DIR / TASK_REPO_URL)"
     fi
-    chown -R "${WORKER_UID}:${WORKER_UID}" /workspace 2>/dev/null || true
+    # Never recursively chown an overlayfs /workspace: it recurses the read-only
+    # lowerdir (the whole WARM_REPO_DIR warm cache) and forces a copy-up of every
+    # file into the upperdir, wedging boot in NFS I/O over a multi-repo cache
+    # (CCT-456). The lowerdir is already worker-readable and writes copy-up into
+    # /overlay/upper (chowned below), so the overlay needs no recursive chown —
+    # only the root-created fallbacks (rsync/clone/empty) do.
+    if [ "$_ws_overlay" = 0 ]; then
+        chown -R "${WORKER_UID}:${WORKER_UID}" /workspace 2>/dev/null || true
+    fi
     [ -d /overlay/upper ] && chown -R "${WORKER_UID}:${WORKER_UID}" /overlay/upper 2>/dev/null || true
 }
 
