@@ -308,6 +308,53 @@ The artifact is **persisted and reused verbatim** as the acceptance script at
 the end of the run — the success condition promised up front is the one the
 deliverable is checked against — and is attached to the session + PR.
 
+## Conditional classifier pipeline
+
+The pipeline is effectively linear, but **which** oracles run, **how** autonomous
+the run may be, and **whether** a human must sign off all depend on what the task
+touches. Between the Intent+Acceptance gate and implementation, an implementation
+prompt should run a **classifier** that turns the ratified `surfaces[]` into a
+pipeline plan. The pattern lives in the example pack as the `classify-surface`
+skill plus the second step of `prompts/example-task.md`.
+
+The plan is a **pure, deterministic function of the surface set** — same surfaces
+always yield the same plan, so the routing is auditable and the agent cannot talk
+itself into a softer gate:
+
+```yaml
+plan:
+  oracles: [<skill>, ...]        # the oracle (verification) skills the surfaces demand
+  autonomy: <auto-merge|human-gate>
+  brand_gate: <true|false>
+  required_evidence: [<kind>, ...]   # union over surfaces; feeds the evidence gate
+```
+
+Each surface class maps to a fixed row (oracles, autonomy, brand gate, required
+evidence); a multi-surface change takes the **union** of the oracle/evidence
+columns and the **strictest** autonomy. The `classify-surface` skill carries the
+full table. Two routing decisions matter:
+
+- **Autonomy** — `auto-merge` is granted **only** when *every* surface is
+  `pure-calc`: a deterministic change backed by golden tests can merge on green
+  without a human, because the oracle is the reviewer (this mirrors the ratify
+  gate's `blast_radius: low` ⇔ auto path). `payments`, auth, and migrations are
+  **always** `human-gate` regardless of how green the oracles are — a silent
+  auto-merge there is the most dangerous case.
+- **Brand / taste gate** — `brand_gate: true` whenever a `brand-visible` surface
+  is present. Taste (copy, layout, pricing, naming, emails) cannot be oracle'd,
+  only routed: no test asserts that wording is on-brand, so the change routes to
+  a human for a sign-off that is explicitly *not* a correctness check. The brand
+  gate is independent of and additional to the autonomy gate.
+
+The plan conditions the rest of the run: implementation runs exactly the
+`oracles[]` selected; the evidence gate demands at least the `required_evidence`
+union; and the finalize step grants the `auto-merge` capability **only** when the
+plan says so — otherwise the finalized PR routes to a human via the `needs_human`
+callback for the merge decision (the PR is opened, the merge is not auto). A
+`brand_gate: true` plan additionally routes the rendered copy/layout to a human
+taste sign-off, independent of the merge decision. The guard enforces the
+capability split, not convention.
+
 ## Evidence-required done gate
 
 The mirror of the ratify gate at the *other* end of the run. The Intent+
