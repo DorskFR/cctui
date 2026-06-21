@@ -20,7 +20,11 @@ required evidence, and whether a brand/taste human sign-off is needed. The plan
 is a pure function of the surface set, so two tasks of different surface classes
 follow different oracle/autonomy/brand paths automatically.
 
-The third step implements, running exactly the oracle skills the plan selected.
+The third step implements, running exactly the oracle skills the plan selected
+(see the per-surface oracle skills — `golden-tests`, `render-check`,
+`endpoint-tests`, `roundtrip-check`, `contract-check`). Each exercises its
+surface in-pod against test-mode / replay and is granted only that surface's
+sandbox net-allow — never a third party's production host.
 
 The last step is the mirror of the ratify gate — an **evidence-required "done"
 gate** (see the `evidence-gate` skill): the agent must assemble an `evidence[]`
@@ -67,11 +71,16 @@ modify anything in this step.
 # Step 3: Implement
 
 Make the change and run exactly the `oracles[]` the Step 2 plan selected — no
-more, no fewer. Commit. Push only in Step 4.
+more, no fewer (see the per-surface oracle skills: `golden-tests`,
+`render-check`, `endpoint-tests`, `roundtrip-check`, `contract-check`). Each
+oracle exercises its surface in-pod against test-mode / replay and emits the
+evidence Step 4 consumes. The network below grants only the per-surface sandbox
+sets — never a third party's production host; a surface that needs a host its set
+does not grant was mis-classified. Commit. Push only in Step 4.
 
 [allowed]: all-read, code-write, Bash, git commit
 [disallowed]: remote-write
-[network]: net-model
+[network]: net-model, net-external-sandbox, net-payments-sandbox
 [transition]: 4, Exit
 
 # Step 4: Accept (evidence-required done gate)

@@ -23,3 +23,13 @@ This fixture is NEUTRAL — every host is a placeholder (`example.com`,
 # Network sets (host:port; use host:* for all ports)
 [net-model]: api.example.com:443, downloads.example.com:443
 [net-vcs]: github.example.com:443, github.example.com:22, api.github.example.com:443
+
+# Per-surface oracle network sets — the net-allow each oracle skill needs to
+# exercise its surface in-pod. Each is the SANDBOX/test-mode host only; the
+# production host of any third party is deliberately absent so an oracle cannot
+# touch live data. pure-calc/webhook get no third-party host at all (golden
+# files / replayed fixtures are local); frontend/backend reach only the loopback
+# dev server (no set needed beyond net-model). A pack replaces every placeholder
+# with its provider's actual sandbox host.
+[net-external-sandbox]: sandbox.example.com:443
+[net-payments-sandbox]: api.sandbox.stripe.example.com:443

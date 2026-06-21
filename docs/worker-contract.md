@@ -355,6 +355,48 @@ callback for the merge decision (the PR is opened, the merge is not auto). A
 taste sign-off, independent of the merge decision. The guard enforces the
 capability split, not convention.
 
+## Per-surface oracle skills
+
+Tasks are novel, but the **surfaces** they verify against are a small fixed set,
+so the verification harness can be reused per surface instead of hand-built each
+time. The classifier names an `oracles[]` set per surface (see the table in the
+`classify-surface` skill); each name resolves to an **oracle skill** in the pack
+that exercises that surface in-pod against test-mode / replay and produces the
+evidence the gate later demands. The example pack ships one oracle skill per
+surface class:
+
+| Surface | Oracle skill | Exercises | Evidence |
+| --- | --- | --- | --- |
+| `pure-calc` | `golden-tests` | unit + property tests + golden-file diffs (no I/O) | `test-run` |
+| `frontend` / `brand-visible` | `render-check` | headless-browser render of the changed UI in-pod | `screenshot` / `video` |
+| `backend` | `endpoint-tests` | route/job against a throwaway test instance in-pod | `test-run` |
+| `external-api` | `roundtrip-check` | third party against test-mode / VCR cassette + contract tests | `transcript` |
+| `webhook` | `contract-check` | recorded payload fixtures replayed at the handler (sig / idempotency) | `transcript` |
+| `payments` | `roundtrip-check` + `contract-check` | outbound charge (test mode) + inbound event (replayed) | `transcript` |
+
+Three properties make the oracles safe to run unattended in the pod:
+
+- **Test-mode / replay, never prod.** No oracle touches a third party's
+  production endpoint. `roundtrip-check` replays a recorded cassette (or hits the
+  provider's sandbox); `contract-check` replays checked-in payload fixtures at
+  the local handler. The cassettes/fixtures/goldens are reviewed code — a
+  re-recorded one shows up in the `diff`, and unexplained churn is a red flag.
+- **Net-allow scoped per surface.** The guard grants each oracle only the
+  network its surface needs: `pure-calc`/`webhook` get no third-party host at
+  all (local goldens / replayed fixtures), `frontend`/`backend` reach only the
+  loopback dev server, and `external-api`/`payments` get the provider's
+  **sandbox** host — never its production host. `guard-rules.md` carries the
+  per-surface `net-*-sandbox` sets. A change that needs a host its surface's set
+  does not grant was mis-classified — stop and re-run `intent-acceptance`.
+- **Oracle ⇒ autonomy.** `golden-tests` is the only oracle whose green run
+  unlocks `auto-merge` (the surface is deterministic, the oracle *is* the
+  reviewer). Every other oracle proves the behaviour *works* but not that it is
+  *wanted*, so its surface stays `human-gate` regardless of how green the run is.
+
+Step 3 of an implementation prompt runs **exactly** the `oracles[]` the
+classifier selected — no more, no fewer — and the evidence they emit is what the
+done gate consumes. A multi-surface change runs the union of oracles.
+
 ## Evidence-required done gate
 
 The mirror of the ratify gate at the *other* end of the run. The Intent+
