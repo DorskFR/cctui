@@ -470,7 +470,12 @@ async fn current_access_token(state: &AppState, acct: &Account) -> Result<String
     let fresh = matches!(&acct.access_token, Some(t) if !t.is_empty())
         && acct
             .expires_at
-            .is_none_or(|exp| exp > Utc::now() + chrono::Duration::seconds(REFRESH_SKEW_SECS));
+            // A NULL expires_at means we don't know when the token dies, so treat
+            // it as stale and force a refresh — an OAuth access token left without
+            // an expiry would otherwise be forwarded forever and die at ~1h,
+            // causing account-wide 401s (CCT-447). Static accounts are handled
+            // above and never reach here.
+            .is_some_and(|exp| exp > Utc::now() + chrono::Duration::seconds(REFRESH_SKEW_SECS));
     if let (true, Some(t)) = (fresh, &acct.access_token) {
         return Ok(t.clone());
     }
@@ -487,7 +492,8 @@ async fn current_access_token(state: &AppState, acct: &Account) -> Result<String
         let still_fresh = matches!(&reloaded.access_token, Some(t) if !t.is_empty())
             && reloaded
                 .expires_at
-                .is_none_or(|exp| exp > Utc::now() + chrono::Duration::seconds(REFRESH_SKEW_SECS));
+                // NULL expires_at => unknown lifetime => treat as stale and refresh (CCT-447).
+                .is_some_and(|exp| exp > Utc::now() + chrono::Duration::seconds(REFRESH_SKEW_SECS));
         if let (true, Some(t)) = (still_fresh, reloaded.access_token.clone()) {
             return Ok(t);
         }
