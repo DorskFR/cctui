@@ -24,7 +24,13 @@ The third step implements, running exactly the oracle skills the plan selected
 (see the per-surface oracle skills — `golden-tests`, `render-check`,
 `endpoint-tests`, `roundtrip-check`, `contract-check`). Each exercises its
 surface in-pod against test-mode / replay and is granted only that surface's
-sandbox net-allow — never a third party's production host.
+sandbox net-allow — never a third party's production host. Before introducing
+any new abstraction it runs the **prior-art** step (cite the existing
+util/type/component you'll reuse, or justify a new one — the retrieval half of
+the consistency problem), and the `[gate]` runs the **consistency-gates**
+(ast-grep / dependency-cruiser / jscpd) so a correct-but-inconsistent change
+cannot transition to finalize; a recurring violation is codified as a one-rule
+change (the ratchet) in the same diff.
 
 The last step is the mirror of the ratify gate — an **evidence-required "done"
 gate** (see the `evidence-gate` skill): the agent must assemble an `evidence[]`
@@ -86,10 +92,20 @@ evidence Step 4 consumes. The network below grants only the per-surface sandbox
 sets — never a third party's production host; a surface that needs a host its set
 does not grant was mis-classified. Commit. Push only in Step 4.
 
+**Before** you write the first new utility/type/component, run the `prior-art`
+skill: search the generated helper index (`docs/helper-index.md`) for an existing
+one and cite the prior art you'll reuse, or justify a new one. The retrieval gate
+catches reinvention up front, where it is cheapest.
+
 The `[gate]` below is a **deterministic transition gate** (guard hardening): the
 transition into Step 4 will not fire until `make oracle-check` exits 0, so the
-finalize step cannot be reached on a claim of "done" — the gate is the proof. A
-real pack points it at whatever command runs its selected oracles green (here a
+finalize step cannot be reached on a claim of "done" — the gate is the proof. The
+same target chains the **consistency-gates** (`make consistency-check` —
+ast-grep / dependency-cruiser / jscpd), so a change that is correct but
+*inconsistent* (banned API, broken layer boundary, copy-paste) also cannot
+transition; fix the violation rather than suppress it, and codify a recurring one
+as a one-rule change in the same diff (the ratchet). A real pack points the gate
+at whatever command runs its selected oracles + consistency gates green (here a
 placeholder `make` target). On entry to each step the guard re-injects this
 step's prompt verbatim plus a compact-context directive, so a long run re-anchors
 on the trusted instructions rather than its own drifting summary.

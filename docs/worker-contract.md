@@ -470,6 +470,45 @@ that evidence is real; and the re-injection keeps the agent anchored on the
 ratified spec the whole way. The example pack wires a `[gate]` on the implement
 step of `prompts/example-task.md`.
 
+## Consistency gates + discoverability
+
+The oracles prove the change *works* and the evidence gate proves it is
+finalized on proof — but neither catches the change that is **correct yet
+inconsistent**: a banned API, a crossed layering boundary, logic re-implemented
+that already exists. That class is ~80% **human-caught** at review (the
+review-mining finding); the bot passes correctness but is blind to "we already
+have this" and "we don't do it that way here". These are not verification
+failures — they are **retrieval** (the agent didn't know the helper existed) and
+**codification** (the convention lived in a reviewer's head) failures. CCT-441
+closes both, and the close lives in the repo so it protects humans too.
+
+**Deterministic consistency gates (codification + detection).** Three
+repo-resident gates run in the implement step and chain into its `[gate]`:
+structural lint (`ast-grep` / Semgrep — banned APIs, house patterns), layering
+boundaries (`dependency-cruiser`), and copy-paste detection (`jscpd`). A
+correct-but-inconsistent change cannot transition to finalize until they are
+green; a violation is fixed (not suppressed), and a **recurring** one is codified
+as a **one-rule change in the same diff** — the *ratchet* that turns a recurring
+review comment into a mechanical gate. The pattern is the `consistency-gates`
+skill plus the implement step's `[gate]` (a real pack chains `make
+consistency-check` into the oracle gate). A suppressed rule is a `judgment`
+decision, visible in the `diff` evidence.
+
+**Prior-art search (retrieval, up front).** jscpd catches a *paste* after the
+fact but cannot catch a *reinvention* — code written from scratch because the
+agent never knew the helper existed. So a **generated helper/utility index**
+(`docs/helper-index.md`, regenerated in CI from an export/doc-comment scan, never
+hand-maintained) makes the repo's reusable surface discoverable, and the
+implement step requires a **cite-prior-art** sub-step: before introducing any new
+util/type/component, the agent searches the index and either cites the existing
+one it will reuse or justifies a new one (`prior_art:` block). The pattern is the
+`prior-art` skill. The two bracket reinvention from both sides — the citation
+makes the agent reuse before it writes, the gate catches it if it pasted anyway.
+
+The acceptance for the epic: a new mechanical convention becomes a one-rule PR,
+not a recurring review comment, and the implement step cites prior art before
+introducing a new utility.
+
 ## Comment handling (classify, defend-don't-cave)
 
 The run does not end when the PR opens — reviewers comment, and the agent has to
