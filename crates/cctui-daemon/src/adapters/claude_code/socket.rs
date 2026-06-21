@@ -132,9 +132,16 @@ pub async fn attach_permission_response(socket: &Path, short: &str, allow: bool)
 /// Submit the current draft in a worker PTY. Used after multiline `reply`
 /// payloads: current Claude builds can accept the text into the composer but
 /// leave it as an unsent draft, which is most visible for attachment messages
-/// because the web UI appends staged file paths on separate lines.
+/// because the web UI appends staged file paths on separate lines (CCT-442).
+///
+/// The submit `\r` is sent as the SECOND chunk of an attach sequence so it
+/// inherits the 350ms inter-chunk pacing in `attach_send_chunks`: a bare `\r`
+/// fired immediately after the attach ack races the `reply` op's draft paste
+/// (the composer is still ingesting/rendering the multiline text) and is
+/// dropped, leaving the message stuck as an unsent draft. The leading empty
+/// chunk is a no-op write that just buys the draft time to settle before Enter.
 pub async fn attach_submit(socket: &Path, short: &str) -> Result<()> {
-    attach_send_keys(socket, short, b"\r").await
+    attach_send_chunks(socket, short, &[Vec::new(), b"\r".to_vec()]).await
 }
 
 /// Answer a pending `AskUserQuestion` form natively (CCT-226): inject the
