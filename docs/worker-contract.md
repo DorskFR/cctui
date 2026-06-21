@@ -151,6 +151,33 @@ Flows add their own fields on top (e.g. `review-pr` adds `review_id`, `verdict`,
 bearer capability — whoever holds it can forge the verdict — so it is never
 logged.
 
+An implementation flow that opens a PR carries a required **`evidence[]`** array
+alongside the envelope — the proof that backs a `success` verdict (see *Evidence-
+required done gate*). Each entry is `{ kind, surface, summary, detail }`:
+
+```jsonc
+{
+  "task_id": "…",
+  "flow":    "implement",
+  "status":  "success",
+  "evidence": [
+    { "kind": "test-run", "surface": "pure-calc",
+      "summary": "all 14 parser tests pass",
+      "detail":  "$ cargo test -p cctui-guard\n… 14 passed; 0 failed" },
+    { "kind": "diff", "surface": "pure-calc",
+      "summary": "adds evidence kind to the parser",
+      "detail":  "@@ … @@\n+…" }
+  ]
+}
+```
+
+`evidence[]` is **required to be non-empty for a `success` finalize** on a flow
+that touches code — a `success` callback with an empty (or absent) `evidence[]`
+is a contract violation; the gate must instead report `needs_human` with what is
+blocked. The array is consumed by the PR renderer (one section per surface) and,
+longer-term, by `cctui-github` (diff viewer + review-draft store + evidence
+attachments) — the not-yet-built crate is the natural home for richer rendering.
+
 ## Hardening report
 
 Two parts, surfaced for the daemon to attach as session metadata:
@@ -280,3 +307,38 @@ auto-ratify and skip the round-trip.
 The artifact is **persisted and reused verbatim** as the acceptance script at
 the end of the run — the success condition promised up front is the one the
 deliverable is checked against — and is attached to the session + PR.
+
+## Evidence-required done gate
+
+The mirror of the ratify gate at the *other* end of the run. The Intent+
+Acceptance gate catches a misread before code is written; the evidence gate stops
+a confident-but-wrong deliverable from being finalized on an **assertion** —
+"evidence, not assertions". An implementation prompt should make its **last** step
+an evidence gate that refuses the finalize / open-PR transition until the result
+carries a populated `evidence[]` for the surfaces the change touched. The pattern
+lives in the example pack as the `evidence-gate` skill plus the final step of
+`prompts/example-task.md`.
+
+After the change is made and the deployed change is run against the Acceptance
+script (verbatim, from Step 1), the agent assembles `evidence[]` — typed,
+self-contained artifacts that *show* each acceptance condition holds:
+
+- `test-run` — the command + its full output (exit status visible).
+- `diff` — the unified diff / key hunks (required for every surface; bounds what
+  was touched).
+- `screenshot` / `video` — UI behaviour for `frontend` / `brand-visible`.
+- `transcript` — the real round-trip for `external-api` / `webhook` / `payments`.
+- `coverage` — the coverage delta where a `test-run` is required (never a
+  substitute for one).
+
+The required kind(s) are keyed per surface class (`pure-calc` → `test-run`+`diff`,
+`frontend` → `screenshot`+`diff`, `external-api`/`webhook`/`payments` →
+`transcript`+`diff`, etc.); the `evidence-gate` skill carries the full table.
+
+The gate is enforced by the guard, not by convention: `remote-write` (push /
+open-PR) is granted **only** in the final step, so the agent cannot finalize from
+an earlier step — the evidence step is the only door to a PR. A `success` callback
+on a code-touching flow **must** carry a non-empty `evidence[]` (see *Result
+callback*); a deliverable that cannot produce its required evidence reports
+`needs_human` instead. The evidence is rendered on the PR body (one section per
+surface) so human review is a glance at the proof, not a re-run of the app.

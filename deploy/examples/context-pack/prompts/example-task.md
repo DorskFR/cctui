@@ -12,6 +12,13 @@ transition into the implement step unlock. The gate is structural — the guard
 will not let Step 1 reach implementation without passing through it, so a
 misread is caught for ~30s of human attention instead of at PR time.
 
+The last step is the mirror gate — an **evidence-required "done" gate** (see the
+`evidence-gate` skill): the agent must assemble an `evidence[]` array proving
+each acceptance condition before the open-PR transition unlocks. The guard makes
+this structural too — `remote-write` is only granted in the final step, so the
+agent cannot push or open a PR without passing through evidence collection.
+Human review becomes a glance at the evidence, not a re-run of the app.
+
 # Step 1: Intent + Acceptance (ratify before implement)
 
 Gather context — read the task, the referenced docs, and the relevant code; do
@@ -38,11 +45,16 @@ Make the change, run the tests, and commit. Push only when the work is complete.
 [network]: net-model
 [transition]: 3, Exit
 
-# Step 3: Accept
+# Step 3: Accept (evidence-required done gate)
 
 Run the deployed change against the Acceptance section of the Step 1 artifact —
-verbatim. Attach the evidence to the PR. Push only once every acceptance
-condition is observably met.
+verbatim. Then run the `evidence-gate` skill: assemble the `evidence[]` array —
+test-run output, the diff, screenshots/transcripts, coverage delta — keyed to
+the surfaces the change touched, with one entry backing each acceptance
+condition. Refuse to finalize (report `status: "success"`) until every surface
+has its required evidence; otherwise report `status: "needs_human"` with what is
+blocked. Only once `evidence[]` is populated and every acceptance condition is
+observably met: render the evidence on the PR body and push / open the PR.
 
 [allowed]: all-read, remote-write, Bash
 [disallowed]:
