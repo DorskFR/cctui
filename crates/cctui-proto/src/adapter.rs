@@ -383,6 +383,15 @@ pub enum AdapterCommand {
         /// records a genuine `tool_result`; `text` remains the fallback carrier.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ask_picks: Option<Vec<Vec<usize>>>,
+        /// Gateway env re-minted by the server for the session's bound OAuth
+        /// account, carried on every reply so that if the daemon has to
+        /// cold-resume a hibernated worker to deliver it, the revived worker
+        /// gets a fresh valid `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_BASE_URL` (or
+        /// OpenAI pair) instead of launching with empty env and 401ing
+        /// (CCT-460). Ignored when the worker is already alive; empty for
+        /// sessions with no account binding.
+        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        env: std::collections::BTreeMap<String, String>,
     },
     /// Interrupt the in-flight turn WITHOUT tearing the session down — the
     /// keep-alive equivalent of pressing Esc in the TUI (CCT-210). Distinct
@@ -756,7 +765,12 @@ mod tests {
     #[test]
     fn adapter_command_reply_kill_perm_roundtrip() {
         let cases = vec![
-            AdapterCommand::Reply { local_id: "s1".into(), text: "go on".into(), ask_picks: None },
+            AdapterCommand::Reply {
+                local_id: "s1".into(),
+                text: "go on".into(),
+                ask_picks: None,
+                env: Default::default(),
+            },
             AdapterCommand::Kill { local_id: "s1".into(), signal: Some(15) },
             AdapterCommand::Kill { local_id: "s1".into(), signal: None },
             AdapterCommand::PermissionResponse {

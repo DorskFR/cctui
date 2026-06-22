@@ -109,6 +109,10 @@ async fn handle_message(
 ) {
     // NoDaemon / NoAdapter are expected for sessions whose daemon is momentarily
     // offline — that is exactly the case the ack lets the client recover from.
+    // Carry re-minted gateway env on the reply so a reply-driven cold-resume of
+    // a hibernated worker revives it with a fresh valid token rather than empty
+    // env (CCT-460). Ignored when the worker is already alive.
+    let env = crate::routes::gateway::resume_env_for_session(state, &session_id).await;
     let dispatch = crate::daemon_dispatch::dispatch(
         state,
         &session_id,
@@ -116,6 +120,7 @@ async fn handle_message(
             local_id: session_id.clone(),
             text: content,
             ask_picks,
+            env,
         },
     )
     .await;

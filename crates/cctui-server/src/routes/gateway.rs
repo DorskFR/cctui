@@ -193,6 +193,43 @@ pub async fn mint_session_env_for_account(
     Ok(Some(mint_env_for_account(state, account_id, &provider, session_id).await?))
 }
 
+/// Resolve a session's bound OAuth account and re-mint its gateway env, ready
+/// to hand to the daemon on any wake path (explicit resume *or* reply-driven
+/// cold-resume) so a revived worker routes through the gateway with a fresh
+/// valid token instead of launching with empty env and 401ing (CCT-460).
+///
+/// The binding is durable on `sessions.account_id`; falls back to the
+/// most-recent non-revoked `session_tokens` row for sessions bound before that
+/// column was populated. Returns empty env (never errors) for sessions with no
+/// account binding — callers attach it unconditionally.
+pub async fn resume_env_for_session(
+    state: &AppState,
+    session_id: &str,
+) -> std::collections::BTreeMap<String, String> {
+    let account_id: Option<Uuid> = sqlx::query_scalar(
+        "SELECT COALESCE( \
+             (SELECT account_id::uuid FROM sessions WHERE id = $1 AND account_id IS NOT NULL), \
+             (SELECT account_id FROM session_tokens \
+               WHERE session_id = $1 AND revoked_at IS NULL \
+               ORDER BY created_at DESC LIMIT 1) \
+         )",
+    )
+    .bind(session_id)
+    .fetch_optional(&state.pool)
+    .await
+    .ok()
+    .flatten();
+    let Some(aid) = account_id else { return Default::default() };
+    match mint_session_env_for_account(state, aid, session_id).await {
+        Ok(Some(env)) => env,
+        Ok(None) => Default::default(),
+        Err(e) => {
+            tracing::error!(%session_id, "re-mint gateway env on wake failed: {e}");
+            Default::default()
+        }
+    }
+}
+
 /// Mint a fresh opaque session token bound to `(session_id, account_id)`,
 /// persist the account on the session row so the binding is durable across id
 /// rotation / restart (CCT-460), and return the gateway env for the account's
@@ -1109,14 +1146,8 @@ mod tests {
         let provider = auth_error(AuthStage::ProviderOauth, true);
         assert_eq!(session.status(), axum::http::StatusCode::UNAUTHORIZED);
         assert_eq!(provider.status(), axum::http::StatusCode::UNAUTHORIZED);
-        assert_eq!(
-            session.headers().get("x-cctui-auth-stage").unwrap(),
-            "session-token"
-        );
-        assert_eq!(
-            provider.headers().get("x-cctui-auth-stage").unwrap(),
-            "provider-oauth"
-        );
+        assert_eq!(session.headers().get("x-cctui-auth-stage").unwrap(), "session-token");
+        assert_eq!(provider.headers().get("x-cctui-auth-stage").unwrap(), "provider-oauth");
     }
 
     #[test]

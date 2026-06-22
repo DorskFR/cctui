@@ -510,6 +510,7 @@ impl Driver {
         local_id: &str,
         text: &str,
         ask_picks: Option<Vec<Vec<usize>>>,
+        env: &std::collections::BTreeMap<String, String>,
     ) -> anyhow::Result<()> {
         // Hibernated sessions (worker exited, job state still on disk)
         // have left `short_by_session`, so fall back to deriving the
@@ -520,7 +521,7 @@ impl Driver {
         // ENOJOB'd by the claude daemon and silently lost. Revive it
         // first via a resume `dispatch`, then deliver as normal. Live
         // workers take the existing path with zero extra ops.
-        self.resume_if_hibernated(sock, &short).await?;
+        self.resume_if_hibernated(sock, &short, env).await?;
         // If an AskUserQuestion form is up in the worker's PTY, a bare
         // `reply` just presses Enter on the highlighted option — claude
         // records option 1 ("Proceed"-style) and the user's text is
@@ -619,10 +620,10 @@ impl Driver {
         let sock = self.ensure_socket().await?;
         match cmd {
             AdapterCommand::SendMessage { local_id, text } => {
-                self.deliver_reply(&sock, &local_id, &text, None).await?;
+                self.deliver_reply(&sock, &local_id, &text, None, &Default::default()).await?;
             }
-            AdapterCommand::Reply { local_id, text, ask_picks } => {
-                self.deliver_reply(&sock, &local_id, &text, ask_picks).await?;
+            AdapterCommand::Reply { local_id, text, ask_picks, env } => {
+                self.deliver_reply(&sock, &local_id, &text, ask_picks, &env).await?;
             }
             AdapterCommand::Kill { local_id, signal } => {
                 let short = self.resolve_short(&local_id)?;
@@ -801,8 +802,9 @@ impl Driver {
         &self,
         sock: &std::path::Path,
         short: &str,
+        env: &std::collections::BTreeMap<String, String>,
     ) -> anyhow::Result<()> {
-        self.resume_worker(sock, short, None, None, &Default::default()).await
+        self.resume_worker(sock, short, None, None, env).await
     }
 
     /// Revive an exited worker bound to its saved conversation. Prefers the
@@ -965,8 +967,7 @@ impl Driver {
         // id the server bound the gateway session token to matches the id the
         // worker registers as (otherwise `account_name` never resolves). Falls
         // back to a fresh uuid for non-account / non-HTTP spawns.
-        let session_id =
-            forced_session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let session_id = forced_session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         // `short` is the first uuid group (8 hex chars); `nonce` is 8 fresh
         // hex chars. Both satisfy the daemon's /^[a-f0-9]{8}$/ validator.
         let short = &session_id[..8];
