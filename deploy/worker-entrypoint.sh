@@ -303,7 +303,12 @@ phase_context_pack() {
     if [ -d "$CONTEXT_DIR/projects" ]; then
         cp -a "$CONTEXT_DIR/projects" "${_home}/projects" 2>/dev/null || true
     fi
-    chown -R "${WORKER_UID}:${WORKER_UID}" "${_home}" 2>/dev/null || true
+    # chown ONLY the paths we just copied in — NOT the whole (NFS-backed) home,
+    # which would hang in NFS RPC like the credentials chown (CCT-457).
+    for _p in CLAUDE.md .claude/skills style projects; do
+        [ -e "${_home}/${_p}" ] \
+            && chown -R "${WORKER_UID}:${WORKER_UID}" "${_home}/${_p}" 2>/dev/null || true
+    done
     # /opt/context stays root-owned + RO under landlock.
     chown -R 0:0 "$CONTEXT_DIR" 2>/dev/null || true
 
@@ -332,7 +337,15 @@ resolve_prompt_path() {
 # no-op when no credential env is present.
 phase_credentials() {
     HOME="/home/${WORKER_USER}" sh /usr/local/bin/cctui-worker-credentials || true
-    chown -R "${WORKER_UID}:${WORKER_UID}" "/home/${WORKER_USER}" 2>/dev/null || true
+    # chown ONLY the credential products the helper may have written as root —
+    # NOT the whole home. The home is NFS-backed and cache-heavy; a recursive
+    # chown over it hangs in NFS RPC and the daemon never launches (CCT-457).
+    # With no credential env the helper writes nothing, so a full home chown is
+    # pure waste; everything else in the home is already worker-owned.
+    for _p in .gitconfig .gnupg .npmrc .mcp.json; do
+        [ -e "/home/${WORKER_USER}/${_p}" ] \
+            && chown -R "${WORKER_UID}:${WORKER_UID}" "/home/${WORKER_USER}/${_p}" 2>/dev/null || true
+    done
 }
 
 # ── Phase 5: Result callback trap ───────────────────────────────────────────
