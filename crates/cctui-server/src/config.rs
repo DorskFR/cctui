@@ -10,23 +10,38 @@ pub struct HttpDispatcherConfig {
     pub token: Option<String>,
 }
 
-/// One dispatcher registration, parsed from `CCTUI_DISPATCHERS` — a JSON array
-/// of `{ "kind": "http"|"kube"|"docker", ... }` (CCT-234). Supersedes the
-/// http-only `CCTUI_HTTP_DISPATCHERS` (still parsed for back-compat); both lists
-/// are merged at startup. `kind` is the discriminant.
-///
-/// CCT-360: the in-process `kube`/`docker` variants were prematurely deleted in
-/// CCT-285, which broke prod (the deployment sets `CCTUI_DISPATCHERS` with a
-/// `kube` entry and the server panicked parsing the unknown kind). They are
-/// restored here, coexisting with the enrolled executor transport
-/// (`/api/v1/dispatcher/{enroll,auth,ws}`), and will be removed for good at the
-/// CCT-291/292 flip once prod migrates fully to the enrolled dispatchers.
-#[derive(Debug, Clone, serde::Deserialize)]
-#[serde(tag = "kind", rename_all = "lowercase")]
-pub enum DispatcherConfig {
-    Http(HttpDispatcherConfig),
-    Kube(crate::dispatchers::kube::KubeDispatcherConfig),
-    Docker(crate::dispatchers::docker::DockerDispatcherConfig),
+/// Parse `CCTUI_DISPATCHERS` (a JSON array of `{ "kind": ..., ... }`, CCT-234)
+/// into the http registrations the server still honors. Only `kind:"http"`
+/// entries are kept; any other kind (the retired in-process `kube`/`docker`
+/// dispatchers, CCT-292) is skipped with a warning rather than failing the
+/// parse — prod still ships a stale `kind:"kube"` entry, and a hard error here
+/// is exactly the crash-loop CCT-360 fixed. Returns `[]` on malformed input.
+fn parse_dispatchers(raw: &str) -> Vec<HttpDispatcherConfig> {
+    let entries: Vec<serde_json::Value> = match serde_json::from_str(raw) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("CCTUI_DISPATCHERS is not a JSON array, ignoring: {e}");
+            return Vec::new();
+        }
+    };
+    entries
+        .into_iter()
+        .filter_map(|v| {
+            let kind = v.get("kind").and_then(|k| k.as_str()).unwrap_or("http");
+            if kind != "http" {
+                let id = v.get("id").and_then(|i| i.as_str()).unwrap_or("?");
+                tracing::warn!(id, kind, "CCTUI_DISPATCHERS entry skipped: in-process kube/docker dispatchers were removed (CCT-292); use an enrolled dispatcher");
+                return None;
+            }
+            match serde_json::from_value::<HttpDispatcherConfig>(v) {
+                Ok(c) => Some(c),
+                Err(e) => {
+                    tracing::warn!("CCTUI_DISPATCHERS http entry skipped (bad shape): {e}");
+                    None
+                }
+            }
+        })
+        .collect()
 }
 
 /// One operator-declared, self-hosted Claude model, parsed from
@@ -65,9 +80,10 @@ pub struct Config {
     pub github_token: Option<String>,
     /// External dispatcher registrations, parsed from `CCTUI_HTTP_DISPATCHERS`.
     pub http_dispatchers: Vec<HttpDispatcherConfig>,
-    /// Native + http dispatcher registrations, parsed from `CCTUI_DISPATCHERS`
-    /// (CCT-234). Merged with `http_dispatchers` at startup.
-    pub dispatchers: Vec<DispatcherConfig>,
+    /// Http dispatcher registrations parsed from `CCTUI_DISPATCHERS` (CCT-234),
+    /// filtered to `kind:"http"` only (CCT-292 retired the in-process variants).
+    /// Merged with `http_dispatchers` at startup.
+    pub dispatchers: Vec<HttpDispatcherConfig>,
     /// How long an `ephemeral` (dispatch/worker) machine may go without being
     /// seen before the reaper soft-deletes it — covers pods that die before
     /// self-deenroll (CCT-183). Configured in hours via
@@ -130,7 +146,7 @@ impl Config {
             dispatchers: env::var("CCTUI_DISPATCHERS")
                 .ok()
                 .filter(|s| !s.trim().is_empty())
-                .map(|s| serde_json::from_str(&s).expect("CCTUI_DISPATCHERS must be a JSON array"))
+                .map(|s| parse_dispatchers(&s))
                 .unwrap_or_default(),
             ephemeral_machine_ttl_secs: env::var("CCTUI_EPHEMERAL_MACHINE_TTL_HOURS")
                 .ok()
@@ -171,7 +187,6 @@ impl Config {
         }
     }
 
-
     pub fn admin_tokens() -> Vec<String> {
         env::var("CCTUI_ADMIN_TOKENS")
             .unwrap_or_default()
@@ -186,39 +201,30 @@ impl Config {
 mod tests {
     use super::*;
 
-    /// CCT-360 regression: prod sets `CCTUI_DISPATCHERS` with a `kind:"kube"`
-    /// entry. CCT-285 dropped the `Kube`/`Docker` variants, so this parse
-    /// panicked and crash-looped the server. Assert all three kinds parse.
+    /// CCT-292: the in-process `kube`/`docker` dispatchers are gone, but prod
+    /// still ships a stale `kind:"kube"` entry in `CCTUI_DISPATCHERS`. The parse
+    /// must skip non-http kinds (not panic — that was the CCT-360 crash-loop)
+    /// and keep the `http` escape-hatch entries.
     #[test]
-    fn cctui_dispatchers_parses_kube_docker_and_http() {
+    fn cctui_dispatchers_skips_kube_docker_keeps_http() {
         let raw = r#"[
             {"kind":"kube","id":"claude-worker","namespace":"ai","source_cronjob":"claude-worker-base","cctui_url":"http://x:8700"},
             {"kind":"docker","id":"docker-worker","image":"worker:latest"},
             {"kind":"http","id":"ext","url":"http://x:9000"}
         ]"#;
-        let parsed: Vec<DispatcherConfig> =
-            serde_json::from_str(raw).expect("CCTUI_DISPATCHERS must parse kube/docker/http");
-        assert_eq!(parsed.len(), 3);
-        match &parsed[0] {
-            DispatcherConfig::Kube(c) => {
-                assert_eq!(c.id, "claude-worker");
-                assert_eq!(c.namespace, "ai");
-                assert_eq!(c.source_cronjob, "claude-worker-base");
-                assert_eq!(c.cctui_url.as_deref(), Some("http://x:8700"));
-            }
-            other => panic!("expected Kube, got {other:?}"),
-        }
-        match &parsed[1] {
-            DispatcherConfig::Docker(c) => {
-                assert_eq!(c.id, "docker-worker");
-                assert_eq!(c.image, "worker:latest");
-            }
-            other => panic!("expected Docker, got {other:?}"),
-        }
-        match &parsed[2] {
-            DispatcherConfig::Http(c) => assert_eq!(c.id, "ext"),
-            other => panic!("expected Http, got {other:?}"),
-        }
+        let parsed = parse_dispatchers(raw);
+        assert_eq!(parsed.len(), 1, "only the http entry survives");
+        assert_eq!(parsed[0].id, "ext");
+        assert_eq!(parsed[0].url, "http://x:9000");
+    }
+
+    /// A `CCTUI_DISPATCHERS` entry with no `kind` defaults to http (back-compat
+    /// with plain `{id,url}` shapes); malformed JSON yields an empty list rather
+    /// than a panic.
+    #[test]
+    fn cctui_dispatchers_defaults_kind_http_and_tolerates_garbage() {
+        assert_eq!(parse_dispatchers(r#"[{"id":"a","url":"http://y"}]"#).len(), 1);
+        assert!(parse_dispatchers("not json").is_empty());
     }
 
     /// `CCTUI_CLAUDE_LITELLM_MODELS` is a JSON array of `{model,label}`; the

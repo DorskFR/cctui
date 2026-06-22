@@ -887,62 +887,24 @@ async fn init_skill_store() -> Arc<skill_store::SkillStore> {
     store
 }
 
-/// Construct the [`dispatchers::Registry`] of env-configured dispatchers.
-/// Merges the legacy `CCTUI_HTTP_DISPATCHERS` with the kind-tagged
-/// `CCTUI_DISPATCHERS` (`http`/`kube`/`docker`).
+/// Construct the [`dispatchers::Registry`] of env-configured `http` escape-hatch
+/// dispatchers, merged from the legacy `CCTUI_HTTP_DISPATCHERS` and the
+/// `kind:"http"` entries of `CCTUI_DISPATCHERS`.
 ///
-/// CCT-360: the in-process `kube`/`docker` dispatchers were prematurely removed
-/// in CCT-285 and are restored here. They coexist with the enrolled executor
-/// transport (`/api/v1/dispatcher/ws`); both are removed at the CCT-291/292
-/// flip once prod fully migrates to the enrolled dispatchers.
-#[allow(clippy::cognitive_complexity)]
+/// CCT-292: the in-process `kube`/`docker` dispatchers are gone — production
+/// dispatches exclusively through enrolled executor binaries
+/// (`/api/v1/dispatcher/ws`), and `resolve_dispatcher` checks enrolled first,
+/// falling back to this http-only registry.
 async fn init_dispatchers(config: &Config) -> Arc<dispatchers::Registry> {
-    use config::DispatcherConfig;
-
     let mut registry = dispatchers::Registry::new();
 
-    for d in &config.http_dispatchers {
-        tracing::info!(id = %d.id, url = %d.url, "http dispatcher registered (legacy CCTUI_HTTP_DISPATCHERS)");
+    for d in config.http_dispatchers.iter().chain(config.dispatchers.iter()) {
+        tracing::info!(id = %d.id, url = %d.url, "http dispatcher registered");
         registry = registry.with(Arc::new(dispatchers::http::HttpDispatcher::new(
             &d.id,
             &d.url,
             d.token.clone(),
         )));
-    }
-
-    for d in &config.dispatchers {
-        match d {
-            DispatcherConfig::Http(c) => {
-                tracing::info!(id = %c.id, url = %c.url, "http dispatcher registered");
-                registry = registry.with(Arc::new(dispatchers::http::HttpDispatcher::new(
-                    &c.id,
-                    &c.url,
-                    c.token.clone(),
-                )));
-            }
-            DispatcherConfig::Kube(c) => {
-                match dispatchers::kube::KubeDispatcher::try_new(c).await {
-                    Ok(k) => {
-                        tracing::info!(id = %c.id, namespace = %c.namespace, source_cronjob = %c.source_cronjob, "kube dispatcher registered");
-                        registry = registry.with(Arc::new(k));
-                    }
-                    Err(e) => {
-                        tracing::warn!(id = %c.id, "kube dispatcher skipped (no kube client): {e}")
-                    }
-                }
-            }
-            DispatcherConfig::Docker(c) => {
-                match dispatchers::docker::DockerDispatcher::try_new(c).await {
-                    Ok(k) => {
-                        tracing::info!(id = %c.id, image = %c.image, "docker dispatcher registered");
-                        registry = registry.with(Arc::new(k));
-                    }
-                    Err(e) => {
-                        tracing::warn!(id = %c.id, "docker dispatcher skipped (no docker socket): {e}")
-                    }
-                }
-            }
-        }
     }
 
     Arc::new(registry)

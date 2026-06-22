@@ -1,32 +1,23 @@
 //! Pluggable [`Dispatcher`]s that turn a [`DispatchSpec`] into a launched
 //! session. Impls:
-//!   * [`enrolled::EnrolledDispatcher`] — the primary, target model: a
-//!     standalone executor service (cctui-dispatcher-kube / -docker) that
-//!     enrolled per account and dials out over `/api/v1/dispatcher/ws`. The
-//!     server sends a key-checked
-//!     [`cctui_proto::ws::DispatcherFrameDown::Dispatch`] over the hub and
-//!     awaits the [`cctui_proto::ws::DispatcherFrameUp::DispatchResult`] reply.
-//!     The server never needs kube/docker API access.
+//!   * [`enrolled::EnrolledDispatcher`] — the primary model: a standalone
+//!     executor service (cctui-dispatcher-kube / -docker) that enrolled per
+//!     account and dials out over `/api/v1/dispatcher/ws`. The server sends a
+//!     key-checked [`cctui_proto::ws::DispatcherFrameDown::Dispatch`] over the
+//!     hub and awaits the [`cctui_proto::ws::DispatcherFrameUp::DispatchResult`]
+//!     reply. The server never needs kube/docker API access.
 //!   * [`http::HttpDispatcher`] — the escape hatch: forward a dispatch to a
 //!     fully external HTTP endpoint (env-configured global registry only).
-//!   * [`kube::KubeDispatcher`] / [`docker::DockerDispatcher`] — the
-//!     transitional in-process dispatchers (CCT-234) that clone a claude-worker
-//!     CronJob into a one-shot k8s Job / run the worker image as a container.
 //!
-//! CCT-360: the in-process `kube`/`docker` dispatchers were prematurely deleted
-//! in CCT-285 (PR #179), which crash-looped prod — the deployment configures
-//! `CCTUI_DISPATCHERS` with a `kind:"kube"` entry and the server panicked
-//! parsing the now-unknown kind. They are restored here and **coexist** with
-//! the enrolled transport: both registries are consulted at dispatch time.
-//! Both in-process impls are removed at the CCT-291/292 flip once prod fully
-//! migrates to the enrolled executor binaries.
+//! CCT-292: the transitional in-process `kube`/`docker` dispatchers (CCT-234,
+//! restored in CCT-360) are removed now that prod dispatches exclusively
+//! through the enrolled executor binaries. Dispatch resolution is enrolled-first
+//! with the `http` escape hatch as the only in-process fallback.
 
 use async_trait::async_trait;
 
-pub mod docker;
 pub mod enrolled;
 pub mod http;
-pub mod kube;
 
 #[derive(Debug, Clone)]
 pub struct DispatchHandle {
@@ -71,9 +62,11 @@ pub enum DispatchError {
 
 /// Lifecycle state of a dispatched handle, reported by [`Dispatcher::status`].
 ///
-/// Part of the trait surface added in CCT-234 (`status`/`cancel`); consumed by
-/// the kube/docker dispatchers and reserved for a future observe/cancel route,
-/// so the variants are allowed to be unused for now.
+/// Part of the trait surface added in CCT-234 (`status`/`cancel`). With the
+/// in-process kube/docker dispatchers gone (CCT-292) no impl reports a live
+/// status today — the enrolled/http dispatchers return `Unsupported` and the
+/// completion webhook treats that as `Wait` — so the variants are reserved for
+/// a future observe/cancel route and allowed to be unused for now.
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum HandleStatus {
