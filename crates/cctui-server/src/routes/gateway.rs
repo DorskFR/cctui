@@ -172,7 +172,38 @@ pub async fn mint_session_env(
         candidates.into_iter().find(|(_, prov)| Family::from_provider(prov) == want)
     };
     let Some((account_id, prov)) = row else { return Ok(None) };
-    let family = Family::from_provider(&prov);
+    Ok(Some(mint_env_for_account(state, account_id, &prov, session_id).await?))
+}
+
+/// Re-mint a gateway session token + env for an **already-resolved** account
+/// (CCT-460). Used on the resume path, where the session already has a bound
+/// account (persisted on `sessions.account_id`) and we just need to re-issue a
+/// fresh token + env for the revived worker rather than re-resolving by name.
+pub async fn mint_session_env_for_account(
+    state: &AppState,
+    account_id: Uuid,
+    session_id: &str,
+) -> Result<Option<std::collections::BTreeMap<String, String>>, sqlx::Error> {
+    let provider: Option<String> =
+        sqlx::query_scalar("SELECT provider FROM oauth_accounts WHERE id = $1")
+            .bind(account_id)
+            .fetch_optional(&state.pool)
+            .await?;
+    let Some(provider) = provider else { return Ok(None) };
+    Ok(Some(mint_env_for_account(state, account_id, &provider, session_id).await?))
+}
+
+/// Mint a fresh opaque session token bound to `(session_id, account_id)`,
+/// persist the account on the session row so the binding is durable across id
+/// rotation / restart (CCT-460), and return the gateway env for the account's
+/// provider family.
+async fn mint_env_for_account(
+    state: &AppState,
+    account_id: Uuid,
+    provider: &str,
+    session_id: &str,
+) -> Result<std::collections::BTreeMap<String, String>, sqlx::Error> {
+    let family = Family::from_provider(provider);
 
     // Mint a fresh opaque session token (same shape/entropy as other secrets)
     // and store only its hash, mapped to the session + account.
@@ -187,6 +218,16 @@ pub async fn mint_session_env(
     .execute(&state.pool)
     .await?;
 
+    // Persist the account on the session row so it survives id rotation and
+    // server restart — the resume path re-mints from here (CCT-460). Best
+    // effort: a session row may not exist yet at spawn-time mint (registration
+    // races), so a no-op update is fine; the token row is the live binding.
+    let _ = sqlx::query("UPDATE sessions SET account_id = $2 WHERE id = $1")
+        .bind(session_id)
+        .bind(account_id.to_string())
+        .execute(&state.pool)
+        .await;
+
     let base = state.config.external_url.trim_end_matches('/');
     let mut env = std::collections::BTreeMap::new();
     match family {
@@ -199,7 +240,7 @@ pub async fn mint_session_env(
             env.insert("OPENAI_API_KEY".into(), token);
         }
     }
-    Ok(Some(env))
+    Ok(env)
 }
 
 /// Resolve a logical model name through a named account's alias map (CCT-406).

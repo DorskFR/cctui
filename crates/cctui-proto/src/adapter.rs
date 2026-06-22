@@ -413,6 +413,14 @@ pub enum AdapterCommand {
         local_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         working_dir: Option<String>,
+        /// Gateway env (`ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` or the
+        /// OpenAI pair) re-minted by the server for the session's bound OAuth
+        /// account, re-injected into the revived worker so it keeps routing
+        /// through the gateway after a hibernation/restart instead of hitting
+        /// the default upstream with no credential and 401ing (CCT-460). Empty
+        /// for sessions with no account binding.
+        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        env: std::collections::BTreeMap<String, String>,
     },
     /// Answer a previously-emitted `AdapterEvent::PermissionRequest`.
     PermissionResponse {

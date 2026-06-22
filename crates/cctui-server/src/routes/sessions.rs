@@ -1466,10 +1466,47 @@ pub async fn resume_session(
             .await
             .ok()
             .flatten();
+
+    // Re-mint the gateway env for the session's bound OAuth account so the
+    // revived worker keeps routing through the gateway instead of hitting the
+    // default upstream with no credential and 401ing (CCT-460). The binding is
+    // durable on `sessions.account_id`; fall back to the most-recent
+    // non-revoked `session_tokens` row for sessions bound before that column
+    // was populated. Empty env for sessions that never used an account.
+    let account_id: Option<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT COALESCE( \
+             (SELECT account_id::uuid FROM sessions WHERE id = $1 AND account_id IS NOT NULL), \
+             (SELECT account_id FROM session_tokens \
+               WHERE session_id = $1 AND revoked_at IS NULL \
+               ORDER BY created_at DESC LIMIT 1) \
+         )",
+    )
+    .bind(&session_id)
+    .fetch_optional(&state.pool)
+    .await
+    .ok()
+    .flatten();
+    let env = if let Some(aid) = account_id {
+        match crate::routes::gateway::mint_session_env_for_account(&state, aid, &session_id).await {
+            Ok(Some(env)) => env,
+            Ok(None) => Default::default(),
+            Err(e) => {
+                tracing::error!(%session_id, "re-mint gateway env on resume failed: {e}");
+                Default::default()
+            }
+        }
+    } else {
+        Default::default()
+    };
+
     crate::daemon_dispatch::dispatch(
         &state,
         &session_id,
-        cctui_proto::adapter::AdapterCommand::Resume { local_id: session_id.clone(), working_dir },
+        cctui_proto::adapter::AdapterCommand::Resume {
+            local_id: session_id.clone(),
+            working_dir,
+            env,
+        },
     )
     .await
     .map_err(|e| {

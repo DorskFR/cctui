@@ -651,7 +651,7 @@ impl Driver {
                 socket::attach_interrupt(&sock, &short).await?;
                 tracing::info!(%short, "interrupted in-flight turn via attach+ESC");
             }
-            AdapterCommand::Resume { local_id, working_dir } => {
+            AdapterCommand::Resume { local_id, working_dir, env } => {
                 let short = self
                     .resolve_short(&local_id)
                     .or_else(|_| self.resolve_short_for_removal(&local_id))?;
@@ -659,7 +659,8 @@ impl Driver {
                 // is gone — archiving runs `claude rm`, which deletes state.json
                 // but keeps the conversation transcript, so an explicit Resume of
                 // an archived session must not depend on it (CCT-345).
-                self.resume_worker(&sock, &short, Some(&local_id), working_dir.as_deref()).await?;
+                self.resume_worker(&sock, &short, Some(&local_id), working_dir.as_deref(), &env)
+                    .await?;
                 tracing::info!(%short, %local_id, "resumed session via explicit command");
             }
             AdapterCommand::PermissionResponse { local_id, request_id, allow } => {
@@ -801,7 +802,7 @@ impl Driver {
         sock: &std::path::Path,
         short: &str,
     ) -> anyhow::Result<()> {
-        self.resume_worker(sock, short, None, None).await
+        self.resume_worker(sock, short, None, None, &Default::default()).await
     }
 
     /// Revive an exited worker bound to its saved conversation. Prefers the
@@ -816,6 +817,7 @@ impl Driver {
         short: &str,
         fallback_session_id: Option<&str>,
         fallback_cwd: Option<&str>,
+        env: &std::collections::BTreeMap<String, String>,
     ) -> anyhow::Result<()> {
         let alive = |resp: &serde_json::Value| {
             resp.get("alive").and_then(serde_json::Value::as_bool).unwrap_or(false)
@@ -865,7 +867,12 @@ impl Driver {
                 "source": "fleet",
                 "cwd": cwd,
                 "launch": { "mode": "prompt", "args": ["--resume", &session_id, "--agent", agent] },
-                "env": {},
+                // Re-inject the gateway env the server re-minted for this
+                // session's bound OAuth account so the revived worker keeps
+                // routing through the gateway rather than hitting the default
+                // upstream with no credential and 401ing (CCT-460). Empty for
+                // sessions with no account binding.
+                "env": env,
                 "isolation": "none",
                 "respawnFlags": ["--agent", agent],
                 "agent": agent,
