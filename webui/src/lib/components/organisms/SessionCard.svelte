@@ -9,7 +9,7 @@
 	import SubagentBadge from '$lib/components/molecules/SubagentBadge.svelte';
 	import type { Label } from '@bindings/Label';
 	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
-	import { Badge, Card, Cluster, Stack, Text, Timestamp } from '@dorsk/tsumikit';
+	import { Badge, Button, Card, Cluster, Stack, Text, Timestamp } from '@dorsk/tsumikit';
 	import { escapeHtml } from '$lib/markdown';
 	import { highlightTerms } from '$lib/search';
 	import { isStaleWorking } from '../../../routes/sessions/sessions.logic';
@@ -40,7 +40,17 @@
 		onAttachLabel,
 		onDetachLabel,
 		onUpdateLabel,
-		onDeleteLabel
+		onDeleteLabel,
+		// Draft sessions (CCT-394): staged spawns not yet launched. When `draft`,
+		// the card body click is inert (no drawer) and a Launch/Edit/Discard action
+		// group renders in place of the live-session affordances, so drafts share
+		// the exact same compact-list / card layout as every other section.
+		draft = false,
+		draftLaunching = false,
+		preview = null,
+		onLaunch,
+		onEdit,
+		onDiscard
 	}: {
 		session: SessionListItem;
 		child?: boolean;
@@ -95,6 +105,15 @@
 		onDetachLabel?: (id: string, labelId: string) => void | Promise<void>;
 		onUpdateLabel?: (labelId: string, patch: { name?: string; color?: string }) => Promise<Label>;
 		onDeleteLabel?: (labelId: string) => void | Promise<void>;
+		// Draft affordances (CCT-394).
+		draft?: boolean;
+		draftLaunching?: boolean;
+		// Optional message-preview override (drafts show their staged prompt here,
+		// since a not-yet-launched session has no last message).
+		preview?: string | null;
+		onLaunch?: (s: SessionListItem) => void;
+		onEdit?: (s: SessionListItem) => void;
+		onDiscard?: (s: SessionListItem) => void;
 	} = $props();
 
 	const s = $derived(session);
@@ -107,6 +126,8 @@
 			? highlightTerms(escapeHtml(s.match_snippet), highlight)
 			: null
 	);
+	// Drafts pass their staged prompt as `preview` since there's no last message.
+	const lastMsg = $derived(preview ?? s.last_message_text);
 	const dirName = $derived(s.working_dir.split('/').filter(Boolean).pop() || '');
 	// Subagents inherit the parent's working dir, so the dir-basename fallback
 	// makes every child read the same ("cctui"). Give nameless subagents the
@@ -195,6 +216,8 @@
 		// Clicks on a nested overlay control (e.g. the Timestamp details popover)
 		// bubble up to the card; they shouldn't also open the session.
 		if (e?.target instanceof Element && e.target.closest('[popovertarget],[popover]')) return;
+		// Drafts aren't openable — their action buttons handle everything.
+		if (draft) return;
 		// A drag (even one that sprang back) shouldn't also open the session.
 		if (didSwipe) {
 			didSwipe = false;
@@ -313,13 +336,13 @@
 				{@render engine()}
 				{@render titleText()}
 				<!-- Message takes the slack and ellipsises aggressively. -->
-				{#if s.match_snippet || s.last_message_text}
+				{#if s.match_snippet || lastMsg}
 					<Text
 						truncate
 						tone={s.match_snippet ? 'default' : 'muted'}
 						size="xs"
 						style="flex:1 1 0;min-width:0"
-						>{s.match_snippet ? `🔍 ${s.match_snippet}` : s.last_message_text}</Text
+						>{s.match_snippet ? `🔍 ${s.match_snippet}` : lastMsg}</Text
 					>
 				{:else}
 					<span style="flex:1 1 auto"></span>
@@ -328,7 +351,7 @@
 				     title, and a bare folder glyph here can't be hovered or copied. -->
 				{@render time()}
 				{#if s.model}<Text tone="muted" size="xs" style="flex:none;white-space:nowrap">{modelFamily(s.model)}</Text>{/if}
-				{@render logo()}
+				{#if draft}{@render draftActions()}{:else}{@render logo()}{/if}
 			</Cluster>
 		{:else}
 			<!-- DETAILED / PROJ = stacked bands (Stack), each horizontal band a Cluster. -->
@@ -371,8 +394,8 @@
 				<!-- 2. PREVIEW: multi-line clamp (grid grows to fill). -->
 				{#if s.match_snippet}
 					<div class="preview match" style={grid ? 'flex:1 1 auto' : ''}>🔍 {#if snippetHtml}{@html snippetHtml}{:else}{s.match_snippet}{/if}</div>
-				{:else if s.last_message_text}
-					<div class="preview last muted" style={grid ? 'flex:1 1 auto' : ''}>{s.last_message_text}</div>
+				{:else if lastMsg}
+					<div class="preview last muted" style={grid ? 'flex:1 1 auto' : ''}>{lastMsg}</div>
 				{/if}
 
 				<!-- 3. FOOTER: path ···· tokens · Σ · model · logo. Wraps when tight so a
@@ -383,9 +406,14 @@
 					     natural width (no shrink) and the footer wraps; elsewhere it flexes. -->
 					<WorkingDir path={s.working_dir} full={detailed} style={detailed ? '' : 'max-width:22rem'} />
 					<Cluster wrap={false} gap="var(--sp-2)" style="margin-left:auto;flex:none">
-						<TokenUsage usage={u} cold={s.cache_cold} sum={rollup ? rollup.tokens : null} />
-						{#if s.model}<Text tone="muted" size="xs" truncate={!detailed} style={detailed ? 'flex:none;white-space:nowrap' : 'max-width:14rem;flex:none'}>{modelShort(s.model)}{s.effort ? ` · ${s.effort}` : ''}</Text>{/if}
-						{@render logo()}
+						{#if draft}
+							{#if s.model}<Text tone="muted" size="xs" style="flex:none;white-space:nowrap">{modelShort(s.model)}{s.effort ? ` · ${s.effort}` : ''}</Text>{/if}
+							{@render draftActions()}
+						{:else}
+							<TokenUsage usage={u} cold={s.cache_cold} sum={rollup ? rollup.tokens : null} />
+							{#if s.model}<Text tone="muted" size="xs" truncate={!detailed} style={detailed ? 'flex:none;white-space:nowrap' : 'max-width:14rem;flex:none'}>{modelShort(s.model)}{s.effort ? ` · ${s.effort}` : ''}</Text>{/if}
+							{@render logo()}
+						{/if}
 					</Cluster>
 				</Cluster>
 			</Stack>
@@ -481,6 +509,25 @@
 
 {#snippet logo()}
 	<span style="flex:none;display:inline-flex"><AdapterIcon adapter={s.adapter_id} size={14} /></span>
+{/snippet}
+
+<!-- Draft action group (CCT-394): Launch / Edit / Discard. Each stops propagation
+     so a button tap never bubbles to the card surface. Rendered in the trailing
+     slot of both the compact row and the detailed/grid footer. -->
+{#snippet draftActions()}
+	<span
+		class="draft-actions"
+		role="presentation"
+		onpointerdown={(e) => e.stopPropagation()}
+		onclick={(e) => e.stopPropagation()}
+	>
+		<Button size="sm" variant="primary" disabled={draftLaunching} onclick={() => onLaunch?.(s)}>
+			{#if draftLaunching}<span class="spin"></span>{/if}
+			Launch
+		</Button>
+		<Button size="sm" onclick={() => onEdit?.(s)}>Edit</Button>
+		<Button size="sm" variant="danger" onclick={() => onDiscard?.(s)}>Discard</Button>
+	</span>
 {/snippet}
 
 <style>
@@ -600,6 +647,14 @@
 		background: var(--accent);
 		border-color: var(--accent);
 		color: var(--bg);
+	}
+	/* Draft action group (CCT-394): keeps Launch/Edit/Discard on one line, sharing
+	   the trailing slot of both the compact row and the detailed footer. */
+	.draft-actions {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--sp-1);
+		flex: none;
 	}
 	/* Fixed gutter slot: star / checkbox / ↳ all share it so titles align. */
 	.gutter {

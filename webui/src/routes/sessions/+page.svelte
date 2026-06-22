@@ -783,6 +783,25 @@
 	{/each}
 {/snippet}
 
+{#snippet draftItems(rows: SessionListItem[], grid: boolean)}
+	{#each rows as s (s.id)}
+		<div class="parent-row" class:dense={dense && !grid}>
+			<SessionCard
+				session={s}
+				{grid}
+				compact={dense && !grid}
+				draft
+				draftLaunching={launchingDraft === s.id}
+				preview={draftPromptPreview(s)}
+				onLaunch={launchDraft}
+				onEdit={editDraft}
+				onDiscard={discardDraft}
+				onopen={() => {}}
+			/>
+		</div>
+	{/each}
+{/snippet}
+
 {#snippet loadMore()}
 	{#if pageError}
 		<div class="empty err"><Text tone="danger">Search failed: {pageError}</Text></div>
@@ -886,37 +905,21 @@
 		{/if}
 
 		{#if sections.has('drafts') && draftRows.length > 0}
+			<!-- Drafts render through the SAME SessionCard path as every other
+			     section (CCT-394), so they honor the card-view / compact toggles
+			     identically; the card surfaces Launch/Edit/Discard in place of the
+			     live-session affordances. -->
 			<div class="section">
 				<div class="group-header">Drafts <Text class="count">{draftRows.length}</Text></div>
-				{#each draftRows as s (s.id)}
-					<div class="draft-row">
-						<div class="draft-main">
-							<div class="draft-title">
-								{s.name || s.working_dir?.split('/').filter(Boolean).pop() || 'Untitled draft'}
-								<Text class="draft-meta" size="sm" tone="muted">
-									{s.adapter_id ?? 'claude-code'} · {s.machine_name ?? s.machine_id}
-								</Text>
-							</div>
-							{#if draftPromptPreview(s)}
-								<div class="draft-prompt">
-									<Text size="sm" tone="muted">{draftPromptPreview(s)}</Text>
-								</div>
-							{/if}
-						</div>
-						<div class="draft-actions">
-							<Button
-								variant="primary"
-								disabled={launchingDraft === s.id}
-								onclick={() => launchDraft(s)}
-							>
-								{#if launchingDraft === s.id}<span class="spin"></span>{/if}
-								Launch
-							</Button>
-							<Button onclick={() => editDraft(s)}>Edit</Button>
-							<Button variant="danger" onclick={() => discardDraft(s)}>Discard</Button>
-						</div>
-					</div>
-				{/each}
+				{#if cardView}
+					{#if dense}
+						<AutoGrid min="calc(18rem * var(--fs-scale))" max="calc(26.75rem * var(--fs-scale))" maxCols={2} gap="var(--sp-2)">{@render draftItems(draftRows, true)}</AutoGrid>
+					{:else}
+						<AutoGrid min="calc(20rem * var(--fs-scale))" max="calc(26.75rem * var(--fs-scale))" gap="var(--sp-3)">{@render draftItems(draftRows, true)}</AutoGrid>
+					{/if}
+				{:else}
+					{@render draftItems(draftRows, false)}
+				{/if}
 			</div>
 		{/if}
 
@@ -1025,39 +1028,6 @@
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
 		color: var(--text-muted);
-	}
-	/* Draft rows (CCT-394): a compact staged-spawn row with Launch/Edit/Discard. */
-	.draft-row {
-		display: flex;
-		align-items: center;
-		gap: var(--sp-3);
-		padding: var(--sp-2) var(--sp-3);
-		border: 1px dashed var(--border-strong);
-		border-radius: var(--r-md);
-		background: var(--bg-elevated);
-	}
-	.draft-main {
-		flex: 1;
-		min-width: 0;
-		display: flex;
-		flex-direction: column;
-		gap: var(--sp-1);
-	}
-	.draft-title {
-		display: flex;
-		align-items: baseline;
-		gap: var(--sp-2);
-		font-weight: 600;
-	}
-	.draft-prompt {
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-	.draft-actions {
-		display: flex;
-		gap: var(--sp-2);
-		flex-shrink: 0;
 	}
 	/* The count is a Text atom; target the passed class via :global. */
 	.group-header :global(.count) {
