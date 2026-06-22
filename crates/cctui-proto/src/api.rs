@@ -24,6 +24,23 @@ pub struct DaemonAuthResponse {
     pub user_id: Uuid,
 }
 
+/// Response for `GET /api/v1/daemon/sessions/{id}/gateway-env` (CCT-460).
+///
+/// The daemon pulls this at every worker (re)launch — spawn, resume,
+/// cold-resume, fork — to obtain the gateway-routing env for the session's
+/// bound OAuth account from the server's durable `sessions.account_id`
+/// binding, instead of relying on each launch path to carry it. `account_bound`
+/// distinguishes "this session has no account, empty env is correct" from
+/// "account bound but the server couldn't mint env" — the latter (account_bound
+/// with empty `env`) is the daemon's signal to refuse the launch rather than
+/// start a worker that would silently hit the default upstream and 401.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GatewayEnvResponse {
+    pub account_bound: bool,
+    #[serde(default)]
+    pub env: std::collections::BTreeMap<String, String>,
+}
+
 /// One declarative adapter configuration row, served to the daemon as part
 /// of the initial `Reconcile` frame so the daemon knows which adapters to
 /// instantiate and with what configuration.

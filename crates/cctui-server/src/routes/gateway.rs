@@ -206,7 +206,26 @@ pub async fn resume_env_for_session(
     state: &AppState,
     session_id: &str,
 ) -> std::collections::BTreeMap<String, String> {
-    let account_id: Option<Uuid> = sqlx::query_scalar(
+    let Some(aid) = resolve_session_account(state, session_id).await else {
+        return Default::default();
+    };
+    match mint_session_env_for_account(state, aid, session_id).await {
+        Ok(Some(env)) => env,
+        Ok(None) => Default::default(),
+        Err(e) => {
+            tracing::error!(%session_id, "re-mint gateway env on wake failed: {e}");
+            Default::default()
+        }
+    }
+}
+
+/// Resolve a session's bound OAuth account id (CCT-460). Durable binding on
+/// `sessions.account_id`, falling back to the most-recent non-revoked
+/// `session_tokens` row for sessions bound before that column existed (or before
+/// the `sessions` row was created at spawn-time mint). `None` when the session
+/// has no account binding at all.
+pub(crate) async fn resolve_session_account(state: &AppState, session_id: &str) -> Option<Uuid> {
+    sqlx::query_scalar(
         "SELECT COALESCE( \
              (SELECT account_id::uuid FROM sessions WHERE id = $1 AND account_id IS NOT NULL), \
              (SELECT account_id FROM session_tokens \
@@ -218,16 +237,7 @@ pub async fn resume_env_for_session(
     .fetch_optional(&state.pool)
     .await
     .ok()
-    .flatten();
-    let Some(aid) = account_id else { return Default::default() };
-    match mint_session_env_for_account(state, aid, session_id).await {
-        Ok(Some(env)) => env,
-        Ok(None) => Default::default(),
-        Err(e) => {
-            tracing::error!(%session_id, "re-mint gateway env on wake failed: {e}");
-            Default::default()
-        }
-    }
+    .flatten()
 }
 
 /// Mint a fresh opaque session token bound to `(session_id, account_id)`,

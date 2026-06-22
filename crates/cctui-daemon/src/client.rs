@@ -1,6 +1,6 @@
 //! HTTP + WS client to a cctui-server.
 
-use cctui_proto::api::{DaemonAuthRequest, DaemonAuthResponse};
+use cctui_proto::api::{DaemonAuthRequest, DaemonAuthResponse, GatewayEnvResponse};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -65,6 +65,30 @@ impl ServerClient {
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
             anyhow::bail!("daemon_auth failed ({status}): {text}");
+        }
+        Ok(resp.json().await?)
+    }
+
+    /// Pull a session's gateway-routing env from the server's durable
+    /// `sessions.account_id` binding (CCT-460). Called by the claude adapter's
+    /// launch chokepoint on every worker (re)launch so the gateway credential is
+    /// re-derived from the DB rather than relying on volatile process/in-memory
+    /// state surviving a daemon / claude-daemon restart or a session-id rotation.
+    pub async fn gateway_env(
+        &self,
+        machine_key: &str,
+        session_id: &str,
+    ) -> anyhow::Result<GatewayEnvResponse> {
+        let url = format!(
+            "{}/api/v1/daemon/sessions/{}/gateway-env",
+            self.base_url.trim_end_matches('/'),
+            session_id,
+        );
+        let resp = self.http.get(&url).bearer_auth(machine_key).send().await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("gateway_env failed ({status}): {text}");
         }
         Ok(resp.json().await?)
     }

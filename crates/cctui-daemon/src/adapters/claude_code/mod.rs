@@ -74,7 +74,9 @@ impl Adapter for ClaudeCodeAdapter {
             tracing::info!("claude-code adapter starting in claude-daemon mode");
             let cfg = control::DriverConfig::from_value(&ctx.config);
             let driver =
-                control::Driver::new(cfg, ctx.events.clone(), ctx.commands, ctx.shutdown.clone());
+                control::Driver::new(cfg, ctx.events.clone(), ctx.commands, ctx.shutdown.clone())
+                    // Gateway-env launch chokepoint source (CCT-460).
+                    .with_server(ctx.server.clone(), ctx.machine_key.clone());
             // The `AskUserQuestion` PreToolUse hook (CCT-167) delivers the
             // pending question here over the daemon's local socket. The hook
             // reports claude's live `session_id`; the driver's shared map

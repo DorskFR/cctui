@@ -21,6 +21,13 @@ pub struct AdapterCtx {
     pub shutdown: CancellationToken,
     /// Adapter-specific declarative config from `adapters_enabled.config`.
     pub config: serde_json::Value,
+    /// Authenticated client back to the cctui-server (CCT-460). Lets an adapter
+    /// pull launch-time data the server owns — currently the per-session gateway
+    /// env resolved from `sessions.account_id`. `None` outside a real daemon run
+    /// (tests construct ctx without a server).
+    pub server: Option<crate::client::ServerClient>,
+    /// The daemon's machine key, paired with `server` for authenticated pulls.
+    pub machine_key: Option<String>,
 }
 
 #[async_trait::async_trait]

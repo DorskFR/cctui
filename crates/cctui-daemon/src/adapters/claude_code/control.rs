@@ -305,6 +305,15 @@ pub struct Driver {
     /// link the server resolves into `parent_id`). `Mutex` for the same reason as
     /// `spawn_model_effort`.
     fork_parent_by_short: std::sync::Mutex<HashMap<String, String>>,
+    /// Authenticated server client + machine key for the launch-time gateway-env
+    /// pull (CCT-460). Every worker (re)launch resolves the session's account
+    /// env here from the server's durable `sessions.account_id` binding, so
+    /// routing survives a daemon / claude-daemon restart and session-id rotation
+    /// instead of depending on env carried by the triggering command. `None` in
+    /// tests / when no server is configured — the chokepoint then falls back to
+    /// the pushed env hint.
+    server: Option<crate::client::ServerClient>,
+    machine_key: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -356,6 +365,29 @@ struct StatusSnapshot {
     effort: Option<String>,
 }
 
+/// Decide the launch env from a server `GatewayEnvResponse` (CCT-460), split out
+/// as a pure function so the fail-closed contract is unit-testable without a
+/// live server. See [`Driver::resolve_launch_env`] for the surrounding flow.
+fn launch_env_decision(
+    local_id: &str,
+    resp: &cctui_proto::api::GatewayEnvResponse,
+    hint: &std::collections::BTreeMap<String, String>,
+) -> anyhow::Result<std::collections::BTreeMap<String, String>> {
+    match resp {
+        // Account-bound but unmintable: refuse rather than launch a worker that
+        // will silently route to the default upstream and 401.
+        r if r.account_bound && r.env.is_empty() => anyhow::bail!(
+            "refusing to launch {local_id}: session is account-bound but the server \
+             returned no gateway env (account missing/unmintable) — launching would \
+             route to the default upstream and 401 (CCT-460)"
+        ),
+        r if r.account_bound => Ok(r.env.clone()),
+        // Not account-bound: no gateway routing required. Keep any hint (e.g.
+        // user-supplied non-gateway env) but don't fail closed.
+        _ => Ok(hint.clone()),
+    }
+}
+
 impl Driver {
     pub fn new(
         cfg: DriverConfig,
@@ -400,7 +432,23 @@ impl Driver {
             churned: false,
             spawn_model_effort: std::sync::Mutex::new(HashMap::new()),
             fork_parent_by_short: std::sync::Mutex::new(HashMap::new()),
+            server: None,
+            machine_key: None,
         }
+    }
+
+    /// Attach the authenticated server client + machine key used by the
+    /// launch-time gateway-env pull (CCT-460). Builder-style so the test
+    /// constructor and any future caller can omit it.
+    #[must_use]
+    pub fn with_server(
+        mut self,
+        server: Option<crate::client::ServerClient>,
+        machine_key: Option<String>,
+    ) -> Self {
+        self.server = server;
+        self.machine_key = machine_key;
+        self
     }
 
     /// How often the periodic reconciliation re-tail runs (CCT-253). Chosen
@@ -521,7 +569,7 @@ impl Driver {
         // ENOJOB'd by the claude daemon and silently lost. Revive it
         // first via a resume `dispatch`, then deliver as normal. Live
         // workers take the existing path with zero extra ops.
-        self.resume_if_hibernated(sock, &short, env).await?;
+        self.resume_if_hibernated(sock, &short, local_id, env).await?;
         // If an AskUserQuestion form is up in the worker's PTY, a bare
         // `reply` just presses Enter on the highlighted option — claude
         // records option 1 ("Proceed"-style) and the user's text is
@@ -660,8 +708,15 @@ impl Driver {
                 // is gone — archiving runs `claude rm`, which deletes state.json
                 // but keeps the conversation transcript, so an explicit Resume of
                 // an archived session must not depend on it (CCT-345).
-                self.resume_worker(&sock, &short, Some(&local_id), working_dir.as_deref(), &env)
-                    .await?;
+                self.resume_worker(
+                    &sock,
+                    &short,
+                    &local_id,
+                    Some(&local_id),
+                    working_dir.as_deref(),
+                    &env,
+                )
+                .await?;
                 tracing::info!(%short, %local_id, "resumed session via explicit command");
             }
             AdapterCommand::PermissionResponse { local_id, request_id, allow } => {
@@ -802,9 +857,45 @@ impl Driver {
         &self,
         sock: &std::path::Path,
         short: &str,
+        local_id: &str,
         env: &std::collections::BTreeMap<String, String>,
     ) -> anyhow::Result<()> {
-        self.resume_worker(sock, short, None, None, env).await
+        self.resume_worker(sock, short, local_id, None, None, env).await
+    }
+
+    /// The single source of gateway-routing env for every worker (re)launch
+    /// (CCT-460): pull it from the server's durable `sessions.account_id` binding
+    /// so routing survives a daemon / claude-daemon restart and session-id
+    /// rotation, instead of trusting whatever env the triggering command carried.
+    ///
+    /// `hint` is that carried env (spawn `spec.env`, reply/resume push) — used as
+    /// a fallback only when the authoritative pull is unavailable (older server,
+    /// transient network) so a rollout or blip degrades to the prior push
+    /// behavior rather than failing.
+    ///
+    /// Fail-closed: when the server reports the session IS account-bound but the
+    /// resolved env is empty (account gone / unmintable), refuse the launch — a
+    /// worker started without the gateway credential would silently route to the
+    /// default upstream and 401. Returning `Err` aborts the dispatch loudly
+    /// instead of producing another silent auth drop.
+    async fn resolve_launch_env(
+        &self,
+        local_id: &str,
+        hint: &std::collections::BTreeMap<String, String>,
+    ) -> anyhow::Result<std::collections::BTreeMap<String, String>> {
+        let (Some(server), Some(mk)) = (self.server.as_ref(), self.machine_key.as_ref()) else {
+            // No server configured (tests / legacy): best-effort hint.
+            return Ok(hint.clone());
+        };
+        match server.gateway_env(mk, local_id).await {
+            Ok(resp) => launch_env_decision(local_id, &resp, hint),
+            Err(e) => {
+                // Pull unavailable (older server / transient). Degrade to the
+                // pushed hint rather than blocking the launch.
+                tracing::warn!(%local_id, "gateway-env pull failed; falling back to pushed env: {e}");
+                Ok(hint.clone())
+            }
+        }
     }
 
     /// Revive an exited worker bound to its saved conversation. Prefers the
@@ -817,6 +908,7 @@ impl Driver {
         &self,
         sock: &std::path::Path,
         short: &str,
+        local_id: &str,
         fallback_session_id: Option<&str>,
         fallback_cwd: Option<&str>,
         env: &std::collections::BTreeMap<String, String>,
@@ -828,6 +920,12 @@ impl Driver {
         if alive(&has) {
             return Ok(());
         }
+
+        // Re-derive the gateway env from the server's durable binding (CCT-460),
+        // falling back to the pushed `env` hint if the pull is unavailable. This
+        // is the path that broke before: a cold-resume relaunched the worker with
+        // empty env and the worker 401ed. Fail-closed inside `resolve_launch_env`.
+        let env = self.resolve_launch_env(local_id, env).await?;
 
         let st = StateJson::read(&self.cfg.jobs_root, short);
         // `/clear`/`/compact` rotate the live conversation into the id recorded
@@ -869,12 +967,15 @@ impl Driver {
                 "source": "fleet",
                 "cwd": cwd,
                 "launch": { "mode": "prompt", "args": ["--resume", &session_id, "--agent", agent] },
-                // Re-inject the gateway env the server re-minted for this
-                // session's bound OAuth account so the revived worker keeps
-                // routing through the gateway rather than hitting the default
-                // upstream with no credential and 401ing (CCT-460). Empty for
-                // sessions with no account binding.
-                "env": env,
+                // Re-inject the gateway env resolved for this session's bound
+                // OAuth account so the revived worker keeps routing through the
+                // gateway rather than hitting the default upstream with no
+                // credential and 401ing (CCT-460). Mirror into `reattachEnv` so
+                // claude's own daemon reapplies it on any internal respawn
+                // (`/clear`, `/compact`) while it's alive. Empty for sessions with
+                // no account binding.
+                "env": &env,
+                "reattachEnv": &env,
                 "isolation": "none",
                 "respawnFlags": ["--agent", agent],
                 "agent": agent,
@@ -1086,8 +1187,15 @@ impl Driver {
         // the respawn/reattach the claude daemon drives after a CLI upgrade.
         // These values are NOT placed in `seed`/`intent`/`launch.args`, so they
         // never reach the transcript, timeline, or `state.json`.
+        //
+        // Resolve the gateway env from the server's durable binding rather than
+        // trusting `spec.env` alone (CCT-460), so a spawn whose server-side mint
+        // silently produced nothing fails closed here instead of launching a
+        // worker that will 401. `spec.env` is the fallback when the pull is
+        // unavailable (older server / transient).
+        let env = self.resolve_launch_env(&session_id, &spec.env).await?;
         let env_json: serde_json::Map<String, serde_json::Value> =
-            spec.env.iter().map(|(k, v)| (k.clone(), json!(v))).collect();
+            env.iter().map(|(k, v)| (k.clone(), json!(v))).collect();
 
         let req = json!({
             "proto": 1,
@@ -1254,6 +1362,18 @@ impl Driver {
             map.insert(short.clone(), parent_local_id.to_owned());
         }
 
+        // Gateway env for the fork child (CCT-460): the fork dispatch used to
+        // hardcode empty env, so a fork of an account-bound conversation 401ed.
+        // Resolve for the child id first; if the server hasn't bound it yet,
+        // inherit the parent's account env so the child routes through the
+        // gateway from its first turn. Empty when neither is account-bound.
+        let mut env = self.resolve_launch_env(&session_id, &Default::default()).await?;
+        if env.is_empty() {
+            env = self.resolve_launch_env(parent_local_id, &Default::default()).await?;
+        }
+        let env_json: serde_json::Map<String, serde_json::Value> =
+            env.iter().map(|(k, v)| (k.clone(), json!(v))).collect();
+
         let req = json!({
             "proto": 1,
             "op": "dispatch",
@@ -1267,8 +1387,8 @@ impl Driver {
                 "source": "fleet",
                 "cwd": cwd,
                 "launch": { "mode": "prompt", "args": args },
-                "env": {},
-                "reattachEnv": {},
+                "env": env_json,
+                "reattachEnv": env_json,
                 "isolation": "none",
                 "respawnFlags": respawn_flags,
                 "agent": agent,
@@ -2240,6 +2360,41 @@ fn ask_keystrokes(questions: &serde_json::Value, picks: &[Vec<usize>]) -> Option
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cctui_proto::api::GatewayEnvResponse;
+
+    fn env_of(pairs: &[(&str, &str)]) -> std::collections::BTreeMap<String, String> {
+        pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
+    }
+
+    #[test]
+    fn launch_env_uses_server_env_when_account_bound() {
+        // CCT-460: a bound session launches with the server-resolved env, not
+        // the (stale/absent) hint.
+        let resp = GatewayEnvResponse {
+            account_bound: true,
+            env: env_of(&[("ANTHROPIC_BASE_URL", "https://x/gateway/anthropic")]),
+        };
+        let got = launch_env_decision("s1", &resp, &env_of(&[("HINT", "1")])).unwrap();
+        assert_eq!(got, resp.env);
+    }
+
+    #[test]
+    fn launch_env_fails_closed_when_bound_but_empty() {
+        // CCT-460: account-bound + empty env must REFUSE the launch rather than
+        // start a worker that silently routes to the default upstream and 401s.
+        let resp = GatewayEnvResponse { account_bound: true, env: Default::default() };
+        let err = launch_env_decision("s1", &resp, &env_of(&[("HINT", "1")])).unwrap_err();
+        assert!(err.to_string().contains("account-bound"), "got: {err}");
+    }
+
+    #[test]
+    fn launch_env_uses_hint_when_not_bound() {
+        // No account binding: gateway env isn't required; preserve any hint
+        // (e.g. user-supplied non-gateway env) and never fail closed.
+        let resp = GatewayEnvResponse { account_bound: false, env: Default::default() };
+        let hint = env_of(&[("FOO", "bar")]);
+        assert_eq!(launch_env_decision("s1", &resp, &hint).unwrap(), hint);
+    }
 
     #[test]
     fn ask_keystrokes_single_question_single_select() {

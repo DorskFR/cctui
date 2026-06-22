@@ -240,7 +240,14 @@ impl Supervisor {
                 continue;
             };
             let token = shutdown.child_token();
-            let (ctx, channels) = build_ctx(cfg.config.clone(), token.clone());
+            // Hand the adapter an authenticated server client + machine key so
+            // its launch chokepoint can pull per-session gateway env (CCT-460).
+            let (ctx, channels) = build_ctx(
+                cfg.config.clone(),
+                token.clone(),
+                Some(self.client.clone()),
+                Some(self.machine_key.clone()),
+            );
             let adapter = factory.build(cfg.config);
             let adapter_id_for_pump = id.clone();
             let event_tx = event_tx.clone();

@@ -63,6 +63,87 @@ pub async fn auth(
     }))
 }
 
+// ---- /api/v1/daemon/sessions/{id}/gateway-env ----
+
+/// Resolve a session's gateway-routing env for the daemon's launch chokepoint
+/// (CCT-460). The daemon calls this at every worker (re)launch — spawn, resume,
+/// cold-resume, fork — so the gateway credential comes from the server's durable
+/// `sessions.account_id` binding rather than from whatever env the triggering
+/// command happened to carry. This is what makes routing survive a daemon /
+/// claude-daemon restart and session-id rotation: the env is re-derived from the
+/// DB, not from volatile process/in-memory state.
+///
+/// Self-authenticating like [`auth`]/[`ws`]: the machine key is the Bearer.
+/// Scoped to the machine's owning user so a daemon can't resolve another user's
+/// account env.
+///
+/// Returns `{account_bound, env}`:
+///   * no binding → `{false, {}}` (no gateway routing needed; launch as-is)
+///   * bound + mintable → `{true, env}` (inject and launch)
+///   * bound + unmintable (account gone) → `{true, {}}` (daemon fails closed)
+///   * transient DB error → 500 (daemon falls back to the pushed env hint)
+pub async fn session_gateway_env(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Path(session_id): Path<String>,
+) -> Result<Json<cctui_proto::api::GatewayEnvResponse>, StatusCode> {
+    let token = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let ctx = state.auth_config.validate(token).await.ok_or(StatusCode::UNAUTHORIZED)?;
+    if ctx.machine_id.is_none() {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    // User-scope: only resolve env for sessions owned by the machine's user. A
+    // session row that exists but belongs to another user yields "not bound"
+    // (the daemon launches without gateway env) rather than leaking that user's
+    // account credential. A missing row (spawn-time race before register) is
+    // allowed through — the account resolves via the freshly-minted token row.
+    let owner: Option<Uuid> = sqlx::query_scalar("SELECT user_id FROM sessions WHERE id = $1")
+        .bind(&session_id)
+        .fetch_optional(&state.pool)
+        .await
+        .ok()
+        .flatten();
+    if owner.is_some_and(|o| o != ctx.user_id) {
+        return Ok(Json(cctui_proto::api::GatewayEnvResponse {
+            account_bound: false,
+            env: Default::default(),
+        }));
+    }
+
+    let Some(account_id) =
+        crate::routes::gateway::resolve_session_account(&state, &session_id).await
+    else {
+        return Ok(Json(cctui_proto::api::GatewayEnvResponse {
+            account_bound: false,
+            env: Default::default(),
+        }));
+    };
+
+    match crate::routes::gateway::mint_session_env_for_account(&state, account_id, &session_id)
+        .await
+    {
+        Ok(Some(env)) => {
+            Ok(Json(cctui_proto::api::GatewayEnvResponse { account_bound: true, env }))
+        }
+        // Bound, but the account row is gone — report bound + empty so the daemon
+        // fails closed instead of launching a worker that will 401.
+        Ok(None) => Ok(Json(cctui_proto::api::GatewayEnvResponse {
+            account_bound: true,
+            env: Default::default(),
+        })),
+        // Transient DB failure: let the daemon fall back to its pushed env hint.
+        Err(e) => {
+            tracing::error!(%session_id, "daemon gateway-env mint failed: {e}");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
 // ---- /api/v1/daemon/ws ----
 
 pub async fn ws(

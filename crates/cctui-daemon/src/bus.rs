@@ -25,10 +25,19 @@ pub struct AdapterChannels {
 pub fn build_ctx(
     config: serde_json::Value,
     shutdown: CancellationToken,
+    server: Option<crate::client::ServerClient>,
+    machine_key: Option<String>,
 ) -> (AdapterCtx, AdapterChannels) {
     let (events_tx, events_rx) = mpsc::channel(EVENT_BUFFER);
     let (commands_tx, commands_rx) = mpsc::channel(COMMAND_BUFFER);
-    let ctx = AdapterCtx { events: events_tx, commands: commands_rx, shutdown, config };
+    let ctx = AdapterCtx {
+        events: events_tx,
+        commands: commands_rx,
+        shutdown,
+        config,
+        server,
+        machine_key,
+    };
     let channels = AdapterChannels { events_rx, commands_tx };
     (ctx, channels)
 }

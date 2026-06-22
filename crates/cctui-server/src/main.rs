@@ -126,6 +126,10 @@ async fn main() -> anyhow::Result<()> {
         // user-token-only `api_router` group.
         .route("/api/v1/daemon/auth", post(routes::daemon::auth))
         .route("/api/v1/daemon/ws", get(routes::daemon::ws))
+        // Launch-time gateway-env pull (CCT-460): the daemon resolves a
+        // session's account env here on every worker (re)launch. Self-auths via
+        // the machine-key Bearer, so it sits beside the other daemon endpoints.
+        .route("/api/v1/daemon/sessions/{id}/gateway-env", get(routes::daemon::session_gateway_env))
         // Enrolled-dispatcher endpoints (CCT-285). Carry their own key auth
         // (dispatcher-key Bearer / `?token=`), so they live outside the
         // user-token `api_router` group, like the daemon endpoints.
