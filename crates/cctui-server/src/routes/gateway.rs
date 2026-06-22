@@ -134,14 +134,20 @@ pub async fn mint_session_env(
     adapter_id: &str,
     session_id: &str,
 ) -> Result<Option<std::collections::BTreeMap<String, String>>, sqlx::Error> {
-    // Resolve the account by (user, name), optionally constrained to an explicit
-    // provider. With no provider hint we still disambiguate by family (derived
-    // from the adapter) so a `personal` anthropic and a `personal` openai don't
-    // collide on the machine-spawn path.
+    // Resolve the account by name for the caller — either one they OWN or one
+    // SHARED to them (CCT-458, `account_shares`), preferring their own on a name
+    // clash. Optionally constrained to an explicit provider; with no provider
+    // hint we disambiguate by family (derived from the adapter) so a `personal`
+    // anthropic and a `personal` openai don't collide on the machine-spawn path.
     let row: Option<(Uuid, String)> = if let Some(p) = provider {
         sqlx::query_as(
             "SELECT id, provider FROM oauth_accounts \
-             WHERE user_id = $1 AND name = $2 AND provider = $3",
+             WHERE name = $2 AND provider = $3 \
+               AND (user_id = $1 OR EXISTS ( \
+                   SELECT 1 FROM account_shares s \
+                    WHERE s.account_id = oauth_accounts.id \
+                      AND s.user_id = $1 AND s.revoked_at IS NULL)) \
+             ORDER BY (user_id = $1) DESC LIMIT 1",
         )
         .bind(user_id)
         .bind(account_name)
@@ -151,7 +157,13 @@ pub async fn mint_session_env(
     } else {
         let want = Family::from_adapter(adapter_id);
         let candidates: Vec<(Uuid, String)> = sqlx::query_as(
-            "SELECT id, provider FROM oauth_accounts WHERE user_id = $1 AND name = $2",
+            "SELECT id, provider FROM oauth_accounts \
+             WHERE name = $2 \
+               AND (user_id = $1 OR EXISTS ( \
+                   SELECT 1 FROM account_shares s \
+                    WHERE s.account_id = oauth_accounts.id \
+                      AND s.user_id = $1 AND s.revoked_at IS NULL)) \
+             ORDER BY (user_id = $1) DESC",
         )
         .bind(user_id)
         .bind(account_name)
@@ -209,7 +221,12 @@ pub async fn resolve_account_model(
     let row: Option<(Option<serde_json::Value>, String)> = if let Some(p) = provider {
         sqlx::query_as(
             "SELECT model_aliases, provider FROM oauth_accounts \
-             WHERE user_id = $1 AND name = $2 AND provider = $3",
+             WHERE name = $2 AND provider = $3 \
+               AND (user_id = $1 OR EXISTS ( \
+                   SELECT 1 FROM account_shares s \
+                    WHERE s.account_id = oauth_accounts.id \
+                      AND s.user_id = $1 AND s.revoked_at IS NULL)) \
+             ORDER BY (user_id = $1) DESC LIMIT 1",
         )
         .bind(user_id)
         .bind(account_name)
@@ -220,7 +237,13 @@ pub async fn resolve_account_model(
     } else {
         let want = Family::from_adapter(adapter_id);
         let candidates: Vec<(Option<serde_json::Value>, String)> = sqlx::query_as(
-            "SELECT model_aliases, provider FROM oauth_accounts WHERE user_id = $1 AND name = $2",
+            "SELECT model_aliases, provider FROM oauth_accounts \
+             WHERE name = $2 \
+               AND (user_id = $1 OR EXISTS ( \
+                   SELECT 1 FROM account_shares s \
+                    WHERE s.account_id = oauth_accounts.id \
+                      AND s.user_id = $1 AND s.revoked_at IS NULL)) \
+             ORDER BY (user_id = $1) DESC",
         )
         .bind(user_id)
         .bind(account_name)

@@ -406,7 +406,12 @@ impl Resource for UserResource {
     }
 }
 
-/// OAuth accounts are owned directly (`oauth_accounts.user_id`).
+/// OAuth accounts are owned directly (`oauth_accounts.user_id`) and may be
+/// SHARED to other users via `account_shares` (CCT-458). This overrides the
+/// default `authorize` to add the grant lookup — the CCT-422 sharing seam in
+/// use: admin → owner → live share grant → denied. Mutation stays owner-only
+/// (the edit/delete handlers fold ownership into their SQL, CCT-420), so a
+/// grant only ever confers use/read here.
 struct AccountResource;
 impl Resource for AccountResource {
     async fn owner_of(id: &str, pool: &PgPool) -> Result<Option<Uuid>, sqlx::Error> {
@@ -415,6 +420,33 @@ impl Resource for AccountResource {
             .bind(uuid)
             .fetch_optional(pool)
             .await
+    }
+
+    async fn authorize(
+        ctx: &AuthContext,
+        _action: Action,
+        id: &str,
+        pool: &PgPool,
+    ) -> Result<Decision, sqlx::Error> {
+        if ctx.is_admin() {
+            return Ok(Decision::Allowed);
+        }
+        match Self::owner_of(id, pool).await? {
+            Some(uid) if uid == ctx.user_id => Ok(Decision::Allowed),
+            Some(_) => {
+                let Ok(uuid) = Uuid::parse_str(id) else { return Ok(Decision::NotFound) };
+                let granted: Option<i32> = sqlx::query_scalar(
+                    "SELECT 1 FROM account_shares \
+                     WHERE account_id = $1 AND user_id = $2 AND revoked_at IS NULL LIMIT 1",
+                )
+                .bind(uuid)
+                .bind(ctx.user_id)
+                .fetch_optional(pool)
+                .await?;
+                Ok(if granted.is_some() { Decision::Allowed } else { Decision::Denied })
+            }
+            None => Ok(Decision::NotFound),
+        }
     }
 }
 
