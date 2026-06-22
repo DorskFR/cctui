@@ -22,7 +22,7 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use chrono::Utc;
 use futures_util::StreamExt;
 use uuid::Uuid;
@@ -661,6 +661,61 @@ async fn reload_account(state: &AppState, id: Uuid) -> Option<Account> {
 }
 
 /// `/gateway/anthropic/*path` — passthrough to api.anthropic.com.
+/// Which side of the gateway rejected an authenticated request (CCT-460). The
+/// two are easy to confuse from a worker's point of view — both surface as a
+/// 401 — but they need opposite remedies, so we label every gateway 401 with
+/// one of these in both the body message and the `x-cctui-auth-stage` header.
+#[derive(Clone, Copy)]
+enum AuthStage {
+    /// cctui itself rejected the inbound `cctui_s_…` session token: unknown,
+    /// revoked, or not bound to an account. The LLM login is irrelevant here.
+    SessionToken,
+    /// cctui accepted the session token and mapped it to an account, but the
+    /// upstream LLM provider rejected that account's OAuth credentials (expired
+    /// / revoked refresh token, failed refresh, upstream 401). The cctui token
+    /// is fine; the account needs re-authenticating.
+    ProviderOauth,
+}
+
+/// Build a labeled 401 response (CCT-460). The body uses the provider's native
+/// error envelope so the CLI surfaces the message verbatim, and the
+/// `x-cctui-auth-stage` header makes the cause machine-readable in logs/clients.
+fn auth_error(stage: AuthStage, is_anthropic: bool) -> Response {
+    let (stage_tag, message) = match stage {
+        AuthStage::SessionToken => (
+            "session-token",
+            "cctui gateway rejected the session token: the cctui_s_ credential is \
+             unknown, revoked, or not bound to an account. This is a cctui gateway \
+             credential problem, NOT an LLM provider login problem — re-create or \
+             re-resume the session to mint a fresh token.",
+        ),
+        AuthStage::ProviderOauth => (
+            "provider-oauth",
+            "cctui accepted the session token, but the upstream LLM provider returned \
+             401 for the bound account's OAuth credentials. The cctui token is valid — \
+             re-authenticate the LLM account in cctui.",
+        ),
+    };
+    // Native error envelopes: Anthropic `{type:error, error:{type,message}}`;
+    // OpenAI `{error:{message,type}}`. Both render the message in the CLI.
+    let body = if is_anthropic {
+        serde_json::json!({
+            "type": "error",
+            "error": { "type": "authentication_error", "message": message },
+        })
+    } else {
+        serde_json::json!({
+            "error": { "message": message, "type": "authentication_error" },
+        })
+    };
+    Response::builder()
+        .status(StatusCode::UNAUTHORIZED)
+        .header(http::header::CONTENT_TYPE, "application/json")
+        .header("x-cctui-auth-stage", stage_tag)
+        .body(Body::from(body.to_string()))
+        .unwrap_or_else(|_| StatusCode::UNAUTHORIZED.into_response())
+}
+
 pub async fn anthropic(
     State(state): State<AppState>,
     req: Request,
@@ -679,16 +734,26 @@ async fn passthrough(
     prefix: &str,
     upstream_base: &str,
 ) -> Result<Response, StatusCode> {
-    // The worker's bearer is the session token; map it to an account.
-    let session_token = req
+    let is_anthropic = prefix.contains("anthropic");
+
+    // The worker's bearer is the session token; map it to an account. A missing
+    // bearer or one that doesn't resolve is a *cctui* rejection — distinguish it
+    // from a provider rejection so the worker/operator knows which to fix
+    // (CCT-460).
+    let Some(session_token) = req
         .headers()
         .get(http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
-        .ok_or(StatusCode::UNAUTHORIZED)?
-        .to_string();
+        .map(str::to_string)
+    else {
+        return Ok(auth_error(AuthStage::SessionToken, is_anthropic));
+    };
 
-    let acct = resolve_account(&state, &session_token).await.ok_or(StatusCode::UNAUTHORIZED)?;
+    let Some(acct) = resolve_account(&state, &session_token).await else {
+        tracing::info!(stage = "session-token", "gateway 401: session token not resolvable");
+        return Ok(auth_error(AuthStage::SessionToken, is_anthropic));
+    };
 
     // Soft limit (CCT-411): cap cctui's own share of the account's usage windows
     // so it leaves headroom for the human sharing the subscription. Only the
@@ -731,7 +796,16 @@ async fn passthrough(
         }
     }
 
-    let access_token = current_access_token(&state, &acct).await?;
+    // The session token is valid (resolved above); a failure to obtain an
+    // upstream access token here is a provider-credential problem (no/expired
+    // refresh token, failed refresh) — label it as such (CCT-460).
+    let access_token = match current_access_token(&state, &acct).await {
+        Ok(t) => t,
+        Err(_) => {
+            tracing::warn!(account = %acct.id, stage = "provider-oauth", "gateway 401: no upstream access token for account");
+            return Ok(auth_error(AuthStage::ProviderOauth, is_anthropic));
+        }
+    };
 
     // Per-account upstream (CCT-399): a compatible endpoint overrides the
     // built-in upstream with its stored `base_url`; native subscription accounts
@@ -829,6 +903,16 @@ async fn passthrough(
     // 529, SSE content-type — all verbatim) and stream the body.
     let status =
         StatusCode::from_u16(upstream.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+
+    // The session token was accepted by cctui (we got this far), so a 401 from
+    // the upstream provider means the account's OAuth credentials are bad, not
+    // the cctui token. Replace the opaque upstream 401 with a labeled one so the
+    // worker/operator re-authenticates the account rather than the session
+    // (CCT-460).
+    if status == StatusCode::UNAUTHORIZED {
+        tracing::warn!(account = %acct.id, stage = "provider-oauth", "gateway 401: upstream provider rejected account credentials");
+        return Ok(auth_error(AuthStage::ProviderOauth, is_anthropic));
+    }
 
     // A successful upstream call clears any soft-limit block on this session
     // (CCT-444): after the user switches accounts (or a window resets) the next
@@ -1014,8 +1098,42 @@ pub async fn fetch_account_usage(
 
 #[cfg(test)]
 mod tests {
-    use super::{Family, usage_cache_stale};
+    use super::{AuthStage, Family, auth_error, usage_cache_stale};
     use std::time::Duration;
+
+    #[test]
+    fn auth_error_distinguishes_session_token_from_provider_oauth() {
+        // CCT-460: the two 401s must be tellable apart — different stage header
+        // and a message naming which credential to fix.
+        let session = auth_error(AuthStage::SessionToken, true);
+        let provider = auth_error(AuthStage::ProviderOauth, true);
+        assert_eq!(session.status(), axum::http::StatusCode::UNAUTHORIZED);
+        assert_eq!(provider.status(), axum::http::StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            session.headers().get("x-cctui-auth-stage").unwrap(),
+            "session-token"
+        );
+        assert_eq!(
+            provider.headers().get("x-cctui-auth-stage").unwrap(),
+            "provider-oauth"
+        );
+    }
+
+    #[test]
+    fn auth_error_uses_native_error_envelope_per_family() {
+        // Anthropic: top-level `type:error`; OpenAI: bare `error` object. The CLI
+        // only renders the message when the envelope matches its provider.
+        let anthropic = auth_error(AuthStage::SessionToken, true);
+        let openai = auth_error(AuthStage::SessionToken, false);
+        assert_eq!(
+            anthropic.headers().get(axum::http::header::CONTENT_TYPE).unwrap(),
+            "application/json"
+        );
+        assert_eq!(
+            openai.headers().get(axum::http::header::CONTENT_TYPE).unwrap(),
+            "application/json"
+        );
+    }
 
     #[test]
     fn cold_usage_cache_is_stale() {
