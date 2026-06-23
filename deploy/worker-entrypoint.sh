@@ -475,6 +475,7 @@ phase_hardening
 log "dropping privileges -> cctui-supervisor -> cctui-daemon"
 exec cctui-supervisor \
     --ro /usr --ro /lib --ro /lib64 --ro /bin --ro /sbin --ro /etc --ro /proc \
+    --ro /prompts \
     --ro "$CONTEXT_DIR" \
     --rw /dev --rw /tmp --rw /workspace --rw "/home/${WORKER_USER}" \
     --rw /var/run/workflow-guard --rw /var/run/guard-proxy \
