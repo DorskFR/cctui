@@ -126,10 +126,18 @@ phase_network() {
                     IFS=$_OLDIFS
                     _h=$(printf '%s' "$_e" | sed 's,:.*$,,')
                     [ -n "$_h" ] || continue
-                    _ip=$(getent hosts "$_h" 2>/dev/null | awk '{print $1; exit}' || true)
+                    # IPv4 only: this is an IPv4 iptables chain, and getent
+                    # hosts would return an AAAA record first for dual-stack
+                    # public hosts (e.g. automation.example.internal), which iptables rejects.
+                    _ip=$(getent ahostsv4 "$_h" 2>/dev/null | awk '{print $1; exit}' || true)
                     if [ -n "$_ip" ]; then
-                        iptables -t nat -A OUTPUT -d "$_ip" -j RETURN
-                        log "iptables: RETURN exempt $_h ($_ip)"
+                        # Don't let one unreachable exempt host (set -e) abort
+                        # the whole guard setup — log and carry on.
+                        if iptables -t nat -A OUTPUT -d "$_ip" -j RETURN 2>/dev/null; then
+                            log "iptables: RETURN exempt $_h ($_ip)"
+                        else
+                            log "WARNING: iptables exempt rule failed for $_h ($_ip)"
+                        fi
                     else
                         log "WARNING: could not resolve WORKER_NET_EXEMPT host $_h"
                     fi
