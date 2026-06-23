@@ -490,6 +490,10 @@ impl Driver {
         if !self.cfg.skip_backfill {
             self.run_backfill().await;
         }
+        // Dispatched-worker bring-up (CCT-471): if this daemon was launched as a
+        // dispatched kube/docker worker, self-start its session before entering
+        // the poll loop. Best-effort — never aborts `run`.
+        self.maybe_dispatch_on_start().await;
         let mut tick = tokio::time::interval(self.cfg.poll_interval);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
@@ -1043,6 +1047,129 @@ impl Driver {
             );
         }
         Ok(())
+    }
+
+    /// Dispatched-worker bring-up (CCT-471).
+    ///
+    /// A kube/docker worker pod is a peer machine whose daemon must *start* the
+    /// dispatched session itself. The server pre-mints the session id + gateway
+    /// token and tells the enrolled dispatcher to spawn the pod, but — unlike a
+    /// desktop machine — it sends no WS `Spawn` command, because every
+    /// dispatched pod registers under the single shared `dispatch` machine row
+    /// and can't be addressed individually. So when the dispatcher-injected env
+    /// (`SESSION_ID` + `TASK_PAYLOAD_JSON`) is present, we self-issue the exact
+    /// control-socket `dispatch` a server-driven spawn would, reusing
+    /// [`Self::spawn`] and forcing the pre-minted `session_id` (CCT-446) so the
+    /// gateway token resolves and the registered id matches the dispatch.
+    ///
+    /// Best-effort: any failure logs and lets the daemon keep observing — it
+    /// never aborts `run`. A normal machine daemon lacks these env vars and is
+    /// unaffected.
+    async fn maybe_dispatch_on_start(&self) {
+        let session_id = match std::env::var("SESSION_ID") {
+            Ok(s) if !s.is_empty() => s,
+            _ => return,
+        };
+        let payload_raw = match std::env::var("TASK_PAYLOAD_JSON") {
+            Ok(s) if !s.is_empty() => s,
+            _ => return,
+        };
+        let payload: serde_json::Value = match serde_json::from_str(&payload_raw) {
+            Ok(v) => v,
+            Err(err) => {
+                tracing::error!(%err, "dispatch-on-start: TASK_PAYLOAD_JSON is not valid JSON");
+                return;
+            }
+        };
+        let spec = match Self::build_dispatch_spec(&payload) {
+            Ok(spec) => spec,
+            Err(err) => {
+                tracing::error!(%err, "dispatch-on-start: could not build session spec");
+                return;
+            }
+        };
+        let sock = match self.ensure_socket().await {
+            Ok(s) => s,
+            Err(err) => {
+                tracing::error!(%err, "dispatch-on-start: claude daemon socket unavailable");
+                return;
+            }
+        };
+        tracing::info!(session_id = %session_id, "dispatch-on-start: launching dispatched session");
+        if let Err(err) = self.spawn(&sock, &spec, Some(session_id.clone())).await {
+            tracing::error!(%err, session_id = %session_id, "dispatch-on-start: spawn failed");
+        } else {
+            tracing::info!(session_id = %session_id, "dispatch-on-start: session dispatched");
+        }
+    }
+
+    /// Build a [`SessionSpec`](cctui_proto::adapter::SessionSpec) from the
+    /// dispatcher's `TASK_PAYLOAD_JSON` (`prompt_file`/`prompt`, `model`,
+    /// `effort`, `repo`, `env`). Working dir is `CCTUI_DISPATCH_WORKDIR`
+    /// (default `/workspace`). Dispatched workers run headless, so the
+    /// permission posture is `Yolo` (bypass — the pod is already sandboxed by
+    /// landlock + seccomp + the guard-proxy).
+    fn build_dispatch_spec(
+        payload: &serde_json::Value,
+    ) -> anyhow::Result<cctui_proto::adapter::SessionSpec> {
+        let prompt = Self::resolve_dispatch_prompt(payload)?;
+        let workdir =
+            std::env::var("CCTUI_DISPATCH_WORKDIR").unwrap_or_else(|_| "/workspace".to_owned());
+        let env: std::collections::BTreeMap<String, String> = payload
+            .get("env")
+            .and_then(serde_json::Value::as_object)
+            .map(|o| {
+                o.iter()
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_owned())))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let name = payload
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned)
+            .or_else(|| std::env::var("TASK_NAME").ok().filter(|s| !s.is_empty()));
+        Ok(cctui_proto::adapter::SessionSpec {
+            adapter_id: cctui_proto::adapter::AdapterId("claude-code".to_owned()),
+            working_dir: Some(workdir),
+            prompt: Some(prompt),
+            name,
+            permission_mode: Some(cctui_proto::adapter::PermissionMode::Yolo),
+            effort: payload.get("effort").and_then(serde_json::Value::as_str).map(ToOwned::to_owned),
+            model: payload.get("model").and_then(serde_json::Value::as_str).map(ToOwned::to_owned),
+            env,
+            bootstrap: serde_json::Value::Null,
+        })
+    }
+
+    /// Resolve the dispatched prompt: an inline `prompt`, else a `prompt_file`
+    /// searched across `CCTUI_DISPATCH_PROMPT_DIRS` (default
+    /// `/opt/context/prompts:/prompts`). An absolute `prompt_file` is read as-is.
+    fn resolve_dispatch_prompt(payload: &serde_json::Value) -> anyhow::Result<String> {
+        if let Some(p) = payload.get("prompt").and_then(serde_json::Value::as_str) {
+            if !p.is_empty() {
+                return Ok(p.to_owned());
+            }
+        }
+        let file = payload
+            .get("prompt_file")
+            .and_then(serde_json::Value::as_str)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("dispatch payload has neither prompt nor prompt_file"))?;
+        if file.starts_with('/') {
+            return std::fs::read_to_string(file)
+                .with_context(|| format!("reading prompt file {file}"));
+        }
+        let dirs = std::env::var("CCTUI_DISPATCH_PROMPT_DIRS")
+            .unwrap_or_else(|_| "/opt/context/prompts:/prompts".to_owned());
+        for dir in dirs.split(':').filter(|d| !d.is_empty()) {
+            let path = std::path::Path::new(dir).join(file);
+            if path.is_file() {
+                return std::fs::read_to_string(&path)
+                    .with_context(|| format!("reading prompt file {}", path.display()));
+            }
+        }
+        anyhow::bail!("prompt_file {file} not found under {dirs}")
     }
 
     /// Spawn a fresh claude session via the `dispatch` op on the `claude
@@ -2374,6 +2501,45 @@ mod tests {
 
     fn env_of(pairs: &[(&str, &str)]) -> std::collections::BTreeMap<String, String> {
         pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
+    }
+
+    #[test]
+    fn dispatch_spec_built_from_payload_with_inline_prompt() {
+        // CCT-471: the dispatcher injects prompt/model/effort/env inside
+        // TASK_PAYLOAD_JSON; the daemon turns it into a headless SessionSpec.
+        let payload = serde_json::json!({
+            "prompt": "do the thing",
+            "model": "opus",
+            "effort": "low",
+            "repo": "acme",
+            "name": "triage-PROJ",
+            "env": { "ANTHROPIC_BASE_URL": "https://x/gateway/anthropic", "ANTHROPIC_AUTH_TOKEN": "cctui_s_x" },
+        });
+        let spec = Driver::build_dispatch_spec(&payload).expect("spec");
+        assert_eq!(spec.prompt.as_deref(), Some("do the thing"));
+        assert_eq!(spec.model.as_deref(), Some("opus"));
+        assert_eq!(spec.effort.as_deref(), Some("low"));
+        assert_eq!(spec.name.as_deref(), Some("triage-PROJ"));
+        assert_eq!(spec.adapter_id.0, "claude-code");
+        assert!(matches!(spec.permission_mode, Some(cctui_proto::adapter::PermissionMode::Yolo)));
+        assert_eq!(spec.env.get("ANTHROPIC_AUTH_TOKEN").map(String::as_str), Some("cctui_s_x"));
+    }
+
+    #[test]
+    fn dispatch_prompt_reads_absolute_file() {
+        let dir = std::env::temp_dir().join(format!("cctui-disp-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("p.md");
+        std::fs::write(&f, "PROMPT BODY").unwrap();
+        let payload = serde_json::json!({ "prompt_file": f.to_str().unwrap() });
+        assert_eq!(Driver::resolve_dispatch_prompt(&payload).unwrap(), "PROMPT BODY");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn dispatch_prompt_errors_when_neither_present() {
+        let payload = serde_json::json!({ "model": "opus" });
+        assert!(Driver::resolve_dispatch_prompt(&payload).is_err());
     }
 
     #[test]
