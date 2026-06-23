@@ -458,6 +458,48 @@ phase_hardening() {
     log "hardening: net_mode=$NET_MODE guard=$GUARD_ON"
 }
 
+# ── Phase 7b: Permission bypass seeding ─────────────────────────────────────
+# A dispatched headless session runs in claude's bypassPermissions mode, which
+# REFUSES to start (prompts the disclaimer) until `bypassPermissionsModeAccepted`
+# is recorded in .claude.json, and prompts a trust dialog until
+# `projects.<cwd>.hasTrustDialogAccepted` is set. The per-pod .claude is a fresh
+# emptyDir every pod, so we seed both. Belt-and-suspenders in settings.json:
+# `skipDangerousModePermissionPrompt` (the disclaimer) + `permissions.defaultMode
+# = bypassPermissions` (unattended, no prompts). Merged into any existing files
+# so the daemon's --settings hooks and managed-settings are untouched. (CCT-475)
+phase_permissions() {
+    _cfgdir="${CLAUDE_CONFIG_DIR:-/home/${WORKER_USER}/.claude}"
+    _cwd="${CCTUI_DISPATCH_WORKDIR:-/workspace}"
+    mkdir -p "$_cfgdir"
+    _cfg="$_cfgdir/.claude.json"
+    if [ -f "$_cfg" ]; then
+        _t=$(mktemp) && jq --arg cwd "$_cwd" \
+            '. + {bypassPermissionsModeAccepted: true}
+             | .projects = ((.projects // {}) | .[$cwd] = ((.[$cwd] // {}) + {hasTrustDialogAccepted: true}))' \
+            "$_cfg" > "$_t" && mv "$_t" "$_cfg"
+    else
+        jq -nc --arg cwd "$_cwd" \
+            '{bypassPermissionsModeAccepted: true, projects: {($cwd): {hasTrustDialogAccepted: true}}}' \
+            > "$_cfg"
+    fi
+    _settings="$_cfgdir/settings.json"
+    if [ -f "$_settings" ]; then
+        _t=$(mktemp) && jq --arg cwd "$_cwd" \
+            '. + {skipDangerousModePermissionPrompt: true}
+             | .permissions = ((.permissions // {}) + {defaultMode: "bypassPermissions"}
+               | .additionalDirectories = (((.additionalDirectories // []) + [$cwd]) | unique))' \
+            "$_settings" > "$_t" && mv "$_t" "$_settings"
+    else
+        jq -nc --arg cwd "$_cwd" \
+            '{skipDangerousModePermissionPrompt: true, permissions: {defaultMode: "bypassPermissions", additionalDirectories: [$cwd]}}' \
+            > "$_settings"
+    fi
+    # .claude is a per-pod emptyDir (not the NFS home), so a recursive chown is
+    # safe here (unlike the home — CCT-457).
+    chown -R "${WORKER_UID}:${WORKER_UID}" "$_cfgdir" 2>/dev/null || true
+    log "permissions: seeded bypass + trust gates (cwd=$_cwd)"
+}
+
 # ── Run the phases (each individually skippable) ─────────────────────────────
 phase_network
 phase_workspace
@@ -465,6 +507,7 @@ phase_context_pack
 phase_credentials
 phase_callback
 phase_guard
+phase_permissions
 phase_hardening
 
 # ── Phase 8: Drop privileges + run ──────────────────────────────────────────
