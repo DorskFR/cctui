@@ -240,6 +240,29 @@ fn resolve_dispatch_account(
     default_account.cloned()
 }
 
+/// Resolve the session id a dispatch should run under (CCT-474).
+///
+/// Claude's daemon derives `short = session_id[..8]` and rejects a dispatch
+/// whose `short` isn't `/^[a-f0-9]{8}$/`, so the id must be UUID-shaped. Returns
+/// `(session_id, display_name)`:
+/// - `None` → a fresh v4 UUID, no display name.
+/// - an already-valid UUID → used as-is, no display name.
+/// - any other (human-readable) id → a DETERMINISTIC UUID-shaped id derived
+///   from its sha256 (so a retried dispatch maps to the same session + Job),
+///   with the original carried as the display name.
+fn resolve_dispatch_session_id(logical: Option<&str>) -> (String, Option<String>) {
+    match logical {
+        None => (uuid::Uuid::new_v4().to_string(), None),
+        Some(s) if uuid::Uuid::parse_str(s).is_ok() => (s.to_owned(), None),
+        Some(s) => {
+            let h = crate::auth::sha256_hex(s);
+            let id =
+                format!("{}-{}-{}-{}-{}", &h[0..8], &h[8..12], &h[12..16], &h[16..20], &h[20..32]);
+            (id, Some(s.to_owned()))
+        }
+    }
+}
+
 /// The OAuth account a dispatcher is bound to (CCT-427), resolved to the
 /// `(name, provider)` `mint_session_env` consumes. Returns `None` when the
 /// dispatcher row carries no `default_account_id` or it points at a deleted
@@ -371,7 +394,14 @@ pub async fn dispatch(
         }
     };
 
-    let session_id = req.session_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    // Claude's daemon derives `short = session_id[..8]` and rejects a dispatch
+    // unless `short` matches /^[a-f0-9]{8}$/ — so the worker's session id must be
+    // UUID-shaped (CCT-474). Callers may pass a human-readable logical id (e.g.
+    // an automation dedup key like `triage-PROJ-2026…`); derive a DETERMINISTIC
+    // UUID-shaped id from it (via sha256, so a retry maps to the same session +
+    // Job) and carry the original as the session display name. A caller that
+    // already passes a real UUID is left unchanged.
+    let (session_id, display_name) = resolve_dispatch_session_id(req.session_id.as_deref());
     let origin = dispatcher.id();
 
     // Alert that a dispatch arrived (CCT-198). Built from the *original* payload
@@ -392,13 +422,13 @@ pub async fn dispatch(
         },
     );
 
-    // We do NOT pre-create a session row (CCT-191): `claude --bg` mints its own
-    // session id and ignores `--session-id`, so a pre-minted row can never be
-    // adopted by the worker's real session — it would just linger as an empty
-    // `dispatch:<origin>` placeholder alongside the real session. Instead the
-    // worker's cctui-daemon registers the real session directly under the
-    // shared `dispatch` machine (so it shows up like any other session). Double
-    // dispatch is still idempotent: the dispatcher derives the k8s Job name from
+    // We do NOT pre-create a session row (CCT-191): the worker's cctui-daemon
+    // self-dispatches the real session on boot (CCT-471) and registers it
+    // directly under the shared `dispatch` machine — forcing this pre-minted
+    // (UUID-shaped) `session_id` (CCT-474) so the registered id matches the id
+    // the gateway token is bound to. A pre-minted row would just linger as an
+    // empty `dispatch:<origin>` placeholder alongside it. Double dispatch is
+    // still idempotent: the dispatcher derives the k8s Job name from
     // `sha(session_id)`, so a repeat maps to the same Job (409 → same handle).
 
     // Resolve the caller's stable dispatch machine and forward its key to the
@@ -418,6 +448,14 @@ pub async fn dispatch(
     })?;
 
     let mut forwarded_payload = req.payload.clone();
+    // Carry the caller's logical id as the session display name (the session id
+    // itself is now a derived UUID, CCT-474) so the UI still shows e.g.
+    // `triage-PROJ-2026…`. Only when the caller didn't already name the session.
+    if let Some(name) = &display_name {
+        if let Some(obj) = forwarded_payload.as_object_mut() {
+            obj.entry("name").or_insert_with(|| serde_json::Value::String(name.clone()));
+        }
+    }
     // The shared dispatch-machine identity + account routing apply to a real
     // owning user (the web UI / automation dispatch with a user token). An admin token
     // (`owner_filter` is `None`) dispatches without the shared identity.
@@ -618,7 +656,32 @@ pub async fn dispatch(
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_dispatch_account;
+    use super::{resolve_dispatch_account, resolve_dispatch_session_id};
+
+    #[test]
+    fn session_id_human_logical_becomes_deterministic_uuid_with_display_name() {
+        let (a, na) = resolve_dispatch_session_id(Some("triage-PROJ-202606231511"));
+        let (b, _) = resolve_dispatch_session_id(Some("triage-PROJ-202606231511"));
+        assert_eq!(a, b, "deterministic across retries");
+        assert!(uuid::Uuid::parse_str(&a).is_ok(), "UUID-shaped: {a}");
+        assert!(a[..8].chars().all(|c| c.is_ascii_hexdigit()), "hex short");
+        assert_eq!(na.as_deref(), Some("triage-PROJ-202606231511"), "logical id kept as name");
+    }
+
+    #[test]
+    fn session_id_real_uuid_passes_through_without_name() {
+        let u = "a1b2c3d4-0000-4000-8000-000000000000";
+        let (id, name) = resolve_dispatch_session_id(Some(u));
+        assert_eq!(id, u);
+        assert!(name.is_none());
+    }
+
+    #[test]
+    fn session_id_none_mints_fresh_uuid() {
+        let (id, name) = resolve_dispatch_session_id(None);
+        assert!(uuid::Uuid::parse_str(&id).is_ok());
+        assert!(name.is_none());
+    }
 
     // Helper: the bound default account a dispatcher carries (CCT-427).
     fn bound(name: &str, provider: Option<&str>) -> (String, Option<String>) {
