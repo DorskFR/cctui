@@ -252,18 +252,49 @@ async fn mint_env_for_account(
 ) -> Result<std::collections::BTreeMap<String, String>, sqlx::Error> {
     let family = Family::from_provider(provider);
 
-    // Mint a fresh opaque session token (same shape/entropy as other secrets)
-    // and store only its hash, mapped to the session + account.
-    let token = format!("cctui_s_{}", crate::auth::mint_secret());
-    let token_hash = crate::auth::sha256_hex(&token);
-    sqlx::query(
-        "INSERT INTO session_tokens (token_hash, session_id, account_id) VALUES ($1, $2, $3)",
-    )
-    .bind(&token_hash)
-    .bind(session_id)
-    .bind(account_id)
-    .execute(&state.pool)
-    .await?;
+    // A session gets ONE stable gateway token for its whole life (CCT-476).
+    // Reuse the existing live token for this session if we have one persisted,
+    // rather than minting a fresh row on every resume — re-minting bloated
+    // `session_tokens` for no reason and left live workers holding a token the
+    // gateway might no longer resolve. The token string is immutable; only its
+    // account binding moves (repointed below) on an account switch (CCT-444).
+    let key = crate::crypto::vault_key();
+    let token = match existing_session_token(state, session_id, &key).await {
+        Some(existing) => {
+            // Repoint the live token to the requested account (and un-revoke,
+            // defensively) so an account switch reuses the same string — the
+            // worker's `ANTHROPIC_AUTH_TOKEN` never changes, the gateway just
+            // resolves it to the new account.
+            let _ = sqlx::query(
+                "UPDATE session_tokens SET account_id = $2, revoked_at = NULL \
+                 WHERE session_id = $1 AND revoked_at IS NULL",
+            )
+            .bind(session_id)
+            .bind(account_id)
+            .execute(&state.pool)
+            .await;
+            existing
+        }
+        None => {
+            // First token for this session: mint a fresh opaque token (same
+            // shape/entropy as other secrets), store its hash AND its
+            // obfuscated plaintext so resume can re-supply the same string.
+            let token = format!("cctui_s_{}", crate::auth::mint_secret());
+            let token_hash = crate::auth::sha256_hex(&token);
+            let enc = crate::crypto::obfuscate(&token, &key);
+            sqlx::query(
+                "INSERT INTO session_tokens (token_hash, session_id, account_id, encrypted_token) \
+                 VALUES ($1, $2, $3, $4)",
+            )
+            .bind(&token_hash)
+            .bind(session_id)
+            .bind(account_id)
+            .bind(&enc)
+            .execute(&state.pool)
+            .await?;
+            token
+        }
+    };
 
     // Persist the account on the session row so it survives id rotation and
     // server restart — the resume path re-mints from here (CCT-460). Best
@@ -288,6 +319,25 @@ async fn mint_env_for_account(
         }
     }
     Ok(env)
+}
+
+/// The session's existing stable gateway token (decrypted), if one was minted
+/// and persisted with its plaintext (CCT-476). `None` for sessions with no live
+/// token, or pre-migration rows that only stored the one-way hash (those fall
+/// through to a one-time fresh mint). Picks the newest live token on the off
+/// chance a session accrued several from the old re-mint-on-resume behaviour.
+async fn existing_session_token(state: &AppState, session_id: &str, key: &[u8]) -> Option<String> {
+    let enc: String = sqlx::query_scalar(
+        "SELECT encrypted_token FROM session_tokens \
+         WHERE session_id = $1 AND revoked_at IS NULL AND encrypted_token IS NOT NULL \
+         ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(session_id)
+    .fetch_optional(&state.pool)
+    .await
+    .ok()
+    .flatten()?;
+    crate::crypto::deobfuscate(&enc, key)
 }
 
 /// Resolve a logical model name through a named account's alias map (CCT-406).
