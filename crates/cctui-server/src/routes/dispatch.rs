@@ -456,10 +456,16 @@ pub async fn dispatch(
             obj.entry("name").or_insert_with(|| serde_json::Value::String(name.clone()));
         }
     }
-    // The shared dispatch-machine identity + account routing apply to a real
-    // owning user (the web UI / automation dispatch with a user token). An admin token
-    // (`owner_filter` is `None`) dispatches without the shared identity.
-    if let Some(uid) = ctx.owner_filter() {
+    // The shared dispatch-machine identity + account routing key on the
+    // AUTHENTICATED USER — `ctx.user_id`, NOT `owner_filter()` (CCT-478).
+    // `owner_filter()` is a query-result scoping switch (it returns `None` for
+    // admins so list views see every row) and has nothing to do with who owns a
+    // dispatched session. Keying on it meant an RBAC-admin user (a real user
+    // with the Admin scope — e.g. the web UI operator) dispatched with NO shared
+    // identity, so `CCTUI_MACHINE_KEY` was never injected and the worker
+    // hard-exited. Only the env admin token has no real user (`user_id` is nil);
+    // it still dispatches without the shared identity.
+    if let Some(uid) = (ctx.user_id != uuid::Uuid::nil()).then_some(ctx.user_id) {
         // The shared `dispatch` machine still groups every dispatched session
         // under one logical machine (UI grouping unchanged, CCT-191) — but the
         // credential handed to the pod is now a PER-SESSION ephemeral key
