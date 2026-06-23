@@ -381,7 +381,17 @@ fn launch_env_decision(
              returned no gateway env (account missing/unmintable) — launching would \
              route to the default upstream and 401 (CCT-460)"
         ),
-        r if r.account_bound => Ok(r.env.clone()),
+        // Account-bound: the authoritative gateway env must win for routing, but
+        // merge it OVER the pushed hint rather than replacing it, so user-supplied
+        // non-gateway env (spec.env keys the gateway mint doesn't emit) survives a
+        // resume / cold-resume / clear / compact / fork relaunch instead of being
+        // dropped (CCT-460 follow-up). Gateway keys still override any hint of the
+        // same name, so routing credentials remain authoritative.
+        r if r.account_bound => {
+            let mut merged = hint.clone();
+            merged.extend(r.env.iter().map(|(k, v)| (k.clone(), v.clone())));
+            Ok(merged)
+        }
         // Not account-bound: no gateway routing required. Keep any hint (e.g.
         // user-supplied non-gateway env) but don't fail closed.
         _ => Ok(hint.clone()),
@@ -2367,15 +2377,18 @@ mod tests {
     }
 
     #[test]
-    fn launch_env_uses_server_env_when_account_bound() {
-        // CCT-460: a bound session launches with the server-resolved env, not
-        // the (stale/absent) hint.
+    fn launch_env_merges_server_env_over_hint_when_account_bound() {
+        // CCT-460 follow-up: a bound session launches with the server-resolved
+        // gateway env merged OVER the pushed hint. Gateway keys win for routing,
+        // but user-supplied non-gateway env (e.g. FOO) survives the relaunch
+        // instead of being dropped.
         let resp = GatewayEnvResponse {
             account_bound: true,
             env: env_of(&[("ANTHROPIC_BASE_URL", "https://x/gateway/anthropic")]),
         };
-        let got = launch_env_decision("s1", &resp, &env_of(&[("HINT", "1")])).unwrap();
-        assert_eq!(got, resp.env);
+        let hint = env_of(&[("FOO", "bar"), ("ANTHROPIC_BASE_URL", "https://stale")]);
+        let got = launch_env_decision("s1", &resp, &hint).unwrap();
+        assert_eq!(got, env_of(&[("FOO", "bar"), ("ANTHROPIC_BASE_URL", "https://x/gateway/anthropic")]));
     }
 
     #[test]
