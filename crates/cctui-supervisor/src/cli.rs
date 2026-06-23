@@ -7,8 +7,12 @@ use clap::Parser;
 
 /// Default read-only paths (neutral worker-contract paths — PUBLIC repo, no
 /// homelab-specific paths). Applied when no `--ro` flag is given.
+///
+/// `/proc` is required: language runtimes (node/V8 behind `claude`, and most
+/// interpreters) read `/proc/self/*`, cpuinfo, etc. during early init, and a
+/// Landlock denial there makes them `abort()` silently before any output.
 pub const DEFAULT_RO: &[&str] =
-    &["/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc", "/prompts", "/opt/context"];
+    &["/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc", "/proc", "/prompts", "/opt/context"];
 
 /// Default read-write paths (neutral worker-contract paths). Applied when no
 /// `--rw` flag is given.
