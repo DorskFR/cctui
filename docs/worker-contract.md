@@ -59,7 +59,8 @@ defines the guard rules; proceeding without it would weaken the sandbox).
 | Var | Default | Meaning |
 | --- | --- | --- |
 | `WORKER_NET_MODE` | auto | `transparent` or `forward`. Auto = `transparent` when iptables is usable (CAP_NET_ADMIN), else `forward`. |
-| `WORKER_NET_EXEMPT` | — | Comma-separated `host:port` exempt from the proxy (resolved to IPs, RETURN'd). Transparent mode only. |
+| `WORKER_NET_EXEMPT` | — | Comma-separated `host:port` that **bypass** the proxy (resolved to a single IP at boot, iptables `RETURN`'d). Transparent mode only. IP-pinned — use only for **IP-stable** hosts; CDN/multi-IP hosts will rotate off the exempted IP. |
+| `WORKER_NET_ALLOW` | — | Comma-separated `host:port` allowed **through** the proxy by **SNI** (IP-independent). Folded into the seeded `policy.json` and re-applied as `cctui-guard --always-allow` so it survives per-step rewrites. The right tool for CDN/multi-IP SaaS APIs (e.g. a YouTrack host). |
 | `WARM_REPO_DIR` | — | Mounted warm-repo dir; becomes the overlayfs lowerdir for `/workspace` (rsync-copy fallback). |
 | `TASK_REPO_URL` | — | Repo to shallow-clone into `/workspace` when no warm repo. |
 | `TASK_REPO_REF` | — | Branch/tag to clone (`git clone --depth 1 --branch`). |

@@ -94,15 +94,23 @@ phase_network() {
 
     mkdir -p "$(dirname "$POLICY_FILE")"
 
-    # Seed a base deny-default policy: allow only the structural hosts (the
-    # cctui server + the result callback). cctui-guard rewrites this per step
-    # when a guarded prompt runs.
+    # Seed a base deny-default policy: allow the structural hosts (the cctui
+    # server + the result callback) plus any WORKER_NET_ALLOW hosts. cctui-guard
+    # rewrites this per step when a guarded prompt runs (WORKER_NET_ALLOW is
+    # re-applied there via --always-allow so it survives every rewrite).
+    #
+    # WORKER_NET_ALLOW vs WORKER_NET_EXEMPT: ALLOW routes the host THROUGH the
+    # proxy and permits it by SNI (IP-independent — the right tool for CDN /
+    # multi-IP hosts like a SaaS API). EXEMPT bypasses the proxy via an iptables
+    # RETURN on a single boot-resolved IP — only safe for IP-stable hosts.
     _cctui_hp=$(url_hostport "$CCTUI_BASE_URL")
     _reply_hp=$(url_hostport "${REPLY_URL:-}")
-    _allowed=$(printf '%s\n%s\n' "$_cctui_hp" "$_reply_hp" | sed '/^$/d' \
+    _net_allow=$(printf '%s' "${WORKER_NET_ALLOW:-}" | tr ',' '\n' \
+        | sed 's/^[[:space:]]*//;s/[[:space:]]*$//;/^$/d')
+    _allowed=$(printf '%s\n%s\n%s\n' "$_cctui_hp" "$_reply_hp" "$_net_allow" | sed '/^$/d' \
         | jq -R . | jq -cs 'unique')
     printf '{"allowed_hosts":%s,"default":"deny"}\n' "$_allowed" > "$POLICY_FILE"
-    log "seeded guard-proxy policy (allow: ${_cctui_hp}${_reply_hp:+, $_reply_hp}; default deny)"
+    log "seeded guard-proxy policy (allow: ${_cctui_hp}${_reply_hp:+, $_reply_hp}${WORKER_NET_ALLOW:+, $WORKER_NET_ALLOW}; default deny)"
 
     if [ "$NET_MODE" = transparent ]; then
         if iptables -t nat -L >/dev/null 2>&1; then
@@ -427,6 +435,18 @@ phase_guard() {
     [ -n "$_cctui_hp" ] && set -- "$@" --always-allow "$_cctui_hp"
     _reply_hp=$(url_hostport "${REPLY_URL:-}")
     [ -n "$_reply_hp" ] && set -- "$@" --always-allow "$_reply_hp"
+    # Operator-plane SNI allow-list (CDN/multi-IP hosts) must survive every
+    # per-step rewrite too, mirroring the seeded policy in phase_network.
+    if [ -n "${WORKER_NET_ALLOW:-}" ]; then
+        _OLDIFS=$IFS; IFS=,
+        for _na in $WORKER_NET_ALLOW; do
+            IFS=$_OLDIFS
+            _na=$(printf '%s' "$_na" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            [ -n "$_na" ] && set -- "$@" --always-allow "$_na"
+            IFS=,
+        done
+        IFS=$_OLDIFS
+    fi
 
     cctui-guard "$@" &
     GUARD_PID=$!
