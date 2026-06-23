@@ -92,6 +92,23 @@ RUN npm install -g \
         "@openai/codex@${CODEX_VERSION}" \
     && npm cache clean --force
 
+# yt — token-frugal YouTrack CLI (https://github.com/DorskFR/yt). Lets dispatched
+# tasks triage / transition YouTrack issues without an MCP server. Pinned and
+# checksum-verified; reads creds from ~/.config/yt/config.json (materialized by
+# worker-credentials.sh from the platform's YOUTRACK_URL/token) or env.
+ARG YT_VERSION=v0.2.0
+RUN arch="$(dpkg --print-architecture)" \
+    && case "$arch" in \
+         amd64) sha=f4e620363f1f9091791cd45e149fb039d55b08833c19d8988e51e24a6281ce83 ;; \
+         arm64) sha=e4193779d174ceb9a60d4f1fddc826810cf9098f5d52a45372327442fb200d32 ;; \
+         *) echo "yt: unsupported arch '$arch'" >&2; exit 1 ;; \
+       esac \
+    && curl -fsSL "https://github.com/DorskFR/yt/releases/download/${YT_VERSION}/yt-linux-${arch}" \
+        -o /usr/local/bin/yt \
+    && echo "${sha}  /usr/local/bin/yt" | sha256sum -c - \
+    && chmod 0755 /usr/local/bin/yt \
+    && yt --version
+
 # Worker user (uid 1000). The container starts as root only to bootstrap the
 # sandbox (iptables, overlayfs, context pack), then cctui-supervisor setuids to
 # this user before exec'ing the daemon. A real home keeps per-session agent

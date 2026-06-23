@@ -350,7 +350,7 @@ phase_credentials() {
     # chown over it hangs in NFS RPC and the daemon never launches (CCT-457).
     # With no credential env the helper writes nothing, so a full home chown is
     # pure waste; everything else in the home is already worker-owned.
-    for _p in .gitconfig .gnupg .npmrc .mcp.json; do
+    for _p in .gitconfig .gnupg .npmrc .mcp.json .config/yt; do
         [ -e "/home/${WORKER_USER}/${_p}" ] \
             && chown -R "${WORKER_UID}:${WORKER_UID}" "/home/${WORKER_USER}/${_p}" 2>/dev/null || true
     done

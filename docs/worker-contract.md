@@ -91,6 +91,7 @@ silently.
 | `GPG_PRIVATE_KEY_<ID>` | `gpg --import` + `user.signingkey` + `commit.gpgsign true`. |
 | `NPM_TOKEN` | `~/.npmrc` registry auth (identity-independent). |
 | `MCP_<NAME>_URL` / `MCP_<NAME>_TOKEN` | `~/.mcp.json` http server entry keyed by lowercase `<NAME>`. |
+| `YOUTRACK_URL` + `YOUTRACK_API_TOKEN` (or `YOUTRACK_TOKEN`) | `~/.config/yt/config.json` for the bundled `yt` YouTrack CLI (identity-independent). Reaching the YouTrack host also needs it on the egress allow-list. |
 
 `ANTHROPIC_*` / `OPENAI_*` model auth is **not** handled here — it stays env
 passthrough / gateway token, materialized by the platform exactly as before.
