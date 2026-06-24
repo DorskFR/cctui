@@ -423,6 +423,7 @@ mod tests {
                 cfg: super::super::app_server::AppServerConfig::default(),
                 cwd: "/w".into(),
                 name: None,
+                env: std::collections::BTreeMap::new(),
             },
         );
         tail.set_owned(registry);

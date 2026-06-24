@@ -397,11 +397,22 @@ pub struct SessionRecord {
     pub cfg: AppServerConfig,
     pub cwd: String,
     pub name: Option<String>,
+    /// Resolved launch-time env (CCT-461) — chiefly the gateway-routing
+    /// credential pulled from the server's durable `sessions.account_id`
+    /// binding. Stored so a resume relaunches the codex app-server with the
+    /// same gateway env instead of starting env-less and 401ing (the codex
+    /// analogue of the claude CCT-460 cold-launch bug).
+    pub env: std::collections::BTreeMap<String, String>,
 }
 
 /// `local_id` → cctui-owned Codex thread metadata.
 pub type SessionRegistry = Arc<Mutex<HashMap<String, SessionRecord>>>;
 
+// `Resume` carries a full `SessionRecord` (now incl. the CCT-461 launch env);
+// the size gap to the unit `Delivered`/`Missing` variants is intrinsic and the
+// value is short-lived (built, matched, dropped per command), so boxing it
+// would add an allocation for no real benefit.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum RouteAction {
     Delivered,
@@ -541,6 +552,10 @@ enum SessionLaunch {
 pub struct CodexSession {
     cfg: AppServerConfig,
     cwd: String,
+    /// Launch-time env merged onto the `codex app-server` child process
+    /// (CCT-461). Holds the gateway-routing credential resolved at spawn /
+    /// fork / resume; see [`SessionRecord::env`].
+    env: std::collections::BTreeMap<String, String>,
     launch: SessionLaunch,
     events: mpsc::Sender<AdapterEvent>,
     live: LiveSessionRegistry,
@@ -553,6 +568,7 @@ impl CodexSession {
     pub const fn new_fresh(
         cfg: AppServerConfig,
         cwd: String,
+        env: std::collections::BTreeMap<String, String>,
         prompt: Option<String>,
         name: Option<String>,
         events: mpsc::Sender<AdapterEvent>,
@@ -563,6 +579,7 @@ impl CodexSession {
         Self {
             cfg,
             cwd,
+            env,
             launch: SessionLaunch::Fresh { prompt, name },
             events,
             live,
@@ -575,6 +592,7 @@ impl CodexSession {
     pub const fn new_fork(
         cfg: AppServerConfig,
         cwd: String,
+        env: std::collections::BTreeMap<String, String>,
         parent_thread_id: String,
         prompt: Option<String>,
         name: Option<String>,
@@ -586,6 +604,7 @@ impl CodexSession {
         Self {
             cfg,
             cwd,
+            env,
             launch: SessionLaunch::Fork { parent_thread_id, prompt, name },
             events,
             live,
@@ -598,6 +617,7 @@ impl CodexSession {
     pub const fn new_resume(
         cfg: AppServerConfig,
         cwd: String,
+        env: std::collections::BTreeMap<String, String>,
         thread_id: String,
         initial_commands: Vec<SessionCommand>,
         events: mpsc::Sender<AdapterEvent>,
@@ -608,6 +628,7 @@ impl CodexSession {
         Self {
             cfg,
             cwd,
+            env,
             launch: SessionLaunch::Resume { thread_id, initial_commands },
             events,
             live,
@@ -629,6 +650,17 @@ impl CodexSession {
         cmd.arg("app-server");
         for (key, value) in self.cfg.config_overrides() {
             cmd.arg("-c").arg(format!("{key}=\"{value}\""));
+        }
+        // Forward the resolved launch env (CCT-461) — chiefly the gateway
+        // credential pulled from the server's `sessions.account_id` binding —
+        // onto the app-server child, so a session bound to a named gateway
+        // account routes through it instead of hitting the default upstream and
+        // 401ing. Applied before `PATH` below so the launchd PATH fix wins even
+        // if the resolved env carried a `PATH` of its own. The fail-closed
+        // contract (refuse an account-bound launch with empty gateway env) is
+        // enforced upstream in the adapter command pump; see CCT-460.
+        for (key, value) in &self.env {
+            cmd.env(key, value);
         }
         let mut child = cmd
             .current_dir(cwd_path)
@@ -852,6 +884,7 @@ impl CodexSession {
                                     cfg: self.cfg.clone(),
                                     cwd: self.cwd.clone(),
                                     name: remembered_name.clone(),
+                                    env: self.env.clone(),
                                 },
                             );
                             self.live.lock().await.insert(local_id.clone(), cmd_tx.clone());
@@ -1158,6 +1191,7 @@ pub fn spawn_resumed_session(
     let session = CodexSession::new_resume(
         record.cfg,
         record.cwd,
+        record.env,
         thread_id,
         vec![command],
         events,
@@ -1423,6 +1457,7 @@ mod tests {
                 cfg: AppServerConfig::default(),
                 cwd: "/tmp".to_owned(),
                 name: Some("n".to_owned()),
+                env: std::collections::BTreeMap::new(),
             },
         );
 
@@ -1450,6 +1485,7 @@ mod tests {
                 cfg: AppServerConfig::default(),
                 cwd: "/repo".to_owned(),
                 name: Some("stale".to_owned()),
+                env: std::collections::BTreeMap::new(),
             },
         );
 
@@ -1495,6 +1531,7 @@ mod tests {
         let session = CodexSession::new_fresh(
             AppServerConfig::default(),
             "/tmp".to_string(),
+            std::collections::BTreeMap::new(),
             None, // no prompt → no turn/start, so no model auth needed
             None,
             tx,

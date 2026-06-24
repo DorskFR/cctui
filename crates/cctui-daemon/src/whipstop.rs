@@ -175,15 +175,24 @@ mod tests {
 
     #[test]
     fn detects_handback_language() {
-        assert_eq!(first_stall_phrase("All set — let me know if you want more."), Some("let me know if"));
-        assert_eq!(first_stall_phrase("This is a good stopping point."), Some("good stopping point"));
+        assert_eq!(
+            first_stall_phrase("All set — let me know if you want more."),
+            Some("let me know if")
+        );
+        assert_eq!(
+            first_stall_phrase("This is a good stopping point."),
+            Some("good stopping point")
+        );
         assert_eq!(first_stall_phrase("Want me to take it to prod?"), Some("want me to"));
         assert_eq!(first_stall_phrase("Ready for your review."), Some("ready for your review"));
     }
 
     #[test]
     fn allows_genuine_completion() {
-        assert_eq!(first_stall_phrase("Done. Tests pass and the deploy is verified in prod."), None);
+        assert_eq!(
+            first_stall_phrase("Done. Tests pass and the deploy is verified in prod."),
+            None
+        );
         assert_eq!(first_stall_phrase("result: shipped v1.2.3, prod returns 200."), None);
     }
 

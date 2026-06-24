@@ -13,6 +13,7 @@ pub mod bus;
 pub mod childenv;
 pub mod client;
 pub mod config;
+pub mod gateway_heal;
 pub mod listdirs;
 pub mod runtime;
 pub mod selfupdate;

@@ -39,10 +39,70 @@ use tokio::net::UnixListener;
 use tokio::sync::mpsc;
 
 use crate::adapter_runtime::{Adapter, AdapterCtx, AdapterFactory};
+use crate::client::ServerClient;
 use app_server::{
     AppServerConfig, CodexSession, LiveSessionRegistry, RouteAction, SessionCommand,
     SessionRegistry, route_or_prepare_resume, spawn_resumed_session,
 };
+
+/// Decide the codex launch env from a server `GatewayEnvResponse` (CCT-461),
+/// mirroring the claude chokepoint's `launch_env_decision`
+/// (`adapters/claude_code/control.rs`). Split out as a pure function so the
+/// fail-closed contract is unit-testable without a live server.
+///
+/// FAIL-CLOSED INVARIANT (CCT-461 / CCT-460): when the session IS account-bound
+/// but the resolved gateway env is empty, refuse the launch — a codex
+/// app-server started without the gateway credential silently routes to the
+/// default upstream and 401s, the exact bug this ticket fixes.
+fn launch_env_decision(
+    local_id: &str,
+    resp: &cctui_proto::api::GatewayEnvResponse,
+    hint: &std::collections::BTreeMap<String, String>,
+) -> anyhow::Result<std::collections::BTreeMap<String, String>> {
+    match resp {
+        r if r.account_bound && r.env.is_empty() => anyhow::bail!(
+            "refusing to launch codex {local_id}: session is account-bound but the \
+             server returned no gateway env (account missing/unmintable) — launching \
+             would route to the default upstream and 401 (CCT-461/CCT-460)"
+        ),
+        // Account-bound: gateway env must win for routing; merge it OVER the
+        // pushed hint so user-supplied non-gateway env survives.
+        r if r.account_bound => {
+            let mut merged = hint.clone();
+            merged.extend(r.env.iter().map(|(k, v)| (k.clone(), v.clone())));
+            Ok(merged)
+        }
+        // Not account-bound: no gateway routing required; keep the hint.
+        _ => Ok(hint.clone()),
+    }
+}
+
+/// Pull the launch-time gateway env for `local_id` from the server's durable
+/// `sessions.account_id` binding and merge it over the carried `hint`
+/// (`spec.env`), mirroring the claude `Driver::resolve_launch_env` chokepoint.
+///
+/// Degrades to the pushed `hint` when no server is configured (tests / legacy)
+/// or the pull is unavailable (older server / transient network) — a rollout or
+/// blip falls back to the prior behavior rather than blocking the launch. The
+/// fail-closed refusal (account-bound but empty env) only fires when the
+/// authoritative pull SUCCEEDS and reports the binding.
+async fn resolve_launch_env(
+    server: Option<&ServerClient>,
+    machine_key: Option<&String>,
+    local_id: &str,
+    hint: &std::collections::BTreeMap<String, String>,
+) -> anyhow::Result<std::collections::BTreeMap<String, String>> {
+    let (Some(server), Some(mk)) = (server, machine_key) else {
+        return Ok(hint.clone());
+    };
+    match server.gateway_env(mk, local_id).await {
+        Ok(resp) => launch_env_decision(local_id, &resp, hint),
+        Err(e) => {
+            tracing::warn!(%local_id, "codex gateway-env pull failed; falling back to pushed env: {e}");
+            Ok(hint.clone())
+        }
+    }
+}
 
 fn uses_uds_mode(config: &serde_json::Value) -> bool {
     config.get("mode").and_then(|v| v.as_str()) == Some("uds")
@@ -147,8 +207,16 @@ async fn run_default(ctx: AdapterCtx) -> anyhow::Result<()> {
 
     let log_handle = tokio::spawn(log.run());
 
-    let pump =
-        command_pump(ctx.commands, ctx.events.clone(), live, registry, app_cfg, ctx.shutdown);
+    let pump = command_pump(
+        ctx.commands,
+        ctx.events.clone(),
+        live,
+        registry,
+        app_cfg,
+        ctx.shutdown,
+        ctx.server,
+        ctx.machine_key,
+    );
     pump.await;
     log_handle.abort();
     if let Some(h) = inventory_handle {
@@ -160,7 +228,7 @@ async fn run_default(ctx: AdapterCtx) -> anyhow::Result<()> {
 /// Route adapter commands. `Spawn` launches a new `codex app-server`-driven
 /// session; the rest are forwarded to the owning session task by `local_id`
 /// via the shared registry.
-#[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
+#[allow(clippy::cognitive_complexity, clippy::too_many_lines, clippy::too_many_arguments)]
 async fn command_pump(
     mut commands: mpsc::Receiver<AdapterCommand>,
     events: mpsc::Sender<AdapterEvent>,
@@ -168,6 +236,8 @@ async fn command_pump(
     registry: SessionRegistry,
     app_cfg: AppServerConfig,
     shutdown: tokio_util::sync::CancellationToken,
+    server: Option<ServerClient>,
+    machine_key: Option<String>,
 ) {
     loop {
         tokio::select! {
@@ -177,7 +247,7 @@ async fn command_pump(
                 match cmd {
                     // codex mints its own thread id, so the server-pre-minted
                     // `session_id` (CCT-446) is ignored here.
-                    AdapterCommand::Spawn { spec, command_id, .. } => {
+                    AdapterCommand::Spawn { spec, command_id, session_id } => {
                         let Some(working_dir) = spec.working_dir.clone() else {
                             tracing::error!("codex spawn: working_dir required");
                             if let Some(command_id) = command_id {
@@ -190,6 +260,36 @@ async fn command_pump(
                                     .await;
                             }
                             continue;
+                        };
+                        // CCT-461: pull the launch-time gateway env from the
+                        // server's durable binding, keyed by the pre-minted
+                        // session id the server bound the gateway token to
+                        // (`session_tokens.session_id`), and merge it over the
+                        // carried `spec.env`. Fail-closed: an account-bound
+                        // session with empty gateway env refuses to launch
+                        // rather than starting env-less and 401ing (CCT-460).
+                        let env = match resolve_launch_env(
+                            server.as_ref(),
+                            machine_key.as_ref(),
+                            &session_id.map_or_else(String::new, |id| id.to_string()),
+                            &spec.env,
+                        )
+                        .await
+                        {
+                            Ok(env) => env,
+                            Err(err) => {
+                                tracing::error!(%err, "codex spawn: refusing env-less launch");
+                                if let Some(command_id) = command_id {
+                                    let _ = events
+                                        .send(AdapterEvent::CommandResult {
+                                            command_id,
+                                            ok: false,
+                                            error: Some(err.to_string()),
+                                        })
+                                        .await;
+                                }
+                                continue;
+                            }
                         };
                         if let Some(command_id) = command_id {
                             // The codex session launches asynchronously; report
@@ -229,6 +329,7 @@ async fn command_pump(
                         let session = CodexSession::new_fresh(
                             cfg,
                             working_dir,
+                            env,
                             spec.prompt.clone(),
                             spec.name.clone(),
                             events.clone(),
@@ -242,7 +343,7 @@ async fn command_pump(
                             }
                         });
                     }
-                    AdapterCommand::Fork { parent_local_id, spec, command_id, .. } => {
+                    AdapterCommand::Fork { parent_local_id, spec, command_id, session_id } => {
                         // Fork an existing thread into a new one seeded from its
                         // history (CCT-302). Mirrors Spawn for cfg overrides
                         // (permission/effort/model) but launches via thread/fork.
@@ -250,6 +351,34 @@ async fn command_pump(
                             .working_dir
                             .clone()
                             .unwrap_or_else(|| parent_local_id.clone());
+                        // CCT-461: resolve gateway env keyed by the child
+                        // session id the server pre-minted + bound the gateway
+                        // token to (falling back to the parent thread id when
+                        // absent), and fail closed on an account-bound fork with
+                        // empty env — same contract as Spawn.
+                        let env = match resolve_launch_env(
+                            server.as_ref(),
+                            machine_key.as_ref(),
+                            &session_id.clone().unwrap_or_else(|| parent_local_id.clone()),
+                            &spec.env,
+                        )
+                        .await
+                        {
+                            Ok(env) => env,
+                            Err(err) => {
+                                tracing::error!(%err, "codex fork: refusing env-less launch");
+                                if let Some(command_id) = command_id {
+                                    let _ = events
+                                        .send(AdapterEvent::CommandResult {
+                                            command_id,
+                                            ok: false,
+                                            error: Some(err.to_string()),
+                                        })
+                                        .await;
+                                }
+                                continue;
+                            }
+                        };
                         if let Some(command_id) = command_id {
                             let _ = events
                                 .send(AdapterEvent::CommandResult {
@@ -278,6 +407,7 @@ async fn command_pump(
                         let session = CodexSession::new_fork(
                             cfg,
                             working_dir,
+                            env,
                             parent_local_id,
                             spec.prompt.clone(),
                             spec.name.clone(),
@@ -487,5 +617,45 @@ impl AdapterFactory for CodexFactory {
     }
     fn build(&self, _config: serde_json::Value) -> Box<dyn Adapter> {
         Box::new(CodexAdapter)
+    }
+}
+
+#[cfg(test)]
+mod gateway_env_tests {
+    use cctui_proto::api::GatewayEnvResponse;
+
+    use super::launch_env_decision;
+
+    fn env_of(pairs: &[(&str, &str)]) -> std::collections::BTreeMap<String, String> {
+        pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
+    }
+
+    #[test]
+    fn merges_server_env_over_hint_when_account_bound() {
+        let hint = env_of(&[("KEEP", "1"), ("OPENAI_BASE_URL", "old")]);
+        let resp = GatewayEnvResponse {
+            account_bound: true,
+            env: env_of(&[("OPENAI_BASE_URL", "gw"), ("OPENAI_API_KEY", "tok")]),
+        };
+        let got = launch_env_decision("s1", &resp, &hint).unwrap();
+        assert_eq!(got.get("KEEP").map(String::as_str), Some("1"));
+        assert_eq!(got.get("OPENAI_BASE_URL").map(String::as_str), Some("gw"));
+        assert_eq!(got.get("OPENAI_API_KEY").map(String::as_str), Some("tok"));
+    }
+
+    #[test]
+    fn fails_closed_when_account_bound_but_env_empty() {
+        let resp =
+            GatewayEnvResponse { account_bound: true, env: std::collections::BTreeMap::default() };
+        let err = launch_env_decision("s1", &resp, &env_of(&[("HINT", "1")])).unwrap_err();
+        assert!(err.to_string().contains("account-bound"));
+    }
+
+    #[test]
+    fn keeps_hint_when_not_account_bound() {
+        let resp =
+            GatewayEnvResponse { account_bound: false, env: std::collections::BTreeMap::default() };
+        let hint = env_of(&[("HINT", "1")]);
+        assert_eq!(launch_env_decision("s1", &resp, &hint).unwrap(), hint);
     }
 }

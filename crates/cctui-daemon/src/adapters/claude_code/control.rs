@@ -314,6 +314,16 @@ pub struct Driver {
     /// the pushed env hint.
     server: Option<crate::client::ServerClient>,
     machine_key: Option<String>,
+    /// Proactive gateway-env healing for autonomously-respawned workers
+    /// (CCT-462). Tracks which live workers cctui launched WITH a resolved
+    /// gateway env; a live, account-bound worker missing from that set was
+    /// brought up by an autonomous `claude daemon` respawn (bypassing the
+    /// CCT-460 launch chokepoint) and may be env-less, so the poll loop forces
+    /// a re-resume through the chokepoint. Bounded/idempotent — see
+    /// [`crate::gateway_heal`]. `Mutex` because the spawn/resume chokepoint
+    /// records launched-with-env under `&self` while the poll loop reads/heals
+    /// under `&mut self`.
+    gateway_heal: std::sync::Mutex<crate::gateway_heal::HealTracker>,
 }
 
 #[derive(Debug, Clone)]
@@ -444,6 +454,7 @@ impl Driver {
             fork_parent_by_short: std::sync::Mutex::new(HashMap::new()),
             server: None,
             machine_key: None,
+            gateway_heal: std::sync::Mutex::new(crate::gateway_heal::HealTracker::new()),
         }
     }
 
@@ -912,6 +923,91 @@ impl Driver {
         }
     }
 
+    /// Proactively heal a LIVE worker that lost its gateway env to an
+    /// autonomous `claude daemon` respawn (CCT-462, follow-up to CCT-460).
+    ///
+    /// Candidacy is cheap and local first: a worker cctui itself launched with
+    /// env (recorded in the [`HealTracker`](crate::gateway_heal)) is trusted and
+    /// skipped, so the normal steady state issues NO server round-trip here. For
+    /// the rare worker NOT in that set we ask the server whether the session is
+    /// account-bound (it alone knows the durable `sessions.account_id` binding);
+    /// only an account-bound session REQUIRES gateway env and is healed. The
+    /// tracker bounds this to [`MAX_HEAL_ATTEMPTS`](crate::gateway_heal::MAX_HEAL_ATTEMPTS)
+    /// kill+resume cycles per session per daemon lifetime and admits at most one
+    /// heal in flight, so it cannot thrash.
+    ///
+    /// The heal is a KILL + cold-resume: `resume_worker` no-ops on an alive
+    /// worker (its `has` check), so we must terminate the env-less worker first,
+    /// then cold-resume it — which routes through `resolve_launch_env` and
+    /// re-seeds both `env` and `reattachEnv`.
+    ///
+    /// Best-effort: any failure logs, releases the in-flight latch (so a later
+    /// poll retries until the cap), and never aborts the poll.
+    async fn maybe_heal_gateway_env(&self, short: &str, local_id: &str) {
+        // Cheap, non-mutating local gate: a worker cctui launched with env is
+        // trusted, and one that's in-flight/parked can't heal now — skip the
+        // server round-trip for all of them (the common steady state).
+        if !self.gateway_heal.lock().is_ok_and(|t| t.is_candidate(short)) {
+            return;
+        }
+        let (Some(server), Some(mk)) = (self.server.as_ref(), self.machine_key.as_ref()) else {
+            return; // No server (tests / legacy): nothing to heal against.
+        };
+        // Only the server knows the durable `sessions.account_id` binding; a
+        // non-account verdict short-circuits `should_heal` below (non-account
+        // sessions need no gateway env).
+        let account_bound = match server.gateway_env(mk, local_id).await {
+            Ok(resp) => resp.account_bound,
+            Err(err) => {
+                // Server unreachable / older server — degrade silently; the next
+                // poll retries. Never escalate to a heal on an unknown binding.
+                tracing::debug!(%short, %local_id, "gateway-env probe for heal failed: {err}");
+                return;
+            }
+        };
+        let want_heal =
+            self.gateway_heal.lock().is_ok_and(|mut t| t.should_heal(short, true, account_bound));
+        if !want_heal {
+            return;
+        }
+        tracing::warn!(
+            %short, %local_id,
+            "account-bound LIVE worker missing gateway env (autonomous claude-daemon respawn) — \
+             forcing kill + cold-resume to re-seed env (CCT-462)"
+        );
+        if let Err(err) = self.force_reresume(short, local_id).await {
+            tracing::warn!(%short, %local_id, "gateway-env heal failed; will retry until cap: {err}");
+            if let Ok(mut t) = self.gateway_heal.lock() {
+                t.note_heal_failed(short);
+            }
+        }
+        // On success `force_reresume`'s cold-resume already recorded the worker
+        // as launched-with-env via `note_launched_with_env`, clearing the
+        // in-flight latch and resetting the budget.
+    }
+
+    /// KILL a live worker, wait for it to exit, then cold-resume it through the
+    /// CCT-460 chokepoint so it relaunches with freshly-resolved gateway env.
+    /// Used by the proactive heal (CCT-462) — the only path that deliberately
+    /// terminates an *alive* worker to re-seed its env.
+    async fn force_reresume(&self, short: &str, local_id: &str) -> anyhow::Result<()> {
+        let sock = self.ensure_socket().await?;
+        let _ = socket::one_shot(&sock, &json!({"proto":1,"op":"kill","short":short})).await;
+        Self::await_worker_exit(&sock, short).await;
+        // `resume_worker` reads the rotated session id + cwd from on-disk
+        // state.json (kept across the kill), resolves env via the chokepoint,
+        // and records launched-with-env on success.
+        self.resume_worker(
+            &sock,
+            short,
+            local_id,
+            Some(local_id),
+            None,
+            &std::collections::BTreeMap::default(),
+        )
+        .await
+    }
+
     /// Revive an exited worker bound to its saved conversation. Prefers the
     /// on-disk `state.json` (so `/clear`/`/compact`'s rotated `resumeSessionId`
     /// is honored, CCT-160); when it's gone — e.g. an archived session whose
@@ -1004,6 +1100,10 @@ impl Driver {
             .await
             .with_context(|| format!("resume dispatch for hibernated session {short}"))?;
         tracing::info!(?resp, %short, %session_id, "resumed hibernated session via dispatch");
+        // CCT-462: this cold-resume went through the chokepoint and re-seeded
+        // env (+ reattachEnv); mark the worker launched-with-env so the
+        // proactive heal treats it as trusted and resets any heal budget.
+        self.note_launched_with_env(short, &env);
 
         // Wait (bounded) for the revived worker to report alive, then give the
         // PTY a moment to finish booting so the reply isn't swallowed by a
@@ -1135,7 +1235,10 @@ impl Driver {
             prompt: Some(prompt),
             name,
             permission_mode: Some(cctui_proto::adapter::PermissionMode::Yolo),
-            effort: payload.get("effort").and_then(serde_json::Value::as_str).map(ToOwned::to_owned),
+            effort: payload
+                .get("effort")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned),
             model: payload.get("model").and_then(serde_json::Value::as_str).map(ToOwned::to_owned),
             env,
             bootstrap: serde_json::Value::Null,
@@ -1155,7 +1258,9 @@ impl Driver {
             .get("prompt_file")
             .and_then(serde_json::Value::as_str)
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| anyhow::anyhow!("dispatch payload has neither prompt nor prompt_file"))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("dispatch payload has neither prompt nor prompt_file")
+            })?;
         if file.starts_with('/') {
             return std::fs::read_to_string(file)
                 .with_context(|| format!("reading prompt file {file}"));
@@ -1363,7 +1468,30 @@ impl Driver {
         let resp: serde_json::Value =
             socket::call(sock, &req).await.with_context(|| format!("dispatch spawn in {cwd}"))?;
         tracing::info!(?resp, %cwd, %session_id, "spawn dispatched via control socket");
+        // CCT-462: record that cctui launched this worker WITH gateway env so
+        // the proactive heal never targets a worker we just resolved env for.
+        // `short` is the first 8 hex of the session id; the poll loop keys the
+        // tracker on the same `short`.
+        self.note_launched_with_env(short, &env);
         Ok(())
+    }
+
+    /// Record (CCT-462) that cctui dispatched worker `short` with `env` resolved
+    /// through the launch chokepoint. Only non-empty env is a meaningful trust
+    /// signal — an account-bound session's env is non-empty (fail-closed in
+    /// `resolve_launch_env` otherwise), and a non-account session is never a
+    /// heal candidate regardless. Best-effort under a poisoned lock.
+    fn note_launched_with_env(
+        &self,
+        short: &str,
+        env: &std::collections::BTreeMap<String, String>,
+    ) {
+        if env.is_empty() {
+            return;
+        }
+        if let Ok(mut t) = self.gateway_heal.lock() {
+            t.note_launched_with_env(short);
+        }
     }
 
     /// Fork an existing conversation into a brand-new claude session (CCT-302).
@@ -1691,6 +1819,15 @@ impl Driver {
             // dead — clear the sticky flag so live status flows again.
             self.dead_shorts.remove(&job.short);
 
+            // Proactive gateway-env heal (CCT-462): a LIVE, account-bound worker
+            // that cctui did NOT launch with env was brought up by an autonomous
+            // `claude daemon` respawn (bypassing the CCT-460 chokepoint) and may
+            // be env-less → 401. Force a re-resume through the chokepoint. The
+            // candidate set is normally empty (every cctui launch records env),
+            // so the server round-trip only fires for the rare autonomous-respawn
+            // case. Bounded/idempotent via `HealTracker`; see `gateway_heal`.
+            self.maybe_heal_gateway_env(&job.short, &local_id).await;
+
             // Surface (or clear) a tool-permission prompt from the live
             // `tempo`/`needs` signal (CCT-211), before the Status emit below.
             self.reconcile_permission(
@@ -1867,6 +2004,12 @@ impl Driver {
         let gone: Vec<String> = self.roster.difference(&now_shorts).cloned().collect();
         for short in &gone {
             self.last_status.remove(short);
+            // Drop heal bookkeeping for a worker that left the live roster
+            // (CCT-462) so it doesn't leak for the daemon lifetime; the next
+            // launch re-records launched-with-env from scratch.
+            if let Ok(mut t) = self.gateway_heal.lock() {
+                t.forget(short);
+            }
             let was_dead = self.dead_shorts.remove(short);
             self.clear_permission(short).await;
             if let Some(loc) = self.transcript_locations.remove(short) {
@@ -2087,6 +2230,12 @@ impl Driver {
         self.attach.cancel_all();
         let shorts: Vec<String> = self.roster.drain().collect();
         self.last_status.clear();
+        // The whole roster is gone — clear heal bookkeeping too (CCT-462).
+        if let Ok(mut t) = self.gateway_heal.lock() {
+            for short in &shorts {
+                t.forget(short);
+            }
+        }
         for short in shorts {
             self.clear_permission(&short).await;
             self.emit(AdapterEvent::SessionEnded { local_id: short, reason: reason.clone() }).await;
@@ -2554,7 +2703,10 @@ mod tests {
         };
         let hint = env_of(&[("FOO", "bar"), ("ANTHROPIC_BASE_URL", "https://stale")]);
         let got = launch_env_decision("s1", &resp, &hint).unwrap();
-        assert_eq!(got, env_of(&[("FOO", "bar"), ("ANTHROPIC_BASE_URL", "https://x/gateway/anthropic")]));
+        assert_eq!(
+            got,
+            env_of(&[("FOO", "bar"), ("ANTHROPIC_BASE_URL", "https://x/gateway/anthropic")])
+        );
     }
 
     #[test]

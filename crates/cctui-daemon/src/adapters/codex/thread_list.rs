@@ -334,6 +334,14 @@ pub fn owned_records(
                     cfg: app.clone(),
                     cwd: e.cwd.clone().unwrap_or_default(),
                     name: e.name.clone(),
+                    // Gateway env (CCT-461) isn't persisted to codex's on-disk
+                    // thread state, so a registry seeded from `thread/list`
+                    // after a daemon restart starts env-less. The fresh spawn /
+                    // fork launch chokepoint in `mod.rs` pulls + stores it; a
+                    // resume reuses the stored value, so a rediscovered thread's
+                    // first resume can still be env-less for the narrow
+                    // restart-then-resume window. See CCT-460/CCT-461.
+                    env: std::collections::BTreeMap::new(),
                 },
             )
         })
@@ -626,6 +634,7 @@ mod tests {
                 cfg: AppServerConfig::default(),
                 cwd: "/live".into(),
                 name: Some("keep-me".into()),
+                env: std::collections::BTreeMap::new(),
             },
         );
         let entries = vec![
@@ -665,7 +674,12 @@ mod tests {
         let owned = SessionRegistry::default();
         owned.lock().await.insert(
             "owned1".into(),
-            SessionRecord { cfg: AppServerConfig::default(), cwd: "/w".into(), name: None },
+            SessionRecord {
+                cfg: AppServerConfig::default(),
+                cwd: "/w".into(),
+                name: None,
+                env: std::collections::BTreeMap::new(),
+            },
         );
         let inv = ThreadListInventory::new(
             ThreadListConfig::from_value(&json!({})),
