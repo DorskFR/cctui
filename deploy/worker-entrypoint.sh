@@ -535,7 +535,115 @@ phase_hardening
 # worker, then exec's the daemon. RO: system + context/prompts; RW: workspace,
 # home, tmp, the guard/proxy state dirs. The supervisor's own --report captures
 # landlock/seccomp/uid for the hardening metadata.
-log "dropping privileges -> cctui-supervisor -> cctui-daemon"
+run_supervised_daemon() {
+    cctui-supervisor \
+        --ro /usr --ro /lib --ro /lib64 --ro /bin --ro /sbin --ro /etc --ro /proc \
+        --ro /prompts \
+        --ro "$CONTEXT_DIR" \
+        --rw /dev --rw /tmp --rw /workspace --rw "/home/${WORKER_USER}" \
+        --rw /var/run/workflow-guard --rw /var/run/guard-proxy \
+        --user "$WORKER_UID" \
+        --report /tmp/hardening.json \
+        -- cctui-daemon run --no-auto-update "$@"
+}
+
+# ── Phase 9: Dual-signal "work done" wait (CCT-483) ─────────────────────────
+# With `claude -p`, "work is done" (semantic) and "process is gone" (liveness)
+# were the same event, so `wait $PID` sufficed. `claude daemon` splits them:
+# the dispatch op acks instantly and the daemon stays up — there is no blocking
+# "wait until done" primitive. So a DISPATCHED worker (SESSION_ID +
+# TASK_PAYLOAD_JSON present) runs the daemon in the BACKGROUND and blocks on two
+# signals:
+#
+#   PRIMARY (done)     — the agent declares completion via cctui-guard ->
+#                        POST /transition {"step":"exit"}, which flips the guard
+#                        state file to STEP_EXITED (-1) AND relaxes the egress
+#                        proxy so the result callback can leave. Guard-less
+#                        workers (no step markers) fall back to watching the
+#                        RESULT_FILE appear with valid JSON.
+#   BACKSTOP (crashed) — the dispatched session dies WITHOUT signalling done.
+#                        Detected per-session (not whole-list emptiness): claude
+#                        writes ~/.claude/jobs/<short>/state.json for the job's
+#                        lifetime, where short = first 8 chars of SESSION_ID
+#                        (control.rs build_dispatch_spec). Gated on "seen alive
+#                        once" so a slow cold start is not mistaken for a crash.
+#
+# Either signal ends the wait; the EXIT trap (phase_callback) then POSTs the
+# preserved clean/failed verdict from RESULT_FILE. A non-dispatched (thin)
+# worker has no task to finish, so it keeps the original exec-forever behavior.
+# GUARD_STATE is already the state FILE path (--state, default
+# /var/run/workflow-guard/state) that cctui-guard's engine writes {"step":N} to.
+GUARD_STATE_FILE="$GUARD_STATE"
+WAIT_POLL_SECS="${WORKER_DONE_POLL_SECS:-2}"
+
+# Guard signalled completion: state file says {"step":-1}.
+guard_exited() {
+    [ "$GUARD_ON" = on ] || return 1
+    [ -f "$GUARD_STATE_FILE" ] || return 1
+    _step=$(jq -r '.step // empty' "$GUARD_STATE_FILE" 2>/dev/null || true)
+    [ "$_step" = "-1" ]
+}
+
+# Guard-less done: the session wrote a valid result JSON.
+result_ready() {
+    [ "$GUARD_ON" = on ] && return 1
+    [ -s "$RESULT_FILE" ] && jq -e . "$RESULT_FILE" >/dev/null 2>&1
+}
+
+# Per-session liveness backstop. claude owns jobs/<short>/state.json; it exists
+# while the job lives and is removed when the job ends (the daemon's `claude rm`
+# on SessionEnded). We only trust its ABSENCE after we've seen it appear, so a
+# cold start that hasn't created it yet doesn't read as a crash.
+_JOBS_DIR="${CLAUDE_CONFIG_DIR:-/home/${WORKER_USER}/.claude}/jobs"
+_SHORT=$(printf '%s' "${SESSION_ID:-}" | cut -c1-8)
+_STATE_JSON="${_JOBS_DIR}/${_SHORT}/state.json"
+_SEEN_ALIVE=0
+session_dead() {
+    if [ -f "$_STATE_JSON" ]; then
+        _SEEN_ALIVE=1
+        return 1
+    fi
+    # No state file. A crash AFTER we saw it alive; before that, just not-yet.
+    [ "$_SEEN_ALIVE" = 1 ]
+}
+
+await_dispatch_done() {
+    log "wait: blocking on dual signal (guard=$GUARD_ON, short=${_SHORT:-none})"
+    while :; do
+        # The daemon process going away is itself terminal — nothing left to
+        # finish the task, so stop waiting and let the trap synthesize a verdict.
+        if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
+            log "wait: cctui-daemon (pid $DAEMON_PID) exited; ending wait"
+            return 0
+        fi
+        if guard_exited; then
+            log "wait: guard signalled completion (step=-1)"
+            return 0
+        fi
+        if result_ready; then
+            log "wait: result file ready (guard-less done)"
+            return 0
+        fi
+        if session_dead; then
+            log "wait: dispatched session ($_SHORT) died without signalling done"
+            return 0
+        fi
+        sleep "$WAIT_POLL_SECS"
+    done
+}
+
+if [ -n "${SESSION_ID:-}" ] && [ -n "${TASK_PAYLOAD_JSON:-}" ]; then
+    log "dispatched worker -> background cctui-daemon + dual-signal wait (CCT-483)"
+    run_supervised_daemon "$@" &
+    DAEMON_PID=$!
+    await_dispatch_done
+    # Best-effort: stop the daemon so the container winds down promptly. The
+    # EXIT trap (phase_callback) then POSTs the preserved RESULT_FILE verdict.
+    kill "$DAEMON_PID" 2>/dev/null || true
+    exit 0
+fi
+
+log "thin worker -> exec cctui-supervisor -> cctui-daemon (run forever)"
 exec cctui-supervisor \
     --ro /usr --ro /lib --ro /lib64 --ro /bin --ro /sbin --ro /etc --ro /proc \
     --ro /prompts \

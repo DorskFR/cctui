@@ -428,6 +428,8 @@ async fn command_pump(
                             &registry,
                             &events,
                             &shutdown,
+                            server.as_ref(),
+                            machine_key.as_ref(),
                             &local_id,
                             SessionCommand::Permission { request_id, allow },
                         )
@@ -440,6 +442,8 @@ async fn command_pump(
                             &registry,
                             &events,
                             &shutdown,
+                            server.as_ref(),
+                            machine_key.as_ref(),
                             &local_id,
                             SessionCommand::Send { text },
                         )
@@ -451,6 +455,8 @@ async fn command_pump(
                             &registry,
                             &events,
                             &shutdown,
+                            server.as_ref(),
+                            machine_key.as_ref(),
                             &local_id,
                             SessionCommand::Kill { signal },
                         )
@@ -493,6 +499,8 @@ async fn command_pump(
                             &registry,
                             &events,
                             &shutdown,
+                            server.as_ref(),
+                            machine_key.as_ref(),
                             &local_id,
                             SessionCommand::Rename { name },
                         )
@@ -509,6 +517,8 @@ async fn command_pump(
                             &registry,
                             &events,
                             &shutdown,
+                            server.as_ref(),
+                            machine_key.as_ref(),
                             &local_id,
                             SessionCommand::Kill { signal: None },
                         )
@@ -521,6 +531,8 @@ async fn command_pump(
                             &registry,
                             &events,
                             &shutdown,
+                            server.as_ref(),
+                            machine_key.as_ref(),
                             &local_id,
                             SessionCommand::SetModel { model, effort },
                         )
@@ -533,18 +545,38 @@ async fn command_pump(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn forward(
     live: &LiveSessionRegistry,
     registry: &SessionRegistry,
     events: &mpsc::Sender<AdapterEvent>,
     shutdown: &tokio_util::sync::CancellationToken,
+    server: Option<&ServerClient>,
+    machine_key: Option<&String>,
     local_id: &str,
     cmd: SessionCommand,
 ) {
     match route_or_prepare_resume(live, registry, local_id, cmd).await {
         RouteAction::Delivered => {}
-        RouteAction::Resume { record, command } if command.is_resumable() => {
+        RouteAction::Resume { mut record, command } if command.is_resumable() => {
             tracing::info!(%local_id, ?command, "codex: resuming hibernated app-server session");
+            // CCT-482: a thread REDISCOVERED from `thread/list` after a daemon
+            // restart was seeded with an empty env (it was not spawned/forked in
+            // this daemon lifetime), so its first resume would launch env-less
+            // and 401 for an account-bound session. Re-pull the gateway env from
+            // the server's durable `sessions.account_id` binding — same
+            // fail-closed contract as spawn/fork — but ONLY when the stored env
+            // is empty, so we don't double-pull (and regress) spawn/fork which
+            // already resolved a fresh env at launch.
+            if record.env.is_empty() {
+                match resolve_launch_env(server, machine_key, local_id, &record.env).await {
+                    Ok(env) => record.env = env,
+                    Err(err) => {
+                        tracing::error!(%local_id, %err, "codex resume: refusing env-less launch");
+                        return;
+                    }
+                }
+            }
             spawn_resumed_session(
                 record,
                 local_id.to_owned(),
@@ -657,5 +689,34 @@ mod gateway_env_tests {
             GatewayEnvResponse { account_bound: false, env: std::collections::BTreeMap::default() };
         let hint = env_of(&[("HINT", "1")]);
         assert_eq!(launch_env_decision("s1", &resp, &hint).unwrap(), hint);
+    }
+
+    // CCT-482: a thread rediscovered from `thread/list` after a daemon restart
+    // has an EMPTY stored env, so the resume path re-pulls with that empty env as
+    // the hint. The decision must then seed the gateway env from the server
+    // (account-bound) so the relaunch routes through the gateway instead of
+    // launching env-less and 401ing.
+    #[test]
+    fn resume_repull_seeds_gateway_env_for_rediscovered_thread() {
+        let stored_env = std::collections::BTreeMap::default();
+        let resp = GatewayEnvResponse {
+            account_bound: true,
+            env: env_of(&[("OPENAI_BASE_URL", "gw"), ("OPENAI_API_KEY", "tok")]),
+        };
+        let got = launch_env_decision("rediscovered", &resp, &stored_env).unwrap();
+        assert_eq!(got.get("OPENAI_BASE_URL").map(String::as_str), Some("gw"));
+        assert_eq!(got.get("OPENAI_API_KEY").map(String::as_str), Some("tok"));
+    }
+
+    // CCT-482: the resume re-pull is fail-closed too — a rediscovered
+    // account-bound thread whose binding yields no env must refuse to relaunch
+    // rather than cold-launch env-less.
+    #[test]
+    fn resume_repull_fails_closed_when_account_bound_but_env_empty() {
+        let stored_env = std::collections::BTreeMap::default();
+        let resp =
+            GatewayEnvResponse { account_bound: true, env: std::collections::BTreeMap::default() };
+        let err = launch_env_decision("rediscovered", &resp, &stored_env).unwrap_err();
+        assert!(err.to_string().contains("account-bound"));
     }
 }
