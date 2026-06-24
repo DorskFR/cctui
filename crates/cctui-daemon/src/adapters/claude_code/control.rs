@@ -992,6 +992,19 @@ impl Driver {
     /// terminates an *alive* worker to re-seed its env.
     async fn force_reresume(&self, short: &str, local_id: &str) -> anyhow::Result<()> {
         let sock = self.ensure_socket().await?;
+        // Pre-flight (CCT-462 hardening): NEVER kill a live worker we then can't
+        // cold-resume. `resume_worker` derives the cwd from on-disk state.json
+        // (force_reresume passes no fallback cwd); if it's absent — e.g. a
+        // worker whose state.json hasn't been written with a cwd yet — abort
+        // BEFORE the kill so we leave the live worker running instead of killing
+        // it into an unrecoverable state. The next poll re-evaluates (bounded by
+        // the heal cap).
+        let resumable =
+            StateJson::read(&self.cfg.jobs_root, short).is_some_and(|s| s.cwd.is_some());
+        anyhow::ensure!(
+            resumable,
+            "refusing to heal {short}: no resumable cwd in state.json (a kill would not be recoverable)"
+        );
         let _ = socket::one_shot(&sock, &json!({"proto":1,"op":"kill","short":short})).await;
         Self::await_worker_exit(&sock, short).await;
         // `resume_worker` reads the rotated session id + cwd from on-disk
@@ -1476,19 +1489,24 @@ impl Driver {
         Ok(())
     }
 
-    /// Record (CCT-462) that cctui dispatched worker `short` with `env` resolved
-    /// through the launch chokepoint. Only non-empty env is a meaningful trust
-    /// signal — an account-bound session's env is non-empty (fail-closed in
-    /// `resolve_launch_env` otherwise), and a non-account session is never a
-    /// heal candidate regardless. Best-effort under a poisoned lock.
+    /// Record (CCT-462) that cctui ITSELF dispatched worker `short` through the
+    /// launch chokepoint, so the proactive heal never force-kills it. The trust
+    /// signal is "cctui launched this worker", NOT "with non-empty env": a
+    /// session bound to the user's own subscription account (e.g. `personal`)
+    /// resolves to an EMPTY gateway env — it routes via the user's own
+    /// credentials, not a gateway-minted token — yet is still a worker cctui
+    /// launched and must never be healed. Recording only non-empty launches
+    /// misclassified those as autonomous respawns and force-killed healthy live
+    /// sessions (the v0.7.47 regression). The heal's real target — a LEGACY
+    /// session present in the roster at daemon startup that cctui never launched
+    /// this lifetime — is untouched (it stays un-recorded → a candidate).
+    /// `_env` is retained for call-site symmetry. Best-effort under a poisoned
+    /// lock.
     fn note_launched_with_env(
         &self,
         short: &str,
-        env: &std::collections::BTreeMap<String, String>,
+        _env: &std::collections::BTreeMap<String, String>,
     ) {
-        if env.is_empty() {
-            return;
-        }
         if let Ok(mut t) = self.gateway_heal.lock() {
             t.note_launched_with_env(short);
         }
@@ -2956,6 +2974,23 @@ mod tests {
         dying.dying = true;
         d.apply_snapshot(vec![spare, dying]).await;
         assert!(rx.try_recv().is_err(), "filtered jobs should emit nothing");
+    }
+
+    #[tokio::test]
+    async fn empty_env_launch_is_trusted_and_never_a_heal_candidate() {
+        // CCT-462 regression (v0.7.47): a session bound to the user's own
+        // subscription account (e.g. `personal`) resolves to an EMPTY gateway
+        // env — it routes via the user's own credentials, not a gateway token —
+        // but cctui still LAUNCHED it, so the proactive heal must never target
+        // it. `note_launched_with_env` must record the worker regardless of env
+        // emptiness; recording only non-empty launches misclassified these as
+        // autonomous respawns and force-killed healthy live sessions.
+        let (d, _rx) = driver();
+        d.note_launched_with_env("aaaa1111", &std::collections::BTreeMap::default());
+        assert!(
+            !d.gateway_heal.lock().unwrap().is_candidate("aaaa1111"),
+            "a cctui-launched worker must be trusted even with empty gateway env (CCT-462)"
+        );
     }
 
     #[tokio::test]
