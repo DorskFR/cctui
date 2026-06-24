@@ -16,7 +16,7 @@
 	import SoftLimitBanner from './SoftLimitBanner.svelte';
 	import ConversationComposer from './conversation/ConversationComposer.svelte';
 	import { MSG_TYPES, type MsgType, type ViewOpts, type Line } from './conversation/types';
-	import { looksMeta, parseAsk, parsePlan, eventSig, formatToolInput, orderAskTurns } from './conversation/format';
+	import { looksMeta, parseAsk, parsePlan, eventSig, formatToolInput } from './conversation/format';
 	import { ConversationStream } from './conversation/stream.svelte';
 	import { ScrollController } from './conversation/scroll.svelte';
 	import { ForkController } from './conversation/fork.svelte';
@@ -281,11 +281,23 @@
 			}
 			out.push(ln);
 		}
-		// Re-anchor any AskUserQuestion turn to its causal order before computing
-		// per-line durations, so a late-arriving preamble + ask card (stamped with
-		// receive-time ts after the user's answer) render above the answer rather
-		// than below it (CCT-338).
-		const ordered = orderAskTurns(out);
+		// Render strictly in timestamp order (CCT-475). `events` is already sorted
+		// ascending by `ts`, so `out` is built in chronological order and rendered
+		// as-is — no role grouping, no re-anchoring.
+		//
+		// We deliberately REMOVED the CCT-338 `orderAskTurns` re-anchor here: it
+		// lifted an assistant preamble + AskUserQuestion card above the user line
+		// directly preceding it, purely structurally. AgentEvent carries only `ts`
+		// (no causal/sequence field), so that lift could not tell a genuine
+		// late-flushed ask inversion (answer stamped before the late preamble+card)
+		// from a normal prior-turn user line — and so pushed later-ts assistant
+		// messages above earlier-ts user messages, breaking chronological order for
+		// EVERY conversation containing an ask (CCT-475). The only remaining cost is
+		// cosmetic: a RELOADED historical ask shows [answer, preamble, card] (answer
+		// above its own question); live asks render via a separate path and are
+		// unaffected. The proper fix (a causal/sequence field on AgentEvent, then
+		// order by causal-group+seq) is tracked in CCT-481.
+		const ordered = out;
 		for (let i = 0; i < ordered.length; i++) {
 			if (ordered[i].role !== 'assistant') continue;
 			const prev = [...ordered.slice(0, i)]
@@ -421,6 +433,22 @@
 	const drawerWidth = $derived(
 		view.paneWidth ? `min(${view.paneWidth}px, 100vw)` : 'min(900px, 100vw)'
 	);
+
+	// Re-clamp the dragged width when the OS window itself shrinks (CCT-463). The
+	// drag path clamps `paneWidth` to the window width at DRAG time, but a stored
+	// width wider than a now-smaller viewport leaves the drawer (and its left
+	// resize border) off-screen and unreachable. Re-apply the same clamp on every
+	// window 'resize' so the border always stays within the viewport. Registered
+	// on mount, torn down on destroy via the effect's cleanup.
+	$effect(() => {
+		const reclamp = () => {
+			if (view.paneWidth === null) return;
+			const clamped = Math.round(Math.max(PANE_MIN, Math.min(view.paneWidth, window.innerWidth)));
+			if (clamped !== view.paneWidth) view.paneWidth = clamped;
+		};
+		window.addEventListener('resize', reclamp);
+		return () => window.removeEventListener('resize', reclamp);
+	});
 </script>
 
 <BackdropScrim {onclose} />

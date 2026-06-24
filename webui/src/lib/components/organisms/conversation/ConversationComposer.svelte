@@ -420,6 +420,17 @@
 		flex: 1;
 		min-width: 0;
 	}
+	/* Cap the autoresizing textarea's growth so a long message can't push the
+	   composer controls (textarea bottom + Send) off the bottom of the viewport
+	   with no way to reach Send (CCT-473). The autoresize action grows the
+	   element's inline `height`; `max-height` clamps it and the textarea scrolls
+	   internally past the cap. 40vh keeps the conversation + composer visible at
+	   any message length; the composer itself stays pinned as the last flex child
+	   of the column-flex drawer. */
+	.composer-input :global(.textarea) {
+		max-height: 40vh;
+		overflow-y: auto;
+	}
 	.attachments {
 		width: 100%;
 	}

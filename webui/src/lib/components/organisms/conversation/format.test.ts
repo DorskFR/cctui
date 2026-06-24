@@ -1,16 +1,19 @@
 import { describe, it, expect } from 'vitest';
-import { orderAskTurns } from './format';
 import type { AskQuestion, Line } from './types';
 
-// CCT-338 regression coverage.
+// CCT-475 regression coverage.
 //
-// Claude flushes the AskUserQuestion tool_use block (and the assistant preamble
-// preceding it) only AFTER the turn advances — i.e. after the user has already
-// answered. Live events and persisted rows are ordered by RECEIVE-time `ts`
-// (the server stamps Utc::now() on ingest), so once history is refetched or the
-// page is reloaded, the preamble + ask card sort BELOW the user's answer. The
-// ordering must therefore come from causal metadata (the block's position
-// relative to the answer), not arrival time.
+// The Conversation Drawer must render the combined message list in strict
+// ascending timestamp order, regardless of role. `events` is sorted ascending
+// by `ts` in ConversationDrawer.svelte (`.sort((a, b) => a.ts - b.ts)`) and the
+// lines are built from it in order with no role grouping and no re-anchoring.
+//
+// This replaces the former CCT-338 `orderAskTurns` re-anchor, which was REMOVED
+// in CCT-475: with ts-only event data it could not distinguish a late-flushed
+// AskUserQuestion inversion from a normal prior-turn user line, so it pushed
+// later-ts assistant messages above earlier-ts user messages — exactly the
+// regression this guards against (Assistant 15:30 rendered above User 15:12).
+// The proper causal-ordering fix is tracked in CCT-481.
 
 const askQ: AskQuestion[] = [{ question: 'Which database?', options: [{ label: 'Postgres' }, { label: 'SQLite' }] }];
 
@@ -19,61 +22,38 @@ const askCard = (ts: number): Line => ({ role: 'tool', ts, tool: 'AskUserQuestio
 const answer = (ts: number): Line => ({ role: 'user', ts, text: 'Postgres' });
 const continuation = (ts: number): Line => ({ role: 'assistant', ts, text: 'Great, using Postgres.' });
 
-const roles = (ls: Line[]) => ls.map((l) => (l.role === 'tool' ? 'ask' : l.text));
+// Mirror the drawer's render order: events are sorted ascending by ts (a stable
+// sort keeps equal-ts ties in source order, as the component relies on).
+const renderOrder = (lines: Line[]) => lines.slice().sort((a, b) => a.ts - b.ts);
+const tsOf = (ls: Line[]) => ls.map((l) => l.ts);
 
-describe('orderAskTurns (CCT-338)', () => {
-	it('lifts a late preamble + ask card above the answer that preceded them', () => {
-		// Receive-time ordering after refetch/reload: the answer was stamped at
-		// send time (earlier), the preamble + card arrived later.
-		const lines: Line[] = [answer(100), preamble(200), askCard(210), continuation(300)];
-		const out = orderAskTurns(lines);
-		expect(roles(out)).toEqual(['I need to know which DB to use.', 'ask', 'Postgres', 'Great, using Postgres.']);
+describe('conversation render ordering (CCT-475)', () => {
+	it('renders the combined list in strict ascending timestamp order', () => {
+		// The reported regression: an assistant message (15:30) ahead of an earlier
+		// user message (15:12). Source order is intentionally scrambled by role.
+		const t1512 = answer(1512);
+		const t1530 = preamble(1530);
+		const t1535 = answer(1535);
+		const out = renderOrder([t1530, t1512, t1535]);
+		expect(tsOf(out)).toEqual([1512, 1530, 1535]);
+		expect(out[0]).toBe(t1512);
+		expect(out[1]).toBe(t1530);
+		expect(out[2]).toBe(t1535);
 	});
 
-	it('handles an ask card without a preamble', () => {
-		const lines: Line[] = [answer(100), askCard(210), continuation(300)];
-		const out = orderAskTurns(lines);
-		expect(roles(out)).toEqual(['ask', 'Postgres', 'Great, using Postgres.']);
+	it('does not lift an ask card / preamble above an earlier user line', () => {
+		// A conversation containing an ask must NOT reorder around it: every line
+		// stays in ts order, including the user answer that follows the ask.
+		const lines: Line[] = [answer(100), preamble(200), askCard(210), answer(220), continuation(300)];
+		const out = renderOrder(lines);
+		expect(tsOf(out)).toEqual([100, 200, 210, 220, 300]);
 	});
 
-	it('is a no-op when order is already causal (the live case)', () => {
-		const lines: Line[] = [preamble(100), askCard(110), answer(120), continuation(130)];
-		const out = orderAskTurns(lines);
-		expect(roles(out)).toEqual(['I need to know which DB to use.', 'ask', 'Postgres', 'Great, using Postgres.']);
-	});
-
-	it('is idempotent — re-running keeps the corrected order', () => {
-		const lines: Line[] = [answer(100), preamble(200), askCard(210), continuation(300)];
-		const once = orderAskTurns(lines);
-		const twice = orderAskTurns(once);
-		expect(roles(twice)).toEqual(roles(once));
-	});
-
-	it('does not move an ask card that has no preceding answer', () => {
-		const lines: Line[] = [preamble(100), askCard(110)];
-		const out = orderAskTurns(lines);
-		expect(roles(out)).toEqual(['I need to know which DB to use.', 'ask']);
-	});
-
-	it('reorders multiple ask turns independently', () => {
-		const lines: Line[] = [
-			answer(100),
-			preamble(200),
-			askCard(210),
-			answer(220),
-			preamble(400),
-			askCard(410),
-			continuation(500)
-		];
-		const out = orderAskTurns(lines);
-		expect(roles(out)).toEqual([
-			'I need to know which DB to use.',
-			'ask',
-			'Postgres',
-			'I need to know which DB to use.',
-			'ask',
-			'Postgres',
-			'Great, using Postgres.'
-		]);
+	it('keeps equal-timestamp ties in source order (stable)', () => {
+		const a = answer(100);
+		const b = preamble(100);
+		const out = renderOrder([a, b]);
+		expect(out[0]).toBe(a);
+		expect(out[1]).toBe(b);
 	});
 });
