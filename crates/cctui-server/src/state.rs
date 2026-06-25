@@ -121,6 +121,27 @@ pub struct AppState {
     /// on the actual transition so the worker's repeated Retry-After retries
     /// don't spam the WS stream.
     pub soft_limit_blocked: Arc<DashMap<String, ()>>,
+    /// Orphan-token spam guard for the gateway, keyed by the SHA-256 fingerprint
+    /// of the (unresolvable) session token. A worker whose session→account
+    /// binding was lost retries `/gateway` indefinitely; each retry ran a DB
+    /// lookup, so a single zombie could starve the connection pool and slow the
+    /// whole server (including the webui). Once a fingerprint exceeds the spam
+    /// threshold within the window we mark it blocked, and subsequent requests
+    /// are dropped *before* any DB lookup until the block expires.
+    pub gateway_orphan_spam: Arc<DashMap<String, OrphanSpam>>,
+}
+
+/// Sliding-window spam state for one orphan token fingerprint. See
+/// [`AppState::gateway_orphan_spam`].
+#[derive(Clone)]
+pub struct OrphanSpam {
+    /// Unresolved-401 count within the current window.
+    pub count: u32,
+    /// Start of the current counting window.
+    pub window_start: std::time::Instant,
+    /// When set and still in the future, requests for this fingerprint are
+    /// dropped before any DB work.
+    pub blocked_until: Option<std::time::Instant>,
 }
 
 /// A cached usage fetch: when it was fetched and the JSON payload (the raw

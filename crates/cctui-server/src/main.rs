@@ -88,6 +88,7 @@ async fn main() -> anyhow::Result<()> {
         account_usage_cache: Arc::new(dashmap::DashMap::new()),
         pr_status_cache: cctui_proto::classifier::PrStatusCache::new(),
         soft_limit_blocked: Arc::new(dashmap::DashMap::new()),
+        gateway_orphan_spam: Arc::new(dashmap::DashMap::new()),
     };
 
     let (api_router, api_descriptors) = build_api_routes().into_parts();

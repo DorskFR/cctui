@@ -574,6 +574,107 @@ impl Account {
 
 /// Resolve the session token (the upstream bearer the worker sent) to its
 /// account. Returns `None` for unknown/revoked tokens.
+/// Env-tunable thresholds for the orphan-token spam guard. Parsed once.
+struct OrphanSpamCfg {
+    /// Unresolved 401s within `window` before a fingerprint is blocked.
+    threshold: u32,
+    /// Counting window.
+    window: std::time::Duration,
+    /// How long a flagged fingerprint stays blocked (DB lookups skipped).
+    block: std::time::Duration,
+}
+
+static ORPHAN_SPAM_CFG: std::sync::LazyLock<OrphanSpamCfg> = std::sync::LazyLock::new(|| {
+    fn env_u64(name: &str, default: u64) -> u64 {
+        std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+    }
+    OrphanSpamCfg {
+        threshold: u32::try_from(env_u64("CCTUI_GATEWAY_SPAM_THRESHOLD", 10)).unwrap_or(10),
+        window: std::time::Duration::from_secs(env_u64("CCTUI_GATEWAY_SPAM_WINDOW_SECS", 60)),
+        block: std::time::Duration::from_secs(env_u64("CCTUI_GATEWAY_SPAM_BLOCK_SECS", 300)),
+    }
+});
+
+type OrphanSpamMap = dashmap::DashMap<String, crate::state::OrphanSpam>;
+
+/// True if this token fingerprint is currently blocked as a spamming orphan.
+/// Pure in-memory check — no DB — so blocked orphans cost ~nothing.
+fn orphan_is_blocked(state: &AppState, token_fp: &str) -> bool {
+    orphan_is_blocked_at(&state.gateway_orphan_spam, token_fp, std::time::Instant::now())
+}
+
+fn orphan_is_blocked_at(map: &OrphanSpamMap, token_fp: &str, now: std::time::Instant) -> bool {
+    let Some(entry) = map.get(token_fp) else { return false };
+    matches!(entry.blocked_until, Some(until) if until > now)
+}
+
+/// Record an unresolvable-token 401 and, once a fingerprint crosses the spam
+/// threshold within the window, flag it as a blocked orphan and log LOUDLY.
+fn note_orphan_401(state: &AppState, token_fp: &str) {
+    let cfg = &*ORPHAN_SPAM_CFG;
+    let fp_short: String = token_fp.chars().take(12).collect();
+    let (count, newly_blocked) = bump_orphan_401(
+        &state.gateway_orphan_spam,
+        token_fp,
+        std::time::Instant::now(),
+        cfg.threshold,
+        cfg.window,
+        cfg.block,
+    );
+
+    if newly_blocked {
+        tracing::error!(
+            stage = "session-token",
+            token_fp = %fp_short,
+            count,
+            block_secs = cfg.block.as_secs(),
+            "🔴 GATEWAY ORPHAN SPAM: unresolvable session token exceeded {} 401s in {}s — \
+             blocking fingerprint for {}s; subsequent requests dropped before any DB lookup. \
+             A zombie worker lost its session→account binding; resume or kill it.",
+            cfg.threshold,
+            cfg.window.as_secs(),
+            cfg.block.as_secs(),
+        );
+    } else {
+        tracing::warn!(
+            stage = "session-token",
+            token_fp = %fp_short,
+            count,
+            "gateway 401: session token not resolvable (orphan worker retrying)"
+        );
+    }
+}
+
+/// Pure sliding-window counter. Returns `(count_in_window, newly_blocked)` where
+/// `newly_blocked` is true only on the transition that flags the fingerprint.
+fn bump_orphan_401(
+    map: &OrphanSpamMap,
+    token_fp: &str,
+    now: std::time::Instant,
+    threshold: u32,
+    window: std::time::Duration,
+    block: std::time::Duration,
+) -> (u32, bool) {
+    let mut entry = map
+        .entry(token_fp.to_string())
+        .or_insert_with(|| crate::state::OrphanSpam { count: 0, window_start: now, blocked_until: None });
+
+    // Roll the window over once it elapses (also clears an expired block).
+    if now.duration_since(entry.window_start) > window {
+        entry.count = 0;
+        entry.window_start = now;
+        entry.blocked_until = None;
+    }
+    entry.count += 1;
+    let count = entry.count;
+
+    let newly_blocked = count >= threshold && entry.blocked_until.is_none();
+    if newly_blocked {
+        entry.blocked_until = Some(now + block);
+    }
+    (count, newly_blocked)
+}
+
 async fn resolve_account(state: &AppState, session_token: &str) -> Option<Account> {
     let hash = crate::auth::sha256_hex(session_token);
     let row: Option<AccountRow> = sqlx::query_as(
@@ -876,8 +977,18 @@ async fn passthrough(
         return Ok(auth_error(AuthStage::SessionToken, is_anthropic));
     };
 
+    // Orphan-spam guard (slow-pool fix): a worker whose session→account binding
+    // was lost retries forever, and every retry used to run DB lookups —
+    // starving the pool and slowing the whole server. Fingerprint the token and,
+    // if it is already flagged as a spamming orphan, drop the request *before*
+    // touching the DB.
+    let token_fp = crate::auth::sha256_hex(&session_token);
+    if orphan_is_blocked(&state, &token_fp) {
+        return Ok(auth_error(AuthStage::SessionToken, is_anthropic));
+    }
+
     let Some(acct) = resolve_account(&state, &session_token).await else {
-        tracing::info!(stage = "session-token", "gateway 401: session token not resolvable");
+        note_orphan_401(&state, &token_fp);
         return Ok(auth_error(AuthStage::SessionToken, is_anthropic));
     };
 
@@ -1225,8 +1336,49 @@ pub async fn fetch_account_usage(
 
 #[cfg(test)]
 mod tests {
-    use super::{AuthStage, Family, auth_error, usage_cache_stale};
-    use std::time::Duration;
+    use super::{
+        AuthStage, Family, OrphanSpamMap, auth_error, bump_orphan_401, orphan_is_blocked_at,
+        usage_cache_stale,
+    };
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn orphan_spam_blocks_after_threshold_and_skips_db() {
+        let map = OrphanSpamMap::new();
+        let now = Instant::now();
+        let window = Duration::from_secs(60);
+        let block = Duration::from_secs(300);
+        let fp = "deadbeef";
+
+        // Below threshold: counts climb, never blocked.
+        for i in 1..3 {
+            let (count, newly) = bump_orphan_401(&map, fp, now, 3, window, block);
+            assert_eq!(count, i);
+            assert!(!newly);
+            assert!(!orphan_is_blocked_at(&map, fp, now));
+        }
+        // Crossing the threshold flags it exactly once.
+        let (count, newly) = bump_orphan_401(&map, fp, now, 3, window, block);
+        assert_eq!(count, 3);
+        assert!(newly, "should flag on the threshold-crossing call");
+        assert!(orphan_is_blocked_at(&map, fp, now));
+
+        // Still blocked mid-block-window, and re-flagging does not re-fire.
+        let mid = now + Duration::from_secs(120);
+        assert!(orphan_is_blocked_at(&map, fp, mid));
+        let (_, newly_again) = bump_orphan_401(&map, fp, mid, 3, window, block);
+        assert!(!newly_again);
+
+        // After the block expires, the fingerprint is clear again.
+        let after = now + block + Duration::from_secs(1);
+        assert!(!orphan_is_blocked_at(&map, fp, after));
+    }
+
+    #[test]
+    fn orphan_spam_unknown_fingerprint_is_not_blocked() {
+        let map = OrphanSpamMap::new();
+        assert!(!orphan_is_blocked_at(&map, "nope", Instant::now()));
+    }
 
     #[test]
     fn auth_error_distinguishes_session_token_from_provider_oauth() {
