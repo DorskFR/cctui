@@ -323,7 +323,12 @@ pub fn reconcile_tail(
     Ok(events)
 }
 
-fn parse_line(local_id: &str, line: &Value, out: &mut Vec<AdapterEvent>) {
+/// Map one transcript / stream-json JSON line (`type:"assistant"|"user"|…`)
+/// to zero or more [`AdapterEvent`]s. Shared with the stream-json drivers
+/// (CCT-497): the CLI's `--output-format stream-json` `assistant`/`user`
+/// frames carry the same `message.content` shape as transcript lines, so the
+/// same normalization applies.
+pub(super) fn parse_line(local_id: &str, line: &Value, out: &mut Vec<AdapterEvent>) {
     let kind = line.get("type").and_then(Value::as_str).unwrap_or_default();
     // CCT-159: `/compact` appends an `isCompactSummary` line (a `type:"user"`
     // entry whose content is the auto-generated summary) into the SAME

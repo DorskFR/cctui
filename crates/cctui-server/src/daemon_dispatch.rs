@@ -31,6 +31,8 @@ pub enum Error {
     ListDirs(String),
     #[error("db error: {0}")]
     Db(#[from] sqlx::Error),
+    #[error("reconcile build error: {0}")]
+    Reconcile(String),
 }
 
 /// Send `command` to the daemon owning `session_id`. Looks up
@@ -54,6 +56,22 @@ pub async fn dispatch(
     tx.send(DaemonFrameDown::Command { adapter_id, command: Box::new(command) })
         .await
         .map_err(|_| Error::Closed)?;
+    Ok(())
+}
+
+/// Rebuild and live-push a fresh [`DaemonFrameDown::Reconcile`] to `machine_id`'s
+/// connected daemon (CCT-495). Used when a per-user setting the reconcile derives
+/// from (e.g. `harnessMode`) changes, so a daemon picks up the new config without
+/// waiting for a reconnect. Best-effort: same `NoDaemon`/`Closed` handling as
+/// [`dispatch`] — a machine with no live WS is a no-op error the caller ignores.
+pub async fn push_reconcile(state: &AppState, machine_id: Uuid) -> Result<(), Error> {
+    let adapters = crate::routes::daemon::load_reconcile(state, machine_id)
+        .await
+        .map_err(|e| Error::Reconcile(e.to_string()))?;
+    let Some(tx) = state.daemon_connections.get(&machine_id) else {
+        return Err(Error::NoDaemon(machine_id));
+    };
+    tx.send(DaemonFrameDown::Reconcile { adapters }).await.map_err(|_| Error::Closed)?;
     Ok(())
 }
 

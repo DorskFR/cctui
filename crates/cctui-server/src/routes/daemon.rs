@@ -885,7 +885,7 @@ async fn mark_session_ended(
     Ok(())
 }
 
-async fn load_reconcile(
+pub(crate) async fn load_reconcile(
     state: &AppState,
     machine_id: Uuid,
 ) -> anyhow::Result<Vec<DaemonAdapterConfig>> {
@@ -895,12 +895,42 @@ async fn load_reconcile(
     .bind(machine_id)
     .fetch_all(&state.pool)
     .await?;
+
+    // Bridge the owning user's `user_settings.data.harnessMode` into each
+    // claude-code adapter's `config["mode"]` (CCT-495). The settings blob is
+    // otherwise webui-only; this is the one place the server reads it. A
+    // machine-level `adapters_enabled.config.mode` (if ever set) wins, so an
+    // operator can still pin a machine. Codex rows are untouched.
+    let harness_mode: Option<String> = sqlx::query_scalar(
+        "SELECT us.data->>'harnessMode' \
+         FROM machines m JOIN user_settings us ON us.user_id = m.user_id \
+         WHERE m.id = $1",
+    )
+    .bind(machine_id)
+    .fetch_optional(&state.pool)
+    .await?
+    .flatten();
+    let adapter_mode = crate::routes::settings::harness_mode_to_adapter_token(harness_mode.as_deref());
+
     Ok(rows
         .into_iter()
-        .map(|(id, config, enabled)| DaemonAdapterConfig {
-            adapter_id: AdapterId::new(id),
-            config,
-            enabled,
+        .map(|(id, mut config, enabled)| {
+            if id == "claude-code" {
+                // Per-machine pin wins: only inject when the row hasn't already
+                // set a mode (any value — `claude-daemon`/`legacy`/bg/etc.).
+                let pinned = config.get("mode").and_then(serde_json::Value::as_str).is_some();
+                if !pinned {
+                    if let Some(obj) = config.as_object_mut() {
+                        obj.insert(
+                            "mode".to_owned(),
+                            serde_json::Value::String(adapter_mode.clone()),
+                        );
+                    } else {
+                        config = serde_json::json!({ "mode": adapter_mode });
+                    }
+                }
+            }
+            DaemonAdapterConfig { adapter_id: AdapterId::new(id), config, enabled }
         })
         .collect())
 }

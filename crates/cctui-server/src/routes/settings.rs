@@ -68,6 +68,48 @@ fn upgrade_step(data: &mut Value, v: i32) {
     let _ = (data, v);
 }
 
+/// The recognized harness modes (CCT-495). Anything else (typo, missing) clamps
+/// to `bg` so a bad value can't wedge a daemon.
+const HARNESS_MODES: [&str; 3] = ["bg", "sdk", "oneshot"];
+const DEFAULT_HARNESS_MODE: &str = "bg";
+
+/// Read the user-facing `harnessMode` from a settings `data` blob, clamping an
+/// unknown/missing value to [`DEFAULT_HARNESS_MODE`].
+fn harness_mode_of(data: &Value) -> &'static str {
+    match data.get("harnessMode").and_then(Value::as_str) {
+        Some(m) => HARNESS_MODES.into_iter().find(|&v| v == m).unwrap_or(DEFAULT_HARNESS_MODE),
+        None => DEFAULT_HARNESS_MODE,
+    }
+}
+
+/// Clamp `data.harnessMode` to a known value in place (rejecting typos), so a
+/// stored row never carries an out-of-whitelist mode (CCT-495).
+fn clamp_harness_mode(data: &mut Value) {
+    let clamped = harness_mode_of(data);
+    if let Some(obj) = data.as_object_mut() {
+        // Only normalize when the key is present; absence means "default", which
+        // we leave implicit rather than materializing.
+        if obj.contains_key("harnessMode") {
+            obj.insert("harnessMode".to_owned(), Value::String(clamped.to_owned()));
+        }
+    }
+}
+
+/// Map a user-facing harness mode (`bg`/`sdk`/`oneshot`, or unknown) to the
+/// claude-code adapter's internal `config["mode"]` token (CCT-495). Today `bg`
+/// is served by the existing `claude-daemon` path; `sdk`/`oneshot` pass through
+/// as-is. Any unknown/missing value defaults to `bg`.
+#[must_use]
+pub fn harness_mode_to_adapter_token(harness_mode: Option<&str>) -> String {
+    let mode = harness_mode
+        .filter(|m| HARNESS_MODES.contains(m))
+        .unwrap_or(DEFAULT_HARNESS_MODE);
+    match mode {
+        "bg" => "claude-daemon".to_owned(),
+        other => other.to_owned(),
+    }
+}
+
 pub async fn get_settings(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -102,7 +144,25 @@ pub async fn put_settings(
 ) -> Result<Json<SettingsPayload>, StatusCode> {
     // Upgrade the incoming payload to the current shape before persisting, so
     // stored rows are always current-versioned.
-    let data = migrate(body.data, body.version);
+    let mut data = migrate(body.data, body.version);
+    // Whitelist harnessMode on write so a typo can't be stored (and later
+    // wedge a daemon's reconcile); unknown → bg (CCT-495).
+    clamp_harness_mode(&mut data);
+    let new_mode = harness_mode_of(&data);
+
+    // Snapshot the stored harnessMode before the upsert so we only push a fresh
+    // Reconcile when it actually changes — unrelated settings edits must not
+    // trigger a reconcile storm across the user's machines.
+    let prev: Option<Value> =
+        sqlx::query_scalar("SELECT data FROM user_settings WHERE user_id = $1")
+            .bind(ctx.user_id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(|e| {
+                tracing::error!("db error: {e}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+    let prev_mode = prev.as_ref().map_or(DEFAULT_HARNESS_MODE, |d| harness_mode_of(d));
 
     let (version, data) = sqlx::query_as::<_, (i32, Value)>(
         "INSERT INTO user_settings (user_id, version, data, updated_at) \
@@ -121,5 +181,64 @@ pub async fn put_settings(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
+    // Live-push a fresh Reconcile to every machine the user owns the instant the
+    // harness mode changes, so connected daemons pick up the new mode without a
+    // reconnect (CCT-495). Best-effort, only on change.
+    if new_mode != prev_mode {
+        let machines: Vec<uuid::Uuid> = sqlx::query_scalar(
+            "SELECT id FROM machines WHERE user_id = $1 AND deleted_at IS NULL",
+        )
+        .bind(ctx.user_id)
+        .fetch_all(&state.pool)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!("db error listing machines for reconcile push: {e}");
+            Vec::new()
+        });
+        for machine_id in machines {
+            if let Err(err) = crate::daemon_dispatch::push_reconcile(&state, machine_id).await {
+                tracing::debug!(%machine_id, %err, "push_reconcile after harnessMode change failed");
+            }
+        }
+    }
+
     Ok(Json(SettingsPayload { version, data }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        clamp_harness_mode, harness_mode_of, harness_mode_to_adapter_token,
+    };
+    use serde_json::json;
+
+    #[test]
+    fn harness_mode_of_clamps_unknown_and_missing_to_bg() {
+        assert_eq!(harness_mode_of(&json!({})), "bg");
+        assert_eq!(harness_mode_of(&json!({ "harnessMode": "wat" })), "bg");
+        assert_eq!(harness_mode_of(&json!({ "harnessMode": 3 })), "bg");
+        assert_eq!(harness_mode_of(&json!({ "harnessMode": "sdk" })), "sdk");
+        assert_eq!(harness_mode_of(&json!({ "harnessMode": "oneshot" })), "oneshot");
+    }
+
+    #[test]
+    fn clamp_rewrites_a_typo_but_leaves_absence_implicit() {
+        let mut bad = json!({ "harnessMode": "wat", "theme": "dark" });
+        clamp_harness_mode(&mut bad);
+        assert_eq!(bad["harnessMode"], "bg");
+        assert_eq!(bad["theme"], "dark");
+
+        let mut none = json!({ "theme": "dark" });
+        clamp_harness_mode(&mut none);
+        assert!(none.get("harnessMode").is_none());
+    }
+
+    #[test]
+    fn adapter_token_maps_bg_to_claude_daemon_and_passes_others_through() {
+        assert_eq!(harness_mode_to_adapter_token(Some("bg")), "claude-daemon");
+        assert_eq!(harness_mode_to_adapter_token(None), "claude-daemon");
+        assert_eq!(harness_mode_to_adapter_token(Some("typo")), "claude-daemon");
+        assert_eq!(harness_mode_to_adapter_token(Some("sdk")), "sdk");
+        assert_eq!(harness_mode_to_adapter_token(Some("oneshot")), "oneshot");
+    }
 }

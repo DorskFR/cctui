@@ -17,10 +17,15 @@ mod backfill;
 mod control;
 pub(crate) use control::stage_mid_chat_files;
 mod discovery;
+mod headless;
 mod kickstart;
+mod mode;
 mod socket;
 mod state;
+mod streamjson;
 mod transcript;
+
+use mode::Mode;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -70,51 +75,54 @@ impl Adapter for ClaudeCodeAdapter {
     }
 
     async fn start(&self, ctx: AdapterCtx) -> anyhow::Result<()> {
-        if use_claude_daemon_path(&ctx.config) {
-            tracing::info!("claude-code adapter starting in claude-daemon mode");
-            let cfg = control::DriverConfig::from_value(&ctx.config);
-            let driver =
-                control::Driver::new(cfg, ctx.events.clone(), ctx.commands, ctx.shutdown.clone())
-                    // Gateway-env launch chokepoint source (CCT-460).
-                    .with_server(ctx.server.clone(), ctx.machine_key.clone());
-            // The `AskUserQuestion` PreToolUse hook (CCT-167) delivers the
-            // pending question here over the daemon's local socket. The hook
-            // reports claude's live `session_id`; the driver's shared map
-            // translates it to the stable `local_id` the rest of the pipeline
-            // (and the server) keys on.
-            let hook_sock = resolve_legacy_socket_path(&ctx.config);
-            let hook_events = ctx.events;
-            let hook_shutdown = ctx.shutdown;
-            let session_map = driver.session_map();
-            let pending_asks = driver.pending_asks();
-            let pending_perm_hooks = driver.pending_perm_hooks();
-            tokio::spawn(async move {
-                if let Err(err) = run_hook_listener(
-                    hook_sock,
-                    hook_events,
-                    hook_shutdown,
-                    session_map,
-                    pending_asks,
-                    pending_perm_hooks,
-                )
-                .await
-                {
-                    tracing::warn!(%err, "claude-code ask-hook listener exited");
-                }
-            });
-            return driver.run().await;
+        match Mode::from_config(&ctx.config) {
+            Mode::Bg => start_bg(ctx).await,
+            // Stub drivers (CCT-497) — real run loops land in follow-up
+            // tickets. The shared `--settings` ask/permission hook listener is
+            // mode-independent (it binds the same local socket the injected
+            // `--settings` file targets), so once these drivers spawn a worker
+            // its hooks deliver through the same path bg uses.
+            Mode::Oneshot => headless::OneshotDriver::new(ctx).run().await,
+            Mode::Sdk => headless::SdkDriver::new(ctx).run().await,
+            Mode::Legacy => run_legacy_uds(ctx).await,
         }
-        run_legacy_uds(ctx).await
     }
 }
 
-fn use_claude_daemon_path(config: &serde_json::Value) -> bool {
-    match config.get("mode").and_then(|v| v.as_str()) {
-        Some("claude-daemon") => return true,
-        Some("legacy") => return false,
-        _ => {}
-    }
-    !matches!(std::env::var("CCTUI_ADAPTER_CLAUDE_DAEMON").as_deref(), Ok("0" | "false"))
+/// The default `claude daemon` control-socket path: build the control driver,
+/// spawn the shared ask/permission hook listener, and run. Behavior is
+/// byte-for-byte the pre-CCT-497 bg path.
+async fn start_bg(ctx: AdapterCtx) -> anyhow::Result<()> {
+    tracing::info!("claude-code adapter starting in claude-daemon mode");
+    let cfg = control::DriverConfig::from_value(&ctx.config);
+    let driver = control::Driver::new(cfg, ctx.events.clone(), ctx.commands, ctx.shutdown.clone())
+        // Gateway-env launch chokepoint source (CCT-460).
+        .with_server(ctx.server.clone(), ctx.machine_key.clone());
+    // The `AskUserQuestion` PreToolUse hook (CCT-167) delivers the pending
+    // question here over the daemon's local socket. The hook reports claude's
+    // live `session_id`; the driver's shared map translates it to the stable
+    // `local_id` the rest of the pipeline (and the server) keys on.
+    let hook_sock = resolve_legacy_socket_path(&ctx.config);
+    let hook_events = ctx.events;
+    let hook_shutdown = ctx.shutdown;
+    let session_map = driver.session_map();
+    let pending_asks = driver.pending_asks();
+    let pending_perm_hooks = driver.pending_perm_hooks();
+    tokio::spawn(async move {
+        if let Err(err) = run_hook_listener(
+            hook_sock,
+            hook_events,
+            hook_shutdown,
+            session_map,
+            pending_asks,
+            pending_perm_hooks,
+        )
+        .await
+        {
+            tracing::warn!(%err, "claude-code ask-hook listener exited");
+        }
+    });
+    driver.run().await
 }
 
 async fn run_legacy_uds(ctx: AdapterCtx) -> anyhow::Result<()> {
@@ -518,12 +526,12 @@ mod tests {
     #[test]
     fn flag_via_config_mode() {
         let v = serde_json::json!({"mode": "claude-daemon"});
-        assert!(use_claude_daemon_path(&v));
+        assert_eq!(Mode::from_config(&v), Mode::Bg);
     }
 
     #[test]
     fn flag_via_config_mode_other_value() {
-        assert!(!use_claude_daemon_path(&serde_json::json!({"mode": "legacy"})));
+        assert_eq!(Mode::from_config(&serde_json::json!({"mode": "legacy"})), Mode::Legacy);
     }
 
     #[test]

@@ -18,7 +18,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;
 
 use crate::adapter_runtime::AdapterFactory;
-use crate::bus::{AdapterChannels, build_ctx};
+use crate::bus::build_ctx;
 use crate::client::ServerClient;
 
 /// Backoff schedule. Capped at the last entry on subsequent failures.
@@ -175,7 +175,7 @@ impl Supervisor {
             }
             DaemonFrameDown::Command { adapter_id, command } => {
                 if let Some(running) = running.get(&adapter_id) {
-                    let _ = running.channels.commands_tx.send(*command).await;
+                    let _ = running.commands_tx.send(*command).await;
                 } else {
                     tracing::warn!(%adapter_id, "command for unknown adapter; dropping");
                 }
@@ -230,10 +230,40 @@ impl Supervisor {
             }
         }
 
-        // Start adapters that should be running but aren't.
+        // Start adapters that should be running but aren't, and rebuild
+        // adapters whose config changed since they were last (re)built —
+        // without this a live mode switch (bg→sdk) is silently ignored until
+        // the adapter is stopped or the daemon restarts (CCT-496).
         for (id, cfg) in want.drain() {
-            if !cfg.enabled || running.contains_key(&id) {
+            if !cfg.enabled {
                 continue;
+            }
+            if let Some(existing) = running.get(&id) {
+                if existing.config == cfg.config {
+                    // Unchanged — leave it running, don't churn it.
+                    continue;
+                }
+                // Config changed: tear the old instance down and rebuild it
+                // with the new config below. Cancel its token so the old
+                // adapter task + event pump exit cleanly before the new
+                // instance is spawned.
+                if let Some(old) = running.remove(&id) {
+                    old.shutdown.cancel();
+                    // The old command sink is dropped here. Any command frame
+                    // still queued in it (server → daemon → old adapter) but
+                    // not yet consumed by the now-cancelled adapter is lost;
+                    // surface that the way the unknown-adapter path does so a
+                    // dropped command isn't silent.
+                    let queued = old.commands_tx.max_capacity() - old.commands_tx.capacity();
+                    if queued > 0 {
+                        tracing::warn!(
+                            adapter_id = %id,
+                            queued,
+                            "dropping in-flight commands for rebuilt adapter",
+                        );
+                    }
+                    tracing::info!(adapter_id = %id, "config changed; rebuilding adapter");
+                }
             }
             let Some(factory) = self.factories.iter().find(|f| f.id() == id) else {
                 tracing::warn!(adapter_id = %id, "no factory compiled in for adapter");
@@ -248,7 +278,7 @@ impl Supervisor {
                 Some(self.client.clone()),
                 Some(self.machine_key.clone()),
             );
-            let adapter = factory.build(cfg.config);
+            let adapter = factory.build(cfg.config.clone());
             let adapter_id_for_pump = id.clone();
             let event_tx = event_tx.clone();
             let mut events_rx = channels.events_rx;
@@ -271,12 +301,10 @@ impl Supervisor {
                 id.clone(),
                 AdapterRunning {
                     shutdown: token,
-                    channels: AdapterChannels {
-                        // events_rx already moved into pump task above; we
-                        // only need the commands_tx going forward.
-                        events_rx: mpsc::channel(1).1,
-                        commands_tx: channels.commands_tx,
-                    },
+                    // Remember the config this instance was built from so the
+                    // next reconcile can detect a change (CCT-496).
+                    config: cfg.config,
+                    commands_tx: channels.commands_tx,
                 },
             );
             tracing::info!(adapter_id = %id, "started adapter");
@@ -286,7 +314,12 @@ impl Supervisor {
 
 struct AdapterRunning {
     shutdown: CancellationToken,
-    channels: AdapterChannels,
+    /// The adapter config this instance was built from. A reconcile compares
+    /// the new manifest's config against this to decide rebuild-vs-leave-alone
+    /// (CCT-496).
+    config: serde_json::Value,
+    /// Command sink the supervisor routes server `Command` frames into.
+    commands_tx: mpsc::Sender<cctui_proto::adapter::AdapterCommand>,
 }
 
 /// Stage mid-chat attachments (CCT-236) and build the `StageFilesResult` reply.
@@ -366,7 +399,93 @@ fn parse_frame(msg: Message) -> anyhow::Result<Option<DaemonFrameDown>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{LIVENESS_TIMEOUT, PING_INTERVAL};
+    use std::sync::Arc;
+    use std::sync::Mutex;
+
+    use cctui_proto::api::DaemonAdapterConfig;
+    use tokio::sync::mpsc;
+    use tokio_util::sync::CancellationToken;
+
+    use super::{AdapterRunning, LIVENESS_TIMEOUT, PING_INTERVAL, Supervisor};
+    use crate::adapter_runtime::{Adapter, AdapterCtx, AdapterFactory};
+    use crate::client::ServerClient;
+
+    /// Records the config each `build` call was handed, so a test can assert
+    /// whether (and with what config) an adapter was (re)built.
+    #[derive(Clone, Default)]
+    struct BuildRecorder {
+        builds: Arc<Mutex<Vec<serde_json::Value>>>,
+    }
+
+    struct StubAdapter;
+
+    #[async_trait::async_trait]
+    impl Adapter for StubAdapter {
+        fn id(&self) -> &'static str {
+            "stub"
+        }
+        async fn start(&self, ctx: AdapterCtx) -> anyhow::Result<()> {
+            // Idle until cancelled so the spawned task doesn't error out.
+            ctx.shutdown.cancelled().await;
+            Ok(())
+        }
+    }
+
+    struct StubFactory {
+        recorder: BuildRecorder,
+    }
+
+    impl AdapterFactory for StubFactory {
+        fn id(&self) -> &'static str {
+            "stub"
+        }
+        fn build(&self, config: serde_json::Value) -> Box<dyn Adapter> {
+            self.recorder.builds.lock().unwrap().push(config);
+            Box::new(StubAdapter)
+        }
+    }
+
+    fn cfg(mode: &str) -> DaemonAdapterConfig {
+        DaemonAdapterConfig {
+            adapter_id: "stub".into(),
+            config: serde_json::json!({ "mode": mode }),
+            enabled: true,
+        }
+    }
+
+    #[tokio::test]
+    async fn config_change_rebuilds_adapter_identical_does_not_churn() {
+        let recorder = BuildRecorder::default();
+        let supervisor = Supervisor::new(
+            ServerClient::new("http://localhost"),
+            "machine-key".to_string(),
+            vec![Box::new(StubFactory { recorder: recorder.clone() })],
+        );
+        let shutdown = CancellationToken::new();
+        let (event_tx, _event_rx) = mpsc::channel(8);
+        let mut running: std::collections::HashMap<String, AdapterRunning> =
+            std::collections::HashMap::new();
+
+        // First reconcile: adapter starts → one build with mode=bg.
+        supervisor.reconcile(vec![cfg("bg")], &mut running, &event_tx, &shutdown);
+        let first_token = running.get("stub").expect("adapter running").shutdown.clone();
+        assert_eq!(recorder.builds.lock().unwrap().len(), 1);
+
+        // Identical reconcile: no churn — still one build, same instance.
+        supervisor.reconcile(vec![cfg("bg")], &mut running, &event_tx, &shutdown);
+        assert_eq!(recorder.builds.lock().unwrap().len(), 1, "identical config must not rebuild");
+        assert!(!first_token.is_cancelled(), "identical config must not cancel the adapter");
+
+        // Changed reconcile (mode bg→sdk): rebuild — second build with the new
+        // config, old instance cancelled, fresh token in the map.
+        supervisor.reconcile(vec![cfg("sdk")], &mut running, &event_tx, &shutdown);
+        let builds = recorder.builds.lock().unwrap().clone();
+        assert_eq!(builds.len(), 2, "config change must rebuild the adapter");
+        assert_eq!(builds[1], serde_json::json!({ "mode": "sdk" }));
+        assert!(first_token.is_cancelled(), "old adapter instance must be cancelled on rebuild");
+        let new_token = &running.get("stub").expect("adapter still running").shutdown;
+        assert!(!new_token.is_cancelled(), "rebuilt adapter must be live");
+    }
 
     #[test]
     fn liveness_timeout_allows_at_least_two_missed_pings() {
