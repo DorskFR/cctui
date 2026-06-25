@@ -778,8 +778,16 @@ async fn insert_event(
     // the event is silently lost (CCT-136). Strip NULs from every string so
     // the rest of the payload survives.
     strip_nul(&mut payload);
+    // Guard the insert on the session row existing. A daemon can emit an event
+    // for a session the server never registered (e.g. a session_ended whose
+    // prior SessionStarted was never received, or an ephemeral subagent
+    // session): a bare INSERT then trips `stream_events_session_id_fkey`,
+    // spamming WARN logs and burning a failed DB round-trip per event. The
+    // `WHERE EXISTS` makes that case a clean no-op (0 rows) instead — when the
+    // session is present this is identical to the old insert (CCT-493).
     let result = sqlx::query(
-        "INSERT INTO stream_events (session_id, event_type, payload) VALUES ($1, $2, $3) \
+        "INSERT INTO stream_events (session_id, event_type, payload) \
+         SELECT $1, $2, $3 WHERE EXISTS (SELECT 1 FROM sessions WHERE id = $1) \
          ON CONFLICT (session_id, event_type, content_hash) DO NOTHING",
     )
     .bind(local_id)
@@ -846,9 +854,13 @@ async fn mark_session_ended(
     reason: &EndReason,
 ) -> anyhow::Result<()> {
     let payload = json!({ "reason": reason });
+    // `WHERE EXISTS` guard: a session_ended can arrive for a session the server
+    // never registered (its SessionStarted was dropped, or an ephemeral subagent
+    // session) — a bare INSERT trips `stream_events_session_id_fkey`. No-op
+    // cleanly instead of erroring; the UPDATE below is already missing-safe (CCT-493).
     sqlx::query(
         "INSERT INTO stream_events (session_id, event_type, payload) \
-         VALUES ($1, 'session_ended', $2) \
+         SELECT $1, 'session_ended', $2 WHERE EXISTS (SELECT 1 FROM sessions WHERE id = $1) \
          ON CONFLICT (session_id, event_type, content_hash) DO NOTHING",
     )
     .bind(local_id)
