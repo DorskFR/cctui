@@ -29,6 +29,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -46,6 +47,30 @@ const ATTACH_ROWS: u32 = 40;
 /// Reconnect backoff bounds. Reset to `MIN` on every successful attach.
 const BACKOFF_MIN: Duration = Duration::from_millis(500);
 const BACKOFF_MAX: Duration = Duration::from_secs(10);
+
+/// How often a held attach actively probes its worker's liveness (CCT-487).
+///
+/// Holding the socket open is normally sufficient to keep the worker focused
+/// and the idle-retire timer reset, but that assumption is unverified: if the
+/// worker idle-retires anyway, or the held socket half-opens (peer stops
+/// sending and never FINs), the drain loop blocks reading PTY bytes forever
+/// over a worker that already slept and cctui never notices (liveness was
+/// otherwise purely time-derived server-side). So while we hold, we periodically
+/// ask the daemon `has` whether the short we *believe* held is still alive.
+const LIVENESS_PROBE_INTERVAL: Duration = Duration::from_secs(20);
+
+/// Maximum quiet period on a held attach's read side before we treat the socket
+/// as half-open (CCT-487). A healthy idle worker still gets a liveness probe at
+/// `LIVENESS_PROBE_INTERVAL`, so a read that stalls well past it (without the
+/// probe having reconnected us) means the peer wedged — map that to a `Retry`
+/// reconnect rather than blocking on `read` indefinitely.
+const READ_STALL_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// Count of held attaches found dead by the periodic liveness probe (CCT-487).
+/// The daemon has no metrics exporter, so this process-local counter is surfaced
+/// in the `warn!` it accompanies, making the prod frequency of
+/// held-but-dead workers visible in journald without new infra.
+static HELD_ATTACH_FOUND_DEAD: AtomicU64 = AtomicU64::new(0);
 
 /// Owns one persistent-attach task per live session `short`, reconciled
 /// against the `list` snapshot on every poll tick.
@@ -123,6 +148,17 @@ impl AttachTask {
                 AttachOutcome::Detached => {
                     // Clean detach (settle / kick / respawn): reconnect quickly
                     // in case the worker came back under the same short.
+                    backoff = BACKOFF_MIN;
+                }
+                AttachOutcome::HeldDead => {
+                    // Keep-alive FAILED (CCT-487): the liveness probe found the
+                    // short we believe held no longer alive (idle-retired despite
+                    // the held attacher), or the held socket stalled half-open.
+                    // Reconnect promptly — a fresh `attach` re-seeds focus and
+                    // re-registers the attacher if the worker is reachable; if it
+                    // is truly gone the reject will downgrade us to Gone and the
+                    // next poll drops us from the roster (where `resume_worker`
+                    // can revive a still-revivable session).
                     backoff = BACKOFF_MIN;
                 }
                 AttachOutcome::Gone => {
@@ -208,23 +244,85 @@ impl AttachTask {
         // Attached. Drain and discard the raw PTY byte stream until the server
         // closes the connection (detach/settle) or we're cancelled. We never
         // write to the socket — any bytes written would be injected as keys.
+        //
+        // CCT-487: holding open is no longer trusted blind. A periodic `has`
+        // probe verifies the worker we believe held is actually alive, and a
+        // read-stall timeout catches a half-open socket whose peer wedged
+        // without a FIN — either maps to a `HeldDead` reconnect instead of
+        // blocking on `read` forever over a worker that already slept.
         let mut buf = [0_u8; 8192];
+        let mut probe = tokio::time::interval(LIVENESS_PROBE_INTERVAL);
+        // First tick fires immediately; skip it so we don't probe a worker we
+        // just confirmed reachable by attaching.
+        probe.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        probe.tick().await;
         loop {
             tokio::select! {
                 () = self.cancel.cancelled() => {
                     // Dropping the socket detaches us server-side.
                     return Ok(AttachOutcome::Detached);
                 }
-                read = reader.read(&mut buf) => {
+                _ = probe.tick() => {
+                    if let Some(outcome) = self.probe_liveness(sock).await {
+                        return Ok(outcome);
+                    }
+                }
+                read = tokio::time::timeout(READ_STALL_TIMEOUT, reader.read(&mut buf)) => {
                     match read {
-                        Ok(0) => return Ok(AttachOutcome::Detached), // server FIN
-                        Ok(_) => {} // discard PTY bytes
-                        Err(err) => {
+                        Ok(Ok(0)) => return Ok(AttachOutcome::Detached), // server FIN
+                        Ok(Ok(_)) => {} // discard PTY bytes
+                        Ok(Err(err)) => {
                             tracing::debug!(short = %self.short, %err, "attach stream read error");
                             return Ok(AttachOutcome::Retry);
                         }
+                        Err(_elapsed) => {
+                            // Half-open: no bytes AND no FIN for far longer than
+                            // the probe interval. Verify before bailing so a
+                            // genuinely-idle-but-alive worker isn't churned.
+                            if let Some(outcome) = self.probe_liveness(sock).await {
+                                return Ok(outcome);
+                            }
+                            tracing::warn!(
+                                short = %self.short,
+                                timeout_s = READ_STALL_TIMEOUT.as_secs(),
+                                "held attach read stalled past timeout but worker still alive — \
+                                 reconnecting to clear a possibly half-open socket"
+                            );
+                            return Ok(AttachOutcome::HeldDead);
+                        }
                     }
                 }
+            }
+        }
+    }
+
+    /// Liveness probe for a held attach (CCT-487): ask the daemon `has` whether
+    /// the short we believe held is still alive. Returns `Some(HeldDead)` when the
+    /// worker reports not-alive — keep-alive has failed and the caller should
+    /// reconnect/re-dispatch — or `None` when it is alive (or the probe couldn't
+    /// be run, e.g. the socket is momentarily gone) so the hold continues.
+    async fn probe_liveness(&self, sock: &Path) -> Option<AttachOutcome> {
+        let req = json!({"proto": 1, "op": "has", "short": self.short});
+        match super::socket::one_shot(sock, &req).await {
+            Ok(resp) => {
+                if has_reports_alive(&resp) {
+                    return None;
+                }
+                let count = HELD_ATTACH_FOUND_DEAD.fetch_add(1, Ordering::Relaxed) + 1;
+                tracing::warn!(
+                    short = %self.short,
+                    held_attach_found_dead_total = count,
+                    "held attach found dead — worker idle-retired despite the keep-alive \
+                     attacher; reconnecting to re-seed focus / let the poll revive it"
+                );
+                Some(AttachOutcome::HeldDead)
+            }
+            // Probe couldn't run (socket gone / transient). Don't tear down a
+            // possibly-healthy hold on a probe blip — the read side or the next
+            // probe tick will catch a real death.
+            Err(err) => {
+                tracing::debug!(short = %self.short, %err, "liveness probe failed; holding");
+                None
             }
         }
     }
@@ -252,6 +350,18 @@ fn attach_request(short: &str, attach_id: &str) -> Value {
     req
 }
 
+/// Interpret a daemon `has` response (CCT-487): the worker is alive only when
+/// the daemon explicitly says so. A missing/non-bool `alive` field, or a
+/// `{ok:false}` ack, is treated as NOT alive — the conservative reading for a
+/// keep-alive liveness check, so an ambiguous answer triggers a reconnect rather
+/// than masking a dead worker.
+fn has_reports_alive(resp: &Value) -> bool {
+    if resp.get("ok") == Some(&Value::Bool(false)) {
+        return false;
+    }
+    resp.get("alive").and_then(Value::as_bool).unwrap_or(false)
+}
+
 /// Map an attach-reject `code` (the daemon's `{ok:false, code}` ack) to the
 /// reconnect outcome. EAUTH is auth-class (Claude Code ≥2.1.168 gates `attach`
 /// behind the control key, CCT-264): keep-alive is globally broken until the key
@@ -273,6 +383,11 @@ fn classify_reject(code: &str) -> AttachOutcome {
 enum AttachOutcome {
     /// Clean detach (server FIN / cancel) — reconnect promptly.
     Detached,
+    /// Keep-alive verification FAILED (CCT-487): the periodic liveness probe
+    /// found the held short not-alive (idle-retired despite the attacher), or the
+    /// held socket stalled half-open. Reconnect promptly to re-seed focus / let
+    /// the poll revive the session, rather than blocking on a dead hold.
+    HeldDead,
     /// Worker unrecoverable under this short — back off hard, await roster drop.
     Gone,
     /// Daemon control key missing/rotated/wrong (EAUTH) — keep-alive is globally
@@ -317,6 +432,21 @@ mod tests {
         // Unknown / transient codes still retry.
         assert_eq!(classify_reject("ERESPAWN"), AttachOutcome::Retry);
         assert_eq!(classify_reject("?"), AttachOutcome::Retry);
+    }
+
+    /// The liveness probe (CCT-487) treats only an explicit `alive:true` as
+    /// alive; anything ambiguous (missing field, ok:false, non-bool) is dead, so
+    /// a held-but-dead worker is never masked into a quiet hold.
+    #[test]
+    fn has_reports_alive_is_conservative() {
+        assert!(has_reports_alive(&json!({"ok": true, "alive": true})));
+        assert!(!has_reports_alive(&json!({"ok": true, "alive": false})));
+        // Idle-retired / unknown short: no `alive` field → not alive.
+        assert!(!has_reports_alive(&json!({"ok": true})));
+        // Rejected probe → not alive.
+        assert!(!has_reports_alive(&json!({"ok": false, "code": "ENOJOB"})));
+        // Defensive: a non-bool `alive` must not read as alive.
+        assert!(!has_reports_alive(&json!({"alive": "yes"})));
     }
 
     /// Reconcile spawns one task per live short and cancels tasks whose session
