@@ -51,6 +51,14 @@ pub struct ClassifyInput<'a> {
     /// user-activity hints in memory (the binary's `q` parameter). `None`
     /// works fine — we just lose the priority-1 short-circuit.
     pub q: Option<&'a str>,
+    /// Set to `Some(reason)` when the session is currently refused by the
+    /// per-account gateway soft limit (CCT-444/CCT-488). This is a durable,
+    /// server-owned block (persisted on the session row), independent of the
+    /// churning daemon `tempo`/`state` signals — so it must win over a
+    /// `busy`/`active` reading from a worker still retrying behind the 429.
+    /// When set the session is unconditionally [`Bucket::Blocked`] (needs the
+    /// human to continue on another account); `None` means no soft-limit block.
+    pub soft_limit_blocked: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -184,6 +192,13 @@ pub fn classify(
     input: &ClassifyInput<'_>,
     pr_cache: &HashMap<String, PrStatus<'_>, impl std::hash::BuildHasher>,
 ) -> Bucket {
+    // A gateway soft-limit block (CCT-488) is a hard, durable "needs input"
+    // signal: the worker is locked out of the account until a human switches
+    // it. It must win over every transient liveness reading (a worker still
+    // hammering Retry-After looks `busy`/`active`), so it is checked first.
+    if input.soft_limit_blocked.is_some() {
+        return Bucket::Blocked;
+    }
     if input.q == Some("busy") {
         return Bucket::Working;
     }
@@ -266,6 +281,28 @@ mod tests {
         s.state = Some("done");
         s.tempo = Some("active");
         assert_eq!(classify(&s, &HashMap::new()), Bucket::Working);
+    }
+
+    #[test]
+    fn soft_limit_block_trumps_busy_and_active() {
+        // CCT-488: a gateway soft-limit 429 must surface as Blocked even while
+        // the worker still looks busy/active retrying behind the Retry-After.
+        let mut s = snap();
+        s.q = Some("busy");
+        s.tempo = Some("active");
+        s.state = Some("working");
+        s.soft_limit_blocked = Some("switch account: foo rate-limited");
+        assert_eq!(classify(&s, &HashMap::new()), Bucket::Blocked);
+    }
+
+    #[test]
+    fn soft_limit_block_trumps_idle_done() {
+        // The actual bug: a soft-limited idle session that would otherwise fall
+        // through to Working/Done is now durably Blocked (needs input).
+        let mut s = snap();
+        s.activity = Some("success");
+        s.soft_limit_blocked = Some("switch account: foo rate-limited");
+        assert_eq!(classify(&s, &HashMap::new()), Bucket::Blocked);
     }
 
     #[test]

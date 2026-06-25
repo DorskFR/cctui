@@ -132,6 +132,14 @@ impl AttachTask {
                     // hammer the socket.
                     backoff = BACKOFF_MAX;
                 }
+                AttachOutcome::Unauthorized => {
+                    // EAUTH: the control key is missing/rotated/wrong, so every
+                    // attach will fail the same way until it's fixed. Back off
+                    // hard like `Gone` so we don't hammer the socket, but unlike
+                    // `Gone` the roster won't drop us — keep retrying so a
+                    // regenerated key (re-read fresh each cycle) is picked up.
+                    backoff = BACKOFF_MAX;
+                }
                 AttachOutcome::Retry => {
                     backoff = (backoff * 2).min(BACKOFF_MAX);
                 }
@@ -180,13 +188,19 @@ impl AttachTask {
         let ack: Value = serde_json::from_str(ack.trim())?;
         if ack.get("ok") == Some(&Value::Bool(false)) {
             let code = ack.get("code").and_then(Value::as_str).unwrap_or("?");
-            tracing::debug!(short = %self.short, %code, "attach rejected");
-            return Ok(match code {
-                // Worker is dead / unverifiable under this short — stop dialing.
-                "ENOJOB" | "EUNVERIFIED" => AttachOutcome::Gone,
-                // Respawning / starting — retry with backoff.
-                _ => AttachOutcome::Retry,
-            });
+            let outcome = classify_reject(code);
+            match outcome {
+                // EAUTH means the control key is missing/rotated/wrong, so
+                // keep-alive is globally broken — not a transient blip. Warn loud.
+                AttachOutcome::Unauthorized => tracing::warn!(
+                    short = %self.short,
+                    %code,
+                    "attach unauthorized — daemon control key missing/rotated/wrong; \
+                     keep-alive is broken until the key is fixed"
+                ),
+                _ => tracing::debug!(short = %self.short, %code, "attach rejected"),
+            }
+            return Ok(outcome);
         }
 
         tracing::debug!(short = %self.short, "attached (holding open to keep worker awake)");
@@ -238,12 +252,33 @@ fn attach_request(short: &str, attach_id: &str) -> Value {
     req
 }
 
+/// Map an attach-reject `code` (the daemon's `{ok:false, code}` ack) to the
+/// reconnect outcome. EAUTH is auth-class (Claude Code ≥2.1.168 gates `attach`
+/// behind the control key, CCT-264): keep-alive is globally broken until the key
+/// is fixed, so it must NOT fall into the silent transient-retry bucket (CCT-486).
+fn classify_reject(code: &str) -> AttachOutcome {
+    match code {
+        // Worker is dead / unverifiable under this short — stop dialing.
+        "ENOJOB" | "EUNVERIFIED" => AttachOutcome::Gone,
+        // Control key missing/rotated/wrong — back off hard but keep retrying so
+        // a regenerated key (re-read fresh each cycle) is picked up.
+        "EAUTH" => AttachOutcome::Unauthorized,
+        // Respawning / starting — retry with backoff.
+        _ => AttachOutcome::Retry,
+    }
+}
+
 /// What an attach cycle tells the reconnect loop to do next.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AttachOutcome {
     /// Clean detach (server FIN / cancel) — reconnect promptly.
     Detached,
     /// Worker unrecoverable under this short — back off hard, await roster drop.
     Gone,
+    /// Daemon control key missing/rotated/wrong (EAUTH) — keep-alive is globally
+    /// broken. Back off hard like `Gone`, but keep retrying so a regenerated key
+    /// is picked up on the next cycle.
+    Unauthorized,
     /// Transient failure — exponential backoff.
     Retry,
 }
@@ -267,6 +302,21 @@ mod tests {
         assert_eq!(req["caps"]["terminal"], Value::Null);
         assert_eq!(req["caps"]["mux"], Value::Null);
         assert_eq!(req["caps"]["ssh"], json!(false));
+    }
+
+    /// EAUTH (control key missing/rotated/wrong) must map to `Unauthorized`, not
+    /// the silent `Retry` bucket — otherwise keep-alive loops forever at debug
+    /// level and every session crosses the 60s idle-retire (CCT-486).
+    #[test]
+    fn eauth_maps_to_unauthorized_not_retry() {
+        assert_eq!(classify_reject("EAUTH"), AttachOutcome::Unauthorized);
+        assert_ne!(classify_reject("EAUTH"), AttachOutcome::Retry);
+        // The dead-worker codes still stop dialing.
+        assert_eq!(classify_reject("ENOJOB"), AttachOutcome::Gone);
+        assert_eq!(classify_reject("EUNVERIFIED"), AttachOutcome::Gone);
+        // Unknown / transient codes still retry.
+        assert_eq!(classify_reject("ERESPAWN"), AttachOutcome::Retry);
+        assert_eq!(classify_reject("?"), AttachOutcome::Retry);
     }
 
     /// Reconcile spawns one task per live short and cancels tasks whose session

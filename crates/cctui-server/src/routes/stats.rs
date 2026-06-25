@@ -138,22 +138,24 @@ pub async fn session_stats(
 
     // needs_input: classify every non-archived session from its persisted
     // signals and count the Blocked bucket — scoped to the caller.
-    let signal_rows: Vec<(Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT s.tempo, s.agent_state, s.activity \
-         FROM sessions s LEFT JOIN machines m ON m.id = s.machine_uuid \
-         WHERE s.status != 'archived' AND ($1::uuid IS NULL OR m.user_id = $1)",
-    )
-    .bind(uid)
-    .fetch_all(&state.pool)
-    .await
-    .map_err(db_err)?;
+    let signal_rows: Vec<(Option<String>, Option<String>, Option<String>, Option<String>)> =
+        sqlx::query_as(
+            "SELECT s.tempo, s.agent_state, s.activity, s.soft_limit_reason \
+             FROM sessions s LEFT JOIN machines m ON m.id = s.machine_uuid \
+             WHERE s.status != 'archived' AND ($1::uuid IS NULL OR m.user_id = $1)",
+        )
+        .bind(uid)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(db_err)?;
     let needs_input: i64 = signal_rows
         .into_iter()
-        .filter(|(tempo, agent_state, activity)| {
+        .filter(|(tempo, agent_state, activity, soft_limit_reason)| {
             attention_from_bucket(bucket_from_signals(
                 tempo.as_deref(),
                 agent_state.as_deref(),
                 activity.as_deref(),
+                soft_limit_reason.as_deref(),
             ))
             .is_some()
         })

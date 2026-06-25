@@ -1,0 +1,14 @@
+-- CCT-488: persist the per-session soft-limit block durably on the session row.
+--
+-- The gateway's 429 soft-limit path (CCT-444) previously only flipped an
+-- in-memory DashMap and broadcast a transient `SoftLimitReached` event. That
+-- block was never reflected on the session's classifier signals, so a
+-- soft-limited idle session fell through to Working/Done and never showed as
+-- "needs input"; the block also vanished on resubscribe.
+--
+-- This column makes the block durable: the gateway sets `soft_limit_reason` to
+-- the human-readable 429 reason on block and NULLs it on clear (next success or
+-- account switch). `list_sessions` reads it and forces the `Blocked` bucket so
+-- the session surfaces "needs input: switch account" and survives resubscribe,
+-- independent of the churning daemon `tempo`/`agent_state` signals.
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS soft_limit_reason TEXT;

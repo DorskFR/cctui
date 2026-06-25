@@ -452,7 +452,7 @@ async fn session_and_account_name_for_token(
 /// worker's repeated Retry-After retries (still blocked) are no-ops, so the WS
 /// stream isn't spammed. The webui shows the banner; the matching clear arrives
 /// from [`clear_soft_limit_block`] on the next success or an account switch.
-fn mark_soft_limit_block(
+async fn mark_soft_limit_block(
     state: &AppState,
     session_id: &str,
     account_id: Uuid,
@@ -462,6 +462,21 @@ fn mark_soft_limit_block(
 ) {
     if session_id.is_empty() {
         return;
+    }
+    // Persist a durable block on the session row so the classifier drives the
+    // session to `Bucket::Blocked` (✋ needs input) and the block survives a
+    // resubscribe (CCT-488). The stored reason is an actionable "continue on
+    // another account" hint; `list_sessions` reads it. Idempotent (overwrite),
+    // and never clobbers the churning daemon `tempo`/`agent_state` signals.
+    let needs = format!("switch account: {account_name} rate-limited");
+    if let Err(e) =
+        sqlx::query("UPDATE sessions SET soft_limit_reason = $2 WHERE id = $1 AND status != 'archived'")
+            .bind(session_id)
+            .bind(&needs)
+            .execute(&state.pool)
+            .await
+    {
+        tracing::warn!(%session_id, error = %e, "failed to persist soft-limit block");
     }
     // Only broadcast on the clear→blocked transition.
     if state.soft_limit_blocked.insert(session_id.to_owned(), ()).is_none() {
@@ -477,9 +492,23 @@ fn mark_soft_limit_block(
 
 /// Clear a session's soft-limit block and broadcast the dismissal (CCT-444).
 /// Only emits on the blocked→clear transition (no-op if it wasn't blocked).
-pub fn clear_soft_limit_block(state: &AppState, session_id: &str) {
+pub async fn clear_soft_limit_block(state: &AppState, session_id: &str) {
     if session_id.is_empty() {
         return;
+    }
+    // Drop the durable block on the session row so the classifier stops forcing
+    // `Bucket::Blocked` and the session returns to its real signal-derived
+    // bucket (CCT-488). Best-effort; clear it whenever set, even if the
+    // in-memory dedup entry was already gone (e.g. after a server restart).
+    if let Err(e) = sqlx::query(
+        "UPDATE sessions SET soft_limit_reason = NULL \
+         WHERE id = $1 AND soft_limit_reason IS NOT NULL",
+    )
+    .bind(session_id)
+    .execute(&state.pool)
+    .await
+    {
+        tracing::warn!(%session_id, error = %e, "failed to clear soft-limit block");
     }
     if state.soft_limit_blocked.remove(session_id).is_some() {
         let _ = state
@@ -881,7 +910,8 @@ async fn passthrough(
                     &account_name,
                     &reason,
                     retry_after_secs,
-                );
+                )
+                .await;
             }
             let resp = Response::builder()
                 .status(StatusCode::TOO_MANY_REQUESTS)
@@ -1021,7 +1051,7 @@ async fn passthrough(
             None => session_id_for_token(&state, &session_token).await,
         };
         if let Some(sid) = session_id {
-            clear_soft_limit_block(&state, &sid);
+            clear_soft_limit_block(&state, &sid).await;
         }
     }
     let mut builder = Response::builder().status(status);

@@ -251,8 +251,16 @@ pub(crate) fn bucket_from_signals(
     tempo: Option<&str>,
     agent_state: Option<&str>,
     activity: Option<&str>,
+    soft_limit_blocked: Option<&str>,
 ) -> Bucket {
-    let input = ClassifyInput { tempo, state: agent_state, activity, children: &[], q: None };
+    let input = ClassifyInput {
+        tempo,
+        state: agent_state,
+        activity,
+        children: &[],
+        q: None,
+        soft_limit_blocked,
+    };
     let empty: std::collections::HashMap<String, PrStatus<'_>> = std::collections::HashMap::new();
     classify(&input, &empty)
 }
@@ -588,9 +596,11 @@ async fn enrich_and_sort(
             Option<String>,
             Option<String>,
             bool,
+            Option<String>,
         );
         let rows: Vec<SignalRow> = sqlx::query_as(
-            "SELECT id, tempo, agent_state, activity, session_name, model, effort, pinned \
+            "SELECT id, tempo, agent_state, activity, session_name, model, effort, pinned, \
+                    soft_limit_reason \
              FROM sessions WHERE id = ANY($1)",
         )
         .bind(&session_ids)
@@ -606,13 +616,23 @@ async fn enrich_and_sort(
             by_session.insert(row.0.clone(), row);
         }
         for (_, s) in &mut with_ts {
-            if let Some((_, tempo, agent_state, activity, name, model, effort, pinned)) =
-                by_session.remove(&s.id)
+            if let Some((
+                _,
+                tempo,
+                agent_state,
+                activity,
+                name,
+                model,
+                effort,
+                pinned,
+                soft_limit_reason,
+            )) = by_session.remove(&s.id)
             {
                 let bucket = bucket_from_signals(
                     tempo.as_deref(),
                     agent_state.as_deref(),
                     activity.as_deref(),
+                    soft_limit_reason.as_deref(),
                 );
                 s.bucket = bucket;
                 s.attention = attention_from_bucket(bucket);
@@ -1443,7 +1463,7 @@ pub async fn switch_account(
     }
 
     // Dismiss the per-chat soft-limit banner.
-    crate::routes::gateway::clear_soft_limit_block(&state, &session_id);
+    crate::routes::gateway::clear_soft_limit_block(&state, &session_id).await;
     tracing::info!(
         session_id = %session_id,
         from = %current_account_id,
@@ -1692,7 +1712,8 @@ async fn archive_one(state: &AppState, session_id: &str) -> Result<(), sqlx::Err
     // input doesn't keep its ✋ "needs input" glyph in the archived view — an
     // archived session is, by definition, no longer waiting on anyone.
     sqlx::query(
-        "UPDATE sessions SET status = 'archived', tempo = NULL, agent_state = NULL, activity = NULL \
+        "UPDATE sessions SET status = 'archived', tempo = NULL, agent_state = NULL, \
+                activity = NULL, soft_limit_reason = NULL \
          WHERE id = $1 OR parent_id = $1",
     )
     .bind(session_id)
@@ -1929,7 +1950,7 @@ mod tests {
         agent_state: Option<&str>,
         activity: Option<&str>,
     ) -> Option<Attention> {
-        attention_from_bucket(bucket_from_signals(tempo, agent_state, activity))
+        attention_from_bucket(bucket_from_signals(tempo, agent_state, activity, None))
     }
 
     #[test]
@@ -1977,10 +1998,19 @@ mod tests {
     #[test]
     fn bucket_reflects_signals() {
         use cctui_proto::classifier::Bucket;
-        assert_eq!(bucket_from_signals(Some("blocked"), Some("working"), None), Bucket::Blocked);
-        assert_eq!(bucket_from_signals(Some("active"), None, None), Bucket::Working);
-        assert_eq!(bucket_from_signals(None, Some("stopped"), None), Bucket::Done);
-        assert_eq!(bucket_from_signals(None, None, Some("success")), Bucket::Done);
+        assert_eq!(
+            bucket_from_signals(Some("blocked"), Some("working"), None, None),
+            Bucket::Blocked
+        );
+        assert_eq!(bucket_from_signals(Some("active"), None, None, None), Bucket::Working);
+        assert_eq!(bucket_from_signals(None, Some("stopped"), None, None), Bucket::Done);
+        assert_eq!(bucket_from_signals(None, None, Some("success"), None), Bucket::Done);
+        // CCT-488: a durable soft-limit block forces Blocked even over an
+        // otherwise-Done/active session.
+        assert_eq!(
+            bucket_from_signals(Some("active"), None, Some("success"), Some("rate-limited")),
+            Bucket::Blocked
+        );
     }
 
     #[test]
