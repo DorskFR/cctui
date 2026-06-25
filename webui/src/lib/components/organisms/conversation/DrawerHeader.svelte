@@ -37,6 +37,9 @@
 		onarchive,
 		onstoparchive,
 		onTogglePin,
+		// Opens the at-will account switcher from the key glyph (CCT-444 follow-up);
+		// when omitted the badge stays a read-only indicator.
+		onAccountClick,
 		// Label editing (CCT-360): same picker as the session card — when
 		// `onAttachLabel` is supplied the strip is interactive, else read-only.
 		allLabels = [],
@@ -63,6 +66,7 @@
 		// Stop-then-archive, fired by the ⌘/Ctrl+E keyboard chord.
 		onstoparchive: () => void;
 		onTogglePin?: (s: SessionListItem) => void;
+		onAccountClick?: () => void;
 		allLabels?: Label[];
 		onCreateLabel?: (name: string, color: string) => Promise<Label>;
 		onAttachLabel?: (id: string, labelId: string) => void | Promise<void>;
@@ -162,7 +166,7 @@
 		{/if}
 		<span class="dot {livenessClass}" title={session.hibernated ? 'hibernated' : session.liveness}></span>
 		<MachineBadge name={session.machine_name} id={session.machine_id} hue={session.machine_hue} mono />
-		<AccountBadge name={session.account_name} />
+		<AccountBadge name={session.account_name} onclick={onAccountClick} />
 		<div class="dtitle">
 			{#if renaming}
 				<Input bind:value={newName} onkeydown={(e: KeyboardEvent) => e.key === 'Enter' && doRename()} />

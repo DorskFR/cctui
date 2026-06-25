@@ -13,7 +13,7 @@
 	import DrawerHeader from './conversation/DrawerHeader.svelte';
 	import DrawerToolbar from './conversation/DrawerToolbar.svelte';
 	import Conversation from './conversation/Conversation.svelte';
-	import SoftLimitBanner from './SoftLimitBanner.svelte';
+	import AccountSwitchModal from './conversation/AccountSwitchModal.svelte';
 	import ConversationComposer from './conversation/ConversationComposer.svelte';
 	import { MSG_TYPES, type MsgType, type ViewOpts, type Line } from './conversation/types';
 	import { looksMeta, parseAsk, parsePlan, eventSig, formatToolInput } from './conversation/format';
@@ -146,9 +146,25 @@
 	// Catch up after the tab regains focus (the ws may have gone half-open).
 	$effect(() => stream.installVisibilityRefresh());
 
-	// Accounts for the soft-limit account picker (CCT-444). Lazy: only fetched
-	// while a block is actually active, so the common case pays nothing.
-	const accounts = useAccounts(() => stream.softLimit !== null);
+	// At-will account switcher (CCT-444 follow-up): opened from the header key
+	// glyph, or auto-opened when a soft limit blocks the chat. Accounts are
+	// fetched lazily — only while the modal is open or a block is active, so the
+	// common case pays nothing.
+	let acctModalOpen = $state(false);
+	const accounts = useAccounts(() => acctModalOpen || stream.softLimit !== null);
+
+	// Auto-open the switcher the first time a given soft-limit block lands, so the
+	// stalled chat surfaces a way out without the user hunting for the key glyph.
+	let lastSoftLimitId = $state<string | null>(null);
+	$effect(() => {
+		const sl = stream.softLimit;
+		if (sl && sl.account_id !== lastSoftLimitId) {
+			lastSoftLimitId = sl.account_id;
+			acctModalOpen = true;
+		} else if (!sl) {
+			lastSoftLimitId = null;
+		}
+	});
 
 	// History (fetched) + live (ws) events, merged in order, with live events
 	// already present in history dropped so a reconnect/focus refetch and the
@@ -493,6 +509,7 @@
 		onarchive={sa.archive}
 		onstoparchive={sa.stopAndArchive}
 		onTogglePin={togglePin}
+		onAccountClick={() => (acctModalOpen = true)}
 		{allLabels}
 		onCreateLabel={createLabel}
 		onAttachLabel={attachLabel}
@@ -513,10 +530,23 @@
 	{/if}
 
 	{#if stream.softLimit}
-		<SoftLimitBanner
-			softLimit={stream.softLimit}
+		<!-- Slim notice once the auto-opened modal is dismissed, so the stalled chat
+		     keeps an obvious way back to the switcher (CCT-444). -->
+		<div class="attn-banner soft-limit-notice">
+			<span>⏳ Soft limit reached on {stream.softLimit.account_name}.</span>
+			<button type="button" class="soft-limit-switch" onclick={() => (acctModalOpen = true)}>
+				Switch account
+			</button>
+		</div>
+	{/if}
+
+	{#if acctModalOpen}
+		<AccountSwitchModal
+			currentName={session.account_name}
 			accounts={$accounts.data ?? []}
+			softLimit={stream.softLimit}
 			onswitch={(acct) => stream.switchAccount(acct)}
+			onclose={() => (acctModalOpen = false)}
 		/>
 	{/if}
 
@@ -653,5 +683,25 @@
 		color: var(--warn);
 		font-size: var(--fs-sm);
 		font-weight: var(--fw-medium);
+	}
+	.soft-limit-notice {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--sp-2);
+	}
+	.soft-limit-switch {
+		flex: none;
+		cursor: pointer;
+		padding: var(--sp-1) var(--sp-2);
+		font-size: var(--fs-sm);
+		font-weight: var(--fw-medium);
+		color: var(--warn);
+		background: none;
+		border: 1px solid color-mix(in srgb, var(--warn) 40%, var(--border-strong));
+		border-radius: var(--r-sm);
+	}
+	.soft-limit-switch:hover {
+		background: color-mix(in srgb, var(--warn) 12%, transparent);
 	}
 </style>

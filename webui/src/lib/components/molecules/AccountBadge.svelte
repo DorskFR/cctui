@@ -6,13 +6,35 @@
 	// on hover/tap via the tsumikit Tooltip. Renders nothing when the session
 	// has no resolved account (e.g. a local session that never routed through
 	// the cctui gateway), so it never disrupts the existing layout.
-	let { name }: { name?: string | null } = $props();
+	//
+	// When `onclick` is supplied the glyph becomes a button that opens the
+	// at-will account switcher (CCT-444 follow-up); otherwise it stays a plain
+	// read-only indicator.
+	let { name, onclick }: { name?: string | null; onclick?: () => void } = $props();
 </script>
 
 {#if name}
-	<Tooltip text={`account: ${name}`}>
+	<Tooltip text={onclick ? `account: ${name} — click to switch` : `account: ${name}`}>
 		{#snippet trigger()}
-			<span class="acct" aria-label={`account: ${name}`}>
+			<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+			<!-- role + tabindex are applied together only when `onclick` is set, so the
+			     glyph is a real button then and a plain indicator otherwise. -->
+			<span
+				class="acct"
+				class:clickable={!!onclick}
+				role={onclick ? 'button' : undefined}
+				tabindex={onclick ? 0 : undefined}
+				aria-label={onclick ? `Switch account (currently ${name})` : `account: ${name}`}
+				{onclick}
+				onkeydown={onclick
+					? (e: KeyboardEvent) => {
+							if (e.key === 'Enter' || e.key === ' ') {
+								e.preventDefault();
+								onclick();
+							}
+						}
+					: undefined}
+			>
 				<!-- lucide key-round, sized in em so it tracks the font-scale picker. -->
 				<svg
 					viewBox="0 0 24 24"
@@ -37,6 +59,17 @@
 		flex: none;
 		color: var(--c-muted, currentColor);
 		cursor: default;
+	}
+	.acct.clickable {
+		cursor: pointer;
+		border: none;
+		background: none;
+		padding: 0;
+	}
+	.acct.clickable:hover,
+	.acct.clickable:focus-visible {
+		color: var(--text, currentColor);
+		outline: none;
 	}
 	.acct svg {
 		/* em-relative so the glyph scales with the font-scale picker (CCT-408). */
