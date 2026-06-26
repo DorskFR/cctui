@@ -378,7 +378,7 @@ struct StatusSnapshot {
 /// Decide the launch env from a server `GatewayEnvResponse` (CCT-460), split out
 /// as a pure function so the fail-closed contract is unit-testable without a
 /// live server. See [`Driver::resolve_launch_env`] for the surrounding flow.
-fn launch_env_decision(
+pub(super) fn launch_env_decision(
     local_id: &str,
     resp: &cctui_proto::api::GatewayEnvResponse,
     hint: &std::collections::BTreeMap<String, String>,
@@ -2526,7 +2526,7 @@ fn hook_settings_path(file: &str) -> Option<PathBuf> {
 /// hook gains `--deny` (it still notifies the UI, but returns a `deny` decision
 /// so the form never renders), and a `Stop` hook (`whip-stop-hook`) blocks
 /// stalling / hand-back language so the worker runs to genuine completion.
-fn ensure_hook_settings(sock: &std::path::Path, whip: bool) -> Option<PathBuf> {
+pub(super) fn ensure_hook_settings(sock: &std::path::Path, whip: bool) -> Option<PathBuf> {
     let path = hook_settings_path(if whip {
         "whip-hook-settings.json"
     } else {

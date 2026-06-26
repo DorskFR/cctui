@@ -20,6 +20,7 @@ mod discovery;
 mod headless;
 mod kickstart;
 mod mode;
+mod oneshot;
 mod socket;
 mod state;
 mod streamjson;
@@ -77,12 +78,13 @@ impl Adapter for ClaudeCodeAdapter {
     async fn start(&self, ctx: AdapterCtx) -> anyhow::Result<()> {
         match Mode::from_config(&ctx.config) {
             Mode::Bg => start_bg(ctx).await,
-            // Stub drivers (CCT-497) — real run loops land in follow-up
-            // tickets. The shared `--settings` ask/permission hook listener is
-            // mode-independent (it binds the same local socket the injected
-            // `--settings` file targets), so once these drivers spawn a worker
-            // its hooks deliver through the same path bg uses.
-            Mode::Oneshot => headless::OneshotDriver::new(ctx).run().await,
+            // Oneshot driver (CCT-499): one transient `claude -p` per turn,
+            // mapped onto the AdapterCommand/AdapterEvent surface via the shared
+            // stream-json codec. It binds the same `--settings` ask/permission
+            // hook socket bg uses, so headless `-p` runs deliver hooks through
+            // the same path.
+            Mode::Oneshot => oneshot::OneshotDriver::new(ctx).run().await,
+            // SDK stub (CCT-497) — real run loop lands in CCT-500.
             Mode::Sdk => headless::SdkDriver::new(ctx).run().await,
             Mode::Legacy => run_legacy_uds(ctx).await,
         }

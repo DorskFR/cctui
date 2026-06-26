@@ -55,10 +55,27 @@ export interface DisplaySettings {
 	notifySound: boolean;
 }
 
+// The claude-code execution harness modes (epic CCT-494). Stored top-level in the
+// settings blob as `data.harnessMode` because the server reads it from there
+// (see settings.rs::harness_mode_of) to drive per-machine Reconcile. Codex
+// sessions ignore this. An unknown stored value is clamped to `bg` server-side.
+export type HarnessMode = 'bg' | 'sdk' | 'oneshot';
+export const HARNESS_MODES: readonly HarnessMode[] = ['bg', 'sdk', 'oneshot'];
+export const DEFAULT_HARNESS_MODE: HarnessMode = 'bg';
+
+/** Clamp an arbitrary stored value to a known harness mode (mirrors the server's
+ *  clamp so an unknown/missing value renders as `bg`). */
+export function clampHarnessMode(v: unknown): HarnessMode {
+	return HARNESS_MODES.includes(v as HarnessMode) ? (v as HarnessMode) : DEFAULT_HARNESS_MODE;
+}
+
 export interface SettingsState {
 	newSession: NewSessionSettings;
 	sessionList: SessionListSettings;
 	display: DisplaySettings;
+	// Claude harness mode (epic CCT-494). Top-level so it serializes as
+	// `data.harnessMode`, which the server reads to drive each daemon's Reconcile.
+	harnessMode: HarnessMode;
 	// Reserved for a future keyboard-shortcuts surface (no UI yet, CCT-426).
 	shortcutsEnabled: boolean;
 	keymap: Record<string, string>;
@@ -93,6 +110,7 @@ const DEFAULTS: SettingsState = {
 		notifyEnabled: false,
 		notifySound: true
 	},
+	harnessMode: DEFAULT_HARNESS_MODE,
 	shortcutsEnabled: false,
 	keymap: {}
 };
@@ -106,6 +124,9 @@ function mergeDefaults(partial: Partial<SettingsState> | null | undefined): Sett
 		newSession: { ...DEFAULTS.newSession, ...(p.newSession ?? {}) },
 		sessionList: { ...DEFAULTS.sessionList, ...(p.sessionList ?? {}) },
 		display: { ...DEFAULTS.display, ...(p.display ?? {}) },
+		// Clamp to a known mode so an unknown stored value renders as `bg` (matches
+		// the server's clamp on PUT).
+		harnessMode: clampHarnessMode(p.harnessMode),
 		shortcutsEnabled: p.shortcutsEnabled ?? DEFAULTS.shortcutsEnabled,
 		keymap: p.keymap ?? DEFAULTS.keymap
 	};
@@ -202,6 +223,18 @@ class Settings {
 	setDisplay(patch: Partial<DisplaySettings>) {
 		this.state.display = { ...this.state.display, ...patch };
 		this.persist();
+	}
+
+	// Claude harness mode (epic CCT-494). Persisted top-level so it serializes as
+	// `data.harnessMode`; the server clamps unknown values on PUT and pushes a
+	// fresh Reconcile to the user's connected daemons within ~1s.
+	setHarnessMode(mode: HarnessMode) {
+		this.state.harnessMode = clampHarnessMode(mode);
+		this.persist();
+	}
+
+	get harnessMode(): HarnessMode {
+		return clampHarnessMode(this.state.harnessMode);
 	}
 
 	toggleArchiveShortcut() {

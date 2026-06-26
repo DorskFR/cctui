@@ -17,6 +17,7 @@
 		adapterLabel
 	} from '$lib/components/organisms/spawn/options';
 	import { Card, Heading, Select, Stack, Switch, Text } from '@dorsk/tsumikit';
+	import type { HarnessMode } from '$lib/settings.svelte';
 
 	const machines = useAllMachines(() => true);
 	const dispatchers = useDispatchers(() => true);
@@ -75,6 +76,28 @@
 	function csv(ids: string[]): string {
 		return ids.join(', ');
 	}
+
+	// Claude harness mode (epic CCT-494). Per-user; applies to all the user's
+	// machines and a connected daemon switches within ~1s. Codex sessions ignore it.
+	const harnessMode = $derived(settings.harnessMode);
+	const harnessOpts: { v: HarnessMode; label: string; help: string }[] = [
+		{
+			v: 'bg',
+			label: 'Background (default)',
+			help: 'Full live fidelity with native FleetView — live PTY, mid-turn control.'
+		},
+		{
+			v: 'sdk',
+			label: 'SDK',
+			help: 'Persistent, structured session. No PTY.'
+		},
+		{
+			v: 'oneshot',
+			label: 'One-shot',
+			help: 'Ephemeral, per-turn. No live mid-turn control.'
+		}
+	];
+	const harnessHelp = $derived(harnessOpts.find((o) => o.v === harnessMode)?.help ?? '');
 </script>
 
 <Stack gap="lg">
@@ -422,6 +445,36 @@
 							label="Archive shortcut"
 							onclick={() => settings.toggleArchiveShortcut()}
 						/>
+					</dd>
+				</div>
+			</dl>
+		</Stack>
+	</Card>
+
+	<!-- ── Claude harness mode (epic CCT-494) ───────────────────────────── -->
+	<Card>
+		<Stack gap="md">
+			<Heading level={2}>Claude harness mode</Heading>
+			<dl class="props">
+				<div class="prop">
+					<dt>
+						<Text weight="semibold">Execution mode</Text>
+						<Text size="sm" tone="faint">{harnessHelp}</Text>
+						<Text size="sm" tone="faint">
+							Applies to all your machines and takes effect within ~1s. Only affects
+							Claude sessions — Codex sessions ignore this.
+						</Text>
+					</dt>
+					<dd>
+						<Select
+							value={harnessMode}
+							onchange={(e) =>
+								settings.setHarnessMode((e.currentTarget as HTMLSelectElement).value as HarnessMode)}
+						>
+							{#each harnessOpts as o (o.v)}
+								<option value={o.v}>{o.label}</option>
+							{/each}
+						</Select>
 					</dd>
 				</div>
 			</dl>
