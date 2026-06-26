@@ -683,7 +683,16 @@ fn bump_orphan_401(
     (count, newly_blocked)
 }
 
-async fn resolve_account(state: &AppState, session_token: &str) -> Option<Account> {
+/// Resolve a session token to its bound account.
+///
+/// Three-valued on purpose (CCT-460 follow-up): `Ok(Some)` = bound and live;
+/// `Ok(None)` = the token is genuinely unknown/revoked/unbound (a real orphan);
+/// `Err` = the DB lookup itself failed (cold/starved pool on a server restart,
+/// transient network). The caller MUST NOT treat `Err` as an orphan — doing so
+/// fed the spam guard during restarts and blocked perfectly valid tokens for
+/// 300s (the "401 on every server restart" regression). On `Err` we return a
+/// retryable 503 and never touch the orphan block.
+async fn resolve_account(state: &AppState, session_token: &str) -> Result<Option<Account>, sqlx::Error> {
     let hash = crate::auth::sha256_hex(session_token);
     let row: Option<AccountRow> = sqlx::query_as(
         "SELECT a.id, a.provider, a.encrypted_access_token, a.encrypted_refresh_token, \
@@ -694,9 +703,7 @@ async fn resolve_account(state: &AppState, session_token: &str) -> Option<Accoun
     )
     .bind(&hash)
     .fetch_optional(&state.pool)
-    .await
-    .ok()
-    .flatten();
+    .await?;
     let (
         id,
         provider,
@@ -709,11 +716,14 @@ async fn resolve_account(state: &AppState, session_token: &str) -> Option<Accoun
         soft_5h,
         soft_7d,
         soft_bypass,
-    ) = row?;
+    ) = match row {
+        Some(r) => r,
+        None => return Ok(None),
+    };
     let key = crate::crypto::vault_key();
     let access_token = enc_access.and_then(|e| crate::crypto::deobfuscate(&e, &key));
     let refresh_token = enc_refresh.and_then(|e| crate::crypto::deobfuscate(&e, &key));
-    Some(Account {
+    Ok(Some(Account {
         id,
         provider,
         access_token,
@@ -727,7 +737,7 @@ async fn resolve_account(state: &AppState, session_token: &str) -> Option<Accoun
             pct_7d: soft_7d,
             bypass_minutes: soft_bypass,
         },
-    })
+    }))
 }
 
 #[derive(serde::Deserialize)]
@@ -995,9 +1005,27 @@ async fn passthrough(
         return Ok(auth_error(AuthStage::SessionToken, is_anthropic));
     }
 
-    let Some(acct) = resolve_account(&state, &session_token).await else {
-        note_orphan_401(&state, &token_fp);
-        return Ok(auth_error(AuthStage::SessionToken, is_anthropic));
+    let acct = match resolve_account(&state, &session_token).await {
+        Ok(Some(acct)) => acct,
+        // Genuinely unknown/revoked/unbound token — a real orphan. Count it
+        // toward the spam guard and reject as a cctui auth failure.
+        Ok(None) => {
+            note_orphan_401(&state, &token_fp);
+            return Ok(auth_error(AuthStage::SessionToken, is_anthropic));
+        }
+        // The DB lookup itself failed (cold/starved pool during a server
+        // restart, transient network). This is NOT an orphan — a valid bound
+        // token can land here while the pool warms up. Returning a retryable
+        // 503 (and crucially NOT feeding the orphan-spam block) keeps a server
+        // restart from poisoning live tokens for 300s (CCT-460 regression).
+        Err(e) => {
+            tracing::warn!(
+                stage = "session-token",
+                error = %e,
+                "gateway token resolution failed transiently (DB) — returning 503, not orphaning"
+            );
+            return Err(StatusCode::SERVICE_UNAVAILABLE);
+        }
     };
 
     // Soft limit (CCT-411): cap cctui's own share of the account's usage windows
