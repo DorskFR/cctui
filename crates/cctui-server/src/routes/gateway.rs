@@ -312,6 +312,14 @@ async fn mint_env_for_account(
         Family::Anthropic => {
             env.insert("ANTHROPIC_BASE_URL".into(), format!("{base}/gateway/anthropic"));
             env.insert("ANTHROPIC_AUTH_TOKEN".into(), token);
+            // Opt into the 1-hour prompt-cache TTL. The upstream account is a
+            // subscription, so 1h caching is plan-included (no per-token write
+            // premium); but Claude Code only requests it when it sees this flag.
+            // Over a custom base URL it can't tell the gateway is subscription-
+            // backed and otherwise defaults to the 5-minute TTL. Setting it here
+            // — alongside the other injected env — keeps the gateway a verbatim
+            // request passthrough (no body rewrite to add `cache_control.ttl`).
+            env.insert("ENABLE_PROMPT_CACHING_1H".into(), "1".into());
         }
         Family::Openai => {
             env.insert("OPENAI_BASE_URL".into(), format!("{base}/gateway/openai"));
