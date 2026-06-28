@@ -290,7 +290,12 @@ phase_context_pack() {
         #      credentials helper materializes. A future dispatcher-side secret
         #      broker can populate this var without changing the job contract.
         if [ -z "${CONTEXT_PACK_TOKEN:-}" ]; then
-            _gh=$(printf '%s' "$TASK_PAYLOAD_JSON" | jq -r '.env.GITHUB_TOKEN // empty' 2>/dev/null || true)
+            # Primary: GITHUB_TOKEN already in the pod env — the dispatcher
+            # promotes payload.env to pod env and the vault-env webhook resolves
+            # any vault: reference before this entrypoint runs, so by here it is a
+            # real token. Fallbacks cover non-promoting callers.
+            _gh="${GITHUB_TOKEN:-}"
+            [ -z "$_gh" ] && _gh=$(printf '%s' "$TASK_PAYLOAD_JSON" | jq -r '.env.GITHUB_TOKEN // empty' 2>/dev/null || true)
             if [ -z "$_gh" ]; then
                 _id=$(printf '%s' "$TASK_PAYLOAD_JSON" | jq -r '.identity // empty' 2>/dev/null || true)
                 if [ -n "$_id" ]; then

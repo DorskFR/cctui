@@ -144,6 +144,15 @@ impl Spawner {
             .as_object_mut()
             .and_then(|o| o.remove("cctui_machine_key"))
             .and_then(|v| v.as_str().map(ToOwned::to_owned));
+        // Lift `payload.env` so it becomes real POD env, not a blob buried in
+        // TASK_PAYLOAD_JSON. This is what lets the secret surface work: a
+        // `vault:…` value is emitted as a literal env var the in-cluster
+        // vault-env webhook resolves at exec (before the entrypoint), and a
+        // `k8s:[ns/]secret#key` value becomes a `secretKeyRef` the kubelet
+        // injects — neither the dispatcher nor the pod spec ever holds the
+        // resolved secret. Removing it from the payload also stops the daemon
+        // from re-applying the unresolved reference over the resolved env.
+        let env_map = payload.as_object_mut().and_then(|o| o.remove("env"));
         let task_name = payload.get("name").and_then(|v| v.as_str()).map(ToOwned::to_owned);
         let payload_json = serde_json::to_string(&payload)?;
 
@@ -163,6 +172,32 @@ impl Spawner {
             overrides.push(("REPLY_URL".into(), u.clone()));
         }
 
+        // Split the lifted env into literal vars (vault:/plain) and k8s
+        // secret-key references. Keys are upserted, so an explicit task env wins
+        // over a same-named template default.
+        let mut secret_refs: Vec<(String, String, String)> = Vec::new();
+        if let Some(Value::Object(m)) = env_map {
+            for (k, v) in m {
+                let Some(val) = v.as_str() else { continue };
+                if let Some(rest) = val.strip_prefix("k8s:") {
+                    // k8s:[namespace/]secret#key — secretKeyRef is namespace-local
+                    // (the pod's own ns), so any namespace prefix is informational
+                    // and dropped here.
+                    if let Some((left, key)) = rest.split_once('#') {
+                        let secret = left.rsplit('/').next().unwrap_or(left);
+                        if !secret.is_empty() && !key.is_empty() {
+                            secret_refs.push((k, secret.to_owned(), key.to_owned()));
+                            continue;
+                        }
+                    }
+                    // Malformed k8s: ref — skip rather than leak the ref string.
+                    continue;
+                }
+                // vault:… (resolved by the vault-env webhook) or a plain literal.
+                overrides.push((k, val.to_owned()));
+            }
+        }
+
         let worker = pod_template
             .pointer_mut("/spec/containers/0")
             .and_then(Value::as_object_mut)
@@ -173,6 +208,7 @@ impl Spawner {
         worker.remove("command");
         worker.remove("args");
         Self::merge_env(worker, &overrides);
+        Self::merge_env_secret_refs(worker, &secret_refs);
 
         // Stamp origin/session labels + the full-id annotation.
         let meta =
@@ -223,6 +259,32 @@ impl Spawner {
                 obj.remove("valueFrom");
             } else {
                 arr.push(json!({ "name": k, "value": v }));
+            }
+        }
+    }
+
+    /// Upsert `valueFrom.secretKeyRef` env vars (from `k8s:` references) into the
+    /// container's `env`. Points at a secret that must already exist in the
+    /// pod's namespace — the kubelet injects the value, so it never enters the
+    /// Job spec or the dispatcher process.
+    fn merge_env_secret_refs(
+        worker: &mut serde_json::Map<String, Value>,
+        refs: &[(String, String, String)],
+    ) {
+        let env = worker.entry("env").or_insert_with(|| json!([]));
+        let arr = env.as_array_mut().expect("env is an array");
+        for (name, secret, key) in refs {
+            let entry = json!({
+                "name": name,
+                "valueFrom": { "secretKeyRef": { "name": secret, "key": key } },
+            });
+            if let Some(existing) = arr
+                .iter_mut()
+                .find(|e| e.get("name").and_then(Value::as_str) == Some(name.as_str()))
+            {
+                *existing = entry;
+            } else {
+                arr.push(entry);
             }
         }
     }
@@ -558,5 +620,42 @@ mod tests {
             v.pointer("/metadata/annotations/cctui.dev~1session-id"),
             Some(&json!("sess-123"))
         );
+    }
+
+    #[test]
+    fn build_job_promotes_payload_env_to_pod_env() {
+        let payload = json!({
+            "flow": "pr-review",
+            "env": {
+                "CONTEXT_PACK_URL": "https://github.com/acme/pack",
+                "GITHUB_TOKEN": "vault:secret/data/ci#github",
+                "SLACK_TOKEN": "k8s:dev/scli-secret#token",
+                "YOUTRACK_TOKEN": "k8s:yt-secret#token"
+            }
+        });
+        let s = spec("sess-9", payload);
+        let name = Spawner::job_name("sess-9");
+        let job = Spawner::build_job("http://cctui:8700", &sample_cronjob(), &s, &name).unwrap();
+        let v = serde_json::to_value(&job).unwrap();
+        let env = v.pointer("/spec/template/spec/containers/0/env").unwrap().as_array().unwrap();
+        let entry = |k: &str| env.iter().find(|e| e["name"] == k).cloned();
+
+        // Plain + vault: values become literal env (vault-env resolves vault: at exec).
+        assert_eq!(entry("CONTEXT_PACK_URL").unwrap()["value"], json!("https://github.com/acme/pack"));
+        assert_eq!(entry("GITHUB_TOKEN").unwrap()["value"], json!("vault:secret/data/ci#github"));
+        // k8s: values become secretKeyRef (no literal value), namespace prefix dropped.
+        let slack = entry("SLACK_TOKEN").unwrap();
+        assert!(slack.get("value").is_none());
+        assert_eq!(slack.pointer("/valueFrom/secretKeyRef/name"), Some(&json!("scli-secret")));
+        assert_eq!(slack.pointer("/valueFrom/secretKeyRef/key"), Some(&json!("token")));
+        assert_eq!(
+            entry("YOUTRACK_TOKEN").unwrap().pointer("/valueFrom/secretKeyRef/name"),
+            Some(&json!("yt-secret"))
+        );
+        // env is stripped from TASK_PAYLOAD_JSON so the daemon can't re-apply refs.
+        let tp = entry("TASK_PAYLOAD_JSON").unwrap()["value"].as_str().unwrap().to_owned();
+        assert!(!tp.contains("vault:"), "unresolved ref leaked into payload: {tp}");
+        assert!(!tp.contains("GITHUB_TOKEN"), "env leaked into payload: {tp}");
+        assert!(tp.contains("pr-review"));
     }
 }

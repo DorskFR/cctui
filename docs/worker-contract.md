@@ -98,6 +98,28 @@ silently.
 `ANTHROPIC_*` / `OPENAI_*` model auth is **not** handled here — it stays env
 passthrough / gateway token, materialized by the platform exactly as before.
 
+### Secret references in `payload.env` (CCT-490)
+
+The dispatch payload's `env` map is the **one secret-injection surface**, and it
+carries **references, never secret values**. The kube dispatcher lifts
+`payload.env` out of `TASK_PAYLOAD_JSON` and promotes each entry to **pod
+container env**, choosing the form by value prefix:
+
+| `payload.env` value | becomes | resolved by |
+| --- | --- | --- |
+| `vault:<path>#<field>` | literal env var | the in-cluster **vault-env** webhook, at exec — before the entrypoint |
+| `k8s:[<ns>/]<secret>#<key>` | `valueFrom.secretKeyRef` (namespace prefix dropped; must exist in the pod's ns) | the kubelet, at pod start |
+| anything else | literal env var | passthrough (plain value / test override) |
+
+So by the time the entrypoint runs, every var holds a **real value** — the
+dispatcher never reads the secret, and a `vault:`/`k8s:` value never lands in the
+Job spec or etcd. The boundary is the worker's Vault role scope (tenant prefix)
+and the namespace's k8s secrets, not the reference string (which is untrusted).
+The entrypoint stays product-aware (wires `gh`/`scli`/`yt`, `gpg --import
+$GPG_PRIVATE_KEY`); the dispatcher stays secret-agnostic. `env` is stripped from
+`TASK_PAYLOAD_JSON` so the daemon cannot re-apply an unresolved reference over
+the resolved pod env.
+
 ## Optional mounts
 
 | Path | Mode | Purpose |
