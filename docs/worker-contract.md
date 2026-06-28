@@ -243,8 +243,9 @@ agent its documentation environment. Anyone can define their own dispatch types
 ```
 <pack repo root or CONTEXT_PACK_SUBDIR>/
   CLAUDE.md          # home-level instructions  -> /home/worker/CLAUDE.md
+  rules/             # always-on guidance (push) -> ~/.claude/rules/ (auto-loaded)
+  docs/              # on-demand reference (pull) -> ~/.claude/docs/
   prompts/           # dispatch prompts; TASK_PROMPT_FILE resolves here
-  docs/              # reference docs exposed to the agent
   skills/            # skill dirs (SKILL.md …)   -> ~/.claude/skills/
   projects/          # per-repo CLAUDE.md overlays -> /home/worker/projects/
   style/             # output styles               -> /home/worker/style/
@@ -263,8 +264,13 @@ A neutral fixture pack lives at `deploy/examples/context-pack/`.
   needed for the pack host.
 - Seams: `TASK_PROMPT_FILE` resolves under `/opt/context/prompts/`;
   `GUARD_RULES_FILE` defaults to `/opt/context/guard-rules.md`; the pack's
-  `CLAUDE.md`/skills/style/projects are copied to the locations the agent
-  expects.
+  `CLAUDE.md`/rules/docs/skills/style/projects are copied to the locations the
+  agent expects.
+- `rules/` vs `docs/` (CCT-490): `rules/` is **push** — copied to
+  `~/.claude/rules/`, which Claude Code auto-loads as instructions on every task
+  (always-on guardrails/conventions). `docs/` is **pull** — copied to
+  `~/.claude/docs/` and referenced on demand by a prompt that needs it
+  (`@~/.claude/docs/<x>.md`); it is not auto-loaded.
 
 ### Security rationale
 

@@ -313,6 +313,18 @@ phase_context_pack() {
         mkdir -p "${_home}/.claude/skills"
         cp -a "$CONTEXT_DIR/skills/." "${_home}/.claude/skills/" 2>/dev/null || true
     fi
+    # rules/ = always-on guidance: wire to ~/.claude/rules so Claude Code
+    # auto-loads each *.md as instructions on every task (the CCT-490 push seam).
+    if [ -d "$CONTEXT_DIR/rules" ]; then
+        mkdir -p "${_home}/.claude/rules"
+        cp -a "$CONTEXT_DIR/rules/." "${_home}/.claude/rules/" 2>/dev/null || true
+    fi
+    # docs/ = on-demand reference: wire to ~/.claude/docs so prompts can pull a
+    # specific doc by path (@~/.claude/docs/<x>.md). Not auto-loaded.
+    if [ -d "$CONTEXT_DIR/docs" ]; then
+        mkdir -p "${_home}/.claude/docs"
+        cp -a "$CONTEXT_DIR/docs/." "${_home}/.claude/docs/" 2>/dev/null || true
+    fi
     if [ -d "$CONTEXT_DIR/style" ]; then
         cp -a "$CONTEXT_DIR/style" "${_home}/style" 2>/dev/null || true
     fi
@@ -321,7 +333,7 @@ phase_context_pack() {
     fi
     # chown ONLY the paths we just copied in — NOT the whole (NFS-backed) home,
     # which would hang in NFS RPC like the credentials chown (CCT-457).
-    for _p in CLAUDE.md .claude/skills style projects; do
+    for _p in CLAUDE.md .claude/skills .claude/rules .claude/docs style projects; do
         [ -e "${_home}/${_p}" ] \
             && chown -R "${WORKER_UID}:${WORKER_UID}" "${_home}/${_p}" 2>/dev/null || true
     done
