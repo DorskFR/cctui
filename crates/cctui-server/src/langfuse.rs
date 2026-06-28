@@ -143,19 +143,31 @@ async fn post_ingestion(
 
     let trace_name = ctx.session_id.clone().unwrap_or_else(|| "gateway".into());
 
+    // First-class Langfuse Sessions/Users grouping. These top-level fields drive
+    // the Sessions and Users tabs; the same ids in `metadata`/`tags` above only
+    // support filtering, not grouping. The session id is the cctui session UUID;
+    // the user dimension is the OAuth account id. Both are well under Langfuse's
+    // 200-char limit. Omitted (serde drops nulls) when unknown.
+    let mut trace_body = serde_json::Map::new();
+    trace_body.insert("id".into(), json!(trace_id));
+    trace_body.insert("name".into(), json!(trace_name));
+    trace_body.insert("timestamp".into(), json!(now));
+    if let Some(sid) = &ctx.session_id {
+        trace_body.insert("sessionId".into(), json!(sid));
+    }
+    if let Some(aid) = &ctx.account_id {
+        trace_body.insert("userId".into(), json!(aid));
+    }
+    trace_body.insert("input".into(), json!(payload.request));
+    trace_body.insert("output".into(), json!(payload.output));
+    trace_body.insert("metadata".into(), Value::Object(metadata.clone()));
+    trace_body.insert("tags".into(), json!(tags));
+
     let trace_event = json!({
         "id": uuid::Uuid::new_v4().to_string(),
         "type": "trace-create",
         "timestamp": now,
-        "body": {
-            "id": trace_id,
-            "name": trace_name,
-            "timestamp": now,
-            "input": payload.request,
-            "output": payload.output,
-            "metadata": Value::Object(metadata.clone()),
-            "tags": tags,
-        },
+        "body": Value::Object(trace_body),
     });
 
     let gen_body = json!({
