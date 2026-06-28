@@ -238,35 +238,76 @@ pub fn parse_guard_rules(path: impl AsRef<Path>) -> std::io::Result<HashMap<Stri
     Ok(parse_guard_rules_str(&text))
 }
 
+/// Parse a layered stack of guard-rules files into one merged map.
+///
+/// Files are applied **in order**, so an operator-supplied base can come first
+/// and a context pack's `guard-rules.md` second: the pack reuses the base's
+/// definitions, **overrides** a set with `[name]: …` (replace), or **extends**
+/// one with `[name]+: …` (append). Missing files are skipped (the pack need not
+/// ship every layer). See [`parse_guard_rules_into`] for the merge semantics.
+pub fn parse_guard_rules_files<P: AsRef<Path>>(
+    paths: &[P],
+) -> std::io::Result<HashMap<String, Vec<String>>> {
+    let mut tool_sets: HashMap<String, Vec<String>> = HashMap::new();
+    for path in paths {
+        if !path.as_ref().exists() {
+            continue;
+        }
+        let text = std::fs::read_to_string(path)?;
+        parse_guard_rules_into(&text, &mut tool_sets);
+    }
+    Ok(tool_sets)
+}
+
 /// Parse guard-rules content from a string (see [`parse_guard_rules`]).
 #[must_use]
 pub fn parse_guard_rules_str(text: &str) -> HashMap<String, Vec<String>> {
     let mut tool_sets: HashMap<String, Vec<String>> = HashMap::new();
+    parse_guard_rules_into(text, &mut tool_sets);
+    tool_sets
+}
 
+/// Apply one guard-rules document onto an existing set map (the layering core).
+///
+/// - `[name]: a, b` **replaces** `name` (last definition wins — override).
+/// - `[name]+: a, b` **appends** to whatever `name` already holds (extend); if
+///   `name` is unknown it is created, so `+` is safe even with no base layer.
+///
+/// Loading a base layer then a pack layer into the same map therefore lets the
+/// pack reuse, extend, or overwrite the base set-by-set.
+#[allow(clippy::implicit_hasher)]
+pub fn parse_guard_rules_into(text: &str, tool_sets: &mut HashMap<String, Vec<String>>) {
     for line in text.lines() {
         let stripped = line.trim();
         if stripped.is_empty() || stripped.starts_with('#') {
             continue;
         }
-        if let Some((name, members)) = parse_set_definition(stripped) {
-            tool_sets.insert(name, members);
+        if let Some((name, members, extend)) = parse_set_definition(stripped) {
+            if extend {
+                tool_sets.entry(name).or_default().extend(members);
+            } else {
+                tool_sets.insert(name, members);
+            }
         }
     }
-
-    tool_sets
 }
 
-/// Parse `[name]: a, b, c` → `(name, [a, b, c])`, mirroring the Python
-/// `^\[([a-zA-Z0-9_-]+)\]\s*:\s*(.*)` regex.
-fn parse_set_definition(line: &str) -> Option<(String, Vec<String>)> {
+/// Parse `[name]: a, b, c` → `(name, [a, b, c], false)` (replace) or
+/// `[name]+: a, b, c` → `(name, [a, b, c], true)` (extend/append). Mirrors the
+/// Python `^\[([a-zA-Z0-9_-]+)\]\s*:\s*(.*)` regex, with an optional `+` before
+/// the colon marking an extend.
+fn parse_set_definition(line: &str) -> Option<(String, Vec<String>, bool)> {
     let rest = line.strip_prefix('[')?;
     let close = rest.find(']')?;
     let name = &rest[..close];
     if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
         return None;
     }
-    // After ']' must come optional whitespace then ':'.
+    // After ']' must come optional whitespace, an optional `+` (extend), optional
+    // whitespace, then ':'.
     let after = rest[close + 1..].trim_start();
+    let (after, extend) =
+        after.strip_prefix('+').map_or((after, false), |r| (r.trim_start(), true));
     let members_str = after.strip_prefix(':')?;
     let members = members_str
         .split(',')
@@ -274,5 +315,69 @@ fn parse_set_definition(line: &str) -> Option<(String, Vec<String>)> {
         .filter(|s| !s.is_empty())
         .map(str::to_string)
         .collect();
-    Some((name.to_string(), members))
+    Some((name.to_string(), members, extend))
+}
+
+#[cfg(test)]
+mod layering_tests {
+    use super::*;
+
+    #[test]
+    fn base_then_pack_override_and_extend() {
+        let base = "\
+# operator base
+[net-dev]: npm.example:443, crates.example:443
+[code-read]: Read, Grep
+[net-model]: api.base:443
+";
+        // (inline `#` comments are not stripped by the parser — full-line only)
+        let pack = "\
+# pack layer
+[net-dev]+: extra.example:443
+[net-model]: api.pack:443
+[net-pack]: only.pack:443
+";
+        let mut sets: HashMap<String, Vec<String>> = HashMap::new();
+        parse_guard_rules_into(base, &mut sets);
+        parse_guard_rules_into(pack, &mut sets);
+
+        // extend appends, preserving base members
+        assert_eq!(
+            sets.get("net-dev").unwrap(),
+            &vec![
+                "npm.example:443".to_string(),
+                "crates.example:443".to_string(),
+                "extra.example:443".to_string(),
+            ]
+        );
+        // override replaces wholesale
+        assert_eq!(sets.get("net-model").unwrap(), &vec!["api.pack:443".to_string()]);
+        // untouched base set survives
+        assert_eq!(sets.get("code-read").unwrap(), &vec!["Read".to_string(), "Grep".to_string()]);
+        // new set added
+        assert_eq!(sets.get("net-pack").unwrap(), &vec!["only.pack:443".to_string()]);
+    }
+
+    #[test]
+    fn extend_with_no_base_creates_set() {
+        let mut sets: HashMap<String, Vec<String>> = HashMap::new();
+        parse_guard_rules_into("[fresh]+: a, b\n", &mut sets);
+        assert_eq!(sets.get("fresh").unwrap(), &vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn plain_definition_is_not_extend() {
+        assert_eq!(
+            parse_set_definition("[x]: a, b"),
+            Some(("x".to_string(), vec!["a".to_string(), "b".to_string()], false))
+        );
+        assert_eq!(
+            parse_set_definition("[x]+: a"),
+            Some(("x".to_string(), vec!["a".to_string()], true))
+        );
+        assert_eq!(
+            parse_set_definition("[x] + : a"),
+            Some(("x".to_string(), vec!["a".to_string()], true))
+        );
+    }
 }

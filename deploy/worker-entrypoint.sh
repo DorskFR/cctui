@@ -279,6 +279,14 @@ phase_context_pack() {
             _v=$(printf '%s' "$TASK_PAYLOAD_JSON" | jq -r --arg k "$_k" '.env[$k] // empty' 2>/dev/null || true)
             [ -n "$_v" ] && export "$_k=$_v"
         done
+        # Single-token model: one GITHUB_TOKEN in payload.env pulls the pack AND
+        # (via the daemon applying payload.env to the session) clones/pushes the
+        # work repo. If no dedicated CONTEXT_PACK_TOKEN was given, fall back to it
+        # for the pack clone so the tenant ships exactly one credential.
+        if [ -z "${CONTEXT_PACK_TOKEN:-}" ]; then
+            _gh=$(printf '%s' "$TASK_PAYLOAD_JSON" | jq -r '.env.GITHUB_TOKEN // empty' 2>/dev/null || true)
+            [ -n "$_gh" ] && export CONTEXT_PACK_TOKEN="$_gh"
+        fi
     fi
     [ -n "${CONTEXT_PACK_URL:-}" ] || { log "context pack: CONTEXT_PACK_URL unset, skipping"; return 0; }
     if [ -z "${CONTEXT_PACK_REF:-}" ]; then
@@ -322,6 +330,31 @@ phase_context_pack() {
     # Wire the pack into the locations the agent expects. Copies (not symlinks)
     # so landlock RO on /opt/context covers them.
     _home="/home/${WORKER_USER}"
+
+    # Per-pod isolation of the home paths the pack overwrites. /home/worker is a
+    # ReadWriteMany NFS volume shared across concurrent workers, so writing the
+    # pack's CLAUDE.md / projects / style straight onto it would race-corrupt
+    # other in-flight dispatches. When a pack is active we bind an empty per-pod
+    # dir (under the /overlay emptyDir) over each, so the pack's writes are
+    # private to this pod and the shared NFS copy is untouched. (~/.claude is
+    # already a per-pod emptyDir, so skills/rules/docs need no isolation.) Best-
+    # effort: if /overlay or mount is unavailable we fall through to direct copy.
+    if [ -d /overlay ]; then
+        _iso="/overlay/pack-home"
+        mkdir -p "$_iso"
+        for _p in projects style; do
+            if [ -d "$CONTEXT_DIR/$_p" ]; then
+                mkdir -p "$_iso/$_p" "${_home}/$_p"
+                mount --bind "$_iso/$_p" "${_home}/$_p" 2>/dev/null || true
+            fi
+        done
+        if [ -f "$CONTEXT_DIR/CLAUDE.md" ]; then
+            : > "$_iso/CLAUDE.md"
+            [ -e "${_home}/CLAUDE.md" ] || : > "${_home}/CLAUDE.md"
+            mount --bind "$_iso/CLAUDE.md" "${_home}/CLAUDE.md" 2>/dev/null || true
+        fi
+    fi
+
     [ -f "$CONTEXT_DIR/CLAUDE.md" ] && cp -f "$CONTEXT_DIR/CLAUDE.md" "${_home}/CLAUDE.md"
     if [ -d "$CONTEXT_DIR/skills" ]; then
         mkdir -p "${_home}/.claude/skills"
@@ -340,10 +373,12 @@ phase_context_pack() {
         cp -a "$CONTEXT_DIR/docs/." "${_home}/.claude/docs/" 2>/dev/null || true
     fi
     if [ -d "$CONTEXT_DIR/style" ]; then
-        cp -a "$CONTEXT_DIR/style" "${_home}/style" 2>/dev/null || true
+        mkdir -p "${_home}/style"
+        cp -a "$CONTEXT_DIR/style/." "${_home}/style/" 2>/dev/null || true
     fi
     if [ -d "$CONTEXT_DIR/projects" ]; then
-        cp -a "$CONTEXT_DIR/projects" "${_home}/projects" 2>/dev/null || true
+        mkdir -p "${_home}/projects"
+        cp -a "$CONTEXT_DIR/projects/." "${_home}/projects/" 2>/dev/null || true
     fi
     # chown ONLY the paths we just copied in — NOT the whole (NFS-backed) home,
     # which would hang in NFS RPC like the credentials chown (CCT-457).
@@ -354,9 +389,16 @@ phase_context_pack() {
     # /opt/context stays root-owned + RO under landlock.
     chown -R 0:0 "$CONTEXT_DIR" 2>/dev/null || true
 
-    # Resolve the well-known seams for later phases.
-    [ -z "${GUARD_RULES_FILE:-}" ] && [ -f "$CONTEXT_DIR/guard-rules.md" ] \
-        && export GUARD_RULES_FILE="$CONTEXT_DIR/guard-rules.md"
+    # Resolve the guard-rules seam. The pack's guard-rules.md is the override/
+    # extend layer; any operator-provided GUARD_RULES_FILE becomes the base
+    # (GUARD_RULES_BASE), which cctui-guard parses first so the pack can reuse a
+    # common set (net-dev, …), extend it (`[name]+:`), or override it (`[name]:`).
+    if [ -f "$CONTEXT_DIR/guard-rules.md" ]; then
+        if [ -n "${GUARD_RULES_FILE:-}" ] && [ -z "${GUARD_RULES_BASE:-}" ]; then
+            export GUARD_RULES_BASE="$GUARD_RULES_FILE"
+        fi
+        export GUARD_RULES_FILE="$CONTEXT_DIR/guard-rules.md"
+    fi
     log "context pack: fetched ref=$CONTEXT_PACK_REF into $CONTEXT_DIR"
 }
 
@@ -455,6 +497,10 @@ phase_guard() {
            --listen "127.0.0.1:${GUARD_PORT}" \
            --state "$GUARD_STATE" \
            --policy-out "$POLICY_FILE"
+    # When a pack supplies guard-rules, GUARD_RULES_BASE holds the operator base
+    # parsed first; the pack's --rules then overrides/extends it (CCT-490 #6).
+    [ -n "${GUARD_RULES_BASE:-}" ] && [ -f "${GUARD_RULES_BASE}" ] \
+        && set -- "$@" --rules-base "$GUARD_RULES_BASE"
     # Always-allow the structural hosts so the agent keeps the model gateway and
     # the callback can fire even under a deny-default step policy.
     _cctui_hp=$(url_hostport "$CCTUI_BASE_URL")

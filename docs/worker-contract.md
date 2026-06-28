@@ -66,9 +66,10 @@ defines the guard rules; proceeding without it would weaken the sandbox).
 | `TASK_REPO_REF` | — | Branch/tag to clone (`git clone --depth 1 --branch`). |
 | `CONTEXT_PACK_URL` | — | Git repo of the context pack. Set ⇒ fetch is **fail-closed**. |
 | `CONTEXT_PACK_REF` | — | **Required when `CONTEXT_PACK_URL` set.** Branch/tag/sha — pin it. |
-| `CONTEXT_PACK_TOKEN` | — | HTTPS basic token for a private pack (injected as `https://<token>@host`). Never logged. |
+| `CONTEXT_PACK_TOKEN` | — | HTTPS basic token for a private pack (injected as `https://<token>@host`). Never logged. Falls back to `payload.env.GITHUB_TOKEN` when unset, so a tenant can ship one token for pack-clone + repo clone/push. |
 | `CONTEXT_PACK_SUBDIR` | — | Subdirectory within the pack repo to use as the pack root. |
-| `GUARD_RULES_FILE` | `/opt/context/guard-rules.md` | Guard rules path; defaults into the fetched pack. |
+| `GUARD_RULES_FILE` | `/opt/context/guard-rules.md` | Guard rules path; defaults into the fetched pack (the override/extend layer). |
+| `GUARD_RULES_BASE` | — | Operator base guard-rules parsed **before** `GUARD_RULES_FILE`. When a pack ships `guard-rules.md`, the entrypoint moves any prior `GUARD_RULES_FILE` here so the pack reuses/extends/overrides it. |
 
 ### Tenant plane (from `TASK_PAYLOAD_JSON`)
 
@@ -266,6 +267,16 @@ A neutral fixture pack lives at `deploy/examples/context-pack/`.
   `GUARD_RULES_FILE` defaults to `/opt/context/guard-rules.md`; the pack's
   `CLAUDE.md`/rules/docs/skills/style/projects are copied to the locations the
   agent expects.
+- **Home isolation:** `/home/worker` is a ReadWriteMany volume shared by
+  concurrent workers, so when a pack is active the entrypoint bind-mounts a
+  per-pod dir (under the `/overlay` emptyDir) over the paths the pack overwrites
+  (`~/CLAUDE.md`, `~/projects`, `~/style`) before copying — the pack's writes
+  stay private to the pod and never mutate the shared copy. `~/.claude` is
+  already a per-pod emptyDir.
+- **Guard-rules layering:** a pack's `guard-rules.md` is parsed as a layer on top
+  of `GUARD_RULES_BASE` (the operator base). `[name]: …` overrides a base set;
+  `[name]+: …` extends it (appends); a new name adds a set. So a pack reuses
+  common sets (`net-dev`, …) and only states its deltas.
 - `rules/` vs `docs/` (CCT-490): `rules/` is **push** — copied to
   `~/.claude/rules/`, which Claude Code auto-loads as instructions on every task
   (always-on guardrails/conventions). `docs/` is **pull** — copied to

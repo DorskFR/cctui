@@ -10,7 +10,7 @@ use std::sync::Arc;
 use clap::Parser;
 
 use cctui_guard::engine::WorkflowEngine;
-use cctui_guard::parser::{parse_guard_rules, parse_steps};
+use cctui_guard::parser::{parse_guard_rules_files, parse_steps};
 use cctui_guard::server::router;
 
 #[derive(Parser, Debug)]
@@ -20,7 +20,14 @@ struct Cli {
     #[arg(long, env = "PROMPT_FILE")]
     prompt: PathBuf,
 
-    /// Shared guard-rules file defining tool sets and network sets.
+    /// Operator base guard-rules file, parsed **before** `--rules` so a context
+    /// pack can reuse/extend/override its sets (common definitions like
+    /// `net-dev` live here). Optional — skipped if it does not exist.
+    #[arg(long = "rules-base", env = "GUARD_RULES_BASE")]
+    rules_base: Option<PathBuf>,
+
+    /// Shared guard-rules file defining tool sets and network sets. Parsed after
+    /// `--rules-base`; `[name]:` overrides a base set, `[name]+:` extends it.
     #[arg(long, env = "GUARD_RULES_FILE", default_value = "/etc/claude-worker/guard-rules.md")]
     rules: PathBuf,
 
@@ -66,14 +73,30 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!("No steps found in {}", cli.prompt.display());
     }
 
-    let tool_sets = if cli.rules.exists() {
-        parse_guard_rules(&cli.rules)?
+    // Layer the rules: operator base first (if any), then the (pack's) rules
+    // file — `[name]:` overrides, `[name]+:` extends. parse_guard_rules_files
+    // skips missing layers, so an absent base or rules file is not fatal.
+    let mut layers: Vec<PathBuf> = Vec::new();
+    if let Some(base) = &cli.rules_base {
+        if base.exists() {
+            layers.push(base.clone());
+        } else {
+            tracing::warn!("Guard rules base not found: {}", base.display());
+        }
+    }
+    if cli.rules.exists() {
+        layers.push(cli.rules.clone());
     } else {
         tracing::warn!("Guard rules file not found: {}", cli.rules.display());
-        std::collections::HashMap::new()
-    };
+    }
+    let tool_sets = parse_guard_rules_files(&layers)?;
 
-    tracing::info!("Loaded {} steps, {} tool sets", steps.len(), tool_sets.len());
+    tracing::info!(
+        "Loaded {} steps, {} tool sets from {} rule layer(s)",
+        steps.len(),
+        tool_sets.len(),
+        layers.len()
+    );
 
     let engine = Arc::new(WorkflowEngine::new(
         steps,

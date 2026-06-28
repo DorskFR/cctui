@@ -14,6 +14,7 @@ pub mod server;
 
 pub use engine::WorkflowEngine;
 pub use parser::{
-    Step, parse_guard_rules, parse_guard_rules_str, parse_keywords, parse_steps, parse_transitions,
+    Step, parse_guard_rules, parse_guard_rules_files, parse_guard_rules_into, parse_guard_rules_str,
+    parse_keywords, parse_steps, parse_transitions,
 };
 pub use rules::{check_rules, split_bash_segments};
