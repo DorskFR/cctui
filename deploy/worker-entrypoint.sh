@@ -279,12 +279,27 @@ phase_context_pack() {
             _v=$(printf '%s' "$TASK_PAYLOAD_JSON" | jq -r --arg k "$_k" '.env[$k] // empty' 2>/dev/null || true)
             [ -n "$_v" ] && export "$_k=$_v"
         done
-        # Single-token model: one GITHUB_TOKEN in payload.env pulls the pack AND
-        # (via the daemon applying payload.env to the session) clones/pushes the
-        # work repo. If no dedicated CONTEXT_PACK_TOKEN was given, fall back to it
-        # for the pack clone so the tenant ships exactly one credential.
+        # Single-token model: one GITHUB_TOKEN pulls the pack AND (via the daemon
+        # applying it to the session) clones/pushes the work repo, so the tenant
+        # ships exactly one credential. If no dedicated CONTEXT_PACK_TOKEN was
+        # given, resolve a GitHub token for the pack clone, in priority order:
+        #   1. payload.env.GITHUB_TOKEN — explicit override (tests / ad-hoc).
+        #   2. GITHUB_TOKEN_<IDENTITY> from the pod env — the per-identity secret
+        #      Vault injects operator-side (identity-as-root; the job carries only
+        #      the `identity` selector, never the secret). Same source the
+        #      credentials helper materializes. A future dispatcher-side secret
+        #      broker can populate this var without changing the job contract.
         if [ -z "${CONTEXT_PACK_TOKEN:-}" ]; then
             _gh=$(printf '%s' "$TASK_PAYLOAD_JSON" | jq -r '.env.GITHUB_TOKEN // empty' 2>/dev/null || true)
+            if [ -z "$_gh" ]; then
+                _id=$(printf '%s' "$TASK_PAYLOAD_JSON" | jq -r '.identity // empty' 2>/dev/null || true)
+                if [ -n "$_id" ]; then
+                    # GITHUB_TOKEN_<ID> with ID upper-cased and non-alnum -> _
+                    _idv=$(printf '%s' "$_id" | tr '[:lower:]' '[:upper:]' | tr -c 'A-Z0-9' '_')
+                    _idv=${_idv%_}
+                    eval "_gh=\${GITHUB_TOKEN_${_idv}:-}"
+                fi
+            fi
             [ -n "$_gh" ] && export CONTEXT_PACK_TOKEN="$_gh"
         fi
     fi
