@@ -265,7 +265,21 @@ phase_workspace() {
 # locations the agent expects. FAIL-CLOSED: when CONTEXT_PACK_URL is set the
 # fetch MUST succeed (the pack defines the guard rules). Skipped entirely when
 # CONTEXT_PACK_URL is unset.
+#
+# Precedence: the pod template (true operator plane) wins. Only when a
+# CONTEXT_PACK_* var is NOT already set in the pod env do we fall back to the
+# dispatch payload's `env` map (TASK_PAYLOAD_JSON.env, the operator-controlled
+# automation dispatcher) — letting a flow select its pack without baking it into the
+# template, while a template that pins the pack still overrides the payload.
 phase_context_pack() {
+    if [ -n "${TASK_PAYLOAD_JSON:-}" ]; then
+        for _k in CONTEXT_PACK_URL CONTEXT_PACK_REF CONTEXT_PACK_TOKEN CONTEXT_PACK_SUBDIR; do
+            eval "_cur=\${$_k:-}"
+            [ -n "$_cur" ] && continue   # pod-template value wins
+            _v=$(printf '%s' "$TASK_PAYLOAD_JSON" | jq -r --arg k "$_k" '.env[$k] // empty' 2>/dev/null || true)
+            [ -n "$_v" ] && export "$_k=$_v"
+        done
+    fi
     [ -n "${CONTEXT_PACK_URL:-}" ] || { log "context pack: CONTEXT_PACK_URL unset, skipping"; return 0; }
     if [ -z "${CONTEXT_PACK_REF:-}" ]; then
         echo "cctui-worker: CONTEXT_PACK_REF is required when CONTEXT_PACK_URL is set (pin the pack)" >&2

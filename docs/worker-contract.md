@@ -276,10 +276,25 @@ A neutral fixture pack lives at `deploy/examples/context-pack/`.
 
 Whoever controls the pack controls the sandbox policy (`guard-rules.md` defines
 the tool/network sets the guard enforces). Therefore the pack URL+ref is
-**operator-plane** config, pinned per dispatcher. The task payload may select a
-*prompt file within* the pack but **never the pack itself**. A configured-but-
-unfetchable pack fails the boot closed — silently proceeding without it would
-weaken the sandbox.
+**operator-plane** config. A configured-but-unfetchable pack fails the boot
+closed — silently proceeding without it would weaken the sandbox.
+
+Precedence (entrypoint `phase_context_pack`):
+
+1. **Pod template env** — the true operator plane. If the worker pod template
+   sets `CONTEXT_PACK_URL` (etc.), that value wins and the payload cannot
+   override it. Pin the pack here when the dispatcher must not be trusted to
+   choose it.
+2. **Dispatch payload `env`** — fallback, used only for a `CONTEXT_PACK_*` var
+   the template leaves unset. This lets an **operator-controlled** dispatcher
+   (e.g. the automation flows, which set `payload.env.CONTEXT_PACK_URL/REF/TOKEN`)
+   select the pack per dispatch without baking it into the template. Because the
+   pack defines the guard fence, this is only safe when the dispatch channel
+   itself is operator-controlled — do **not** expose it to an untrusted tenant.
+   A template that pins the pack (step 1) closes this door.
+
+The task payload may also select a *prompt file within* the pack
+(`TASK_PROMPT_FILE`).
 
 ## Intent+Acceptance ratify gate
 
