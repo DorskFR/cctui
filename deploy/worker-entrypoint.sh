@@ -223,7 +223,10 @@ phase_network() {
 phase_workspace() {
     mkdir -p /workspace
     _ws_overlay=0
-    if [ -n "${WARM_REPO_DIR:-}" ] && [ -d "$WARM_REPO_DIR" ]; then
+    # Warm cache only when it actually holds this repo (WARM_REPO_DIR/<repo>);
+    # an empty/missing cache must fall through to a clone, not overlay nothing.
+    if [ -n "${WARM_REPO_DIR:-}" ] && [ -n "${TASK_REPO:-}" ] \
+            && [ -d "${WARM_REPO_DIR%/}/${TASK_REPO}" ]; then
         mkdir -p /overlay/upper /overlay/work
         if mount -t overlay overlay \
                 -o "lowerdir=${WARM_REPO_DIR},upperdir=/overlay/upper,workdir=/overlay/work" \
@@ -235,16 +238,33 @@ phase_workspace() {
             rsync -a "${WARM_REPO_DIR%/}/" /workspace/
         fi
     elif [ -n "${TASK_REPO_URL:-}" ]; then
-        _branch_opt=""
-        [ -n "${TASK_REPO_REF:-}" ] && _branch_opt="--branch ${TASK_REPO_REF}"
-        # shellcheck disable=SC2086  # intentional word-split of the optional flag
-        if git clone --depth 1 $_branch_opt "$TASK_REPO_URL" /workspace 2>/dev/null; then
-            log "workspace: shallow-cloned TASK_REPO_URL${TASK_REPO_REF:+ @ $TASK_REPO_REF}"
+        # On-demand clone into /workspace/<repo> (matches the warm-overlay layout
+        # the prompts expect at /workspace/${TASK_REPO}). Private repos need a
+        # token; creds aren't materialized yet at this phase, so resolve the
+        # identity token from the pod env and inject it into the clone URL, then
+        # scrub it from the persisted remote.
+        _dest="/workspace/${TASK_REPO:-repo}"
+        mkdir -p "$_dest"
+        _wtok="${GITHUB_TOKEN:-}"
+        if [ -z "$_wtok" ] && [ -n "${TASK_IDENTITY:-}" ]; then
+            _wid=$(printf '%s' "$TASK_IDENTITY" | tr '[:lower:]-' '[:upper:]_')
+            eval "_wtok=\${GITHUB_TOKEN_${_wid}:-}"
+        fi
+        _curl="$TASK_REPO_URL"
+        [ -n "$_wtok" ] && _curl=$(printf '%s' "$TASK_REPO_URL" | sed "s,^https://,https://${_wtok}@,")
+        if git clone --depth 1 "$_curl" "$_dest" 2>/dev/null; then
+            if [ -n "${TASK_REPO_REF:-}" ]; then
+                git -C "$_dest" fetch --depth 1 -q origin "$TASK_REPO_REF" 2>/dev/null \
+                    && git -C "$_dest" checkout -q FETCH_HEAD 2>/dev/null \
+                    || log "WARNING: could not check out TASK_REPO_REF=$TASK_REPO_REF"
+            fi
+            git -C "$_dest" remote set-url origin "$TASK_REPO_URL" 2>/dev/null || true
+            log "workspace: cloned ${TASK_REPO} into $_dest${TASK_REPO_REF:+ @ ${TASK_REPO_REF}}"
         else
             log "WARNING: TASK_REPO_URL clone failed; /workspace left empty"
         fi
     else
-        log "workspace: empty /workspace (no WARM_REPO_DIR / TASK_REPO_URL)"
+        log "workspace: empty /workspace (no warm cache for ${TASK_REPO:-?} / no TASK_REPO_URL)"
     fi
     # Never recursively chown an overlayfs /workspace: it recurses the read-only
     # lowerdir (the whole WARM_REPO_DIR warm cache) and forces a copy-up of every
@@ -682,11 +702,27 @@ phase_identity_scrub() {
 }
 
 # ── Run the phases (each individually skippable) ─────────────────────────────
-# Derive the acting identity from the payload so the resolver + credential helper
-# can key off it (the dispatcher forwards it as payload.identity).
-if [ -z "${TASK_IDENTITY:-}" ] && [ -n "${TASK_PAYLOAD_JSON:-}" ]; then
-    TASK_IDENTITY=$(printf '%s' "$TASK_PAYLOAD_JSON" | jq -r '.identity // empty' 2>/dev/null || true)
-    [ -n "${TASK_IDENTITY:-}" ] && export TASK_IDENTITY
+# Derive the task-shape env the prompts + workspace expect from the dispatch
+# payload. The dispatcher forwards the whole payload as TASK_PAYLOAD_JSON but
+# only injects a few magic vars, so map the conventional fields here. Each is
+# only set when unset, so an explicit pod-template/dispatcher value still wins.
+if [ -n "${TASK_PAYLOAD_JSON:-}" ]; then
+    _pj() { printf '%s' "$TASK_PAYLOAD_JSON" | jq -r "$1 // empty" 2>/dev/null || true; }
+    [ -z "${TASK_IDENTITY:-}" ] && { _v=$(_pj '.identity'); [ -n "$_v" ] && export TASK_IDENTITY="$_v"; }
+    [ -z "${TASK_REPO:-}" ]     && { _v=$(_pj '.repo');     [ -n "$_v" ] && export TASK_REPO="$_v"; }
+    [ -z "${TASK_EFFORT:-}" ]   && { _v=$(_pj '.effort');   [ -n "$_v" ] && export TASK_EFFORT="$_v"; }
+    [ -z "${TASK_MODEL:-}" ]    && { _v=$(_pj '.model');    [ -n "$_v" ] && export TASK_MODEL="$_v"; }
+    if [ -z "${TASK_CONTEXT_JSON:-}" ]; then
+        _v=$(printf '%s' "$TASK_PAYLOAD_JSON" | jq -c '.context // empty' 2>/dev/null || true)
+        [ -n "$_v" ] && export TASK_CONTEXT_JSON="$_v"
+    fi
+    # Repo acquisition (no warm cache ⇒ clone): build the URL from context.owner +
+    # repo, and the ref from context.head_sha, unless explicitly provided.
+    if [ -z "${TASK_REPO_URL:-}" ] && [ -n "${TASK_REPO:-}" ]; then
+        _owner=$(_pj '.context.owner')
+        [ -n "$_owner" ] && export TASK_REPO_URL="https://github.com/${_owner}/${TASK_REPO}"
+    fi
+    [ -z "${TASK_REPO_REF:-}" ] && { _v=$(_pj '.context.head_sha'); [ -n "$_v" ] && export TASK_REPO_REF="$_v"; }
 fi
 phase_network
 phase_workspace
