@@ -573,6 +573,29 @@ pub struct DispatchRequest {
     /// matching the k8s claude-worker the dispatch path runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
+    /// Multiple accounts to route the dispatched session through (CCT-508).
+    /// When non-empty the server mints a session-scoped gateway token for EACH
+    /// account and merges every family's env into `payload.env`, so one worker
+    /// can carry `ANTHROPIC_*` and `OPENAI_*` at once (e.g. claude + codex both
+    /// authenticating through the passthrough gateway). At most one account per
+    /// provider family — two accounts of the same family collide on the same env
+    /// keys and the dispatch is rejected. Takes precedence over the singular
+    /// `account`/`provider` shortcut (and the dispatcher's bound default) when
+    /// present; an empty list falls back to the single-account path unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accounts: Vec<DispatchAccount>,
+}
+
+/// One `(account, provider)` entry in [`DispatchRequest::accounts`] (CCT-508).
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct DispatchAccount {
+    /// Named account to mint a gateway token for.
+    pub account: String,
+    /// Provider disambiguating a name shared across providers. `None` → the
+    /// anthropic family, matching the singular-account default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

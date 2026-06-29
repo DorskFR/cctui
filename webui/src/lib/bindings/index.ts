@@ -26,6 +26,7 @@ export type * from './DiffLineKind';
 export type * from './DiffLine';
 export type * from './DiffSelection';
 export type * from './DiffSide';
+export type * from './DispatchAccount';
 export type * from './DispatchRequest';
 export type * from './DispatchResponse';
 export type * from './DraftAuthorKind';

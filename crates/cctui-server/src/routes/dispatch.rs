@@ -503,16 +503,34 @@ pub async fn dispatch(
         // account either way, dispatch injects no gateway env (unchanged). The
         // dispatch path runs a claude-worker, so the family falls back to
         // anthropic when no provider is given.
-        let default_account = if req.account.as_deref().map(str::trim).is_none_or(str::is_empty) {
-            dispatcher_default_account(&state, &req.dispatcher, uid).await
+        // Build the list of accounts to mint. An explicit `req.accounts` list
+        // (CCT-508) wins — mint EACH and merge every family's env so one worker
+        // carries claude + codex creds at once. Otherwise fall back to the
+        // singular account/provider shortcut (with the dispatcher's bound
+        // default, CCT-427). With no account either way, no gateway env is
+        // injected (unchanged).
+        let accounts: Vec<(String, Option<String>)> = if req.accounts.is_empty() {
+            let default_account =
+                if req.account.as_deref().map(str::trim).is_none_or(str::is_empty) {
+                    dispatcher_default_account(&state, &req.dispatcher, uid).await
+                } else {
+                    None
+                };
+            resolve_dispatch_account(
+                req.account.as_deref(),
+                req.provider.as_deref(),
+                default_account.as_ref(),
+            )
+            .into_iter()
+            .collect()
         } else {
-            None
+            req.accounts
+                .iter()
+                .map(|a| (a.account.clone(), a.provider.clone()))
+                .collect()
         };
-        if let Some((account_name, account_provider)) = resolve_dispatch_account(
-            req.account.as_deref(),
-            req.provider.as_deref(),
-            default_account.as_ref(),
-        ) {
+
+        for (account_name, account_provider) in accounts {
             match crate::routes::gateway::mint_session_env(
                 &state,
                 uid,
@@ -530,6 +548,23 @@ pub async fn dispatch(
                             .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
                         if let Some(env_obj) = env.as_object_mut() {
                             for (k, v) in gateway_env {
+                                // Two accounts of the same provider family mint
+                                // the same env keys (e.g. ANTHROPIC_AUTH_TOKEN);
+                                // reject rather than silently clobber (CCT-508).
+                                if let Some(existing) = env_obj.get(&k)
+                                    && existing.as_str() != Some(v.as_str())
+                                {
+                                    return Err((
+                                        StatusCode::BAD_REQUEST,
+                                        Json(ApiError {
+                                            error: format!(
+                                                "multiple dispatch accounts resolve to the \
+                                                 same provider family (conflict on {k:?}); \
+                                                 specify at most one account per family"
+                                            ),
+                                        }),
+                                    ));
+                                }
                                 env_obj.insert(k, serde_json::Value::String(v));
                             }
                         }
