@@ -309,19 +309,42 @@ phase_context_pack() {
         fi
     fi
     [ -n "${CONTEXT_PACK_URL:-}" ] || { log "context pack: CONTEXT_PACK_URL unset, skipping"; return 0; }
-    if [ -z "${CONTEXT_PACK_REF:-}" ]; then
-        echo "cctui-worker: CONTEXT_PACK_REF is required when CONTEXT_PACK_URL is set (pin the pack)" >&2
-        exit 1
-    fi
 
-    _url="$CONTEXT_PACK_URL"
+    # The URL may carry an optional `@<ref>` (in the path) and `#<subdir>`
+    # fragment, so a single CONTEXT_PACK_URL can pin ref + subdir; explicit
+    # CONTEXT_PACK_REF / CONTEXT_PACK_SUBDIR still take precedence. REF is
+    # OPTIONAL — absent ⇒ the remote's default branch (pin it in prod for
+    # reproducibility). The `@` is only split out of the path, never the
+    # authority, so an embedded `user@host` credential is left intact.
+    _raw="$CONTEXT_PACK_URL"
+    case "$_raw" in
+        *\#*) _frag="${_raw##*#}"; _raw="${_raw%%#*}"
+              [ -z "${CONTEXT_PACK_SUBDIR:-}" ] && [ -n "$_frag" ] && CONTEXT_PACK_SUBDIR="$_frag" ;;
+    esac
+    _scheme=""; _rest="$_raw"
+    case "$_raw" in *://*) _scheme="${_raw%%://*}://"; _rest="${_raw#*://}" ;; esac
+    case "$_rest" in
+        */*) _auth="${_rest%%/*}"; _path="/${_rest#*/}" ;;
+        *)   _auth="$_rest"; _path="" ;;
+    esac
+    case "$_path" in
+        *@*) [ -z "${CONTEXT_PACK_REF:-}" ] && CONTEXT_PACK_REF="${_path##*@}"; _path="${_path%@*}" ;;
+    esac
+    _url="${_scheme}${_auth}${_path}"
+
     if [ -n "${CONTEXT_PACK_TOKEN:-}" ]; then
         # Inject an HTTPS basic token (https://<token>@host/...). Never logged.
-        _url=$(printf '%s' "$CONTEXT_PACK_URL" | sed "s,^https://,https://${CONTEXT_PACK_TOKEN}@,")
+        _url=$(printf '%s' "$_url" | sed "s,^https://,https://${CONTEXT_PACK_TOKEN}@,")
     fi
 
     _tmp=$(mktemp -d)
-    if ! git clone --depth 1 --branch "$CONTEXT_PACK_REF" "$_url" "$_tmp" 2>/dev/null; then
+    if [ -z "${CONTEXT_PACK_REF:-}" ]; then
+        # No ref ⇒ clone the remote's default branch.
+        if ! git clone --depth 1 "$_url" "$_tmp" 2>/dev/null; then
+            echo "cctui-worker: FATAL context-pack clone failed (default branch)" >&2
+            exit 1
+        fi
+    elif ! git clone --depth 1 --branch "$CONTEXT_PACK_REF" "$_url" "$_tmp" 2>/dev/null; then
         # Some refs are SHAs (not clonable by --branch): fetch the ref directly.
         rm -rf "$_tmp"; _tmp=$(mktemp -d)
         if ! (git -C "$_tmp" init -q \
@@ -419,7 +442,7 @@ phase_context_pack() {
         fi
         export GUARD_RULES_FILE="$CONTEXT_DIR/guard-rules.md"
     fi
-    log "context pack: fetched ref=$CONTEXT_PACK_REF into $CONTEXT_DIR"
+    log "context pack: fetched ref=${CONTEXT_PACK_REF:-<default-branch>} into $CONTEXT_DIR"
 }
 
 # Resolve the dispatched prompt file path. TASK_PROMPT_FILE resolves under the
