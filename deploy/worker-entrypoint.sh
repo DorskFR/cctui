@@ -674,6 +674,16 @@ fi
 phase_network
 phase_workspace
 phase_context_pack
+# When a pack is active, drive cctui-guard from the dispatched prompt: derive
+# TASK_PROMPT_FILE from payload.prompt_file so resolve_prompt_path finds the
+# pack's prompt and the guard enforces its [allowed]/[network] steps. Scoped to
+# pack flows (CONTEXT_PACK_URL set) so legacy configMap dispatches keep their
+# current — unguarded — behavior until they migrate to a pack.
+if [ -z "${TASK_PROMPT_FILE:-}" ] && [ -n "${CONTEXT_PACK_URL:-}" ] && [ -n "${TASK_PAYLOAD_JSON:-}" ]; then
+    TASK_PROMPT_FILE=$(printf '%s' "$TASK_PAYLOAD_JSON" | jq -r '.prompt_file // empty' 2>/dev/null || true)
+    [ -n "${TASK_PROMPT_FILE:-}" ] && export TASK_PROMPT_FILE \
+        && log "prompt: TASK_PROMPT_FILE=${TASK_PROMPT_FILE} (from payload; pack active → guard will engage if the prompt has steps)"
+fi
 phase_identity_resolve
 phase_credentials
 phase_identity_scrub

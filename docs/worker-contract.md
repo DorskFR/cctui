@@ -75,7 +75,7 @@ defines the guard rules; proceeding without it would weaken the sandbox).
 
 | Var | Meaning |
 | --- | --- |
-| `TASK_PROMPT_FILE` | Prompt file; resolves under `/opt/context/prompts/` (absolute path honored as-is). Drives guard activation. |
+| `TASK_PROMPT_FILE` | Prompt file; resolves under `/opt/context/prompts/` (absolute path honored as-is). Drives guard activation. When a pack is active (`CONTEXT_PACK_URL` set) and this is unset, the entrypoint derives it from `payload.prompt_file` so the guard engages on the pack's prompt; legacy (no-pack) dispatches are left unguarded as before. |
 | `TASK_IDENTITY` | Selects the credential env set (`GITHUB_TOKEN_<ID>`, …). Absent ⇒ image default. |
 | `REPLY_URL` | Result-callback target (a bearer capability — never logged). Set ⇒ exit trap installed. Its host is always-allowed. |
 | `RESULT_FILE` | Where the session writes its verdict. Default `/tmp/cctui-result.json`. |
