@@ -68,6 +68,7 @@ defines the guard rules; proceeding without it would weaken the sandbox).
 | `CONTEXT_PACK_REF` | default branch | Branch/tag/sha. Optional — absent ⇒ the remote's default branch. Pin it in prod. Overrides any `@<ref>` in the URL. |
 | `CONTEXT_PACK_TOKEN` | — | HTTPS basic token for a private pack (injected as `https://<token>@host`). Never logged. Falls back to `payload.env.GITHUB_TOKEN` when unset, so a tenant can ship one token for pack-clone + repo clone/push. |
 | `CONTEXT_PACK_SUBDIR` | — | Subdirectory within the pack repo to use as the pack root. |
+| `CONTEXT_PACK_TOKEN_FROM` | — | Name of an env var holding the pack-clone token, when it differs from the task identity's (e.g. the task identity can't read the pack repo). Resolved before the `GITHUB_TOKEN` fallbacks; keeps a specific identity name out of the image. |
 | `GUARD_RULES_FILE` | `/opt/context/guard-rules.md` | Guard rules path; defaults into the fetched pack (the override/extend layer). |
 | `GUARD_RULES_BASE` | — | Operator base guard-rules parsed **before** `GUARD_RULES_FILE`. When a pack ships `guard-rules.md`, the entrypoint moves any prior `GUARD_RULES_FILE` here so the pack reuses/extends/overrides it. |
 

@@ -289,6 +289,19 @@ phase_context_pack() {
         #      the `identity` selector, never the secret). Same source the
         #      credentials helper materializes. A future dispatcher-side secret
         #      broker can populate this var without changing the job contract.
+        # Operator-named source for the pack-clone token: CONTEXT_PACK_TOKEN_FROM
+        # holds the NAME of an env var holding a token that can read the pack repo
+        # (e.g. a privileged identity), set in the worker template. The
+        # indirection keeps any specific identity name out of this image while
+        # letting the operator point the pack clone at a different credential than
+        # the task identity (whose token may not have pack-repo access).
+        if [ -z "${CONTEXT_PACK_TOKEN:-}" ] && [ -n "${CONTEXT_PACK_TOKEN_FROM:-}" ]; then
+            case "$CONTEXT_PACK_TOKEN_FROM" in
+                [A-Za-z_][A-Za-z0-9_]*)
+                    eval "_v=\${${CONTEXT_PACK_TOKEN_FROM}:-}"
+                    [ -n "${_v:-}" ] && export CONTEXT_PACK_TOKEN="$_v" ;;
+            esac
+        fi
         if [ -z "${CONTEXT_PACK_TOKEN:-}" ]; then
             # Primary: GITHUB_TOKEN already in the pod env — the dispatcher
             # promotes payload.env to pod env and the vault-env webhook resolves
