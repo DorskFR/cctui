@@ -442,8 +442,12 @@ phase_context_pack() {
         [ -e "${_home}/${_p}" ] \
             && chown -R "${WORKER_UID}:${WORKER_UID}" "${_home}/${_p}" 2>/dev/null || true
     done
-    # /opt/context stays root-owned + RO under landlock.
+    # /opt/context stays root-owned + RO under landlock, but must be world-
+    # READABLE/traversable: the dropped-privilege daemon (worker uid) reads the
+    # prompt + guard-rules from here. mkdir inherits root's umask (077 -> 700),
+    # which blocks the worker from traversing it, so force a+rX.
     chown -R 0:0 "$CONTEXT_DIR" 2>/dev/null || true
+    chmod -R a+rX "$CONTEXT_DIR" 2>/dev/null || true
 
     # Resolve the guard-rules seam. The pack's guard-rules.md is the override/
     # extend layer; any operator-provided GUARD_RULES_FILE becomes the base
