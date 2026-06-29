@@ -80,20 +80,34 @@ defines the guard rules; proceeding without it would weaken the sandbox).
 | `REPLY_URL` | Result-callback target (a bearer capability — never logged). Set ⇒ exit trap installed. Its host is always-allowed. |
 | `RESULT_FILE` | Where the session writes its verdict. Default `/tmp/cctui-result.json`. |
 
-### Credential env (materialized by `worker-credentials.sh`, all optional)
+### Credential env — identity resolve + scrub
 
-Suffix `<ID>` is `TASK_IDENTITY` uppercased with `-` → `_`. Absent ⇒ skipped
-silently.
+The single secret surface: the pod env carries **every** identity's secrets as
+`VAR_<ID>` (Vault env-from-path) plus optional unsuffixed defaults. `TASK_IDENTITY`
+(derived from `payload.identity`) selects the active one, `<ID>` = uppercased with
+`-` → `_`. The entrypoint then, around `worker-credentials.sh`:
 
-| Var | Effect |
+1. **resolve** (before the helper): `VAR = ${VAR_<ID>:-$VAR}` for each secret base
+   (`GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_NAME`, `GITHUB_EMAIL`, `GPG_PRIVATE_KEY`,
+   `YOUTRACK_TOKEN`, `YOUTRACK_API_TOKEN`, `SLACK_TOKEN`) — so the helper and the
+   agent read one canonical var.
+2. **scrub** (after the helper): unset every `VAR_<…>` suffixed variant, so the
+   agent process inherits only the resolved mains — never another identity's
+   secret. (Trade-off: the *pod* still holds all secrets; only the agent's env is
+   narrowed. Per-payload pod-level scoping is a later step.)
+
+`worker-credentials.sh` then materializes the **canonical** vars (all optional,
+skipped silently when absent):
+
+| Var (canonical) | Effect |
 | --- | --- |
-| `GITHUB_TOKEN_<ID>` | `GITHUB_TOKEN`/`GH_TOKEN` + git credential helper `!gh auth git-credential`. |
-| `GITHUB_NAME_<ID>` | `git config user.name`. |
-| `GITHUB_EMAIL_<ID>` | `git config user.email`. |
-| `GPG_PRIVATE_KEY_<ID>` | `gpg --import` + `user.signingkey` + `commit.gpgsign true`. |
+| `GITHUB_TOKEN` | `GH_TOKEN` + git credential helper `!gh auth git-credential`. |
+| `GITHUB_NAME` | `git config user.name`. |
+| `GITHUB_EMAIL` | `git config user.email`. |
+| `GPG_PRIVATE_KEY` | `gpg --import` + `user.signingkey` + `commit.gpgsign true`. |
 | `NPM_TOKEN` | `~/.npmrc` registry auth (identity-independent). |
 | `MCP_<NAME>_URL` / `MCP_<NAME>_TOKEN` | `~/.mcp.json` http server entry keyed by lowercase `<NAME>`. |
-| `YOUTRACK_URL` + `YOUTRACK_API_TOKEN` (or `YOUTRACK_TOKEN`) | `~/.config/yt/config.json` for the bundled `yt` YouTrack CLI (identity-independent). Reaching the YouTrack host also needs it on the egress allow-list. |
+| `YOUTRACK_URL` + `YOUTRACK_API_TOKEN` (or `YOUTRACK_TOKEN`) | `~/.config/yt/config.json` for the bundled `yt` YouTrack CLI. Reaching the YouTrack host also needs it on the egress allow-list. |
 
 `ANTHROPIC_*` / `OPENAI_*` model auth is **not** handled here — it stays env
 passthrough / gateway token, materialized by the platform exactly as before.

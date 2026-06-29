@@ -635,11 +635,48 @@ phase_permissions() {
     log "permissions: seeded bypass + trust gates (cwd=$_cwd)"
 }
 
+# ── Identity secret surface (CCT-490, simple model) ─────────────────────────
+# The pod env carries every identity's third-party secrets as `VAR_<ID>` (Vault
+# env-from-path) plus any unsuffixed defaults. Two steps around the credential
+# helper, keyed on the active identity (`<ID>` = TASK_IDENTITY uppercased,
+# `-`→`_`):
+#   resolve (before the helper): collapse each base to the active identity's
+#     "main" value — `VAR = ${VAR_<ID>:-$VAR}` — so the helper and the agent read
+#     one canonical var.
+#   scrub (after the helper): UNSET every `VAR_<…>` suffixed variant so the agent
+#     inherits only the resolved mains, never another identity's secret.
+SECRET_BASES="GITHUB_TOKEN GH_TOKEN GITHUB_NAME GITHUB_EMAIL GPG_PRIVATE_KEY YOUTRACK_TOKEN YOUTRACK_API_TOKEN SLACK_TOKEN"
+phase_identity_resolve() {
+    [ -n "${TASK_IDENTITY:-}" ] || return 0
+    _id_up=$(printf '%s' "$TASK_IDENTITY" | tr '[:lower:]-' '[:upper:]_')
+    for _base in $SECRET_BASES; do
+        eval "_v=\${${_base}_${_id_up}:-}"
+        [ -n "${_v:-}" ] && export "${_base}=${_v}"
+    done
+    log "identity resolve: canonical secrets set for ${TASK_IDENTITY}"
+}
+phase_identity_scrub() {
+    for _base in $SECRET_BASES; do
+        for _var in $(env | sed -n "s/^\\(${_base}_[A-Za-z0-9_]*\\)=.*/\\1/p"); do
+            unset "$_var" 2>/dev/null || true
+        done
+    done
+    log "identity scrub: per-identity secret variants removed from the agent env"
+}
+
 # ── Run the phases (each individually skippable) ─────────────────────────────
+# Derive the acting identity from the payload so the resolver + credential helper
+# can key off it (the dispatcher forwards it as payload.identity).
+if [ -z "${TASK_IDENTITY:-}" ] && [ -n "${TASK_PAYLOAD_JSON:-}" ]; then
+    TASK_IDENTITY=$(printf '%s' "$TASK_PAYLOAD_JSON" | jq -r '.identity // empty' 2>/dev/null || true)
+    [ -n "${TASK_IDENTITY:-}" ] && export TASK_IDENTITY
+fi
 phase_network
 phase_workspace
 phase_context_pack
+phase_identity_resolve
 phase_credentials
+phase_identity_scrub
 phase_callback
 phase_guard
 phase_permissions
