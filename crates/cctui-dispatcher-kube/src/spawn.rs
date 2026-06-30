@@ -82,6 +82,8 @@ pub struct Spawner {
     source_cronjob: String,
     cctui_url: String,
     client: Client,
+    /// Ceiling on concurrently in-flight worker Jobs (CCT-522). `0` ⇒ unlimited.
+    max_inflight: usize,
 }
 
 impl Spawner {
@@ -94,7 +96,16 @@ impl Spawner {
         cctui_url: String,
     ) -> anyhow::Result<Self> {
         let client = Client::try_default().await?;
-        Ok(Self { namespace, source_cronjob, cctui_url, client })
+        // Optional concurrency ceiling (CCT-522): `CCTUI_WORKER_MAX_INFLIGHT`,
+        // `0`/unset ⇒ unlimited. An explicit cap rejects a dispatch once that
+        // many non-terminal dispatcher-owned Jobs already exist, so a webhook
+        // flood of DISTINCT keys can't exhaust the cluster — the throttle the
+        // old session-id collision used to provide implicitly.
+        let max_inflight = std::env::var("CCTUI_WORKER_MAX_INFLIGHT")
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .unwrap_or(0);
+        Ok(Self { namespace, source_cronjob, cctui_url, client, max_inflight })
     }
 
     fn jobs(&self) -> Api<Job> {
@@ -340,8 +351,17 @@ impl Spawner {
         })
     }
 
+    /// The string the Job name derives from: the caller's `dedup_key` (the
+    /// logical request id) when present, else the `session_id` (CCT-522). Keeping
+    /// idempotency on the dedup key lets `session_id` be fresh per dispatch (no
+    /// conversation chaining) while a repeat of the same logical key still
+    /// coalesces onto one Job.
+    fn dedup_source(spec: &WireDispatchSpec) -> &str {
+        spec.dedup_key.as_deref().filter(|k| !k.is_empty()).unwrap_or(&spec.session_id)
+    }
+
     /// Spawn a worker Job for the session. Idempotent: a repeat dispatch of the
-    /// same session reuses the deterministic name; a 409 (name in use) is
+    /// same dedup key reuses the deterministic name; a 409 (name in use) is
     /// resolved by reading the existing Job — in-flight ⇒ `deduplicated`,
     /// terminal ⇒ delete + recreate ⇒ `redispatched`.
     pub async fn dispatch(&self, spec: &WireDispatchSpec) -> anyhow::Result<SpawnOutcome> {
@@ -355,7 +375,8 @@ impl Spawner {
             .await
             .map_err(|e| anyhow::anyhow!("reading source CronJob: {e}"))?;
 
-        let name = Self::job_name(&spec.session_id);
+        let name = Self::job_name(Self::dedup_source(spec));
+        self.enforce_inflight_cap(&name).await?;
         let job = Self::build_job(&self.cctui_url, &cronjob, spec, &name)?;
 
         match self.create(&job, "dispatched", &name).await {
@@ -399,6 +420,37 @@ impl Spawner {
             }),
             Err(e) => anyhow::bail!("recreating Job: {e}"),
         }
+    }
+
+    /// Reject a dispatch when `max_inflight` non-terminal dispatcher-owned Jobs
+    /// already exist (CCT-522). `0` ⇒ unlimited (the default; no behavior
+    /// change). The Job we're about to create (`this_name`) is excluded from the
+    /// count so a dedup/redispatch of an already-running Job is never blocked by
+    /// its own presence. Only consulted when a cap is explicitly configured.
+    async fn enforce_inflight_cap(&self, this_name: &str) -> anyhow::Result<()> {
+        if self.max_inflight == 0 {
+            return Ok(());
+        }
+        let lp = ListParams::default().labels(&format!("{LABEL_ORIGIN}=cctui-kube-dispatcher"));
+        let jobs = self
+            .jobs()
+            .list(&lp)
+            .await
+            .map_err(|e| anyhow::anyhow!("listing worker Jobs for concurrency cap: {e}"))?;
+        let inflight = jobs
+            .items
+            .iter()
+            .filter(|j| j.metadata.name.as_deref() != Some(this_name))
+            .filter(|j| Self::job_terminal_state(j).is_none())
+            .count();
+        if inflight >= self.max_inflight {
+            anyhow::bail!(
+                "worker concurrency cap reached: {inflight} in-flight \
+                 >= CCTUI_WORKER_MAX_INFLIGHT={}",
+                self.max_inflight
+            );
+        }
+        Ok(())
     }
 
     /// Lifecycle of a Job handle, plus a human reason when it FAILED (CCT-429).
@@ -526,6 +578,7 @@ mod tests {
             session_id: session_id.to_owned(),
             timeout_minutes: Some(30),
             reply_url: Some("https://cb".to_owned()),
+            dedup_key: None,
             payload,
         }
     }
@@ -571,6 +624,30 @@ mod tests {
         assert!(a.len() <= 63);
         assert!(a.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'));
         assert_ne!(a, Spawner::job_name("triage:PROJ:2026060117"));
+    }
+
+    #[test]
+    fn job_name_derives_from_dedup_key_so_session_id_can_be_fresh() {
+        // CCT-522: two dispatches of the same logical key carry DIFFERENT fresh
+        // session ids but the SAME dedup key, and must map to the same Job so a
+        // duplicate webhook coalesces.
+        let mut s1 = spec("11111111-1111-4111-8111-111111111111", json!({}));
+        s1.dedup_key = Some("triage-PROJ-202606231511".to_owned());
+        let mut s2 = spec("22222222-2222-4222-8222-222222222222", json!({}));
+        s2.dedup_key = Some("triage-PROJ-202606231511".to_owned());
+        assert_eq!(
+            Spawner::job_name(Spawner::dedup_source(&s1)),
+            Spawner::job_name(Spawner::dedup_source(&s2)),
+            "same dedup key ⇒ same Job despite distinct session ids",
+        );
+        // With no dedup key the Job name falls back to the (unique) session id.
+        let s3 = spec("33333333-3333-4333-8333-333333333333", json!({}));
+        assert_eq!(Spawner::dedup_source(&s3), "33333333-3333-4333-8333-333333333333");
+        assert_ne!(
+            Spawner::job_name(Spawner::dedup_source(&s1)),
+            Spawner::job_name(Spawner::dedup_source(&s3)),
+            "different keys ⇒ different Jobs (own pod + own session)",
+        );
     }
 
     #[test]

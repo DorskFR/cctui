@@ -240,26 +240,32 @@ fn resolve_dispatch_account(
     default_account.cloned()
 }
 
-/// Resolve the session id a dispatch should run under (CCT-474).
+/// Resolve the `(session_id, display_name, dedup_key)` for a dispatch (CCT-474,
+/// CCT-522).
 ///
-/// Claude's daemon derives `short = session_id[..8]` and rejects a dispatch
-/// whose `short` isn't `/^[a-f0-9]{8}$/`, so the id must be UUID-shaped. Returns
-/// `(session_id, display_name)`:
-/// - `None` → a fresh v4 UUID, no display name.
-/// - an already-valid UUID → used as-is, no display name.
-/// - any other (human-readable) id → a DETERMINISTIC UUID-shaped id derived
-///   from its sha256 (so a retried dispatch maps to the same session + Job),
-///   with the original carried as the display name.
-fn resolve_dispatch_session_id(logical: Option<&str>) -> (String, Option<String>) {
+/// `session_id` is the per-dispatch correlation id the worker registers under
+/// and the gateway token binds to. It is now ALWAYS a fresh UUID so isolated
+/// short-lived pods never get their logs chained into one growing conversation:
+/// previously a human-readable logical key was hashed into a DETERMINISTIC id,
+/// so every round of the same key (e.g. a PR's review rounds) collapsed onto one
+/// session and the server concatenated their logs. The idempotency that used to
+/// ride `session_id` now lives in `dedup_key`, which the dispatcher hashes into
+/// the Job name. Claude's daemon derives `short = session_id[..8]` and rejects a
+/// dispatch whose `short` isn't `/^[a-f0-9]{8}$/`, so a v4 UUID still satisfies
+/// the shape constraint.
+///
+/// - `None` → fresh UUID, no display name, no dedup (each dispatch is unique).
+/// - an already-valid UUID → used as-is (a deliberate retry/resume target) and
+///   as its own dedup key, no display name.
+/// - any other (human-readable) id → a FRESH UUID session, the original carried
+///   as both the display name and the dedup key (so repeat dispatches of the
+///   same logical key still coalesce onto one Job while each running round keeps
+///   its own isolated session).
+fn resolve_dispatch_session_id(logical: Option<&str>) -> (String, Option<String>, Option<String>) {
     match logical {
-        None => (uuid::Uuid::new_v4().to_string(), None),
-        Some(s) if uuid::Uuid::parse_str(s).is_ok() => (s.to_owned(), None),
-        Some(s) => {
-            let h = crate::auth::sha256_hex(s);
-            let id =
-                format!("{}-{}-{}-{}-{}", &h[0..8], &h[8..12], &h[12..16], &h[16..20], &h[20..32]);
-            (id, Some(s.to_owned()))
-        }
+        None => (uuid::Uuid::new_v4().to_string(), None, None),
+        Some(s) if uuid::Uuid::parse_str(s).is_ok() => (s.to_owned(), None, Some(s.to_owned())),
+        Some(s) => (uuid::Uuid::new_v4().to_string(), Some(s.to_owned()), Some(s.to_owned())),
     }
 }
 
@@ -397,11 +403,13 @@ pub async fn dispatch(
     // Claude's daemon derives `short = session_id[..8]` and rejects a dispatch
     // unless `short` matches /^[a-f0-9]{8}$/ — so the worker's session id must be
     // UUID-shaped (CCT-474). Callers may pass a human-readable logical id (e.g.
-    // an automation dedup key like `triage-PROJ-2026…`); derive a DETERMINISTIC
-    // UUID-shaped id from it (via sha256, so a retry maps to the same session +
-    // Job) and carry the original as the session display name. A caller that
-    // already passes a real UUID is left unchanged.
-    let (session_id, display_name) = resolve_dispatch_session_id(req.session_id.as_deref());
+    // an automation dedup key like `triage-PROJ-2026…`); we now mint a FRESH UUID
+    // session for it and carry the original as both the display name and the
+    // `dedup_key` (CCT-522). The dispatcher hashes `dedup_key` into the Job name,
+    // so a duplicate webhook still coalesces while each round keeps an isolated
+    // session — the server no longer chains every round's logs onto one id.
+    let (session_id, display_name, dedup_key) =
+        resolve_dispatch_session_id(req.session_id.as_deref());
     let origin = dispatcher.id();
 
     // Alert that a dispatch arrived (CCT-198). Built from the *original* payload
@@ -429,7 +437,9 @@ pub async fn dispatch(
     // the gateway token is bound to. A pre-minted row would just linger as an
     // empty `dispatch:<origin>` placeholder alongside it. Double dispatch is
     // still idempotent: the dispatcher derives the k8s Job name from
-    // `sha(session_id)`, so a repeat maps to the same Job (409 → same handle).
+    // `sha(dedup_key)` (the caller's logical key, CCT-522), so a repeat of the
+    // same key maps to the same Job (409 → same handle) even though each
+    // dispatch now mints a fresh `session_id`.
 
     // Resolve the caller's stable dispatch machine and forward its key to the
     // pod via a reserved payload key (CCT-191). The dispatcher lifts it into
@@ -614,6 +624,7 @@ pub async fn dispatch(
         session_id: &session_id,
         timeout_minutes: req.timeout,
         reply_url: req.reply_url.as_deref(),
+        dedup_key: dedup_key.as_deref(),
         payload: &forwarded_payload,
     };
 
@@ -700,28 +711,36 @@ mod tests {
     use super::{resolve_dispatch_account, resolve_dispatch_session_id};
 
     #[test]
-    fn session_id_human_logical_becomes_deterministic_uuid_with_display_name() {
-        let (a, na) = resolve_dispatch_session_id(Some("triage-PROJ-202606231511"));
-        let (b, _) = resolve_dispatch_session_id(Some("triage-PROJ-202606231511"));
-        assert_eq!(a, b, "deterministic across retries");
+    fn session_id_human_logical_mints_fresh_uuid_keeps_key_as_dedup_and_name() {
+        // CCT-522: each dispatch of the same logical key gets a DISTINCT session
+        // (no log chaining), while the logical key is preserved as both the
+        // display name and the dedup key (idempotency now lives there).
+        let (a, na, ka) = resolve_dispatch_session_id(Some("triage-PROJ-202606231511"));
+        let (b, nb, kb) = resolve_dispatch_session_id(Some("triage-PROJ-202606231511"));
+        assert_ne!(a, b, "fresh, distinct session per dispatch");
         assert!(uuid::Uuid::parse_str(&a).is_ok(), "UUID-shaped: {a}");
         assert!(a[..8].chars().all(|c| c.is_ascii_hexdigit()), "hex short");
         assert_eq!(na.as_deref(), Some("triage-PROJ-202606231511"), "logical id kept as name");
+        assert_eq!(nb, na, "display name is the logical key both times");
+        assert_eq!(ka.as_deref(), Some("triage-PROJ-202606231511"), "logical id is the dedup key");
+        assert_eq!(kb, ka, "dedup key is stable across dispatches (Job coalesces)");
     }
 
     #[test]
-    fn session_id_real_uuid_passes_through_without_name() {
+    fn session_id_real_uuid_passes_through_as_its_own_dedup_key() {
         let u = "a1b2c3d4-0000-4000-8000-000000000000";
-        let (id, name) = resolve_dispatch_session_id(Some(u));
+        let (id, name, dedup) = resolve_dispatch_session_id(Some(u));
         assert_eq!(id, u);
         assert!(name.is_none());
+        assert_eq!(dedup.as_deref(), Some(u), "explicit uuid is its own dedup target");
     }
 
     #[test]
-    fn session_id_none_mints_fresh_uuid() {
-        let (id, name) = resolve_dispatch_session_id(None);
+    fn session_id_none_mints_fresh_uuid_no_dedup() {
+        let (id, name, dedup) = resolve_dispatch_session_id(None);
         assert!(uuid::Uuid::parse_str(&id).is_ok());
         assert!(name.is_none());
+        assert!(dedup.is_none(), "no logical key ⇒ no dedup, each dispatch unique");
     }
 
     // Helper: the bound default account a dispatcher carries (CCT-427).

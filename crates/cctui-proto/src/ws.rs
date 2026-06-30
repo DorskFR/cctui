@@ -107,6 +107,16 @@ pub struct WireDispatchSpec {
     /// Caller resume URL — a bearer capability; do not log.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply_url: Option<String>,
+    /// Idempotency / dedup key (CCT-522): the caller's logical request id (e.g.
+    /// an automation dedup key like `triage-PROJ-…`). The dispatcher derives the worker
+    /// Job name from THIS, not `session_id` — which is now a fresh UUID per
+    /// dispatch so isolated short-lived pods never get their logs chained into
+    /// one growing conversation. A duplicate webhook within a Job's lifetime
+    /// still coalesces (same key ⇒ same Job name); a genuinely new round gets its
+    /// own pod AND its own session. `None` ⇒ the dispatcher falls back to
+    /// `session_id` (each dispatch unique, no dedup).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dedup_key: Option<String>,
     /// Free-form blob, forwarded verbatim to the worker.
     pub payload: serde_json::Value,
 }
@@ -662,6 +672,7 @@ mod tests {
                 session_id: "sess-1".into(),
                 timeout_minutes: Some(30),
                 reply_url: None,
+                dedup_key: None,
                 payload: serde_json::json!({"name": "demo"}),
             },
         };

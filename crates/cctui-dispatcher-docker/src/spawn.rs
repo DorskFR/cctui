@@ -81,9 +81,17 @@ impl Spawner {
         Ok(Self { image, network, cctui_url, mounts, docker })
     }
 
-    fn container_name(session_id: &str) -> String {
-        let digest = Sha1::digest(session_id.as_bytes());
+    fn container_name(dedup_source: &str) -> String {
+        let digest = Sha1::digest(dedup_source.as_bytes());
         format!("cctui-worker-{}", &hex::encode(digest)[..12])
+    }
+
+    /// The string the container name derives from: the caller's `dedup_key` when
+    /// present, else the `session_id` (CCT-522). Mirrors the kube dispatcher so
+    /// `session_id` can be fresh per dispatch while a repeat of the same logical
+    /// key still coalesces onto one container.
+    fn dedup_source(spec: &WireDispatchSpec) -> &str {
+        spec.dedup_key.as_deref().filter(|k| !k.is_empty()).unwrap_or(&spec.session_id)
     }
 
     /// Kubernetes/docker-safe label value: lowercase alnum / `-` / `_` / `.`,
@@ -143,7 +151,7 @@ impl Spawner {
         if spec.session_id.is_empty() {
             anyhow::bail!("session_id is required");
         }
-        let name = Self::container_name(&spec.session_id);
+        let name = Self::container_name(Self::dedup_source(spec));
         let env = self.build_env(spec)?;
 
         let mut labels = HashMap::new();

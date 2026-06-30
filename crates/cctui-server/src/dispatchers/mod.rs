@@ -42,6 +42,11 @@ pub struct DispatchSpec<'a> {
     pub timeout_minutes: Option<u32>,
     /// Caller resume URL — a bearer capability; do not log.
     pub reply_url: Option<&'a str>,
+    /// Idempotency / dedup key (CCT-522): the caller's logical request id, hashed
+    /// by the dispatcher into the worker Job name so a fresh-per-dispatch
+    /// `session_id` no longer chains conversations. `None` ⇒ derive from
+    /// `session_id` (each dispatch unique).
+    pub dedup_key: Option<&'a str>,
     /// Free-form blob, forwarded verbatim to the runtime.
     pub payload: &'a serde_json::Value,
 }

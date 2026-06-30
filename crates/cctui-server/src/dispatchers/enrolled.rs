@@ -104,6 +104,7 @@ impl Dispatcher for EnrolledDispatcher {
             session_id: spec.session_id.to_owned(),
             timeout_minutes: spec.timeout_minutes,
             reply_url: spec.reply_url.map(ToOwned::to_owned),
+            dedup_key: spec.dedup_key.map(ToOwned::to_owned),
             payload: spec.payload.clone(),
         };
         let reply = self
@@ -218,6 +219,7 @@ mod tests {
             session_id: "sess-1".into(),
             timeout_minutes: None,
             reply_url: None,
+            dedup_key: None,
             payload: serde_json::json!({}),
         };
         let reply = round_trip(
