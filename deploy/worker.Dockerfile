@@ -83,14 +83,34 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
 
-# Agent CLIs, version-pinnable at build time. Defaults track latest; CI / a
-# local build can pin via --build-arg for reproducibility.
+# Claude Code — installed via npm, which pulls the per-platform *native* binary;
+# the `claude` bin does not invoke node at runtime. Version-pinnable at build.
 ARG CLAUDE_CODE_VERSION=latest
-ARG CODEX_VERSION=latest
-RUN npm install -g \
-        "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
-        "@openai/codex@${CODEX_VERSION}" \
+RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
     && npm cache clean --force
+
+# Codex — native static-musl binary from the GitHub release, NOT the npm package.
+# The npm codex is a node entrypoint, so in derived images that put a node shim
+# on PATH (e.g. mise managing the toolchain) launching it resolves `node`
+# through the shim and can fail before codex starts (the
+# "mise ERROR Permission denied (os error 13)" seen in the acme fat image).
+# The standalone binary has no node dependency and sidesteps that entirely.
+# Pinned + checksum-verified, mirroring the yt install above.
+ARG CODEX_VERSION=0.142.4
+RUN arch="$(dpkg --print-architecture)" \
+    && case "$arch" in \
+         amd64) target=x86_64-unknown-linux-musl;  sha=f0ac43751c6d3b29a973a860a8de528ad79cb20cc1296611930a3d5c91ddef95 ;; \
+         arm64) target=aarch64-unknown-linux-musl; sha=a546ee05915313fea340f8315b54f43d077f4390afbb5af2de944d48013d447f ;; \
+         *) echo "codex: unsupported arch '$arch'" >&2; exit 1 ;; \
+       esac \
+    && curl -fsSL "https://github.com/openai/codex/releases/download/rust-v${CODEX_VERSION}/codex-${target}.tar.gz" \
+        -o /tmp/codex.tar.gz \
+    && echo "${sha}  /tmp/codex.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/codex.tar.gz -C /usr/local/bin \
+    && mv "/usr/local/bin/codex-${target}" /usr/local/bin/codex \
+    && chmod 0755 /usr/local/bin/codex \
+    && rm /tmp/codex.tar.gz \
+    && codex --version
 
 # yt — token-frugal YouTrack CLI (https://github.com/DorskFR/yt). Lets dispatched
 # tasks triage / transition YouTrack issues without an MCP server. Pinned and
