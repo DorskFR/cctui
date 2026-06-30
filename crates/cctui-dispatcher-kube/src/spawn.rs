@@ -34,6 +34,12 @@ use kube::{Client, Error as KubeError};
 /// A pod wedged `Pending` longer than this (no schedulable node / image still
 /// failing to pull) is reported `Failed` rather than `Running` (CCT-429).
 const PENDING_FAILURE_SECS: i64 = 300;
+
+/// Auto-reap a finished worker Job (`Complete`/`Failed`) this many seconds after
+/// it stops, via `spec.ttlSecondsAfterFinished`. Long enough to inspect a
+/// just-finished run, short enough to keep the namespace free of corpses
+/// (CCT-518; was 86400 = 24h).
+const JOB_TTL_SECONDS: i64 = 3600;
 use serde_json::{Value, json};
 use sha1::{Digest, Sha1};
 
@@ -236,7 +242,9 @@ impl Spawner {
             },
             "spec": {
                 "backoffLimit": 0,
-                "ttlSecondsAfterFinished": 86400,
+                // Set on our built spec (not pulled from the source CronJob's
+                // jobTemplate), so this TTL always wins (CCT-518).
+                "ttlSecondsAfterFinished": JOB_TTL_SECONDS,
                 "activeDeadlineSeconds": deadline,
                 "template": pod_template,
             },
