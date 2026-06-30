@@ -11,7 +11,8 @@
 //! Each test owns the connection: it starts by dropping the `github` schema so
 //! reruns are clean.
 
-use sqlx::{Executor, Row, postgres::PgPoolOptions};
+use sqlx::postgres::PgPoolOptions;
+use sqlx::{Executor, Row};
 
 async fn pool() -> Option<sqlx::PgPool> {
     let url = std::env::var("TEST_DATABASE_URL").ok()?;
@@ -75,7 +76,7 @@ async fn migrations_tracked_in_github_schema() {
     cctui_github::migrate(&pool).await.expect("re-migrate idempotent");
 }
 
-/// Regression for the prod-breaking search_path leak: after `migrate()`, an
+/// Regression for the prod-breaking `search_path` leak: after `migrate()`, an
 /// *unqualified* core query must still resolve against `public`. The original
 /// bug returned the search_path-pinned connection to the pool, so a reused
 /// connection saw `search_path = github` and failed core queries with

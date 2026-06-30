@@ -179,7 +179,7 @@ pub struct AccountInfo {
     /// Credential health (CCT-512): `true` once the gateway saw the upstream
     /// provider reject this account's OAuth credentials, cleared on the next
     /// successful upstream call. The accounts UI shows a "reauthenticate" badge.
-    /// `#[sqlx(default)]` so SELECTs that don't project it (create/oauth_finish on
+    /// `#[sqlx(default)]` so SELECTs that don't project it (`create`/`oauth_finish` on
     /// a fresh, never-flagged account) still decode.
     #[sqlx(default)]
     pub needs_reauth: bool,
@@ -241,8 +241,8 @@ pub struct CreateAccount {
 /// renames (back-compat — the only field native accounts allow). For a
 /// non-managed compatible endpoint the operator may also edit `models`,
 /// `base_url`, `auth_scheme`, and rotate the static credential (`access_token`).
-/// All optional; an absent field leaves that column unchanged. base_url/credential
-/// are never returned, so the editor re-supplies base_url when changing it and
+/// All optional; an absent field leaves that column unchanged. `base_url/credential`
+/// are never returned, so the editor re-supplies `base_url` when changing it and
 /// leaves the credential blank to keep the stored one.
 #[derive(Debug, serde::Deserialize)]
 pub struct UpdateAccount {
@@ -272,6 +272,9 @@ pub struct UpdateAccount {
 
 /// The three soft-limit columns as a patchable block (CCT-411). A field left
 /// `null`/absent inside a provided block clears that column.
+// Field names are the JSON API contract (deserialized request body); the shared
+// `soft_limit_` prefix mirrors the DB columns and cannot be dropped.
+#[allow(clippy::struct_field_names)]
 #[derive(Debug, serde::Deserialize)]
 pub struct SoftLimitPatch {
     #[serde(default)]
@@ -341,6 +344,8 @@ pub async fn list_accounts(
 }
 
 /// `POST /api/v1/accounts` — register a named OAuth account.
+// Linear handler: validate, branch per credential kind, insert, respond.
+#[allow(clippy::too_many_lines)]
 pub async fn create_account(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -467,6 +472,8 @@ pub async fn create_account(
 /// `PATCH /api/v1/accounts/{id}` — rename, and (CCT-402) edit a non-managed
 /// compatible endpoint's models / base URL / auth scheme / credential without
 /// recreating it. Native subscription accounts only honour `name`.
+// Linear handler: per-field optional updates built into one dynamic UPDATE.
+#[allow(clippy::too_many_lines)]
 pub async fn rename_account(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -557,11 +564,10 @@ pub async fn rename_account(
     // block replaces all three columns (a null field clears one) while an absent
     // block leaves them untouched.
     let soft_provided = req.soft_limits.is_some();
-    let (soft_5h, soft_7d, soft_bypass) = req
-        .soft_limits
-        .as_ref()
-        .map(|s| (s.soft_limit_5h_pct, s.soft_limit_7d_pct, s.soft_limit_bypass_minutes))
-        .unwrap_or((None, None, None));
+    let (soft_5h, weekly_pct, soft_bypass) =
+        req.soft_limits.as_ref().map_or((None, None, None), |s| {
+            (s.soft_limit_5h_pct, s.soft_limit_7d_pct, s.soft_limit_bypass_minutes)
+        });
 
     // COALESCE keeps each column when its bind is NULL, so an absent field is a
     // no-op. Admin (`ctx.user_id` = NULL) may edit any account; a user only its
@@ -595,7 +601,7 @@ pub async fn rename_account(
     .bind(&model_aliases)
     .bind(soft_provided)
     .bind(soft_5h)
-    .bind(soft_7d)
+    .bind(weekly_pct)
     .bind(soft_bypass)
     .fetch_optional(&state.pool)
     .await
@@ -606,7 +612,7 @@ pub async fn rename_account(
     row.map(Json).ok_or_else(|| err(StatusCode::NOT_FOUND, "no such account"))
 }
 
-/// `DELETE /api/v1/accounts/{id}` — delete (cascades session_tokens).
+/// `DELETE /api/v1/accounts/{id}` — delete (cascades `session_tokens`).
 pub async fn delete_account(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -651,7 +657,7 @@ pub async fn delete_account(
 
 #[derive(Debug, serde::Deserialize)]
 pub struct OAuthStart {
-    /// `anthropic` ("Sign in with Claude") or `openai` ("Sign in with ChatGPT").
+    /// `anthropic` ("Sign in with Claude") or `openai` ("Sign in with `ChatGPT`").
     pub provider: String,
     /// Owning user — required (and only honoured) when authenticated with the
     /// admin token (CCT-251).
@@ -692,7 +698,7 @@ struct OAuthTokenResponse {
     id_token: Option<String>,
 }
 
-/// Extract `chatgpt_account_id` from an OpenAI `id_token` JWT without verifying
+/// Extract `chatgpt_account_id` from an `OpenAI` `id_token` JWT without verifying
 /// the signature (the token came straight from the trusted token endpoint over
 /// TLS). The claim is nested under `https://api.openai.com/auth` (CCT-244).
 fn chatgpt_account_id_from_id_token(id_token: &str) -> Option<String> {
@@ -706,7 +712,7 @@ fn chatgpt_account_id_from_id_token(id_token: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Parse the `code` out of an OpenAI callback URL (or a bare `code`/`code#state`
+/// Parse the `code` out of an `OpenAI` callback URL (or a bare `code`/`code#state`
 /// string). Accepts the full `http://localhost:1455/auth/callback?code=…&state=…`
 /// the user pastes, or just the code itself (CCT-244).
 fn code_from_callback(input: &str) -> Option<String> {
@@ -847,6 +853,8 @@ pub async fn oauth_start(
 /// `POST /api/v1/accounts/oauth/finish` — exchange the pasted `code#state` for
 /// tokens and store the account (same shape as POST /accounts). Single-use: the
 /// pending record is consumed regardless of exchange outcome.
+// Linear handler: consume pending record, exchange code, store per provider.
+#[allow(clippy::too_many_lines)]
 pub async fn oauth_finish(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -1011,7 +1019,7 @@ fn urlencoding(s: &str) -> String {
 /// Anthropic's usage endpoint rate-limits per access token (safe at ~180s); we
 /// cache for a few minutes so a viewed accounts page + slow background poll never
 /// spams it, and many clients share one entry per account.
-pub(crate) const USAGE_CACHE_TTL: Duration = Duration::minutes(3);
+pub const USAGE_CACHE_TTL: Duration = Duration::minutes(3);
 
 /// Usage windows surfaced per account (CCT-306). `usage` mirrors Anthropic's free
 /// OAuth usage payload (`five_hour`/`seven_day` utilization + reset timestamps);
@@ -1073,23 +1081,22 @@ pub async fn account_usage(
     }
 
     // Stale or absent → fetch upstream (anthropic only; Codex returns None).
-    let usage = match gateway::fetch_account_usage(&state, id).await {
-        Ok(u) => u,
-        Err(_) => {
-            // Upstream hiccup (e.g. 429/refresh fail): fall back to the last
-            // cached value if we have one rather than erroring the whole row.
-            if let Some(hit) = state.account_usage_cache.get(&id) {
-                let age_secs = hit.fetched_at.elapsed().as_secs();
-                return Ok(Json(AccountUsage {
-                    account_id: id,
-                    provider,
-                    usage: hit.usage.clone(),
-                    age_secs,
-                }));
-            }
-            // No prior value — surface as "no usage" so the UI just hides the chip.
-            None
+    let usage = if let Ok(u) = gateway::fetch_account_usage(&state, id).await {
+        u
+    } else {
+        // Upstream hiccup (e.g. 429/refresh fail): fall back to the last
+        // cached value if we have one rather than erroring the whole row.
+        if let Some(hit) = state.account_usage_cache.get(&id) {
+            let age_secs = hit.fetched_at.elapsed().as_secs();
+            return Ok(Json(AccountUsage {
+                account_id: id,
+                provider,
+                usage: hit.usage.clone(),
+                age_secs,
+            }));
         }
+        // No prior value — surface as "no usage" so the UI just hides the chip.
+        None
     };
     state.account_usage_cache.insert(
         id,

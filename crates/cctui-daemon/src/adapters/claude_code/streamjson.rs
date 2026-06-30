@@ -22,7 +22,7 @@
 //!   — first frame; carries the resolved session id + model.
 //! - `{"type":"assistant","message":{"id":…,"model":…,"content":[…],"usage":{…}}}`
 //!   — a full assistant turn (same `message` shape as a transcript line).
-//! - `{"type":"user","message":{"content":[…]}}` — a user/tool_result turn.
+//! - `{"type":"user","message":{"content":[…]}}` — a user/`tool_result` turn.
 //! - `{"type":"stream_event","event":{…}}` — incremental SSE deltas
 //!   (`content_block_delta` etc.); ignored here — the coalesced `assistant`
 //!   frame carries the final text, and forwarding partial deltas would
@@ -158,7 +158,7 @@ fn result_end_reason(v: &Value) -> EndReason {
 /// `content` is passed through as-is so callers can send either a plain text
 /// turn (`json!(text)`) or a structured content-block array (tool results,
 /// attachments). The returned `Value` is one line; the driver appends `\n`.
-pub(super) fn user_message_envelope(content: Value) -> Value {
+pub(super) fn user_message_envelope(content: &Value) -> Value {
     json!({
         "type": "user",
         "message": { "role": "user", "content": content },
@@ -394,7 +394,7 @@ mod tests {
 
     #[test]
     fn user_message_envelope_wraps_text() {
-        let env = user_message_envelope(json!("hi there"));
+        let env = user_message_envelope(&json!("hi there"));
         assert_eq!(env["type"], "user");
         assert_eq!(env["message"]["role"], "user");
         assert_eq!(env["message"]["content"], "hi there");
@@ -403,7 +403,7 @@ mod tests {
     #[test]
     fn user_message_envelope_passes_through_blocks() {
         let blocks = json!([{"type":"text","text":"a"}]);
-        let env = user_message_envelope(blocks.clone());
+        let env = user_message_envelope(&blocks);
         assert_eq!(env["message"]["content"], blocks);
     }
 

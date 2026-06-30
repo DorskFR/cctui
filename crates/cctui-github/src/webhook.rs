@@ -461,7 +461,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires TEST_DATABASE_URL"]
     async fn pull_request_event_upserts_a_pull() {
-        use sqlx::{Executor, Row, postgres::PgPoolOptions};
+        use sqlx::postgres::PgPoolOptions;
+        use sqlx::{Executor, Row};
 
         let Ok(url) = std::env::var("TEST_DATABASE_URL") else { return };
         let pool = PgPoolOptions::new().max_connections(2).connect(&url).await.unwrap();

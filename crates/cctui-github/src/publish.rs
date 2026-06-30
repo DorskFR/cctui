@@ -63,7 +63,7 @@ pub struct ReviewPayload {
 
 /// The GitHub `event` token for a [`ReviewVerdict`].
 #[must_use]
-pub fn verdict_event(v: ReviewVerdict) -> &'static str {
+pub const fn verdict_event(v: ReviewVerdict) -> &'static str {
     match v {
         ReviewVerdict::Comment => "COMMENT",
         ReviewVerdict::Approve => "APPROVE",
@@ -85,7 +85,9 @@ pub enum PublishError {
 }
 
 /// Resolve every draft comment against the current diff and assemble the single
-/// batched submission. Pure over its inputs (no I/O), so the stale-SHA refusal
+/// batched submission.
+///
+/// Pure over its inputs (no I/O), so the stale-SHA refusal
 /// and skip-vs-include logic are exhaustively unit-testable.
 ///
 /// # Errors
@@ -315,7 +317,11 @@ impl ReviewSubmitClient for HttpReviewClient {
             Ok(r) if r.status().is_success() => {
                 let arr: serde_json::Value = r.json().await.unwrap_or_default();
                 arr.as_array()
-                    .map(|a| a.iter().filter_map(|c| c.get("id").and_then(serde_json::Value::as_i64)).collect())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|c| c.get("id").and_then(serde_json::Value::as_i64))
+                            .collect()
+                    })
                     .unwrap_or_default()
             }
             // The review posted; failing to read its comment ids just means we
@@ -411,7 +417,12 @@ mod tests {
     };
 
     fn ctx(o: u32, n: u32) -> DiffLine {
-        DiffLine { kind: DiffLineKind::Context, content: "x".into(), old_line: Some(o), new_line: Some(n) }
+        DiffLine {
+            kind: DiffLineKind::Context,
+            content: "x".into(),
+            old_line: Some(o),
+            new_line: Some(n),
+        }
     }
     fn add(n: u32) -> DiffLine {
         DiffLine { kind: DiffLineKind::Add, content: "x".into(), old_line: None, new_line: Some(n) }
@@ -566,14 +577,11 @@ mod tests {
         // Reviewer drafted against "sha-old"; the PR is now at "sha1" (force-push).
         // The publish must refuse rather than re-anchor onto rotated lines.
         let d = draft(ReviewVerdict::Comment, vec![comment(2, DiffSide::New, "a.rs")]);
-        let err =
-            assemble_review_payload(&d, &diff("sha1"), Some("ship".into()), Some("sha-old")).unwrap_err();
+        let err = assemble_review_payload(&d, &diff("sha1"), Some("ship".into()), Some("sha-old"))
+            .unwrap_err();
         assert_eq!(
             err,
-            PublishError::StaleHeadSha {
-                selection_sha: "sha-old".into(),
-                diff_sha: "sha1".into(),
-            }
+            PublishError::StaleHeadSha { selection_sha: "sha-old".into(), diff_sha: "sha1".into() }
         );
     }
 

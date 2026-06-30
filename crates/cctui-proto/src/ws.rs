@@ -90,7 +90,9 @@ pub enum DaemonFrameDown {
 // --- Dispatcher ↔ Server (CCT-246/247/248) ---
 
 /// A dispatch intent relayed from the server to an enrolled dispatcher over the
-/// wire (CCT-248). The dispatcher turns this into a worker container/pod on its
+/// wire (CCT-248).
+///
+/// The dispatcher turns this into a worker container/pod on its
 /// host, injecting the dispatch info into the worker env. `payload` is opaque —
 /// the dispatcher forwards it verbatim (lifting `cctui_machine_key` /`name` out
 /// for env injection) without otherwise inspecting it.

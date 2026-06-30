@@ -263,6 +263,27 @@ impl WorkflowEngine {
         allow()
     }
 
+    /// Apply the always-allowed exit transition: mark the run exited and, if a
+    /// proxy policy dir is present, relax the egress policy to the net-claude
+    /// host set so the agent can still report its outcome.
+    fn transition_exit(&self, current_u: u32) -> TransitionResponse {
+        tracing::info!("Transition: Step {current_u} → Exit");
+        self.write_state(STEP_EXITED);
+        if self.proxy_dir_present() {
+            let mut hosts = self.expand_network_rules("net-claude");
+            hosts.extend(self.always_allowed_hosts.iter().cloned());
+            let _ = std::fs::write(
+                &self.proxy_policy_file,
+                json!({ "allowed_hosts": hosts, "default": "deny" }).to_string(),
+            );
+        }
+        json!({
+            "ok": true,
+            "step": "exit",
+            "message": "Session complete. You may now stop.",
+        })
+    }
+
     /// Validate and apply a transition request. `target` may be a number or the
     /// string `"exit"`. Exit is always allowed from any step.
     #[must_use]
@@ -283,21 +304,7 @@ impl WorkflowEngine {
         // it does not finalize a deliverable). A finalize-type transition is a
         // numeric advance into a later step, which the gate above guards.
         if target.as_str().is_some_and(|s| s.eq_ignore_ascii_case("exit")) {
-            tracing::info!("Transition: Step {current_u} → Exit");
-            self.write_state(STEP_EXITED);
-            if self.proxy_dir_present() {
-                let mut hosts = self.expand_network_rules("net-claude");
-                hosts.extend(self.always_allowed_hosts.iter().cloned());
-                let _ = std::fs::write(
-                    &self.proxy_policy_file,
-                    json!({ "allowed_hosts": hosts, "default": "deny" }).to_string(),
-                );
-            }
-            return json!({
-                "ok": true,
-                "step": "exit",
-                "message": "Session complete. You may now stop.",
-            });
+            return self.transition_exit(current_u);
         }
 
         // Numeric target (accept JSON number or numeric string).

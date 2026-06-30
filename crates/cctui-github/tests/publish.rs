@@ -1,5 +1,5 @@
 //! GH-VIEW-5: DB-gated tests for the publish + pull-down database layer —
-//! `mark_published` (status flip + github_comment_id backfill, transactional) and
+//! `mark_published` (status flip + `github_comment_id` backfill, transactional) and
 //! `list_open_threads` (pull-down read, open-only, grouped).
 //!
 //! DB-gated like `review_drafts` / `upsert_idempotency`: point `TEST_DATABASE_URL`
@@ -14,8 +14,8 @@ use cctui_proto::github::{
     CreateDraftComment, DiffSide, DraftStatus, ReviewCommentUpsert, ReviewThreadUpsert,
     ReviewVerdict,
 };
-use sqlx::postgres::PgPoolOptions;
 use sqlx::Executor;
+use sqlx::postgres::PgPoolOptions;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
@@ -65,26 +65,18 @@ async fn mark_published_flips_status_and_backfills_github_ids() {
     let d = cctui_github::open_user_draft(&pool, conn, "o/r", 7, user, ReviewVerdict::Comment)
         .await
         .unwrap();
-    let d = cctui_github::add_comment(&pool, conn, "o/r", 7, d.id, &comment("a.rs", 1))
-        .await
-        .unwrap();
-    let d = cctui_github::add_comment(&pool, conn, "o/r", 7, d.id, &comment("a.rs", 2))
-        .await
-        .unwrap();
+    let d =
+        cctui_github::add_comment(&pool, conn, "o/r", 7, d.id, &comment("a.rs", 1)).await.unwrap();
+    let d =
+        cctui_github::add_comment(&pool, conn, "o/r", 7, d.id, &comment("a.rs", 2)).await.unwrap();
     assert_eq!(d.status, DraftStatus::Draft);
     let c0 = d.comments[0].id;
     let c1 = d.comments[1].id;
 
-    let published = cctui_github::mark_published(
-        &pool,
-        conn,
-        "o/r",
-        7,
-        d.id,
-        &[(c0, 1001), (c1, 1002)],
-    )
-    .await
-    .unwrap();
+    let published =
+        cctui_github::mark_published(&pool, conn, "o/r", 7, d.id, &[(c0, 1001), (c1, 1002)])
+            .await
+            .unwrap();
 
     assert_eq!(published.status, DraftStatus::Published);
     let by_id: std::collections::HashMap<_, _> =
@@ -113,7 +105,8 @@ async fn list_open_threads_returns_open_with_comments_grouped() {
         line: Some(10),
         resolved: false,
     };
-    let resolved = ReviewThreadUpsert { thread_node_id: "T_done".into(), resolved: true, ..open.clone() };
+    let resolved =
+        ReviewThreadUpsert { thread_node_id: "T_done".into(), resolved: true, ..open.clone() };
     cctui_github::upsert_review_thread(&pool, &tx, conn, &open).await.unwrap();
     cctui_github::upsert_review_thread(&pool, &tx, conn, &resolved).await.unwrap();
 

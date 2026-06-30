@@ -97,7 +97,9 @@ pub struct UpdateConnector {
     pub webhook_secret: Option<String>,
 }
 
-/// API view of a connector. The credential and webhook secret are **never**
+/// API view of a connector.
+///
+/// The credential and webhook secret are **never**
 /// present — only a non-secret [`ConnectorInfo::credential_preview`] mask, so the
 /// webui and agents can confirm a connector exists without ever seeing the token.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -167,13 +169,13 @@ pub struct PullUpsert {
     pub gh_updated_at: String,
 }
 
-/// A parsed CI check (check_run or legacy commit status) for a head SHA.
+/// A parsed CI check (`check_run` or legacy commit status) for a head SHA.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct CheckUpsert {
     pub repo: String,
     pub head_sha: String,
-    /// GitHub's check_run id, or `status:<context>` for legacy commit statuses.
+    /// GitHub's `check_run` id, or `status:<context>` for legacy commit statuses.
     pub external_id: String,
     pub name: String,
     /// `queued` | `in_progress` | `completed`.
@@ -492,8 +494,9 @@ pub struct PullDiff {
 // No credential or token is represented here — only diff coordinates.
 // ---------------------------------------------------------------------------
 
-/// Which side of the diff a selected line lives on, in cctui's own vocabulary
-/// (a rendered split/unified view has an old column and a new column). Maps to
+/// Which side of the diff a selected line lives on, in cctui's own vocabulary.
+///
+/// (A rendered split/unified view has an old column and a new column.) Maps to
 /// GitHub's `LEFT` (base/old) and `RIGHT` (head/new) review-comment sides.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -510,16 +513,18 @@ pub enum DiffSide {
 impl DiffSide {
     /// GitHub's review-comment `side` token (`LEFT`/`RIGHT`).
     #[must_use]
-    pub fn github_token(self) -> &'static str {
+    pub const fn github_token(self) -> &'static str {
         match self {
-            DiffSide::Old => "LEFT",
-            DiffSide::New => "RIGHT",
+            Self::Old => "LEFT",
+            Self::New => "RIGHT",
         }
     }
 }
 
 /// A reviewer's selection in the rendered diff, before it is resolved to a
-/// GitHub anchor. This is what the draft UI (GH-VIEW-4) persists per comment:
+/// GitHub anchor.
+///
+/// This is what the draft UI (GH-VIEW-4) persists per comment:
 /// the file path, the side, and the (display) line — optionally a multi-line
 /// range whose `start_line..=line` is inclusive. `head_sha` records the SHA the
 /// selection was made against, so a later force-push (head SHA rotated) can
@@ -545,7 +550,9 @@ pub struct DiffSelection {
 }
 
 /// A fully resolved GitHub review-comment anchor — the precise shape a
-/// `POST .../reviews` comment entry needs. Produced by resolving a
+/// `POST .../reviews` comment entry needs.
+///
+/// Produced by resolving a
 /// [`DiffSelection`] against the [`PullDiff`] it targets. Every field maps 1:1
 /// to GitHub's review-comment API.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -838,7 +845,9 @@ pub struct PublishReviewRequest {
 }
 
 /// One draft comment that could not be anchored at publish time, so it was left
-/// out of the submitted review. The webui surfaces these so the reviewer knows a
+/// out of the submitted review.
+///
+/// The webui surfaces these so the reviewer knows a
 /// comment did not post (rather than silently dropping it).
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -879,7 +888,9 @@ pub struct ReviewThreadCommentInfo {
 }
 
 /// One pulled-down GitHub review thread (CONN-3 `github.review_threads`) plus its
-/// comments, anchored on a diff line. Distinct from a local draft: it is already
+/// comments, anchored on a diff line.
+///
+/// Distinct from a local draft: it is already
 /// posted on GitHub. The webui renders it inline, visually separate from drafts.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]

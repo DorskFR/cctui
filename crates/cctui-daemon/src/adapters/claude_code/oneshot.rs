@@ -102,6 +102,10 @@ impl OneshotDriver {
         }
     }
 
+    // Top-level driver event loop (hook listener + select over shutdown / commands
+    // / turn completion); complexity is the per-branch dispatch, not nesting.
+    // Splitting the select arms would obscure the loop's lifecycle.
+    #[allow(clippy::cognitive_complexity)]
     pub(super) async fn run(mut self) -> anyhow::Result<()> {
         tracing::info!("claude-code adapter starting in oneshot mode");
         // The same ask/permission hook listener the bg driver uses (CCT-167 /
@@ -173,6 +177,9 @@ impl OneshotDriver {
         });
     }
 
+    // Dispatch over every `AdapterCommand` variant; complexity is the breadth of
+    // the match arms, not nesting. Per-arm helpers would be pure churn.
+    #[allow(clippy::cognitive_complexity)]
     async fn handle_command(&mut self, cmd: AdapterCommand) -> anyhow::Result<()> {
         match cmd {
             AdapterCommand::Spawn { spec, session_id, .. } => {
@@ -329,6 +336,10 @@ impl OneshotDriver {
     /// Spawn one `claude -p` child, stream its stdout through the shared codec,
     /// forward events, and on the terminal frame emit an idle `Status` so the
     /// session stays resumable. Blocks until the turn completes (or shutdown).
+    // Linear spawn → stream → forward → terminal-frame pipeline with a select over
+    // shutdown / child output; complexity is the per-line/per-event handling, not
+    // nesting. Splitting would fragment the single-turn lifecycle.
+    #[allow(clippy::cognitive_complexity)]
     async fn launch_turn(
         &mut self,
         local_id: &str,
@@ -337,8 +348,9 @@ impl OneshotDriver {
         prompt: &str,
         env: &std::collections::BTreeMap<String, String>,
     ) -> anyhow::Result<()> {
-        let mut cmd = Command::new(&self.cfg.claude_bin);
-        cmd.current_dir(cwd)
+        let mut command = Command::new(&self.cfg.claude_bin);
+        command
+            .current_dir(cwd)
             .arg("--print")
             .arg("--output-format")
             .arg("stream-json")
@@ -352,7 +364,7 @@ impl OneshotDriver {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
 
-        let mut child = cmd
+        let mut child = command
             .spawn()
             .with_context(|| format!("spawning `{} -p` in {cwd}", self.cfg.claude_bin))?;
         let stdout = child.stdout.take().expect("piped stdout");

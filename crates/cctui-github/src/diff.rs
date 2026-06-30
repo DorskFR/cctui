@@ -440,10 +440,7 @@ fn has_next_page(resp: &reqwest::Response) -> bool {
 fn parse_raw_file(f: &serde_json::Value) -> Option<RawFile> {
     Some(RawFile {
         filename: f.get("filename")?.as_str()?.to_string(),
-        previous_filename: f
-            .get("previous_filename")
-            .and_then(|v| v.as_str())
-            .map(str::to_string),
+        previous_filename: f.get("previous_filename").and_then(|v| v.as_str()).map(str::to_string),
         status: f.get("status").and_then(|v| v.as_str()).unwrap_or("modified").to_string(),
         additions: f.get("additions").and_then(serde_json::Value::as_u64).unwrap_or(0) as u32,
         deletions: f.get("deletions").and_then(serde_json::Value::as_u64).unwrap_or(0) as u32,
@@ -549,11 +546,7 @@ mod tests {
             path: &str,
             _git_ref: &str,
         ) -> anyhow::Result<Option<String>> {
-            if path == "big.txt" {
-                Ok(Some("one\ntwo\nthree\n".into()))
-            } else {
-                Ok(None)
-            }
+            if path == "big.txt" { Ok(Some("one\ntwo\nthree\n".into())) } else { Ok(None) }
         }
     }
 
@@ -583,12 +576,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl DiffClient for HugeClient {
-        async fn pull_files(
-            &self,
-            _c: &str,
-            _r: &str,
-            _n: i64,
-        ) -> anyhow::Result<Vec<RawFile>> {
+        async fn pull_files(&self, _c: &str, _r: &str, _n: i64) -> anyhow::Result<Vec<RawFile>> {
             Ok(vec![
                 RawFile {
                     filename: "huge.txt".into(),
@@ -634,7 +622,7 @@ mod tests {
             huge: false,
             files: vec![],
         });
-        cache.put(d1.clone());
+        cache.put(d1);
         assert!(cache.get("sha1").is_some(), "stored SHA hits");
         assert!(cache.get("sha2").is_none(), "a different head SHA misses (re-fetch on new push)");
 
@@ -649,7 +637,7 @@ mod tests {
         for i in 0..(MAX_CACHE_ENTRIES + 5) {
             cache.put(Arc::new(PullDiff {
                 repo: "o/r".into(),
-                number: i as i64,
+                number: i64::try_from(i).unwrap(),
                 head_sha: format!("sha-{i}"),
                 total_files: 0,
                 total_changes: 0,

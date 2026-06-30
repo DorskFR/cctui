@@ -365,15 +365,17 @@ pub async fn rediscover_owned(cfg: &ThreadListConfig, registry: &SessionRegistry
     if records.is_empty() {
         return;
     }
-    let mut guard = registry.lock().await;
     let mut count = 0_usize;
-    for (id, record) in records {
-        // Don't clobber a record a live session already inserted in the race
-        // between rediscovery and a freshly spawned session.
-        guard.entry(id).or_insert_with(|| {
-            count += 1;
-            record
-        });
+    {
+        let mut guard = registry.lock().await;
+        for (id, record) in records {
+            // Don't clobber a record a live session already inserted in the race
+            // between rediscovery and a freshly spawned session.
+            guard.entry(id).or_insert_with(|| {
+                count += 1;
+                record
+            });
+        }
     }
     if count > 0 {
         tracing::info!(count, "codex: rediscovered owned threads, seeded for resume");
@@ -661,10 +663,17 @@ mod tests {
             guard.entry(id).or_insert(record);
         }
         drop(guard);
-        let guard = registry.lock().await;
-        assert_eq!(guard.get("live").and_then(|r| r.name.as_deref()), Some("keep-me"));
-        assert_eq!(guard.get("live").map(|r| r.cwd.as_str()), Some("/live"));
-        assert_eq!(guard.get("rediscovered").map(|r| r.cwd.as_str()), Some("/repo"));
+        let (live_name, live_cwd, rediscovered_cwd) = {
+            let guard = registry.lock().await;
+            (
+                guard.get("live").and_then(|r| r.name.clone()),
+                guard.get("live").map(|r| r.cwd.clone()),
+                guard.get("rediscovered").map(|r| r.cwd.clone()),
+            )
+        };
+        assert_eq!(live_name.as_deref(), Some("keep-me"));
+        assert_eq!(live_cwd.as_deref(), Some("/live"));
+        assert_eq!(rediscovered_cwd.as_deref(), Some("/repo"));
     }
 
     #[tokio::test]

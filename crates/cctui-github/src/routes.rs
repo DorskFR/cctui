@@ -29,9 +29,8 @@ use crate::attention::{self, Viewer};
 use crate::diff::{self, HttpDiffClient};
 use crate::drafts::{self, DraftError};
 use crate::publish::{self, ReviewSubmitClient};
-use crate::store;
 use crate::viewed::{self, ViewedError};
-use crate::{GithubState, crypto};
+use crate::{GithubState, crypto, store};
 
 /// Query string for `GET .../threads`: `?sync=1` pulls fresh threads from GitHub
 /// before reading back; otherwise the synced rows are served as-is.
@@ -47,7 +46,7 @@ fn err(code: StatusCode, msg: &str) -> ApiError {
     (code, Json(serde_json::json!({ "error": msg })))
 }
 
-fn kind_str(k: GithubCredentialKind) -> &'static str {
+const fn kind_str(k: GithubCredentialKind) -> &'static str {
     match k {
         GithubCredentialKind::Pat => "pat",
         GithubCredentialKind::AppInstallation => "app_installation",
@@ -861,12 +860,12 @@ pub async fn list_threads(
     scope_connector(&state, &ctx, connector_id).await?;
     let repo = format!("{owner}/{name}");
 
-    if q.sync.unwrap_or(false) {
-        if let Err(e) = sync_threads(&state, &ctx, connector_id, &repo, number).await {
-            // A sync failure (network, rate limit) is non-fatal: fall through and
-            // serve whatever is already synced rather than failing the read.
-            tracing::warn!(%connector_id, repo, number, "github thread pull-down failed: {e}");
-        }
+    if q.sync.unwrap_or(false)
+        && let Err(e) = sync_threads(&state, &ctx, connector_id, &repo, number).await
+    {
+        // A sync failure (network, rate limit) is non-fatal: fall through and
+        // serve whatever is already synced rather than failing the read.
+        tracing::warn!(%connector_id, repo, number, "github thread pull-down failed: {e}");
     }
 
     store::list_open_threads(&state.pool, connector_id, &repo, number).await.map(Json).map_err(

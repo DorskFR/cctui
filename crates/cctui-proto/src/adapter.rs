@@ -387,7 +387,7 @@ pub enum AdapterCommand {
         /// account, carried on every reply so that if the daemon has to
         /// cold-resume a hibernated worker to deliver it, the revived worker
         /// gets a fresh valid `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_BASE_URL` (or
-        /// OpenAI pair) instead of launching with empty env and 401ing
+        /// `OpenAI` pair) instead of launching with empty env and 401ing
         /// (CCT-460). Ignored when the worker is already alive; empty for
         /// sessions with no account binding.
         #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
@@ -423,7 +423,7 @@ pub enum AdapterCommand {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         working_dir: Option<String>,
         /// Gateway env (`ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` or the
-        /// OpenAI pair) re-minted by the server for the session's bound OAuth
+        /// `OpenAI` pair) re-minted by the server for the session's bound OAuth
         /// account, re-injected into the revived worker so it keeps routing
         /// through the gateway after a hibernation/restart instead of hitting
         /// the default upstream with no credential and 401ing (CCT-460). Empty
@@ -769,7 +769,7 @@ mod tests {
                 local_id: "s1".into(),
                 text: "go on".into(),
                 ask_picks: None,
-                env: Default::default(),
+                env: std::collections::BTreeMap::default(),
             },
             AdapterCommand::Kill { local_id: "s1".into(), signal: Some(15) },
             AdapterCommand::Kill { local_id: "s1".into(), signal: None },

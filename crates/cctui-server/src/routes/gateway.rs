@@ -71,7 +71,7 @@ pub fn openai_client_id() -> String {
     std::env::var("CCTUI_OPENAI_OAUTH_CLIENT_ID")
         .unwrap_or_else(|_| "app_EMoamEEZ73f0CkXaXp7hrann".into())
 }
-/// auth.openai.com authorize endpoint for the "Sign in with ChatGPT" login
+/// auth.openai.com authorize endpoint for the "Sign in with `ChatGPT`" login
 /// (CCT-244). Overridable so we can track upstream without a redeploy.
 pub fn openai_authorize_url() -> String {
     std::env::var("CCTUI_OPENAI_OAUTH_AUTHORIZE_URL")
@@ -224,14 +224,14 @@ pub async fn resume_env_for_session(
 
 /// Resolve a session's bound OAuth accounts — **one per provider family**
 /// (CCT-514). A session can carry a claude (Anthropic) account *and* a codex
-/// (OpenAI) account at once; both must be re-minted on wake or the worker
+/// (`OpenAI`) account at once; both must be re-minted on wake or the worker
 /// launches missing one family's creds and 401s (the multi-account dispatch
 /// regression). The durable binding lives on the session's live `session_tokens`
 /// rows (one stable token per family, see `mint_env_for_account`); we take the
 /// newest live token per family. Falls back to the legacy single
 /// `sessions.account_id` column for sessions bound before per-family tokens
 /// existed. Empty when the session has no account binding at all.
-pub(crate) async fn resolve_session_accounts(state: &AppState, session_id: &str) -> Vec<Uuid> {
+pub async fn resolve_session_accounts(state: &AppState, session_id: &str) -> Vec<Uuid> {
     // `(oa.provider ILIKE '%openai%')` is the family key (true → OpenAI/Codex,
     // false → Anthropic); DISTINCT ON it keeps the newest live token per family.
     let mut ids: Vec<Uuid> = sqlx::query_scalar(
@@ -282,8 +282,8 @@ async fn mint_env_for_account(
     // lets a worker carry claude + codex at once: minting the OpenAI account
     // must NOT repoint the Anthropic token to it (CCT-514).
     let key = crate::crypto::vault_key();
-    let token = match existing_session_token(state, session_id, is_openai, &key).await {
-        Some(existing) => {
+    let token =
+        if let Some(existing) = existing_session_token(state, session_id, is_openai, &key).await {
             // Repoint only THIS family's live token to the requested account (and
             // un-revoke, defensively) so an account switch reuses the same string
             // — the worker's `ANTHROPIC_AUTH_TOKEN`/`OPENAI_API_KEY` never
@@ -303,8 +303,7 @@ async fn mint_env_for_account(
             .execute(&state.pool)
             .await;
             existing
-        }
-        None => {
+        } else {
             // First token for this session: mint a fresh opaque token (same
             // shape/entropy as other secrets), store its hash AND its
             // obfuscated plaintext so resume can re-supply the same string.
@@ -322,8 +321,7 @@ async fn mint_env_for_account(
             .execute(&state.pool)
             .await?;
             token
-        }
-    };
+        };
 
     // Persist the account on the session row so it survives id rotation and
     // server restart — the resume path re-mints from here (CCT-460). Best
@@ -774,6 +772,7 @@ fn bump_orphan_401(
     if newly_blocked {
         entry.blocked_until = Some(now + block);
     }
+    drop(entry);
     (count, newly_blocked)
 }
 
@@ -801,7 +800,7 @@ async fn resolve_account(
     .bind(&hash)
     .fetch_optional(&state.pool)
     .await?;
-    let (
+    let Some((
         id,
         provider,
         enc_access,
@@ -811,11 +810,11 @@ async fn resolve_account(
         base_url,
         auth_scheme,
         soft_5h,
-        soft_7d,
+        soft_weekly,
         soft_bypass,
-    ) = match row {
-        Some(r) => r,
-        None => return Ok(None),
+    )) = row
+    else {
+        return Ok(None);
     };
     let key = crate::crypto::vault_key();
     let access_token = enc_access.and_then(|e| crate::crypto::deobfuscate(&e, &key));
@@ -831,7 +830,7 @@ async fn resolve_account(
         auth_scheme,
         soft_limits: crate::soft_limit::SoftLimits {
             pct_5h: soft_5h,
-            pct_7d: soft_7d,
+            pct_7d: soft_weekly,
             bypass_minutes: soft_bypass,
         },
     }))
@@ -849,6 +848,9 @@ struct TokenResponse {
 /// Exchange the refresh token for a fresh access token and persist the rotated
 /// pair. Caller MUST hold the account's refresh mutex. Returns the new access
 /// token.
+// Linear refresh flow with per-provider branches; complexity is per-branch
+// error handling, not nesting.
+#[allow(clippy::cognitive_complexity)]
 async fn refresh_account(state: &AppState, acct: &Account) -> Result<String, StatusCode> {
     // Static-credential compatible accounts never refresh — the stored access
     // token (the bearer/api key) is forwarded verbatim (CCT-399).
@@ -1070,6 +1072,9 @@ pub async fn openai(State(state): State<AppState>, req: Request) -> Result<Respo
     passthrough(state, req, "/gateway/openai", &openai_upstream()).await
 }
 
+// Linear proxy pipeline (auth, account-resolve, refresh, forward, stream);
+// complexity/length are per-stage handling, not nesting.
+#[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
 async fn passthrough(
     state: AppState,
     req: Request,
@@ -1170,13 +1175,10 @@ async fn passthrough(
     // The session token is valid (resolved above); a failure to obtain an
     // upstream access token here is a provider-credential problem (no/expired
     // refresh token, failed refresh) — label it as such (CCT-460).
-    let access_token = match current_access_token(&state, &acct).await {
-        Ok(t) => t,
-        Err(_) => {
-            tracing::warn!(account = %acct.id, stage = "provider-oauth", "gateway 401: no upstream access token for account");
-            flag_account_reauth(&state, acct.id, "no upstream access token (refresh failed)");
-            return Ok(auth_error(AuthStage::ProviderOauth, is_anthropic));
-        }
+    let Ok(access_token) = current_access_token(&state, &acct).await else {
+        tracing::warn!(account = %acct.id, stage = "provider-oauth", "gateway 401: no upstream access token for account");
+        flag_account_reauth(&state, acct.id, "no upstream access token (refresh failed)");
+        return Ok(auth_error(AuthStage::ProviderOauth, is_anthropic));
     };
 
     // Per-account upstream (CCT-399): a compatible endpoint overrides the
@@ -1395,10 +1397,7 @@ pub fn anthropic_usage_user_agent() -> String {
 /// refresh. The original soft limit treated a cold cache as "no data → allow",
 /// which let a capped account run to 100% whenever no human was viewing it.
 fn usage_cache_stale(entry_age: Option<std::time::Duration>, ttl: std::time::Duration) -> bool {
-    match entry_age {
-        None => true,
-        Some(age) => age >= ttl,
-    }
+    entry_age.is_none_or(|age| age >= ttl)
 }
 
 /// Usage payload for the soft-limit check on the dispatch hot path.
@@ -1414,8 +1413,10 @@ async fn usage_for_soft_limit(state: &AppState, account_id: Uuid) -> Option<serd
     if !usage_cache_stale(entry_age, ttl) {
         return state.account_usage_cache.get(&account_id).and_then(|h| h.usage.clone());
     }
-    match fetch_account_usage(state, account_id).await {
-        Ok(usage) => {
+    fetch_account_usage(state, account_id).await.map_or_else(
+        // Upstream hiccup (429/refresh fail): fall back to the last cached value.
+        |_| state.account_usage_cache.get(&account_id).and_then(|h| h.usage.clone()),
+        |usage| {
             state.account_usage_cache.insert(
                 account_id,
                 crate::state::CachedUsage {
@@ -1424,10 +1425,8 @@ async fn usage_for_soft_limit(state: &AppState, account_id: Uuid) -> Option<serd
                 },
             );
             usage
-        }
-        // Upstream hiccup (429/refresh fail): fall back to the last cached value.
-        Err(_) => state.account_usage_cache.get(&account_id).and_then(|h| h.usage.clone()),
-    }
+        },
+    )
 }
 
 /// Fetch the Anthropic OAuth usage windows for an account (CCT-306).
@@ -1546,9 +1545,9 @@ async fn local_window(
     let (tokens, oldest) = row;
     let utilization = (tokens as f64 / budget as f64) * 100.0;
     // The window frees up when the oldest contributing row falls out of it.
-    let resets_at = oldest.and_then(|t| {
+    let resets_at = oldest.map(|t| {
         let secs = if interval == "5 hours" { 5 * 3600 } else { 7 * 86400 };
-        Some((t + chrono::Duration::seconds(secs)).to_rfc3339())
+        (t + chrono::Duration::seconds(secs)).to_rfc3339()
     });
     Ok(serde_json::json!({
         "utilization": utilization,

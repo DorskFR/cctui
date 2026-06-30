@@ -17,7 +17,7 @@ use crate::state::AppState;
 // The per-session attach/detach routes, by contrast, ARE ownership-gated via
 // `authorize_session` since they mutate a specific session (CCT-417).
 
-fn db_err(e: sqlx::Error) -> (StatusCode, Json<ApiError>) {
+fn db_err(e: &sqlx::Error) -> (StatusCode, Json<ApiError>) {
     tracing::error!("db error: {e}");
     (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
 }
@@ -39,7 +39,7 @@ pub async fn list_labels(
     )
     .fetch_all(&state.pool)
     .await
-    .map_err(db_err)?;
+    .map_err(|e| db_err(&e))?;
     let labels = rows
         .into_iter()
         .map(|(id, name, color)| Label { id: id.to_string(), name, color })
@@ -70,7 +70,7 @@ pub async fn create_label(
     .bind(&req.color)
     .fetch_one(&state.pool)
     .await
-    .map_err(db_err)?;
+    .map_err(|e| db_err(&e))?;
     Ok((StatusCode::CREATED, Json(Label { id: row.0.to_string(), name: row.1, color: row.2 })))
 }
 
@@ -116,7 +116,7 @@ pub async fn update_label(
                 Json(ApiError { error: "a label with that name already exists".into() }),
             );
         }
-        db_err(e)
+        db_err(&e)
     })?;
     match row {
         Some(r) => Ok(Json(Label { id: r.0.to_string(), name: r.1, color: r.2 })),
@@ -135,7 +135,7 @@ pub async fn delete_label(
         .bind(id)
         .execute(&state.pool)
         .await
-        .map_err(db_err)?;
+        .map_err(|e| db_err(&e))?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -155,7 +155,7 @@ pub async fn attach_label(
     .bind(label_id)
     .execute(&state.pool)
     .await
-    .map_err(db_err)?;
+    .map_err(|e| db_err(&e))?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -171,7 +171,7 @@ pub async fn detach_label(
         .bind(label_id)
         .execute(&state.pool)
         .await
-        .map_err(db_err)?;
+        .map_err(|e| db_err(&e))?;
     Ok(StatusCode::NO_CONTENT)
 }
 

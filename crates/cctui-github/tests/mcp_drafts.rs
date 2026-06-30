@@ -1,5 +1,5 @@
 //! GH-AGENT-2: DB-gated tests for the agent review-draft store functions the MCP
-//! review tool drives — `open_agent_draft` (author=agent+session_id, open-or-
+//! review tool drives — `open_agent_draft` (author=agent+`session_id`, open-or-
 //! reuse) and `set_summary` (set/append summary + verdict). Also covers the
 //! anchor write through `add_comment` under an agent draft and the
 //! auth→author mapping (the session id becomes `author_session_id`).

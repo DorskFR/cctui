@@ -16,10 +16,7 @@ const DEFAULT_CONTENT_TYPE: &str = "application/zstd";
 
 /// A skill upload is a machine-key action (the daemon publishes its skills).
 fn require_machine(ctx: &AuthContext) -> Result<(Uuid, Uuid), StatusCode> {
-    match ctx.machine_id {
-        Some(mid) => Ok((mid, ctx.user_id)),
-        None => Err(StatusCode::FORBIDDEN),
-    }
+    ctx.machine_id.map_or(Err(StatusCode::FORBIDDEN), |mid| Ok((mid, ctx.user_id)))
 }
 
 /// Reading the skill index/blobs needs any authenticated identity (machine or

@@ -98,7 +98,7 @@ pub struct Config {
     /// URL, e.g. `https://ntfy.example.com/cctui-dispatch`). No default: when
     /// unset, push notifications stay off.
     pub ntfy_url: Option<String>,
-    /// Base URL of a self-hosted, Anthropic-compatible endpoint (e.g. a LiteLLM
+    /// Base URL of a self-hosted, Anthropic-compatible endpoint (e.g. a `LiteLLM`
     /// proxy in front of Ollama) dedicated to Claude Code. When set together
     /// with `claude_litellm_models`, the listed models become selectable in the
     /// spawn picker and a session launched under one of them gets

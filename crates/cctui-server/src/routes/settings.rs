@@ -64,7 +64,7 @@ fn migrate(mut data: Value, from: i32) -> Value {
 /// Upgrade `data` in place from version `v` to `v + 1`. No prior versions exist
 /// yet, so this is a no-op; add a `1 => { /* v1 -> v2 */ }` arm here when bumping
 /// [`CURRENT_VERSION`].
-fn upgrade_step(data: &mut Value, v: i32) {
+const fn upgrade_step(data: &mut Value, v: i32) {
     let _ = (data, v);
 }
 
@@ -76,10 +76,9 @@ const DEFAULT_HARNESS_MODE: &str = "bg";
 /// Read the user-facing `harnessMode` from a settings `data` blob, clamping an
 /// unknown/missing value to [`DEFAULT_HARNESS_MODE`].
 fn harness_mode_of(data: &Value) -> &'static str {
-    match data.get("harnessMode").and_then(Value::as_str) {
-        Some(m) => HARNESS_MODES.into_iter().find(|&v| v == m).unwrap_or(DEFAULT_HARNESS_MODE),
-        None => DEFAULT_HARNESS_MODE,
-    }
+    data.get("harnessMode").and_then(Value::as_str).map_or(DEFAULT_HARNESS_MODE, |m| {
+        HARNESS_MODES.into_iter().find(|&v| v == m).unwrap_or(DEFAULT_HARNESS_MODE)
+    })
 }
 
 /// Clamp `data.harnessMode` to a known value in place (rejecting typos), so a
@@ -101,9 +100,7 @@ fn clamp_harness_mode(data: &mut Value) {
 /// as-is. Any unknown/missing value defaults to `bg`.
 #[must_use]
 pub fn harness_mode_to_adapter_token(harness_mode: Option<&str>) -> String {
-    let mode = harness_mode
-        .filter(|m| HARNESS_MODES.contains(m))
-        .unwrap_or(DEFAULT_HARNESS_MODE);
+    let mode = harness_mode.filter(|m| HARNESS_MODES.contains(m)).unwrap_or(DEFAULT_HARNESS_MODE);
     match mode {
         "bg" => "claude-daemon".to_owned(),
         other => other.to_owned(),
@@ -185,16 +182,15 @@ pub async fn put_settings(
     // harness mode changes, so connected daemons pick up the new mode without a
     // reconnect (CCT-495). Best-effort, only on change.
     if new_mode != prev_mode {
-        let machines: Vec<uuid::Uuid> = sqlx::query_scalar(
-            "SELECT id FROM machines WHERE user_id = $1 AND deleted_at IS NULL",
-        )
-        .bind(ctx.user_id)
-        .fetch_all(&state.pool)
-        .await
-        .unwrap_or_else(|e| {
-            tracing::warn!("db error listing machines for reconcile push: {e}");
-            Vec::new()
-        });
+        let machines: Vec<uuid::Uuid> =
+            sqlx::query_scalar("SELECT id FROM machines WHERE user_id = $1 AND deleted_at IS NULL")
+                .bind(ctx.user_id)
+                .fetch_all(&state.pool)
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!("db error listing machines for reconcile push: {e}");
+                    Vec::new()
+                });
         for machine_id in machines {
             if let Err(err) = crate::daemon_dispatch::push_reconcile(&state, machine_id).await {
                 tracing::debug!(%machine_id, %err, "push_reconcile after harnessMode change failed");
@@ -207,9 +203,7 @@ pub async fn put_settings(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        clamp_harness_mode, harness_mode_of, harness_mode_to_adapter_token,
-    };
+    use super::{clamp_harness_mode, harness_mode_of, harness_mode_to_adapter_token};
     use serde_json::json;
 
     #[test]

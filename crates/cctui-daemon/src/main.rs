@@ -131,6 +131,64 @@ fn auto_update_enabled(flag: bool) -> bool {
     !matches!(std::env::var("CCTUI_DAEMON_AUTOUPDATE").as_deref(), Ok("0" | "false"))
 }
 
+/// Run the long-lived daemon: authenticate, wire up the optional self-update and
+/// archive-sync loops, then run the supervisor until shutdown (`Cmd::Run`).
+// Linear startup wiring (auth → clone creds → optional self-update + archive-sync
+// tasks → supervisor); complexity is the two opt-in setup branches, not nesting.
+#[allow(clippy::cognitive_complexity)]
+async fn run_daemon(path: &std::path::Path, no_auto_update: bool) -> anyhow::Result<()> {
+    let cfg = Config::load_or_env(&path.to_path_buf())?;
+    // Record this process as the running service so `status` /
+    // `service status` can report the version actually serving.
+    runtime::record();
+    let client = ServerClient::new(&cfg.server_url);
+    // Confirm identity once up-front so misconfigurations fail loudly.
+    let auth = client.daemon_auth(&cfg.machine_key).await?;
+    tracing::info!(machine_id = %auth.machine_id, user_id = %auth.user_id, "authenticated");
+    // Captured for the self-update loop before `machine_key` is moved
+    // into the supervisor; both flow to the server-routed updater.
+    let update_server_url = cfg.server_url.clone();
+    let update_machine_key = cfg.machine_key.clone();
+    // Separate clones for the archive-sync loop (the update_* ones may be
+    // moved into the self-update task below).
+    let sync_server_url = cfg.server_url.clone();
+    let sync_machine_key = cfg.machine_key.clone();
+    let sync_archive_cfg = cfg.archive.clone();
+    let supervisor = Supervisor::new(client, cfg.machine_key, adapters::registry());
+    let shutdown = CancellationToken::new();
+    // Translate Ctrl-C / SIGTERM into shutdown.
+    let signal_token = shutdown.clone();
+    tokio::spawn(async move {
+        let _ = tokio::signal::ctrl_c().await;
+        signal_token.cancel();
+    });
+    if auto_update_enabled(no_auto_update) {
+        let interval = selfupdate::poll_interval();
+        tracing::info!(interval_secs = interval.as_secs(), "auto-update enabled");
+        selfupdate::spawn_loop(shutdown.clone(), update_server_url, update_machine_key, interval);
+    } else {
+        tracing::info!("auto-update disabled");
+    }
+    // Opt-in archive sync (CCT-362): mirror local Claude transcripts to
+    // the server on an interval. Off unless `archive.enabled` is set.
+    if sync_archive_cfg.enabled {
+        let projects_root = dirs::home_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join(".claude")
+            .join("projects");
+        let interval = std::time::Duration::from_secs(sync_archive_cfg.sync_interval_secs.max(60));
+        tokio::spawn(cctui_daemon::sync::run(
+            sync_server_url,
+            sync_machine_key,
+            projects_root,
+            interval,
+            shutdown.clone(),
+        ));
+    }
+    supervisor.run(shutdown).await;
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -159,64 +217,7 @@ async fn main() -> anyhow::Result<()> {
             println!("enrolled as {} → {}", resp.machine_id, path.display());
             Ok(())
         }
-        Cmd::Run { no_auto_update } => {
-            let cfg = Config::load_or_env(&path)?;
-            // Record this process as the running service so `status` /
-            // `service status` can report the version actually serving.
-            runtime::record();
-            let client = ServerClient::new(&cfg.server_url);
-            // Confirm identity once up-front so misconfigurations fail loudly.
-            let auth = client.daemon_auth(&cfg.machine_key).await?;
-            tracing::info!(machine_id = %auth.machine_id, user_id = %auth.user_id, "authenticated");
-            // Captured for the self-update loop before `machine_key` is moved
-            // into the supervisor; both flow to the server-routed updater.
-            let update_server_url = cfg.server_url.clone();
-            let update_machine_key = cfg.machine_key.clone();
-            // Separate clones for the archive-sync loop (the update_* ones may be
-            // moved into the self-update task below).
-            let sync_server_url = cfg.server_url.clone();
-            let sync_machine_key = cfg.machine_key.clone();
-            let sync_archive_cfg = cfg.archive.clone();
-            let supervisor = Supervisor::new(client, cfg.machine_key, adapters::registry());
-            let shutdown = CancellationToken::new();
-            // Translate Ctrl-C / SIGTERM into shutdown.
-            let signal_token = shutdown.clone();
-            tokio::spawn(async move {
-                let _ = tokio::signal::ctrl_c().await;
-                signal_token.cancel();
-            });
-            if auto_update_enabled(no_auto_update) {
-                let interval = selfupdate::poll_interval();
-                tracing::info!(interval_secs = interval.as_secs(), "auto-update enabled");
-                selfupdate::spawn_loop(
-                    shutdown.clone(),
-                    update_server_url,
-                    update_machine_key,
-                    interval,
-                );
-            } else {
-                tracing::info!("auto-update disabled");
-            }
-            // Opt-in archive sync (CCT-362): mirror local Claude transcripts to
-            // the server on an interval. Off unless `archive.enabled` is set.
-            if sync_archive_cfg.enabled {
-                let projects_root = dirs::home_dir()
-                    .unwrap_or_else(|| std::path::PathBuf::from("."))
-                    .join(".claude")
-                    .join("projects");
-                let interval =
-                    std::time::Duration::from_secs(sync_archive_cfg.sync_interval_secs.max(60));
-                tokio::spawn(cctui_daemon::sync::run(
-                    sync_server_url,
-                    sync_machine_key,
-                    projects_root,
-                    interval,
-                    shutdown.clone(),
-                ));
-            }
-            supervisor.run(shutdown).await;
-            Ok(())
-        }
+        Cmd::Run { no_auto_update } => run_daemon(&path, no_auto_update).await,
         Cmd::Update => {
             let cfg = Config::load_from(&path)?;
             match selfupdate::check_and_apply(&cfg.server_url, &cfg.machine_key).await {

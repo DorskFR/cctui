@@ -89,7 +89,7 @@ pub struct LangfuseClient {
 }
 
 impl LangfuseClient {
-    pub fn new(config: LangfuseConfig, http: reqwest::Client) -> Self {
+    pub const fn new(config: LangfuseConfig, http: reqwest::Client) -> Self {
         Self { config, http }
     }
 
@@ -135,8 +135,7 @@ async fn post_ingestion(
         metadata.insert("account_id".into(), json!(aid));
     }
 
-    let tags: Vec<String> = ["cctui".to_string()]
-        .into_iter()
+    let tags: Vec<String> = std::iter::once("cctui".to_string())
         .chain(ctx.session_id.clone())
         .chain(ctx.account_id.clone())
         .collect();
@@ -208,7 +207,7 @@ async fn post_ingestion(
 /// The 8-hex worker shortcode is the leading hex of the session id (CCT — the
 /// daemon derives `~/.claude/jobs/<short>` the same way). Best-effort.
 fn short_of(session_id: &str) -> String {
-    session_id.chars().filter(|c| c.is_ascii_hexdigit()).take(8).collect()
+    session_id.chars().filter(char::is_ascii_hexdigit).take(8).collect()
 }
 
 /// A uniform random in `[0, 1)` without pulling in the `rand` crate — derived

@@ -242,10 +242,10 @@ fn parse_line(local_id: &str, line: &str) -> AdapterEvent {
         // session runs on (CCT-299). Surface them as a Status so discovered
         // (log-tailed) codex sessions render model/effort in the list, instead
         // of letting the line fall through as a meaningless "message".
-        if value.get("type").and_then(Value::as_str) == Some("turn_context") {
-            if let Some(status) = turn_context_status(local_id, &value) {
-                return status;
-            }
+        if value.get("type").and_then(Value::as_str) == Some("turn_context")
+            && let Some(status) = turn_context_status(local_id, &value)
+        {
+            return status;
         }
         // Heuristic: lines that look like tool calls.
         if value.get("tool").is_some()

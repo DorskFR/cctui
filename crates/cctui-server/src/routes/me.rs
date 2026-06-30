@@ -28,7 +28,7 @@ pub struct MeResponse {
     /// Resolved from `users.name`.
     pub user_name: Option<String>,
     pub machine_id: Option<Uuid>,
-    /// Effective scopes (key_acls ∩ user_acls) for this request.
+    /// Effective scopes (`key_acls` ∩ `user_acls`) for this request.
     pub scopes: Vec<String>,
     /// Non-secret fragment of the token this request authenticated with,
     /// e.g. `cctui_u_ab1234…ef34`.
@@ -71,7 +71,7 @@ pub async fn me(
         user_id: Some(ctx.user_id),
         user_name,
         machine_id: ctx.machine_id,
-        scopes: ctx.scopes.iter().map(|s| s.to_string()).collect(),
+        scopes: ctx.scopes.iter().map(std::string::ToString::to_string).collect(),
         token_preview: preview,
     }))
 }

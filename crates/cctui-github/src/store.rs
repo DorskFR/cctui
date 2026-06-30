@@ -279,7 +279,9 @@ pub async fn upsert_review_comment(
 }
 
 /// List the PR's OPEN (unresolved) pulled-down GitHub review threads + their
-/// comments, scoped to a connector. Read side of GH-VIEW-5's pull-down: the
+/// comments, scoped to a connector.
+///
+/// Read side of GH-VIEW-5's pull-down: the
 /// webui renders these inline alongside local drafts (visually distinct).
 ///
 /// Threads are ordered by `(path, line)` so they group by file in the viewer;

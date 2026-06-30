@@ -31,7 +31,7 @@ pub struct DaemonAuthResponse {
 /// bound OAuth account from the server's durable `sessions.account_id`
 /// binding, instead of relying on each launch path to carry it. `account_bound`
 /// distinguishes "this session has no account, empty env is correct" from
-/// "account bound but the server couldn't mint env" — the latter (account_bound
+/// "account bound but the server couldn't mint env" — the latter (`account_bound`
 /// with empty `env`) is the daemon's signal to refuse the launch rather than
 /// start a worker that would silently hit the default upstream and 401.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,6 +102,9 @@ const fn default_bucket() -> Bucket {
     Bucket::Working
 }
 
+// Public wire/data shape mirrored to TS bindings; the bool fields are independent
+// session flags, not a state machine, so refactoring them into enums would churn the API.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct SessionListItem {
@@ -225,7 +228,9 @@ pub struct SessionListItem {
     pub account_name: Option<String>,
 }
 
-/// A reusable, user-defined colored label (CCT-360). Labels are global (shared
+/// A reusable, user-defined colored label (CCT-360).
+///
+/// Labels are global (shared
 /// across sessions) and attached many-to-many; `color` is a CSS hex string
 /// (e.g. `"#e11d48"`) chosen via the label picker's swatches/color input.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -293,7 +298,9 @@ pub struct SessionStats {
 }
 
 /// Token totals for one time window, mirroring the three figures the session
-/// list shows (`↑in ↓out ⚡cache`). Cache-creation tokens are intentionally
+/// list shows (`↑in ↓out ⚡cache`).
+///
+/// Cache-creation tokens are intentionally
 /// omitted here — the Overview surfaces the same readout as the session card.
 #[derive(Debug, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -307,6 +314,7 @@ pub struct WindowTokenUsage {
 }
 
 /// Aggregate token usage across rolling time windows for the Overview page.
+///
 /// `today` is calendar-day (since local midnight, derived from the caller's
 /// timezone offset); the others are rolling intervals back from now.
 #[derive(Debug, Serialize, Deserialize, TS)]
@@ -464,6 +472,7 @@ impl std::fmt::Debug for SpawnRequest {
             .field("account", &self.account)
             .field("provider", &self.provider)
             .field("env", &format_args!("<{} secret(s) redacted>", self.env.len()))
+            .field("save_draft", &self.save_draft)
             .finish()
     }
 }
@@ -476,7 +485,9 @@ pub struct SpawnResponse {
 }
 
 /// Body for `POST /api/v1/sessions/{id}/launch` (CCT-394) — promote a draft
-/// session to a live spawn. The stored draft holds prompt + config only; env
+/// session to a live spawn.
+///
+/// The stored draft holds prompt + config only; env
 /// secrets are entered fresh here (never persisted at rest) and account gateway
 /// tokens are minted at launch so they're never stale. An empty map is fine for
 /// drafts that need no manual secrets.
@@ -487,7 +498,9 @@ pub struct LaunchRequest {
     pub env: std::collections::BTreeMap<String, String>,
 }
 
-/// Response to `POST /api/v1/sessions/{id}/fork` (CCT-345). Like
+/// Response to `POST /api/v1/sessions/{id}/fork` (CCT-345).
+///
+/// Like
 /// [`SpawnResponse`] but also returns the child `session_id` the server
 /// pre-minted (when the adapter supports a caller-supplied id, i.e. claude) so
 /// the webui can navigate to the new conversation immediately instead of

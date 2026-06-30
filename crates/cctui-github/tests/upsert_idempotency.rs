@@ -12,10 +12,11 @@
 use cctui_proto::github::{
     CheckUpsert, PullUpsert, ReviewCommentUpsert, ReviewThreadUpsert, ReviewUpsert,
 };
-use sqlx::{Executor, Row, postgres::PgPoolOptions};
+use sqlx::postgres::PgPoolOptions;
+use sqlx::{Executor, Row};
 use uuid::Uuid;
 
-/// Fresh schema + a connector to scope rows to; returns (pool, connector_id).
+/// Fresh schema + a connector to scope rows to; returns (pool, `connector_id`).
 async fn setup() -> Option<(sqlx::PgPool, Uuid)> {
     let url = std::env::var("TEST_DATABASE_URL").ok()?;
     let pool = PgPoolOptions::new().max_connections(4).connect(&url).await.expect("connect");

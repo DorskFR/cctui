@@ -177,14 +177,14 @@ async fn mint_ephemeral_dispatch_key(
     session_id: &str,
     timeout_minutes: Option<u32>,
 ) -> anyhow::Result<String> {
-    let secret = mint_secret();
-    let token = machine_token(&secret);
-    let key_hash = sha256_hex(&token);
     // TTL = session deadline + grace. Fall back to a generous default when the
     // dispatch carries no timeout so the key still outlives a long run, then is
     // swept by the reaper. Grace covers post-deadline teardown/heartbeat.
     const GRACE_SECS: i64 = 30 * 60;
     const DEFAULT_TTL_SECS: i64 = 24 * 60 * 60;
+    let secret = mint_secret();
+    let token = machine_token(&secret);
+    let key_hash = sha256_hex(&token);
     let lifetime = timeout_minutes
         .map_or(DEFAULT_TTL_SECS, |m| i64::from(m).saturating_mul(60))
         .saturating_add(GRACE_SECS);
@@ -310,7 +310,7 @@ async fn dispatcher_default_account(
 /// deterministic `ORDER BY created_at LIMIT 1` — acceptable until dispatchers
 /// are addressable by id; if two users enroll the same name, admin hits the
 /// oldest.
-pub(crate) async fn resolve_dispatcher(
+pub async fn resolve_dispatcher(
     state: &AppState,
     user_id: Option<uuid::Uuid>,
     name: &str,
@@ -370,7 +370,10 @@ pub async fn list_dispatchers(
     Json(ids)
 }
 
-#[allow(clippy::too_many_lines)]
+// Linear dispatch pipeline (auth → resolve account/dispatcher → mint key → resolve
+// session id → forward); complexity is the breadth of validation/error branches,
+// not nesting. Splitting risks the CCT-521/522 session-id/dedup invariants.
+#[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
 pub async fn dispatch(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -461,10 +464,10 @@ pub async fn dispatch(
     // Carry the caller's logical id as the session display name (the session id
     // itself is now a derived UUID, CCT-474) so the UI still shows e.g.
     // `triage-PROJ-2026…`. Only when the caller didn't already name the session.
-    if let Some(name) = &display_name {
-        if let Some(obj) = forwarded_payload.as_object_mut() {
-            obj.entry("name").or_insert_with(|| serde_json::Value::String(name.clone()));
-        }
+    if let Some(name) = &display_name
+        && let Some(obj) = forwarded_payload.as_object_mut()
+    {
+        obj.entry("name").or_insert_with(|| serde_json::Value::String(name.clone()));
     }
     // The shared dispatch-machine identity + account routing key on the
     // AUTHENTICATED USER — `ctx.user_id`, NOT `owner_filter()` (CCT-478).
@@ -520,12 +523,12 @@ pub async fn dispatch(
         // default, CCT-427). With no account either way, no gateway env is
         // injected (unchanged).
         let accounts: Vec<(String, Option<String>)> = if req.accounts.is_empty() {
-            let default_account =
-                if req.account.as_deref().map(str::trim).is_none_or(str::is_empty) {
-                    dispatcher_default_account(&state, &req.dispatcher, uid).await
-                } else {
-                    None
-                };
+            let default_account = if req.account.as_deref().map(str::trim).is_none_or(str::is_empty)
+            {
+                dispatcher_default_account(&state, &req.dispatcher, uid).await
+            } else {
+                None
+            };
             resolve_dispatch_account(
                 req.account.as_deref(),
                 req.provider.as_deref(),
@@ -534,10 +537,7 @@ pub async fn dispatch(
             .into_iter()
             .collect()
         } else {
-            req.accounts
-                .iter()
-                .map(|a| (a.account.clone(), a.provider.clone()))
-                .collect()
+            req.accounts.iter().map(|a| (a.account.clone(), a.provider.clone())).collect()
         };
 
         for (account_name, account_provider) in accounts {

@@ -58,7 +58,8 @@ pub fn run(event: &str, sock: &Path, deny: bool) -> anyhow::Result<()> {
     // deferred) it prints nothing and exits 0, so the normal permission prompt
     // renders and the keystroke fallback path can answer it.
     if event == "perm" {
-        return run_perm(sock, session_id, &payload);
+        run_perm(sock, session_id, &payload);
+        return Ok(());
     }
 
     let tool_name = payload.get("tool_name").and_then(Value::as_str).unwrap_or_default();
@@ -142,7 +143,7 @@ pub fn run(event: &str, sock: &Path, deny: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Handle the `perm` (PreToolUse permission) hook event (CCT-342).
+/// Handle the `perm` (`PreToolUse` permission) hook event (CCT-342).
 ///
 /// `AskUserQuestion` is skipped here — it has its own `pre`/`post` hook and is
 /// not a tool-permission prompt. For every other tool we mint a correlation id,
@@ -160,7 +161,7 @@ pub fn run(event: &str, sock: &Path, deny: bool) -> anyhow::Result<()> {
 /// - `AskUserQuestion` — answered via its own pre/post hook + the reply path,
 ///   never as a tool permission.
 /// - `permission_mode == "bypassPermissions"` (yolo) — the user has explicitly
-///   opted out of every prompt. Claude Code still fires PreToolUse hooks in this
+///   opted out of every prompt. Claude Code still fires `PreToolUse` hooks in this
 ///   mode, so without this guard the hook would park every tool for a human
 ///   decision and resurrect a permission prompt for every action, defeating
 ///   bypass mode (CCT-356 regression of CCT-342). Only `default`/`acceptEdits`/
@@ -172,13 +173,13 @@ fn perm_hook_defers(payload: &Value, tool: &str) -> bool {
     payload.get("permission_mode").and_then(Value::as_str) == Some("bypassPermissions")
 }
 
-fn run_perm(sock: &Path, session_id: &str, payload: &Value) -> anyhow::Result<()> {
+fn run_perm(sock: &Path, session_id: &str, payload: &Value) {
     let tool = payload.get("tool_name").and_then(Value::as_str).unwrap_or_default();
     // AskUserQuestion is answered via its own hook + the reply path, and in
     // `bypassPermissions` (yolo) mode no prompt should ever render — see
     // `perm_hook_defers`. Both cases defer immediately so we never park here.
     if perm_hook_defers(payload, tool) {
-        return Ok(());
+        return;
     }
     let hook_id = format!("{session_id}-{}", std::process::id());
     let request = json!({
@@ -206,7 +207,6 @@ fn run_perm(sock: &Path, session_id: &str, payload: &Value) -> anyhow::Result<()
             eprintln!("cctui-daemon ask-hook: perm decision unavailable: {err}");
         }
     }
-    Ok(())
 }
 
 /// Send `line` to the daemon and block reading a single newline-delimited JSON

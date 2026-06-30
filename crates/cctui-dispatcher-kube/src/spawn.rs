@@ -479,10 +479,10 @@ impl Spawner {
         }
         // Job not terminal — look for a doomed pod the Job condition won't
         // surface until backoff is exhausted.
-        match self.pod_failure_reason(name).await {
-            Some(reason) => Ok((HandleState::Failed, Some(reason))),
-            None => Ok((HandleState::Running, None)),
-        }
+        Ok(self
+            .pod_failure_reason(name)
+            .await
+            .map_or((HandleState::Running, None), |reason| (HandleState::Failed, Some(reason))))
     }
 
     fn pods(&self) -> Api<Pod> {
@@ -520,25 +520,24 @@ impl Spawner {
                 .flatten()
                 .find_map(|cs| {
                     let st = cs.state.as_ref()?;
-                    if let Some(w) = &st.waiting {
-                        if let Some(r) = &w.reason {
-                            if matches!(
-                                r.as_str(),
-                                "CrashLoopBackOff"
-                                    | "ImagePullBackOff"
-                                    | "ErrImagePull"
-                                    | "CreateContainerError"
-                                    | "CreateContainerConfigError"
-                                    | "InvalidImageName"
-                            ) {
-                                return Some(r.clone());
-                            }
-                        }
+                    if let Some(w) = &st.waiting
+                        && let Some(r) = &w.reason
+                        && matches!(
+                            r.as_str(),
+                            "CrashLoopBackOff"
+                                | "ImagePullBackOff"
+                                | "ErrImagePull"
+                                | "CreateContainerError"
+                                | "CreateContainerConfigError"
+                                | "InvalidImageName"
+                        )
+                    {
+                        return Some(r.clone());
                     }
-                    if let Some(t) = &st.terminated {
-                        if t.reason.as_deref() == Some("OOMKilled") {
-                            return Some("OOMKilled".to_owned());
-                        }
+                    if let Some(t) = &st.terminated
+                        && t.reason.as_deref() == Some("OOMKilled")
+                    {
+                        return Some("OOMKilled".to_owned());
                     }
                     None
                 });
@@ -548,12 +547,12 @@ impl Spawner {
             // Pod wedged Pending (unschedulable / image still pulling) past the
             // grace window: treat as failed so an unschedulable Job doesn't read
             // as alive forever.
-            if status.phase.as_deref() == Some("Pending") {
-                if let Some(created) = pod.metadata.creation_timestamp.as_ref() {
-                    let age = chrono::Utc::now().signed_duration_since(created.0).num_seconds();
-                    if age >= PENDING_FAILURE_SECS {
-                        return Some(format!("pod pending for {age}s (unschedulable?)"));
-                    }
+            if status.phase.as_deref() == Some("Pending")
+                && let Some(created) = pod.metadata.creation_timestamp.as_ref()
+            {
+                let age = chrono::Utc::now().signed_duration_since(created.0).num_seconds();
+                if age >= PENDING_FAILURE_SECS {
+                    return Some(format!("pod pending for {age}s (unschedulable?)"));
                 }
             }
             if status.phase.as_deref() == Some("Failed") {
@@ -726,7 +725,10 @@ mod tests {
         let entry = |k: &str| env.iter().find(|e| e["name"] == k).cloned();
 
         // Plain + vault: values become literal env (vault-env resolves vault: at exec).
-        assert_eq!(entry("CONTEXT_PACK_URL").unwrap()["value"], json!("https://github.com/acme/pack"));
+        assert_eq!(
+            entry("CONTEXT_PACK_URL").unwrap()["value"],
+            json!("https://github.com/acme/pack")
+        );
         assert_eq!(entry("GITHUB_TOKEN").unwrap()["value"], json!("vault:secret/data/ci#github"));
         // k8s: values become secretKeyRef (no literal value), namespace prefix dropped.
         let slack = entry("SLACK_TOKEN").unwrap();

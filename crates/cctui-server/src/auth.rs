@@ -61,7 +61,7 @@ impl fmt::Display for Scope {
 
 /// Resolved identity for one authenticated request. Everyone is a real user
 /// (CCT-410): `user_id` is always present, admin is just a user holding the
-/// `admin` scope. `scopes` is the effective set = key_acls ∩ user_acls.
+/// `admin` scope. `scopes` is the effective set = `key_acls` ∩ `user_acls`.
 #[derive(Debug, Clone)]
 pub struct AuthContext {
     pub user_id: Uuid,
@@ -223,8 +223,8 @@ impl AuthConfig {
         }
     }
 
-    /// Load the effective scopes for a (key_id, user_id) pair = key_acls ∩
-    /// user_acls. Re-intersected on every (cache-miss) auth so a demotion of
+    /// Load the effective scopes for a (`key_id`, `user_id`) pair = `key_acls` ∩
+    /// `user_acls`. Re-intersected on every (cache-miss) auth so a demotion of
     /// the user's ceiling immediately limits the key (the drift-killer).
     async fn effective_scopes(&self, key_id: Uuid, user_id: Uuid) -> BTreeSet<Scope> {
         let grant: Vec<(String,)> = sqlx::query_as("SELECT scope FROM key_acls WHERE key_id = $1")
@@ -279,7 +279,7 @@ impl AuthConfig {
 
     /// Resolve a token hash against the unified `auth_keys` table, gating on the
     /// owning user being live (revoked/disabled cascades) and the key itself
-    /// being live (not revoked/expired). Scopes = key_acls ∩ user_acls.
+    /// being live (not revoked/expired). Scopes = `key_acls` ∩ `user_acls`.
     async fn validate_api_key(&self, hash: &str) -> Option<AuthContext> {
         #[derive(sqlx::FromRow)]
         struct KeyRow {
@@ -307,7 +307,7 @@ impl AuthConfig {
         Some(AuthContext { user_id, key_id, machine_id, scopes })
     }
 
-    /// Legacy resolution (machines.key_hash, users.key_hash, user_tokens).
+    /// Legacy resolution (`machines.key_hash`, `users.key_hash`, `user_tokens`).
     /// Synthesizes a key identity from the legacy row and scopes from the
     /// owner's ceiling so a not-yet-backfilled token behaves identically.
     async fn validate_legacy(&self, hash: &str) -> Option<AuthContext> {
@@ -588,7 +588,7 @@ mod tests {
             user_id: uid,
             key_id: Uuid::new_v4(),
             machine_id: None,
-            scopes: [Scope::Read].into_iter().collect(),
+            scopes: std::iter::once(Scope::Read).collect(),
         };
         assert!(!user.is_admin());
         assert_eq!(user.owner_filter(), Some(uid));
@@ -629,7 +629,7 @@ mod tests {
             user_id: Uuid::nil(),
             key_id: Uuid::nil(),
             machine_id: None,
-            scopes: [Scope::Read].into_iter().collect(),
+            scopes: std::iter::once(Scope::Read).collect(),
         };
         cfg.cache_put("h".into(), ctx);
         assert!(cfg.cache_get("h").is_some());

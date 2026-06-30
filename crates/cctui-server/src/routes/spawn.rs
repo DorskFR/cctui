@@ -364,7 +364,7 @@ pub async fn launch_draft(
     req.env = launch.env;
     req.save_draft = false;
 
-    let res = dispatch_spawn(&state, &ctx, req, Vec::new()).await?;
+    let outcome = dispatch_spawn(&state, &ctx, req, Vec::new()).await?;
 
     // Drop the draft only after a successful dispatch; the live session is born
     // from the daemon's registration with its own id.
@@ -376,7 +376,7 @@ pub async fn launch_draft(
         tracing::warn!(%session_id, "draft launched but row delete failed: {e}");
     }
     tracing::info!(draft = %session_id, "draft launched");
-    Ok(res)
+    Ok(outcome)
 }
 
 /// `POST /api/v1/sessions/{id}/discard` (CCT-394). Delete a draft session row.

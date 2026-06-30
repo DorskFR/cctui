@@ -110,6 +110,9 @@ impl Runner {
     /// Drive a server-sent frame against the local docker host, producing the
     /// reply frame. Errors are reported back in-band (never panic the loop) so
     /// the server can surface a dispatch failure instead of hanging.
+    // Dispatch over every `DispatcherFrameDown` variant with in-band error
+    // reporting at each step; complexity is the breadth of arms, not nesting.
+    #[allow(clippy::cognitive_complexity)]
     async fn handle_frame(&self, frame: DispatcherFrameDown) -> DispatcherFrameUp {
         match frame {
             DispatcherFrameDown::Dispatch { request_id, spec } => {

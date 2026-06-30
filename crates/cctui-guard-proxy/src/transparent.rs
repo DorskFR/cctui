@@ -51,6 +51,10 @@ impl TransparentListener {
     }
 }
 
+// Linear name-recovery (SNI/Host) → fail-closed policy check → dial → splice
+// flow; complexity is the per-step timeout/error branches, not nesting. Splitting
+// would scatter the security-critical fail-closed control flow across helpers.
+#[allow(clippy::cognitive_complexity)]
 async fn handle_connection(mut conn: TcpStream, policy: Arc<PolicyManager>) -> anyhow::Result<()> {
     let dst = original_dst(&conn)?;
     let host_port = dst.to_string();

@@ -19,7 +19,7 @@ pub(super) struct SdkDriver {
 }
 
 impl SdkDriver {
-    pub(super) fn new(ctx: AdapterCtx) -> Self {
+    pub(super) const fn new(ctx: AdapterCtx) -> Self {
         Self { ctx }
     }
 
@@ -39,13 +39,12 @@ async fn run_stub(mode: &'static str, mut ctx: AdapterCtx) -> anyhow::Result<()>
     loop {
         tokio::select! {
             () = ctx.shutdown.cancelled() => return Ok(()),
-            cmd = ctx.commands.recv() => match cmd {
-                Some(cmd) => tracing::debug!(?cmd, mode, "claude-code stub driver dropping command"),
+            cmd = ctx.commands.recv() => if let Some(cmd) = cmd {
+                tracing::debug!(?cmd, mode, "claude-code stub driver dropping command");
+            } else {
                 // Sender closed: nothing more will arrive — wait for shutdown.
-                None => {
-                    ctx.shutdown.cancelled().await;
-                    return Ok(());
-                }
+                ctx.shutdown.cancelled().await;
+                return Ok(());
             },
         }
     }

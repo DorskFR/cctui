@@ -29,7 +29,7 @@ pub struct SoftLimits {
 
 impl SoftLimits {
     /// No cap configured on either window ⇒ nothing to evaluate (fast path).
-    pub fn is_unset(&self) -> bool {
+    pub const fn is_unset(&self) -> bool {
         self.pct_5h.is_none() && self.pct_7d.is_none()
     }
 }
@@ -94,7 +94,7 @@ pub fn evaluate_soft_limit(
             continue;
         }
         // Seconds until reset; unknown reset ⇒ treat as far away (can't bypass).
-        let secs_to_reset = win.resets_at.map(|r| (r - now).num_seconds()).unwrap_or(i64::MAX);
+        let secs_to_reset = win.resets_at.map_or(i64::MAX, |r| (r - now).num_seconds());
         // Within the bypass window (and not already past reset) ⇒ ignore this cap.
         if secs_to_reset > 0 && secs_to_reset <= bypass * 60 {
             continue;
@@ -161,7 +161,7 @@ mod tests {
                 assert_eq!(retry_after_secs, 41 * 60);
                 assert_eq!(reason, "cctui soft limit: 5h window at 86% (cap 80%), resets in 41m");
             }
-            d => panic!("expected block, got {d:?}"),
+            d @ Decision::Allow => panic!("expected block, got {d:?}"),
         }
     }
 
@@ -191,7 +191,7 @@ mod tests {
                 assert_eq!(retry_after_secs, 20 * 60);
                 assert!(reason.contains("7d window"), "{reason}");
             }
-            d => panic!("expected block, got {d:?}"),
+            d @ Decision::Allow => panic!("expected block, got {d:?}"),
         }
     }
 

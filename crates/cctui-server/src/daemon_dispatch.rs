@@ -143,7 +143,7 @@ pub async fn stage_files(
 const LIST_DIRS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// Ask the daemon on `machine_uuid` for the sub-directories of `path`
-/// (working-directory autocomplete). Same request_id + oneshot pattern as
+/// (working-directory autocomplete). Same `request_id` + oneshot pattern as
 /// [`stage_files`], but machine-addressed (no session involved).
 pub async fn list_dirs(
     state: &AppState,

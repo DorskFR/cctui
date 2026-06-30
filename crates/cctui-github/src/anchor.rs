@@ -48,11 +48,7 @@ pub fn resolve(diff: &PullDiff, sel: &DiffSelection) -> Result<CommentAnchor, An
         });
     }
 
-    let file = diff
-        .files
-        .iter()
-        .find(|f| f.path == sel.path)
-        .ok_or(AnchorError::FileNotFound)?;
+    let file = diff.files.iter().find(|f| f.path == sel.path).ok_or(AnchorError::FileNotFound)?;
 
     // Validate the range endpoints (if any) and the end line, all on `sel.side`.
     if let Some(start) = sel.start_line {
@@ -148,13 +144,7 @@ mod tests {
     }
 
     fn sel(path: &str, side: DiffSide, line: u32, start: Option<u32>, sha: &str) -> DiffSelection {
-        DiffSelection {
-            path: path.into(),
-            side,
-            line,
-            start_line: start,
-            head_sha: sha.into(),
-        }
+        DiffSelection { path: path.into(), side, line, start_line: start, head_sha: sha.into() }
     }
 
     // A single-hunk file: ctx@1, del@2(old), add@2(new), ctx@3/3.

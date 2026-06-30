@@ -72,7 +72,7 @@ fn bearer(headers: &HeaderMap) -> Option<String> {
 
 /// The two tool descriptors, as MCP `tools/list` entries. Pulled out so the
 /// shape is unit-testable without standing up HTTP.
-pub(crate) fn tool_descriptors() -> Value {
+pub fn tool_descriptors() -> Value {
     json!([
         {
             "name": "review_comment",
@@ -149,7 +149,7 @@ fn parse_line(v: Option<&Value>) -> Option<u32> {
 /// Outcome of validating + applying one tool call (pure of HTTP). `Ok(text)` is
 /// the human-readable success message; `Err(text)` is a tool error
 /// (`isError: true`) the agent sees and can recover from.
-pub(crate) enum ToolOutcome {
+pub enum ToolOutcome {
     Ok(String),
     Err(String),
 }
@@ -305,7 +305,7 @@ async fn do_review_summary(state: &GithubState, session_id: &str, args: &Value) 
     }
 }
 
-fn verdict_label(v: ReviewVerdict) -> &'static str {
+const fn verdict_label(v: ReviewVerdict) -> &'static str {
     match v {
         ReviewVerdict::Comment => "comment",
         ReviewVerdict::Approve => "approve",
@@ -338,12 +338,12 @@ fn tool_result(outcome: ToolOutcome) -> Value {
 }
 
 /// JSON-RPC error response helper.
-fn rpc_error(id: Value, code: i64, message: &str) -> Value {
+fn rpc_error(id: &Value, code: i64, message: &str) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
 }
 
 /// JSON-RPC success response helper.
-fn rpc_result(id: Value, result: Value) -> Value {
+fn rpc_result(id: &Value, result: &Value) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "result": result })
 }
 
@@ -376,29 +376,29 @@ pub async fn handler(
 
     let body = match method {
         "initialize" => rpc_result(
-            id,
-            json!({
+            &id,
+            &json!({
                 "protocolVersion": PROTOCOL_VERSION,
                 "serverInfo": { "name": "cctui-github-review", "version": env!("CARGO_PKG_VERSION") },
                 "capabilities": { "tools": { "listChanged": false } }
             }),
         ),
-        "tools/list" => rpc_result(id, json!({ "tools": tool_descriptors() })),
+        "tools/list" => rpc_result(&id, &json!({ "tools": tool_descriptors() })),
         "tools/call" => {
             let params = req.get("params").cloned().unwrap_or(Value::Null);
             let name = params.get("name").and_then(Value::as_str).unwrap_or_default();
-            let args = params.get("arguments").cloned().unwrap_or(json!({}));
+            let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
             let outcome = match name {
                 "review_comment" => do_review_comment(&state, &session_id, &args).await,
                 "review_summary" => do_review_summary(&state, &session_id, &args).await,
                 other => {
-                    return Json(rpc_error(id, -32601, &format!("unknown tool: {other}")))
+                    return Json(rpc_error(&id, -32601, &format!("unknown tool: {other}")))
                         .into_response();
                 }
             };
-            rpc_result(id, tool_result(outcome))
+            rpc_result(&id, &tool_result(outcome))
         }
-        other => rpc_error(id, -32601, &format!("method not found: {other}")),
+        other => rpc_error(&id, -32601, &format!("method not found: {other}")),
     };
 
     Json(body).into_response()

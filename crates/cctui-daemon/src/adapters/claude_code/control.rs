@@ -9,6 +9,7 @@
 //! 2s poll cadence.
 
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -205,6 +206,9 @@ impl LiveSnapshot {
     }
 }
 
+/// Spawn-time `(model, effort)` pair remembered per worker `short` (CCT-299).
+type SpawnModelEffort = (Option<String>, Option<String>);
+
 pub struct Driver {
     cfg: DriverConfig,
     events: mpsc::Sender<AdapterEvent>,
@@ -306,7 +310,7 @@ pub struct Driver {
     /// yet (freshly spawned) or transiently absent (`/clear` rotation), so the
     /// session list still shows the model/effort we launched the worker with.
     /// `Mutex` because `spawn` takes `&self` while the poll loop holds `&mut self`.
-    spawn_model_effort: std::sync::Mutex<HashMap<String, (Option<String>, Option<String>)>>,
+    spawn_model_effort: std::sync::Mutex<HashMap<String, SpawnModelEffort>>,
     /// Parent session id remembered per freshly-forked child `short` (CCT-302).
     /// `fork` dispatches a new worker but the `SessionStarted` for it is emitted
     /// later by the poll loop when the short first appears in the roster — that
@@ -588,6 +592,11 @@ impl Driver {
     /// back to dismiss-then-reply: attach+ESC the form away, then `reply` the
     /// text (CCT-219; claude records the ask as declined and reads the text as
     /// a new user turn).
+    // Sequential reply-delivery pipeline (resolve short → resume-on-reply →
+    // ask-form vs text → submit) whose complexity is linear `?`-propagating I/O
+    // steps plus hibernation/ENOJOB recovery branches, not nesting. Splitting risks
+    // the resume/recovery control flow; kept whole deliberately.
+    #[allow(clippy::cognitive_complexity)]
     async fn deliver_reply(
         &self,
         sock: &std::path::Path,
@@ -688,10 +697,10 @@ impl Driver {
             socket::one_shot(sock, &json!({"proto":1,"op":"reply","short":short,"text":text}))
                 .await?;
         tracing::debug!(?resp, %short, "reply ack");
-        if text.contains('\n') {
-            if let Err(err) = socket::attach_submit(sock, &short).await {
-                tracing::warn!(%err, %short, "failed to submit multiline reply draft");
-            }
+        if text.contains('\n')
+            && let Err(err) = socket::attach_submit(sock, &short).await
+        {
+            tracing::warn!(%err, %short, "failed to submit multiline reply draft");
         }
         Ok(())
     }
@@ -704,7 +713,14 @@ impl Driver {
         let sock = self.ensure_socket().await?;
         match cmd {
             AdapterCommand::SendMessage { local_id, text } => {
-                self.deliver_reply(&sock, &local_id, &text, None, &Default::default()).await?;
+                self.deliver_reply(
+                    &sock,
+                    &local_id,
+                    &text,
+                    None,
+                    &std::collections::BTreeMap::default(),
+                )
+                .await?;
             }
             AdapterCommand::Reply { local_id, text, ask_picks, env } => {
                 self.deliver_reply(&sock, &local_id, &text, ask_picks, &env).await?;
@@ -954,6 +970,10 @@ impl Driver {
     ///
     /// Best-effort: any failure logs, releases the in-flight latch (so a later
     /// poll retries until the cap), and never aborts the poll.
+    // Linear heal pipeline (latch → fetch gateway env → re-seed env/reattachEnv)
+    // with best-effort error branches at each step; complexity is the bail-out
+    // logging, not nesting. Splitting would scatter the latch-release invariant.
+    #[allow(clippy::cognitive_complexity)]
     async fn maybe_heal_gateway_env(&self, short: &str, local_id: &str) {
         // Cheap, non-mutating local gate: a worker cctui launched with env is
         // trusted, and one that's in-flight/parked can't heal now — skip the
@@ -1189,6 +1209,10 @@ impl Driver {
     /// Best-effort: any failure logs and lets the daemon keep observing — it
     /// never aborts `run`. A normal machine daemon lacks these env vars and is
     /// unaffected.
+    // Linear startup-dispatch pipeline (read env → build spec → force session_id
+    // → spawn) with best-effort bail-out logging at each step; complexity is the
+    // env-validation branches, not nesting. Kept whole to preserve the dispatch flow.
+    #[allow(clippy::cognitive_complexity)]
     async fn maybe_dispatch_on_start(&self) {
         let session_id = match std::env::var("SESSION_ID") {
             Ok(s) if !s.is_empty() => s,
@@ -1273,10 +1297,10 @@ impl Driver {
     /// searched across `CCTUI_DISPATCH_PROMPT_DIRS` (default
     /// `/opt/context/prompts:/prompts`). An absolute `prompt_file` is read as-is.
     fn resolve_dispatch_prompt(payload: &serde_json::Value) -> anyhow::Result<String> {
-        if let Some(p) = payload.get("prompt").and_then(serde_json::Value::as_str) {
-            if !p.is_empty() {
-                return Ok(p.to_owned());
-            }
+        if let Some(p) = payload.get("prompt").and_then(serde_json::Value::as_str)
+            && !p.is_empty()
+        {
+            return Ok(p.to_owned());
         }
         let file = payload
             .get("prompt_file")
@@ -1395,13 +1419,10 @@ impl Driver {
         {
             let model = spec.model.as_deref().map(str::trim).filter(|m| !m.is_empty());
             let effort = spec.effort.as_deref().map(str::trim).filter(|e| !e.is_empty());
-            if model.is_some() || effort.is_some() {
-                if let Ok(mut map) = self.spawn_model_effort.lock() {
-                    map.insert(
-                        short.to_owned(),
-                        (model.map(str::to_owned), effort.map(str::to_owned)),
-                    );
-                }
+            if (model.is_some() || effort.is_some())
+                && let Ok(mut map) = self.spawn_model_effort.lock()
+            {
+                map.insert(short.to_owned(), (model.map(str::to_owned), effort.map(str::to_owned)));
             }
         }
         let whip = spec.permission_mode.is_some_and(cctui_proto::adapter::PermissionMode::is_whip);
@@ -1574,9 +1595,8 @@ impl Driver {
         let agent = "claude";
         // Use the server-pre-minted child id when supplied (CCT-345) so the id
         // the webui navigated to matches the worker the daemon launches.
-        let session_id = forced_session_id
-            .map(str::to_owned)
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let session_id =
+            forced_session_id.map_or_else(|| uuid::Uuid::new_v4().to_string(), str::to_owned);
         let short = session_id[..8].to_owned();
         let nonce: String = uuid::Uuid::new_v4().simple().to_string().chars().take(8).collect();
         let created_at = u64::try_from(
@@ -1661,9 +1681,12 @@ impl Driver {
         // Resolve for the child id first; if the server hasn't bound it yet,
         // inherit the parent's account env so the child routes through the
         // gateway from its first turn. Empty when neither is account-bound.
-        let mut env = self.resolve_launch_env(&session_id, &Default::default()).await?;
+        let mut env =
+            self.resolve_launch_env(&session_id, &std::collections::BTreeMap::default()).await?;
         if env.is_empty() {
-            env = self.resolve_launch_env(parent_local_id, &Default::default()).await?;
+            env = self
+                .resolve_launch_env(parent_local_id, &std::collections::BTreeMap::default())
+                .await?;
         }
         let env_json: serde_json::Map<String, serde_json::Value> =
             env.iter().map(|(k, v)| (k.clone(), json!(v))).collect();
@@ -2428,26 +2451,30 @@ fn build_session_context(
 ) -> String {
     let mut b = String::from("<session-context>\n");
     if let Some(name) = spec.name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
-        b.push_str(&format!("session: {name}\n"));
+        let _ = writeln!(b, "session: {name}");
     }
     if let Some(model) = spec.model.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
         match spec.effort.as_deref().map(str::trim).filter(|e| !e.is_empty()) {
-            Some(effort) => b.push_str(&format!("model: {model} · effort: {effort}\n")),
-            None => b.push_str(&format!("model: {model}\n")),
+            Some(effort) => {
+                let _ = writeln!(b, "model: {model} · effort: {effort}");
+            }
+            None => {
+                let _ = writeln!(b, "model: {model}");
+            }
         }
     }
     if let Some(mode) = spec.permission_mode {
-        b.push_str(&format!("permission-mode: {}\n", mode.normalized_label()));
+        let _ = writeln!(b, "permission-mode: {}", mode.normalized_label());
     }
-    b.push_str(&format!("cwd: {cwd}\n"));
+    let _ = writeln!(b, "cwd: {cwd}");
     if !spec.env.is_empty() {
         let names = spec.env.keys().cloned().collect::<Vec<_>>().join(", ");
-        b.push_str(&format!("env (names only): {names}\n"));
+        let _ = writeln!(b, "env (names only): {names}");
     }
     if !staged.is_empty() {
         b.push_str("attached files:\n");
         for p in staged {
-            b.push_str(&format!("  - {p}\n"));
+            let _ = writeln!(b, "  - {p}");
         }
     }
     b.push_str("</session-context>");
@@ -2557,7 +2584,7 @@ fn hook_settings_path(file: &str) -> Option<PathBuf> {
 /// proceeds without the hook rather than failing).
 ///
 /// `whip` (CCT-352) toggles the 🐎 enforcement profile, written to a separate
-/// file so it never clobbers the default one: the `AskUserQuestion` PreToolUse
+/// file so it never clobbers the default one: the `AskUserQuestion` `PreToolUse`
 /// hook gains `--deny` (it still notifies the UI, but returns a `deny` decision
 /// so the form never renders), and a `Stop` hook (`whip-stop-hook`) blocks
 /// stalling / hand-back language so the worker runs to genuine completion.
@@ -2766,7 +2793,8 @@ mod tests {
     fn launch_env_fails_closed_when_bound_but_empty() {
         // CCT-460: account-bound + empty env must REFUSE the launch rather than
         // start a worker that silently routes to the default upstream and 401s.
-        let resp = GatewayEnvResponse { account_bound: true, env: Default::default() };
+        let resp =
+            GatewayEnvResponse { account_bound: true, env: std::collections::BTreeMap::default() };
         let err = launch_env_decision("s1", &resp, &env_of(&[("HINT", "1")])).unwrap_err();
         assert!(err.to_string().contains("account-bound"), "got: {err}");
     }
@@ -2775,7 +2803,8 @@ mod tests {
     fn launch_env_uses_hint_when_not_bound() {
         // No account binding: gateway env isn't required; preserve any hint
         // (e.g. user-supplied non-gateway env) and never fail closed.
-        let resp = GatewayEnvResponse { account_bound: false, env: Default::default() };
+        let resp =
+            GatewayEnvResponse { account_bound: false, env: std::collections::BTreeMap::default() };
         let hint = env_of(&[("FOO", "bar")]);
         assert_eq!(launch_env_decision("s1", &resp, &hint).unwrap(), hint);
     }
@@ -3056,9 +3085,12 @@ mod tests {
             snap("bbbb2222", "working", None),
         ])
         .await;
-        let t = d.gateway_heal.lock().unwrap();
-        assert!(!t.is_candidate("aaaa1111"), "the grandfathered startup session stays trusted");
-        assert!(t.is_candidate("bbbb2222"), "a post-startup arrival is the heal's genuine target");
+        let (aaaa_candidate, bbbb_candidate) = {
+            let t = d.gateway_heal.lock().unwrap();
+            (t.is_candidate("aaaa1111"), t.is_candidate("bbbb2222"))
+        };
+        assert!(!aaaa_candidate, "the grandfathered startup session stays trusted");
+        assert!(bbbb_candidate, "a post-startup arrival is the heal's genuine target");
     }
 
     #[tokio::test]
@@ -3396,7 +3428,7 @@ mod tests {
             }
         }
         let extra = extra.expect("workflow subagent SessionStarted expected");
-        assert_eq!(extra.get("subagent").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(extra.get("subagent").and_then(serde_json::Value::as_bool), Some(true));
         assert_eq!(extra.get("workflow_run_id").and_then(|v| v.as_str()), Some("wf_test123"));
         assert_eq!(extra.get("workflow_name").and_then(|v| v.as_str()), Some("deep-research"));
         assert_eq!(extra.get("agent_type").and_then(|v| v.as_str()), Some("workflow-subagent"));

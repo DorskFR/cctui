@@ -32,6 +32,7 @@
 //! secret material.
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -113,13 +114,11 @@ pub fn pull_involves_viewer(pr: &serde_json::Value, login: &str) -> bool {
     if author.is_some_and(|a| a.eq_ignore_ascii_case(login)) {
         return true;
     }
-    pr.get("requested_reviewers")
-        .and_then(|r| r.as_array())
-        .is_some_and(|reviewers| {
-            reviewers.iter().any(|r| {
-                r.get("login").and_then(|l| l.as_str()).is_some_and(|l| l.eq_ignore_ascii_case(login))
-            })
+    pr.get("requested_reviewers").and_then(|r| r.as_array()).is_some_and(|reviewers| {
+        reviewers.iter().any(|r| {
+            r.get("login").and_then(|l| l.as_str()).is_some_and(|l| l.eq_ignore_ascii_case(login))
         })
+    })
 }
 
 /// Build the GitHub issue-search query string for one connector scope.
@@ -156,7 +155,7 @@ pub fn build_query(repos: &[String], viewer: &str) -> String {
     // (`org/team`), not `@me`, so GitHub rejects the whole search with a 422
     // Validation Failed. `review-requested` already covers reviews requested of
     // the viewer directly; team-requested-only PRs are out of scope for v1.
-    q.push_str(&format!(" (author:{viewer} OR review-requested:{viewer})"));
+    let _ = write!(q, " (author:{viewer} OR review-requested:{viewer})");
     q
 }
 
@@ -270,7 +269,7 @@ async fn record_poll_result(pool: &PgPool, connector_id: Uuid, result: &anyhow::
 }
 
 /// Run the reconcile poll for a single connector immediately (CCT-396's manual
-/// "Refresh now"), independent of the scheduled loop. Uses a throwaway ETag
+/// "Refresh now"), independent of the scheduled loop. Uses a throwaway `ETag`
 /// cache so it always performs a full fetch rather than short-circuiting on the
 /// loop's cached `304`. Records the attempt's status like the loop does.
 pub async fn sync_now(state: &GithubState, connector_id: Uuid) {
@@ -534,11 +533,7 @@ impl SearchClient for HttpSearchClient {
             let resp = self
                 .http
                 .get(&url)
-                .query(&[
-                    ("state", "open"),
-                    ("per_page", "100"),
-                    ("page", &page.to_string()),
-                ])
+                .query(&[("state", "open"), ("per_page", "100"), ("page", &page.to_string())])
                 .header(reqwest::header::USER_AGENT, USER_AGENT)
                 .header(reqwest::header::AUTHORIZATION, format!("Bearer {credential}"))
                 .header(reqwest::header::ACCEPT, "application/vnd.github+json")

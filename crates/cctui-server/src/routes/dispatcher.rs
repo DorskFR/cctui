@@ -64,6 +64,8 @@ pub struct EnrollResponse {
 /// `POST /api/v1/dispatcher/enroll` — user token mints a dispatcher identity.
 /// The key is returned ONCE and only its hash + a preview are persisted (same
 /// discipline as the machine enroll).
+// Linear handler: validate, mint key, persist identity, build response.
+#[allow(clippy::too_many_lines)]
 pub async fn enroll(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,

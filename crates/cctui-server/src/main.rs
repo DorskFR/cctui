@@ -59,7 +59,7 @@ async fn main() -> anyhow::Result<()> {
 
     let archive = init_archive_store().await;
     let skills = init_skill_store().await;
-    let dispatchers = init_dispatchers(&config).await;
+    let dispatchers = init_dispatchers(&config);
 
     let state = AppState {
         pool,
@@ -128,6 +128,8 @@ async fn main() -> anyhow::Result<()> {
     #[cfg(feature = "github")]
     cctui_github::migrate(&state.pool).await?;
 
+    // `{id}` etc. in route paths are axum path-param syntax, not format args.
+    #[allow(clippy::literal_string_with_formatting_args)]
     let app = Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/api/v1/ws", get(ws::tui_ws))
@@ -910,7 +912,7 @@ async fn init_skill_store() -> Arc<skill_store::SkillStore> {
 /// dispatches exclusively through enrolled executor binaries
 /// (`/api/v1/dispatcher/ws`), and `resolve_dispatcher` checks enrolled first,
 /// falling back to this http-only registry.
-async fn init_dispatchers(config: &Config) -> Arc<dispatchers::Registry> {
+fn init_dispatchers(config: &Config) -> Arc<dispatchers::Registry> {
     let mut registry = dispatchers::Registry::new();
 
     for d in config.http_dispatchers.iter().chain(config.dispatchers.iter()) {

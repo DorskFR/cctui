@@ -70,8 +70,8 @@ pub struct RenameDispatcher {
     pub name: String,
 }
 
-fn db_err(e: sqlx::Error) -> (StatusCode, Json<serde_json::Value>) {
-    if let sqlx::Error::Database(dbe) = &e
+fn db_err(e: &sqlx::Error) -> (StatusCode, Json<serde_json::Value>) {
+    if let sqlx::Error::Database(dbe) = e
         && dbe.code().as_deref() == Some("23505")
     {
         return (
@@ -100,7 +100,7 @@ pub async fn list_dispatchers(
     .bind(ctx.owner_filter())
     .fetch_all(&state.pool)
     .await
-    .map_err(db_err)?;
+    .map_err(|e| db_err(&e))?;
 
     Ok(Json(rows.into_iter().map(|r| r.into_info(&state)).collect()))
 }
@@ -136,7 +136,7 @@ pub async fn update_dispatcher(
     .bind(req.name.trim())
     .fetch_optional(&state.pool)
     .await
-    .map_err(db_err)?;
+    .map_err(|e| db_err(&e))?;
 
     row.map(|r| Json(r.into_info(&state))).ok_or_else(|| {
         (StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": "dispatcher not found" })))
@@ -160,7 +160,7 @@ pub async fn delete_dispatcher(
     .bind(ctx.owner_filter())
     .execute(&state.pool)
     .await
-    .map_err(db_err)?;
+    .map_err(|e| db_err(&e))?;
 
     if res.rows_affected() == 0 {
         return Err((

@@ -68,17 +68,12 @@ pub fn derive_bucket(
     let check_rows: Vec<(String, Option<String>)> =
         checks.iter().map(|c| (c.status.clone(), c.conclusion.clone())).collect();
     let review_rows: Vec<(String,)> = reviews.iter().map(|r| (r.state.clone(),)).collect();
-    derive_bucket_from_rows(
-        &pull.state,
-        pull.merged,
-        pull.draft,
-        &check_rows,
-        &review_rows,
-        viewer,
-    )
+    derive_bucket_from_rows(&pull.state, pull.merged, pull.draft, &check_rows, &review_rows, viewer)
 }
 
-/// Pure core of [`derive_bucket`], over already-projected column tuples so it is
+/// Pure core of [`derive_bucket`], over already-projected column tuples.
+///
+/// Kept this way so it is
 /// trivially unit-testable and so the DB read path (`SELECT state, merged,
 /// draft …` / check `(status, conclusion)` / review `(state,)`) and the struct
 /// path agree by construction. Mirrors
@@ -110,9 +105,9 @@ pub fn derive_bucket_from_rows(
         if draft {
             return AttentionBucket::Waiting;
         }
-        let ci_red = checks
-            .iter()
-            .any(|(status, conclusion)| status == "completed" && is_failing_conclusion(conclusion.as_deref()));
+        let ci_red = checks.iter().any(|(status, conclusion)| {
+            status == "completed" && is_failing_conclusion(conclusion.as_deref())
+        });
         if ci_red {
             return AttentionBucket::MyPrCiRed;
         }
@@ -182,6 +177,9 @@ mod tests {
 
     /// Table-driven coverage of the §6.1 rules. Each row: (label, pull, checks,
     /// reviews, viewer, expected bucket).
+    // Table-driven test: the case tuple and the long case list are inherent to
+    // covering every §6.1 rule in one place; splitting would obscure the table.
+    #[allow(clippy::too_many_lines, clippy::type_complexity)]
     #[test]
     fn buckets_match_spec() {
         let cases: Vec<(
@@ -325,12 +323,22 @@ mod tests {
     #[test]
     fn each_failing_conclusion_is_ci_red() {
         for c in ["failure", "timed_out", "cancelled", "action_required", "startup_failure"] {
-            let got = derive_bucket(&pull("open", false, false), &[check("completed", Some(c))], &[], AUTHOR);
+            let got = derive_bucket(
+                &pull("open", false, false),
+                &[check("completed", Some(c))],
+                &[],
+                AUTHOR,
+            );
             assert_eq!(got, AttentionBucket::MyPrCiRed, "conclusion {c}");
         }
         // A benign conclusion is not red.
         for c in ["success", "neutral", "skipped"] {
-            let got = derive_bucket(&pull("open", false, false), &[check("completed", Some(c))], &[], AUTHOR);
+            let got = derive_bucket(
+                &pull("open", false, false),
+                &[check("completed", Some(c))],
+                &[],
+                AUTHOR,
+            );
             assert_eq!(got, AttentionBucket::MyPrMergeable, "conclusion {c}");
         }
     }

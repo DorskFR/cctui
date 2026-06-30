@@ -225,16 +225,17 @@ impl AttachTask {
         if ack.get("ok") == Some(&Value::Bool(false)) {
             let code = ack.get("code").and_then(Value::as_str).unwrap_or("?");
             let outcome = classify_reject(code);
-            match outcome {
-                // EAUTH means the control key is missing/rotated/wrong, so
-                // keep-alive is globally broken — not a transient blip. Warn loud.
-                AttachOutcome::Unauthorized => tracing::warn!(
+            // EAUTH means the control key is missing/rotated/wrong, so
+            // keep-alive is globally broken — not a transient blip. Warn loud.
+            if outcome == AttachOutcome::Unauthorized {
+                tracing::warn!(
                     short = %self.short,
                     %code,
                     "attach unauthorized — daemon control key missing/rotated/wrong; \
                      keep-alive is broken until the key is fixed"
-                ),
-                _ => tracing::debug!(short = %self.short, %code, "attach rejected"),
+                );
+            } else {
+                tracing::debug!(short = %self.short, %code, "attach rejected");
             }
             return Ok(outcome);
         }

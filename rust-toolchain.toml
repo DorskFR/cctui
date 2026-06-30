@@ -1,0 +1,8 @@
+# Pin the toolchain so local dev, lefthook (fmt/clippy/check) and the release
+# Docker builds all use ONE Rust version. 1.90 matches deploy/*.Dockerfile
+# (`FROM rust:1.90-slim-bookworm`), so a contributor's newer default stable no
+# longer flags lints the shipped build never saw. fmt still runs on nightly via
+# the explicit `cargo +nightly fmt` in lefthook.yml (rustfmt.toml needs unstable
+# features); this pin only sets the DEFAULT toolchain for everything else.
+[toolchain]
+channel = "1.90.0"

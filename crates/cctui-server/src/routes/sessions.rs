@@ -156,8 +156,8 @@ const STATUS_WINDOW_SECS: i64 = 5 * 60;
 /// Liveness-dot thresholds (heartbeat age). `Active` (green) within the
 /// active window, `Stale` (orange) up to the dead window, `Dead` (no dot)
 /// beyond it.
-pub(crate) const LIVENESS_ACTIVE_SECS: i64 = 5 * 60;
-pub(crate) const LIVENESS_DEAD_SECS: i64 = 60 * 60;
+pub const LIVENESS_ACTIVE_SECS: i64 = 5 * 60;
+pub const LIVENESS_DEAD_SECS: i64 = 60 * 60;
 
 /// Query params for `GET /sessions`. Archived sessions are hidden unless
 /// `?include_archived=true`.
@@ -168,7 +168,7 @@ pub struct ListParams {
 }
 
 #[derive(sqlx::FromRow)]
-pub(crate) struct DbSession {
+pub struct DbSession {
     id: String,
     parent_id: Option<String>,
     machine_id: String,
@@ -183,10 +183,7 @@ pub(crate) struct DbSession {
     resolved_machine_kind: Option<String>,
 }
 
-pub(crate) fn derive_status(
-    registered_at: DateTime<Utc>,
-    last_heartbeat: DateTime<Utc>,
-) -> SessionStatus {
+pub fn derive_status(registered_at: DateTime<Utc>, last_heartbeat: DateTime<Utc>) -> SessionStatus {
     let now = Utc::now();
     if (now - last_heartbeat).num_seconds() < STATUS_WINDOW_SECS {
         SessionStatus::Active
@@ -198,7 +195,7 @@ pub(crate) fn derive_status(
 }
 
 /// Map heartbeat age onto the three-tier liveness dot.
-pub(crate) fn derive_liveness(last_heartbeat: DateTime<Utc>) -> Liveness {
+pub fn derive_liveness(last_heartbeat: DateTime<Utc>) -> Liveness {
     let age = (Utc::now() - last_heartbeat).num_seconds();
     if age < LIVENESS_ACTIVE_SECS {
         Liveness::Active
@@ -225,7 +222,7 @@ fn sticky_status(row_status: &str) -> Option<SessionStatus> {
 }
 
 /// Resolve the row's status + liveness, honouring sticky terminal states.
-pub(crate) fn resolve_status_liveness(
+pub fn resolve_status_liveness(
     row_status: &str,
     registered_at: DateTime<Utc>,
     last_heartbeat: DateTime<Utc>,
@@ -247,7 +244,7 @@ pub(crate) fn resolve_status_liveness(
 /// Classify a session into its bucket from the persisted signals. PR-children
 /// ("Ready for review") are not wired server-side yet, so `children` is empty
 /// and the PR cache unused — the `Review` bucket therefore cannot arise today.
-pub(crate) fn bucket_from_signals(
+pub fn bucket_from_signals(
     tempo: Option<&str>,
     agent_state: Option<&str>,
     activity: Option<&str>,
@@ -266,7 +263,7 @@ pub(crate) fn bucket_from_signals(
 }
 
 /// The attention glyph is just the `Blocked` bucket surfaced as ✋ needs input.
-pub(crate) const fn attention_from_bucket(bucket: Bucket) -> Option<Attention> {
+pub const fn attention_from_bucket(bucket: Bucket) -> Option<Attention> {
     match bucket {
         Bucket::Blocked => Some(Attention::NeedsInput),
         _ => None,
@@ -1387,6 +1384,8 @@ pub async fn switch_account(
     Path(session_id): Path<String>,
     Json(req): Json<SwitchAccountRequest>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    use crate::routes::gateway::Family;
+
     let err = |code: StatusCode, msg: &str| (code, Json(ApiError { error: msg.into() }));
     let db = |e: sqlx::Error| {
         tracing::error!("db error (switch-account): {e}");
@@ -1439,7 +1438,6 @@ pub async fn switch_account(
 
     // Same provider family only (CCT-444 v1): the worker's harness already
     // negotiated the auth scheme, so a cross-family rebind would break it.
-    use crate::routes::gateway::Family;
     if Family::from_provider(&current_provider) != Family::from_provider(&target_provider) {
         return Err(err(
             StatusCode::CONFLICT,
@@ -1562,7 +1560,7 @@ pub async fn set_model(
 /// brand-new session, optionally changing model/effort at fork time (CCT-302).
 ///
 /// Resolves the parent's `(adapter_id, machine_uuid, working_dir)` from the DB,
-/// builds a [`SessionSpec`] (working_dir inherited from the parent; model/effort
+/// builds a [`SessionSpec`] (`working_dir` inherited from the parent; model/effort
 /// from the request, which the webui pre-fills with the parent's current
 /// values), and dispatches an [`AdapterCommand::Fork`] to the owning daemon. The
 /// child links back to the parent via `SessionMeta::parent_local_id` on its
@@ -1807,6 +1805,8 @@ async fn unpin_one(state: &AppState, session_id: &str) -> Result<(), sqlx::Error
 
 /// `POST /api/v1/sessions/pin` — pin many sessions in one request. Mirrors the
 /// batch archive route; per-id failures are logged but don't abort the batch.
+// Linear batch loop with per-id error handling; complexity is per-id, not nesting.
+#[allow(clippy::cognitive_complexity)]
 pub async fn pin_sessions(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -1831,6 +1831,8 @@ pub async fn pin_sessions(
 }
 
 /// `POST /api/v1/sessions/unpin` — the batch mirror of `unpin_session`.
+// Linear batch loop with per-id error handling; complexity is per-id, not nesting.
+#[allow(clippy::cognitive_complexity)]
 pub async fn unpin_sessions(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -1864,6 +1866,8 @@ pub struct BatchIds {
 /// (CCT-172, multi-select). Each id is processed via [`archive_one`]; a per-id
 /// failure is logged but does not abort the rest of the batch. Idempotent:
 /// re-archiving an already-archived id is a no-op.
+// Linear batch loop with per-id error handling; complexity is per-id, not nesting.
+#[allow(clippy::cognitive_complexity)]
 pub async fn archive_sessions(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -1888,6 +1892,8 @@ pub async fn archive_sessions(
 }
 
 /// `POST /api/v1/sessions/unarchive` — the batch mirror of `unarchive_session`.
+// Linear batch loop with per-id error handling; complexity is per-id, not nesting.
+#[allow(clippy::cognitive_complexity)]
 pub async fn unarchive_sessions(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,

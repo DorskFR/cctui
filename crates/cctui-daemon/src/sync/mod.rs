@@ -34,6 +34,9 @@ struct LocalFile {
 }
 
 /// Run the sync loop until cancelled. `projects_root` is `~/.claude/projects`.
+// Loop = select over shutdown / tick, each tick running `sync_once`; complexity
+// is the per-tick error handling, not nesting. Kept whole as the loop lifecycle.
+#[allow(clippy::cognitive_complexity)]
 pub async fn run(
     base_url: String,
     machine_key: String,
@@ -59,6 +62,10 @@ pub async fn run(
     }
 }
 
+// Linear scan → diff-against-server → upload pipeline; complexity is the per-file
+// error handling and skip branches, not nesting. Splitting would scatter the
+// scan/diff/upload flow that reads naturally top-to-bottom.
+#[allow(clippy::cognitive_complexity)]
 async fn sync_once(
     http: &reqwest::Client,
     base: &str,

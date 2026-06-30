@@ -279,7 +279,7 @@ pub fn reconcile_tail(
     // been truncated since the offset was taken) so the backup math stays
     // in bounds, then back up the window.
     let anchor = persisted_offset.min(len);
-    let mut start = anchor.saturating_sub(RECONCILE_BACKUP_BYTES);
+    let start = anchor.saturating_sub(RECONCILE_BACKUP_BYTES);
 
     file.seek(SeekFrom::Start(start))?;
     let mut reader = BufReader::new(file);
@@ -290,8 +290,9 @@ pub fn reconcile_tail(
     // boundary, so skip the realignment.
     if start > 0 {
         let mut partial = String::new();
-        let n = reader.read_line(&mut partial)?;
-        start += n as u64;
+        // Advance the reader past the partial line; we don't need its byte
+        // count, only the realignment side effect.
+        reader.read_line(&mut partial)?;
         // If that "line" had no terminating '\n' it ran to EOF with no
         // complete line after the checkpoint — nothing to reconcile.
         if !partial.ends_with('\n') {

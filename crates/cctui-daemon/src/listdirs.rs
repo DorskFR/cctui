@@ -1,5 +1,7 @@
 //! List sub-directories of a path for the spawn dialog's working-directory
-//! autocomplete. Kept dumb on purpose: the daemon resolves `~`, lists ONE
+//! autocomplete.
+//!
+//! Kept dumb on purpose: the daemon resolves `~`, lists ONE
 //! directory level, and returns sorted entry names — splitting the user's
 //! input into (parent, prefix) and filtering is the web UI's job.
 
@@ -16,10 +18,10 @@ fn expand_tilde(path: &str) -> PathBuf {
         if let Some(home) = std::env::var_os("HOME") {
             return PathBuf::from(home);
         }
-    } else if let Some(rest) = path.strip_prefix("~/") {
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home).join(rest);
-        }
+    } else if let Some(rest) = path.strip_prefix("~/")
+        && let Some(home) = std::env::var_os("HOME")
+    {
+        return PathBuf::from(home).join(rest);
     }
     PathBuf::from(path)
 }

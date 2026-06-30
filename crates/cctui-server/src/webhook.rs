@@ -6,7 +6,7 @@
 //! `REPLY_URL`, and that payload (opaque to the server) is the source of truth.
 //! The server fires only for the cases the worker's trap CANNOT cover — a pod
 //! OOM/SIGKILL that never runs the trap, a worker that never registered
-//! (CrashLoopBackOff / unschedulable), or a connection lost past grace — and
+//! (`CrashLoopBackOff` / unschedulable), or a connection lost past grace — and
 //! then the callback is uniformly `status:"failed"` with a reason. The verdict
 //! never transits or is stored on the server.
 //!
@@ -138,7 +138,7 @@ fn sign(secret: &str, body: &[u8]) -> String {
 enum Outcome {
     /// The run died without a conclusion — fire the death callback with reason.
     Fire(String),
-    /// The worker owns the callback (clean exit → its REPLY_URL trap delivered
+    /// The worker owns the callback (clean exit → its `REPLY_URL` trap delivered
     /// the verdict). Close the row without firing.
     Supersede,
     /// Still alive / not yet decidable — re-poll on the next sweep.
@@ -147,7 +147,7 @@ enum Outcome {
 
 /// Decide a pending row's fate (CCT-429). The server is a death-detector: it
 /// fires only for runs that did NOT complete. A clean `SessionEnded` (the
-/// worker reached its exit trap and POSTed `REPLY_URL`) is superseded; a session
+/// worker reached its exit trap and `POSTed` `REPLY_URL`) is superseded; a session
 /// that never registered is resolved by asking the owning dispatcher whether its
 /// workload is still alive.
 async fn decide(state: &AppState, row: &PendingRow) -> Outcome {
@@ -177,12 +177,12 @@ async fn decide(state: &AppState, row: &PendingRow) -> Outcome {
         // nothing to probe; the time-based archive path is the only backstop.
         return Outcome::Wait;
     };
-    let dispatcher =
-        match crate::routes::dispatch::resolve_dispatcher(state, row.user_id, name).await {
-            Ok(Some(d)) => d,
-            // Dispatcher gone/unreachable — wait; archive backstop still applies.
-            _ => return Outcome::Wait,
-        };
+    let Ok(Some(dispatcher)) =
+        crate::routes::dispatch::resolve_dispatcher(state, row.user_id, name).await
+    else {
+        // Dispatcher gone/unreachable — wait; archive backstop still applies.
+        return Outcome::Wait;
+    };
     match dispatcher.status(handle).await {
         Ok(HandleStatus::Complete) => Outcome::Supersede,
         Ok(HandleStatus::Failed(reason)) => {
@@ -191,9 +191,9 @@ async fn decide(state: &AppState, row: &PendingRow) -> Outcome {
         Ok(HandleStatus::Gone) => {
             Outcome::Fire("workload no longer exists (crashed / evicted before reporting)".into())
         }
-        Ok(HandleStatus::Running) => Outcome::Wait,
-        // Dispatcher can't introspect (http) or a transient error — wait.
-        Err(_) => Outcome::Wait,
+        // Still running, or the dispatcher can't introspect (http) / a transient
+        // error — wait.
+        Ok(HandleStatus::Running) | Err(_) => Outcome::Wait,
     }
 }
 
@@ -204,6 +204,9 @@ async fn decide(state: &AppState, row: &PendingRow) -> Outcome {
 /// death payload and POSTs it (2xx → `sent`, else backoff/dead-letter);
 /// `Supersede` closes the row (the worker's own callback owns the verdict);
 /// `Wait` re-polls on the next sweep. Best-effort and self-healing.
+// Linear per-row outbox processing with per-outcome handling; complexity is
+// per-branch, not nesting.
+#[allow(clippy::cognitive_complexity)]
 pub async fn sweep(state: &AppState) {
     let rows: Vec<PendingRow> = match sqlx::query_as(
         "SELECT w.id, w.session_id, w.user_id, w.notify_url, w.secret, w.task_id, w.attempts, \

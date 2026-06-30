@@ -81,7 +81,7 @@ pub async fn list_prompts(
     .bind(ctx.owner_filter())
     .fetch_all(&state.pool)
     .await
-    .map_err(db_err)?;
+    .map_err(|e| db_err(&e))?;
     Ok(Json(rows))
 }
 
@@ -109,7 +109,7 @@ pub async fn create_prompt(
     .bind(ctx.user_id)
     .fetch_one(&state.pool)
     .await
-    .map_err(db_err)?;
+    .map_err(|e| db_err(&e))?;
     Ok((StatusCode::CREATED, Json(row)))
 }
 
@@ -125,7 +125,7 @@ pub async fn get_prompt(
     .bind(ctx.owner_filter())
     .fetch_optional(&state.pool)
     .await
-    .map_err(db_err)?;
+    .map_err(|e| db_err(&e))?;
     row.map(Json).ok_or(StatusCode::NOT_FOUND)
 }
 
@@ -156,7 +156,7 @@ pub async fn resolve_prompt(
     .bind(ctx.owner_filter())
     .fetch_all(&state.pool)
     .await
-    .map_err(db_err)?;
+    .map_err(|e| db_err(&e))?;
 
     most_specific(candidates, &q.owner, &q.repo).map(Json).ok_or(StatusCode::NOT_FOUND)
 }
@@ -204,14 +204,14 @@ pub async fn delete_prompt(
             .bind(ctx.owner_filter())
             .execute(&state.pool)
             .await
-            .map_err(db_err)?;
+            .map_err(|e| db_err(&e))?;
     if res.rows_affected() == 0 {
         return Err(StatusCode::NOT_FOUND);
     }
     Ok(StatusCode::NO_CONTENT)
 }
 
-fn db_err(e: sqlx::Error) -> StatusCode {
+fn db_err(e: &sqlx::Error) -> StatusCode {
     tracing::error!("db error: {e}");
     StatusCode::INTERNAL_SERVER_ERROR
 }

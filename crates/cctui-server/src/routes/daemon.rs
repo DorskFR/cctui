@@ -111,7 +111,7 @@ pub async fn session_gateway_env(
     if owner.is_some_and(|o| o != ctx.user_id) {
         return Ok(Json(cctui_proto::api::GatewayEnvResponse {
             account_bound: false,
-            env: Default::default(),
+            env: std::collections::BTreeMap::default(),
         }));
     }
 
@@ -123,7 +123,7 @@ pub async fn session_gateway_env(
     if accounts.is_empty() {
         return Ok(Json(cctui_proto::api::GatewayEnvResponse {
             account_bound: false,
-            env: Default::default(),
+            env: std::collections::BTreeMap::default(),
         }));
     }
     let mut env = std::collections::BTreeMap::new();
@@ -315,6 +315,9 @@ const fn event_kind(event: &AdapterEvent) -> &'static str {
     }
 }
 
+// Breadth-of-match dispatch over inbound daemon frames; complexity is per-frame
+// handling, not nesting.
+#[allow(clippy::cognitive_complexity)]
 async fn process_frame(
     state: &AppState,
     machine_id: Uuid,
@@ -888,7 +891,7 @@ async fn mark_session_ended(
     Ok(())
 }
 
-pub(crate) async fn load_reconcile(
+pub async fn load_reconcile(
     state: &AppState,
     machine_id: Uuid,
 ) -> anyhow::Result<Vec<DaemonAdapterConfig>> {

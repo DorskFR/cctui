@@ -161,6 +161,10 @@ impl Supervisor {
         }
     }
 
+    // Dispatch over every `DaemonFrameDown` variant (reconcile / spawn / command /
+    // …); complexity is the breadth of the match arms, not nesting. Per-arm helpers
+    // would be churn and obscure the frame-handling overview.
+    #[allow(clippy::cognitive_complexity)]
     async fn handle_frame(
         &self,
         frame: DaemonFrameDown,
@@ -399,8 +403,7 @@ fn parse_frame(msg: Message) -> anyhow::Result<Option<DaemonFrameDown>> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     use cctui_proto::api::DaemonAdapterConfig;
     use tokio::sync::mpsc;

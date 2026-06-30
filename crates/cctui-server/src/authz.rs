@@ -295,7 +295,7 @@ fn resolve_id(req: &Request, id_from: IdFrom) -> Option<String> {
 /// the principal's role → permitted `(ResourceKind, Action)` set HERE; because
 /// the descriptor already carries `kind` and `action`, enabling roles needs NO
 /// per-endpoint change. Returning `false` makes the guard deny with `403`.
-fn role_permits(_ctx: &AuthContext, _kind: ResourceKind, _action: Action) -> bool {
+const fn role_permits(_ctx: &AuthContext, _kind: ResourceKind, _action: Action) -> bool {
     true
 }
 
@@ -591,8 +591,7 @@ impl Routes {
         // policy captured directly as layer state. A global `.layer` would run
         // OUTSIDE the router before the matched route is entered, so it could
         // never see a per-route extension — the 0.7.0 default-deny regression.
-        let handler =
-            handler.route_layer(middleware::from_fn_with_state(policy, enforce_route));
+        let handler = handler.route_layer(middleware::from_fn_with_state(policy, enforce_route));
         self.router = self.router.route(path, handler);
         for method in methods {
             self.descriptors.push(RouteDescriptor {
@@ -889,14 +888,14 @@ mod tests {
     /// table needs no per-endpoint change.
     #[tokio::test]
     async fn role_seam_denies_with_403_before_object_lookup() {
-        // Sanity: the production hook is permissive (the no-behavior-change
-        // contract for this ticket).
-        assert!(role_permits(&user(Uuid::new_v4()), ResourceKind::Account, Action::Write));
-
         // Test-only role rule: deny Write on Account, allow everything else.
         fn test_role_permits(_ctx: &AuthContext, kind: ResourceKind, action: Action) -> bool {
             !(kind == ResourceKind::Account && action == Action::Write)
         }
+
+        // Sanity: the production hook is permissive (the no-behavior-change
+        // contract for this ticket).
+        assert!(role_permits(&user(Uuid::new_v4()), ResourceKind::Account, Action::Write));
 
         let pool = sqlx::PgPool::connect_lazy("postgres://invalid").unwrap();
         let me = user(Uuid::new_v4());

@@ -18,7 +18,7 @@ use cctui_proto::github::{DiffSide, DraftAuthorKind, DraftStatus, ReviewVerdict}
 /// Column string for a [`DiffSide`] (`old`/`new`) — matches the
 /// `review_draft_comments_side_chk` constraint and the proto `snake_case`.
 #[must_use]
-pub fn side_str(s: DiffSide) -> &'static str {
+pub const fn side_str(s: DiffSide) -> &'static str {
     match s {
         DiffSide::Old => "old",
         DiffSide::New => "new",
@@ -38,7 +38,7 @@ pub fn side_from_str(s: &str) -> DiffSide {
 
 /// Column string for a [`ReviewVerdict`].
 #[must_use]
-pub fn verdict_str(v: ReviewVerdict) -> &'static str {
+pub const fn verdict_str(v: ReviewVerdict) -> &'static str {
     match v {
         ReviewVerdict::Comment => "comment",
         ReviewVerdict::Approve => "approve",
@@ -88,7 +88,7 @@ mod db {
     use uuid::Uuid;
 
     /// Outcome of a draft CRUD operation the route maps to an HTTP status.
-    #[derive(Debug, PartialEq, Eq)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum DraftError {
         /// No draft/comment matched the id (and scope).
         NotFound,
@@ -212,7 +212,9 @@ mod db {
     }
 
     /// Open (or reuse) a **review agent's** open draft for a PR, keyed on the
-    /// authoring session id (GH-AGENT-2). The agent identity comes from the
+    /// authoring session id (GH-AGENT-2).
+    ///
+    /// The agent identity comes from the
     /// session token (resolved to `session_id` before this call) — it becomes
     /// the draft's `author_session_id`, so a draft is always attributable to the
     /// session that staged it. One open agent draft per (connector, pull,
@@ -268,7 +270,9 @@ mod db {
             .ok_or(DraftError::Db)
     }
 
-    /// Set (or append to) a draft's summary and set its verdict. Used by the
+    /// Set (or append to) a draft's summary and set its verdict.
+    ///
+    /// Used by the
     /// agent `review_summary` tool. `append = true` concatenates onto any
     /// existing summary (blank-line separated) so an agent can build the review
     /// body over several turns; `append = false` replaces it. Returns the draft
@@ -311,10 +315,7 @@ mod db {
             .fetch_optional(pool)
             .await
             .map_err(|_| DraftError::Db)?;
-        match new_summary {
-            Some(s) => Ok((draft_id, s)),
-            None => Err(DraftError::NotFound),
-        }
+        new_summary.map_or(Err(DraftError::NotFound), |s| Ok((draft_id, s)))
     }
 
     /// List the caller's open + published drafts for a PR (header + comments).
@@ -432,8 +433,7 @@ mod db {
         .await
         .map_err(|_| DraftError::Db)?;
         match open {
-            None => return Err(DraftError::NotFound),
-            Some(false) => return Err(DraftError::NotFound),
+            None | Some(false) => return Err(DraftError::NotFound),
             Some(true) => {}
         }
 

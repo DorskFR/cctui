@@ -2,7 +2,7 @@
 //!
 //! `GET /machines/{machine_id}/fs/dirs?path=…` asks the machine's daemon for
 //! the sub-directories of `path` and returns their names. The daemon answers
-//! over its existing WS with the same request_id + oneshot pattern as
+//! over its existing WS with the same `request_id` + oneshot pattern as
 //! mid-chat file staging (CCT-236). Ownership rule matches spawn: the machine
 //! must belong to the requesting user (admin tokens may browse any machine) —
 //! no path restriction beyond that, since machine owners can already spawn

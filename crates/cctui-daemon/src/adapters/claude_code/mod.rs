@@ -292,9 +292,6 @@ async fn handle_hook_connection(
                 AdapterEvent::AskQuestion { local_id, questions, .. } => {
                     map.insert(local_id.clone(), questions.clone());
                 }
-                AdapterEvent::AskResolved { local_id } => {
-                    map.remove(local_id);
-                }
                 // A plan-approval prompt is a single-select form too (CCT-347):
                 // store a synthetic single question whose options are the known
                 // ExitPlanMode continuations so the reply path answers picks
@@ -304,7 +301,9 @@ async fn handle_hook_connection(
                 AdapterEvent::PlanRequest { local_id, .. } => {
                     map.insert(local_id.clone(), Some(plan_form_questions()));
                 }
-                AdapterEvent::PlanResolved { local_id } => {
+                // Either form being resolved clears its pending entry.
+                AdapterEvent::AskResolved { local_id }
+                | AdapterEvent::PlanResolved { local_id } => {
                     map.remove(local_id);
                 }
                 _ => {}

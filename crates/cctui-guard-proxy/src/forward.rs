@@ -98,6 +98,10 @@ async fn handle_connection(mut conn: TcpStream, policy: Arc<PolicyManager>) -> a
 }
 
 /// `CONNECT host:port` — the target is already a host:port authority.
+// Linear deny/allow + dial + splice flow; the complexity is the per-step HTTP
+// error responses (`write_all().await?`), not nesting. Splitting would scatter
+// the security-critical allow/deny control flow across helpers.
+#[allow(clippy::cognitive_complexity)]
 async fn handle_connect(
     mut conn: TcpStream,
     target: &str,
@@ -130,6 +134,9 @@ async fn handle_connect(
 }
 
 /// Plain HTTP with an absolute-URI request target (`GET http://host/path …`).
+// Linear parse/deny/allow + dial + splice flow; complexity is the per-step HTTP
+// error responses, not nesting. Splitting would scatter the allow/deny control flow.
+#[allow(clippy::cognitive_complexity)]
 async fn handle_http(
     mut conn: TcpStream,
     req: &Request,
@@ -191,7 +198,7 @@ fn normalize_authority(authority: &str, default_port: u16) -> String {
 fn split_absolute_uri(target: &str) -> Option<(String, String)> {
     let rest = target.strip_prefix("http://")?;
     let (authority, path) =
-        rest.split_once('/').map_or((rest, "/".to_string()), |(a, p)| (a, format!("/{p}")));
+        rest.split_once('/').map_or_else(|| (rest, "/".to_string()), |(a, p)| (a, format!("/{p}")));
     Some((normalize_authority(authority, 80), path))
 }
 

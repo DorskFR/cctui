@@ -661,10 +661,7 @@ pub async fn get_user_acls(
 ) -> Result<Json<UserAclsResponse>, (StatusCode, Json<ApiError>)> {
     self_or_admin(&ctx, user_id)?;
     let scopes = load_user_acls(&state.pool, user_id).await.map_err(|e| db_err(&e))?;
-    Ok(Json(UserAclsResponse {
-        user_id,
-        scopes: scopes.iter().map(ToString::to_string).collect(),
-    }))
+    Ok(Json(UserAclsResponse { user_id, scopes: scopes.iter().map(ToString::to_string).collect() }))
 }
 
 #[derive(Deserialize, TS)]
@@ -679,10 +676,7 @@ fn parse_scopes(raw: &[String]) -> Result<Vec<Scope>, (StatusCode, Json<ApiError
     raw.iter()
         .map(|s| {
             Scope::parse(s).ok_or_else(|| {
-                (
-                    StatusCode::BAD_REQUEST,
-                    Json(ApiError { error: format!("unknown scope: {s}") }),
-                )
+                (StatusCode::BAD_REQUEST, Json(ApiError { error: format!("unknown scope: {s}") }))
             })
         })
         .collect()
@@ -741,12 +735,12 @@ pub struct ApiKeyRow {
     pub created_at: DateTime<Utc>,
     pub expires_at: Option<DateTime<Utc>>,
     pub revoked_at: Option<DateTime<Utc>>,
-    /// The key's granted scopes (key_acls), filled by the handler.
+    /// The key's granted scopes (`key_acls`), filled by the handler.
     #[sqlx(skip)]
     pub scopes: Vec<String>,
 }
 
-/// `GET /users/{id}/keys` — the user's auth_keys with their granted scopes. Self
+/// `GET /users/{id}/keys` — the user's `auth_keys` with their granted scopes. Self
 /// or admin.
 pub async fn list_user_keys(
     State(state): State<AppState>,
@@ -763,12 +757,11 @@ pub async fn list_user_keys(
     .await
     .map_err(|e| db_err(&e))?;
     for row in &mut rows {
-        let scopes: Vec<(String,)> =
-            sqlx::query_as("SELECT scope FROM key_acls WHERE key_id = $1")
-                .bind(row.id)
-                .fetch_all(&state.pool)
-                .await
-                .unwrap_or_default();
+        let scopes: Vec<(String,)> = sqlx::query_as("SELECT scope FROM key_acls WHERE key_id = $1")
+            .bind(row.id)
+            .fetch_all(&state.pool)
+            .await
+            .unwrap_or_default();
         row.scopes = scopes.into_iter().map(|(s,)| s).collect();
     }
     Ok(Json(rows))
@@ -804,8 +797,7 @@ pub async fn mint_user_key(
     self_or_admin(&ctx, user_id)?;
     let requested = parse_scopes(&req.scopes)?;
     let ceiling = load_user_acls(&state.pool, user_id).await.map_err(|e| db_err(&e))?;
-    let granted: Vec<Scope> =
-        requested.into_iter().filter(|s| ceiling.contains(s)).collect();
+    let granted: Vec<Scope> = requested.into_iter().filter(|s| ceiling.contains(s)).collect();
 
     let token = user_token(&mint_secret());
     let hash = sha256_hex(&token);
@@ -900,8 +892,8 @@ pub async fn set_key_acls(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `DELETE /users/{id}/keys/{kid}` — revoke a key (sets revoked_at; cascades
-/// drop its key_acls on hard-delete, but revoke preserves the audit row). Self
+/// `DELETE /users/{id}/keys/{kid}` — revoke a key (sets `revoked_at`; cascades
+/// drop its `key_acls` on hard-delete, but revoke preserves the audit row). Self
 /// or admin. Also revokes the legacy mirror rows by hash so the dual-read path
 /// stops accepting it. Cache purged so it stops working immediately.
 pub async fn revoke_user_key(

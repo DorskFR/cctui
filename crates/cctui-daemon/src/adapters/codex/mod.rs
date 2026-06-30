@@ -545,7 +545,10 @@ async fn command_pump(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+// Translates codex app-server frames into adapter events; complexity is the
+// breadth of frame-type branches, not nesting. Splitting per frame-type would
+// fragment the codex protocol mapping kept together here on purpose.
+#[allow(clippy::too_many_arguments, clippy::cognitive_complexity)]
 async fn forward(
     live: &LiveSessionRegistry,
     registry: &SessionRegistry,

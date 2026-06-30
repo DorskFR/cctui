@@ -1,9 +1,8 @@
 use std::collections::HashSet;
 
-use axum::Extension;
-use axum::Json;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
+use axum::{Extension, Json};
 use chrono::{DateTime, Duration, Utc};
 use serde::Deserialize;
 
@@ -13,6 +12,10 @@ use cctui_proto::models::SessionStatus;
 use crate::auth::AuthContext;
 use crate::routes::sessions::{attention_from_bucket, bucket_from_signals, derive_status};
 use crate::state::AppState;
+
+/// One row of the per-session classification signals
+/// (`tempo`, `agent_state`, `activity`, `soft_limit_reason`).
+type SignalRow = (Option<String>, Option<String>, Option<String>, Option<String>);
 
 /// Query params for `GET /sessions/recent-dirs` — the last working dirs used
 /// on a given machine, for the spawn working-directory picker.
@@ -138,16 +141,15 @@ pub async fn session_stats(
 
     // needs_input: classify every non-archived session from its persisted
     // signals and count the Blocked bucket — scoped to the caller.
-    let signal_rows: Vec<(Option<String>, Option<String>, Option<String>, Option<String>)> =
-        sqlx::query_as(
-            "SELECT s.tempo, s.agent_state, s.activity, s.soft_limit_reason \
+    let signal_rows: Vec<SignalRow> = sqlx::query_as(
+        "SELECT s.tempo, s.agent_state, s.activity, s.soft_limit_reason \
              FROM sessions s LEFT JOIN machines m ON m.id = s.machine_uuid \
              WHERE s.status != 'archived' AND ($1::uuid IS NULL OR m.user_id = $1)",
-        )
-        .bind(uid)
-        .fetch_all(&state.pool)
-        .await
-        .map_err(db_err)?;
+    )
+    .bind(uid)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(db_err)?;
     let needs_input: i64 = signal_rows
         .into_iter()
         .filter(|(tempo, agent_state, activity, soft_limit_reason)| {
@@ -183,7 +185,7 @@ fn day_start_for_offset(now: DateTime<Utc>, tz_offset_minutes: i32) -> DateTime<
     let local_now = now - offset;
     // Truncate the local wall-clock time to midnight, then map back to UTC.
     let local_midnight =
-        local_now.date_naive().and_hms_opt(0, 0, 0).unwrap_or(local_now.naive_utc());
+        local_now.date_naive().and_hms_opt(0, 0, 0).unwrap_or_else(|| local_now.naive_utc());
     DateTime::<Utc>::from_naive_utc_and_offset(local_midnight, Utc) + offset
 }
 
@@ -196,6 +198,8 @@ pub async fn session_token_stats(
     Extension(ctx): Extension<AuthContext>,
     Query(params): Query<TokenStatsParams>,
 ) -> Result<Json<TokenUsageWindows>, (StatusCode, Json<ApiError>)> {
+    type Row = (i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64);
+
     let uid = ctx.owner_filter();
     let now = Utc::now();
     let hour = now - Duration::hours(1);
@@ -206,7 +210,6 @@ pub async fn session_token_stats(
 
     // 15 conditional sums (5 windows × 3 metrics) in one pass. COALESCE keeps
     // every column a non-null bigint even when no rows match the window.
-    type Row = (i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64);
     let r: Row = sqlx::query_as(
         "SELECT \
             COALESCE(SUM(input_tokens)       FILTER (WHERE created_at >= $1), 0)::bigint, \
@@ -264,7 +267,7 @@ type TokenStatsRow = (i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64
 
 /// Index a 15-tuple positionally (the `query_as` row above). Keeps the window
 /// construction terse without a 15-field named struct.
-fn field(t: &TokenStatsRow, i: usize) -> i64 {
+const fn field(t: &TokenStatsRow, i: usize) -> i64 {
     match i {
         0 => t.0,
         1 => t.1,
