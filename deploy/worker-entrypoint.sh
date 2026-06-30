@@ -627,7 +627,7 @@ phase_guard() {
     fi
 
     _rules="${GUARD_RULES_FILE:-$CONTEXT_DIR/guard-rules.md}"
-    mkdir -p "$GUARD_STATE" "$(dirname "$POLICY_FILE")"
+    mkdir -p "$(dirname "$GUARD_STATE")" "$(dirname "$POLICY_FILE")"
 
     set -- --prompt "$_prompt" \
            --rules "$_rules" \
