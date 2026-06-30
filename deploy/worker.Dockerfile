@@ -96,6 +96,12 @@ RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
 # "mise ERROR Permission denied (os error 13)" seen in the acme fat image).
 # The standalone binary has no node dependency and sidesteps that entirely.
 # Pinned + checksum-verified, mirroring the yt install above.
+#
+# Model provider: codex IGNORES OPENAI_API_KEY / OPENAI_BASE_URL env and reads
+# its provider only from ~/.codex/config.toml. Do NOT bake a static config here —
+# it would clobber codex's own runtime writes (trust_level) and pin a stale
+# base_url. The entrypoint's phase_codex_config MERGES the cctui gateway provider
+# in at runtime from the injected OPENAI_* env (CCT-517).
 ARG CODEX_VERSION=0.142.4
 RUN arch="$(dpkg --print-architecture)" \
     && case "$arch" in \

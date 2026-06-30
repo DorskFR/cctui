@@ -512,6 +512,63 @@ phase_credentials() {
     done
 }
 
+# ── Phase 4b: Codex model provider ──────────────────────────────────────────
+# The platform injects OPENAI_API_KEY + OPENAI_BASE_URL (the cctui openai
+# gateway, CCT-508/514) into the agent env, but the `codex` CLI IGNORES those
+# vars — it reads its model provider only from ~/.codex/config.toml. The pod's
+# config.toml has just `trust_level = "trusted"` (codex writes that itself), so
+# codex's default provider connects straight to api.openai.com with no bearer →
+# `401 Unauthorized (Missing bearer)`, and the dual-reviewer review-pr flow
+# silently degrades to Claude-only (CCT-517).
+#
+# When OPENAI_API_KEY is set, MERGE a `[model_providers.cctui]` block + a
+# `model_provider = "cctui"` selector into config.toml, pointing codex's
+# `responses` wire transport at OPENAI_BASE_URL and reading the bearer from the
+# OPENAI_API_KEY env var (codex DOES read env_key from env at request time).
+# The block is delimited by BEGIN/END markers and rewritten in place, so this
+# is idempotent (safe to re-run) and preserves codex's own keys (trust_level).
+# No TOML-aware tool ships in the worker image (jq is JSON-only, no python3), so
+# the merge is plain shell: drop any prior cctui-managed region + a stray
+# top-level `model_provider`, then append a fresh region. Skipped silently when
+# OPENAI_API_KEY is unset.
+CODEX_MARKER_BEGIN="# >>> cctui codex model_provider (CCT-517) >>>"
+CODEX_MARKER_END="# <<< cctui codex model_provider (CCT-517) <<<"
+phase_codex_config() {
+    [ -n "${OPENAI_API_KEY:-}" ] || { log "codex: OPENAI_API_KEY unset, skipping model_provider"; return 0; }
+    _base="${OPENAI_BASE_URL:-}"
+    if [ -z "$_base" ]; then
+        log "WARNING: codex: OPENAI_API_KEY set but OPENAI_BASE_URL empty; skipping model_provider"
+        return 0
+    fi
+    _cfgdir="${CODEX_HOME:-/home/${WORKER_USER}/.codex}"
+    _cfg="$_cfgdir/config.toml"
+    mkdir -p "$_cfgdir"
+
+    # Preserve any existing config MINUS our managed region and a top-level
+    # `model_provider` line (we re-set it). awk drops the marker-delimited block;
+    # the trailing grep removes a bare `model_provider = …` outside the block.
+    _kept=""
+    if [ -f "$_cfg" ]; then
+        _kept=$(awk -v b="$CODEX_MARKER_BEGIN" -v e="$CODEX_MARKER_END" '
+            $0==b {skip=1; next} $0==e {skip=0; next} skip{next} {print}
+        ' "$_cfg" | grep -vE '^[[:space:]]*model_provider[[:space:]]*=' || true)
+    fi
+
+    {
+        [ -n "$_kept" ] && printf '%s\n' "$_kept"
+        printf '%s\n' "$CODEX_MARKER_BEGIN"
+        printf 'model_provider = "cctui"\n'
+        printf '[model_providers.cctui]\n'
+        printf 'name = "cctui-gateway"\n'
+        printf 'base_url = "%s"\n' "$_base"
+        printf 'env_key = "OPENAI_API_KEY"\n'
+        printf 'wire_api = "responses"\n'
+        printf '%s\n' "$CODEX_MARKER_END"
+    } > "$_cfg"
+    chown -R "${WORKER_UID}:${WORKER_UID}" "$_cfgdir" 2>/dev/null || true
+    log "codex: model_provider 'cctui' wired into $_cfg (base_url from OPENAI_BASE_URL)"
+}
+
 # ── Phase 5: Result callback trap ───────────────────────────────────────────
 # If REPLY_URL is set, install an EXIT/INT/TERM trap that POSTs the result JSON
 # once (RESULT_FILE if the session wrote a valid one, else a synthesized
@@ -739,6 +796,7 @@ if [ -z "${TASK_PROMPT_FILE:-}" ] && [ -n "${CONTEXT_PACK_URL:-}" ] && [ -n "${T
 fi
 phase_identity_resolve
 phase_credentials
+phase_codex_config
 phase_identity_scrub
 phase_callback
 phase_guard
