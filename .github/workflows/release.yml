@@ -48,6 +48,14 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      # rust-toolchain.toml pins 1.90.0 (matches deploy/*.Dockerfile), so cargo
+      # builds under 1.90.0 — but the dtolnay step above only added the cross
+      # target to the runner's default stable. Add the cross std to the PINNED
+      # toolchain too, or the musl cross-compile fails with "can't find crate for
+      # core" (E0463). No-op when the target equals the host (darwin).
+      - name: Add cross target to the pinned toolchain
+        run: rustup target add ${{ matrix.target }}
+
       # Linux artifacts are static musl builds so they run on any glibc
       # (the claude-worker image is debian bookworm = glibc 2.36, while the
       # default GitHub runners are glibc 2.39). cargo-zigbuild cross-compiles
