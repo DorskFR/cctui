@@ -291,6 +291,16 @@ pub struct Driver {
     /// successful poll triggers an immediate reconciliation re-tail rather
     /// than waiting for the periodic cycle (CCT-253).
     churned: bool,
+    /// Whether the first successful roster snapshot of this daemon lifetime has
+    /// been grandfathered into the heal tracker (CCT-509). The in-memory
+    /// `HealTracker` is empty at (re)start, so without this every session that
+    /// was already alive — a self-update re-exec / sleep-wake survivor cctui
+    /// launched correctly in a prior lifetime — would look like an env-less
+    /// autonomous respawn and be force-killed by the proactive heal. The first
+    /// snapshot's workers were brought up by a PRIOR lifetime, not by a respawn
+    /// we observed, so we trust them; genuine respawns AFTER startup still arm
+    /// the heal via the roster-drop `forget`. Set once on the first snapshot.
+    grandfathered: bool,
     /// Spawn-time `--model`/`--effort` remembered per worker `short` (CCT-299).
     /// Used as a fallback for the Status event when `state.json` isn't on disk
     /// yet (freshly spawned) or transiently absent (`/clear` rotation), so the
@@ -450,6 +460,7 @@ impl Driver {
             pending_perm_hooks: super::PendingPermHooks::default(),
             last_reconcile: Instant::now(),
             churned: false,
+            grandfathered: false,
             spawn_model_effort: std::sync::Mutex::new(HashMap::new()),
             fork_parent_by_short: std::sync::Mutex::new(HashMap::new()),
             server: None,
@@ -1740,6 +1751,26 @@ impl Driver {
             jobs.into_iter().filter(LiveSnapshot::is_user_visible).collect();
         let now_shorts: HashSet<String> = visible.iter().map(|j| j.short.clone()).collect();
 
+        // CCT-509: grandfather the FIRST successful snapshot of this daemon
+        // lifetime. Its workers were already alive when cctui (re)started — they
+        // were brought up by a PRIOR lifetime (a self-update re-exec or
+        // sleep-wake survivor cctui launched correctly), not by an autonomous
+        // respawn we observed flip absent→present. The in-memory `HealTracker`
+        // is empty at startup, so without this they'd all be untrusted →
+        // mistaken for env-less respawns → force-killed (the restart-amnesia
+        // kill storm). Trust them; a genuine respawn AFTER startup still arms
+        // the heal because it drops off the roster (`forget`) then reappears
+        // untracked. A worker cctui itself launches is recorded with env at the
+        // chokepoint regardless, so this only matters for inherited survivors.
+        if !self.grandfathered {
+            self.grandfathered = true;
+            if let Ok(mut t) = self.gateway_heal.lock() {
+                for short in &now_shorts {
+                    t.note_launched_with_env(short);
+                }
+            }
+        }
+
         // Newly started.
         for job in &visible {
             if !self.roster.contains(&job.short) {
@@ -2248,12 +2279,16 @@ impl Driver {
         self.attach.cancel_all();
         let shorts: Vec<String> = self.roster.drain().collect();
         self.last_status.clear();
-        // The whole roster is gone — clear heal bookkeeping too (CCT-462).
-        if let Ok(mut t) = self.gateway_heal.lock() {
-            for short in &shorts {
-                t.forget(short);
-            }
-        }
+        // CCT-509: do NOT clear heal bookkeeping here. A flush fires when the
+        // control socket is momentarily unreachable (on-demand daemon
+        // idle-shutdown / kickstart race) — that is NOT evidence the workers
+        // died; they stay alive and reappear on the next successful poll.
+        // Forgetting their launched-with-env trust here made cctui mistake its
+        // own live, account-bound sessions for env-less autonomous respawns and
+        // force-kill them as soon as the socket returned (the observed kill
+        // loop). Trust is dropped only when a worker genuinely leaves a
+        // *successful* roster snapshot (`apply_snapshot`'s `gone` handling),
+        // which a real death/respawn does and a socket blip does not.
         for short in shorts {
             self.clear_permission(&short).await;
             self.emit(AdapterEvent::SessionEnded { local_id: short, reason: reason.clone() }).await;
@@ -2990,6 +3025,56 @@ mod tests {
         assert!(
             !d.gateway_heal.lock().unwrap().is_candidate("aaaa1111"),
             "a cctui-launched worker must be trusted even with empty gateway env (CCT-462)"
+        );
+    }
+
+    #[tokio::test]
+    async fn startup_roster_is_grandfathered_not_healed() {
+        // CCT-509: the in-memory HealTracker is empty after a daemon (re)start
+        // (self-update re-exec / sleep-wake), so every session that was already
+        // alive would look like an env-less autonomous respawn and be
+        // force-killed — the restart-amnesia kill storm. The FIRST successful
+        // snapshot must grandfather the pre-existing roster as trusted.
+        let (mut d, _rx) = driver();
+        d.apply_snapshot(vec![snap("aaaa1111", "working", None)]).await;
+        assert!(
+            !d.gateway_heal.lock().unwrap().is_candidate("aaaa1111"),
+            "a session already alive at daemon startup must be grandfathered, not a heal candidate (CCT-509)"
+        );
+    }
+
+    #[tokio::test]
+    async fn worker_appearing_after_startup_stays_a_heal_candidate() {
+        // CCT-509: grandfathering applies ONLY to the first snapshot. A worker
+        // that flips absent→present LATER is exactly the heal's genuine target —
+        // an autonomous claude-daemon respawn cctui never launched this lifetime
+        // — and must remain a candidate so the env-less case is still healed.
+        let (mut d, _rx) = driver();
+        d.apply_snapshot(vec![snap("aaaa1111", "working", None)]).await; // startup → grandfathered
+        d.apply_snapshot(vec![
+            snap("aaaa1111", "working", None),
+            snap("bbbb2222", "working", None),
+        ])
+        .await;
+        let t = d.gateway_heal.lock().unwrap();
+        assert!(!t.is_candidate("aaaa1111"), "the grandfathered startup session stays trusted");
+        assert!(t.is_candidate("bbbb2222"), "a post-startup arrival is the heal's genuine target");
+    }
+
+    #[tokio::test]
+    async fn socket_loss_flush_keeps_heal_trust() {
+        // CCT-509: a flush fires when the control socket is momentarily
+        // unreachable, NOT when workers die — they stay alive and reappear next
+        // poll. Forgetting their launched-with-env trust here made cctui
+        // force-kill its own live sessions once the socket returned. Trust must
+        // survive the flush.
+        let (mut d, _rx) = driver();
+        d.apply_snapshot(vec![snap("aaaa1111", "working", None)]).await; // in roster + trusted
+        assert!(!d.gateway_heal.lock().unwrap().is_candidate("aaaa1111"));
+        d.flush_roster(EndReason::Other { detail: "socket blip".into() }).await;
+        assert!(
+            !d.gateway_heal.lock().unwrap().is_candidate("aaaa1111"),
+            "heal trust must survive a transient socket-loss flush — the worker is still alive (CCT-509)"
         );
     }
 
