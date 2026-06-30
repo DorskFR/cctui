@@ -176,6 +176,17 @@ pub struct AccountInfo {
     pub soft_limit_5h_pct: Option<i32>,
     pub soft_limit_7d_pct: Option<i32>,
     pub soft_limit_bypass_minutes: Option<i32>,
+    /// Credential health (CCT-512): `true` once the gateway saw the upstream
+    /// provider reject this account's OAuth credentials, cleared on the next
+    /// successful upstream call. The accounts UI shows a "reauthenticate" badge.
+    /// `#[sqlx(default)]` so SELECTs that don't project it (create/oauth_finish on
+    /// a fresh, never-flagged account) still decode.
+    #[sqlx(default)]
+    pub needs_reauth: bool,
+    #[sqlx(default)]
+    pub last_auth_error: Option<String>,
+    #[sqlx(default)]
+    pub last_auth_error_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -293,6 +304,7 @@ pub async fn list_accounts(
                 a.expires_at, a.created_at, a.last_used_at, \
                 a.request_count, a.bytes_transferred, \
                 a.soft_limit_5h_pct, a.soft_limit_7d_pct, a.soft_limit_bypass_minutes, \
+                a.needs_reauth, a.last_auth_error, a.last_auth_error_at, \
                 (COALESCE(t.input_tokens,0) + COALESCE(t.output_tokens,0) \
                  + COALESCE(t.cache_read_tokens,0) + COALESCE(t.cache_creation_tokens,0))::bigint \
                   AS total_tokens, \
@@ -930,11 +942,21 @@ pub async fn oauth_finish(
     let enc_access = crate::crypto::obfuscate(&tok.access_token, &key);
     let expires_at = tok.expires_in.map(|s| Utc::now() + Duration::seconds(s));
 
+    // Upsert on (user_id, name, provider): a first login inserts; re-running the
+    // flow for an existing account (the Reauthenticate button, CCT-512) refreshes
+    // its credentials in place and clears any `needs_reauth` flag, instead of
+    // 409ing on the unique index.
     let row: Result<AccountInfo, sqlx::Error> = sqlx::query_as(
         "INSERT INTO oauth_accounts \
             (user_id, name, provider, encrypted_refresh_token, encrypted_access_token, \
              expires_at, provider_account_id) \
          VALUES ($1, $2, $3, $4, $5, $6, $7) \
+         ON CONFLICT (user_id, name, provider) DO UPDATE SET \
+             encrypted_refresh_token = EXCLUDED.encrypted_refresh_token, \
+             encrypted_access_token  = EXCLUDED.encrypted_access_token, \
+             expires_at              = EXCLUDED.expires_at, \
+             provider_account_id     = EXCLUDED.provider_account_id, \
+             needs_reauth = false, last_auth_error = NULL, last_auth_error_at = NULL \
          RETURNING id, name, provider, models, managed, user_id, NULL::text AS user_name, \
                    expires_at, created_at, last_used_at, \
                    request_count, bytes_transferred, \
@@ -951,7 +973,12 @@ pub async fn oauth_finish(
     .await;
 
     match row {
-        Ok(info) => Ok((StatusCode::CREATED, Json(info))),
+        Ok(info) => {
+            // Fresh credentials → drop the in-memory reauth gate too (CCT-512), so
+            // the gateway's success path doesn't think it still needs clearing.
+            state.account_reauth.remove(&info.id);
+            Ok((StatusCode::CREATED, Json(info)))
+        }
         Err(sqlx::Error::Database(db)) if db.is_unique_violation() => {
             Err(err(StatusCode::CONFLICT, "an account with that name+provider already exists"))
         }

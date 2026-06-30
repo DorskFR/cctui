@@ -124,6 +124,9 @@
 	let oauthCode = $state('');
 	let oauthBusy = $state(false);
 	let showAdvanced = $state(false);
+	// Reauth mode (CCT-512): editing an existing native account to refresh its
+	// rejected credentials, which reveals the sign-in block inside the edit modal.
+	let reauthing = $state(false);
 
 	function resetForm() {
 		name = '';
@@ -141,6 +144,7 @@
 		oauthCode = '';
 		oauthBusy = false;
 		showAdvanced = false;
+		reauthing = false;
 	}
 
 	// Start the authorize leg: ask the server for an authorize URL, open it in a
@@ -228,6 +232,17 @@
 		soft5h = a.soft_limit_5h_pct;
 		soft7d = a.soft_limit_7d_pct;
 		softBypass = a.soft_limit_bypass_minutes;
+	}
+
+	// Reauthenticate a flagged account (CCT-512): open its edit modal, flip into
+	// reauth mode (reveals the sign-in block), and kick the authorize leg. The
+	// pasted code is exchanged by finishOAuthLogin, which upserts the credentials
+	// in place (same name+provider) and clears `needs_reauth` server-side.
+	function reauth(a: OAuthAccount) {
+		openEdit(a);
+		ownerId = a.user_id;
+		reauthing = true;
+		startOAuthLogin();
 	}
 
 	function close() {
@@ -344,6 +359,13 @@
 						</span>
 						<Heading level={2} size="lg" class="account-name">{a.name}</Heading>
 					</Cluster>
+					{#if a.needs_reauth}
+						<!-- Credential rejected (CCT-512): the gateway saw the upstream
+						     provider reject this account's OAuth grant. -->
+						<div class="reauth-banner" title={a.last_auth_error ?? undefined}>
+							<Text as="span" size="xs">⚠ Credential rejected — reauthenticate</Text>
+						</div>
+					{/if}
 					{#if a.provider === 'anthropic' || a.provider === 'openai'}
 						<div class="usage-block">
 							<Text as="div" tone="muted" size="xs" class="usage-head">Subscription usage</Text>
@@ -368,6 +390,9 @@
 					{#if a.managed}
 						<Text tone="faint" size="xs">Managed (read-only)</Text>
 					{:else}
+						{#if a.needs_reauth && !a.provider.endsWith('-compatible')}
+							<Button variant="primary" onclick={() => reauth(a)}>Reauthenticate</Button>
+						{/if}
 						<Button onclick={() => openEdit(a)}>Edit</Button>
 						<Button variant="danger" onclick={() => remove(a)}>Delete</Button>
 					{/if}
@@ -385,7 +410,7 @@
 </Tabs>
 
 {#if editing !== undefined}
-	<Modal title={editing ? 'Edit account' : 'New account'} onclose={close}>
+	<Modal title={reauthing ? 'Reauthenticate account' : editing ? 'Edit account' : 'New account'} onclose={close}>
 		{#snippet body()}
 			<div class="editor-body">
 				<Field label="Name">
@@ -465,8 +490,9 @@
 								>+ Add model</Button
 							>
 						</div>
-					{:else if !editing}
-						<!-- Sign in with Claude / ChatGPT: authorize upstream, paste back. -->
+					{:else if !editing || reauthing}
+						<!-- Sign in with Claude / ChatGPT: authorize upstream, paste back.
+						     Also shown when reauthenticating an existing account (CCT-512). -->
 						{#if !oauthNonce}
 							<Button
 								variant="primary"
@@ -573,7 +599,7 @@
 		{#snippet footer()}
 			<div class="spacer"></div>
 			<Button onclick={close}>Cancel</Button>
-			{#if !editing && oauthNonce && !showAdvanced}
+			{#if (!editing || reauthing) && oauthNonce && !showAdvanced}
 				<Button variant="primary" disabled={oauthBusy} onclick={finishOAuthLogin}>Save</Button>
 			{:else}
 				<Button variant="primary" onclick={save}>Save</Button>
@@ -647,6 +673,14 @@
 		border: 1px solid var(--border);
 		border-radius: var(--r-sm);
 		background: var(--bg-elevated-2);
+	}
+	/* Credential-rejected banner (CCT-512): a muted danger strip on the card. */
+	.reauth-banner {
+		padding: var(--sp-1) var(--sp-2);
+		border: 1px solid var(--danger, #d9534f);
+		border-radius: var(--r-sm);
+		background: color-mix(in srgb, var(--danger, #d9534f) 12%, transparent);
+		color: var(--danger, #d9534f);
 	}
 	/* Passed to a Text atom (renders inside it), so target globally. Size/colour
 	   come from Text; the page owns only the uppercase treatment. */

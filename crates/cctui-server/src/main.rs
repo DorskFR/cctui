@@ -89,7 +89,21 @@ async fn main() -> anyhow::Result<()> {
         pr_status_cache: cctui_proto::classifier::PrStatusCache::new(),
         soft_limit_blocked: Arc::new(dashmap::DashMap::new()),
         gateway_orphan_spam: Arc::new(dashmap::DashMap::new()),
+        account_reauth: Arc::new(dashmap::DashMap::new()),
     };
+
+    // Warm the reauth gate from the persisted flag (CCT-512) so a restart doesn't
+    // strand an account: without this the success path couldn't clear a flag set
+    // before the restart (it only writes on the in-memory transition).
+    if let Ok(ids) =
+        sqlx::query_scalar::<_, uuid::Uuid>("SELECT id FROM oauth_accounts WHERE needs_reauth")
+            .fetch_all(&state.pool)
+            .await
+    {
+        for id in ids {
+            state.account_reauth.insert(id, ());
+        }
+    }
 
     let (api_router, api_descriptors) = build_api_routes().into_parts();
 

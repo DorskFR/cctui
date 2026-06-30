@@ -525,6 +525,56 @@ pub async fn clear_soft_limit_block(state: &AppState, session_id: &str) {
     }
 }
 
+/// Flag an account as needing reauthentication (CCT-512): the upstream provider
+/// rejected its OAuth credentials. Persists `needs_reauth` + the error so the
+/// accounts UI can show a "credential rejected — reauthenticate" badge. Gated on
+/// the in-memory set so a flapping worker doesn't re-write the row on every 401 —
+/// the DB write fires only on the false→true transition.
+fn flag_account_reauth(state: &AppState, account_id: Uuid, reason: &str) {
+    if state.account_reauth.insert(account_id, ()).is_some() {
+        return; // already flagged in memory — no redundant write
+    }
+    let pool = state.pool.clone();
+    let reason = reason.to_string();
+    tokio::spawn(async move {
+        if let Err(e) = sqlx::query(
+            "UPDATE oauth_accounts \
+                SET needs_reauth = true, last_auth_error = $2, last_auth_error_at = now() \
+             WHERE id = $1",
+        )
+        .bind(account_id)
+        .bind(reason)
+        .execute(&pool)
+        .await
+        {
+            tracing::warn!(account = %account_id, error = %e, "failed to flag account reauth");
+        }
+    });
+}
+
+/// Clear an account's reauth flag (CCT-512) after a successful upstream call.
+/// Gated on the in-memory set so the common case (account healthy) costs nothing;
+/// the DB write fires only on the true→false transition.
+fn clear_account_reauth(state: &AppState, account_id: Uuid) {
+    if state.account_reauth.remove(&account_id).is_none() {
+        return; // not flagged — nothing to clear
+    }
+    let pool = state.pool.clone();
+    tokio::spawn(async move {
+        if let Err(e) = sqlx::query(
+            "UPDATE oauth_accounts \
+                SET needs_reauth = false, last_auth_error = NULL, last_auth_error_at = NULL \
+             WHERE id = $1 AND needs_reauth",
+        )
+        .bind(account_id)
+        .execute(&pool)
+        .await
+        {
+            tracing::warn!(account = %account_id, error = %e, "failed to clear account reauth");
+        }
+    });
+}
+
 /// Raw account row as selected from the join (before decrypt).
 type AccountRow = (
     Uuid,
@@ -1077,6 +1127,7 @@ async fn passthrough(
         Ok(t) => t,
         Err(_) => {
             tracing::warn!(account = %acct.id, stage = "provider-oauth", "gateway 401: no upstream access token for account");
+            flag_account_reauth(&state, acct.id, "no upstream access token (refresh failed)");
             return Ok(auth_error(AuthStage::ProviderOauth, is_anthropic));
         }
     };
@@ -1185,6 +1236,7 @@ async fn passthrough(
     // (CCT-460).
     if status == StatusCode::UNAUTHORIZED {
         tracing::warn!(account = %acct.id, stage = "provider-oauth", "gateway 401: upstream provider rejected account credentials");
+        flag_account_reauth(&state, acct.id, "upstream provider rejected account credentials");
         return Ok(auth_error(AuthStage::ProviderOauth, is_anthropic));
     }
 
@@ -1200,6 +1252,12 @@ async fn passthrough(
         if let Some(sid) = session_id {
             clear_soft_limit_block(&state, &sid).await;
         }
+    }
+    // A successful upstream call means the account's credentials are good again —
+    // clear any reauth flag (CCT-512). Gated in-memory, so this is free unless the
+    // account was actually flagged.
+    if status.is_success() {
+        clear_account_reauth(&state, acct.id);
     }
     let mut builder = Response::builder().status(status);
     for (name, value) in upstream.headers() {

@@ -124,6 +124,12 @@ export interface OAuthAccount {
   soft_limit_5h_pct: number | null;
   soft_limit_7d_pct: number | null;
   soft_limit_bypass_minutes: number | null;
+  /** Credential health (CCT-512): true once the gateway saw the upstream provider
+   *  reject this account's OAuth credentials; cleared on the next successful
+   *  upstream call. UI shows a "reauthenticate" badge + button when set. */
+  needs_reauth: boolean;
+  last_auth_error: string | null;
+  last_auth_error_at: string | null;
 }
 
 /** One usage window from Anthropic's free OAuth usage API (CCT-306):
