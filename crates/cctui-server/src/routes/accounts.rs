@@ -1004,8 +1004,9 @@ pub struct AccountUsage {
 /// `GET /api/v1/accounts/{id}/usage` — current subscription usage for an account
 /// (CCT-306). Free + tokenless: for anthropic accounts this hits Anthropic's
 /// OAuth usage endpoint (5h/7d window utilization), served from a slow-refresh
-/// per-account cache so we never spam the rate-limited upstream. Non-anthropic
-/// providers (Codex) have no such API → `usage: null` (the UI hides the chip).
+/// per-account cache so we never spam the rate-limited upstream. OpenAI/codex
+/// accounts have no such API, so the 5h/7d windows are metered locally from
+/// recorded token usage (CCT-511) — same shape, same cache, same UI chip.
 /// Ownership: a user may only read their own accounts; admin may read any.
 pub async fn account_usage(
     State(state): State<AppState>,

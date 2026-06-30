@@ -1330,8 +1330,9 @@ async fn usage_for_soft_limit(state: &AppState, account_id: Uuid) -> Option<serd
 /// Reloads + decrypts the account, ensures a fresh access token (refreshing under
 /// the per-account mutex if needed), and calls Anthropic's free usage endpoint.
 /// Returns:
-///   * `Ok(Some(json))` — anthropic account, usage fetched
-///   * `Ok(None)` — no such account, or a non-anthropic provider (no usage API)
+///   * `Ok(Some(json))` — anthropic account (fetched upstream) or OpenAI/codex
+///     account (metered locally from `session_token_usage`, CCT-511)
+///   * `Ok(None)` — no such account
 ///   * `Err(status)` — token refresh failed or upstream rejected (e.g. 429)
 ///
 /// This makes NO inference request and costs no tokens. Callers MUST throttle it
@@ -1342,8 +1343,11 @@ pub async fn fetch_account_usage(
 ) -> Result<Option<serde_json::Value>, StatusCode> {
     let Some(acct) = reload_account(state, account_id).await else { return Ok(None) };
     if acct.provider != "anthropic" {
-        // Codex/OpenAI has no equivalent free usage endpoint — degrade gracefully.
-        return Ok(None);
+        // OpenAI/codex has no comparable free usage endpoint, so meter the 5h/7d
+        // windows locally from our own recorded token usage (CCT-511). Same
+        // `{five_hour, seven_day}` shape as Anthropic so soft_limit + the UI work
+        // identically; utilization is tokens-in-window vs an env-tunable budget.
+        return local_usage_windows(state, account_id).await;
     }
     let access_token = current_access_token(state, &acct).await?;
     let resp = state
@@ -1368,6 +1372,83 @@ pub async fn fetch_account_usage(
         StatusCode::BAD_GATEWAY
     })?;
     Ok(Some(json))
+}
+
+/// Per-window token budget an OpenAI/codex account's local utilization is measured
+/// against (CCT-511). Codex exposes no free usage endpoint, so we can't read a real
+/// quota — utilization is `tokens_used_in_window / budget`. The budgets are
+/// arbitrary-but-tunable so the soft-limit % stays meaningful per plan; override
+/// via env to match whatever ChatGPT/codex tier the account is on.
+fn openai_5h_token_budget() -> i64 {
+    std::env::var("CCTUI_OPENAI_5H_TOKEN_BUDGET")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(8_000_000)
+}
+
+fn openai_7d_token_budget() -> i64 {
+    std::env::var("CCTUI_OPENAI_7D_TOKEN_BUDGET")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(80_000_000)
+}
+
+/// Compute provider-agnostic 5h/7d usage windows from cctui's own recorded token
+/// usage (CCT-511). Sums every token kind across the account's sessions inside each
+/// rolling window and divides by the configured budget for a utilization percent.
+/// `resets_at` is when the oldest contributing usage ages out of the window (i.e.
+/// when capacity frees up). Emits the same JSON shape as the Anthropic usage
+/// endpoint so [`crate::soft_limit`] and the accounts UI consume it unchanged.
+async fn local_usage_windows(
+    state: &AppState,
+    account_id: Uuid,
+) -> Result<Option<serde_json::Value>, StatusCode> {
+    let five_hour = local_window(state, account_id, "5 hours", openai_5h_token_budget()).await?;
+    let seven_day = local_window(state, account_id, "7 days", openai_7d_token_budget()).await?;
+    Ok(Some(serde_json::json!({
+        "five_hour": five_hour,
+        "seven_day": seven_day,
+    })))
+}
+
+/// One rolling window's `{utilization, resets_at}` from `session_token_usage`.
+async fn local_window(
+    state: &AppState,
+    account_id: Uuid,
+    interval: &str,
+    budget: i64,
+) -> Result<serde_json::Value, StatusCode> {
+    // SUM() over bigint returns NUMERIC; cast back to bigint or sqlx fails to
+    // decode into i64. `oldest` is the earliest in-window usage row.
+    let row: (i64, Option<chrono::DateTime<chrono::Utc>>) = sqlx::query_as(
+        "SELECT COALESCE(SUM(stu.input_tokens + stu.output_tokens \
+                + stu.cache_read_tokens + stu.cache_creation_tokens), 0)::bigint AS tokens, \
+                MIN(stu.created_at) AS oldest \
+         FROM session_tokens st \
+         JOIN session_token_usage stu ON stu.session_id = st.session_id \
+         WHERE st.account_id = $1 AND stu.created_at >= now() - $2::interval",
+    )
+    .bind(account_id)
+    .bind(interval)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(|e| {
+        tracing::warn!(account = %account_id, "local usage query error: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let (tokens, oldest) = row;
+    let utilization = (tokens as f64 / budget as f64) * 100.0;
+    // The window frees up when the oldest contributing row falls out of it.
+    let resets_at = oldest.and_then(|t| {
+        let secs = if interval == "5 hours" { 5 * 3600 } else { 7 * 86400 };
+        Some((t + chrono::Duration::seconds(secs)).to_rfc3339())
+    });
+    Ok(serde_json::json!({
+        "utilization": utilization,
+        "resets_at": resets_at,
+    }))
 }
 
 #[cfg(test)]

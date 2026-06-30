@@ -3,11 +3,11 @@
 	import { relativeTime } from '$lib/format';
 	import { Text } from '@dorsk/tsumikit';
 
-	// Per-account subscription-usage chip (CCT-306). Shows Anthropic's free OAuth
-	// usage windows (5h session + 7d weekly utilization) for claude accounts;
-	// hides entirely for providers with no usage API (Codex) or while we have no
-	// data. Fetch is lazy + slow-refresh (see useAccountUsage) so the rate-limited
-	// upstream is never spammed.
+	// Per-account subscription-usage chip (CCT-306). Shows the 5h/7d window
+	// utilization for an account: Anthropic's free OAuth usage windows for claude
+	// accounts, and locally-metered windows for OpenAI/codex accounts (CCT-511).
+	// Hides only while we have no data. Fetch is lazy + slow-refresh (see
+	// useAccountUsage) so the rate-limited upstream is never spammed.
 	let {
 		id,
 		provider,
@@ -19,8 +19,9 @@
 		enabled?: boolean;
 	} = $props();
 
-	// Codex/OpenAI has no free usage endpoint — never fetch for it.
-	const active = $derived(enabled && provider === 'anthropic');
+	// Both anthropic (upstream) and openai (local metering, CCT-511) report
+	// windows now; only providers we don't meter at all are excluded.
+	const active = $derived(enabled && (provider === 'anthropic' || provider === 'openai'));
 	const q = useAccountUsage(
 		() => id,
 		() => active

@@ -344,7 +344,7 @@
 						</span>
 						<Heading level={2} size="lg" class="account-name">{a.name}</Heading>
 					</Cluster>
-					{#if a.provider === 'anthropic'}
+					{#if a.provider === 'anthropic' || a.provider === 'openai'}
 						<div class="usage-block">
 							<Text as="div" tone="muted" size="xs" class="usage-head">Subscription usage</Text>
 							<UsageBars
@@ -541,9 +541,9 @@
 
 					<!-- Soft limits (CCT-411): cap cctui's own share of the 5h/7d usage
 					     windows so a shared subscription keeps headroom for the human.
-					     Blank ⇒ no cap on that window. Anthropic-only (it has the usage
-					     API), but harmless to set on others. -->
-					{#if provider === 'anthropic' || provider === 'anthropic-compatible'}
+					     Blank ⇒ no cap on that window. Works for anthropic (upstream usage
+					     API) and openai (locally metered, CCT-511). -->
+					{#if provider === 'anthropic' || provider === 'anthropic-compatible' || provider === 'openai'}
 						<div class="models">
 							<Text as="div" tone="muted" size="sm">Soft limits</Text>
 							<Text as="div" tone="faint" size="xs">

@@ -29,7 +29,7 @@
 		cap7d?: number | null;
 	} = $props();
 
-	const active = $derived(enabled && provider === 'anthropic');
+	const active = $derived(enabled && (provider === 'anthropic' || provider === 'openai'));
 	const q = useAccountUsage(
 		() => id,
 		() => active
