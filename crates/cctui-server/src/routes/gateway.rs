@@ -206,38 +206,57 @@ pub async fn resume_env_for_session(
     state: &AppState,
     session_id: &str,
 ) -> std::collections::BTreeMap<String, String> {
-    let Some(aid) = resolve_session_account(state, session_id).await else {
-        return Default::default();
-    };
-    match mint_session_env_for_account(state, aid, session_id).await {
-        Ok(Some(env)) => env,
-        Ok(None) => Default::default(),
-        Err(e) => {
-            tracing::error!(%session_id, "re-mint gateway env on wake failed: {e}");
-            Default::default()
+    // Re-mint EVERY bound family and merge. The two families emit disjoint env
+    // keys (`ANTHROPIC_*` vs `OPENAI_*`), so a worker carrying both claude +
+    // codex creds gets both restored — not just the last-minted family (CCT-514).
+    let mut env = std::collections::BTreeMap::new();
+    for aid in resolve_session_accounts(state, session_id).await {
+        match mint_session_env_for_account(state, aid, session_id).await {
+            Ok(Some(e)) => env.extend(e),
+            Ok(None) => {} // this family's account row is gone; others may still mint
+            Err(e) => {
+                tracing::error!(%session_id, "re-mint gateway env on wake failed: {e}");
+            }
         }
     }
+    env
 }
 
-/// Resolve a session's bound OAuth account id (CCT-460). Durable binding on
-/// `sessions.account_id`, falling back to the most-recent non-revoked
-/// `session_tokens` row for sessions bound before that column existed (or before
-/// the `sessions` row was created at spawn-time mint). `None` when the session
-/// has no account binding at all.
-pub(crate) async fn resolve_session_account(state: &AppState, session_id: &str) -> Option<Uuid> {
-    sqlx::query_scalar(
-        "SELECT COALESCE( \
-             (SELECT account_id::uuid FROM sessions WHERE id = $1 AND account_id IS NOT NULL), \
-             (SELECT account_id FROM session_tokens \
-               WHERE session_id = $1 AND revoked_at IS NULL \
-               ORDER BY created_at DESC LIMIT 1) \
-         )",
+/// Resolve a session's bound OAuth accounts — **one per provider family**
+/// (CCT-514). A session can carry a claude (Anthropic) account *and* a codex
+/// (OpenAI) account at once; both must be re-minted on wake or the worker
+/// launches missing one family's creds and 401s (the multi-account dispatch
+/// regression). The durable binding lives on the session's live `session_tokens`
+/// rows (one stable token per family, see `mint_env_for_account`); we take the
+/// newest live token per family. Falls back to the legacy single
+/// `sessions.account_id` column for sessions bound before per-family tokens
+/// existed. Empty when the session has no account binding at all.
+pub(crate) async fn resolve_session_accounts(state: &AppState, session_id: &str) -> Vec<Uuid> {
+    // `(oa.provider ILIKE '%openai%')` is the family key (true → OpenAI/Codex,
+    // false → Anthropic); DISTINCT ON it keeps the newest live token per family.
+    let mut ids: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT DISTINCT ON ((oa.provider ILIKE '%openai%')) st.account_id \
+         FROM session_tokens st JOIN oauth_accounts oa ON oa.id = st.account_id \
+         WHERE st.session_id = $1 AND st.revoked_at IS NULL \
+         ORDER BY (oa.provider ILIKE '%openai%'), st.created_at DESC",
     )
     .bind(session_id)
-    .fetch_optional(&state.pool)
+    .fetch_all(&state.pool)
     .await
-    .ok()
-    .flatten()
+    .unwrap_or_default();
+    if ids.is_empty()
+        && let Some(aid) = sqlx::query_scalar::<_, Uuid>(
+            "SELECT account_id::uuid FROM sessions WHERE id = $1 AND account_id IS NOT NULL",
+        )
+        .bind(session_id)
+        .fetch_optional(&state.pool)
+        .await
+        .ok()
+        .flatten()
+    {
+        ids.push(aid);
+    }
+    ids
 }
 
 /// Mint a fresh opaque session token bound to `(session_id, account_id)`,
@@ -251,26 +270,36 @@ async fn mint_env_for_account(
     session_id: &str,
 ) -> Result<std::collections::BTreeMap<String, String>, sqlx::Error> {
     let family = Family::from_provider(provider);
+    let is_openai = family == Family::Openai;
 
-    // A session gets ONE stable gateway token for its whole life (CCT-476).
-    // Reuse the existing live token for this session if we have one persisted,
-    // rather than minting a fresh row on every resume — re-minting bloated
-    // `session_tokens` for no reason and left live workers holding a token the
-    // gateway might no longer resolve. The token string is immutable; only its
-    // account binding moves (repointed below) on an account switch (CCT-444).
+    // A session gets ONE stable gateway token **per provider family** for its
+    // whole life (CCT-476 / CCT-514). Reuse the existing live token for THIS
+    // family if we have one persisted, rather than minting a fresh row on every
+    // resume — re-minting bloated `session_tokens` for no reason and left live
+    // workers holding a token the gateway might no longer resolve. The token
+    // string is immutable; only its account binding moves (repointed below) on
+    // an account switch (CCT-444). Scoping reuse + repoint to the family is what
+    // lets a worker carry claude + codex at once: minting the OpenAI account
+    // must NOT repoint the Anthropic token to it (CCT-514).
     let key = crate::crypto::vault_key();
-    let token = match existing_session_token(state, session_id, &key).await {
+    let token = match existing_session_token(state, session_id, is_openai, &key).await {
         Some(existing) => {
-            // Repoint the live token to the requested account (and un-revoke,
-            // defensively) so an account switch reuses the same string — the
-            // worker's `ANTHROPIC_AUTH_TOKEN` never changes, the gateway just
-            // resolves it to the new account.
+            // Repoint only THIS family's live token to the requested account (and
+            // un-revoke, defensively) so an account switch reuses the same string
+            // — the worker's `ANTHROPIC_AUTH_TOKEN`/`OPENAI_API_KEY` never
+            // changes, the gateway just resolves it to the new account. The
+            // `oauth_accounts` join + family predicate confine the repoint to the
+            // same-family token, leaving the other family's token untouched.
             let _ = sqlx::query(
-                "UPDATE session_tokens SET account_id = $2, revoked_at = NULL \
-                 WHERE session_id = $1 AND revoked_at IS NULL",
+                "UPDATE session_tokens AS st SET account_id = $2, revoked_at = NULL \
+                 FROM oauth_accounts AS oa \
+                 WHERE st.session_id = $1 AND st.revoked_at IS NULL \
+                   AND st.account_id = oa.id \
+                   AND (oa.provider ILIKE '%openai%') = $3",
             )
             .bind(session_id)
             .bind(account_id)
+            .bind(is_openai)
             .execute(&state.pool)
             .await;
             existing
@@ -329,18 +358,30 @@ async fn mint_env_for_account(
     Ok(env)
 }
 
-/// The session's existing stable gateway token (decrypted), if one was minted
-/// and persisted with its plaintext (CCT-476). `None` for sessions with no live
-/// token, or pre-migration rows that only stored the one-way hash (those fall
-/// through to a one-time fresh mint). Picks the newest live token on the off
-/// chance a session accrued several from the old re-mint-on-resume behaviour.
-async fn existing_session_token(state: &AppState, session_id: &str, key: &[u8]) -> Option<String> {
+/// The session's existing stable gateway token for a given provider family
+/// (decrypted), if one was minted and persisted with its plaintext (CCT-476 /
+/// CCT-514). `is_openai` selects the family (true → OpenAI/Codex, false →
+/// Anthropic) so the two families' tokens stay independent. `None` for a family
+/// with no live token, or pre-migration rows that only stored the one-way hash
+/// (those fall through to a one-time fresh mint). Picks the newest live token on
+/// the off chance a session accrued several from the old re-mint-on-resume
+/// behaviour.
+async fn existing_session_token(
+    state: &AppState,
+    session_id: &str,
+    is_openai: bool,
+    key: &[u8],
+) -> Option<String> {
     let enc: String = sqlx::query_scalar(
-        "SELECT encrypted_token FROM session_tokens \
-         WHERE session_id = $1 AND revoked_at IS NULL AND encrypted_token IS NOT NULL \
-         ORDER BY created_at DESC LIMIT 1",
+        "SELECT st.encrypted_token FROM session_tokens st \
+         JOIN oauth_accounts oa ON oa.id = st.account_id \
+         WHERE st.session_id = $1 AND st.revoked_at IS NULL \
+           AND st.encrypted_token IS NOT NULL \
+           AND (oa.provider ILIKE '%openai%') = $2 \
+         ORDER BY st.created_at DESC LIMIT 1",
     )
     .bind(session_id)
+    .bind(is_openai)
     .fetch_optional(&state.pool)
     .await
     .ok()
@@ -477,12 +518,13 @@ async fn mark_soft_limit_block(
     // another account" hint; `list_sessions` reads it. Idempotent (overwrite),
     // and never clobbers the churning daemon `tempo`/`agent_state` signals.
     let needs = format!("switch account: {account_name} rate-limited");
-    if let Err(e) =
-        sqlx::query("UPDATE sessions SET soft_limit_reason = $2 WHERE id = $1 AND status != 'archived'")
-            .bind(session_id)
-            .bind(&needs)
-            .execute(&state.pool)
-            .await
+    if let Err(e) = sqlx::query(
+        "UPDATE sessions SET soft_limit_reason = $2 WHERE id = $1 AND status != 'archived'",
+    )
+    .bind(session_id)
+    .bind(&needs)
+    .execute(&state.pool)
+    .await
     {
         tracing::warn!(%session_id, error = %e, "failed to persist soft-limit block");
     }
@@ -713,9 +755,11 @@ fn bump_orphan_401(
     window: std::time::Duration,
     block: std::time::Duration,
 ) -> (u32, bool) {
-    let mut entry = map
-        .entry(token_fp.to_string())
-        .or_insert_with(|| crate::state::OrphanSpam { count: 0, window_start: now, blocked_until: None });
+    let mut entry = map.entry(token_fp.to_string()).or_insert_with(|| crate::state::OrphanSpam {
+        count: 0,
+        window_start: now,
+        blocked_until: None,
+    });
 
     // Roll the window over once it elapses (also clears an expired block).
     if now.duration_since(entry.window_start) > window {
@@ -742,7 +786,10 @@ fn bump_orphan_401(
 /// fed the spam guard during restarts and blocked perfectly valid tokens for
 /// 300s (the "401 on every server restart" regression). On `Err` we return a
 /// retryable 503 and never touch the orphan block.
-async fn resolve_account(state: &AppState, session_token: &str) -> Result<Option<Account>, sqlx::Error> {
+async fn resolve_account(
+    state: &AppState,
+    session_token: &str,
+) -> Result<Option<Account>, sqlx::Error> {
     let hash = crate::auth::sha256_hex(session_token);
     let row: Option<AccountRow> = sqlx::query_as(
         "SELECT a.id, a.provider, a.encrypted_access_token, a.encrypted_refresh_token, \

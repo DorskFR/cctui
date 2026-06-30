@@ -115,33 +115,36 @@ pub async fn session_gateway_env(
         }));
     }
 
-    let Some(account_id) =
-        crate::routes::gateway::resolve_session_account(&state, &session_id).await
-    else {
+    // Resolve EVERY bound family (one account per family) and re-mint each, so a
+    // worker carrying both claude + codex creds gets both restored on launch,
+    // not just the last-minted family (CCT-514). The families emit disjoint env
+    // keys, so the merge never collides.
+    let accounts = crate::routes::gateway::resolve_session_accounts(&state, &session_id).await;
+    if accounts.is_empty() {
         return Ok(Json(cctui_proto::api::GatewayEnvResponse {
             account_bound: false,
             env: Default::default(),
         }));
-    };
-
-    match crate::routes::gateway::mint_session_env_for_account(&state, account_id, &session_id)
-        .await
-    {
-        Ok(Some(env)) => {
-            Ok(Json(cctui_proto::api::GatewayEnvResponse { account_bound: true, env }))
-        }
-        // Bound, but the account row is gone — report bound + empty so the daemon
-        // fails closed instead of launching a worker that will 401.
-        Ok(None) => Ok(Json(cctui_proto::api::GatewayEnvResponse {
-            account_bound: true,
-            env: Default::default(),
-        })),
-        // Transient DB failure: let the daemon fall back to its pushed env hint.
-        Err(e) => {
-            tracing::error!(%session_id, "daemon gateway-env mint failed: {e}");
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+    }
+    let mut env = std::collections::BTreeMap::new();
+    for account_id in accounts {
+        match crate::routes::gateway::mint_session_env_for_account(&state, account_id, &session_id)
+            .await
+        {
+            Ok(Some(e)) => env.extend(e),
+            // This family's account row is gone — skip it; other families may
+            // still mint. With every family gone, `env` stays empty and we report
+            // bound + empty below so the daemon fails closed instead of launching
+            // a worker that will 401.
+            Ok(None) => {}
+            // Transient DB failure: let the daemon fall back to its pushed env hint.
+            Err(e) => {
+                tracing::error!(%session_id, "daemon gateway-env mint failed: {e}");
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
         }
     }
+    Ok(Json(cctui_proto::api::GatewayEnvResponse { account_bound: true, env }))
 }
 
 // ---- /api/v1/daemon/ws ----
@@ -910,7 +913,8 @@ pub(crate) async fn load_reconcile(
     .fetch_optional(&state.pool)
     .await?
     .flatten();
-    let adapter_mode = crate::routes::settings::harness_mode_to_adapter_token(harness_mode.as_deref());
+    let adapter_mode =
+        crate::routes::settings::harness_mode_to_adapter_token(harness_mode.as_deref());
 
     Ok(rows
         .into_iter()
