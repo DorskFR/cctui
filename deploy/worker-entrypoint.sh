@@ -871,16 +871,29 @@ result_ready() {
     [ -s "$RESULT_FILE" ] && jq -e . "$RESULT_FILE" >/dev/null 2>&1
 }
 
-# Per-session liveness backstop. claude owns jobs/<short>/state.json; it exists
-# while the job lives and is removed when the job ends (the daemon's `claude rm`
-# on SessionEnded). We only trust its ABSENCE after we've seen it appear, so a
+# Per-session liveness backstop. claude keeps a jobs/<id>/state.json while a
+# session lives and removes it when the session ends (the daemon's `claude rm`
+# on SessionEnded). We can NOT key on the cctui SESSION_ID: claude derives its
+# OWN job id and rotates it on resume/clear (CCT-160), so the path is unknown up
+# front. Keying on jobs/<SESSION_ID[:8]>/state.json (CCT-520) missed every
+# resumed session — _SEEN_ALIVE stayed 0, and the boot bound below hard-killed a
+# fully-alive review at exactly 120s (CCT-521). The worker pod is single-session
+# and ephemeral (its jobs dir starts empty), so ANY jobs/*/state.json means OUR
+# session is alive. We only trust its ABSENCE after we've seen one appear, so a
 # cold start that hasn't created it yet doesn't read as a crash.
 _JOBS_DIR="${CLAUDE_CONFIG_DIR:-/home/${WORKER_USER}/.claude}/jobs"
 _SHORT=$(printf '%s' "${SESSION_ID:-}" | cut -c1-8)
-_STATE_JSON="${_JOBS_DIR}/${_SHORT}/state.json"
 _SEEN_ALIVE=0
+# True while claude holds any session's state.json under the single-session pod.
+# Unmatched glob stays literal, so the `[ -f ]` is false when none exists.
+session_alive_now() {
+    for _sj in "$_JOBS_DIR"/*/state.json; do
+        [ -f "$_sj" ] && return 0
+    done
+    return 1
+}
 session_dead() {
-    if [ -f "$_STATE_JSON" ]; then
+    if session_alive_now; then
         _SEEN_ALIVE=1
         return 1
     fi
