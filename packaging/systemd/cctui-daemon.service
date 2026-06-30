@@ -15,13 +15,14 @@ RestartSec=5s
 NoNewPrivileges=true
 PrivateTmp=false
 
-# Limit blast radius. The daemon needs:
-#   - ~/.claude/jobs and ~/.claude/projects (read)
-#   - ~/.config/cctui (read/write — config + cursors)
-#   - /tmp (read/write — claude daemon sockets live here)
-#   - network egress (HTTPS to the cctui server)
-ProtectSystem=strict
-ReadWritePaths=%h/.config/cctui /tmp
+# NOTE: deliberately NO ProtectSystem=/ReadWritePaths= here. On a systemd
+# --user service, mount-sandbox directives force the unprivileged user manager
+# to wrap the unit in a USER NAMESPACE (uid_map "1000 1000 1", setgroups=deny),
+# which drops every supplementary group — notably `docker`. The claude sessions
+# the daemon spawns inherit that userns and lose docker-socket access
+# (root:docker 0660 -> EACCES). As an unprivileged uid-1000 service, DAC already
+# blocks writing system dirs, so these directives added little real confinement
+# here while breaking docker. NoNewPrivileges (a prctl, not a userns trigger) stays.
 
 [Install]
 WantedBy=default.target
