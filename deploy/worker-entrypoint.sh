@@ -848,6 +848,14 @@ run_supervised_daemon() {
 # /var/run/workflow-guard/state) that cctui-guard's engine writes {"step":N} to.
 GUARD_STATE_FILE="$GUARD_STATE"
 WAIT_POLL_SECS="${WORKER_DONE_POLL_SECS:-2}"
+# Fail-closed boot bound (CCT-520). A `claude daemon run` that crash-loops
+# `exited code=1` (often behind a network deny) keeps cctui-daemon up but never
+# dispatches a session, so `session_dead` (gated on "seen alive once") never
+# fires and the wait blocks to the 24h activeDeadlineSeconds, burning a pod slot
+# for a day with no callback. Bound the time-to-first-liveness: if the
+# dispatched session never appears within this window, write a failed
+# RESULT_FILE and exit non-zero so the EXIT trap POSTs the callback promptly.
+WORKER_BOOT_DEADLINE_SECS="${WORKER_BOOT_DEADLINE_SECS:-120}"
 
 # Guard signalled completion: state file says {"step":-1}.
 guard_exited() {
@@ -882,12 +890,26 @@ session_dead() {
 
 await_dispatch_done() {
     log "wait: blocking on dual signal (guard=$GUARD_ON, short=${_SHORT:-none})"
+    _waited=0
     while :; do
         # The daemon process going away is itself terminal — nothing left to
         # finish the task, so stop waiting and let the trap synthesize a verdict.
         if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
             log "wait: cctui-daemon (pid $DAEMON_PID) exited; ending wait"
             return 0
+        fi
+        # Fail-closed boot bound (CCT-520): the daemon is still up but the
+        # dispatched session never came alive within the boot window — a wedged
+        # `claude daemon run` (crash-loop / network deny). Surface a fast
+        # failure instead of blocking to the 24h deadline. Once the session has
+        # been seen alive ($_SEEN_ALIVE=1), the bound no longer applies; long
+        # legitimate work is governed by activeDeadlineSeconds as before.
+        if [ "$_SEEN_ALIVE" = 0 ] && [ "$_waited" -ge "$WORKER_BOOT_DEADLINE_SECS" ]; then
+            log "wait: claude daemon failed to boot a session within ${WORKER_BOOT_DEADLINE_SECS}s; failing closed"
+            jq -nc --arg id "${TASK_ID:-}" --arg secs "$WORKER_BOOT_DEADLINE_SECS" \
+                '{task_id:$id, status:"failed", error:("claude daemon failed to boot a session within "+$secs+"s")}' \
+                > "$RESULT_FILE"
+            exit 1
         fi
         if guard_exited; then
             log "wait: guard signalled completion (step=-1)"
@@ -902,6 +924,7 @@ await_dispatch_done() {
             return 0
         fi
         sleep "$WAIT_POLL_SECS"
+        _waited=$((_waited + WAIT_POLL_SECS))
     done
 }
 
