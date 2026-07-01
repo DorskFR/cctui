@@ -1391,6 +1391,70 @@ pub fn anthropic_usage_user_agent() -> String {
     std::env::var("CCTUI_ANTHROPIC_USAGE_USER_AGENT").unwrap_or_else(|_| "claude-code/2.1.0".into())
 }
 
+/// OpenAI/codex's real per-account usage endpoint (CCT-527). Returns the `ChatGPT`
+/// backend's actual 5h/7d rate-limit windows (`rate_limit.primary_window` /
+/// `secondary_window`) — the same numbers `codex /status` shows. Works cookieless
+/// with just the account's OAuth Bearer + `chatgpt-account-id` header, both of
+/// which we already hold per account. Overridable via env to track upstream moves.
+pub fn openai_usage_url() -> String {
+    std::env::var("CCTUI_OPENAI_USAGE_URL")
+        .unwrap_or_else(|_| "https://chatgpt.com/backend-api/wham/usage".into())
+}
+
+/// Map the `ChatGPT` `wham/usage` body to our provider-agnostic `{five_hour,
+/// seven_day}` usage shape (CCT-527). `primary_window` is the 5h window,
+/// `secondary_window` the 7d one; `used_percent` → `utilization`, `reset_at`
+/// (unix epoch seconds) → `resets_at` (rfc3339). Returns `None` if the body has
+/// no `rate_limit` or is missing either window, so the caller can fall back to the
+/// local tally.
+fn map_wham_usage(body: &serde_json::Value) -> Option<serde_json::Value> {
+    let rate_limit = body.get("rate_limit")?;
+    let window = |w: &serde_json::Value| {
+        let utilization = w.get("used_percent").and_then(serde_json::Value::as_f64);
+        let resets_at = w
+            .get("reset_at")
+            .and_then(serde_json::Value::as_i64)
+            .and_then(|s| chrono::DateTime::<chrono::Utc>::from_timestamp(s, 0))
+            .map(|dt| dt.to_rfc3339());
+        serde_json::json!({ "utilization": utilization, "resets_at": resets_at })
+    };
+    let five_hour = window(rate_limit.get("primary_window")?);
+    let seven_day = window(rate_limit.get("secondary_window")?);
+    Some(serde_json::json!({ "five_hour": five_hour, "seven_day": seven_day }))
+}
+
+/// Fetch an OpenAI/codex account's real 5h/7d usage from `wham/usage` (CCT-527).
+///
+/// Uses only stored OAuth data: a fresh Bearer via [`current_access_token`] and the
+/// `chatgpt-account-id` from `acct.provider_account_id`. Returns `None` (so the
+/// caller falls back to the local tally) when the account has no account-id, the
+/// token can't be refreshed, the call fails/errs, or the body has no rate-limit
+/// windows — logging the reason in each case. No inference request, costs no tokens.
+async fn fetch_openai_usage(state: &AppState, acct: &Account) -> Option<serde_json::Value> {
+    let account_id = acct.provider_account_id.as_deref()?;
+    let access_token = current_access_token(state, acct).await.ok()?;
+    let resp = state
+        .http_client
+        .get(openai_usage_url())
+        .header(reqwest::header::AUTHORIZATION, format!("Bearer {access_token}"))
+        .header("chatgpt-account-id", account_id)
+        .header(reqwest::header::ACCEPT, "*/*")
+        .send()
+        .await
+        .map_err(|e| tracing::warn!(account = %acct.id, "openai usage transport error: {e}"))
+        .ok()?;
+    if !resp.status().is_success() {
+        tracing::warn!(account = %acct.id, status = %resp.status(), "openai usage rejected");
+        return None;
+    }
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| tracing::warn!(account = %acct.id, "openai usage decode error: {e}"))
+        .ok()?;
+    map_wham_usage(&body)
+}
+
 /// Whether the soft-limit check must refresh usage from upstream before deciding.
 ///
 /// CCT-411 regression guard: a cold (`None`) or stale cache must trigger a
@@ -1447,10 +1511,18 @@ pub async fn fetch_account_usage(
 ) -> Result<Option<serde_json::Value>, StatusCode> {
     let Some(acct) = reload_account(state, account_id).await else { return Ok(None) };
     if acct.provider != "anthropic" {
-        // OpenAI/codex has no comparable free usage endpoint, so meter the 5h/7d
-        // windows locally from our own recorded token usage (CCT-511). Same
-        // `{five_hour, seven_day}` shape as Anthropic so soft_limit + the UI work
-        // identically; utilization is tokens-in-window vs an env-tunable budget.
+        // OpenAI/codex accounts: read the ChatGPT backend's REAL 5h/7d rate-limit
+        // windows (CCT-527) — the same numbers `codex /status` shows, keyed on the
+        // stored OAuth Bearer + chatgpt-account-id. Fall back to the local token
+        // tally (CCT-511) only when that call can't produce windows (no account-id,
+        // token refresh fail, upstream error, or a body without rate limits), so
+        // freshly-enrolled / API-key accounts still render something.
+        if acct.provider == "openai"
+            && let Some(usage) = fetch_openai_usage(state, &acct).await
+        {
+            return Ok(Some(usage));
+        }
+        tracing::info!(account = %account_id, "openai usage unavailable; falling back to local token tally");
         return local_usage_windows(state, account_id).await;
     }
     let access_token = current_access_token(state, &acct).await?;
@@ -1558,10 +1630,37 @@ async fn local_window(
 #[cfg(test)]
 mod tests {
     use super::{
-        AuthStage, Family, OrphanSpamMap, auth_error, bump_orphan_401, orphan_is_blocked_at,
-        usage_cache_stale,
+        AuthStage, Family, OrphanSpamMap, auth_error, bump_orphan_401, map_wham_usage,
+        orphan_is_blocked_at, usage_cache_stale,
     };
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn wham_usage_maps_to_five_and_seven_windows() {
+        // Real-shaped `wham/usage` body (CCT-527): primary=5h, secondary=7d.
+        let body = serde_json::json!({
+            "rate_limit": {
+                "primary_window":   { "used_percent": 1,  "limit_window_seconds": 18000,  "reset_at": 1_782_955_425i64 },
+                "secondary_window": { "used_percent": 14, "limit_window_seconds": 604800, "reset_at": 1_783_403_309i64 },
+            }
+        });
+        let mapped = map_wham_usage(&body).expect("rate_limit present");
+        assert_eq!(mapped["five_hour"]["utilization"].as_f64(), Some(1.0));
+        assert_eq!(mapped["seven_day"]["utilization"].as_f64(), Some(14.0));
+        // Epoch seconds → rfc3339 (stable server reset, not client-drifted).
+        assert_eq!(mapped["five_hour"]["resets_at"].as_str(), Some("2026-07-02T01:23:45+00:00"));
+        assert_eq!(mapped["seven_day"]["resets_at"].as_str(), Some("2026-07-07T05:48:29+00:00"));
+    }
+
+    #[test]
+    fn wham_usage_none_without_rate_limit() {
+        // No rate_limit (or a partial body) → None so the caller falls back local.
+        assert!(map_wham_usage(&serde_json::json!({ "user_id": "u" })).is_none());
+        assert!(
+            map_wham_usage(&serde_json::json!({ "rate_limit": { "primary_window": {} } }))
+                .is_none()
+        );
+    }
 
     #[test]
     fn orphan_spam_blocks_after_threshold_and_skips_db() {
