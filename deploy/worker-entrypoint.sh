@@ -525,6 +525,14 @@ phase_credentials() {
 # `model_provider = "cctui"` selector into config.toml, pointing codex's
 # `responses` wire transport at OPENAI_BASE_URL and reading the bearer from the
 # OPENAI_API_KEY env var (codex DOES read env_key from env at request time).
+#
+# We ALSO pin standard service tier + disable fast mode (CCT: codex spend).
+# Codex "fast mode" is a 1.5x speed lever that bills subscription credits at
+# 2-2.5x the standard rate (same model, same quality) and can persist via
+# `service_tier = "fast"` + `[features].fast_mode = true`. Unattended dispatched
+# workers must never silently run on the expensive tier, so we force the inverse
+# (`service_tier = "default"`, `fast_mode = false`) into the managed region.
+#
 # The block is delimited by BEGIN/END markers and rewritten in place, so this
 # is idempotent (safe to re-run) and preserves codex's own keys (trust_level).
 # No TOML-aware tool ships in the worker image (jq is JSON-only, no python3), so
@@ -544,25 +552,30 @@ phase_codex_config() {
     _cfg="$_cfgdir/config.toml"
     mkdir -p "$_cfgdir"
 
-    # Preserve any existing config MINUS our managed region and a top-level
-    # `model_provider` line (we re-set it). awk drops the marker-delimited block;
-    # the trailing grep removes a bare `model_provider = …` outside the block.
+    # Preserve any existing config MINUS our managed region and the top-level
+    # keys we re-set (`model_provider`, `service_tier`). awk drops the
+    # marker-delimited block; the trailing grep removes bare re-set keys outside
+    # the block so a re-run can't leave a duplicate TOML key.
     _kept=""
     if [ -f "$_cfg" ]; then
         _kept=$(awk -v b="$CODEX_MARKER_BEGIN" -v e="$CODEX_MARKER_END" '
             $0==b {skip=1; next} $0==e {skip=0; next} skip{next} {print}
-        ' "$_cfg" | grep -vE '^[[:space:]]*model_provider[[:space:]]*=' || true)
+        ' "$_cfg" | grep -vE '^[[:space:]]*(model_provider|service_tier)[[:space:]]*=' || true)
     fi
 
     {
         [ -n "$_kept" ] && printf '%s\n' "$_kept"
         printf '%s\n' "$CODEX_MARKER_BEGIN"
         printf 'model_provider = "cctui"\n'
+        # Standard tier, fast mode off — never bill credits at the 2-2.5x fast rate.
+        printf 'service_tier = "default"\n'
         printf '[model_providers.cctui]\n'
         printf 'name = "cctui-gateway"\n'
         printf 'base_url = "%s"\n' "$_base"
         printf 'env_key = "OPENAI_API_KEY"\n'
         printf 'wire_api = "responses"\n'
+        printf '[features]\n'
+        printf 'fast_mode = false\n'
         printf '%s\n' "$CODEX_MARKER_END"
     } > "$_cfg"
     chown -R "${WORKER_UID}:${WORKER_UID}" "$_cfgdir" 2>/dev/null || true
