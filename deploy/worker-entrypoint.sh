@@ -882,30 +882,48 @@ result_ready() {
 # and mid guard Step 2). The daemon is the source of truth: it launches claude
 # with `--session-id $SESSION_ID` (control.rs, CCT-446) and registers THAT stable
 # id with the server, immune to claude's id rotation. Ask the server for it.
-_SESSION_URL="${CCTUI_BASE_URL%/}/api/v1/sessions/${SESSION_ID}"
+#
+# Use the LIST endpoint, not GET /sessions/{id}: the per-object route's
+# Resource(Session) guard is `admin || owner==principal`, and a machine-key
+# principal is NOT the session's resolved owner (machine_uuid -> user_id), so it
+# 403s even for the pod's OWN session (that 403 -> "unknown" is exactly what let
+# the 120s kill survive the first fix). GET /sessions is self-scoped via
+# owner_filter(): a machine key sees its OWN machine's sessions — a short list
+# (dispatch pods are single-session) that includes our dispatched id.
+_SESSIONS_URL="${CCTUI_BASE_URL%/}/api/v1/sessions"
 _PROBE_BODY=/tmp/cctui-liveness-probe.json
 WORKER_LIVENESS_POLL_SECS="${WORKER_LIVENESS_POLL_SECS:-10}"
 _SEEN_ALIVE=0
+_PROBE_LOGGED_CODE=""
 # Probe the daemon's server-side registration for OUR session id. Echoes:
-#   registered — HTTP 200 and status "active": the daemon holds this session
-#                live in its registry (heartbeat fresh within STATUS_WINDOW=5m).
-#   ended      — HTTP 200 but status != "active" (daemon deregistered it on
-#                SessionEnded -> DB row goes 'inactive', or heartbeat stale >5m),
-#                or HTTP 404 (row deleted). Only trusted as death after we have
-#                seen it registered at least once.
-#   unknown    — transient curl/HTTP error or not-yet-registered; never death.
+#   registered — our id present with status "active"/"new": the daemon holds
+#                this session live (registered, heartbeat within STATUS_WINDOW=5m).
+#   ended      — our id present but status != "active" (daemon deregistered it on
+#                SessionEnded -> row goes 'inactive', or heartbeat stale >5m).
+#                Only trusted as death after we have seen it registered once.
+#   unknown    — transient curl/non-200, or our id not (yet) in the roster;
+#                never read as death.
 # `-4` mirrors the callback curl (the worker forces IPv4 egress; CCT-468).
 probe_session() {
     _code=$(curl -4 -sS -o "$_PROBE_BODY" -w '%{http_code}' --max-time 5 \
-        -H "Authorization: Bearer $CCTUI_MACHINE_KEY" "$_SESSION_URL" 2>/dev/null) \
+        -H "Authorization: Bearer $CCTUI_MACHINE_KEY" "$_SESSIONS_URL" 2>/dev/null) \
         || { echo unknown; return; }
-    case "$_code" in
-        200)
-            _st=$(jq -r '.status // empty' "$_PROBE_BODY" 2>/dev/null || true)
-            [ "$_st" = active ] && echo registered || echo ended
-            ;;
-        404) echo ended ;;
-        *) echo unknown ;;
+    if [ "$_code" != 200 ]; then
+        # Surface a persistent auth/URL fault ONCE rather than failing blind —
+        # the first fix died silently on a 403 from the wrong endpoint.
+        if [ "$_PROBE_LOGGED_CODE" != "$_code" ]; then
+            log "wait: liveness probe HTTP $_code from $_SESSIONS_URL (treating as unknown)"
+            _PROBE_LOGGED_CODE="$_code"
+        fi
+        echo unknown
+        return
+    fi
+    _st=$(jq -r --arg id "$SESSION_ID" \
+        '.sessions[]? | select(.id == $id) | .status' "$_PROBE_BODY" 2>/dev/null | head -n1)
+    case "$_st" in
+        active|new) echo registered ;;
+        inactive)   echo ended ;;
+        *)          echo unknown ;;
     esac
 }
 
