@@ -273,6 +273,22 @@ impl Authz {
             _ => None,
         }
     }
+
+    /// The coarse [`Scope`] this policy implies for documentation (CCT-464).
+    ///
+    /// A `Scope(s)` route requires exactly `s`. Every other policy
+    /// (`Authenticated`, per-object `Resource`, `Custom`, `Public`) is reachable
+    /// by any authenticated principal, i.e. it needs no scope beyond `Read` — so
+    /// that is what the generated `OpenAPI`/`llms.txt` advertise as the minimum
+    /// scope. (Per-object routes ADDITIONALLY require ownership, documented
+    /// separately in `llms.txt`.)
+    #[must_use]
+    pub const fn doc_scope(&self) -> Scope {
+        match self {
+            Self::Scope(s) => *s,
+            _ => Scope::Read,
+        }
+    }
 }
 
 /// Resolve a path-sourced resource id from the matched route. axum exposes the
@@ -551,6 +567,11 @@ pub struct RouteDescriptor {
     pub path: &'static str,
     pub authn: Authn,
     pub authz: Authz,
+    /// A one-line, human-facing description of what the route does. Emitted into
+    /// the `OpenAPI` operation `summary` and the `llms.txt` endpoint list (CCT-464).
+    /// The `every_route_has_a_summary` guard test fails if any route ships this
+    /// empty, so a new route cannot be undocumented.
+    pub summary: &'static str,
 }
 
 /// Builder that records every route and assembles the axum `Router` from the
@@ -580,6 +601,7 @@ impl Routes {
         mut self,
         methods: &[Method],
         path: &'static str,
+        summary: &'static str,
         handler: MethodRouter<AppState>,
         authn: Authn,
         authz: Authz,
@@ -599,6 +621,7 @@ impl Routes {
                 path,
                 authn,
                 authz: authz.clone(),
+                summary,
             });
         }
         self
@@ -684,6 +707,21 @@ mod tests {
         }
         // Every path must start with `/` (it nests under `/api/v1`).
         assert!(descs.iter().all(|d| d.path.starts_with('/')));
+    }
+
+    /// CI guard (CCT-464): every registered route MUST carry a non-empty
+    /// `summary`, so a new route cannot ship undocumented in the `OpenAPI` doc /
+    /// `llms.txt` capability index generated from this table.
+    #[test]
+    fn every_route_has_a_summary() {
+        for d in descriptors() {
+            assert!(
+                !d.summary.trim().is_empty(),
+                "route {} {} has an empty summary — every Routes::add entry must document itself",
+                d.method.as_str(),
+                d.path
+            );
+        }
     }
 
     #[test]

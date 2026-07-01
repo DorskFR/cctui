@@ -10,6 +10,7 @@ mod langfuse;
 mod machine_liveness;
 mod normalize;
 mod ntfy;
+mod openapi;
 mod policy;
 mod rebuild;
 mod registry;
@@ -132,6 +133,12 @@ async fn main() -> anyhow::Result<()> {
     #[allow(clippy::literal_string_with_formatting_args)]
     let app = Router::new()
         .route("/health", get(|| async { "ok" }))
+        // Self-describing API surface (CCT-464). Both are unauthenticated meta
+        // routes — like `/health` — because they expose ONLY the public shape of
+        // the API (paths/methods/auth model/summaries), never any data. An agent
+        // handed a base URL can discover the surface, then authenticate.
+        .route("/llms.txt", get(openapi::llms_txt))
+        .route("/api/v1/openapi.json", get(openapi::openapi_json))
         .route("/api/v1/ws", get(ws::tui_ws))
         // Browser auth-cookie endpoints (CCT-423). Self-authenticating: `login`
         // validates the presented token and sets the `HttpOnly` cookie, `logout`
@@ -241,10 +248,18 @@ fn build_api_routes() -> Routes {
     Routes::new()
         // Version info requires a valid principal — no unauthenticated endpoint
         // survives except `/health`.
-        .add(&[GET], "/version", get(routes::web::version), Authn::Bearer, Authenticated)
+        .add(
+            &[GET],
+            "/version",
+            "Server version and build info.",
+            get(routes::web::version),
+            Authn::Bearer,
+            Authenticated,
+        )
         .add(
             &[Method::POST],
             "/sessions/register",
+            "Register a session the daemon just launched.",
             post(routes::sessions::register),
             Authn::Bearer,
             Authenticated,
@@ -252,6 +267,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::POST],
             "/sessions/{id}/deregister",
+            "Deregister a session (mark it gone).",
             post(routes::sessions::deregister),
             Authn::Bearer,
             Authenticated,
@@ -259,6 +275,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::POST],
             "/sessions/spawn",
+            "Spawn a new session on a machine, with optional file uploads.",
             // Multipart spawn with file uploads (CCT-203): the route enforces a
             // 20 MB total cap itself; allow a little headroom over it for
             // multipart framing + base64 isn't applied until after parsing.
@@ -272,6 +289,7 @@ fn build_api_routes() -> Routes {
             // as spawn, same body-limit headroom.
             &[Method::POST],
             "/sessions/{id}/files",
+            "Attach files to a live session mid-conversation.",
             post(routes::spawn::stage_session_files).layer(DefaultBodyLimit::max(24 * 1024 * 1024)),
             Authn::Bearer,
             Authenticated,
@@ -279,6 +297,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::POST],
             "/sessions/dispatch",
+            "Dispatch a session to an enrolled executor (remote runner).",
             post(routes::dispatch::dispatch),
             Authn::Bearer,
             ScopeAz(auth::Scope::Dispatch),
@@ -286,6 +305,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[GET],
             "/sessions/dispatchers",
+            "List dispatch targets available for a spawn.",
             get(routes::dispatch::list_dispatchers),
             Authn::Bearer,
             // owner_filter() SQL filter in the handler.
@@ -296,6 +316,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[GET],
             "/dispatchers",
+            "List enrolled dispatchers with liveness.",
             get(routes::dispatchers::list_dispatchers),
             Authn::Bearer,
             // owner_filter() filter.
@@ -304,6 +325,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::PATCH, Method::DELETE],
             "/dispatchers/{id}",
+            "Rename or remove an enrolled dispatcher.",
             patch(routes::dispatchers::update_dispatcher)
                 .delete(routes::dispatchers::delete_dispatcher),
             Authn::Bearer,
@@ -312,6 +334,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::POST],
             "/dispatcher/enroll",
+            "Enroll a new dispatcher (executor) and mint its key.",
             post(routes::dispatcher::enroll),
             Authn::Bearer,
             ScopeAz(auth::Scope::Enroll),
@@ -322,6 +345,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::POST],
             "/sessions/archive",
+            "Archive a batch of sessions by id.",
             post(routes::sessions::archive_sessions),
             Authn::Bearer,
             Authenticated,
@@ -329,6 +353,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::POST],
             "/sessions/unarchive",
+            "Unarchive a batch of sessions by id.",
             post(routes::sessions::unarchive_sessions),
             Authn::Bearer,
             Authenticated,
@@ -336,6 +361,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::POST],
             "/sessions/pin",
+            "Pin a batch of sessions by id.",
             post(routes::sessions::pin_sessions),
             Authn::Bearer,
             Authenticated,
@@ -343,6 +369,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::POST],
             "/sessions/unpin",
+            "Unpin a batch of sessions by id.",
             post(routes::sessions::unpin_sessions),
             Authn::Bearer,
             Authenticated,
@@ -352,6 +379,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[GET],
             "/sessions",
+            "List your sessions (admin: all).",
             get(routes::sessions::list_sessions),
             Authn::Bearer,
             Authenticated,
@@ -359,6 +387,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[GET],
             "/sessions/stats",
+            "Aggregate session counts/status stats.",
             get(routes::stats::session_stats),
             Authn::Bearer,
             Authenticated,
@@ -366,6 +395,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[GET],
             "/sessions/stats/tokens",
+            "Token-usage stats across sessions.",
             get(routes::stats::session_token_stats),
             Authn::Bearer,
             Authenticated,
@@ -373,6 +403,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[GET],
             "/sessions/search",
+            "Full-text search across your sessions.",
             get(routes::sessions::search_sessions),
             Authn::Bearer,
             Authenticated,
@@ -380,6 +411,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[GET],
             "/sessions/recent-dirs",
+            "List recently used working directories.",
             get(routes::stats::recent_dirs),
             Authn::Bearer,
             Authenticated,
@@ -393,6 +425,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[GET],
             "/sessions/{id}",
+            "Get one session's details.",
             get(routes::sessions::get_session),
             Authn::Bearer,
             sess_read(),
@@ -400,6 +433,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::PATCH],
             "/sessions/{id}",
+            "Rename a session.",
             patch(routes::sessions::rename_session),
             Authn::Bearer,
             sess_write(),
@@ -407,6 +441,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[GET],
             "/sessions/{id}/conversation",
+            "Fetch a session's normalized conversation transcript.",
             get(routes::sessions::get_conversation),
             Authn::Bearer,
             sess_read(),
@@ -414,6 +449,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::POST],
             "/sessions/{id}/message",
+            "Send a message to a live session.",
             post(routes::sessions::send_message),
             Authn::Bearer,
             sess_write(),
@@ -421,6 +457,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::POST],
             "/sessions/{id}/kill",
+            "Kill a session's underlying process.",
             post(routes::sessions::kill_session),
             Authn::Bearer,
             sess_write(),
@@ -430,6 +467,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::POST],
             "/sessions/{id}/launch",
+            "Launch a draft session into a live spawn.",
             post(routes::spawn::launch_draft),
             Authn::Bearer,
             sess_write(),
@@ -437,6 +475,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::POST],
             "/sessions/{id}/discard",
+            "Discard a draft session.",
             post(routes::spawn::discard_draft),
             Authn::Bearer,
             sess_write(),
@@ -444,6 +483,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::POST],
             "/sessions/{id}/interrupt",
+            "Interrupt a session's current turn.",
             post(routes::sessions::interrupt_session),
             Authn::Bearer,
             sess_write(),
@@ -451,6 +491,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::POST],
             "/sessions/{id}/resume",
+            "Resume an exited session.",
             post(routes::sessions::resume_session),
             Authn::Bearer,
             sess_write(),
@@ -458,6 +499,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::POST],
             "/sessions/{id}/set-model",
+            "Change a session's model.",
             post(routes::sessions::set_model),
             Authn::Bearer,
             sess_write(),
@@ -465,6 +507,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::POST],
             "/sessions/{id}/switch-account",
+            "Switch the account backing a session.",
             post(routes::sessions::switch_account),
             Authn::Bearer,
             sess_write(),
@@ -472,6 +515,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::POST],
             "/sessions/{id}/fork",
+            "Fork a session into a new one.",
             post(routes::sessions::fork_session),
             Authn::Bearer,
             sess_write(),
@@ -479,6 +523,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::POST],
             "/sessions/{id}/auto-approve",
+            "Toggle auto-approval of tool-use for a session.",
             post(routes::sessions::set_auto_approve),
             Authn::Bearer,
             sess_write(),
@@ -486,6 +531,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::POST],
             "/sessions/{id}/archive",
+            "Archive a single session.",
             post(routes::sessions::archive_session),
             Authn::Bearer,
             sess_write(),
@@ -493,6 +539,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::POST],
             "/sessions/{id}/unarchive",
+            "Unarchive a single session.",
             post(routes::sessions::unarchive_session),
             Authn::Bearer,
             sess_write(),
@@ -500,6 +547,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::POST],
             "/sessions/{id}/pin",
+            "Pin a single session.",
             post(routes::sessions::pin_session),
             Authn::Bearer,
             sess_write(),
@@ -507,6 +555,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::POST],
             "/sessions/{id}/unpin",
+            "Unpin a single session.",
             post(routes::sessions::unpin_session),
             Authn::Bearer,
             sess_write(),
@@ -514,6 +563,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::POST],
             "/sessions/{id}/policy",
+            "Set a session's permission policy.",
             post(routes::sessions::set_session_policy),
             Authn::Bearer,
             sess_write(),
@@ -523,6 +573,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[GET, Method::POST],
             "/labels",
+            "List label definitions, or create one.",
             get(routes::labels::list_labels).post(routes::labels::create_label),
             Authn::Bearer,
             Authenticated,
@@ -530,6 +581,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::PATCH, Method::DELETE],
             "/labels/{id}",
+            "Rename or delete a label definition.",
             axum::routing::patch(routes::labels::update_label).delete(routes::labels::delete_label),
             Authn::Bearer,
             Authenticated,
@@ -537,6 +589,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::POST],
             "/sessions/{id}/labels",
+            "Attach a label to a session.",
             post(routes::labels::attach_label),
             Authn::Bearer,
             sess_write(),
@@ -544,6 +597,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::DELETE],
             "/sessions/{id}/labels/{label_id}",
+            "Detach a label from a session.",
             axum::routing::delete(routes::labels::detach_label),
             Authn::Bearer,
             sess_write(),
@@ -551,6 +605,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[GET],
             "/manifest/daemon",
+            "Daemon update manifest (latest version + download URLs).",
             get(routes::manifest::daemon_manifest),
             Authn::Bearer,
             Authenticated,
@@ -558,6 +613,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[GET],
             "/daemon/binary/{target}",
+            "Download a daemon binary for a target (self-update proxy).",
             get(routes::manifest::download_daemon_binary),
             Authn::Bearer,
             Authenticated,
@@ -566,6 +622,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[GET, Method::POST],
             "/prompts",
+            "List your saved prompts, or create one.",
             get(routes::prompts::list_prompts).post(routes::prompts::create_prompt),
             Authn::Bearer,
             Authenticated,
@@ -573,6 +630,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[GET],
             "/prompts/resolve",
+            "Resolve a prompt by name/reference.",
             get(routes::prompts::resolve_prompt),
             Authn::Bearer,
             Authenticated,
@@ -580,6 +638,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[GET, Method::DELETE],
             "/prompts/{id}",
+            "Get or delete a saved prompt.",
             get(routes::prompts::get_prompt).delete(routes::prompts::delete_prompt),
             Authn::Bearer,
             Authenticated,
@@ -588,6 +647,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[GET, Method::POST],
             "/keys",
+            "List your provider API keys, or store a new one.",
             get(routes::credentials::list_api_keys).post(routes::credentials::create_api_key),
             Authn::Bearer,
             Authenticated,
@@ -595,6 +655,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::DELETE],
             "/keys/{id}",
+            "Delete a stored provider API key.",
             delete(routes::credentials::delete_api_key),
             Authn::Bearer,
             Authenticated,
@@ -602,6 +663,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[GET],
             "/keys/{id}/value",
+            "Reveal a stored provider API key's value.",
             get(routes::credentials::get_api_key_value),
             Authn::Bearer,
             Authenticated,
@@ -610,6 +672,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[GET, Method::POST],
             "/accounts",
+            "List your OAuth accounts, or create one.",
             get(routes::accounts::list_accounts).post(routes::accounts::create_account),
             Authn::Bearer,
             Authenticated,
@@ -617,6 +680,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::POST],
             "/accounts/oauth/start",
+            "Begin an OAuth account authorization flow.",
             post(routes::accounts::oauth_start),
             Authn::Bearer,
             Authenticated,
@@ -624,6 +688,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::POST],
             "/accounts/oauth/finish",
+            "Complete an OAuth account authorization flow.",
             post(routes::accounts::oauth_finish),
             Authn::Bearer,
             Authenticated,
@@ -631,6 +696,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::PATCH, Method::DELETE],
             "/accounts/{id}",
+            "Rename or delete an OAuth account.",
             patch(routes::accounts::rename_account).delete(routes::accounts::delete_account),
             Authn::Bearer,
             Authenticated,
@@ -638,6 +704,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[GET],
             "/accounts/{id}/usage",
+            "Get an account's usage/limits.",
             get(routes::accounts::account_usage),
             Authn::Bearer,
             Authenticated,
@@ -647,6 +714,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[GET, Method::POST],
             "/accounts/{id}/shares",
+            "List or grant shares of an account to other users.",
             get(routes::accounts::list_shares).post(routes::accounts::grant_share),
             Authn::Bearer,
             Authenticated,
@@ -654,6 +722,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::DELETE],
             "/accounts/{id}/shares/{user_id}",
+            "Revoke a user's share of an account.",
             delete(routes::accounts::revoke_share),
             Authn::Bearer,
             Authenticated,
@@ -661,6 +730,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[GET],
             "/machines/{machine_id}/commands/pending",
+            "Poll a machine's pending spawn/control commands.",
             get(routes::spawn::get_machine_commands),
             Authn::Bearer,
             Authenticated,
@@ -668,17 +738,33 @@ fn build_api_routes() -> Routes {
         .add(
             &[GET],
             "/machines/{machine_id}/fs/dirs",
+            "List directories on a machine (spawn dir picker).",
             get(routes::fs::list_dirs),
             Authn::Bearer,
             // Machine-owner guard (CCT-420): `machines.user_id`, id from the
             // `{machine_id}` path param.
             Authz::Resource(ResourceKind::Machine, Action::Read, IdFrom::Path("machine_id")),
         )
-        .add(&[GET], "/me", get(routes::me::me), Authn::Bearer, Authenticated)
-        .add(&[GET], "/settings", get(routes::settings::get_settings), Authn::Bearer, Authenticated)
+        .add(
+            &[GET],
+            "/me",
+            "Get the current principal (user, scopes, machine).",
+            get(routes::me::me),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[GET],
+            "/settings",
+            "Get your user settings.",
+            get(routes::settings::get_settings),
+            Authn::Bearer,
+            Authenticated,
+        )
         .add(
             &[Method::PUT],
             "/settings",
+            "Replace your user settings.",
             put(routes::settings::put_settings),
             Authn::Bearer,
             Authenticated,
@@ -686,6 +772,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[GET],
             "/capabilities",
+            "List server capabilities/feature flags.",
             get(routes::capabilities::capabilities),
             Authn::Bearer,
             Authenticated,
@@ -693,6 +780,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::POST],
             "/enroll",
+            "Enroll this machine and mint its machine key.",
             post(routes::enroll::enroll),
             Authn::Bearer,
             ScopeAz(auth::Scope::Enroll),
@@ -700,6 +788,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::POST],
             "/deenroll",
+            "Deenroll the current machine.",
             post(routes::enroll::deenroll),
             Authn::Bearer,
             // In-handler: requires a machine token (machine_id present).
@@ -709,6 +798,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::POST, GET],
             "/admin/users",
+            "List all users, or create a user (admin).",
             post(routes::admin_auth::create_user).get(routes::admin_auth::list_users),
             Authn::Bearer,
             ScopeAz(auth::Scope::Admin),
@@ -716,6 +806,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::DELETE, Method::PATCH],
             "/admin/users/{id}",
+            "Revoke or update a user (admin).",
             delete(routes::admin_auth::revoke_user).patch(routes::admin_auth::update_user),
             Authn::Bearer,
             ScopeAz(auth::Scope::Admin),
@@ -723,6 +814,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::DELETE],
             "/admin/users/{id}/purge",
+            "Hard-delete a user and all their data (admin).",
             delete(routes::admin_auth::purge_user),
             Authn::Bearer,
             ScopeAz(auth::Scope::Admin),
@@ -730,6 +822,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::POST],
             "/admin/users/{id}/rotate",
+            "Rotate a user's tokens (admin).",
             post(routes::admin_auth::rotate_user),
             Authn::Bearer,
             ScopeAz(auth::Scope::Admin),
@@ -737,6 +830,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[GET],
             "/admin/users/{id}/machines",
+            "List a user's machines (admin).",
             get(routes::admin_auth::list_user_machines),
             Authn::Bearer,
             ScopeAz(auth::Scope::Admin),
@@ -744,6 +838,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[GET],
             "/admin/users/{id}/tokens",
+            "List a user's tokens (admin).",
             get(routes::admin_auth::list_user_tokens),
             Authn::Bearer,
             ScopeAz(auth::Scope::Admin),
@@ -751,6 +846,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::PATCH, Method::DELETE],
             "/admin/users/{id}/tokens/{token_id}",
+            "Relabel or revoke a user's token (admin).",
             patch(routes::admin_auth::relabel_user_token)
                 .delete(routes::admin_auth::revoke_user_token),
             Authn::Bearer,
@@ -759,6 +855,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::DELETE],
             "/admin/users/{id}/tokens/{token_id}/purge",
+            "Hard-delete a user's token (admin).",
             delete(routes::admin_auth::delete_user_token),
             Authn::Bearer,
             ScopeAz(auth::Scope::Admin),
@@ -766,6 +863,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::DELETE, Method::PATCH],
             "/admin/machines/{id}",
+            "Revoke or rename a machine (admin).",
             delete(routes::admin_auth::revoke_machine).patch(routes::admin_auth::rename_machine),
             Authn::Bearer,
             ScopeAz(auth::Scope::Admin),
@@ -773,6 +871,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::POST],
             "/admin/machines/{id}/rotate",
+            "Rotate a machine's key (admin).",
             post(routes::admin_auth::rotate_machine),
             Authn::Bearer,
             ScopeAz(auth::Scope::Admin),
@@ -780,15 +879,24 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::DELETE],
             "/admin/machines/{id}/purge",
+            "Hard-delete a machine (admin).",
             delete(routes::admin_auth::delete_machine),
             Authn::Bearer,
             ScopeAz(auth::Scope::Admin),
         )
         // Archive: machine/scope checks performed in the handlers.
-        .add(&[GET], "/archive/index", get(routes::archive::index), Authn::Bearer, Authenticated)
+        .add(
+            &[GET],
+            "/archive/index",
+            "List archived transcript entries.",
+            get(routes::archive::index),
+            Authn::Bearer,
+            Authenticated,
+        )
         .add(
             &[GET],
             "/archive/status",
+            "Get archive storage status.",
             get(routes::archive::get_status),
             Authn::Bearer,
             Authenticated,
@@ -796,6 +904,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::POST],
             "/archive/manifest",
+            "Post an archive manifest (sync negotiation).",
             post(routes::archive::post_manifest).layer(DefaultBodyLimit::max(8 * 1024 * 1024)),
             Authn::Bearer,
             Authenticated,
@@ -807,15 +916,24 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::POST],
             "/archive/rebuild",
+            "Rebuild a transcript from stored stream events.",
             post(routes::archive::rebuild),
             Authn::Bearer,
             Authenticated,
         )
         // Export the caller's archives as a coach-ingestable tar.gz (CCT-364).
-        .add(&[GET], "/archive/export", get(routes::archive::export), Authn::Bearer, Authenticated)
+        .add(
+            &[GET],
+            "/archive/export",
+            "Export your archives as a tar.gz bundle.",
+            get(routes::archive::export),
+            Authn::Bearer,
+            Authenticated,
+        )
         .add(
             &[Method::PUT, Method::HEAD, GET],
             "/archive/{project_dir}/{session_id}",
+            "Upload, probe, or download an archived transcript blob.",
             put(routes::archive::put)
                 .head(routes::archive::head)
                 .get(routes::archive::get)
@@ -826,15 +944,24 @@ fn build_api_routes() -> Routes {
         .add(
             &[GET],
             "/permissions/pending",
+            "List pending tool-use permission requests.",
             get(routes::permissions::list_pending),
             Authn::Bearer,
             // In-handler owner join on session machine_uuid -> machines.user_id.
             Authenticated,
         )
-        .add(&[GET], "/skills/index", get(routes::skills::index), Authn::Bearer, Authenticated)
+        .add(
+            &[GET],
+            "/skills/index",
+            "List available skills.",
+            get(routes::skills::index),
+            Authn::Bearer,
+            Authenticated,
+        )
         .add(
             &[Method::PUT, GET],
             "/skills/{name}",
+            "Upload or fetch a skill bundle by name.",
             put(routes::skills::put)
                 .get(routes::skills::get)
                 .layer(DefaultBodyLimit::max(50 * 1024 * 1024)),
@@ -844,6 +971,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::POST],
             "/users/{id}/tokens",
+            "Mint a token for a user (self or admin).",
             post(routes::daemon::mint_user_token),
             Authn::Bearer,
             // In-handler: admin may mint for anyone; a user only for itself.
@@ -854,6 +982,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[GET, Method::PATCH],
             "/users/{id}/acls",
+            "Get or set a user's scope ceiling (admin).",
             get(routes::admin_auth::get_user_acls).patch(routes::admin_auth::set_user_acls),
             Authn::Bearer,
             ScopeAz(auth::Scope::Admin),
@@ -861,6 +990,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[GET, Method::POST],
             "/users/{id}/keys",
+            "List or mint a user's API keys (admin).",
             get(routes::admin_auth::list_user_keys).post(routes::admin_auth::mint_user_key),
             Authn::Bearer,
             ScopeAz(auth::Scope::Admin),
@@ -868,6 +998,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::DELETE],
             "/users/{id}/keys/{kid}",
+            "Revoke a user's API key (admin).",
             delete(routes::admin_auth::revoke_user_key),
             Authn::Bearer,
             ScopeAz(auth::Scope::Admin),
@@ -875,6 +1006,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::PATCH],
             "/users/{id}/keys/{kid}/acls",
+            "Set a key's scope grant (admin).",
             patch(routes::admin_auth::set_key_acls),
             Authn::Bearer,
             ScopeAz(auth::Scope::Admin),
