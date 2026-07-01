@@ -45,7 +45,7 @@
 		cwdHighlight = -1;
 	});
 	function pickCwd(name: string) {
-		value = `${cwdParent === '/' ? '' : cwdParent}/${name}/`;
+		value = `${cwdParent === '/' ? '' : cwdParent}/${name}`;
 		cwdHighlight = -1;
 	}
 	function cwdKeydown(e: KeyboardEvent) {

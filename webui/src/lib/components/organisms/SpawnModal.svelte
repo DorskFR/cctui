@@ -21,7 +21,8 @@
 		LAST_SPAWN_LABELS,
 		nextSessionName,
 		loadMachinePrefs,
-		saveMachinePrefs
+		saveMachinePrefs,
+		normalizeDir
 	} from '$lib/drafts';
 	import { mergeFiles, removeFileByName, fileCapError } from '$lib/attachments';
 	import {
@@ -182,7 +183,8 @@
 
 	// recent working dirs on the selected machine, from the server (last 5).
 	const dirsQuery = useRecentDirs(() => form.machine_id);
-	const recentDirs = $derived([...new Set($dirsQuery.data ?? [])]);
+	// Collapse `folder` and `folder/` into one canonical `folder` entry (CCT-491).
+	const recentDirs = $derived([...new Set(($dirsQuery.data ?? []).map(normalizeDir))]);
 
 	// Working-directory autocomplete lives in spawn/CwdCombo.svelte.
 
@@ -378,7 +380,7 @@
 			: (adapter === 'codex' ? form.model_codex : form.model_claude) || null;
 		return {
 			machine_id: form.machine_id,
-			working_dir: form.working_dir.trim(),
+			working_dir: normalizeDir(form.working_dir.trim()),
 			adapter_id: adapter,
 			name: form.name.trim() || null,
 			prompt: form.prompt.trim() || null,
@@ -415,7 +417,7 @@
 		const body: SpawnRequest = buildSpawnBody();
 		// Capture label intent before the form is reset on success (CCT-360).
 		const labelIds = [...form.labels];
-		const labelCwd = form.working_dir.trim();
+		const labelCwd = normalizeDir(form.working_dir.trim());
 		const labelMachine = form.machine_id;
 		const requestedAt = Date.now();
 		const res = await actions.spawn(body, files);
@@ -436,7 +438,7 @@
 			account: form.account,
 			account_provider: form.account_provider,
 			model_account: form.model_account,
-			working_dir: form.working_dir.trim()
+			working_dir: normalizeDir(form.working_dir.trim())
 		});
 		toasts.push('Spawning…', 'info');
 		const result = await ws.awaitCommand(res.command_id);

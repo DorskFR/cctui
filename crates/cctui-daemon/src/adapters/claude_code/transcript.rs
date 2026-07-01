@@ -516,17 +516,28 @@ fn parse_user(local_id: &str, line: &Value, out: &mut Vec<AdapterEvent>) {
         return;
     }
     let Some(blocks) = content.as_array() else { return };
+    // A user turn stored as a block array can interleave several `text` blocks
+    // with `image` blocks — Claude expands attached files into their own
+    // synthetic `[Image #N]` / `[Image: source: …]` text blocks plus raw
+    // `image` blocks. Emitting one `Message` per block fans a single turn out
+    // into 3+ duplicate bubbles in the webui and drops the `image` blocks
+    // entirely. Instead JOIN the text blocks into ONE `Message` for the turn
+    // (preserving order) and note any attachments with a single indicator so
+    // an attachment-only turn isn't lost (CCT-506). `tool_result` blocks stay
+    // as their own events.
+    let mut texts: Vec<&str> = Vec::new();
+    let mut has_attachment = false;
+    let mut tool_results: Vec<AdapterEvent> = Vec::new();
     for block in blocks {
         match block.get("type").and_then(Value::as_str) {
             Some("text") => {
-                let text = block.get("text").and_then(Value::as_str).unwrap_or_default();
-                out.push(AdapterEvent::Message {
-                    local_id: local_id.to_owned(),
-                    payload: json!({"role": "user", "text": text, "meta": user_text_is_meta(text)}),
-                });
+                texts.push(block.get("text").and_then(Value::as_str).unwrap_or_default());
+            }
+            Some("image") => {
+                has_attachment = true;
             }
             Some("tool_result") => {
-                out.push(AdapterEvent::ToolUse {
+                tool_results.push(AdapterEvent::ToolUse {
                     local_id: local_id.to_owned(),
                     payload: json!({
                         "kind": "tool_result",
@@ -539,6 +550,17 @@ fn parse_user(local_id: &str, line: &Value, out: &mut Vec<AdapterEvent>) {
             _ => {}
         }
     }
+    if !texts.is_empty() || has_attachment {
+        let mut joined = texts.join("\n");
+        if has_attachment && joined.trim().is_empty() {
+            joined = "[image attachment]".to_owned();
+        }
+        out.push(AdapterEvent::Message {
+            local_id: local_id.to_owned(),
+            payload: json!({"role": "user", "text": joined, "meta": user_text_is_meta(&joined)}),
+        });
+    }
+    out.extend(tool_results);
 }
 
 /// Persistent (`session_id` → byte offset) store.

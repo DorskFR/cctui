@@ -18,14 +18,40 @@ export interface PermReq {
  * events. Shared so both shapes reconcile to one identity. */
 export const USER_PREFIX = '▷ User:';
 
+/** Canonicalize a user-turn body so its optimistic-echo and persisted/server
+ * shapes reduce to the same string (CCT-489). The composer appends staged
+ * *absolute* upload paths under an `Attached file(s):` header, and the
+ * persisted form can diverge on whitespace, trailing newlines, and path
+ * rewrites — so content-based dedup fails for attachment messages. Normalize
+ * defensively: trim each line, drop blank lines, and reduce every `- <path>`
+ * bullet to its basename so absolute-path differences don't matter. */
+export function canonUserBody(body: string): string {
+	return body
+		.split('\n')
+		.map((line) => {
+			const trimmed = line.trim();
+			// Attachment bullets: `- /abs/path/to/file` → `- file`. Also collapses
+			// emptied bullets (`-`) the persisted form sometimes carries.
+			const m = trimmed.match(/^-\s*(.*)$/);
+			if (m) {
+				const path = m[1].trim();
+				const base = path.split(/[\\/]/).pop() ?? '';
+				return base ? `- ${base}` : '-';
+			}
+			return trimmed;
+		})
+		.filter((line) => line.length > 0)
+		.join('\n');
+}
+
 /** Stable identity of a user-typed message across its three shapes (optimistic
  * `reply`, server `reply` echo, persisted `▷ User:` text), or null if `ev`
  * isn't a user message. Used to reconcile optimistic echoes and to dedup the
  * live stream against fetched history. */
 export function userMsgKey(ev: AgentEvent): string | null {
-	if (ev.type === 'reply') return ev.content.trim();
+	if (ev.type === 'reply') return canonUserBody(ev.content);
 	if (ev.type === 'text' && ev.content.startsWith(USER_PREFIX))
-		return ev.content.slice(USER_PREFIX.length).trim();
+		return canonUserBody(ev.content.slice(USER_PREFIX.length));
 	return null;
 }
 

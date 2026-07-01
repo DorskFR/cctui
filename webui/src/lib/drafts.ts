@@ -56,6 +56,16 @@ export function clearSessionStorage(sessionId: string) {
 	localStorage.removeItem(historyKey(sessionId));
 }
 
+/** Canonicalize a working-directory path for storage/dedup (CCT-491): strip
+ * trailing slashes so `folder` and `folder/` collapse to one `folder`, but
+ * keep the filesystem root `/` (a bare run of slashes) intact. Leaves the
+ * empty string as-is. */
+export function normalizeDir(path: string): string {
+	if (!path) return path;
+	const stripped = path.replace(/\/+$/, '');
+	return stripped === '' ? '/' : stripped;
+}
+
 export const SPAWN_DRAFT = 'cctui_spawn_draft';
 export const LAST_MACHINE = 'cctui_last_machine';
 

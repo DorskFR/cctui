@@ -38,11 +38,14 @@ pub async fn recent_dirs(
     let rows: Vec<(String,)> = match params.machine_id.as_deref() {
         Some(machine_id) => {
             sqlx::query_as(
-                "SELECT s.working_dir FROM sessions s \
+                // CCT-491: normalize trailing slashes (keep root '/') so
+                // `folder` and `folder/` collapse to one entry.
+                "SELECT CASE WHEN s.working_dir ~ '^/+$' THEN '/' \
+                    ELSE rtrim(s.working_dir, '/') END AS dir FROM sessions s \
              LEFT JOIN machines m ON m.id = s.machine_uuid \
              WHERE s.machine_id = $1 AND s.working_dir <> '' \
              AND ($2::uuid IS NULL OR m.user_id = $2) \
-             GROUP BY s.working_dir \
+             GROUP BY dir \
              ORDER BY MAX(s.registered_at) DESC LIMIT 5",
             )
             .bind(machine_id)
@@ -52,11 +55,14 @@ pub async fn recent_dirs(
         }
         None => {
             sqlx::query_as(
-                "SELECT s.working_dir FROM sessions s \
+                // CCT-491: normalize trailing slashes (keep root '/') so
+                // `folder` and `folder/` collapse to one entry.
+                "SELECT CASE WHEN s.working_dir ~ '^/+$' THEN '/' \
+                    ELSE rtrim(s.working_dir, '/') END AS dir FROM sessions s \
              LEFT JOIN machines m ON m.id = s.machine_uuid \
              WHERE s.working_dir <> '' \
              AND ($1::uuid IS NULL OR m.user_id = $1) \
-             GROUP BY s.working_dir \
+             GROUP BY dir \
              ORDER BY MAX(s.registered_at) DESC LIMIT 5",
             )
             .bind(uid)
