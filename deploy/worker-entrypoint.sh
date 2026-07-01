@@ -552,15 +552,30 @@ phase_codex_config() {
     _cfg="$_cfgdir/config.toml"
     mkdir -p "$_cfgdir"
 
+    # Model + reasoning effort, pinned per-pod so one-off `codex exec` (and the
+    # codex-run shim) need no --model/-c flags — config.toml owns them. Model
+    # defaults to a known-good PLAIN variant; the `-codex` family (e.g.
+    # gpt-5.5-codex) is rejected by the gateway account, so callers must not pin
+    # one. TASK_MODEL overrides. Effort maps TASK_EFFORT onto codex's scale
+    # (which adds `xhigh` above `high`); `low` is honored (cheaper) rather than
+    # floored up to medium (CCT-526).
+    _model="${TASK_MODEL:-gpt-5.5}"
+    case "${TASK_EFFORT:-high}" in
+        low)                _effort=low ;;
+        medium)             _effort=medium ;;
+        max|xhigh|veryhigh) _effort=xhigh ;;
+        high|*)             _effort=high ;;
+    esac
+
     # Preserve any existing config MINUS our managed region and the top-level
-    # keys we re-set (`model_provider`, `service_tier`). awk drops the
-    # marker-delimited block; the trailing grep removes bare re-set keys outside
-    # the block so a re-run can't leave a duplicate TOML key.
+    # keys we re-set. awk drops the marker-delimited block; the trailing grep
+    # removes bare re-set keys outside the block so a re-run can't leave a
+    # duplicate TOML key.
     _kept=""
     if [ -f "$_cfg" ]; then
         _kept=$(awk -v b="$CODEX_MARKER_BEGIN" -v e="$CODEX_MARKER_END" '
             $0==b {skip=1; next} $0==e {skip=0; next} skip{next} {print}
-        ' "$_cfg" | grep -vE '^[[:space:]]*(model_provider|service_tier)[[:space:]]*=' || true)
+        ' "$_cfg" | grep -vE '^[[:space:]]*(model_provider|service_tier|model|model_reasoning_effort|approval_policy|sandbox_mode)[[:space:]]*=' || true)
     fi
 
     {
@@ -569,6 +584,17 @@ phase_codex_config() {
         printf 'model_provider = "cctui"\n'
         # Standard tier, fast mode off — never bill credits at the 2-2.5x fast rate.
         printf 'service_tier = "default"\n'
+        # Model + effort pinned per-pod (from TASK_MODEL / TASK_EFFORT above).
+        printf 'model = "%s"\n' "$_model"
+        printf 'model_reasoning_effort = "%s"\n' "$_effort"
+        # Approvals off + full access: the pod is ALREADY a hardened sandbox
+        # (Landlock+seccomp+guard-proxy), and codex's inner bubblewrap sandbox is
+        # blocked by our seccomp filter — so a codex sandbox makes every read
+        # fail. This is the config.toml equivalent of the yolo CLI flag; it lets
+        # `codex exec` / the codex-run shim run with no approval/sandbox flags.
+        # (`--skip-git-repo-check` has NO config equivalent and stays on the CLI.)
+        printf 'approval_policy = "never"\n'
+        printf 'sandbox_mode = "danger-full-access"\n'
         printf '[model_providers.cctui]\n'
         printf 'name = "cctui-gateway"\n'
         printf 'base_url = "%s"\n' "$_base"

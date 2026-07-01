@@ -169,12 +169,16 @@ COPY --from=builder /app/target/release/cctui-supervisor   /usr/local/bin/cctui-
 COPY --from=builder /app/target/release/cctui-guard        /usr/local/bin/cctui-guard
 COPY deploy/worker-entrypoint.sh   /usr/local/bin/cctui-worker-entrypoint
 COPY deploy/worker-credentials.sh  /usr/local/bin/cctui-worker-credentials
+# codex-run — safe one-shot `codex exec` wrapper (model/effort/approvals from
+# config.toml; wrapper adds only --skip-git-repo-check + stdin-close + timeout).
+COPY deploy/codex-run.sh           /usr/local/bin/codex-run
 
 # Sandbox state dirs the entrypoint and proxy/guard write into. /opt/context is
 # the context-pack mount target (read-only after fetch).
 RUN mkdir -p /var/run/guard-proxy /var/run/workflow-guard /workspace /opt/context \
     && chmod +x /usr/local/bin/cctui-worker-entrypoint \
-                /usr/local/bin/cctui-worker-credentials
+                /usr/local/bin/cctui-worker-credentials \
+                /usr/local/bin/codex-run
 
 # Contract marker: derived images and dispatchers can assert the wire contract.
 LABEL dev.cctui.contract="1"
