@@ -122,11 +122,11 @@ RUN arch="$(dpkg --print-architecture)" \
 # tasks triage / transition YouTrack issues without an MCP server. Pinned and
 # checksum-verified; reads creds from ~/.config/yt/config.json (materialized by
 # worker-credentials.sh from the platform's YOUTRACK_URL/token) or env.
-ARG YT_VERSION=latest
+ARG YT_VERSION=v0.9.2
 RUN arch="$(dpkg --print-architecture)" \
     && case "$arch" in \
-         amd64) sha=f4e620363f1f9091791cd45e149fb039d55b08833c19d8988e51e24a6281ce83 ;; \
-         arm64) sha=e4193779d174ceb9a60d4f1fddc826810cf9098f5d52a45372327442fb200d32 ;; \
+         amd64) sha=5201231f53f93a6528f13fbb5333dc0935db6db96884c5133e17aff33153aaf9 ;; \
+         arm64) sha=15dc6961b56bbcc3939d83c7c88742a650570bc734e5d5d6ca8ba425469bfde4 ;; \
          *) echo "yt: unsupported arch '$arch'" >&2; exit 1 ;; \
        esac \
     && curl -fsSL "https://github.com/DorskFR/yt/releases/download/${YT_VERSION}/yt-linux-${arch}" \
