@@ -835,11 +835,11 @@ run_supervised_daemon() {
 #                        workers (no step markers) fall back to watching the
 #                        RESULT_FILE appear with valid JSON.
 #   BACKSTOP (crashed) — the dispatched session dies WITHOUT signalling done.
-#                        Detected per-session (not whole-list emptiness): claude
-#                        writes ~/.claude/jobs/<short>/state.json for the job's
-#                        lifetime, where short = first 8 chars of SESSION_ID
-#                        (control.rs build_dispatch_spec). Gated on "seen alive
-#                        once" so a slow cold start is not mistaken for a crash.
+#                        Sourced from the daemon's authoritative registration:
+#                        the server row for $SESSION_ID leaves "active" (the
+#                        daemon deregistered it on SessionEnded, or its heartbeat
+#                        went stale). Gated on "seen registered once" so a slow
+#                        cold start is not mistaken for a crash (CCT-521).
 #
 # Either signal ends the wait; the EXIT trap (phase_callback) then POSTs the
 # preserved clean/failed verdict from RESULT_FILE. A non-dispatched (thin)
@@ -850,11 +850,12 @@ GUARD_STATE_FILE="$GUARD_STATE"
 WAIT_POLL_SECS="${WORKER_DONE_POLL_SECS:-2}"
 # Fail-closed boot bound (CCT-520). A `claude daemon run` that crash-loops
 # `exited code=1` (often behind a network deny) keeps cctui-daemon up but never
-# dispatches a session, so `session_dead` (gated on "seen alive once") never
-# fires and the wait blocks to the 24h activeDeadlineSeconds, burning a pod slot
-# for a day with no callback. Bound the time-to-first-liveness: if the
-# dispatched session never appears within this window, write a failed
-# RESULT_FILE and exit non-zero so the EXIT trap POSTs the callback promptly.
+# dispatches a session, so it never registers and the backstop (gated on "seen
+# registered once") never fires — the wait would block to the 24h
+# activeDeadlineSeconds, burning a pod slot for a day with no callback. Bound the
+# time-to-first-registration: if the dispatched session never registers within
+# this window, write a failed RESULT_FILE and exit non-zero so the EXIT trap
+# POSTs the callback promptly.
 WORKER_BOOT_DEADLINE_SECS="${WORKER_BOOT_DEADLINE_SECS:-120}"
 
 # Guard signalled completion: state file says {"step":-1}.
@@ -871,39 +872,47 @@ result_ready() {
     [ -s "$RESULT_FILE" ] && jq -e . "$RESULT_FILE" >/dev/null 2>&1
 }
 
-# Per-session liveness backstop. claude keeps a jobs/<id>/state.json while a
-# session lives and removes it when the session ends (the daemon's `claude rm`
-# on SessionEnded). We can NOT key on the cctui SESSION_ID: claude derives its
-# OWN job id and rotates it on resume/clear (CCT-160), so the path is unknown up
-# front. Keying on jobs/<SESSION_ID[:8]>/state.json (CCT-520) missed every
-# resumed session — _SEEN_ALIVE stayed 0, and the boot bound below hard-killed a
-# fully-alive review at exactly 120s (CCT-521). The worker pod is single-session
-# and ephemeral (its jobs dir starts empty), so ANY jobs/*/state.json means OUR
-# session is alive. We only trust its ABSENCE after we've seen one appear, so a
-# cold start that hasn't created it yet doesn't read as a crash.
-_JOBS_DIR="${CLAUDE_CONFIG_DIR:-/home/${WORKER_USER}/.claude}/jobs"
-_SHORT=$(printf '%s' "${SESSION_ID:-}" | cut -c1-8)
+# Per-session liveness backstop — sourced from the cctui-daemon's own
+# registration, NOT a grep of claude's private jobs dir (CCT-521). The old
+# backstop keyed on ~/.claude/jobs/<short>/state.json, i.e. claude's INTERNAL
+# job id. Claude rotates that id on resume/clear (CCT-160) and never writes it
+# at the guessed path for cold-dispatched worker sessions, so _SEEN_ALIVE stayed
+# 0 and the 120s boot bound below guillotined fully-alive reviews mid-work (live
+# incident: PR #5679/#5776 — killed at exactly 120s while streaming to the API
+# and mid guard Step 2). The daemon is the source of truth: it launches claude
+# with `--session-id $SESSION_ID` (control.rs, CCT-446) and registers THAT stable
+# id with the server, immune to claude's id rotation. Ask the server for it.
+_SESSION_URL="${CCTUI_BASE_URL%/}/api/v1/sessions/${SESSION_ID}"
+_PROBE_BODY=/tmp/cctui-liveness-probe.json
+WORKER_LIVENESS_POLL_SECS="${WORKER_LIVENESS_POLL_SECS:-10}"
 _SEEN_ALIVE=0
-# True while claude holds any session's state.json under the single-session pod.
-# Unmatched glob stays literal, so the `[ -f ]` is false when none exists.
-session_alive_now() {
-    for _sj in "$_JOBS_DIR"/*/state.json; do
-        [ -f "$_sj" ] && return 0
-    done
-    return 1
-}
-session_dead() {
-    if session_alive_now; then
-        _SEEN_ALIVE=1
-        return 1
-    fi
-    # No state file. A crash AFTER we saw it alive; before that, just not-yet.
-    [ "$_SEEN_ALIVE" = 1 ]
+# Probe the daemon's server-side registration for OUR session id. Echoes:
+#   registered — HTTP 200 and status "active": the daemon holds this session
+#                live in its registry (heartbeat fresh within STATUS_WINDOW=5m).
+#   ended      — HTTP 200 but status != "active" (daemon deregistered it on
+#                SessionEnded -> DB row goes 'inactive', or heartbeat stale >5m),
+#                or HTTP 404 (row deleted). Only trusted as death after we have
+#                seen it registered at least once.
+#   unknown    — transient curl/HTTP error or not-yet-registered; never death.
+# `-4` mirrors the callback curl (the worker forces IPv4 egress; CCT-468).
+probe_session() {
+    _code=$(curl -4 -sS -o "$_PROBE_BODY" -w '%{http_code}' --max-time 5 \
+        -H "Authorization: Bearer $CCTUI_MACHINE_KEY" "$_SESSION_URL" 2>/dev/null) \
+        || { echo unknown; return; }
+    case "$_code" in
+        200)
+            _st=$(jq -r '.status // empty' "$_PROBE_BODY" 2>/dev/null || true)
+            [ "$_st" = active ] && echo registered || echo ended
+            ;;
+        404) echo ended ;;
+        *) echo unknown ;;
+    esac
 }
 
 await_dispatch_done() {
-    log "wait: blocking on dual signal (guard=$GUARD_ON, short=${_SHORT:-none})"
+    log "wait: blocking on dual signal (guard=$GUARD_ON, session=${SESSION_ID:-none})"
     _waited=0
+    _next_probe=0
     while :; do
         # The daemon process going away is itself terminal — nothing left to
         # finish the task, so stop waiting and let the trap synthesize a verdict.
@@ -911,19 +920,7 @@ await_dispatch_done() {
             log "wait: cctui-daemon (pid $DAEMON_PID) exited; ending wait"
             return 0
         fi
-        # Fail-closed boot bound (CCT-520): the daemon is still up but the
-        # dispatched session never came alive within the boot window — a wedged
-        # `claude daemon run` (crash-loop / network deny). Surface a fast
-        # failure instead of blocking to the 24h deadline. Once the session has
-        # been seen alive ($_SEEN_ALIVE=1), the bound no longer applies; long
-        # legitimate work is governed by activeDeadlineSeconds as before.
-        if [ "$_SEEN_ALIVE" = 0 ] && [ "$_waited" -ge "$WORKER_BOOT_DEADLINE_SECS" ]; then
-            log "wait: claude daemon failed to boot a session within ${WORKER_BOOT_DEADLINE_SECS}s; failing closed"
-            jq -nc --arg id "${TASK_ID:-}" --arg secs "$WORKER_BOOT_DEADLINE_SECS" \
-                '{task_id:$id, status:"failed", error:("claude daemon failed to boot a session within "+$secs+"s")}' \
-                > "$RESULT_FILE"
-            exit 1
-        fi
+        # PRIMARY done-signals — cheap local file reads, every loop.
         if guard_exited; then
             log "wait: guard signalled completion (step=-1)"
             return 0
@@ -932,9 +929,38 @@ await_dispatch_done() {
             log "wait: result file ready (guard-less done)"
             return 0
         fi
-        if session_dead; then
-            log "wait: dispatched session ($_SHORT) died without signalling done"
-            return 0
+        # Daemon-sourced liveness — throttled server probe (not every 2s).
+        if [ "$_waited" -ge "$_next_probe" ]; then
+            _next_probe=$((_waited + WORKER_LIVENESS_POLL_SECS))
+            case "$(probe_session)" in
+                registered)
+                    if [ "$_SEEN_ALIVE" = 0 ]; then
+                        _SEEN_ALIVE=1
+                        log "wait: session ${SESSION_ID%%-*} registered with the daemon (seen alive)"
+                    fi
+                    ;;
+                ended)
+                    # Only terminal once we have seen it alive: a pre-registration
+                    # 404 is just a slow cold start, not a crash.
+                    if [ "$_SEEN_ALIVE" = 1 ]; then
+                        log "wait: daemon reports session ${SESSION_ID%%-*} ended without a done-signal"
+                        return 0
+                    fi
+                    ;;
+            esac
+        fi
+        # Fail-closed boot bound (CCT-520/521): the daemon is still up but never
+        # registered the dispatched session within the boot window — a wedged
+        # `claude daemon run` (crash-loop / network deny). Surface a fast failure
+        # instead of blocking to the 24h deadline. Once the session has been seen
+        # alive ($_SEEN_ALIVE=1), the bound no longer applies; long legitimate
+        # work is governed by activeDeadlineSeconds as before.
+        if [ "$_SEEN_ALIVE" = 0 ] && [ "$_waited" -ge "$WORKER_BOOT_DEADLINE_SECS" ]; then
+            log "wait: claude daemon failed to boot a session within ${WORKER_BOOT_DEADLINE_SECS}s; failing closed"
+            jq -nc --arg id "${TASK_ID:-}" --arg secs "$WORKER_BOOT_DEADLINE_SECS" \
+                '{task_id:$id, status:"failed", error:("claude daemon failed to boot a session within "+$secs+"s")}' \
+                > "$RESULT_FILE"
+            exit 1
         fi
         sleep "$WAIT_POLL_SECS"
         _waited=$((_waited + WAIT_POLL_SECS))
