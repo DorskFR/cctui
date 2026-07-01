@@ -1105,6 +1105,188 @@ pub async fn account_usage(
     Ok(Json(AccountUsage { account_id: id, provider, usage, age_secs: 0 }))
 }
 
+// ----------------------------------------------------------------------------
+// Account sharing management (CCT-510)
+//
+// `account_shares` (CCT-458) is the CCT-422 sharing seam: a live grant row lets
+// a NON-owner resolve/use an OAuth account on the gateway + dispatch path,
+// without transferring ownership. Until now the only way to create/see/revoke a
+// grant was a manual `INSERT` — a dispatched job that 404'd on an unshared
+// account had no fix but a DB dig. These three routes give the OWNER a surface
+// to list / grant / revoke shares. Owner-scoped: only the account's owner (or an
+// admin) may manage its shares — a grant confers `use`, never share management.
+// ----------------------------------------------------------------------------
+
+/// API view of one live share grant on an account (CCT-510). Safe to return —
+/// no secrets; just who the account is shared with and since when.
+#[derive(Debug, serde::Serialize, sqlx::FromRow)]
+pub struct ShareInfo {
+    pub account_id: Uuid,
+    pub user_id: Uuid,
+    /// The grantee's login (`users.name`), joined for display.
+    pub user_name: String,
+    pub action: String,
+    pub granted_at: DateTime<Utc>,
+}
+
+/// `POST /api/v1/accounts/{id}/shares` payload (CCT-510). `user` is the grantee,
+/// accepted as either a UUID or a login (`users.name`) so an operator can grant
+/// by whichever they have. `action` defaults to `use` (the only action today).
+#[derive(Debug, serde::Deserialize)]
+pub struct GrantShare {
+    pub user: String,
+    #[serde(default)]
+    pub action: Option<String>,
+}
+
+/// Confirm the caller owns the account (admin sees any), scoped like the other
+/// account mutations via `owner_filter()`. Returns 404 (not 403) when the caller
+/// isn't the owner so an account id's existence never leaks. Share management is
+/// owner-only — a share grant does NOT confer the right to manage shares.
+async fn require_account_owner(
+    state: &AppState,
+    ctx: &AuthContext,
+    id: Uuid,
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    let owner: Option<Uuid> = sqlx::query_scalar(
+        "SELECT user_id FROM oauth_accounts \
+         WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)",
+    )
+    .bind(id)
+    .bind(ctx.owner_filter())
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("db error: {e}");
+        err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
+    })?;
+    owner.map(|_| ()).ok_or_else(|| err(StatusCode::NOT_FOUND, "no such account"))
+}
+
+/// `GET /api/v1/accounts/{id}/shares` — who the account is shared with (owner-
+/// scoped). Lists only live grants (`revoked_at IS NULL`).
+pub async fn list_shares(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<ShareInfo>>, (StatusCode, Json<serde_json::Value>)> {
+    require_human(&ctx)?;
+    require_account_owner(&state, &ctx, id).await?;
+    let rows: Vec<ShareInfo> = sqlx::query_as(
+        "SELECT s.account_id, s.user_id, u.name AS user_name, s.action, s.granted_at \
+         FROM account_shares s JOIN users u ON u.id = s.user_id \
+         WHERE s.account_id = $1 AND s.revoked_at IS NULL \
+         ORDER BY u.name",
+    )
+    .bind(id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("db error: {e}");
+        err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
+    })?;
+    Ok(Json(rows))
+}
+
+/// `POST /api/v1/accounts/{id}/shares` — grant `use` to another user (owner-
+/// scoped). `user` is a UUID or login. Idempotent: re-granting a previously
+/// revoked share un-revokes it in place rather than 409ing on the primary key.
+pub async fn grant_share(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(id): Path<Uuid>,
+    Json(req): Json<GrantShare>,
+) -> Result<(StatusCode, Json<ShareInfo>), (StatusCode, Json<serde_json::Value>)> {
+    require_human(&ctx)?;
+    require_account_owner(&state, &ctx, id).await?;
+
+    // Only `use` today (schema default); reject anything else so a typo doesn't
+    // silently store a dead action that no code path honours.
+    let action = req.action.as_deref().map(str::trim).filter(|s| !s.is_empty()).unwrap_or("use");
+    if action != "use" {
+        return Err(err(StatusCode::BAD_REQUEST, "action must be 'use'"));
+    }
+
+    // Resolve the grantee by UUID or login (`users.name`), active users only.
+    let ident = req.user.trim();
+    if ident.is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "user required"));
+    }
+    let target: Option<Uuid> = if let Ok(uuid) = Uuid::parse_str(ident) {
+        sqlx::query_scalar("SELECT id FROM users WHERE id = $1 AND revoked_at IS NULL").bind(uuid)
+    } else {
+        sqlx::query_scalar("SELECT id FROM users WHERE name = $1 AND revoked_at IS NULL").bind(ident)
+    }
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("db error: {e}");
+        err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
+    })?;
+    let Some(target) = target else {
+        return Err(err(StatusCode::NOT_FOUND, "no such user"));
+    };
+
+    sqlx::query(
+        "INSERT INTO account_shares (account_id, user_id, action) VALUES ($1, $2, $3) \
+         ON CONFLICT (account_id, user_id, action) \
+         DO UPDATE SET revoked_at = NULL, granted_at = now()",
+    )
+    .bind(id)
+    .bind(target)
+    .bind(action)
+    .execute(&state.pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("db error: {e}");
+        err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
+    })?;
+
+    let info: ShareInfo = sqlx::query_as(
+        "SELECT s.account_id, s.user_id, u.name AS user_name, s.action, s.granted_at \
+         FROM account_shares s JOIN users u ON u.id = s.user_id \
+         WHERE s.account_id = $1 AND s.user_id = $2 AND s.action = $3",
+    )
+    .bind(id)
+    .bind(target)
+    .bind(action)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("db error: {e}");
+        err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
+    })?;
+    Ok((StatusCode::CREATED, Json(info)))
+}
+
+/// `DELETE /api/v1/accounts/{id}/shares/{user_id}` — revoke a grant (owner-
+/// scoped) by setting `revoked_at`. Idempotent-ish: 404 if there was no live
+/// share to revoke.
+pub async fn revoke_share(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path((id, user_id)): Path<(Uuid, Uuid)>,
+) -> Result<StatusCode, (StatusCode, Json<serde_json::Value>)> {
+    require_human(&ctx)?;
+    require_account_owner(&state, &ctx, id).await?;
+    let res = sqlx::query(
+        "UPDATE account_shares SET revoked_at = now() \
+         WHERE account_id = $1 AND user_id = $2 AND revoked_at IS NULL",
+    )
+    .bind(id)
+    .bind(user_id)
+    .execute(&state.pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("db error: {e}");
+        err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
+    })?;
+    if res.rows_affected() == 0 {
+        return Err(err(StatusCode::NOT_FOUND, "no such share"));
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

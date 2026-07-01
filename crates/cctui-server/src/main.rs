@@ -642,6 +642,22 @@ fn build_api_routes() -> Routes {
             Authn::Bearer,
             Authenticated,
         )
+        // Account sharing management (CCT-510): owner-scoped in the handler
+        // (require_account_owner) just like the other account routes.
+        .add(
+            &[GET, Method::POST],
+            "/accounts/{id}/shares",
+            get(routes::accounts::list_shares).post(routes::accounts::grant_share),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[Method::DELETE],
+            "/accounts/{id}/shares/{user_id}",
+            delete(routes::accounts::revoke_share),
+            Authn::Bearer,
+            Authenticated,
+        )
         .add(
             &[GET],
             "/machines/{machine_id}/commands/pending",

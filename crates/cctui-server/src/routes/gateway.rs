@@ -171,7 +171,20 @@ pub async fn mint_session_env(
         .await?;
         candidates.into_iter().find(|(_, prov)| Family::from_provider(prov) == want)
     };
-    let Some((account_id, prov)) = row else { return Ok(None) };
+    let Some((account_id, prov)) = row else {
+        // Fail-diagnosable, not silent (CCT-510): the account name resolved to
+        // nothing for this user — neither owned nor shared. This is the exact
+        // shape of the "404 no account named X" dispatch failures, so name the
+        // user + account + provider hint here rather than leaving a caller to dig
+        // through the DB.
+        tracing::warn!(
+            %user_id,
+            account = %account_name,
+            provider = ?provider,
+            "mint_session_env: no account resolved (not owned by, nor shared to, this user)"
+        );
+        return Ok(None);
+    };
     Ok(Some(mint_env_for_account(state, account_id, &prov, session_id).await?))
 }
 

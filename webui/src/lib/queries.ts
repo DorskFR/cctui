@@ -224,6 +224,23 @@ export interface OAuthFinish {
   callback_url?: string;
 }
 
+/** One live share grant on an account (CCT-510): who it's shared with + since
+ *  when. No secrets; `user_name` is the grantee's login joined for display. */
+export interface ShareInfo {
+  account_id: string;
+  user_id: string;
+  user_name: string;
+  action: string;
+  granted_at: string;
+}
+
+/** Grant payload (CCT-510). `user` is a UUID or a login; `action` defaults to
+ *  `use` server-side. */
+export interface GrantShare {
+  user: string;
+  action?: string;
+}
+
 /** Centralised query keys so invalidation stays consistent. */
 export const qk = {
   version: ["version"] as const,
@@ -243,6 +260,7 @@ export const qk = {
   userAcls: (userId: string) => ["users", userId, "acls"] as const,
   userKeys: (userId: string) => ["users", userId, "keys"] as const,
   labels: ["labels"] as const,
+  accountShares: (accountId: string) => ["accounts", accountId, "shares"] as const,
 };
 
 /** Raw typed fetchers — also usable outside of components. */
@@ -366,6 +384,12 @@ export const endpoints = {
   /** Current subscription usage for an account (CCT-306). Free + tokenless;
    *  the server slow-refreshes a cache so polling never spams upstream. */
   accountUsage: (id: string) => api.get<AccountUsage>(`/accounts/${id}/usage`),
+  /** Who an account is shared with (CCT-510). Owner-scoped server-side. */
+  accountShares: (id: string) => api.get<ShareInfo[]>(`/accounts/${id}/shares`),
+  grantShare: (id: string, body: GrantShare) =>
+    api.post<ShareInfo>(`/accounts/${id}/shares`, body),
+  revokeShare: (id: string, userId: string) =>
+    api.del<void>(`/accounts/${id}/shares/${userId}`),
   oauthStart: (provider: string, userId?: string) =>
     api.post<OAuthStartResponse>("/accounts/oauth/start", {
       provider,
@@ -721,6 +745,21 @@ export const useAccountUsage = (
       staleTime: 180_000,
       refetchInterval: 180_000,
       refetchOnWindowFocus: false,
+      retry: false,
+    })),
+  );
+
+/** Who an account is shared with (CCT-510). Owner-scoped: the server 404s the
+ *  list for a non-owner, so callers gate `enabled` to the account owner/admin. */
+export const useAccountShares = (
+  accountId: () => string,
+  enabled: () => boolean = () => true,
+) =>
+  createQuery(
+    toStore(() => ({
+      queryKey: qk.accountShares(accountId()),
+      queryFn: () => endpoints.accountShares(accountId()),
+      enabled: enabled(),
       retry: false,
     })),
   );
@@ -1298,6 +1337,16 @@ export function useAccountActions() {
     remove: async (id: string) => {
       await endpoints.deleteAccount(id);
       inval();
+    },
+    // Sharing (CCT-510): grant/revoke invalidate that account's shares query.
+    grantShare: async (id: string, body: GrantShare) => {
+      const r = await endpoints.grantShare(id, body);
+      qc.invalidateQueries({ queryKey: qk.accountShares(id) });
+      return r;
+    },
+    revokeShare: async (id: string, userId: string) => {
+      await endpoints.revokeShare(id, userId);
+      qc.invalidateQueries({ queryKey: qk.accountShares(id) });
     },
   };
 }

@@ -12,6 +12,7 @@
 	import { toasts } from '$lib/toast.svelte';
 	import { compact } from '$lib/format';
 	import UsageBars from '$lib/components/molecules/UsageBars.svelte';
+	import AccountShares from '$lib/components/molecules/AccountShares.svelte';
 	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
 	import GithubConnectors from '$lib/components/organisms/GithubConnectors.svelte';
 	import DispatchersPanel from '$lib/components/organisms/DispatchersPanel.svelte';
@@ -385,6 +386,12 @@
 						<div><dt>Last used</dt><dd><Timestamp value={a.last_used_at} mode="relative" tone="inherit" /></dd></div>
 						<div><dt>Created</dt><dd><Timestamp value={a.created_at} mode="date" tone="inherit" /></dd></div>
 					</dl>
+					{#if !a.managed && (isAdmin || a.user_id === $me.data?.user_id)}
+						<!-- Sharing management (CCT-510): owner-only surface to view/grant/
+						     revoke who may USE this account. The list endpoint is
+						     owner-scoped, so only render (and fetch) it for the owner/admin. -->
+						<AccountShares id={a.id} enabled={tab === 'ai'} />
+					{/if}
 				</Stack>
 				<Cluster as="footer" gap="var(--sp-1)" justify="flex-end" class="card-foot">
 					{#if a.managed}
