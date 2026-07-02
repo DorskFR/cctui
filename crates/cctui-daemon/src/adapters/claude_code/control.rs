@@ -389,6 +389,16 @@ struct StatusSnapshot {
     effort: Option<String>,
 }
 
+/// Everything the launch chokepoint pulls from the server's durable binding for
+/// a (re)launch: the gateway-routing `env` (CCT-460) and the per-account
+/// `settings_json` (CCT-539/540) the daemon merges under its managed hook
+/// settings.
+#[derive(Debug, Default)]
+pub(super) struct LaunchEnv {
+    pub env: std::collections::BTreeMap<String, String>,
+    pub settings: Option<serde_json::Value>,
+}
+
 /// Decide the launch env from a server `GatewayEnvResponse` (CCT-460), split out
 /// as a pure function so the fail-closed contract is unit-testable without a
 /// live server. See [`Driver::resolve_launch_env`] for the surrounding flow.
@@ -934,18 +944,23 @@ impl Driver {
         &self,
         local_id: &str,
         hint: &std::collections::BTreeMap<String, String>,
-    ) -> anyhow::Result<std::collections::BTreeMap<String, String>> {
+    ) -> anyhow::Result<LaunchEnv> {
         let (Some(server), Some(mk)) = (self.server.as_ref(), self.machine_key.as_ref()) else {
             // No server configured (tests / legacy): best-effort hint.
-            return Ok(hint.clone());
+            return Ok(LaunchEnv { env: hint.clone(), settings: None });
         };
         match server.gateway_env(mk, local_id).await {
-            Ok(resp) => launch_env_decision(local_id, &resp, hint),
+            // The env decision can fail closed (account-bound but unmintable);
+            // the per-account settings (CCT-540) ride the same response.
+            Ok(resp) => Ok(LaunchEnv {
+                env: launch_env_decision(local_id, &resp, hint)?,
+                settings: resp.settings,
+            }),
             Err(e) => {
                 // Pull unavailable (older server / transient). Degrade to the
                 // pushed hint rather than blocking the launch.
                 tracing::warn!(%local_id, "gateway-env pull failed; falling back to pushed env: {e}");
-                Ok(hint.clone())
+                Ok(LaunchEnv { env: hint.clone(), settings: None })
             }
         }
     }
@@ -1075,11 +1090,25 @@ impl Driver {
             return Ok(());
         }
 
-        // Re-derive the gateway env from the server's durable binding (CCT-460),
-        // falling back to the pushed `env` hint if the pull is unavailable. This
-        // is the path that broke before: a cold-resume relaunched the worker with
-        // empty env and the worker 401ed. Fail-closed inside `resolve_launch_env`.
-        let env = self.resolve_launch_env(local_id, env).await?;
+        // Re-derive the gateway env + per-account settings from the server's
+        // durable binding (CCT-460/540), falling back to the pushed `env` hint if
+        // the pull is unavailable. This is the path that broke before: a
+        // cold-resume relaunched the worker with empty env and the worker 401ed.
+        // Fail-closed inside `resolve_launch_env`.
+        let launch = self.resolve_launch_env(local_id, env).await?;
+        let env = launch.env;
+
+        // Re-apply the managed hook settings on cold resume so the revived worker
+        // keeps its ask/permission/Stop hooks AND picks up the (possibly
+        // refreshed) per-account settings the env pull re-served (CCT-539/540).
+        // `whip` is recovered from the settings file the original spawn wrote for
+        // this `short` (its `hooks.Stop` block is whip-only) — cold resume has no
+        // `spec` to read it from directly, and defaulting false would silently
+        // downgrade a 🐎 session's enforcement profile.
+        let whip = detect_whip_from_settings(short);
+        let settings_arg =
+            ensure_hook_settings(&self.cfg.hook_socket_path, whip, short, launch.settings.as_ref())
+                .map(|p| p.to_string_lossy().into_owned());
 
         let st = StateJson::read(&self.cfg.jobs_root, short);
         // `/clear`/`/compact` rotate the live conversation into the id recorded
@@ -1108,6 +1137,16 @@ impl Driver {
                 .unwrap_or(0),
         )
         .unwrap_or(0);
+        // Launch argv + respawn flags, appending the managed `--settings` file so
+        // the revived worker keeps its hooks + account settings (CCT-540).
+        let mut args = vec!["--resume".to_owned(), session_id.clone(), "--agent".to_owned(), agent.to_owned()];
+        let mut respawn_flags = vec!["--agent".to_owned(), agent.to_owned()];
+        if let Some(settings) = &settings_arg {
+            args.push("--settings".to_owned());
+            args.push(settings.clone());
+            respawn_flags.push("--settings".to_owned());
+            respawn_flags.push(settings.clone());
+        }
         let req = json!({
             "proto": 1,
             "op": "dispatch",
@@ -1120,7 +1159,7 @@ impl Driver {
                 "createdAt": created_at,
                 "source": "fleet",
                 "cwd": cwd,
-                "launch": { "mode": "prompt", "args": ["--resume", &session_id, "--agent", agent] },
+                "launch": { "mode": "prompt", "args": args },
                 // Re-inject the gateway env resolved for this session's bound
                 // OAuth account so the revived worker keeps routing through the
                 // gateway rather than hitting the default upstream with no
@@ -1131,7 +1170,7 @@ impl Driver {
                 "env": &env,
                 "reattachEnv": &env,
                 "isolation": "none",
-                "respawnFlags": ["--agent", agent],
+                "respawnFlags": respawn_flags,
                 "agent": agent,
                 // `state.json` already exists for this short; the daemon keeps
                 // its identity fields, so the seed is just protocol filler.
@@ -1426,7 +1465,15 @@ impl Driver {
             }
         }
         let whip = spec.permission_mode.is_some_and(cctui_proto::adapter::PermissionMode::is_whip);
-        if let Some(settings) = ensure_hook_settings(&self.cfg.hook_socket_path, whip) {
+        // Resolve the gateway env + per-account settings from the server's
+        // durable binding BEFORE writing the managed hook-settings file, so the
+        // account settings (CCT-539/540) can be deep-merged under the managed
+        // hooks. Fail-closed inside `resolve_launch_env` (account-bound but
+        // unmintable → abort rather than launch a worker that will 401, CCT-460).
+        let launch = self.resolve_launch_env(&session_id, &spec.env).await?;
+        if let Some(settings) =
+            ensure_hook_settings(&self.cfg.hook_socket_path, whip, short, launch.settings.as_ref())
+        {
             let settings = settings.to_string_lossy().into_owned();
             args.push("--settings".to_owned());
             args.push(settings.clone());
@@ -1475,12 +1522,10 @@ impl Driver {
         // These values are NOT placed in `seed`/`intent`/`launch.args`, so they
         // never reach the transcript, timeline, or `state.json`.
         //
-        // Resolve the gateway env from the server's durable binding rather than
-        // trusting `spec.env` alone (CCT-460), so a spawn whose server-side mint
-        // silently produced nothing fails closed here instead of launching a
-        // worker that will 401. `spec.env` is the fallback when the pull is
-        // unavailable (older server / transient).
-        let env = self.resolve_launch_env(&session_id, &spec.env).await?;
+        // Gateway env resolved above (CCT-460): a spawn whose server-side mint
+        // silently produced nothing already failed closed there rather than
+        // launching a worker that will 401.
+        let env = launch.env;
         let env_json: serde_json::Map<String, serde_json::Value> =
             env.iter().map(|(k, v)| (k.clone(), json!(v))).collect();
 
@@ -1650,7 +1695,27 @@ impl Driver {
             }
         }
         let whip = spec.permission_mode.is_some_and(cctui_proto::adapter::PermissionMode::is_whip);
-        if let Some(settings) = ensure_hook_settings(&self.cfg.hook_socket_path, whip) {
+        // Gateway env + per-account settings for the fork child (CCT-460): the
+        // fork dispatch used to hardcode empty env, so a fork of an account-bound
+        // conversation 401ed. Resolve for the child id first; if the server
+        // hasn't bound it yet, inherit the parent's account env (and settings) so
+        // the child routes through the gateway from its first turn. Empty when
+        // neither is account-bound. Resolved BEFORE the hook-settings file is
+        // written so the account settings can be merged under the managed hooks
+        // (CCT-539/540).
+        let mut launch =
+            self.resolve_launch_env(&session_id, &std::collections::BTreeMap::default()).await?;
+        if launch.env.is_empty() {
+            launch = self
+                .resolve_launch_env(parent_local_id, &std::collections::BTreeMap::default())
+                .await?;
+        }
+        if let Some(settings) = ensure_hook_settings(
+            &self.cfg.hook_socket_path,
+            whip,
+            &short,
+            launch.settings.as_ref(),
+        ) {
             let settings = settings.to_string_lossy().into_owned();
             args.push("--settings".to_owned());
             args.push(settings.clone());
@@ -1676,18 +1741,8 @@ impl Driver {
             map.insert(short.clone(), parent_local_id.to_owned());
         }
 
-        // Gateway env for the fork child (CCT-460): the fork dispatch used to
-        // hardcode empty env, so a fork of an account-bound conversation 401ed.
-        // Resolve for the child id first; if the server hasn't bound it yet,
-        // inherit the parent's account env so the child routes through the
-        // gateway from its first turn. Empty when neither is account-bound.
-        let mut env =
-            self.resolve_launch_env(&session_id, &std::collections::BTreeMap::default()).await?;
-        if env.is_empty() {
-            env = self
-                .resolve_launch_env(parent_local_id, &std::collections::BTreeMap::default())
-                .await?;
-        }
+        // Gateway env resolved above (CCT-460).
+        let env = launch.env;
         let env_json: serde_json::Map<String, serde_json::Value> =
             env.iter().map(|(k, v)| (k.clone(), json!(v))).collect();
 
@@ -2569,11 +2624,74 @@ pub fn stage_mid_chat_files(
     stage_upload_files(session_id, uploads)
 }
 
+/// Recover a session's whip posture from the per-session settings file the
+/// original spawn wrote for `short` (CCT-540). The whip profile is the only one
+/// that emits a top-level `hooks.Stop` block (the `whip-stop-hook`), so its
+/// presence is a reliable discriminator. Used by cold resume, which has no
+/// `spec` to read `permission_mode` from. Absent/unreadable file → not whip.
+fn detect_whip_from_settings(short: &str) -> bool {
+    let Some(path) = hook_settings_path(&format!("hook-settings-{short}.json")) else {
+        return false;
+    };
+    std::fs::read(&path)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+        .and_then(|v| v.get("hooks").and_then(|h| h.get("Stop")).cloned())
+        .is_some()
+}
+
 fn hook_settings_path(file: &str) -> Option<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
     Some(base.join("cctui").join(file))
+}
+
+/// Recursively deep-merge `overlay` into `base`, with `overlay` winning at every
+/// level (CCT-540). Object nodes are merged key-by-key (recursing on shared
+/// keys); every other node kind (scalars, arrays) is replaced wholesale by the
+/// overlay value. Keys present only in `base` are preserved.
+///
+/// The daemon uses this to layer its load-bearing managed settings (the ask /
+/// permission / Stop hooks) as the `overlay` OVER server-provided per-account
+/// settings (the `base`) — so account settings can add keys but can never
+/// clobber a managed key. See [`ensure_hook_settings`].
+pub(super) fn deep_merge(base: &mut serde_json::Value, overlay: &serde_json::Value) {
+    match (base, overlay) {
+        (serde_json::Value::Object(b), serde_json::Value::Object(o)) => {
+            for (k, ov) in o {
+                match b.get_mut(k) {
+                    Some(bv) => deep_merge(bv, ov),
+                    None => {
+                        b.insert(k.clone(), ov.clone());
+                    }
+                }
+            }
+        }
+        (b, o) => *b = o.clone(),
+    }
+}
+
+/// Produce the final `--settings` document by deep-merging the server-provided
+/// per-account `settings` UNDERNEATH the daemon's `managed` settings (CCT-540).
+///
+/// Managed values win at every level: we start from a clone of the account
+/// settings (an object; anything non-object is discarded as malformed) and
+/// overlay the managed settings on top via [`deep_merge`]. An account blob that
+/// tries to set its own `hooks` therefore loses to the managed `hooks` block —
+/// the ask/permission/Stop hooks survive intact.
+pub(super) fn merge_account_under_managed(
+    managed: serde_json::Value,
+    account: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    let mut merged = match account {
+        Some(a @ serde_json::Value::Object(_)) => a.clone(),
+        // No account settings, or a non-object blob we can't safely merge under:
+        // fall back to managed-only, exactly as before CCT-540.
+        _ => return managed,
+    };
+    deep_merge(&mut merged, &managed);
+    merged
 }
 
 /// Write (idempotently, on every spawn so it tracks binary upgrades) the
@@ -2583,17 +2701,29 @@ fn hook_settings_path(file: &str) -> Option<PathBuf> {
 /// or `None` if we can't locate the binary / config dir (in which case spawning
 /// proceeds without the hook rather than failing).
 ///
-/// `whip` (CCT-352) toggles the 🐎 enforcement profile, written to a separate
-/// file so it never clobbers the default one: the `AskUserQuestion` `PreToolUse`
-/// hook gains `--deny` (it still notifies the UI, but returns a `deny` decision
-/// so the form never renders), and a `Stop` hook (`whip-stop-hook`) blocks
-/// stalling / hand-back language so the worker runs to genuine completion.
-pub(super) fn ensure_hook_settings(sock: &std::path::Path, whip: bool) -> Option<PathBuf> {
-    let path = hook_settings_path(if whip {
-        "whip-hook-settings.json"
-    } else {
-        "ask-hook-settings.json"
-    })?;
+/// `whip` (CCT-352) toggles the 🐎 enforcement profile: the `AskUserQuestion`
+/// `PreToolUse` hook gains `--deny` (it still notifies the UI, but returns a
+/// `deny` decision so the form never renders), and a `Stop` hook
+/// (`whip-stop-hook`) blocks stalling / hand-back language so the worker runs to
+/// genuine completion.
+///
+/// The file is written to a PER-SESSION path (keyed by `short`) so different
+/// sessions — potentially bound to different accounts with different
+/// `account_settings` — never clobber each other's `--settings` file.
+///
+/// `account_settings` (CCT-540) is the server-provided, per-account
+/// `settings_json` that rode the gateway-env pull. It is deep-merged UNDERNEATH
+/// the managed settings: account keys are layered in, but the managed `hooks`
+/// block (and any other key the daemon sets) ALWAYS WINS — a malicious or
+/// stale account blob that specifies its own `hooks` can never disable the
+/// ask/permission/Stop hooks. `None` → managed settings only, exactly as before.
+pub(super) fn ensure_hook_settings(
+    sock: &std::path::Path,
+    whip: bool,
+    short: &str,
+    account_settings: Option<&serde_json::Value>,
+) -> Option<PathBuf> {
+    let path = hook_settings_path(&format!("hook-settings-{short}.json"))?;
     let exe = std::env::current_exe()
         .map_err(|err| tracing::warn!(%err, "ask-hook: cannot resolve current_exe"))
         .ok()?;
@@ -2635,7 +2765,7 @@ pub(super) fn ensure_hook_settings(sock: &std::path::Path, whip: bool) -> Option
         }],
     });
     let pre_hooks = json!([hook("pre"), perm_hook]);
-    let settings = if whip {
+    let managed = if whip {
         json!({
             "hooks": {
                 "PreToolUse": pre_hooks,
@@ -2654,6 +2784,10 @@ pub(super) fn ensure_hook_settings(sock: &std::path::Path, whip: bool) -> Option
             "hooks": { "PreToolUse": pre_hooks, "PostToolUse": [hook("post")] },
         })
     };
+    // Layer the server-provided per-account settings UNDERNEATH the managed
+    // settings (CCT-540): account keys are merged in, but the managed `hooks`
+    // block always wins so the ask/permission/Stop hooks can never be clobbered.
+    let settings = merge_account_under_managed(managed, account_settings);
     if let Some(Err(err)) = path.parent().map(std::fs::create_dir_all) {
         tracing::warn!(%err, "ask-hook: cannot create settings dir");
         return None;
@@ -2769,6 +2903,93 @@ mod tests {
     fn dispatch_prompt_errors_when_neither_present() {
         let payload = serde_json::json!({ "model": "opus" });
         assert!(Driver::resolve_dispatch_prompt(&payload).is_err());
+    }
+
+    /// The managed settings shape produced by `ensure_hook_settings` for a
+    /// non-whip session (hooks the ask form + permission flow depend on). Kept
+    /// in the test so the merge assertions below pin the load-bearing keys
+    /// without dragging in `current_exe`/socket resolution.
+    fn managed_ask_settings() -> serde_json::Value {
+        json!({
+            "hooks": {
+                "PreToolUse": [
+                    { "matcher": "AskUserQuestion|ExitPlanMode", "hooks": [{ "type": "command", "command": "cctui ask-hook --event pre" }] },
+                    { "matcher": "Bash|Edit", "hooks": [{ "type": "command", "command": "cctui ask-hook --event perm" }] },
+                ],
+                "PostToolUse": [{ "matcher": "AskUserQuestion|ExitPlanMode", "hooks": [{ "type": "command", "command": "cctui ask-hook --event post" }] }],
+            },
+        })
+    }
+
+    #[test]
+    fn deep_merge_overlay_wins_and_recurses() {
+        // CCT-540: overlay wins at every level; base-only keys are preserved;
+        // nested objects merge key-by-key rather than replacing wholesale.
+        let mut base = json!({
+            "a": 1,
+            "keep": "me",
+            "nested": { "x": "base-x", "base_only": true },
+        });
+        let overlay = json!({
+            "a": 2,
+            "nested": { "x": "overlay-x", "y": "overlay-y" },
+        });
+        deep_merge(&mut base, &overlay);
+        assert_eq!(base["a"], json!(2), "overlay scalar wins");
+        assert_eq!(base["keep"], json!("me"), "base-only top key preserved");
+        assert_eq!(base["nested"]["x"], json!("overlay-x"), "overlay wins nested");
+        assert_eq!(base["nested"]["base_only"], json!(true), "base-only nested key preserved");
+        assert_eq!(base["nested"]["y"], json!("overlay-y"), "overlay-only nested key added");
+    }
+
+    #[test]
+    fn account_settings_cannot_clobber_managed_hooks() {
+        // (a) An account blob that specifies its OWN hooks must lose to the
+        // managed hooks entirely — the ask/permission hooks survive intact.
+        let managed = managed_ask_settings();
+        let account = json!({
+            "hooks": { "PreToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "evil --disable" }] }] },
+            "env": { "MY_ACCOUNT_VAR": "1" },
+            "permissions": { "allow": ["Bash(ls:*)"] },
+        });
+        let merged = merge_account_under_managed(managed.clone(), Some(&account));
+        // Managed hooks win wholesale (the malicious PreToolUse never appears).
+        assert_eq!(merged["hooks"], managed["hooks"], "managed hooks always win");
+        assert_eq!(
+            merged["hooks"]["PreToolUse"].as_array().unwrap().len(),
+            2,
+            "both managed PreToolUse hooks (ask + perm) survive"
+        );
+        // (b) account NON-hook keys are merged in.
+        assert_eq!(merged["env"]["MY_ACCOUNT_VAR"], json!("1"));
+        assert_eq!(merged["permissions"]["allow"], json!(["Bash(ls:*)"]));
+    }
+
+    #[test]
+    fn account_non_hook_keys_merge_and_nested_managed_survives() {
+        // (c) A nested merge where the account also supplies `hooks.PostToolUse`
+        // must not drop the managed `hooks.PreToolUse` sub-key.
+        let managed = managed_ask_settings();
+        let account = json!({
+            "hooks": { "PostToolUse": [{ "matcher": "*", "hooks": [{ "command": "acct-post" }] }], "SessionStart": [{ "hooks": [] }] },
+            "statusLine": { "type": "command", "command": "mystatus" },
+        });
+        let merged = merge_account_under_managed(managed.clone(), Some(&account));
+        // Managed PreToolUse + PostToolUse both intact (managed wins on PostToolUse).
+        assert_eq!(merged["hooks"]["PreToolUse"], managed["hooks"]["PreToolUse"]);
+        assert_eq!(merged["hooks"]["PostToolUse"], managed["hooks"]["PostToolUse"]);
+        // Account's brand-new hook event (no managed counterpart) is added.
+        assert!(merged["hooks"]["SessionStart"].is_array());
+        // Non-hook top-level account key merged in.
+        assert_eq!(merged["statusLine"]["command"], json!("mystatus"));
+    }
+
+    #[test]
+    fn no_account_settings_is_managed_only() {
+        let managed = managed_ask_settings();
+        assert_eq!(merge_account_under_managed(managed.clone(), None), managed);
+        // A non-object account blob is treated as absent (never merged).
+        assert_eq!(merge_account_under_managed(managed.clone(), Some(&json!("garbage"))), managed);
     }
 
     #[test]

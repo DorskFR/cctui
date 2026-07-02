@@ -262,10 +262,23 @@ impl OneshotDriver {
             anyhow::bail!("spawn: working_dir does not exist or is not a directory: {cwd}");
         }
 
-        // Ensure the ask/permission hook is wired for this run (idempotent).
+        // Resolve gateway env + per-account settings (CCT-460/539/540) BEFORE
+        // writing the hook-settings file, so the account settings can be
+        // deep-merged under the managed hooks. Fail-closed inside
+        // `resolve_launch_env`.
+        let launch_env = self.resolve_launch_env(&session_id, &spec.env).await?;
+
+        // Ensure the ask/permission hook is wired for this run (idempotent),
+        // per-session so distinct sessions don't clobber each other's settings.
         let whip = spec.permission_mode.is_some_and(cctui_proto::adapter::PermissionMode::is_whip);
-        let settings = super::control::ensure_hook_settings(&self.cfg.hook_socket_path, whip)
-            .map(|p| p.to_string_lossy().into_owned());
+        let short = &session_id[..8.min(session_id.len())];
+        let settings = super::control::ensure_hook_settings(
+            &self.cfg.hook_socket_path,
+            whip,
+            short,
+            launch_env.settings.as_ref(),
+        )
+        .map(|p| p.to_string_lossy().into_owned());
         self.settings_path.clone_from(&settings);
 
         let mut launch = LaunchArgs::from_spec(spec, settings);
@@ -291,7 +304,7 @@ impl OneshotDriver {
         })
         .await;
 
-        let env = self.resolve_launch_env(&session_id, &spec.env).await?;
+        let env = launch_env.env;
         let prompt = spec.prompt.clone().unwrap_or_default();
         self.launch_turn(&session_id, &cwd, launch.to_argv(), &prompt, &env).await
     }
@@ -313,7 +326,7 @@ impl OneshotDriver {
             settings_path: self.settings_path.clone(),
             ..LaunchArgs::default()
         };
-        let env = self.resolve_launch_env(local_id, &env_hint).await?;
+        let env = self.resolve_launch_env(local_id, &env_hint).await?.env;
         self.launch_turn(local_id, &cwd, launch.to_argv(), text, &env).await
     }
 
@@ -329,7 +342,7 @@ impl OneshotDriver {
             settings_path: self.settings_path.clone(),
             ..LaunchArgs::default()
         };
-        let env = self.resolve_launch_env(local_id, &std::collections::BTreeMap::new()).await?;
+        let env = self.resolve_launch_env(local_id, &std::collections::BTreeMap::new()).await?.env;
         self.launch_turn(local_id, &cwd, launch.to_argv(), "", &env).await
     }
 
@@ -441,15 +454,18 @@ impl OneshotDriver {
         &self,
         local_id: &str,
         hint: &std::collections::BTreeMap<String, String>,
-    ) -> anyhow::Result<std::collections::BTreeMap<String, String>> {
+    ) -> anyhow::Result<super::control::LaunchEnv> {
         let (Some(server), Some(mk)) = (self.server.as_ref(), self.machine_key.as_ref()) else {
-            return Ok(hint.clone());
+            return Ok(super::control::LaunchEnv { env: hint.clone(), settings: None });
         };
         match server.gateway_env(mk, local_id).await {
-            Ok(resp) => super::control::launch_env_decision(local_id, &resp, hint),
+            Ok(resp) => Ok(super::control::LaunchEnv {
+                env: super::control::launch_env_decision(local_id, &resp, hint)?,
+                settings: resp.settings,
+            }),
             Err(e) => {
                 tracing::warn!(%local_id, "oneshot gateway-env pull failed; using pushed env: {e}");
-                Ok(hint.clone())
+                Ok(super::control::LaunchEnv { env: hint.clone(), settings: None })
             }
         }
     }
