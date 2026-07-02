@@ -81,7 +81,9 @@
 		working_dir: '',
 		name: '',
 		prompt: '',
-		permission_mode: (sNew.defaultPermissionMode || 'yolo') as Form['permission_mode'],
+		// No hardcoded fallback (CCT-542): empty = "Default", so the account
+		// default permission mode (else claude's own) applies unless overridden.
+		permission_mode: (sNew.defaultPermissionMode || '') as Form['permission_mode'],
 		dispatcher: '',
 		identity: '',
 		repo: '',
@@ -385,7 +387,9 @@
 			name: form.name.trim() || null,
 			prompt: form.prompt.trim() || null,
 			prompt_name: null,
-			permission_mode: form.permission_mode,
+			// Omit when unset (CCT-542): null lets the server resolve the account
+			// default permission mode, else claude's own — never force a mode.
+			permission_mode: form.permission_mode || null,
 			effort: (adapter === 'codex' ? form.effort_codex : form.effort_claude) || null,
 			model,
 			env: envMap(),

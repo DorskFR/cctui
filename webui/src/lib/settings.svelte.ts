@@ -92,7 +92,9 @@ const DEFAULTS: SettingsState = {
 		defaultModelCodex: '',
 		defaultEffortClaude: '',
 		defaultEffortCodex: '',
-		defaultPermissionMode: 'yolo',
+		// '' = unset: let the account default (else claude's own default) apply
+		// rather than forcing a mode into every spawn (CCT-542).
+		defaultPermissionMode: '',
 		defaultAccount: null,
 		defaultLabels: []
 	},

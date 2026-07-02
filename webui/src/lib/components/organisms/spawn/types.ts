@@ -11,7 +11,10 @@ export interface Form {
 	working_dir: string;
 	name: string;
 	prompt: string;
-	permission_mode: PermissionMode;
+	// Empty = "Default" (unset): the server then applies the account default
+	// permission mode, falling back to claude's own default when the account has
+	// none (CCT-542). A concrete value is a per-spawn override.
+	permission_mode: PermissionMode | '';
 	// dispatch-only fields (forwarded to the dispatcher as `payload`).
 	dispatcher: string;
 	identity: string;

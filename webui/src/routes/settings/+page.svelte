@@ -283,6 +283,7 @@
 									defaultPermissionMode: (e.currentTarget as HTMLSelectElement).value
 								})}
 						>
+							<option value="">Default</option>
 							{#each modes as m (m.v)}
 								<option value={m.v}>{m.label}</option>
 							{/each}

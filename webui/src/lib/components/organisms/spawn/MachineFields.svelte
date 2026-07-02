@@ -240,6 +240,15 @@
 
 <Field label="Permission mode">
 	<div class="modes">
+		<!-- "Default" (unset) leaves the mode to the account default, else
+		     claude's own default — no mode is forced into the spawn (CCT-542). -->
+		<OptionButton
+			selected={form.permission_mode === ''}
+			onclick={() => (form.permission_mode = '')}
+		>
+			<strong>Default</strong>
+			<Text tone="faint" size="xs">Account / claude default</Text>
+		</OptionButton>
 		{#each modes as md (md.v)}
 			<OptionButton
 				selected={form.permission_mode === md.v}
@@ -252,7 +261,7 @@
 		{/each}
 	</div>
 	{#if selectedAccount?.default_permission_mode}
-		<Text tone="faint" size="xs">Account default: {selectedAccount.default_permission_mode} (this per-spawn choice overrides it).</Text>
+		<Text tone="faint" size="xs">Account default: {selectedAccount.default_permission_mode} (used when left as Default; a concrete choice overrides it).</Text>
 	{/if}
 </Field>
 
