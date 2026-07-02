@@ -26,6 +26,25 @@ set -eu
 
 log() { echo "cctui-worker: $*"; }
 
+# Extra read-only paths for DERIVED images (CCT-528). The base entrypoint's RO
+# allow-list is fixed, but a fat derived image installs its own toolchain outside
+# it (e.g. Node/pnpm under /opt/mise, Rust under /opt/rust). Such an image can set
+# CCTUI_WORKER_EXTRA_RO (colon-separated, e.g. `/opt/mise:/opt/rust`) to have each
+# path added to the supervisor's Landlock RO set. Emits a `--ro <path>` token per
+# non-empty entry (newline-separated for word-splitting at the call sites); a
+# no-op when the var is unset/empty.
+extra_ro_flags() {
+    _ero="${CCTUI_WORKER_EXTRA_RO:-}"
+    [ -n "$_ero" ] || return 0
+    _OLDIFS=$IFS; IFS=:
+    for _p in $_ero; do
+        IFS=$_OLDIFS
+        [ -n "$_p" ] && printf '%s\n%s\n' --ro "$_p"
+        IFS=:
+    done
+    IFS=$_OLDIFS
+}
+
 # ── Required platform identity ──────────────────────────────────────────────
 if [ -z "${CCTUI_MACHINE_KEY:-}" ]; then
     echo "cctui-worker: CCTUI_MACHINE_KEY is required (injected by the dispatcher)" >&2
@@ -879,6 +898,7 @@ run_supervised_daemon() {
         --ro /usr --ro /lib --ro /lib64 --ro /bin --ro /sbin --ro /etc --ro /proc \
         --ro /prompts \
         --ro "$CONTEXT_DIR" \
+        $(extra_ro_flags) \
         --rw /dev --rw /tmp --rw /workspace --rw "/home/${WORKER_USER}" \
         --rw /var/run/workflow-guard --rw /var/run/guard-proxy \
         --user "$WORKER_UID" \
@@ -1067,6 +1087,7 @@ exec cctui-supervisor \
     --ro /usr --ro /lib --ro /lib64 --ro /bin --ro /sbin --ro /etc --ro /proc \
     --ro /prompts \
     --ro "$CONTEXT_DIR" \
+    $(extra_ro_flags) \
     --rw /dev --rw /tmp --rw /workspace --rw "/home/${WORKER_USER}" \
     --rw /var/run/workflow-guard --rw /var/run/guard-proxy \
     --user "$WORKER_UID" \

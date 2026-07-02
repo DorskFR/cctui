@@ -11,6 +11,13 @@ use clap::Parser;
 /// `/proc` is required: language runtimes (node/V8 behind `claude`, and most
 /// interpreters) read `/proc/self/*`, cpuinfo, etc. during early init, and a
 /// Landlock denial there makes them `abort()` silently before any output.
+///
+/// This set is fixed here, but a DERIVED worker image whose toolchain lives
+/// outside it (e.g. Node/pnpm under `/opt/mise`, Rust under `/opt/rust`) does not
+/// need to fork the entrypoint: `deploy/worker-entrypoint.sh` reads the
+/// colon-separated `CCTUI_WORKER_EXTRA_RO` env var and appends a `--ro <path>`
+/// for each entry to the supervisor invocation, extending the RO set at boot
+/// (CCT-528).
 pub const DEFAULT_RO: &[&str] =
     &["/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc", "/proc", "/prompts", "/opt/context"];
 
