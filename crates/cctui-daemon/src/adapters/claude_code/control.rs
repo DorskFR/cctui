@@ -2780,6 +2780,7 @@ mod tests {
         let resp = GatewayEnvResponse {
             account_bound: true,
             env: env_of(&[("ANTHROPIC_BASE_URL", "https://x/gateway/anthropic")]),
+            ..Default::default()
         };
         let hint = env_of(&[("FOO", "bar"), ("ANTHROPIC_BASE_URL", "https://stale")]);
         let got = launch_env_decision("s1", &resp, &hint).unwrap();
@@ -2793,8 +2794,11 @@ mod tests {
     fn launch_env_fails_closed_when_bound_but_empty() {
         // CCT-460: account-bound + empty env must REFUSE the launch rather than
         // start a worker that silently routes to the default upstream and 401s.
-        let resp =
-            GatewayEnvResponse { account_bound: true, env: std::collections::BTreeMap::default() };
+        let resp = GatewayEnvResponse {
+            account_bound: true,
+            env: std::collections::BTreeMap::default(),
+            ..Default::default()
+        };
         let err = launch_env_decision("s1", &resp, &env_of(&[("HINT", "1")])).unwrap_err();
         assert!(err.to_string().contains("account-bound"), "got: {err}");
     }
@@ -2803,8 +2807,11 @@ mod tests {
     fn launch_env_uses_hint_when_not_bound() {
         // No account binding: gateway env isn't required; preserve any hint
         // (e.g. user-supplied non-gateway env) and never fail closed.
-        let resp =
-            GatewayEnvResponse { account_bound: false, env: std::collections::BTreeMap::default() };
+        let resp = GatewayEnvResponse {
+            account_bound: false,
+            env: std::collections::BTreeMap::default(),
+            ..Default::default()
+        };
         let hint = env_of(&[("FOO", "bar")]);
         assert_eq!(launch_env_decision("s1", &resp, &hint).unwrap(), hint);
     }

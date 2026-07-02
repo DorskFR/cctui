@@ -130,6 +130,17 @@ export interface OAuthAccount {
   needs_reauth: boolean;
   last_auth_error: string | null;
   last_auth_error_at: string | null;
+  /** Validated, allowlisted harness settings applied to sessions run under this
+   *  account (CCT-538/CCT-541). Config, not secret → returned. Only SAFE/CARE
+   *  settings.json keys; the server rejects MANAGED/SYSTEM keys on write. */
+  settings_json: Record<string, unknown> | null;
+  /** Launch defaults applied when a spawn omits them (CCT-538): model code,
+   *  reasoning effort, permission mode. A per-spawn value overrides these. */
+  default_model: string | null;
+  default_effort: string | null;
+  default_permission_mode: string | null;
+  // NOTE: `env_json` is deliberately absent — it is write-only, never returned
+  // over the API (may hold secrets), exactly like the OAuth tokens.
 }
 
 /** One usage window from Anthropic's free OAuth usage API (CCT-306):
@@ -203,6 +214,21 @@ export interface UpdateAccount {
     soft_limit_5h_pct: number | null;
     soft_limit_7d_pct: number | null;
     soft_limit_bypass_minutes: number | null;
+  };
+  /** Replacement validated settings blob (CCT-538/CCT-541). Provided → replaces
+   *  the stored settings wholesale (an empty object clears it); absent →
+   *  unchanged. Validated against the SAFE/CARE allowlist before persist. */
+  settings_json?: Record<string, unknown>;
+  /** Replacement extra-env map (CCT-538). Provided → re-encrypts and replaces
+   *  (an empty map clears it); absent → unchanged. WRITE-ONLY: never returned,
+   *  so the editor only ever sends new values, it can't display stored ones. */
+  env_json?: Record<string, string>;
+  /** Replacement launch defaults (CCT-538). A `null` field inside the provided
+   *  block clears that column; the block absent → all three unchanged. */
+  defaults?: {
+    default_model: string | null;
+    default_effort: string | null;
+    default_permission_mode: string | null;
   };
 }
 

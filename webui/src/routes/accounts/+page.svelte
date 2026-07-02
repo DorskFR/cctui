@@ -16,6 +16,7 @@
 	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
 	import GithubConnectors from '$lib/components/organisms/GithubConnectors.svelte';
 	import DispatchersPanel from '$lib/components/organisms/DispatchersPanel.svelte';
+	import AccountSettingsEditor from '$lib/components/organisms/AccountSettingsEditor.svelte';
 	import {
 		AutoGrid,
 		Button,
@@ -91,6 +92,20 @@
 	let softBypass = $state<number | null>(null);
 	const isCompatible = $derived(provider.endsWith('-compatible'));
 
+	// Per-account settings editor state (CCT-541). `settings` mirrors the account's
+	// settings_json (SAFE/CARE keys); `envRows` feed the write-only env_json (never
+	// read back, so they start empty on edit); `replaceEnv` gates whether env_json
+	// is sent at all (only when the operator actually edits the env); `defaults`
+	// holds the launch defaults.
+	let acctSettings = $state<Record<string, unknown>>({});
+	let acctEnvRows = $state<{ name: string; value: string }[]>([]);
+	let acctReplaceEnv = $state(false);
+	let acctDefaults = $state<{ model: string; effort: string; mode: string }>({
+		model: '',
+		effort: '',
+		mode: ''
+	});
+
 	/** Normalise a soft-limit input: empty ⇒ null, else a clamped non-negative
 	 *  integer. Tolerates either the number a number-input binds or a stray string. */
 	function softNum(v: number | string | null | undefined): number | null {
@@ -116,6 +131,17 @@
 			const a = r.alias.trim();
 			const m = r.model.trim();
 			if (a && m) out[a] = m;
+		}
+		return out;
+	}
+
+	/** Collapse the env rows into the `{name: value}` object PATCH expects,
+	 *  dropping rows without a name. An empty object clears the stored env. */
+	function envObject(): Record<string, string> {
+		const out: Record<string, string> = {};
+		for (const r of acctEnvRows) {
+			const n = r.name.trim();
+			if (n) out[n] = r.value;
 		}
 		return out;
 	}
@@ -146,6 +172,10 @@
 		oauthBusy = false;
 		showAdvanced = false;
 		reauthing = false;
+		acctSettings = {};
+		acctEnvRows = [];
+		acctReplaceEnv = false;
+		acctDefaults = { model: '', effort: '', mode: '' };
 	}
 
 	// Start the authorize leg: ask the server for an authorize URL, open it in a
@@ -233,6 +263,17 @@
 		soft5h = a.soft_limit_5h_pct;
 		soft7d = a.soft_limit_7d_pct;
 		softBypass = a.soft_limit_bypass_minutes;
+		// Settings + launch defaults are editable for every provider (CCT-541).
+		// settings_json comes back from the API; env_json is write-only and never
+		// returned, so env rows start empty (the operator re-enters to replace).
+		acctSettings = { ...(a.settings_json ?? {}) };
+		acctEnvRows = [];
+		acctReplaceEnv = false;
+		acctDefaults = {
+			model: a.default_model ?? '',
+			effort: a.default_effort ?? '',
+			mode: a.default_permission_mode ?? ''
+		};
 	}
 
 	// Reauthenticate a flagged account (CCT-512): open its edit modal, flip into
@@ -262,8 +303,20 @@
 				const body: UpdateAccount = {
 					name: name.trim(),
 					model_aliases,
-					soft_limits: softLimits()
+					soft_limits: softLimits(),
+					// Settings + launch defaults (CCT-541). settings_json is always sent
+					// so clearing a toggle sticks (empty object clears the stored blob);
+					// defaults likewise. env_json is write-only and only sent when the
+					// operator actually edited the env (acctReplaceEnv) — otherwise the
+					// stored (never-returned) env is left untouched.
+					settings_json: acctSettings,
+					defaults: {
+						default_model: acctDefaults.model.trim() || null,
+						default_effort: acctDefaults.effort.trim() || null,
+						default_permission_mode: acctDefaults.mode.trim() || null
+					}
 				};
+				if (acctReplaceEnv) body.env_json = envObject();
 				if (isCompatible) {
 					const models = modelRows
 						.map((r) => ({ model: r.model.trim(), label: r.label.trim() || r.model.trim() }))
@@ -329,6 +382,9 @@
 	}
 
 	const rows = $derived([...($accounts.data ?? [])]);
+	// The account currently open in the edit modal (CCT-541) — drives the settings
+	// editor's provider-specific model list.
+	const editingAccount = $derived(editing ? rows.find((a) => a.id === editing) : undefined);
 </script>
 
 <Heading level={1} class="page-title">Accounts</Heading>
@@ -600,6 +656,19 @@
 								</label>
 							</div>
 						</div>
+					{/if}
+
+					<!-- Per-account settings, env, and launch defaults (CCT-541). Edit
+					     only (persisted via PATCH); the create flow signs in first. -->
+					{#if editing && editingAccount}
+						<AccountSettingsEditor
+							bind:settings={acctSettings}
+							bind:envRows={acctEnvRows}
+							bind:replaceEnv={acctReplaceEnv}
+							bind:defaults={acctDefaults}
+							provider={editingAccount.provider}
+							accountModels={editingAccount.models ?? []}
+						/>
 					{/if}
 			</div>
 		{/snippet}

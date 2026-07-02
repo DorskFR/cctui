@@ -212,6 +212,9 @@
 			{#each claudeModelOptions as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
 		</Select>
 	{/if}
+	{#if selectedAccount?.default_model}
+		<Text tone="faint" size="xs">Account default: {selectedAccount.default_model} (used when left as Default).</Text>
+	{/if}
 </Field>
 
 <!-- Per-adapter effort: keyed off the effective harness so an account-locked
@@ -231,6 +234,9 @@
 		onset={(v) => (form.effort_claude = v)}
 	/>
 {/if}
+{#if selectedAccount?.default_effort}
+	<Text tone="faint" size="xs">Account default effort: {selectedAccount.default_effort}.</Text>
+{/if}
 
 <Field label="Permission mode">
 	<div class="modes">
@@ -245,6 +251,9 @@
 			</OptionButton>
 		{/each}
 	</div>
+	{#if selectedAccount?.default_permission_mode}
+		<Text tone="faint" size="xs">Account default: {selectedAccount.default_permission_mode} (this per-spawn choice overrides it).</Text>
+	{/if}
 </Field>
 
 <style>

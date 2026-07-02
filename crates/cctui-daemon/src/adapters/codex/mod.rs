@@ -671,6 +671,7 @@ mod gateway_env_tests {
         let resp = GatewayEnvResponse {
             account_bound: true,
             env: env_of(&[("OPENAI_BASE_URL", "gw"), ("OPENAI_API_KEY", "tok")]),
+            ..Default::default()
         };
         let got = launch_env_decision("s1", &resp, &hint).unwrap();
         assert_eq!(got.get("KEEP").map(String::as_str), Some("1"));
@@ -680,16 +681,22 @@ mod gateway_env_tests {
 
     #[test]
     fn fails_closed_when_account_bound_but_env_empty() {
-        let resp =
-            GatewayEnvResponse { account_bound: true, env: std::collections::BTreeMap::default() };
+        let resp = GatewayEnvResponse {
+            account_bound: true,
+            env: std::collections::BTreeMap::default(),
+            ..Default::default()
+        };
         let err = launch_env_decision("s1", &resp, &env_of(&[("HINT", "1")])).unwrap_err();
         assert!(err.to_string().contains("account-bound"));
     }
 
     #[test]
     fn keeps_hint_when_not_account_bound() {
-        let resp =
-            GatewayEnvResponse { account_bound: false, env: std::collections::BTreeMap::default() };
+        let resp = GatewayEnvResponse {
+            account_bound: false,
+            env: std::collections::BTreeMap::default(),
+            ..Default::default()
+        };
         let hint = env_of(&[("HINT", "1")]);
         assert_eq!(launch_env_decision("s1", &resp, &hint).unwrap(), hint);
     }
@@ -705,6 +712,7 @@ mod gateway_env_tests {
         let resp = GatewayEnvResponse {
             account_bound: true,
             env: env_of(&[("OPENAI_BASE_URL", "gw"), ("OPENAI_API_KEY", "tok")]),
+            ..Default::default()
         };
         let got = launch_env_decision("rediscovered", &resp, &stored_env).unwrap();
         assert_eq!(got.get("OPENAI_BASE_URL").map(String::as_str), Some("gw"));
@@ -717,8 +725,11 @@ mod gateway_env_tests {
     #[test]
     fn resume_repull_fails_closed_when_account_bound_but_env_empty() {
         let stored_env = std::collections::BTreeMap::default();
-        let resp =
-            GatewayEnvResponse { account_bound: true, env: std::collections::BTreeMap::default() };
+        let resp = GatewayEnvResponse {
+            account_bound: true,
+            env: std::collections::BTreeMap::default(),
+            ..Default::default()
+        };
         let err = launch_env_decision("rediscovered", &resp, &stored_env).unwrap_err();
         assert!(err.to_string().contains("account-bound"));
     }

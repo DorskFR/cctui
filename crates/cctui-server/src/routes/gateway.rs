@@ -348,6 +348,16 @@ async fn mint_env_for_account(
 
     let base = state.config.external_url.trim_end_matches('/');
     let mut env = std::collections::BTreeMap::new();
+    // Per-account custom env (CCT-539): decrypt the account's `env_json` blob and
+    // merge it in FIRST, so the gateway routing keys inserted by the `match`
+    // below always win over any account-supplied key of the same name. Because
+    // every worker (re)launch path funnels through here — initial spawn,
+    // `resume_env_for_session`, and the daemon's `gateway-env` pull — the account
+    // env is re-served on respawn/resume and survives a daemon / claude-daemon
+    // restart, not just the initial spawn (the CCT-460 failure class).
+    if let Some(account_env) = account_env_json(state, account_id, &key).await {
+        env.extend(account_env);
+    }
     match family {
         Family::Anthropic => {
             env.insert("ANTHROPIC_BASE_URL".into(), format!("{base}/gateway/anthropic"));
@@ -456,6 +466,167 @@ pub async fn resolve_account_model(
         .and_then(serde_json::Value::as_str)
         .filter(|s| !s.trim().is_empty())
         .map_or_else(|| model.to_owned(), str::to_owned)
+}
+
+/// Decrypt a named account's per-account custom env (`env_json`, CCT-539).
+///
+/// `env_json` is stored as an obfuscated JSON object of `{VAR: value}` (the
+/// values may be secrets — daemon-supplied env like a per-account API key — so
+/// the column is encrypted at rest and never serialized back out of the accounts
+/// model). Returns the decoded map, or `None` when the account has no custom env
+/// / the blob can't be decrypted or parsed (degrade gracefully: a bad blob must
+/// never fail the mint and strand the worker with no gateway routing).
+async fn account_env_json(
+    state: &AppState,
+    account_id: Uuid,
+    key: &[u8],
+) -> Option<std::collections::BTreeMap<String, String>> {
+    let enc: String = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT env_json FROM oauth_accounts WHERE id = $1",
+    )
+    .bind(account_id)
+    .fetch_optional(&state.pool)
+    .await
+    .ok()
+    .flatten()
+    .flatten()?;
+    let json = crate::crypto::deobfuscate(&enc, key)?;
+    serde_json::from_str::<std::collections::BTreeMap<String, String>>(&json).ok()
+}
+
+/// The merged per-account `settings_json` for a session's bound account(s)
+/// (CCT-539), served to the daemon via the gateway-env pull so it is re-derived
+/// on every worker (re)launch (spawn/resume/cold-resume/fork) — surviving a
+/// daemon / claude-daemon restart the same way gateway env does (CCT-460 class).
+///
+/// A session can bind one account per provider family (claude + codex, CCT-514);
+/// their `settings_json` blobs are deep-merged (later family wins on a key
+/// clash, which in practice never happens — the two harnesses don't share
+/// settings keys). Returns `None` when no bound account carries settings.
+///
+/// The daemon deep-merges this UNDER its own managed hook settings when it writes
+/// the worker's `--settings` file, so the managed hooks always win; that
+/// daemon-side merge is CCT-540. This function only makes the settings available
+/// on the server pull path.
+///
+/// OPEN QUESTION (CCT-539) — MANAGED-only keys (`strictKnownMarketplaces`,
+/// `strictPluginOnlyCustomization`, `disableSideloadFlags`,
+/// `blockedMarketplaces`): it is NOT verified at runtime whether claude honors
+/// these via a plain `--settings` file, or whether they must land in the
+/// managed-settings drop-in path (e.g. `/etc/claude-code/managed-settings.json`)
+/// to take effect. This is a follow-up to confirm when a real user needs one of
+/// these keys. It does NOT block CCT-539: those keys are tagged MANAGED in the
+/// settings catalog and rejected by `Catalog::validate_settings`, so no
+/// per-account `settings_json` can carry them yet — whatever arrives here is
+/// safe/care keys that `--settings` honors.
+pub async fn resolve_session_settings(
+    state: &AppState,
+    session_id: &str,
+) -> Option<serde_json::Value> {
+    let mut merged: Option<serde_json::Value> = None;
+    for account_id in resolve_session_accounts(state, session_id).await {
+        let settings: Option<serde_json::Value> =
+            sqlx::query_scalar("SELECT settings_json FROM oauth_accounts WHERE id = $1")
+                .bind(account_id)
+                .fetch_optional(&state.pool)
+                .await
+                .ok()
+                .flatten();
+        if let Some(s) = settings.filter(|v| !v.is_null()) {
+            match merged.as_mut() {
+                Some(base) => deep_merge_json(base, s),
+                None => merged = Some(s),
+            }
+        }
+    }
+    merged
+}
+
+/// Recursively merge `overlay` into `base` (CCT-539). Objects merge key-by-key;
+/// any non-object value in `overlay` replaces the value in `base`.
+fn deep_merge_json(base: &mut serde_json::Value, overlay: serde_json::Value) {
+    match (base, overlay) {
+        (serde_json::Value::Object(base_map), serde_json::Value::Object(overlay_map)) => {
+            for (k, v) in overlay_map {
+                match base_map.get_mut(&k) {
+                    Some(existing) => deep_merge_json(existing, v),
+                    None => {
+                        base_map.insert(k, v);
+                    }
+                }
+            }
+        }
+        (base_slot, overlay) => *base_slot = overlay,
+    }
+}
+
+/// The per-account launch defaults (CCT-539) applied at the spawn chokepoint when
+/// a named account is selected: `default_model` / `default_effort` /
+/// `default_permission_mode`. All `None` when the account sets no defaults.
+#[derive(Default)]
+pub struct AccountDefaults {
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub permission_mode: Option<String>,
+}
+
+/// Resolve a named account's launch defaults for the caller (CCT-539).
+///
+/// Mirrors [`mint_session_env`] / [`resolve_account_model`]'s
+/// `(user, name, provider|family)` resolution so spawn applies the defaults of
+/// the *same* account row the gateway binds the session to. A DB error or a
+/// missing account degrades to all-`None` (claude's own defaults apply) rather
+/// than failing the spawn.
+pub async fn resolve_account_defaults(
+    state: &AppState,
+    user_id: Uuid,
+    account_name: &str,
+    provider: Option<&str>,
+    adapter_id: &str,
+) -> AccountDefaults {
+    type Row = (Option<String>, Option<String>, Option<String>, String);
+    let row: Option<Row> = if let Some(p) = provider {
+        sqlx::query_as(
+            "SELECT default_model, default_effort, default_permission_mode, provider \
+             FROM oauth_accounts \
+             WHERE name = $2 AND provider = $3 \
+               AND (user_id = $1 OR EXISTS ( \
+                   SELECT 1 FROM account_shares s \
+                    WHERE s.account_id = oauth_accounts.id \
+                      AND s.user_id = $1 AND s.revoked_at IS NULL)) \
+             ORDER BY (user_id = $1) DESC LIMIT 1",
+        )
+        .bind(user_id)
+        .bind(account_name)
+        .bind(p)
+        .fetch_optional(&state.pool)
+        .await
+        .unwrap_or(None)
+    } else {
+        let want = Family::from_adapter(adapter_id);
+        let candidates: Vec<Row> = sqlx::query_as(
+            "SELECT default_model, default_effort, default_permission_mode, provider \
+             FROM oauth_accounts \
+             WHERE name = $2 \
+               AND (user_id = $1 OR EXISTS ( \
+                   SELECT 1 FROM account_shares s \
+                    WHERE s.account_id = oauth_accounts.id \
+                      AND s.user_id = $1 AND s.revoked_at IS NULL)) \
+             ORDER BY (user_id = $1) DESC",
+        )
+        .bind(user_id)
+        .bind(account_name)
+        .fetch_all(&state.pool)
+        .await
+        .unwrap_or_default();
+        candidates.into_iter().find(|(_, _, _, prov)| Family::from_provider(prov) == want)
+    };
+    let norm = |s: Option<String>| s.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
+    row.map_or_else(AccountDefaults::default, |(model, effort, mode, _)| AccountDefaults {
+        model: norm(model),
+        effort: norm(effort),
+        permission_mode: norm(mode),
+    })
 }
 
 /// Revoke every session token bound to a session (CCT-232) — called when a

@@ -112,6 +112,7 @@ pub async fn session_gateway_env(
         return Ok(Json(cctui_proto::api::GatewayEnvResponse {
             account_bound: false,
             env: std::collections::BTreeMap::default(),
+            settings: None,
         }));
     }
 
@@ -124,6 +125,7 @@ pub async fn session_gateway_env(
         return Ok(Json(cctui_proto::api::GatewayEnvResponse {
             account_bound: false,
             env: std::collections::BTreeMap::default(),
+            settings: None,
         }));
     }
     let mut env = std::collections::BTreeMap::new();
@@ -144,7 +146,13 @@ pub async fn session_gateway_env(
             }
         }
     }
-    Ok(Json(cctui_proto::api::GatewayEnvResponse { account_bound: true, env }))
+    // Merge the bound account(s)' per-account `settings_json` (CCT-539) so it
+    // rides alongside the gateway env on this same pull. Re-served on every
+    // (re)launch, it survives a daemon / claude-daemon restart; the daemon
+    // deep-merges it UNDER its managed hook settings when writing the worker's
+    // `--settings` file (that daemon-side merge is CCT-540).
+    let settings = crate::routes::gateway::resolve_session_settings(&state, &session_id).await;
+    Ok(Json(cctui_proto::api::GatewayEnvResponse { account_bound: true, env, settings }))
 }
 
 // ---- /api/v1/daemon/ws ----

@@ -34,11 +34,21 @@ pub struct DaemonAuthResponse {
 /// "account bound but the server couldn't mint env" — the latter (`account_bound`
 /// with empty `env`) is the daemon's signal to refuse the launch rather than
 /// start a worker that would silently hit the default upstream and 401.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GatewayEnvResponse {
     pub account_bound: bool,
     #[serde(default)]
     pub env: std::collections::BTreeMap<String, String>,
+    /// Deep-merged per-account `settings_json` for the session's bound
+    /// account(s) (CCT-539). Travels alongside `env` on every daemon
+    /// gateway-env pull so it is re-served on spawn/resume/cold-resume/fork and
+    /// survives a daemon / claude-daemon restart (the CCT-460 failure class).
+    /// The daemon deep-merges this UNDER its managed hook settings when writing
+    /// the worker's `--settings` file — the managed hooks always win (the
+    /// daemon-side merge is CCT-540). `None` / absent → no per-account settings;
+    /// older daemons that don't read this field simply ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings: Option<serde_json::Value>,
 }
 
 /// One declarative adapter configuration row, served to the daemon as part
