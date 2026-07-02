@@ -119,37 +119,50 @@ RUN arch="$(dpkg --print-architecture)" \
     && codex --version
 
 # yt — token-frugal YouTrack CLI (https://github.com/DorskFR/yt). Lets dispatched
-# tasks triage / transition YouTrack issues without an MCP server. Pinned and
-# checksum-verified; reads creds from ~/.config/yt/config.json (materialized by
+# tasks triage / transition YouTrack issues without an MCP server. Tracks the
+# rolling `latest` release (a moving tag the yt CI republishes on every release),
+# so the worker always bakes the newest yt. Integrity is still checked against the
+# release's own SHA256SUMS rather than a hard-pinned digest (which can't survive a
+# moving tag). Reads creds from ~/.config/yt/config.json (materialized by
 # worker-credentials.sh from the platform's YOUTRACK_URL/token) or env.
-ARG YT_VERSION=v0.9.2
+ARG YT_VERSION=latest
 RUN arch="$(dpkg --print-architecture)" \
     && case "$arch" in \
-         amd64) sha=5201231f53f93a6528f13fbb5333dc0935db6db96884c5133e17aff33153aaf9 ;; \
-         arm64) sha=15dc6961b56bbcc3939d83c7c88742a650570bc734e5d5d6ca8ba425469bfde4 ;; \
+         amd64|arm64) : ;; \
          *) echo "yt: unsupported arch '$arch'" >&2; exit 1 ;; \
        esac \
-    && curl -fsSL "https://github.com/DorskFR/yt/releases/download/${YT_VERSION}/yt-linux-${arch}" \
-        -o /usr/local/bin/yt \
+    && base="https://github.com/DorskFR/yt/releases/download/${YT_VERSION}" \
+    && curl -fsSL "${base}/yt-linux-${arch}" -o /usr/local/bin/yt \
+    && curl -fsSL "${base}/SHA256SUMS" -o /tmp/yt.sums \
+    && sha="$(awk -v f="yt-linux-${arch}" '$2==f{print $1}' /tmp/yt.sums)" \
+    && [ -n "$sha" ] || { echo "yt: no checksum for yt-linux-${arch}" >&2; exit 1; } \
     && echo "${sha}  /usr/local/bin/yt" | sha256sum -c - \
+    && rm /tmp/yt.sums \
     && chmod 0755 /usr/local/bin/yt \
     && yt --version
 
 # scli — token-frugal Slack CLI (https://github.com/dorskFR/scli). Lets dispatched
-# tasks read/post Slack without an MCP server. Pinned and checksum-verified; reads
-# creds from ~/.config/scli/config.json (materialized by worker-credentials.sh from
-# the platform's SLACK_TOKEN) or the SLACK_TOKEN env var. Release assets use
+# tasks read/post Slack without an MCP server. Tracks the rolling `latest` release
+# (a moving tag the scli CI republishes on every release), so the worker always
+# bakes the newest scli. Integrity is still checked against the release's own
+# SHA256SUMS rather than a hard-pinned digest (which can't survive a moving tag).
+# Reads creds from ~/.config/scli/config.json (materialized by worker-credentials.sh
+# from the platform's SLACK_TOKEN) or the SLACK_TOKEN env var. Release assets use
 # x86_64/aarch64 naming, so map dpkg's amd64/arm64 accordingly.
-ARG SCLI_VERSION=v0.4.0
+ARG SCLI_VERSION=latest
 RUN arch="$(dpkg --print-architecture)" \
     && case "$arch" in \
-         amd64) rel_arch=x86_64;  sha=3a00632c1415426e3ee7f52999b5fae44073e518239999ff12fab706f0bbfc0e ;; \
-         arm64) rel_arch=aarch64; sha=423ff1c090581b133aa202325576a2060bfd66c841a976c0dfa94f904613bdc1 ;; \
+         amd64) rel_arch=x86_64 ;; \
+         arm64) rel_arch=aarch64 ;; \
          *) echo "scli: unsupported arch '$arch'" >&2; exit 1 ;; \
        esac \
-    && curl -fsSL "https://github.com/dorskFR/scli/releases/download/${SCLI_VERSION}/scli-linux-${rel_arch}" \
-        -o /usr/local/bin/scli \
+    && base="https://github.com/dorskFR/scli/releases/download/${SCLI_VERSION}" \
+    && curl -fsSL "${base}/scli-linux-${rel_arch}" -o /usr/local/bin/scli \
+    && curl -fsSL "${base}/SHA256SUMS" -o /tmp/scli.sums \
+    && sha="$(awk -v f="scli-linux-${rel_arch}" '$2==f{print $1}' /tmp/scli.sums)" \
+    && [ -n "$sha" ] || { echo "scli: no checksum for scli-linux-${rel_arch}" >&2; exit 1; } \
     && echo "${sha}  /usr/local/bin/scli" | sha256sum -c - \
+    && rm /tmp/scli.sums \
     && chmod 0755 /usr/local/bin/scli \
     && scli --version
 
