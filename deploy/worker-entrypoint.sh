@@ -61,37 +61,57 @@ extra_rw_flags() {
     IFS=$_OLDIFS
 }
 
-# ── Optional in-pod Docker daemon (fat/derived images only, CCT-535) ─────────
-# The docker-e2e flow brings up a compose stack, which needs a running
-# dockerd. dockerd needs root + caps, so it can only start HERE in the root
-# phase, before cctui-supervisor drops to the worker uid and applies landlock/
-# seccomp. Gated purely on the dockerd binary being present: the lean base omits
-# it (no-op there), a derived image opts in just by installing docker-ce. Mirrors
-# repo-sync-full.sh's dockerd bring-up. Best-effort — a failure logs a warning
-# and continues (e2e is optional evidence, never a hard prerequisite). On success
-# the socket is made world-writable and added to the supervisor RW set so the
-# sandboxed worker can reach it (the pod is already privileged).
+# ── Optional in-pod ROOTLESS Docker daemon (fat/derived images, CCT-535) ─────
+# The docker-e2e flow needs docker. We run dockerd ROOTLESS — as the
+# worker uid, inside its own user namespace — on purpose: the socket the
+# sandboxed agent can reach then grants only worker-uid powers, NOT node root.
+# A raw ROOT docker.sock in the landlock RW set would be a full sandbox escape
+# (the agent could `docker run --privileged -v /:/host`); rootless closes that
+# by construction — "root" in any container maps back to the unprivileged worker
+# uid on the host.
+#
+# rootlesskit must set up the userns + slirp4netns network here in the root
+# phase, before cctui-supervisor drops privileges. dockerd itself runs as worker
+# (a sibling process), so the daemon's later landlock/seccomp doesn't touch it.
+# The socket + DOCKER_HOST are then handed to the worker.
+#
+# Gated on dockerd-rootless.sh presence: the lean base omits it (no-op); the fat
+# image opts in by installing docker-ce + docker-ce-rootless-extras + uidmap +
+# slirp4netns + fuse-overlayfs + iproute2, and delegating subuids to worker.
+# Best-effort — any failure logs a warning and continues (e2e is optional
+# evidence). Validated on the k3s nodes: fuse-overlayfs driver (native overlay
+# can't stack on containerd's overlayfs) + slirp4netns (needs iproute2) + /dev/fuse.
 phase_dockerd() {
-    command -v dockerd >/dev/null 2>&1 || return 0
-    if docker info >/dev/null 2>&1; then
-        log "dockerd: already running"
-    else
-        log "dockerd: starting (root phase, pre-lockdown)"
-        mkdir -p /docker-storage
-        dockerd --data-root /docker-storage >/var/log/dockerd.log 2>&1 &
-        _ready=0; _i=0
-        while [ "$_i" -lt 30 ]; do
-            docker info >/dev/null 2>&1 && { _ready=1; break; }
-            sleep 1; _i=$((_i + 1))
-        done
-        if [ "$_ready" != 1 ]; then
-            log "WARNING: dockerd not ready in 30s; docker-dependent flows (e2e) will skip (tail: $(tail -1 /var/log/dockerd.log 2>/dev/null))"
-            return 0
-        fi
-        log "dockerd: ready"
+    command -v dockerd-rootless.sh >/dev/null 2>&1 || return 0
+    _xdg="/run/user/${WORKER_UID}"
+    _sock="${_xdg}/docker.sock"
+    _droot="/var/lib/docker-rootless"   # local (NOT the NFS $HOME); ephemeral per pod
+    mkdir -p "$_xdg" "$_droot"
+    chown "${WORKER_UID}:${WORKER_UID}" "$_xdg" "$_droot"
+    log "dockerd: starting rootless as ${WORKER_USER} (pre-lockdown; socket ${_sock})"
+    # setsid + nohup so the daemon survives the transient `su` shell exiting (the
+    # readiness wait below runs in the root shell, not inside su).
+    su "${WORKER_USER}" -s /bin/sh -c "
+        export XDG_RUNTIME_DIR='${_xdg}' HOME='/home/${WORKER_USER}' PATH=/usr/bin:/usr/local/bin:\$PATH
+        export DOCKER_HOST='unix://${_sock}'
+        setsid nohup dockerd-rootless.sh --storage-driver fuse-overlayfs --data-root '${_droot}' \
+            >/tmp/rootless-dockerd.log 2>&1 &
+    "
+    _i=0
+    while [ "$_i" -lt 30 ]; do
+        [ -S "$_sock" ] && DOCKER_HOST="unix://${_sock}" docker version >/dev/null 2>&1 && break
+        sleep 1; _i=$((_i + 1))
+    done
+    if ! { [ -S "$_sock" ] && DOCKER_HOST="unix://${_sock}" docker version >/dev/null 2>&1; }; then
+        log "WARNING: rootless dockerd not ready in 30s; docker-dependent flows (e2e) will skip (tail: $(tail -2 /tmp/rootless-dockerd.log 2>/dev/null))"
+        return 0
     fi
-    chmod 666 /var/run/docker.sock 2>/dev/null || true
-    CCTUI_WORKER_EXTRA_RW="${CCTUI_WORKER_EXTRA_RW:+${CCTUI_WORKER_EXTRA_RW}:}/var/run/docker.sock"
+    log "dockerd: rootless ready (driver=$(DOCKER_HOST=unix://${_sock} docker info --format '{{.Driver}}' 2>/dev/null))"
+    # Hand the socket to the sandboxed worker: DOCKER_HOST env (inherited through
+    # the supervisor exec) + the runtime dir in the Landlock RW set. The socket is
+    # worker-owned, so no chmod is needed.
+    DOCKER_HOST="unix://${_sock}"; export DOCKER_HOST
+    CCTUI_WORKER_EXTRA_RW="${CCTUI_WORKER_EXTRA_RW:+${CCTUI_WORKER_EXTRA_RW}:}${_xdg}"
     export CCTUI_WORKER_EXTRA_RW
 }
 
