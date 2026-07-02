@@ -45,6 +45,56 @@ extra_ro_flags() {
     IFS=$_OLDIFS
 }
 
+# RW analogue of extra_ro_flags (CCT-535). Derived images — and phase_dockerd
+# below — add writable paths to the supervisor's Landlock RW set via
+# CCTUI_WORKER_EXTRA_RW (colon-separated). Emits a `--rw <path>` token per
+# non-empty entry; a no-op when unset/empty.
+extra_rw_flags() {
+    _erw="${CCTUI_WORKER_EXTRA_RW:-}"
+    [ -n "$_erw" ] || return 0
+    _OLDIFS=$IFS; IFS=:
+    for _p in $_erw; do
+        IFS=$_OLDIFS
+        [ -n "$_p" ] && printf '%s\n%s\n' --rw "$_p"
+        IFS=:
+    done
+    IFS=$_OLDIFS
+}
+
+# ── Optional in-pod Docker daemon (fat/derived images only, CCT-535) ─────────
+# The docker-e2e flow brings up a compose stack, which needs a running
+# dockerd. dockerd needs root + caps, so it can only start HERE in the root
+# phase, before cctui-supervisor drops to the worker uid and applies landlock/
+# seccomp. Gated purely on the dockerd binary being present: the lean base omits
+# it (no-op there), a derived image opts in just by installing docker-ce. Mirrors
+# repo-sync-full.sh's dockerd bring-up. Best-effort — a failure logs a warning
+# and continues (e2e is optional evidence, never a hard prerequisite). On success
+# the socket is made world-writable and added to the supervisor RW set so the
+# sandboxed worker can reach it (the pod is already privileged).
+phase_dockerd() {
+    command -v dockerd >/dev/null 2>&1 || return 0
+    if docker info >/dev/null 2>&1; then
+        log "dockerd: already running"
+    else
+        log "dockerd: starting (root phase, pre-lockdown)"
+        mkdir -p /docker-storage
+        dockerd --data-root /docker-storage >/var/log/dockerd.log 2>&1 &
+        _ready=0; _i=0
+        while [ "$_i" -lt 30 ]; do
+            docker info >/dev/null 2>&1 && { _ready=1; break; }
+            sleep 1; _i=$((_i + 1))
+        done
+        if [ "$_ready" != 1 ]; then
+            log "WARNING: dockerd not ready in 30s; docker-dependent flows (e2e) will skip (tail: $(tail -1 /var/log/dockerd.log 2>/dev/null))"
+            return 0
+        fi
+        log "dockerd: ready"
+    fi
+    chmod 666 /var/run/docker.sock 2>/dev/null || true
+    CCTUI_WORKER_EXTRA_RW="${CCTUI_WORKER_EXTRA_RW:+${CCTUI_WORKER_EXTRA_RW}:}/var/run/docker.sock"
+    export CCTUI_WORKER_EXTRA_RW
+}
+
 # ── Required platform identity ──────────────────────────────────────────────
 if [ -z "${CCTUI_MACHINE_KEY:-}" ]; then
     echo "cctui-worker: CCTUI_MACHINE_KEY is required (injected by the dispatcher)" >&2
@@ -889,6 +939,7 @@ phase_callback
 phase_guard
 phase_permissions
 phase_hardening
+phase_dockerd
 
 # ── Phase 8: Drop privileges + run ──────────────────────────────────────────
 # cctui-supervisor applies landlock + seccomp, drops all caps, setuids to the
@@ -903,6 +954,7 @@ run_supervised_daemon() {
         $(extra_ro_flags) \
         --rw /dev --rw /tmp --rw /workspace --rw "/home/${WORKER_USER}" \
         --rw /var/run/workflow-guard --rw /var/run/guard-proxy \
+        $(extra_rw_flags) \
         --user "$WORKER_UID" \
         --report /tmp/hardening.json \
         -- cctui-daemon run --no-auto-update "$@"
@@ -1092,6 +1144,7 @@ exec cctui-supervisor \
     $(extra_ro_flags) \
     --rw /dev --rw /tmp --rw /workspace --rw "/home/${WORKER_USER}" \
     --rw /var/run/workflow-guard --rw /var/run/guard-proxy \
+    $(extra_rw_flags) \
     --user "$WORKER_UID" \
     --report /tmp/hardening.json \
     -- cctui-daemon run --no-auto-update "$@"
