@@ -148,19 +148,18 @@ RUN arch="$(dpkg --print-architecture)" \
 # SHA256SUMS rather than a hard-pinned digest (which can't survive a moving tag).
 # Reads creds from ~/.config/scli/config.json (materialized by worker-credentials.sh
 # from the platform's SLACK_TOKEN) or the SLACK_TOKEN env var. Release assets use
-# x86_64/aarch64 naming, so map dpkg's amd64/arm64 accordingly.
+# linux-amd64/linux-arm64 naming (matching yt), so dpkg's arch maps directly.
 ARG SCLI_VERSION=latest
 RUN arch="$(dpkg --print-architecture)" \
     && case "$arch" in \
-         amd64) rel_arch=x86_64 ;; \
-         arm64) rel_arch=aarch64 ;; \
+         amd64|arm64) : ;; \
          *) echo "scli: unsupported arch '$arch'" >&2; exit 1 ;; \
        esac \
     && base="https://github.com/dorskFR/scli/releases/download/${SCLI_VERSION}" \
-    && curl -fsSL "${base}/scli-linux-${rel_arch}" -o /usr/local/bin/scli \
+    && curl -fsSL "${base}/scli-linux-${arch}" -o /usr/local/bin/scli \
     && curl -fsSL "${base}/SHA256SUMS" -o /tmp/scli.sums \
-    && sha="$(awk -v f="scli-linux-${rel_arch}" '$2==f{print $1}' /tmp/scli.sums)" \
-    && [ -n "$sha" ] || { echo "scli: no checksum for scli-linux-${rel_arch}" >&2; exit 1; } \
+    && sha="$(awk -v f="scli-linux-${arch}" '$2==f{print $1}' /tmp/scli.sums)" \
+    && [ -n "$sha" ] || { echo "scli: no checksum for scli-linux-${arch}" >&2; exit 1; } \
     && echo "${sha}  /usr/local/bin/scli" | sha256sum -c - \
     && rm /tmp/scli.sums \
     && chmod 0755 /usr/local/bin/scli \
