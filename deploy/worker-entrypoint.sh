@@ -396,8 +396,35 @@ phase_context_pack() {
         exit 1
     fi
 
+    # Optional shared base layer merged UNDER the selected pack. A monorepo of
+    # packs keeps universal material (home CLAUDE.md, guard-rules.md, universal
+    # rules) once in a `_base` dir; each pack subdir overlays its own files on
+    # top. The subdir's pack.toml declares its location via `base = "../_base"`
+    # (path relative to the subdir); absent that we fall back to a repo-root
+    # `_base` when a subdir is selected. Copied FIRST so the pack wins on
+    # conflict (cp -a "$X/." merges trees, later copy overwrites same-named files).
+    _base_dir=""
+    if [ -n "${CONTEXT_PACK_SUBDIR:-}" ]; then
+        _base_rel=""
+        [ -f "$_src/pack.toml" ] && _base_rel=$(sed -n 's/^[[:space:]]*base[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$_src/pack.toml" | head -n1)
+        if [ -n "$_base_rel" ]; then
+            # Resolve relative to the subdir, then confine to the clone tree so a
+            # crafted pack.toml can't escape $_tmp (e.g. base = "../../etc").
+            _base_dir=$(cd "$_src/$(dirname "$_base_rel")" 2>/dev/null && pwd)/$(basename "$_base_rel")
+            case "$_base_dir" in "$_tmp"/*|"$_tmp") : ;; *) _base_dir="" ;; esac
+        elif [ -d "$_tmp/_base" ]; then
+            _base_dir="$_tmp/_base"
+        fi
+    fi
+
     rm -rf "$CONTEXT_DIR"
     mkdir -p "$CONTEXT_DIR"
+    # Base layer first (if any), then the pack overlays on top; both drop .git.
+    if [ -n "$_base_dir" ] && [ -d "$_base_dir" ]; then
+        rm -rf "$_base_dir/.git"
+        cp -a "$_base_dir/." "$CONTEXT_DIR/" 2>/dev/null || true
+        log "context pack: merged base layer from ${_base_rel:-_base}"
+    fi
     # Copy the pack contents (drop .git) into the read-only context dir.
     rm -rf "$_src/.git"
     cp -a "$_src/." "$CONTEXT_DIR/" 2>/dev/null || true

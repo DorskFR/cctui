@@ -288,9 +288,32 @@ agent its documentation environment. Anyone can define their own dispatch types
   projects/          # per-repo CLAUDE.md overlays -> /home/worker/projects/
   style/             # output styles               -> /home/worker/style/
   guard-rules.md     # tool-set + network-set definitions for cctui-guard
+  pack.toml          # optional manifest; may declare a shared base layer
 ```
 
 A neutral fixture pack lives at `deploy/examples/context-pack/`.
+
+### Shared base layer (monorepo of packs)
+
+A repo can host several packs plus a shared `_base` dir holding universal
+material (home `CLAUDE.md`, `guard-rules.md`, universal `rules/`) once. A pack
+subdir selected via `CONTEXT_PACK_SUBDIR` declares the shared layer in its
+`pack.toml`:
+
+```toml
+base = "../_base"   # path relative to the subdir; confined to the clone tree
+```
+
+The entrypoint copies `_base` **first**, then overlays the pack subdir on top, so
+the pack wins on any same-named file (`cp -a "$X/." dest/` merges trees). Absent
+a `base =` line, it falls back to a repo-root `_base` dir when a subdir is
+selected; with no `_base` present the pack is used as-is (unchanged behaviour).
+
+```
+<repo>/
+  _base/             # merged under every pack (CLAUDE.md, guard-rules.md, rules/…)
+  <pack>/            # e.g. acme/ — pack.toml (base="../_base") + its own dirs
+```
 
 ### Mechanics
 
@@ -304,6 +327,11 @@ A neutral fixture pack lives at `deploy/examples/context-pack/`.
   `GUARD_RULES_FILE` defaults to `/opt/context/guard-rules.md`; the pack's
   `CLAUDE.md`/rules/docs/skills/style/projects are copied to the locations the
   agent expects.
+- **Base merge:** when a subdir pack declares `base = "…"` (or a repo-root
+  `_base` exists), that shared layer is copied into `/opt/context` first and the
+  pack subdir overlaid on top, before any of the seams above resolve — so
+  `guard-rules.md`, `CLAUDE.md`, and universal `rules/` can live once in `_base`
+  while each pack ships only its deltas.
 - **Home isolation:** `/home/worker` is a ReadWriteMany volume shared by
   concurrent workers, so when a pack is active the entrypoint bind-mounts a
   per-pod dir (under the `/overlay` emptyDir) over the paths the pack overwrites
