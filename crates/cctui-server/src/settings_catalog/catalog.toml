@@ -1,0 +1,981 @@
+# Claude Code settings catalog — hand-maintained delta over the vendored JSON schema.
+#
+# The vendored schema (claude-code-settings.schema.json, draft-07) is the source of
+# truth for TYPES / ENUMS / DEFAULTS of the keys it covers. This file adds what the
+# schema lacks: per-key POLICY TAGS (safe/care/managed/system), the docs-only keys the
+# schema still lags on, a curated env-var allowlist, and named presets.
+#
+# Consumed by the settings_catalog Rust module (server-side allowlist validation, CCT-538)
+# and the webui account settings editor (CCT-541). Keep in sync with the Claude Code docs.
+#
+# Policy tags:
+#   safe    — good per-account toggle candidate, low blast radius
+#   care    — exposable but has caveats (cost / security / footgun)
+#   managed — org/admin managed-settings only; do NOT expose per-account
+#   system  — CLI-written state or session-only; not a user-facing toggle
+#
+# `source` is "schema" (present in the vendored schema) or "docs" (docs-only delta).
+
+schema_url = "https://json.schemastore.org/claude-code-settings.json"
+schema_file = "claude-code-settings.schema.json"
+captured = "2026-07-02"
+
+[[keys]]
+name = "$schema"
+tag = "system"
+source = "schema"
+notes = "user/project"
+
+[[keys]]
+name = "agent"
+tag = "care"
+source = "schema"
+notes = "run main thread as a named subagent (system prompt+tools+model)"
+
+[[keys]]
+name = "allowManagedHooksOnly"
+tag = "managed"
+source = "schema"
+notes = "managed only — only managed/SDK hooks load"
+
+[[keys]]
+name = "allowManagedMcpServersOnly"
+tag = "managed"
+source = "schema"
+notes = "managed only"
+
+[[keys]]
+name = "allowManagedPermissionRulesOnly"
+tag = "managed"
+source = "schema"
+notes = "managed only — only managed allow/ask/deny apply"
+
+[[keys]]
+name = "allowedChannelPlugins"
+tag = "managed"
+source = "schema"
+notes = "managed only — channel-notif plugin allowlist"
+
+[[keys]]
+name = "allowedHttpHookUrls"
+tag = "care"
+source = "schema"
+notes = "allowlist for HTTP hook targets; []=block all; arrays merge"
+
+[[keys]]
+name = "allowedMcpServers"
+tag = "managed"
+source = "schema"
+notes = "managed/enterprise MCP allowlist; []=lockdown"
+
+[[keys]]
+name = "alwaysThinkingEnabled"
+tag = "safe"
+source = "schema"
+notes = "extended thinking on by default (usually via /config)"
+
+[[keys]]
+name = "apiKeyHelper"
+tag = "care"
+source = "schema"
+notes = "outputs auth value (X-Api-Key/Bearer)"
+
+[[keys]]
+name = "attribution"
+tag = "safe"
+source = "schema"
+notes = "customize git commit / PR attribution"
+
+[[keys]]
+name = "autoMemoryDirectory"
+tag = "care"
+source = "schema"
+notes = "auto-memory dir; ignored if in checked-in project settings"
+
+[[keys]]
+name = "autoMemoryEnabled"
+tag = "safe"
+source = "schema"
+notes = "auto memory read/write to .claude/memory/"
+
+[[keys]]
+name = "autoMode"
+tag = "care"
+source = "schema"
+notes = "tune auto-mode classifier; usually managed"
+
+[[keys]]
+name = "autoUpdatesChannel"
+tag = "safe"
+source = "schema"
+notes = "release channel for updates"
+
+[[keys]]
+name = "availableModels"
+tag = "care"
+source = "schema"
+notes = "restrict selectable models; merges+dedupes across levels"
+
+[[keys]]
+name = "awsAuthRefresh"
+tag = "care"
+source = "schema"
+notes = "refresh AWS auth (writes .aws)"
+
+[[keys]]
+name = "awsCredentialExport"
+tag = "care"
+source = "schema"
+notes = "outputs JSON AWS creds"
+
+[[keys]]
+name = "blockedMarketplaces"
+tag = "managed"
+source = "schema"
+notes = "managed only marketplace blocklist"
+
+[[keys]]
+name = "channelsEnabled"
+tag = "managed"
+source = "schema"
+notes = "(Teams/Enterprise) channel notifications opt-in"
+
+[[keys]]
+name = "claudeMdExcludes"
+tag = "safe"
+source = "schema"
+notes = "CLAUDE.md files to skip (monorepos)"
+
+[[keys]]
+name = "cleanupPeriodDays"
+tag = "safe"
+source = "schema"
+notes = "retention: sessions/worktrees/tasks/snapshots/backups"
+
+[[keys]]
+name = "companyAnnouncements"
+tag = "care"
+source = "schema"
+notes = "startup banners (random pick)"
+
+[[keys]]
+name = "defaultShell"
+tag = "safe"
+source = "schema"
+notes = "shell for ! commands"
+
+[[keys]]
+name = "deniedMcpServers"
+tag = "managed"
+source = "schema"
+notes = "enterprise MCP denylist; wins; merges all scopes"
+
+[[keys]]
+name = "disableAllHooks"
+tag = "care"
+source = "schema"
+notes = "disable all hooks + statusLine; managed-true can't be overridden"
+
+[[keys]]
+name = "disableDeepLinkRegistration"
+tag = "care"
+source = "schema"
+notes = "block claude:// protocol handler"
+
+[[keys]]
+name = "disableSkillShellExecution"
+tag = "safe"
+source = "schema"
+notes = "disable inline  !... / !  shell in skills/commands"
+
+[[keys]]
+name = "disabledMcpjsonServers"
+tag = "care"
+source = "schema"
+notes = ".mcp.json servers to reject"
+
+[[keys]]
+name = "effortLevel"
+tag = "safe"
+source = "schema"
+notes = "persist reasoning effort (Opus 4.6/4.7, Sonnet 4.6)"
+
+[[keys]]
+name = "enableAllProjectMcpServers"
+tag = "care"
+source = "schema"
+notes = "auto-approve all .mcp.json servers"
+
+[[keys]]
+name = "enabledMcpjsonServers"
+tag = "care"
+source = "schema"
+notes = ".mcp.json servers to approve"
+
+[[keys]]
+name = "enabledPlugins"
+tag = "care"
+source = "schema"
+notes = "enable plugins"
+
+[[keys]]
+name = "env"
+tag = "care"
+source = "schema"
+notes = "env vars for every session + subprocess (see §4)"
+
+[[keys]]
+name = "extraKnownMarketplaces"
+tag = "care"
+source = "schema"
+notes = "extra marketplaces for the repo"
+
+[[keys]]
+name = "fastMode"
+tag = "care"
+source = "schema"
+notes = "Opus 4.7, 2.5x faster/costlier; needs extra usage"
+
+[[keys]]
+name = "fastModePerSessionOptIn"
+tag = "safe"
+source = "schema"
+notes = "require /fast each session (fast mode won't persist)"
+
+[[keys]]
+name = "feedbackSurveyRate"
+tag = "safe"
+source = "schema"
+notes = "probability quality survey appears"
+
+[[keys]]
+name = "fileSuggestion"
+tag = "care"
+source = "schema"
+notes = "custom @ autocomplete script"
+
+[[keys]]
+name = "forceLoginMethod"
+tag = "managed"
+source = "schema"
+notes = "restrict login account type; blocks env-cred sessions"
+
+[[keys]]
+name = "forceLoginOrgUUID"
+tag = "managed"
+source = "schema"
+notes = "require login to a specific org"
+
+[[keys]]
+name = "forceRemoteSettingsRefresh"
+tag = "managed"
+source = "schema"
+notes = "managed — block startup until remote settings fetched (fail-closed)"
+
+[[keys]]
+name = "hooks"
+tag = "care"
+source = "schema"
+notes = "lifecycle commands"
+
+[[keys]]
+name = "httpHookAllowedEnvVars"
+tag = "care"
+source = "schema"
+notes = "allowlist env vars HTTP hooks may inject into headers"
+
+[[keys]]
+name = "includeCoAuthoredBy"
+tag = "safe"
+source = "schema"
+notes = "DEPRECATED — use attribution; co-authored-by byline"
+
+[[keys]]
+name = "includeGitInstructions"
+tag = "safe"
+source = "schema"
+notes = "git commit/PR instructions + status in system prompt"
+
+[[keys]]
+name = "language"
+tag = "safe"
+source = "schema"
+notes = "preferred response language"
+
+[[keys]]
+name = "minimumVersion"
+tag = "care"
+source = "schema"
+notes = "floor version (prevents downgrade on channel switch)"
+
+[[keys]]
+name = "model"
+tag = "safe"
+source = "schema"
+notes = "override default model (read at start; /model mid-session)"
+
+[[keys]]
+name = "modelOverrides"
+tag = "care"
+source = "schema"
+notes = "map to Bedrock ARNs / Vertex / Foundry names"
+
+[[keys]]
+name = "otelHeadersHelper"
+tag = "care"
+source = "schema"
+notes = "dynamic OTel headers"
+
+[[keys]]
+name = "outputStyle"
+tag = "safe"
+source = "schema"
+notes = "output style (rebuilt on /clear/restart)"
+
+[[keys]]
+name = "parentSettingsBehavior"
+tag = "managed"
+source = "schema"
+notes = "managed/admin — SDK-parent merge behavior"
+
+[[keys]]
+name = "permissions"
+tag = "safe"
+source = "schema"
+notes = "tool permission rules"
+
+[[keys]]
+name = "plansDirectory"
+tag = "safe"
+source = "schema"
+notes = "plan file storage"
+
+[[keys]]
+name = "pluginConfigs"
+tag = "care"
+source = "schema"
+notes = "per-plugin MCP/opts"
+
+[[keys]]
+name = "pluginTrustMessage"
+tag = "managed"
+source = "schema"
+notes = "managed only — plugin trust warning text"
+
+[[keys]]
+name = "prUrlTemplate"
+tag = "safe"
+source = "schema"
+notes = "PR badge URL"
+
+[[keys]]
+name = "prefersReducedMotion"
+tag = "safe"
+source = "schema"
+notes = "reduce UI animations"
+
+[[keys]]
+name = "respectGitignore"
+tag = "safe"
+source = "schema"
+notes = "@ picker respects .gitignore"
+
+[[keys]]
+name = "sandbox"
+tag = "care"
+source = "schema"
+notes = "sandbox execution config"
+
+[[keys]]
+name = "showClearContextOnPlanAccept"
+tag = "safe"
+source = "schema"
+notes = "offer \"clear context\" on plan approval"
+
+[[keys]]
+name = "showThinkingSummaries"
+tag = "safe"
+source = "schema"
+notes = "show thinking summaries in transcript (Ctrl+O)"
+
+[[keys]]
+name = "showTurnDuration"
+tag = "safe"
+source = "schema"
+notes = "show \"Cooked for 1m 6s\""
+
+[[keys]]
+name = "skillOverrides"
+tag = "safe"
+source = "schema"
+notes = "per-skill visibility to Claude + / picker"
+
+[[keys]]
+name = "skipDangerousModePermissionPrompt"
+tag = "system"
+source = "schema"
+notes = "CLI-written state — accepted bypass dialog"
+
+[[keys]]
+name = "skipWebFetchPreflight"
+tag = "care"
+source = "schema"
+notes = "skip WebFetch blocklist check (enterprise)"
+
+[[keys]]
+name = "skippedMarketplaces"
+tag = "system"
+source = "schema"
+notes = "CLI state — declined marketplaces"
+
+[[keys]]
+name = "skippedPlugins"
+tag = "system"
+source = "schema"
+notes = "CLI state — declined plugins"
+
+[[keys]]
+name = "spinnerTipsEnabled"
+tag = "safe"
+source = "schema"
+notes = "spinner tips"
+
+[[keys]]
+name = "spinnerTipsOverride"
+tag = "safe"
+source = "schema"
+notes = "customize spinner tips"
+
+[[keys]]
+name = "spinnerVerbs"
+tag = "safe"
+source = "schema"
+notes = "customize spinner verbs"
+
+[[keys]]
+name = "statusLine"
+tag = "care"
+source = "schema"
+notes = "custom status line"
+
+[[keys]]
+name = "strictKnownMarketplaces"
+tag = "managed"
+source = "schema"
+notes = "managed only — marketplace add allowlist"
+
+[[keys]]
+name = "strictPluginOnlyCustomization"
+tag = "managed"
+source = "schema"
+notes = "–"
+
+[[keys]]
+name = "subagentStatusLine"
+tag = "care"
+source = "schema"
+notes = "status line for subagent sessions"
+
+[[keys]]
+name = "teammateMode"
+tag = "care"
+source = "schema"
+notes = "agent-team teammate display (experimental)"
+
+[[keys]]
+name = "terminalProgressBarEnabled"
+tag = "safe"
+source = "schema"
+notes = "terminal progress bar"
+
+[[keys]]
+name = "tui"
+tag = "safe"
+source = "schema"
+notes = "TUI renderer mode"
+
+[[keys]]
+name = "useAutoModeDuringPlan"
+tag = "safe"
+source = "schema"
+notes = "auto-approve safe reads during plan mode"
+
+[[keys]]
+name = "viewMode"
+tag = "safe"
+source = "schema"
+notes = "transcript view mode"
+
+[[keys]]
+name = "voiceEnabled"
+tag = "system"
+source = "schema"
+notes = "push-to-talk dictation (needs claude.ai acct); usually /voice-written"
+
+[[keys]]
+name = "worktree"
+tag = "care"
+source = "schema"
+notes = "--worktree session config"
+
+[[keys]]
+name = "wslInheritsWindowsSettings"
+tag = "managed"
+source = "schema"
+notes = "Windows managed only"
+
+[[keys]]
+name = "advisorModel"
+tag = "care"
+source = "docs"
+type = "string"
+enum = "model alias / ID"
+default = "unset (disabled)"
+notes = "server-side advisor tool (v2.1.98+)"
+
+[[keys]]
+name = "agentPushNotifEnabled"
+tag = "safe"
+source = "docs"
+type = "bool"
+default = "false"
+notes = "proactive phone push (v2.1.119+)"
+
+[[keys]]
+name = "allowAllClaudeAiMcps"
+tag = "managed"
+source = "docs"
+type = "bool"
+notes = "managed — load claude.ai connectors"
+
+[[keys]]
+name = "autoCompactEnabled"
+tag = "safe"
+source = "docs"
+type = "bool"
+default = "true"
+notes = "auto-compact near context limit (v2.1.119+)"
+
+[[keys]]
+name = "autoScrollEnabled"
+tag = "safe"
+source = "docs"
+type = "bool"
+default = "true"
+notes = "follow output to bottom (fullscreen)"
+
+[[keys]]
+name = "awaySummaryEnabled"
+tag = "safe"
+source = "docs"
+type = "bool"
+notes = "session recap when returning"
+
+[[keys]]
+name = "axScreenReader"
+tag = "safe"
+source = "docs"
+type = "bool"
+notes = "screen-reader flat output (v2.1.181+)"
+
+[[keys]]
+name = "claudeMd"
+tag = "managed"
+source = "docs"
+type = "string"
+enum = "text"
+notes = "managed — org CLAUDE.md-style memory"
+
+[[keys]]
+name = "disableAgentView"
+tag = "safe"
+source = "docs"
+type = "bool"
+notes = "turn off background agents/agent view (== env)"
+
+[[keys]]
+name = "disableArtifact"
+tag = "safe"
+source = "docs"
+type = "bool"
+notes = "disable Artifact tool (== env)"
+
+[[keys]]
+name = "disableAutoMode"
+tag = "care"
+source = "docs"
+type = "enum"
+enum = "\"disable\""
+notes = "prevent auto mode; removes from Shift+Tab; rejects --permission-mode auto"
+
+[[keys]]
+name = "disableBundledSkills"
+tag = "safe"
+source = "docs"
+type = "bool"
+notes = "disable bundled skills/workflows; built-ins hidden but typable (== CLAUDE_CODE_DISABLE_BUNDLED_SKILLS)"
+
+[[keys]]
+name = "disableClaudeAiConnectors"
+tag = "care"
+source = "docs"
+type = "bool"
+notes = "disable claude.ai MCP connectors; true wins across scopes (v2.1.182+)"
+
+[[keys]]
+name = "disableRemoteControl"
+tag = "care"
+source = "docs"
+type = "bool"
+notes = "disable Remote Control (v2.1.128+)"
+
+[[keys]]
+name = "disableSideloadFlags"
+tag = "managed"
+source = "docs"
+type = "bool"
+notes = "managed — reject --plugin-dir/--plugin-url/--agents/--mcp-config (v2.1.193+)"
+
+[[keys]]
+name = "disableWorkflows"
+tag = "safe"
+source = "docs"
+type = "bool"
+default = "false"
+notes = "disable dynamic workflows + bundled workflow commands"
+
+[[keys]]
+name = "editorMode"
+tag = "safe"
+source = "docs"
+type = "enum"
+enum = "normal,vim"
+default = "normal"
+notes = "input key bindings"
+
+[[keys]]
+name = "enableArtifact"
+tag = "safe"
+source = "docs"
+type = "bool"
+default = "availability"
+notes = "enable Artifact tool per user (v2.1.196+)"
+
+[[keys]]
+name = "enforceAvailableModels"
+tag = "care"
+source = "docs"
+type = "bool"
+notes = "extend availableModels allowlist to Default model (v2.1.175+)"
+
+[[keys]]
+name = "fallbackModel"
+tag = "safe"
+source = "docs"
+type = "array"
+enum = "model IDs (max 3; \"default\" expands)"
+default = "[\"claude-sonnet-5\",\"claude-haiku-4-5\"] (example)"
+notes = "fallback chain; does NOT merge across files"
+
+[[keys]]
+name = "fileCheckpointingEnabled"
+tag = "safe"
+source = "docs"
+type = "bool"
+default = "true"
+notes = "snapshot files before edits for /rewind (v2.1.119+)"
+
+[[keys]]
+name = "footerLinksRegexes"
+tag = "care"
+source = "docs"
+type = "array"
+enum = "{type,pattern,url,label}"
+notes = "footer badges from regex; read from user/--settings/managed only (v2.1.176+)"
+
+[[keys]]
+name = "forceLoginGatewayUrl"
+tag = "managed"
+source = "docs"
+type = "string"
+enum = "URL"
+notes = "managed — lock gateway URL"
+
+[[keys]]
+name = "gcpAuthRefresh"
+tag = "care"
+source = "docs"
+type = "string"
+enum = "script"
+notes = "refresh GCP ADC"
+
+[[keys]]
+name = "inputNeededNotifEnabled"
+tag = "safe"
+source = "docs"
+type = "bool"
+default = "false"
+notes = "phone push on permission/question (v2.1.119+)"
+
+[[keys]]
+name = "pluginSuggestionMarketplaces"
+tag = "managed"
+source = "docs"
+type = "array"
+enum = "names"
+notes = "managed — marketplaces allowed to suggest installs"
+
+[[keys]]
+name = "policyHelper"
+tag = "managed"
+source = "docs"
+type = "object"
+enum = "{path}"
+notes = "managed (MDM/file only) — executable computing managed settings (v2.1.136+)"
+
+[[keys]]
+name = "preferredNotifChannel"
+tag = "safe"
+source = "docs"
+type = "enum"
+enum = "auto,terminal_bell,iterm2,iterm2_with_bell,kitty,ghostty,notifications_disabled"
+default = "auto"
+notes = "notification method"
+
+[[keys]]
+name = "remoteControlAtStartup"
+tag = "care"
+source = "docs"
+type = "bool"
+default = "org default"
+notes = "auto-connect Remote Control (v2.1.119+)"
+
+[[keys]]
+name = "requiredMaximumVersion"
+tag = "managed"
+source = "docs"
+type = "string"
+enum = "version"
+notes = "managed — hard max version to start"
+
+[[keys]]
+name = "requiredMinimumVersion"
+tag = "managed"
+source = "docs"
+type = "string"
+enum = "version"
+notes = "managed — hard min version; fails open if invalid"
+
+[[keys]]
+name = "ultracode"
+tag = "system"
+source = "docs"
+type = "bool"
+notes = "session-only, not read from settings.json; via /effort ultracode/--settings/SDK"
+
+[[env]]
+name = "ANTHROPIC_MODEL"
+group = "model"
+tag = "safe"
+notes = "primary model id; overrides `model`, overridden by --model/ /model"
+
+[[env]]
+name = "CLAUDE_CODE_SUBAGENT_MODEL"
+group = "model"
+tag = "safe"
+notes = "model for subagents; `inherit` == unset"
+
+[[env]]
+name = "CLAUDE_CODE_EFFORT_LEVEL"
+group = "model"
+tag = "safe"
+notes = "reasoning effort low/medium/high/xhigh/max/auto; precedence over effortLevel"
+
+[[env]]
+name = "CLAUDE_CODE_DISABLE_1M_CONTEXT"
+group = "context"
+tag = "safe"
+notes = "disable 1M context; Sonnet treated as 200K (=1)"
+
+[[env]]
+name = "CLAUDE_CODE_MAX_CONTEXT_TOKENS"
+group = "context"
+tag = "care"
+notes = "override assumed context window (tokens)"
+
+[[env]]
+name = "CLAUDE_CODE_AUTO_COMPACT_WINDOW"
+group = "context"
+tag = "care"
+notes = "context capacity for auto-compaction (tokens)"
+
+[[env]]
+name = "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"
+group = "context"
+tag = "care"
+notes = "%-of-window compaction trigger, lowers only (1-100)"
+
+[[env]]
+name = "MAX_THINKING_TOKENS"
+group = "thinking"
+tag = "safe"
+notes = "extended-thinking budget; 0 disables on Anthropic API"
+
+[[env]]
+name = "CLAUDE_CODE_DISABLE_THINKING"
+group = "thinking"
+tag = "care"
+notes = "omit thinking param, proxy compat (=1)"
+
+[[env]]
+name = "CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING"
+group = "thinking"
+tag = "care"
+notes = "fixed MAX_THINKING_TOKENS instead of adaptive (=1)"
+
+[[env]]
+name = "DISABLE_INTERLEAVED_THINKING"
+group = "thinking"
+tag = "care"
+notes = "drop interleaved-thinking beta header (=1)"
+
+[[env]]
+name = "CLAUDE_CODE_MAX_OUTPUT_TOKENS"
+group = "tokens"
+tag = "care"
+notes = "max output tokens/request (reduces effective context)"
+
+[[env]]
+name = "CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS"
+group = "tokens"
+tag = "safe"
+notes = "file-read token cap"
+
+[[env]]
+name = "MAX_MCP_OUTPUT_TOKENS"
+group = "tokens"
+tag = "safe"
+notes = "max tokens in MCP tool responses (default 25000)"
+
+[[env]]
+name = "TASK_MAX_OUTPUT_LENGTH"
+group = "tokens"
+tag = "safe"
+notes = "subagent output char cap (default 32000, max 160000)"
+
+[[env]]
+name = "BASH_MAX_OUTPUT_LENGTH"
+group = "tokens"
+tag = "safe"
+notes = "bash output char cap before file spill"
+
+[[env]]
+name = "CLAUDE_CODE_DISABLE_BUNDLED_SKILLS"
+group = "skills"
+tag = "safe"
+notes = "disable bundled skills/workflows (== disableBundledSkills)"
+
+[[env]]
+name = "CLAUDE_CODE_DISABLE_WORKFLOWS"
+group = "skills"
+tag = "safe"
+notes = "disable dynamic + bundled workflows (== disableWorkflows)"
+
+[[env]]
+name = "CLAUDE_CODE_DISABLE_POLICY_SKILLS"
+group = "skills"
+tag = "care"
+notes = "skip system-wide managed skills dir (=1)"
+
+[[env]]
+name = "API_TIMEOUT_MS"
+group = "timeouts"
+tag = "safe"
+notes = "API request timeout, default 600000 (10m)"
+
+[[env]]
+name = "BASH_DEFAULT_TIMEOUT_MS"
+group = "timeouts"
+tag = "safe"
+notes = "default long bash timeout, default 120000 (2m)"
+
+[[env]]
+name = "BASH_MAX_TIMEOUT_MS"
+group = "timeouts"
+tag = "safe"
+notes = "max bash timeout the model can set, default 600000"
+
+[[env]]
+name = "MCP_TIMEOUT"
+group = "timeouts"
+tag = "safe"
+notes = "MCP server startup, default 30000"
+
+[[env]]
+name = "MCP_TOOL_TIMEOUT"
+group = "timeouts"
+tag = "safe"
+notes = "MCP tool execution timeout"
+
+[[env]]
+name = "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"
+group = "telemetry"
+tag = "safe"
+notes = "umbrella: autoupdater + feedback + error-reporting + telemetry off (=1)"
+
+[[env]]
+name = "DISABLE_TELEMETRY"
+group = "telemetry"
+tag = "safe"
+notes = "opt out of telemetry + GrowthBook flags (=1)"
+
+[[env]]
+name = "DO_NOT_TRACK"
+group = "telemetry"
+tag = "safe"
+notes = "cross-tool opt-out == DISABLE_TELEMETRY (=1)"
+
+[[env]]
+name = "DISABLE_ERROR_REPORTING"
+group = "telemetry"
+tag = "safe"
+notes = "disable error reporting (=1)"
+
+[[env]]
+name = "DISABLE_AUTOUPDATER"
+group = "telemetry"
+tag = "safe"
+notes = "disable background auto-updates (=1)"
+
+[[env]]
+name = "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY"
+group = "telemetry"
+tag = "safe"
+notes = "quality-survey prompts off (=1)"
+
+[[presets]]
+id = "quiet-defaults"
+name = "Quiet defaults"
+description = "Silence bundled skills/workflows/artifact + remote-control + telemetry/updater noise. All reversible per account. MANAGED keys may be ignored via a plain --settings file (needs a managed-settings drop-in) — see CCT-539."
+
+# settings.json keys applied by the preset (deep-merged under managed hooks).
+[presets.settings]
+disableBundledSkills = true
+disableWorkflows = true
+disableArtifact = true
+disableRemoteControl = true
+remoteControlAtStartup = false
+strictKnownMarketplaces = []
+strictPluginOnlyCustomization = ["skills", "hooks"]
+disableSideloadFlags = true
+
+# env vars applied by the preset (merged into the session env).
+[presets.env]
+CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1"
+CLAUDE_CODE_DISABLE_BUNDLED_SKILLS = "1"
+CLAUDE_CODE_DISABLE_WORKFLOWS = "1"
+DISABLE_TELEMETRY = "1"
+DO_NOT_TRACK = "1"
+DISABLE_ERROR_REPORTING = "1"
+DISABLE_AUTOUPDATER = "1"
+CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY = "1"

@@ -187,6 +187,23 @@ pub struct AccountInfo {
     pub last_auth_error: Option<String>,
     #[sqlx(default)]
     pub last_auth_error_at: Option<DateTime<Utc>>,
+    /// Validated, allowlisted subset of harness settings applied to sessions run
+    /// under this account (CCT-538). Config, not secret → returned normally.
+    /// Server-side validation rejects MANAGED/SYSTEM keys before persist. JSONB
+    /// object at rest; `#[sqlx(default)]` so SELECTs that don't project it decode.
+    #[sqlx(default)]
+    pub settings_json: Option<serde_json::Value>,
+    /// Launch defaults applied when a session omits them (CCT-538): the `--model`
+    /// code, reasoning effort, and permission mode. Config, not secret.
+    #[sqlx(default)]
+    pub default_model: Option<String>,
+    #[sqlx(default)]
+    pub default_effort: Option<String>,
+    #[sqlx(default)]
+    pub default_permission_mode: Option<String>,
+    // NOTE: `env_json` is deliberately NOT a field here — it holds encrypted
+    // extra environment (possibly secrets) and is WRITE-ONLY, never returned over
+    // the API, exactly like the OAuth tokens.
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -235,6 +252,22 @@ pub struct CreateAccount {
     pub soft_limit_7d_pct: Option<i32>,
     #[serde(default)]
     pub soft_limit_bypass_minutes: Option<i32>,
+    /// Validated, allowlisted harness settings for this account (CCT-538).
+    /// Server rejects MANAGED/SYSTEM keys before persist. Returned normally.
+    #[serde(default)]
+    pub settings_json: Option<serde_json::Value>,
+    /// Extra environment variables for sessions run under this account (CCT-538).
+    /// Stored ENCRYPTED at rest and never returned over the API (write-only,
+    /// like the OAuth tokens). An empty map ⇒ no override.
+    #[serde(default)]
+    pub env_json: Option<std::collections::HashMap<String, String>>,
+    /// Launch defaults (CCT-538). All optional; absent ⇒ NULL (no default).
+    #[serde(default)]
+    pub default_model: Option<String>,
+    #[serde(default)]
+    pub default_effort: Option<String>,
+    #[serde(default)]
+    pub default_permission_mode: Option<String>,
 }
 
 /// `PATCH /api/v1/accounts/{id}` payload (CCT-402). A partial update: `name`
@@ -268,6 +301,35 @@ pub struct UpdateAccount {
     /// all three unchanged. Editable for every provider, like model aliases.
     #[serde(default)]
     pub soft_limits: Option<SoftLimitPatch>,
+    /// Replacement validated settings blob (CCT-538). Provided → replaces the
+    /// stored settings wholesale (an empty object clears it); absent → unchanged.
+    /// Validated against the allowlist before persist. Editable for every provider.
+    #[serde(default)]
+    pub settings_json: Option<serde_json::Value>,
+    /// Replacement extra-env map (CCT-538). Provided → re-encrypts and replaces
+    /// (an empty map clears it); absent → unchanged. Write-only, never returned.
+    #[serde(default)]
+    pub env_json: Option<std::collections::HashMap<String, String>>,
+    /// Replacement launch defaults (CCT-538). Each provided → set (a `null` field
+    /// inside the provided block clears that column); the block absent → all three
+    /// unchanged. Editable for every provider.
+    #[serde(default)]
+    pub defaults: Option<AccountDefaultsPatch>,
+}
+
+/// The three launch-default columns as a patchable block (CCT-538). A field left
+/// `null`/absent inside a provided block clears that column.
+// Field names are the JSON API contract; the shared `default_` prefix mirrors the
+// DB columns and cannot be dropped.
+#[allow(clippy::struct_field_names)]
+#[derive(Debug, serde::Deserialize)]
+pub struct AccountDefaultsPatch {
+    #[serde(default)]
+    pub default_model: Option<String>,
+    #[serde(default)]
+    pub default_effort: Option<String>,
+    #[serde(default)]
+    pub default_permission_mode: Option<String>,
 }
 
 /// The three soft-limit columns as a patchable block (CCT-411). A field left
@@ -289,6 +351,42 @@ fn err(code: StatusCode, msg: &str) -> (StatusCode, Json<serde_json::Value>) {
     (code, Json(serde_json::json!({ "error": msg })))
 }
 
+/// Validate a pasted `settings_json` blob before persisting it (CCT-538) via the
+/// settings catalog (CCT-537): only keys tagged `safe`/`care` may be set
+/// per-account; unknown, MANAGED, and SYSTEM keys are rejected. Fail-closed —
+/// any violation aborts the whole write.
+fn validate_settings_json(
+    value: &serde_json::Value,
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    let report = crate::settings_catalog::catalog().validate_settings(value);
+    if report.ok() {
+        return Ok(());
+    }
+    let detail = report.violations.iter().map(|v| v.key.as_str()).collect::<Vec<_>>().join(", ");
+    Err(err(
+        StatusCode::BAD_REQUEST,
+        &format!("settings_json rejected — not settable per-account: {detail}"),
+    ))
+}
+
+/// Validate an extra-env map against the catalog's curated per-account allowlist
+/// (CCT-538/CCT-537) before it is encrypted and stored. Fail-closed.
+fn validate_env_json(
+    env: &std::collections::HashMap<String, String>,
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    let map: std::collections::BTreeMap<String, String> =
+        env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let report = crate::settings_catalog::catalog().validate_env(&map);
+    if report.ok() {
+        return Ok(());
+    }
+    let detail = report.violations.iter().map(|v| v.key.as_str()).collect::<Vec<_>>().join(", ");
+    Err(err(
+        StatusCode::BAD_REQUEST,
+        &format!("env_json rejected — not in the per-account allowlist: {detail}"),
+    ))
+}
+
 /// `GET /api/v1/accounts` — the caller's own accounts (tokens never returned).
 /// Admin sees every account, with the owner's name joined in (CCT-251).
 pub async fn list_accounts(
@@ -308,6 +406,7 @@ pub async fn list_accounts(
                 a.request_count, a.bytes_transferred, \
                 a.soft_limit_5h_pct, a.soft_limit_7d_pct, a.soft_limit_bypass_minutes, \
                 a.needs_reauth, a.last_auth_error, a.last_auth_error_at, \
+                a.settings_json, a.default_model, a.default_effort, a.default_permission_mode, \
                 (COALESCE(t.input_tokens,0) + COALESCE(t.output_tokens,0) \
                  + COALESCE(t.cache_read_tokens,0) + COALESCE(t.cache_creation_tokens,0))::bigint \
                   AS total_tokens, \
@@ -429,16 +528,38 @@ pub async fn create_account(
         .filter(|m| !m.is_empty())
         .map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null));
 
+    // Settings/env/defaults (CCT-538): validate settings + env against the
+    // catalog allowlist, encrypt env (may hold secrets), store defaults as-is.
+    // Empty ⇒ NULL.
+    if let Some(s) = req.settings_json.as_ref().filter(|v| !v.is_null()) {
+        validate_settings_json(s)?;
+    }
+    let settings_json = req.settings_json.as_ref().filter(|v| !v.is_null()).cloned();
+    if let Some(m) = req.env_json.as_ref().filter(|m| !m.is_empty()) {
+        validate_env_json(m)?;
+    }
+    let enc_env = req
+        .env_json
+        .as_ref()
+        .filter(|m| !m.is_empty())
+        .map(|m| crate::crypto::obfuscate(&serde_json::to_string(m).unwrap_or_default(), &key));
+    let default_model = req.default_model.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let default_effort = req.default_effort.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let default_permission_mode =
+        req.default_permission_mode.as_deref().map(str::trim).filter(|s| !s.is_empty());
+
     let row: Result<AccountInfo, sqlx::Error> = sqlx::query_as(
         "INSERT INTO oauth_accounts \
             (user_id, name, provider, encrypted_refresh_token, encrypted_access_token, \
              expires_at, base_url, models, auth_scheme, model_aliases, \
-             soft_limit_5h_pct, soft_limit_7d_pct, soft_limit_bypass_minutes) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) \
+             soft_limit_5h_pct, soft_limit_7d_pct, soft_limit_bypass_minutes, \
+             settings_json, env_json, default_model, default_effort, default_permission_mode) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) \
          RETURNING id, name, provider, models, model_aliases, managed, user_id, NULL::text AS user_name, \
                    expires_at, created_at, last_used_at, \
                    request_count, bytes_transferred, \
                    soft_limit_5h_pct, soft_limit_7d_pct, soft_limit_bypass_minutes, \
+                   settings_json, default_model, default_effort, default_permission_mode, \
                    0::bigint AS total_tokens, 0::double precision AS est_cost_usd",
     )
     .bind(uid)
@@ -454,6 +575,11 @@ pub async fn create_account(
     .bind(req.soft_limit_5h_pct)
     .bind(req.soft_limit_7d_pct)
     .bind(req.soft_limit_bypass_minutes)
+    .bind(&settings_json)
+    .bind(&enc_env)
+    .bind(default_model)
+    .bind(default_effort)
+    .bind(default_permission_mode)
     .fetch_one(&state.pool)
     .await;
 
@@ -569,6 +695,34 @@ pub async fn rename_account(
             (s.soft_limit_5h_pct, s.soft_limit_7d_pct, s.soft_limit_bypass_minutes)
         });
 
+    // Settings/env/defaults (CCT-538): each carries a provided-flag so a provided
+    // value replaces (empty clears) while an absent one is untouched — COALESCE
+    // can't distinguish "clear" from "unchanged". settings_json + env_json are
+    // validated against the catalog allowlist before persist; env_json is
+    // re-encrypted.
+    let settings_provided = req.settings_json.is_some();
+    if let Some(s) = req.settings_json.as_ref().filter(|v| !v.is_null()) {
+        validate_settings_json(s)?;
+    }
+    let settings_json = req.settings_json.as_ref().filter(|v| !v.is_null()).cloned();
+    let env_provided = req.env_json.is_some();
+    if let Some(m) = req.env_json.as_ref().filter(|m| !m.is_empty()) {
+        validate_env_json(m)?;
+    }
+    let enc_env = req
+        .env_json
+        .as_ref()
+        .filter(|m| !m.is_empty())
+        .map(|m| crate::crypto::obfuscate(&serde_json::to_string(m).unwrap_or_default(), &key));
+    let defaults_provided = req.defaults.is_some();
+    let (default_model, default_effort, default_permission_mode) =
+        req.defaults.as_ref().map_or((None, None, None), |d| {
+            let norm = |v: &Option<String>| {
+                v.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned)
+            };
+            (norm(&d.default_model), norm(&d.default_effort), norm(&d.default_permission_mode))
+        });
+
     // COALESCE keeps each column when its bind is NULL, so an absent field is a
     // no-op. Admin (`ctx.user_id` = NULL) may edit any account; a user only its
     // own. Managed accounts are excluded.
@@ -582,12 +736,18 @@ pub async fn rename_account(
             model_aliases = CASE WHEN $8 THEN $9 ELSE model_aliases END, \
             soft_limit_5h_pct = CASE WHEN $10 THEN $11 ELSE soft_limit_5h_pct END, \
             soft_limit_7d_pct = CASE WHEN $10 THEN $12 ELSE soft_limit_7d_pct END, \
-            soft_limit_bypass_minutes = CASE WHEN $10 THEN $13 ELSE soft_limit_bypass_minutes END \
+            soft_limit_bypass_minutes = CASE WHEN $10 THEN $13 ELSE soft_limit_bypass_minutes END, \
+            settings_json = CASE WHEN $14 THEN $15 ELSE settings_json END, \
+            env_json = CASE WHEN $16 THEN $17 ELSE env_json END, \
+            default_model = CASE WHEN $18 THEN $19 ELSE default_model END, \
+            default_effort = CASE WHEN $18 THEN $20 ELSE default_effort END, \
+            default_permission_mode = CASE WHEN $18 THEN $21 ELSE default_permission_mode END \
          WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2) AND NOT managed \
          RETURNING id, name, provider, models, model_aliases, managed, user_id, NULL::text AS user_name, \
                    expires_at, created_at, last_used_at, \
                    request_count, bytes_transferred, \
                    soft_limit_5h_pct, soft_limit_7d_pct, soft_limit_bypass_minutes, \
+                   settings_json, default_model, default_effort, default_permission_mode, \
                    0::bigint AS total_tokens, 0::double precision AS est_cost_usd",
     )
     .bind(id)
@@ -603,6 +763,14 @@ pub async fn rename_account(
     .bind(soft_5h)
     .bind(weekly_pct)
     .bind(soft_bypass)
+    .bind(settings_provided)
+    .bind(&settings_json)
+    .bind(env_provided)
+    .bind(&enc_env)
+    .bind(defaults_provided)
+    .bind(&default_model)
+    .bind(&default_effort)
+    .bind(&default_permission_mode)
     .fetch_optional(&state.pool)
     .await
     .map_err(|e| {
@@ -1215,7 +1383,8 @@ pub async fn grant_share(
     let target: Option<Uuid> = if let Ok(uuid) = Uuid::parse_str(ident) {
         sqlx::query_scalar("SELECT id FROM users WHERE id = $1 AND revoked_at IS NULL").bind(uuid)
     } else {
-        sqlx::query_scalar("SELECT id FROM users WHERE name = $1 AND revoked_at IS NULL").bind(ident)
+        sqlx::query_scalar("SELECT id FROM users WHERE name = $1 AND revoked_at IS NULL")
+            .bind(ident)
     }
     .fetch_optional(&state.pool)
     .await

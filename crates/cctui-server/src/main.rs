@@ -15,6 +15,7 @@ mod policy;
 mod rebuild;
 mod registry;
 mod routes;
+mod settings_catalog;
 mod skill_store;
 mod soft_limit;
 mod state;

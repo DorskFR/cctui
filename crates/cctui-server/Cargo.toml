@@ -43,6 +43,7 @@ kube.workspace = true
 k8s-openapi.workspace = true
 bollard = "0.18"
 sha1 = "0.10"
+toml = "0.8"
 tar.workspace = true
 flate2.workspace = true
 

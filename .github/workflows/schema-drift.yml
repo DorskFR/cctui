@@ -1,0 +1,67 @@
+name: schema-drift
+
+# Re-fetch the upstream Claude Code settings JSON schema and diff it against the
+# vendored copy consumed by the settings catalog (CCT-537). The schema drives the
+# types/enums/defaults for the ~84 keys it covers, so drift here means the catalog's
+# machine-readable half is stale and should be re-vendored + the hand-maintained
+# delta (catalog.toml) reviewed for newly added / removed keys.
+#
+# This job never edits the repo; it only flags drift so a human re-vendors on purpose.
+
+on:
+  schedule:
+    # Weekly, Mondays 07:17 UTC (off the top-of-hour to avoid the fleet stampede).
+    - cron: "17 7 * * 1"
+  workflow_dispatch: {}
+  push:
+    paths:
+      - "crates/cctui-server/src/settings_catalog/claude-code-settings.schema.json"
+      - ".github/workflows/schema-drift.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  diff:
+    name: diff vendored schema vs upstream
+    runs-on: ubuntu-latest
+    env:
+      SCHEMA_URL: https://json.schemastore.org/claude-code-settings.json
+      VENDORED: crates/cctui-server/src/settings_catalog/claude-code-settings.schema.json
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch upstream schema
+        run: curl -fsSL "$SCHEMA_URL" -o /tmp/upstream-schema.json
+
+      - name: Normalize (stable key order) and diff
+        run: |
+          set -euo pipefail
+          # Normalize both with jq -S so formatting/key-order changes don't cause
+          # false drift — only real content changes trip the diff.
+          jq -S . "$VENDORED" > /tmp/vendored.norm.json
+          jq -S . /tmp/upstream-schema.json > /tmp/upstream.norm.json
+          if diff -u /tmp/vendored.norm.json /tmp/upstream.norm.json; then
+            echo "✅ Vendored schema is in sync with upstream."
+          else
+            echo "::error::Claude Code settings schema drift detected."
+            echo "Upstream $SCHEMA_URL differs from the vendored copy at $VENDORED."
+            echo "Re-vendor it and review catalog.toml for added/removed keys:"
+            echo "  curl -fsSL $SCHEMA_URL -o $VENDORED"
+            echo "Then run: cargo test -p cctui-server settings_catalog"
+            exit 1
+          fi
+
+      - name: Report new / removed top-level properties
+        if: always()
+        run: |
+          set -euo pipefail
+          jq -r '.properties | keys[]' "$VENDORED" | sort > /tmp/vendored.keys
+          jq -r '.properties | keys[]' /tmp/upstream-schema.json | sort > /tmp/upstream.keys
+          echo "### Property drift" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "added upstream (not vendored):" >> "$GITHUB_STEP_SUMMARY"
+          comm -13 /tmp/vendored.keys /tmp/upstream.keys >> "$GITHUB_STEP_SUMMARY" || true
+          echo "removed upstream (still vendored):" >> "$GITHUB_STEP_SUMMARY"
+          comm -23 /tmp/vendored.keys /tmp/upstream.keys >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
