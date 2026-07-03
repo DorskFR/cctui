@@ -133,7 +133,7 @@ phase_restore_stack() {
 
     if [ -f "${_cache}/images.tar.gz" ]; then
         log "restore: docker load images.tar.gz"
-        gunzip -c "${_cache}/images.tar.gz" | docker load >/dev/null 2>&1 \
+        gunzip -c "${_cache}/images.tar.gz" | docker load 2>&1 \
             || log "WARNING: restore image load failed (compose may re-pull)"
     fi
 
@@ -145,7 +145,7 @@ phase_restore_stack() {
         log "restore: volume ${_vol}"
         docker volume create "$_vol" >/dev/null 2>&1 || true
         docker run --rm -v "${_vol}:/data" -v "${_cache}:/backup:ro" alpine \
-            sh -c "cd /data && tar xzf /backup/$(basename "$_tb")" >/dev/null 2>&1 \
+            sh -c "cd /data && tar xzf /backup/$(basename "$_tb")" 2>&1 \
             || log "WARNING: restore of volume ${_vol} failed"
     done
     log "restore: stack cache restored (images + volumes); E2E can skip setup"
