@@ -1039,29 +1039,54 @@ impl Driver {
     async fn force_reresume(&self, short: &str, local_id: &str) -> anyhow::Result<()> {
         let sock = self.ensure_socket().await?;
         // Pre-flight (CCT-462 hardening): NEVER kill a live worker we then can't
-        // cold-resume. `resume_worker` derives the cwd from on-disk state.json
-        // (force_reresume passes no fallback cwd); if it's absent — e.g. a
-        // worker whose state.json hasn't been written with a cwd yet — abort
-        // BEFORE the kill so we leave the live worker running instead of killing
-        // it into an unrecoverable state. The next poll re-evaluates (bounded by
-        // the heal cap).
-        let resumable =
-            StateJson::read(&self.cfg.jobs_root, short).is_some_and(|s| s.cwd.is_some());
-        anyhow::ensure!(
-            resumable,
-            "refusing to heal {short}: no resumable cwd in state.json (a kill would not be recoverable)"
-        );
+        // cold-resume. `resume_worker` derives the cwd from on-disk state.json;
+        // if it's absent — e.g. a worker whose state.json hasn't been written
+        // with a cwd yet — fall back to deriving it locally from the Claude
+        // transcript (CCT-504): its entries carry an explicit `cwd`, and even
+        // the project dir name encodes one. Only a true orphan (no transcript
+        // either) still aborts BEFORE the kill, leaving the live worker running
+        // instead of killing it into an unrecoverable state. The next poll
+        // re-evaluates (bounded by the heal cap).
+        let st = StateJson::read(&self.cfg.jobs_root, short);
+        let mut fallback_cwd = None;
+        if st.as_ref().is_none_or(|s| s.cwd.is_none()) {
+            // Try every session id the worker may have written a transcript
+            // under: the rotated id first (`/clear`/`/compact` moved the live
+            // conversation there, CCT-160), then the spawn id, then the emitted
+            // local_id (usually == spawn id, but state.json may be gone).
+            let candidates = st
+                .as_ref()
+                .into_iter()
+                .flat_map(|s| [s.resume_session_id.as_deref(), s.session_id.as_deref()])
+                .flatten()
+                .chain(std::iter::once(local_id));
+            fallback_cwd = candidates.into_iter().find_map(|id| {
+                super::fallback_cwd::derive_cwd_from_transcript(&self.cfg.projects_root, id)
+            });
+            let Some(cwd) = fallback_cwd.as_deref() else {
+                anyhow::bail!(
+                    "refusing to heal {short}: no resumable cwd in state.json and no \
+                     transcript to derive one from (a kill would not be recoverable)"
+                );
+            };
+            tracing::info!(
+                %short, %local_id, %cwd,
+                "state.json has no cwd; derived fallback cwd from transcript (CCT-504)"
+            );
+        }
         let _ = socket::one_shot(&sock, &json!({"proto":1,"op":"kill","short":short})).await;
         Self::await_worker_exit(&sock, short).await;
         // `resume_worker` reads the rotated session id + cwd from on-disk
         // state.json (kept across the kill), resolves env via the chokepoint,
-        // and records launched-with-env on success.
+        // and records launched-with-env on success. The transcript-derived cwd
+        // (if any) rides along as the fallback it uses when state.json still
+        // lacks one.
         self.resume_worker(
             &sock,
             short,
             local_id,
             Some(local_id),
-            None,
+            fallback_cwd.as_deref(),
             &std::collections::BTreeMap::default(),
         )
         .await
