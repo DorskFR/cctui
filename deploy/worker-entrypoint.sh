@@ -115,6 +115,42 @@ phase_dockerd() {
     export CCTUI_WORKER_EXTRA_RW
 }
 
+# Restore the docker stack (images + migrated DB volumes) from the warm cache
+# repo-sync exports in its Phase 5 (${WARM_REPO_DIR}/.docker-cache): images.tar.gz
+# (`docker save` of every image, base + app) + one <volume>.tar.gz per docker
+# volume (fully-migrated MySQL/Postgres/oauth-server state). Restoring these lets the
+# repo's E2E `compose up` reuse migrated state and SKIP `pnpm run setup` — the
+# slowest, most fragile boot phase. Runs AFTER phase_dockerd (needs the rootless
+# DOCKER_HOST) and before privilege drop. Idempotent; a no-op on the lean base
+# (no dockerd) or when the cache is absent. Best-effort throughout: a failed
+# restore just means the E2E falls back to a full setup, so nothing hard-fails.
+phase_restore_stack() {
+    command -v docker >/dev/null 2>&1 || return 0
+    [ -n "${DOCKER_HOST:-}" ] || return 0
+    _cache="${WARM_REPO_DIR:-/repos}/.docker-cache"
+    [ -d "$_cache" ] || { log "restore: no warm docker cache at ${_cache}; skipping"; return 0; }
+    docker version >/dev/null 2>&1 || { log "restore: docker not reachable; skipping"; return 0; }
+
+    if [ -f "${_cache}/images.tar.gz" ]; then
+        log "restore: docker load images.tar.gz"
+        gunzip -c "${_cache}/images.tar.gz" | docker load >/dev/null 2>&1 \
+            || log "WARNING: restore image load failed (compose may re-pull)"
+    fi
+
+    for _tb in "${_cache}"/*.tar.gz; do
+        [ -e "$_tb" ] || continue
+        case "$(basename "$_tb")" in images.tar.gz) continue ;; esac
+        _vol="$(basename "$_tb" .tar.gz)"
+        docker volume inspect "$_vol" >/dev/null 2>&1 && continue   # already present
+        log "restore: volume ${_vol}"
+        docker volume create "$_vol" >/dev/null 2>&1 || true
+        docker run --rm -v "${_vol}:/data" -v "${_cache}:/backup:ro" alpine \
+            sh -c "cd /data && tar xzf /backup/$(basename "$_tb")" >/dev/null 2>&1 \
+            || log "WARNING: restore of volume ${_vol} failed"
+    done
+    log "restore: stack cache restored (images + volumes); E2E can skip setup"
+}
+
 # ── Required platform identity ──────────────────────────────────────────────
 if [ -z "${CCTUI_MACHINE_KEY:-}" ]; then
     echo "cctui-worker: CCTUI_MACHINE_KEY is required (injected by the dispatcher)" >&2
@@ -960,6 +996,7 @@ phase_guard
 phase_permissions
 phase_hardening
 phase_dockerd
+phase_restore_stack
 
 # ── Phase 8: Drop privileges + run ──────────────────────────────────────────
 # cctui-supervisor applies landlock + seccomp, drops all caps, setuids to the
