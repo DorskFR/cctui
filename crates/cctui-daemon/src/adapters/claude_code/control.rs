@@ -338,6 +338,10 @@ pub struct Driver {
     /// records launched-with-env under `&self` while the poll loop reads/heals
     /// under `&mut self`.
     gateway_heal: std::sync::Mutex<crate::gateway_heal::HealTracker>,
+    /// Polls elapsed since the last token-validity sweep (CCT-462 finish). The
+    /// sweep runs every [`TOKEN_VALIDITY_SWEEP_POLLS`] polls, probing each
+    /// trusted account-bound worker's recorded token hash against the server.
+    polls_since_validity_sweep: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -358,6 +362,14 @@ struct PendingPerm {
 /// (subagents aren't `list` jobs), so quiescence is the primary signal,
 /// with parent-session end as a backstop.
 const SUBAGENT_IDLE_TICKS_TO_END: u32 = 15;
+
+/// Polls between token-validity sweeps for trusted workers (CCT-462 finish).
+/// At the default 2s poll cadence this probes roughly once a minute —
+/// low-frequency on purpose: each sweep is one server round-trip per live
+/// account-bound trusted worker, and a stale token must stay unresolvable for
+/// [`crate::gateway_heal::STALE_TOKEN_STRIKES`] consecutive sweeps before the
+/// (destructive) heal fires.
+const TOKEN_VALIDITY_SWEEP_POLLS: u32 = 30;
 
 #[derive(Debug, Clone)]
 struct TranscriptLocation {
@@ -480,6 +492,7 @@ impl Driver {
             server: None,
             machine_key: None,
             gateway_heal: std::sync::Mutex::new(crate::gateway_heal::HealTracker::new()),
+            polls_since_validity_sweep: 0,
         }
     }
 
@@ -1032,6 +1045,76 @@ impl Driver {
         // in-flight latch and resetting the budget.
     }
 
+    /// Low-frequency token-validity sweep for TRUSTED workers (CCT-462 finish).
+    ///
+    /// The env-less heal above only targets workers cctui did NOT launch — a
+    /// TRUSTED worker whose `session_tokens` row got unbound/deleted
+    /// server-side keeps its (now dead) gateway token and 401s forever at the
+    /// gateway session-token stage without ever becoming a candidate. For each
+    /// live worker with a recorded launch-token hash, ask the server whether
+    /// that hash still resolves; a `valid: false` confirmed
+    /// [`crate::gateway_heal::STALE_TOKEN_STRIKES`] sweeps in a row revokes the
+    /// worker's trust and fires the SAME bounded heal machinery (kill +
+    /// cold-resume re-mints a fresh token and re-records its hash).
+    ///
+    /// Network errors / non-200 count as UNKNOWN, not invalid — the heal kill
+    /// is destructive, so this fails open and the next sweep retries.
+    // Linear probe → strike → heal pipeline mirroring `maybe_heal_gateway_env`;
+    // complexity is the best-effort bail-out logging, not nesting.
+    #[allow(clippy::cognitive_complexity)]
+    async fn sweep_token_validity(&self, live: &[(String, String)]) {
+        let (Some(server), Some(mk)) = (self.server.as_ref(), self.machine_key.as_ref()) else {
+            return; // No server (tests / legacy): nothing to probe against.
+        };
+        for (short, local_id) in live {
+            // Cheap local gate: only trusted workers with a recorded hash and
+            // an available heal budget are probed (the common steady state is
+            // a handful of round-trips per sweep, one per account-bound worker).
+            let Some(hash) = self.gateway_heal.lock().ok().and_then(|t| t.probe_hash(short)) else {
+                continue;
+            };
+            let valid = match server.session_token_valid(mk, local_id, &hash).await {
+                Ok(resp) => resp.valid,
+                Err(err) => {
+                    // Unknown, NOT invalid: server unreachable / older server /
+                    // non-200. Never escalate to a destructive heal on it.
+                    tracing::debug!(
+                        %short, %local_id,
+                        "token-validity probe failed (treated as unknown): {err}"
+                    );
+                    continue;
+                }
+            };
+            let want_heal = self.gateway_heal.lock().is_ok_and(|mut t| {
+                if valid {
+                    t.note_token_valid(short);
+                    false
+                } else {
+                    t.note_token_invalid(short)
+                }
+            });
+            if !want_heal {
+                continue;
+            }
+            tracing::warn!(
+                %short, %local_id,
+                "trusted worker's session token no longer resolves — forcing kill + \
+                 cold-resume to re-mint (CCT-462)"
+            );
+            if let Err(err) = self.force_reresume(short, local_id).await {
+                tracing::warn!(
+                    %short, %local_id,
+                    "stale-token heal failed; will retry until cap: {err}"
+                );
+                if let Ok(mut t) = self.gateway_heal.lock() {
+                    t.note_heal_failed(short);
+                }
+            }
+            // On success `force_reresume`'s cold-resume recorded the relaunch —
+            // with its freshly-minted token's hash — via `note_launched_with_env`.
+        }
+    }
+
     /// KILL a live worker, wait for it to exit, then cold-resume it through the
     /// CCT-460 chokepoint so it relaunches with freshly-resolved gateway env.
     /// Used by the proactive heal (CCT-462) — the only path that deliberately
@@ -1164,7 +1247,8 @@ impl Driver {
         .unwrap_or(0);
         // Launch argv + respawn flags, appending the managed `--settings` file so
         // the revived worker keeps its hooks + account settings (CCT-540).
-        let mut args = vec!["--resume".to_owned(), session_id.clone(), "--agent".to_owned(), agent.to_owned()];
+        let mut args =
+            vec!["--resume".to_owned(), session_id.clone(), "--agent".to_owned(), agent.to_owned()];
         let mut respawn_flags = vec!["--agent".to_owned(), agent.to_owned()];
         if let Some(settings) = &settings_arg {
             args.push("--settings".to_owned());
@@ -1602,15 +1686,26 @@ impl Driver {
     /// sessions (the v0.7.47 regression). The heal's real target — a LEGACY
     /// session present in the roster at daemon startup that cctui never launched
     /// this lifetime — is untouched (it stays un-recorded → a candidate).
-    /// `_env` is retained for call-site symmetry. Best-effort under a poisoned
-    /// lock.
+    ///
+    /// When the env carries a gateway session token
+    /// (`ANTHROPIC_AUTH_TOKEN` / `OPENAI_API_KEY`) its sha256 hex is recorded
+    /// too, arming the low-frequency token-validity sweep for this worker
+    /// (CCT-462 finish) — a trusted worker whose token stops resolving
+    /// server-side (unbound/deleted `session_tokens` row) would otherwise 401
+    /// forever without ever becoming a heal candidate. Hash only, in memory
+    /// only — no token material persisted (CCT-503). Best-effort under a
+    /// poisoned lock.
     fn note_launched_with_env(
         &self,
         short: &str,
-        _env: &std::collections::BTreeMap<String, String>,
+        env: &std::collections::BTreeMap<String, String>,
     ) {
+        let token_hash = env
+            .get("ANTHROPIC_AUTH_TOKEN")
+            .or_else(|| env.get("OPENAI_API_KEY"))
+            .map(|t| crate::gateway_heal::sha256_hex(t));
         if let Ok(mut t) = self.gateway_heal.lock() {
-            t.note_launched_with_env(short);
+            t.note_launched_with_env(short, token_hash);
         }
     }
 
@@ -1735,12 +1830,9 @@ impl Driver {
                 .resolve_launch_env(parent_local_id, &std::collections::BTreeMap::default())
                 .await?;
         }
-        if let Some(settings) = ensure_hook_settings(
-            &self.cfg.hook_socket_path,
-            whip,
-            &short,
-            launch.settings.as_ref(),
-        ) {
+        if let Some(settings) =
+            ensure_hook_settings(&self.cfg.hook_socket_path, whip, &short, launch.settings.as_ref())
+        {
             let settings = settings.to_string_lossy().into_owned();
             args.push("--settings".to_owned());
             args.push(settings.clone());
@@ -1869,7 +1961,10 @@ impl Driver {
             self.grandfathered = true;
             if let Ok(mut t) = self.gateway_heal.lock() {
                 for short in &now_shorts {
-                    t.note_launched_with_env(short);
+                    // No hash: cctui didn't launch these this lifetime, so it
+                    // doesn't know what token (if any) they carry — trusted but
+                    // never validity-probed (CCT-462).
+                    t.note_launched_with_env(short, None);
                 }
             }
         }
@@ -2118,6 +2213,34 @@ impl Driver {
                 })
                 .await;
             }
+        }
+
+        // Low-frequency token-validity sweep for TRUSTED workers (CCT-462
+        // finish): a worker cctui launched with env never enters the env-less
+        // heal above, but its `session_tokens` row can still be unbound/deleted
+        // server-side — it then 401s at the gateway forever with nothing
+        // observing it. Every `TOKEN_VALIDITY_SWEEP_POLLS` polls (~1/min at the
+        // default cadence), ask the server whether each trusted worker's
+        // recorded token hash still resolves; a twice-confirmed `valid: false`
+        // heals through the same bounded kill + cold-resume machinery.
+        self.polls_since_validity_sweep = self.polls_since_validity_sweep.saturating_add(1);
+        if self.polls_since_validity_sweep >= TOKEN_VALIDITY_SWEEP_POLLS {
+            self.polls_since_validity_sweep = 0;
+            let live: Vec<(String, String)> = visible
+                .iter()
+                .filter(|j| !self.dead_shorts.contains(&j.short))
+                .map(|j| {
+                    // Same stable-local_id derivation as the Status loop above.
+                    let local_id = self
+                        .transcript_locations
+                        .get(&j.short)
+                        .map(|loc| loc.local_id.clone())
+                        .or_else(|| j.session_id().map(str::to_owned))
+                        .unwrap_or_else(|| j.short.clone());
+                    (j.short.clone(), local_id)
+                })
+                .collect();
+            self.sweep_token_validity(&live).await;
         }
 
         // Tail transcripts for every visible session and emit new events.

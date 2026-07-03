@@ -1,6 +1,8 @@
 //! HTTP + WS client to a cctui-server.
 
-use cctui_proto::api::{DaemonAuthRequest, DaemonAuthResponse, GatewayEnvResponse};
+use cctui_proto::api::{
+    DaemonAuthRequest, DaemonAuthResponse, GatewayEnvResponse, TokenValidResponse,
+};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -89,6 +91,37 @@ impl ServerClient {
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
             anyhow::bail!("gateway_env failed ({status}): {text}");
+        }
+        Ok(resp.json().await?)
+    }
+
+    /// Ask whether the session token a trusted worker was launched with still
+    /// resolves at the gateway (CCT-462). `token_hash` is the sha256 hex of the
+    /// token — the token itself never travels on this call. `Err` covers both
+    /// network failures and non-200 responses; the caller MUST treat `Err` as
+    /// "unknown" (no heal), never as invalid — the heal kill is destructive.
+    pub async fn session_token_valid(
+        &self,
+        machine_key: &str,
+        session_id: &str,
+        token_hash: &str,
+    ) -> anyhow::Result<TokenValidResponse> {
+        let url = format!(
+            "{}/api/v1/daemon/sessions/{}/token-valid",
+            self.base_url.trim_end_matches('/'),
+            session_id,
+        );
+        let resp = self
+            .http
+            .get(&url)
+            .query(&[("hash", token_hash)])
+            .bearer_auth(machine_key)
+            .send()
+            .await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("session_token_valid failed ({status}): {text}");
         }
         Ok(resp.json().await?)
     }

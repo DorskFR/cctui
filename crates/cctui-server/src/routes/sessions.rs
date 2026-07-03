@@ -1460,6 +1460,11 @@ pub async fn switch_account(
         return Err(err(StatusCode::NOT_FOUND, "no active token row to rebind"));
     }
 
+    // The rebind reuses the SAME token string — clear any orphan-spam block on
+    // its fingerprint so the fixed binding resolves immediately instead of
+    // 401ing for the remainder of the (up to 300s) block window (CCT-462).
+    crate::routes::gateway::clear_orphan_block_for_session(&state, &session_id).await;
+
     // Dismiss the per-chat soft-limit banner.
     crate::routes::gateway::clear_soft_limit_block(&state, &session_id).await;
     tracing::info!(

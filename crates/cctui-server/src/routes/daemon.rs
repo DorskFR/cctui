@@ -155,6 +155,85 @@ pub async fn session_gateway_env(
     Ok(Json(cctui_proto::api::GatewayEnvResponse { account_bound: true, env, settings }))
 }
 
+// ---- /api/v1/daemon/sessions/{id}/token-valid ----
+
+/// Query for [`session_token_valid`]: the sha256 hex of the session token the
+/// daemon launched the worker with. Hash-only on purpose — no token material
+/// on the wire (CCT-503 invariant).
+#[derive(Deserialize)]
+pub struct TokenValidQuery {
+    pub hash: String,
+}
+
+/// Does this session's minted token still resolve at the gateway? (CCT-462)
+///
+/// The daemon's validity sweep calls this for TRUSTED workers (ones it
+/// launched with gateway env) so a worker whose `session_tokens` row got
+/// unbound/deleted — which 401s forever at the gateway session-token stage —
+/// is finally observable and healable, instead of relying purely on
+/// launch-trust memory. `valid` = a `session_tokens` row with this hash exists
+/// FOR THIS SESSION, is not revoked, and joins a live `oauth_accounts` row
+/// (the same join [`resolve_account`](crate::routes::gateway) applies, but by
+/// hash equality).
+///
+/// Self-authenticating like [`session_gateway_env`]: machine-key Bearer.
+/// User-scoped the same way, except a session owned by another user answers
+/// 404 rather than `{valid: false}` — a false `valid` triggers a destructive
+/// kill + cold-resume daemon-side, and the daemon treats any non-200 as
+/// "unknown" (no heal). Transient DB error → 500 for the same reason
+/// (fail-open; the heal kill is destructive).
+pub async fn session_token_valid(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Path(session_id): Path<String>,
+    axum::extract::Query(q): axum::extract::Query<TokenValidQuery>,
+) -> Result<Json<cctui_proto::api::TokenValidResponse>, StatusCode> {
+    let token = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let ctx = state.auth_config.validate(token).await.ok_or(StatusCode::UNAUTHORIZED)?;
+    if ctx.machine_id.is_none() {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    // User-scope (mirrors `session_gateway_env`): only answer for sessions
+    // owned by the machine's user. A foreign session 404s — NOT `valid:false`,
+    // which would trigger a destructive kill + cold-resume daemon-side.
+    let owner: Option<Uuid> = sqlx::query_scalar("SELECT user_id FROM sessions WHERE id = $1")
+        .bind(&session_id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(%session_id, "token-valid owner lookup failed: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    if owner.is_some_and(|o| o != ctx.user_id) {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    // Valid = a live token row with this hash, scoped to this session, that
+    // still joins a live account (same join semantics as the gateway's
+    // `resolve_account`, but by hash equality — the daemon sends the sha256
+    // hex of the token it launched the worker with, never the token itself).
+    let valid: bool = sqlx::query_scalar(
+        "SELECT EXISTS (
+            SELECT 1 FROM session_tokens t JOIN oauth_accounts a ON a.id = t.account_id
+            WHERE t.token_hash = $1 AND t.session_id = $2 AND t.revoked_at IS NULL
+         )",
+    )
+    .bind(&q.hash)
+    .bind(&session_id)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(|e| {
+        tracing::error!(%session_id, "token-valid lookup failed: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    Ok(Json(cctui_proto::api::TokenValidResponse { valid }))
+}
+
 // ---- /api/v1/daemon/ws ----
 
 pub async fn ws(

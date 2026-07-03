@@ -295,46 +295,53 @@ async fn mint_env_for_account(
     // lets a worker carry claude + codex at once: minting the OpenAI account
     // must NOT repoint the Anthropic token to it (CCT-514).
     let key = crate::crypto::vault_key();
-    let token =
-        if let Some(existing) = existing_session_token(state, session_id, is_openai, &key).await {
-            // Repoint only THIS family's live token to the requested account (and
-            // un-revoke, defensively) so an account switch reuses the same string
-            // — the worker's `ANTHROPIC_AUTH_TOKEN`/`OPENAI_API_KEY` never
-            // changes, the gateway just resolves it to the new account. The
-            // `oauth_accounts` join + family predicate confine the repoint to the
-            // same-family token, leaving the other family's token untouched.
-            let _ = sqlx::query(
-                "UPDATE session_tokens AS st SET account_id = $2, revoked_at = NULL \
+    let token = if let Some(existing) =
+        existing_session_token(state, session_id, is_openai, &key).await
+    {
+        // Repoint only THIS family's live token to the requested account (and
+        // un-revoke, defensively) so an account switch reuses the same string
+        // — the worker's `ANTHROPIC_AUTH_TOKEN`/`OPENAI_API_KEY` never
+        // changes, the gateway just resolves it to the new account. The
+        // `oauth_accounts` join + family predicate confine the repoint to the
+        // same-family token, leaving the other family's token untouched.
+        let _ = sqlx::query(
+            "UPDATE session_tokens AS st SET account_id = $2, revoked_at = NULL \
                  FROM oauth_accounts AS oa \
                  WHERE st.session_id = $1 AND st.revoked_at IS NULL \
                    AND st.account_id = oa.id \
                    AND (oa.provider ILIKE '%openai%') = $3",
-            )
-            .bind(session_id)
-            .bind(account_id)
-            .bind(is_openai)
-            .execute(&state.pool)
-            .await;
-            existing
-        } else {
-            // First token for this session: mint a fresh opaque token (same
-            // shape/entropy as other secrets), store its hash AND its
-            // obfuscated plaintext so resume can re-supply the same string.
-            let token = format!("cctui_s_{}", crate::auth::mint_secret());
-            let token_hash = crate::auth::sha256_hex(&token);
-            let enc = crate::crypto::obfuscate(&token, &key);
-            sqlx::query(
-                "INSERT INTO session_tokens (token_hash, session_id, account_id, encrypted_token) \
+        )
+        .bind(session_id)
+        .bind(account_id)
+        .bind(is_openai)
+        .execute(&state.pool)
+        .await;
+        // The reused token's fingerprint may have been flagged as a
+        // spamming orphan while its binding was broken (CCT-462) — the
+        // rebind keeps the SAME token string, so clear the block now
+        // instead of leaving the just-fixed binding 401ing for the
+        // remainder of the (up to 300s) block window.
+        clear_orphan_fingerprint(&state.gateway_orphan_spam, &crate::auth::sha256_hex(&existing));
+        existing
+    } else {
+        // First token for this session: mint a fresh opaque token (same
+        // shape/entropy as other secrets), store its hash AND its
+        // obfuscated plaintext so resume can re-supply the same string.
+        let token = format!("cctui_s_{}", crate::auth::mint_secret());
+        let token_hash = crate::auth::sha256_hex(&token);
+        let enc = crate::crypto::obfuscate(&token, &key);
+        sqlx::query(
+            "INSERT INTO session_tokens (token_hash, session_id, account_id, encrypted_token) \
                  VALUES ($1, $2, $3, $4)",
-            )
-            .bind(&token_hash)
-            .bind(session_id)
-            .bind(account_id)
-            .bind(&enc)
-            .execute(&state.pool)
-            .await?;
-            token
-        };
+        )
+        .bind(&token_hash)
+        .bind(session_id)
+        .bind(account_id)
+        .bind(&enc)
+        .execute(&state.pool)
+        .await?;
+        token
+    };
 
     // Persist the account on the session row so it survives id rotation and
     // server restart — the resume path re-mints from here (CCT-460). Best
@@ -888,6 +895,39 @@ fn orphan_is_blocked(state: &AppState, token_fp: &str) -> bool {
 fn orphan_is_blocked_at(map: &OrphanSpamMap, token_fp: &str, now: std::time::Instant) -> bool {
     let Some(entry) = map.get(token_fp) else { return false };
     matches!(entry.blocked_until, Some(until) if until > now)
+}
+
+/// Drop a token fingerprint from the in-memory orphan-spam state (CCT-462).
+///
+/// Called after a successful rebind/mint that reuses an existing token string:
+/// the fingerprint may have been blocked while the binding was broken (an
+/// unresolvable token 401s its way past the threshold), and since a rebind
+/// repoints the SAME token string, the block would otherwise keep dropping a
+/// NOW-VALID token's requests for the remainder of the block window (up to
+/// 300s). Clearing re-enables the DB lookup immediately. Idempotent.
+fn clear_orphan_fingerprint(map: &OrphanSpamMap, token_fp: &str) {
+    map.remove(token_fp);
+}
+
+/// Clear the orphan-spam block for every live token of `session_id` (CCT-462).
+///
+/// The explicit account-switch path (`sessions::switch_account`) rebinds token
+/// rows by session id without the token plaintext in hand;
+/// `session_tokens.token_hash` IS the fingerprint the spam guard keys on (both
+/// are the sha256 hex of the token string), so clearing by stored hash needs no
+/// token material. Best-effort: a failed lookup just leaves the block to
+/// expire on its own.
+pub async fn clear_orphan_block_for_session(state: &AppState, session_id: &str) {
+    let hashes: Vec<String> = sqlx::query_scalar(
+        "SELECT token_hash FROM session_tokens WHERE session_id = $1 AND revoked_at IS NULL",
+    )
+    .bind(session_id)
+    .fetch_all(&state.pool)
+    .await
+    .unwrap_or_default();
+    for hash in &hashes {
+        clear_orphan_fingerprint(&state.gateway_orphan_spam, hash);
+    }
 }
 
 /// Record an unresolvable-token 401 and, once a fingerprint crosses the spam
@@ -1814,8 +1854,8 @@ async fn local_window(
 #[cfg(test)]
 mod tests {
     use super::{
-        AuthStage, Family, OrphanSpamMap, auth_error, bump_orphan_401, map_wham_usage,
-        orphan_is_blocked_at, usage_cache_stale,
+        AuthStage, Family, OrphanSpamMap, auth_error, bump_orphan_401, clear_orphan_fingerprint,
+        map_wham_usage, orphan_is_blocked_at, usage_cache_stale,
     };
     use std::time::{Duration, Instant};
 
@@ -1882,6 +1922,33 @@ mod tests {
     fn orphan_spam_unknown_fingerprint_is_not_blocked() {
         let map = OrphanSpamMap::new();
         assert!(!orphan_is_blocked_at(&map, "nope", Instant::now()));
+    }
+
+    #[test]
+    fn rebind_clears_a_blocked_fingerprint_immediately() {
+        // CCT-462 part 3: an account rebind reuses the SAME token string, so a
+        // fingerprint blocked while the binding was broken must be cleared on
+        // rebind — otherwise the just-fixed binding keeps 401ing for the
+        // remainder of the (up to 300s) block window.
+        let map = OrphanSpamMap::new();
+        let now = Instant::now();
+        let window = Duration::from_secs(60);
+        let block = Duration::from_secs(300);
+        let fp = "deadbeef";
+        for _ in 0..3 {
+            bump_orphan_401(&map, fp, now, 3, window, block);
+        }
+        assert!(orphan_is_blocked_at(&map, fp, now), "precondition: fp is blocked");
+
+        clear_orphan_fingerprint(&map, fp);
+        // No longer blocked — the next gateway request goes back to the DB
+        // lookup instead of being dropped.
+        assert!(!orphan_is_blocked_at(&map, fp, now));
+        // And the window restarts from scratch: one fresh 401 doesn't re-block.
+        let (count, newly) = bump_orphan_401(&map, fp, now, 3, window, block);
+        assert_eq!(count, 1);
+        assert!(!newly);
+        assert!(!orphan_is_blocked_at(&map, fp, now));
     }
 
     #[test]

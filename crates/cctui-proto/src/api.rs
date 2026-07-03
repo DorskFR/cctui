@@ -51,6 +51,21 @@ pub struct GatewayEnvResponse {
     pub settings: Option<serde_json::Value>,
 }
 
+/// Response for `GET /api/v1/daemon/sessions/{id}/token-valid?hash=<sha256hex>`
+/// (CCT-462).
+///
+/// The daemon's low-frequency validity sweep asks whether the session token it
+/// launched a TRUSTED worker with still resolves — i.e. a `session_tokens` row
+/// with that hash exists, is not revoked, and joins a live `oauth_accounts`
+/// row. Only the sha256 hex of the token travels on the wire, never the token
+/// itself. `valid: false` (confirmed twice) is the daemon's signal that the
+/// worker will 401 at the gateway forever and needs a kill + cold-resume to
+/// re-mint.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TokenValidResponse {
+    pub valid: bool,
+}
+
 /// One declarative adapter configuration row, served to the daemon as part
 /// of the initial `Reconcile` frame so the daemon knows which adapters to
 /// instantiate and with what configuration.

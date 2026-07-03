@@ -155,6 +155,11 @@ async fn main() -> anyhow::Result<()> {
         // session's account env here on every worker (re)launch. Self-auths via
         // the machine-key Bearer, so it sits beside the other daemon endpoints.
         .route("/api/v1/daemon/sessions/{id}/gateway-env", get(routes::daemon::session_gateway_env))
+        // Token-validity probe (CCT-462): the daemon's low-frequency sweep asks
+        // whether the session token it launched a trusted worker with still
+        // resolves (by sha256 hash — no token material on the wire). Same
+        // machine-key self-auth as gateway-env.
+        .route("/api/v1/daemon/sessions/{id}/token-valid", get(routes::daemon::session_token_valid))
         // Enrolled-dispatcher endpoints (CCT-285). Carry their own key auth
         // (dispatcher-key Bearer / `?token=`), so they live outside the
         // user-token `api_router` group, like the daemon endpoints.
