@@ -38,6 +38,30 @@ pub fn blocked_syscalls() -> Option<Vec<Blocked>> {
     )
 }
 
+/// Number of leading id arguments to guard for a uid/gid-setting syscall.
+///
+/// Returns the count of `uid_t`/`gid_t` arguments the seccomp filter must guard
+/// for the given syscall, or `None` for syscalls that are blocked
+/// unconditionally.
+///
+/// These calls are not denied outright: a *no-op* to the identity the payload
+/// already runs as (or the `-1` "leave unchanged" sentinel) is permitted, while
+/// any attempt to switch to a different uid/gid still returns `EPERM`. This is
+/// required because GNU Make's recipe-spawn child resets its effective uid to
+/// the real uid (`setresuid(-1, <uid>, -1)`) before `execve`; a blanket block
+/// turned that no-op into `EPERM`, killing the recipe shell with exit 127
+/// (CCT-549). A no-op reset grants no privilege, so allowing it does not weaken
+/// the sandbox — `setuid(0)` and friends stay denied.
+#[must_use]
+pub fn id_setter_argc(name: &str) -> Option<u8> {
+    match name {
+        "setuid" | "setgid" => Some(1),
+        "setreuid" | "setregid" => Some(2),
+        "setresuid" | "setresgid" => Some(3),
+        _ => None,
+    }
+}
+
 /// Names + reasons, ported verbatim from `seccomp.go` `blockedSyscalls`.
 /// Order is fixed here (the Go map is unordered) for deterministic output.
 const DENYLIST: &[(&str, &str)] = &[

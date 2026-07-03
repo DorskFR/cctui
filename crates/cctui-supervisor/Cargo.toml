@@ -18,7 +18,7 @@ serde_json.workspace = true
 landlock = "0.4"
 seccompiler = "0.5"
 caps = "0.5"
-nix = { version = "0.31", features = ["user", "process"] }
+nix = { version = "0.31", features = ["user", "process", "sched"] }
 libc = "0.2"
 
 [dev-dependencies]

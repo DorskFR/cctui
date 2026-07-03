@@ -35,10 +35,12 @@ fn run() -> anyhow::Result<()> {
     use cctui_supervisor::{landlock_rules, privdrop, seccomp};
 
     // Hidden self-test hook (used by integration tests, no privileges needed):
-    // install the seccomp denylist, then call setuid(geteuid()). Setting your
-    // uid to its current value normally succeeds for any user, so a resulting
-    // EPERM is unambiguous proof the filter denied it. Prints the errno and
-    // exits with that code.
+    // install the seccomp denylist, then call unshare(0). `unshare` with no
+    // flags is a no-op that normally succeeds for any user, so a resulting
+    // EPERM is unambiguous proof the filter denied it. (setuid is no longer
+    // suitable here: a no-op setuid to the current id is now deliberately
+    // allowed for CCT-549, so it would not prove the filter is active.) Prints
+    // the errno and exits with that code.
     if std::env::var_os("CCTUI_SUPERVISOR_SELFTEST_SECCOMP").is_some() {
         return selftest_seccomp();
     }
@@ -83,7 +85,7 @@ fn run() -> anyhow::Result<()> {
         eprintln!("cctui-supervisor: warning: --no-seccomp, syscall denylist NOT installed");
         (false, Vec::new())
     } else {
-        let names = seccomp::apply().context("applying seccomp")?;
+        let names = seccomp::apply(cli.user).context("applying seccomp")?;
         eprintln!("cctui-supervisor: seccomp blocked {} syscalls: {:?}", names.len(), names);
         (true, names.into_iter().map(ToString::to_string).collect())
     };
@@ -124,16 +126,16 @@ fn run() -> anyhow::Result<()> {
 fn selftest_seccomp() -> anyhow::Result<()> {
     use anyhow::Context;
     use nix::errno::Errno;
-    use nix::unistd::{Uid, geteuid, setuid};
+    use nix::sched::{CloneFlags, unshare};
 
-    let _ = cctui_supervisor::seccomp::apply().context("self-test: apply seccomp")?;
+    // Worker id is irrelevant here: `unshare` is denied unconditionally.
+    let _ = cctui_supervisor::seccomp::apply(1000).context("self-test: apply seccomp")?;
 
-    // setuid(geteuid()) is a no-op that succeeds for any user when allowed; the
+    // unshare(0) is a no-op that succeeds for any user when allowed; the
     // denylist turns it into EPERM.
-    let me: Uid = geteuid();
-    match setuid(me) {
+    match unshare(CloneFlags::empty()) {
         Err(Errno::EPERM) => {
-            eprintln!("self-test: setuid denied with EPERM (filter active)");
+            eprintln!("self-test: unshare denied with EPERM (filter active)");
             std::process::exit(0);
         }
         other => {

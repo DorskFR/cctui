@@ -137,6 +137,55 @@ fn landlock_ro_blocks_write_rw_allows_write() {
 }
 
 #[test]
+fn make_runs_a_recipe_under_full_sandbox() {
+    // Regression for CCT-549: GNU Make's recipe-spawn child resets its
+    // effective uid (`setresuid(-1, <uid>, -1)`) before exec. The seccomp
+    // denylist used to turn that no-op into EPERM, so `make` aborted every
+    // recipe with `/bin/sh: Operation not permitted` (exit 127). With the
+    // conditional uid/gid guard, a no-op reset to the worker id is allowed, so
+    // a trivial Makefile target must run to completion under the full sandbox.
+    if Command::new("make").arg("--version").output().is_err() {
+        eprintln!("SKIP make test: `make` not found on PATH");
+        return;
+    }
+    if !landlock_available() {
+        eprintln!("SKIP make test: kernel reports no landlock LSM");
+        return;
+    }
+
+    let dir = std::env::temp_dir().join(format!("cctui-sup-make-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("Makefile"), "all:\n\t@echo hello-from-make\n").unwrap();
+
+    // Seccomp ON (default) + Landlock (rw=/ so the recipe shell + coreutils are
+    // reachable). Privdrop is skipped (CI is not root), so the worker id the
+    // seccomp guard must recognise is this process's own uid — pass it via
+    // `--user` so make's `setresuid(-1, <our uid>, -1)` is treated as the
+    // allowed no-op.
+    let uid = nix::unistd::getuid().as_raw();
+    let out = Command::new(bin())
+        .args(["--no-privdrop", "--rw", "/", "--user"])
+        .arg(uid.to_string())
+        .arg("--")
+        .args(["make", "-C"])
+        .arg(&dir)
+        .arg("all")
+        .output()
+        .expect("run make under supervisor");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let _ = fs::remove_dir_all(&dir);
+
+    assert!(
+        out.status.success(),
+        "make should succeed under the sandbox; status {:?}\nstdout: {stdout}\nstderr: {stderr}",
+        out.status.code()
+    );
+    assert!(stdout.contains("hello-from-make"), "recipe output missing: {stdout}");
+}
+
+#[test]
 fn report_json_has_expected_shape() {
     let tmp = std::env::temp_dir().join(format!("cctui-sup-report-{}.json", std::process::id()));
     let _ = fs::remove_file(&tmp);
