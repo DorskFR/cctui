@@ -155,7 +155,75 @@ export const QUIET_DEFAULTS = {
 	} as Record<string, string>
 };
 
-const SETTINGS_KEY_SET = new Set(CATALOG_KEYS.map((k) => k.name));
+// The remaining SAFE/CARE keys from catalog.toml (CCT-570). These get no bespoke
+// control — they are settable only through the raw-JSON box — but they MUST be in
+// the client allowlist or `invalidSettingsKeys` rejects pastes the server would
+// accept (e.g. `worktree`, `permissions`, the doc'd `editorMode` example). Names
+// only; types/notes live server-side. A drift test (settingsCatalog.test.ts)
+// parses catalog.toml and fails when this list goes stale.
+export const RAW_ONLY_KEYS: string[] = [
+	'advisorModel',
+	'agent',
+	'allowedHttpHookUrls',
+	'apiKeyHelper',
+	'attribution',
+	'autoMemoryDirectory',
+	'autoMode',
+	'autoUpdatesChannel',
+	'availableModels',
+	'awsAuthRefresh',
+	'awsCredentialExport',
+	'claudeMdExcludes',
+	'cleanupPeriodDays',
+	'companyAnnouncements',
+	'defaultShell',
+	'disableAllHooks',
+	'disableAutoMode',
+	'disableDeepLinkRegistration',
+	'disabledMcpjsonServers',
+	'editorMode',
+	'effortLevel',
+	'enableAllProjectMcpServers',
+	'enabledMcpjsonServers',
+	'enabledPlugins',
+	'enforceAvailableModels',
+	'env',
+	'extraKnownMarketplaces',
+	'fallbackModel',
+	'fastMode',
+	'fastModePerSessionOptIn',
+	'feedbackSurveyRate',
+	'fileSuggestion',
+	'footerLinksRegexes',
+	'gcpAuthRefresh',
+	'hooks',
+	'httpHookAllowedEnvVars',
+	'includeCoAuthoredBy',
+	'language',
+	'minimumVersion',
+	'model',
+	'modelOverrides',
+	'otelHeadersHelper',
+	'outputStyle',
+	'permissions',
+	'plansDirectory',
+	'pluginConfigs',
+	'prUrlTemplate',
+	'preferredNotifChannel',
+	'sandbox',
+	'skillOverrides',
+	'skipWebFetchPreflight',
+	'spinnerTipsOverride',
+	'spinnerVerbs',
+	'statusLine',
+	'subagentStatusLine',
+	'teammateMode',
+	'tui',
+	'viewMode',
+	'worktree'
+];
+
+const SETTINGS_KEY_SET = new Set([...CATALOG_KEYS.map((k) => k.name), ...RAW_ONLY_KEYS]);
 const ENV_NAME_SET = new Set(CATALOG_ENV.map((e) => e.name));
 
 /** Boolean SAFE/CARE keys, in catalog order, grouped for the toggle list. */
