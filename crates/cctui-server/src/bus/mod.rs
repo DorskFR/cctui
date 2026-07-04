@@ -1,0 +1,876 @@
+//! The single routing seam for all WS-bound traffic (CCT-572, phase 1 of the
+//! message-bus architecture).
+//!
+//! Before this module, "which pod holds the WS / who is subscribed" was smeared
+//! across three places: `daemon_dispatch.rs` (pod-local daemon commands),
+//! `registry.rs` (per-session stream broadcast) and `state.tui_tx` (server
+//! event fan-out). The bus owns ALL delivery state now:
+//!
+//!   * point-to-point commands toward the pod terminating a WS
+//!     ([`Bus::command_daemon`], [`Bus::command_dispatcher`]) and correlated
+//!     round-trips ([`Bus::request_daemon`], [`Bus::request_dispatcher`]) with
+//!     the pending oneshot maps as private internals;
+//!   * cluster-wide pub/sub ([`Bus::publish`], [`Bus::subscribe_session`],
+//!     [`Bus::subscribe_server`]).
+//!
+//! Behind it sits a [`Transport`]. Phase 1 ships only [`NoopTransport`]:
+//! routing is a local registry lookup and publish is a local broadcast —
+//! semantically exactly the pre-bus behavior. CCT-573 (peer-HTTP forwarding,
+//! replacing `forward.rs`) and CCT-568 (NATS) plug in here without touching
+//! callers.
+//!
+//! Persistence is NOT the bus's job: event DB writes and the permission/ask/
+//! plan stores stay with their current owners — the bus moves delivery only.
+
+use std::sync::Arc;
+
+use cctui_proto::adapter::{AdapterCommand, BootstrapFile};
+use cctui_proto::ws::{
+    AgentEvent, DaemonFrameDown, DispatcherFrameDown, DispatcherFrameUp, ServerEvent,
+};
+use dashmap::DashMap;
+use tokio::sync::{broadcast, mpsc, oneshot};
+use uuid::Uuid;
+
+use crate::state::AppState;
+
+/// Outcome of a mid-chat file-stage request (CCT-236): the staged absolute
+/// paths on success, or an error string on failure.
+type StageFilesOutcome = Result<Vec<String>, String>;
+
+/// Outcome of a working-dir autocomplete listing (spawn dialog): the
+/// directory names on success, or an error string on failure.
+type ListDirsOutcome = Result<Vec<String>, String>;
+
+/// How long [`Bus::request_daemon`] waits for the daemon's `StageFilesResult`
+/// before giving up. Staging is local filesystem work after a small base64
+/// decode, so this is generous-but-bounded.
+const STAGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long [`Bus::request_daemon`] waits for the daemon's `ListDirsResult`.
+/// Autocomplete is interactive — better to fail fast than to hold the
+/// typeahead open.
+const LIST_DIRS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// How long [`Bus::request_dispatcher`] awaits a dispatcher reply. Spawning a
+/// container/pod can take a few seconds; status/cancel are quick. One generous
+/// bound covers all three round-trips.
+const DISPATCHER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Capacity of the per-session stream channels (mirrors the pre-bus
+/// `registry.rs` broadcast) and of the server event channel.
+const CHANNEL_CAPACITY: usize = 256;
+
+/// Delivery failures surfaced by the bus. Superset of the retired
+/// `daemon_dispatch::Error` so existing error-handling match arms keep
+/// working; display strings are preserved verbatim where they reach clients.
+#[derive(Debug, thiserror::Error)]
+pub enum BusError {
+    #[error("session not found")]
+    NotFound,
+    #[error("session has no adapter_id (legacy path)")]
+    NoAdapter,
+    #[error("session has no machine_uuid yet")]
+    NoMachine,
+    #[error("no daemon connected for machine {0}")]
+    NoDaemon(Uuid),
+    #[error("no dispatcher connected for {0}")]
+    NoDispatcher(Uuid),
+    #[error("daemon channel closed")]
+    Closed,
+    #[error("peer disconnected before replying")]
+    Disconnected,
+    #[error("timed out waiting for the daemon to stage files")]
+    Timeout,
+    #[error("daemon could not stage files: {0}")]
+    Staging(String),
+    #[error("daemon could not list the directory: {0}")]
+    ListDirs(String),
+    #[error("db error: {0}")]
+    Db(#[from] sqlx::Error),
+    #[error("reconcile build error: {0}")]
+    Reconcile(String),
+}
+
+/// A correlated daemon round-trip (request/response over the daemon WS). The
+/// bus mints the `request_id`, parks the reply oneshot internally, and fires
+/// it when the WS read loop reports the matching result frame.
+#[derive(Debug)]
+pub enum DaemonRequest {
+    /// Stage mid-chat attachment files (CCT-236) → `StageFilesResult`.
+    StageFiles { adapter_id: String, local_id: String, uploads: Vec<BootstrapFile> },
+    /// Working-directory autocomplete listing → `ListDirsResult`.
+    ListDirs { path: String },
+}
+
+/// Reply to a [`DaemonRequest`], variant-matched to the request.
+#[derive(Debug)]
+pub enum DaemonResponse {
+    StagedFiles(Vec<String>),
+    Dirs(Vec<String>),
+}
+
+/// Everything the bus publishes cluster-wide: an envelope over the per-session
+/// agent stream and the server event fan-out.
+#[derive(Debug, Clone)]
+pub enum BusEvent {
+    /// Per-session agent stream, delivered to [`Bus::subscribe_session`]
+    /// subscribers of `session_id`. No in-process producer publishes these yet
+    /// (the daemon ingest path streams via `ServerEvent::Stream`, exactly as
+    /// before — the pre-bus `stream_tx` had no producer either); the variant
+    /// is the seam CCT-573/CCT-568 route through.
+    #[allow(dead_code)]
+    Session { session_id: String, event: AgentEvent },
+    /// Cluster-wide server event (permission prompts, asks, plans, acks,
+    /// liveness, session registered/deregistered, …), delivered to every
+    /// [`Bus::subscribe_server`] subscriber.
+    Server(ServerEvent),
+}
+
+/// The routing backend behind the [`Bus`]. The bus always tries local
+/// delivery first (this pod's connection registries / broadcast channels);
+/// the transport is its escape hatch to the rest of the cluster.
+///
+/// Contract for future transports (CCT-573 peer-HTTP, CCT-568 NATS):
+///   * `forward_daemon` / `forward_dispatcher` / `request_*` are invoked ONLY
+///     when the local lookup missed. A cross-replica transport forwards the
+///     frame/request to the peer pod owning the WS and returns its outcome;
+///     when no peer owns it either, return the same `NoDaemon`/`NoDispatcher`
+///     miss the caller would have seen locally.
+///   * `relay` is invoked on EVERY publish, alongside local broadcast. A
+///     cross-replica transport re-publishes the event to peer pods (which
+///     deliver it to their local subscribers only — no re-relay, or events
+///     would loop).
+#[async_trait::async_trait]
+pub trait Transport: Send + Sync {
+    /// Route a fire-and-forget daemon command that found no local WS.
+    async fn forward_daemon(&self, machine: Uuid, frame: DaemonFrameDown) -> Result<(), BusError>;
+
+    /// Route a fire-and-forget dispatcher command that found no local WS.
+    async fn forward_dispatcher(
+        &self,
+        dispatcher: Uuid,
+        frame: DispatcherFrameDown,
+    ) -> Result<(), BusError>;
+
+    /// Route a correlated daemon round-trip that found no local WS.
+    async fn request_daemon(
+        &self,
+        machine: Uuid,
+        request: DaemonRequest,
+    ) -> Result<DaemonResponse, BusError>;
+
+    /// Route a correlated dispatcher round-trip that found no local WS.
+    async fn request_dispatcher(
+        &self,
+        dispatcher: Uuid,
+        request_id: Uuid,
+        frame: DispatcherFrameDown,
+    ) -> Result<DispatcherFrameUp, BusError>;
+
+    /// Relay a locally-published event to peer pods (local delivery already
+    /// happened). Fire-and-forget: publish is infallible for callers.
+    fn relay(&self, event: &BusEvent);
+}
+
+/// Phase-1 transport: single-pod semantics. A local lookup miss is a miss —
+/// exactly the pre-bus `NoDaemon`/"dispatcher offline" behavior — and publish
+/// reaches only this pod's subscribers. Cross-replica HTTP routes still go
+/// through `forward.rs` (CCT-567) until CCT-573 replaces both.
+pub struct NoopTransport;
+
+#[async_trait::async_trait]
+impl Transport for NoopTransport {
+    async fn forward_daemon(&self, machine: Uuid, _frame: DaemonFrameDown) -> Result<(), BusError> {
+        Err(BusError::NoDaemon(machine))
+    }
+
+    async fn forward_dispatcher(
+        &self,
+        dispatcher: Uuid,
+        _frame: DispatcherFrameDown,
+    ) -> Result<(), BusError> {
+        Err(BusError::NoDispatcher(dispatcher))
+    }
+
+    async fn request_daemon(
+        &self,
+        machine: Uuid,
+        _request: DaemonRequest,
+    ) -> Result<DaemonResponse, BusError> {
+        Err(BusError::NoDaemon(machine))
+    }
+
+    async fn request_dispatcher(
+        &self,
+        dispatcher: Uuid,
+        _request_id: Uuid,
+        _frame: DispatcherFrameDown,
+    ) -> Result<DispatcherFrameUp, BusError> {
+        Err(BusError::NoDispatcher(dispatcher))
+    }
+
+    fn relay(&self, _event: &BusEvent) {}
+}
+
+struct Inner {
+    /// Per-machine outbound channel into the connected daemon's WS task.
+    /// Absent entry = daemon not terminated by this pod.
+    daemons: DashMap<Uuid, mpsc::Sender<DaemonFrameDown>>,
+    /// Per-dispatcher outbound channel into the connected enrolled
+    /// dispatcher's WS task (CCT-285). Peer of `daemons`.
+    dispatchers: DashMap<Uuid, mpsc::Sender<DispatcherFrameDown>>,
+    /// In-flight stage-files round-trips awaiting a daemon `StageFilesResult`
+    /// (CCT-236), keyed by the request id the bus minted.
+    pending_stage: DashMap<Uuid, oneshot::Sender<StageFilesOutcome>>,
+    /// In-flight autocomplete listings awaiting a daemon `ListDirsResult`.
+    pending_listdirs: DashMap<Uuid, oneshot::Sender<ListDirsOutcome>>,
+    /// In-flight Dispatch/Status/Cancel round-trips awaiting a
+    /// [`DispatcherFrameUp`] reply (CCT-285).
+    pending_dispatcher: DashMap<Uuid, oneshot::Sender<DispatcherFrameUp>>,
+    /// Cluster-wide server event fan-out (the former `state.tui_tx`).
+    server_tx: broadcast::Sender<ServerEvent>,
+    /// Per-session agent stream channels (the former
+    /// `SessionHandle::stream_tx`). Entries live exactly as long as the
+    /// session's registry handle: created on register, removed on deregister.
+    session_streams: DashMap<String, broadcast::Sender<AgentEvent>>,
+    transport: Box<dyn Transport>,
+}
+
+/// Cheap-to-clone handle to the delivery seam. One per process, on `AppState`.
+#[derive(Clone)]
+pub struct Bus {
+    inner: Arc<Inner>,
+}
+
+impl Bus {
+    pub fn new(transport: Box<dyn Transport>) -> Self {
+        Self {
+            inner: Arc::new(Inner {
+                daemons: DashMap::new(),
+                dispatchers: DashMap::new(),
+                pending_stage: DashMap::new(),
+                pending_listdirs: DashMap::new(),
+                pending_dispatcher: DashMap::new(),
+                server_tx: broadcast::channel(CHANNEL_CAPACITY).0,
+                session_streams: DashMap::new(),
+                transport,
+            }),
+        }
+    }
+
+    // ---- connection registry (daemon / dispatcher WS handlers) ----
+
+    /// Register the outbound channel of a freshly connected daemon WS. If a
+    /// stale entry exists, overwrite it (newest connection wins).
+    pub fn register_daemon(&self, machine: Uuid, tx: mpsc::Sender<DaemonFrameDown>) {
+        self.inner.daemons.insert(machine, tx);
+    }
+
+    /// Drop `machine`'s connection entry, but only if it is STILL `tx` —
+    /// during a reconnect race the daemon's new connection may already have
+    /// overwritten the map with its own channel, and an unconditional remove
+    /// would delete that live channel (CCT-159). Returns whether an entry was
+    /// removed, so the caller can mirror it into presence (CCT-567).
+    pub fn unregister_daemon(&self, machine: Uuid, tx: &mpsc::Sender<DaemonFrameDown>) -> bool {
+        self.inner.daemons.remove_if(&machine, |_, current| current.same_channel(tx)).is_some()
+    }
+
+    /// Whether THIS pod terminates `machine`'s daemon WS. Used by the CCT-567
+    /// locality guards in `forward.rs` (which stay functional this phase).
+    pub fn daemon_connected(&self, machine: Uuid) -> bool {
+        self.inner.daemons.contains_key(&machine)
+    }
+
+    /// Register the outbound channel of a freshly connected enrolled
+    /// dispatcher WS (newest connection wins, mirroring the daemon hub).
+    pub fn register_dispatcher(&self, dispatcher: Uuid, tx: mpsc::Sender<DispatcherFrameDown>) {
+        self.inner.dispatchers.insert(dispatcher, tx);
+    }
+
+    /// [`Self::unregister_daemon`] for dispatchers: same-channel guard
+    /// (CCT-159), returns whether an entry was removed.
+    pub fn unregister_dispatcher(
+        &self,
+        dispatcher: Uuid,
+        tx: &mpsc::Sender<DispatcherFrameDown>,
+    ) -> bool {
+        self.inner
+            .dispatchers
+            .remove_if(&dispatcher, |_, current| current.same_channel(tx))
+            .is_some()
+    }
+
+    /// Unconditionally drop a dispatcher's live connection — used when the
+    /// dispatcher identity is deleted so it can't keep operating under a
+    /// removed identity (it'll fail to re-auth on reconnect).
+    pub fn evict_dispatcher(&self, dispatcher: Uuid) {
+        self.inner.dispatchers.remove(&dispatcher);
+    }
+
+    /// Whether THIS pod terminates `dispatcher`'s WS.
+    pub fn dispatcher_connected(&self, dispatcher: Uuid) -> bool {
+        self.inner.dispatchers.contains_key(&dispatcher)
+    }
+
+    // ---- point-to-point commands / round-trips ----
+
+    /// Fire-and-forget a [`DaemonFrameDown`] toward `machine`'s daemon WS
+    /// (`Reply`, `PermissionResponse`, `Kill`, `Interrupt`, `SetModel`,
+    /// `Rename` write-through, `Reconcile` push, …). Local lookup first; a
+    /// miss goes to the [`Transport`] (a hard miss under [`NoopTransport`]).
+    pub async fn command_daemon(
+        &self,
+        machine: Uuid,
+        frame: DaemonFrameDown,
+    ) -> Result<(), BusError> {
+        let Some(tx) = self.inner.daemons.get(&machine).map(|r| r.clone()) else {
+            return self.inner.transport.forward_daemon(machine, frame).await;
+        };
+        tx.send(frame).await.map_err(|_| BusError::Closed)
+    }
+
+    /// Fire-and-forget a [`DispatcherFrameDown`] toward the enrolled
+    /// dispatcher's WS. Peer of [`Self::command_daemon`].
+    #[allow(dead_code)] // dispatcher traffic is all correlated today; here for API symmetry
+    pub async fn command_dispatcher(
+        &self,
+        dispatcher: Uuid,
+        frame: DispatcherFrameDown,
+    ) -> Result<(), BusError> {
+        let Some(tx) = self.inner.dispatchers.get(&dispatcher).map(|r| r.clone()) else {
+            return self.inner.transport.forward_dispatcher(dispatcher, frame).await;
+        };
+        tx.send(frame).await.map_err(|_| BusError::Closed)
+    }
+
+    /// Correlated daemon round-trip: mint a request id, park the reply
+    /// oneshot, send the frame, and await the matching result (fired by the
+    /// daemon WS read loop via [`Self::resolve_stage_files`] /
+    /// [`Self::resolve_list_dirs`]) within the request's timeout.
+    pub async fn request_daemon(
+        &self,
+        machine: Uuid,
+        request: DaemonRequest,
+    ) -> Result<DaemonResponse, BusError> {
+        let Some(tx) = self.inner.daemons.get(&machine).map(|r| r.clone()) else {
+            return self.inner.transport.request_daemon(machine, request).await;
+        };
+        let request_id = Uuid::new_v4();
+        match request {
+            DaemonRequest::StageFiles { adapter_id, local_id, uploads } => {
+                let (reply_tx, reply_rx) = oneshot::channel();
+                self.inner.pending_stage.insert(request_id, reply_tx);
+                let frame =
+                    DaemonFrameDown::StageFiles { request_id, adapter_id, local_id, uploads };
+                if tx.send(frame).await.is_err() {
+                    self.inner.pending_stage.remove(&request_id);
+                    return Err(BusError::Closed);
+                }
+                match tokio::time::timeout(STAGE_TIMEOUT, reply_rx).await {
+                    Ok(Ok(Ok(paths))) => Ok(DaemonResponse::StagedFiles(paths)),
+                    Ok(Ok(Err(msg))) => Err(BusError::Staging(msg)),
+                    // Sender dropped (daemon disconnected mid-request) — clean
+                    // up defensively.
+                    Ok(Err(_)) => {
+                        self.inner.pending_stage.remove(&request_id);
+                        Err(BusError::Closed)
+                    }
+                    Err(_) => {
+                        self.inner.pending_stage.remove(&request_id);
+                        Err(BusError::Timeout)
+                    }
+                }
+            }
+            DaemonRequest::ListDirs { path } => {
+                let (reply_tx, reply_rx) = oneshot::channel();
+                self.inner.pending_listdirs.insert(request_id, reply_tx);
+                if tx.send(DaemonFrameDown::ListDirs { request_id, path }).await.is_err() {
+                    self.inner.pending_listdirs.remove(&request_id);
+                    return Err(BusError::Closed);
+                }
+                match tokio::time::timeout(LIST_DIRS_TIMEOUT, reply_rx).await {
+                    Ok(Ok(Ok(dirs))) => Ok(DaemonResponse::Dirs(dirs)),
+                    Ok(Ok(Err(msg))) => Err(BusError::ListDirs(msg)),
+                    Ok(Err(_)) => {
+                        self.inner.pending_listdirs.remove(&request_id);
+                        Err(BusError::Closed)
+                    }
+                    Err(_) => {
+                        self.inner.pending_listdirs.remove(&request_id);
+                        Err(BusError::Timeout)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Correlated dispatcher round-trip (Dispatch/Status/Cancel, CCT-285).
+    /// The caller mints `request_id` and embeds it in `frame`; the bus parks
+    /// the reply oneshot under it and awaits the matching
+    /// [`DispatcherFrameUp`] (fired by the dispatcher WS read loop via
+    /// [`Self::resolve_dispatcher_reply`]).
+    pub async fn request_dispatcher(
+        &self,
+        dispatcher: Uuid,
+        request_id: Uuid,
+        frame: DispatcherFrameDown,
+    ) -> Result<DispatcherFrameUp, BusError> {
+        let Some(tx) = self.inner.dispatchers.get(&dispatcher).map(|r| r.clone()) else {
+            return self.inner.transport.request_dispatcher(dispatcher, request_id, frame).await;
+        };
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.inner.pending_dispatcher.insert(request_id, reply_tx);
+
+        if tx.send(frame).await.is_err() {
+            self.inner.pending_dispatcher.remove(&request_id);
+            return Err(BusError::Closed);
+        }
+
+        match tokio::time::timeout(DISPATCHER_TIMEOUT, reply_rx).await {
+            Ok(Ok(reply)) => Ok(reply),
+            Ok(Err(_)) => Err(BusError::Disconnected),
+            Err(_) => {
+                self.inner.pending_dispatcher.remove(&request_id);
+                Err(BusError::Timeout)
+            }
+        }
+    }
+
+    // ---- inbound correlation (WS read loops fire the parked oneshots) ----
+
+    /// Fire the oneshot a stage-files round-trip is awaiting. Returns `false`
+    /// for an unknown request id (the route already timed out).
+    pub fn resolve_stage_files(&self, request_id: Uuid, outcome: StageFilesOutcome) -> bool {
+        // Receiver gone (route timed out already) → drop silently.
+        self.inner
+            .pending_stage
+            .remove(&request_id)
+            .map(|(_, reply_tx)| {
+                let _ = reply_tx.send(outcome);
+            })
+            .is_some()
+    }
+
+    /// Fire the oneshot a list-dirs round-trip is awaiting. Returns `false`
+    /// for an unknown request id.
+    pub fn resolve_list_dirs(&self, request_id: Uuid, outcome: ListDirsOutcome) -> bool {
+        self.inner
+            .pending_listdirs
+            .remove(&request_id)
+            .map(|(_, reply_tx)| {
+                let _ = reply_tx.send(outcome);
+            })
+            .is_some()
+    }
+
+    /// Fire the oneshot a dispatcher round-trip is awaiting. Returns `false`
+    /// for an unknown request id.
+    pub fn resolve_dispatcher_reply(&self, request_id: Uuid, frame: DispatcherFrameUp) -> bool {
+        self.inner
+            .pending_dispatcher
+            .remove(&request_id)
+            .map(|(_, reply_tx)| {
+                let _ = reply_tx.send(frame);
+            })
+            .is_some()
+    }
+
+    // ---- pub/sub ----
+
+    /// Publish an event to this pod's subscribers, handing it to the
+    /// transport for cross-pod relay (a no-op under [`NoopTransport`]).
+    /// Infallible for callers: "nobody listening" is not an error, matching
+    /// the pre-bus `let _ = tx.send(..)` discipline.
+    pub fn publish(&self, event: BusEvent) {
+        self.inner.transport.relay(&event);
+        match event {
+            BusEvent::Session { session_id, event: agent_event } => {
+                if let Some(tx) = self.inner.session_streams.get(&session_id) {
+                    let _ = tx.send(agent_event);
+                }
+            }
+            BusEvent::Server(server_event) => {
+                let _ = self.inner.server_tx.send(server_event);
+            }
+        }
+    }
+
+    /// Convenience for the dominant call shape: publish a [`ServerEvent`].
+    pub fn publish_server(&self, event: ServerEvent) {
+        self.publish(BusEvent::Server(event));
+    }
+
+    /// Subscribe to a registered session's agent stream. `None` for sessions
+    /// with no live stream channel (historical/terminated) — this is expected,
+    /// mirroring the pre-bus `registry.subscribe`.
+    pub fn subscribe_session(&self, session_id: &str) -> Option<broadcast::Receiver<AgentEvent>> {
+        self.inner.session_streams.get(session_id).map(|tx| tx.subscribe())
+    }
+
+    /// Subscribe to the cluster-wide server event stream.
+    pub fn subscribe_server(&self) -> broadcast::Receiver<ServerEvent> {
+        self.inner.server_tx.subscribe()
+    }
+
+    /// A clone of the raw server-event sender, for external crates that
+    /// publish through their own handle (the optional GitHub integration takes
+    /// an `EventTx` and cannot depend on the bus type). In-process code should
+    /// call [`Self::publish`] instead.
+    #[cfg_attr(not(feature = "github"), allow(dead_code))]
+    pub fn server_sender(&self) -> broadcast::Sender<ServerEvent> {
+        self.inner.server_tx.clone()
+    }
+
+    /// Create (or reuse) the stream channel for a registering session and
+    /// return its sender. Reuse-on-reregister keeps current WS subscribers
+    /// from seeing the broadcast channel close and losing their stream until
+    /// they manually reopen the pane — the pre-bus `registry.register`
+    /// semantics.
+    pub fn register_session_stream(&self, session_id: &str) -> broadcast::Sender<AgentEvent> {
+        self.inner
+            .session_streams
+            .entry(session_id.to_owned())
+            .or_insert_with(|| broadcast::channel(CHANNEL_CAPACITY).0)
+            .clone()
+    }
+
+    /// Drop a deregistering session's stream channel; live subscribers see
+    /// `Closed` once the last sender is gone, as they did when the registry
+    /// handle owned the channel.
+    pub fn deregister_session_stream(&self, session_id: &str) {
+        self.inner.session_streams.remove(session_id);
+    }
+}
+
+// ---- session/machine-addressed helpers (the retired `daemon_dispatch.rs`) ----
+//
+// These resolve DB-level addressing (session → machine/adapter) and then use
+// the bus primitives. Best-effort: a call that finds no matching session, no
+// `adapter_id`, or no connected daemon returns an error which callers can log
+// and ignore.
+
+/// Send `command` to the daemon owning `session_id`. Looks up
+/// `(machine_uuid, adapter_id)` from the `sessions` table.
+pub async fn dispatch(
+    state: &AppState,
+    session_id: &str,
+    command: AdapterCommand,
+) -> Result<(), BusError> {
+    let (adapter_id, machine_uuid) = resolve_session(state, session_id).await?;
+    state
+        .bus
+        .command_daemon(
+            machine_uuid,
+            DaemonFrameDown::Command { adapter_id, command: Box::new(command) },
+        )
+        .await
+}
+
+/// Rebuild and live-push a fresh [`DaemonFrameDown::Reconcile`] to `machine_id`'s
+/// connected daemon (CCT-495). Used when a per-user setting the reconcile derives
+/// from (e.g. `harnessMode`) changes, so a daemon picks up the new config without
+/// waiting for a reconnect. Best-effort: same `NoDaemon`/`Closed` handling as
+/// [`dispatch`] — a machine with no live WS is a no-op error the caller ignores.
+pub async fn push_reconcile(state: &AppState, machine_id: Uuid) -> Result<(), BusError> {
+    let adapters = crate::routes::daemon::load_reconcile(state, machine_id)
+        .await
+        .map_err(|e| BusError::Reconcile(e.to_string()))?;
+    state.bus.command_daemon(machine_id, DaemonFrameDown::Reconcile { adapters }).await
+}
+
+/// Stage mid-chat attachment `files` for `session_id` (CCT-236) and return the
+/// staged absolute paths reported by the owning daemon. Same session
+/// resolution as [`dispatch`]; the correlated round-trip (request id, parked
+/// oneshot, timeout) lives inside [`Bus::request_daemon`].
+pub async fn stage_files(
+    state: &AppState,
+    session_id: &str,
+    files: Vec<BootstrapFile>,
+) -> Result<Vec<String>, BusError> {
+    let (adapter_id, machine_uuid) = resolve_session(state, session_id).await?;
+    let response = state
+        .bus
+        .request_daemon(
+            machine_uuid,
+            DaemonRequest::StageFiles {
+                adapter_id,
+                local_id: session_id.to_owned(),
+                uploads: files,
+            },
+        )
+        .await?;
+    match response {
+        DaemonResponse::StagedFiles(paths) => Ok(paths),
+        DaemonResponse::Dirs(_) => Err(BusError::Closed), // unreachable: variant-matched
+    }
+}
+
+/// Ask the daemon on `machine_uuid` for the sub-directories of `path`
+/// (working-directory autocomplete). Machine-addressed — no session involved.
+pub async fn list_dirs(
+    state: &AppState,
+    machine_uuid: Uuid,
+    path: String,
+) -> Result<Vec<String>, BusError> {
+    match state.bus.request_daemon(machine_uuid, DaemonRequest::ListDirs { path }).await? {
+        DaemonResponse::Dirs(dirs) => Ok(dirs),
+        DaemonResponse::StagedFiles(_) => Err(BusError::Closed), // unreachable: variant-matched
+    }
+}
+
+/// Resolve a session id to its `(adapter_id, machine_uuid)` addressing pair.
+async fn resolve_session(state: &AppState, session_id: &str) -> Result<(String, Uuid), BusError> {
+    let row: Option<(Option<String>, Option<Uuid>)> =
+        sqlx::query_as("SELECT adapter_id, machine_uuid FROM sessions WHERE id = $1")
+            .bind(session_id)
+            .fetch_optional(&state.pool)
+            .await?;
+    let (adapter_id, machine_uuid) = row.ok_or(BusError::NotFound)?;
+    let adapter_id = adapter_id.ok_or(BusError::NoAdapter)?;
+    let machine_uuid = machine_uuid.ok_or(BusError::NoMachine)?;
+    Ok((adapter_id, machine_uuid))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bus() -> Bus {
+        Bus::new(Box::new(NoopTransport))
+    }
+
+    fn text_event(content: &str) -> AgentEvent {
+        AgentEvent::Text {
+            content: content.into(),
+            meta: false,
+            ts: 0,
+            message_id: None,
+            usage: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn command_daemon_delivers_locally() {
+        let bus = bus();
+        let machine = Uuid::new_v4();
+        let (tx, mut rx) = mpsc::channel(8);
+        bus.register_daemon(machine, tx);
+
+        bus.command_daemon(machine, DaemonFrameDown::Reconcile { adapters: Vec::new() })
+            .await
+            .unwrap();
+        assert!(matches!(rx.recv().await, Some(DaemonFrameDown::Reconcile { .. })));
+    }
+
+    #[tokio::test]
+    async fn command_daemon_miss_is_no_daemon_under_noop() {
+        let bus = bus();
+        let machine = Uuid::new_v4();
+        let err = bus
+            .command_daemon(machine, DaemonFrameDown::Reconcile { adapters: Vec::new() })
+            .await
+            .unwrap_err();
+        assert!(matches!(err, BusError::NoDaemon(m) if m == machine));
+    }
+
+    #[tokio::test]
+    async fn command_daemon_closed_channel_errors() {
+        let bus = bus();
+        let machine = Uuid::new_v4();
+        let (tx, rx) = mpsc::channel(1);
+        bus.register_daemon(machine, tx);
+        drop(rx);
+        let err = bus
+            .command_daemon(machine, DaemonFrameDown::Reconcile { adapters: Vec::new() })
+            .await
+            .unwrap_err();
+        assert!(matches!(err, BusError::Closed));
+    }
+
+    /// CCT-159: disconnect cleanup only removes the entry when it is still the
+    /// same channel — a reconnect's newer channel must survive the old WS
+    /// task's cleanup.
+    #[tokio::test]
+    async fn unregister_daemon_guards_reconnect_race() {
+        let bus = bus();
+        let machine = Uuid::new_v4();
+        let (old_tx, _old_rx) = mpsc::channel::<DaemonFrameDown>(1);
+        let (new_tx, mut new_rx) = mpsc::channel::<DaemonFrameDown>(8);
+
+        bus.register_daemon(machine, old_tx.clone());
+        // Reconnect: newest connection wins.
+        bus.register_daemon(machine, new_tx);
+        // Old task's cleanup: entry is no longer ours — must NOT remove it.
+        assert!(!bus.unregister_daemon(machine, &old_tx));
+        assert!(bus.daemon_connected(machine));
+
+        bus.command_daemon(machine, DaemonFrameDown::Reconcile { adapters: Vec::new() })
+            .await
+            .unwrap();
+        assert!(new_rx.recv().await.is_some());
+    }
+
+    /// The full stage-files round-trip against a fake daemon: the WS read loop
+    /// side is `resolve_stage_files`, exactly what `routes::daemon` does.
+    #[tokio::test]
+    async fn request_daemon_stage_files_round_trip() {
+        let bus = bus();
+        let machine = Uuid::new_v4();
+        let (tx, mut rx) = mpsc::channel(8);
+        bus.register_daemon(machine, tx);
+
+        let bus2 = bus.clone();
+        let fake_daemon = tokio::spawn(async move {
+            let Some(DaemonFrameDown::StageFiles { request_id, .. }) = rx.recv().await else {
+                panic!("expected StageFiles");
+            };
+            assert!(bus2.resolve_stage_files(request_id, Ok(vec!["/tmp/a.txt".into()])));
+        });
+
+        let response = bus
+            .request_daemon(
+                machine,
+                DaemonRequest::StageFiles {
+                    adapter_id: "claude-code".into(),
+                    local_id: "sess-1".into(),
+                    uploads: Vec::new(),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(matches!(response, DaemonResponse::StagedFiles(p) if p == vec!["/tmp/a.txt"]));
+        fake_daemon.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn request_daemon_list_dirs_error_surfaces() {
+        let bus = bus();
+        let machine = Uuid::new_v4();
+        let (tx, mut rx) = mpsc::channel(8);
+        bus.register_daemon(machine, tx);
+
+        let bus2 = bus.clone();
+        tokio::spawn(async move {
+            let Some(DaemonFrameDown::ListDirs { request_id, .. }) = rx.recv().await else {
+                panic!("expected ListDirs");
+            };
+            bus2.resolve_list_dirs(request_id, Err("no such directory".into()));
+        });
+
+        let err = bus
+            .request_daemon(machine, DaemonRequest::ListDirs { path: "/nope".into() })
+            .await
+            .unwrap_err();
+        assert!(matches!(err, BusError::ListDirs(m) if m == "no such directory"));
+    }
+
+    #[tokio::test]
+    async fn resolve_unknown_request_id_reports_false() {
+        let bus = bus();
+        assert!(!bus.resolve_stage_files(Uuid::new_v4(), Ok(Vec::new())));
+        assert!(!bus.resolve_list_dirs(Uuid::new_v4(), Ok(Vec::new())));
+    }
+
+    #[tokio::test]
+    async fn dispatcher_round_trip_and_offline() {
+        let bus = bus();
+        let dispatcher = Uuid::new_v4();
+
+        // Offline: fails fast with the miss error.
+        let request_id = Uuid::new_v4();
+        let err = bus
+            .request_dispatcher(
+                dispatcher,
+                request_id,
+                DispatcherFrameDown::Status { request_id, handle: "h".into() },
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, BusError::NoDispatcher(d) if d == dispatcher));
+
+        // Online: reply correlates by request id.
+        let (tx, mut rx) = mpsc::channel(8);
+        bus.register_dispatcher(dispatcher, tx);
+        let bus2 = bus.clone();
+        let fake = tokio::spawn(async move {
+            let Some(DispatcherFrameDown::Status { request_id, .. }) = rx.recv().await else {
+                panic!("expected Status");
+            };
+            assert!(bus2.resolve_dispatcher_reply(
+                request_id,
+                DispatcherFrameUp::StatusResult {
+                    request_id,
+                    handle: "h".into(),
+                    state: Some("complete".into()),
+                    error: None,
+                },
+            ));
+        });
+        let request_id = Uuid::new_v4();
+        let reply = bus
+            .request_dispatcher(
+                dispatcher,
+                request_id,
+                DispatcherFrameDown::Status { request_id, handle: "h".into() },
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(reply, DispatcherFrameUp::StatusResult { state: Some(s), .. } if s == "complete")
+        );
+        fake.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn publish_server_reaches_subscribers() {
+        let bus = bus();
+        let mut rx = bus.subscribe_server();
+        bus.publish(BusEvent::Server(ServerEvent::SessionDeregistered {
+            session_id: "sess-1".into(),
+        }));
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            ServerEvent::SessionDeregistered { session_id } if session_id == "sess-1"
+        ));
+    }
+
+    #[tokio::test]
+    async fn session_stream_register_subscribe_publish() {
+        let bus = bus();
+        // No stream registered → historical session → None.
+        assert!(bus.subscribe_session("sess-1").is_none());
+
+        bus.register_session_stream("sess-1");
+        let mut rx = bus.subscribe_session("sess-1").unwrap();
+        bus.publish(BusEvent::Session { session_id: "sess-1".into(), event: text_event("hello") });
+        assert!(
+            matches!(rx.try_recv().unwrap(), AgentEvent::Text { content, .. } if content == "hello")
+        );
+
+        // Publishing to an unknown session is a silent no-op.
+        bus.publish(BusEvent::Session { session_id: "ghost".into(), event: text_event("x") });
+    }
+
+    /// Re-registration reuses the existing channel so live subscribers keep
+    /// their stream (the pre-bus `registry.register` semantics); deregistration
+    /// closes it.
+    #[tokio::test]
+    async fn session_stream_reuse_and_close() {
+        let bus = bus();
+        let first = bus.register_session_stream("sess-1");
+        let mut rx = bus.subscribe_session("sess-1").unwrap();
+
+        let again = bus.register_session_stream("sess-1");
+        assert!(first.same_channel(&again));
+        again.send(text_event("still here")).unwrap();
+        assert!(rx.try_recv().is_ok());
+
+        drop(first);
+        drop(again);
+        bus.deregister_session_stream("sess-1");
+        assert!(bus.subscribe_session("sess-1").is_none());
+        assert!(matches!(rx.try_recv(), Err(broadcast::error::TryRecvError::Closed)));
+    }
+}

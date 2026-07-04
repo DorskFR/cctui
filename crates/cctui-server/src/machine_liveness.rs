@@ -43,9 +43,10 @@ pub fn record_and_broadcast(state: &AppState, machine_id: Uuid, tier: MachineLiv
     let changed = state.machine_liveness.insert(machine_id, tier).is_none_or(|prev| prev != tier);
     if changed {
         tracing::info!(%machine_id, ?tier, "machine liveness changed");
-        let _ = state
-            .tui_tx
-            .send(cctui_proto::ws::ServerEvent::MachineLiveness { machine_id, liveness: tier });
+        state.bus.publish_server(cctui_proto::ws::ServerEvent::MachineLiveness {
+            machine_id,
+            liveness: tier,
+        });
     }
 }
 
@@ -83,7 +84,7 @@ pub fn record_and_broadcast_dispatcher(
         state.dispatcher_liveness.insert(dispatcher_id, tier).is_none_or(|prev| prev != tier);
     if changed {
         tracing::info!(%dispatcher_id, ?tier, "dispatcher liveness changed");
-        let _ = state.tui_tx.send(cctui_proto::ws::ServerEvent::DispatcherLiveness {
+        state.bus.publish_server(cctui_proto::ws::ServerEvent::DispatcherLiveness {
             dispatcher_id,
             liveness: tier,
         });

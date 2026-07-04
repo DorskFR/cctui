@@ -1,56 +1,18 @@
 use std::sync::Arc;
 
 use cctui_proto::models::MachineLiveness;
-use cctui_proto::ws::{DaemonFrameDown, DispatcherFrameDown, DispatcherFrameUp, ServerEvent};
 use dashmap::DashMap;
 use sqlx::PgPool;
-use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
 
 use crate::archive_store::ArchiveStore;
 use crate::auth::AuthConfig;
+use crate::bus::Bus;
 use crate::config::Config;
 use crate::dispatchers::Registry as DispatcherRegistry;
 use crate::registry::SharedRegistry;
 use crate::routes::permissions::SharedPermissionStore;
 use crate::skill_store::SkillStore;
-
-/// Per-machine outbound channel into the connected daemon's WS task.
-/// Clients dispatch `DaemonFrameDown` commands by looking up the target
-/// machine here. Absent entry = daemon offline; command should be written
-/// to the `commands` table for replay on reconnect (post-v0).
-pub type DaemonConnections = Arc<DashMap<Uuid, mpsc::Sender<DaemonFrameDown>>>;
-
-/// Outcome of a mid-chat file-stage request (CCT-236): the staged absolute
-/// paths on success, or an error string on failure.
-pub type StageFilesOutcome = Result<Vec<String>, String>;
-
-/// In-flight `POST /sessions/{id}/files` requests awaiting a daemon
-/// `StageFilesResult`, keyed by the request id minted by the route. The daemon
-/// WS read loop fires the oneshot when the matching reply arrives (CCT-236).
-pub type PendingStageRequests = Arc<DashMap<Uuid, tokio::sync::oneshot::Sender<StageFilesOutcome>>>;
-
-/// Outcome of a working-dir autocomplete listing (spawn dialog): the
-/// directory names on success, or an error string on failure.
-pub type ListDirsOutcome = Result<Vec<String>, String>;
-
-/// In-flight `GET /machines/{id}/fs/dirs` requests awaiting a daemon
-/// `ListDirsResult`, keyed by the request id minted by the route. The daemon
-/// WS read loop fires the oneshot when the matching reply arrives.
-pub type PendingListDirsRequests =
-    Arc<DashMap<Uuid, tokio::sync::oneshot::Sender<ListDirsOutcome>>>;
-
-/// Per-dispatcher outbound channel into the connected enrolled dispatcher's WS
-/// task (CCT-285), keyed by dispatcher id. Peer of [`DaemonConnections`].
-/// Absent entry = dispatcher offline; a dispatch targeting it fails fast.
-pub type DispatcherConnections = Arc<DashMap<Uuid, mpsc::Sender<DispatcherFrameDown>>>;
-
-/// In-flight Dispatch/Status/Cancel round-trips awaiting a
-/// [`DispatcherFrameUp`] reply, keyed by the request id minted by the dispatch
-/// path. The dispatcher WS read loop fires the oneshot when the matching reply
-/// arrives (CCT-285); mirrors `pending_stage_requests`.
-pub type PendingDispatcherRequests =
-    Arc<DashMap<Uuid, tokio::sync::oneshot::Sender<DispatcherFrameUp>>>;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -58,30 +20,23 @@ pub struct AppState {
     pub config: Config,
     pub registry: SharedRegistry,
     pub permission_store: SharedPermissionStore,
-    /// Broadcast channel for server-initiated TUI events (e.g. permission requests).
-    pub tui_tx: broadcast::Sender<ServerEvent>,
+    /// The single routing seam for all WS traffic (CCT-572): daemon/dispatcher
+    /// connection registries, correlated round-trips, per-session streams and
+    /// the server event fan-out all live behind it.
+    pub bus: Bus,
     #[allow(dead_code)]
     pub auth_config: AuthConfig,
     pub archive: Arc<ArchiveStore>,
     pub skills: Arc<SkillStore>,
-    pub daemon_connections: DaemonConnections,
-    /// Connected enrolled dispatchers (CCT-285), keyed by dispatcher id.
-    pub dispatcher_connections: DispatcherConnections,
     /// This pod's identity for replica-aware WS presence (CCT-567). Rows in
     /// `ws_presence` record which pod terminates each daemon/dispatcher WS so
     /// peers can forward WS-targeted requests instead of reporting a spurious
     /// "offline".
     pub presence: Arc<crate::presence::PodIdentity>,
-    /// In-flight Dispatch/Status/Cancel round-trips awaiting a dispatcher reply.
-    pub pending_dispatcher_requests: PendingDispatcherRequests,
     /// Last broadcast liveness tier per enrolled dispatcher (CCT-285), peer of
     /// [`Self::machine_liveness`].
     pub dispatcher_liveness: Arc<DashMap<Uuid, MachineLiveness>>,
     pub dispatchers: Arc<DispatcherRegistry>,
-    /// In-flight mid-chat file-stage requests awaiting a daemon reply (CCT-236).
-    pub pending_stage_requests: PendingStageRequests,
-    /// In-flight working-dir autocomplete requests awaiting a daemon reply.
-    pub pending_listdirs_requests: PendingListDirsRequests,
     /// Last broadcast liveness tier per machine (CCT-255). The daemon-WS
     /// heartbeat handler and the reaper both re-derive a machine's tier from
     /// `machines.last_seen_at` age; this map lets them broadcast a

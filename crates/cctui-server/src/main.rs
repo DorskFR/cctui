@@ -1,9 +1,9 @@
 mod archive_store;
 mod auth;
 mod authz;
+mod bus;
 mod config;
 mod crypto;
-mod daemon_dispatch;
 mod db;
 mod dispatchers;
 mod forward;
@@ -59,7 +59,6 @@ async fn main() -> anyhow::Result<()> {
     // with {admin} ceiling/grant, so the break-glass token is a real identity
     // rather than a user_id=None ghost. Idempotent, best-effort.
     auth_config.seed_admin().await;
-    let (tui_tx, _) = tokio::sync::broadcast::channel(256);
 
     let archive = init_archive_store().await;
     let skills = init_skill_store().await;
@@ -70,18 +69,16 @@ async fn main() -> anyhow::Result<()> {
         config: config.clone(),
         registry: Registry::shared(),
         permission_store: routes::permissions::PermissionStore::shared(),
-        tui_tx,
+        // Phase-1 bus (CCT-572): local-only Noop transport, single routing
+        // seam for daemon/dispatcher WS traffic. CCT-573/CCT-568 swap the
+        // transport for a cross-replica one here.
+        bus: bus::Bus::new(Box::new(bus::NoopTransport)),
         auth_config: auth_config.clone(),
         archive,
         skills,
-        daemon_connections: Arc::new(dashmap::DashMap::new()),
-        dispatcher_connections: Arc::new(dashmap::DashMap::new()),
         presence: Arc::new(presence::PodIdentity::from_env()),
-        pending_dispatcher_requests: Arc::new(dashmap::DashMap::new()),
         dispatcher_liveness: Arc::new(dashmap::DashMap::new()),
         dispatchers,
-        pending_stage_requests: Arc::new(dashmap::DashMap::new()),
-        pending_listdirs_requests: Arc::new(dashmap::DashMap::new()),
         machine_liveness: Arc::new(dashmap::DashMap::new()),
         account_locks: Arc::new(dashmap::DashMap::new()),
         http_client: reqwest::Client::new(),
@@ -206,7 +203,7 @@ async fn main() -> anyhow::Result<()> {
         "/api/v1",
         cctui_github::routes(
             state.pool.clone(),
-            state.tui_tx.clone(),
+            state.bus.server_sender(),
             state.pr_status_cache.clone(),
         )
         .layer(middleware::from_fn(github_identity))
@@ -222,7 +219,7 @@ async fn main() -> anyhow::Result<()> {
         "/api/v1",
         cctui_github::mcp_routes(
             state.pool.clone(),
-            state.tui_tx.clone(),
+            state.bus.server_sender(),
             state.pr_status_cache.clone(),
         ),
     );
@@ -234,7 +231,7 @@ async fn main() -> anyhow::Result<()> {
     #[cfg(feature = "github")]
     cctui_github::spawn_reconcile(
         state.pool.clone(),
-        state.tui_tx.clone(),
+        state.bus.server_sender(),
         state.pr_status_cache.clone(),
     );
 

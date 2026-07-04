@@ -11,12 +11,8 @@ use cctui_proto::ws::{DispatcherFrameDown, DispatcherFrameUp, WireDispatchSpec};
 use uuid::Uuid;
 
 use super::{DispatchError, DispatchHandle, DispatchSpec, Dispatcher, HandleStatus};
-use crate::state::{AppState, DispatcherConnections, PendingDispatcherRequests};
-
-/// How long to await a dispatcher reply before giving up. Spawning a
-/// container/pod can take a few seconds; status/cancel are quick. One generous
-/// bound covers all three round-trips.
-const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+use crate::bus::{Bus, BusError};
+use crate::state::AppState;
 
 pub struct EnrolledDispatcher {
     /// The dispatcher's display name (the `dispatcher` field of the caller's
@@ -39,57 +35,33 @@ impl EnrolledDispatcher {
         request_id: Uuid,
         frame: DispatcherFrameDown,
     ) -> Result<DispatcherFrameUp, DispatchError> {
-        round_trip(
-            &self.state.dispatcher_connections,
-            &self.state.pending_dispatcher_requests,
-            self.dispatcher_id,
-            &self.name,
-            request_id,
-            frame,
-        )
-        .await
+        round_trip(&self.state.bus, self.dispatcher_id, &self.name, request_id, frame).await
     }
 }
 
 /// Hub-level round-trip, factored out of [`EnrolledDispatcher`] so it depends
-/// only on the two maps (not the full `AppState`) and is unit-testable against a
-/// fake dispatcher. Sends `frame` on the dispatcher's channel, parks a oneshot
-/// keyed by `request_id`, and awaits the matching [`DispatcherFrameUp`] (fired
-/// by the WS read loop) within [`REQUEST_TIMEOUT`].
+/// only on the [`Bus`] (not the full `AppState`) and is unit-testable against a
+/// fake dispatcher. The correlated send/await (parked oneshot, timeout) lives
+/// in [`Bus::request_dispatcher`]; this maps its errors onto the dispatcher's
+/// human-readable [`DispatchError::Backend`] messages.
 async fn round_trip(
-    connections: &DispatcherConnections,
-    pending: &PendingDispatcherRequests,
+    bus: &Bus,
     dispatcher_id: Uuid,
     name: &str,
     request_id: Uuid,
     frame: DispatcherFrameDown,
 ) -> Result<DispatcherFrameUp, DispatchError> {
-    let tx = connections
-        .get(&dispatcher_id)
-        .map(|e| e.value().clone())
-        .ok_or_else(|| DispatchError::Backend(format!("dispatcher '{name}' is offline")))?;
-
-    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    pending.insert(request_id, reply_tx);
-
-    if tx.send(frame).await.is_err() {
-        pending.remove(&request_id);
-        return Err(DispatchError::Backend(format!("dispatcher '{name}' connection closed")));
-    }
-
-    match tokio::time::timeout(REQUEST_TIMEOUT, reply_rx).await {
-        Ok(Ok(reply)) => Ok(reply),
-        Ok(Err(_)) => {
-            Err(DispatchError::Backend(format!("dispatcher '{name}' disconnected before replying")))
-        }
-        Err(_) => {
-            pending.remove(&request_id);
-            Err(DispatchError::Backend(format!(
-                "dispatcher '{name}' did not reply within {}s",
-                REQUEST_TIMEOUT.as_secs()
-            )))
-        }
-    }
+    bus.request_dispatcher(dispatcher_id, request_id, frame).await.map_err(|err| {
+        DispatchError::Backend(match err {
+            BusError::NoDispatcher(_) => format!("dispatcher '{name}' is offline"),
+            BusError::Closed => format!("dispatcher '{name}' connection closed"),
+            BusError::Disconnected => {
+                format!("dispatcher '{name}' disconnected before replying")
+            }
+            BusError::Timeout => format!("dispatcher '{name}' did not reply within 30s"),
+            other => format!("dispatcher '{name}' round-trip failed: {other}"),
+        })
+    })
 }
 
 #[async_trait::async_trait]
@@ -102,7 +74,7 @@ impl Dispatcher for EnrolledDispatcher {
     /// replica does, report that peer so the route forwards instead of failing
     /// with a spurious "offline".
     async fn remote_owner(&self) -> Option<String> {
-        if self.state.dispatcher_connections.contains_key(&self.dispatcher_id) {
+        if self.state.bus.dispatcher_connected(self.dispatcher_id) {
             return None;
         }
         crate::presence::peer_owner(
@@ -189,15 +161,13 @@ impl Dispatcher for EnrolledDispatcher {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use dashmap::DashMap;
     use tokio::sync::mpsc;
 
     use super::*;
+    use crate::bus::NoopTransport;
 
-    fn maps() -> (DispatcherConnections, PendingDispatcherRequests) {
-        (Arc::new(DashMap::new()), Arc::new(DashMap::new()))
+    fn bus() -> Bus {
+        Bus::new(Box::new(NoopTransport))
     }
 
     /// A fake dispatcher: register a channel, read the next frame the server
@@ -205,28 +175,28 @@ mod tests {
     /// read loop does in `routes::dispatcher::process_frame`.
     #[tokio::test]
     async fn dispatch_round_trip_succeeds() {
-        let (connections, pending) = maps();
+        let bus = bus();
         let id = Uuid::new_v4();
         let (tx, mut rx) = mpsc::channel::<DispatcherFrameDown>(8);
-        connections.insert(id, tx);
+        bus.register_dispatcher(id, tx);
 
-        let pending2 = pending.clone();
+        let bus2 = bus.clone();
         let fake = tokio::spawn(async move {
             let frame = rx.recv().await.unwrap();
             let DispatcherFrameDown::Dispatch { request_id, spec } = frame else {
                 panic!("expected Dispatch");
             };
-            let (_, reply_tx) = pending2.remove(&request_id).unwrap();
-            reply_tx
-                .send(DispatcherFrameUp::DispatchResult {
+            assert!(bus2.resolve_dispatcher_reply(
+                request_id,
+                DispatcherFrameUp::DispatchResult {
                     request_id,
                     session_id: spec.session_id,
                     handle: "container/worker-1".into(),
                     namespace: None,
                     status: Some("dispatched".into()),
                     error: None,
-                })
-                .unwrap();
+                },
+            ));
         });
 
         let request_id = Uuid::new_v4();
@@ -238,8 +208,7 @@ mod tests {
             payload: serde_json::json!({}),
         };
         let reply = round_trip(
-            &connections,
-            &pending,
+            &bus,
             id,
             "k8s",
             request_id,
@@ -255,17 +224,14 @@ mod tests {
             other => panic!("unexpected reply: {other:?}"),
         }
         fake.await.unwrap();
-        // The pending entry was consumed by the fake dispatcher.
-        assert!(pending.is_empty());
     }
 
     #[tokio::test]
     async fn offline_dispatcher_errors_fast() {
-        let (connections, pending) = maps();
+        let bus = bus();
         let request_id = Uuid::new_v4();
         let err = round_trip(
-            &connections,
-            &pending,
+            &bus,
             Uuid::new_v4(),
             "k8s",
             request_id,
@@ -277,20 +243,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn timeout_when_no_reply() {
-        // Register a live channel but never reply; shorten the wait by parking
-        // our own oneshot and letting the real REQUEST_TIMEOUT elapse would be
-        // slow, so assert the no-reply path via a closed connection instead.
-        let (connections, pending) = maps();
+    async fn closed_connection_errors_fast() {
+        // Register a live channel whose receiver is gone: send fails →
+        // "connection closed" (the parked request is cleaned up inside the bus).
+        let bus = bus();
         let id = Uuid::new_v4();
         let (tx, rx) = mpsc::channel::<DispatcherFrameDown>(1);
-        connections.insert(id, tx);
-        drop(rx); // receiver gone → send fails → "connection closed"
+        bus.register_dispatcher(id, tx);
+        drop(rx);
 
         let request_id = Uuid::new_v4();
         let err = round_trip(
-            &connections,
-            &pending,
+            &bus,
             id,
             "k8s",
             request_id,
@@ -299,7 +263,5 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, DispatchError::Backend(m) if m.contains("closed")));
-        // The parked request was cleaned up on the send failure.
-        assert!(pending.is_empty());
     }
 }

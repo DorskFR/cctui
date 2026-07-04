@@ -113,7 +113,7 @@ async fn handle_message(
     // a hibernated worker revives it with a fresh valid token rather than empty
     // env (CCT-460). Ignored when the worker is already alive.
     let env = crate::routes::gateway::resume_env_for_session(state, &session_id).await;
-    let dispatch = crate::daemon_dispatch::dispatch(
+    let dispatch = crate::bus::dispatch(
         state,
         &session_id,
         cctui_proto::adapter::AdapterCommand::Reply {
@@ -125,9 +125,9 @@ async fn handle_message(
     )
     .await;
     let err_reason = dispatch.as_ref().err().map(|err| {
-        use crate::daemon_dispatch::Error;
+        use crate::bus::BusError;
         match err {
-            Error::NoDaemon(_) | Error::NoAdapter | Error::NotFound => {
+            BusError::NoDaemon(_) | BusError::NoAdapter | BusError::NotFound => {
                 tracing::debug!(%session_id, ?err, "daemon dispatch skipped");
             }
             _ => tracing::warn!(%session_id, %err, "daemon dispatch failed"),
@@ -152,10 +152,7 @@ async fn handle_subscribe(
     event_tx: &mpsc::Sender<ServerEvent>,
     sub_handles: &mut std::collections::HashMap<String, tokio::task::JoinHandle<()>>,
 ) {
-    let receiver = {
-        let registry = state.registry.read().await;
-        registry.subscribe(&session_id)
-    };
+    let receiver = state.bus.subscribe_session(&session_id);
 
     // Replay any prompt the session is currently blocked on (CCT-277). Asks and
     // permission requests were originally fire-and-forget broadcasts: a client
@@ -306,7 +303,7 @@ async fn run_tui_socket(
                 // Push the decision down to the adapter so blocking agents
                 // (e.g. the codex app-server, which holds the turn open until
                 // it gets a reply) are unblocked.
-                let dispatch = crate::daemon_dispatch::dispatch(
+                let dispatch = crate::bus::dispatch(
                     &state,
                     &resolved_session_id,
                     cctui_proto::adapter::AdapterCommand::PermissionResponse {
@@ -317,9 +314,9 @@ async fn run_tui_socket(
                 )
                 .await;
                 if let Err(err) = dispatch {
-                    use crate::daemon_dispatch::Error;
+                    use crate::bus::BusError;
                     match err {
-                        Error::NoDaemon(_) | Error::NoAdapter | Error::NotFound => {
+                        BusError::NoDaemon(_) | BusError::NoAdapter | BusError::NotFound => {
                             tracing::debug!(%resolved_session_id, ?err, "permission dispatch skipped");
                         }
                         _ => {
@@ -327,7 +324,7 @@ async fn run_tui_socket(
                         }
                     }
                 }
-                let _ = state.tui_tx.send(ServerEvent::PermissionResolved {
+                state.bus.publish_server(ServerEvent::PermissionResolved {
                     session_id: resolved_session_id,
                     request_id,
                 });
@@ -401,7 +398,7 @@ async fn handle_tui_ws(socket: WebSocket, state: AppState, ctx: AuthContext) {
 
     // Relay server-initiated events (e.g. permission requests) to this TUI
     // client, scoped to sessions the principal owns (admin sees all, CCT-417).
-    spawn_server_event_relay(state.tui_tx.subscribe(), state.clone(), ctx.clone(), tx.clone());
+    spawn_server_event_relay(state.bus.subscribe_server(), state.clone(), ctx.clone(), tx.clone());
 
     spawn_send_task(sink, rx);
     run_tui_socket(stream, state, ctx, tx).await;

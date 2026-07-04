@@ -192,7 +192,7 @@ pub async fn put_settings(
                     Vec::new()
                 });
         for machine_id in machines {
-            if let Err(err) = crate::daemon_dispatch::push_reconcile(&state, machine_id).await {
+            if let Err(err) = crate::bus::push_reconcile(&state, machine_id).await {
                 tracing::debug!(%machine_id, %err, "push_reconcile after harnessMode change failed");
             }
         }

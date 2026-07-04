@@ -277,9 +277,9 @@ async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: U
     let (mut sink, mut stream) = socket.split();
     let (tx, mut rx) = mpsc::channel::<DaemonFrameDown>(64);
 
-    // Register the daemon for command fan-out. If a stale entry exists,
-    // overwrite it (newest connection wins).
-    state.daemon_connections.insert(machine_id, tx.clone());
+    // Register the daemon for command fan-out with the bus (CCT-572). If a
+    // stale entry exists, overwrite it (newest connection wins).
+    state.bus.register_daemon(machine_id, tx.clone());
     // Replica-aware presence (CCT-567): record this pod as the WS owner so a
     // peer replica can forward daemon-targeted requests here.
     crate::presence::register(&state, crate::presence::Kind::Daemon, machine_id).await;
@@ -328,7 +328,7 @@ async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: U
 
     // Inbound loop. A live daemon pings every ~20s, so a read timeout of 3×
     // that evicts a half-open daemon promptly instead of leaving a dead entry
-    // in `daemon_connections` that swallows commands (CCT-140).
+    // in the bus's connection registry that swallows commands (CCT-140).
     loop {
         let msg = match tokio::time::timeout(DAEMON_READ_TIMEOUT, stream.next()).await {
             Ok(Some(Ok(msg))) => msg,
@@ -358,19 +358,15 @@ async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: U
     }
 
     // Cleanup. Only drop the entry if it is STILL OURS. During a reconnect
-    // race the daemon's new connection may have already overwritten the map
-    // with its own `tx` (line ~110, "newest wins"); an unconditional remove
-    // here would delete that live channel, so every command would silently
+    // race the daemon's new connection may have already overwritten the bus
+    // registry with its own `tx` ("newest wins" above); an unconditional
+    // remove would delete that live channel, so every command would silently
     // fail `NoDaemon` while events kept flowing (they go through
-    // `process_frame`, which never touches `daemon_connections`). Compare the
-    // stored sender against ours and only remove a match (CCT-159). The
+    // `process_frame`, which never touches the connection registry). The
+    // bus's `unregister_daemon` applies the same-channel guard (CCT-159). The
     // presence row mirrors it, with its own pod guard for the cross-pod twin
     // of the same race (CCT-567).
-    if state
-        .daemon_connections
-        .remove_if(&machine_id, |_, current| current.same_channel(&tx))
-        .is_some()
-    {
+    if state.bus.unregister_daemon(machine_id, &tx) {
         crate::presence::unregister(&state, crate::presence::Kind::Daemon, machine_id).await;
     }
     outbound.abort();
@@ -445,32 +441,26 @@ async fn process_frame(
         }
         DaemonFrameUp::StageFilesResult { request_id, ok, paths, error } => {
             // Mid-chat attachment reply (CCT-236): fire the oneshot the
-            // `POST /sessions/{id}/files` route is awaiting.
-            if let Some((_, reply_tx)) = state.pending_stage_requests.remove(&request_id) {
-                let outcome = if ok {
-                    Ok(paths)
-                } else {
-                    Err(error.unwrap_or_else(|| "daemon reported staging failure".to_owned()))
-                };
-                // Receiver gone (route timed out already) → drop silently.
-                let _ = reply_tx.send(outcome);
+            // `POST /sessions/{id}/files` round-trip parked in the bus.
+            let outcome = if ok {
+                Ok(paths)
             } else {
+                Err(error.unwrap_or_else(|| "daemon reported staging failure".to_owned()))
+            };
+            if !state.bus.resolve_stage_files(request_id, outcome) {
                 tracing::debug!(%request_id, "StageFilesResult for unknown request (timed out?)");
             }
             Ok(())
         }
         DaemonFrameUp::ListDirsResult { request_id, ok, dirs, error } => {
             // Working-dir autocomplete reply: fire the oneshot the
-            // `GET /machines/{id}/fs/dirs` route is awaiting.
-            if let Some((_, reply_tx)) = state.pending_listdirs_requests.remove(&request_id) {
-                let outcome = if ok {
-                    Ok(dirs)
-                } else {
-                    Err(error.unwrap_or_else(|| "daemon reported a listing failure".to_owned()))
-                };
-                // Receiver gone (route timed out already) → drop silently.
-                let _ = reply_tx.send(outcome);
+            // `GET /machines/{id}/fs/dirs` round-trip parked in the bus.
+            let outcome = if ok {
+                Ok(dirs)
             } else {
+                Err(error.unwrap_or_else(|| "daemon reported a listing failure".to_owned()))
+            };
+            if !state.bus.resolve_list_dirs(request_id, outcome) {
                 tracing::debug!(%request_id, "ListDirsResult for unknown request (timed out?)");
             }
             Ok(())
@@ -582,7 +572,7 @@ async fn handle_event(
             if !ok {
                 tracing::warn!(%command_id, ?error, "command failed on daemon");
             }
-            let _ = state.tui_tx.send(cctui_proto::ws::ServerEvent::CommandResult {
+            state.bus.publish_server(cctui_proto::ws::ServerEvent::CommandResult {
                 command_id: command_id.to_string(),
                 ok,
                 error,
@@ -605,7 +595,7 @@ async fn handle_event(
                     tool = %tool,
                     "auto-approving permission request"
                 );
-                let _ = crate::daemon_dispatch::dispatch(
+                let _ = crate::bus::dispatch(
                     state,
                     &local_id,
                     cctui_proto::adapter::AdapterCommand::PermissionResponse {
@@ -628,7 +618,7 @@ async fn handle_event(
                     received_at: chrono::Utc::now(),
                 },
             );
-            let _ = state.tui_tx.send(cctui_proto::ws::ServerEvent::PermissionRequest {
+            state.bus.publish_server(cctui_proto::ws::ServerEvent::PermissionRequest {
                 session_id: local_id.clone(),
                 request_id,
                 tool_name: tool.clone(),
@@ -644,7 +634,7 @@ async fn handle_event(
             // request answered via cctui already broadcast PermissionResolved on
             // the client path, so a second clear here is a harmless no-op.
             state.permission_store.write().await.record_decision(&request_id, "resolved".into());
-            let _ = state.tui_tx.send(cctui_proto::ws::ServerEvent::PermissionResolved {
+            state.bus.publish_server(cctui_proto::ws::ServerEvent::PermissionResolved {
                 session_id: local_id.clone(),
                 request_id,
             });
@@ -669,7 +659,7 @@ async fn handle_event(
                     received_at: chrono::Utc::now(),
                 },
             );
-            let _ = state.tui_tx.send(cctui_proto::ws::ServerEvent::AskQuestion {
+            state.bus.publish_server(cctui_proto::ws::ServerEvent::AskQuestion {
                 session_id: local_id.clone(),
                 question,
                 questions,
@@ -679,9 +669,9 @@ async fn handle_event(
         }
         AdapterEvent::AskResolved { local_id } => {
             state.permission_store.write().await.remove_ask(&local_id);
-            let _ = state
-                .tui_tx
-                .send(cctui_proto::ws::ServerEvent::AskResolved { session_id: local_id.clone() });
+            state.bus.publish_server(cctui_proto::ws::ServerEvent::AskResolved {
+                session_id: local_id.clone(),
+            });
             bump_heartbeat(state, &local_id).await;
         }
         AdapterEvent::PlanRequest { local_id, plan, preamble } => {
@@ -697,7 +687,7 @@ async fn handle_event(
                     received_at: chrono::Utc::now(),
                 },
             );
-            let _ = state.tui_tx.send(cctui_proto::ws::ServerEvent::PlanRequest {
+            state.bus.publish_server(cctui_proto::ws::ServerEvent::PlanRequest {
                 session_id: local_id.clone(),
                 plan,
                 preamble,
@@ -706,9 +696,9 @@ async fn handle_event(
         }
         AdapterEvent::PlanResolved { local_id } => {
             state.permission_store.write().await.remove_plan(&local_id);
-            let _ = state
-                .tui_tx
-                .send(cctui_proto::ws::ServerEvent::PlanResolved { session_id: local_id.clone() });
+            state.bus.publish_server(cctui_proto::ws::ServerEvent::PlanResolved {
+                session_id: local_id.clone(),
+            });
             bump_heartbeat(state, &local_id).await;
         }
         AdapterEvent::Status {
@@ -760,7 +750,7 @@ async fn handle_event(
         bump_heartbeat(state, &id).await;
     }
     if newly_inserted && let Some((session_id, data)) = broadcast_pair {
-        let _ = state.tui_tx.send(cctui_proto::ws::ServerEvent::Stream { session_id, data });
+        state.bus.publish_server(cctui_proto::ws::ServerEvent::Stream { session_id, data });
     }
     Ok(())
 }

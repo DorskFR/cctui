@@ -160,7 +160,7 @@ pub async fn put(
     );
 
     // Broadcast so open web-UI clients can flip the pill to `synced` live (CCT-68).
-    let _ = state.tui_tx.send(ServerEvent::ArchiveUploaded {
+    state.bus.publish_server(ServerEvent::ArchiveUploaded {
         machine_id,
         project_dir: project_dir.clone(),
         session_id: session_id.clone(),
@@ -233,7 +233,7 @@ pub async fn post_manifest(
 
     let count = i64::try_from(body.entries.len()).unwrap_or(i64::MAX);
     tracing::info!(machine_id = %machine_id, count, "archive manifest posted");
-    let _ = state.tui_tx.send(ServerEvent::ArchiveManifest { machine_id, count });
+    state.bus.publish_server(ServerEvent::ArchiveManifest { machine_id, count });
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -514,7 +514,7 @@ pub async fn rebuild(
             },
         )?;
 
-    let _ = state.tui_tx.send(ServerEvent::ArchiveUploaded {
+    state.bus.publish_server(ServerEvent::ArchiveUploaded {
         machine_id,
         project_dir: project_dir.clone(),
         session_id: q.session_id.clone(),

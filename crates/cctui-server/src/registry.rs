@@ -3,10 +3,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use cctui_proto::models::{Session, SessionStatus, TokenUsage};
-use cctui_proto::ws::AgentEvent;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{RwLock, broadcast};
+use tokio::sync::RwLock;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -17,6 +16,9 @@ pub struct MachineCommand {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// Live-session metadata. Delivery concerns (the per-session stream broadcast
+/// channel) moved into [`crate::bus::Bus`] (CCT-572); the registry keeps only
+/// session bookkeeping.
 #[derive(Debug)]
 pub struct SessionHandle {
     pub session: Session,
@@ -24,7 +26,6 @@ pub struct SessionHandle {
     pub last_heartbeat: Instant,
     #[allow(dead_code)]
     pub token_usage: TokenUsage,
-    pub stream_tx: broadcast::Sender<AgentEvent>,
     pub policy_rules: Vec<crate::policy::PolicyRule>,
 }
 
@@ -45,26 +46,16 @@ impl Registry {
         Arc::new(RwLock::new(Self::new()))
     }
 
-    pub fn register(&mut self, session: Session) -> broadcast::Sender<AgentEvent> {
-        // Reuse an existing stream_tx on re-registration so current WS
-        // subscribers don't see the broadcast channel close and lose their
-        // stream until they manually reopen the pane.
-        let stream_tx = self
-            .sessions
-            .get(&session.id)
-            .map_or_else(|| broadcast::channel(256).0, |h| h.stream_tx.clone());
-        let tx = stream_tx.clone();
+    pub fn register(&mut self, session: Session) {
         self.sessions.insert(
             session.id.clone(),
             SessionHandle {
                 session,
                 last_heartbeat: Instant::now(),
                 token_usage: TokenUsage::default(),
-                stream_tx,
                 policy_rules: Vec::new(),
             },
         );
-        tx
     }
 
     pub fn deregister(&mut self, id: &str) -> Option<Session> {
@@ -149,10 +140,6 @@ impl Registry {
         demoted
     }
 
-    pub fn subscribe(&self, id: &str) -> Option<broadcast::Receiver<AgentEvent>> {
-        self.sessions.get(id).map(|h| h.stream_tx.subscribe())
-    }
-
     pub fn set_policy(&mut self, session_id: &str, rules: Vec<crate::policy::PolicyRule>) {
         if let Some(handle) = self.sessions.get_mut(session_id) {
             handle.policy_rules = rules;
@@ -217,29 +204,6 @@ mod tests {
         reg.deregister(id);
         assert!(reg.get(id).is_none());
         assert_eq!(reg.list().len(), 0);
-    }
-
-    #[test]
-    fn subscribe_gets_broadcast_receiver() {
-        let mut reg = Registry::new();
-        let id = "claude-session-abc";
-        let tx = reg.register(make_session(id, None));
-        let mut rx = reg.subscribe(id).unwrap();
-
-        tx.send(AgentEvent::Text {
-            content: "hello".into(),
-            meta: false,
-            ts: 0,
-            message_id: None,
-            usage: None,
-        })
-        .unwrap();
-
-        let event = rx.try_recv().unwrap();
-        match event {
-            AgentEvent::Text { content, .. } => assert_eq!(content, "hello"),
-            _ => panic!("unexpected event"),
-        }
     }
 
     #[test]

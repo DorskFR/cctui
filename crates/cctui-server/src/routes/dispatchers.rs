@@ -49,7 +49,7 @@ struct DispatcherRow {
 
 impl DispatcherRow {
     fn into_info(self, state: &AppState) -> DispatcherInfo {
-        let connected = state.dispatcher_connections.contains_key(&self.id);
+        let connected = state.bus.dispatcher_connected(self.id);
         let liveness = crate::machine_liveness::derive(self.last_seen_at);
         DispatcherInfo {
             id: self.id,
@@ -170,6 +170,6 @@ pub async fn delete_dispatcher(
     }
     // Drop any live connection so the dispatcher can't keep operating under a
     // removed identity (it'll fail to re-auth on reconnect).
-    state.dispatcher_connections.remove(&id);
+    state.bus.evict_dispatcher(id);
     Ok(StatusCode::NO_CONTENT)
 }

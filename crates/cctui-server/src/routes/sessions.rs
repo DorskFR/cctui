@@ -89,6 +89,9 @@ pub async fn register(
         let mut registry = state.registry.write().await;
         registry.register(session.clone());
     }
+    // Create (or reuse, on re-registration) the session's live stream channel
+    // in the bus (CCT-572) — delivery moved out of the registry handle.
+    state.bus.register_session_stream(&session_id);
 
     tracing::info!(session_id = %session_id, machine = %session.machine_id, "session registered");
     Ok(Json(RegisterResponse { session_id, ws_url }))
@@ -112,6 +115,7 @@ pub async fn deregister(
         let mut registry = state.registry.write().await;
         registry.deregister(&session_id);
     }
+    state.bus.deregister_session_stream(&session_id);
     tracing::info!(session_id = %session_id, "session deregistered");
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1235,7 +1239,7 @@ pub async fn send_message(
     // Carry re-minted gateway env so a reply-driven cold-resume revives the
     // worker with a fresh valid token rather than empty env (CCT-460).
     let env = crate::routes::gateway::resume_env_for_session(&state, &session_id).await;
-    let dispatch = crate::daemon_dispatch::dispatch(
+    let dispatch = crate::bus::dispatch(
         &state,
         &session_id,
         cctui_proto::adapter::AdapterCommand::Reply {
@@ -1247,9 +1251,9 @@ pub async fn send_message(
     )
     .await;
     if let Err(err) = dispatch {
-        use crate::daemon_dispatch::Error;
+        use crate::bus::BusError;
         match err {
-            Error::NoDaemon(_) | Error::NoAdapter | Error::NotFound => {
+            BusError::NoDaemon(_) | BusError::NoAdapter | BusError::NotFound => {
                 tracing::debug!(%session_id, ?err, "daemon dispatch skipped");
             }
             _ => tracing::warn!(%session_id, %err, "daemon dispatch failed"),
@@ -1283,7 +1287,7 @@ pub async fn rename_session(
             (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
         })?;
     // Best-effort propagation to the owning daemon's adapter.
-    let _ = crate::daemon_dispatch::dispatch(
+    let _ = crate::bus::dispatch(
         &state,
         &session_id,
         cctui_proto::adapter::AdapterCommand::Rename {
@@ -1304,7 +1308,7 @@ pub async fn kill_session(
     // Best-effort: also dispatch to the daemon so the running worker is
     // actually killed via the `claude daemon` socket. The DB update
     // below remains source-of-truth.
-    let _ = crate::daemon_dispatch::dispatch(
+    let _ = crate::bus::dispatch(
         &state,
         &session_id,
         cctui_proto::adapter::AdapterCommand::Kill { local_id: session_id.clone(), signal: None },
@@ -1324,6 +1328,7 @@ pub async fn kill_session(
         let mut registry = state.registry.write().await;
         registry.deregister(&session_id);
     }
+    state.bus.deregister_session_stream(&session_id);
     tracing::info!(session_id = %session_id, "session killed");
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1348,7 +1353,7 @@ pub async fn interrupt_session(
     // Forward to the replica holding the session's daemon WS (CCT-567).
     crate::forward::ensure_session_daemon_local(&state, &session_id).await?;
     let command_id = uuid::Uuid::new_v4();
-    let _ = crate::daemon_dispatch::dispatch(
+    let _ = crate::bus::dispatch(
         &state,
         &session_id,
         cctui_proto::adapter::AdapterCommand::Interrupt {
@@ -1545,7 +1550,7 @@ pub async fn resume_session(
     // default upstream with no credential and 401ing (CCT-460).
     let env = crate::routes::gateway::resume_env_for_session(&state, &session_id).await;
 
-    crate::daemon_dispatch::dispatch(
+    crate::bus::dispatch(
         &state,
         &session_id,
         cctui_proto::adapter::AdapterCommand::Resume {
@@ -1595,7 +1600,7 @@ pub async fn set_model(
             Json(ApiError { error: "model or effort must be set".into() }),
         ));
     }
-    let _ = crate::daemon_dispatch::dispatch(
+    let _ = crate::bus::dispatch(
         &state,
         &session_id,
         cctui_proto::adapter::AdapterCommand::SetModel {
@@ -1687,18 +1692,16 @@ pub async fn fork_session(
             session_id: child_session_id.clone(),
         }),
     };
-    let Some(sender) = state.daemon_connections.get(&machine_uuid).map(|r| r.clone()) else {
-        return Err((
+    state.bus.command_daemon(machine_uuid, frame).await.map_err(|err| match err {
+        crate::bus::BusError::NoDaemon(_) => (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(ApiError { error: "daemon for that machine is offline".into() }),
-        ));
-    };
-    if sender.send(frame).await.is_err() {
-        return Err((
+        ),
+        _ => (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(ApiError { error: "daemon disconnected mid-dispatch".into() }),
-        ));
-    }
+        ),
+    })?;
     tracing::info!(parent = %session_id, %command_id, %adapter_id, child = ?child_session_id, "fork dispatched");
     Ok((
         StatusCode::ACCEPTED,
@@ -1745,7 +1748,7 @@ pub async fn archive_session(
 /// single-session route and the batch route. Dispatches `Remove`, marks the row
 /// `archived`, clears classifier signals, and drops it from the live registry.
 async fn archive_one(state: &AppState, session_id: &str) -> Result<(), sqlx::Error> {
-    let _ = crate::daemon_dispatch::dispatch(
+    let _ = crate::bus::dispatch(
         state,
         session_id,
         cctui_proto::adapter::AdapterCommand::Remove { local_id: session_id.to_string() },
@@ -1778,6 +1781,10 @@ async fn archive_one(state: &AppState, session_id: &str) -> Result<(), sqlx::Err
         for child in &children {
             registry.deregister(child);
         }
+    }
+    state.bus.deregister_session_stream(session_id);
+    for child in &children {
+        state.bus.deregister_session_stream(child);
     }
     tracing::info!(session_id = %session_id, children = children.len(), "session archived");
     Ok(())

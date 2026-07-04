@@ -15,7 +15,7 @@ use cctui_proto::api::ApiError;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::daemon_dispatch;
+use crate::bus;
 use crate::state::AppState;
 
 #[derive(Debug, Deserialize)]
@@ -46,17 +46,17 @@ pub async fn list_dirs(
     // Forward to the replica holding this machine's daemon WS (CCT-567).
     crate::forward::ensure_daemon_local(&state, machine_uuid).await?;
 
-    match daemon_dispatch::list_dirs(&state, machine_uuid, params.path).await {
+    match bus::list_dirs(&state, machine_uuid, params.path).await {
         Ok(dirs) => Ok(Json(ListDirsResponse { dirs })),
-        Err(daemon_dispatch::Error::NoDaemon(_)) => Err((
+        Err(bus::BusError::NoDaemon(_)) => Err((
             StatusCode::SERVICE_UNAVAILABLE,
             Json(ApiError { error: "daemon offline".into() }),
         )),
-        Err(daemon_dispatch::Error::Timeout) => Err((
+        Err(bus::BusError::Timeout) => Err((
             StatusCode::GATEWAY_TIMEOUT,
             Json(ApiError { error: "timed out waiting for the daemon".into() }),
         )),
-        Err(daemon_dispatch::Error::ListDirs(msg)) => {
+        Err(bus::BusError::ListDirs(msg)) => {
             Err((StatusCode::BAD_REQUEST, Json(ApiError { error: msg })))
         }
         Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: e.to_string() }))),

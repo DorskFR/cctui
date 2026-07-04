@@ -235,21 +235,18 @@ async fn dispatch_spawn(
         }),
     };
 
-    let sender = state.daemon_connections.get(&machine_uuid).map(|r| r.clone());
-    let Some(sender) = sender else {
-        return Err((
+    state.bus.command_daemon(machine_uuid, frame).await.map_err(|err| match err {
+        crate::bus::BusError::NoDaemon(_) => (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(ApiError {
                 error: "daemon for that machine is offline — start `cctui-daemon` first".into(),
             }),
-        ));
-    };
-    if sender.send(frame).await.is_err() {
-        return Err((
+        ),
+        _ => (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(ApiError { error: "daemon disconnected mid-dispatch".into() }),
-        ));
-    }
+        ),
+    })?;
 
     tracing::info!(machine = %req.machine_id, %command_id, %adapter_id, "spawn dispatched");
     Ok((StatusCode::ACCEPTED, Json(SpawnResponse { command_id, status: "dispatched".into() })))
@@ -432,28 +429,25 @@ pub async fn stage_session_files(
     // Forward to the replica holding the session's daemon WS (CCT-567).
     crate::forward::ensure_session_daemon_local(&state, &session_id).await?;
     let count = parsed.files.len();
-    match crate::daemon_dispatch::stage_files(&state, &session_id, parsed.files).await {
+    match crate::bus::stage_files(&state, &session_id, parsed.files).await {
         Ok(paths) => {
             tracing::info!(%session_id, count, "staged mid-chat files");
             Ok(Json(cctui_proto::api::StageFilesResponse { paths }))
         }
-        Err(crate::daemon_dispatch::Error::NotFound) => {
+        Err(crate::bus::BusError::NotFound) => {
             Err((StatusCode::NOT_FOUND, Json(ApiError { error: "session not found".into() })))
         }
-        Err(
-            err @ (crate::daemon_dispatch::Error::NoDaemon(_)
-            | crate::daemon_dispatch::Error::Closed),
-        ) => Err((
+        Err(err @ (crate::bus::BusError::NoDaemon(_) | crate::bus::BusError::Closed)) => Err((
             StatusCode::SERVICE_UNAVAILABLE,
             Json(ApiError {
                 error: format!("{err} — the session's machine is offline; try again"),
             }),
         )),
-        Err(crate::daemon_dispatch::Error::Timeout) => Err((
+        Err(crate::bus::BusError::Timeout) => Err((
             StatusCode::GATEWAY_TIMEOUT,
             Json(ApiError { error: "timed out staging files on the session's machine".into() }),
         )),
-        Err(err @ crate::daemon_dispatch::Error::Staging(_)) => {
+        Err(err @ crate::bus::BusError::Staging(_)) => {
             Err((StatusCode::BAD_GATEWAY, Json(ApiError { error: err.to_string() })))
         }
         Err(err) => {

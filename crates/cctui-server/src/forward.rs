@@ -69,7 +69,9 @@ pub async fn ensure_daemon_local(
     state: &AppState,
     machine_uuid: Uuid,
 ) -> Result<(), (StatusCode, Json<ApiError>)> {
-    if state.daemon_connections.contains_key(&machine_uuid) {
+    // Locality via the bus's connection registry (CCT-572); same semantics as
+    // the old direct `daemon_connections` lookup.
+    if state.bus.daemon_connected(machine_uuid) {
         return Ok(());
     }
     presence::peer_owner(state, Kind::Daemon, machine_uuid)

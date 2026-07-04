@@ -298,8 +298,9 @@ async fn handle(socket: WebSocket, state: AppState, dispatcher_id: Uuid) {
     let (mut sink, mut stream) = socket.split();
     let (tx, mut rx) = mpsc::channel::<DispatcherFrameDown>(64);
 
-    // Newest connection wins (mirrors the daemon hub).
-    state.dispatcher_connections.insert(dispatcher_id, tx.clone());
+    // Newest connection wins (mirrors the daemon hub); registered with the
+    // bus (CCT-572).
+    state.bus.register_dispatcher(dispatcher_id, tx.clone());
     // Replica-aware presence (CCT-567): record this pod as the WS owner so a
     // peer replica can forward dispatches here instead of reporting offline.
     crate::presence::register(&state, crate::presence::Kind::Dispatcher, dispatcher_id).await;
@@ -360,14 +361,11 @@ async fn handle(socket: WebSocket, state: AppState, dispatcher_id: Uuid) {
         process_frame(&state, dispatcher_id, frame).await;
     }
 
-    // Cleanup: only drop the entry if it is STILL OURS (reconnect race, CCT-159).
-    // The presence row mirrors it, with its own pod guard for the cross-pod
-    // twin of the same race (CCT-567).
-    if state
-        .dispatcher_connections
-        .remove_if(&dispatcher_id, |_, current| current.same_channel(&tx))
-        .is_some()
-    {
+    // Cleanup: only drop the entry if it is STILL OURS (reconnect race,
+    // CCT-159) — the bus's `unregister_dispatcher` applies the same-channel
+    // guard. The presence row mirrors it, with its own pod guard for the
+    // cross-pod twin of the same race (CCT-567).
+    if state.bus.unregister_dispatcher(dispatcher_id, &tx) {
         crate::presence::unregister(&state, crate::presence::Kind::Dispatcher, dispatcher_id).await;
     }
     outbound.abort();
@@ -393,13 +391,12 @@ async fn process_frame(state: &AppState, dispatcher_id: Uuid, frame: DispatcherF
             );
         }
         // Every reply carries the request_id the dispatch path is awaiting; fire
-        // the matching oneshot. An unknown id means the route already timed out.
+        // the matching oneshot parked in the bus. An unknown id means the route
+        // already timed out.
         DispatcherFrameUp::DispatchResult { request_id, .. }
         | DispatcherFrameUp::StatusResult { request_id, .. }
         | DispatcherFrameUp::CancelResult { request_id, .. } => {
-            if let Some((_, reply_tx)) = state.pending_dispatcher_requests.remove(&request_id) {
-                let _ = reply_tx.send(frame);
-            } else {
+            if !state.bus.resolve_dispatcher_reply(request_id, frame) {
                 tracing::debug!(%request_id, "dispatcher reply for unknown request (timed out?)");
             }
         }

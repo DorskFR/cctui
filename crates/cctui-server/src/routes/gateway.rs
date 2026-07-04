@@ -669,7 +669,7 @@ async fn mark_soft_limit_block(
     }
     // Only broadcast on the clear→blocked transition.
     if state.soft_limit_blocked.insert(session_id.to_owned(), ()).is_none() {
-        let _ = state.tui_tx.send(cctui_proto::ws::ServerEvent::SoftLimitReached {
+        state.bus.publish_server(cctui_proto::ws::ServerEvent::SoftLimitReached {
             session_id: session_id.to_owned(),
             account_id,
             account_name: account_name.to_owned(),
@@ -700,9 +700,9 @@ pub async fn clear_soft_limit_block(state: &AppState, session_id: &str) {
         tracing::warn!(%session_id, error = %e, "failed to clear soft-limit block");
     }
     if state.soft_limit_blocked.remove(session_id).is_some() {
-        let _ = state
-            .tui_tx
-            .send(cctui_proto::ws::ServerEvent::SoftLimitCleared { session_id: session_id.into() });
+        state.bus.publish_server(cctui_proto::ws::ServerEvent::SoftLimitCleared {
+            session_id: session_id.into(),
+        });
     }
 }
 
