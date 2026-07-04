@@ -280,6 +280,9 @@ async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: U
     // Register the daemon for command fan-out. If a stale entry exists,
     // overwrite it (newest connection wins).
     state.daemon_connections.insert(machine_id, tx.clone());
+    // Replica-aware presence (CCT-567): record this pod as the WS owner so a
+    // peer replica can forward daemon-targeted requests here.
+    crate::presence::register(&state, crate::presence::Kind::Daemon, machine_id).await;
 
     // Send Reconcile immediately.
     match load_reconcile(&state, machine_id).await {
@@ -360,8 +363,16 @@ async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: U
     // here would delete that live channel, so every command would silently
     // fail `NoDaemon` while events kept flowing (they go through
     // `process_frame`, which never touches `daemon_connections`). Compare the
-    // stored sender against ours and only remove a match (CCT-159).
-    state.daemon_connections.remove_if(&machine_id, |_, current| current.same_channel(&tx));
+    // stored sender against ours and only remove a match (CCT-159). The
+    // presence row mirrors it, with its own pod guard for the cross-pod twin
+    // of the same race (CCT-567).
+    if state
+        .daemon_connections
+        .remove_if(&machine_id, |_, current| current.same_channel(&tx))
+        .is_some()
+    {
+        crate::presence::unregister(&state, crate::presence::Kind::Daemon, machine_id).await;
+    }
     outbound.abort();
 }
 

@@ -6,12 +6,14 @@ mod crypto;
 mod daemon_dispatch;
 mod db;
 mod dispatchers;
+mod forward;
 mod langfuse;
 mod machine_liveness;
 mod normalize;
 mod ntfy;
 mod openapi;
 mod policy;
+mod presence;
 mod rebuild;
 mod registry;
 mod routes;
@@ -74,6 +76,7 @@ async fn main() -> anyhow::Result<()> {
         skills,
         daemon_connections: Arc::new(dashmap::DashMap::new()),
         dispatcher_connections: Arc::new(dashmap::DashMap::new()),
+        presence: Arc::new(presence::PodIdentity::from_env()),
         pending_dispatcher_requests: Arc::new(dashmap::DashMap::new()),
         dispatcher_liveness: Arc::new(dashmap::DashMap::new()),
         dispatchers,
@@ -107,6 +110,13 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // Replica-aware WS presence (CCT-567): registered only when the pod knows
+    // its routable IP; the heartbeat task keeps this pod's rows trusted and
+    // reaps rows crashed pods left behind.
+    if state.presence.ip.is_some() {
+        tokio::spawn(presence::heartbeat_task(state.clone()));
+    }
+
     let (api_router, api_descriptors) = build_api_routes().into_parts();
 
     // The descriptor list is the route table / source of truth, consumed by
@@ -115,6 +125,10 @@ async fn main() -> anyhow::Result<()> {
     let _ = &api_descriptors;
 
     let api_router = api_router
+        // Cross-replica forwarding (CCT-567), inner to `auth_middleware` so only
+        // authenticated requests are ever forwarded. Selective by path (WS-
+        // targeted routes only) — everything else passes through unbuffered.
+        .layer(middleware::from_fn_with_state(state.clone(), forward::forward_mw))
         // Authentication runs as a global layer; AUTHORIZATION is enforced
         // per-route inside each route's `route_layer` (attached by
         // `Routes::add`), which runs INSIDE this `auth_middleware` so the

@@ -67,6 +67,11 @@ pub struct AppState {
     pub daemon_connections: DaemonConnections,
     /// Connected enrolled dispatchers (CCT-285), keyed by dispatcher id.
     pub dispatcher_connections: DispatcherConnections,
+    /// This pod's identity for replica-aware WS presence (CCT-567). Rows in
+    /// `ws_presence` record which pod terminates each daemon/dispatcher WS so
+    /// peers can forward WS-targeted requests instead of reporting a spurious
+    /// "offline".
+    pub presence: Arc<crate::presence::PodIdentity>,
     /// In-flight Dispatch/Status/Cancel round-trips awaiting a dispatcher reply.
     pub pending_dispatcher_requests: PendingDispatcherRequests,
     /// Last broadcast liveness tier per enrolled dispatcher (CCT-285), peer of

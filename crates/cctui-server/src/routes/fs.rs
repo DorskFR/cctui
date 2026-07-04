@@ -43,6 +43,9 @@ pub async fn list_dirs(
         (StatusCode::BAD_REQUEST, Json(ApiError { error: "machine_id must be a uuid".into() }))
     })?;
 
+    // Forward to the replica holding this machine's daemon WS (CCT-567).
+    crate::forward::ensure_daemon_local(&state, machine_uuid).await?;
+
     match daemon_dispatch::list_dirs(&state, machine_uuid, params.path).await {
         Ok(dirs) => Ok(Json(ListDirsResponse { dirs })),
         Err(daemon_dispatch::Error::NoDaemon(_)) => Err((

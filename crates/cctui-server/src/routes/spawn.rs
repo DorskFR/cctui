@@ -110,6 +110,11 @@ async fn dispatch_spawn(
         return Err((StatusCode::FORBIDDEN, Json(ApiError { error: "not your machine".into() })));
     }
 
+    // Replica-aware forwarding (CCT-567): if a live peer replica holds this
+    // machine's daemon WS, hand the request over before any command/env
+    // minting side effects run here.
+    crate::forward::ensure_daemon_local(state, machine_uuid).await?;
+
     let adapter_id = req.adapter_id.clone().unwrap_or_else(|| "claude-code".to_owned());
 
     // OAuth account selection (CCT-232): if the caller picked a named account,
@@ -424,6 +429,8 @@ pub async fn stage_session_files(
     if parsed.files.is_empty() {
         return Err(bad_request("no files in upload"));
     }
+    // Forward to the replica holding the session's daemon WS (CCT-567).
+    crate::forward::ensure_session_daemon_local(&state, &session_id).await?;
     let count = parsed.files.len();
     match crate::daemon_dispatch::stage_files(&state, &session_id, parsed.files).await {
         Ok(paths) => {

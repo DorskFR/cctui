@@ -1230,6 +1230,8 @@ pub async fn send_message(
     Path(session_id): Path<String>,
     Json(req): Json<MessageRequest>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    // Forward to the replica holding the session's daemon WS (CCT-567).
+    crate::forward::ensure_session_daemon_local(&state, &session_id).await?;
     // Carry re-minted gateway env so a reply-driven cold-resume revives the
     // worker with a fresh valid token rather than empty env (CCT-460).
     let env = crate::routes::gateway::resume_env_for_session(&state, &session_id).await;
@@ -1297,6 +1299,8 @@ pub async fn kill_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    // Forward to the replica holding the session's daemon WS (CCT-567).
+    crate::forward::ensure_session_daemon_local(&state, &session_id).await?;
     // Best-effort: also dispatch to the daemon so the running worker is
     // actually killed via the `claude daemon` socket. The DB update
     // below remains source-of-truth.
@@ -1341,6 +1345,8 @@ pub async fn interrupt_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
 ) -> Result<(StatusCode, Json<cctui_proto::api::SpawnResponse>), (StatusCode, Json<ApiError>)> {
+    // Forward to the replica holding the session's daemon WS (CCT-567).
+    crate::forward::ensure_session_daemon_local(&state, &session_id).await?;
     let command_id = uuid::Uuid::new_v4();
     let _ = crate::daemon_dispatch::dispatch(
         &state,
@@ -1388,6 +1394,9 @@ pub async fn switch_account(
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
     use crate::routes::gateway::Family;
 
+    // Forward to the replica holding the session's daemon WS (CCT-567).
+    crate::forward::ensure_session_daemon_local(&state, &session_id).await?;
+
     let err = |code: StatusCode, msg: &str| (code, Json(ApiError { error: msg.into() }));
     let db = |e: sqlx::Error| {
         tracing::error!("db error (switch-account): {e}");
@@ -1417,53 +1426,52 @@ pub async fn switch_account(
     // id, or an IDENTITY (`accounts`) id — clients hold identity ids, and only
     // backfilled rows share the two by uuid reuse. An identity id resolves to
     // its child in the CURRENT binding's family, same as the name path.
-    let target: Option<(uuid::Uuid, String)> = if let Ok(tid) =
-        uuid::Uuid::parse_str(req.account.trim())
-    {
-        let direct: Option<(uuid::Uuid, String)> = sqlx::query_as(
-            "SELECT id, provider FROM account_providers WHERE id = $1 AND user_id = $2",
-        )
-        .bind(tid)
-        .bind(owner_id)
-        .fetch_optional(&state.pool)
-        .await
-        .map_err(db)?;
-        if direct.is_some() {
-            direct
-        } else {
-            sqlx::query_as(
-                "SELECT ap.id, ap.provider \
+    let target: Option<(uuid::Uuid, String)> =
+        if let Ok(tid) = uuid::Uuid::parse_str(req.account.trim()) {
+            let direct: Option<(uuid::Uuid, String)> = sqlx::query_as(
+                "SELECT id, provider FROM account_providers WHERE id = $1 AND user_id = $2",
+            )
+            .bind(tid)
+            .bind(owner_id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(db)?;
+            if direct.is_some() {
+                direct
+            } else {
+                sqlx::query_as(
+                    "SELECT ap.id, ap.provider \
                  FROM account_providers ap JOIN accounts a ON a.id = ap.account_id \
                  WHERE a.id = $1 AND ap.user_id = $2 \
                    AND (ap.provider ILIKE '%openai%') = $3 \
                  LIMIT 1",
+                )
+                .bind(tid)
+                .bind(owner_id)
+                .bind(current_provider.contains("openai"))
+                .fetch_optional(&state.pool)
+                .await
+                .map_err(db)?
+            }
+        } else {
+            // Name lives on the identity parent (CCT-558); pick the provider row in
+            // the CURRENT binding's family so the same-family constraint below holds
+            // for multi-provider identities (single-provider accounts behave as
+            // before).
+            sqlx::query_as(
+                "SELECT ap.id, ap.provider \
+             FROM account_providers ap JOIN accounts a ON a.id = ap.account_id \
+             WHERE a.name = $1 AND ap.user_id = $2 \
+               AND (ap.provider ILIKE '%openai%') = $3 \
+             LIMIT 1",
             )
-            .bind(tid)
+            .bind(req.account.trim())
             .bind(owner_id)
             .bind(current_provider.contains("openai"))
             .fetch_optional(&state.pool)
             .await
             .map_err(db)?
-        }
-    } else {
-        // Name lives on the identity parent (CCT-558); pick the provider row in
-        // the CURRENT binding's family so the same-family constraint below holds
-        // for multi-provider identities (single-provider accounts behave as
-        // before).
-        sqlx::query_as(
-            "SELECT ap.id, ap.provider \
-             FROM account_providers ap JOIN accounts a ON a.id = ap.account_id \
-             WHERE a.name = $1 AND ap.user_id = $2 \
-               AND (ap.provider ILIKE '%openai%') = $3 \
-             LIMIT 1",
-        )
-        .bind(req.account.trim())
-        .bind(owner_id)
-        .bind(current_provider.contains("openai"))
-        .fetch_optional(&state.pool)
-        .await
-        .map_err(db)?
-    };
+        };
     let Some((target_id, target_provider)) = target else {
         return Err(err(StatusCode::NOT_FOUND, "no such account for this session's owner"));
     };
@@ -1519,6 +1527,8 @@ pub async fn resume_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    // Forward to the replica holding the session's daemon WS (CCT-567).
+    crate::forward::ensure_session_daemon_local(&state, &session_id).await?;
     // Pass the working_dir so the daemon can resume even after archiving ran
     // `claude rm` (which deletes the on-disk job state.json but keeps the
     // conversation transcript) — the daemon falls back to local_id + this cwd.
@@ -1574,6 +1584,8 @@ pub async fn set_model(
     Path(session_id): Path<String>,
     Json(req): Json<cctui_proto::api::SetModelRequest>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    // Forward to the replica holding the session's daemon WS (CCT-567).
+    crate::forward::ensure_session_daemon_local(&state, &session_id).await?;
     let norm = |s: Option<String>| s.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
     let model = norm(req.model);
     let effort = norm(req.effort);
@@ -1613,6 +1625,8 @@ pub async fn fork_session(
     Path(session_id): Path<String>,
     Json(req): Json<cctui_proto::api::ForkRequest>,
 ) -> Result<(StatusCode, Json<cctui_proto::api::ForkResponse>), (StatusCode, Json<ApiError>)> {
+    // Forward to the replica holding the session's daemon WS (CCT-567).
+    crate::forward::ensure_session_daemon_local(&state, &session_id).await?;
     let norm = |s: Option<String>| s.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
 
     // Resolve the parent: adapter + machine + cwd. The fork inherits the

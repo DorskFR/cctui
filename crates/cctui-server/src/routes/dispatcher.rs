@@ -300,6 +300,9 @@ async fn handle(socket: WebSocket, state: AppState, dispatcher_id: Uuid) {
 
     // Newest connection wins (mirrors the daemon hub).
     state.dispatcher_connections.insert(dispatcher_id, tx.clone());
+    // Replica-aware presence (CCT-567): record this pod as the WS owner so a
+    // peer replica can forward dispatches here instead of reporting offline.
+    crate::presence::register(&state, crate::presence::Kind::Dispatcher, dispatcher_id).await;
     bump_last_seen(&state, dispatcher_id).await;
     crate::machine_liveness::record_and_broadcast_dispatcher(
         &state,
@@ -358,7 +361,15 @@ async fn handle(socket: WebSocket, state: AppState, dispatcher_id: Uuid) {
     }
 
     // Cleanup: only drop the entry if it is STILL OURS (reconnect race, CCT-159).
-    state.dispatcher_connections.remove_if(&dispatcher_id, |_, current| current.same_channel(&tx));
+    // The presence row mirrors it, with its own pod guard for the cross-pod
+    // twin of the same race (CCT-567).
+    if state
+        .dispatcher_connections
+        .remove_if(&dispatcher_id, |_, current| current.same_channel(&tx))
+        .is_some()
+    {
+        crate::presence::unregister(&state, crate::presence::Kind::Dispatcher, dispatcher_id).await;
+    }
     outbound.abort();
 }
 

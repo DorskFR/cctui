@@ -98,6 +98,21 @@ impl Dispatcher for EnrolledDispatcher {
         &self.name
     }
 
+    /// CCT-567: when this pod doesn't hold the dispatcher's WS but a live peer
+    /// replica does, report that peer so the route forwards instead of failing
+    /// with a spurious "offline".
+    async fn remote_owner(&self) -> Option<String> {
+        if self.state.dispatcher_connections.contains_key(&self.dispatcher_id) {
+            return None;
+        }
+        crate::presence::peer_owner(
+            &self.state,
+            crate::presence::Kind::Dispatcher,
+            self.dispatcher_id,
+        )
+        .await
+    }
+
     async fn dispatch(&self, spec: &DispatchSpec<'_>) -> Result<DispatchHandle, DispatchError> {
         let request_id = Uuid::new_v4();
         let wire = WireDispatchSpec {

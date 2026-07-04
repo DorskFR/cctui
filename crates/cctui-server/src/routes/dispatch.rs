@@ -403,6 +403,15 @@ pub async fn dispatch(
         }
     };
 
+    // Replica-aware forwarding (CCT-567): if a live PEER replica holds this
+    // dispatcher's WS, hand the request over BEFORE any side effect (ntfy,
+    // ephemeral key mint, webhook registration) runs here — the owning pod
+    // re-executes the whole route exactly once.
+    if let Some(owner) = dispatcher.remote_owner().await {
+        tracing::info!(dispatcher = %req.dispatcher, %owner, "dispatch target WS lives on peer");
+        return Err(crate::forward::not_local_error(&owner));
+    }
+
     // Claude's daemon derives `short = session_id[..8]` and rejects a dispatch
     // unless `short` matches /^[a-f0-9]{8}$/ — so the worker's session id must be
     // UUID-shaped (CCT-474). Callers may pass a human-readable logical id (e.g.
