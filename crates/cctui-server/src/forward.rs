@@ -131,6 +131,8 @@ fn is_ws_targeted(path: &str) -> bool {
 /// Middleware layered on the API router: for WS-targeted routes, buffers the
 /// (bounded) request body, runs the route, and on a 421 re-sends the original
 /// request to the owning peer pod, returning the peer's response verbatim.
+// Linear pipeline; the breadth is error branches, not nesting.
+#[allow(clippy::cognitive_complexity)]
 pub async fn forward_mw(State(state): State<AppState>, req: Request, next: Next) -> Response {
     // Peer side of a forward — or a hop already taken — or a route the
     // forwarder doesn't participate in: run straight through, unbuffered.
@@ -167,8 +169,15 @@ pub async fn forward_mw(State(state): State<AppState>, req: Request, next: Next)
         return Response::from_parts(res_parts, axum::body::Body::from(res_bytes));
     };
 
+    // `nest` strips the `/api/v1` prefix from the URI this (inner-router)
+    // middleware sees; the peer's OUTER router needs the full original path or
+    // it 404s. `OriginalUri` is inserted by the outermost Router on entry.
+    let full_uri = parts
+        .extensions
+        .get::<axum::extract::OriginalUri>()
+        .map_or(&parts.uri, |original| &original.0);
     let path_and_query =
-        parts.uri.path_and_query().map_or_else(|| parts.uri.path(), |pq| pq.as_str());
+        full_uri.path_and_query().map_or_else(|| full_uri.path(), |pq| pq.as_str());
     // IPv6 literals need bracketing in authority position.
     let host = if owner.contains(':') { format!("[{owner}]") } else { owner.clone() };
     let url = format!("http://{host}:{}{path_and_query}", state.config.port);
