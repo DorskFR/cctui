@@ -5,17 +5,17 @@
 		useCapabilities,
 		useMe,
 		useUsers,
-		primaryProvider,
 		type OAuthAccount,
+		type AccountProvider,
 		type CreateAccount,
+		type CreateProvider,
 		type UpdateAccount,
 		type UpdateProvider,
 	} from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
-	import { compact } from '$lib/format';
-	import UsageBars from '$lib/components/molecules/UsageBars.svelte';
+	import { providerFamily, providerLabel, PROVIDER_KINDS, type ProviderKind } from '$lib/providers';
+	import ProviderPanel from '$lib/components/molecules/ProviderPanel.svelte';
 	import AccountShares from '$lib/components/molecules/AccountShares.svelte';
-	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
 	import GithubConnectors from '$lib/components/organisms/GithubConnectors.svelte';
 	import DispatchersPanel from '$lib/components/organisms/DispatchersPanel.svelte';
 	import AccountSettingsEditor from '$lib/components/organisms/AccountSettingsEditor.svelte';
@@ -36,7 +36,6 @@
 		Timestamp,
 		type TabItem
 	} from '@dorsk/tsumikit';
-	import { providerLabel } from './accounts.logic';
 
 	const caps = useCapabilities();
 	// Accounts is the single home for everything external (CCT-403): AI provider
@@ -64,13 +63,28 @@
 	});
 	const guard = (p: Promise<unknown>) => p.catch((e: Error) => toasts.err(e.message));
 
-	// Editor state. `editing` holds the id when renaming, null when creating a
-	// fresh one, undefined when the editor is closed.
-	let editing = $state<string | null | undefined>(undefined);
+	// ------------------------------------------------------------------------
+	// Editor state (CCT-560). One modal, four modes:
+	//   create        — new identity + its first provider credential
+	//   add-provider  — attach a credential to an existing identity
+	//   edit-account  — identity fields: name + write-only extra env
+	//   edit-provider — one credential: aliases, soft limits, settings,
+	//                   compatible-endpoint config, reauth, move
+	type EditorMode = 'create' | 'add-provider' | 'edit-account' | 'edit-provider';
+	let editor = $state<{ mode: EditorMode; accountId?: string; providerId?: string } | null>(null);
+
+	const rows = $derived([...($accounts.data ?? [])]);
+	const editingAccount = $derived(
+		editor?.accountId ? rows.find((a) => a.id === editor?.accountId) : undefined
+	);
+	const editingProvider = $derived(
+		editor?.providerId
+			? editingAccount?.providers.find((p) => p.id === editor?.providerId)
+			: undefined
+	);
+
 	let name = $state('');
-	let provider = $state<
-		'anthropic' | 'openai' | 'anthropic-compatible' | 'openai-compatible'
-	>('anthropic');
+	let provider = $state<ProviderKind>('anthropic');
 	let refreshToken = $state('');
 	// Compatible-endpoint fields (CCT-399): base URL, a static credential, the
 	// auth scheme, and a tiny model-list editor (model code + display label).
@@ -80,13 +94,12 @@
 	// never read back, CCT-402). Create always picks bearer/api_key.
 	let authScheme = $state<'bearer' | 'api_key' | 'keep'>('bearer');
 	let modelRows = $state<{ model: string; label: string }[]>([{ model: '', label: '' }]);
-	// Per-account model alias map (CCT-406): logical name → concrete model code,
-	// e.g. opus → claude-opus-4-8[1m]. Applies to every provider; resolved
-	// server-side at spawn. Edited as rows, sent as an object.
+	// Per-provider model alias map (CCT-406): logical name → concrete model code,
+	// e.g. opus → claude-opus-4-8[1m]. Resolved server-side at spawn.
 	let aliasRows = $state<{ alias: string; model: string }[]>([]);
-	// Per-account soft limits (CCT-411): cap cctui's own share of the 5h/7d usage
+	// Per-provider soft limits (CCT-411): cap cctui's own share of the 5h/7d usage
 	// windows so it leaves headroom for the human sharing the subscription. Empty
-	// input = no cap on that window. Kept as strings so blank ⇒ null.
+	// input = no cap on that window.
 	// `<Input type="number">` makes Svelte coerce `bind:value` to `number | null`
 	// (null when the field is cleared), so these hold numbers, not strings.
 	let soft5h = $state<number | null>(null);
@@ -94,14 +107,15 @@
 	let softBypass = $state<number | null>(null);
 	const isCompatible = $derived(provider.endsWith('-compatible'));
 
-	// Per-account settings editor state (CCT-541). `settings` mirrors the provider's
-	// settings_json (SAFE/CARE keys); `envRows` feed the write-only env_json (never
-	// read back, so they start empty on edit); `replaceEnv` gates whether env_json
-	// is sent at all (only when the operator actually edits the env). The launch
-	// defaults surface was removed with CCT-558 (superseded by CCT-561).
+	// Per-provider settings (CCT-541) + per-account env (CCT-538). `settings`
+	// mirrors the provider's settings_json; `envRows` feed the identity's
+	// write-only env_json (never read back, so they start empty on edit);
+	// `replaceEnv` gates whether env_json is sent at all.
 	let acctSettings = $state<Record<string, unknown>>({});
 	let acctEnvRows = $state<{ name: string; value: string }[]>([]);
 	let acctReplaceEnv = $state(false);
+	// Move-provider target (CCT-558 merge path): another account of the same owner.
+	let moveTarget = $state('');
 
 	/** Normalise a soft-limit input: empty ⇒ null, else a clamped non-negative
 	 *  integer. Tolerates either the number a number-input binds or a stray string. */
@@ -143,16 +157,23 @@
 		return out;
 	}
 
+	/** Trimmed model rows for the compatible-endpoint payloads. */
+	function modelList() {
+		return modelRows
+			.map((r) => ({ model: r.model.trim(), label: r.label.trim() || r.model.trim() }))
+			.filter((r) => r.model);
+	}
+
 	// "Sign in with Claude" OAuth flow state (CCT-243).
 	let oauthNonce = $state<string | null>(null);
 	let oauthCode = $state('');
 	let oauthBusy = $state(false);
 	let showAdvanced = $state(false);
-	// Reauth mode (CCT-512): editing an existing native account to refresh its
+	// Reauth mode (CCT-512): editing an existing native provider to refresh its
 	// rejected credentials, which reveals the sign-in block inside the edit modal.
 	let reauthing = $state(false);
-	// OAuth attach target (CCT-558): when reauthenticating, finish the flow as a
-	// provider under this existing account instead of creating a new identity.
+	// OAuth attach target (CCT-558): when adding/reauthenticating, finish the flow
+	// as a provider under this existing account instead of creating a new identity.
 	let oauthAttachAccountId = $state<string | null>(null);
 
 	function resetForm() {
@@ -176,13 +197,14 @@
 		acctSettings = {};
 		acctEnvRows = [];
 		acctReplaceEnv = false;
+		moveTarget = '';
 	}
 
 	// Start the authorize leg: ask the server for an authorize URL, open it in a
 	// new tab, and reveal the paste field. Works for both Claude (anthropic) and
 	// "Sign in with ChatGPT" for Codex (openai) — CCT-243/CCT-244.
 	async function startOAuthLogin() {
-		if (isAdmin && !ownerId) {
+		if (isAdmin && !ownerId && !oauthAttachAccountId) {
 			toasts.err('Pick the owning user first');
 			return;
 		}
@@ -210,10 +232,12 @@
 	}
 
 	// Finish: exchange the pasted code/callback URL for tokens and create the
-	// account. Claude sends `code` (the code#state pair); Codex sends
-	// `callback_url` (the full localhost:1455 URL from the address bar).
+	// account/provider. Claude sends `code` (the code#state pair); Codex sends
+	// `callback_url` (the full localhost:1455 URL from the address bar). With an
+	// attach target (CCT-558) the credential lands under that account and the
+	// name is ignored server-side.
 	async function finishOAuthLogin() {
-		if (!name.trim()) {
+		if (!oauthAttachAccountId && !name.trim()) {
 			toasts.err('Name is required');
 			return;
 		}
@@ -227,12 +251,13 @@
 		}
 		oauthBusy = true;
 		try {
+			const acctName = name.trim() || editingAccount?.name || '';
 			await actions.oauthFinish(
 				provider === 'openai'
-					? { nonce: oauthNonce, name: name.trim(), callback_url: oauthCode.trim() }
-					: { nonce: oauthNonce, name: name.trim(), code: oauthCode.trim() },
+					? { nonce: oauthNonce, name: acctName, callback_url: oauthCode.trim() }
+					: { nonce: oauthNonce, name: acctName, code: oauthCode.trim() },
 			);
-			toasts.ok('Account added');
+			toasts.ok(oauthAttachAccountId ? 'Provider added' : 'Account added');
 			close();
 		} catch (e) {
 			toasts.err((e as Error).message);
@@ -243,48 +268,62 @@
 
 	function openCreate() {
 		resetForm();
-		editing = null;
+		editor = { mode: 'create' };
 	}
 
-	function openEdit(a: OAuthAccount) {
+	/** Provider kinds this account can still add: at most one per family
+	 *  (anthropic/openai), mirroring the server's unique index (CCT-558). */
+	function availableKinds(a: OAuthAccount): ProviderKind[] {
+		const taken = new Set(a.providers.map((p) => p.family));
+		return PROVIDER_KINDS.map((k) => k.value).filter((v) => !taken.has(providerFamily(v)));
+	}
+
+	function openAddProvider(a: OAuthAccount) {
 		resetForm();
-		editing = a.id;
+		editor = { mode: 'add-provider', accountId: a.id };
+		provider = availableKinds(a)[0] ?? 'anthropic';
+		ownerId = a.user_id;
+		// The native OAuth flows attach via oauth/start's account_id (CCT-558).
+		oauthAttachAccountId = a.id;
+	}
+
+	function openEditAccount(a: OAuthAccount) {
+		resetForm();
+		editor = { mode: 'edit-account', accountId: a.id };
 		name = a.name;
-		// TODO(CCT-560): the editor still assumes a single credential per account —
-		// edit the first provider row until the accounts UI is redesigned for
-		// multi-provider identities.
-		const p = primaryProvider(a);
-		provider = (p?.provider as typeof provider) ?? 'anthropic';
+		// env_json is write-only: rows start empty; editing them flips replaceEnv.
+	}
+
+	function openEditProvider(a: OAuthAccount, p: AccountProvider) {
+		resetForm();
+		editor = { mode: 'edit-provider', accountId: a.id, providerId: p.id };
+		provider = p.provider as ProviderKind;
 		// Compatible endpoints can edit their model list in place (CCT-402). The
 		// base URL, credential, and scheme are never read back, so they start
 		// blank/"keep" — supplying one overwrites, leaving it keeps the stored value.
-		if (provider.endsWith('-compatible')) {
-			const ms = p?.models ?? [];
+		if (p.provider.endsWith('-compatible')) {
+			const ms = p.models ?? [];
 			modelRows = ms.length
 				? ms.map((m) => ({ model: m.model, label: m.label }))
 				: [{ model: '', label: '' }];
 			authScheme = 'keep';
 		}
 		// Aliases are editable for every provider (CCT-406).
-		aliasRows = Object.entries(p?.model_aliases ?? {}).map(([alias, model]) => ({ alias, model }));
+		aliasRows = Object.entries(p.model_aliases ?? {}).map(([alias, model]) => ({ alias, model }));
 		// Soft limits are editable for every provider (CCT-411).
-		soft5h = p?.soft_limit_5h_pct ?? null;
-		soft7d = p?.soft_limit_7d_pct ?? null;
-		softBypass = p?.soft_limit_bypass_minutes ?? null;
-		// Settings are editable for every provider (CCT-541). settings_json comes
-		// back from the API; env_json is write-only and never returned, so env rows
-		// start empty (the operator re-enters to replace).
-		acctSettings = { ...(p?.settings_json ?? {}) };
-		acctEnvRows = [];
-		acctReplaceEnv = false;
+		soft5h = p.soft_limit_5h_pct;
+		soft7d = p.soft_limit_7d_pct;
+		softBypass = p.soft_limit_bypass_minutes;
+		// Settings are editable per provider (CCT-541/CCT-560).
+		acctSettings = { ...(p.settings_json ?? {}) };
 	}
 
-	// Reauthenticate a flagged account (CCT-512): open its edit modal, flip into
+	// Reauthenticate a flagged provider (CCT-512): open its edit modal, flip into
 	// reauth mode (reveals the sign-in block), and kick the authorize leg. The
-	// pasted code is exchanged by finishOAuthLogin, which upserts the credentials
-	// in place (same name+provider) and clears `needs_reauth` server-side.
-	function reauth(a: OAuthAccount) {
-		openEdit(a);
+	// pasted code is exchanged by finishOAuthLogin, which refreshes the
+	// same-family credential in place and clears `needs_reauth` server-side.
+	function reauth(a: OAuthAccount, p: AccountProvider) {
+		openEditProvider(a, p);
 		ownerId = a.user_id;
 		reauthing = true;
 		// Attach the refreshed credential to THIS account (CCT-558) rather than
@@ -294,46 +333,72 @@
 	}
 
 	function close() {
-		editing = undefined;
+		editor = null;
 	}
 
 	async function save() {
-		if (!name.trim()) {
-			toasts.err('Name is required');
-			return;
-		}
+		const mode = editor?.mode;
 		const model_aliases = aliasObject();
 		try {
-			if (editing) {
-				// CCT-558: the edit is two PATCHes — identity fields (name, env_json)
-				// go to the account; credential fields (aliases, soft limits, settings,
-				// compatible-endpoint config) go to its provider row.
+			if (mode === 'edit-account' && editor?.accountId) {
+				if (!name.trim()) {
+					toasts.err('Name is required');
+					return;
+				}
 				const identity: UpdateAccount = { name: name.trim() };
 				if (acctReplaceEnv) identity.env_json = envObject();
-				await actions.update(editing, identity);
-				// TODO(CCT-560): still single-credential — patch the first provider row.
-				const providerId = editingAccount ? primaryProvider(editingAccount)?.id : undefined;
-				if (providerId) {
-					// Always send the alias map + soft limits + settings so clearing
-					// them sticks (empty object clears the stored blob).
-					const body: UpdateProvider = {
-						model_aliases,
-						soft_limits: softLimits(),
-						settings_json: acctSettings
-					};
-					if (isCompatible) {
-						const models = modelRows
-							.map((r) => ({ model: r.model.trim(), label: r.label.trim() || r.model.trim() }))
-							.filter((r) => r.model);
-						body.models = models;
-						if (baseUrl.trim()) body.base_url = baseUrl.trim();
-						if (credential.trim()) body.access_token = credential.trim();
-						if (authScheme !== 'keep') body.auth_scheme = authScheme;
-					}
-					await actions.updateProvider(editing, providerId, body);
-				}
+				await actions.update(editor.accountId, identity);
 				toasts.ok('Account updated');
+			} else if (mode === 'edit-provider' && editor?.accountId && editor.providerId) {
+				// Always send the alias map + soft limits + settings so clearing
+				// them sticks (empty object clears the stored blob). Settings only
+				// apply to the claude-code harness → anthropic-family providers.
+				const body: UpdateProvider = {
+					model_aliases,
+					soft_limits: softLimits(),
+					...(editingProvider?.family === 'anthropic' ? { settings_json: acctSettings } : {})
+				};
+				if (isCompatible) {
+					body.models = modelList();
+					if (baseUrl.trim()) body.base_url = baseUrl.trim();
+					if (credential.trim()) body.access_token = credential.trim();
+					if (authScheme !== 'keep') body.auth_scheme = authScheme;
+				}
+				await actions.updateProvider(editor.accountId, editor.providerId, body);
+				toasts.ok('Provider updated');
+			} else if (mode === 'add-provider' && editor?.accountId) {
+				// Native OAuth adds go through finishOAuthLogin instead; this path is
+				// the compatible-endpoint / pasted-refresh-token attach (CCT-558).
+				const spec: CreateProvider = {
+					provider,
+					...(Object.keys(model_aliases).length ? { model_aliases } : {}),
+					...softLimits()
+				};
+				if (isCompatible) {
+					if (!baseUrl.trim()) {
+						toasts.err('Base URL is required for a compatible endpoint');
+						return;
+					}
+					spec.base_url = baseUrl.trim();
+					spec.auth_scheme = authScheme === 'keep' ? 'bearer' : authScheme;
+					if (credential.trim()) spec.access_token = credential.trim();
+					const models = modelList();
+					if (models.length) spec.models = models;
+				} else {
+					if (!refreshToken.trim()) {
+						toasts.err('Refresh token is required');
+						return;
+					}
+					spec.refresh_token = refreshToken.trim();
+				}
+				await actions.addProvider(editor.accountId, spec);
+				toasts.ok('Provider added');
 			} else {
+				// create: identity + first credential in one call.
+				if (!name.trim()) {
+					toasts.err('Name is required');
+					return;
+				}
 				if (isAdmin && !ownerId) {
 					toasts.err('Pick the owning user first');
 					return;
@@ -344,14 +409,12 @@
 						toasts.err('Base URL is required for a compatible endpoint');
 						return;
 					}
-					const models = modelRows
-						.map((r) => ({ model: r.model.trim(), label: r.label.trim() || r.model.trim() }))
-						.filter((r) => r.model);
+					const models = modelList();
 					body = {
 						name: name.trim(),
 						provider,
 						base_url: baseUrl.trim(),
-						auth_scheme: authScheme,
+						auth_scheme: authScheme === 'keep' ? 'bearer' : authScheme,
 						...(credential.trim() ? { access_token: credential.trim() } : {}),
 						...(models.length ? { models } : {}),
 						...(Object.keys(model_aliases).length ? { model_aliases } : {}),
@@ -381,15 +444,68 @@
 		}
 	}
 
-	function remove(a: OAuthAccount) {
-		if (!confirm(`Delete account "${a.name}"?`)) return;
+	function removeAccount(a: OAuthAccount) {
+		if (!confirm(`Delete account "${a.name}" and all its provider credentials?`)) return;
 		guard(actions.remove(a.id).then(() => toasts.ok('Deleted')));
 	}
 
-	const rows = $derived([...($accounts.data ?? [])]);
-	// The account currently open in the edit modal (CCT-541) — drives the settings
-	// editor's provider-specific model list.
-	const editingAccount = $derived(editing ? rows.find((a) => a.id === editing) : undefined);
+	function removeProvider(a: OAuthAccount, p: AccountProvider) {
+		if (
+			!confirm(
+				`Remove the ${providerLabel(p.provider)} credential from "${a.name}"? The account and its other providers stay.`
+			)
+		)
+			return;
+		guard(actions.removeProvider(a.id, p.id).then(() => toasts.ok('Provider removed')));
+	}
+
+	async function moveProvider() {
+		if (!editor?.accountId || !editor.providerId || !moveTarget) return;
+		try {
+			await actions.moveProvider(editor.accountId, editor.providerId, moveTarget);
+			toasts.ok('Provider moved');
+			close();
+		} catch (e) {
+			toasts.err((e as Error).message);
+		}
+	}
+
+	/** Same-owner move targets whose family slot is free (server 409s otherwise). */
+	const moveTargets = $derived(
+		editingAccount && editingProvider
+			? rows.filter(
+					(a) =>
+						a.id !== editingAccount.id &&
+						a.user_id === editingAccount.user_id &&
+						!a.providers.some((p) => p.family === editingProvider.family)
+				)
+			: []
+	);
+
+	// An account whose every provider is server-managed (the litellm shim) is
+	// read-only as a whole; per-provider buttons key off each row's `managed`.
+	const isManaged = (a: OAuthAccount) => a.providers.length > 0 && a.providers.every((p) => p.managed);
+
+	// Native OAuth flows save via finishOAuthLogin (the pasted-code exchange).
+	const oauthSaves = $derived(
+		editor !== null &&
+			(editor?.mode === 'create' || editor?.mode === 'add-provider' || reauthing) &&
+			!isCompatible &&
+			oauthNonce !== null &&
+			!showAdvanced
+	);
+
+	const modalTitle = $derived(
+		editor?.mode === 'create'
+			? 'New account'
+			: editor?.mode === 'add-provider'
+				? `Add provider to "${editingAccount?.name ?? ''}"`
+				: editor?.mode === 'edit-account'
+					? 'Edit account'
+					: reauthing
+						? 'Reauthenticate provider'
+						: `Edit ${providerLabel(editingProvider?.provider ?? '')} provider`
+	);
 </script>
 
 <Heading level={1} class="page-title">Accounts</Heading>
@@ -400,78 +516,68 @@
 			<Cluster class="bar" justify="space-between" align="center" gap="var(--sp-3)">
 				<Text as="p" tone="muted" size="sm" class="intro">
 					Named accounts for Claude and Codex, plus self-hosted OpenAI/Anthropic-compatible
-					endpoints. Pick one per job at spawn time; the session runs through a passthrough
-					gateway under that account. Tokens are stored encrypted and never shown again.
+					endpoints. An account can hold one credential per provider family; pick one per job
+					at spawn time and the session runs through a passthrough gateway under it. Tokens
+					are stored encrypted and never shown again.
 				</Text>
 				<Button control variant="primary" onclick={openCreate}>+ New account</Button>
 			</Cluster>
 
 			{#if $accounts.isLoading}
-	<div class="empty"><span class="spin"></span></div>
-{:else if rows.length === 0}
-	<div class="empty"><Text tone="muted">No accounts yet.</Text></div>
-{:else}
-	<AutoGrid min="22rem" gap="var(--sp-3)">
-		{#each rows as a (a.id)}
-			<!-- TODO(CCT-560): the card still renders a single credential — the first
-			     provider row — until the accounts UI is redesigned for
-			     multi-provider identities. -->
-			{@const p = primaryProvider(a)}
-			<Card class="account-card">
-				<Stack gap="var(--sp-3)" class="card-body">
-					<Cluster gap="var(--sp-2)" align="center" wrap={false}>
-						<span class="provider-mark" title={providerLabel(p?.provider ?? '')}>
-							<AdapterIcon provider={p?.provider ?? ''} size={22} />
-						</span>
-						<Heading level={2} size="lg" class="account-name">{a.name}</Heading>
-					</Cluster>
-					{#if p?.needs_reauth}
-						<!-- Credential rejected (CCT-512): the gateway saw the upstream
-						     provider reject this account's OAuth grant. -->
-						<div class="reauth-banner" title={p.last_auth_error ?? undefined}>
-							<Text as="span" size="xs">⚠ Credential rejected — reauthenticate</Text>
-						</div>
-					{/if}
-					{#if p && (p.provider === 'anthropic' || p.provider === 'openai')}
-						<div class="usage-block">
-							<Text as="div" tone="muted" size="xs" class="usage-head">Subscription usage</Text>
-							<UsageBars
-								id={p.id}
-								provider={p.provider}
-								cap5h={p.soft_limit_5h_pct}
-								cap7d={p.soft_limit_7d_pct}
-							/>
-						</div>
-					{/if}
-					<dl class="stats">
-						{#if isAdmin}
-							<div><dt>Owner</dt><dd>{a.user_name ?? '—'}</dd></div>
-						{/if}
-						<div><dt>Requests</dt><dd>{compact(p?.request_count ?? 0)}</dd></div>
-						<div><dt>Last used</dt><dd><Timestamp value={p?.last_used_at ?? null} mode="relative" tone="inherit" /></dd></div>
-						<div><dt>Created</dt><dd><Timestamp value={a.created_at} mode="date" tone="inherit" /></dd></div>
-					</dl>
-					{#if !p?.managed && (isAdmin || a.user_id === $me.data?.user_id)}
-						<!-- Sharing management (CCT-510): owner-only surface to view/grant/
-						     revoke who may USE this account. The list endpoint is
-						     owner-scoped, so only render (and fetch) it for the owner/admin. -->
-						<AccountShares id={a.id} enabled={tab === 'ai'} />
-					{/if}
-				</Stack>
-				<Cluster as="footer" gap="var(--sp-1)" justify="flex-end" class="card-foot">
-					{#if p?.managed}
-						<Text tone="faint" size="xs">Managed (read-only)</Text>
-					{:else}
-						{#if p?.needs_reauth && !p.provider.endsWith('-compatible')}
-							<Button variant="primary" onclick={() => reauth(a)}>Reauthenticate</Button>
-						{/if}
-						<Button onclick={() => openEdit(a)}>Edit</Button>
-						<Button variant="danger" onclick={() => remove(a)}>Delete</Button>
-					{/if}
-				</Cluster>
-			</Card>
-		{/each}
-	</AutoGrid>
+				<div class="empty"><span class="spin"></span></div>
+			{:else if rows.length === 0}
+				<div class="empty"><Text tone="muted">No accounts yet.</Text></div>
+			{:else}
+				<AutoGrid min="22rem" gap="var(--sp-3)">
+					{#each rows as a (a.id)}
+						<Card class="account-card">
+							<Stack gap="var(--sp-3)" class="card-body">
+								<Heading level={2} size="lg" class="account-name">{a.name}</Heading>
+
+								<!-- One panel per provider credential (CCT-560). -->
+								{#each a.providers as p (p.id)}
+									<ProviderPanel
+										provider={p}
+										usageEnabled={tab === 'ai'}
+										canManage={!p.managed}
+										canRemove={!p.managed}
+										onedit={() => openEditProvider(a, p)}
+										onreauth={() => reauth(a, p)}
+										onremove={() => removeProvider(a, p)}
+									/>
+								{:else}
+									<Text tone="faint" size="sm">No provider credentials yet.</Text>
+								{/each}
+								{#if !isManaged(a) && availableKinds(a).length}
+									<Button size="sm" style="align-self: flex-start" onclick={() => openAddProvider(a)}>
+										+ Add provider
+									</Button>
+								{/if}
+
+								<dl class="stats">
+									{#if isAdmin}
+										<div><dt>Owner</dt><dd>{a.user_name ?? '—'}</dd></div>
+									{/if}
+									<div><dt>Created</dt><dd><Timestamp value={a.created_at} mode="date" tone="inherit" /></dd></div>
+								</dl>
+								{#if !isManaged(a) && (isAdmin || a.user_id === $me.data?.user_id)}
+									<!-- Sharing management (CCT-510): owner-only surface to view/grant/
+									     revoke who may USE this account. The list endpoint is
+									     owner-scoped, so only render (and fetch) it for the owner/admin. -->
+									<AccountShares id={a.id} enabled={tab === 'ai'} />
+								{/if}
+							</Stack>
+							<Cluster as="footer" gap="var(--sp-1)" justify="flex-end" class="card-foot">
+								{#if isManaged(a)}
+									<Text tone="faint" size="xs">Managed (read-only)</Text>
+								{:else}
+									<Button onclick={() => openEditAccount(a)}>Edit</Button>
+									<Button variant="danger" onclick={() => removeAccount(a)}>Delete</Button>
+								{/if}
+							</Cluster>
+						</Card>
+					{/each}
+				</AutoGrid>
 			{/if}
 		{:else if id === 'connectors'}
 			<GithubConnectors />
@@ -481,14 +587,16 @@
 	{/snippet}
 </Tabs>
 
-{#if editing !== undefined}
-	<Modal title={reauthing ? 'Reauthenticate account' : editing ? 'Edit account' : 'New account'} onclose={close}>
+{#if editor !== null}
+	<Modal title={modalTitle} onclose={close}>
 		{#snippet body()}
 			<div class="editor-body">
-				<Field label="Name">
-					<Input bind:value={name} placeholder="personal" />
-				</Field>
-				{#if !editing && isAdmin}
+				{#if editor?.mode === 'create' || editor?.mode === 'edit-account'}
+					<Field label="Name">
+						<Input bind:value={name} placeholder="personal" />
+					</Field>
+				{/if}
+				{#if editor?.mode === 'create' && isAdmin}
 					<Field label="Owner">
 						<Select bind:value={ownerId}>
 							{#each activeUsers as u (u.id)}
@@ -497,7 +605,7 @@
 						</Select>
 					</Field>
 				{/if}
-				{#if !editing}
+				{#if editor?.mode === 'create' || editor?.mode === 'add-provider'}
 					<Field label="Provider">
 						<Select
 							bind:value={provider}
@@ -506,29 +614,38 @@
 								oauthCode = '';
 							}}
 						>
-							<option value="anthropic">Claude (anthropic)</option>
-							<option value="openai">Codex (openai)</option>
-							<option value="anthropic-compatible">Anthropic-compatible endpoint</option>
-							<option value="openai-compatible">OpenAI-compatible endpoint</option>
+							{#each editor?.mode === 'add-provider' && editingAccount ? availableKinds(editingAccount) : PROVIDER_KINDS.map((k) => k.value) as v (v)}
+								<option value={v}>{PROVIDER_KINDS.find((k) => k.value === v)?.label ?? v}</option>
+							{/each}
 						</Select>
 					</Field>
 				{/if}
 
-				{#if isCompatible}
+				{#if editor?.mode === 'edit-account'}
+					<!-- Identity half (CCT-560): the write-only extra env lives on the
+					     account; provider settings are edited per provider. -->
+					<AccountSettingsEditor
+						bind:envRows={acctEnvRows}
+						bind:replaceEnv={acctReplaceEnv}
+						showSettings={false}
+					/>
+				{:else}
+					{#if isCompatible}
 						<!-- Compatible endpoint (CCT-399): base URL + a static credential +
 						     a model list. No OAuth; the gateway forwards the credential and
 						     skips refresh. On edit (CCT-402) the model list is editable in
 						     place; base URL / credential / scheme are write-only — blank or
 						     "keep" leaves the stored value untouched. -->
+						{@const isEdit = editor?.mode === 'edit-provider'}
 						<Field label="Base URL">
 							<Input
 								bind:value={baseUrl}
-								placeholder={editing ? 'leave blank to keep current' : 'https://litellm.example/v1'}
+								placeholder={isEdit ? 'leave blank to keep current' : 'https://litellm.example/v1'}
 							/>
 						</Field>
 						<Field label="Auth scheme">
 							<Select bind:value={authScheme}>
-								{#if editing}
+								{#if isEdit}
 									<option value="keep">Keep current</option>
 								{/if}
 								<option value="bearer">Bearer token</option>
@@ -539,7 +656,7 @@
 							<Input
 								type="password"
 								bind:value={credential}
-								placeholder={editing
+								placeholder={isEdit
 									? 'leave blank to keep current'
 									: 'bearer / API key (blank for an open proxy)'}
 							/>
@@ -562,9 +679,9 @@
 								>+ Add model</Button
 							>
 						</div>
-					{:else if !editing || reauthing}
+					{:else if editor?.mode === 'create' || editor?.mode === 'add-provider' || reauthing}
 						<!-- Sign in with Claude / ChatGPT: authorize upstream, paste back.
-						     Also shown when reauthenticating an existing account (CCT-512). -->
+						     Also shown when reauthenticating an existing provider (CCT-512). -->
 						{#if !oauthNonce}
 							<Button
 								variant="primary"
@@ -600,21 +717,23 @@
 								>
 							</Text>
 						{/if}
-						<details bind:open={showAdvanced} class="adv">
-							<summary><Text tone="muted" size="sm">Advanced: paste a refresh token instead</Text></summary>
-							<Field label="OAuth refresh token" class="adv-fld">
-								<Input
-									type="password"
-									bind:value={refreshToken}
-									placeholder="paste the OAuth refresh token"
-								/>
-							</Field>
-						</details>
+						{#if !reauthing}
+							<details bind:open={showAdvanced} class="adv">
+								<summary><Text tone="muted" size="sm">Advanced: paste a refresh token instead</Text></summary>
+								<Field label="OAuth refresh token" class="adv-fld">
+									<Input
+										type="password"
+										bind:value={refreshToken}
+										placeholder="paste the OAuth refresh token"
+									/>
+								</Field>
+							</details>
+						{/if}
 					{/if}
 
 					<!-- Model aliases (CCT-406): logical name -> concrete model code,
 					     resolved server-side at spawn; works for every provider. -->
-					{#if editing || isCompatible}
+					{#if editor?.mode === 'edit-provider' || isCompatible}
 						<div class="models">
 							<Text as="div" tone="muted" size="sm">Model aliases</Text>
 							<Text as="div" tone="faint" size="xs">
@@ -667,21 +786,49 @@
 						</div>
 					{/if}
 
-					<!-- Per-account settings + env (CCT-541). Edit only (persisted via
-					     PATCH); the create flow signs in first. -->
-					{#if editing && editingAccount}
-						<AccountSettingsEditor
-							bind:settings={acctSettings}
-							bind:envRows={acctEnvRows}
-							bind:replaceEnv={acctReplaceEnv}
-						/>
+					<!-- Per-provider settings (CCT-541/CCT-560). Only the claude-code
+					     harness has an injectable settings.json today, so only
+					     anthropic-family providers get the toggle list. -->
+					{#if editor?.mode === 'edit-provider' && editingProvider}
+						{#if editingProvider.family === 'anthropic'}
+							<AccountSettingsEditor bind:settings={acctSettings} showEnv={false} />
+						{:else}
+							<Text tone="faint" size="sm">
+								No per-provider settings for Codex yet — model aliases and soft
+								limits above are the available knobs.
+							</Text>
+						{/if}
+
+						<!-- Move (CCT-558): re-parent this credential onto another account of
+						     the same owner — the merge path for migrated split rows. -->
+						{#if !reauthing && moveTargets.length}
+							<div class="models">
+								<Text as="div" tone="muted" size="sm">Move to another account</Text>
+								<Text as="div" tone="faint" size="xs">
+									Re-parent this credential onto another of this owner's accounts
+									(e.g. merging "alice (anthropic)" + "alice (openai)" into one
+									"alice"). Only accounts with a free {editingProvider.family} slot
+									are listed.
+								</Text>
+								<div class="move-row">
+									<Select bind:value={moveTarget}>
+										<option value="">Pick an account…</option>
+										{#each moveTargets as t (t.id)}
+											<option value={t.id}>{t.name}</option>
+										{/each}
+									</Select>
+									<Button disabled={!moveTarget} onclick={moveProvider}>Move</Button>
+								</div>
+							</div>
+						{/if}
 					{/if}
+				{/if}
 			</div>
 		{/snippet}
 		{#snippet footer()}
 			<div class="spacer"></div>
 			<Button onclick={close}>Cancel</Button>
-			{#if (!editing || reauthing) && oauthNonce && !showAdvanced}
+			{#if oauthSaves}
 				<Button variant="primary" disabled={oauthBusy} onclick={finishOAuthLogin}>Save</Button>
 			{:else}
 				<Button variant="primary" onclick={save}>Save</Button>
@@ -702,22 +849,9 @@
 	:global(.bar .intro) {
 		max-width: 60ch;
 	}
-	/* Provider brand mark — keeps the AdapterIcon's own tint (amber/blue) but
-	   gives it a soft tile so it reads as an avatar, not inline text. */
-	.provider-mark {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		flex: none;
-		width: 2.25rem;
-		height: 2.25rem;
-		border-radius: var(--r-sm);
-		background: var(--bg-elevated-2);
-		border: 1px solid var(--border);
-	}
 	/* Cards stretch to the tallest in their row (AutoGrid), then the body grows
 	   so the footer's action buttons pin to the bottom edge — consistent across
-	   cards regardless of whether a usage block is present. */
+	   cards regardless of how many provider panels are present. */
 	:global(.account-card) {
 		display: flex;
 		flex-direction: column;
@@ -747,30 +881,7 @@
 		gap: 0.25rem;
 		min-width: 0;
 	}
-	.usage-block {
-		display: flex;
-		flex-direction: column;
-		gap: var(--sp-2);
-		padding: var(--sp-3);
-		border: 1px solid var(--border);
-		border-radius: var(--r-sm);
-		background: var(--bg-elevated-2);
-	}
-	/* Credential-rejected banner (CCT-512): a muted danger strip on the card. */
-	.reauth-banner {
-		padding: var(--sp-1) var(--sp-2);
-		border: 1px solid var(--danger, #d9534f);
-		border-radius: var(--r-sm);
-		background: color-mix(in srgb, var(--danger, #d9534f) 12%, transparent);
-		color: var(--danger, #d9534f);
-	}
-	/* Passed to a Text atom (renders inside it), so target globally. Size/colour
-	   come from Text; the page owns only the uppercase treatment. */
-	.usage-block :global(.usage-head) {
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-	}
-	/* Lightweight stat list — label over value, no input-like chrome (CCT-345). */
+	/* Account-level stat list — label over value, no input-like chrome (CCT-345). */
 	.stats {
 		display: grid;
 		grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));
@@ -808,6 +919,12 @@
 	.model-row {
 		display: grid;
 		grid-template-columns: 1fr 1fr auto;
+		gap: var(--sp-2);
+		align-items: center;
+	}
+	.move-row {
+		display: grid;
+		grid-template-columns: 1fr auto;
 		gap: var(--sp-2);
 		align-items: center;
 	}

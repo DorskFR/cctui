@@ -158,10 +158,10 @@ export interface OAuthAccount {
   // over the API (may hold secrets), exactly like the OAuth tokens.
 }
 
-/** TODO(CCT-560): single-provider back-compat. The UI still treats an account
- *  as one credential; until the accounts/spawn surfaces are redesigned for
- *  multi-provider identities (CCT-560/CCT-562), read the first provider row.
- *  Migrated pre-CCT-558 accounts have exactly one, so behavior is unchanged. */
+/** TODO(CCT-562): single-provider back-compat for the SPAWN surfaces. The
+ *  accounts page renders the full provider array (CCT-560); the spawn/dispatch
+ *  pickers still assume one credential per account and read the first provider
+ *  row until they grow a provider dimension. */
 export const primaryProvider = (a: OAuthAccount): AccountProvider | undefined => a.providers[0];
 
 /** One usage window from Anthropic's free OAuth usage API (CCT-306):
@@ -213,6 +213,30 @@ export interface CreateAccount {
   soft_limit_5h_pct?: number | null;
   soft_limit_7d_pct?: number | null;
   soft_limit_bypass_minutes?: number | null;
+}
+
+/** Provider create/attach payload (CCT-558): `POST /accounts/{id}/providers`.
+ *  The pasted-token / compatible-endpoint path — the native OAuth flows attach
+ *  via `oauth/start`'s `account_id` instead. 409 when the account already has
+ *  a provider of the same family (anthropic/openai). */
+export interface CreateProvider {
+  provider: string;
+  /** OAuth refresh token (native subscription providers). */
+  refresh_token?: string;
+  /** Initial access token (native) OR the static credential for a compatible
+   *  endpoint (CCT-399). */
+  access_token?: string;
+  expires_at?: number;
+  /** Compatible-endpoint base URL (CCT-399); required for `*-compatible`. */
+  base_url?: string;
+  models?: AccountModel[];
+  model_aliases?: Record<string, string>;
+  /** `bearer` | `api_key` for a compatible endpoint (CCT-399). */
+  auth_scheme?: string;
+  soft_limit_5h_pct?: number | null;
+  soft_limit_7d_pct?: number | null;
+  soft_limit_bypass_minutes?: number | null;
+  settings_json?: Record<string, unknown>;
 }
 
 /** Identity-level edit payload (CCT-558): rename and/or replace the write-only
@@ -431,6 +455,19 @@ export const endpoints = {
   /** Edit one provider credential under an account (CCT-558). */
   updateProvider: (accountId: string, providerId: string, body: UpdateProvider) =>
     api.patch<AccountProvider>(`/accounts/${accountId}/providers/${providerId}`, body),
+  /** Attach a provider credential to an existing account (CCT-558): the
+   *  pasted-token / compatible-endpoint path. 409 on a family collision. */
+  addProvider: (accountId: string, body: CreateProvider) =>
+    api.post<AccountProvider>(`/accounts/${accountId}/providers`, body),
+  /** Remove one provider credential; the identity + other providers stay. */
+  deleteProvider: (accountId: string, providerId: string) =>
+    api.del<void>(`/accounts/${accountId}/providers/${providerId}`),
+  /** Re-parent a provider onto another account of the same owner (CCT-558's
+   *  manual merge for the migration's one-account-per-old-row backfill). */
+  moveProvider: (accountId: string, providerId: string, targetAccountId: string) =>
+    api.post<AccountProvider>(`/accounts/${accountId}/providers/${providerId}/move`, {
+      target_account_id: targetAccountId,
+    }),
   deleteAccount: (id: string) => api.del<void>(`/accounts/${id}`),
   /** Current subscription usage for an account (CCT-306). Free + tokenless;
    *  the server slow-refreshes a cache so polling never spams upstream. */
@@ -1390,6 +1427,20 @@ export function useAccountActions() {
     },
     updateProvider: async (accountId: string, providerId: string, body: UpdateProvider) => {
       const r = await endpoints.updateProvider(accountId, providerId, body);
+      inval();
+      return r;
+    },
+    addProvider: async (accountId: string, body: CreateProvider) => {
+      const r = await endpoints.addProvider(accountId, body);
+      inval();
+      return r;
+    },
+    removeProvider: async (accountId: string, providerId: string) => {
+      await endpoints.deleteProvider(accountId, providerId);
+      inval();
+    },
+    moveProvider: async (accountId: string, providerId: string, targetAccountId: string) => {
+      const r = await endpoints.moveProvider(accountId, providerId, targetAccountId);
       inval();
       return r;
     },

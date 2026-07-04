@@ -34,15 +34,21 @@
 	}
 
 	let {
-		settings = $bindable(),
-		envRows = $bindable(),
+		settings = $bindable({}),
+		envRows = $bindable([]),
 		// When true, `env_json` is sent on save (replacing/clearing the stored env);
 		// when false the stored env is left untouched. Flipped on by any edit here.
-		replaceEnv = $bindable()
+		replaceEnv = $bindable(false),
+		// CCT-560 split: `settings_json` lives on a provider row, `env_json` on the
+		// account identity — the two edit modals each show only their half.
+		showSettings = true,
+		showEnv = true
 	}: {
-		settings: Record<string, unknown>;
-		envRows: EnvRow[];
-		replaceEnv: boolean;
+		settings?: Record<string, unknown>;
+		envRows?: EnvRow[];
+		replaceEnv?: boolean;
+		showSettings?: boolean;
+		showEnv?: boolean;
 	} = $props();
 
 	// --- Boolean settings tri-state (Default / On / Off) -----------------------
@@ -117,28 +123,44 @@
 	}
 
 	// --- Quiet defaults preset -------------------------------------------------
+	// Applies only the visible halves (CCT-560): the settings preset in the
+	// provider modal, the env preset in the identity modal.
 	function applyQuietDefaults() {
-		settings = { ...settings, ...QUIET_DEFAULTS.settings };
-		// Merge the preset env into the editor rows (replace matching names).
-		const byName = new Map(envRows.map((r) => [r.name, r]));
-		for (const [name, value] of Object.entries(QUIET_DEFAULTS.env)) {
-			byName.set(name, { name, value });
+		if (showSettings) settings = { ...settings, ...QUIET_DEFAULTS.settings };
+		if (showEnv) {
+			// Merge the preset env into the editor rows (replace matching names).
+			const byName = new Map(envRows.map((r) => [r.name, r]));
+			for (const [name, value] of Object.entries(QUIET_DEFAULTS.env)) {
+				byName.set(name, { name, value });
+			}
+			envRows = [...byName.values()];
+			replaceEnv = true;
 		}
-		envRows = [...byName.values()];
-		replaceEnv = true;
 	}
 </script>
 
 <div class="settings-editor">
 	<div class="head">
-		<Text as="div" weight="semibold" size="sm">Account settings &amp; environment</Text>
+		<Text as="div" weight="semibold" size="sm">
+			{showSettings && showEnv
+				? 'Account settings & environment'
+				: showSettings
+					? 'Provider settings'
+					: 'Extra environment'}
+		</Text>
 		<Button onclick={applyQuietDefaults}>Quiet defaults</Button>
 	</div>
 	<Text as="p" tone="faint" size="xs">
-		Applied to every session run under this account. Only low-risk, per-account
-		settings are exposed; the server rejects org-managed keys.
+		{#if showSettings}
+			Applied to every session run under this provider. Only low-risk settings
+			are exposed; the server rejects org-managed keys.
+		{:else}
+			Applied to every session run under this account. Values are stored
+			encrypted and never shown again.
+		{/if}
 	</Text>
 
+	{#if showSettings}
 	<!-- Boolean toggle list (CCT-541), grouped. Tri-state: Default / On / Off. -->
 	<div class="block">
 		<Text as="div" tone="muted" size="sm">Settings toggles</Text>
@@ -204,11 +226,16 @@
 		{#if rawError}<Error>{rawError}</Error>{/if}
 		<Button onclick={applyRawJson} disabled={!rawJson.trim()}>Merge JSON</Button>
 	</div>
+	{/if}
 
+	{#if showEnv}
 	<!-- Curated env editor (CCT-541). WRITE-ONLY: stored values are never returned,
-	     so this only sets new ones. -->
+	     so this only sets new ones. The block title dedupes against the editor
+	     head when env is the only section shown (CCT-560). -->
 	<div class="block">
-		<Text as="div" tone="muted" size="sm">Extra environment (write-only)</Text>
+		{#if showSettings}
+			<Text as="div" tone="muted" size="sm">Extra environment (write-only)</Text>
+		{/if}
 		<Text as="div" tone="faint" size="xs">
 			Only allowlisted vars. Values are stored encrypted and never shown again —
 			this editor can only set or clear them, not display what's stored.
@@ -250,6 +277,7 @@
 		{/if}
 		<Button onclick={addEnvRow}>+ Add env var</Button>
 	</div>
+	{/if}
 </div>
 
 <style>
