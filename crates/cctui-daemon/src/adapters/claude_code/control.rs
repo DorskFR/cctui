@@ -1068,6 +1068,70 @@ impl Driver {
         // in-flight latch and resetting the budget.
     }
 
+    /// Verify a trusted worker actually RECEIVED the gateway env it was
+    /// dispatched with (CCT-574).
+    ///
+    /// `note_launched_with_env` records trust on dispatch `ok: true`, but
+    /// delivery can fail inside the claude daemon (observed: a worker claimed
+    /// from the pre-warmed spare pool exec'd without the dispatch `env`). On a
+    /// desktop daemon that failure is SILENT — the worker falls back to the
+    /// machine's ambient `~/.claude` login and bills whatever account that is,
+    /// while the session's recorded account never sees the traffic. Worse, the
+    /// CCT-462 heal loops forever on it: every "successful" cold-resume
+    /// re-records trust, the delivery fails again, and the cycle repeats.
+    ///
+    /// So: for each trusted worker whose launch env carried a gateway token
+    /// (`verify_hash`), check the live process environment actually holds that
+    /// token (`envcheck`, Linux `/proc`; other platforms are indeterminate and
+    /// keep the old behaviour). A confirmed miss ([`ENV_VERIFY_STRIKES`]
+    /// consecutive polls) revokes trust — the regular heal retries delivery —
+    /// bounded by the delivery-failure budget, which `note_launched_with_env`
+    /// does NOT reset; at the cap the session parks with one loud error
+    /// instead of thrashing.
+    ///
+    /// [`ENV_VERIFY_STRIKES`]: crate::gateway_heal::ENV_VERIFY_STRIKES
+    fn verify_env_delivery(&self, short: &str, local_id: &str) {
+        // Cheap gate: only trusted, token-carrying, not-yet-verified launches
+        // within the delivery budget are checked (the common steady state is a
+        // single scan right after launch, then verified → no-op).
+        let Some(want_hash) = self.gateway_heal.lock().ok().and_then(|t| t.verify_hash(short))
+        else {
+            return;
+        };
+        // Indeterminate (no process found / non-Linux): try again next poll.
+        let Some(carries) = super::envcheck::worker_carries_token(short, &want_hash) else {
+            return;
+        };
+        if carries {
+            if let Ok(mut t) = self.gateway_heal.lock() {
+                t.note_env_observed(short);
+            }
+            tracing::debug!(%short, %local_id, "gateway env delivery verified in worker process");
+            return;
+        }
+        let verdict = match self.gateway_heal.lock() {
+            Ok(mut t) => t.note_env_missing(short),
+            Err(_) => return,
+        };
+        match verdict {
+            crate::gateway_heal::EnvMissing::Strike => {}
+            crate::gateway_heal::EnvMissing::Revoked => tracing::warn!(
+                %short, %local_id,
+                "dispatched gateway env NEVER REACHED the worker process (claude-daemon \
+                 env-delivery failure) — revoking trust so the heal re-delivers (CCT-574)"
+            ),
+            crate::gateway_heal::EnvMissing::Exhausted => tracing::error!(
+                %short, %local_id,
+                "🔴 gateway env delivery failed {} times — PARKING the session: its worker is \
+                 running WITHOUT gateway credentials and, on a desktop daemon, is silently \
+                 consuming the machine's ambient login instead of its bound account. Kill and \
+                 respawn the session, and investigate the claude-daemon spare-claim env drop \
+                 (CCT-574).",
+                crate::gateway_heal::MAX_DELIVERY_FAILURES,
+            ),
+        }
+    }
+
     /// Low-frequency token-validity sweep for TRUSTED workers (CCT-462 finish).
     ///
     /// The env-less heal above only targets workers cctui did NOT launch — a
@@ -1701,14 +1765,19 @@ impl Driver {
     /// Record (CCT-462) that cctui ITSELF dispatched worker `short` through the
     /// launch chokepoint, so the proactive heal never force-kills it. The trust
     /// signal is "cctui launched this worker", NOT "with non-empty env": a
-    /// session bound to the user's own subscription account (e.g. `personal`)
-    /// resolves to an EMPTY gateway env — it routes via the user's own
-    /// credentials, not a gateway-minted token — yet is still a worker cctui
-    /// launched and must never be healed. Recording only non-empty launches
-    /// misclassified those as autonomous respawns and force-killed healthy live
-    /// sessions (the v0.7.47 regression). The heal's real target — a LEGACY
-    /// session present in the roster at daemon startup that cctui never launched
-    /// this lifetime — is untouched (it stays un-recorded → a candidate).
+    /// session with no account binding legitimately resolves to an EMPTY
+    /// gateway env — it routes via the machine's own ambient credentials — yet
+    /// is still a worker cctui launched and must never be healed. Recording
+    /// only non-empty launches misclassified those as autonomous respawns and
+    /// force-killed healthy live sessions (the v0.7.47 regression). The heal's
+    /// real target — a LEGACY session present in the roster at daemon startup
+    /// that cctui never launched this lifetime — is untouched (it stays
+    /// un-recorded → a candidate).
+    ///
+    /// Trust is additionally VERIFIED after the fact (CCT-574): for launches
+    /// whose env carried a token, the poll loop checks the live process really
+    /// received it (`verify_env_delivery`) — dispatch success alone proved
+    /// nothing when the claude daemon's spare claim dropped the env.
     ///
     /// When the env carries a gateway session token
     /// (`ANTHROPIC_AUTH_TOKEN` / `OPENAI_API_KEY`) its sha256 hex is recorded
@@ -2097,6 +2166,15 @@ impl Driver {
             // so the server round-trip only fires for the rare autonomous-respawn
             // case. Bounded/idempotent via `HealTracker`; see `gateway_heal`.
             self.maybe_heal_gateway_env(&job.short, &local_id).await;
+
+            // Verify env DELIVERY for workers cctui just launched with a
+            // gateway token (CCT-574): dispatch `ok: true` is not proof the
+            // worker process actually carries the env — the claude daemon's
+            // spare-claim path has been observed exec'ing workers without it,
+            // silently falling back to the machine's ambient login. A confirmed
+            // miss revokes trust so the heal above retries delivery, bounded by
+            // the delivery-failure budget (no more infinite heal↔resume loops).
+            self.verify_env_delivery(&job.short, &local_id);
 
             // Surface (or clear) a tool-permission prompt from the live
             // `tempo`/`needs` signal (CCT-211), before the Status emit below.

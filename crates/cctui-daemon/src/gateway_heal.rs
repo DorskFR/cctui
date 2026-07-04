@@ -10,9 +10,12 @@
 //! BUT the on-demand `claude daemon` can autonomously respawn a LIVE worker on
 //! its OWN restart, bypassing the chokepoint entirely. A LEGACY session whose
 //! worker carried no claude-side `reattachEnv` then comes back env-less; cctui
-//! sees it as "alive" in the `list` roster and won't re-resume an alive worker,
-//! so it routes to the default upstream and 401s until its next genuine
-//! cold-resume (worker death + user reply). Observed: a session reported
+//! sees it as "alive" in the `list` roster and won't re-resume an alive worker.
+//! On k8s that worker 401s; on a DESKTOP daemon it is worse — it silently falls
+//! back to the machine's ambient `~/.claude` login and bills whatever account
+//! that is, invisible to the gateway (CCT-574). Either way it stays broken
+//! until its next genuine cold-resume (worker death + user reply). Observed: a
+//! session reported
 //! `account_bound: true` by the server while its live worker had lost gateway
 //! env after a claude-daemon autonomous respawn.
 //!
@@ -68,6 +71,24 @@
 //! the SAME bounded heal machinery (latch + attempt budget); a `valid: true`
 //! ([`HealTracker::note_token_valid`]) resets the strikes. Probe errors are
 //! "unknown", never invalid — the heal kill is destructive, so it fails open.
+//!
+//! ## Env-delivery verification (CCT-574)
+//!
+//! Trust used to be recorded on dispatch `ok: true` alone — but delivery can
+//! fail INSIDE the claude daemon (observed: a worker claimed from the pre-warmed
+//! spare pool exec'd without the dispatch `env`, so an account-bound session ran
+//! on the machine's ambient login while cctui believed it launched with env, and
+//! the heal↔cold-resume cycle looped forever because every "successful" heal
+//! re-recorded trust). So the poll loop now VERIFIES delivery: for a trusted
+//! worker whose launch env carried a gateway token, it checks the live worker
+//! process actually carries that token ([`HealTracker::verify_hash`] →
+//! `/proc/<pid>/environ` on Linux). A confirmed miss ([`ENV_VERIFY_STRIKES`]
+//! consecutive polls, [`HealTracker::note_env_missing`]) revokes trust so the
+//! regular heal machinery retries delivery — but each confirmed miss also burns
+//! a `delivery_failures` point that `note_launched_with_env` does NOT reset;
+//! at [`MAX_DELIVERY_FAILURES`] the session is parked with one loud error
+//! instead of thrashing. A verified delivery ([`HealTracker::note_env_observed`])
+//! clears the budget.
 
 use std::collections::HashMap;
 
@@ -88,6 +109,37 @@ pub const MAX_HEAL_ATTEMPTS: u8 = 3;
 /// the probe), and the heal is a destructive kill + cold-resume; a token that
 /// stays unresolvable across two sweeps (~2 min apart) is genuinely orphaned.
 pub const STALE_TOKEN_STRIKES: u8 = 2;
+
+/// Consecutive polls observing the live worker process WITHOUT its expected
+/// gateway token before trust is revoked (CCT-574).
+///
+/// Two on purpose: a single miss could race the worker's exec or a mid-claim
+/// respawn.
+pub const ENV_VERIFY_STRIKES: u8 = 2;
+
+/// Confirmed env-delivery failures before the session is PARKED (CCT-574).
+///
+/// A confirmed failure means the dispatch carried gateway env yet the worker
+/// process demonstrably runs without it, and each one already cost a kill +
+/// cold-resume retry. Past this cap the delivery path itself is broken (e.g.
+/// the claude daemon's spare claim dropping dispatch env) and further kills
+/// only churn the session while it consumes the machine's ambient login —
+/// park it and say so loudly.
+pub const MAX_DELIVERY_FAILURES: u8 = 3;
+
+/// Outcome of an observed env-delivery miss (CCT-574); tells the caller what to
+/// log. See [`HealTracker::note_env_missing`].
+#[derive(Debug, PartialEq, Eq)]
+pub enum EnvMissing {
+    /// Below the strike threshold (or the worker isn't verifiable) — no action.
+    Strike,
+    /// Trust revoked: the worker provably lacks its gateway env. The regular
+    /// env-less heal will kill + cold-resume it on the next poll.
+    Revoked,
+    /// Trust revoked AND the delivery budget is spent: parked, no more heals.
+    /// The session is running on ambient credentials — log loudly.
+    Exhausted,
+}
 
 /// Per-session heal bookkeeping.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -113,6 +165,19 @@ struct HealState {
     /// A heal is dispatched and not yet resolved. Suppresses re-triggering on
     /// the polls that elapse while the kill + cold-resume is in progress.
     in_flight: bool,
+    /// The launch env was VERIFIED to have reached the worker process
+    /// (CCT-574). Once set, verification stops for this launch; reset on every
+    /// launched-with-env record so each new launch is re-verified.
+    env_verified: bool,
+    /// Consecutive polls the worker process was observed without its expected
+    /// token (CCT-574). Reset on launch and on a verified observation.
+    env_verify_strikes: u8,
+    /// Confirmed env-delivery failures for this session (CCT-574).
+    /// Deliberately NOT reset by `note_launched_with_env` — the heal's own
+    /// cold-resume records trust, and letting it clear this budget is exactly
+    /// the infinite heal↔cold-resume loop this field exists to break. Cleared
+    /// only by a verified delivery or a roster drop (`forget`).
+    delivery_failures: u8,
 }
 
 /// Bounded, idempotent tracker of which live workers need a forced gateway-env
@@ -146,6 +211,12 @@ impl HealTracker {
         st.stale_token_strikes = 0;
         st.in_flight = false;
         st.attempts = 0;
+        // Each launch is a fresh delivery to verify (CCT-574) — but
+        // `delivery_failures` deliberately survives: the heal's own cold-resume
+        // lands here, and resetting the budget would re-arm the infinite
+        // heal↔cold-resume loop verification exists to break.
+        st.env_verified = false;
+        st.env_verify_strikes = 0;
     }
 
     /// Decide whether a live worker needs a forced re-resume.
@@ -249,6 +320,66 @@ impl HealTracker {
         true
     }
 
+    /// The token hash to VERIFY against the live worker process (CCT-574):
+    /// recorded for a trusted worker whose launch env carried a token, not yet
+    /// verified this launch, no heal in flight, delivery budget not spent.
+    /// `None` otherwise — including hash-less trusted workers (non-account,
+    /// grandfathered), which have nothing to verify.
+    #[must_use]
+    pub fn verify_hash(&self, short: &str) -> Option<String> {
+        self.by_short.get(short).and_then(|st| {
+            (st.launched_with_env
+                && !st.env_verified
+                && !st.in_flight
+                && st.delivery_failures < MAX_DELIVERY_FAILURES)
+                .then(|| st.token_hash.clone())
+                .flatten()
+        })
+    }
+
+    /// Record that the worker process was observed CARRYING its expected
+    /// gateway token (CCT-574): delivery worked, stop verifying this launch,
+    /// and clear the delivery-failure budget — the path is proven good again.
+    pub fn note_env_observed(&mut self, short: &str) {
+        if let Some(st) = self.by_short.get_mut(short) {
+            st.env_verified = true;
+            st.env_verify_strikes = 0;
+            st.delivery_failures = 0;
+        }
+    }
+
+    /// Record that the worker process was observed WITHOUT its expected gateway
+    /// token (CCT-574). Strikes accumulate per poll; at [`ENV_VERIFY_STRIKES`]
+    /// the miss is confirmed: trust is revoked (the regular env-less heal takes
+    /// over next poll) and a `delivery_failures` point is burned. At
+    /// [`MAX_DELIVERY_FAILURES`] the session parks instead — the heal budget is
+    /// zeroed out so neither heal path fires again — and the caller must log
+    /// the ambient-credentials fallout loudly.
+    pub fn note_env_missing(&mut self, short: &str) -> EnvMissing {
+        let Some(st) = self.by_short.get_mut(short) else { return EnvMissing::Strike };
+        // Only a trusted, unverified worker accumulates strikes; anything else
+        // is (or will be) the env-less heal path's business.
+        if !st.launched_with_env || st.env_verified || st.token_hash.is_none() {
+            return EnvMissing::Strike;
+        }
+        st.env_verify_strikes = st.env_verify_strikes.saturating_add(1);
+        if st.env_verify_strikes < ENV_VERIFY_STRIKES {
+            return EnvMissing::Strike;
+        }
+        // Confirmed: the dispatch claimed success but the process runs bare.
+        st.launched_with_env = false;
+        st.token_hash = None;
+        st.env_verify_strikes = 0;
+        st.delivery_failures = st.delivery_failures.saturating_add(1);
+        if st.delivery_failures >= MAX_DELIVERY_FAILURES {
+            // Park hard: exhaust the heal budget so `should_heal` /
+            // `note_token_invalid` refuse from here on.
+            st.attempts = MAX_HEAL_ATTEMPTS;
+            return EnvMissing::Exhausted;
+        }
+        EnvMissing::Revoked
+    }
+
     /// Whether `short` could conceivably need a heal right now — i.e. cctui has
     /// NOT launched it with env, no heal is in flight, and the budget isn't
     /// exhausted. A cheap, non-mutating pre-filter the caller uses to skip the
@@ -292,7 +423,10 @@ pub fn sha256_hex(token: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{HealTracker, MAX_HEAL_ATTEMPTS, STALE_TOKEN_STRIKES, sha256_hex};
+    use super::{
+        ENV_VERIFY_STRIKES, EnvMissing, HealTracker, MAX_DELIVERY_FAILURES, MAX_HEAL_ATTEMPTS,
+        STALE_TOKEN_STRIKES, sha256_hex,
+    };
 
     #[test]
     fn non_account_bound_never_heals() {
@@ -454,6 +588,116 @@ mod tests {
             assert!(!t.note_token_invalid("aaaa1111"));
         }
         assert!(t.note_token_invalid("aaaa1111"), "fresh budget after re-trust");
+    }
+
+    // ---- env-delivery verification (CCT-574) ----
+
+    #[test]
+    fn verify_hash_stops_after_a_verified_delivery_and_rearms_on_relaunch() {
+        let mut t = HealTracker::new();
+        // Nothing recorded / hash-less launches: nothing to verify.
+        assert_eq!(t.verify_hash("aaaa1111"), None);
+        t.note_launched_with_env("aaaa1111", None);
+        assert_eq!(t.verify_hash("aaaa1111"), None);
+        // Token-carrying launch: verify until observed, then stop.
+        t.note_launched_with_env("aaaa1111", Some("abc".into()));
+        assert_eq!(t.verify_hash("aaaa1111"), Some("abc".into()));
+        t.note_env_observed("aaaa1111");
+        assert_eq!(t.verify_hash("aaaa1111"), None);
+        // A relaunch is a fresh delivery — re-verify.
+        t.note_launched_with_env("aaaa1111", Some("def".into()));
+        assert_eq!(t.verify_hash("aaaa1111"), Some("def".into()));
+    }
+
+    #[test]
+    fn confirmed_env_miss_revokes_trust_after_strikes() {
+        let mut t = HealTracker::new();
+        t.note_launched_with_env("aaaa1111", Some("abc".into()));
+        // One miss could race the worker's exec — no action.
+        for _ in 0..ENV_VERIFY_STRIKES - 1 {
+            assert_eq!(t.note_env_missing("aaaa1111"), EnvMissing::Strike);
+            assert!(!t.should_heal("aaaa1111", true, true), "still trusted below the threshold");
+        }
+        // The confirming miss revokes trust; the regular env-less heal fires.
+        assert_eq!(t.note_env_missing("aaaa1111"), EnvMissing::Revoked);
+        assert_eq!(t.verify_hash("aaaa1111"), None, "trust revoked, nothing to verify");
+        assert!(t.should_heal("aaaa1111", true, true));
+    }
+
+    #[test]
+    fn delivery_failures_survive_relaunch_and_park_at_the_cap() {
+        // The v0.7.x heal loop (CCT-574): heal → cold-resume records trust →
+        // delivery fails again → heal → … forever. The delivery budget must
+        // survive `note_launched_with_env` and park the session at the cap.
+        let mut t = HealTracker::new();
+        for failure in 1..=MAX_DELIVERY_FAILURES {
+            t.note_launched_with_env("aaaa1111", Some("abc".into()));
+            for _ in 0..ENV_VERIFY_STRIKES - 1 {
+                assert_eq!(t.note_env_missing("aaaa1111"), EnvMissing::Strike);
+            }
+            let verdict = t.note_env_missing("aaaa1111");
+            if failure < MAX_DELIVERY_FAILURES {
+                assert_eq!(verdict, EnvMissing::Revoked);
+                // The env-less heal retries delivery (kill + cold-resume, which
+                // will re-record trust at the top of the next iteration).
+                assert!(t.should_heal("aaaa1111", true, true));
+            } else {
+                assert_eq!(verdict, EnvMissing::Exhausted);
+            }
+        }
+        // Parked: untrusted but no heal fires — the loop is broken.
+        assert!(!t.should_heal("aaaa1111", true, true));
+        assert!(t.is_exhausted("aaaa1111"));
+        // And verification stays off even if something re-records trust.
+        t.note_launched_with_env("aaaa1111", Some("def".into()));
+        assert_eq!(t.verify_hash("aaaa1111"), None, "spent delivery budget disables verification");
+    }
+
+    #[test]
+    fn verified_delivery_clears_the_failure_budget() {
+        let mut t = HealTracker::new();
+        // One confirmed failure…
+        t.note_launched_with_env("aaaa1111", Some("abc".into()));
+        for _ in 0..ENV_VERIFY_STRIKES {
+            t.note_env_missing("aaaa1111");
+        }
+        // …then the retry actually lands: budget resets to pristine.
+        t.note_launched_with_env("aaaa1111", Some("def".into()));
+        t.note_env_observed("aaaa1111");
+        for failure in 1..=MAX_DELIVERY_FAILURES {
+            t.note_launched_with_env("aaaa1111", Some("ghi".into()));
+            for _ in 0..ENV_VERIFY_STRIKES - 1 {
+                assert_eq!(t.note_env_missing("aaaa1111"), EnvMissing::Strike);
+            }
+            let verdict = t.note_env_missing("aaaa1111");
+            assert_eq!(
+                verdict,
+                if failure < MAX_DELIVERY_FAILURES {
+                    EnvMissing::Revoked
+                } else {
+                    EnvMissing::Exhausted
+                },
+                "a full budget must be available after a verified delivery"
+            );
+            if failure < MAX_DELIVERY_FAILURES {
+                assert!(t.should_heal("aaaa1111", true, true));
+            }
+        }
+    }
+
+    #[test]
+    fn env_missing_on_untrusted_or_verified_workers_is_inert() {
+        let mut t = HealTracker::new();
+        // Unknown short: inert.
+        assert_eq!(t.note_env_missing("aaaa1111"), EnvMissing::Strike);
+        // Verified launch: inert (no strikes accumulate).
+        t.note_launched_with_env("aaaa1111", Some("abc".into()));
+        t.note_env_observed("aaaa1111");
+        for _ in 0..ENV_VERIFY_STRIKES * 2 {
+            assert_eq!(t.note_env_missing("aaaa1111"), EnvMissing::Strike);
+        }
+        assert_eq!(t.verify_hash("aaaa1111"), None);
+        assert!(!t.should_heal("aaaa1111", true, true), "still trusted");
     }
 
     #[test]

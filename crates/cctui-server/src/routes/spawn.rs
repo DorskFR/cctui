@@ -145,11 +145,23 @@ async fn dispatch_spawn(
     // falls back to the adapter's/claude's own default.
     let effort = req.effort.clone().filter(|e| !e.trim().is_empty());
     let permission_mode = req.permission_mode;
-    if let Some(account_name) = req.account.as_deref().filter(|a| !a.trim().is_empty()) {
-        // Accounts are user-owned. The admin token has no user identity, so it
-        // resolves the account against the target machine's owner (CCT-251) —
-        // the session runs on that user's machine with that user's account.
-        let uid = ctx.owner_filter().unwrap_or(owner);
+    // Accounts are user-owned. The admin token has no user identity, so it
+    // resolves the account against the target machine's owner (CCT-251) —
+    // the session runs on that user's machine with that user's account.
+    let uid = ctx.owner_filter().unwrap_or(owner);
+    // Single source of truth for credentials (CCT-574): an unspecified account
+    // no longer silently means "run on whatever ambient login the machine
+    // has" — that spawned sessions whose traffic bypassed the gateway (no
+    // usage attribution, no soft limits, no langfuse capture) and, on a
+    // desktop, billed the machine owner's personal login regardless of intent.
+    // With no account named: exactly one matching-family account → bind it;
+    // several → 400 (pick explicitly, never guess); none → unbound as before
+    // (setups with no accounts configured keep working).
+    let account_choice = match req.account.as_deref().map(str::trim).filter(|a| !a.is_empty()) {
+        Some(a) => Some(a.to_owned()),
+        None => default_account_name(state, uid, &adapter_id).await?,
+    };
+    if let Some(account_name) = account_choice.as_deref() {
         let provider = req.provider.as_deref().filter(|p| !p.trim().is_empty());
         // Resolve the model through this account's alias map
         // (CCT-406) before it reaches the worker — a no-op when the account has no
@@ -252,6 +264,60 @@ async fn dispatch_spawn(
 
 /// Resolve `req.machine_id` (a UUID) to the owning user, enforcing
 /// `admin || caller == owner`. Returns the machine UUID on success.
+/// Pick the account to bind when a spawn names none (CCT-574).
+///
+/// Sessions used to launch UNBOUND in this case — their traffic skipped the
+/// gateway entirely (no usage attribution, no soft limits, no langfuse trace)
+/// and, on a desktop daemon, silently consumed the machine owner's ambient
+/// `~/.claude` login whatever account the user believed was in play. Credential
+/// choice must have one source of truth:
+///
+///   * exactly one account (owned or shared) in the adapter's provider family →
+///     bind it, exactly as if the caller had named it;
+///   * several → `400` listing them — the server never guesses between
+///     accounts, that's the caller's decision;
+///   * none → `Ok(None)`, unbound spawn as before (no-accounts setups keep
+///     working; on k8s an unbound worker has no ambient login to leak to).
+async fn default_account_name(
+    state: &AppState,
+    user_id: Uuid,
+    adapter_id: &str,
+) -> Result<Option<String>, (StatusCode, Json<ApiError>)> {
+    let want_openai = matches!(
+        crate::routes::gateway::Family::from_adapter(adapter_id),
+        crate::routes::gateway::Family::Openai
+    );
+    let names: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT a.name \
+         FROM account_providers ap JOIN accounts a ON a.id = ap.account_id \
+         WHERE (ap.provider ILIKE '%openai%') = $2 \
+           AND (a.user_id = $1 OR EXISTS ( \
+               SELECT 1 FROM account_shares s \
+                WHERE s.account_id = a.id \
+                  AND s.user_id = $1 AND s.revoked_at IS NULL)) \
+         ORDER BY a.name",
+    )
+    .bind(user_id)
+    .bind(want_openai)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("resolving default account: {e}");
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+    })?;
+    match names.as_slice() {
+        [] => Ok(None),
+        [one] => {
+            tracing::info!(%user_id, account = %one, %adapter_id, "spawn named no account — binding the user's only matching account (CCT-574)");
+            Ok(Some(one.clone()))
+        }
+        many => Err(bad_request(format!(
+            "no account specified and several are available ({}) — pass `account` to pick one",
+            many.join(", ")
+        ))),
+    }
+}
+
 async fn resolve_owned_machine(
     state: &AppState,
     ctx: &AuthContext,
