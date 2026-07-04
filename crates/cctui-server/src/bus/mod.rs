@@ -13,14 +13,18 @@
 //!   * cluster-wide pub/sub ([`Bus::publish`], [`Bus::subscribe_session`],
 //!     [`Bus::subscribe_server`]).
 //!
-//! Behind it sits a [`Transport`]. Phase 1 ships only [`NoopTransport`]:
-//! routing is a local registry lookup and publish is a local broadcast —
-//! semantically exactly the pre-bus behavior. CCT-573 (peer-HTTP forwarding,
-//! replacing `forward.rs`) and CCT-568 (NATS) plug in here without touching
-//! callers.
+//! Behind it sits a [`Transport`]. [`NoopTransport`] (local dev / single
+//! replica) keeps single-pod semantics: routing is a local registry lookup and
+//! publish is a local broadcast. With `CCTUI_POD_IP` set, main swaps in
+//! [`peer::PeerHttpTransport`] (CCT-573): local misses are forwarded to the
+//! peer pod owning the WS, and publishes fan out to every live replica —
+//! replacing the retired CCT-567 HTTP request-replay forwarder. CCT-568 (NATS)
+//! plugs in here the same way without touching callers.
 //!
 //! Persistence is NOT the bus's job: event DB writes and the permission/ask/
 //! plan stores stay with their current owners — the bus moves delivery only.
+
+pub mod peer;
 
 use std::sync::Arc;
 
@@ -90,6 +94,11 @@ pub enum BusError {
     Db(#[from] sqlx::Error),
     #[error("reconcile build error: {0}")]
     Reconcile(String),
+    /// A cross-replica transport failure that doesn't map onto one of the
+    /// meaning-bearing variants above (CCT-573): the peer replied with an
+    /// unclassified error or an unreadable body. The frame was NOT delivered.
+    #[error("bus transport error: {0}")]
+    Transport(String),
 }
 
 /// A correlated daemon round-trip (request/response over the daemon WS). The
@@ -173,10 +182,11 @@ pub trait Transport: Send + Sync {
     fn relay(&self, event: &BusEvent);
 }
 
-/// Phase-1 transport: single-pod semantics. A local lookup miss is a miss —
+/// Local-only transport: single-pod semantics. A local lookup miss is a miss —
 /// exactly the pre-bus `NoDaemon`/"dispatcher offline" behavior — and publish
-/// reaches only this pod's subscribers. Cross-replica HTTP routes still go
-/// through `forward.rs` (CCT-567) until CCT-573 replaces both.
+/// reaches only this pod's subscribers. Used when `CCTUI_POD_IP` is unset
+/// (local dev / single replica); multi-replica deployments swap in
+/// [`peer::PeerHttpTransport`] (CCT-573).
 pub struct NoopTransport;
 
 #[async_trait::async_trait]
@@ -276,8 +286,8 @@ impl Bus {
         self.inner.daemons.remove_if(&machine, |_, current| current.same_channel(tx)).is_some()
     }
 
-    /// Whether THIS pod terminates `machine`'s daemon WS. Used by the CCT-567
-    /// locality guards in `forward.rs` (which stay functional this phase).
+    /// Whether THIS pod terminates `machine`'s daemon WS.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn daemon_connected(&self, machine: Uuid) -> bool {
         self.inner.daemons.contains_key(&machine)
     }
@@ -330,6 +340,21 @@ impl Bus {
         tx.send(frame).await.map_err(|_| BusError::Closed)
     }
 
+    /// [`Self::command_daemon`] restricted to THIS pod's registry — a miss is a
+    /// hard [`BusError::NoDaemon`], never the transport. Used by the internal
+    /// peer-ingest endpoints (CCT-573), whose loop guard is exactly "deliver
+    /// locally or fail; never re-forward".
+    pub async fn command_daemon_local(
+        &self,
+        machine: Uuid,
+        frame: DaemonFrameDown,
+    ) -> Result<(), BusError> {
+        let Some(tx) = self.inner.daemons.get(&machine).map(|r| r.clone()) else {
+            return Err(BusError::NoDaemon(machine));
+        };
+        tx.send(frame).await.map_err(|_| BusError::Closed)
+    }
+
     /// Fire-and-forget a [`DispatcherFrameDown`] toward the enrolled
     /// dispatcher's WS. Peer of [`Self::command_daemon`].
     #[allow(dead_code)] // dispatcher traffic is all correlated today; here for API symmetry
@@ -340,6 +365,19 @@ impl Bus {
     ) -> Result<(), BusError> {
         let Some(tx) = self.inner.dispatchers.get(&dispatcher).map(|r| r.clone()) else {
             return self.inner.transport.forward_dispatcher(dispatcher, frame).await;
+        };
+        tx.send(frame).await.map_err(|_| BusError::Closed)
+    }
+
+    /// [`Self::command_dispatcher`] restricted to THIS pod's registry
+    /// (peer-ingest loop guard, CCT-573).
+    pub async fn command_dispatcher_local(
+        &self,
+        dispatcher: Uuid,
+        frame: DispatcherFrameDown,
+    ) -> Result<(), BusError> {
+        let Some(tx) = self.inner.dispatchers.get(&dispatcher).map(|r| r.clone()) else {
+            return Err(BusError::NoDispatcher(dispatcher));
         };
         tx.send(frame).await.map_err(|_| BusError::Closed)
     }
@@ -356,6 +394,30 @@ impl Bus {
         let Some(tx) = self.inner.daemons.get(&machine).map(|r| r.clone()) else {
             return self.inner.transport.request_daemon(machine, request).await;
         };
+        self.request_daemon_via(tx, request).await
+    }
+
+    /// [`Self::request_daemon`] restricted to THIS pod's registry (peer-ingest
+    /// loop guard, CCT-573) — a miss is a hard [`BusError::NoDaemon`].
+    pub async fn request_daemon_local(
+        &self,
+        machine: Uuid,
+        request: DaemonRequest,
+    ) -> Result<DaemonResponse, BusError> {
+        let Some(tx) = self.inner.daemons.get(&machine).map(|r| r.clone()) else {
+            return Err(BusError::NoDaemon(machine));
+        };
+        self.request_daemon_via(tx, request).await
+    }
+
+    /// The correlated round-trip against an already-resolved local daemon
+    /// channel: mint the request id, park the oneshot, send, await with the
+    /// request's timeout.
+    async fn request_daemon_via(
+        &self,
+        tx: mpsc::Sender<DaemonFrameDown>,
+        request: DaemonRequest,
+    ) -> Result<DaemonResponse, BusError> {
         let request_id = Uuid::new_v4();
         match request {
             DaemonRequest::StageFiles { adapter_id, local_id, uploads } => {
@@ -419,7 +481,30 @@ impl Bus {
         let Some(tx) = self.inner.dispatchers.get(&dispatcher).map(|r| r.clone()) else {
             return self.inner.transport.request_dispatcher(dispatcher, request_id, frame).await;
         };
+        self.request_dispatcher_via(tx, request_id, frame).await
+    }
 
+    /// [`Self::request_dispatcher`] restricted to THIS pod's registry
+    /// (peer-ingest loop guard, CCT-573) — a miss is a hard
+    /// [`BusError::NoDispatcher`].
+    pub async fn request_dispatcher_local(
+        &self,
+        dispatcher: Uuid,
+        request_id: Uuid,
+        frame: DispatcherFrameDown,
+    ) -> Result<DispatcherFrameUp, BusError> {
+        let Some(tx) = self.inner.dispatchers.get(&dispatcher).map(|r| r.clone()) else {
+            return Err(BusError::NoDispatcher(dispatcher));
+        };
+        self.request_dispatcher_via(tx, request_id, frame).await
+    }
+
+    async fn request_dispatcher_via(
+        &self,
+        tx: mpsc::Sender<DispatcherFrameDown>,
+        request_id: Uuid,
+        frame: DispatcherFrameDown,
+    ) -> Result<DispatcherFrameUp, BusError> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.inner.pending_dispatcher.insert(request_id, reply_tx);
 
@@ -485,6 +570,14 @@ impl Bus {
     /// the pre-bus `let _ = tx.send(..)` discipline.
     pub fn publish(&self, event: BusEvent) {
         self.inner.transport.relay(&event);
+        self.deliver_local(event);
+    }
+
+    /// Deliver an event to THIS pod's subscribers only, without handing it to
+    /// the transport. This is the peer-ingest half of [`Self::publish`]
+    /// (CCT-573): events relayed from another pod land here, so they can never
+    /// be re-relayed and loop around the mesh.
+    pub fn deliver_local(&self, event: BusEvent) {
         match event {
             BusEvent::Session { session_id, event: agent_event } => {
                 if let Some(tx) = self.inner.session_streams.get(&session_id) {

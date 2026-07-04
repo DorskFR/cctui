@@ -112,15 +112,6 @@ pub trait Dispatcher: Send + Sync {
     async fn cancel(&self, handle: &str) -> Result<(), DispatchError> {
         Err(DispatchError::Unsupported(format!("cancel({handle})")))
     }
-
-    /// The IP of a live PEER server replica holding this dispatcher's WS, when
-    /// this pod doesn't (CCT-567). The dispatch route checks it BEFORE any side
-    /// effects (ntfy, key minting) and answers 421 so [`crate::forward`]
-    /// re-sends the request to the owning pod. `None` — the default, and always
-    /// for `HttpDispatcher` (no WS involved) — means "handle it here".
-    async fn remote_owner(&self) -> Option<String> {
-        None
-    }
 }
 
 /// Resolves dispatcher id strings to concrete impls. Built once at

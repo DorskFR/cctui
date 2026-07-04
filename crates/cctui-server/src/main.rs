@@ -6,7 +6,6 @@ mod config;
 mod crypto;
 mod db;
 mod dispatchers;
-mod forward;
 mod langfuse;
 mod machine_liveness;
 mod normalize;
@@ -64,24 +63,46 @@ async fn main() -> anyhow::Result<()> {
     let skills = init_skill_store().await;
     let dispatchers = init_dispatchers(&config);
 
+    let presence = Arc::new(presence::PodIdentity::from_env());
+    let http_client = reqwest::Client::new();
+
+    // Bus transport selection (CCT-573): with a routable pod IP this replica
+    // participates in the peer mesh — mint/load the internal shared secret and
+    // route/relay through `PeerHttpTransport`. Without one (local dev, single
+    // replica) the bus stays local-only (`NoopTransport`) and writes nothing.
+    let (transport, internal_secret): (Box<dyn bus::Transport>, Option<Arc<str>>) =
+        if presence.ip.is_some() {
+            let secret = routes::internal::ensure_secret(&pool).await?;
+            let transport = bus::peer::PeerHttpTransport::new(
+                pool.clone(),
+                http_client.clone(),
+                presence.pod.clone(),
+                config.port,
+                secret.clone(),
+            );
+            (Box::new(transport), Some(Arc::from(secret.as_str())))
+        } else {
+            (Box::new(bus::NoopTransport), None)
+        };
+
     let state = AppState {
         pool,
         config: config.clone(),
         registry: Registry::shared(),
         permission_store: routes::permissions::PermissionStore::shared(),
-        // Phase-1 bus (CCT-572): local-only Noop transport, single routing
-        // seam for daemon/dispatcher WS traffic. CCT-573/CCT-568 swap the
-        // transport for a cross-replica one here.
-        bus: bus::Bus::new(Box::new(bus::NoopTransport)),
+        // The single routing seam for daemon/dispatcher WS traffic (CCT-572);
+        // the transport behind it is chosen above (CCT-573).
+        bus: bus::Bus::new(transport),
         auth_config: auth_config.clone(),
         archive,
         skills,
-        presence: Arc::new(presence::PodIdentity::from_env()),
+        presence,
+        internal_secret,
         dispatcher_liveness: Arc::new(dashmap::DashMap::new()),
         dispatchers,
         machine_liveness: Arc::new(dashmap::DashMap::new()),
         account_locks: Arc::new(dashmap::DashMap::new()),
-        http_client: reqwest::Client::new(),
+        http_client,
         // Optional Langfuse tracing sink (CCT-443). `None` (dark) unless the
         // CCTUI_LANGFUSE_* env is fully set — zero overhead on the gateway path.
         langfuse: langfuse::LangfuseConfig::from_env()
@@ -122,10 +143,6 @@ async fn main() -> anyhow::Result<()> {
     let _ = &api_descriptors;
 
     let api_router = api_router
-        // Cross-replica forwarding (CCT-567), inner to `auth_middleware` so only
-        // authenticated requests are ever forwarded. Selective by path (WS-
-        // targeted routes only) — everything else passes through unbuffered.
-        .layer(middleware::from_fn_with_state(state.clone(), forward::forward_mw))
         // Authentication runs as a global layer; AUTHORIZATION is enforced
         // per-route inside each route's `route_layer` (attached by
         // `Routes::add`), which runs INSIDE this `auth_middleware` so the
@@ -183,6 +200,16 @@ async fn main() -> anyhow::Result<()> {
         // method + sub-path under each provider prefix.
         .route("/gateway/anthropic/{*path}", any(routes::gateway::anthropic))
         .route("/gateway/openai/{*path}", any(routes::gateway::openai))
+        // Pod-to-pod bus endpoints (CCT-573). Self-authenticating via the
+        // cluster-internal shared secret (constant-time compare; user/machine
+        // tokens never accepted), so they live outside the `api_router` auth
+        // group. `route` may carry a forwarded stage-files upload — give it the
+        // same body headroom as the spawn/files routes it serves.
+        .route(
+            "/internal/bus/route",
+            post(routes::internal::bus_route).layer(DefaultBodyLimit::max(32 * 1024 * 1024)),
+        )
+        .route("/internal/bus/publish", post(routes::internal::bus_publish))
         .nest("/api/v1", api_router)
         // The web UI is served same-origin in prod, so the `HttpOnly` auth
         // cookie (CCT-423) flows without any cross-origin credential config.

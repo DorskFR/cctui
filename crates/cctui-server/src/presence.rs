@@ -1,12 +1,16 @@
-//! Replica-aware WS presence (CCT-567).
+//! Replica-aware WS presence (CCT-567) + pod discovery (CCT-573).
 //!
 //! The daemon/dispatcher connection registries in [`crate::state::AppState`]
 //! are per-pod in-memory maps, so with multiple server replicas an HTTP request
 //! that needs a live WS can land on a pod that doesn't hold it. Each replica
 //! records the WS connections it terminates in the `ws_presence` table; a pod
 //! that misses locally consults the table and, when a live peer owns the
-//! connection, answers 421 so [`crate::forward`] re-sends the request to that
-//! peer.
+//! connection, the [`crate::bus::peer::PeerHttpTransport`] forwards the frame
+//! to that peer over the internal bus endpoints.
+//!
+//! `pods` is the pod-level twin of `ws_presence`: each replica registers its
+//! own (name, IP) row and heartbeats it, so event publish can fan out to every
+//! live peer replica.
 //!
 //! Registration only happens when the pod knows its own routable IP
 //! (`CCTUI_POD_IP`, injected via the k8s downward API). Without it — local dev,
@@ -14,6 +18,7 @@
 //! pre-CCT-567 single-pod model; lookups still work so such a pod can forward
 //! *to* registered peers.
 
+use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::state::AppState;
@@ -113,7 +118,14 @@ pub async fn unregister(state: &AppState, kind: Kind, entity_id: Uuid) {
 /// "no live peer owns it" — either truly offline, or a stale row (crashed pod),
 /// or we own it ourselves (callers check the in-memory registry first, so a
 /// self-row here still means the connection is gone locally → offline).
-pub async fn peer_owner(state: &AppState, kind: Kind, entity_id: Uuid) -> Option<String> {
+/// Pool-level (the bus transport holds a pool + pod name, not the whole
+/// `AppState` — the bus is built before it).
+pub async fn peer_owner_ip(
+    pool: &PgPool,
+    self_pod: &str,
+    kind: Kind,
+    entity_id: Uuid,
+) -> Option<String> {
     sqlx::query_scalar::<_, String>(
         "SELECT pod_ip FROM ws_presence \
          WHERE kind = $1 AND entity_id = $2 AND pod <> $3 \
@@ -121,21 +133,52 @@ pub async fn peer_owner(state: &AppState, kind: Kind, entity_id: Uuid) -> Option
     )
     .bind(kind.as_str())
     .bind(entity_id)
-    .bind(&state.presence.pod)
+    .bind(self_pod)
     .bind(f64::from(LIVE_WITHIN_SECS))
-    .fetch_optional(&state.pool)
+    .fetch_optional(pool)
     .await
     .map_err(|err| tracing::warn!(%err, %entity_id, "ws_presence lookup failed"))
     .ok()
     .flatten()
 }
 
+/// IPs of every live PEER pod (excluding this one), for event fan-out
+/// (CCT-573). Best-effort: a lookup failure logs and returns empty — DB
+/// persistence remains the source of truth for refetch, so a missed relay
+/// degrades to today's single-pod visibility rather than an error.
+pub async fn live_peer_pods(pool: &PgPool, self_pod: &str) -> Vec<String> {
+    sqlx::query_scalar::<_, String>(
+        "SELECT pod_ip FROM pods \
+         WHERE pod <> $1 AND heartbeat_at > now() - make_interval(secs => $2)",
+    )
+    .bind(self_pod)
+    .bind(f64::from(LIVE_WITHIN_SECS))
+    .fetch_all(pool)
+    .await
+    .map_err(|err| tracing::warn!(%err, "pods lookup failed"))
+    .unwrap_or_default()
+}
+
 /// Boot cleanup + heartbeat loop. On start, drop any rows a previous
 /// incarnation of THIS pod name left behind (a crashed process can't
-/// unregister); then refresh our rows' heartbeats every [`HEARTBEAT_SECS`] and
-/// opportunistically reap long-dead rows from crashed peers so the table stays
-/// small. Spawned from `main` only when registration is enabled.
+/// unregister) and register this pod in `pods` (CCT-573); then refresh our
+/// rows' heartbeats every [`HEARTBEAT_SECS`] and opportunistically reap
+/// long-dead rows from crashed peers so the tables stay small. Spawned from
+/// `main` only when registration is enabled (pod IP known).
 pub async fn heartbeat_task(state: AppState) {
+    boot_register(&state).await;
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(HEARTBEAT_SECS));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        interval.tick().await;
+        heartbeat_tick(&state).await;
+    }
+}
+
+/// Boot-time presence bookkeeping: drop stale `ws_presence` rows from a prior
+/// incarnation of this pod name and self-register in `pods` (CCT-573).
+/// Upsert: a restarted pod with the same name simply takes its row over.
+async fn boot_register(state: &AppState) {
     if let Err(err) = sqlx::query("DELETE FROM ws_presence WHERE pod = $1")
         .bind(&state.presence.pod)
         .execute(&state.pool)
@@ -143,23 +186,45 @@ pub async fn heartbeat_task(state: AppState) {
     {
         tracing::warn!(%err, "ws_presence boot cleanup failed");
     }
-    let mut interval = tokio::time::interval(std::time::Duration::from_secs(HEARTBEAT_SECS));
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    loop {
-        interval.tick().await;
-        if let Err(err) = sqlx::query("UPDATE ws_presence SET heartbeat_at = now() WHERE pod = $1")
-            .bind(&state.presence.pod)
-            .execute(&state.pool)
-            .await
-        {
-            tracing::warn!(%err, "ws_presence heartbeat failed");
-        }
-        // Rows a crashed pod never deleted: long past any liveness window, safe
-        // for anyone to reap (idempotent across replicas).
-        let _ = sqlx::query(
-            "DELETE FROM ws_presence WHERE heartbeat_at < now() - interval '10 minutes'",
+    if let Some(ip) = state.presence.ip.as_deref()
+        && let Err(err) = sqlx::query(
+            "INSERT INTO pods (pod, pod_ip, started_at, heartbeat_at) \
+             VALUES ($1, $2, now(), now()) \
+             ON CONFLICT (pod) DO UPDATE SET \
+               pod_ip = EXCLUDED.pod_ip, started_at = now(), heartbeat_at = now()",
         )
+        .bind(&state.presence.pod)
+        .bind(ip)
+        .execute(&state.pool)
+        .await
+    {
+        tracing::warn!(%err, "pods register failed");
+    }
+}
+
+/// One heartbeat: refresh this pod's `ws_presence` + `pods` rows and reap rows
+/// crashed pods never deleted — long past any liveness window, safe for anyone
+/// to reap (idempotent across replicas).
+async fn heartbeat_tick(state: &AppState) {
+    if let Err(err) = sqlx::query("UPDATE ws_presence SET heartbeat_at = now() WHERE pod = $1")
+        .bind(&state.presence.pod)
+        .execute(&state.pool)
+        .await
+    {
+        tracing::warn!(%err, "ws_presence heartbeat failed");
+    }
+    if let Err(err) = sqlx::query("UPDATE pods SET heartbeat_at = now() WHERE pod = $1")
+        .bind(&state.presence.pod)
+        .execute(&state.pool)
+        .await
+    {
+        tracing::warn!(%err, "pods heartbeat failed");
+    }
+    let _ =
+        sqlx::query("DELETE FROM ws_presence WHERE heartbeat_at < now() - interval '10 minutes'")
+            .execute(&state.pool)
+            .await;
+    let _ = sqlx::query("DELETE FROM pods WHERE heartbeat_at < now() - interval '10 minutes'")
         .execute(&state.pool)
         .await;
-    }
 }

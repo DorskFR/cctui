@@ -1234,8 +1234,6 @@ pub async fn send_message(
     Path(session_id): Path<String>,
     Json(req): Json<MessageRequest>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    // Forward to the replica holding the session's daemon WS (CCT-567).
-    crate::forward::ensure_session_daemon_local(&state, &session_id).await?;
     // Carry re-minted gateway env so a reply-driven cold-resume revives the
     // worker with a fresh valid token rather than empty env (CCT-460).
     let env = crate::routes::gateway::resume_env_for_session(&state, &session_id).await;
@@ -1303,8 +1301,6 @@ pub async fn kill_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    // Forward to the replica holding the session's daemon WS (CCT-567).
-    crate::forward::ensure_session_daemon_local(&state, &session_id).await?;
     // Best-effort: also dispatch to the daemon so the running worker is
     // actually killed via the `claude daemon` socket. The DB update
     // below remains source-of-truth.
@@ -1350,8 +1346,6 @@ pub async fn interrupt_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
 ) -> Result<(StatusCode, Json<cctui_proto::api::SpawnResponse>), (StatusCode, Json<ApiError>)> {
-    // Forward to the replica holding the session's daemon WS (CCT-567).
-    crate::forward::ensure_session_daemon_local(&state, &session_id).await?;
     let command_id = uuid::Uuid::new_v4();
     let _ = crate::bus::dispatch(
         &state,
@@ -1398,9 +1392,6 @@ pub async fn switch_account(
     Json(req): Json<SwitchAccountRequest>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
     use crate::routes::gateway::Family;
-
-    // Forward to the replica holding the session's daemon WS (CCT-567).
-    crate::forward::ensure_session_daemon_local(&state, &session_id).await?;
 
     let err = |code: StatusCode, msg: &str| (code, Json(ApiError { error: msg.into() }));
     let db = |e: sqlx::Error| {
@@ -1532,8 +1523,6 @@ pub async fn resume_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    // Forward to the replica holding the session's daemon WS (CCT-567).
-    crate::forward::ensure_session_daemon_local(&state, &session_id).await?;
     // Pass the working_dir so the daemon can resume even after archiving ran
     // `claude rm` (which deletes the on-disk job state.json but keeps the
     // conversation transcript) — the daemon falls back to local_id + this cwd.
@@ -1589,8 +1578,6 @@ pub async fn set_model(
     Path(session_id): Path<String>,
     Json(req): Json<cctui_proto::api::SetModelRequest>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    // Forward to the replica holding the session's daemon WS (CCT-567).
-    crate::forward::ensure_session_daemon_local(&state, &session_id).await?;
     let norm = |s: Option<String>| s.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
     let model = norm(req.model);
     let effort = norm(req.effort);
@@ -1630,8 +1617,6 @@ pub async fn fork_session(
     Path(session_id): Path<String>,
     Json(req): Json<cctui_proto::api::ForkRequest>,
 ) -> Result<(StatusCode, Json<cctui_proto::api::ForkResponse>), (StatusCode, Json<ApiError>)> {
-    // Forward to the replica holding the session's daemon WS (CCT-567).
-    crate::forward::ensure_session_daemon_local(&state, &session_id).await?;
     let norm = |s: Option<String>| s.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
 
     // Resolve the parent: adapter + machine + cwd. The fork inherits the

@@ -33,6 +33,11 @@ pub struct AppState {
     /// peers can forward WS-targeted requests instead of reporting a spurious
     /// "offline".
     pub presence: Arc<crate::presence::PodIdentity>,
+    /// The cluster-internal shared secret authenticating pod-to-pod
+    /// `/internal/bus/*` calls (CCT-573). `Some` only when the peer transport
+    /// is enabled (`CCTUI_POD_IP` set); `None` makes the internal endpoints
+    /// refuse everything.
+    pub internal_secret: Option<Arc<str>>,
     /// Last broadcast liveness tier per enrolled dispatcher (CCT-285), peer of
     /// [`Self::machine_liveness`].
     pub dispatcher_liveness: Arc<DashMap<Uuid, MachineLiveness>>,

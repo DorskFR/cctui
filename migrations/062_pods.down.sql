@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS cluster_secrets;
+DROP TABLE IF EXISTS pods;
