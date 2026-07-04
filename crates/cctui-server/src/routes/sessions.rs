@@ -1413,15 +1413,38 @@ pub async fn switch_account(
     };
 
     // Resolve the target, scoped to the same owner. Accept a UUID or a name.
+    // A UUID may be either level (CCT-565): a credential (`account_providers`)
+    // id, or an IDENTITY (`accounts`) id — clients hold identity ids, and only
+    // backfilled rows share the two by uuid reuse. An identity id resolves to
+    // its child in the CURRENT binding's family, same as the name path.
     let target: Option<(uuid::Uuid, String)> = if let Ok(tid) =
         uuid::Uuid::parse_str(req.account.trim())
     {
-        sqlx::query_as("SELECT id, provider FROM account_providers WHERE id = $1 AND user_id = $2")
+        let direct: Option<(uuid::Uuid, String)> = sqlx::query_as(
+            "SELECT id, provider FROM account_providers WHERE id = $1 AND user_id = $2",
+        )
+        .bind(tid)
+        .bind(owner_id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(db)?;
+        if direct.is_some() {
+            direct
+        } else {
+            sqlx::query_as(
+                "SELECT ap.id, ap.provider \
+                 FROM account_providers ap JOIN accounts a ON a.id = ap.account_id \
+                 WHERE a.id = $1 AND ap.user_id = $2 \
+                   AND (ap.provider ILIKE '%openai%') = $3 \
+                 LIMIT 1",
+            )
             .bind(tid)
             .bind(owner_id)
+            .bind(current_provider.contains("openai"))
             .fetch_optional(&state.pool)
             .await
             .map_err(db)?
+        }
     } else {
         // Name lives on the identity parent (CCT-558); pick the provider row in
         // the CURRENT binding's family so the same-family constraint below holds

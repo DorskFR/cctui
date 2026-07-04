@@ -248,12 +248,20 @@ pub async fn resume_env_for_session(
 /// existed. Empty when the session has no account binding at all.
 pub async fn resolve_session_accounts(state: &AppState, session_id: &str) -> Vec<Uuid> {
     // `(oa.provider ILIKE '%openai%')` is the family key (true → OpenAI/Codex,
-    // false → Anthropic); DISTINCT ON it keeps the newest live token per family.
+    // false → Anthropic); DISTINCT ON it keeps the newest token per family,
+    // preferring live over revoked. Revoked rows COUNT as a binding (CCT-565):
+    // session end revokes every token (`revoke_session_tokens`), so a resume
+    // after a real — or spurious — end would otherwise find no binding and
+    // relaunch the worker with EMPTY gateway env (silently off-gateway on a
+    // desktop, a 401 loop on k8s). The revoked row still names the account;
+    // `mint_env_for_account` then mints a FRESH live token — the dead token
+    // itself is never resurrected.
     let mut ids: Vec<Uuid> = sqlx::query_scalar(
         "SELECT DISTINCT ON ((oa.provider ILIKE '%openai%')) st.account_id \
          FROM session_tokens st JOIN account_providers oa ON oa.id = st.account_id \
-         WHERE st.session_id = $1 AND st.revoked_at IS NULL \
-         ORDER BY (oa.provider ILIKE '%openai%'), st.created_at DESC",
+         WHERE st.session_id = $1 \
+         ORDER BY (oa.provider ILIKE '%openai%'), (st.revoked_at IS NULL) DESC, \
+                  st.created_at DESC",
     )
     .bind(session_id)
     .fetch_all(&state.pool)

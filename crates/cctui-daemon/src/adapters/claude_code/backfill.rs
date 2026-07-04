@@ -127,8 +127,19 @@ impl CursorFile {
 
 /// Run a single backfill pass. Emits events into `events` and returns
 /// the number of sessions backfilled this pass.
+///
+/// `live_shorts` is the set of job shorts the claude daemon currently lists as
+/// live. Those jobs are the LIVE path's to report — backfill must skip them
+/// entirely (CCT-565): a live bg worker's `state.json` reads `state: done`
+/// after every completed *turn* while the session is very much alive, and
+/// backfilling it emitted a spurious `SessionEnded{completed}` on every
+/// adapter restart (= every server WS reconnect). The server then revoked the
+/// session's gateway tokens, and the CCT-462 stale-token sweep force-killed
+/// the healthy worker. Skipped jobs are NOT cursor-marked, so a later pass
+/// picks them up once they are genuinely gone from the live roster.
 pub async fn run_once(
     cfg: &BackfillConfig,
+    live_shorts: &std::collections::HashSet<String>,
     events: &mpsc::Sender<AdapterEvent>,
     cursor: &mut CursorFile,
     offsets: &mut OffsetStore,
@@ -145,6 +156,9 @@ pub async fn run_once(
         let Some(short) = path.file_name().and_then(|s| s.to_str()).map(str::to_owned) else {
             continue;
         };
+        if live_shorts.contains(&short) {
+            continue;
+        }
         let state_path = path.join("state.json");
         let Ok(bytes) = std::fs::read(&state_path) else { continue };
         let Ok(job) = serde_json::from_slice::<JobState>(&bytes) else { continue };
@@ -283,7 +297,7 @@ mod tests {
         };
         let mut cursor = CursorFile::open(cfg.cursor_path.clone());
         let mut offsets = OffsetStore::open(Some(tmp.path().join("offsets.json")));
-        let n = run_once(&cfg, &tx, &mut cursor, &mut offsets).await.unwrap();
+        let n = run_once(&cfg, &HashSet::default(), &tx, &mut cursor, &mut offsets).await.unwrap();
         assert_eq!(n, 2);
         // Drain — sess-1 emits Started, sess-2 emits Started + Ended.
         let mut started = 0;
@@ -297,6 +311,46 @@ mod tests {
         }
         assert_eq!(started, 2);
         assert_eq!(ended, 1);
+    }
+
+    #[tokio::test]
+    async fn backfill_skips_live_jobs_and_leaves_them_uncursored() {
+        // A job the claude daemon lists as LIVE must be untouched even when its
+        // state.json looks terminal (`done` = completed TURN, session alive,
+        // CCT-565) — and must stay OUT of the cursor so a later pass picks it
+        // up once it is genuinely gone from the live roster.
+        let tmp = tempfile::tempdir().unwrap();
+        let jobs = tmp.path().join("jobs");
+        let projects = tmp.path().join("projects");
+        std::fs::create_dir_all(&projects).unwrap();
+        write_state(&jobs, "1fdaf0b6", r#"{"sessionId":"sess-live","cwd":"/tmp","state":"done"}"#);
+        write_state(
+            &jobs,
+            "deadbeef",
+            r#"{"sessionId":"sess-old","cwd":"/tmp","state":"done","firstTerminalAt":"x"}"#,
+        );
+        let (tx, mut rx) = mpsc::channel(64);
+        let cfg = BackfillConfig {
+            jobs_root: jobs,
+            projects_root: projects,
+            cursor_path: Some(tmp.path().join("cursor.json")),
+        };
+        let live: HashSet<String> = ["1fdaf0b6".to_owned()].into();
+        let mut cursor = CursorFile::open(cfg.cursor_path.clone());
+        let mut offsets = OffsetStore::open(Some(tmp.path().join("offsets.json")));
+        let n = run_once(&cfg, &live, &tx, &mut cursor, &mut offsets).await.unwrap();
+        assert_eq!(n, 1);
+        while let Ok(evt) = rx.try_recv() {
+            let (AdapterEvent::SessionStarted { local_id, .. }
+            | AdapterEvent::SessionEnded { local_id, .. }
+            | AdapterEvent::Message { local_id, .. }) = evt
+            else {
+                continue;
+            };
+            assert_eq!(local_id, "sess-old", "live session must emit nothing from backfill");
+        }
+        assert!(!cursor.contains("sess-live"), "skipped live job must not be cursor-marked");
+        assert!(cursor.contains("sess-old"));
     }
 
     #[tokio::test]
@@ -335,7 +389,7 @@ mod tests {
         };
         let mut cursor = CursorFile::open(cfg.cursor_path.clone());
         let mut offsets = OffsetStore::open(Some(tmp.path().join("offsets.json")));
-        let n = run_once(&cfg, &tx, &mut cursor, &mut offsets).await.unwrap();
+        let n = run_once(&cfg, &HashSet::default(), &tx, &mut cursor, &mut offsets).await.unwrap();
         assert_eq!(n, 1);
 
         let mut texts = Vec::new();
@@ -362,7 +416,7 @@ mod tests {
 
         // Cursor is keyed on the tip — a re-run replays nothing.
         let mut cursor2 = CursorFile::open(cfg.cursor_path.clone());
-        let n2 = run_once(&cfg, &tx, &mut cursor2, &mut offsets).await.unwrap();
+        let n2 = run_once(&cfg, &HashSet::default(), &tx, &mut cursor2, &mut offsets).await.unwrap();
         assert_eq!(n2, 0, "tip already backfilled; must not replay");
     }
 
@@ -381,11 +435,11 @@ mod tests {
         };
         let mut cursor = CursorFile::open(cfg.cursor_path.clone());
         let mut offsets = OffsetStore::open(Some(tmp.path().join("offsets.json")));
-        let n1 = run_once(&cfg, &tx, &mut cursor, &mut offsets).await.unwrap();
+        let n1 = run_once(&cfg, &HashSet::default(), &tx, &mut cursor, &mut offsets).await.unwrap();
         assert_eq!(n1, 1);
         // Reload cursor from disk → should still skip.
         let mut cursor2 = CursorFile::open(cfg.cursor_path.clone());
-        let n2 = run_once(&cfg, &tx, &mut cursor2, &mut offsets).await.unwrap();
+        let n2 = run_once(&cfg, &HashSet::default(), &tx, &mut cursor2, &mut offsets).await.unwrap();
         assert_eq!(n2, 0);
     }
 }

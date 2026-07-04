@@ -587,6 +587,26 @@ impl Driver {
         }
     }
 
+    /// Shorts the claude daemon currently lists as live — the jobs backfill
+    /// must NOT touch (CCT-565, see `backfill::run_once`). No live socket
+    /// (true cold start, claude daemon down) means nothing is live and the
+    /// pass may sweep everything, as before.
+    async fn live_shorts(&self) -> std::collections::HashSet<String> {
+        let Some(sock) = self.cfg.discovery.locate_live().await else {
+            return std::collections::HashSet::new();
+        };
+        match socket::call::<ListResponse>(&sock, &json!({"proto": 1, "op": "list"})).await {
+            Ok(resp) => resp.jobs.into_iter().map(|j| j.short).collect(),
+            Err(err) => {
+                tracing::debug!(%err, "backfill live-roster list failed; treating none live");
+                std::collections::HashSet::new()
+            }
+        }
+    }
+
+    // Linear setup (config → cursor → live roster → one pass) plus outcome
+    // logging; no nesting to split.
+    #[allow(clippy::cognitive_complexity)]
     async fn run_backfill(&mut self) {
         let cfg = BackfillConfig {
             jobs_root: self.cfg.jobs_root.clone(),
@@ -597,7 +617,10 @@ impl Driver {
             .cursor_path
             .clone()
             .map_or_else(CursorFile::open_default, |p| CursorFile::open(Some(p)));
-        match backfill::run_once(&cfg, &self.events, &mut cursor, &mut self.offsets).await {
+        let live_shorts = self.live_shorts().await;
+        match backfill::run_once(&cfg, &live_shorts, &self.events, &mut cursor, &mut self.offsets)
+            .await
+        {
             Ok(n) if n > 0 => {
                 tracing::info!(backfilled = n, "claude-code backfill pass complete");
                 self.offsets.flush();

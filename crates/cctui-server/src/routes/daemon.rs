@@ -152,6 +152,14 @@ pub async fn session_gateway_env(
     // deep-merges it UNDER its managed hook settings when writing the worker's
     // `--settings` file (that daemon-side merge is CCT-540).
     let settings = crate::routes::gateway::resolve_session_settings(&state, &session_id).await;
+    // This pull only happens when the daemon is actually (re)launching the
+    // worker — a session marked `ended` (possibly by a spurious end, CCT-565)
+    // is provably coming back to life, so un-stick the terminal status here.
+    // `archived` stays parked: un-archiving is an explicit user action.
+    let _ = sqlx::query("UPDATE sessions SET status = 'active' WHERE id = $1 AND status = 'ended'")
+        .bind(&session_id)
+        .execute(&state.pool)
+        .await;
     Ok(Json(cctui_proto::api::GatewayEnvResponse { account_bound: true, env, settings }))
 }
 
@@ -851,6 +859,22 @@ async fn upsert_session(
     .bind(machine_id)
     .bind(adapter_id)
     .bind(parent_local_id)
+    .execute(&state.pool)
+    .await?;
+    // Repair the durable account binding (CCT-565): the dispatch path mints the
+    // gateway token BEFORE the daemon registers the session, so mint-time's
+    // best-effort `UPDATE sessions SET account_id` hit no row and the binding
+    // (CCT-460) silently stayed NULL — leaving resume-after-revocation with
+    // nothing to re-mint from. Backfill it here from the newest token row
+    // (live preferred). No-op for already-bound or never-bound sessions.
+    sqlx::query(
+        "UPDATE sessions SET account_id = ( \
+            SELECT st.account_id::text FROM session_tokens st \
+             WHERE st.session_id = $1 \
+             ORDER BY (st.revoked_at IS NULL) DESC, st.created_at DESC LIMIT 1) \
+         WHERE id = $1 AND account_id IS NULL",
+    )
+    .bind(local_id)
     .execute(&state.pool)
     .await?;
     Ok(())

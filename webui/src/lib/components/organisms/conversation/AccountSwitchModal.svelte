@@ -40,11 +40,15 @@
 	// TODO(CCT-560): single-provider back-compat — reads providers[0].
 	const providerOf = (a: OAuthAccount) => primaryProvider(a)?.provider ?? '';
 
-	// The account this session is bound to. A soft-limit open carries the id;
-	// an at-will open only has the name (SessionListItem exposes no account id).
+	// The account this session is bound to. A soft-limit open carries the id —
+	// the *credential* (provider-row) id, so match against providers (CCT-565;
+	// only backfilled accounts share the identity id by uuid reuse). An at-will
+	// open only has the name (SessionListItem exposes no account id).
 	const current = $derived(
 		softLimit
-			? accounts.find((a) => a.id === softLimit.account_id)
+			? accounts.find(
+					(a) => a.providers.some((p) => p.id === softLimit.account_id) || a.id === softLimit.account_id
+				)
 			: accounts.find((a) => a.name === currentName)
 	);
 	// Same-family targets, excluding the current account itself.
@@ -65,7 +69,14 @@
 		switching = a.id;
 		error = null;
 		try {
-			await onswitch(a.id);
+			// Send the same-family CREDENTIAL id, not the identity id (CCT-565):
+			// the switch endpoint rebinds session_tokens.account_id, which points
+			// at provider rows. (The server also resolves identity ids as a
+			// fallback, but only backfilled accounts share the two by uuid reuse.)
+			const cred = a.providers.find(
+				(p) => current && family(p.provider) === family(providerOf(current))
+			);
+			await onswitch(cred?.id ?? a.id);
 			onclose();
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'switch failed';

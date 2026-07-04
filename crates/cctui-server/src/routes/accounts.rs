@@ -115,16 +115,43 @@ pub async fn sync_litellm_shim(pool: &sqlx::PgPool, config: &crate::config::Conf
         .await
         .unwrap_or_default();
     for uid in users {
-        let parent: Result<Uuid, sqlx::Error> = sqlx::query_scalar(
-            "INSERT INTO accounts (user_id, name) VALUES ($1, 'litellm (legacy)') \
-             ON CONFLICT (user_id, name) DO UPDATE SET updated_at = now() \
-             RETURNING id",
+        // Resolve the parent identity via the user's existing MANAGED provider
+        // first — never adopt a same-named account the user made themselves
+        // (CCT-565): the `ON CONFLICT (user_id, name) DO UPDATE … RETURNING id`
+        // find-or-create hijacked any user account literally named
+        // `litellm (legacy)`, making it read-only/undeletable (managed guard)
+        // or failing the (account_id, family) unique index outright.
+        let managed_parent: Option<Uuid> = sqlx::query_scalar(
+            "SELECT account_id FROM account_providers \
+             WHERE user_id = $1 AND managed AND provider = 'anthropic-compatible'",
         )
         .bind(uid)
-        .fetch_one(pool)
-        .await;
+        .fetch_optional(pool)
+        .await
+        .unwrap_or_default();
+        let parent: Result<Option<Uuid>, sqlx::Error> = match managed_parent {
+            Some(id) => Ok(Some(id)),
+            None => {
+                sqlx::query_scalar(
+                    "INSERT INTO accounts (user_id, name) VALUES ($1, 'litellm (legacy)') \
+                     ON CONFLICT (user_id, name) DO NOTHING \
+                     RETURNING id",
+                )
+                .bind(uid)
+                .fetch_optional(pool)
+                .await
+            }
+        };
         let account_id = match parent {
-            Ok(id) => id,
+            Ok(Some(id)) => id,
+            Ok(None) => {
+                tracing::warn!(
+                    %uid,
+                    "litellm shim skipped: user already has an unmanaged account named \
+                     'litellm (legacy)'"
+                );
+                continue;
+            }
             Err(e) => {
                 tracing::warn!(%uid, "litellm shim parent upsert failed: {e}");
                 continue;
