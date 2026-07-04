@@ -2,6 +2,6 @@
 
 export type ApiKeyRow = { id: string, label: string | null, key_preview: string | null, kind: string, created_at: string, expires_at: string | null, revoked_at: string | null, 
 /**
- * The key's granted scopes (key_acls), filled by the handler.
+ * The key's granted scopes (`key_acls`), filled by the handler.
  */
 scopes: Array<string>, };

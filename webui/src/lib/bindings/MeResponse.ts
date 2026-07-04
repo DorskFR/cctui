@@ -16,7 +16,7 @@ user_id: string | null,
  */
 user_name: string | null, machine_id: string | null, 
 /**
- * Effective scopes (key_acls ∩ user_acls) for this request.
+ * Effective scopes (`key_acls` ∩ `user_acls`) for this request.
  */
 scopes: Array<string>, 
 /**

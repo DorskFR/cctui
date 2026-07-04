@@ -70,6 +70,8 @@ notes = "managed/enterprise MCP allowlist; []=lockdown"
 
 [[keys]]
 name = "alwaysThinkingEnabled"
+group = "UI & transcript"
+label = "Always extended thinking"
 tag = "safe"
 source = "schema"
 notes = "extended thinking on by default (usually via /config)"
@@ -94,6 +96,8 @@ notes = "auto-memory dir; ignored if in checked-in project settings"
 
 [[keys]]
 name = "autoMemoryEnabled"
+group = "Privacy & memory"
+label = "Auto memory"
 tag = "safe"
 source = "schema"
 notes = "auto memory read/write to .claude/memory/"
@@ -184,6 +188,8 @@ notes = "block claude:// protocol handler"
 
 [[keys]]
 name = "disableSkillShellExecution"
+group = "Skills & workflows"
+label = "Disable skill shell execution"
 tag = "safe"
 source = "schema"
 notes = "disable inline  !... / !  shell in skills/commands"
@@ -292,6 +298,8 @@ notes = "DEPRECATED — use attribution; co-authored-by byline"
 
 [[keys]]
 name = "includeGitInstructions"
+group = "Editing & safety"
+label = "Include git instructions"
 tag = "safe"
 source = "schema"
 notes = "git commit/PR instructions + status in system prompt"
@@ -370,12 +378,16 @@ notes = "PR badge URL"
 
 [[keys]]
 name = "prefersReducedMotion"
+group = "UI & transcript"
+label = "Reduce motion"
 tag = "safe"
 source = "schema"
 notes = "reduce UI animations"
 
 [[keys]]
 name = "respectGitignore"
+group = "Editing & safety"
+label = "Respect .gitignore"
 tag = "safe"
 source = "schema"
 notes = "@ picker respects .gitignore"
@@ -388,18 +400,24 @@ notes = "sandbox execution config"
 
 [[keys]]
 name = "showClearContextOnPlanAccept"
+group = "UI & transcript"
+label = "Offer clear-context on plan accept"
 tag = "safe"
 source = "schema"
 notes = "offer \"clear context\" on plan approval"
 
 [[keys]]
 name = "showThinkingSummaries"
+group = "UI & transcript"
+label = "Show thinking summaries"
 tag = "safe"
 source = "schema"
 notes = "show thinking summaries in transcript (Ctrl+O)"
 
 [[keys]]
 name = "showTurnDuration"
+group = "UI & transcript"
+label = "Show turn duration"
 tag = "safe"
 source = "schema"
 notes = "show \"Cooked for 1m 6s\""
@@ -436,6 +454,8 @@ notes = "CLI state — declined plugins"
 
 [[keys]]
 name = "spinnerTipsEnabled"
+group = "UI & transcript"
+label = "Spinner tips"
 tag = "safe"
 source = "schema"
 notes = "spinner tips"
@@ -484,6 +504,8 @@ notes = "agent-team teammate display (experimental)"
 
 [[keys]]
 name = "terminalProgressBarEnabled"
+group = "UI & transcript"
+label = "Terminal progress bar"
 tag = "safe"
 source = "schema"
 notes = "terminal progress bar"
@@ -496,6 +518,8 @@ notes = "TUI renderer mode"
 
 [[keys]]
 name = "useAutoModeDuringPlan"
+group = "Editing & safety"
+label = "Auto-mode during plan"
 tag = "safe"
 source = "schema"
 notes = "auto-approve safe reads during plan mode"
@@ -535,6 +559,8 @@ notes = "server-side advisor tool (v2.1.98+)"
 
 [[keys]]
 name = "agentPushNotifEnabled"
+group = "Notifications"
+label = "Agent push notifications"
 tag = "safe"
 source = "docs"
 type = "bool"
@@ -550,6 +576,8 @@ notes = "managed — load claude.ai connectors"
 
 [[keys]]
 name = "autoCompactEnabled"
+group = "Editing & safety"
+label = "Auto-compact"
 tag = "safe"
 source = "docs"
 type = "bool"
@@ -558,6 +586,8 @@ notes = "auto-compact near context limit (v2.1.119+)"
 
 [[keys]]
 name = "autoScrollEnabled"
+group = "UI & transcript"
+label = "Auto-scroll"
 tag = "safe"
 source = "docs"
 type = "bool"
@@ -566,6 +596,8 @@ notes = "follow output to bottom (fullscreen)"
 
 [[keys]]
 name = "awaySummaryEnabled"
+group = "Notifications"
+label = "Away summary"
 tag = "safe"
 source = "docs"
 type = "bool"
@@ -573,6 +605,8 @@ notes = "session recap when returning"
 
 [[keys]]
 name = "axScreenReader"
+group = "UI & transcript"
+label = "Screen-reader output"
 tag = "safe"
 source = "docs"
 type = "bool"
@@ -588,6 +622,8 @@ notes = "managed — org CLAUDE.md-style memory"
 
 [[keys]]
 name = "disableAgentView"
+group = "Skills & workflows"
+label = "Disable background agents"
 tag = "safe"
 source = "docs"
 type = "bool"
@@ -595,6 +631,8 @@ notes = "turn off background agents/agent view (== env)"
 
 [[keys]]
 name = "disableArtifact"
+group = "Skills & workflows"
+label = "Disable Artifact tool"
 tag = "safe"
 source = "docs"
 type = "bool"
@@ -610,6 +648,8 @@ notes = "prevent auto mode; removes from Shift+Tab; rejects --permission-mode au
 
 [[keys]]
 name = "disableBundledSkills"
+group = "Skills & workflows"
+label = "Disable bundled skills"
 tag = "safe"
 source = "docs"
 type = "bool"
@@ -617,6 +657,8 @@ notes = "disable bundled skills/workflows; built-ins hidden but typable (== CLAU
 
 [[keys]]
 name = "disableClaudeAiConnectors"
+group = "Editing & safety"
+label = "Disable claude.ai connectors"
 tag = "care"
 source = "docs"
 type = "bool"
@@ -624,6 +666,8 @@ notes = "disable claude.ai MCP connectors; true wins across scopes (v2.1.182+)"
 
 [[keys]]
 name = "disableRemoteControl"
+group = "Remote control"
+label = "Disable Remote Control"
 tag = "care"
 source = "docs"
 type = "bool"
@@ -638,6 +682,8 @@ notes = "managed — reject --plugin-dir/--plugin-url/--agents/--mcp-config (v2.
 
 [[keys]]
 name = "disableWorkflows"
+group = "Skills & workflows"
+label = "Disable workflows"
 tag = "safe"
 source = "docs"
 type = "bool"
@@ -655,6 +701,8 @@ notes = "input key bindings"
 
 [[keys]]
 name = "enableArtifact"
+group = "Skills & workflows"
+label = "Enable Artifact tool"
 tag = "safe"
 source = "docs"
 type = "bool"
@@ -679,6 +727,8 @@ notes = "fallback chain; does NOT merge across files"
 
 [[keys]]
 name = "fileCheckpointingEnabled"
+group = "Editing & safety"
+label = "File checkpointing"
 tag = "safe"
 source = "docs"
 type = "bool"
@@ -711,6 +761,8 @@ notes = "refresh GCP ADC"
 
 [[keys]]
 name = "inputNeededNotifEnabled"
+group = "Notifications"
+label = "Input-needed push"
 tag = "safe"
 source = "docs"
 type = "bool"
@@ -744,6 +796,8 @@ notes = "notification method"
 
 [[keys]]
 name = "remoteControlAtStartup"
+group = "Remote control"
+label = "Connect Remote Control at startup"
 tag = "care"
 source = "docs"
 type = "bool"

@@ -3,7 +3,9 @@ import type { DiffSide } from "./DiffSide";
 
 /**
  * A fully resolved GitHub review-comment anchor — the precise shape a
- * `POST .../reviews` comment entry needs. Produced by resolving a
+ * `POST .../reviews` comment entry needs.
+ *
+ * Produced by resolving a
  * [`DiffSelection`] against the [`PullDiff`] it targets. Every field maps 1:1
  * to GitHub's review-comment API.
  */

@@ -3,7 +3,9 @@ import type { DiffSide } from "./DiffSide";
 
 /**
  * A reviewer's selection in the rendered diff, before it is resolved to a
- * GitHub anchor. This is what the draft UI (GH-VIEW-4) persists per comment:
+ * GitHub anchor.
+ *
+ * This is what the draft UI (GH-VIEW-4) persists per comment:
  * the file path, the side, and the (display) line — optionally a multi-line
  * range whose `start_line..=line` is inclusive. `head_sha` records the SHA the
  * selection was made against, so a later force-push (head SHA rotated) can

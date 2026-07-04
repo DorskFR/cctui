@@ -2,7 +2,9 @@
 import type { GithubCredentialKind } from "./GithubCredentialKind";
 
 /**
- * API view of a connector. The credential and webhook secret are **never**
+ * API view of a connector.
+ *
+ * The credential and webhook secret are **never**
  * present — only a non-secret [`ConnectorInfo::credential_preview`] mask, so the
  * webui and agents can confirm a connector exists without ever seeing the token.
  */

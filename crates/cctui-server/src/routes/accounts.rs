@@ -536,6 +536,38 @@ fn db_err(e: &sqlx::Error) -> (StatusCode, Json<serde_json::Value>) {
     err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
 }
 
+/// The settings catalog as served to the webui account-settings editor
+/// (CCT-571). Everything here comes from the embedded catalog — the webui
+/// carries NO mirror of the key list, so it cannot drift from the server that
+/// validates the writes. `managed`/`system` keys are omitted entirely.
+#[derive(serde::Serialize, ts_rs::TS)]
+#[ts(export)]
+pub struct SettingsCatalogResponse {
+    /// Exposable (safe/care) `settings.json` keys, catalog order. Keys with a
+    /// `group`/`label` are the curated boolean toggles; the rest are settable
+    /// via the raw-JSON box only.
+    pub keys: Vec<crate::settings_catalog::SettingKey>,
+    /// The curated env-var allowlist (all exposable by construction).
+    pub env: Vec<crate::settings_catalog::EnvVar>,
+    /// The "Quiet defaults" preset, with its `settings` filtered to exposable
+    /// keys (the server-applied MANAGED keys are not offerable per-account).
+    pub preset: crate::settings_catalog::Preset,
+}
+
+/// `GET /accounts/settings-catalog` — serve the per-account settings catalog
+/// (CCT-571). Read-only, embedded data; no tenant scoping needed (the catalog
+/// is the same for everyone and contains no secrets).
+pub async fn settings_catalog() -> Json<SettingsCatalogResponse> {
+    let c = crate::settings_catalog::catalog();
+    let mut preset = c.quiet_defaults().clone();
+    preset.settings.retain(|name, _| c.key(name).is_some_and(|k| k.account_exposable()));
+    Json(SettingsCatalogResponse {
+        keys: c.exposable_keys().cloned().collect(),
+        env: c.env_allowlist().to_vec(),
+        preset,
+    })
+}
+
 /// Validate a pasted `settings_json` blob before persisting it (CCT-538) via the
 /// settings catalog (CCT-537): only keys tagged `safe`/`care` may be set
 /// per-provider; unknown, MANAGED, and SYSTEM keys are rejected. Fail-closed —

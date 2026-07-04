@@ -12,21 +12,13 @@
 	// split — per-account launch defaults are superseded by per-(machine, cwd)
 	// client memory (CCT-561).
 	//
-	// The catalog it renders from is a generated mirror of the server-side
-	// settings_catalog (see $lib/settingsCatalog). The server re-validates every
-	// write, so the client-side checks here are fast feedback, not the boundary.
+	// The catalog it renders from is fetched from the server (CCT-571,
+	// GET /accounts/settings-catalog) — the same embedded catalog the server
+	// validates writes against, so the editor cannot drift from it. The
+	// client-side checks here are fast feedback, not the boundary.
 	import { Button, Input, Select, Text } from '@dorsk/tsumikit';
 	import Error from '$lib/components/atoms/Error.svelte';
-	import {
-		BOOL_KEYS,
-		CATALOG_ENV,
-		ENV_GROUPS,
-		QUIET_DEFAULTS,
-		SETTINGS_GROUPS,
-		invalidEnvKeys,
-		invalidSettingsKeys,
-		isKnownBoolKey
-	} from '$lib/settingsCatalog';
+	import { useSettingsCatalog } from '$lib/queries';
 
 	interface EnvRow {
 		name: string;
@@ -51,6 +43,19 @@
 		showEnv?: boolean;
 	} = $props();
 
+	// --- Catalog (CCT-571) ------------------------------------------------------
+	const catalog = useSettingsCatalog();
+	const catalogKeys = $derived($catalog.data?.keys ?? []);
+	const catalogEnv = $derived($catalog.data?.env ?? []);
+	// Curated toggles: the catalog assigns `group`/`label` to exactly the
+	// exposable boolean keys that get a tri-state control.
+	const boolKeys = $derived(catalogKeys.filter((k) => k.group !== null));
+	const settingsGroups = $derived([...new Set(boolKeys.map((k) => k.group as string))]);
+	const envGroups = $derived([...new Set(catalogEnv.map((e) => e.group))]);
+	const keyNames = $derived(new Set(catalogKeys.map((k) => k.name)));
+	const envNames = $derived(new Set(catalogEnv.map((e) => e.name)));
+	const isKnownBoolKey = (name: string): boolean => boolKeys.some((k) => k.name === name);
+
 	// --- Boolean settings tri-state (Default / On / Off) -----------------------
 	// `undefined` in `settings` = inherit the Claude Code default; `true`/`false`
 	// = an explicit account override.
@@ -66,8 +71,8 @@
 		settings = next;
 	}
 
-	const keysInGroup = (group: string) => BOOL_KEYS.filter((k) => k.group === group);
-	const envInGroup = (group: string) => CATALOG_ENV.filter((e) => e.group === group);
+	const keysInGroup = (group: string) => boolKeys.filter((k) => k.group === group);
+	const envInGroup = (group: string) => catalogEnv.filter((e) => e.group === group);
 
 	// --- Advanced raw-JSON merge ----------------------------------------------
 	let rawJson = $state('');
@@ -88,7 +93,11 @@
 			return;
 		}
 		const obj = parsed as Record<string, unknown>;
-		const bad = invalidSettingsKeys(obj);
+		if (!$catalog.data) {
+			rawError = 'Settings catalog is still loading — try again in a moment.';
+			return;
+		}
+		const bad = Object.keys(obj).filter((k) => !keyNames.has(k));
 		if (bad.length) {
 			rawError = `Not settable per-account (MANAGED/SYSTEM/unknown): ${bad.join(', ')}`;
 			return;
@@ -109,7 +118,11 @@
 	}
 
 	// --- Env editor ------------------------------------------------------------
-	const badEnvKeys = $derived(invalidEnvKeys(envRows.map((r) => r.name)));
+	const badEnvKeys = $derived(
+		$catalog.data
+			? envRows.map((r) => r.name).filter((n) => n.trim() && !envNames.has(n.trim()))
+			: []
+	);
 	function addEnvRow() {
 		envRows = [...envRows, { name: '', value: '' }];
 		replaceEnv = true;
@@ -126,12 +139,14 @@
 	// Applies only the visible halves (CCT-560): the settings preset in the
 	// provider modal, the env preset in the identity modal.
 	function applyQuietDefaults() {
-		if (showSettings) settings = { ...settings, ...QUIET_DEFAULTS.settings };
+		const preset = $catalog.data?.preset;
+		if (!preset) return;
+		if (showSettings) settings = { ...settings, ...preset.settings };
 		if (showEnv) {
 			// Merge the preset env into the editor rows (replace matching names).
 			const byName = new Map(envRows.map((r) => [r.name, r]));
-			for (const [name, value] of Object.entries(QUIET_DEFAULTS.env)) {
-				byName.set(name, { name, value });
+			for (const [name, value] of Object.entries(preset.env)) {
+				if (value !== undefined) byName.set(name, { name, value });
 			}
 			envRows = [...byName.values()];
 			replaceEnv = true;
@@ -148,7 +163,7 @@
 					? 'Provider settings'
 					: 'Extra environment'}
 		</Text>
-		<Button onclick={applyQuietDefaults}>Quiet defaults</Button>
+		<Button onclick={applyQuietDefaults} disabled={!$catalog.data}>Quiet defaults</Button>
 	</div>
 	<Text as="p" tone="faint" size="xs">
 		{#if showSettings}
@@ -160,7 +175,13 @@
 		{/if}
 	</Text>
 
-	{#if showSettings}
+	{#if showSettings && !$catalog.data}
+	<Text as="div" tone="faint" size="xs">
+		{$catalog.error ? 'Failed to load the settings catalog.' : 'Loading settings catalog…'}
+	</Text>
+	{/if}
+
+	{#if showSettings && $catalog.data}
 	<!-- Boolean toggle list (CCT-541), grouped. Tri-state: Default / On / Off. -->
 	<div class="block">
 		<Text as="div" tone="muted" size="sm">Settings toggles</Text>
@@ -169,24 +190,24 @@
 			org-level toggle and can't be injected here. Only Remote Control
 			(<Text variant="code">disableRemoteControl</Text>) is per-device/per-account.
 		</Text>
-		{#each SETTINGS_GROUPS as group (group)}
+		{#each settingsGroups as group (group)}
 			<div class="group">
 				<Text as="div" tone="faint" size="xs" class="group-title">{group}</Text>
 				{#each keysInGroup(group) as k (k.name)}
 					<div class="key-row">
 						<div class="key-meta">
 							<Text as="div" size="sm">
-								{k.label}
+								{k.label ?? k.name}
 								{#if k.tag === 'care'}<span class="care" title="Has caveats — set with care">care</span>{/if}
 							</Text>
 							<Text as="div" tone="faint" size="xs">
-								{k.notes}{#if k.default}{' '}(default: {k.default}){/if}
+								{k.notes ?? ''}{#if k.default}{' '}(default: {k.default}){/if}
 							</Text>
 						</div>
 						<Select
 							value={triValue(k.name)}
 							onchange={(e) => setTri(k.name, (e.currentTarget as HTMLSelectElement).value)}
-							aria-label={k.label}
+							aria-label={k.label ?? k.name}
 							compact
 						>
 							<option value="">Default</option>
@@ -228,7 +249,7 @@
 	</div>
 	{/if}
 
-	{#if showEnv}
+	{#if showEnv && $catalog.data}
 	<!-- Curated env editor (CCT-541). WRITE-ONLY: stored values are never returned,
 	     so this only sets new ones. The block title dedupes against the editor
 	     head when env is the only section shown (CCT-560). -->
@@ -251,7 +272,7 @@
 					<div class="env-row">
 						<Select bind:value={row.name} onchange={onEnvEdit} aria-label="Env var name">
 							<option value="">Pick a variable…</option>
-							{#each ENV_GROUPS as group (group)}
+							{#each envGroups as group (group)}
 								<optgroup label={group}>
 									{#each envInGroup(group) as ev (ev.name)}
 										<option value={ev.name}>{ev.name}</option>

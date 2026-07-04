@@ -2,7 +2,9 @@
 
 /**
  * Token totals for one time window, mirroring the three figures the session
- * list shows (`↑in ↓out ⚡cache`). Cache-creation tokens are intentionally
+ * list shows (`↑in ↓out ⚡cache`).
+ *
+ * Cache-creation tokens are intentionally
  * omitted here — the Overview surfaces the same readout as the session card.
  */
 export type WindowTokenUsage = { 

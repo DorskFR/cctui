@@ -690,6 +690,14 @@ fn build_api_routes() -> Routes {
         )
         // Accounts: require_human() + owner_filter()/resolve_owner in handler.
         .add(
+            &[GET],
+            "/accounts/settings-catalog",
+            "The per-account settings catalog (exposable keys, env allowlist, preset).",
+            get(routes::accounts::settings_catalog),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
             &[GET, Method::POST],
             "/accounts",
             "List your accounts (identities + provider credentials), or create one.",

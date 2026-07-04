@@ -3,7 +3,9 @@ import type { AnchorError } from "./AnchorError";
 
 /**
  * One draft comment that could not be anchored at publish time, so it was left
- * out of the submitted review. The webui surfaces these so the reviewer knows a
+ * out of the submitted review.
+ *
+ * The webui surfaces these so the reviewer knows a
  * comment did not post (rather than silently dropping it).
  */
 export type SkippedComment = { 

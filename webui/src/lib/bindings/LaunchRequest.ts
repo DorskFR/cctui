@@ -2,7 +2,9 @@
 
 /**
  * Body for `POST /api/v1/sessions/{id}/launch` (CCT-394) — promote a draft
- * session to a live spawn. The stored draft holds prompt + config only; env
+ * session to a live spawn.
+ *
+ * The stored draft holds prompt + config only; env
  * secrets are entered fresh here (never persisted at rest) and account gateway
  * tokens are minted at launch so they're never stale. An empty map is fine for
  * drafts that need no manual secrets.

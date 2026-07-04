@@ -37,12 +37,14 @@ use std::sync::LazyLock;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use ts_rs::TS;
 
 const RAW_SCHEMA: &str = include_str!("claude-code-settings.schema.json");
 const RAW_CATALOG: &str = include_str!("catalog.toml");
 
 /// Per-key exposure policy. Ordered least → most restrictive for display.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "lowercase")]
 pub enum Policy {
     /// Good per-account toggle candidate; low blast radius.
@@ -76,7 +78,8 @@ impl Policy {
 }
 
 /// Where a key's definition comes from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "lowercase")]
 pub enum Source {
     /// Present in the vendored JSON schema (types/enums/defaults come from it).
@@ -86,7 +89,8 @@ pub enum Source {
 }
 
 /// A single `settings.json` top-level key, enriched from the schema where possible.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export)]
 pub struct SettingKey {
     /// Top-level key name (e.g. `"model"`, `"disableBundledSkills"`).
     pub name: String,
@@ -102,6 +106,12 @@ pub struct SettingKey {
     pub default: Option<String>,
     /// Human-readable notes (from the schema description or the hand catalog).
     pub notes: Option<String>,
+    /// Editor grouping for the account-settings toggle list (CCT-571). Set in
+    /// catalog.toml on the curated boolean keys only; a key with a group gets a
+    /// tri-state toggle in the webui, everything else is raw-JSON-only.
+    pub group: Option<String>,
+    /// Human-readable toggle label (paired with `group`).
+    pub label: Option<String>,
 }
 
 impl SettingKey {
@@ -113,7 +123,8 @@ impl SettingKey {
 }
 
 /// A curated environment variable exposed as an account default.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export)]
 pub struct EnvVar {
     /// Variable name (e.g. `"ANTHROPIC_MODEL"`).
     pub name: String,
@@ -127,7 +138,8 @@ pub struct EnvVar {
 }
 
 /// A named bundle of settings + env applied together (e.g. "Quiet defaults").
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export)]
 pub struct Preset {
     /// Stable id (e.g. `"quiet-defaults"`).
     pub id: String,
@@ -225,6 +237,13 @@ impl Catalog {
         self.preset(QUIET_DEFAULTS_ID).expect("quiet-defaults preset present (checked at load)")
     }
 
+    /// The per-account-exposable (`safe`/`care`) keys, in catalog order. This is
+    /// what the catalog endpoint serves — `managed`/`system` keys never leave the
+    /// server as settable options.
+    pub fn exposable_keys(&self) -> impl Iterator<Item = &SettingKey> {
+        self.keys.iter().filter(|k| k.account_exposable())
+    }
+
     /// Validate a `settings.json` object against the per-account allowlist policy.
     ///
     /// Each top-level key must be known to the catalog AND tagged `safe`/`care`.
@@ -309,6 +328,8 @@ struct RawKey {
     r#enum: Option<String>,
     default: Option<String>,
     notes: Option<String>,
+    group: Option<String>,
+    label: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -388,6 +409,8 @@ fn build() -> Catalog {
             r#enum: k.r#enum.or(s_enum),
             default: k.default.or(s_default),
             notes: k.notes.or(s_desc),
+            group: k.group,
+            label: k.label,
         });
     }
 
@@ -479,6 +502,25 @@ mod tests {
         {
             let k = catalog().key(name).unwrap_or_else(|| panic!("{name} missing"));
             assert_eq!(k.source, Source::Docs, "{name} should be a docs-delta key");
+        }
+    }
+
+    /// Toggle metadata (CCT-571): every key with a `group` must be an exposable
+    /// boolean — the webui renders a tri-state toggle for exactly these.
+    #[test]
+    fn grouped_keys_are_exposable_booleans() {
+        let c = catalog();
+        let grouped: Vec<&SettingKey> = c.keys().iter().filter(|k| k.group.is_some()).collect();
+        assert!(grouped.len() >= 25, "expected the curated toggle set, got {}", grouped.len());
+        for k in grouped {
+            assert!(k.account_exposable(), "{} is grouped but not exposable", k.name);
+            assert!(k.label.is_some(), "{} is grouped but has no label", k.name);
+            let ty = k.r#type.as_deref().unwrap_or("");
+            assert!(
+                ty == "boolean" || ty == "bool",
+                "{} is grouped but not boolean (type {ty:?})",
+                k.name
+            );
         }
     }
 

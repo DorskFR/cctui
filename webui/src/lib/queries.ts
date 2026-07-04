@@ -43,6 +43,7 @@ import type { ViewedMarkInfo } from "@bindings/ViewedMarkInfo";
 import type { MarkViewedRequest } from "@bindings/MarkViewedRequest";
 import type { Label } from "@bindings/Label";
 import type { LabelListResponse } from "@bindings/LabelListResponse";
+import type { SettingsCatalogResponse } from "@bindings/SettingsCatalogResponse";
 
 /** Machine kinds the server manages itself — the per-user `dispatch` machine
  * and one-shot `ephemeral` worker pods. They are never spawn targets and are
@@ -333,6 +334,7 @@ export const qk = {
   userKeys: (userId: string) => ["users", userId, "keys"] as const,
   labels: ["labels"] as const,
   accountShares: (accountId: string) => ["accounts", accountId, "shares"] as const,
+  settingsCatalog: ["settings-catalog"] as const,
 };
 
 /** Raw typed fetchers — also usable outside of components. */
@@ -448,6 +450,12 @@ export const endpoints = {
   deleteDispatcher: (id: string) => api.del<void>(`/dispatchers/${id}`),
   /** The caller's own OAuth accounts (CCT-232). Tokens never returned. */
   accounts: () => api.get<OAuthAccount[]>("/accounts"),
+  /** The per-account settings catalog (CCT-571): exposable settings keys, the
+   *  curated env allowlist, and the quiet-defaults preset — served from the
+   *  server's embedded catalog so the editor can never drift from what the
+   *  server validates on write. */
+  settingsCatalog: () =>
+    api.get<SettingsCatalogResponse>("/accounts/settings-catalog"),
   createAccount: (body: CreateAccount) =>
     api.post<OAuthAccount>("/accounts", body),
   updateAccount: (id: string, body: UpdateAccount) =>
@@ -687,6 +695,15 @@ export const useCapabilities = () =>
     queryKey: qk.capabilities,
     queryFn: endpoints.capabilities,
     staleTime: 5 * 60_000,
+  });
+
+/** The settings catalog (CCT-571). Embedded server data — effectively
+ * immutable per server version, so cache it for the whole session. */
+export const useSettingsCatalog = () =>
+  createQuery({
+    queryKey: qk.settingsCatalog,
+    queryFn: endpoints.settingsCatalog,
+    staleTime: Infinity,
   });
 
 export const useVersion = () =>

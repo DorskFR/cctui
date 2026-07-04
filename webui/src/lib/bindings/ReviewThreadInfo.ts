@@ -3,7 +3,9 @@ import type { ReviewThreadCommentInfo } from "./ReviewThreadCommentInfo";
 
 /**
  * One pulled-down GitHub review thread (CONN-3 `github.review_threads`) plus its
- * comments, anchored on a diff line. Distinct from a local draft: it is already
+ * comments, anchored on a diff line.
+ *
+ * Distinct from a local draft: it is already
  * posted on GitHub. The webui renders it inline, visually separate from drafts.
  */
 export type ReviewThreadInfo = { thread_node_id: string, 

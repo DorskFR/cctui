@@ -3,6 +3,7 @@ import type { WindowTokenUsage } from "./WindowTokenUsage";
 
 /**
  * Aggregate token usage across rolling time windows for the Overview page.
+ *
  * `today` is calendar-day (since local midnight, derived from the caller's
  * timezone offset); the others are rolling intervals back from now.
  */
