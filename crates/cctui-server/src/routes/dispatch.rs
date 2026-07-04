@@ -281,9 +281,9 @@ async fn dispatcher_default_account(
     user_id: uuid::Uuid,
 ) -> Option<(String, Option<String>)> {
     sqlx::query_as::<_, (String, Option<String>)>(
-        "SELECT oa.name, d.default_account_provider \
+        "SELECT a.name, d.default_account_provider \
          FROM dispatchers d \
-         JOIN oauth_accounts oa ON oa.id = d.default_account_id \
+         JOIN accounts a ON a.id = d.default_account_id \
          WHERE d.name = $1 AND d.user_id = $2 \
            AND d.deleted_at IS NULL AND d.revoked_at IS NULL \
          ORDER BY d.created_at LIMIT 1",

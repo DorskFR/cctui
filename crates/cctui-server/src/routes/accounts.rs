@@ -1,13 +1,17 @@
-//! `/api/v1/accounts` — the OAuth account vault (CCT-232).
+//! `/api/v1/accounts` — account identities + provider credentials (CCT-558).
 //!
-//! Users register **named OAuth accounts** for Claude Code / Codex (e.g.
-//! `personal`, `enterprise`) and pick one per job at spawn/dispatch time. The
-//! OAuth refresh token is encrypted at rest with the vault key (`crate::crypto`,
-//! same as `api_keys`/`dispatchers`) and is **never** returned over the API —
-//! list/get only ever surface name/provider/expiry/last-used + lightweight
-//! stats. Accounts belong to the registering user and are visible/usable only by
-//! that user (`require_user`).
+//! An **account** is an identity (e.g. `personal`, `enterprise`): a name, an
+//! owner, optional extra environment, and sharing grants. Each account holds
+//! zero or more **providers** (`account_providers`, née `oauth_accounts`,
+//! CCT-232): one credential per provider family (anthropic | openai) — a native
+//! OAuth subscription or a compatible endpoint (CCT-399). OAuth refresh tokens
+//! are encrypted at rest with the vault key (`crate::crypto`, same as
+//! `api_keys`/`dispatchers`) and are **never** returned over the API —
+//! list/get only ever surface provider/expiry/last-used + lightweight stats.
+//! Accounts belong to the registering user and are visible/usable only by that
+//! user (`require_human` + `owner_filter`).
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
@@ -31,13 +35,16 @@ pub type PendingOAuthLogins = Arc<DashMap<String, PendingOAuthLogin>>;
 
 /// A pending "Sign in with Claude" login: the PKCE verifier we generated and the
 /// user it belongs to, with a creation timestamp for TTL expiry. Held only in
-/// memory and deleted on finish (single-use).
+/// memory and deleted on finish (single-use). `account_id` carries an optional
+/// attach target (CCT-558): when set, the finished credential lands as a
+/// provider under that existing account instead of creating a new identity.
 #[derive(Clone)]
 pub struct PendingOAuthLogin {
     pub user_id: Uuid,
     pub provider: String,
     pub code_verifier: String,
     pub created_at: DateTime<Utc>,
+    pub account_id: Option<Uuid>,
 }
 
 /// Resolve which user an account operation targets (CCT-251). A user token
@@ -75,12 +82,15 @@ fn require_human(ctx: &AuthContext) -> Result<(), (StatusCode, Json<serde_json::
 }
 
 /// One-release back-compat shim (CCT-399): if `CCTUI_CLAUDE_LITELLM_*` is set,
-/// synthesize a server-owned **managed** anthropic-compatible account per user so
-/// existing deployments keep working after the env-var path is retired. Managed
-/// accounts are read-only over the API (rename/delete excluded). Idempotent:
+/// synthesize a server-owned **managed** anthropic-compatible provider per user
+/// (under a dedicated `litellm (legacy)` account identity) so existing
+/// deployments keep working after the env-var path is retired. Managed
+/// providers are read-only over the API (edit/delete excluded). Idempotent:
 /// re-upserted on every restart against the partial unique index
 /// `(user_id, provider) WHERE managed`. A no-op unless both the endpoint and the
 /// model list are configured. To be removed in a follow-up release.
+// Linear per-user upsert loop; the parent+child pair pushes it over the limit.
+#[allow(clippy::cognitive_complexity)]
 pub async fn sync_litellm_shim(pool: &sqlx::PgPool, config: &crate::config::Config) {
     let Some(endpoint) = config.claude_litellm_endpoint.as_deref() else { return };
     let models = config.claude_litellm_visible_models();
@@ -98,22 +108,40 @@ pub async fn sync_litellm_shim(pool: &sqlx::PgPool, config: &crate::config::Conf
     )
     .unwrap_or(serde_json::Value::Null);
 
-    // One managed account per user, keyed by (user_id, provider) WHERE managed.
+    // One managed provider per user, keyed by (user_id, provider) WHERE managed,
+    // parented under an idempotently upserted `litellm (legacy)` identity.
     let users: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM users WHERE revoked_at IS NULL")
         .fetch_all(pool)
         .await
         .unwrap_or_default();
     for uid in users {
-        let res = sqlx::query(
-            "INSERT INTO oauth_accounts \
-                (user_id, name, provider, encrypted_access_token, base_url, models, \
-                 auth_scheme, managed) \
-             VALUES ($1, 'litellm (legacy)', 'anthropic-compatible', $2, $3, $4, 'bearer', TRUE) \
-             ON CONFLICT (user_id, provider) WHERE managed DO UPDATE \
-               SET encrypted_access_token = EXCLUDED.encrypted_access_token, \
-                   base_url = EXCLUDED.base_url, models = EXCLUDED.models",
+        let parent: Result<Uuid, sqlx::Error> = sqlx::query_scalar(
+            "INSERT INTO accounts (user_id, name) VALUES ($1, 'litellm (legacy)') \
+             ON CONFLICT (user_id, name) DO UPDATE SET updated_at = now() \
+             RETURNING id",
         )
         .bind(uid)
+        .fetch_one(pool)
+        .await;
+        let account_id = match parent {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::warn!(%uid, "litellm shim parent upsert failed: {e}");
+                continue;
+            }
+        };
+        let res = sqlx::query(
+            "INSERT INTO account_providers \
+                (user_id, account_id, provider, encrypted_access_token, base_url, models, \
+                 auth_scheme, managed) \
+             VALUES ($1, $2, 'anthropic-compatible', $3, $4, $5, 'bearer', TRUE) \
+             ON CONFLICT (user_id, provider) WHERE managed DO UPDATE \
+               SET encrypted_access_token = EXCLUDED.encrypted_access_token, \
+                   base_url = EXCLUDED.base_url, models = EXCLUDED.models, \
+                   account_id = EXCLUDED.account_id",
+        )
+        .bind(uid)
+        .bind(account_id)
         .bind(&enc_access)
         .bind(endpoint)
         .bind(&models_json)
@@ -123,46 +151,51 @@ pub async fn sync_litellm_shim(pool: &sqlx::PgPool, config: &crate::config::Conf
             tracing::warn!(%uid, "litellm shim upsert failed: {e}");
         }
     }
-    tracing::info!("CCTUI_CLAUDE_LITELLM_* shim: synced managed compatible accounts (CCT-399)");
+    tracing::info!("CCTUI_CLAUDE_LITELLM_* shim: synced managed compatible providers (CCT-399)");
 }
 
-/// One selectable model on a compatible-endpoint account (CCT-399): `model` is
+/// One selectable model on a compatible-endpoint provider (CCT-399): `model` is
 /// the `--model` code, `label` the display name. Safe to return over the API —
-/// model names are not secret (unlike the base URL + credential).
+/// model names are not secret (unlike the credential).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AccountModel {
     pub model: String,
     pub label: String,
 }
 
-/// API view of an account — secrets (tokens), the base URL, and the auth scheme
-/// are deliberately absent (CCT-399). Only `models` (safe) is surfaced.
+/// API view of one provider credential under an account (CCT-558). Secrets (the
+/// OAuth/static tokens) are deliberately absent; `base_url`/`auth_scheme` are
+/// surfaced so the accounts UI can render/edit a compatible endpoint in place.
 #[derive(Debug, serde::Serialize, sqlx::FromRow)]
-pub struct AccountInfo {
+pub struct ProviderInfo {
     pub id: Uuid,
-    pub name: String,
+    pub account_id: Uuid,
+    /// `anthropic` | `openai` | `anthropic-compatible` | `openai-compatible`.
     pub provider: String,
+    /// Provider family (generated column): `anthropic` | `openai`. At most one
+    /// provider per family per account (CCT-508 guard by construction).
+    pub family: String,
     /// Selectable models for a compatible endpoint (CCT-399). `None`/empty for
-    /// native subscription accounts (they use the harness's native families).
-    /// JSONB at rest; safe to return — names aren't secret.
+    /// native subscription providers (they use the harness's native families).
     pub models: Option<serde_json::Value>,
-    /// Per-account logical→concrete model alias map (CCT-406), e.g.
-    /// `{"opus": "claude-opus-4-8[1m]"}`. Applies to every provider; resolved
-    /// server-side at spawn. JSONB object at rest; safe to return.
+    /// Per-provider logical→concrete model alias map (CCT-406), e.g.
+    /// `{"opus": "claude-opus-4-8[1m]"}`. Resolved server-side at spawn.
     pub model_aliases: Option<serde_json::Value>,
-    /// `true` for a server-synthesized (managed) account — read-only over the
+    /// `true` for a server-synthesized (managed) provider — read-only over the
     /// API (the back-compat shim for `CCTUI_CLAUDE_LITELLM_*`, CCT-399).
     pub managed: bool,
-    /// Owning user (CCT-251) — admins see all accounts, so the owner matters.
-    pub user_id: Uuid,
-    /// Owner's name for display; only populated on the list query's join.
-    pub user_name: Option<String>,
+    /// Compatible-endpoint base URL (CCT-399); NULL for native providers.
+    pub base_url: Option<String>,
+    /// `oauth` (native) | `bearer` | `api_key` (compatible, CCT-399).
+    pub auth_scheme: String,
+    /// Upstream account id (Codex `chatgpt_account_id`, CCT-244).
+    pub provider_account_id: Option<String>,
     pub expires_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub last_used_at: Option<DateTime<Utc>>,
     pub request_count: i64,
     pub bytes_transferred: i64,
-    /// Total tokens (input + output + cache) attributed to this account across
+    /// Total tokens (input + output + cache) attributed to this provider across
     /// all its sessions (CCT-273). Joined from `session_tokens` →
     /// `session_token_usage` at read time.
     pub total_tokens: i64,
@@ -170,49 +203,152 @@ pub struct AccountInfo {
     /// blended rate (CCT-273). An estimate only — OAuth/subscription accounts
     /// aren't metered per token; this is a usage-weight signal, not a bill.
     pub est_cost_usd: f64,
-    /// Per-account soft limits on cctui's own share of the subscription windows
-    /// (CCT-411). NULL ⇒ no soft limit on that window. Safe to return — they're
-    /// config, not secrets.
+    /// Per-provider soft limits on cctui's own share of the subscription windows
+    /// (CCT-411). NULL ⇒ no soft limit on that window.
     pub soft_limit_5h_pct: Option<i32>,
     pub soft_limit_7d_pct: Option<i32>,
     pub soft_limit_bypass_minutes: Option<i32>,
     /// Credential health (CCT-512): `true` once the gateway saw the upstream
-    /// provider reject this account's OAuth credentials, cleared on the next
-    /// successful upstream call. The accounts UI shows a "reauthenticate" badge.
-    /// `#[sqlx(default)]` so SELECTs that don't project it (`create`/`oauth_finish` on
-    /// a fresh, never-flagged account) still decode.
-    #[sqlx(default)]
+    /// provider reject this credential, cleared on the next successful upstream
+    /// call. The accounts UI shows a "reauthenticate" badge.
     pub needs_reauth: bool,
-    #[sqlx(default)]
     pub last_auth_error: Option<String>,
-    #[sqlx(default)]
     pub last_auth_error_at: Option<DateTime<Utc>>,
     /// Validated, allowlisted subset of harness settings applied to sessions run
-    /// under this account (CCT-538). Config, not secret → returned normally.
-    /// Server-side validation rejects MANAGED/SYSTEM keys before persist. JSONB
-    /// object at rest; `#[sqlx(default)]` so SELECTs that don't project it decode.
-    #[sqlx(default)]
+    /// under this provider (CCT-538). Config, not secret → returned normally.
     pub settings_json: Option<serde_json::Value>,
-    /// Launch defaults applied when a session omits them (CCT-538): the `--model`
-    /// code, reasoning effort, and permission mode. Config, not secret.
-    #[sqlx(default)]
-    pub default_model: Option<String>,
-    #[sqlx(default)]
-    pub default_effort: Option<String>,
-    #[sqlx(default)]
-    pub default_permission_mode: Option<String>,
+}
+
+/// API view of an account identity (CCT-558): name, owner, timestamps, and its
+/// provider credentials.
+#[derive(Debug, serde::Serialize)]
+pub struct AccountInfo {
+    pub id: Uuid,
+    pub name: String,
+    /// Owning user (CCT-251) — admins see all accounts, so the owner matters.
+    pub user_id: Uuid,
+    /// Owner's name for display, joined from `users`.
+    pub user_name: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub providers: Vec<ProviderInfo>,
     // NOTE: `env_json` is deliberately NOT a field here — it holds encrypted
     // extra environment (possibly secrets) and is WRITE-ONLY, never returned over
     // the API, exactly like the OAuth tokens.
 }
 
-#[derive(Debug, serde::Deserialize)]
-pub struct CreateAccount {
-    pub name: String,
+/// Identity-row projection (`accounts` + owner name); providers are attached
+/// separately from [`PROVIDER_SELECT`].
+#[derive(Debug, sqlx::FromRow)]
+struct AccountRow {
+    id: Uuid,
+    name: String,
+    user_id: Uuid,
+    user_name: Option<String>,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+}
+
+impl AccountRow {
+    fn into_info(self, providers: Vec<ProviderInfo>) -> AccountInfo {
+        AccountInfo {
+            id: self.id,
+            name: self.name,
+            user_id: self.user_id,
+            user_name: self.user_name,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+            providers,
+        }
+    }
+}
+
+/// Shared SELECT for [`ProviderInfo`]: per-provider token totals + a rough USD
+/// cost estimate (CCT-273). Tokens are recorded per session
+/// (`session_token_usage`); `session_tokens` bridges a session to the provider
+/// row it ran under. `SUM()` over bigint returns NUMERIC, so cast back to bigint
+/// for the i64 columns. Cost uses a per-provider blended per-million rate
+/// (input/output/cache weighted) — an estimate, not a meter. Append a
+/// `WHERE`/`ORDER BY` clause before use.
+const PROVIDER_SELECT: &str = "SELECT p.id, p.account_id, p.provider, p.family, p.models, p.model_aliases, p.managed, \
+            p.base_url, p.auth_scheme, p.provider_account_id, \
+            p.expires_at, p.created_at, p.last_used_at, \
+            p.request_count, p.bytes_transferred, \
+            p.soft_limit_5h_pct, p.soft_limit_7d_pct, p.soft_limit_bypass_minutes, \
+            p.needs_reauth, p.last_auth_error, p.last_auth_error_at, p.settings_json, \
+            (COALESCE(t.input_tokens,0) + COALESCE(t.output_tokens,0) \
+             + COALESCE(t.cache_read_tokens,0) + COALESCE(t.cache_creation_tokens,0))::bigint \
+              AS total_tokens, \
+            (CASE p.provider \
+               WHEN 'openai' THEN \
+                 COALESCE(t.input_tokens,0)*1.25 + COALESCE(t.output_tokens,0)*10 \
+                 + COALESCE(t.cache_read_tokens,0)*0.125 + COALESCE(t.cache_creation_tokens,0)*1.25 \
+               ELSE \
+                 COALESCE(t.input_tokens,0)*3 + COALESCE(t.output_tokens,0)*15 \
+                 + COALESCE(t.cache_read_tokens,0)*0.3 + COALESCE(t.cache_creation_tokens,0)*3.75 \
+             END / 1000000.0)::double precision AS est_cost_usd \
+     FROM account_providers p \
+     LEFT JOIN ( \
+         SELECT st.account_id, \
+                SUM(stu.input_tokens)          AS input_tokens, \
+                SUM(stu.output_tokens)         AS output_tokens, \
+                SUM(stu.cache_read_tokens)     AS cache_read_tokens, \
+                SUM(stu.cache_creation_tokens) AS cache_creation_tokens \
+         FROM session_tokens st \
+         JOIN session_token_usage stu ON stu.session_id = st.session_id \
+         GROUP BY st.account_id \
+     ) t ON t.account_id = p.id";
+
+/// Identity SELECT for [`AccountRow`]. Append a `WHERE`/`ORDER BY` before use.
+const ACCOUNT_SELECT: &str = "SELECT a.id, a.name, a.user_id, u.name AS user_name, a.created_at, a.updated_at \
+     FROM accounts a JOIN users u ON u.id = a.user_id";
+
+/// Fetch one account (owner-scoped: `owner` NULL = admin sees all) with its
+/// providers. `Ok(None)` = no such account for that scope.
+async fn fetch_account_info(
+    pool: &sqlx::PgPool,
+    id: Uuid,
+    owner: Option<Uuid>,
+) -> Result<Option<AccountInfo>, sqlx::Error> {
+    let row: Option<AccountRow> = sqlx::query_as(&format!(
+        "{ACCOUNT_SELECT} WHERE a.id = $1 AND ($2::uuid IS NULL OR a.user_id = $2)"
+    ))
+    .bind(id)
+    .bind(owner)
+    .fetch_optional(pool)
+    .await?;
+    let Some(row) = row else { return Ok(None) };
+    let providers: Vec<ProviderInfo> =
+        sqlx::query_as(&format!("{PROVIDER_SELECT} WHERE p.account_id = $1 ORDER BY p.family"))
+            .bind(id)
+            .fetch_all(pool)
+            .await?;
+    Ok(Some(row.into_info(providers)))
+}
+
+/// Fetch one provider row by id. `Ok(None)` = no such provider.
+async fn fetch_provider_info(
+    pool: &sqlx::PgPool,
+    id: Uuid,
+) -> Result<Option<ProviderInfo>, sqlx::Error> {
+    sqlx::query_as(&format!("{PROVIDER_SELECT} WHERE p.id = $1"))
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+}
+
+/// Provider-credential payload (CCT-558): the create/attach fields for one
+/// provider row. Used standalone by `POST /accounts/{id}/providers` and
+/// flattened into [`CreateAccount`] so the pre-CCT-558 one-shot
+/// account+credential create keeps working.
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct ProviderSpec {
     /// `anthropic` | `openai` (native subscription) | `anthropic-compatible` |
-    /// `openai-compatible` (CCT-399).
-    pub provider: String,
-    /// OAuth refresh token (subscription accounts). Optional for compatible
+    /// `openai-compatible` (CCT-399). Optional only when flattened into
+    /// [`CreateAccount`] (identity-only create); required on the provider route.
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// OAuth refresh token (subscription providers). Optional for compatible
     /// endpoints, which store only a static credential (in `access_token`).
     /// Stored encrypted; the gateway exchanges it for access tokens on demand.
     #[serde(default)]
@@ -226,8 +362,7 @@ pub struct CreateAccount {
     #[serde(default)]
     pub expires_at: Option<i64>,
     /// Compatible-endpoint base URL (CCT-399), e.g. a LiteLLM/vLLM/Ollama-proxy.
-    /// Required for `*-compatible` providers; ignored for native ones. Never
-    /// returned over the API.
+    /// Required for `*-compatible` providers; ignored for native ones.
     #[serde(default)]
     pub base_url: Option<String>,
     /// Selectable models for a compatible endpoint (CCT-399).
@@ -238,49 +373,84 @@ pub struct CreateAccount {
     #[serde(default)]
     pub model_aliases: Option<std::collections::HashMap<String, String>>,
     /// Credential scheme for a compatible endpoint: `bearer` | `api_key`
-    /// (CCT-399). Defaults to `bearer`. Native accounts are always `oauth`.
+    /// (CCT-399). Defaults to `bearer`. Native providers are always `oauth`.
     #[serde(default)]
     pub auth_scheme: Option<String>,
-    /// Owning user — required (and only honoured) when authenticated with the
-    /// admin token, which has no user identity of its own (CCT-251).
-    #[serde(default)]
-    pub user_id: Option<Uuid>,
-    /// Per-account soft limits (CCT-411). All optional; absent ⇒ NULL (no cap).
+    /// Per-provider soft limits (CCT-411). All optional; absent ⇒ NULL (no cap).
     #[serde(default)]
     pub soft_limit_5h_pct: Option<i32>,
     #[serde(default)]
     pub soft_limit_7d_pct: Option<i32>,
     #[serde(default)]
     pub soft_limit_bypass_minutes: Option<i32>,
-    /// Validated, allowlisted harness settings for this account (CCT-538).
+    /// Validated, allowlisted harness settings for this provider (CCT-538).
     /// Server rejects MANAGED/SYSTEM keys before persist. Returned normally.
     #[serde(default)]
     pub settings_json: Option<serde_json::Value>,
+}
+
+/// `POST /api/v1/accounts` payload (CCT-558): the identity fields, plus an
+/// optionally flattened [`ProviderSpec`] — supplying `provider` creates the
+/// account and its first credential in one call (the pre-CCT-558 shape).
+#[derive(Debug, serde::Deserialize)]
+pub struct CreateAccount {
+    pub name: String,
+    /// Owning user — required (and only honoured) when authenticated with the
+    /// admin token, which has no user identity of its own (CCT-251).
+    #[serde(default)]
+    pub user_id: Option<Uuid>,
     /// Extra environment variables for sessions run under this account (CCT-538).
     /// Stored ENCRYPTED at rest and never returned over the API (write-only,
     /// like the OAuth tokens). An empty map ⇒ no override.
     #[serde(default)]
     pub env_json: Option<std::collections::HashMap<String, String>>,
-    /// Launch defaults (CCT-538). All optional; absent ⇒ NULL (no default).
-    #[serde(default)]
-    pub default_model: Option<String>,
-    #[serde(default)]
-    pub default_effort: Option<String>,
-    #[serde(default)]
-    pub default_permission_mode: Option<String>,
+    #[serde(flatten)]
+    pub provider: ProviderSpec,
 }
 
-/// `PATCH /api/v1/accounts/{id}` payload (CCT-402). A partial update: `name`
-/// renames (back-compat — the only field native accounts allow). For a
-/// non-managed compatible endpoint the operator may also edit `models`,
-/// `base_url`, `auth_scheme`, and rotate the static credential (`access_token`).
-/// All optional; an absent field leaves that column unchanged. `base_url/credential`
-/// are never returned, so the editor re-supplies `base_url` when changing it and
-/// leaves the credential blank to keep the stored one.
+/// `PATCH /api/v1/accounts/{id}` payload (CCT-558): identity-level fields only.
+/// `name` renames; `env_json` provided → re-encrypts and replaces (an empty map
+/// clears it); absent → unchanged (write-only, never returned). The legacy
+/// provider-ish fields are accepted syntactically but rejected with a pointer
+/// to the provider route, so an un-migrated client gets a clear 400 instead of
+/// a silent no-op.
 #[derive(Debug, serde::Deserialize)]
 pub struct UpdateAccount {
     #[serde(default)]
     pub name: Option<String>,
+    #[serde(default)]
+    pub env_json: Option<std::collections::HashMap<String, String>>,
+    // Legacy pre-CCT-558 provider fields (any shape): presence ⇒ 400 pointing at
+    // PATCH /accounts/{id}/providers/{provider_id}.
+    #[serde(default)]
+    pub base_url: Option<serde_json::Value>,
+    #[serde(default)]
+    pub auth_scheme: Option<serde_json::Value>,
+    #[serde(default)]
+    pub models: Option<serde_json::Value>,
+    #[serde(default)]
+    pub model_aliases: Option<serde_json::Value>,
+    #[serde(default)]
+    pub access_token: Option<serde_json::Value>,
+    #[serde(default)]
+    pub soft_limits: Option<serde_json::Value>,
+    #[serde(default)]
+    pub settings_json: Option<serde_json::Value>,
+    #[serde(default)]
+    pub defaults: Option<serde_json::Value>,
+}
+
+/// `PATCH /api/v1/accounts/{id}/providers/{provider_id}` payload (CCT-558,
+/// formerly the provider half of the account PATCH, CCT-402). A partial update:
+/// for a non-managed compatible endpoint the operator may edit `models`,
+/// `base_url`, `auth_scheme`, and rotate the static credential (`access_token`).
+/// `model_aliases` / `soft_limits` / `settings_json` are editable for every
+/// provider. All optional; an absent field leaves that column unchanged.
+/// `base_url`/credential are never returned, so the editor re-supplies
+/// `base_url` when changing it and leaves the credential blank to keep the
+/// stored one.
+#[derive(Debug, serde::Deserialize)]
+pub struct UpdateProvider {
     #[serde(default)]
     pub base_url: Option<String>,
     #[serde(default)]
@@ -288,8 +458,7 @@ pub struct UpdateAccount {
     #[serde(default)]
     pub models: Option<Vec<AccountModel>>,
     /// Replacement model alias map (CCT-406). Provided → replaces the stored map
-    /// wholesale (an empty object clears it); absent → unchanged. Editable for
-    /// every provider, unlike the compatible-only fields above.
+    /// wholesale (an empty object clears it); absent → unchanged.
     #[serde(default)]
     pub model_aliases: Option<std::collections::HashMap<String, String>>,
     /// New static credential for a compatible endpoint; blank/absent keeps the
@@ -298,38 +467,22 @@ pub struct UpdateAccount {
     pub access_token: Option<String>,
     /// Replacement soft-limit config (CCT-411). Provided → each of the three
     /// columns is set to its value (a null field clears that column); absent →
-    /// all three unchanged. Editable for every provider, like model aliases.
+    /// all three unchanged.
     #[serde(default)]
     pub soft_limits: Option<SoftLimitPatch>,
     /// Replacement validated settings blob (CCT-538). Provided → replaces the
     /// stored settings wholesale (an empty object clears it); absent → unchanged.
-    /// Validated against the allowlist before persist. Editable for every provider.
+    /// Validated against the allowlist before persist.
     #[serde(default)]
     pub settings_json: Option<serde_json::Value>,
-    /// Replacement extra-env map (CCT-538). Provided → re-encrypts and replaces
-    /// (an empty map clears it); absent → unchanged. Write-only, never returned.
-    #[serde(default)]
-    pub env_json: Option<std::collections::HashMap<String, String>>,
-    /// Replacement launch defaults (CCT-538). Each provided → set (a `null` field
-    /// inside the provided block clears that column); the block absent → all three
-    /// unchanged. Editable for every provider.
-    #[serde(default)]
-    pub defaults: Option<AccountDefaultsPatch>,
 }
 
-/// The three launch-default columns as a patchable block (CCT-538). A field left
-/// `null`/absent inside a provided block clears that column.
-// Field names are the JSON API contract; the shared `default_` prefix mirrors the
-// DB columns and cannot be dropped.
-#[allow(clippy::struct_field_names)]
+/// `POST /api/v1/accounts/{id}/providers/{provider_id}/move` payload (CCT-558):
+/// re-parent a provider credential onto another account owned by the same user
+/// (the manual merge path for the migration's one-account-per-old-row backfill).
 #[derive(Debug, serde::Deserialize)]
-pub struct AccountDefaultsPatch {
-    #[serde(default)]
-    pub default_model: Option<String>,
-    #[serde(default)]
-    pub default_effort: Option<String>,
-    #[serde(default)]
-    pub default_permission_mode: Option<String>,
+pub struct MoveProvider {
+    pub target_account_id: Uuid,
 }
 
 /// The three soft-limit columns as a patchable block (CCT-411). A field left
@@ -351,9 +504,14 @@ fn err(code: StatusCode, msg: &str) -> (StatusCode, Json<serde_json::Value>) {
     (code, Json(serde_json::json!({ "error": msg })))
 }
 
+fn db_err(e: &sqlx::Error) -> (StatusCode, Json<serde_json::Value>) {
+    tracing::error!("db error: {e}");
+    err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
+}
+
 /// Validate a pasted `settings_json` blob before persisting it (CCT-538) via the
 /// settings catalog (CCT-537): only keys tagged `safe`/`care` may be set
-/// per-account; unknown, MANAGED, and SYSTEM keys are rejected. Fail-closed —
+/// per-provider; unknown, MANAGED, and SYSTEM keys are rejected. Fail-closed —
 /// any violation aborts the whole write.
 fn validate_settings_json(
     value: &serde_json::Value,
@@ -387,88 +545,51 @@ fn validate_env_json(
     ))
 }
 
-/// `GET /api/v1/accounts` — the caller's own accounts (tokens never returned).
-/// Admin sees every account, with the owner's name joined in (CCT-251).
-pub async fn list_accounts(
-    State(state): State<AppState>,
-    Extension(ctx): Extension<AuthContext>,
-) -> Result<Json<Vec<AccountInfo>>, (StatusCode, Json<serde_json::Value>)> {
-    require_human(&ctx)?;
-    // Per-account token totals + a rough USD cost estimate (CCT-273). Tokens
-    // are recorded per session (`session_token_usage`); `session_tokens` bridges
-    // a session to the account it ran under. SUM() over bigint returns NUMERIC,
-    // so cast back to bigint for the i64 columns. Cost uses a per-provider
-    // blended per-million rate (input/output/cache weighted) — an estimate, not
-    // a meter (these are subscription accounts).
-    let rows: Vec<AccountInfo> = sqlx::query_as(
-        "SELECT a.id, a.name, a.provider, a.models, a.model_aliases, a.managed, a.user_id, u.name AS user_name, \
-                a.expires_at, a.created_at, a.last_used_at, \
-                a.request_count, a.bytes_transferred, \
-                a.soft_limit_5h_pct, a.soft_limit_7d_pct, a.soft_limit_bypass_minutes, \
-                a.needs_reauth, a.last_auth_error, a.last_auth_error_at, \
-                a.settings_json, a.default_model, a.default_effort, a.default_permission_mode, \
-                (COALESCE(t.input_tokens,0) + COALESCE(t.output_tokens,0) \
-                 + COALESCE(t.cache_read_tokens,0) + COALESCE(t.cache_creation_tokens,0))::bigint \
-                  AS total_tokens, \
-                (CASE a.provider \
-                   WHEN 'openai' THEN \
-                     COALESCE(t.input_tokens,0)*1.25 + COALESCE(t.output_tokens,0)*10 \
-                     + COALESCE(t.cache_read_tokens,0)*0.125 + COALESCE(t.cache_creation_tokens,0)*1.25 \
-                   ELSE \
-                     COALESCE(t.input_tokens,0)*3 + COALESCE(t.output_tokens,0)*15 \
-                     + COALESCE(t.cache_read_tokens,0)*0.3 + COALESCE(t.cache_creation_tokens,0)*3.75 \
-                 END / 1000000.0)::double precision AS est_cost_usd \
-         FROM oauth_accounts a JOIN users u ON u.id = a.user_id \
-         LEFT JOIN ( \
-             SELECT st.account_id, \
-                    SUM(stu.input_tokens)          AS input_tokens, \
-                    SUM(stu.output_tokens)         AS output_tokens, \
-                    SUM(stu.cache_read_tokens)     AS cache_read_tokens, \
-                    SUM(stu.cache_creation_tokens) AS cache_creation_tokens \
-             FROM session_tokens st \
-             JOIN session_token_usage stu ON stu.session_id = st.session_id \
-             GROUP BY st.account_id \
-         ) t ON t.account_id = a.id \
-         WHERE $1::uuid IS NULL OR a.user_id = $1 \
-         ORDER BY a.provider, a.name",
-    )
-    .bind(ctx.owner_filter())
-    .fetch_all(&state.pool)
-    .await
-    .map_err(|e| {
-        tracing::error!("db error: {e}");
-        err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
-    })?;
-    Ok(Json(rows))
+/// Validate + encrypt an extra-env map (CCT-538). Empty ⇒ `None` (clears).
+fn encrypt_env(
+    env: Option<&std::collections::HashMap<String, String>>,
+) -> Result<Option<String>, (StatusCode, Json<serde_json::Value>)> {
+    let Some(map) = env.filter(|m| !m.is_empty()) else { return Ok(None) };
+    validate_env_json(map)?;
+    let key = crate::crypto::vault_key();
+    Ok(Some(crate::crypto::obfuscate(&serde_json::to_string(map).unwrap_or_default(), &key)))
 }
 
-/// `POST /api/v1/accounts` — register a named OAuth account.
-// Linear handler: validate, branch per credential kind, insert, respond.
-#[allow(clippy::too_many_lines)]
-pub async fn create_account(
-    State(state): State<AppState>,
-    Extension(ctx): Extension<AuthContext>,
-    Json(req): Json<CreateAccount>,
-) -> Result<(StatusCode, Json<AccountInfo>), (StatusCode, Json<serde_json::Value>)> {
-    let uid = resolve_owner(&ctx, req.user_id)?;
-    if req.name.trim().is_empty() {
-        return Err(err(StatusCode::BAD_REQUEST, "name required"));
-    }
-    let compatible = matches!(req.provider.as_str(), "anthropic-compatible" | "openai-compatible");
-    if !matches!(
-        req.provider.as_str(),
-        "anthropic" | "openai" | "anthropic-compatible" | "openai-compatible"
-    ) {
+/// A validated, encrypted provider payload ready to INSERT.
+struct ProviderWrite {
+    provider: String,
+    enc_refresh: Option<String>,
+    enc_access: Option<String>,
+    expires_at: Option<DateTime<Utc>>,
+    base_url: Option<String>,
+    auth_scheme: String,
+    models: Option<serde_json::Value>,
+    model_aliases: Option<serde_json::Value>,
+    soft_limit_5h_pct: Option<i32>,
+    soft_limit_7d_pct: Option<i32>,
+    soft_limit_bypass_minutes: Option<i32>,
+    settings_json: Option<serde_json::Value>,
+}
+
+/// Validate a [`ProviderSpec`] into a [`ProviderWrite`] (shared by the one-shot
+/// account create and `POST /accounts/{id}/providers`). Native subscription
+/// providers require an OAuth refresh token (`auth_scheme` = oauth); compatible
+/// endpoints (CCT-399) a base URL + a static credential stored in
+/// `encrypted_access_token`, no refresh token, `auth_scheme` = `bearer|api_key`.
+fn prepare_provider_write(
+    spec: &ProviderSpec,
+) -> Result<ProviderWrite, (StatusCode, Json<serde_json::Value>)> {
+    let Some(provider) = spec.provider.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
+        return Err(err(StatusCode::BAD_REQUEST, "provider required"));
+    };
+    if !matches!(provider, "anthropic" | "openai" | "anthropic-compatible" | "openai-compatible") {
         return Err(err(
             StatusCode::BAD_REQUEST,
             "provider must be anthropic|openai|anthropic-compatible|openai-compatible",
         ));
     }
+    let compatible = matches!(provider, "anthropic-compatible" | "openai-compatible");
 
-    let key = crate::crypto::vault_key();
-    // Native subscription accounts: an OAuth refresh token, auth_scheme = oauth.
-    // Compatible endpoints (CCT-399): a base URL + a static credential stored in
-    // encrypted_access_token, no refresh token, auth_scheme = bearer|api_key.
     let (enc_refresh, enc_access, base_url, auth_scheme): (
         Option<String>,
         Option<String>,
@@ -476,7 +597,7 @@ pub async fn create_account(
         String,
     );
     if compatible {
-        let base = req.base_url.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        let base = spec.base_url.as_deref().map(str::trim).filter(|s| !s.is_empty());
         let Some(base) = base else {
             return Err(err(
                 StatusCode::BAD_REQUEST,
@@ -488,152 +609,373 @@ pub async fn create_account(
         if !(base.starts_with("http://") || base.starts_with("https://")) {
             return Err(err(StatusCode::BAD_REQUEST, "base_url must be an http(s) URL"));
         }
-        let scheme = req.auth_scheme.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        let scheme = spec.auth_scheme.as_deref().map(str::trim).filter(|s| !s.is_empty());
         let scheme = scheme.unwrap_or("bearer");
         if !matches!(scheme, "bearer" | "api_key") {
             return Err(err(StatusCode::BAD_REQUEST, "auth_scheme must be bearer|api_key"));
         }
         // A static credential is optional (an open proxy accepts any value); when
         // absent we still store a dummy so the gateway has a bearer to forward.
-        let cred = req
+        let cred = spec
             .access_token
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .unwrap_or("sk-dummy");
+        let key = crate::crypto::vault_key();
         enc_refresh = None;
         enc_access = Some(crate::crypto::obfuscate(cred, &key));
         base_url = Some(base.to_owned());
         auth_scheme = scheme.to_owned();
     } else {
-        let refresh = req.refresh_token.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        let refresh = spec.refresh_token.as_deref().map(str::trim).filter(|s| !s.is_empty());
         let Some(refresh) = refresh else {
             return Err(err(StatusCode::BAD_REQUEST, "refresh_token required"));
         };
+        let key = crate::crypto::vault_key();
         enc_refresh = Some(crate::crypto::obfuscate(refresh, &key));
-        enc_access = req.access_token.as_deref().map(|t| crate::crypto::obfuscate(t, &key));
+        enc_access = spec.access_token.as_deref().map(|t| crate::crypto::obfuscate(t, &key));
         base_url = None;
         auth_scheme = "oauth".to_owned();
     }
-    let expires_at = req.expires_at.and_then(|s| DateTime::<Utc>::from_timestamp(s, 0));
-    let models = req
+    let expires_at = spec.expires_at.and_then(|s| DateTime::<Utc>::from_timestamp(s, 0));
+    let models = spec
         .models
         .as_ref()
         .filter(|m| !m.is_empty())
         .map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null));
     // Alias map (CCT-406): an empty map stores NULL (no remapping).
-    let model_aliases = req
+    let model_aliases = spec
         .model_aliases
         .as_ref()
         .filter(|m| !m.is_empty())
         .map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null));
-
-    // Settings/env/defaults (CCT-538): validate settings + env against the
-    // catalog allowlist, encrypt env (may hold secrets), store defaults as-is.
-    // Empty ⇒ NULL.
-    if let Some(s) = req.settings_json.as_ref().filter(|v| !v.is_null()) {
+    if let Some(s) = spec.settings_json.as_ref().filter(|v| !v.is_null()) {
         validate_settings_json(s)?;
     }
-    let settings_json = req.settings_json.as_ref().filter(|v| !v.is_null()).cloned();
-    if let Some(m) = req.env_json.as_ref().filter(|m| !m.is_empty()) {
-        validate_env_json(m)?;
-    }
-    let enc_env = req
-        .env_json
-        .as_ref()
-        .filter(|m| !m.is_empty())
-        .map(|m| crate::crypto::obfuscate(&serde_json::to_string(m).unwrap_or_default(), &key));
-    let default_model = req.default_model.as_deref().map(str::trim).filter(|s| !s.is_empty());
-    let default_effort = req.default_effort.as_deref().map(str::trim).filter(|s| !s.is_empty());
-    let default_permission_mode =
-        req.default_permission_mode.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let settings_json = spec.settings_json.as_ref().filter(|v| !v.is_null()).cloned();
 
-    let row: Result<AccountInfo, sqlx::Error> = sqlx::query_as(
-        "INSERT INTO oauth_accounts \
-            (user_id, name, provider, encrypted_refresh_token, encrypted_access_token, \
+    Ok(ProviderWrite {
+        provider: provider.to_owned(),
+        enc_refresh,
+        enc_access,
+        expires_at,
+        base_url,
+        auth_scheme,
+        models,
+        model_aliases,
+        soft_limit_5h_pct: spec.soft_limit_5h_pct,
+        soft_limit_7d_pct: spec.soft_limit_7d_pct,
+        soft_limit_bypass_minutes: spec.soft_limit_bypass_minutes,
+        settings_json,
+    })
+}
+
+/// INSERT one provider row under an account. Bubbles the raw `sqlx::Error` so
+/// callers can map a unique violation on `(account_id, family)` to a 409.
+async fn insert_provider(
+    conn: &mut sqlx::PgConnection,
+    user_id: Uuid,
+    account_id: Uuid,
+    w: &ProviderWrite,
+) -> Result<Uuid, sqlx::Error> {
+    sqlx::query_scalar(
+        "INSERT INTO account_providers \
+            (user_id, account_id, provider, encrypted_refresh_token, encrypted_access_token, \
              expires_at, base_url, models, auth_scheme, model_aliases, \
-             soft_limit_5h_pct, soft_limit_7d_pct, soft_limit_bypass_minutes, \
-             settings_json, env_json, default_model, default_effort, default_permission_mode) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) \
-         RETURNING id, name, provider, models, model_aliases, managed, user_id, NULL::text AS user_name, \
-                   expires_at, created_at, last_used_at, \
-                   request_count, bytes_transferred, \
-                   soft_limit_5h_pct, soft_limit_7d_pct, soft_limit_bypass_minutes, \
-                   settings_json, default_model, default_effort, default_permission_mode, \
-                   0::bigint AS total_tokens, 0::double precision AS est_cost_usd",
+             soft_limit_5h_pct, soft_limit_7d_pct, soft_limit_bypass_minutes, settings_json) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) \
+         RETURNING id",
+    )
+    .bind(user_id)
+    .bind(account_id)
+    .bind(&w.provider)
+    .bind(&w.enc_refresh)
+    .bind(&w.enc_access)
+    .bind(w.expires_at)
+    .bind(&w.base_url)
+    .bind(&w.models)
+    .bind(&w.auth_scheme)
+    .bind(&w.model_aliases)
+    .bind(w.soft_limit_5h_pct)
+    .bind(w.soft_limit_7d_pct)
+    .bind(w.soft_limit_bypass_minutes)
+    .bind(&w.settings_json)
+    .fetch_one(conn)
+    .await
+}
+
+/// `GET /api/v1/accounts` — the caller's own accounts with their providers
+/// (tokens never returned). Admin sees every account, with the owner's name
+/// joined in (CCT-251).
+pub async fn list_accounts(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+) -> Result<Json<Vec<AccountInfo>>, (StatusCode, Json<serde_json::Value>)> {
+    require_human(&ctx)?;
+    let accounts: Vec<AccountRow> = sqlx::query_as(&format!(
+        "{ACCOUNT_SELECT} WHERE $1::uuid IS NULL OR a.user_id = $1 ORDER BY a.name"
+    ))
+    .bind(ctx.owner_filter())
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| db_err(&e))?;
+    let providers: Vec<ProviderInfo> = sqlx::query_as(&format!(
+        "{PROVIDER_SELECT} WHERE $1::uuid IS NULL OR p.user_id = $1 ORDER BY p.family"
+    ))
+    .bind(ctx.owner_filter())
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| db_err(&e))?;
+
+    let mut by_account: HashMap<Uuid, Vec<ProviderInfo>> = HashMap::new();
+    for p in providers {
+        by_account.entry(p.account_id).or_default().push(p);
+    }
+    let rows = accounts
+        .into_iter()
+        .map(|a| {
+            let providers = by_account.remove(&a.id).unwrap_or_default();
+            a.into_info(providers)
+        })
+        .collect();
+    Ok(Json(rows))
+}
+
+/// `GET /api/v1/accounts/{id}` — one account with its providers (owner-scoped;
+/// admin sees any).
+pub async fn get_account(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<AccountInfo>, (StatusCode, Json<serde_json::Value>)> {
+    require_human(&ctx)?;
+    fetch_account_info(&state.pool, id, ctx.owner_filter())
+        .await
+        .map_err(|e| db_err(&e))?
+        .map(Json)
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "no such account"))
+}
+
+/// `POST /api/v1/accounts` — register an account identity, optionally with its
+/// first provider credential in the same call (the pre-CCT-558 one-shot shape:
+/// a body carrying `provider` + credential fields).
+pub async fn create_account(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Json(req): Json<CreateAccount>,
+) -> Result<(StatusCode, Json<AccountInfo>), (StatusCode, Json<serde_json::Value>)> {
+    let uid = resolve_owner(&ctx, req.user_id)?;
+    if req.name.trim().is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "name required"));
+    }
+    let enc_env = encrypt_env(req.env_json.as_ref())?;
+    // Validate the optional provider payload BEFORE creating the identity so a
+    // bad credential body doesn't leave an empty account behind.
+    let provider_write = if req.provider.provider.is_some() {
+        Some(prepare_provider_write(&req.provider)?)
+    } else {
+        None
+    };
+
+    let mut tx = state.pool.begin().await.map_err(|e| db_err(&e))?;
+    let account_id: Uuid = match sqlx::query_scalar(
+        "INSERT INTO accounts (user_id, name, env_json) VALUES ($1, $2, $3) RETURNING id",
     )
     .bind(uid)
     .bind(req.name.trim())
-    .bind(&req.provider)
-    .bind(&enc_refresh)
-    .bind(&enc_access)
-    .bind(expires_at)
-    .bind(&base_url)
-    .bind(&models)
-    .bind(&auth_scheme)
-    .bind(&model_aliases)
-    .bind(req.soft_limit_5h_pct)
-    .bind(req.soft_limit_7d_pct)
-    .bind(req.soft_limit_bypass_minutes)
-    .bind(&settings_json)
     .bind(&enc_env)
-    .bind(default_model)
-    .bind(default_effort)
-    .bind(default_permission_mode)
-    .fetch_one(&state.pool)
-    .await;
-
-    match row {
-        Ok(info) => Ok((StatusCode::CREATED, Json(info))),
+    .fetch_one(&mut *tx)
+    .await
+    {
+        Ok(id) => id,
         Err(sqlx::Error::Database(db)) if db.is_unique_violation() => {
-            Err(err(StatusCode::CONFLICT, "an account with that name+provider already exists"))
+            return Err(err(StatusCode::CONFLICT, "an account with that name already exists"));
         }
-        Err(e) => {
-            tracing::error!("db error: {e}");
-            Err(err(StatusCode::INTERNAL_SERVER_ERROR, "database error"))
-        }
+        Err(e) => return Err(db_err(&e)),
+    };
+    if let Some(w) = &provider_write
+        && let Err(e) = insert_provider(&mut tx, uid, account_id, w).await
+    {
+        // A fresh account can't collide on (account_id, family); any error here
+        // is a genuine DB failure. The tx rollback drops the parent too.
+        return Err(db_err(&e));
     }
+    tx.commit().await.map_err(|e| db_err(&e))?;
+
+    let info = fetch_account_info(&state.pool, account_id, None)
+        .await
+        .map_err(|e| db_err(&e))?
+        .ok_or_else(|| err(StatusCode::INTERNAL_SERVER_ERROR, "account vanished after create"))?;
+    Ok((StatusCode::CREATED, Json(info)))
 }
 
-/// `PATCH /api/v1/accounts/{id}` — rename, and (CCT-402) edit a non-managed
-/// compatible endpoint's models / base URL / auth scheme / credential without
-/// recreating it. Native subscription accounts only honour `name`.
-// Linear handler: per-field optional updates built into one dynamic UPDATE.
-#[allow(clippy::too_many_lines)]
-pub async fn rename_account(
+/// `PATCH /api/v1/accounts/{id}` — rename the identity and/or replace its extra
+/// env (CCT-558). Provider fields moved to the provider routes; sending them
+/// here 400s with a pointer. Accounts holding a managed provider (the litellm
+/// shim) are read-only.
+pub async fn update_account(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateAccount>,
 ) -> Result<Json<AccountInfo>, (StatusCode, Json<serde_json::Value>)> {
     require_human(&ctx)?;
+    if req.base_url.is_some()
+        || req.auth_scheme.is_some()
+        || req.models.is_some()
+        || req.model_aliases.is_some()
+        || req.access_token.is_some()
+        || req.soft_limits.is_some()
+        || req.settings_json.is_some()
+        || req.defaults.is_some()
+    {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "provider fields moved (CCT-558): use PATCH /api/v1/accounts/:id/providers/:provider_id",
+        ));
+    }
     if let Some(name) = req.name.as_deref()
         && name.trim().is_empty()
     {
         return Err(err(StatusCode::BAD_REQUEST, "name required"));
     }
+    let name = req.name.as_deref().map(str::trim).map(str::to_owned);
+    // env_json: provided → re-encrypt + replace (empty map clears); absent →
+    // unchanged. COALESCE can't distinguish those, so carry a provided-flag.
+    let env_provided = req.env_json.is_some();
+    let enc_env = encrypt_env(req.env_json.as_ref())?;
 
-    // Resolve the target (scoped to the caller; admin sees all) so we can tell a
-    // compatible endpoint from a native one and reject editing managed accounts.
-    let provider: Option<(String,)> = sqlx::query_as(
-        "SELECT provider FROM oauth_accounts \
-         WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2) AND NOT managed",
+    let updated: Option<Uuid> = sqlx::query_scalar(
+        "UPDATE accounts SET \
+            name = COALESCE($3, name), \
+            env_json = CASE WHEN $4 THEN $5 ELSE env_json END, \
+            updated_at = now() \
+         WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2) \
+           AND NOT EXISTS (SELECT 1 FROM account_providers p \
+                           WHERE p.account_id = accounts.id AND p.managed) \
+         RETURNING id",
     )
+    .bind(id)
+    .bind(ctx.owner_filter())
+    .bind(&name)
+    .bind(env_provided)
+    .bind(&enc_env)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| match &e {
+        sqlx::Error::Database(db) if db.is_unique_violation() => {
+            err(StatusCode::CONFLICT, "an account with that name already exists")
+        }
+        _ => db_err(&e),
+    })?;
+    if updated.is_none() {
+        return Err(err(StatusCode::NOT_FOUND, "no such account"));
+    }
+    let info = fetch_account_info(&state.pool, id, None)
+        .await
+        .map_err(|e| db_err(&e))?
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "no such account"))?;
+    Ok(Json(info))
+}
+
+/// `DELETE /api/v1/accounts/{id}` — delete the identity (cascades its providers
+/// and their `session_tokens`).
+pub async fn delete_account(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, (StatusCode, Json<serde_json::Value>)> {
+    require_human(&ctx)?;
+    // Admin (`ctx.user_id` = NULL) may delete any account; a user only its own.
+    // Accounts holding a managed provider (litellm shim) are read-only.
+    let res = sqlx::query(
+        "DELETE FROM accounts WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2) \
+           AND NOT EXISTS (SELECT 1 FROM account_providers p \
+                           WHERE p.account_id = accounts.id AND p.managed)",
+    )
+    .bind(id)
+    .bind(ctx.owner_filter())
+    .execute(&state.pool)
+    .await
+    .map_err(|e| db_err(&e))?;
+    if res.rows_affected() == 0 {
+        return Err(err(StatusCode::NOT_FOUND, "no such account"));
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// ----------------------------------------------------------------------------
+// Provider routes (CCT-558): add / edit / remove / move one credential under an
+// account identity.
+// ----------------------------------------------------------------------------
+
+/// `POST /api/v1/accounts/{id}/providers` — attach a provider credential to an
+/// existing account (pasted-token / compatible-endpoint path; the OAuth flows
+/// attach via `oauth/start`'s `account_id`). 409 if the account already has a
+/// provider of that family.
+pub async fn add_provider(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(id): Path<Uuid>,
+    Json(req): Json<ProviderSpec>,
+) -> Result<(StatusCode, Json<ProviderInfo>), (StatusCode, Json<serde_json::Value>)> {
+    require_human(&ctx)?;
+    let owner = require_account_owner(&state, &ctx, id).await?;
+    let w = prepare_provider_write(&req)?;
+
+    let mut conn = state.pool.acquire().await.map_err(|e| db_err(&e))?;
+    let pid = match insert_provider(&mut conn, owner, id, &w).await {
+        Ok(pid) => pid,
+        Err(sqlx::Error::Database(db)) if db.is_unique_violation() => {
+            return Err(err(
+                StatusCode::CONFLICT,
+                "the account already has a provider of that family",
+            ));
+        }
+        Err(e) => return Err(db_err(&e)),
+    };
+    drop(conn);
+    let info = fetch_provider_info(&state.pool, pid)
+        .await
+        .map_err(|e| db_err(&e))?
+        .ok_or_else(|| err(StatusCode::INTERNAL_SERVER_ERROR, "provider vanished after create"))?;
+    Ok((StatusCode::CREATED, Json(info)))
+}
+
+/// `PATCH /api/v1/accounts/{id}/providers/{provider_id}` — edit a provider
+/// (CCT-402 semantics, re-homed by CCT-558): compatible endpoints may change
+/// models / base URL / auth scheme / credential; aliases, soft limits, and
+/// settings are editable for every provider. Managed providers are read-only.
+// Linear handler: per-field optional updates built into one dynamic UPDATE.
+#[allow(clippy::too_many_lines)]
+pub async fn update_provider(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path((id, provider_id)): Path<(Uuid, Uuid)>,
+    Json(req): Json<UpdateProvider>,
+) -> Result<Json<ProviderInfo>, (StatusCode, Json<serde_json::Value>)> {
+    require_human(&ctx)?;
+    // Resolve the target (scoped to the caller; admin sees all) so we can tell a
+    // compatible endpoint from a native one and reject editing managed rows.
+    let provider: Option<(String,)> = sqlx::query_as(
+        "SELECT provider FROM account_providers \
+         WHERE id = $1 AND account_id = $2 \
+           AND ($3::uuid IS NULL OR user_id = $3) AND NOT managed",
+    )
+    .bind(provider_id)
     .bind(id)
     .bind(ctx.owner_filter())
     .fetch_optional(&state.pool)
     .await
-    .map_err(|e| {
-        tracing::error!("db error: {e}");
-        err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
-    })?;
+    .map_err(|e| db_err(&e))?;
     let Some((provider,)) = provider else {
-        return Err(err(StatusCode::NOT_FOUND, "no such account"));
+        return Err(err(StatusCode::NOT_FOUND, "no such provider"));
     };
     let compatible = matches!(provider.as_str(), "anthropic-compatible" | "openai-compatible");
 
-    // Compatible-only fields are rejected for native accounts so the edit form
-    // can't silently no-op against a subscription account.
+    // Compatible-only fields are rejected for native providers so the edit form
+    // can't silently no-op against a subscription credential.
     if !compatible
         && (req.base_url.is_some()
             || req.auth_scheme.is_some()
@@ -642,7 +984,7 @@ pub async fn rename_account(
     {
         return Err(err(
             StatusCode::BAD_REQUEST,
-            "only the name is editable for a native subscription account",
+            "endpoint fields are only editable for a compatible provider",
         ));
     }
 
@@ -685,7 +1027,6 @@ pub async fn rename_account(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(|c| crate::crypto::obfuscate(c, &key));
-    let name = req.name.as_deref().map(str::trim).map(str::to_owned);
     // Soft limits (CCT-411): like aliases, carry a provided-flag so a provided
     // block replaces all three columns (a null field clears one) while an absent
     // block leaves them untouched.
@@ -694,41 +1035,19 @@ pub async fn rename_account(
         req.soft_limits.as_ref().map_or((None, None, None), |s| {
             (s.soft_limit_5h_pct, s.soft_limit_7d_pct, s.soft_limit_bypass_minutes)
         });
-
-    // Settings/env/defaults (CCT-538): each carries a provided-flag so a provided
-    // value replaces (empty clears) while an absent one is untouched — COALESCE
-    // can't distinguish "clear" from "unchanged". settings_json + env_json are
-    // validated against the catalog allowlist before persist; env_json is
-    // re-encrypted.
+    // Settings (CCT-538): provided replaces (empty clears), absent untouched;
+    // validated against the catalog allowlist before persist.
     let settings_provided = req.settings_json.is_some();
     if let Some(s) = req.settings_json.as_ref().filter(|v| !v.is_null()) {
         validate_settings_json(s)?;
     }
     let settings_json = req.settings_json.as_ref().filter(|v| !v.is_null()).cloned();
-    let env_provided = req.env_json.is_some();
-    if let Some(m) = req.env_json.as_ref().filter(|m| !m.is_empty()) {
-        validate_env_json(m)?;
-    }
-    let enc_env = req
-        .env_json
-        .as_ref()
-        .filter(|m| !m.is_empty())
-        .map(|m| crate::crypto::obfuscate(&serde_json::to_string(m).unwrap_or_default(), &key));
-    let defaults_provided = req.defaults.is_some();
-    let (default_model, default_effort, default_permission_mode) =
-        req.defaults.as_ref().map_or((None, None, None), |d| {
-            let norm = |v: &Option<String>| {
-                v.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned)
-            };
-            (norm(&d.default_model), norm(&d.default_effort), norm(&d.default_permission_mode))
-        });
 
     // COALESCE keeps each column when its bind is NULL, so an absent field is a
-    // no-op. Admin (`ctx.user_id` = NULL) may edit any account; a user only its
-    // own. Managed accounts are excluded.
-    let row: Option<AccountInfo> = sqlx::query_as(
-        "UPDATE oauth_accounts SET \
-            name = COALESCE($3, name), \
+    // no-op. Admin (`ctx.user_id` = NULL) may edit any provider; a user only its
+    // own. Managed rows are excluded.
+    let updated: Option<Uuid> = sqlx::query_scalar(
+        "UPDATE account_providers SET \
             base_url = COALESCE($4, base_url), \
             auth_scheme = COALESCE($5, auth_scheme), \
             models = COALESCE($6, models), \
@@ -737,22 +1056,14 @@ pub async fn rename_account(
             soft_limit_5h_pct = CASE WHEN $10 THEN $11 ELSE soft_limit_5h_pct END, \
             soft_limit_7d_pct = CASE WHEN $10 THEN $12 ELSE soft_limit_7d_pct END, \
             soft_limit_bypass_minutes = CASE WHEN $10 THEN $13 ELSE soft_limit_bypass_minutes END, \
-            settings_json = CASE WHEN $14 THEN $15 ELSE settings_json END, \
-            env_json = CASE WHEN $16 THEN $17 ELSE env_json END, \
-            default_model = CASE WHEN $18 THEN $19 ELSE default_model END, \
-            default_effort = CASE WHEN $18 THEN $20 ELSE default_effort END, \
-            default_permission_mode = CASE WHEN $18 THEN $21 ELSE default_permission_mode END \
-         WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2) AND NOT managed \
-         RETURNING id, name, provider, models, model_aliases, managed, user_id, NULL::text AS user_name, \
-                   expires_at, created_at, last_used_at, \
-                   request_count, bytes_transferred, \
-                   soft_limit_5h_pct, soft_limit_7d_pct, soft_limit_bypass_minutes, \
-                   settings_json, default_model, default_effort, default_permission_mode, \
-                   0::bigint AS total_tokens, 0::double precision AS est_cost_usd",
+            settings_json = CASE WHEN $14 THEN $15 ELSE settings_json END \
+         WHERE id = $1 AND account_id = $2 \
+           AND ($3::uuid IS NULL OR user_id = $3) AND NOT managed \
+         RETURNING id",
     )
+    .bind(provider_id)
     .bind(id)
     .bind(ctx.owner_filter())
-    .bind(&name)
     .bind(&base_url)
     .bind(&auth_scheme)
     .bind(&models)
@@ -765,45 +1076,95 @@ pub async fn rename_account(
     .bind(soft_bypass)
     .bind(settings_provided)
     .bind(&settings_json)
-    .bind(env_provided)
-    .bind(&enc_env)
-    .bind(defaults_provided)
-    .bind(&default_model)
-    .bind(&default_effort)
-    .bind(&default_permission_mode)
     .fetch_optional(&state.pool)
     .await
-    .map_err(|e| {
-        tracing::error!("db error: {e}");
-        err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
-    })?;
-    row.map(Json).ok_or_else(|| err(StatusCode::NOT_FOUND, "no such account"))
+    .map_err(|e| db_err(&e))?;
+    if updated.is_none() {
+        return Err(err(StatusCode::NOT_FOUND, "no such provider"));
+    }
+    let info = fetch_provider_info(&state.pool, provider_id)
+        .await
+        .map_err(|e| db_err(&e))?
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "no such provider"))?;
+    Ok(Json(info))
 }
 
-/// `DELETE /api/v1/accounts/{id}` — delete (cascades `session_tokens`).
-pub async fn delete_account(
+/// `DELETE /api/v1/accounts/{id}/providers/{provider_id}` — remove one provider
+/// credential (cascades its `session_tokens`). The identity and its other
+/// providers stay.
+pub async fn delete_provider(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
-    Path(id): Path<Uuid>,
+    Path((id, provider_id)): Path<(Uuid, Uuid)>,
 ) -> Result<StatusCode, (StatusCode, Json<serde_json::Value>)> {
     require_human(&ctx)?;
-    // Admin (`ctx.user_id` = NULL) may delete any account; a user only its own.
     let res = sqlx::query(
-        "DELETE FROM oauth_accounts WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2) \
-         AND NOT managed",
+        "DELETE FROM account_providers \
+         WHERE id = $1 AND account_id = $2 \
+           AND ($3::uuid IS NULL OR user_id = $3) AND NOT managed",
     )
+    .bind(provider_id)
     .bind(id)
     .bind(ctx.owner_filter())
     .execute(&state.pool)
     .await
-    .map_err(|e| {
-        tracing::error!("db error: {e}");
-        err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
-    })?;
+    .map_err(|e| db_err(&e))?;
     if res.rows_affected() == 0 {
-        return Err(err(StatusCode::NOT_FOUND, "no such account"));
+        return Err(err(StatusCode::NOT_FOUND, "no such provider"));
     }
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /api/v1/accounts/{id}/providers/{provider_id}/move` — re-parent a
+/// provider onto another account of the SAME owner (CCT-558's manual merge for
+/// the migration's one-account-per-old-row backfill, e.g. "alice (anthropic)" +
+/// "alice (openai)" → one "alice"). 409 if the target already has a provider of
+/// that family.
+pub async fn move_provider(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path((id, provider_id)): Path<(Uuid, Uuid)>,
+    Json(req): Json<MoveProvider>,
+) -> Result<Json<ProviderInfo>, (StatusCode, Json<serde_json::Value>)> {
+    require_human(&ctx)?;
+    let src_owner = require_account_owner(&state, &ctx, id).await?;
+    let tgt_owner = require_account_owner(&state, &ctx, req.target_account_id)
+        .await
+        .map_err(|_| err(StatusCode::NOT_FOUND, "no such target account"))?;
+    // Same-owner only: shares confer `use`, never re-homing a credential onto
+    // another user's identity (which would also flip whose sessions bill it).
+    if src_owner != tgt_owner {
+        return Err(err(
+            StatusCode::FORBIDDEN,
+            "provider can only move between accounts of the same owner",
+        ));
+    }
+    let moved = sqlx::query(
+        "UPDATE account_providers SET account_id = $1 \
+         WHERE id = $2 AND account_id = $3 AND NOT managed",
+    )
+    .bind(req.target_account_id)
+    .bind(provider_id)
+    .bind(id)
+    .execute(&state.pool)
+    .await;
+    match moved {
+        Ok(done) if done.rows_affected() == 0 => {
+            Err(err(StatusCode::NOT_FOUND, "no such provider"))
+        }
+        Ok(_) => {
+            let info = fetch_provider_info(&state.pool, provider_id)
+                .await
+                .map_err(|e| db_err(&e))?
+                .ok_or_else(|| err(StatusCode::NOT_FOUND, "no such provider"))?;
+            Ok(Json(info))
+        }
+        Err(sqlx::Error::Database(db)) if db.is_unique_violation() => Err(err(
+            StatusCode::CONFLICT,
+            "the target account already has a provider of that family",
+        )),
+        Err(e) => Err(db_err(&e)),
+    }
 }
 
 // ----------------------------------------------------------------------------
@@ -820,7 +1181,8 @@ pub async fn delete_account(
 // openai form-encoded) and Codex's id_token carries the chatgpt_account_id we
 // persist for the gateway's upstream header. Pending logins live in memory
 // only, keyed by nonce + scoped to the authenticated user, single-use,
-// TTL-bounded.
+// TTL-bounded. CCT-558: `start` may carry an `account_id` attach target so the
+// finished credential lands as a provider under an existing account.
 // ----------------------------------------------------------------------------
 
 #[derive(Debug, serde::Deserialize)]
@@ -828,9 +1190,14 @@ pub struct OAuthStart {
     /// `anthropic` ("Sign in with Claude") or `openai` ("Sign in with `ChatGPT`").
     pub provider: String,
     /// Owning user — required (and only honoured) when authenticated with the
-    /// admin token (CCT-251).
+    /// admin token (CCT-251). Ignored when `account_id` names the attach target
+    /// (the target's owner wins).
     #[serde(default)]
     pub user_id: Option<Uuid>,
+    /// Optional attach target (CCT-558): finish the flow as a provider under
+    /// this existing account instead of creating a new identity.
+    #[serde(default)]
+    pub account_id: Option<Uuid>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -842,7 +1209,10 @@ pub struct OAuthStartResponse {
 #[derive(Debug, serde::Deserialize)]
 pub struct OAuthFinish {
     pub nonce: String,
-    pub name: String,
+    /// New-account name. Required unless the flow was started with an
+    /// `account_id` attach target (then ignored).
+    #[serde(default)]
+    pub name: Option<String>,
     /// anthropic: the `code#state` pair pasted from claude.ai (the `#state`
     /// suffix is optional). Either this or `callback_url` must be present.
     #[serde(default)]
@@ -956,13 +1326,28 @@ fn sweep_expired(store: &PendingOAuthLogins) {
 
 /// `POST /api/v1/accounts/oauth/start` — begin a "Sign in with Claude" login.
 /// Generates PKCE + a nonce, stashes a pending record, and returns the
-/// authorize URL for the webui to open in a new tab.
+/// authorize URL for the webui to open in a new tab. With `account_id`
+/// (CCT-558) the finish attaches to that existing account.
 pub async fn oauth_start(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Json(req): Json<OAuthStart>,
 ) -> Result<Json<OAuthStartResponse>, (StatusCode, Json<serde_json::Value>)> {
-    let uid = resolve_owner(&ctx, req.user_id)?;
+    // The attach target names its owner; otherwise the caller does (CCT-251).
+    let uid = if let Some(account_id) = req.account_id {
+        require_human(&ctx)?;
+        let owner: Option<Uuid> = sqlx::query_scalar(
+            "SELECT user_id FROM accounts WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)",
+        )
+        .bind(account_id)
+        .bind(ctx.owner_filter())
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| db_err(&e))?;
+        owner.ok_or_else(|| err(StatusCode::NOT_FOUND, "no such account"))?
+    } else {
+        resolve_owner(&ctx, req.user_id)?
+    };
     if !matches!(req.provider.as_str(), "anthropic" | "openai") {
         return Err(err(StatusCode::BAD_REQUEST, "provider must be anthropic|openai"));
     }
@@ -1012,6 +1397,7 @@ pub async fn oauth_start(
             provider: req.provider,
             code_verifier,
             created_at: Utc::now(),
+            account_id: req.account_id,
         },
     );
 
@@ -1019,8 +1405,11 @@ pub async fn oauth_start(
 }
 
 /// `POST /api/v1/accounts/oauth/finish` — exchange the pasted `code#state` for
-/// tokens and store the account (same shape as POST /accounts). Single-use: the
-/// pending record is consumed regardless of exchange outcome.
+/// tokens and store the credential. Single-use: the pending record is consumed
+/// regardless of exchange outcome. Lands as a provider under the `start`
+/// attach target when one was given; otherwise finds-or-creates an account
+/// identity by `name` (re-running the flow for an existing name refreshes the
+/// same-family credential in place — the Reauthenticate button, CCT-512).
 // Linear handler: consume pending record, exchange code, store per provider.
 #[allow(clippy::too_many_lines)]
 pub async fn oauth_finish(
@@ -1029,9 +1418,6 @@ pub async fn oauth_finish(
     Json(req): Json<OAuthFinish>,
 ) -> Result<(StatusCode, Json<AccountInfo>), (StatusCode, Json<serde_json::Value>)> {
     require_human(&ctx)?;
-    if req.name.trim().is_empty() {
-        return Err(err(StatusCode::BAD_REQUEST, "name required"));
-    }
 
     sweep_expired(&state.pending_oauth_logins);
 
@@ -1045,6 +1431,28 @@ pub async fn oauth_finish(
     };
     let uid = pending.user_id;
     state.pending_oauth_logins.remove(&req.nonce);
+
+    // Resolve the target identity BEFORE the token exchange so a bad target
+    // fails fast: an attach target must still exist and belong to the pending
+    // owner; otherwise `name` finds-or-creates an identity after the exchange.
+    let attach_target = if let Some(account_id) = pending.account_id {
+        let owner: Option<Uuid> =
+            sqlx::query_scalar("SELECT user_id FROM accounts WHERE id = $1 AND user_id = $2")
+                .bind(account_id)
+                .bind(uid)
+                .fetch_optional(&state.pool)
+                .await
+                .map_err(|e| db_err(&e))?;
+        if owner.is_none() {
+            return Err(err(StatusCode::NOT_FOUND, "no such account"));
+        }
+        Some(account_id)
+    } else {
+        if req.name.as_deref().map(str::trim).filter(|s| !s.is_empty()).is_none() {
+            return Err(err(StatusCode::BAD_REQUEST, "name required"));
+        }
+        None
+    };
 
     // The token exchange differs per provider: anthropic posts JSON with the
     // pasted `code#state`; openai/Codex posts a form-encoded body with the code
@@ -1118,28 +1526,44 @@ pub async fn oauth_finish(
     let enc_access = crate::crypto::obfuscate(&tok.access_token, &key);
     let expires_at = tok.expires_in.map(|s| Utc::now() + Duration::seconds(s));
 
-    // Upsert on (user_id, name, provider): a first login inserts; re-running the
-    // flow for an existing account (the Reauthenticate button, CCT-512) refreshes
-    // its credentials in place and clears any `needs_reauth` flag, instead of
-    // 409ing on the unique index.
-    let row: Result<AccountInfo, sqlx::Error> = sqlx::query_as(
-        "INSERT INTO oauth_accounts \
-            (user_id, name, provider, encrypted_refresh_token, encrypted_access_token, \
+    // Resolve the identity: the attach target, or find-or-create by name.
+    let account_id: Uuid = if let Some(aid) = attach_target {
+        aid
+    } else {
+        // Safe unwrap-ish: validated non-empty above when attach_target is None.
+        let name = req.name.as_deref().map(str::trim).unwrap_or_default();
+        sqlx::query_scalar(
+            "INSERT INTO accounts (user_id, name) VALUES ($1, $2) \
+             ON CONFLICT (user_id, name) DO UPDATE SET updated_at = now() \
+             RETURNING id",
+        )
+        .bind(uid)
+        .bind(name)
+        .fetch_one(&state.pool)
+        .await
+        .map_err(|e| db_err(&e))?
+    };
+
+    // Upsert on (account_id, family): a first login inserts; re-running the flow
+    // against the same account (the Reauthenticate button, CCT-512) refreshes the
+    // same-family credential in place and clears any `needs_reauth` flag, instead
+    // of 409ing on the unique index.
+    let pid: Result<Uuid, sqlx::Error> = sqlx::query_scalar(
+        "INSERT INTO account_providers \
+            (user_id, account_id, provider, encrypted_refresh_token, encrypted_access_token, \
              expires_at, provider_account_id) \
          VALUES ($1, $2, $3, $4, $5, $6, $7) \
-         ON CONFLICT (user_id, name, provider) DO UPDATE SET \
-             encrypted_refresh_token = EXCLUDED.encrypted_refresh_token, \
-             encrypted_access_token  = EXCLUDED.encrypted_access_token, \
-             expires_at              = EXCLUDED.expires_at, \
-             provider_account_id     = EXCLUDED.provider_account_id, \
+         ON CONFLICT (account_id, family) DO UPDATE SET \
+             provider                 = EXCLUDED.provider, \
+             encrypted_refresh_token  = EXCLUDED.encrypted_refresh_token, \
+             encrypted_access_token   = EXCLUDED.encrypted_access_token, \
+             expires_at               = EXCLUDED.expires_at, \
+             provider_account_id      = EXCLUDED.provider_account_id, \
              needs_reauth = false, last_auth_error = NULL, last_auth_error_at = NULL \
-         RETURNING id, name, provider, models, managed, user_id, NULL::text AS user_name, \
-                   expires_at, created_at, last_used_at, \
-                   request_count, bytes_transferred, \
-                   0::bigint AS total_tokens, 0::double precision AS est_cost_usd",
+         RETURNING id",
     )
     .bind(uid)
-    .bind(req.name.trim())
+    .bind(account_id)
     .bind(&pending.provider)
     .bind(&enc_refresh)
     .bind(&enc_access)
@@ -1148,20 +1572,20 @@ pub async fn oauth_finish(
     .fetch_one(&state.pool)
     .await;
 
-    match row {
-        Ok(info) => {
+    match pid {
+        Ok(pid) => {
             // Fresh credentials → drop the in-memory reauth gate too (CCT-512), so
             // the gateway's success path doesn't think it still needs clearing.
-            state.account_reauth.remove(&info.id);
+            state.account_reauth.remove(&pid);
+            let info = fetch_account_info(&state.pool, account_id, None)
+                .await
+                .map_err(|e| db_err(&e))?
+                .ok_or_else(|| {
+                    err(StatusCode::INTERNAL_SERVER_ERROR, "account vanished after login")
+                })?;
             Ok((StatusCode::CREATED, Json(info)))
         }
-        Err(sqlx::Error::Database(db)) if db.is_unique_violation() => {
-            Err(err(StatusCode::CONFLICT, "an account with that name+provider already exists"))
-        }
-        Err(e) => {
-            tracing::error!("db error: {e}");
-            Err(err(StatusCode::INTERNAL_SERVER_ERROR, "database error"))
-        }
+        Err(e) => Err(db_err(&e)),
     }
 }
 
@@ -1189,10 +1613,12 @@ fn urlencoding(s: &str) -> String {
 /// spams it, and many clients share one entry per account.
 pub const USAGE_CACHE_TTL: Duration = Duration::minutes(3);
 
-/// Usage windows surfaced per account (CCT-306). `usage` mirrors Anthropic's free
-/// OAuth usage payload (`five_hour`/`seven_day` utilization + reset timestamps);
-/// `None` means the provider has no usage API (Codex) or the account has no
-/// active windows — the webui hides the indicator in that case.
+/// Usage windows surfaced per provider credential (CCT-306). `usage` mirrors
+/// Anthropic's free OAuth usage payload (`five_hour`/`seven_day` utilization +
+/// reset timestamps); `None` means the provider has no usage API (Codex) or the
+/// credential has no active windows — the webui hides the indicator in that
+/// case. `account_id` is the provider-row id (the pre-CCT-558 field name is the
+/// API contract).
 #[derive(Debug, serde::Serialize)]
 pub struct AccountUsage {
     pub account_id: Uuid,
@@ -1204,13 +1630,15 @@ pub struct AccountUsage {
     pub age_secs: u64,
 }
 
-/// `GET /api/v1/accounts/{id}/usage` — current subscription usage for an account
-/// (CCT-306). Free + tokenless: for anthropic accounts this hits Anthropic's
-/// OAuth usage endpoint (5h/7d window utilization), served from a slow-refresh
-/// per-account cache so we never spam the rate-limited upstream. OpenAI/codex
-/// accounts have no such API, so the 5h/7d windows are metered locally from
-/// recorded token usage (CCT-511) — same shape, same cache, same UI chip.
-/// Ownership: a user may only read their own accounts; admin may read any.
+/// `GET /api/v1/accounts/{id}/usage` — current subscription usage for a
+/// provider credential (CCT-306). `{id}` is the provider-row id (the pre-CCT-558
+/// account id — migrated rows share the uuid, so old callers keep working).
+/// Free + tokenless: for anthropic providers this hits Anthropic's OAuth usage
+/// endpoint (5h/7d window utilization), served from a slow-refresh per-provider
+/// cache so we never spam the rate-limited upstream. OpenAI/codex providers
+/// have no such API, so the 5h/7d windows are metered locally from recorded
+/// token usage (CCT-511) — same shape, same cache, same UI chip.
+/// Ownership: a user may only read their own providers; admin may read any.
 pub async fn account_usage(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -1218,19 +1646,16 @@ pub async fn account_usage(
 ) -> Result<Json<AccountUsage>, (StatusCode, Json<serde_json::Value>)> {
     require_human(&ctx)?;
     // Authorize + resolve provider in one go. Admin (`ctx.user_id` = NULL) may
-    // read any account; a user only its own.
+    // read any provider; a user only its own.
     let provider: Option<String> = sqlx::query_scalar(
-        "SELECT provider FROM oauth_accounts \
+        "SELECT provider FROM account_providers \
          WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)",
     )
     .bind(id)
     .bind(ctx.owner_filter())
     .fetch_optional(&state.pool)
     .await
-    .map_err(|e| {
-        tracing::error!("db error: {e}");
-        err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
-    })?;
+    .map_err(|e| db_err(&e))?;
     let Some(provider) = provider else {
         return Err(err(StatusCode::NOT_FOUND, "no such account"));
     };
@@ -1277,12 +1702,11 @@ pub async fn account_usage(
 // Account sharing management (CCT-510)
 //
 // `account_shares` (CCT-458) is the CCT-422 sharing seam: a live grant row lets
-// a NON-owner resolve/use an OAuth account on the gateway + dispatch path,
-// without transferring ownership. Until now the only way to create/see/revoke a
-// grant was a manual `INSERT` — a dispatched job that 404'd on an unshared
-// account had no fix but a DB dig. These three routes give the OWNER a surface
-// to list / grant / revoke shares. Owner-scoped: only the account's owner (or an
-// admin) may manage its shares — a grant confers `use`, never share management.
+// a NON-owner resolve/use an account on the gateway + dispatch path, without
+// transferring ownership. Grants key on the account IDENTITY (CCT-558): sharing
+// an account shares all its provider credentials. Owner-scoped: only the
+// account's owner (or an admin) may manage its shares — a grant confers `use`,
+// never share management.
 // ----------------------------------------------------------------------------
 
 /// API view of one live share grant on an account (CCT-510). Safe to return —
@@ -1307,28 +1731,26 @@ pub struct GrantShare {
     pub action: Option<String>,
 }
 
-/// Confirm the caller owns the account (admin sees any), scoped like the other
-/// account mutations via `owner_filter()`. Returns 404 (not 403) when the caller
-/// isn't the owner so an account id's existence never leaks. Share management is
-/// owner-only — a share grant does NOT confer the right to manage shares.
+/// Confirm the caller owns the account identity (admin sees any), scoped like
+/// the other account mutations via `owner_filter()`; returns the owner's id.
+/// Returns 404 (not 403) when the caller isn't the owner so an account id's
+/// existence never leaks. Share management is owner-only — a share grant does
+/// NOT confer the right to manage shares.
 async fn require_account_owner(
     state: &AppState,
     ctx: &AuthContext,
     id: Uuid,
-) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+) -> Result<Uuid, (StatusCode, Json<serde_json::Value>)> {
     let owner: Option<Uuid> = sqlx::query_scalar(
-        "SELECT user_id FROM oauth_accounts \
+        "SELECT user_id FROM accounts \
          WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)",
     )
     .bind(id)
     .bind(ctx.owner_filter())
     .fetch_optional(&state.pool)
     .await
-    .map_err(|e| {
-        tracing::error!("db error: {e}");
-        err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
-    })?;
-    owner.map(|_| ()).ok_or_else(|| err(StatusCode::NOT_FOUND, "no such account"))
+    .map_err(|e| db_err(&e))?;
+    owner.ok_or_else(|| err(StatusCode::NOT_FOUND, "no such account"))
 }
 
 /// `GET /api/v1/accounts/{id}/shares` — who the account is shared with (owner-
@@ -1349,10 +1771,7 @@ pub async fn list_shares(
     .bind(id)
     .fetch_all(&state.pool)
     .await
-    .map_err(|e| {
-        tracing::error!("db error: {e}");
-        err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
-    })?;
+    .map_err(|e| db_err(&e))?;
     Ok(Json(rows))
 }
 
@@ -1388,10 +1807,7 @@ pub async fn grant_share(
     }
     .fetch_optional(&state.pool)
     .await
-    .map_err(|e| {
-        tracing::error!("db error: {e}");
-        err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
-    })?;
+    .map_err(|e| db_err(&e))?;
     let Some(target) = target else {
         return Err(err(StatusCode::NOT_FOUND, "no such user"));
     };
@@ -1406,10 +1822,7 @@ pub async fn grant_share(
     .bind(action)
     .execute(&state.pool)
     .await
-    .map_err(|e| {
-        tracing::error!("db error: {e}");
-        err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
-    })?;
+    .map_err(|e| db_err(&e))?;
 
     let info: ShareInfo = sqlx::query_as(
         "SELECT s.account_id, s.user_id, u.name AS user_name, s.action, s.granted_at \
@@ -1421,10 +1834,7 @@ pub async fn grant_share(
     .bind(action)
     .fetch_one(&state.pool)
     .await
-    .map_err(|e| {
-        tracing::error!("db error: {e}");
-        err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
-    })?;
+    .map_err(|e| db_err(&e))?;
     Ok((StatusCode::CREATED, Json(info)))
 }
 
@@ -1446,10 +1856,7 @@ pub async fn revoke_share(
     .bind(user_id)
     .execute(&state.pool)
     .await
-    .map_err(|e| {
-        tracing::error!("db error: {e}");
-        err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
-    })?;
+    .map_err(|e| db_err(&e))?;
     if res.rows_affected() == 0 {
         return Err(err(StatusCode::NOT_FOUND, "no such share"));
     }
@@ -1491,6 +1898,7 @@ mod tests {
                 provider: "anthropic".into(),
                 code_verifier: "v".into(),
                 created_at: Utc::now(),
+                account_id: None,
             },
         );
         store.insert(
@@ -1500,6 +1908,7 @@ mod tests {
                 provider: "anthropic".into(),
                 code_verifier: "v".into(),
                 created_at: Utc::now() - Duration::minutes(20),
+                account_id: None,
             },
         );
         sweep_expired(&store);
@@ -1553,5 +1962,29 @@ mod tests {
             urlencoding("https://console.anthropic.com/oauth/code/callback"),
             "https%3A%2F%2Fconsole.anthropic.com%2Foauth%2Fcode%2Fcallback"
         );
+    }
+
+    #[test]
+    fn create_account_body_flattens_provider_spec() {
+        // Pre-CCT-558 one-shot shape still deserializes: provider fields flat.
+        let body: CreateAccount =
+            serde_json::from_str(r#"{"name":"work","provider":"anthropic","refresh_token":"rt"}"#)
+                .unwrap();
+        assert_eq!(body.provider.provider.as_deref(), Some("anthropic"));
+        assert_eq!(body.provider.refresh_token.as_deref(), Some("rt"));
+        // Identity-only create: no provider block.
+        let body: CreateAccount = serde_json::from_str(r#"{"name":"work"}"#).unwrap();
+        assert!(body.provider.provider.is_none());
+    }
+
+    #[test]
+    fn provider_write_validates_provider() {
+        let spec = ProviderSpec { provider: Some("bogus".into()), ..Default::default() };
+        assert!(prepare_provider_write(&spec).is_err());
+        let spec = ProviderSpec::default();
+        assert!(prepare_provider_write(&spec).is_err());
+        // native without refresh token → 400.
+        let spec = ProviderSpec { provider: Some("anthropic".into()), ..Default::default() };
+        assert!(prepare_provider_write(&spec).is_err());
     }
 }

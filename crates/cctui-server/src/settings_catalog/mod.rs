@@ -222,8 +222,7 @@ impl Catalog {
     /// load time (in [`build`]) if it is ever removed, so this cannot return `None`.
     #[must_use]
     pub fn quiet_defaults(&self) -> &Preset {
-        self.preset(QUIET_DEFAULTS_ID)
-            .expect("quiet-defaults preset present (checked at load)")
+        self.preset(QUIET_DEFAULTS_ID).expect("quiet-defaults preset present (checked at load)")
     }
 
     /// Validate a `settings.json` object against the per-account allowlist policy.
@@ -333,18 +332,18 @@ struct RawPreset {
 
 /// Best-effort extraction of `type` / `enum` / `default` / `description` for one key
 /// from the vendored schema's `properties` map.
-fn enrich_from_schema(props: Option<&Value>, name: &str) -> (Option<String>, Option<String>, Option<String>, Option<String>) {
+fn enrich_from_schema(
+    props: Option<&Value>,
+    name: &str,
+) -> (Option<String>, Option<String>, Option<String>, Option<String>) {
     let Some(p) = props.and_then(|p| p.get(name)) else {
         return (None, None, None, None);
     };
     let type_ = match p.get("type") {
         Some(Value::String(s)) => Some(s.clone()),
-        Some(Value::Array(a)) => Some(
-            a.iter()
-                .filter_map(|v| v.as_str())
-                .collect::<Vec<_>>()
-                .join(" | "),
-        ),
+        Some(Value::Array(a)) => {
+            Some(a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(" | "))
+        }
         _ => None,
     };
     let enum_ = p.get("enum").and_then(Value::as_array).map(|a| {
@@ -360,10 +359,7 @@ fn enrich_from_schema(props: Option<&Value>, name: &str) -> (Option<String>, Opt
         Value::String(s) => s.clone(),
         other => other.to_string(),
     });
-    let desc = p
-        .get("description")
-        .and_then(Value::as_str)
-        .map(str::to_string);
+    let desc = p.get("description").and_then(Value::as_str).map(str::to_string);
     (type_, enum_, default, desc)
 }
 
@@ -399,12 +395,7 @@ fn build() -> Catalog {
     let mut env_by_name = BTreeMap::new();
     for (i, e) in raw.env.into_iter().enumerate() {
         env_by_name.insert(e.name.clone(), i);
-        env.push(EnvVar {
-            name: e.name,
-            group: e.group,
-            tag: e.tag,
-            notes: e.notes,
-        });
+        env.push(EnvVar { name: e.name, group: e.group, tag: e.tag, notes: e.notes });
     }
 
     let presets: Vec<Preset> = raw
@@ -424,14 +415,7 @@ fn build() -> Catalog {
         "catalog.toml must define the `{QUIET_DEFAULTS_ID}` preset"
     );
 
-    Catalog {
-        keys,
-        keys_by_name,
-        env,
-        env_by_name,
-        presets,
-        schema_url: raw.schema_url,
-    }
+    Catalog { keys, keys_by_name, env, env_by_name, presets, schema_url: raw.schema_url }
 }
 
 static CATALOG: LazyLock<Catalog> = LazyLock::new(build);
@@ -466,15 +450,11 @@ mod tests {
     fn every_schema_property_is_catalogued() {
         let c = catalog();
         let schema: Value = serde_json::from_str(RAW_SCHEMA).unwrap();
-        let props = schema
-            .get("properties")
-            .and_then(Value::as_object)
-            .expect("schema has properties");
+        let props =
+            schema.get("properties").and_then(Value::as_object).expect("schema has properties");
         let missing: Vec<&String> = props
             .keys()
-            .filter(|name| {
-                !matches!(c.key(name), Some(k) if matches!(k.source, Source::Schema))
-            })
+            .filter(|name| !matches!(c.key(name), Some(k) if matches!(k.source, Source::Schema)))
             .collect();
         assert!(
             missing.is_empty(),
@@ -495,7 +475,8 @@ mod tests {
 
     #[test]
     fn docs_only_keys_present() {
-        for name in ["disableBundledSkills", "disableWorkflows", "disableArtifact", "fallbackModel"] {
+        for name in ["disableBundledSkills", "disableWorkflows", "disableArtifact", "fallbackModel"]
+        {
             let k = catalog().key(name).unwrap_or_else(|| panic!("{name} missing"));
             assert_eq!(k.source, Source::Docs, "{name} should be a docs-delta key");
         }

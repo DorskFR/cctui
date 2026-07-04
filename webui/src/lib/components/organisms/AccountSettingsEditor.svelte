@@ -7,13 +7,15 @@
 	//   2. extra `env_json` — a curated, allowlisted env-var editor. WRITE-ONLY:
 	//      the server never returns stored values, so this only ever SETS new ones
 	//      (with an explicit replace/clear affordance) and never displays secrets.
-	//   3. launch `defaults` — default model / effort / permission mode, applied
-	//      when a spawn omits them (a per-spawn value still overrides these).
+	//
+	// The launch `defaults` surface (CCT-539) was removed with the CCT-558 schema
+	// split — per-account launch defaults are superseded by per-(machine, cwd)
+	// client memory (CCT-561).
 	//
 	// The catalog it renders from is a generated mirror of the server-side
 	// settings_catalog (see $lib/settingsCatalog). The server re-validates every
 	// write, so the client-side checks here are fast feedback, not the boundary.
-	import { Button, Field, Input, Select, Text } from '@dorsk/tsumikit';
+	import { Button, Input, Select, Text } from '@dorsk/tsumikit';
 	import Error from '$lib/components/atoms/Error.svelte';
 	import {
 		BOOL_KEYS,
@@ -25,17 +27,10 @@
 		invalidSettingsKeys,
 		isKnownBoolKey
 	} from '$lib/settingsCatalog';
-	import { claudeEfforts, codexEfforts, claudeModels, codexModels, modes } from './spawn/options';
-	import { adapterForProvider, isCompatibleProvider } from './spawn/options';
 
 	interface EnvRow {
 		name: string;
 		value: string;
-	}
-	interface Defaults {
-		model: string;
-		effort: string;
-		mode: string;
 	}
 
 	let {
@@ -43,32 +38,12 @@
 		envRows = $bindable(),
 		// When true, `env_json` is sent on save (replacing/clearing the stored env);
 		// when false the stored env is left untouched. Flipped on by any edit here.
-		replaceEnv = $bindable(),
-		defaults = $bindable(),
-		provider,
-		accountModels = []
+		replaceEnv = $bindable()
 	}: {
 		settings: Record<string, unknown>;
 		envRows: EnvRow[];
 		replaceEnv: boolean;
-		defaults: Defaults;
-		provider: string;
-		accountModels?: { model: string; label: string }[];
 	} = $props();
-
-	// Model/effort option lists follow the account's harness family, mirroring the
-	// spawn form: a compatible endpoint uses its own declared models, else the
-	// native families for the locked adapter.
-	const isCodex = $derived(adapterForProvider(provider) === 'codex');
-	const compatible = $derived(isCompatibleProvider(provider));
-	const modelOptions = $derived(
-		compatible
-			? accountModels.map((m) => ({ v: m.model, label: m.label }))
-			: isCodex
-				? codexModels
-				: claudeModels
-	);
-	const effortOptions = $derived(isCodex ? codexEfforts : claudeEfforts);
 
 	// --- Boolean settings tri-state (Default / On / Off) -----------------------
 	// `undefined` in `settings` = inherit the Claude Code default; `true`/`false`
@@ -156,41 +131,13 @@
 
 <div class="settings-editor">
 	<div class="head">
-		<Text as="div" weight="semibold" size="sm">Account settings &amp; defaults</Text>
+		<Text as="div" weight="semibold" size="sm">Account settings &amp; environment</Text>
 		<Button onclick={applyQuietDefaults}>Quiet defaults</Button>
 	</div>
 	<Text as="p" tone="faint" size="xs">
 		Applied to every session run under this account. Only low-risk, per-account
 		settings are exposed; the server rejects org-managed keys.
 	</Text>
-
-	<!-- Launch defaults (CCT-541): model / effort / permission mode. A per-spawn
-	     value overrides these. -->
-	<div class="block">
-		<Text as="div" tone="muted" size="sm">Launch defaults</Text>
-		<Text as="div" tone="faint" size="xs">
-			Used when a new session doesn't pick its own. A per-spawn choice still wins.
-		</Text>
-		<div class="defaults-grid">
-			<Field label="Default model">
-				<Select bind:value={defaults.model}>
-					<option value="">No default</option>
-					{#each modelOptions as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
-				</Select>
-			</Field>
-			<Field label="Default effort">
-				<Select bind:value={defaults.effort}>
-					{#each effortOptions as e (e)}<option value={e}>{e || 'No default'}</option>{/each}
-				</Select>
-			</Field>
-			<Field label="Default permission mode">
-				<Select bind:value={defaults.mode}>
-					<option value="">No default</option>
-					{#each modes as md (md.v)}<option value={md.v}>{md.label}</option>{/each}
-				</Select>
-			</Field>
-		</div>
-	</div>
 
 	<!-- Boolean toggle list (CCT-541), grouped. Tri-state: Default / On / Off. -->
 	<div class="block">
@@ -333,11 +280,6 @@
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
 		margin-top: var(--sp-1);
-	}
-	.defaults-grid {
-		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
-		gap: var(--sp-2);
 	}
 	.key-row {
 		display: flex;

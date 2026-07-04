@@ -422,8 +422,8 @@ impl Resource for UserResource {
     }
 }
 
-/// OAuth accounts are owned directly (`oauth_accounts.user_id`) and may be
-/// SHARED to other users via `account_shares` (CCT-458). This overrides the
+/// Accounts (identities, CCT-558) are owned directly (`accounts.user_id`) and
+/// may be SHARED to other users via `account_shares` (CCT-458). This overrides the
 /// default `authorize` to add the grant lookup — the CCT-422 sharing seam in
 /// use: admin → owner → live share grant → denied. Mutation stays owner-only
 /// (the edit/delete handlers fold ownership into their SQL, CCT-420), so a
@@ -432,7 +432,7 @@ struct AccountResource;
 impl Resource for AccountResource {
     async fn owner_of(id: &str, pool: &PgPool) -> Result<Option<Uuid>, sqlx::Error> {
         let Ok(uuid) = Uuid::parse_str(id) else { return Ok(None) };
-        sqlx::query_scalar("SELECT user_id FROM oauth_accounts WHERE id = $1")
+        sqlx::query_scalar("SELECT user_id FROM accounts WHERE id = $1")
             .bind(uuid)
             .fetch_optional(pool)
             .await

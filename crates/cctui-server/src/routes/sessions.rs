@@ -677,13 +677,15 @@ async fn enrich_and_sort(
     // Account each session runs under (CCT-430). `sessions.account_id` is
     // unused legacy; the real binding lives in `session_tokens` (minted at
     // dispatch/gateway). Resolve the most recent non-revoked token per session
-    // to its `oauth_accounts.name` in one batched query. `None` for sessions
-    // that never routed through the gateway (e.g. plain local sessions).
+    // to its identity's `accounts.name` (via `account_providers`) in one batched
+    // query. `None` for sessions that never routed through the gateway (e.g.
+    // plain local sessions).
     if !session_ids.is_empty() {
         let rows: Vec<(String, String)> = sqlx::query_as(
-            "SELECT DISTINCT ON (st.session_id) st.session_id, oa.name \
+            "SELECT DISTINCT ON (st.session_id) st.session_id, a.name \
              FROM session_tokens st \
-             JOIN oauth_accounts oa ON oa.id = st.account_id \
+             JOIN account_providers ap ON ap.id = st.account_id \
+             JOIN accounts a ON a.id = ap.account_id \
              WHERE st.session_id = ANY($1) AND st.revoked_at IS NULL \
              ORDER BY st.session_id, st.created_at DESC",
         )
@@ -1357,7 +1359,7 @@ pub async fn interrupt_session(
 }
 
 /// Body of `POST /sessions/{id}/switch-account` (CCT-444). `account` names the
-/// target by either its `oauth_accounts.name` or its UUID.
+/// target by either its `accounts.name` or a provider-row UUID.
 #[derive(Deserialize)]
 pub struct SwitchAccountRequest {
     pub account: String,
@@ -1368,7 +1370,7 @@ pub struct SwitchAccountRequest {
 ///
 /// The worker's upstream bearer (`ANTHROPIC_AUTH_TOKEN=cctui_s_…`) is an opaque
 /// gateway token; the gateway resolves it to an account per request via a DB
-/// lookup (`session_tokens.token_hash → oauth_accounts`). So switching accounts
+/// lookup (`session_tokens.token_hash → account_providers`). So switching accounts
 /// is a **pure server-side rebind**: point the session's active token row at the
 /// target account. The worker keeps running with the same env token and its very
 /// next upstream request resolves to the new account — no restart, no re-exec,
@@ -1395,7 +1397,7 @@ pub async fn switch_account(
     // The session's currently-bound (active, most-recent) account.
     let current: Option<(uuid::Uuid, String, uuid::Uuid)> = sqlx::query_as(
         "SELECT a.id, a.provider, a.user_id \
-         FROM session_tokens t JOIN oauth_accounts a ON a.id = t.account_id \
+         FROM session_tokens t JOIN account_providers a ON a.id = t.account_id \
          WHERE t.session_id = $1 AND t.revoked_at IS NULL \
          ORDER BY t.created_at DESC LIMIT 1",
     )
@@ -1414,19 +1416,30 @@ pub async fn switch_account(
     let target: Option<(uuid::Uuid, String)> = if let Ok(tid) =
         uuid::Uuid::parse_str(req.account.trim())
     {
-        sqlx::query_as("SELECT id, provider FROM oauth_accounts WHERE id = $1 AND user_id = $2")
+        sqlx::query_as("SELECT id, provider FROM account_providers WHERE id = $1 AND user_id = $2")
             .bind(tid)
             .bind(owner_id)
             .fetch_optional(&state.pool)
             .await
             .map_err(db)?
     } else {
-        sqlx::query_as("SELECT id, provider FROM oauth_accounts WHERE name = $1 AND user_id = $2")
-            .bind(req.account.trim())
-            .bind(owner_id)
-            .fetch_optional(&state.pool)
-            .await
-            .map_err(db)?
+        // Name lives on the identity parent (CCT-558); pick the provider row in
+        // the CURRENT binding's family so the same-family constraint below holds
+        // for multi-provider identities (single-provider accounts behave as
+        // before).
+        sqlx::query_as(
+            "SELECT ap.id, ap.provider \
+             FROM account_providers ap JOIN accounts a ON a.id = ap.account_id \
+             WHERE a.name = $1 AND ap.user_id = $2 \
+               AND (ap.provider ILIKE '%openai%') = $3 \
+             LIMIT 1",
+        )
+        .bind(req.account.trim())
+        .bind(owner_id)
+        .bind(current_provider.contains("openai"))
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(db)?
     };
     let Some((target_id, target_provider)) = target else {
         return Err(err(StatusCode::NOT_FOUND, "no such account for this session's owner"));

@@ -56,7 +56,7 @@ pub struct GatewayEnvResponse {
 ///
 /// The daemon's low-frequency validity sweep asks whether the session token it
 /// launched a TRUSTED worker with still resolves — i.e. a `session_tokens` row
-/// with that hash exists, is not revoked, and joins a live `oauth_accounts`
+/// with that hash exists, is not revoked, and joins a live `account_providers`
 /// row. Only the sha256 hex of the token travels on the wire, never the token
 /// itself. `valid: false` (confirmed twice) is the daemon's signal that the
 /// worker will 401 at the gateway forever and needs a kill + cold-resume to
@@ -245,7 +245,7 @@ pub struct SessionListItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_heartbeat: Option<chrono::DateTime<chrono::Utc>>,
     /// OAuth account this session runs under (CCT-430), resolved from the most
-    /// recent non-revoked `session_tokens` row joined to `oauth_accounts`.
+    /// recent non-revoked `session_tokens` row joined to `account_providers` (name from its `accounts` parent).
     /// Surfaced so clients can show which account is driving the session (key
     /// icon + name tooltip). `None` for sessions with no minted gateway token
     /// (e.g. local sessions that never routed through the cctui gateway).

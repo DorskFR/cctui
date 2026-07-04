@@ -98,7 +98,7 @@ async fn main() -> anyhow::Result<()> {
     // strand an account: without this the success path couldn't clear a flag set
     // before the restart (it only writes on the in-memory transition).
     if let Ok(ids) =
-        sqlx::query_scalar::<_, uuid::Uuid>("SELECT id FROM oauth_accounts WHERE needs_reauth")
+        sqlx::query_scalar::<_, uuid::Uuid>("SELECT id FROM account_providers WHERE needs_reauth")
             .fetch_all(&state.pool)
             .await
     {
@@ -678,7 +678,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[GET, Method::POST],
             "/accounts",
-            "List your OAuth accounts, or create one.",
+            "List your accounts (identities + provider credentials), or create one.",
             get(routes::accounts::list_accounts).post(routes::accounts::create_account),
             Authn::Bearer,
             Authenticated,
@@ -700,10 +700,38 @@ fn build_api_routes() -> Routes {
             Authenticated,
         )
         .add(
-            &[Method::PATCH, Method::DELETE],
+            &[GET, Method::PATCH, Method::DELETE],
             "/accounts/{id}",
-            "Rename or delete an OAuth account.",
-            patch(routes::accounts::rename_account).delete(routes::accounts::delete_account),
+            "Get, rename/re-env, or delete an account identity.",
+            get(routes::accounts::get_account)
+                .patch(routes::accounts::update_account)
+                .delete(routes::accounts::delete_account),
+            Authn::Bearer,
+            Authenticated,
+        )
+        // Provider credentials under an account identity (CCT-558): owner-scoped
+        // in the handlers like the other account routes.
+        .add(
+            &[Method::POST],
+            "/accounts/{id}/providers",
+            "Attach a provider credential to an account.",
+            post(routes::accounts::add_provider),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[Method::PATCH, Method::DELETE],
+            "/accounts/{id}/providers/{provider_id}",
+            "Edit or remove one of an account's provider credentials.",
+            patch(routes::accounts::update_provider).delete(routes::accounts::delete_provider),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[Method::POST],
+            "/accounts/{id}/providers/{provider_id}/move",
+            "Move a provider credential to another account of the same owner.",
+            post(routes::accounts::move_provider),
             Authn::Bearer,
             Authenticated,
         )

@@ -8,7 +8,8 @@
 		useRecentDirs,
 		useAccounts,
 		useLabels,
-		endpoints
+		endpoints,
+		primaryProvider
 	} from '$lib/queries';
 	import type { Label } from '@bindings/Label';
 	import { ws } from '$lib/ws.svelte';
@@ -315,9 +316,15 @@
 	const selectedAccount = $derived(
 		form.account
 			? (allAccounts.find(
-					(a) => a.name === form.account && a.provider === form.account_provider
+					(a) => a.name === form.account && primaryProvider(a)?.provider === form.account_provider
 				) ?? allAccounts.find((a) => a.name === form.account))
 			: undefined
+	);
+	// TODO(CCT-562): the spawn flow still assumes one credential per account —
+	// read the first provider row until the modal is reworked for
+	// multi-provider identities.
+	const selectedProvider = $derived(
+		selectedAccount ? primaryProvider(selectedAccount)?.provider : undefined
 	);
 
 	const actions = useSessionActions();
@@ -375,8 +382,8 @@
 	function buildSpawnBody(): SpawnRequest {
 		// The account drives the harness + model (CCT-399); "Default" falls back
 		// to the adapter-first selection.
-		const adapter = selectedAccount ? adapterForProvider(selectedAccount.provider) : form.adapter_id;
-		const compatible = !!selectedAccount && isCompatibleProvider(selectedAccount.provider);
+		const adapter = selectedProvider ? adapterForProvider(selectedProvider) : form.adapter_id;
+		const compatible = !!selectedProvider && isCompatibleProvider(selectedProvider);
 		const model = compatible
 			? form.model_account || null
 			: (adapter === 'codex' ? form.model_codex : form.model_claude) || null;
@@ -396,7 +403,7 @@
 			account: form.account.trim() || null,
 			// Disambiguate a name shared across providers so the server resolves
 			// the exact account (CCT-399).
-			provider: selectedAccount?.provider || null,
+			provider: selectedProvider || null,
 			save_draft: false
 		};
 	}
@@ -493,7 +500,7 @@
 		if (form.prompt_file.trim()) payload.prompt_file = form.prompt_file.trim();
 		// The model is account-driven for a compatible account (CCT-399), else the
 		// claude family.
-		const dispatchCompatible = !!selectedAccount && isCompatibleProvider(selectedAccount.provider);
+		const dispatchCompatible = !!selectedProvider && isCompatibleProvider(selectedProvider);
 		const dispatchModel = dispatchCompatible ? form.model_account.trim() : form.model_claude.trim();
 		if (dispatchModel) payload.model = dispatchModel;
 		if (form.effort_claude.trim()) payload.effort = form.effort_claude.trim();
@@ -518,7 +525,10 @@
 			// Account routing on the dispatch path (CCT-399): the server mints the
 			// gateway token + merges its base-url/token into payload.env.
 			account: form.account.trim() || null,
-			provider: selectedAccount?.provider || null,
+			provider: selectedProvider || null,
+			// Multi-account routing (CCT-508) isn't driven from the modal; the
+			// singular account/provider pair above is the modal's contract.
+			accounts: [],
 			// `payload` is opaque (JsonValue) server-side; our local shape carries a
 			// nested `env` object, so cast at the boundary.
 			payload: payload as DispatchRequest['payload']

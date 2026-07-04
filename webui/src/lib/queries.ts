@@ -80,68 +80,89 @@ export interface EnrollDispatcherResponse {
   server_version: string;
 }
 
-/** A named OAuth account in the vault (CCT-232/CCT-237). Tokens are never
- *  returned by the API — only name/provider/expiry/last-used + lightweight
- *  usage stats. `provider` is `anthropic` (claude) or `openai` (codex). */
 /** One selectable model on a compatible-endpoint account (CCT-399). */
 export interface AccountModel {
   model: string;
   label: string;
 }
 
-export interface OAuthAccount {
+/** One provider credential under an account identity (CCT-558). Tokens are
+ *  never returned by the API — only provider/expiry/last-used + lightweight
+ *  usage stats. `provider` is `anthropic` (claude), `openai` (codex), or a
+ *  `*-compatible` base-url-overridden endpoint (CCT-399). */
+export interface AccountProvider {
   id: string;
-  name: string;
+  account_id: string;
   /** `anthropic` | `openai` (native) | `anthropic-compatible` |
    *  `openai-compatible` (a base-url-overridden endpoint, CCT-399). */
   provider: string;
+  /** Provider family: `anthropic` | `openai`. At most one provider per family
+   *  per account (CCT-508 guard by construction). */
+  family: string;
   /** Selectable models for a compatible endpoint (CCT-399); null/empty for
    *  native subscription accounts (which use the harness's native families).
    *  Safe to surface — model names aren't secret (unlike base URL + credential). */
   models: AccountModel[] | null;
-  /** Per-account logical→concrete model alias map (CCT-406), e.g.
-   *  `{ opus: "claude-opus-4-8[1m]" }`. Applies to every provider; resolved
-   *  server-side at spawn. null/empty means no remapping. */
+  /** Per-provider logical→concrete model alias map (CCT-406), e.g.
+   *  `{ opus: "claude-opus-4-8[1m]" }`. Resolved server-side at spawn.
+   *  null/empty means no remapping. */
   model_aliases: Record<string, string> | null;
-  /** True for a server-synthesized account (the CCTUI_CLAUDE_LITELLM_* shim) —
-   *  read-only: rename/delete are rejected server-side (CCT-399). */
+  /** True for a server-synthesized provider (the CCTUI_CLAUDE_LITELLM_* shim) —
+   *  read-only: edit/delete are rejected server-side (CCT-399). */
   managed: boolean;
-  /** Owning user (CCT-251) — shown to admins, who see all accounts. */
-  user_id: string;
-  user_name: string | null;
+  /** Compatible-endpoint base URL (CCT-399); null for native providers. */
+  base_url: string | null;
+  /** `oauth` (native) | `bearer` | `api_key` (compatible, CCT-399). */
+  auth_scheme: string;
+  provider_account_id: string | null;
   expires_at: string | null;
   created_at: string;
   last_used_at: string | null;
   request_count: number;
   bytes_transferred: number;
-  /** Total tokens (input + output + cache) across this account's sessions. */
+  /** Total tokens (input + output + cache) across this provider's sessions. */
   total_tokens: number;
   /** Rough USD cost estimate from tokens (per-provider blended rate, CCT-273). */
   est_cost_usd: number;
-  /** Per-account soft limits on cctui's own share of the usage windows (CCT-411).
+  /** Per-provider soft limits on cctui's own share of the usage windows (CCT-411).
    *  null on a window ⇒ no cap. `bypass_minutes`: ignore a window's cap when it
    *  resets within that many minutes. */
   soft_limit_5h_pct: number | null;
   soft_limit_7d_pct: number | null;
   soft_limit_bypass_minutes: number | null;
   /** Credential health (CCT-512): true once the gateway saw the upstream provider
-   *  reject this account's OAuth credentials; cleared on the next successful
-   *  upstream call. UI shows a "reauthenticate" badge + button when set. */
+   *  reject this credential; cleared on the next successful upstream call. UI
+   *  shows a "reauthenticate" badge + button when set. */
   needs_reauth: boolean;
   last_auth_error: string | null;
   last_auth_error_at: string | null;
   /** Validated, allowlisted harness settings applied to sessions run under this
-   *  account (CCT-538/CCT-541). Config, not secret → returned. Only SAFE/CARE
+   *  provider (CCT-538/CCT-541). Config, not secret → returned. Only SAFE/CARE
    *  settings.json keys; the server rejects MANAGED/SYSTEM keys on write. */
   settings_json: Record<string, unknown> | null;
-  /** Launch defaults applied when a spawn omits them (CCT-538): model code,
-   *  reasoning effort, permission mode. A per-spawn value overrides these. */
-  default_model: string | null;
-  default_effort: string | null;
-  default_permission_mode: string | null;
+}
+
+/** An account identity (CCT-558): name + owner, with zero or more provider
+ *  credentials attached. The pre-CCT-558 flat shape (one row = one credential)
+ *  became `providers[0]` for existing data. */
+export interface OAuthAccount {
+  id: string;
+  name: string;
+  /** Owning user (CCT-251) — shown to admins, who see all accounts. */
+  user_id: string;
+  user_name: string | null;
+  created_at: string;
+  updated_at: string;
+  providers: AccountProvider[];
   // NOTE: `env_json` is deliberately absent — it is write-only, never returned
   // over the API (may hold secrets), exactly like the OAuth tokens.
 }
+
+/** TODO(CCT-560): single-provider back-compat. The UI still treats an account
+ *  as one credential; until the accounts/spawn surfaces are redesigned for
+ *  multi-provider identities (CCT-560/CCT-562), read the first provider row.
+ *  Migrated pre-CCT-558 accounts have exactly one, so behavior is unchanged. */
+export const primaryProvider = (a: OAuthAccount): AccountProvider | undefined => a.providers[0];
 
 /** One usage window from Anthropic's free OAuth usage API (CCT-306):
  *  `utilization` is a 0–100 percentage of the window consumed, `resets_at` an
@@ -194,12 +215,22 @@ export interface CreateAccount {
   soft_limit_bypass_minutes?: number | null;
 }
 
-/** Partial edit payload (CCT-402). Every field optional; an absent field leaves
- *  that column unchanged. `name` works for any account; the compatible-endpoint
- *  fields are only honoured for a non-managed `*-compatible` account. A blank
- *  `base_url`/`access_token` keeps the stored value (they are never read back). */
+/** Identity-level edit payload (CCT-558): rename and/or replace the write-only
+ *  extra-env map. Provider-credential fields moved to [`UpdateProvider`]. */
 export interface UpdateAccount {
   name?: string;
+  /** Replacement extra-env map (CCT-538). Provided → re-encrypts and replaces
+   *  (an empty map clears it); absent → unchanged. WRITE-ONLY: never returned,
+   *  so the editor only ever sends new values, it can't display stored ones. */
+  env_json?: Record<string, string>;
+}
+
+/** Provider-credential edit payload (CCT-558, formerly the provider half of the
+ *  account PATCH, CCT-402). Every field optional; an absent field leaves that
+ *  column unchanged. The compatible-endpoint fields are only honoured for a
+ *  non-managed `*-compatible` provider. A blank `base_url`/`access_token`
+ *  keeps the stored value (they are never read back). */
+export interface UpdateProvider {
   base_url?: string;
   auth_scheme?: string;
   models?: AccountModel[];
@@ -219,17 +250,6 @@ export interface UpdateAccount {
    *  the stored settings wholesale (an empty object clears it); absent →
    *  unchanged. Validated against the SAFE/CARE allowlist before persist. */
   settings_json?: Record<string, unknown>;
-  /** Replacement extra-env map (CCT-538). Provided → re-encrypts and replaces
-   *  (an empty map clears it); absent → unchanged. WRITE-ONLY: never returned,
-   *  so the editor only ever sends new values, it can't display stored ones. */
-  env_json?: Record<string, string>;
-  /** Replacement launch defaults (CCT-538). A `null` field inside the provided
-   *  block clears that column; the block absent → all three unchanged. */
-  defaults?: {
-    default_model: string | null;
-    default_effort: string | null;
-    default_permission_mode: string | null;
-  };
 }
 
 /** "Sign in with Claude" OAuth start payload/response (CCT-243). */
@@ -245,7 +265,9 @@ export interface OAuthStartResponse {
  */
 export interface OAuthFinish {
   nonce: string;
-  name: string;
+  /** New-account name; ignored when the flow was started with an attach
+   *  target (`account_id` on start, CCT-558). */
+  name?: string;
   code?: string;
   callback_url?: string;
 }
@@ -406,6 +428,9 @@ export const endpoints = {
     api.post<OAuthAccount>("/accounts", body),
   updateAccount: (id: string, body: UpdateAccount) =>
     api.patch<OAuthAccount>(`/accounts/${id}`, body),
+  /** Edit one provider credential under an account (CCT-558). */
+  updateProvider: (accountId: string, providerId: string, body: UpdateProvider) =>
+    api.patch<AccountProvider>(`/accounts/${accountId}/providers/${providerId}`, body),
   deleteAccount: (id: string) => api.del<void>(`/accounts/${id}`),
   /** Current subscription usage for an account (CCT-306). Free + tokenless;
    *  the server slow-refreshes a cache so polling never spams upstream. */
@@ -416,10 +441,13 @@ export const endpoints = {
     api.post<ShareInfo>(`/accounts/${id}/shares`, body),
   revokeShare: (id: string, userId: string) =>
     api.del<void>(`/accounts/${id}/shares/${userId}`),
-  oauthStart: (provider: string, userId?: string) =>
+  oauthStart: (provider: string, userId?: string, accountId?: string) =>
     api.post<OAuthStartResponse>("/accounts/oauth/start", {
       provider,
       user_id: userId,
+      // Attach target (CCT-558): finish lands the credential as a provider
+      // under this existing account instead of creating a new identity.
+      account_id: accountId,
     }),
   oauthFinish: (body: OAuthFinish) =>
     api.post<OAuthAccount>("/accounts/oauth/finish", body),
@@ -1348,8 +1376,8 @@ export function useAccountActions() {
     // "Sign in with Claude" (CCT-243): start returns the authorize URL the
     // page opens in a new tab; finish exchanges the pasted code for tokens
     // and creates the account (no inval needed on start, only on finish).
-    oauthStart: (provider: string, userId?: string) =>
-      endpoints.oauthStart(provider, userId),
+    oauthStart: (provider: string, userId?: string, accountId?: string) =>
+      endpoints.oauthStart(provider, userId, accountId),
     oauthFinish: async (body: OAuthFinish) => {
       const r = await endpoints.oauthFinish(body);
       inval();
@@ -1357,6 +1385,11 @@ export function useAccountActions() {
     },
     update: async (id: string, body: UpdateAccount) => {
       const r = await endpoints.updateAccount(id, body);
+      inval();
+      return r;
+    },
+    updateProvider: async (accountId: string, providerId: string, body: UpdateProvider) => {
+      const r = await endpoints.updateProvider(accountId, providerId, body);
       inval();
       return r;
     },

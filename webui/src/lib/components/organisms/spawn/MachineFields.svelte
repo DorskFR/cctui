@@ -9,7 +9,7 @@
 	// account's declared models (compatible endpoints) or native families
 	// (subscription). "Default (no account)" preserves the old adapter-first flow.
 	import type { MachineRow } from '@bindings/MachineRow';
-	import type { OAuthAccount } from '$lib/queries';
+	import { primaryProvider, type OAuthAccount } from '$lib/queries';
 	import BrandLogo from '$lib/components/atoms/BrandLogo.svelte';
 	import { Field, Input, OptionButton, Select, Text, Textarea } from '@dorsk/tsumikit';
 	import CwdCombo from './CwdCombo.svelte';
@@ -46,31 +46,38 @@
 
 	// The account currently selected (matched on name + provider so a name shared
 	// across providers stays unambiguous). Empty form.account = "Default".
+	// TODO(CCT-562): the spawn flow still assumes one credential per account —
+	// read the first provider row until the modal is reworked for
+	// multi-provider identities.
 	const selectedAccount = $derived(
 		form.account
-			? (accounts.find((a) => a.name === form.account && a.provider === form.account_provider) ??
-					accounts.find((a) => a.name === form.account))
+			? (accounts.find(
+					(a) => a.name === form.account && primaryProvider(a)?.provider === form.account_provider
+				) ?? accounts.find((a) => a.name === form.account))
 			: undefined
+	);
+	const selectedProvider = $derived(
+		selectedAccount ? primaryProvider(selectedAccount) : undefined
 	);
 
 	// The effective harness: locked to the account's family when one is chosen,
 	// else the user-picked adapter ("Default" flow).
 	const effectiveAdapter = $derived(
-		selectedAccount ? adapterForProvider(selectedAccount.provider) : form.adapter_id
+		selectedProvider ? adapterForProvider(selectedProvider.provider) : form.adapter_id
 	);
 
 	// Model options for the chosen axis (CCT-399):
 	//  * compatible account → its own declared models;
 	//  * native account / Default → the harness's native families.
 	const accountModelOptions = $derived(
-		(selectedAccount?.models ?? []).map((m) => ({ v: m.model, label: m.label }))
+		(selectedProvider?.models ?? []).map((m) => ({ v: m.model, label: m.label }))
 	);
 	const usesAccountModels = $derived(
-		!!selectedAccount && isCompatibleProvider(selectedAccount.provider)
+		!!selectedProvider && isCompatibleProvider(selectedProvider.provider)
 	);
 	// Native claude families annotated with the selected account's alias targets.
 	const claudeModelOptions = $derived(
-		withAliasTargets(claudeModels, selectedAccount?.model_aliases)
+		withAliasTargets(claudeModels, selectedProvider?.model_aliases)
 	);
 
 	// Clear a stale account selection if it no longer exists (e.g. accounts
@@ -94,7 +101,7 @@
 	function onAccountChange(value: string) {
 		form.account = value;
 		form.account_provider = value
-			? (accounts.find((a) => a.name === value)?.provider ?? '')
+			? (primaryProvider(accounts.find((a) => a.name === value) ?? ({ providers: [] } as unknown as OAuthAccount))?.provider ?? '')
 			: '';
 	}
 </script>
@@ -143,7 +150,7 @@
 	<Select id="sp-account" value={form.account} onchange={(e) => onAccountChange((e.currentTarget as HTMLSelectElement).value)}>
 		<option value="">Default (no account)</option>
 		{#each accounts as a (a.id)}
-			<option value={a.name}>{a.name} ({a.provider})</option>
+			<option value={a.name}>{a.name} ({primaryProvider(a)?.provider ?? 'no provider'})</option>
 		{/each}
 	</Select>
 	{#if selectedAccount}
@@ -212,9 +219,6 @@
 			{#each claudeModelOptions as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
 		</Select>
 	{/if}
-	{#if selectedAccount?.default_model}
-		<Text tone="faint" size="xs">Account default: {selectedAccount.default_model} (used when left as Default).</Text>
-	{/if}
 </Field>
 
 <!-- Per-adapter effort: keyed off the effective harness so an account-locked
@@ -234,20 +238,17 @@
 		onset={(v) => (form.effort_claude = v)}
 	/>
 {/if}
-{#if selectedAccount?.default_effort}
-	<Text tone="faint" size="xs">Account default effort: {selectedAccount.default_effort}.</Text>
-{/if}
 
 <Field label="Permission mode">
 	<div class="modes">
-		<!-- "Default" (unset) leaves the mode to the account default, else
-		     claude's own default — no mode is forced into the spawn (CCT-542). -->
+		<!-- "Default" (unset) leaves the mode to claude's own default — no mode
+		     is forced into the spawn (CCT-542/CCT-558). -->
 		<OptionButton
 			selected={form.permission_mode === ''}
 			onclick={() => (form.permission_mode = '')}
 		>
 			<strong>Default</strong>
-			<Text tone="faint" size="xs">Account / claude default</Text>
+			<Text tone="faint" size="xs">Claude default</Text>
 		</OptionButton>
 		{#each modes as md (md.v)}
 			<OptionButton
@@ -260,9 +261,6 @@
 			</OptionButton>
 		{/each}
 	</div>
-	{#if selectedAccount?.default_permission_mode}
-		<Text tone="faint" size="xs">Account default: {selectedAccount.default_permission_mode} (used when left as Default; a concrete choice overrides it).</Text>
-	{/if}
 </Field>
 
 <style>

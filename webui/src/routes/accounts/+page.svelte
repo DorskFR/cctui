@@ -5,9 +5,11 @@
 		useCapabilities,
 		useMe,
 		useUsers,
+		primaryProvider,
 		type OAuthAccount,
 		type CreateAccount,
 		type UpdateAccount,
+		type UpdateProvider,
 	} from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
 	import { compact } from '$lib/format';
@@ -92,19 +94,14 @@
 	let softBypass = $state<number | null>(null);
 	const isCompatible = $derived(provider.endsWith('-compatible'));
 
-	// Per-account settings editor state (CCT-541). `settings` mirrors the account's
+	// Per-account settings editor state (CCT-541). `settings` mirrors the provider's
 	// settings_json (SAFE/CARE keys); `envRows` feed the write-only env_json (never
 	// read back, so they start empty on edit); `replaceEnv` gates whether env_json
-	// is sent at all (only when the operator actually edits the env); `defaults`
-	// holds the launch defaults.
+	// is sent at all (only when the operator actually edits the env). The launch
+	// defaults surface was removed with CCT-558 (superseded by CCT-561).
 	let acctSettings = $state<Record<string, unknown>>({});
 	let acctEnvRows = $state<{ name: string; value: string }[]>([]);
 	let acctReplaceEnv = $state(false);
-	let acctDefaults = $state<{ model: string; effort: string; mode: string }>({
-		model: '',
-		effort: '',
-		mode: ''
-	});
 
 	/** Normalise a soft-limit input: empty ⇒ null, else a clamped non-negative
 	 *  integer. Tolerates either the number a number-input binds or a stray string. */
@@ -154,6 +151,9 @@
 	// Reauth mode (CCT-512): editing an existing native account to refresh its
 	// rejected credentials, which reveals the sign-in block inside the edit modal.
 	let reauthing = $state(false);
+	// OAuth attach target (CCT-558): when reauthenticating, finish the flow as a
+	// provider under this existing account instead of creating a new identity.
+	let oauthAttachAccountId = $state<string | null>(null);
 
 	function resetForm() {
 		name = '';
@@ -172,10 +172,10 @@
 		oauthBusy = false;
 		showAdvanced = false;
 		reauthing = false;
+		oauthAttachAccountId = null;
 		acctSettings = {};
 		acctEnvRows = [];
 		acctReplaceEnv = false;
-		acctDefaults = { model: '', effort: '', mode: '' };
 	}
 
 	// Start the authorize leg: ask the server for an authorize URL, open it in a
@@ -188,7 +188,11 @@
 		}
 		oauthBusy = true;
 		try {
-			const r = await actions.oauthStart(provider, isAdmin ? ownerId : undefined);
+			const r = await actions.oauthStart(
+				provider,
+				isAdmin ? ownerId : undefined,
+				oauthAttachAccountId ?? undefined,
+			);
 			oauthNonce = r.nonce;
 			window.open(r.authorize_url, '_blank', 'noopener');
 			if (provider === 'openai') {
@@ -246,34 +250,33 @@
 		resetForm();
 		editing = a.id;
 		name = a.name;
-		provider = (a.provider as typeof provider) ?? 'anthropic';
+		// TODO(CCT-560): the editor still assumes a single credential per account —
+		// edit the first provider row until the accounts UI is redesigned for
+		// multi-provider identities.
+		const p = primaryProvider(a);
+		provider = (p?.provider as typeof provider) ?? 'anthropic';
 		// Compatible endpoints can edit their model list in place (CCT-402). The
 		// base URL, credential, and scheme are never read back, so they start
 		// blank/"keep" — supplying one overwrites, leaving it keeps the stored value.
 		if (provider.endsWith('-compatible')) {
-			const ms = a.models ?? [];
+			const ms = p?.models ?? [];
 			modelRows = ms.length
 				? ms.map((m) => ({ model: m.model, label: m.label }))
 				: [{ model: '', label: '' }];
 			authScheme = 'keep';
 		}
 		// Aliases are editable for every provider (CCT-406).
-		aliasRows = Object.entries(a.model_aliases ?? {}).map(([alias, model]) => ({ alias, model }));
+		aliasRows = Object.entries(p?.model_aliases ?? {}).map(([alias, model]) => ({ alias, model }));
 		// Soft limits are editable for every provider (CCT-411).
-		soft5h = a.soft_limit_5h_pct;
-		soft7d = a.soft_limit_7d_pct;
-		softBypass = a.soft_limit_bypass_minutes;
-		// Settings + launch defaults are editable for every provider (CCT-541).
-		// settings_json comes back from the API; env_json is write-only and never
-		// returned, so env rows start empty (the operator re-enters to replace).
-		acctSettings = { ...(a.settings_json ?? {}) };
+		soft5h = p?.soft_limit_5h_pct ?? null;
+		soft7d = p?.soft_limit_7d_pct ?? null;
+		softBypass = p?.soft_limit_bypass_minutes ?? null;
+		// Settings are editable for every provider (CCT-541). settings_json comes
+		// back from the API; env_json is write-only and never returned, so env rows
+		// start empty (the operator re-enters to replace).
+		acctSettings = { ...(p?.settings_json ?? {}) };
 		acctEnvRows = [];
 		acctReplaceEnv = false;
-		acctDefaults = {
-			model: a.default_model ?? '',
-			effort: a.default_effort ?? '',
-			mode: a.default_permission_mode ?? ''
-		};
 	}
 
 	// Reauthenticate a flagged account (CCT-512): open its edit modal, flip into
@@ -284,6 +287,9 @@
 		openEdit(a);
 		ownerId = a.user_id;
 		reauthing = true;
+		// Attach the refreshed credential to THIS account (CCT-558) rather than
+		// creating a new identity from the name.
+		oauthAttachAccountId = a.id;
 		startOAuthLogin();
 	}
 
@@ -299,34 +305,33 @@
 		const model_aliases = aliasObject();
 		try {
 			if (editing) {
-				// Always send the alias map + soft limits so clearing them sticks.
-				const body: UpdateAccount = {
-					name: name.trim(),
-					model_aliases,
-					soft_limits: softLimits(),
-					// Settings + launch defaults (CCT-541). settings_json is always sent
-					// so clearing a toggle sticks (empty object clears the stored blob);
-					// defaults likewise. env_json is write-only and only sent when the
-					// operator actually edited the env (acctReplaceEnv) — otherwise the
-					// stored (never-returned) env is left untouched.
-					settings_json: acctSettings,
-					defaults: {
-						default_model: acctDefaults.model.trim() || null,
-						default_effort: acctDefaults.effort.trim() || null,
-						default_permission_mode: acctDefaults.mode.trim() || null
+				// CCT-558: the edit is two PATCHes — identity fields (name, env_json)
+				// go to the account; credential fields (aliases, soft limits, settings,
+				// compatible-endpoint config) go to its provider row.
+				const identity: UpdateAccount = { name: name.trim() };
+				if (acctReplaceEnv) identity.env_json = envObject();
+				await actions.update(editing, identity);
+				// TODO(CCT-560): still single-credential — patch the first provider row.
+				const providerId = editingAccount ? primaryProvider(editingAccount)?.id : undefined;
+				if (providerId) {
+					// Always send the alias map + soft limits + settings so clearing
+					// them sticks (empty object clears the stored blob).
+					const body: UpdateProvider = {
+						model_aliases,
+						soft_limits: softLimits(),
+						settings_json: acctSettings
+					};
+					if (isCompatible) {
+						const models = modelRows
+							.map((r) => ({ model: r.model.trim(), label: r.label.trim() || r.model.trim() }))
+							.filter((r) => r.model);
+						body.models = models;
+						if (baseUrl.trim()) body.base_url = baseUrl.trim();
+						if (credential.trim()) body.access_token = credential.trim();
+						if (authScheme !== 'keep') body.auth_scheme = authScheme;
 					}
-				};
-				if (acctReplaceEnv) body.env_json = envObject();
-				if (isCompatible) {
-					const models = modelRows
-						.map((r) => ({ model: r.model.trim(), label: r.label.trim() || r.model.trim() }))
-						.filter((r) => r.model);
-					body.models = models;
-					if (baseUrl.trim()) body.base_url = baseUrl.trim();
-					if (credential.trim()) body.access_token = credential.trim();
-					if (authScheme !== 'keep') body.auth_scheme = authScheme;
+					await actions.updateProvider(editing, providerId, body);
 				}
-				await actions.update(editing, body);
 				toasts.ok('Account updated');
 			} else {
 				if (isAdmin && !ownerId) {
@@ -408,29 +413,33 @@
 {:else}
 	<AutoGrid min="22rem" gap="var(--sp-3)">
 		{#each rows as a (a.id)}
+			<!-- TODO(CCT-560): the card still renders a single credential — the first
+			     provider row — until the accounts UI is redesigned for
+			     multi-provider identities. -->
+			{@const p = primaryProvider(a)}
 			<Card class="account-card">
 				<Stack gap="var(--sp-3)" class="card-body">
 					<Cluster gap="var(--sp-2)" align="center" wrap={false}>
-						<span class="provider-mark" title={providerLabel(a.provider)}>
-							<AdapterIcon provider={a.provider} size={22} />
+						<span class="provider-mark" title={providerLabel(p?.provider ?? '')}>
+							<AdapterIcon provider={p?.provider ?? ''} size={22} />
 						</span>
 						<Heading level={2} size="lg" class="account-name">{a.name}</Heading>
 					</Cluster>
-					{#if a.needs_reauth}
+					{#if p?.needs_reauth}
 						<!-- Credential rejected (CCT-512): the gateway saw the upstream
 						     provider reject this account's OAuth grant. -->
-						<div class="reauth-banner" title={a.last_auth_error ?? undefined}>
+						<div class="reauth-banner" title={p.last_auth_error ?? undefined}>
 							<Text as="span" size="xs">⚠ Credential rejected — reauthenticate</Text>
 						</div>
 					{/if}
-					{#if a.provider === 'anthropic' || a.provider === 'openai'}
+					{#if p && (p.provider === 'anthropic' || p.provider === 'openai')}
 						<div class="usage-block">
 							<Text as="div" tone="muted" size="xs" class="usage-head">Subscription usage</Text>
 							<UsageBars
-								id={a.id}
-								provider={a.provider}
-								cap5h={a.soft_limit_5h_pct}
-								cap7d={a.soft_limit_7d_pct}
+								id={p.id}
+								provider={p.provider}
+								cap5h={p.soft_limit_5h_pct}
+								cap7d={p.soft_limit_7d_pct}
 							/>
 						</div>
 					{/if}
@@ -438,11 +447,11 @@
 						{#if isAdmin}
 							<div><dt>Owner</dt><dd>{a.user_name ?? '—'}</dd></div>
 						{/if}
-						<div><dt>Requests</dt><dd>{compact(a.request_count)}</dd></div>
-						<div><dt>Last used</dt><dd><Timestamp value={a.last_used_at} mode="relative" tone="inherit" /></dd></div>
+						<div><dt>Requests</dt><dd>{compact(p?.request_count ?? 0)}</dd></div>
+						<div><dt>Last used</dt><dd><Timestamp value={p?.last_used_at ?? null} mode="relative" tone="inherit" /></dd></div>
 						<div><dt>Created</dt><dd><Timestamp value={a.created_at} mode="date" tone="inherit" /></dd></div>
 					</dl>
-					{#if !a.managed && (isAdmin || a.user_id === $me.data?.user_id)}
+					{#if !p?.managed && (isAdmin || a.user_id === $me.data?.user_id)}
 						<!-- Sharing management (CCT-510): owner-only surface to view/grant/
 						     revoke who may USE this account. The list endpoint is
 						     owner-scoped, so only render (and fetch) it for the owner/admin. -->
@@ -450,10 +459,10 @@
 					{/if}
 				</Stack>
 				<Cluster as="footer" gap="var(--sp-1)" justify="flex-end" class="card-foot">
-					{#if a.managed}
+					{#if p?.managed}
 						<Text tone="faint" size="xs">Managed (read-only)</Text>
 					{:else}
-						{#if a.needs_reauth && !a.provider.endsWith('-compatible')}
+						{#if p?.needs_reauth && !p.provider.endsWith('-compatible')}
 							<Button variant="primary" onclick={() => reauth(a)}>Reauthenticate</Button>
 						{/if}
 						<Button onclick={() => openEdit(a)}>Edit</Button>
@@ -658,16 +667,13 @@
 						</div>
 					{/if}
 
-					<!-- Per-account settings, env, and launch defaults (CCT-541). Edit
-					     only (persisted via PATCH); the create flow signs in first. -->
+					<!-- Per-account settings + env (CCT-541). Edit only (persisted via
+					     PATCH); the create flow signs in first. -->
 					{#if editing && editingAccount}
 						<AccountSettingsEditor
 							bind:settings={acctSettings}
 							bind:envRows={acctEnvRows}
 							bind:replaceEnv={acctReplaceEnv}
-							bind:defaults={acctDefaults}
-							provider={editingAccount.provider}
-							accountModels={editingAccount.models ?? []}
 						/>
 					{/if}
 			</div>

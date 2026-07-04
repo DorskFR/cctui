@@ -44,7 +44,7 @@ pub struct EnrollRequest {
     #[serde(default)]
     pub kind: Option<String>,
     /// Optional OAuth account name to bind as the dispatcher's default
-    /// (CCT-427). Resolved to `oauth_accounts.id` for the enrolling user; a
+    /// (CCT-427). Resolved to `accounts.id` for the enrolling user; a
     /// dispatch with no explicit account routes through it.
     #[serde(default)]
     pub account: Option<String>,
@@ -124,9 +124,14 @@ pub async fn enroll(
     let account = req.account.as_deref().map(str::trim).filter(|a| !a.is_empty());
     let provider = req.provider.as_deref().map(str::trim).filter(|p| !p.is_empty());
     let default_account_id: Option<Uuid> = if let Some(name) = account {
-        let rows: Vec<(Uuid, String)> = sqlx::query_as(
-            "SELECT id, provider FROM oauth_accounts \
-             WHERE user_id = $1 AND name = $2 AND ($3::text IS NULL OR provider = $3)",
+        // The binding points at the identity (`accounts.id`, CCT-558); the
+        // provider hint filters via the identity's provider rows. DISTINCT
+        // because a multi-provider identity is still ONE binding target.
+        let rows: Vec<(Uuid,)> = sqlx::query_as(
+            "SELECT DISTINCT a.id \
+             FROM accounts a JOIN account_providers ap ON ap.account_id = a.id \
+             WHERE a.user_id = $1 AND a.name = $2 \
+               AND ($3::text IS NULL OR ap.provider = $3)",
         )
         .bind(user_id)
         .bind(name)
@@ -144,7 +149,7 @@ pub async fn enroll(
                     Json(ApiError { error: format!("no account named {name:?}") }),
                 ));
             }
-            [(id, _)] => Some(*id),
+            [(id,)] => Some(*id),
             _ => {
                 return Err((
                     StatusCode::CONFLICT,

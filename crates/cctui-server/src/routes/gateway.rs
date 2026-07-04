@@ -141,13 +141,14 @@ pub async fn mint_session_env(
     // anthropic and a `personal` openai don't collide on the machine-spawn path.
     let row: Option<(Uuid, String)> = if let Some(p) = provider {
         sqlx::query_as(
-            "SELECT id, provider FROM oauth_accounts \
-             WHERE name = $2 AND provider = $3 \
-               AND (user_id = $1 OR EXISTS ( \
+            "SELECT ap.id, ap.provider \
+             FROM account_providers ap JOIN accounts a ON a.id = ap.account_id \
+             WHERE a.name = $2 AND ap.provider = $3 \
+               AND (a.user_id = $1 OR EXISTS ( \
                    SELECT 1 FROM account_shares s \
-                    WHERE s.account_id = oauth_accounts.id \
+                    WHERE s.account_id = a.id \
                       AND s.user_id = $1 AND s.revoked_at IS NULL)) \
-             ORDER BY (user_id = $1) DESC LIMIT 1",
+             ORDER BY (a.user_id = $1) DESC LIMIT 1",
         )
         .bind(user_id)
         .bind(account_name)
@@ -157,13 +158,14 @@ pub async fn mint_session_env(
     } else {
         let want = Family::from_adapter(adapter_id);
         let candidates: Vec<(Uuid, String)> = sqlx::query_as(
-            "SELECT id, provider FROM oauth_accounts \
-             WHERE name = $2 \
-               AND (user_id = $1 OR EXISTS ( \
+            "SELECT ap.id, ap.provider \
+             FROM account_providers ap JOIN accounts a ON a.id = ap.account_id \
+             WHERE a.name = $2 \
+               AND (a.user_id = $1 OR EXISTS ( \
                    SELECT 1 FROM account_shares s \
-                    WHERE s.account_id = oauth_accounts.id \
+                    WHERE s.account_id = a.id \
                       AND s.user_id = $1 AND s.revoked_at IS NULL)) \
-             ORDER BY (user_id = $1) DESC",
+             ORDER BY (a.user_id = $1) DESC",
         )
         .bind(user_id)
         .bind(account_name)
@@ -198,7 +200,7 @@ pub async fn mint_session_env_for_account(
     session_id: &str,
 ) -> Result<Option<std::collections::BTreeMap<String, String>>, sqlx::Error> {
     let provider: Option<String> =
-        sqlx::query_scalar("SELECT provider FROM oauth_accounts WHERE id = $1")
+        sqlx::query_scalar("SELECT provider FROM account_providers WHERE id = $1")
             .bind(account_id)
             .fetch_optional(&state.pool)
             .await?;
@@ -249,7 +251,7 @@ pub async fn resolve_session_accounts(state: &AppState, session_id: &str) -> Vec
     // false → Anthropic); DISTINCT ON it keeps the newest live token per family.
     let mut ids: Vec<Uuid> = sqlx::query_scalar(
         "SELECT DISTINCT ON ((oa.provider ILIKE '%openai%')) st.account_id \
-         FROM session_tokens st JOIN oauth_accounts oa ON oa.id = st.account_id \
+         FROM session_tokens st JOIN account_providers oa ON oa.id = st.account_id \
          WHERE st.session_id = $1 AND st.revoked_at IS NULL \
          ORDER BY (oa.provider ILIKE '%openai%'), st.created_at DESC",
     )
@@ -302,11 +304,11 @@ async fn mint_env_for_account(
         // un-revoke, defensively) so an account switch reuses the same string
         // — the worker's `ANTHROPIC_AUTH_TOKEN`/`OPENAI_API_KEY` never
         // changes, the gateway just resolves it to the new account. The
-        // `oauth_accounts` join + family predicate confine the repoint to the
+        // `account_providers` join + family predicate confine the repoint to the
         // same-family token, leaving the other family's token untouched.
         let _ = sqlx::query(
             "UPDATE session_tokens AS st SET account_id = $2, revoked_at = NULL \
-                 FROM oauth_accounts AS oa \
+                 FROM account_providers AS oa \
                  WHERE st.session_id = $1 AND st.revoked_at IS NULL \
                    AND st.account_id = oa.id \
                    AND (oa.provider ILIKE '%openai%') = $3",
@@ -402,7 +404,7 @@ async fn existing_session_token(
 ) -> Option<String> {
     let enc: String = sqlx::query_scalar(
         "SELECT st.encrypted_token FROM session_tokens st \
-         JOIN oauth_accounts oa ON oa.id = st.account_id \
+         JOIN account_providers oa ON oa.id = st.account_id \
          WHERE st.session_id = $1 AND st.revoked_at IS NULL \
            AND st.encrypted_token IS NOT NULL \
            AND (oa.provider ILIKE '%openai%') = $2 \
@@ -435,13 +437,14 @@ pub async fn resolve_account_model(
 ) -> String {
     let row: Option<(Option<serde_json::Value>, String)> = if let Some(p) = provider {
         sqlx::query_as(
-            "SELECT model_aliases, provider FROM oauth_accounts \
-             WHERE name = $2 AND provider = $3 \
-               AND (user_id = $1 OR EXISTS ( \
+            "SELECT ap.model_aliases, ap.provider \
+             FROM account_providers ap JOIN accounts a ON a.id = ap.account_id \
+             WHERE a.name = $2 AND ap.provider = $3 \
+               AND (a.user_id = $1 OR EXISTS ( \
                    SELECT 1 FROM account_shares s \
-                    WHERE s.account_id = oauth_accounts.id \
+                    WHERE s.account_id = a.id \
                       AND s.user_id = $1 AND s.revoked_at IS NULL)) \
-             ORDER BY (user_id = $1) DESC LIMIT 1",
+             ORDER BY (a.user_id = $1) DESC LIMIT 1",
         )
         .bind(user_id)
         .bind(account_name)
@@ -452,13 +455,14 @@ pub async fn resolve_account_model(
     } else {
         let want = Family::from_adapter(adapter_id);
         let candidates: Vec<(Option<serde_json::Value>, String)> = sqlx::query_as(
-            "SELECT model_aliases, provider FROM oauth_accounts \
-             WHERE name = $2 \
-               AND (user_id = $1 OR EXISTS ( \
+            "SELECT ap.model_aliases, ap.provider \
+             FROM account_providers ap JOIN accounts a ON a.id = ap.account_id \
+             WHERE a.name = $2 \
+               AND (a.user_id = $1 OR EXISTS ( \
                    SELECT 1 FROM account_shares s \
-                    WHERE s.account_id = oauth_accounts.id \
+                    WHERE s.account_id = a.id \
                       AND s.user_id = $1 AND s.revoked_at IS NULL)) \
-             ORDER BY (user_id = $1) DESC",
+             ORDER BY (a.user_id = $1) DESC",
         )
         .bind(user_id)
         .bind(account_name)
@@ -488,8 +492,13 @@ async fn account_env_json(
     account_id: Uuid,
     key: &[u8],
 ) -> Option<std::collections::BTreeMap<String, String>> {
+    // `env_json` lives on the identity parent (`accounts`) since CCT-558;
+    // `account_id` here is the provider-row id (session_tokens FK), so join up
+    // to the parent to read it.
     let enc: String = sqlx::query_scalar::<_, Option<String>>(
-        "SELECT env_json FROM oauth_accounts WHERE id = $1",
+        "SELECT a.env_json FROM accounts a \
+         JOIN account_providers ap ON ap.account_id = a.id \
+         WHERE ap.id = $1",
     )
     .bind(account_id)
     .fetch_optional(&state.pool)
@@ -533,7 +542,7 @@ pub async fn resolve_session_settings(
     let mut merged: Option<serde_json::Value> = None;
     for account_id in resolve_session_accounts(state, session_id).await {
         let settings: Option<serde_json::Value> =
-            sqlx::query_scalar("SELECT settings_json FROM oauth_accounts WHERE id = $1")
+            sqlx::query_scalar("SELECT settings_json FROM account_providers WHERE id = $1")
                 .bind(account_id)
                 .fetch_optional(&state.pool)
                 .await
@@ -565,75 +574,6 @@ fn deep_merge_json(base: &mut serde_json::Value, overlay: serde_json::Value) {
         }
         (base_slot, overlay) => *base_slot = overlay,
     }
-}
-
-/// The per-account launch defaults (CCT-539) applied at the spawn chokepoint when
-/// a named account is selected: `default_model` / `default_effort` /
-/// `default_permission_mode`. All `None` when the account sets no defaults.
-#[derive(Default)]
-pub struct AccountDefaults {
-    pub model: Option<String>,
-    pub effort: Option<String>,
-    pub permission_mode: Option<String>,
-}
-
-/// Resolve a named account's launch defaults for the caller (CCT-539).
-///
-/// Mirrors [`mint_session_env`] / [`resolve_account_model`]'s
-/// `(user, name, provider|family)` resolution so spawn applies the defaults of
-/// the *same* account row the gateway binds the session to. A DB error or a
-/// missing account degrades to all-`None` (claude's own defaults apply) rather
-/// than failing the spawn.
-pub async fn resolve_account_defaults(
-    state: &AppState,
-    user_id: Uuid,
-    account_name: &str,
-    provider: Option<&str>,
-    adapter_id: &str,
-) -> AccountDefaults {
-    type Row = (Option<String>, Option<String>, Option<String>, String);
-    let row: Option<Row> = if let Some(p) = provider {
-        sqlx::query_as(
-            "SELECT default_model, default_effort, default_permission_mode, provider \
-             FROM oauth_accounts \
-             WHERE name = $2 AND provider = $3 \
-               AND (user_id = $1 OR EXISTS ( \
-                   SELECT 1 FROM account_shares s \
-                    WHERE s.account_id = oauth_accounts.id \
-                      AND s.user_id = $1 AND s.revoked_at IS NULL)) \
-             ORDER BY (user_id = $1) DESC LIMIT 1",
-        )
-        .bind(user_id)
-        .bind(account_name)
-        .bind(p)
-        .fetch_optional(&state.pool)
-        .await
-        .unwrap_or(None)
-    } else {
-        let want = Family::from_adapter(adapter_id);
-        let candidates: Vec<Row> = sqlx::query_as(
-            "SELECT default_model, default_effort, default_permission_mode, provider \
-             FROM oauth_accounts \
-             WHERE name = $2 \
-               AND (user_id = $1 OR EXISTS ( \
-                   SELECT 1 FROM account_shares s \
-                    WHERE s.account_id = oauth_accounts.id \
-                      AND s.user_id = $1 AND s.revoked_at IS NULL)) \
-             ORDER BY (user_id = $1) DESC",
-        )
-        .bind(user_id)
-        .bind(account_name)
-        .fetch_all(&state.pool)
-        .await
-        .unwrap_or_default();
-        candidates.into_iter().find(|(_, _, _, prov)| Family::from_provider(prov) == want)
-    };
-    let norm = |s: Option<String>| s.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
-    row.map_or_else(AccountDefaults::default, |(model, effort, mode, _)| AccountDefaults {
-        model: norm(model),
-        effort: norm(effort),
-        permission_mode: norm(mode),
-    })
 }
 
 /// Revoke every session token bound to a session (CCT-232) — called when a
@@ -673,7 +613,9 @@ async fn session_and_account_name_for_token(
     let hash = crate::auth::sha256_hex(session_token);
     sqlx::query_as::<_, (String, String)>(
         "SELECT t.session_id, a.name \
-         FROM session_tokens t JOIN oauth_accounts a ON a.id = t.account_id \
+         FROM session_tokens t \
+         JOIN account_providers ap ON ap.id = t.account_id \
+         JOIN accounts a ON a.id = ap.account_id \
          WHERE t.token_hash = $1 AND t.revoked_at IS NULL",
     )
     .bind(&hash)
@@ -769,7 +711,7 @@ fn flag_account_reauth(state: &AppState, account_id: Uuid, reason: &str) {
     let reason = reason.to_string();
     tokio::spawn(async move {
         if let Err(e) = sqlx::query(
-            "UPDATE oauth_accounts \
+            "UPDATE account_providers \
                 SET needs_reauth = true, last_auth_error = $2, last_auth_error_at = now() \
              WHERE id = $1",
         )
@@ -793,7 +735,7 @@ fn clear_account_reauth(state: &AppState, account_id: Uuid) {
     let pool = state.pool.clone();
     tokio::spawn(async move {
         if let Err(e) = sqlx::query(
-            "UPDATE oauth_accounts \
+            "UPDATE account_providers \
                 SET needs_reauth = false, last_auth_error = NULL, last_auth_error_at = NULL \
              WHERE id = $1 AND needs_reauth",
         )
@@ -1018,7 +960,7 @@ async fn resolve_account(
         "SELECT a.id, a.provider, a.encrypted_access_token, a.encrypted_refresh_token, \
                     a.expires_at, a.provider_account_id, a.base_url, a.auth_scheme, \
                     a.soft_limit_5h_pct, a.soft_limit_7d_pct, a.soft_limit_bypass_minutes \
-             FROM session_tokens t JOIN oauth_accounts a ON a.id = t.account_id \
+             FROM session_tokens t JOIN account_providers a ON a.id = t.account_id \
              WHERE t.token_hash = $1 AND t.revoked_at IS NULL",
     )
     .bind(&hash)
@@ -1127,7 +1069,7 @@ async fn refresh_account(state: &AppState, acct: &Account) -> Result<String, Sta
 
     let result = if let Some(enc_refresh) = enc_refresh {
         sqlx::query(
-            "UPDATE oauth_accounts SET encrypted_access_token = $2, \
+            "UPDATE account_providers SET encrypted_access_token = $2, \
                     encrypted_refresh_token = $3, expires_at = $4 WHERE id = $1",
         )
         .bind(acct.id)
@@ -1138,7 +1080,7 @@ async fn refresh_account(state: &AppState, acct: &Account) -> Result<String, Sta
         .await
     } else {
         sqlx::query(
-            "UPDATE oauth_accounts SET encrypted_access_token = $2, expires_at = $3 WHERE id = $1",
+            "UPDATE account_providers SET encrypted_access_token = $2, expires_at = $3 WHERE id = $1",
         )
         .bind(acct.id)
         .bind(&enc_access)
@@ -1202,7 +1144,7 @@ async fn reload_account(state: &AppState, id: Uuid) -> Option<Account> {
     let row: Option<ReloadRow> = sqlx::query_as(
         "SELECT provider, encrypted_access_token, encrypted_refresh_token, expires_at, \
                     provider_account_id, base_url, auth_scheme \
-             FROM oauth_accounts WHERE id = $1",
+             FROM account_providers WHERE id = $1",
     )
     .bind(id)
     .fetch_optional(&state.pool)
@@ -1487,7 +1429,7 @@ async fn passthrough(
     let pool = state.pool.clone();
     tokio::spawn(async move {
         let _ = sqlx::query(
-            "UPDATE oauth_accounts SET request_count = request_count + 1, \
+            "UPDATE account_providers SET request_count = request_count + 1, \
                     bytes_transferred = bytes_transferred + $2, last_used_at = now() \
              WHERE id = $1",
         )

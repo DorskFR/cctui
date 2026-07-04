@@ -10,7 +10,7 @@
 	// running and its next upstream call lands on the chosen account.
 	import { Button, Heading, Text } from '@dorsk/tsumikit';
 	import type { SoftLimit } from '$lib/ws.svelte';
-	import type { OAuthAccount } from '$lib/queries';
+	import { primaryProvider, type OAuthAccount } from '$lib/queries';
 	import UsageBars from '$lib/components/molecules/UsageBars.svelte';
 
 	let {
@@ -37,6 +37,8 @@
 	// mirroring the server's `Family::from_provider` (CCT-444 / CCT-399).
 	const family = (provider: string): 'openai' | 'anthropic' =>
 		provider.includes('openai') ? 'openai' : 'anthropic';
+	// TODO(CCT-560): single-provider back-compat — reads providers[0].
+	const providerOf = (a: OAuthAccount) => primaryProvider(a)?.provider ?? '';
 
 	// The account this session is bound to. A soft-limit open carries the id;
 	// an at-will open only has the name (SessionListItem exposes no account id).
@@ -49,7 +51,7 @@
 	const targets = $derived(
 		current
 			? accounts.filter(
-					(a) => a.id !== current.id && family(a.provider) === family(current.provider)
+					(a) => a.id !== current.id && family(providerOf(a)) === family(providerOf(current))
 				)
 			: []
 	);
@@ -114,10 +116,10 @@
 						Continue on {a.name}
 					</Button>
 					<UsageBars
-						id={a.id}
-						provider={a.provider}
-						cap5h={a.soft_limit_5h_pct}
-						cap7d={a.soft_limit_7d_pct}
+						id={primaryProvider(a)?.id ?? a.id}
+						provider={providerOf(a)}
+						cap5h={primaryProvider(a)?.soft_limit_5h_pct ?? null}
+						cap7d={primaryProvider(a)?.soft_limit_7d_pct ?? null}
 					/>
 				</div>
 			{/each}

@@ -136,45 +136,19 @@ async fn dispatch_spawn(
     // named account is selected below, its alias map can rewrite this to a
     // concrete model id (e.g. `opus` → `claude-opus-4-8[1m]`).
     let mut model = req.model.clone().filter(|m| !m.trim().is_empty());
-    // Session-provided effort/permission_mode take precedence; an account default
-    // fills them below when the caller left them unset (CCT-539).
-    let mut effort = req.effort.clone().filter(|e| !e.trim().is_empty());
-    let mut permission_mode = req.permission_mode;
+    // Session-provided effort/permission_mode pass through as-is. The CCT-539
+    // per-account launch defaults were dropped with the CCT-558 schema split
+    // (superseded by per-(machine, cwd) client memory, CCT-561); an unset field
+    // falls back to the adapter's/claude's own default.
+    let effort = req.effort.clone().filter(|e| !e.trim().is_empty());
+    let permission_mode = req.permission_mode;
     if let Some(account_name) = req.account.as_deref().filter(|a| !a.trim().is_empty()) {
         // Accounts are user-owned. The admin token has no user identity, so it
         // resolves the account against the target machine's owner (CCT-251) —
         // the session runs on that user's machine with that user's account.
         let uid = ctx.owner_filter().unwrap_or(owner);
         let provider = req.provider.as_deref().filter(|p| !p.trim().is_empty());
-        // Per-account launch defaults (CCT-539). Precedence: session-provided
-        // value > account default > the adapter's/claude's own default. So we only
-        // fall back to a default for a field the caller left unset; the model
-        // default is still funneled through the alias resolution below so an
-        // account default like `opus` maps to its concrete id.
-        let defaults = crate::routes::gateway::resolve_account_defaults(
-            state,
-            uid,
-            account_name,
-            provider,
-            &adapter_id,
-        )
-        .await;
-        if model.is_none() {
-            model = defaults.model;
-        }
-        if effort.is_none() {
-            effort = defaults.effort;
-        }
-        if permission_mode.is_none()
-            && let Some(mode) = defaults.permission_mode.as_deref()
-        {
-            // Parse the stored lowercase posture (`yolo`/`auto`/`ask`/`whip`) via
-            // the enum's serde repr; an unrecognized value degrades to the
-            // adapter default rather than failing the spawn.
-            permission_mode =
-                serde_json::from_value(serde_json::Value::String(mode.to_owned())).ok();
-        }
-        // Resolve the (possibly default) model through this account's alias map
+        // Resolve the model through this account's alias map
         // (CCT-406) before it reaches the worker — a no-op when the account has no
         // matching alias.
         if let Some(m) = model.as_deref() {

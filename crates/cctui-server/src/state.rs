@@ -131,7 +131,7 @@ pub struct AppState {
     pub gateway_orphan_spam: Arc<DashMap<String, OrphanSpam>>,
     /// Accounts whose upstream credentials the gateway has seen rejected
     /// (`needs_reauth`, CCT-512), keyed by account id. Mirrors the persisted
-    /// `oauth_accounts.needs_reauth` flag so the success path can clear it with a
+    /// `account_providers.needs_reauth` flag so the success path can clear it with a
     /// single DB write only on the actual transition — without this in-memory
     /// gate every successful passthrough would issue a conditional UPDATE.
     pub account_reauth: Arc<DashMap<Uuid, ()>>,
