@@ -172,7 +172,7 @@ pub struct TokenValidQuery {
 /// unbound/deleted — which 401s forever at the gateway session-token stage —
 /// is finally observable and healable, instead of relying purely on
 /// launch-trust memory. `valid` = a `session_tokens` row with this hash exists
-/// FOR THIS SESSION, is not revoked, and joins a live `oauth_accounts` row
+/// FOR THIS SESSION, is not revoked, and joins a live `account_providers` row
 /// (the same join [`resolve_account`](crate::routes::gateway) applies, but by
 /// hash equality).
 ///
@@ -219,7 +219,7 @@ pub async fn session_token_valid(
     // hex of the token it launched the worker with, never the token itself).
     let valid: bool = sqlx::query_scalar(
         "SELECT EXISTS (
-            SELECT 1 FROM session_tokens t JOIN oauth_accounts a ON a.id = t.account_id
+            SELECT 1 FROM session_tokens t JOIN account_providers a ON a.id = t.account_id
             WHERE t.token_hash = $1 AND t.session_id = $2 AND t.revoked_at IS NULL
          )",
     )
@@ -866,7 +866,7 @@ async fn insert_event(
     event_type: &str,
     mut payload: serde_json::Value,
 ) -> anyhow::Result<bool> {
-    // Postgres jsonb/text cannot store the NUL code point (` `); a
+    // Postgres jsonb/text cannot store the NUL code point (`\0`); a
     // payload carrying one (e.g. binary-ish tool output) fails the INSERT and
     // the event is silently lost (CCT-136). Strip NULs from every string so
     // the rest of the payload survives.
@@ -891,7 +891,7 @@ async fn insert_event(
     Ok(result.rows_affected() > 0)
 }
 
-/// Recursively strip NUL (` `) from every string in a JSON value.
+/// Recursively strip NUL (`\0`) from every string in a JSON value.
 /// Postgres rejects NUL in `jsonb`/`text`, so an event carrying one would be
 /// dropped on insert (CCT-136). Stripping keeps the event; the NUL has no
 /// display value anyway.

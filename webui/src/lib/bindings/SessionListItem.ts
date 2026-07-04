@@ -136,7 +136,7 @@ labels: Array<Label>,
 last_heartbeat: string | null, 
 /**
  * OAuth account this session runs under (CCT-430), resolved from the most
- * recent non-revoked `session_tokens` row joined to `oauth_accounts`.
+ * recent non-revoked `session_tokens` row joined to `account_providers` (name from its `accounts` parent).
  * Surfaced so clients can show which account is driving the session (key
  * icon + name tooltip). `None` for sessions with no minted gateway token
  * (e.g. local sessions that never routed through the cctui gateway).
