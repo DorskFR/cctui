@@ -94,6 +94,13 @@ phase_dockerd() {
     su "${WORKER_USER}" -s /bin/sh -c "
         export XDG_RUNTIME_DIR='${_xdg}' HOME='/home/${WORKER_USER}' PATH=/usr/bin:/usr/local/bin:\$PATH
         export DOCKER_HOST='unix://${_sock}'
+        # Rootless docker defaults to slirp4netns --disable-host-loopback, which
+        # severs the 127.0.0.1 -> host 127.0.0.1 forwarding path. oauth-server's OAuth
+        # token_hook must dial alice (a HOST process on the pod netns) at
+        # 127.0.0.1:8886, so drop that flag. dockerd-rootless.sh honors this var
+        # (=false -> rootlesskit omits --disable-host-loopback). Exported here
+        # explicitly (not just via pod env) to be bulletproof across su.
+        export DOCKERD_ROOTLESS_ROOTLESSKIT_DISABLE_HOST_LOOPBACK=false
         setsid nohup dockerd-rootless.sh --storage-driver fuse-overlayfs --data-root '${_droot}' \
             >/tmp/rootless-dockerd.log 2>&1 &
     "
