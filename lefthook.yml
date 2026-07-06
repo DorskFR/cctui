@@ -32,3 +32,25 @@ pre-commit:
           echo "$added"
           exit 1
         fi
+
+pre-push:
+  commands:
+    # Mirror of the schema-drift CI job (.github/workflows/schema-drift.yml) so
+    # drift is caught locally before it reaches CI. Re-fetches the upstream
+    # Claude Code settings schema and diffs (jq -S, so formatting/key-order is
+    # ignored) against the vendored copy the settings catalog consumes.
+    schema-drift:
+      run: |
+        set -eu
+        url=https://json.schemastore.org/claude-code-settings.json
+        vendored=crates/cctui-server/src/settings_catalog/claude-code-settings.schema.json
+        curl -fsSL "$url" -o /tmp/cctui-upstream-schema.json
+        jq -S . "$vendored" > /tmp/cctui-vendored.norm.json
+        jq -S . /tmp/cctui-upstream-schema.json > /tmp/cctui-upstream.norm.json
+        if ! diff -q /tmp/cctui-vendored.norm.json /tmp/cctui-upstream.norm.json >/dev/null; then
+          echo "✖ Claude Code settings schema drift: upstream differs from $vendored"
+          echo "  Re-vendor:  curl -fsSL $url -o $vendored"
+          echo "  Then review catalog.toml for added/removed keys and run:"
+          echo "    cargo test -p cctui-server settings_catalog"
+          exit 1
+        fi
