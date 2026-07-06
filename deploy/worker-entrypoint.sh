@@ -134,7 +134,13 @@ phase_dockerd() {
 phase_restore_stack() {
     command -v docker >/dev/null 2>&1 || return 0
     [ -n "${DOCKER_HOST:-}" ] || return 0
-    _cache="${WARM_REPO_DIR:-/repos}/.docker-cache"
+    # Baked warm image (warm.Dockerfile) ships the cache inside /workspace;
+    # the PVC layout keeps it on ${WARM_REPO_DIR}. Prefer the baked one.
+    if [ -d /workspace/.docker-cache ]; then
+        _cache="/workspace/.docker-cache"
+    else
+        _cache="${WARM_REPO_DIR:-/repos}/.docker-cache"
+    fi
     [ -d "$_cache" ] || { log "restore: no warm docker cache at ${_cache}; skipping"; return 0; }
     docker version >/dev/null 2>&1 || { log "restore: docker not reachable; skipping"; return 0; }
 
@@ -355,6 +361,31 @@ phase_network() {
 phase_workspace() {
     mkdir -p /workspace
     _ws_overlay=0
+    # Baked warm image (warm.Dockerfile): /workspace already holds the repos as
+    # ordinary image-layer files owned by the worker — no overlay, no clone.
+    # Just fetch + check out the requested ref in the baked checkout. Runs as
+    # the worker uid so no root-owned files land in the repo.
+    if [ -f /workspace/.warm-baked ] && [ -n "${TASK_REPO:-}" ] \
+            && [ -d "/workspace/${TASK_REPO}/.git" ]; then
+        log "workspace: baked warm image ($(cat /workspace/.warm-baked)); using /workspace/${TASK_REPO} in place"
+        if [ -n "${TASK_REPO_REF:-}" ]; then
+            _wtok="${GITHUB_TOKEN:-}"
+            if [ -z "$_wtok" ] && [ -n "${TASK_IDENTITY:-}" ]; then
+                _wid=$(printf '%s' "$TASK_IDENTITY" | tr '[:lower:]-' '[:upper:]_')
+                eval "_wtok=\${GITHUB_TOKEN_${_wid}:-}"
+            fi
+            _wurl=$(git -C "/workspace/${TASK_REPO}" remote get-url origin 2>/dev/null || echo "")
+            [ -n "$_wtok" ] && [ -n "$_wurl" ] \
+                && _wurl=$(printf '%s' "$_wurl" | sed "s,^https://,https://${_wtok}@,")
+            if git -C "/workspace/${TASK_REPO}" fetch -q "${_wurl:-origin}" "$TASK_REPO_REF" 2>/dev/null \
+                    && git -C "/workspace/${TASK_REPO}" checkout -q FETCH_HEAD 2>/dev/null; then
+                log "workspace: checked out TASK_REPO_REF=$TASK_REPO_REF"
+            else
+                log "WARNING: could not check out TASK_REPO_REF=$TASK_REPO_REF (baked HEAD left as-is)"
+            fi
+        fi
+        return 0
+    fi
     # Warm cache only when it actually holds this repo (WARM_REPO_DIR/<repo>);
     # an empty/missing cache must fall through to a clone, not overlay nothing.
     if [ -n "${WARM_REPO_DIR:-}" ] && [ -n "${TASK_REPO:-}" ] \
