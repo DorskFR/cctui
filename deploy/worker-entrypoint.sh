@@ -683,6 +683,24 @@ resolve_prompt_path() {
     esac
 }
 
+# ── Phase 4: Extension hooks ────────────────────────────────────────────────
+# Generic seam for DERIVED images to inject boot phases (e.g. credential
+# materialization, extra provisioning) WITHOUT forking this entrypoint. Any
+# snippets in /opt/worker-entrypoint.d/ are sourced in lexical order, after
+# identity-resolve and before identity-scrub, with the full boot env in scope
+# (so a hook can read the resolved canonical vars and write into the worker
+# home before the suffixed variants are scrubbed). The public image ships no
+# hooks, so this is a no-op here; the pattern mirrors nginx/postgres
+# `docker-entrypoint.d`.
+phase_extensions() {
+    [ -d /opt/worker-entrypoint.d ] || return 0
+    for _ext in /opt/worker-entrypoint.d/*.sh; do
+        [ -e "$_ext" ] || continue
+        log "ext: sourcing $(basename "$_ext")"
+        . "$_ext" || log "WARNING: extension ${_ext} failed (continuing)"
+    done
+}
+
 # ── Phase 4b: Codex model provider ──────────────────────────────────────────
 # The platform injects OPENAI_API_KEY + OPENAI_BASE_URL (the cctui openai
 # gateway, CCT-508/514) into the agent env, but the `codex` CLI IGNORES those
@@ -1007,6 +1025,7 @@ if [ -z "${TASK_PROMPT_FILE:-}" ] && [ -n "${CONTEXT_PACK_URL:-}" ] && [ -n "${T
         && log "prompt: TASK_PROMPT_FILE=${TASK_PROMPT_FILE} (from payload; pack active → guard will engage if the prompt has steps)"
 fi
 phase_identity_resolve
+phase_extensions
 phase_codex_config
 phase_identity_scrub
 phase_callback

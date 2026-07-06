@@ -260,9 +260,10 @@ input), then drops to uid 1000:
 3. **Context pack** — fetch the pinned ref to `/opt/context` (fail-closed when
    `CONTEXT_PACK_URL` set); wire `CLAUDE.md`/skills/style/projects into the
    worker home; default `GUARD_RULES_FILE`.
-4. **Credentials** — an optional credential helper (baked by derived images)
-   materializes the per-identity github/gpg/npm/mcp config into the worker home
-   (no-op when the helper is absent).
+4. **Extensions** — source any `*.sh` in `/opt/worker-entrypoint.d/` (lexical
+   order), after identity-resolve and before identity-scrub. The generic seam
+   derived images use to inject boot phases (e.g. credential materialization)
+   without forking the entrypoint. No-op on the public image (empty dir).
 5. **Callback** — install the `REPLY_URL` exit trap.
 6. **Guard** — start `cctui-guard` if the resolved prompt has step blocks
    (`# Step N` + `[allowed]`); always-allow the structural hosts.

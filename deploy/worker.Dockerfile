@@ -186,7 +186,7 @@ COPY deploy/codex-run.sh           /usr/local/bin/codex-run
 
 # Sandbox state dirs the entrypoint and proxy/guard write into. /opt/context is
 # the context-pack mount target (read-only after fetch).
-RUN mkdir -p /var/run/guard-proxy /var/run/workflow-guard /workspace /opt/context \
+RUN mkdir -p /var/run/guard-proxy /var/run/workflow-guard /workspace /opt/context /opt/worker-entrypoint.d \
     && chmod +x /usr/local/bin/cctui-worker-entrypoint \
                 /usr/local/bin/codex-run
 
