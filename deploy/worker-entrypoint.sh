@@ -61,108 +61,6 @@ extra_rw_flags() {
     IFS=$_OLDIFS
 }
 
-# ── Optional in-pod ROOTLESS Docker daemon (fat/derived images, CCT-535) ─────
-# The docker-e2e flow needs docker. We run dockerd ROOTLESS — as the
-# worker uid, inside its own user namespace — on purpose: the socket the
-# sandboxed agent can reach then grants only worker-uid powers, NOT node root.
-# A raw ROOT docker.sock in the landlock RW set would be a full sandbox escape
-# (the agent could `docker run --privileged -v /:/host`); rootless closes that
-# by construction — "root" in any container maps back to the unprivileged worker
-# uid on the host.
-#
-# rootlesskit must set up the userns + slirp4netns network here in the root
-# phase, before cctui-supervisor drops privileges. dockerd itself runs as worker
-# (a sibling process), so the daemon's later landlock/seccomp doesn't touch it.
-# The socket + DOCKER_HOST are then handed to the worker.
-#
-# Gated on dockerd-rootless.sh presence: the lean base omits it (no-op); the fat
-# image opts in by installing docker-ce + docker-ce-rootless-extras + uidmap +
-# slirp4netns + fuse-overlayfs + iproute2, and delegating subuids to worker.
-# Best-effort — any failure logs a warning and continues (e2e is optional
-# evidence). Validated on the k3s nodes: fuse-overlayfs driver (native overlay
-# can't stack on containerd's overlayfs) + slirp4netns (needs iproute2) + /dev/fuse.
-phase_dockerd() {
-    command -v dockerd-rootless.sh >/dev/null 2>&1 || return 0
-    _xdg="/run/user/${WORKER_UID}"
-    _sock="${_xdg}/docker.sock"
-    _droot="/var/lib/docker-rootless"   # local (NOT the NFS $HOME); ephemeral per pod
-    mkdir -p "$_xdg" "$_droot"
-    chown "${WORKER_UID}:${WORKER_UID}" "$_xdg" "$_droot"
-    log "dockerd: starting rootless as ${WORKER_USER} (pre-lockdown; socket ${_sock})"
-    # setsid + nohup so the daemon survives the transient `su` shell exiting (the
-    # readiness wait below runs in the root shell, not inside su).
-    su "${WORKER_USER}" -s /bin/sh -c "
-        export XDG_RUNTIME_DIR='${_xdg}' HOME='/home/${WORKER_USER}' PATH=/usr/bin:/usr/local/bin:\$PATH
-        export DOCKER_HOST='unix://${_sock}'
-        # Rootless docker defaults to slirp4netns --disable-host-loopback, which
-        # severs the 127.0.0.1 -> host 127.0.0.1 forwarding path. oauth-server's OAuth
-        # token_hook must dial alice (a HOST process on the pod netns) at
-        # 127.0.0.1:8886, so drop that flag. dockerd-rootless.sh honors this var
-        # (=false -> rootlesskit omits --disable-host-loopback). Exported here
-        # explicitly (not just via pod env) to be bulletproof across su.
-        export DOCKERD_ROOTLESS_ROOTLESSKIT_DISABLE_HOST_LOOPBACK=false
-        setsid nohup dockerd-rootless.sh --storage-driver fuse-overlayfs --data-root '${_droot}' \
-            >/tmp/rootless-dockerd.log 2>&1 &
-    "
-    _i=0
-    while [ "$_i" -lt 30 ]; do
-        [ -S "$_sock" ] && DOCKER_HOST="unix://${_sock}" docker version >/dev/null 2>&1 && break
-        sleep 1; _i=$((_i + 1))
-    done
-    if ! { [ -S "$_sock" ] && DOCKER_HOST="unix://${_sock}" docker version >/dev/null 2>&1; }; then
-        log "WARNING: rootless dockerd not ready in 30s; docker-dependent flows (e2e) will skip (tail: $(tail -2 /tmp/rootless-dockerd.log 2>/dev/null))"
-        return 0
-    fi
-    log "dockerd: rootless ready (driver=$(DOCKER_HOST=unix://${_sock} docker info --format '{{.Driver}}' 2>/dev/null))"
-    # Hand the socket to the sandboxed worker: DOCKER_HOST env (inherited through
-    # the supervisor exec) + the runtime dir in the Landlock RW set. The socket is
-    # worker-owned, so no chmod is needed.
-    DOCKER_HOST="unix://${_sock}"; export DOCKER_HOST
-    CCTUI_WORKER_EXTRA_RW="${CCTUI_WORKER_EXTRA_RW:+${CCTUI_WORKER_EXTRA_RW}:}${_xdg}"
-    export CCTUI_WORKER_EXTRA_RW
-}
-
-# Restore the docker stack (images + migrated DB volumes) from the warm cache
-# repo-sync exports in its Phase 5 (${WARM_REPO_DIR}/.docker-cache): images.tar.gz
-# (`docker save` of every image, base + app) + one <volume>.tar.gz per docker
-# volume (fully-migrated MySQL/Postgres/oauth-server state). Restoring these lets the
-# repo's E2E `compose up` reuse migrated state and SKIP `pnpm run setup` — the
-# slowest, most fragile boot phase. Runs AFTER phase_dockerd (needs the rootless
-# DOCKER_HOST) and before privilege drop. Idempotent; a no-op on the lean base
-# (no dockerd) or when the cache is absent. Best-effort throughout: a failed
-# restore just means the E2E falls back to a full setup, so nothing hard-fails.
-phase_restore_stack() {
-    command -v docker >/dev/null 2>&1 || return 0
-    [ -n "${DOCKER_HOST:-}" ] || return 0
-    # Baked warm image (warm.Dockerfile) ships the cache inside /workspace;
-    # the PVC layout keeps it on ${WARM_REPO_DIR}. Prefer the baked one.
-    if [ -d /workspace/.docker-cache ]; then
-        _cache="/workspace/.docker-cache"
-    else
-        _cache="${WARM_REPO_DIR:-/repos}/.docker-cache"
-    fi
-    [ -d "$_cache" ] || { log "restore: no warm docker cache at ${_cache}; skipping"; return 0; }
-    docker version >/dev/null 2>&1 || { log "restore: docker not reachable; skipping"; return 0; }
-
-    if [ -f "${_cache}/images.tar.gz" ]; then
-        log "restore: docker load images.tar.gz"
-        gunzip -c "${_cache}/images.tar.gz" | docker load 2>&1 \
-            || log "WARNING: restore image load failed (compose may re-pull)"
-    fi
-
-    for _tb in "${_cache}"/*.tar.gz; do
-        [ -e "$_tb" ] || continue
-        case "$(basename "$_tb")" in images.tar.gz) continue ;; esac
-        _vol="$(basename "$_tb" .tar.gz)"
-        docker volume inspect "$_vol" >/dev/null 2>&1 && continue   # already present
-        log "restore: volume ${_vol}"
-        docker volume create "$_vol" >/dev/null 2>&1 || true
-        docker run --rm -v "${_vol}:/data" -v "${_cache}:/backup:ro" alpine \
-            sh -c "cd /data && tar xzf /backup/$(basename "$_tb")" 2>&1 \
-            || log "WARNING: restore of volume ${_vol} failed"
-    done
-    log "restore: stack cache restored (images + volumes); E2E can skip setup"
-}
 
 # ── Required platform identity ──────────────────────────────────────────────
 if [ -z "${CCTUI_MACHINE_KEY:-}" ]; then
@@ -959,34 +857,6 @@ phase_permissions() {
     log "permissions: seeded bypass + trust gates (cwd=$_cwd)"
 }
 
-# ── Identity secret surface (CCT-490, simple model) ─────────────────────────
-# The pod env carries every identity's third-party secrets as `VAR_<ID>` (Vault
-# env-from-path) plus any unsuffixed defaults. Two steps around the credential
-# helper, keyed on the active identity (`<ID>` = TASK_IDENTITY uppercased,
-# `-`→`_`):
-#   resolve (before the helper): collapse each base to the active identity's
-#     "main" value — `VAR = ${VAR_<ID>:-$VAR}` — so the helper and the agent read
-#     one canonical var.
-#   scrub (after the helper): UNSET every `VAR_<…>` suffixed variant so the agent
-#     inherits only the resolved mains, never another identity's secret.
-SECRET_BASES="GITHUB_TOKEN GH_TOKEN GITHUB_NAME GITHUB_EMAIL GPG_PRIVATE_KEY YOUTRACK_TOKEN YOUTRACK_API_TOKEN SLACK_TOKEN"
-phase_identity_resolve() {
-    [ -n "${TASK_IDENTITY:-}" ] || return 0
-    _id_up=$(printf '%s' "$TASK_IDENTITY" | tr '[:lower:]-' '[:upper:]_')
-    for _base in $SECRET_BASES; do
-        eval "_v=\${${_base}_${_id_up}:-}"
-        [ -n "${_v:-}" ] && export "${_base}=${_v}"
-    done
-    log "identity resolve: canonical secrets set for ${TASK_IDENTITY}"
-}
-phase_identity_scrub() {
-    for _base in $SECRET_BASES; do
-        for _var in $(env | sed -n "s/^\\(${_base}_[A-Za-z0-9_]*\\)=.*/\\1/p"); do
-            unset "$_var" 2>/dev/null || true
-        done
-    done
-    log "identity scrub: per-identity secret variants removed from the agent env"
-}
 
 # ── Run the phases (each individually skippable) ─────────────────────────────
 # Derive the task-shape env the prompts + workspace expect from the dispatch
@@ -1024,16 +894,12 @@ if [ -z "${TASK_PROMPT_FILE:-}" ] && [ -n "${CONTEXT_PACK_URL:-}" ] && [ -n "${T
     [ -n "${TASK_PROMPT_FILE:-}" ] && export TASK_PROMPT_FILE \
         && log "prompt: TASK_PROMPT_FILE=${TASK_PROMPT_FILE} (from payload; pack active → guard will engage if the prompt has steps)"
 fi
-phase_identity_resolve
 phase_extensions
 phase_codex_config
-phase_identity_scrub
 phase_callback
 phase_guard
 phase_permissions
 phase_hardening
-phase_dockerd
-phase_restore_stack
 
 # ── Phase 8: Drop privileges + run ──────────────────────────────────────────
 # cctui-supervisor applies landlock + seccomp, drops all caps, setuids to the
