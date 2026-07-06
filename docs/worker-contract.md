@@ -86,7 +86,7 @@ defines the guard rules; proceeding without it would weaken the sandbox).
 The single secret surface: the pod env carries **every** identity's secrets as
 `VAR_<ID>` (Vault env-from-path) plus optional unsuffixed defaults. `TASK_IDENTITY`
 (derived from `payload.identity`) selects the active one, `<ID>` = uppercased with
-`-` → `_`. The entrypoint then, around `worker-credentials.sh`:
+`-` → `_`. The entrypoint then, around the optional credential helper (baked by derived images):
 
 1. **resolve** (before the helper): `VAR = ${VAR_<ID>:-$VAR}` for each secret base
    (`GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_NAME`, `GITHUB_EMAIL`, `GPG_PRIVATE_KEY`,
@@ -97,7 +97,7 @@ The single secret surface: the pod env carries **every** identity's secrets as
    secret. (Trade-off: the *pod* still holds all secrets; only the agent's env is
    narrowed. Per-payload pod-level scoping is a later step.)
 
-`worker-credentials.sh` then materializes the **canonical** vars (all optional,
+The credential helper then materializes the **canonical** vars (all optional,
 skipped silently when absent):
 
 | Var (canonical) | Effect |
@@ -260,8 +260,9 @@ input), then drops to uid 1000:
 3. **Context pack** — fetch the pinned ref to `/opt/context` (fail-closed when
    `CONTEXT_PACK_URL` set); wire `CLAUDE.md`/skills/style/projects into the
    worker home; default `GUARD_RULES_FILE`.
-4. **Credentials** — `worker-credentials.sh` materializes the per-identity
-   github/gpg/npm/mcp config into the worker home (no-op when absent).
+4. **Credentials** — an optional credential helper (baked by derived images)
+   materializes the per-identity github/gpg/npm/mcp config into the worker home
+   (no-op when the helper is absent).
 5. **Callback** — install the `REPLY_URL` exit trap.
 6. **Guard** — start `cctui-guard` if the resolved prompt has step blocks
    (`# Step N` + `[allowed]`); always-allow the structural hosts.

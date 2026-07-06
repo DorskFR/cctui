@@ -1,8 +1,8 @@
 //! GH-AGENT-2: the MCP review tool exposed to a **review agent session**.
 //!
 //! A review session is a normal cctui session; it talks to this server as an
-//! HTTP MCP server registered in the worker's `~/.mcp.json` (see
-//! `deploy/worker-credentials.sh`: `MCP_<NAME>_URL` / `MCP_<NAME>_TOKEN` →
+//! HTTP MCP server registered in the worker's `~/.mcp.json` (the worker's
+//! credential helper maps `MCP_<NAME>_URL` / `MCP_<NAME>_TOKEN` →
 //! `{type:"http", url, headers:{Authorization:"Bearer <token>"}}`). That is the
 //! *existing* way cctui hands a tool surface to a session — we reuse it rather
 //! than invent a transport. The bearer is the session's own session token (the

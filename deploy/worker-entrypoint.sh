@@ -683,25 +683,6 @@ resolve_prompt_path() {
     esac
 }
 
-# ── Phase 4: Credentials ────────────────────────────────────────────────────
-# Materialize the per-task identity (github/gpg/npm/mcp) into the WORKER home
-# via the helper. The helper reads many vars by COMPUTED name (GITHUB_TOKEN_<ID>
-# etc.), so we run it inline (env intact) targeting the worker home, then chown
-# the products back to the worker — robust across the optional-env matrix and a
-# no-op when no credential env is present.
-phase_credentials() {
-    HOME="/home/${WORKER_USER}" sh /usr/local/bin/cctui-worker-credentials || true
-    # chown ONLY the credential products the helper may have written as root —
-    # NOT the whole home. The home is NFS-backed and cache-heavy; a recursive
-    # chown over it hangs in NFS RPC and the daemon never launches (CCT-457).
-    # With no credential env the helper writes nothing, so a full home chown is
-    # pure waste; everything else in the home is already worker-owned.
-    for _p in .gitconfig .gnupg .npmrc .mcp.json .config/yt; do
-        [ -e "/home/${WORKER_USER}/${_p}" ] \
-            && chown -R "${WORKER_UID}:${WORKER_UID}" "/home/${WORKER_USER}/${_p}" 2>/dev/null || true
-    done
-}
-
 # ── Phase 4b: Codex model provider ──────────────────────────────────────────
 # The platform injects OPENAI_API_KEY + OPENAI_BASE_URL (the cctui openai
 # gateway, CCT-508/514) into the agent env, but the `codex` CLI IGNORES those
@@ -1026,7 +1007,6 @@ if [ -z "${TASK_PROMPT_FILE:-}" ] && [ -n "${CONTEXT_PACK_URL:-}" ] && [ -n "${T
         && log "prompt: TASK_PROMPT_FILE=${TASK_PROMPT_FILE} (from payload; pack active → guard will engage if the prompt has steps)"
 fi
 phase_identity_resolve
-phase_credentials
 phase_codex_config
 phase_identity_scrub
 phase_callback

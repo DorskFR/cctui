@@ -124,7 +124,7 @@ RUN arch="$(dpkg --print-architecture)" \
 # so the worker always bakes the newest yt. Integrity is still checked against the
 # release's own SHA256SUMS rather than a hard-pinned digest (which can't survive a
 # moving tag). Reads creds from ~/.config/yt/config.json (materialized by
-# worker-credentials.sh from the platform's YOUTRACK_URL/token) or env.
+# a derived image's credential helper, from the YOUTRACK_URL/token env) or env.
 ARG YT_VERSION=latest
 RUN arch="$(dpkg --print-architecture)" \
     && case "$arch" in \
@@ -146,8 +146,8 @@ RUN arch="$(dpkg --print-architecture)" \
 # (a moving tag the scli CI republishes on every release), so the worker always
 # bakes the newest scli. Integrity is still checked against the release's own
 # SHA256SUMS rather than a hard-pinned digest (which can't survive a moving tag).
-# Reads creds from ~/.config/scli/config.json (materialized by worker-credentials.sh
-# from the platform's SLACK_TOKEN) or the SLACK_TOKEN env var. Release assets use
+# Reads creds from the SLACK_TOKEN env var (derived images may also materialize
+# ~/.config/scli/config.json via their own credential helper). Release assets use
 # linux-amd64/linux-arm64 naming (matching yt), so dpkg's arch maps directly.
 ARG SCLI_VERSION=latest
 RUN arch="$(dpkg --print-architecture)" \
@@ -180,7 +180,6 @@ COPY --from=builder /app/target/release/cctui-guard-proxy  /usr/local/bin/cctui-
 COPY --from=builder /app/target/release/cctui-supervisor   /usr/local/bin/cctui-supervisor
 COPY --from=builder /app/target/release/cctui-guard        /usr/local/bin/cctui-guard
 COPY deploy/worker-entrypoint.sh   /usr/local/bin/cctui-worker-entrypoint
-COPY deploy/worker-credentials.sh  /usr/local/bin/cctui-worker-credentials
 # codex-run — safe one-shot `codex exec` wrapper (model/effort/approvals from
 # config.toml; wrapper adds only --skip-git-repo-check + stdin-close + timeout).
 COPY deploy/codex-run.sh           /usr/local/bin/codex-run
@@ -189,7 +188,6 @@ COPY deploy/codex-run.sh           /usr/local/bin/codex-run
 # the context-pack mount target (read-only after fetch).
 RUN mkdir -p /var/run/guard-proxy /var/run/workflow-guard /workspace /opt/context \
     && chmod +x /usr/local/bin/cctui-worker-entrypoint \
-                /usr/local/bin/cctui-worker-credentials \
                 /usr/local/bin/codex-run
 
 # Contract marker: derived images and dispatchers can assert the wire contract.
