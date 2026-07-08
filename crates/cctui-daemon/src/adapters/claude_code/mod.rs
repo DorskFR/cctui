@@ -18,7 +18,6 @@ mod control;
 pub(crate) use control::stage_mid_chat_files;
 mod discovery;
 mod envcheck;
-mod fallback_cwd;
 mod headless;
 mod kickstart;
 mod mode;
