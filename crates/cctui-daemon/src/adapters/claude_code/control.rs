@@ -1337,6 +1337,18 @@ impl Driver {
         let mut args =
             vec!["--resume".to_owned(), session_id.clone(), "--agent".to_owned(), agent.to_owned()];
         let mut respawn_flags = vec!["--agent".to_owned(), agent.to_owned()];
+        // Re-assert the model/effort the original spawn recorded in `state.json`
+        // (CCT-577). Without this the resume dispatch shipped only
+        // `--resume`/`--agent`/`--settings`, so a heal silently relaunched the
+        // worker at the model's DEFAULT effort and could re-resolve the model —
+        // and, because we also rewrite `respawnFlags` below, clobbered the prior
+        // flags on disk so the drift became sticky. Same helper as `spawn`.
+        push_launch_flags(
+            &mut args,
+            &mut respawn_flags,
+            st.as_ref().and_then(|s| s.model.as_deref()),
+            st.as_ref().and_then(|s| s.effort.as_deref()),
+        );
         if let Some(settings) = &settings_arg {
             args.push("--settings".to_owned());
             args.push(settings.clone());
@@ -1630,24 +1642,17 @@ impl Driver {
         // only ADDS the hook. Goes into `respawnFlags` too so it survives the
         // `/clear`/`/compact` relaunch the claude daemon drives off them.
         let mut respawn_flags = vec!["--agent".to_owned(), agent.to_owned()];
-        // Reasoning effort (claude `--effort`: low/medium/high/xhigh/max).
-        // Goes into `respawnFlags` too so it survives the `/clear`/`/compact`
-        // relaunch and round-trips through `state.json` for display.
-        if let Some(effort) = spec.effort.as_deref().map(str::trim).filter(|e| !e.is_empty()) {
-            args.push("--effort".to_owned());
-            args.push(effort.to_owned());
-            respawn_flags.push("--effort".to_owned());
-            respawn_flags.push(effort.to_owned());
-        }
-        // Model family (claude `--model`: opus/sonnet/haiku/fable + aliases —
-        // CCT-274). Like effort, mirrored into `respawnFlags` so it survives a
-        // `/clear`/`/compact` relaunch and round-trips through `state.json`.
-        if let Some(model) = spec.model.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
-            args.push("--model".to_owned());
-            args.push(model.to_owned());
-            respawn_flags.push("--model".to_owned());
-            respawn_flags.push(model.to_owned());
-        }
+        // Reasoning effort + model family, shared verbatim with the resume path
+        // (CCT-577) so a healed/cold-resumed worker runs the SAME model/effort as
+        // the original dispatch instead of dropping them and drifting to the
+        // model default. Both land in `respawnFlags` too so they survive a
+        // `/clear`/`/compact` relaunch and round-trip through `state.json`.
+        push_launch_flags(
+            &mut args,
+            &mut respawn_flags,
+            spec.model.as_deref(),
+            spec.effort.as_deref(),
+        );
         // Remember the spawn-time model/effort keyed by `short` (CCT-299) so the
         // Status emit can fall back to it while `state.json` is still being
         // written (or transiently gone across a `/clear`).
@@ -2038,6 +2043,11 @@ impl Driver {
             jobs.into_iter().filter(LiveSnapshot::is_user_visible).collect();
         let now_shorts: HashSet<String> = visible.iter().map(|j| j.short.clone()).collect();
 
+        // Ground-truth effort for every live worker in one `/proc` pass (CCT-577),
+        // reused across the per-job Status build below so a busy roster doesn't
+        // rescan `/proc` per session.
+        let observed_efforts = super::envcheck::worker_efforts(&now_shorts);
+
         // CCT-509: grandfather the FIRST successful snapshot of this daemon
         // lifetime. Its workers were already alive when cctui (re)started — they
         // were brought up by a PRIOR lifetime (a self-update re-exec or
@@ -2274,9 +2284,16 @@ impl Driver {
                 .as_ref()
                 .and_then(|s| s.model.clone())
                 .or_else(|| spawned.as_ref().and_then(|(m, _)| m.clone()));
-            let effort = on_disk
-                .as_ref()
-                .and_then(|s| s.effort.clone())
+            // Prefer the GROUND-TRUTH effort the live worker actually booted at
+            // (read from its `CLAUDE_EFFORT` env), so the UI shows what the
+            // session is running rather than what we requested — a spare-claim or
+            // a silent background clamp can make them differ (CCT-577). Fall back
+            // to the requested value (state.json flags, then the spawn cache)
+            // while the worker is mid-exec / not yet found in `/proc`.
+            let effort = observed_efforts
+                .get(&job.short)
+                .cloned()
+                .or_else(|| on_disk.as_ref().and_then(|s| s.effort.clone()))
                 .or_else(|| spawned.as_ref().and_then(|(_, e)| e.clone()));
             let children = on_disk.as_ref().map(StateJson::proto_children).unwrap_or_default();
 
@@ -2918,6 +2935,30 @@ pub(super) fn deep_merge(base: &mut serde_json::Value, overlay: &serde_json::Val
             }
         }
         (b, o) => *b = o.clone(),
+    }
+}
+
+/// Append `--effort`/`--model` to both the live argv and the `respawnFlags`
+/// array, shared by the spawn and resume paths so they cannot drift (CCT-577).
+/// Empty/absent values are skipped. Effort is pushed before model to match the
+/// original spawn ordering; the claude daemon treats the two independently.
+fn push_launch_flags(
+    args: &mut Vec<String>,
+    respawn_flags: &mut Vec<String>,
+    model: Option<&str>,
+    effort: Option<&str>,
+) {
+    if let Some(effort) = effort.map(str::trim).filter(|e| !e.is_empty()) {
+        args.push("--effort".to_owned());
+        args.push(effort.to_owned());
+        respawn_flags.push("--effort".to_owned());
+        respawn_flags.push(effort.to_owned());
+    }
+    if let Some(model) = model.map(str::trim).filter(|m| !m.is_empty()) {
+        args.push("--model".to_owned());
+        args.push(model.to_owned());
+        respawn_flags.push("--model".to_owned());
+        respawn_flags.push(model.to_owned());
     }
 }
 
