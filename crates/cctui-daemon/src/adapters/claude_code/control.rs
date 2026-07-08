@@ -1337,18 +1337,13 @@ impl Driver {
         let mut args =
             vec!["--resume".to_owned(), session_id.clone(), "--agent".to_owned(), agent.to_owned()];
         let mut respawn_flags = vec!["--agent".to_owned(), agent.to_owned()];
-        // Re-assert the model/effort the original spawn recorded in `state.json`
-        // (CCT-577). Without this the resume dispatch shipped only
-        // `--resume`/`--agent`/`--settings`, so a heal silently relaunched the
-        // worker at the model's DEFAULT effort and could re-resolve the model —
-        // and, because we also rewrite `respawnFlags` below, clobbered the prior
-        // flags on disk so the drift became sticky. Same helper as `spawn`.
-        push_launch_flags(
-            &mut args,
-            &mut respawn_flags,
-            st.as_ref().and_then(|s| s.model.as_deref()),
-            st.as_ref().and_then(|s| s.effort.as_deref()),
-        );
+        // NB: resume deliberately does NOT pass `--model`/`--effort` (CCT-577
+        // regression fix). Asserting `--model` on a `--resume` forces the claude
+        // daemon down its spare-claim/cold relaunch, which does NOT reapply
+        // cctui's dispatch gateway env (background workers don't inherit gateway
+        // vars) — so the revived worker came up with no `ANTHROPIC_BASE_URL`/
+        // token and 401ed/ConnectionRefused. The resumed session already carries
+        // its model/effort in the transcript; only `spawn` seeds them as flags.
         if let Some(settings) = &settings_arg {
             args.push("--settings".to_owned());
             args.push(settings.clone());
