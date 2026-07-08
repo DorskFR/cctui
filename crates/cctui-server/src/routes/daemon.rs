@@ -730,11 +730,13 @@ async fn handle_event(
             .await?;
         }
         AdapterEvent::SessionModel { local_id, model } => {
-            // Fill the model from the transcript's ground truth, but only when
-            // it's still unset — an explicit `--model` alias delivered via a
-            // Status event keeps priority (the alias the operator typed, e.g.
-            // "opus", rather than the full id). Cheap indexed no-op once set.
-            sqlx::query("UPDATE sessions SET model = $2 WHERE id = $1 AND model IS NULL")
+            // Overwrite with the transcript/init-frame ground truth — the model
+            // the session is ACTUALLY running (CCT-577). Previously this only
+            // filled when unset, so the requested `--model` (delivered first via
+            // a Status event) permanently masked a spare-claim/clamp drift. The
+            // Status path now fills model only when NULL, so this ground-truth
+            // write wins and sticks.
+            sqlx::query("UPDATE sessions SET model = $2 WHERE id = $1")
                 .bind(&local_id)
                 .bind(&model)
                 .execute(&state.pool)
@@ -767,7 +769,11 @@ struct StatusSignals<'a> {
 
 /// Persist the latest Status signals onto the session row. `COALESCE` keeps
 /// a previously-known value when a given Status event omits a field, so a
-/// sparse update never clears signal.
+/// sparse update never clears signal. `model` is special-cased to
+/// `COALESCE(model, $6)` (fill only when NULL): the requested model must not
+/// overwrite the init-frame ground truth that `SessionModel` writes (CCT-577).
+/// `effort` is safe to overwrite because the daemon now reports the observed
+/// (`/proc CLAUDE_EFFORT`) value in Status, not the requested one.
 async fn update_status_signals(
     state: &AppState,
     local_id: &str,
@@ -779,7 +785,7 @@ async fn update_status_signals(
             agent_state = COALESCE($3, agent_state), \
             activity = COALESCE($4, activity), \
             session_name = COALESCE($5, session_name), \
-            model = COALESCE($6, model), \
+            model = COALESCE(model, $6), \
             effort = COALESCE($7, effort) \
          WHERE id = $1",
     )
