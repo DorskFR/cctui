@@ -256,8 +256,7 @@ impl SdkDriver {
                 self.postures.remove(&local_id);
                 self.names.remove(&local_id);
                 self.forget(&local_id);
-                self.emit(AdapterEvent::SessionEnded { local_id, reason: EndReason::Killed })
-                    .await;
+                self.emit(AdapterEvent::SessionEnded { local_id, reason: EndReason::Killed }).await;
                 Ok(())
             }
             AdapterCommand::PermissionResponse { local_id, request_id, allow } => {
@@ -320,6 +319,9 @@ impl SdkDriver {
             whip,
             short,
             launch_env.settings.as_ref(),
+            &launch_env.env,
+            None,
+            None,
         )
         .map(|p| p.to_string_lossy().into_owned());
 

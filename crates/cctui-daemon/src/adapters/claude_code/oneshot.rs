@@ -277,6 +277,9 @@ impl OneshotDriver {
             whip,
             short,
             launch_env.settings.as_ref(),
+            &launch_env.env,
+            None,
+            None,
         )
         .map(|p| p.to_string_lossy().into_owned());
         self.settings_path.clone_from(&settings);

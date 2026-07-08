@@ -1301,11 +1301,22 @@ impl Driver {
         // `spec` to read it from directly, and defaulting false would silently
         // downgrade a 🐎 session's enforcement profile.
         let whip = detect_whip_from_settings(short);
-        let settings_arg =
-            ensure_hook_settings(&self.cfg.hook_socket_path, whip, short, launch.settings.as_ref())
-                .map(|p| p.to_string_lossy().into_owned());
-
         let st = StateJson::read(&self.cfg.jobs_root, short);
+        // Carry the gateway env + the session's model/effort (from `state.json`)
+        // into the managed `--settings` file (CCT-577) so a spare-claimed resume
+        // keeps its routing env and model/effort — the settings file survives the
+        // spare-claim, the dispatch `env` and a `--model` CLI arg do not.
+        let settings_arg = ensure_hook_settings(
+            &self.cfg.hook_socket_path,
+            whip,
+            short,
+            launch.settings.as_ref(),
+            &env,
+            st.as_ref().and_then(|s| s.model.as_deref()),
+            st.as_ref().and_then(|s| s.effort.as_deref()),
+        )
+        .map(|p| p.to_string_lossy().into_owned());
+
         // `/clear`/`/compact` rotate the live conversation into the id recorded
         // in `resumeSessionId`; resuming the stale spawn id would fork the
         // conversation back at the pre-reset state (CCT-160). When state.json is
@@ -1637,17 +1648,11 @@ impl Driver {
         // only ADDS the hook. Goes into `respawnFlags` too so it survives the
         // `/clear`/`/compact` relaunch the claude daemon drives off them.
         let mut respawn_flags = vec!["--agent".to_owned(), agent.to_owned()];
-        // Reasoning effort + model family, shared verbatim with the resume path
-        // (CCT-577) so a healed/cold-resumed worker runs the SAME model/effort as
-        // the original dispatch instead of dropping them and drifting to the
-        // model default. Both land in `respawnFlags` too so they survive a
-        // `/clear`/`/compact` relaunch and round-trip through `state.json`.
-        push_launch_flags(
-            &mut args,
-            &mut respawn_flags,
-            spec.model.as_deref(),
-            spec.effort.as_deref(),
-        );
+        // NB: model/effort are NOT passed as `--model`/`--effort` CLI args
+        // (CCT-577). They ride the managed `--settings` file below (`model` /
+        // `effortLevel` / `CLAUDE_CODE_EFFORT_LEVEL`), which the claude daemon
+        // applies to a spare-claimed worker — whereas a `--model` CLI arg forces
+        // the spare-claim/cold relaunch that drops the dispatch gateway env.
         // Remember the spawn-time model/effort keyed by `short` (CCT-299) so the
         // Status emit can fall back to it while `state.json` is still being
         // written (or transiently gone across a `/clear`).
@@ -1667,9 +1672,15 @@ impl Driver {
         // hooks. Fail-closed inside `resolve_launch_env` (account-bound but
         // unmintable → abort rather than launch a worker that will 401, CCT-460).
         let launch = self.resolve_launch_env(&session_id, &spec.env).await?;
-        if let Some(settings) =
-            ensure_hook_settings(&self.cfg.hook_socket_path, whip, short, launch.settings.as_ref())
-        {
+        if let Some(settings) = ensure_hook_settings(
+            &self.cfg.hook_socket_path,
+            whip,
+            short,
+            launch.settings.as_ref(),
+            &launch.env,
+            spec.model.as_deref(),
+            spec.effort.as_deref(),
+        ) {
             let settings = settings.to_string_lossy().into_owned();
             args.push("--settings".to_owned());
             args.push(settings.clone());
@@ -1922,9 +1933,15 @@ impl Driver {
                 .resolve_launch_env(parent_local_id, &std::collections::BTreeMap::default())
                 .await?;
         }
-        if let Some(settings) =
-            ensure_hook_settings(&self.cfg.hook_socket_path, whip, &short, launch.settings.as_ref())
-        {
+        if let Some(settings) = ensure_hook_settings(
+            &self.cfg.hook_socket_path,
+            whip,
+            &short,
+            launch.settings.as_ref(),
+            &launch.env,
+            None,
+            None,
+        ) {
             let settings = settings.to_string_lossy().into_owned();
             args.push("--settings".to_owned());
             args.push(settings.clone());
@@ -2933,30 +2950,6 @@ pub(super) fn deep_merge(base: &mut serde_json::Value, overlay: &serde_json::Val
     }
 }
 
-/// Append `--effort`/`--model` to both the live argv and the `respawnFlags`
-/// array, shared by the spawn and resume paths so they cannot drift (CCT-577).
-/// Empty/absent values are skipped. Effort is pushed before model to match the
-/// original spawn ordering; the claude daemon treats the two independently.
-fn push_launch_flags(
-    args: &mut Vec<String>,
-    respawn_flags: &mut Vec<String>,
-    model: Option<&str>,
-    effort: Option<&str>,
-) {
-    if let Some(effort) = effort.map(str::trim).filter(|e| !e.is_empty()) {
-        args.push("--effort".to_owned());
-        args.push(effort.to_owned());
-        respawn_flags.push("--effort".to_owned());
-        respawn_flags.push(effort.to_owned());
-    }
-    if let Some(model) = model.map(str::trim).filter(|m| !m.is_empty()) {
-        args.push("--model".to_owned());
-        args.push(model.to_owned());
-        respawn_flags.push("--model".to_owned());
-        respawn_flags.push(model.to_owned());
-    }
-}
-
 /// Produce the final `--settings` document by deep-merging the server-provided
 /// per-account `settings` UNDERNEATH the daemon's `managed` settings (CCT-540).
 ///
@@ -3007,6 +3000,9 @@ pub(super) fn ensure_hook_settings(
     whip: bool,
     short: &str,
     account_settings: Option<&serde_json::Value>,
+    gateway_env: &std::collections::BTreeMap<String, String>,
+    model: Option<&str>,
+    effort: Option<&str>,
 ) -> Option<PathBuf> {
     let path = hook_settings_path(&format!("hook-settings-{short}.json"))?;
     let exe = std::env::current_exe()
@@ -3050,40 +3046,82 @@ pub(super) fn ensure_hook_settings(
         }],
     });
     let pre_hooks = json!([hook("pre"), perm_hook]);
-    let managed = if whip {
+    let hooks = if whip {
         json!({
-            "hooks": {
-                "PreToolUse": pre_hooks,
-                "PostToolUse": [hook("post")],
-                "Stop": [{
-                    "hooks": [{
-                        "type": "command",
-                        "command": format!("{exe} whip-stop-hook"),
-                        "timeout": 10,
-                    }],
+            "PreToolUse": pre_hooks,
+            "PostToolUse": [hook("post")],
+            "Stop": [{
+                "hooks": [{
+                    "type": "command",
+                    "command": format!("{exe} whip-stop-hook"),
+                    "timeout": 10,
                 }],
-            },
+            }],
         })
     } else {
-        json!({
-            "hooks": { "PreToolUse": pre_hooks, "PostToolUse": [hook("post")] },
-        })
+        json!({ "PreToolUse": pre_hooks, "PostToolUse": [hook("post")] })
     };
+    let managed = managed_settings(hooks, gateway_env, model, effort);
     // Layer the server-provided per-account settings UNDERNEATH the managed
-    // settings (CCT-540): account keys are merged in, but the managed `hooks`
-    // block always wins so the ask/permission/Stop hooks can never be clobbered.
+    // settings (CCT-540): account keys are merged in, but the managed keys
+    // (hooks, gateway env, model/effort) always win so they can never be
+    // clobbered.
     let settings = merge_account_under_managed(managed, account_settings);
     if let Some(Err(err)) = path.parent().map(std::fs::create_dir_all) {
         tracing::warn!(%err, "ask-hook: cannot create settings dir");
         return None;
     }
-    match std::fs::write(&path, serde_json::to_vec_pretty(&settings).ok()?) {
-        Ok(()) => Some(path),
-        Err(err) => {
-            tracing::warn!(%err, path = %path.display(), "ask-hook: cannot write settings");
-            None
+    if let Err(err) = std::fs::write(&path, serde_json::to_vec_pretty(&settings).ok()?) {
+        tracing::warn!(%err, path = %path.display(), "ask-hook: cannot write settings");
+        return None;
+    }
+    // The file now carries the gateway bearer token (CCT-577) — restrict it to
+    // owner-only so the secret isn't world-readable on disk.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(err) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)) {
+            tracing::warn!(%err, path = %path.display(), "ask-hook: cannot chmod settings 0600");
         }
     }
+    Some(path)
+}
+
+/// Build the managed `--settings` document (CCT-577): the ask/permission/Stop
+/// `hooks`, the gateway routing `env`, and the session `model`/`effortLevel`,
+/// all in one file. The claude daemon applies a session's `--settings` to a
+/// spare-claimed worker but deliberately does NOT reapply the dispatch `env`, so
+/// carrying the gateway env HERE is the only channel that survives the
+/// spare-claim on every platform (replacing the Linux-`/proc`-only gateway-env
+/// heal). Split out from [`ensure_hook_settings`] so the shape is unit-testable
+/// without touching the filesystem.
+fn managed_settings(
+    hooks: serde_json::Value,
+    gateway_env: &std::collections::BTreeMap<String, String>,
+    model: Option<&str>,
+    effort: Option<&str>,
+) -> serde_json::Value {
+    let mut managed = serde_json::Map::new();
+    managed.insert("hooks".to_owned(), hooks);
+    if let Some(m) = model.map(str::trim).filter(|m| !m.is_empty()) {
+        managed.insert("model".to_owned(), json!(m));
+    }
+    let mut env_obj: serde_json::Map<String, serde_json::Value> =
+        gateway_env.iter().map(|(k, v)| (k.clone(), json!(v))).collect();
+    // `effortLevel` only accepts low|medium|high|xhigh; `max`/`ultracode` are
+    // session-only and rejected in a settings file, so they ride the
+    // `CLAUDE_CODE_EFFORT_LEVEL` env var instead (which accepts them).
+    if let Some(e) = effort.map(str::trim).filter(|e| !e.is_empty()) {
+        if matches!(e, "low" | "medium" | "high" | "xhigh") {
+            managed.insert("effortLevel".to_owned(), json!(e));
+        } else {
+            env_obj.insert("CLAUDE_CODE_EFFORT_LEVEL".to_owned(), json!(e));
+        }
+    }
+    if !env_obj.is_empty() {
+        managed.insert("env".to_owned(), serde_json::Value::Object(env_obj));
+    }
+    serde_json::Value::Object(managed)
 }
 
 /// Translate a structured ask answer into the keystroke chunks that drive the
@@ -3188,6 +3226,39 @@ mod tests {
     fn dispatch_prompt_errors_when_neither_present() {
         let payload = serde_json::json!({ "model": "opus" });
         assert!(Driver::resolve_dispatch_prompt(&payload).is_err());
+    }
+
+    #[test]
+    fn managed_settings_carries_gateway_env_model_and_effort() {
+        // CCT-577: gateway env + model + effort ride the `--settings` file so
+        // they survive the claude-daemon spare-claim (which drops the dispatch
+        // env). Enum efforts use the `effortLevel` key; `max` falls back to the
+        // CLAUDE_CODE_EFFORT_LEVEL env var (the settings key rejects it).
+        let mut env = std::collections::BTreeMap::new();
+        env.insert("ANTHROPIC_BASE_URL".to_owned(), "https://x/gateway/anthropic".to_owned());
+        env.insert("ANTHROPIC_AUTH_TOKEN".to_owned(), "cctui_s_tok".to_owned());
+
+        let s = managed_settings(
+            json!({ "PreToolUse": [] }),
+            &env,
+            Some("claude-fable-5[1m]"),
+            Some("medium"),
+        );
+        assert_eq!(s["model"], json!("claude-fable-5[1m]"));
+        assert_eq!(s["effortLevel"], json!("medium"));
+        assert_eq!(s["env"]["ANTHROPIC_BASE_URL"], json!("https://x/gateway/anthropic"));
+        assert_eq!(s["env"]["ANTHROPIC_AUTH_TOKEN"], json!("cctui_s_tok"));
+        assert!(s["hooks"].is_object());
+
+        // `max` is not a valid `effortLevel`; it rides the env var instead.
+        let s = managed_settings(json!({}), &env, None, Some("max"));
+        assert!(s.get("effortLevel").is_none());
+        assert_eq!(s["env"]["CLAUDE_CODE_EFFORT_LEVEL"], json!("max"));
+
+        // No env / model / effort → only hooks, no empty `env` object.
+        let s = managed_settings(json!({}), &std::collections::BTreeMap::new(), None, None);
+        assert!(s.get("env").is_none());
+        assert!(s.get("model").is_none());
     }
 
     /// The managed settings shape produced by `ensure_hook_settings` for a
