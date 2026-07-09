@@ -234,7 +234,10 @@ pub struct ProviderInfo {
     /// (CCT-411). NULL ⇒ no soft limit on that window.
     pub soft_limit_5h_pct: Option<i32>,
     pub soft_limit_7d_pct: Option<i32>,
-    pub soft_limit_bypass_minutes: Option<i32>,
+    /// Per-window bypass (CCT-484): ignore a window's cap when it resets within
+    /// this many minutes. Each window has its own — the 7d one needs hours.
+    pub soft_limit_bypass_5h_minutes: Option<i32>,
+    pub soft_limit_bypass_7d_minutes: Option<i32>,
     /// Credential health (CCT-512): `true` once the gateway saw the upstream
     /// provider reject this credential, cleared on the next successful upstream
     /// call. The accounts UI shows a "reauthenticate" badge.
@@ -301,7 +304,8 @@ const PROVIDER_SELECT: &str = "SELECT p.id, p.account_id, p.provider, p.family, 
             p.base_url, p.auth_scheme, p.provider_account_id, \
             p.expires_at, p.created_at, p.last_used_at, \
             p.request_count, p.bytes_transferred, \
-            p.soft_limit_5h_pct, p.soft_limit_7d_pct, p.soft_limit_bypass_minutes, \
+            p.soft_limit_5h_pct, p.soft_limit_7d_pct, \
+            p.soft_limit_bypass_5h_minutes, p.soft_limit_bypass_7d_minutes, \
             p.needs_reauth, p.last_auth_error, p.last_auth_error_at, p.settings_json, \
             (COALESCE(t.input_tokens,0) + COALESCE(t.output_tokens,0) \
              + COALESCE(t.cache_read_tokens,0) + COALESCE(t.cache_creation_tokens,0))::bigint \
@@ -408,6 +412,13 @@ pub struct ProviderSpec {
     pub soft_limit_5h_pct: Option<i32>,
     #[serde(default)]
     pub soft_limit_7d_pct: Option<i32>,
+    /// Per-window bypass minutes (CCT-484). The legacy single
+    /// `soft_limit_bypass_minutes` is still accepted and fans out to whichever
+    /// of the two is absent.
+    #[serde(default)]
+    pub soft_limit_bypass_5h_minutes: Option<i32>,
+    #[serde(default)]
+    pub soft_limit_bypass_7d_minutes: Option<i32>,
     #[serde(default)]
     pub soft_limit_bypass_minutes: Option<i32>,
     /// Validated, allowlisted harness settings for this provider (CCT-538).
@@ -512,8 +523,10 @@ pub struct MoveProvider {
     pub target_account_id: Uuid,
 }
 
-/// The three soft-limit columns as a patchable block (CCT-411). A field left
-/// `null`/absent inside a provided block clears that column.
+/// The soft-limit columns as a patchable block (CCT-411). A field left
+/// `null`/absent inside a provided block clears that column. The legacy single
+/// `soft_limit_bypass_minutes` (pre-CCT-484) is still accepted and fans out to
+/// whichever per-window bypass is absent.
 // Field names are the JSON API contract (deserialized request body); the shared
 // `soft_limit_` prefix mirrors the DB columns and cannot be dropped.
 #[allow(clippy::struct_field_names)]
@@ -523,6 +536,10 @@ pub struct SoftLimitPatch {
     pub soft_limit_5h_pct: Option<i32>,
     #[serde(default)]
     pub soft_limit_7d_pct: Option<i32>,
+    #[serde(default)]
+    pub soft_limit_bypass_5h_minutes: Option<i32>,
+    #[serde(default)]
+    pub soft_limit_bypass_7d_minutes: Option<i32>,
     #[serde(default)]
     pub soft_limit_bypass_minutes: Option<i32>,
 }
@@ -626,7 +643,8 @@ struct ProviderWrite {
     model_aliases: Option<serde_json::Value>,
     soft_limit_5h_pct: Option<i32>,
     soft_limit_7d_pct: Option<i32>,
-    soft_limit_bypass_minutes: Option<i32>,
+    soft_limit_bypass_5h_minutes: Option<i32>,
+    soft_limit_bypass_7d_minutes: Option<i32>,
     settings_json: Option<serde_json::Value>,
 }
 
@@ -725,7 +743,12 @@ fn prepare_provider_write(
         model_aliases,
         soft_limit_5h_pct: spec.soft_limit_5h_pct,
         soft_limit_7d_pct: spec.soft_limit_7d_pct,
-        soft_limit_bypass_minutes: spec.soft_limit_bypass_minutes,
+        soft_limit_bypass_5h_minutes: spec
+            .soft_limit_bypass_5h_minutes
+            .or(spec.soft_limit_bypass_minutes),
+        soft_limit_bypass_7d_minutes: spec
+            .soft_limit_bypass_7d_minutes
+            .or(spec.soft_limit_bypass_minutes),
         settings_json,
     })
 }
@@ -742,8 +765,9 @@ async fn insert_provider(
         "INSERT INTO account_providers \
             (user_id, account_id, provider, encrypted_refresh_token, encrypted_access_token, \
              expires_at, base_url, models, auth_scheme, model_aliases, \
-             soft_limit_5h_pct, soft_limit_7d_pct, soft_limit_bypass_minutes, settings_json) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) \
+             soft_limit_5h_pct, soft_limit_7d_pct, \
+             soft_limit_bypass_5h_minutes, soft_limit_bypass_7d_minutes, settings_json) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) \
          RETURNING id",
     )
     .bind(user_id)
@@ -758,7 +782,8 @@ async fn insert_provider(
     .bind(&w.model_aliases)
     .bind(w.soft_limit_5h_pct)
     .bind(w.soft_limit_7d_pct)
-    .bind(w.soft_limit_bypass_minutes)
+    .bind(w.soft_limit_bypass_5h_minutes)
+    .bind(w.soft_limit_bypass_7d_minutes)
     .bind(&w.settings_json)
     .fetch_one(conn)
     .await
@@ -1087,12 +1112,18 @@ pub async fn update_provider(
         .filter(|s| !s.is_empty())
         .map(|c| crate::crypto::obfuscate(c, &key));
     // Soft limits (CCT-411): like aliases, carry a provided-flag so a provided
-    // block replaces all three columns (a null field clears one) while an absent
-    // block leaves them untouched.
+    // block replaces every column (a null field clears one) while an absent
+    // block leaves them untouched. The legacy single bypass (pre-CCT-484) fans
+    // out to whichever per-window bypass the client didn't send.
     let soft_provided = req.soft_limits.is_some();
-    let (soft_5h, weekly_pct, soft_bypass) =
-        req.soft_limits.as_ref().map_or((None, None, None), |s| {
-            (s.soft_limit_5h_pct, s.soft_limit_7d_pct, s.soft_limit_bypass_minutes)
+    let (soft_5h, weekly_pct, bypass_5h, bypass_weekly) =
+        req.soft_limits.as_ref().map_or((None, None, None, None), |s| {
+            (
+                s.soft_limit_5h_pct,
+                s.soft_limit_7d_pct,
+                s.soft_limit_bypass_5h_minutes.or(s.soft_limit_bypass_minutes),
+                s.soft_limit_bypass_7d_minutes.or(s.soft_limit_bypass_minutes),
+            )
         });
     // Settings (CCT-538): provided replaces (empty clears), absent untouched;
     // validated against the catalog allowlist before persist.
@@ -1114,8 +1145,11 @@ pub async fn update_provider(
             model_aliases = CASE WHEN $8 THEN $9 ELSE model_aliases END, \
             soft_limit_5h_pct = CASE WHEN $10 THEN $11 ELSE soft_limit_5h_pct END, \
             soft_limit_7d_pct = CASE WHEN $10 THEN $12 ELSE soft_limit_7d_pct END, \
-            soft_limit_bypass_minutes = CASE WHEN $10 THEN $13 ELSE soft_limit_bypass_minutes END, \
-            settings_json = CASE WHEN $14 THEN $15 ELSE settings_json END \
+            soft_limit_bypass_5h_minutes = \
+                CASE WHEN $10 THEN $13 ELSE soft_limit_bypass_5h_minutes END, \
+            soft_limit_bypass_7d_minutes = \
+                CASE WHEN $10 THEN $14 ELSE soft_limit_bypass_7d_minutes END, \
+            settings_json = CASE WHEN $15 THEN $16 ELSE settings_json END \
          WHERE id = $1 AND account_id = $2 \
            AND ($3::uuid IS NULL OR user_id = $3) AND NOT managed \
          RETURNING id",
@@ -1132,7 +1166,8 @@ pub async fn update_provider(
     .bind(soft_provided)
     .bind(soft_5h)
     .bind(weekly_pct)
-    .bind(soft_bypass)
+    .bind(bypass_5h)
+    .bind(bypass_weekly)
     .bind(settings_provided)
     .bind(&settings_json)
     .fetch_optional(&state.pool)

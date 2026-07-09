@@ -2,6 +2,12 @@ import { browser } from '$app/environment';
 import { api } from './api';
 import { auth } from './auth.svelte';
 import type { SettingsPayload } from '@bindings/SettingsPayload';
+import {
+	latestDirFor,
+	putSpawnMemory,
+	type SpawnMemoryEntry,
+	type SpawnMemoryMap
+} from './spawnMemory';
 
 // Server-persisted, user-scoped app settings (CCT-426, epic CCT-357). The whole
 // preference catalogue lives in a single JSON blob behind GET/PUT
@@ -18,23 +24,6 @@ export const CURRENT_VERSION = 1;
 
 // Debounce window for the PUT — coalesces a burst of toggles into one write.
 const SAVE_DEBOUNCE_MS = 400;
-
-export interface NewSessionSettings {
-	/** ON: the last-used spawn config (per-machine prefs / draft) wins, with
-	 *  these defaults as the first-use fallback. OFF: seed purely from defaults. */
-	rememberLastUsed: boolean;
-	defaultTarget: 'machine' | 'dispatch';
-	defaultMachineId: string | null;
-	defaultDispatcherId: string | null;
-	defaultAdapter: string;
-	defaultModelClaude: string;
-	defaultModelCodex: string;
-	defaultEffortClaude: string;
-	defaultEffortCodex: string;
-	defaultPermissionMode: string;
-	defaultAccount: string | null;
-	defaultLabels: string[];
-}
 
 export interface SessionListSettings {
 	sort: 'activity' | 'created' | 'name';
@@ -70,34 +59,22 @@ export function clampHarnessMode(v: unknown): HarnessMode {
 }
 
 export interface SettingsState {
-	newSession: NewSessionSettings;
 	sessionList: SessionListSettings;
 	display: DisplaySettings;
 	// Claude harness mode (epic CCT-494). Top-level so it serializes as
 	// `data.harnessMode`, which the server reads to drive each daemon's Reconcile.
 	harnessMode: HarnessMode;
+	// Per-(machine, working-dir) spawn memory (CCT-561): the config last
+	// submitted from the spawn modal, keyed by machineMemoryKey/dispatchMemoryKey
+	// (spawnMemory.ts), LRU-capped. Replaces the localStorage per-machine prefs
+	// (CCT-274) so the memory follows the user across browsers.
+	spawnMemory: SpawnMemoryMap;
 	// Reserved for a future keyboard-shortcuts surface (no UI yet, CCT-426).
 	shortcutsEnabled: boolean;
 	keymap: Record<string, string>;
 }
 
 const DEFAULTS: SettingsState = {
-	newSession: {
-		rememberLastUsed: true,
-		defaultTarget: 'machine',
-		defaultMachineId: null,
-		defaultDispatcherId: null,
-		defaultAdapter: 'claude-code',
-		defaultModelClaude: '',
-		defaultModelCodex: '',
-		defaultEffortClaude: '',
-		defaultEffortCodex: '',
-		// '' = unset: let the account default (else claude's own default) apply
-		// rather than forcing a mode into every spawn (CCT-542).
-		defaultPermissionMode: '',
-		defaultAccount: null,
-		defaultLabels: []
-	},
 	sessionList: {
 		sort: 'activity',
 		view: 'list',
@@ -113,6 +90,7 @@ const DEFAULTS: SettingsState = {
 		notifySound: true
 	},
 	harnessMode: DEFAULT_HARNESS_MODE,
+	spawnMemory: {},
 	shortcutsEnabled: false,
 	keymap: {}
 };
@@ -120,15 +98,17 @@ const DEFAULTS: SettingsState = {
 // Deep-merge a partial saved blob over DEFAULTS so a value missing from an older
 // payload (a field added in a later release) falls back to its default rather
 // than becoming undefined. One level of nesting covers the catalogue shape.
+// Stale keys in an older blob (e.g. the retired `newSession` launch defaults,
+// CCT-563) are simply not copied over, and get pruned on the next save.
 function mergeDefaults(partial: Partial<SettingsState> | null | undefined): SettingsState {
 	const p = partial ?? {};
 	return {
-		newSession: { ...DEFAULTS.newSession, ...(p.newSession ?? {}) },
 		sessionList: { ...DEFAULTS.sessionList, ...(p.sessionList ?? {}) },
 		display: { ...DEFAULTS.display, ...(p.display ?? {}) },
 		// Clamp to a known mode so an unknown stored value renders as `bg` (matches
 		// the server's clamp on PUT).
 		harnessMode: clampHarnessMode(p.harnessMode),
+		spawnMemory: p.spawnMemory ?? {},
 		shortcutsEnabled: p.shortcutsEnabled ?? DEFAULTS.shortcutsEnabled,
 		keymap: p.keymap ?? DEFAULTS.keymap
 	};
@@ -214,10 +194,6 @@ class Settings {
 	// Section setters — replace a whole group (or a subset of its fields) and
 	// persist. Components mutate via these so every write goes through the cache +
 	// debounced save path.
-	setNewSession(patch: Partial<NewSessionSettings>) {
-		this.state.newSession = { ...this.state.newSession, ...patch };
-		this.persist();
-	}
 	setSessionList(patch: Partial<SessionListSettings>) {
 		this.state.sessionList = { ...this.state.sessionList, ...patch };
 		this.persist();
@@ -237,6 +213,26 @@ class Settings {
 
 	get harnessMode(): HarnessMode {
 		return clampHarnessMode(this.state.harnessMode);
+	}
+
+	// Spawn memory (CCT-561): write on spawn submit, recall on machine/cwd (or
+	// dispatcher/repo) change in the spawn modal. Keys come from spawnMemory.ts.
+	rememberSpawn(key: string, entry: Omit<SpawnMemoryEntry, 'at'>) {
+		this.state.spawnMemory = putSpawnMemory(this.state.spawnMemory, key, {
+			...entry,
+			at: Date.now()
+		});
+		this.persist();
+	}
+
+	recallSpawn(key: string): SpawnMemoryEntry | null {
+		return this.state.spawnMemory[key] ?? null;
+	}
+
+	/** The working dir most recently spawned on `machineId`, to pre-fill the cwd
+	 *  (which then keys the full recall). */
+	lastDirFor(machineId: string): string | null {
+		return latestDirFor(this.state.spawnMemory, machineId);
 	}
 
 	toggleArchiveShortcut() {

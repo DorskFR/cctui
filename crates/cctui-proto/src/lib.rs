@@ -1,6 +1,7 @@
 pub mod adapter;
 pub mod api;
 pub mod classifier;
+pub mod diagnose;
 pub mod github;
 pub mod identity;
 pub mod models;

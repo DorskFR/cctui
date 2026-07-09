@@ -5,6 +5,7 @@ pub mod auth;
 pub mod capabilities;
 pub mod credentials;
 pub mod daemon;
+pub mod diagnose;
 pub mod dispatch;
 pub mod dispatcher;
 pub mod dispatchers;

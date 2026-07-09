@@ -786,6 +786,7 @@ type AccountRow = (
     Option<i32>,
     Option<i32>,
     Option<i32>,
+    Option<i32>,
 );
 /// Raw account row by id (no id column, before decrypt).
 type ReloadRow = (
@@ -984,7 +985,8 @@ async fn resolve_account(
     let row: Option<AccountRow> = sqlx::query_as(
         "SELECT a.id, a.provider, a.encrypted_access_token, a.encrypted_refresh_token, \
                     a.expires_at, a.provider_account_id, a.base_url, a.auth_scheme, \
-                    a.soft_limit_5h_pct, a.soft_limit_7d_pct, a.soft_limit_bypass_minutes \
+                    a.soft_limit_5h_pct, a.soft_limit_7d_pct, \
+                    a.soft_limit_bypass_5h_minutes, a.soft_limit_bypass_7d_minutes \
              FROM session_tokens t JOIN account_providers a ON a.id = t.account_id \
              WHERE t.token_hash = $1 AND t.revoked_at IS NULL",
     )
@@ -1002,7 +1004,8 @@ async fn resolve_account(
         auth_scheme,
         soft_5h,
         soft_weekly,
-        soft_bypass,
+        soft_bypass_5h,
+        soft_bypass_weekly,
     )) = row
     else {
         return Ok(None);
@@ -1022,7 +1025,8 @@ async fn resolve_account(
         soft_limits: crate::soft_limit::SoftLimits {
             pct_5h: soft_5h,
             pct_7d: soft_weekly,
-            bypass_minutes: soft_bypass,
+            bypass_5h_minutes: soft_bypass_5h,
+            bypass_7d_minutes: soft_bypass_weekly,
         },
     }))
 }

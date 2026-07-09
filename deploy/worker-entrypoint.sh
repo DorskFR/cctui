@@ -994,7 +994,8 @@ run_supervised_daemon() {
 #                        state file to STEP_EXITED (-1) AND relaxes the egress
 #                        proxy so the result callback can leave. Guard-less
 #                        workers (no step markers) fall back to watching the
-#                        RESULT_FILE appear with valid JSON.
+#                        RESULT_FILE appear with valid JSON, or the daemon's
+#                        dispatch_done turn-complete marker (CCT-513).
 #   BACKSTOP (crashed) — the dispatched session dies WITHOUT signalling done.
 #                        Sourced from the daemon's authoritative registration:
 #                        the server row for $SESSION_ID leaves "active" (the
@@ -1018,6 +1019,22 @@ WAIT_POLL_SECS="${WORKER_DONE_POLL_SECS:-2}"
 # this window, write a failed RESULT_FILE and exit non-zero so the EXIT trap
 # POSTs the callback promptly.
 WORKER_BOOT_DEADLINE_SECS="${WORKER_BOOT_DEADLINE_SECS:-120}"
+
+# Turn-complete marker (CCT-513): cctui-daemon writes
+# ~worker/.claude/jobs/<short>/dispatch_done once the session it dispatched at
+# boot has been busy at least once and then settled idle (default 60s,
+# CCTUI_DISPATCH_DONE_SETTLE_SECS). Catches the "finished its turn but stays
+# idle-and-alive under `claude daemon`" case none of the other signals fires
+# for: no guard step=-1, no RESULT_FILE, the daemon stays up and the session
+# stays registered — the pod would otherwise idle to activeDeadlineSeconds.
+# <short> is the first 8 chars of the session id, mirroring the daemon's
+# `session_id[..8]` (control.rs).
+_SHORT=$(printf %s "${SESSION_ID:-}" | cut -c1-8)
+DISPATCH_DONE_MARKER="/home/${WORKER_USER}/.claude/jobs/${_SHORT}/dispatch_done"
+
+dispatch_done_marker() {
+    [ -n "$_SHORT" ] && [ -e "$DISPATCH_DONE_MARKER" ]
+}
 
 # Guard signalled completion: state file says {"step":-1}.
 guard_exited() {
@@ -1106,6 +1123,10 @@ await_dispatch_done() {
         fi
         if result_ready; then
             log "wait: result file ready (guard-less done)"
+            return 0
+        fi
+        if dispatch_done_marker; then
+            log "wait: daemon wrote dispatch_done marker (turn complete, CCT-513)"
             return 0
         fi
         # Daemon-sourced liveness — throttled server probe (not every 2s).

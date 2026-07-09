@@ -23,8 +23,11 @@ pub struct SoftLimits {
     pub pct_5h: Option<i32>,
     /// Same for the 7d weekly window.
     pub pct_7d: Option<i32>,
-    /// If a window's `resets_at` is within this many minutes, ignore its cap.
-    pub bypass_minutes: Option<i32>,
+    /// If the 5h window's `resets_at` is within this many minutes, ignore its cap.
+    pub bypass_5h_minutes: Option<i32>,
+    /// Same for the 7d window (CCT-484) — it needs a much longer bypass than the
+    /// 5h window to ever fire, so each window carries its own.
+    pub bypass_7d_minutes: Option<i32>,
 }
 
 impl SoftLimits {
@@ -70,9 +73,9 @@ fn parse_window(usage: &serde_json::Value, key: &str) -> Option<Window> {
 ///
 /// Fails open: missing usage, an unparseable window, or no caps ⇒ `Allow`. A
 /// window blocks only when its utilization is at/above the cap AND its reset is
-/// more than `bypass_minutes` away (or its reset time is unknown). When several
-/// windows block, the reason names the nearest-resetting one and `retry_after`
-/// is derived from that reset.
+/// more than its own bypass (`bypass_5h_minutes` / `bypass_7d_minutes`) away
+/// (or its reset time is unknown). When several windows block, the reason names
+/// the nearest-resetting one and `retry_after` is derived from that reset.
 pub fn evaluate_soft_limit(
     usage: Option<&serde_json::Value>,
     caps: &SoftLimits,
@@ -82,13 +85,16 @@ pub fn evaluate_soft_limit(
         return Decision::Allow;
     }
     let Some(usage) = usage else { return Decision::Allow };
-    let bypass = i64::from(caps.bypass_minutes.unwrap_or(0).max(0));
 
     // Collect every window that is currently blocking, with the seconds until it
     // resets (used both to apply the bypass window and to size Retry-After).
     let mut blocking: Vec<(i64, String)> = Vec::new();
-    for (key, label, cap) in [("five_hour", "5h", caps.pct_5h), ("seven_day", "7d", caps.pct_7d)] {
+    for (key, label, cap, bypass_minutes) in [
+        ("five_hour", "5h", caps.pct_5h, caps.bypass_5h_minutes),
+        ("seven_day", "7d", caps.pct_7d, caps.bypass_7d_minutes),
+    ] {
         let Some(cap) = cap else { continue };
+        let bypass = i64::from(bypass_minutes.unwrap_or(0).max(0));
         let Some(win) = parse_window(usage, key) else { continue };
         if win.utilization < f64::from(cap) {
             continue;
@@ -168,17 +174,81 @@ mod tests {
     #[test]
     fn within_bypass_window_allows() {
         // Over cap, but the window resets in 5 minutes and bypass is 10 ⇒ allow.
-        let caps = SoftLimits { pct_5h: Some(80), bypass_minutes: Some(10), ..Default::default() };
+        let caps =
+            SoftLimits { pct_5h: Some(80), bypass_5h_minutes: Some(10), ..Default::default() };
         let u = usage(95.0, "2026-06-19T12:05:00Z", 10.0, "2026-06-26T00:00:00Z");
         assert_eq!(evaluate_soft_limit(Some(&u), &caps, now()), Decision::Allow);
     }
 
     #[test]
     fn outside_bypass_window_blocks() {
-        let caps = SoftLimits { pct_5h: Some(80), bypass_minutes: Some(10), ..Default::default() };
+        let caps =
+            SoftLimits { pct_5h: Some(80), bypass_5h_minutes: Some(10), ..Default::default() };
         // Resets in 30m, bypass only 10m ⇒ still blocks.
         let u = usage(95.0, "2026-06-19T12:30:00Z", 10.0, "2026-06-26T00:00:00Z");
         assert!(matches!(evaluate_soft_limit(Some(&u), &caps, now()), Decision::Block { .. }));
+    }
+
+    #[test]
+    fn seven_day_bypass_does_not_leak_to_five_hour() {
+        // 5h over cap, resets in 30m. 7d bypass is a generous 6h but the 5h
+        // bypass is only 10m ⇒ the 5h window still blocks (CCT-484).
+        let caps = SoftLimits {
+            pct_5h: Some(80),
+            bypass_5h_minutes: Some(10),
+            bypass_7d_minutes: Some(360),
+            ..Default::default()
+        };
+        let u = usage(95.0, "2026-06-19T12:30:00Z", 10.0, "2026-06-26T00:00:00Z");
+        assert!(matches!(evaluate_soft_limit(Some(&u), &caps, now()), Decision::Block { .. }));
+    }
+
+    #[test]
+    fn seven_day_within_its_longer_bypass_while_five_hour_blocks_outside_its_own() {
+        // Both windows over cap. 7d resets in 4h — within its 6h bypass ⇒ 7d is
+        // waved through. 5h resets in 30m — outside its 10m bypass ⇒ blocks, and
+        // the reason must name the 5h window.
+        let caps = SoftLimits {
+            pct_5h: Some(80),
+            pct_7d: Some(70),
+            bypass_5h_minutes: Some(10),
+            bypass_7d_minutes: Some(360),
+        };
+        let u = usage(95.0, "2026-06-19T12:30:00Z", 90.0, "2026-06-19T16:00:00Z");
+        match evaluate_soft_limit(Some(&u), &caps, now()) {
+            Decision::Block { reason, .. } => assert!(reason.contains("5h window"), "{reason}"),
+            d @ Decision::Allow => panic!("expected block, got {d:?}"),
+        }
+    }
+
+    #[test]
+    fn five_hour_within_its_bypass_while_seven_day_blocks_outside_its_own() {
+        // Mirror case: 5h resets in 5m (within its 10m bypass ⇒ allowed); 7d
+        // resets in 4h with only a 30m bypass ⇒ 7d blocks.
+        let caps = SoftLimits {
+            pct_5h: Some(80),
+            pct_7d: Some(70),
+            bypass_5h_minutes: Some(10),
+            bypass_7d_minutes: Some(30),
+        };
+        let u = usage(95.0, "2026-06-19T12:05:00Z", 90.0, "2026-06-19T16:00:00Z");
+        match evaluate_soft_limit(Some(&u), &caps, now()) {
+            Decision::Block { reason, .. } => assert!(reason.contains("7d window"), "{reason}"),
+            d @ Decision::Allow => panic!("expected block, got {d:?}"),
+        }
+    }
+
+    #[test]
+    fn both_within_their_own_bypasses_allows() {
+        // 5h resets in 5m (bypass 10m), 7d resets in 4h (bypass 6h) ⇒ allow.
+        let caps = SoftLimits {
+            pct_5h: Some(80),
+            pct_7d: Some(70),
+            bypass_5h_minutes: Some(10),
+            bypass_7d_minutes: Some(360),
+        };
+        let u = usage(95.0, "2026-06-19T12:05:00Z", 90.0, "2026-06-19T16:00:00Z");
+        assert_eq!(evaluate_soft_limit(Some(&u), &caps, now()), Decision::Allow);
     }
 
     #[test]

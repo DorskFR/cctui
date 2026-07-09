@@ -89,7 +89,8 @@
 	});
 
 	// Collapsed configuration line (CCT-562): one summary of the five knobs;
-	// expansion is per-open only (not persisted). Prefill-from-memory is CCT-561.
+	// expansion is per-open only (not persisted). The knobs prefill from the
+	// (machine, cwd) spawn memory (CCT-561, SpawnModal's memory effects).
 	let configOpen = $state(false);
 	const summaryModel = $derived(
 		usesAccountModels
@@ -121,8 +122,8 @@
 	};
 </script>
 
-<!-- Machine · working dir · label share one row (CCT-562). Auto-filling the
-     label from (machine, cwd) memory is CCT-561 — seed `form.name` there. -->
+<!-- Machine · working dir · label share one row (CCT-562). The label
+     auto-fills from the (machine, cwd) memory (CCT-561, in SpawnModal). -->
 <div class="top-row">
 	<Field label="Machine" for="sp-machine">
 		<Select id="sp-machine" bind:value={form.machine_id}>

@@ -76,6 +76,12 @@ impl Discovery {
         dirs.into_iter().map(|d| d.join("control.sock")).filter(|c| c.exists()).collect()
     }
 
+    /// The candidate socket paths, for observability (session diagnose,
+    /// CCT-547). Same enumeration [`Self::locate_live`] walks; no probing.
+    pub(super) fn candidate_paths(&self) -> Vec<PathBuf> {
+        self.candidates()
+    }
+
     /// Returns the first `<base>/<hash>/control.sock` that exists by `exists()`
     /// alone, ignoring liveness. Cheap and synchronous; prefer
     /// [`Discovery::locate_live`] on the poll/dispatch paths where a dead

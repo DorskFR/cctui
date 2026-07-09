@@ -73,6 +73,13 @@ struct Cli {
 enum Command {
     /// Force re-download of the latest cctui release and re-apply settings.
     Update,
+    /// One-call session diagnose (CCT-547): print everything the daemon knows
+    /// about a session — each fact dated + sourced — plus the server-side
+    /// gateway/account binding facts.
+    Diagnose {
+        /// The session id (as shown in the session list / URL).
+        session_id: String,
+    },
 }
 
 #[tokio::main]
@@ -83,12 +90,83 @@ async fn main() -> Result<()> {
             let (base_url, _) = resolve_identity();
             selfupdate::force_update(&base_url).await
         }
+        Some(Command::Diagnose { session_id }) => run_diagnose(&session_id).await,
         None => {
             let (base_url, _) = resolve_identity();
             selfupdate::maybe_update(&base_url).await;
             run_tui().await
         }
     }
+}
+
+/// `cctui diagnose <session-id>` (CCT-547): fetch the one-call diagnose blob
+/// and render it as one dated, sourced line per fact.
+async fn run_diagnose(session_id: &str) -> Result<()> {
+    let (base_url, token) = resolve_identity();
+    let server = ServerClient::new(&base_url, &token);
+    let resp = server.diagnose_session(session_id).await?;
+
+    println!("session {}", resp.session_id);
+    let s = &resp.server;
+    println!(
+        "server: status={} adapter={} account_bound={} accounts=[{}] machine={} last_seen={}",
+        s.status.as_deref().unwrap_or("?"),
+        s.adapter_id.as_deref().unwrap_or("?"),
+        s.account_bound,
+        s.accounts.join(", "),
+        s.machine_id.as_deref().unwrap_or("?"),
+        s.machine_last_seen_ms.map_or_else(|| "?".to_owned(), fmt_age_since),
+    );
+    if let Some(err) = &resp.daemon_error {
+        println!("daemon: UNAVAILABLE — {err}");
+    }
+    let Some(d) = &resp.daemon else { return Ok(()) };
+    println!(
+        "daemon report: adapter={} short={} generated_at={}",
+        d.adapter,
+        d.short.as_deref().unwrap_or("?"),
+        d.generated_at_ms,
+    );
+    print_fact("effective_state", &d.effective_state);
+    print_fact("last_hook_event", &d.last_hook_event);
+    print_fact("attach", &d.attach);
+    print_fact("pty_output", &d.pty_output);
+    print_fact("claude_socket", &d.claude_socket);
+    print_fact("transcript", &d.transcript);
+    print_fact("prompts", &d.prompts);
+    print_fact("permission_mode", &d.permission_mode);
+    print_fact("dispatch", &d.dispatch);
+    print_fact("gateway", &d.gateway);
+    Ok(())
+}
+
+/// One `name [source, age]: value-or-reason` line per fact.
+fn print_fact<T: serde::Serialize>(name: &str, fact: &cctui_proto::diagnose::DiagnoseFact<T>) {
+    let age = fact.age_ms.map_or_else(|| "undated".to_owned(), fmt_age);
+    match &fact.value {
+        Some(v) => {
+            let rendered = serde_json::to_string(v).unwrap_or_else(|_| "<unserializable>".into());
+            println!("  {name} [{}, {age}]: {rendered}", fact.source);
+        }
+        None => println!(
+            "  {name} [{}, {age}]: — ({})",
+            fact.source,
+            fact.missing_reason.as_deref().unwrap_or("missing"),
+        ),
+    }
+}
+
+fn fmt_age(ms: i64) -> String {
+    match ms {
+        ms if ms < 1_000 => format!("{ms}ms ago"),
+        ms if ms < 60_000 => format!("{}s ago", ms / 1_000),
+        ms if ms < 3_600_000 => format!("{}m ago", ms / 60_000),
+        ms => format!("{}h ago", ms / 3_600_000),
+    }
+}
+
+fn fmt_age_since(at_ms: i64) -> String {
+    fmt_age((chrono::Utc::now().timestamp_millis() - at_ms).max(0))
 }
 
 async fn run_tui() -> Result<()> {

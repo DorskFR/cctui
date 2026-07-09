@@ -21,8 +21,15 @@ use serde_json::json;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use cctui_proto::diagnose::{
+    AttachStatus, DiagnoseFact, DispatchStatus, EffectiveState, GatewayStatus, HookEvent,
+    PendingPrompts, PtyOutputStats, SessionDiagnose, SocketStatus, TranscriptStatus,
+};
+
 use super::backfill::{self, BackfillConfig, CursorFile, default_cursor_path};
+use super::diagnose::{ArbitrationInput, arbitrate, now_unix_ms, to_unix_ms};
 use super::discovery::Discovery;
+use super::dispatch_done::{self, DispatchDoneTracker};
 use super::kickstart::Kickstarter;
 use super::state::{StateJson, default_jobs_root};
 use super::transcript::{self, OffsetStore, default_projects_root};
@@ -318,6 +325,27 @@ pub struct Driver {
     /// the pushed env hint.
     server: Option<crate::client::ServerClient>,
     machine_key: Option<String>,
+    /// Turn-complete watcher for the one session `maybe_dispatch_on_start`
+    /// launched (CCT-513): writes `<jobs_root>/<short>/dispatch_done` once
+    /// that session has been busy and then settles idle, so the worker
+    /// entrypoint can wind the pod down instead of idling to the Job
+    /// deadline. `None` on normal (non-dispatched) daemons — interactive
+    /// sessions never get a marker. `Mutex` because it's armed from
+    /// `maybe_dispatch_on_start` (`&self`).
+    dispatch_done: std::sync::Mutex<Option<DispatchDoneTracker>>,
+    /// Last ask/permission/plan hook delivery per `local_id`, maintained by
+    /// the ask-hook listener. Read by the diagnose aggregation (CCT-547).
+    hook_log: super::HookLog,
+    /// When each short was last seen in a `list` snapshot — the observation
+    /// timestamp behind the diagnose report's effective-state fact (CCT-547).
+    last_status_at: HashMap<String, std::time::SystemTime>,
+    /// Kind + time of the last event parsed out of each transcript tail,
+    /// keyed by `offset_key` (CCT-547).
+    last_parsed: HashMap<String, (String, std::time::SystemTime)>,
+    /// Permission posture (`default`/`auto`/`yolo`/`whip`) recorded per
+    /// worker `short` at spawn/fork time (CCT-547). `Mutex` for the same
+    /// reason as `spawn_model_effort`.
+    spawn_permission_mode: std::sync::Mutex<HashMap<String, String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -484,6 +512,11 @@ impl Driver {
             fork_parent_by_short: std::sync::Mutex::new(HashMap::new()),
             server: None,
             machine_key: None,
+            dispatch_done: std::sync::Mutex::new(None),
+            hook_log: super::HookLog::default(),
+            last_status_at: HashMap::new(),
+            last_parsed: HashMap::new(),
+            spawn_permission_mode: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -523,6 +556,12 @@ impl Driver {
     /// ask-hook listener to register blocked `PreToolUse` hooks into (CCT-342).
     pub fn pending_perm_hooks(&self) -> super::PendingPermHooks {
         self.pending_perm_hooks.clone()
+    }
+
+    /// Clone handle to the shared hook-delivery log, for the ask-hook
+    /// listener to maintain (CCT-547).
+    pub fn hook_log(&self) -> super::HookLog {
+        self.hook_log.clone()
     }
 
     #[allow(clippy::cognitive_complexity)]
@@ -744,6 +783,12 @@ impl Driver {
 
     #[allow(clippy::cognitive_complexity)]
     async fn handle_command(&self, cmd: AdapterCommand) -> anyhow::Result<()> {
+        // Diagnose (CCT-547) is read-only aggregation and must answer even
+        // when the claude daemon is down (the report *says* the socket is
+        // gone), so it is handled before the socket requirement below.
+        if let AdapterCommand::Diagnose { local_id, request_id } = cmd {
+            return self.handle_diagnose(&local_id, request_id).await;
+        }
         // A command (spawn/reply/kill/…) needs a live control socket. If the
         // on-demand claude daemon has shut down, boot it and wait briefly for
         // the socket rather than failing the command outright (CCT-194).
@@ -908,6 +953,220 @@ impl Driver {
         JobShort::parse(candidate)
             .map(|j| j.as_str().to_string())
             .ok_or_else(|| anyhow::anyhow!("cannot resolve short for {local_id}"))
+    }
+
+    /// Assemble the session-diagnose report (CCT-547): everything this driver
+    /// already knows about `local_id`, each fact dated + sourced, and emit it
+    /// back as an [`AdapterEvent::Diagnose`] echoing `request_id`.
+    ///
+    /// Fail-soft by construction: facts that cannot be produced right now
+    /// come back `missing(reason)`; the only hard failure is the events
+    /// channel being gone.
+    // One fact per block — linear assembly, no nesting to split. The
+    // effective-state `if let` stays a plain branch (not `map_or_else`): both
+    // arms borrow `self` and the readable two-arm shape is the point.
+    #[allow(clippy::cognitive_complexity, clippy::too_many_lines, clippy::option_if_let_else)]
+    async fn handle_diagnose(&self, local_id: &str, request_id: uuid::Uuid) -> anyhow::Result<()> {
+        let now_ms = now_unix_ms();
+        let short =
+            self.resolve_short(local_id).or_else(|_| self.resolve_short_for_removal(local_id)).ok();
+
+        // Hook-side prompt state (shared with the ask-hook listener).
+        let pending_ask = self.pending_asks.lock().is_ok_and(|m| m.contains_key(local_id));
+        let parked_perm_hook =
+            self.pending_perm_hooks.lock().is_ok_and(|m| m.contains_key(local_id));
+        // Control-socket permission prompt (CCT-211), keyed by short.
+        let pending_perm = short.as_deref().and_then(|s| self.pending_perms.get(s)).cloned();
+
+        // Effective state + arbitration verdict.
+        let effective_state = if let Some(short) = short.as_deref() {
+            let snap = self.last_status.get(short);
+            let (verdict, source) = arbitrate(&ArbitrationInput {
+                pending_ask,
+                parked_perm_hook,
+                control_needs: pending_perm.as_ref().map(|p| p.needs.as_str()),
+                reported_dead: self.dead_shorts.contains(short),
+                in_roster: self.roster.contains(short),
+                state_json_on_disk: StateJson::read(&self.cfg.jobs_root, short).is_some(),
+                tempo: snap.and_then(|s| s.tempo.as_deref()),
+                state: snap.and_then(|s| s.state.as_deref()),
+            });
+            let value = EffectiveState {
+                verdict,
+                tempo: snap.and_then(|s| s.tempo.clone()),
+                state: snap.and_then(|s| s.state.clone()),
+                detail: snap.and_then(|s| s.detail.clone()),
+                activity: snap.and_then(|s| s.activity.clone()),
+            };
+            match self.last_status_at.get(short) {
+                Some(at) => DiagnoseFact::observed(value, source.as_str(), to_unix_ms(*at), now_ms),
+                None => DiagnoseFact::undated(value, source.as_str()),
+            }
+        } else {
+            DiagnoseFact::missing("activity", "unknown session (no worker short resolvable)")
+        };
+
+        let last_hook_event =
+            self.hook_log.lock().ok().and_then(|m| m.get(local_id).cloned()).map_or_else(
+                || DiagnoseFact::missing("hook", "no hook delivery seen for this session"),
+                |(kind, at)| {
+                    DiagnoseFact::observed(HookEvent { kind }, "hook", to_unix_ms(at), now_ms)
+                },
+            );
+
+        let attach = short.as_deref().and_then(|s| self.attach.snapshot(s)).map_or_else(
+            || DiagnoseFact::missing("attach", "no keep-alive attach task for this session"),
+            |snap| {
+                let value = AttachStatus {
+                    phase: snap.phase.clone(),
+                    backoff_ms: snap
+                        .backoff
+                        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX)),
+                    last_probe_alive: snap.last_probe_alive,
+                    last_probe_at_ms: snap.last_probe_at.map(to_unix_ms),
+                };
+                match snap.updated_at {
+                    Some(at) => DiagnoseFact::observed(value, "attach", to_unix_ms(at), now_ms),
+                    None => DiagnoseFact::undated(value, "attach"),
+                }
+            },
+        );
+
+        // Typed slot only until PTY output capture (CCT-546) lands.
+        let pty_output: DiagnoseFact<PtyOutputStats> = DiagnoseFact::missing(
+            "pty",
+            "PTY output age/throughput depends on CCT-546 (PTY output capture), not landed",
+        );
+
+        // Live probe at report time: which socket discovery picks, and the
+        // full candidate list. Bounded (per-candidate probe timeout), no
+        // kickstart side effects.
+        let candidates: Vec<String> = self
+            .cfg
+            .discovery
+            .candidate_paths()
+            .into_iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        let live_sock = self.cfg.discovery.locate_live().await;
+        let claude_socket = DiagnoseFact::fresh(
+            SocketStatus {
+                live: live_sock.is_some(),
+                path: live_sock.map(|p| p.to_string_lossy().into_owned()),
+                candidates,
+            },
+            "discovery",
+            now_ms,
+        );
+
+        let transcript =
+            short.as_deref().and_then(|s| self.transcript_locations.get(s)).map_or_else(
+                || DiagnoseFact::missing("filesystem", "no transcript pinned for this session yet"),
+                |loc| {
+                    let meta = std::fs::metadata(&loc.path).ok();
+                    let mtime = meta.as_ref().and_then(|m| m.modified().ok());
+                    let parsed = self.last_parsed.get(&loc.offset_key);
+                    let value = TranscriptStatus {
+                        path: loc.path.to_string_lossy().into_owned(),
+                        mtime_ms: mtime.map(to_unix_ms),
+                        size_bytes: meta.as_ref().map(std::fs::Metadata::len),
+                        tail_offset: self.offsets.get(&loc.offset_key),
+                        last_parsed_event: parsed.map(|(kind, _)| kind.clone()),
+                        last_parsed_at_ms: parsed.map(|(_, at)| to_unix_ms(*at)),
+                    };
+                    match mtime {
+                        Some(at) => {
+                            DiagnoseFact::observed(value, "filesystem", to_unix_ms(at), now_ms)
+                        }
+                        None => DiagnoseFact::undated(value, "filesystem"),
+                    }
+                },
+            );
+
+        let prompts = DiagnoseFact::fresh(
+            PendingPrompts {
+                pending_ask,
+                parked_perm_hook,
+                control_needs: pending_perm.as_ref().map(|p| p.needs.clone()),
+                perm_request_id: pending_perm.map(|p| p.request_id),
+            },
+            "hook+control_socket",
+            now_ms,
+        );
+
+        let permission_mode = {
+            let recorded = short.as_deref().and_then(|s| {
+                self.spawn_permission_mode.lock().ok().and_then(|m| m.get(s).cloned())
+            });
+            match recorded {
+                Some(label) => DiagnoseFact::undated(label, "spawn"),
+                // The spawn-time record dies with the daemon process; the whip
+                // Stop hook in the managed settings file survives on disk.
+                None if short.as_deref().is_some_and(detect_whip_from_settings) => {
+                    DiagnoseFact::undated("whip".to_owned(), "settings-file")
+                }
+                None => DiagnoseFact::missing(
+                    "spawn",
+                    "not recorded (session predates this daemon process or was launched externally)",
+                ),
+            }
+        };
+
+        let dispatch = self
+            .dispatch_done
+            .lock()
+            .ok()
+            .and_then(|guard| {
+                guard.as_ref().and_then(|t| {
+                    (Some(t.short()) == short.as_deref()).then(|| DispatchStatus {
+                        seen_busy: t.seen_busy(),
+                        done: t.is_done(),
+                        marker_path: t.marker_path().to_string_lossy().into_owned(),
+                    })
+                })
+            })
+            .map_or_else(
+                || {
+                    DiagnoseFact::missing(
+                        "dispatch",
+                        "not a dispatched session (no turn-complete watcher armed)",
+                    )
+                },
+                |value| DiagnoseFact::fresh(value, "dispatch", now_ms),
+            );
+
+        let gateway = DiagnoseFact::fresh(
+            GatewayStatus {
+                server_configured: self.server.is_some() && self.machine_key.is_some(),
+            },
+            "daemon-config",
+            now_ms,
+        );
+
+        let report = SessionDiagnose {
+            local_id: local_id.to_owned(),
+            short,
+            generated_at_ms: now_ms,
+            adapter: "claude-code".to_owned(),
+            effective_state,
+            last_hook_event,
+            attach,
+            pty_output,
+            claude_socket,
+            transcript,
+            prompts,
+            permission_mode,
+            dispatch,
+            gateway,
+        };
+        self.events
+            .send(AdapterEvent::Diagnose {
+                local_id: local_id.to_owned(),
+                request_id,
+                report: Box::new(report),
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("events channel closed while sending diagnose report"))
     }
 
     /// Poll the `has` op until the worker is no longer alive (or we give up).
@@ -1227,6 +1486,15 @@ impl Driver {
             tracing::error!(%err, session_id = %session_id, "dispatch-on-start: spawn failed");
         } else {
             tracing::info!(session_id = %session_id, "dispatch-on-start: session dispatched");
+            // Arm the turn-complete watcher (CCT-513) for this — and only
+            // this — session, so the pod entrypoint gets a done-signal when
+            // the session settles idle after its work.
+            let settle = dispatch_done::settle_from_env(
+                std::env::var("CCTUI_DISPATCH_DONE_SETTLE_SECS").ok().as_deref(),
+            );
+            if let Ok(mut guard) = self.dispatch_done.lock() {
+                *guard = Some(DispatchDoneTracker::new(&session_id, &self.cfg.jobs_root, settle));
+            }
         }
     }
 
@@ -1390,6 +1658,12 @@ impl Driver {
             {
                 map.insert(short.to_owned(), (model.map(str::to_owned), effort.map(str::to_owned)));
             }
+        }
+        // Remember the launch posture for the diagnose report (CCT-547).
+        if let Some(mode) = spec.permission_mode
+            && let Ok(mut map) = self.spawn_permission_mode.lock()
+        {
+            map.insert(short.to_owned(), super::diagnose::permission_label(mode).to_owned());
         }
         let whip = spec.permission_mode.is_some_and(cctui_proto::adapter::PermissionMode::is_whip);
         // Resolve the gateway env + per-account settings from the server's
@@ -1599,6 +1873,12 @@ impl Driver {
                 map.insert(short.clone(), (model.map(str::to_owned), effort.map(str::to_owned)));
             }
         }
+        // Remember the launch posture for the diagnose report (CCT-547).
+        if let Some(mode) = spec.permission_mode
+            && let Ok(mut map) = self.spawn_permission_mode.lock()
+        {
+            map.insert(short.clone(), super::diagnose::permission_label(mode).to_owned());
+        }
         let whip = spec.permission_mode.is_some_and(cctui_proto::adapter::PermissionMode::is_whip);
         // Gateway env + per-account settings for the fork child (CCT-460): the
         // fork dispatch used to hardcode empty env, so a fork of an account-bound
@@ -1781,6 +2061,10 @@ impl Driver {
                 .or_else(|| job.session_id().map(str::to_owned))
                 .unwrap_or_else(|| job.short.clone());
             let on_disk = StateJson::read(&self.cfg.jobs_root, &job.short);
+
+            // Observation timestamp for the diagnose report (CCT-547): when
+            // this short was last seen on the control socket.
+            self.last_status_at.insert(job.short.clone(), std::time::SystemTime::now());
 
             // Dead-but-still-listed (CCT-252). claude can keep a session in
             // `daemon list` while its worker process is gone (e.g. it died
@@ -2012,6 +2296,16 @@ impl Driver {
                         self.offsets.set(loc.offset_key.clone(), new_off);
                         dirty_offsets = true;
                     }
+                    if let Some(last) = events.last() {
+                        // "Last parsed event" for diagnose (CCT-547).
+                        self.last_parsed.insert(
+                            loc.offset_key.clone(),
+                            (
+                                super::diagnose::event_kind(last).to_owned(),
+                                std::time::SystemTime::now(),
+                            ),
+                        );
+                    }
                     for evt in events {
                         self.emit(evt).await;
                     }
@@ -2087,7 +2381,50 @@ impl Driver {
         // stays focused/awake and `reply` actually drives its PTY (CCT-209).
         self.attach.reconcile(now_shorts.iter().map(String::as_str));
 
+        self.tick_dispatch_done(&visible);
+
         self.roster = now_shorts;
+    }
+
+    /// Feed the dispatch turn-complete watcher (CCT-513) one roster snapshot
+    /// and write the `dispatch_done` marker when it fires. No-op on normal
+    /// daemons (`dispatch_done` is only armed by `maybe_dispatch_on_start`).
+    fn tick_dispatch_done(&self, jobs: &[LiveSnapshot]) {
+        let Ok(mut guard) = self.dispatch_done.lock() else { return };
+        let Some(tracker) = guard.as_mut() else { return };
+        let job = jobs.iter().find(|j| j.short == tracker.short());
+        // Absent from the roster before it ever ran isn't idleness — it's a
+        // cold start still booting (the entrypoint's boot deadline bounds
+        // that). Once seen busy, absence (session ended/retired) does count
+        // toward settle.
+        if job.is_none() && !tracker.seen_busy() {
+            return;
+        }
+        let busy = job.is_some_and(|j| {
+            !j.is_dead() && DispatchDoneTracker::is_busy(j.tempo.as_deref(), j.state.as_deref())
+        });
+        if tracker.observe(busy, Instant::now()) {
+            let path = tracker.marker_path();
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            match std::fs::write(path, b"") {
+                Ok(()) => {
+                    tracing::info!(
+                        short = %tracker.short(),
+                        path = %path.display(),
+                        "dispatched session settled idle after work; wrote dispatch_done marker (CCT-513)"
+                    );
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        %err,
+                        path = %path.display(),
+                        "failed to write dispatch_done marker"
+                    );
+                }
+            }
+        }
     }
 
     /// Discover and tail Task-tool subagents for every live parent session
@@ -3762,5 +4099,97 @@ mod tests {
         rx.recv().await.unwrap(); // status
         d.apply_snapshot(vec![snap("c0ffee00", "working", Some("ours"))]).await;
         assert!(rx.try_recv().is_err(), "identical poll should emit nothing");
+    }
+
+    /// Drain events until the Diagnose reply for `request_id` arrives.
+    async fn recv_diagnose(
+        rx: &mut mpsc::Receiver<AdapterEvent>,
+        request_id: uuid::Uuid,
+    ) -> SessionDiagnose {
+        loop {
+            match rx.recv().await.expect("event stream open") {
+                AdapterEvent::Diagnose { request_id: rid, report, .. } if rid == request_id => {
+                    return *report;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// CCT-547: the diagnose assembly aggregates the driver's live state —
+    /// resolved short, activity-sourced verdict with an observation timestamp,
+    /// pinned transcript, and honest `missing` facts for signals not present.
+    #[tokio::test]
+    async fn diagnose_assembles_dated_facts_for_live_session() {
+        let (mut d, mut rx) = driver();
+        d.apply_snapshot(vec![snap("abcd1234", "working", Some("ours"))]).await;
+
+        let request_id = uuid::Uuid::new_v4();
+        d.handle_diagnose("abcd1234-uuid", request_id).await.unwrap();
+        let report = recv_diagnose(&mut rx, request_id).await;
+
+        assert_eq!(report.local_id, "abcd1234-uuid");
+        assert_eq!(report.short.as_deref(), Some("abcd1234"));
+        assert_eq!(report.adapter, "claude-code");
+        assert!(report.generated_at_ms > 0);
+
+        // Effective state: derived from the poll snapshot (activity source),
+        // dated by the poll observation.
+        let es = &report.effective_state;
+        assert_eq!(es.source, "activity");
+        let v = es.value.as_ref().expect("effective state present");
+        assert_eq!(v.verdict, "active/working");
+        assert_eq!(v.tempo.as_deref(), Some("active"));
+        assert!(es.observed_at_ms.is_some());
+        assert!(es.age_ms.is_some_and(|a| a >= 0));
+
+        // Transcript was pinned by the snapshot; the file doesn't exist yet so
+        // the fact is present-but-undated with offset 0.
+        let t = report.transcript.value.as_ref().expect("transcript pinned");
+        assert!(t.path.ends_with("abcd1234-uuid.jsonl"), "{}", t.path);
+        assert_eq!(t.tail_offset, 0);
+        assert_eq!(t.mtime_ms, None);
+
+        // No socket in the temp discovery base.
+        let sock = report.claude_socket.value.as_ref().unwrap();
+        assert!(!sock.live);
+        assert!(sock.path.is_none());
+
+        // Nothing pending, nothing recorded → honest missing/false facts.
+        let p = report.prompts.value.as_ref().unwrap();
+        assert!(!p.pending_ask && !p.parked_perm_hook);
+        assert!(report.pty_output.value.is_none(), "CCT-546 slot must be missing");
+        assert!(report.pty_output.missing_reason.as_deref().unwrap().contains("CCT-546"));
+        assert!(report.dispatch.value.is_none(), "not a dispatched session");
+        assert!(report.permission_mode.value.is_none(), "posture never recorded");
+        assert!(report.last_hook_event.value.is_none());
+        assert!(!report.gateway.value.as_ref().unwrap().server_configured);
+    }
+
+    /// CCT-547: a pending ask (hook signal) wins the arbitration and surfaces
+    /// in both the verdict and the prompts fact; an unknown session still
+    /// produces a fail-soft report rather than an error.
+    #[tokio::test]
+    async fn diagnose_hook_signal_wins_and_unknown_session_fails_soft() {
+        let (mut d, mut rx) = driver();
+        d.apply_snapshot(vec![snap("abcd1234", "working", None)]).await;
+        d.pending_asks.lock().unwrap().insert("abcd1234-uuid".into(), None);
+
+        let request_id = uuid::Uuid::new_v4();
+        d.handle_diagnose("abcd1234-uuid", request_id).await.unwrap();
+        let report = recv_diagnose(&mut rx, request_id).await;
+        assert_eq!(report.effective_state.source, "hook");
+        assert!(report.effective_state.value.unwrap().verdict.contains("ask"));
+        assert!(report.prompts.value.unwrap().pending_ask);
+
+        // Unknown session: no short resolvable → missing facts, not an Err.
+        let request_id = uuid::Uuid::new_v4();
+        d.handle_diagnose("not-a-known-session", request_id).await.unwrap();
+        let report = recv_diagnose(&mut rx, request_id).await;
+        assert!(report.short.is_none());
+        assert!(report.effective_state.value.is_none());
+        assert!(
+            report.effective_state.missing_reason.as_deref().unwrap().contains("unknown session")
+        );
     }
 }

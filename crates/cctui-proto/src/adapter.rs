@@ -292,6 +292,16 @@ pub enum AdapterEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
+    /// Reply to an [`AdapterCommand::Diagnose`] (CCT-547): everything the
+    /// adapter knows about the session, dated. `request_id` correlates with
+    /// the round-trip the server parked for the originating
+    /// `GET /sessions/{id}/diagnose`. Boxed: the report is by far the largest
+    /// payload on this enum.
+    Diagnose {
+        local_id: String,
+        request_id: Uuid,
+        report: Box<crate::diagnose::SessionDiagnose>,
+    },
 }
 
 /// Child reference attached to a session — typically a linked PR. Drives the
@@ -472,6 +482,14 @@ pub enum AdapterCommand {
         model: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         effort: Option<String>,
+    },
+    /// Snapshot everything the adapter knows about a session (CCT-547). The
+    /// adapter answers with an [`AdapterEvent::Diagnose`] echoing
+    /// `request_id`, which the server correlates back to the waiting
+    /// `GET /sessions/{id}/diagnose`. Read-only: never touches the worker.
+    Diagnose {
+        local_id: String,
+        request_id: Uuid,
     },
 }
 
@@ -794,6 +812,52 @@ mod tests {
         let back: AdapterCommand =
             serde_json::from_str(r#"{"kind":"kill","local_id":"s1"}"#).unwrap();
         assert!(matches!(back, AdapterCommand::Kill { signal: None, .. }));
+    }
+
+    #[test]
+    fn adapter_diagnose_command_and_event_roundtrip() {
+        // CCT-547: the diagnose round-trip rides the generic Command/Event
+        // path, so its serde shape must stay wire-stable.
+        let req_id = Uuid::new_v4();
+        let cmd = AdapterCommand::Diagnose { local_id: "s1".into(), request_id: req_id };
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert!(json.contains(r#""kind":"diagnose""#));
+        let back: AdapterCommand = serde_json::from_str(&json).unwrap();
+        assert!(
+            matches!(back, AdapterCommand::Diagnose { request_id, .. } if request_id == req_id)
+        );
+
+        let report = crate::diagnose::SessionDiagnose {
+            local_id: "s1".into(),
+            short: None,
+            generated_at_ms: 42,
+            adapter: "claude-code".into(),
+            effective_state: crate::diagnose::DiagnoseFact::missing("activity", "no status"),
+            last_hook_event: crate::diagnose::DiagnoseFact::missing("hook", "none"),
+            attach: crate::diagnose::DiagnoseFact::missing("attach", "none"),
+            pty_output: crate::diagnose::DiagnoseFact::missing("pty", "CCT-546"),
+            claude_socket: crate::diagnose::DiagnoseFact::missing("discovery", "none"),
+            transcript: crate::diagnose::DiagnoseFact::missing("filesystem", "none"),
+            prompts: crate::diagnose::DiagnoseFact::missing("hook", "none"),
+            permission_mode: crate::diagnose::DiagnoseFact::missing("spawn", "none"),
+            dispatch: crate::diagnose::DiagnoseFact::missing("dispatch", "none"),
+            gateway: crate::diagnose::DiagnoseFact::missing("daemon-config", "none"),
+        };
+        let evt = AdapterEvent::Diagnose {
+            local_id: "s1".into(),
+            request_id: req_id,
+            report: Box::new(report.clone()),
+        };
+        let json = serde_json::to_string(&evt).unwrap();
+        assert!(json.contains(r#""kind":"diagnose""#));
+        let back: AdapterEvent = serde_json::from_str(&json).unwrap();
+        match back {
+            AdapterEvent::Diagnose { request_id, report: r, .. } => {
+                assert_eq!(request_id, req_id);
+                assert_eq!(*r, report);
+            }
+            other => panic!("expected Diagnose, got {other:?}"),
+        }
     }
 
     #[test]

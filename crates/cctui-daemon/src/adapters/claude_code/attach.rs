@@ -30,7 +30,8 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime};
 
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -72,6 +73,25 @@ const READ_STALL_TIMEOUT: Duration = Duration::from_secs(90);
 /// held-but-dead workers visible in journald without new infra.
 static HELD_ATTACH_FOUND_DEAD: AtomicU64 = AtomicU64::new(0);
 
+/// Observable keep-alive state for one held short, surfaced by the session
+/// diagnose report (CCT-547). Updated by the attach task as it cycles.
+#[derive(Debug, Clone, Default)]
+pub(super) struct AttachSnapshot {
+    /// `connecting` (no cycle finished yet), `held`, or `reconnecting`.
+    pub phase: String,
+    /// Current reconnect backoff, when `phase == "reconnecting"`.
+    pub backoff: Option<Duration>,
+    /// Outcome + time of the last liveness `has` probe (CCT-487).
+    pub last_probe_alive: Option<bool>,
+    pub last_probe_at: Option<SystemTime>,
+    /// When the current/most recent state was recorded.
+    pub updated_at: Option<SystemTime>,
+}
+
+/// Shared `short → AttachSnapshot` map: written by the attach tasks, read by
+/// the diagnose path.
+type AttachStatusMap = Arc<Mutex<HashMap<String, AttachSnapshot>>>;
+
 /// Owns one persistent-attach task per live session `short`, reconciled
 /// against the `list` snapshot on every poll tick.
 pub(super) struct AttachManager {
@@ -80,11 +100,19 @@ pub(super) struct AttachManager {
     shutdown: CancellationToken,
     /// `short` → child cancellation token for that session's attach task.
     tasks: HashMap<String, CancellationToken>,
+    /// Keep-alive observability for diagnose (CCT-547).
+    status: AttachStatusMap,
 }
 
 impl AttachManager {
     pub(super) fn new(discovery: Discovery, shutdown: CancellationToken) -> Self {
-        Self { discovery, shutdown, tasks: HashMap::new() }
+        Self { discovery, shutdown, tasks: HashMap::new(), status: AttachStatusMap::default() }
+    }
+
+    /// The current keep-alive snapshot for `short`, when an attach task is
+    /// (or recently was) running for it.
+    pub(super) fn snapshot(&self, short: &str) -> Option<AttachSnapshot> {
+        self.status.lock().ok().and_then(|m| m.get(short).cloned())
     }
 
     /// Spawn attach tasks for newly-seen shorts and cancel tasks for shorts
@@ -102,6 +130,9 @@ impl AttachManager {
             let keep = live.contains(short.as_str());
             if !keep {
                 cancel.cancel();
+                if let Ok(mut m) = self.status.lock() {
+                    m.remove(short);
+                }
             }
             keep
         });
@@ -112,10 +143,21 @@ impl AttachManager {
                 continue;
             }
             let cancel = self.shutdown.child_token();
+            if let Ok(mut m) = self.status.lock() {
+                m.insert(
+                    short.to_owned(),
+                    AttachSnapshot {
+                        phase: "connecting".to_owned(),
+                        updated_at: Some(SystemTime::now()),
+                        ..AttachSnapshot::default()
+                    },
+                );
+            }
             let task = AttachTask {
                 discovery: self.discovery.clone(),
                 short: short.to_owned(),
                 cancel: cancel.clone(),
+                status: self.status.clone(),
             };
             tokio::spawn(task.run());
             self.tasks.insert(short.to_owned(), cancel);
@@ -128,6 +170,9 @@ impl AttachManager {
         for (_, cancel) in self.tasks.drain() {
             cancel.cancel();
         }
+        if let Ok(mut m) = self.status.lock() {
+            m.clear();
+        }
     }
 }
 
@@ -135,9 +180,20 @@ struct AttachTask {
     discovery: Discovery,
     short: String,
     cancel: CancellationToken,
+    status: AttachStatusMap,
 }
 
 impl AttachTask {
+    /// Record an observability update for this short (CCT-547). Best-effort;
+    /// a poisoned lock just drops the update.
+    fn note(&self, f: impl FnOnce(&mut AttachSnapshot)) {
+        if let Ok(mut m) = self.status.lock() {
+            let snap = m.entry(self.short.clone()).or_default();
+            f(snap);
+            snap.updated_at = Some(SystemTime::now());
+        }
+    }
+
     async fn run(self) {
         let mut backoff = BACKOFF_MIN;
         loop {
@@ -180,6 +236,10 @@ impl AttachTask {
                     backoff = (backoff * 2).min(BACKOFF_MAX);
                 }
             }
+            self.note(|s| {
+                "reconnecting".clone_into(&mut s.phase);
+                s.backoff = Some(backoff);
+            });
             tokio::select! {
                 () = self.cancel.cancelled() => return,
                 () = tokio::time::sleep(backoff) => {}
@@ -241,6 +301,10 @@ impl AttachTask {
         }
 
         tracing::debug!(short = %self.short, "attached (holding open to keep worker awake)");
+        self.note(|s| {
+            "held".clone_into(&mut s.phase);
+            s.backoff = None;
+        });
 
         // Attached. Drain and discard the raw PTY byte stream until the server
         // closes the connection (detach/settle) or we're cancelled. We never
@@ -306,7 +370,12 @@ impl AttachTask {
         let req = json!({"proto": 1, "op": "has", "short": self.short});
         match super::socket::one_shot(sock, &req).await {
             Ok(resp) => {
-                if has_reports_alive(&resp) {
+                let alive = has_reports_alive(&resp);
+                self.note(|s| {
+                    s.last_probe_alive = Some(alive);
+                    s.last_probe_at = Some(SystemTime::now());
+                });
+                if alive {
                     return None;
                 }
                 let count = HELD_ATTACH_FOUND_DEAD.fetch_add(1, Ordering::Relaxed) + 1;
@@ -464,6 +533,8 @@ mod tests {
         mgr.reconcile(["aaaaaaaa", "bbbbbbbb"]);
         assert_eq!(mgr.tasks.len(), 2);
         let token_a = mgr.tasks["aaaaaaaa"].clone();
+        // Diagnose observability (CCT-547): a tracked short has a snapshot.
+        assert!(mgr.snapshot("aaaaaaaa").is_some());
 
         // Drop one, keep one, add one.
         mgr.reconcile(["bbbbbbbb", "cccccccc"]);
@@ -471,9 +542,11 @@ mod tests {
         assert!(token_a.is_cancelled(), "dropped short's task must be cancelled");
         assert!(mgr.tasks.contains_key("bbbbbbbb"));
         assert!(mgr.tasks.contains_key("cccccccc"));
+        assert!(mgr.snapshot("aaaaaaaa").is_none(), "dropped short's snapshot must be removed");
 
         mgr.cancel_all();
         assert!(mgr.tasks.is_empty());
+        assert!(mgr.snapshot("bbbbbbbb").is_none());
         shutdown.cancel();
     }
 }

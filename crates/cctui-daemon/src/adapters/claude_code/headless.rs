@@ -215,6 +215,9 @@ impl SdkDriver {
                 session_map,
                 pending_asks,
                 pending_perm_hooks,
+                // These drivers don't serve the diagnose aggregation
+                // (CCT-547 is bg-only); a fresh log satisfies the listener.
+                super::HookLog::default(),
             )
             .await
             {

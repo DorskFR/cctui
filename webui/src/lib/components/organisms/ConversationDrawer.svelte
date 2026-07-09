@@ -12,6 +12,7 @@
 	import ForkModal from './conversation/ForkModal.svelte';
 	import DrawerHeader from './conversation/DrawerHeader.svelte';
 	import DrawerToolbar from './conversation/DrawerToolbar.svelte';
+	import DiagnosePanel from './conversation/DiagnosePanel.svelte';
 	import Conversation from './conversation/Conversation.svelte';
 	import AccountSwitchModal from './conversation/AccountSwitchModal.svelte';
 	import ConversationComposer from './conversation/ConversationComposer.svelte';
@@ -57,6 +58,14 @@
 	);
 	const showStatusBadge = $derived(session.status === 'new' || session.status === 'archived');
 	const qc = useQueryClient();
+
+	// Session diagnose panel (CCT-547), opened from the toolbar.
+	let diagnoseOpen = $state(false);
+	// A navigation to another session must not leave a stale panel open.
+	$effect(() => {
+		void id;
+		diagnoseOpen = false;
+	});
 
 	// Message-type tag filter (CCT-250 item 2), shared types in ./conversation/types.
 	const defaults: ViewOpts = {
@@ -523,7 +532,12 @@
 		autoApprove={session.auto_approve}
 		bind:mobilePanel
 		ontoggleAuto={sa.toggleAutoApprove}
+		ondiagnose={() => (diagnoseOpen = true)}
 	/>
+
+	{#if diagnoseOpen}
+		<DiagnosePanel sessionId={id} onclose={() => (diagnoseOpen = false)} />
+	{/if}
 
 	{#if needsInput}
 		<div class="attn-banner">✋ Waiting for your input</div>

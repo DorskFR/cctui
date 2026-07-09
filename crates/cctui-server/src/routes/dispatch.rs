@@ -853,10 +853,7 @@ mod tests {
     fn bare_explicit_account_carries_no_provider_hint() {
         // CCT-559: `account: "acme"` alone means "all of acme's providers" —
         // the resolution must not invent a family constraint.
-        assert_eq!(
-            resolve_dispatch_account(Some("acme"), None, None),
-            Some(("acme".into(), None))
-        );
+        assert_eq!(resolve_dispatch_account(Some("acme"), None, None), Some(("acme".into(), None)));
     }
 
     #[test]

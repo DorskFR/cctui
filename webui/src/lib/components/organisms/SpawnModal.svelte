@@ -20,10 +20,18 @@
 		LAST_SPAWN_NAME,
 		LAST_SPAWN_LABELS,
 		nextSessionName,
-		loadMachinePrefs,
-		saveMachinePrefs,
 		normalizeDir
 	} from '$lib/drafts';
+	import {
+		machineMemoryKey,
+		dispatchMemoryKey,
+		applyMemory,
+		memoryFieldsOf,
+		entryFromForm,
+		MACHINE_MEMORY_FIELDS,
+		DISPATCH_MEMORY_FIELDS,
+		type MemoryPatch
+	} from '$lib/spawnMemory';
 	import { mergeFiles, removeFileByName, fileCapError } from '$lib/attachments';
 	import {
 		AutoGrid,
@@ -66,42 +74,40 @@
 	const dispatcherIds = $derived($dispatchers.data ?? []);
 	const canDispatch = $derived(dispatcherIds.length > 0);
 
-	// Spawn target + form shape live in ./spawn/types. Default target comes from
-	// settings (CCT-426); a prefill (re-dispatch) is always a machine spawn.
-	// Machine / Dispatch render as tabs (CCT-562).
-	let target = $state<Target>(prefill ? 'machine' : settings.state.newSession.defaultTarget);
+	// Spawn target + form shape live in ./spawn/types. Machine / Dispatch render
+	// as tabs (CCT-562); a prefill (re-dispatch) is always a machine spawn.
+	let target = $state<Target>('machine');
 	const targetTabs: TabItem[] = [
 		{ id: 'machine', label: 'Machine' },
 		{ id: 'dispatch', label: 'Dispatch (k8s)' }
 	];
 
-	// New-session defaults are now seeded from server-persisted settings (CCT-426)
-	// rather than hardcoded; last-used per-machine prefs still take precedence when
-	// `rememberLastUsed` is on (see load()/the prefs effect below).
-	const sNew = settings.state.newSession;
+	// The blank form is all-unset; the per-(machine, cwd) spawn memory (CCT-561)
+	// fills it in once a machine/cwd (or dispatcher/repo) is known. The /settings
+	// launch defaults it used to seed from were removed in CCT-563.
 	const blank: Form = {
 		machine_id: '',
-		adapter_id: sNew.defaultAdapter || 'claude-code',
+		adapter_id: 'claude-code',
 		working_dir: '',
 		name: '',
 		prompt: '',
 		// No hardcoded fallback (CCT-542): empty = "Default", so the account
 		// default permission mode (else claude's own) applies unless overridden.
-		permission_mode: (sNew.defaultPermissionMode || '') as Form['permission_mode'],
+		permission_mode: '' as Form['permission_mode'],
 		dispatcher: '',
 		identity: '',
 		repo: '',
 		ticket: '',
 		prompt_file: '',
-		model_claude: sNew.defaultModelClaude || '',
-		model_codex: sNew.defaultModelCodex || '',
+		model_claude: '',
+		model_codex: '',
 		model_account: '',
-		account: sNew.defaultAccount || '',
+		account: '',
 		account_provider: '',
-		effort_claude: sNew.defaultEffortClaude || '',
-		effort_codex: sNew.defaultEffortCodex || '',
+		effort_claude: '',
+		effort_codex: '',
 		timeout: '',
-		labels: [...sNew.defaultLabels]
+		labels: []
 	};
 	interface SpawnDraftPayload extends Partial<Form> {
 		envRows?: EnvRow[];
@@ -109,6 +115,13 @@
 	let loadedDraft = false;
 	let restoredEnvRows: EnvRow[] = [];
 	let form = $state<Form>(load());
+	// What the modal seeded (draft/prefill/defaults): the baseline the memory
+	// effects compare against so an explicit user edit is never clobbered.
+	// Deliberately a one-time snapshot, not reactive.
+	// svelte-ignore state_referenced_locally
+	const initialFields = memoryFieldsOf(form);
+	// svelte-ignore state_referenced_locally
+	const initialDir = form.working_dir;
 	function load(): Form {
 		try {
 			const raw = drafts.get(SPAWN_DRAFT);
@@ -139,52 +152,86 @@
 	$effect(() => {
 		const list = $machines.data ?? [];
 		if (form.machine_id || !list.length) return;
-		// Precedence (CCT-426): "remember last used" on → last-used machine wins,
-		// settings default is the first-use fallback; off → settings default wins.
-		// Either way, fall back to the first available machine.
-		const remember = settings.state.newSession.rememberLastUsed;
 		const last = drafts.get(LAST_MACHINE);
-		const def = settings.state.newSession.defaultMachineId;
-		const order = remember ? [last, def] : [def, last];
-		const pick = order.find((id) => id && list.some((m) => m.id === id));
-		form.machine_id = pick ?? list[0].id;
+		form.machine_id = last && list.some((m) => m.id === last) ? last : list[0].id;
 	});
 
-	// Remember spawn settings PER MACHINE (CCT-274): when the selected machine
-	// changes, pull that machine's last-used adapter/model/effort/account and
-	// working dir so the next spawn on e.g. dev1 re-selects what you usually
-	// run there. An explicit
-	// prefill (re-dispatch from an existing session) takes precedence — we don't
-	// clobber it. We set `prefsLoadedFor` BEFORE writing the fields, so the
-	// re-runs triggered by those writes hit the early-return.
-	let prefsLoadedFor = $state<string | null>(null);
+	// Spawn memory (CCT-561): the config last submitted for a (machine, cwd) —
+	// account/harness/model/effort/permission mode/label — recalled from the
+	// server-persisted settings blob whenever the machine or cwd changes, so a
+	// new session on a known machine+cwd needs zero config clicks. Precedence:
+	// an explicit edit in the open modal (including a restored draft or prefill)
+	// wins over the memory, which wins over the blank-form seed.
+	// `memApplied` tracks what the memory wrote so applyMemory can tell an edit
+	// from its own writes. Keys are set BEFORE writing fields, so the re-runs
+	// triggered by those writes hit the early-return.
+	let memApplied: MemoryPatch = {};
+
+	// Picking a machine pre-fills its most recent working dir (which then keys
+	// the full memory recall below).
+	let dirAppliedFor = $state<string | null>(null);
+	let dirApplied: string | null = null;
 	$effect(() => {
 		const id = form.machine_id;
-		if (!id || id === prefsLoadedFor) return;
-		prefsLoadedFor = id;
-		if (prefill || loadedDraft) return;
-		// CCT-426: when "remember last used" is off, ignore the per-machine cache —
-		// the settings defaults seeded into `blank` are the source for a fresh form.
-		if (!settings.state.newSession.rememberLastUsed) return;
-		const p = loadMachinePrefs(id);
-		if (!p) return;
-		if (p.adapter_id) form.adapter_id = p.adapter_id;
-		if (p.model_claude != null) form.model_claude = p.model_claude;
-		if (p.model_codex != null) form.model_codex = p.model_codex;
-		if (p.effort_claude != null) form.effort_claude = p.effort_claude;
-		if (p.effort_codex != null) form.effort_codex = p.effort_codex;
-		if (p.account != null) form.account = p.account;
-		if (p.account_provider != null) form.account_provider = p.account_provider;
-		if (p.model_account != null) form.model_account = p.model_account;
-		if (p.working_dir) form.working_dir = p.working_dir;
+		if (!id || id === dirAppliedFor) return;
+		const first = dirAppliedFor === null;
+		dirAppliedFor = id;
+		if (first && (prefill || loadedDraft)) return;
+		if (form.working_dir !== (dirApplied ?? initialDir)) return;
+		const dir = settings.lastDirFor(id);
+		if (!dir) return;
+		dirApplied = dir;
+		form.working_dir = dir;
+	});
+
+	let memKeyApplied = $state<string | null>(null);
+	$effect(() => {
+		const key = form.machine_id ? machineMemoryKey(form.machine_id, form.working_dir) : null;
+		if (!key || key === memKeyApplied) return;
+		const first = memKeyApplied === null;
+		memKeyApplied = key;
+		if (first && (prefill || loadedDraft)) return;
+		const entry = settings.recallSpawn(key);
+		if (!entry) return;
+		const patch = applyMemory(
+			MACHINE_MEMORY_FIELDS,
+			form,
+			initialFields,
+			memApplied,
+			entry,
+			drafts.get(LAST_SPAWN_NAME)
+		);
+		memApplied = { ...memApplied, ...patch };
+		Object.assign(form, patch as Partial<Form>);
+	});
+
+	// Dispatch flavor keyed by (dispatcher, repo): same memory, claude-family
+	// knobs only (a dispatched worker is always claude).
+	let dispatchKeyApplied = $state<string | null>(null);
+	$effect(() => {
+		const key = form.dispatcher ? dispatchMemoryKey(form.dispatcher, form.repo) : null;
+		if (!key || key === dispatchKeyApplied) return;
+		const first = dispatchKeyApplied === null;
+		dispatchKeyApplied = key;
+		if (first && (prefill || loadedDraft)) return;
+		const entry = settings.recallSpawn(key);
+		if (!entry) return;
+		const patch = applyMemory(
+			DISPATCH_MEMORY_FIELDS,
+			form,
+			initialFields,
+			memApplied,
+			entry,
+			drafts.get(LAST_SPAWN_NAME)
+		);
+		memApplied = { ...memApplied, ...patch };
+		Object.assign(form, patch as Partial<Form>);
 	});
 
 	// default the dispatcher to the first configured one once loaded
 	$effect(() => {
 		if (form.dispatcher || !dispatcherIds.length) return;
-		// Prefer the settings default dispatcher (CCT-426), else the first configured.
-		const def = settings.state.newSession.defaultDispatcherId;
-		form.dispatcher = def && dispatcherIds.includes(def) ? def : dispatcherIds[0];
+		form.dispatcher = dispatcherIds[0];
 	});
 
 	// recent working dirs on the selected machine, from the server (last 5).
@@ -437,20 +484,10 @@
 		drafts.set(LAST_SPAWN_NAME, form.name.trim());
 		// Remember the label set for the next New Session (empty clears it).
 		drafts.set(LAST_SPAWN_LABELS, labelIds.join(','));
-		// Remember these settings for this machine (CCT-274) so the next spawn
-		// here pre-selects them. Saved on submit (not just on confirmed success)
+		// Remember this config for (machine, cwd) (CCT-561) so the next spawn
+		// here pre-selects it. Saved on submit (not just on confirmed success)
 		// so a slow/unconfirmed spawn still records the operator's intent.
-		saveMachinePrefs(form.machine_id, {
-			adapter_id: form.adapter_id,
-			model_claude: form.model_claude,
-			model_codex: form.model_codex,
-			effort_claude: form.effort_claude,
-			effort_codex: form.effort_codex,
-			account: form.account,
-			account_provider: form.account_provider,
-			model_account: form.model_account,
-			working_dir: normalizeDir(form.working_dir.trim())
-		});
+		settings.rememberSpawn(machineMemoryKey(labelMachine, labelCwd), entryFromForm(form));
 		toasts.push('Spawning…', 'info');
 		const result = await ws.awaitCommand(res.command_id);
 		if (result.ok) {
@@ -537,6 +574,8 @@
 		const dispatchedId = pendingDispatchId;
 		const res = await actions.dispatch(body);
 		drafts.set(LAST_SPAWN_NAME, form.name.trim());
+		// Remember the dispatch flavor for (dispatcher, repo) (CCT-561).
+		settings.rememberSpawn(dispatchMemoryKey(form.dispatcher, form.repo), entryFromForm(form));
 		// Remember the label set + attach to the dispatched session (its id is the
 		// client-minted dispatch id, CCT-360).
 		drafts.set(LAST_SPAWN_LABELS, labelIds.join(','));

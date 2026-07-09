@@ -45,6 +45,8 @@ const COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const STAGE_FORWARD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(40);
 /// Timeout for a forwarded list-dirs round-trip (peer waits 3s).
 const LIST_DIRS_FORWARD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+/// Timeout for a forwarded session-diagnose round-trip (peer waits 10s).
+const DIAGNOSE_FORWARD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 /// Timeout for a forwarded dispatcher round-trip (peer waits 30s).
 const DISPATCHER_FORWARD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(35);
 /// Timeout for one relay POST to one peer. Publish is best-effort; a slow peer
@@ -76,6 +78,13 @@ pub enum RouteRequest {
         machine: Uuid,
         path: String,
     },
+    /// Session-diagnose round-trip (CCT-547): the receiving pod runs the full
+    /// command-down / event-up correlation locally and returns the report.
+    DaemonDiagnose {
+        machine: Uuid,
+        adapter_id: String,
+        local_id: String,
+    },
     DispatcherCommand {
         dispatcher: Uuid,
         frame: DispatcherFrameDown,
@@ -98,6 +107,7 @@ pub enum RouteResponse {
     Ok,
     StagedFiles { paths: Vec<String> },
     Dirs { dirs: Vec<String> },
+    Diagnose { report: Box<cctui_proto::diagnose::SessionDiagnose> },
     DispatcherReply { frame: DispatcherFrameUp },
     Err { code: WireErrorCode, message: String },
 }
@@ -316,10 +326,15 @@ impl Transport for PeerHttpTransport {
             DaemonRequest::ListDirs { path } => {
                 (RouteRequest::DaemonListDirs { machine, path }, LIST_DIRS_FORWARD_TIMEOUT)
             }
+            DaemonRequest::Diagnose { adapter_id, local_id } => (
+                RouteRequest::DaemonDiagnose { machine, adapter_id, local_id },
+                DIAGNOSE_FORWARD_TIMEOUT,
+            ),
         };
         match self.route(Kind::Daemon, machine, &request, timeout).await? {
             RouteResponse::StagedFiles { paths } => Ok(DaemonResponse::StagedFiles(paths)),
             RouteResponse::Dirs { dirs } => Ok(DaemonResponse::Dirs(dirs)),
+            RouteResponse::Diagnose { report } => Ok(DaemonResponse::Diagnose(report)),
             other => Err(BusError::Transport(format!("unexpected peer reply: {other:?}"))),
         }
     }

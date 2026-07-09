@@ -61,6 +61,11 @@ const LIST_DIRS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3)
 /// bound covers all three round-trips.
 const DISPATCHER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// How long [`Bus::request_daemon`] waits for the adapter's diagnose report
+/// (CCT-547). Aggregation over in-memory state plus one bounded socket probe —
+/// fast, but the reply rides the adapter's command loop, so leave headroom.
+const DIAGNOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Capacity of the per-session stream channels (mirrors the pre-bus
 /// `registry.rs` broadcast) and of the server event channel.
 const CHANNEL_CAPACITY: usize = 256;
@@ -110,6 +115,12 @@ pub enum DaemonRequest {
     StageFiles { adapter_id: String, local_id: String, uploads: Vec<BootstrapFile> },
     /// Working-directory autocomplete listing → `ListDirsResult`.
     ListDirs { path: String },
+    /// Session diagnose snapshot (CCT-547). Unlike the two above this rides
+    /// the generic `Command` frame into the adapter (the facts live in the
+    /// adapter's driver, not the supervisor) and the reply comes back as an
+    /// `AdapterEvent::Diagnose` on the event stream, correlated by the bus's
+    /// request id.
+    Diagnose { adapter_id: String, local_id: String },
 }
 
 /// Reply to a [`DaemonRequest`], variant-matched to the request.
@@ -117,6 +128,7 @@ pub enum DaemonRequest {
 pub enum DaemonResponse {
     StagedFiles(Vec<String>),
     Dirs(Vec<String>),
+    Diagnose(Box<cctui_proto::diagnose::SessionDiagnose>),
 }
 
 /// Everything the bus publishes cluster-wide: an envelope over the per-session
@@ -235,6 +247,9 @@ struct Inner {
     pending_stage: DashMap<Uuid, oneshot::Sender<StageFilesOutcome>>,
     /// In-flight autocomplete listings awaiting a daemon `ListDirsResult`.
     pending_listdirs: DashMap<Uuid, oneshot::Sender<ListDirsOutcome>>,
+    /// In-flight session-diagnose round-trips awaiting the adapter's
+    /// `AdapterEvent::Diagnose` reply (CCT-547).
+    pending_diagnose: DashMap<Uuid, oneshot::Sender<Box<cctui_proto::diagnose::SessionDiagnose>>>,
     /// In-flight Dispatch/Status/Cancel round-trips awaiting a
     /// [`DispatcherFrameUp`] reply (CCT-285).
     pending_dispatcher: DashMap<Uuid, oneshot::Sender<DispatcherFrameUp>>,
@@ -261,6 +276,7 @@ impl Bus {
                 dispatchers: DashMap::new(),
                 pending_stage: DashMap::new(),
                 pending_listdirs: DashMap::new(),
+                pending_diagnose: DashMap::new(),
                 pending_dispatcher: DashMap::new(),
                 server_tx: broadcast::channel(CHANNEL_CAPACITY).0,
                 session_streams: DashMap::new(),
@@ -464,6 +480,33 @@ impl Bus {
                     }
                 }
             }
+            DaemonRequest::Diagnose { adapter_id, local_id } => {
+                let (reply_tx, reply_rx) = oneshot::channel();
+                self.inner.pending_diagnose.insert(request_id, reply_tx);
+                // Rides the generic Command frame: only the adapter's driver
+                // can see the per-session facts. The reply arrives as an
+                // `AdapterEvent::Diagnose` (routes::daemon fires
+                // `resolve_diagnose` with the echoed request id).
+                let frame = DaemonFrameDown::Command {
+                    adapter_id,
+                    command: Box::new(AdapterCommand::Diagnose { local_id, request_id }),
+                };
+                if tx.send(frame).await.is_err() {
+                    self.inner.pending_diagnose.remove(&request_id);
+                    return Err(BusError::Closed);
+                }
+                match tokio::time::timeout(DIAGNOSE_TIMEOUT, reply_rx).await {
+                    Ok(Ok(report)) => Ok(DaemonResponse::Diagnose(report)),
+                    Ok(Err(_)) => {
+                        self.inner.pending_diagnose.remove(&request_id);
+                        Err(BusError::Closed)
+                    }
+                    Err(_) => {
+                        self.inner.pending_diagnose.remove(&request_id);
+                        Err(BusError::Timeout)
+                    }
+                }
+            }
         }
     }
 
@@ -546,6 +589,23 @@ impl Bus {
             .remove(&request_id)
             .map(|(_, reply_tx)| {
                 let _ = reply_tx.send(outcome);
+            })
+            .is_some()
+    }
+
+    /// Fire the oneshot a session-diagnose round-trip is awaiting (CCT-547).
+    /// Returns `false` for an unknown request id (the route already timed
+    /// out, or a spooled reply was replayed after a daemon reconnect).
+    pub fn resolve_diagnose(
+        &self,
+        request_id: Uuid,
+        report: Box<cctui_proto::diagnose::SessionDiagnose>,
+    ) -> bool {
+        self.inner
+            .pending_diagnose
+            .remove(&request_id)
+            .map(|(_, reply_tx)| {
+                let _ = reply_tx.send(report);
             })
             .is_some()
     }
@@ -696,7 +756,29 @@ pub async fn stage_files(
         .await?;
     match response {
         DaemonResponse::StagedFiles(paths) => Ok(paths),
-        DaemonResponse::Dirs(_) => Err(BusError::Closed), // unreachable: variant-matched
+        _ => Err(BusError::Closed), // unreachable: variant-matched
+    }
+}
+
+/// Ask the daemon owning `session_id` for its session-diagnose report
+/// (CCT-547). Same session resolution as [`dispatch`]; the correlated
+/// round-trip (request id, parked oneshot, timeout) lives inside
+/// [`Bus::request_daemon`].
+pub async fn diagnose(
+    state: &AppState,
+    session_id: &str,
+) -> Result<Box<cctui_proto::diagnose::SessionDiagnose>, BusError> {
+    let (adapter_id, machine_uuid) = resolve_session(state, session_id).await?;
+    let response = state
+        .bus
+        .request_daemon(
+            machine_uuid,
+            DaemonRequest::Diagnose { adapter_id, local_id: session_id.to_owned() },
+        )
+        .await?;
+    match response {
+        DaemonResponse::Diagnose(report) => Ok(report),
+        _ => Err(BusError::Closed), // unreachable: variant-matched
     }
 }
 
@@ -709,7 +791,7 @@ pub async fn list_dirs(
 ) -> Result<Vec<String>, BusError> {
     match state.bus.request_daemon(machine_uuid, DaemonRequest::ListDirs { path }).await? {
         DaemonResponse::Dirs(dirs) => Ok(dirs),
-        DaemonResponse::StagedFiles(_) => Err(BusError::Closed), // unreachable: variant-matched
+        _ => Err(BusError::Closed), // unreachable: variant-matched
     }
 }
 
@@ -864,6 +946,65 @@ mod tests {
         let bus = bus();
         assert!(!bus.resolve_stage_files(Uuid::new_v4(), Ok(Vec::new())));
         assert!(!bus.resolve_list_dirs(Uuid::new_v4(), Ok(Vec::new())));
+        assert!(!bus.resolve_diagnose(Uuid::new_v4(), Box::new(dummy_report("s1"))));
+    }
+
+    fn dummy_report(local_id: &str) -> cctui_proto::diagnose::SessionDiagnose {
+        use cctui_proto::diagnose::{DiagnoseFact, SessionDiagnose};
+        SessionDiagnose {
+            local_id: local_id.into(),
+            short: None,
+            generated_at_ms: 1,
+            adapter: "claude-code".into(),
+            effective_state: DiagnoseFact::missing("activity", "n/a"),
+            last_hook_event: DiagnoseFact::missing("hook", "n/a"),
+            attach: DiagnoseFact::missing("attach", "n/a"),
+            pty_output: DiagnoseFact::missing("pty", "n/a"),
+            claude_socket: DiagnoseFact::missing("discovery", "n/a"),
+            transcript: DiagnoseFact::missing("filesystem", "n/a"),
+            prompts: DiagnoseFact::missing("hook", "n/a"),
+            permission_mode: DiagnoseFact::missing("spawn", "n/a"),
+            dispatch: DiagnoseFact::missing("dispatch", "n/a"),
+            gateway: DiagnoseFact::missing("daemon-config", "n/a"),
+        }
+    }
+
+    /// The diagnose round-trip (CCT-547): the request goes down as a generic
+    /// `Command` frame carrying `AdapterCommand::Diagnose` with the bus-minted
+    /// request id, and `resolve_diagnose` (fired by the WS read loop on the
+    /// echoed `AdapterEvent::Diagnose`) completes it.
+    #[tokio::test]
+    async fn request_daemon_diagnose_round_trip() {
+        let bus = bus();
+        let machine = Uuid::new_v4();
+        let (tx, mut rx) = mpsc::channel(8);
+        bus.register_daemon(machine, tx);
+
+        let bus2 = bus.clone();
+        let fake_daemon = tokio::spawn(async move {
+            let Some(DaemonFrameDown::Command { adapter_id, command }) = rx.recv().await else {
+                panic!("expected Command");
+            };
+            assert_eq!(adapter_id, "claude-code");
+            let AdapterCommand::Diagnose { local_id, request_id } = *command else {
+                panic!("expected AdapterCommand::Diagnose");
+            };
+            assert_eq!(local_id, "sess-1");
+            assert!(bus2.resolve_diagnose(request_id, Box::new(dummy_report(&local_id))));
+        });
+
+        let response = bus
+            .request_daemon(
+                machine,
+                DaemonRequest::Diagnose {
+                    adapter_id: "claude-code".into(),
+                    local_id: "sess-1".into(),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(matches!(response, DaemonResponse::Diagnose(r) if r.local_id == "sess-1"));
+        fake_daemon.await.unwrap();
     }
 
     #[tokio::test]
