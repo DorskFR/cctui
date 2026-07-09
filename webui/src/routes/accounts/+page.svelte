@@ -104,7 +104,8 @@
 	// (null when the field is cleared), so these hold numbers, not strings.
 	let soft5h = $state<number | null>(null);
 	let soft7d = $state<number | null>(null);
-	let softBypass = $state<number | null>(null);
+	let softBypass5h = $state<number | null>(null);
+	let softBypass7d = $state<number | null>(null);
 	const isCompatible = $derived(provider.endsWith('-compatible'));
 
 	// Per-provider settings (CCT-541) + per-account env (CCT-538). `settings`
@@ -130,7 +131,8 @@
 		return {
 			soft_limit_5h_pct: softNum(soft5h),
 			soft_limit_7d_pct: softNum(soft7d),
-			soft_limit_bypass_minutes: softNum(softBypass)
+			soft_limit_bypass_5h_minutes: softNum(softBypass5h),
+			soft_limit_bypass_7d_minutes: softNum(softBypass7d)
 		};
 	}
 
@@ -187,7 +189,8 @@
 		aliasRows = [];
 		soft5h = null;
 		soft7d = null;
-		softBypass = null;
+		softBypass5h = null;
+		softBypass7d = null;
 		oauthNonce = null;
 		oauthCode = '';
 		oauthBusy = false;
@@ -313,7 +316,8 @@
 		// Soft limits are editable for every provider (CCT-411).
 		soft5h = p.soft_limit_5h_pct;
 		soft7d = p.soft_limit_7d_pct;
-		softBypass = p.soft_limit_bypass_minutes;
+		softBypass5h = p.soft_limit_bypass_5h_minutes;
+		softBypass7d = p.soft_limit_bypass_7d_minutes;
 		// Settings are editable per provider (CCT-541/CCT-560).
 		acctSettings = { ...(p.settings_json ?? {}) };
 	}
@@ -766,8 +770,9 @@
 							<Text as="div" tone="faint" size="xs">
 								Cap cctui's own share of each usage window (%). Over the cap, cctui's
 								spawned workers get a 429 instead of consuming more — leaving headroom
-								for your own Claude Code. Blank = no cap. Bypass ignores a cap when the
-								window resets within that many minutes.
+								for your own Claude Code. Blank = no cap. A bypass ignores its window's
+								cap when that window resets within that many minutes — the 7d window
+								usually needs a much longer bypass than the 5h one.
 							</Text>
 							<div class="soft-grid">
 								<label class="soft-field">
@@ -779,8 +784,12 @@
 									<Input type="number" bind:value={soft7d} placeholder="e.g. 80" />
 								</label>
 								<label class="soft-field">
-									<Text as="div" tone="faint" size="xs">Bypass (min)</Text>
-									<Input type="number" bind:value={softBypass} placeholder="e.g. 30" />
+									<Text as="div" tone="faint" size="xs">5h bypass (min)</Text>
+									<Input type="number" bind:value={softBypass5h} placeholder="e.g. 30" />
+								</label>
+								<label class="soft-field">
+									<Text as="div" tone="faint" size="xs">7d bypass (min)</Text>
+									<Input type="number" bind:value={softBypass7d} placeholder="e.g. 360" />
 								</label>
 							</div>
 						</div>
@@ -872,7 +881,7 @@
 	}
 	.soft-grid {
 		display: grid;
-		grid-template-columns: repeat(3, 1fr);
+		grid-template-columns: repeat(2, 1fr);
 		gap: var(--sp-2);
 	}
 	.soft-field {

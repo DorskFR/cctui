@@ -44,6 +44,7 @@ import type { MarkViewedRequest } from "@bindings/MarkViewedRequest";
 import type { Label } from "@bindings/Label";
 import type { LabelListResponse } from "@bindings/LabelListResponse";
 import type { SettingsCatalogResponse } from "@bindings/SettingsCatalogResponse";
+import type { SessionDiagnoseResponse } from "@bindings/SessionDiagnoseResponse";
 
 /** Machine kinds the server manages itself — the per-user `dispatch` machine
  * and one-shot `ephemeral` worker pods. They are never spawn targets and are
@@ -126,11 +127,12 @@ export interface AccountProvider {
   /** Rough USD cost estimate from tokens (per-provider blended rate, CCT-273). */
   est_cost_usd: number;
   /** Per-provider soft limits on cctui's own share of the usage windows (CCT-411).
-   *  null on a window ⇒ no cap. `bypass_minutes`: ignore a window's cap when it
-   *  resets within that many minutes. */
+   *  null on a window ⇒ no cap. The per-window bypass (CCT-484) ignores that
+   *  window's cap when it resets within that many minutes. */
   soft_limit_5h_pct: number | null;
   soft_limit_7d_pct: number | null;
-  soft_limit_bypass_minutes: number | null;
+  soft_limit_bypass_5h_minutes: number | null;
+  soft_limit_bypass_7d_minutes: number | null;
   /** Credential health (CCT-512): true once the gateway saw the upstream provider
    *  reject this credential; cleared on the next successful upstream call. UI
    *  shows a "reauthenticate" badge + button when set. */
@@ -210,10 +212,12 @@ export interface CreateAccount {
   auth_scheme?: string;
   /** Owner — required when authenticated with the admin token (CCT-251). */
   user_id?: string;
-  /** Per-account soft limits (CCT-411); omit/null for no cap. */
+  /** Per-account soft limits (CCT-411); omit/null for no cap. Bypass is
+   *  per-window (CCT-484). */
   soft_limit_5h_pct?: number | null;
   soft_limit_7d_pct?: number | null;
-  soft_limit_bypass_minutes?: number | null;
+  soft_limit_bypass_5h_minutes?: number | null;
+  soft_limit_bypass_7d_minutes?: number | null;
 }
 
 /** Provider create/attach payload (CCT-558): `POST /accounts/{id}/providers`.
@@ -236,7 +240,8 @@ export interface CreateProvider {
   auth_scheme?: string;
   soft_limit_5h_pct?: number | null;
   soft_limit_7d_pct?: number | null;
-  soft_limit_bypass_minutes?: number | null;
+  soft_limit_bypass_5h_minutes?: number | null;
+  soft_limit_bypass_7d_minutes?: number | null;
   settings_json?: Record<string, unknown>;
 }
 
@@ -264,12 +269,14 @@ export interface UpdateProvider {
   model_aliases?: Record<string, string>;
   /** New static credential; omit/blank to keep the stored one. */
   access_token?: string;
-  /** Replacement soft-limit config (CCT-411). Provided → replaces all three
-   *  columns (a null field clears it); absent → unchanged. */
+  /** Replacement soft-limit config (CCT-411). Provided → replaces every
+   *  column (a null field clears it); absent → unchanged. Bypass is
+   *  per-window (CCT-484). */
   soft_limits?: {
     soft_limit_5h_pct: number | null;
     soft_limit_7d_pct: number | null;
-    soft_limit_bypass_minutes: number | null;
+    soft_limit_bypass_5h_minutes: number | null;
+    soft_limit_bypass_7d_minutes: number | null;
   };
   /** Replacement validated settings blob (CCT-538/CCT-541). Provided → replaces
    *  the stored settings wholesale (an empty object clears it); absent →
@@ -378,6 +385,11 @@ export const endpoints = {
   session: (id: string) => api.get<SessionListItem>(`/sessions/${id}`),
   conversation: (id: string) =>
     api.get<AgentEvent[]>(`/sessions/${id}/conversation`),
+  /** One-call session diagnose (CCT-547): everything the daemon knows about
+   *  the session — each fact dated + sourced, plus the arbitration verdict —
+   *  merged with the server-side gateway/account binding facts. */
+  sessionDiagnose: (id: string) =>
+    api.get<SessionDiagnoseResponse>(`/sessions/${id}/diagnose`),
   recentDirs: (machineId: string) =>
     api.get<string[]>("/sessions/recent-dirs", {
       machine_id: machineId || undefined,
@@ -759,6 +771,23 @@ export const useConversation = (
       queryKey: qk.conversation(id()),
       queryFn: () => endpoints.conversation(id()),
       enabled: enabled() && !!id(),
+    })),
+  );
+
+/** Session diagnose panel (CCT-547). Fetched only while the panel is open;
+ *  no polling — the panel offers an explicit refresh instead, since the call
+ *  round-trips through the daemon. */
+export const useSessionDiagnose = (
+  id: () => string,
+  enabled: () => boolean = () => true,
+) =>
+  createQuery(
+    toStore(() => ({
+      queryKey: ["session-diagnose", id()],
+      queryFn: () => endpoints.sessionDiagnose(id()),
+      enabled: enabled() && !!id(),
+      staleTime: 0,
+      retry: false,
     })),
   );
 

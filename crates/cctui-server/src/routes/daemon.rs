@@ -566,6 +566,15 @@ async fn handle_event(
             )
             .await?;
         }
+        AdapterEvent::Diagnose { request_id, report, .. } => {
+            // Session-diagnose reply (CCT-547): fire the oneshot the
+            // `GET /sessions/{id}/diagnose` round-trip parked in the bus. A
+            // late reply (route timed out, or a spooled event replayed after
+            // reconnect) resolves nothing and is dropped.
+            if !state.bus.resolve_diagnose(request_id, report) {
+                tracing::debug!(%request_id, "Diagnose reply for unknown request (timed out?)");
+            }
+        }
         AdapterEvent::CommandResult { command_id, ok, error } => {
             // Not a session event — rebroadcast straight to clients so the
             // originating spawn request gets a definitive answer (CCT-131).

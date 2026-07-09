@@ -491,6 +491,14 @@ fn build_api_routes() -> Routes {
             sess_read(),
         )
         .add(
+            &[GET],
+            "/sessions/{id}/diagnose",
+            "Snapshot everything the daemon knows about a session, dated (CCT-547).",
+            get(routes::diagnose::diagnose_session),
+            Authn::Bearer,
+            sess_read(),
+        )
+        .add(
             &[Method::POST],
             "/sessions/{id}/message",
             "Send a message to a live session.",

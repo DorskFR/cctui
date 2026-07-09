@@ -79,6 +79,28 @@ impl ServerClient {
         Ok(())
     }
 
+    /// One-call session diagnose (CCT-547): everything the daemon knows about
+    /// the session, dated, plus the server-side binding facts.
+    pub async fn diagnose_session(
+        &self,
+        session_id: &str,
+    ) -> Result<cctui_proto::diagnose::SessionDiagnoseResponse> {
+        let url = format!("{}/api/v1/sessions/{}/diagnose", self.base_url, session_id);
+        let resp = self
+            .http
+            .get(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .context("GET diagnose")?
+            .error_for_status()
+            .context("diagnose response status")?
+            .json::<cctui_proto::diagnose::SessionDiagnoseResponse>()
+            .await
+            .context("deserialize diagnose")?;
+        Ok(resp)
+    }
+
     /// Toggle cctui-side auto-approve for a session (CCT-151).
     pub async fn set_auto_approve(&self, session_id: &str, enabled: bool) -> Result<()> {
         let url = format!("{}/api/v1/sessions/{}/auto-approve", self.base_url, session_id);

@@ -16,7 +16,9 @@ mod attach;
 mod backfill;
 mod control;
 pub(crate) use control::stage_mid_chat_files;
+mod diagnose;
 mod discovery;
+mod dispatch_done;
 mod envcheck;
 mod headless;
 mod kickstart;
@@ -68,6 +70,18 @@ pub(crate) type PendingAsks = Arc<Mutex<HashMap<String, Option<serde_json::Value
 /// injecting keystrokes whenever one is registered for the target session.
 pub(crate) type PendingPermHooks = Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<bool>>>>;
 
+/// Last hook delivery per stable `local_id`: `(kind, when)`. Maintained by
+/// the ask-hook listener and read by the session-diagnose aggregation
+/// (CCT-547) so "last hook event: type + age" is answerable.
+pub(crate) type HookLog = Arc<Mutex<HashMap<String, (String, std::time::SystemTime)>>>;
+
+/// Record a hook delivery for diagnose (CCT-547). Best-effort.
+fn record_hook(log: &HookLog, local_id: &str, kind: &str) {
+    if let Ok(mut m) = log.lock() {
+        m.insert(local_id.to_owned(), (kind.to_owned(), std::time::SystemTime::now()));
+    }
+}
+
 pub struct ClaudeCodeAdapter;
 
 #[async_trait::async_trait]
@@ -111,6 +125,7 @@ async fn start_bg(ctx: AdapterCtx) -> anyhow::Result<()> {
     let session_map = driver.session_map();
     let pending_asks = driver.pending_asks();
     let pending_perm_hooks = driver.pending_perm_hooks();
+    let hook_log = driver.hook_log();
     tokio::spawn(async move {
         if let Err(err) = run_hook_listener(
             hook_sock,
@@ -119,6 +134,7 @@ async fn start_bg(ctx: AdapterCtx) -> anyhow::Result<()> {
             session_map,
             pending_asks,
             pending_perm_hooks,
+            hook_log,
         )
         .await
         {
@@ -198,6 +214,7 @@ async fn run_hook_listener(
     session_map: SessionMap,
     pending_asks: PendingAsks,
     pending_perm_hooks: PendingPermHooks,
+    hook_log: HookLog,
 ) -> anyhow::Result<()> {
     let _ = std::fs::remove_file(&path);
     if let Some(parent) = path.parent() {
@@ -223,6 +240,7 @@ async fn run_hook_listener(
                 let session_map = session_map.clone();
                 let pending_asks = pending_asks.clone();
                 let pending_perm_hooks = pending_perm_hooks.clone();
+                let hook_log = hook_log.clone();
                 tokio::spawn(async move {
                     if let Err(err) = handle_hook_connection(
                         stream,
@@ -230,6 +248,7 @@ async fn run_hook_listener(
                         session_map,
                         pending_asks,
                         pending_perm_hooks,
+                        hook_log,
                     )
                     .await
                     {
@@ -257,6 +276,7 @@ async fn handle_hook_connection(
     session_map: SessionMap,
     pending_asks: PendingAsks,
     pending_perm_hooks: PendingPermHooks,
+    hook_log: HookLog,
 ) -> anyhow::Result<()> {
     use tokio::io::AsyncWriteExt as _;
 
@@ -275,6 +295,7 @@ async fn handle_hook_connection(
         // long-polls the same connection, so the decision we write back is what
         // it returns to Claude Code — no attach + keystroke in the common case.
         if let Some(req) = parse_perm_request(line, &session_map) {
+            record_hook(&hook_log, &req.local_id, "perm-request");
             let decision = wait_for_perm_decision(req, &events, &pending_perm_hooks).await;
             let _ = write_half.write_all(decision.as_bytes()).await;
             let _ = write_half.write_all(b"\n").await;
@@ -285,6 +306,17 @@ async fn handle_hook_connection(
         let Some(evt) = hook_line_to_event(line, &session_map) else {
             continue;
         };
+        // Remember the delivery for diagnose ("last hook event: type, age",
+        // CCT-547).
+        match &evt {
+            AdapterEvent::AskQuestion { local_id, .. } => record_hook(&hook_log, local_id, "ask"),
+            AdapterEvent::AskResolved { local_id } => record_hook(&hook_log, local_id, "resolved"),
+            AdapterEvent::PlanRequest { local_id, .. } => record_hook(&hook_log, local_id, "plan"),
+            AdapterEvent::PlanResolved { local_id } => {
+                record_hook(&hook_log, local_id, "plan_resolved");
+            }
+            _ => {}
+        }
         // Track which sessions have the ask form up (CCT-219), keeping the
         // questions payload so the driver's reply path can answer the form
         // natively via keystrokes (CCT-226) or dismiss it before injecting text.

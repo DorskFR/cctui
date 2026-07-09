@@ -98,15 +98,26 @@ pub async fn bus_route(
             .map(|response| match response {
                 DaemonResponse::StagedFiles(paths) => RouteResponse::StagedFiles { paths },
                 DaemonResponse::Dirs(dirs) => RouteResponse::Dirs { dirs },
+                DaemonResponse::Diagnose(report) => RouteResponse::Diagnose { report },
             }),
         RouteRequest::DaemonListDirs { machine, path } => {
             state.bus.request_daemon_local(machine, DaemonRequest::ListDirs { path }).await.map(
                 |response| match response {
                     DaemonResponse::Dirs(dirs) => RouteResponse::Dirs { dirs },
                     DaemonResponse::StagedFiles(paths) => RouteResponse::StagedFiles { paths },
+                    DaemonResponse::Diagnose(report) => RouteResponse::Diagnose { report },
                 },
             )
         }
+        RouteRequest::DaemonDiagnose { machine, adapter_id, local_id } => state
+            .bus
+            .request_daemon_local(machine, DaemonRequest::Diagnose { adapter_id, local_id })
+            .await
+            .map(|response| match response {
+                DaemonResponse::Diagnose(report) => RouteResponse::Diagnose { report },
+                DaemonResponse::StagedFiles(paths) => RouteResponse::StagedFiles { paths },
+                DaemonResponse::Dirs(dirs) => RouteResponse::Dirs { dirs },
+            }),
         RouteRequest::DispatcherCommand { dispatcher, frame } => {
             state.bus.command_dispatcher_local(dispatcher, frame).await.map(|()| RouteResponse::Ok)
         }

@@ -14,12 +14,15 @@
 		view = $bindable(),
 		autoApprove,
 		mobilePanel = $bindable(),
-		ontoggleAuto
+		ontoggleAuto,
+		ondiagnose
 	}: {
 		view: ViewOpts;
 		autoApprove: boolean;
 		mobilePanel: 'filters' | 'format' | 'auto' | null;
 		ontoggleAuto: () => void;
+		/** Opens the session diagnose panel (CCT-547); omit to hide the button. */
+		ondiagnose?: () => void;
 	} = $props();
 
 	// Cycle a tag: off → include → exclude → off.
@@ -100,6 +103,13 @@
 			title="Auto-approve permission requests for this session"
 			onclick={ontoggleAuto}
 		>⚡ Auto-approve</Toggle>
+		{#if ondiagnose}
+			<Toggle
+				pressed={false}
+				title="Everything the daemon knows about this session, dated (CCT-547)"
+				onclick={ondiagnose}
+			>🩺 Diagnose</Toggle>
+		{/if}
 	</div>
 </div>
 

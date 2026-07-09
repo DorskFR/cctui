@@ -40,6 +40,14 @@ const PENDING_FAILURE_SECS: i64 = 300;
 /// just-finished run, short enough to keep the namespace free of corpses
 /// (CCT-518; was 86400 = 24h).
 const JOB_TTL_SECONDS: i64 = 3600;
+
+/// Default worker lifetime when the dispatch carries no `timeout_minutes`
+/// (CCT-513): 1h, instead of inheriting the source CronJob template's 24h
+/// `activeDeadlineSeconds` backstop — a dispatched session that finishes but
+/// never signals done should cost at most an hour, not a day. Overridable via
+/// `CCTUI_WORKER_DEFAULT_TIMEOUT_MINUTES`; a per-dispatch `timeout_minutes`
+/// always wins.
+const DEFAULT_TIMEOUT_MINUTES: u32 = 60;
 use serde_json::{Value, json};
 use sha1::{Digest, Sha1};
 
@@ -84,6 +92,9 @@ pub struct Spawner {
     client: Client,
     /// Ceiling on concurrently in-flight worker Jobs (CCT-522). `0` ⇒ unlimited.
     max_inflight: usize,
+    /// `activeDeadlineSeconds` applied when a dispatch has no
+    /// `timeout_minutes` (CCT-513).
+    default_deadline_secs: i64,
 }
 
 impl Spawner {
@@ -105,7 +116,28 @@ impl Spawner {
             .ok()
             .and_then(|v| v.trim().parse::<usize>().ok())
             .unwrap_or(0);
-        Ok(Self { namespace, source_cronjob, cctui_url, client, max_inflight })
+        let default_deadline_secs = Self::default_deadline_secs(
+            std::env::var("CCTUI_WORKER_DEFAULT_TIMEOUT_MINUTES").ok().as_deref(),
+        );
+        Ok(Self {
+            namespace,
+            source_cronjob,
+            cctui_url,
+            client,
+            max_inflight,
+            default_deadline_secs,
+        })
+    }
+
+    /// Resolve the no-`timeout_minutes` deadline from
+    /// `CCTUI_WORKER_DEFAULT_TIMEOUT_MINUTES` (minutes; unset/unparsable/0 ⇒
+    /// [`DEFAULT_TIMEOUT_MINUTES`]), in seconds.
+    fn default_deadline_secs(var: Option<&str>) -> i64 {
+        let minutes = var
+            .and_then(|v| v.trim().parse::<u32>().ok())
+            .filter(|m| *m > 0)
+            .unwrap_or(DEFAULT_TIMEOUT_MINUTES);
+        i64::from(minutes) * 60
     }
 
     fn jobs(&self) -> Api<Job> {
@@ -145,6 +177,7 @@ impl Spawner {
         cronjob: &CronJob,
         spec: &WireDispatchSpec,
         name: &str,
+        default_deadline_secs: i64,
     ) -> anyhow::Result<Job> {
         let jt = cronjob
             .spec
@@ -237,8 +270,11 @@ impl Spawner {
         let annotations = meta.entry("annotations").or_insert_with(|| json!({}));
         annotations[ANNOTATION_SESSION_ID] = json!(spec.session_id);
 
-        let deadline =
-            spec.timeout_minutes.map(|m| i64::from(m) * 60).or(jt.active_deadline_seconds);
+        // Deliberately NOT falling back to the template's
+        // `activeDeadlineSeconds` (the infra CronJob's 24h outer backstop):
+        // a dispatch without an explicit timeout gets the dispatcher's 1h
+        // default instead (CCT-513).
+        let deadline = spec.timeout_minutes.map_or(default_deadline_secs, |m| i64::from(m) * 60);
 
         let job_json = json!({
             "apiVersion": "batch/v1",
@@ -377,7 +413,8 @@ impl Spawner {
 
         let name = Self::job_name(Self::dedup_source(spec));
         self.enforce_inflight_cap(&name).await?;
-        let job = Self::build_job(&self.cctui_url, &cronjob, spec, &name)?;
+        let job =
+            Self::build_job(&self.cctui_url, &cronjob, spec, &name, self.default_deadline_secs)?;
 
         match self.create(&job, "dispatched", &name).await {
             Ok(h) => return Ok(h),
@@ -667,6 +704,7 @@ mod tests {
             &sample_cronjob(),
             &s,
             &name,
+            3600,
         )
         .unwrap();
         let v = serde_json::to_value(&job).unwrap();
@@ -707,6 +745,40 @@ mod tests {
     }
 
     #[test]
+    fn no_timeout_uses_default_deadline_not_template_24h() {
+        // CCT-513: a dispatch without `timeout_minutes` must NOT inherit the
+        // CronJob template's 86400s backstop — it gets the dispatcher default.
+        let mut s = spec("sess-none", json!({}));
+        s.timeout_minutes = None;
+        let name = Spawner::job_name("sess-none");
+        let job =
+            Spawner::build_job("http://cctui:8700", &sample_cronjob(), &s, &name, 3600).unwrap();
+        let v = serde_json::to_value(&job).unwrap();
+        assert_eq!(v.pointer("/spec/activeDeadlineSeconds"), Some(&json!(3600)));
+    }
+
+    #[test]
+    fn per_dispatch_timeout_overrides_default_deadline() {
+        // timeout_minutes=30 wins even when the configured default is larger.
+        let s = spec("sess-30", json!({}));
+        let name = Spawner::job_name("sess-30");
+        let job =
+            Spawner::build_job("http://cctui:8700", &sample_cronjob(), &s, &name, 7200).unwrap();
+        let v = serde_json::to_value(&job).unwrap();
+        assert_eq!(v.pointer("/spec/activeDeadlineSeconds"), Some(&json!(1800)));
+    }
+
+    #[test]
+    fn default_deadline_env_parsing() {
+        // Unset ⇒ 60 min; explicit minutes override; garbage/zero fall back.
+        assert_eq!(Spawner::default_deadline_secs(None), 3600);
+        assert_eq!(Spawner::default_deadline_secs(Some("30")), 1800);
+        assert_eq!(Spawner::default_deadline_secs(Some(" 120 ")), 7200);
+        assert_eq!(Spawner::default_deadline_secs(Some("nope")), 3600);
+        assert_eq!(Spawner::default_deadline_secs(Some("0")), 3600);
+    }
+
+    #[test]
     fn build_job_promotes_payload_env_to_pod_env() {
         let payload = json!({
             "flow": "pr-review",
@@ -719,7 +791,8 @@ mod tests {
         });
         let s = spec("sess-9", payload);
         let name = Spawner::job_name("sess-9");
-        let job = Spawner::build_job("http://cctui:8700", &sample_cronjob(), &s, &name).unwrap();
+        let job =
+            Spawner::build_job("http://cctui:8700", &sample_cronjob(), &s, &name, 3600).unwrap();
         let v = serde_json::to_value(&job).unwrap();
         let env = v.pointer("/spec/template/spec/containers/0/env").unwrap().as_array().unwrap();
         let entry = |k: &str| env.iter().find(|e| e["name"] == k).cloned();

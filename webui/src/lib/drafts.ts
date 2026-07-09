@@ -69,40 +69,6 @@ export function normalizeDir(path: string): string {
 export const SPAWN_DRAFT = 'cctui_spawn_draft';
 export const LAST_MACHINE = 'cctui_last_machine';
 
-/** Spawn settings remembered PER MACHINE (CCT-274): the adapter, per-adapter
- * model + effort, account and working directory last used on a given machine,
- * so the next spawn on e.g. dev1 re-selects what you usually run there.
- * Keyed by machine id. */
-export interface MachineSpawnPrefs {
-	adapter_id: string;
-	model_claude: string;
-	model_codex: string;
-	effort_claude: string;
-	effort_codex: string;
-	account: string;
-	// CCT-399: the chosen account's provider (disambiguator) + the compatible
-	// account's free-form model, remembered alongside the account.
-	account_provider: string;
-	model_account: string;
-	working_dir: string;
-}
-const machinePrefsKey = (machineId: string) => `cctui_spawn_prefs_${machineId}`;
-
-export function loadMachinePrefs(machineId: string): Partial<MachineSpawnPrefs> | null {
-	if (!browser || !machineId) return null;
-	try {
-		const raw = localStorage.getItem(machinePrefsKey(machineId));
-		return raw ? (JSON.parse(raw) as Partial<MachineSpawnPrefs>) : null;
-	} catch {
-		return null;
-	}
-}
-
-export function saveMachinePrefs(machineId: string, prefs: MachineSpawnPrefs) {
-	if (!browser || !machineId) return;
-	localStorage.setItem(machinePrefsKey(machineId), JSON.stringify(prefs));
-}
-
 /** The session name last submitted from the spawn dialog (either target).
  * A fresh dialog open proposes it with a bumped numeric suffix. */
 export const LAST_SPAWN_NAME = 'cctui_last_spawn_name';
