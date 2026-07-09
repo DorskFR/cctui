@@ -1406,6 +1406,15 @@ async fn passthrough(
     let trace_session_id =
         if langfuse.is_some() { session_id_for_token(&state, &session_token).await } else { None };
 
+    // Traced calls must come back identity-encoded: the response tee buffers the
+    // raw bytes for SSE reconstruction, and a gzip/zstd body defeats it — every
+    // trace then lands in Langfuse without usage and gets mis-costed by the
+    // tokenizer fallback (CCT-578). reqwest is built without decompression
+    // features, so dropping the client's `accept-encoding` yields a plain body.
+    if langfuse.is_some() {
+        headers.remove(reqwest::header::ACCEPT_ENCODING);
+    }
+
     // Stream the request body through without buffering (default), OR buffer it
     // once for the trace input when Langfuse is sampling this call.
     let (upstream_body, traced_request) = if langfuse.is_some() {
