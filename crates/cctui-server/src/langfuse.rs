@@ -76,7 +76,8 @@ pub struct TracePayload {
     pub request: Option<Value>,
     /// The reconstructed completion text (assistant output).
     pub output: Option<String>,
-    /// Token usage `{ input, output, cache_read, cache_creation }`.
+    /// Token usage keyed by Langfuse price usage types: `input`, `output`,
+    /// `cache_read_input_tokens`, `cache_creation_input_tokens`.
     pub usage: Option<Value>,
 }
 
@@ -179,7 +180,7 @@ async fn post_ingestion(
         "model": ctx.model,
         "input": payload.request,
         "output": payload.output,
-        "usage": payload.usage,
+        "usageDetails": payload.usage,
         "metadata": Value::Object(metadata),
     });
     let gen_event = json!({
@@ -290,26 +291,43 @@ fn reconstruct_sse(text: &str) -> (Option<String>, Option<Value>) {
     if !saw_event {
         return (None, None);
     }
-    let usage = (input_tokens.is_some() || output_tokens.is_some()).then(|| {
-        json!({
-            "input": input_tokens,
-            "output": output_tokens,
-            "cache_read": cache_read,
-            "cache_creation": cache_creation,
-        })
-    });
+    let usage = (input_tokens.is_some() || output_tokens.is_some())
+        .then(|| usage_details(input_tokens, output_tokens, cache_read, cache_creation));
     ((!out.is_empty()).then_some(out), usage)
+}
+
+/// Build a Langfuse `usageDetails` map. Keys must match the model's price usage
+/// types so cost is computed per token class (cache reads at ~10% of input);
+/// `None` entries are omitted — a JSON null fails ingestion validation.
+fn usage_details(
+    input: Option<u64>,
+    output: Option<u64>,
+    cache_read: Option<u64>,
+    cache_creation: Option<u64>,
+) -> Value {
+    let mut m = serde_json::Map::new();
+    for (k, v) in [
+        ("input", input),
+        ("output", output),
+        ("cache_read_input_tokens", cache_read),
+        ("cache_creation_input_tokens", cache_creation),
+    ] {
+        if let Some(v) = v {
+            m.insert(k.into(), json!(v));
+        }
+    }
+    Value::Object(m)
 }
 
 /// Normalize a non-streaming Anthropic `usage` object into the same shape as the
 /// SSE reconstruction emits.
 fn normalize_usage(u: &Value) -> Value {
-    json!({
-        "input": u.get("input_tokens").and_then(Value::as_u64),
-        "output": u.get("output_tokens").and_then(Value::as_u64),
-        "cache_read": u.get("cache_read_input_tokens").and_then(Value::as_u64),
-        "cache_creation": u.get("cache_creation_input_tokens").and_then(Value::as_u64),
-    })
+    usage_details(
+        u.get("input_tokens").and_then(Value::as_u64),
+        u.get("output_tokens").and_then(Value::as_u64),
+        u.get("cache_read_input_tokens").and_then(Value::as_u64),
+        u.get("cache_creation_input_tokens").and_then(Value::as_u64),
+    )
 }
 
 #[cfg(test)]
@@ -342,7 +360,8 @@ mod tests {
         let u = usage.unwrap();
         assert_eq!(u["input"], json!(10));
         assert_eq!(u["output"], json!(5));
-        assert_eq!(u["cache_read"], json!(3));
+        assert_eq!(u["cache_read_input_tokens"], json!(3));
+        assert!(u.get("cache_creation_input_tokens").is_none());
     }
 
     #[test]
@@ -362,7 +381,13 @@ mod tests {
         let u = usage.unwrap();
         assert_eq!(u["input"], json!(20));
         assert_eq!(u["output"], json!(7));
-        assert_eq!(u["cache_read"], json!(4));
+        assert_eq!(u["cache_read_input_tokens"], json!(4));
+    }
+
+    #[test]
+    fn usage_details_omits_absent_token_classes() {
+        let u = usage_details(Some(2), None, Some(100), None);
+        assert_eq!(u, json!({"input": 2, "cache_read_input_tokens": 100}));
     }
 
     #[test]
