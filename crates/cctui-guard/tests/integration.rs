@@ -55,12 +55,13 @@ async fn spawn() -> (String, tempfile::TempDir) {
     let state_file = dir.path().join("state");
 
     let engine = Arc::new(WorkflowEngine::new(
-        parse_steps(PROMPT),
+        parse_steps(PROMPT).unwrap(),
         parse_guard_rules_str(RULES),
         state_file,
         policy_file,
         vec!["callback.example.com:443".to_string()],
         dir.path().to_path_buf(),
+        None,
     ));
 
     let app = router(engine);
@@ -213,12 +214,13 @@ async fn gated_transition_requires_proof_and_reinjects() {
     );
 
     let engine = Arc::new(WorkflowEngine::new(
-        parse_steps(&prompt),
+        parse_steps(&prompt).unwrap(),
         parse_guard_rules_str(RULES),
         state_file,
         dir.path().join("nopolicy").join("policy.json"),
         vec![],
         dir.path().to_path_buf(),
+        None,
     ));
 
     // Gate not yet satisfied → transition refused, still on Step 1.
@@ -244,12 +246,13 @@ async fn gated_transition_requires_proof_and_reinjects() {
 
     // Exit ignores the gate — bail-out must always work (back on a gated step).
     let engine2 = Arc::new(WorkflowEngine::new(
-        parse_steps(&prompt),
+        parse_steps(&prompt).unwrap(),
         parse_guard_rules_str(RULES),
         dir.path().join("state2"),
         dir.path().join("nopolicy2").join("policy.json"),
         vec![],
         dir.path().join("empty"), // gate would fail here, but Exit skips it
+        None,
     ));
     let exit = engine2.transition(&json!("exit"));
     assert_eq!(exit["ok"], true, "Exit always allowed regardless of gate");
@@ -279,12 +282,13 @@ async fn compact_directive_is_opt_in_per_step() {
 
     let make = |state_name: &str| {
         Arc::new(WorkflowEngine::new(
-            parse_steps(prompt),
+            parse_steps(prompt).unwrap(),
             parse_guard_rules_str(RULES),
             dir.path().join(state_name),
             dir.path().join("nopolicy").join("policy.json"),
             vec![],
             dir.path().to_path_buf(),
+            None,
         ))
     };
 
@@ -305,4 +309,151 @@ async fn compact_directive_is_opt_in_per_step() {
         !r3.contains("Compact your working context"),
         "step without [compact] does NOT force compaction: {r3}"
     );
+}
+
+/// CCT-516: an `[llmjudge]` block is a semantic acceptance gate. It runs after
+/// the deterministic `[gate]`, in a clean context (the judge command gets only
+/// the question prompt on stdin), and requires a perfect score: any 0, any
+/// malformed verdict, or a missing judge command refuses the transition.
+#[tokio::test]
+async fn llmjudge_full_score_required_to_transition() {
+    let dir = tempfile::tempdir().unwrap();
+    let prompt = "# Step 1: Accept\n\
+         Assemble the evidence.\n\
+         [allowed]: *\n\
+         [llmjudge]\n\
+         - Does every acceptance condition have evidence? :: two of three covered\n\
+         - Does the diff implement the change itself?\n\
+         [transition]: 2, Exit\n\
+         \n\
+         # Step 2: Finalize\n\
+         Open the PR.\n\
+         [allowed]: *\n\
+         [transition]: Exit\n";
+
+    let make = |name: &str, judge_cmd: Option<&str>| {
+        Arc::new(WorkflowEngine::new(
+            parse_steps(prompt).unwrap(),
+            parse_guard_rules_str(RULES),
+            dir.path().join(name),
+            dir.path().join("nopolicy").join("policy.json"),
+            vec![],
+            dir.path().to_path_buf(),
+            judge_cmd.map(str::to_string),
+        ))
+    };
+
+    // Partial score → refused, failing question + reason returned, state stays.
+    let partial = r#"echo '[{"question":1,"answer":1,"reason":"evidence covers all"},{"question":2,"answer":0,"reason":"diff only adds a test"}]'"#;
+    let engine = make("state-partial", Some(partial));
+    let refused = engine.transition(&json!(2));
+    assert_eq!(refused["ok"], false, "1/2 score refuses the transition: {refused}");
+    assert_eq!(refused["step"], 1, "stays on the current step");
+    let err = refused["error"].as_str().unwrap();
+    assert!(err.contains("1/2"), "score surfaced: {err}");
+    assert!(err.contains("Q2 FAILED"), "failing question named: {err}");
+    assert!(err.contains("diff only adds a test"), "judge reason surfaced: {err}");
+    assert_eq!(refused["evidence"][0]["kind"], "judge", "verdicts carried as judge evidence");
+    assert_eq!(refused["evidence"][0]["verdicts"][1]["answer"], 0);
+    // Still refused on retry (idempotent), then Exit still bails out.
+    assert_eq!(engine.transition(&json!(2))["ok"], false);
+    assert_eq!(engine.transition(&json!("exit"))["ok"], true, "Exit bypasses the judge");
+
+    // Full score → transition proceeds, per-question verdicts emitted as a
+    // `kind: "judge"` evidence entry for the result callback.
+    let perfect = r#"echo '[{"question":1,"answer":1,"reason":"all conditions covered"},{"question":2,"answer":1,"reason":"implements the change"}]'"#;
+    let engine = make("state-perfect", Some(perfect));
+    let ok = engine.transition(&json!(2));
+    assert_eq!(ok["ok"], true, "2/2 score allows the transition: {ok}");
+    assert_eq!(ok["step"], 2);
+    let entry = &ok["evidence"][0];
+    assert_eq!(entry["kind"], "judge");
+    assert!(entry["summary"].as_str().unwrap().contains("2/2"), "summary: {entry}");
+    assert_eq!(entry["verdicts"].as_array().unwrap().len(), 2);
+    assert_eq!(entry["verdicts"][0]["answer"], 1);
+    assert!(
+        entry["detail"].as_str().unwrap().contains("implements the change"),
+        "per-question reasons in detail: {entry}"
+    );
+
+    // No judge command configured → fail closed.
+    let engine = make("state-nocmd", None);
+    let refused = engine.transition(&json!(2));
+    assert_eq!(refused["ok"], false, "no --judge-cmd ⇒ refused: {refused}");
+    assert!(refused["error"].as_str().unwrap().contains("fail closed"));
+
+    // Garbage output → fail closed.
+    let engine = make("state-garbage", Some("echo 'looks good to me!'"));
+    let refused = engine.transition(&json!(2));
+    assert_eq!(refused["ok"], false, "non-JSON verdict ⇒ refused: {refused}");
+
+    // Wrong verdict count → fail closed.
+    let one = r#"echo '[{"question":1,"answer":1,"reason":"ok"}]'"#;
+    let refused = make("state-count", Some(one)).transition(&json!(2));
+    assert_eq!(refused["ok"], false, "1 verdict for 2 questions ⇒ refused: {refused}");
+    assert!(refused["error"].as_str().unwrap().contains("expected 2 verdicts"));
+
+    // Judge command failing → fail closed.
+    let refused = make("state-exit1", Some("exit 1")).transition(&json!(2));
+    assert_eq!(refused["ok"], false, "judge command exit 1 ⇒ refused: {refused}");
+}
+
+/// CCT-516: the judge runs **after** the deterministic gate (which stays
+/// independently enforced), and its stdin prompt is the clean-context question
+/// block — questions + violation examples, no implementer reasoning.
+#[tokio::test]
+async fn llmjudge_runs_after_gate_with_clean_context() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("gate-ok");
+    let captured = dir.path().join("judge-stdin.txt");
+    let prompt = format!(
+        "# Step 1: Accept\n\
+         Prove it.\n\
+         [allowed]: *\n\
+         [gate]: test -f {}\n\
+         [llmjudge]\n\
+         - Is the acceptance condition observably met? :: asserted without output\n\
+         [transition]: 2, Exit\n\
+         \n\
+         # Step 2: Finalize\n\
+         [allowed]: *\n\
+         [transition]: Exit\n",
+        marker.display()
+    );
+    let judge_cmd = format!(
+        r#"cat > {} && echo '[{{"question":1,"answer":1,"reason":"verified"}}]'"#,
+        captured.display()
+    );
+
+    let engine = Arc::new(WorkflowEngine::new(
+        parse_steps(&prompt).unwrap(),
+        parse_guard_rules_str(RULES),
+        dir.path().join("state"),
+        dir.path().join("nopolicy").join("policy.json"),
+        vec![],
+        dir.path().to_path_buf(),
+        Some(judge_cmd),
+    ));
+
+    // Gate fails ⇒ refused with the gate error; the judge never ran.
+    let refused = engine.transition(&json!(2));
+    assert_eq!(refused["ok"], false);
+    assert!(
+        refused["error"].as_str().unwrap().contains("transition gate failed"),
+        "gate failure reported, not a judge failure: {refused}"
+    );
+    assert!(!captured.exists(), "judge does not run until the gate passes");
+
+    // Gate passes ⇒ judge runs and the prompt it saw is the clean question block.
+    std::fs::write(&marker, "ok").unwrap();
+    let ok = engine.transition(&json!(2));
+    assert_eq!(ok["ok"], true, "gate + judge pass ⇒ transition: {ok}");
+    let stdin = std::fs::read_to_string(&captured).unwrap();
+    assert!(stdin.contains("1. Is the acceptance condition observably met?"), "{stdin}");
+    assert!(stdin.contains("example violation: asserted without output"), "{stdin}");
+    assert!(
+        stdin.contains("answer each question independently") || stdin.contains("independently"),
+        "{stdin}"
+    );
+    assert!(stdin.contains("JSON array"), "{stdin}");
 }

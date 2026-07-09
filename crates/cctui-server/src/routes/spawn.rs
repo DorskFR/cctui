@@ -162,46 +162,49 @@ async fn dispatch_spawn(
         None => default_account_name(state, uid, &adapter_id).await?,
     };
     if let Some(account_name) = account_choice.as_deref() {
-        let provider = req.provider.as_deref().filter(|p| !p.trim().is_empty());
+        // Resolution is by (account identity, harness family) (CCT-559): the
+        // adapter names the family, and the identity carries at most one
+        // provider row per family (CCT-558). The request's legacy `provider`
+        // hint is no longer consulted.
+        let family = crate::routes::gateway::Family::from_adapter(&adapter_id);
         // Resolve the model through this account's alias map
         // (CCT-406) before it reaches the worker — a no-op when the account has no
         // matching alias.
         if let Some(m) = model.as_deref() {
             model = Some(
-                crate::routes::gateway::resolve_account_model(
-                    state,
-                    uid,
-                    account_name,
-                    provider,
-                    &adapter_id,
-                    m,
-                )
-                .await,
+                crate::routes::gateway::resolve_account_model(state, uid, account_name, family, m)
+                    .await,
             );
         }
-        // The account drives the base URL + family (CCT-399); the explicit
-        // `provider` disambiguates a name shared across providers, falling back
-        // to the adapter-derived family when absent.
         match crate::routes::gateway::mint_session_env(
             state,
             uid,
             account_name,
-            provider,
-            &adapter_id,
+            family,
             &token_session_id,
         )
         .await
         {
-            Ok(Some(gateway_env)) => env.extend(gateway_env),
-            Ok(None) => {
+            Ok(gateway_env) => env.extend(gateway_env),
+            Err(crate::routes::gateway::MintSessionEnvError::NoAccount) => {
+                return Err((
+                    StatusCode::NOT_FOUND,
+                    Json(ApiError { error: format!("no account named {account_name:?}") }),
+                ));
+            }
+            Err(crate::routes::gateway::MintSessionEnvError::NoProviderForFamily(f)) => {
                 return Err((
                     StatusCode::NOT_FOUND,
                     Json(ApiError {
-                        error: format!("no account named {account_name:?} for this adapter"),
+                        error: format!(
+                            "account {account_name:?} has no {} provider (required by adapter \
+                             {adapter_id:?}) — connect one on the accounts page",
+                            f.label()
+                        ),
                     }),
                 ));
             }
-            Err(e) => {
+            Err(crate::routes::gateway::MintSessionEnvError::Db(e)) => {
                 tracing::error!("mint_session_env failed: {e}");
                 return Err((
                     StatusCode::INTERNAL_SERVER_ERROR,

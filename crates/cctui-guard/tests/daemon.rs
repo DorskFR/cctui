@@ -63,7 +63,7 @@ const SAMPLE_MD: &str = r"
 
 #[test]
 fn test_parse_steps() {
-    let steps = parse_steps(SAMPLE_MD);
+    let steps = parse_steps(SAMPLE_MD).unwrap();
     let keys: Vec<u32> = steps.keys().copied().collect();
     assert_eq!(keys, vec![1, 2, 10], "parse_steps: step numbers");
     assert_eq!(steps[&1].title, "Research the task");
@@ -84,22 +84,22 @@ fn test_parse_steps_body_and_gate() {
               [allowed]: *\n\
               [gate]: cargo test\n\
               [transition]: 2\n";
-    let steps = parse_steps(md);
+    let steps = parse_steps(md).unwrap();
     assert_eq!(steps[&1].body, "Make the change.\nRun the tests.", "body excludes annotations");
     assert_eq!(steps[&1].gate, "cargo test", "gate captured");
 
     // No gate ⇒ empty (trusted transition, as before).
-    let steps2 = parse_steps("# Step 1: X\nbody\n[allowed]: *\n[transition]: Exit");
+    let steps2 = parse_steps("# Step 1: X\nbody\n[allowed]: *\n[transition]: Exit").unwrap();
     assert_eq!(steps2[&1].gate, "");
     assert_eq!(steps2[&1].body, "body");
 }
 
 #[test]
 fn test_parse_steps_case_insensitive() {
-    let steps = parse_steps("### STEP 5: Upper case\n[allowed]: *\n[transition]: 6");
+    let steps = parse_steps("### STEP 5: Upper case\n[allowed]: *\n[transition]: 6").unwrap();
     assert!(steps.contains_key(&5), "case insensitive STEP");
 
-    let steps2 = parse_steps("## step 3: lower case\n[allowed]: *\n[transition]: 4");
+    let steps2 = parse_steps("## step 3: lower case\n[allowed]: *\n[transition]: 4").unwrap();
     assert!(steps2.contains_key(&3), "case insensitive step");
 }
 
@@ -108,7 +108,7 @@ fn test_parse_steps_various_heading_levels() {
     for level in 1..=6 {
         let prefix = "#".repeat(level);
         let md = format!("{prefix} Step 1: Level {level}\n[allowed]: *\n[transition]: Exit");
-        let steps = parse_steps(&md);
+        let steps = parse_steps(&md).unwrap();
         assert!(steps.contains_key(&1), "heading level {level}");
     }
 }
@@ -413,10 +413,11 @@ fn make_engine(rules_text: &str, prompt_text: &str) -> TestEngine {
     let state_file = dir.path().join("state");
     // No proxy dir → policy writes are skipped (matches Python guard on missing dir).
     let policy_file = dir.path().join("guard-proxy").join("policy.json");
-    let steps = parse_steps(prompt_text);
+    let steps = parse_steps(prompt_text).unwrap();
     let tool_sets = parse_guard_rules_str(rules_text);
     let gate_cwd = dir.path().to_path_buf();
-    let engine = WorkflowEngine::new(steps, tool_sets, state_file, policy_file, vec![], gate_cwd);
+    let engine =
+        WorkflowEngine::new(steps, tool_sets, state_file, policy_file, vec![], gate_cwd, None);
     TestEngine { engine, _dir: dir }
 }
 
@@ -537,7 +538,7 @@ fn test_network_rule_parsing() {
 [network]: net-anthropic, net-github, net-youtrack
 [transition]: Exit
 ";
-    let steps = parse_steps(md);
+    let steps = parse_steps(md).unwrap();
     assert_eq!(steps[&1].network, "net-anthropic, net-github");
     assert_eq!(steps[&2].network, "net-anthropic, net-github, net-youtrack");
 }
@@ -563,12 +564,13 @@ fn test_proxy_policy_expansion() {
     let state_file = dir.path().join("state");
 
     let engine = WorkflowEngine::new(
-        parse_steps(md),
+        parse_steps(md).unwrap(),
         parse_guard_rules_str(rules),
         state_file,
         policy_file.clone(),
         vec![],
         dir.path().to_path_buf(),
+        None,
     );
 
     // Engine initialized on step 1, which has [network]: net-anthropic, net-github.
@@ -586,4 +588,102 @@ fn test_proxy_policy_expansion() {
     assert_eq!(hosts.len(), 3, "exactly 3 hosts");
     assert_eq!(written["default"], "deny");
     drop(engine);
+}
+
+// --- [llmjudge] parsing (CCT-516) ---
+
+#[test]
+fn test_parse_llmjudge_questions_and_violations() {
+    let md = "# Step 4: Accept\n\
+              Assemble the evidence.\n\
+              [llmjudge]\n\
+              - Does every acceptance condition have evidence? :: only two of three are covered\n\
+              - Does the diff implement the change itself?\n\
+              [allowed]: *\n\
+              [gate]: make check\n\
+              [transition]: Exit\n";
+    let steps = parse_steps(md).unwrap();
+    let judge = &steps[&4].llmjudge;
+    assert_eq!(judge.len(), 2);
+    assert_eq!(judge[0].question, "Does every acceptance condition have evidence?");
+    assert_eq!(judge[0].violation, "only two of three are covered");
+    assert_eq!(judge[1].question, "Does the diff implement the change itself?");
+    assert_eq!(judge[1].violation, "");
+    // Other annotations still parse around the block.
+    assert_eq!(steps[&4].gate, "make check");
+    assert_eq!(steps[&4].body, "Assemble the evidence.", "questions are not body prose");
+
+    // A step without the block has no judge.
+    let steps2 = parse_steps("# Step 1: X\n[allowed]: *\n[transition]: Exit\n").unwrap();
+    assert!(steps2[&1].llmjudge.is_empty());
+}
+
+#[test]
+fn test_parse_llmjudge_malformed_blocks_error() {
+    // No questions before the next annotation.
+    let err = parse_steps("# Step 1: X\n[llmjudge]\n[allowed]: *\n").unwrap_err();
+    assert!(err.message.contains("at least one"), "{err}");
+    assert_eq!(err.step, 1);
+
+    // No questions at end of input.
+    assert!(parse_steps("# Step 1: X\n[llmjudge]\n").is_err());
+
+    // No questions before the next step heading.
+    assert!(parse_steps("# Step 1: X\n[llmjudge]\n# Step 2: Y\n[allowed]: *\n").is_err());
+
+    // Blank line between the annotation and the list is malformed too —
+    // questions must immediately follow.
+    assert!(parse_steps("# Step 1: X\n[llmjudge]\n\n- Is it done?\n").is_err());
+
+    // Inline value instead of a list.
+    let err = parse_steps("# Step 1: X\n[llmjudge]: is it done?\n").unwrap_err();
+    assert!(err.message.contains("no inline value"), "{err}");
+
+    // Empty question text.
+    assert!(parse_steps("# Step 1: X\n[llmjudge]\n-\n").is_err());
+    assert!(parse_steps("# Step 1: X\n[llmjudge]\n- :: only a violation\n").is_err());
+
+    // Duplicate block in one step.
+    let err = parse_steps("# Step 1: X\n[llmjudge]\n- Q1?\n[llmjudge]\n- Q2?\n").unwrap_err();
+    assert!(err.message.contains("duplicate"), "{err}");
+
+    // Question-count cap.
+    let questions = |n: usize| -> String {
+        use std::fmt::Write;
+        let mut out = String::new();
+        for i in 0..n {
+            let _ = writeln!(out, "- Question {i}?");
+        }
+        out
+    };
+    let md = format!(
+        "# Step 1: X\n[llmjudge]\n{}",
+        questions(cctui_guard::parser::MAX_JUDGE_QUESTIONS + 1)
+    );
+    let err = parse_steps(&md).unwrap_err();
+    assert!(err.message.contains("more than"), "{err}");
+
+    // Exactly the cap is fine.
+    let md =
+        format!("# Step 1: X\n[llmjudge]\n{}", questions(cctui_guard::parser::MAX_JUDGE_QUESTIONS));
+    assert_eq!(
+        parse_steps(&md).unwrap()[&1].llmjudge.len(),
+        cctui_guard::parser::MAX_JUDGE_QUESTIONS
+    );
+}
+
+#[test]
+fn test_example_context_pack_prompt_parses_with_llmjudge() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../deploy/examples/context-pack/prompts/example-task.md"
+    );
+    let md = std::fs::read_to_string(path).unwrap();
+    let steps = parse_steps(&md).unwrap();
+    assert_eq!(steps.len(), 5);
+    let judge = &steps[&4].llmjudge;
+    assert_eq!(judge.len(), 4, "Accept step carries the [llmjudge] block");
+    assert!(judge.iter().all(|q| !q.question.is_empty() && !q.violation.is_empty()));
+    assert!(steps[&1].llmjudge.is_empty() && steps[&5].llmjudge.is_empty());
+    assert_eq!(steps[&4].transition, "5, Exit", "annotations after the block still parse");
 }

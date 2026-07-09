@@ -148,9 +148,24 @@ finalize the merge; otherwise leave the PR for a human and report `status:
 the rendered copy/layout to a human taste sign-off via `needs_human`, carrying
 the brand-visible evidence.
 
+The `[llmjudge]` below is the **semantic acceptance gate** (guard hardening,
+CCT-516) — the mirror of Step 3's deterministic `[gate]`. Where the gate proves
+mechanical facts (tests exit 0), the judge answers binary questions about the
+*meaning* of the evidence, in a clean context (the ratified artifact, the
+assembled `evidence[]`, and the diff — never this session's reasoning), and the
+transition out of this step is refused unless **every** question scores 1. Its
+per-question verdicts come back as a `kind: "judge"` evidence entry — attach it
+to the result callback's `evidence[]` so the PR carries e.g. "5/6 verified; Q4
+FAILED: no test covers replayed delivery".
+
 [allowed]: all-read, remote-write, Bash
 [disallowed]:
 [network]: net-model, net-vcs
+[llmjudge]
+- Does every acceptance condition in the ratified Step 1 artifact have at least one evidence[] entry that observably backs it? :: evidence[] covers only two of three conditions
+- Does the diff itself implement each acceptance condition, rather than only adding tests, docs, or scaffolding? :: the PR only adds a test asserting the current behavior
+- Was every oracle the Step 2 plan selected actually run, with its output captured in evidence[]? :: the plan requires endpoint-tests but no endpoint output appears
+- Is each evidence[] entry backed by a command, artifact, or observable output rather than a bare assertion? :: an entry says "verified manually" with nothing attached
 [transition]: 5, Exit
 
 # Step 5: Address review comments (classify, defend-don't-cave)

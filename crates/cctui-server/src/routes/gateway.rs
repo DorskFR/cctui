@@ -108,104 +108,153 @@ impl Family {
         if provider.contains("openai") { Self::Openai } else { Self::Anthropic }
     }
     /// Derive the family from a spawn adapter id (`codex*` → openai, else
-    /// anthropic). Used only as a fallback disambiguator when the caller names
-    /// an account but not its provider.
+    /// anthropic). Since CCT-559 this IS the spawn resolution key: the adapter
+    /// names the harness family, and the account identity carries at most one
+    /// provider row per family (CCT-558).
     pub fn from_adapter(adapter_id: &str) -> Self {
         if adapter_id.starts_with("codex") { Self::Openai } else { Self::Anthropic }
     }
+    /// Human label for error messages.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Anthropic => "anthropic",
+            Self::Openai => "openai",
+        }
+    }
+}
+
+/// Why [`mint_session_env`] could not mint, kept apart so callers can 404 with
+/// a message naming the actual gap (CCT-559): "no such account" and "account
+/// exists but carries no provider for this harness family" need different
+/// remedies (fix the name vs. connect a provider).
+pub enum MintSessionEnvError {
+    /// The account name resolved to nothing for this user (neither owned nor
+    /// shared).
+    NoAccount,
+    /// The account identity exists but has no provider row in the requested
+    /// family.
+    NoProviderForFamily(Family),
+    /// The database failed.
+    Db(sqlx::Error),
+}
+
+/// One provider row of a resolved account identity (CCT-558/559): the
+/// credential-level `account_providers` row the gateway binds session tokens
+/// to. At most one per family per account.
+pub struct ProviderRow {
+    pub id: Uuid,
+    pub provider: String,
+    /// Per-provider logical→concrete model alias map (CCT-406).
+    pub model_aliases: Option<serde_json::Value>,
+}
+
+impl ProviderRow {
+    pub fn family(&self) -> Family {
+        Family::from_provider(&self.provider)
+    }
+}
+
+/// Resolve an account identity by name for a user — either one they OWN or one
+/// SHARED to them (CCT-458, `account_shares`), preferring their own on a name
+/// clash — and return its provider rows (CCT-559). `Ok(None)` means no such
+/// account; `Ok(Some(rows))` may be empty for an identity with no connected
+/// providers.
+pub async fn account_provider_rows(
+    state: &AppState,
+    user_id: Uuid,
+    account_name: &str,
+) -> Result<Option<Vec<ProviderRow>>, sqlx::Error> {
+    let account_id: Option<Uuid> = sqlx::query_scalar(
+        "SELECT a.id FROM accounts a \
+         WHERE a.name = $2 \
+           AND (a.user_id = $1 OR EXISTS ( \
+               SELECT 1 FROM account_shares s \
+                WHERE s.account_id = a.id \
+                  AND s.user_id = $1 AND s.revoked_at IS NULL)) \
+         ORDER BY (a.user_id = $1) DESC LIMIT 1",
+    )
+    .bind(user_id)
+    .bind(account_name)
+    .fetch_optional(&state.pool)
+    .await?;
+    let Some(account_id) = account_id else { return Ok(None) };
+    let rows: Vec<(Uuid, String, Option<serde_json::Value>)> = sqlx::query_as(
+        "SELECT id, provider, model_aliases FROM account_providers \
+         WHERE account_id = $1 ORDER BY provider",
+    )
+    .bind(account_id)
+    .fetch_all(&state.pool)
+    .await?;
+    Ok(Some(
+        rows.into_iter()
+            .map(|(id, provider, model_aliases)| ProviderRow { id, provider, model_aliases })
+            .collect(),
+    ))
 }
 
 /// Resolve a named account for a user and mint a session-scoped gateway token
-/// bound to `(session_id, account)`, returning the env vars to inject into the
-/// worker so its agent traffic flows through this gateway under that account
-/// (CCT-232 / CCT-399). The raw credentials never leave the server — only the
-/// opaque session token does. The account drives the base URL + family, NOT the
-/// adapter id (CCT-399): an explicit `provider` disambiguates name collisions
-/// across providers; absent it, the adapter id is the fallback family hint.
-/// Returns:
-///   * `Ok(Some(env))` — account found, token minted, env ready
-///   * `Ok(None)` — the caller has no matching account
-///   * `Err(_)` — a database failure
+/// bound to `(session_id, provider row)`, returning the env vars to inject into
+/// the worker so its agent traffic flows through this gateway under that
+/// account (CCT-232 / CCT-399). The raw credentials never leave the server —
+/// only the opaque session token does. Resolution is by `(account identity,
+/// harness family)` (CCT-559): the account carries at most one provider per
+/// family (CCT-558), and `family` — derived from the adapter via
+/// [`Family::from_adapter`] — picks that row.
 pub async fn mint_session_env(
     state: &AppState,
     user_id: Uuid,
     account_name: &str,
-    provider: Option<&str>,
-    adapter_id: &str,
+    family: Family,
     session_id: &str,
-) -> Result<Option<std::collections::BTreeMap<String, String>>, sqlx::Error> {
-    // Resolve the account by name for the caller — either one they OWN or one
-    // SHARED to them (CCT-458, `account_shares`), preferring their own on a name
-    // clash. Optionally constrained to an explicit provider; with no provider
-    // hint we disambiguate by family (derived from the adapter) so a `personal`
-    // anthropic and a `personal` openai don't collide on the machine-spawn path.
-    let row: Option<(Uuid, String)> = if let Some(p) = provider {
-        sqlx::query_as(
-            "SELECT ap.id, ap.provider \
-             FROM account_providers ap JOIN accounts a ON a.id = ap.account_id \
-             WHERE a.name = $2 AND ap.provider = $3 \
-               AND (a.user_id = $1 OR EXISTS ( \
-                   SELECT 1 FROM account_shares s \
-                    WHERE s.account_id = a.id \
-                      AND s.user_id = $1 AND s.revoked_at IS NULL)) \
-             ORDER BY (a.user_id = $1) DESC LIMIT 1",
-        )
-        .bind(user_id)
-        .bind(account_name)
-        .bind(p)
-        .fetch_optional(&state.pool)
-        .await?
-    } else {
-        let want = Family::from_adapter(adapter_id);
-        let candidates: Vec<(Uuid, String)> = sqlx::query_as(
-            "SELECT ap.id, ap.provider \
-             FROM account_providers ap JOIN accounts a ON a.id = ap.account_id \
-             WHERE a.name = $2 \
-               AND (a.user_id = $1 OR EXISTS ( \
-                   SELECT 1 FROM account_shares s \
-                    WHERE s.account_id = a.id \
-                      AND s.user_id = $1 AND s.revoked_at IS NULL)) \
-             ORDER BY (a.user_id = $1) DESC",
-        )
-        .bind(user_id)
-        .bind(account_name)
-        .fetch_all(&state.pool)
-        .await?;
-        candidates.into_iter().find(|(_, prov)| Family::from_provider(prov) == want)
-    };
-    let Some((account_id, prov)) = row else {
+) -> Result<std::collections::BTreeMap<String, String>, MintSessionEnvError> {
+    let rows = account_provider_rows(state, user_id, account_name)
+        .await
+        .map_err(MintSessionEnvError::Db)?;
+    let Some(rows) = rows else {
         // Fail-diagnosable, not silent (CCT-510): the account name resolved to
         // nothing for this user — neither owned nor shared. This is the exact
         // shape of the "404 no account named X" dispatch failures, so name the
-        // user + account + provider hint here rather than leaving a caller to dig
-        // through the DB.
+        // user + account here rather than leaving a caller to dig through the DB.
         tracing::warn!(
             %user_id,
             account = %account_name,
-            provider = ?provider,
             "mint_session_env: no account resolved (not owned by, nor shared to, this user)"
         );
-        return Ok(None);
+        return Err(MintSessionEnvError::NoAccount);
     };
-    Ok(Some(mint_env_for_account(state, account_id, &prov, session_id).await?))
+    let Some(row) = rows.iter().find(|r| r.family() == family) else {
+        tracing::warn!(
+            %user_id,
+            account = %account_name,
+            family = family.label(),
+            "mint_session_env: account has no provider for this family"
+        );
+        return Err(MintSessionEnvError::NoProviderForFamily(family));
+    };
+    mint_env_for_account(state, row.id, &row.provider, session_id)
+        .await
+        .map_err(MintSessionEnvError::Db)
 }
 
-/// Re-mint a gateway session token + env for an **already-resolved** account
-/// (CCT-460). Used on the resume path, where the session already has a bound
-/// account (persisted on `sessions.account_id`) and we just need to re-issue a
-/// fresh token + env for the revived worker rather than re-resolving by name.
+/// Re-mint a gateway session token + env for an **already-resolved** provider
+/// row (CCT-460 / CCT-559). `provider_id` is the `account_providers.id` the
+/// session token binds to — NOT the identity-level `accounts.id`. Used on the
+/// resume path, where the session already has a bound provider row (persisted
+/// via `session_tokens` / `sessions.account_id`) and we just need to re-issue a
+/// fresh token + env for the revived worker rather than re-resolving by name,
+/// and on the dispatch path after `(account, family)` resolution.
 pub async fn mint_session_env_for_account(
     state: &AppState,
-    account_id: Uuid,
+    provider_id: Uuid,
     session_id: &str,
 ) -> Result<Option<std::collections::BTreeMap<String, String>>, sqlx::Error> {
     let provider: Option<String> =
         sqlx::query_scalar("SELECT provider FROM account_providers WHERE id = $1")
-            .bind(account_id)
+            .bind(provider_id)
             .fetch_optional(&state.pool)
             .await?;
     let Some(provider) = provider else { return Ok(None) };
-    Ok(Some(mint_env_for_account(state, account_id, &provider, session_id).await?))
+    Ok(Some(mint_env_for_account(state, provider_id, &provider, session_id).await?))
 }
 
 /// Resolve a session's bound OAuth account and re-mint its gateway env, ready
@@ -429,58 +478,26 @@ async fn existing_session_token(
 
 /// Resolve a logical model name through a named account's alias map (CCT-406).
 ///
-/// Mirrors [`mint_session_env`]'s `(user, name, provider|family)` account
-/// resolution so spawn maps the *same* row the gateway binds the session to,
-/// then looks `model` up in that account's `model_aliases` JSON object. Returns
-/// the mapped concrete model (e.g. `opus` → `claude-opus-4-8[1m]`) or the input
-/// unchanged when there's no account, no alias map, or no matching key. A DB
-/// error degrades gracefully to the unmapped model rather than failing spawn.
+/// Mirrors [`mint_session_env`]'s `(account identity, family)` resolution
+/// (CCT-559) so spawn maps the *same* provider row the gateway binds the
+/// session to, then looks `model` up in that row's `model_aliases` JSON object.
+/// Returns the mapped concrete model (e.g. `opus` → `claude-opus-4-8[1m]`) or
+/// the input unchanged when there's no account, no family match, no alias map,
+/// or no matching key. A DB error degrades gracefully to the unmapped model
+/// rather than failing spawn.
 pub async fn resolve_account_model(
     state: &AppState,
     user_id: Uuid,
     account_name: &str,
-    provider: Option<&str>,
-    adapter_id: &str,
+    family: Family,
     model: &str,
 ) -> String {
-    let row: Option<(Option<serde_json::Value>, String)> = if let Some(p) = provider {
-        sqlx::query_as(
-            "SELECT ap.model_aliases, ap.provider \
-             FROM account_providers ap JOIN accounts a ON a.id = ap.account_id \
-             WHERE a.name = $2 AND ap.provider = $3 \
-               AND (a.user_id = $1 OR EXISTS ( \
-                   SELECT 1 FROM account_shares s \
-                    WHERE s.account_id = a.id \
-                      AND s.user_id = $1 AND s.revoked_at IS NULL)) \
-             ORDER BY (a.user_id = $1) DESC LIMIT 1",
-        )
-        .bind(user_id)
-        .bind(account_name)
-        .bind(p)
-        .fetch_optional(&state.pool)
-        .await
-        .unwrap_or(None)
-    } else {
-        let want = Family::from_adapter(adapter_id);
-        let candidates: Vec<(Option<serde_json::Value>, String)> = sqlx::query_as(
-            "SELECT ap.model_aliases, ap.provider \
-             FROM account_providers ap JOIN accounts a ON a.id = ap.account_id \
-             WHERE a.name = $2 \
-               AND (a.user_id = $1 OR EXISTS ( \
-                   SELECT 1 FROM account_shares s \
-                    WHERE s.account_id = a.id \
-                      AND s.user_id = $1 AND s.revoked_at IS NULL)) \
-             ORDER BY (a.user_id = $1) DESC",
-        )
-        .bind(user_id)
-        .bind(account_name)
-        .fetch_all(&state.pool)
-        .await
-        .unwrap_or_default();
-        candidates.into_iter().find(|(_, prov)| Family::from_provider(prov) == want)
+    let Ok(Some(rows)) = account_provider_rows(state, user_id, account_name).await else {
+        return model.to_owned();
     };
-    row.and_then(|(aliases, _)| aliases)
-        .as_ref()
+    rows.iter()
+        .find(|r| r.family() == family)
+        .and_then(|r| r.model_aliases.as_ref())
         .and_then(|v| v.get(model))
         .and_then(serde_json::Value::as_str)
         .filter(|s| !s.trim().is_empty())
@@ -1968,9 +1985,31 @@ mod tests {
     }
 
     #[test]
-    fn family_from_adapter_is_the_fallback_hint() {
+    fn family_from_adapter_is_the_spawn_resolution_key() {
+        // CCT-559: the adapter id names the harness family spawn resolves the
+        // account's provider row by.
         assert!(matches!(Family::from_adapter("codex"), Family::Openai));
         assert!(matches!(Family::from_adapter("codex-foo"), Family::Openai));
         assert!(matches!(Family::from_adapter("claude-code"), Family::Anthropic));
+    }
+
+    #[test]
+    fn provider_row_family_and_label_line_up() {
+        // CCT-559: (account, family) resolution picks rows via ProviderRow::family;
+        // labels feed the "no <family> provider" 404s.
+        let anthropic = super::ProviderRow {
+            id: uuid::Uuid::new_v4(),
+            provider: "anthropic-compatible".into(),
+            model_aliases: None,
+        };
+        let openai = super::ProviderRow {
+            id: uuid::Uuid::new_v4(),
+            provider: "openai".into(),
+            model_aliases: None,
+        };
+        assert!(matches!(anthropic.family(), Family::Anthropic));
+        assert!(matches!(openai.family(), Family::Openai));
+        assert_eq!(Family::Anthropic.label(), "anthropic");
+        assert_eq!(Family::Openai.label(), "openai");
     }
 }

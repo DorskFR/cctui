@@ -7,7 +7,7 @@ use std::sync::Mutex;
 
 use serde_json::{Value, json};
 
-use crate::parser::{Step, expand_set, parse_keywords, parse_transitions};
+use crate::parser::{JudgeQuestion, Step, expand_set, parse_keywords, parse_transitions};
 use crate::rules::check_rules;
 
 /// Tools always allowed regardless of step rules.
@@ -38,6 +38,11 @@ pub struct WorkflowEngine {
     /// Working directory the deterministic transition gate command runs in
     /// (the worker's `/workspace`). CCT-440.
     gate_cwd: PathBuf,
+    /// Command the `[llmjudge]` block pipes its question prompt to (CCT-516).
+    /// Runs via `sh -c` in `gate_cwd`, receives the prompt on stdin, and must
+    /// print a JSON verdict array on stdout. `None` while a step declares
+    /// `[llmjudge]` refuses the transition — fail closed.
+    judge_cmd: Option<String>,
 }
 
 impl WorkflowEngine {
@@ -53,6 +58,7 @@ impl WorkflowEngine {
         proxy_policy_file: PathBuf,
         always_allowed_hosts: Vec<String>,
         gate_cwd: PathBuf,
+        judge_cmd: Option<String>,
     ) -> Self {
         let step_numbers: Vec<u32> = steps.keys().copied().collect();
         let engine = Self {
@@ -64,6 +70,7 @@ impl WorkflowEngine {
             proxy_policy_file,
             always_allowed_hosts,
             gate_cwd,
+            judge_cmd,
         };
 
         if let Some(parent) = engine.state_file.parent() {
@@ -220,6 +227,71 @@ impl WorkflowEngine {
         }
     }
 
+    /// Run a step's `[llmjudge]` acceptance judge (CCT-516). Runs **after** the
+    /// deterministic `[gate]`, in a clean context: the configured judge command
+    /// gets only the question prompt on stdin (plus its own working tree in
+    /// `gate_cwd` — Intent+Acceptance artifact, evidence[], diff), never the
+    /// implementer session's reasoning. Every question must score 1 for the
+    /// transition to proceed; a partial score, malformed verdicts, a failed
+    /// command, or a missing judge command all refuse it — fail closed.
+    ///
+    /// Returns `Ok(None)` when the step has no `[llmjudge]`, `Ok(Some(entry))`
+    /// with a `kind: "judge"` evidence entry on a perfect score, `Err((reason,
+    /// entry))` otherwise (the entry carries per-question verdicts when the
+    /// judge produced any).
+    fn run_judge(&self, step_num: u32) -> Result<Option<Value>, (String, Option<Value>)> {
+        let questions = self.steps.get(&step_num).map_or(&[][..], |s| s.llmjudge.as_slice());
+        if questions.is_empty() {
+            return Ok(None);
+        }
+        let Some(cmd) = self.judge_cmd.as_deref().map(str::trim).filter(|c| !c.is_empty()) else {
+            return Err((
+                format!(
+                    "Step {step_num} declares [llmjudge] but no judge command is configured \
+                     (--judge-cmd); refusing the transition (fail closed)"
+                ),
+                None,
+            ));
+        };
+
+        tracing::info!("Running llm judge for Step {step_num}: {} question(s)", questions.len());
+        let prompt = judge_prompt(questions);
+        let output = run_with_stdin(cmd, &prompt, &self.gate_cwd)
+            .map_err(|e| (format!("llm judge command `{cmd}` failed: {e}"), None))?;
+
+        let verdicts = parse_verdicts(&output, questions.len())
+            .map_err(|e| (format!("llm judge returned an unusable verdict: {e}"), None))?;
+
+        let score = verdicts.iter().filter(|(answer, _)| *answer == 1).count();
+        let total = questions.len();
+        let entry = judge_evidence(questions, &verdicts, score);
+
+        if score == total {
+            return Ok(Some(entry));
+        }
+        let failures: Vec<String> = verdicts
+            .iter()
+            .enumerate()
+            .filter(|(_, (answer, _))| *answer != 1)
+            .map(|(i, (_, reason))| {
+                format!(
+                    "Q{} FAILED ({}): {}",
+                    i + 1,
+                    questions[i].question,
+                    if reason.is_empty() { "(no reason given)" } else { reason }
+                )
+            })
+            .collect();
+        Err((
+            format!(
+                "llm judge refused the transition ({score}/{total} verified — full score \
+                 required): {}",
+                failures.join("; ")
+            ),
+            Some(entry),
+        ))
+    }
+
     /// Evaluate a `PreToolUse` hook for `tool` / `tool_input`.
     #[must_use]
     pub fn check(&self, tool: &str, tool_input: &Value) -> HookResponse {
@@ -284,6 +356,46 @@ impl WorkflowEngine {
         })
     }
 
+    /// Apply a validated numeric advance `current_u` → `tn`: the deterministic
+    /// `[gate]` must pass, then the `[llmjudge]` acceptance judge must score
+    /// perfect — the agent's claim of completion is not trusted (CCT-440 /
+    /// CCT-516). The judge's per-question verdicts are surfaced as a
+    /// `kind: "judge"` evidence entry on both outcomes.
+    fn transition_advance(&self, current_u: u32, tn: u32) -> TransitionResponse {
+        if let Err(reason) = self.run_gate(current_u) {
+            tracing::info!("DENY transition Step {current_u} → Step {tn}: {reason}");
+            return json!({ "ok": false, "step": current_u, "error": reason });
+        }
+        let judge = match self.run_judge(current_u) {
+            Ok(entry) => entry,
+            Err((reason, entry)) => {
+                tracing::info!("DENY transition Step {current_u} → Step {tn}: {reason}");
+                let mut resp = json!({ "ok": false, "step": current_u, "error": reason });
+                if let (Some(obj), Some(entry)) = (resp.as_object_mut(), entry) {
+                    obj.insert("evidence".to_string(), json!([entry]));
+                }
+                return resp;
+            }
+        };
+        tracing::info!("Transition: Step {current_u} → Step {tn}");
+        self.write_state(i64::from(tn));
+        self.write_proxy_policy(tn);
+        let title = self.steps.get(&tn).map_or("", |s| s.title.as_str());
+        // Re-inject the authoritative next-step prompt + compact directive.
+        let mut resp = json!({
+            "ok": true,
+            "step": tn,
+            "title": title,
+            "reinject": self.reinjection(tn),
+        });
+        if let (Some(obj), Some(entry)) = (resp.as_object_mut(), judge) {
+            // Attach the judge verdicts so the agent carries them into the
+            // result callback's evidence[] (kind: "judge").
+            obj.insert("evidence".to_string(), json!([entry]));
+        }
+        resp
+    }
+
     /// Validate and apply a transition request. `target` may be a number or the
     /// string `"exit"`. Exit is always allowed from any step.
     #[must_use]
@@ -315,24 +427,7 @@ impl WorkflowEngine {
 
         if let Some(tn) = target_num {
             if valid_steps.contains(&tn) {
-                // Deterministic gate: the current step's `[gate]` must pass
-                // before we are allowed to leave it. A failed gate refuses the
-                // transition — the agent's claim of completion is not trusted.
-                if let Err(reason) = self.run_gate(current_u) {
-                    tracing::info!("DENY transition Step {current_u} → Step {tn}: {reason}");
-                    return json!({ "ok": false, "step": current_u, "error": reason });
-                }
-                tracing::info!("Transition: Step {current_u} → Step {tn}");
-                self.write_state(i64::from(tn));
-                self.write_proxy_policy(tn);
-                let title = self.steps.get(&tn).map_or("", |s| s.title.as_str());
-                // Re-inject the authoritative next-step prompt + compact directive.
-                return json!({
-                    "ok": true,
-                    "step": tn,
-                    "title": title,
-                    "reinject": self.reinjection(tn),
-                });
+                return self.transition_advance(current_u, tn);
             }
             return json!({
                 "ok": false,
@@ -348,6 +443,157 @@ impl WorkflowEngine {
             "error": format!("Invalid transition target: {target}"),
         })
     }
+}
+
+/// Build the clean-context prompt piped to the judge command's stdin: the
+/// BINEVAL contract (independent binary answers, uncertain ⇒ 0), the numbered
+/// questions with their violation examples, and the JSON output shape. The
+/// judge command itself supplies the evidence base (artifact, evidence[],
+/// diff) from its working tree — the implementer's reasoning is never passed.
+fn judge_prompt(questions: &[JudgeQuestion]) -> String {
+    let mut out = String::from(
+        "You are an acceptance judge. Answer each binary question below with 1 (verifiably \
+         yes) or 0 (not verifiably yes), each question independently of the others. Judge \
+         only against the ratified Intent+Acceptance artifact, the assembled evidence[], \
+         and the actual diff in your working tree — not against anyone's claims of \
+         completion. If you cannot verify a yes, answer 0. Give a one-line reason per \
+         answer.\n\nQuestions:\n",
+    );
+    for (i, q) in questions.iter().enumerate() {
+        use std::fmt::Write;
+        let _ = write!(out, "{}. {}", i + 1, q.question);
+        if !q.violation.is_empty() {
+            let _ = write!(out, " (example violation: {})", q.violation);
+        }
+        out.push('\n');
+    }
+    out.push_str(
+        "\nOutput ONLY a JSON array, one object per question, in order:\n\
+         [{\"question\": 1, \"answer\": 1, \"reason\": \"<one line>\"}, ...]\n",
+    );
+    out
+}
+
+/// Run `cmd` via `sh -c` in `dir`, piping `input` to stdin. Returns stdout on
+/// exit 0, an error string otherwise.
+fn run_with_stdin(cmd: &str, input: &str, dir: &std::path::Path) -> Result<String, String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new("sh")
+        .arg("-c")
+        .arg(cmd)
+        .current_dir(dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("could not spawn: {e}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(input.as_bytes());
+    }
+    let out = child.wait_with_output().map_err(|e| format!("could not run: {e}"))?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        let mut detail = String::from_utf8_lossy(&out.stdout).into_owned();
+        detail.push_str(&String::from_utf8_lossy(&out.stderr));
+        let detail = detail.trim();
+        Err(format!(
+            "exited {}: {}",
+            out.status.code().map_or_else(|| "signal".to_string(), |c| c.to_string()),
+            if detail.is_empty() { "(no output)" } else { detail }
+        ))
+    }
+}
+
+/// Parse the judge command's stdout into exactly `expected` `(answer, reason)`
+/// verdicts, in question order. Accepts a bare JSON array or an object with a
+/// `verdicts` array; tolerates surrounding noise by falling back to the
+/// outermost `[...]` slice. Anything else — wrong count, an answer that is not
+/// 0/1 — is an error, and the caller fails closed.
+fn parse_verdicts(stdout: &str, expected: usize) -> Result<Vec<(u8, String)>, String> {
+    let trimmed = stdout.trim();
+    let parsed: Value = serde_json::from_str(trimmed)
+        .or_else(|_| {
+            let start = trimmed.find('[').ok_or(())?;
+            let end = trimmed.rfind(']').ok_or(())?;
+            if end <= start {
+                return Err(());
+            }
+            serde_json::from_str(&trimmed[start..=end]).map_err(|_| ())
+        })
+        .map_err(|()| format!("stdout is not JSON verdicts: {}", truncate(trimmed, 300)))?;
+
+    let items = parsed
+        .as_array()
+        .or_else(|| parsed.get("verdicts").and_then(Value::as_array))
+        .ok_or_else(|| "expected a JSON array of {question, answer, reason}".to_string())?;
+
+    if items.len() != expected {
+        return Err(format!("expected {expected} verdicts, got {}", items.len()));
+    }
+
+    let mut verdicts = Vec::with_capacity(items.len());
+    for (i, item) in items.iter().enumerate() {
+        let answer = item
+            .get("answer")
+            .and_then(|a| match a {
+                Value::Number(n) => n.as_u64(),
+                Value::Bool(b) => Some(u64::from(*b)),
+                Value::String(s) => s.trim().parse().ok(),
+                _ => None,
+            })
+            .filter(|a| *a <= 1)
+            .ok_or_else(|| format!("verdict {} has no binary `answer` (0 or 1)", i + 1))?;
+        let reason =
+            item.get("reason").and_then(Value::as_str).unwrap_or_default().trim().to_string();
+        #[allow(clippy::cast_possible_truncation)]
+        verdicts.push((answer as u8, reason));
+    }
+    Ok(verdicts)
+}
+
+/// Build the `kind: "judge"` evidence entry carrying the per-question verdicts,
+/// for the result callback's `evidence[]` (e.g. "5/6 verified; Q4 FAILED: …").
+fn judge_evidence(questions: &[JudgeQuestion], verdicts: &[(u8, String)], score: usize) -> Value {
+    let total = questions.len();
+    let detail: Vec<String> = verdicts
+        .iter()
+        .enumerate()
+        .map(|(i, (answer, reason))| {
+            format!(
+                "Q{} {}: {} — {}",
+                i + 1,
+                if *answer == 1 { "PASS" } else { "FAILED" },
+                questions[i].question,
+                if reason.is_empty() { "(no reason given)" } else { reason }
+            )
+        })
+        .collect();
+    json!({
+        "kind": "judge",
+        "summary": format!("llm judge: {score}/{total} acceptance questions verified"),
+        "detail": detail.join("\n"),
+        "verdicts": verdicts.iter().enumerate().map(|(i, (answer, reason))| json!({
+            "question": i + 1,
+            "text": questions[i].question,
+            "answer": answer,
+            "reason": reason,
+        })).collect::<Vec<Value>>(),
+    })
+}
+
+/// Truncate `s` to at most `n` bytes on a char boundary, for error messages.
+fn truncate(s: &str, n: usize) -> &str {
+    if s.len() <= n {
+        return s;
+    }
+    let mut end = n;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
 }
 
 /// Build an `allow` `PreToolUse` decision.

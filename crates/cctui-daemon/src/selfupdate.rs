@@ -81,55 +81,59 @@ const fn target_name() -> &'static str {
 }
 
 /// Server response from `GET /api/v1/manifest/daemon`.
+///
+/// Shared with the remote-enroll flow (CCT-548), which fetches the manifest
+/// with the operator's user token instead of a machine key.
 #[derive(Debug, Deserialize)]
-struct DaemonManifest {
-    version: String,
-    assets: Vec<DaemonAsset>,
+pub struct DaemonManifest {
+    pub version: String,
+    pub assets: Vec<DaemonAsset>,
 }
 
 #[derive(Debug, Deserialize)]
-struct DaemonAsset {
-    target: String,
-    url: String,
+pub struct DaemonAsset {
+    pub target: String,
+    pub url: String,
 }
 
 fn manifest_url(server_url: &str) -> String {
     format!("{}/api/v1/manifest/daemon", server_url.trim_end_matches('/'))
 }
 
-fn sha256sums_url(server_url: &str) -> String {
+#[must_use]
+pub fn sha256sums_url(server_url: &str) -> String {
     format!("{}/api/v1/daemon/binary/SHA256SUMS", server_url.trim_end_matches('/'))
 }
 
-fn client() -> Result<reqwest::Client> {
+pub fn client() -> Result<reqwest::Client> {
     Ok(reqwest::Client::builder()
         .user_agent(concat!("cctui-daemon/", env!("CARGO_PKG_VERSION")))
         .build()?)
 }
 
-async fn fetch_manifest(
+/// Fetch the daemon manifest. `bearer` is a machine key on the self-update
+/// path and a user token on the remote-enroll path — the endpoint accepts any
+/// authenticated principal.
+pub async fn fetch_manifest(
     client: &reqwest::Client,
     server_url: &str,
-    machine_key: &str,
+    bearer: &str,
 ) -> Result<DaemonManifest> {
     let url = manifest_url(server_url);
-    let res = client
-        .get(&url)
-        .bearer_auth(machine_key)
-        .header("Accept", "application/json")
-        .send()
-        .await?;
+    let res =
+        client.get(&url).bearer_auth(bearer).header("Accept", "application/json").send().await?;
     if !res.status().is_success() {
         bail!("daemon manifest returned {}", res.status());
     }
     Ok(res.json::<DaemonManifest>().await?)
 }
 
-/// Download bytes from a server endpoint, authenticated with the machine key.
-async fn download(client: &reqwest::Client, url: &str, machine_key: &str) -> Result<Vec<u8>> {
+/// Download bytes from a server endpoint, authenticated with `bearer` (a
+/// machine key on the self-update path, a user token on remote enroll).
+pub async fn download(client: &reqwest::Client, url: &str, bearer: &str) -> Result<Vec<u8>> {
     let res = client
         .get(url)
-        .bearer_auth(machine_key)
+        .bearer_auth(bearer)
         .header("Accept", "application/octet-stream")
         .send()
         .await?
@@ -138,7 +142,8 @@ async fn download(client: &reqwest::Client, url: &str, machine_key: &str) -> Res
     Ok(bytes.to_vec())
 }
 
-fn parse_sha256sums(text: &str, target: &str) -> Option<String> {
+#[must_use]
+pub fn parse_sha256sums(text: &str, target: &str) -> Option<String> {
     text.lines().find_map(|line| {
         let mut it = line.split_whitespace();
         let hash = it.next()?;
@@ -147,7 +152,8 @@ fn parse_sha256sums(text: &str, target: &str) -> Option<String> {
     })
 }
 
-fn hex_sha256(bytes: &[u8]) -> String {
+#[must_use]
+pub fn hex_sha256(bytes: &[u8]) -> String {
     let mut h = Sha256::new();
     h.update(bytes);
     let out = h.finalize();

@@ -27,6 +27,18 @@ pub struct EnrollResponse {
     pub machine_key: String,
 }
 
+/// `GET /api/v1/machines/{id}/status` (CCT-548): connectivity snapshot used
+/// by remote enroll to verify the freshly installed daemon actually joined
+/// the fleet.
+#[derive(Debug, Deserialize)]
+pub struct MachineStatus {
+    pub machine_id: Uuid,
+    pub name: String,
+    pub connected: bool,
+    pub liveness: String,
+    pub revoked: bool,
+}
+
 impl ServerClient {
     #[must_use]
     pub fn new(base_url: impl Into<String>) -> Self {
@@ -51,6 +63,22 @@ impl ServerClient {
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
             anyhow::bail!("enroll failed ({status}): {text}");
+        }
+        Ok(resp.json().await?)
+    }
+
+    pub async fn machine_status(
+        &self,
+        user_token: &str,
+        machine_id: Uuid,
+    ) -> anyhow::Result<MachineStatus> {
+        let url =
+            format!("{}/api/v1/machines/{machine_id}/status", self.base_url.trim_end_matches('/'));
+        let resp = self.http.get(&url).bearer_auth(user_token).send().await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("machine_status failed ({status}): {text}");
         }
         Ok(resp.json().await?)
     }

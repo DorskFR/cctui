@@ -866,6 +866,14 @@ fn build_api_routes() -> Routes {
             ScopeAz(auth::Scope::Enroll),
         )
         .add(
+            &[GET],
+            "/machines/{machine_id}/status",
+            "Machine connectivity/liveness snapshot (remote-enroll verification).",
+            get(routes::enroll::machine_status),
+            Authn::Bearer,
+            Authz::Resource(ResourceKind::Machine, Action::Read, IdFrom::Path("machine_id")),
+        )
+        .add(
             &[Method::POST],
             "/deenroll",
             "Deenroll the current machine.",
