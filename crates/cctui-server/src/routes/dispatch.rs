@@ -220,8 +220,10 @@ async fn mint_ephemeral_dispatch_key(
 
 /// The account a dispatch should route through, after applying the CCT-427
 /// fallback precedence: an explicit `req.account` always wins; otherwise the
-/// dispatcher's bound default account (if any) is used. Each carries the
-/// optional provider hint that disambiguates a name shared across providers.
+/// dispatcher's bound default account (if any) is used. The optional provider
+/// hint constrains the mint to that provider's family; without one the
+/// account's EVERY provider row is minted (CCT-559) — the dispatcher default is
+/// an identity, so it always mints all providers.
 ///
 /// Pure so the precedence is unit-testable without a DB. `None` means "no
 /// account at all" — dispatch then behaves as it did before any account
@@ -229,7 +231,7 @@ async fn mint_ephemeral_dispatch_key(
 fn resolve_dispatch_account(
     explicit_account: Option<&str>,
     explicit_provider: Option<&str>,
-    default_account: Option<&(String, Option<String>)>,
+    default_account: Option<&str>,
 ) -> Option<(String, Option<String>)> {
     if let Some(name) = explicit_account.map(str::trim).filter(|a| !a.is_empty()) {
         return Some((
@@ -237,7 +239,31 @@ fn resolve_dispatch_account(
             explicit_provider.map(str::trim).filter(|p| !p.is_empty()).map(str::to_string),
         ));
     }
-    default_account.cloned()
+    default_account.map(|name| (name.to_owned(), None))
+}
+
+/// The first provider family that appears twice in the expanded mint set
+/// (CCT-559) — two same-family provider rows would mint the same env keys
+/// (e.g. `ANTHROPIC_AUTH_TOKEN`) and the second mint would silently repoint the
+/// session's family token, so the dispatch is rejected instead (CCT-508). Pure
+/// for unit-testability.
+fn colliding_family(
+    families: impl IntoIterator<Item = crate::routes::gateway::Family>,
+) -> Option<crate::routes::gateway::Family> {
+    let (mut anthropic, mut openai) = (0u32, 0u32);
+    for f in families {
+        match f {
+            crate::routes::gateway::Family::Anthropic => anthropic += 1,
+            crate::routes::gateway::Family::Openai => openai += 1,
+        }
+        if anthropic > 1 {
+            return Some(crate::routes::gateway::Family::Anthropic);
+        }
+        if openai > 1 {
+            return Some(crate::routes::gateway::Family::Openai);
+        }
+    }
+    None
 }
 
 /// Resolve the `(session_id, display_name, dedup_key)` for a dispatch (CCT-474,
@@ -269,19 +295,20 @@ fn resolve_dispatch_session_id(logical: Option<&str>) -> (String, Option<String>
     }
 }
 
-/// The OAuth account a dispatcher is bound to (CCT-427), resolved to the
-/// `(name, provider)` `mint_session_env` consumes. Returns `None` when the
-/// dispatcher row carries no `default_account_id` or it points at a deleted
-/// account (the `ON DELETE SET NULL` FK clears the binding). A DB error
-/// degrades to `None` so a lookup hiccup never blocks an otherwise-valid
-/// dispatch.
+/// The account identity a dispatcher is bound to (CCT-427 / CCT-559), resolved
+/// to the identity *name* `mint` resolution consumes — default injection mints
+/// ALL of that identity's providers, so no provider hint travels with it.
+/// Returns `None` when the dispatcher row carries no `default_account_id` or it
+/// points at a deleted account (the `ON DELETE SET NULL` FK clears the
+/// binding). A DB error degrades to `None` so a lookup hiccup never blocks an
+/// otherwise-valid dispatch.
 async fn dispatcher_default_account(
     state: &AppState,
     dispatcher_name: &str,
     user_id: uuid::Uuid,
-) -> Option<(String, Option<String>)> {
-    sqlx::query_as::<_, (String, Option<String>)>(
-        "SELECT a.name, d.default_account_provider \
+) -> Option<String> {
+    sqlx::query_scalar::<_, String>(
+        "SELECT a.name \
          FROM dispatchers d \
          JOIN accounts a ON a.id = d.default_account_id \
          WHERE d.name = $1 AND d.user_id = $2 \
@@ -511,22 +538,17 @@ pub async fn dispatch(
             obj.insert("cctui_machine_key".into(), serde_json::Value::String(key));
         }
 
-        // Account-scoped routing on the dispatch path (CCT-399 / CCT-427): mint
-        // a session-scoped gateway token bound to this (session, account) and
-        // merge the gateway base-url + token into `payload.env` so the worker
-        // pod routes through the passthrough gateway under that account. The
-        // account is the explicit `req.account` if the caller picked one, else
-        // the dispatcher's bound default account (CCT-427) — an empty
-        // `req.account` falls back, an explicit one always overrides. With no
-        // account either way, dispatch injects no gateway env (unchanged). The
-        // dispatch path runs a claude-worker, so the family falls back to
-        // anthropic when no provider is given.
-        // Build the list of accounts to mint. An explicit `req.accounts` list
-        // (CCT-508) wins — mint EACH and merge every family's env so one worker
-        // carries claude + codex creds at once. Otherwise fall back to the
-        // singular account/provider shortcut (with the dispatcher's bound
-        // default, CCT-427). With no account either way, no gateway env is
-        // injected (unchanged).
+        // Account-scoped routing on the dispatch path (CCT-399 / CCT-427 /
+        // CCT-559): mint session-scoped gateway tokens and merge the gateway
+        // base-url + token env into `payload.env` so the worker pod routes
+        // through the passthrough gateway. An explicit `req.accounts` list
+        // (CCT-508) wins — it's the cross-account mix form, each entry
+        // optionally family-constrained by its provider hint. Otherwise the
+        // singular `req.account` (or the dispatcher's bound default identity,
+        // CCT-427) is used. A bare account name mints EVERY provider the
+        // identity carries (CCT-559) — one worker gets claude + codex creds
+        // from `account: "acme"` alone, no accounts[] boilerplate. With no
+        // account either way, no gateway env is injected (unchanged).
         let accounts: Vec<(String, Option<String>)> = if req.accounts.is_empty() {
             let default_account = if req.account.as_deref().map(str::trim).is_none_or(str::is_empty)
             {
@@ -537,7 +559,7 @@ pub async fn dispatch(
             resolve_dispatch_account(
                 req.account.as_deref(),
                 req.provider.as_deref(),
-                default_account.as_ref(),
+                default_account.as_deref(),
             )
             .into_iter()
             .collect()
@@ -545,16 +567,75 @@ pub async fn dispatch(
             req.accounts.iter().map(|a| (a.account.clone(), a.provider.clone())).collect()
         };
 
-        for (account_name, account_provider) in accounts {
-            match crate::routes::gateway::mint_session_env(
-                &state,
-                uid,
-                &account_name,
-                account_provider.as_deref().filter(|p| !p.trim().is_empty()),
-                "claude-code",
-                &session_id,
-            )
-            .await
+        // Expand each named account into the provider rows to mint: the hinted
+        // family's row only, or every row for a bare name.
+        let mut mints: Vec<crate::routes::gateway::ProviderRow> = Vec::new();
+        for (account_name, provider_hint) in accounts {
+            let rows =
+                match crate::routes::gateway::account_provider_rows(&state, uid, &account_name)
+                    .await
+                {
+                    Ok(Some(rows)) if !rows.is_empty() => rows,
+                    Ok(_) => {
+                        return Err((
+                            StatusCode::NOT_FOUND,
+                            Json(ApiError {
+                                error: format!(
+                                    "no account named {account_name:?} with a connected provider"
+                                ),
+                            }),
+                        ));
+                    }
+                    Err(e) => {
+                        tracing::error!("resolving dispatch account {account_name:?}: {e}");
+                        return Err((
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(ApiError { error: "could not provision account session".into() }),
+                        ));
+                    }
+                };
+            match provider_hint.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+                Some(p) => {
+                    let family = crate::routes::gateway::Family::from_provider(p);
+                    let before = mints.len();
+                    mints.extend(rows.into_iter().filter(|r| r.family() == family));
+                    if mints.len() == before {
+                        return Err((
+                            StatusCode::NOT_FOUND,
+                            Json(ApiError {
+                                error: format!(
+                                    "account {account_name:?} has no {} provider",
+                                    family.label()
+                                ),
+                            }),
+                        ));
+                    }
+                }
+                None => mints.extend(rows),
+            }
+        }
+
+        // Two same-family provider rows would mint the same env keys (e.g.
+        // ANTHROPIC_AUTH_TOKEN) and silently repoint the session's family
+        // token; reject rather than clobber (CCT-508).
+        if let Some(family) =
+            colliding_family(mints.iter().map(crate::routes::gateway::ProviderRow::family))
+        {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ApiError {
+                    error: format!(
+                        "multiple dispatch accounts resolve to the {} provider family; \
+                         specify at most one account per family",
+                        family.label()
+                    ),
+                }),
+            ));
+        }
+
+        for row in mints {
+            match crate::routes::gateway::mint_session_env_for_account(&state, row.id, &session_id)
+                .await
             {
                 Ok(Some(gateway_env)) => {
                     if let Some(obj) = forwarded_payload.as_object_mut() {
@@ -563,36 +644,23 @@ pub async fn dispatch(
                             .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
                         if let Some(env_obj) = env.as_object_mut() {
                             for (k, v) in gateway_env {
-                                // Two accounts of the same provider family mint
-                                // the same env keys (e.g. ANTHROPIC_AUTH_TOKEN);
-                                // reject rather than silently clobber (CCT-508).
-                                if let Some(existing) = env_obj.get(&k)
-                                    && existing.as_str() != Some(v.as_str())
-                                {
-                                    return Err((
-                                        StatusCode::BAD_REQUEST,
-                                        Json(ApiError {
-                                            error: format!(
-                                                "multiple dispatch accounts resolve to the \
-                                                 same provider family (conflict on {k:?}); \
-                                                 specify at most one account per family"
-                                            ),
-                                        }),
-                                    ));
-                                }
                                 env_obj.insert(k, serde_json::Value::String(v));
                             }
                         }
                     }
                 }
                 Ok(None) => {
+                    tracing::error!(
+                        provider_id = %row.id,
+                        "mint_session_env_for_account (dispatch): provider row vanished mid-dispatch"
+                    );
                     return Err((
-                        StatusCode::NOT_FOUND,
-                        Json(ApiError { error: format!("no account named {account_name:?}") }),
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ApiError { error: "could not provision account session".into() }),
                     ));
                 }
                 Err(e) => {
-                    tracing::error!("mint_session_env (dispatch) failed: {e}");
+                    tracing::error!(provider_id = %row.id, "mint_session_env_for_account (dispatch) failed: {e}");
                     return Err((
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(ApiError { error: "could not provision account session".into() }),
@@ -713,7 +781,8 @@ pub async fn dispatch(
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_dispatch_account, resolve_dispatch_session_id};
+    use super::{colliding_family, resolve_dispatch_account, resolve_dispatch_session_id};
+    use crate::routes::gateway::Family;
 
     #[test]
     fn session_id_human_logical_mints_fresh_uuid_keeps_key_as_dedup_and_name() {
@@ -748,11 +817,6 @@ mod tests {
         assert!(dedup.is_none(), "no logical key ⇒ no dedup, each dispatch unique");
     }
 
-    // Helper: the bound default account a dispatcher carries (CCT-427).
-    fn bound(name: &str, provider: Option<&str>) -> (String, Option<String>) {
-        (name.to_string(), provider.map(str::to_string))
-    }
-
     #[test]
     fn explicit_account_is_used_verbatim() {
         // An explicit `req.account` routes through that account regardless of any
@@ -764,24 +828,34 @@ mod tests {
     #[test]
     fn explicit_account_overrides_bound_default() {
         // CCT-427: explicit account wins over the dispatcher's default, and uses
-        // the explicit provider hint (not the bound one).
-        let default = bound("automation-account", Some("openai"));
-        let got = resolve_dispatch_account(Some("work"), Some("anthropic"), Some(&default));
+        // the explicit provider hint.
+        let got =
+            resolve_dispatch_account(Some("work"), Some("anthropic"), Some("automation-account"));
         assert_eq!(got, Some(("work".into(), Some("anthropic".into()))));
     }
 
     #[test]
-    fn empty_account_falls_back_to_bound_default() {
-        // CCT-427: an empty / whitespace `req.account` falls back to the
-        // dispatcher's bound default account (name + its provider hint).
-        let default = bound("automation-account", Some("anthropic"));
+    fn empty_account_falls_back_to_bound_default_identity_all_providers() {
+        // CCT-427 / CCT-559: an empty / whitespace `req.account` falls back to
+        // the dispatcher's bound default account IDENTITY — no provider hint, so
+        // every provider the identity carries gets minted.
         assert_eq!(
-            resolve_dispatch_account(None, None, Some(&default)),
-            Some(("automation-account".into(), Some("anthropic".into())))
+            resolve_dispatch_account(None, None, Some("automation-account")),
+            Some(("automation-account".into(), None))
         );
         assert_eq!(
-            resolve_dispatch_account(Some("   "), None, Some(&default)),
-            Some(("automation-account".into(), Some("anthropic".into())))
+            resolve_dispatch_account(Some("   "), None, Some("automation-account")),
+            Some(("automation-account".into(), None))
+        );
+    }
+
+    #[test]
+    fn bare_explicit_account_carries_no_provider_hint() {
+        // CCT-559: `account: "acme"` alone means "all of acme's providers" —
+        // the resolution must not invent a family constraint.
+        assert_eq!(
+            resolve_dispatch_account(Some("acme"), None, None),
+            Some(("acme".into(), None))
         );
     }
 
@@ -791,5 +865,27 @@ mod tests {
         // (behaves as before any account routing existed).
         assert_eq!(resolve_dispatch_account(None, None, None), None);
         assert_eq!(resolve_dispatch_account(Some(""), None, None), None);
+    }
+
+    #[test]
+    fn disjoint_families_do_not_collide() {
+        // CCT-559: one identity's claude + codex rows mint disjoint env keys.
+        assert!(colliding_family([Family::Anthropic, Family::Openai]).is_none());
+        assert!(colliding_family([]).is_none());
+        assert!(colliding_family([Family::Openai]).is_none());
+    }
+
+    #[test]
+    fn same_family_twice_collides() {
+        // CCT-508: two same-family rows would fight over ANTHROPIC_AUTH_TOKEN /
+        // OPENAI_API_KEY — the guard names the colliding family.
+        assert!(matches!(
+            colliding_family([Family::Anthropic, Family::Anthropic]),
+            Some(Family::Anthropic)
+        ));
+        assert!(matches!(
+            colliding_family([Family::Anthropic, Family::Openai, Family::Openai]),
+            Some(Family::Openai)
+        ));
     }
 }

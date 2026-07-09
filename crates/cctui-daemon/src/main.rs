@@ -19,20 +19,34 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Enrol this machine with a cctui-server and write the resulting
-    /// machine key to the config file.
+    /// Enrol a machine with a cctui-server. Without a target this machine:
+    /// mint a machine key and write it to the local config file. With an
+    /// `[user@]host` ssh target (CCT-548): one-shot remote install — push the
+    /// right daemon binary through the server's release proxy, enroll, write
+    /// the remote config, install + start the systemd user service, and wait
+    /// until the machine shows connected in the fleet. Idempotent: re-running
+    /// upgrades/repairs an existing install.
     Enroll {
+        /// ssh target (`user@host` or an ssh-config alias) for remote
+        /// enrolment. Omit to enroll this machine locally.
+        ssh_target: Option<String>,
         #[arg(long)]
         server_url: String,
         #[arg(long)]
         token: String,
+        /// Machine name. Required for local enrolment; defaults to the remote
+        /// hostname for remote enrolment.
         #[arg(long)]
-        name: String,
+        name: Option<String>,
         /// Machine kind: `persistent` (default, a real dev machine) or
         /// `ephemeral` (a dispatch/worker pod — hidden from the New-session
         /// picker and reaped once stale; CCT-183).
         #[arg(long, default_value = "persistent")]
         kind: String,
+        /// Seconds to wait for the remote daemon to connect before failing
+        /// the verification step (remote enrolment only).
+        #[arg(long, default_value_t = 90)]
+        verify_timeout_secs: u64,
     },
     /// Connect to the configured server and supervise adapters.
     Run {
@@ -202,7 +216,21 @@ async fn main() -> anyhow::Result<()> {
     let path = cli.config.unwrap_or_else(Config::default_path);
 
     match cli.cmd {
-        Cmd::Enroll { server_url, token, name, kind } => {
+        Cmd::Enroll { ssh_target, server_url, token, name, kind, verify_timeout_secs } => {
+            if let Some(ssh_target) = ssh_target {
+                return cctui_daemon::enroll::run(cctui_daemon::enroll::RemoteEnrollOpts {
+                    ssh_target,
+                    server_url,
+                    token,
+                    name,
+                    kind,
+                    verify_timeout: std::time::Duration::from_secs(verify_timeout_secs),
+                })
+                .await;
+            }
+            let Some(name) = name else {
+                anyhow::bail!("--name is required when enrolling this machine locally");
+            };
             let client = ServerClient::new(&server_url);
             // Send `kind` only when non-default so older servers are unaffected.
             let kind_arg = (kind != "persistent").then_some(kind.as_str());

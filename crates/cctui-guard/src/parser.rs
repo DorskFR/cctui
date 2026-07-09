@@ -3,6 +3,39 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
+/// Maximum number of `[llmjudge]` questions per step.
+///
+/// BINEVAL questions are atomic yes/no decompositions of the acceptance
+/// conditions; past a dozen the block stops being a gate and starts being a
+/// rubric, so parsing fails loudly rather than silently truncating.
+pub const MAX_JUDGE_QUESTIONS: usize = 12;
+
+/// A single binary acceptance question in a step's `[llmjudge]` block.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct JudgeQuestion {
+    /// The atomic yes/no question. Must be answerable 1 (verifiably yes) or 0.
+    pub question: String,
+    /// Optional violation example (`question :: violation example`) anchoring
+    /// what a 0 looks like.
+    pub violation: String,
+}
+
+/// A prompt-markdown parse error (malformed `[llmjudge]` block, …). Carries the
+/// step number the error was found in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseError {
+    pub step: u32,
+    pub message: String,
+}
+
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Step {}: {}", self.step, self.message)
+    }
+}
+
+impl std::error::Error for ParseError {}
+
 /// A single parsed workflow step.
 ///
 /// Mirrors the dict produced by `parse_steps` in the Python daemon: every field
@@ -34,6 +67,13 @@ pub struct Step {
     /// explicitly asks for it (CCT-450). Bare `[compact]` ⇒ on; `[compact]: false`
     /// (or `no`/`off`/`0`) ⇒ off; `[compact]: true` ⇒ on.
     pub compact: bool,
+    /// Optional `[llmjudge]` block (CCT-516): binary acceptance questions the
+    /// judge must all answer 1 before the transition *out* of this step is
+    /// allowed. Runs after the deterministic `[gate]`, judges the semantic
+    /// acceptance conditions in a clean context, and fails closed — a partial
+    /// score, a malformed verdict, or a missing judge command all refuse the
+    /// transition. Empty ⇒ no judge.
+    pub llmjudge: Vec<JudgeQuestion>,
 }
 
 /// Strip a leading run of `#` characters, then the rest of an ASCII-whitespace
@@ -87,23 +127,64 @@ fn parse_step_heading(line: &str) -> Option<(u32, String)> {
     Some((num, title))
 }
 
+/// Parse one `[llmjudge]` list item (the text after the leading `-`) into a
+/// [`JudgeQuestion`]: `question` or `question :: violation example`. An empty
+/// question is a parse error.
+fn parse_judge_question(item: &str, step: u32) -> Result<JudgeQuestion, ParseError> {
+    let item = item.trim();
+    if item.is_empty() {
+        return Err(ParseError { step, message: "[llmjudge] question line is empty".to_string() });
+    }
+    let (question, violation) =
+        item.split_once("::").map_or((item, ""), |(q, v)| (q.trim_end(), v.trim_start()));
+    if question.is_empty() {
+        return Err(ParseError { step, message: "[llmjudge] question text is empty".to_string() });
+    }
+    Ok(JudgeQuestion { question: question.to_string(), violation: violation.to_string() })
+}
+
 /// Parse step definitions from prompt markdown.
 ///
 /// Looks for headings matching `# Step N` (1–6 `#`, case-insensitive) and
-/// collects the `[allowed]`/`[disallowed]`/`[transition]`/`[network]` lines that
-/// follow, until the next step heading.
-#[must_use]
-pub fn parse_steps(markdown: &str) -> BTreeMap<u32, Step> {
+/// collects the `[allowed]`/`[disallowed]`/`[transition]`/`[network]`/`[gate]`/
+/// `[compact]`/`[llmjudge]` lines that follow, until the next step heading.
+///
+/// A `[llmjudge]` block is the bare annotation immediately followed by one
+/// `- question` line per binary acceptance question (optionally
+/// `- question :: violation example`). A malformed block — inline value, no
+/// questions, an empty question, a duplicate block, or more than
+/// [`MAX_JUDGE_QUESTIONS`] questions — is a parse error (CCT-516).
+pub fn parse_steps(markdown: &str) -> Result<BTreeMap<u32, Step>, ParseError> {
     let mut steps: BTreeMap<u32, Step> = BTreeMap::new();
     // Accumulate each step's prose body lines separately; joined + trimmed once
     // the step is closed (next heading or end of input).
     let mut bodies: BTreeMap<u32, Vec<String>> = BTreeMap::new();
     let mut current: Option<u32> = None;
+    // Steps whose `[llmjudge]` block has been seen (duplicate detection).
+    let mut judged: HashSet<u32> = HashSet::new();
+    // A `[llmjudge]` block is open and collecting `- question` lines.
+    let mut judge_open = false;
+
+    let close_judge = |cur: u32, steps: &BTreeMap<u32, Step>| -> Result<(), ParseError> {
+        if steps.get(&cur).is_some_and(|s| s.llmjudge.is_empty()) {
+            return Err(ParseError {
+                step: cur,
+                message: "[llmjudge] must be immediately followed by at least one `- <question>` \
+                          line"
+                    .to_string(),
+            });
+        }
+        Ok(())
+    };
 
     for line in markdown.split('\n') {
         let stripped = line.trim();
 
         if let Some((num, title)) = parse_step_heading(stripped) {
+            if judge_open && let Some(cur) = current {
+                close_judge(cur, &steps)?;
+            }
+            judge_open = false;
             current = Some(num);
             steps.insert(num, Step { title, ..Step::default() });
             bodies.insert(num, Vec::new());
@@ -116,8 +197,47 @@ pub fn parse_steps(markdown: &str) -> BTreeMap<u32, Step> {
         let value =
             || stripped.split_once(':').map_or(String::new(), |(_, v)| v.trim().to_string());
 
+        if judge_open {
+            if let Some(item) = stripped.strip_prefix('-') {
+                let question = parse_judge_question(item, cur)?;
+                if let Some(step) = steps.get_mut(&cur) {
+                    if step.llmjudge.len() >= MAX_JUDGE_QUESTIONS {
+                        return Err(ParseError {
+                            step: cur,
+                            message: format!(
+                                "[llmjudge] has more than {MAX_JUDGE_QUESTIONS} questions — \
+                                 decompose into fewer, more atomic conditions"
+                            ),
+                        });
+                    }
+                    step.llmjudge.push(question);
+                }
+                continue;
+            }
+            // Any non-list line closes the block; an empty block is malformed.
+            close_judge(cur, &steps)?;
+            judge_open = false;
+        }
+
         if let Some(step) = steps.get_mut(&cur) {
-            if lower.starts_with("[allowed]") {
+            if lower.starts_with("[llmjudge]") {
+                if !judged.insert(cur) {
+                    return Err(ParseError {
+                        step: cur,
+                        message: "duplicate [llmjudge] block".to_string(),
+                    });
+                }
+                if !value().is_empty() {
+                    return Err(ParseError {
+                        step: cur,
+                        message: "[llmjudge] takes no inline value — list one `- <question>` \
+                                  (optionally `- <question> :: <violation example>`) per line \
+                                  below it"
+                            .to_string(),
+                    });
+                }
+                judge_open = true;
+            } else if lower.starts_with("[allowed]") {
                 step.allowed = value();
             } else if lower.starts_with("[disallowed]") {
                 step.disallowed = value();
@@ -140,13 +260,17 @@ pub fn parse_steps(markdown: &str) -> BTreeMap<u32, Step> {
         }
     }
 
+    if judge_open && let Some(cur) = current {
+        close_judge(cur, &steps)?;
+    }
+
     for (num, lines) in bodies {
         if let Some(step) = steps.get_mut(&num) {
             step.body = lines.join("\n").trim().to_string();
         }
     }
 
-    steps
+    Ok(steps)
 }
 
 /// Parse a transition string into `(step_numbers, allows_exit)`.

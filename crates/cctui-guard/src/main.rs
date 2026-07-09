@@ -52,6 +52,14 @@ struct Cli {
     /// (the worker's task tree).
     #[arg(long = "gate-cwd", default_value = "/workspace")]
     gate_cwd: PathBuf,
+
+    /// Command the `[llmjudge]` acceptance judge runs through (CCT-516). Runs
+    /// via `sh -c` in `--gate-cwd`, receives the question prompt on stdin, and
+    /// must print a JSON verdict array on stdout (e.g. a wrapper around
+    /// `claude -p` with a clean context). Unset while a step declares
+    /// `[llmjudge]` ⇒ that step's transition is refused (fail closed).
+    #[arg(long = "judge-cmd", env = "GUARD_JUDGE_CMD")]
+    judge_cmd: Option<String>,
 }
 
 #[tokio::main]
@@ -68,7 +76,8 @@ async fn main() -> anyhow::Result<()> {
 
     let markdown = std::fs::read_to_string(&cli.prompt)
         .map_err(|e| anyhow::anyhow!("prompt file {}: {e}", cli.prompt.display()))?;
-    let steps = parse_steps(&markdown);
+    let steps = parse_steps(&markdown)
+        .map_err(|e| anyhow::anyhow!("prompt file {}: {e}", cli.prompt.display()))?;
     if steps.is_empty() {
         tracing::warn!("No steps found in {}", cli.prompt.display());
     }
@@ -105,6 +114,7 @@ async fn main() -> anyhow::Result<()> {
         cli.policy_out,
         cli.always_allow,
         cli.gate_cwd,
+        cli.judge_cmd,
     ));
 
     let app = router(engine);

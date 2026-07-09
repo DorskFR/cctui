@@ -20,10 +20,15 @@ cctui-guard \
   --state /var/run/workflow-guard/state \
   --policy-out /var/run/guard-proxy/policy.json \
   --always-allow callback.example.com:443 \
-  --always-allow cctui.example.com:8700
+  --always-allow cctui.example.com:8700 \
+  --judge-cmd 'accept-judge'
 ```
 
-`--prompt`/`PROMPT_FILE` and `--rules`/`GUARD_RULES_FILE` may be given via env.
+`--prompt`/`PROMPT_FILE`, `--rules`/`GUARD_RULES_FILE`, and
+`--judge-cmd`/`GUARD_JUDGE_CMD` may be given via env. `--judge-cmd` is the
+command the `[llmjudge]` acceptance judge runs through (see below); leaving it
+unset while a prompt declares `[llmjudge]` refuses that step's transition
+(fail closed).
 `--always-allow host:port` is repeatable; those hosts are appended to every
 deny-default policy written (the entrypoint seeds the result-callback and
 in-cluster service hosts this way — nothing is hardcoded). The daemon must run
@@ -101,6 +106,38 @@ Explore; do not modify anything.
   assertion of completion. Omitting `[gate]` leaves the transition trusted, as
   before. `Exit` bypasses the gate — bail-out must always work; the agent reports
   the blocked outcome via the result callback rather than finalizing.
+- **`[llmjudge]`** — an optional semantic acceptance gate (CCT-516), parallel to
+  `[gate]` and enforced independently *after* it. The bare annotation is
+  immediately followed by one `- <question>` line per binary acceptance question
+  (optionally `- <question> :: <violation example>`), max 12 per step:
+
+  ```markdown
+  [llmjudge]
+  - Does every acceptance condition have a matching evidence[] entry? :: two of three covered
+  - Does the diff implement the change itself, not just a test?
+  ```
+
+  On a numeric transition out of the step the guard pipes the question block to
+  the configured `--judge-cmd` (env `GUARD_JUDGE_CMD`), run via `sh -c` in
+  `--gate-cwd` with a **clean context** — the judge sees the questions plus its
+  own working tree (the Intent+Acceptance artifact, the assembled `evidence[]`,
+  the diff), never the implementer session's reasoning. The command must print a
+  JSON array on stdout, one verdict per question in order:
+
+  ```json
+  [{ "question": 1, "answer": 1, "reason": "one line" }, ...]
+  ```
+
+  The transition proceeds **only on a perfect score** (every answer `1`). A
+  partial score, a malformed verdict, a failing command, or a missing
+  `--judge-cmd` all refuse the transition (fail closed), returning the failing
+  questions + reasons in `error` (same shape as a gate failure). Either way the
+  per-question verdicts are attached to the response as a `kind: "judge"`
+  evidence entry (`{"kind","summary","detail","verdicts"}`) for the agent to
+  carry into the result callback's `evidence[]` — e.g. "llm judge: 5/6
+  acceptance questions verified". A malformed block (inline value, no questions,
+  an empty question, a duplicate block, more than 12 questions) is a **parse
+  error** at startup. `Exit` bypasses the judge like it bypasses the gate.
 
 Every numeric transition (and the `SessionStart`/compact hook) re-injects the
 target step's **prose body verbatim**, so a long or compacted session re-anchors

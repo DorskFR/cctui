@@ -8,8 +8,7 @@
 		useRecentDirs,
 		useAccounts,
 		useLabels,
-		endpoints,
-		primaryProvider
+		endpoints
 	} from '$lib/queries';
 	import type { Label } from '@bindings/Label';
 	import { ws } from '$lib/ws.svelte';
@@ -32,11 +31,10 @@
 		Button,
 		Dropzone,
 		FileButton,
-		Field,
 		Icon,
 		Modal,
-		OptionButton,
-		Text
+		Tabs,
+		type TabItem
 	} from '@dorsk/tsumikit';
 	import { clickOutside } from '$lib/clickOutside';
 	import { dialogBackdropGuard } from '$lib/dialogBackdropGuard';
@@ -47,7 +45,7 @@
 	import MachineFields from './spawn/MachineFields.svelte';
 	import DispatchFields from './spawn/DispatchFields.svelte';
 	import type { Form, Target } from './spawn/types';
-	import { adapterForProvider, isCompatibleProvider } from './spawn/options';
+	import { effectiveAdapterFor, providerForAdapter, isCompatibleProvider } from './spawn/options';
 	import { settings } from '$lib/settings.svelte';
 
 	let {
@@ -70,7 +68,12 @@
 
 	// Spawn target + form shape live in ./spawn/types. Default target comes from
 	// settings (CCT-426); a prefill (re-dispatch) is always a machine spawn.
+	// Machine / Dispatch render as tabs (CCT-562).
 	let target = $state<Target>(prefill ? 'machine' : settings.state.newSession.defaultTarget);
+	const targetTabs: TabItem[] = [
+		{ id: 'machine', label: 'Machine' },
+		{ id: 'dispatch', label: 'Dispatch (k8s)' }
+	];
 
 	// New-session defaults are now seeded from server-persisted settings (CCT-426)
 	// rather than hardcoded; last-used per-machine prefs still take precedence when
@@ -310,22 +313,19 @@
 	}
 
 	// Account is the primary axis (CCT-399): MachineFields offers every account
-	// and derives the harness + model list from the chosen one (no per-adapter
-	// pre-filter). Stale-selection cleanup lives in MachineFields.
+	// and derives the allowed harnesses + model list from the chosen one.
+	// Stale-selection cleanup lives in MachineFields. Accounts are identities
+	// (CCT-558): matched by name; the credential in play is the provider whose
+	// family backs the effective harness (CCT-562).
 	const allAccounts = $derived($accounts.data ?? []);
 	const selectedAccount = $derived(
-		form.account
-			? (allAccounts.find(
-					(a) => a.name === form.account && primaryProvider(a)?.provider === form.account_provider
-				) ?? allAccounts.find((a) => a.name === form.account))
-			: undefined
+		form.account ? allAccounts.find((a) => a.name === form.account) : undefined
 	);
-	// TODO(CCT-562): the spawn flow still assumes one credential per account —
-	// read the first provider row until the modal is reworked for
-	// multi-provider identities.
-	const selectedProvider = $derived(
-		selectedAccount ? primaryProvider(selectedAccount)?.provider : undefined
-	);
+	const effectiveAdapter = $derived(effectiveAdapterFor(selectedAccount, form.adapter_id));
+	const spawnProvider = $derived(providerForAdapter(selectedAccount, effectiveAdapter)?.provider);
+	// Dispatch runs a claude worker → its gateway routing always uses the
+	// account's anthropic-family credential.
+	const dispatchProvider = $derived(providerForAdapter(selectedAccount, 'claude-code')?.provider);
 
 	const actions = useSessionActions();
 	let busy = $state(false);
@@ -380,10 +380,10 @@
 	// immediate spawn and the "Save as draft" path (CCT-394); `save_draft` and
 	// `env` are overridden by the caller as needed.
 	function buildSpawnBody(): SpawnRequest {
-		// The account drives the harness + model (CCT-399); "Default" falls back
-		// to the adapter-first selection.
-		const adapter = selectedProvider ? adapterForProvider(selectedProvider) : form.adapter_id;
-		const compatible = !!selectedProvider && isCompatibleProvider(selectedProvider);
+		// The account bounds the harness to its provider families (CCT-562);
+		// "Default" keeps the adapter-first selection.
+		const adapter = effectiveAdapter;
+		const compatible = !!spawnProvider && isCompatibleProvider(spawnProvider);
 		const model = compatible
 			? form.model_account || null
 			: (adapter === 'codex' ? form.model_codex : form.model_claude) || null;
@@ -401,9 +401,9 @@
 			model,
 			env: envMap(),
 			account: form.account.trim() || null,
-			// Disambiguate a name shared across providers so the server resolves
-			// the exact account (CCT-399).
-			provider: selectedProvider || null,
+			// The provider credential backing the chosen harness (CCT-562), so the
+			// server resolves the exact credential under the account identity.
+			provider: spawnProvider || null,
 			save_draft: false
 		};
 	}
@@ -500,7 +500,7 @@
 		if (form.prompt_file.trim()) payload.prompt_file = form.prompt_file.trim();
 		// The model is account-driven for a compatible account (CCT-399), else the
 		// claude family.
-		const dispatchCompatible = !!selectedProvider && isCompatibleProvider(selectedProvider);
+		const dispatchCompatible = !!dispatchProvider && isCompatibleProvider(dispatchProvider);
 		const dispatchModel = dispatchCompatible ? form.model_account.trim() : form.model_claude.trim();
 		if (dispatchModel) payload.model = dispatchModel;
 		if (form.effort_claude.trim()) payload.effort = form.effort_claude.trim();
@@ -525,7 +525,7 @@
 			// Account routing on the dispatch path (CCT-399): the server mints the
 			// gateway token + merges its base-url/token into payload.env.
 			account: form.account.trim() || null,
-			provider: selectedProvider || null,
+			provider: dispatchProvider || null,
 			// Multi-account routing (CCT-508) isn't driven from the modal; the
 			// singular account/provider pair above is the modal's contract.
 			accounts: [],
@@ -602,32 +602,7 @@
 			onfiles={addFiles}
 		>
 			<div class="stack" use:dialogBackdropGuard>
-			{#if canDispatch}
-				<Field label="Run on">
-					<div class="targets">
-						<OptionButton
-							selected={target === 'machine'}
-							style="--opt-accent: var(--c-blue)"
-							onclick={() => (target = 'machine')}
-						>
-							<strong>Machine</strong>
-							<Text tone="faint" size="xs">An enrolled daemon</Text>
-						</OptionButton>
-						<OptionButton
-							selected={target === 'dispatch'}
-							style="--opt-accent: var(--c-blue)"
-							onclick={() => (target = 'dispatch')}
-						>
-							<strong>Dispatch (k8s)</strong>
-							<Text tone="faint" size="xs">Ephemeral worker pod</Text>
-						</OptionButton>
-					</div>
-				</Field>
-			{/if}
-
-			{#if target === 'dispatch'}
-				<DispatchFields bind:form {dispatcherIds} accounts={allAccounts} onsubmit={submit} />
-			{:else}
+			{#snippet machineFields()}
 				<MachineFields
 					bind:form
 					machines={$machines.data ?? []}
@@ -635,6 +610,26 @@
 					accounts={allAccounts}
 					onsubmit={submit}
 				/>
+			{/snippet}
+			{#snippet targetPanel(id: string)}
+				<div class="stack">
+					{#if id === 'dispatch'}
+						<DispatchFields bind:form {dispatcherIds} accounts={allAccounts} onsubmit={submit} />
+					{:else}
+						{@render machineFields()}
+					{/if}
+				</div>
+			{/snippet}
+			<!-- Machine / Dispatch are tabs (CCT-562) when a dispatcher exists. -->
+			{#if canDispatch}
+				<Tabs
+					label="Run on"
+					tabs={targetTabs}
+					bind:value={() => target as string, (v) => (target = v === 'dispatch' ? 'dispatch' : 'machine')}
+					panel={targetPanel}
+				/>
+			{:else}
+				{@render machineFields()}
 			{/if}
 
 			<!-- Shared add-ons: one row of equal-width buttons — Add label
@@ -729,11 +724,6 @@
 </Modal>
 
 <style>
-	.targets {
-		display: grid;
-		grid-template-columns: 1fr 1fr;
-		gap: var(--sp-2);
-	}
 	/* Add-ons: a single wrapping row of "Add …" buttons, with each control's
 	   content stacked below. */
 	.addons {

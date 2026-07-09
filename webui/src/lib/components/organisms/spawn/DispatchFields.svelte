@@ -5,9 +5,9 @@
 	// Dispatch runs a claude worker, so it uses the claude model/effort sets.
 	import EffortSlider from './EffortSlider.svelte';
 	import { Field, Input, Select, Text, Textarea } from '@dorsk/tsumikit';
-	import { claudeModels, claudeEfforts, adapterForProvider, isCompatibleProvider, withAliasTargets } from './options';
+	import { claudeModels, claudeEfforts, accountAdapters, providerForAdapter, isCompatibleProvider, withAliasTargets } from './options';
 	import { submitChordLabel, isSubmitChord } from '$lib/platform';
-	import { primaryProvider, type OAuthAccount } from '$lib/queries';
+	import type { OAuthAccount } from '$lib/queries';
 	import type { Form } from './types';
 
 	let {
@@ -25,17 +25,14 @@
 		onsubmit?: () => void;
 	} = $props();
 
-	// Dispatch runs a claude worker → only Claude-family accounts apply (CCT-399).
-	// TODO(CCT-560/CCT-562): single-provider back-compat — reads providers[0].
-	const providerOf = (a: OAuthAccount) => primaryProvider(a)?.provider ?? '';
-	const dispatchAccounts = $derived(accounts.filter((a) => adapterForProvider(providerOf(a)) === 'claude-code'));
+	// Dispatch runs a claude worker → only accounts holding an anthropic-family
+	// provider apply (provider-family union, CCT-562). The credential in play is
+	// the account's anthropic-family provider.
+	const dispatchAccounts = $derived(accounts.filter((a) => accountAdapters(a).includes('claude-code')));
 	const selectedAccount = $derived(
-		form.account
-			? (dispatchAccounts.find((a) => a.name === form.account && providerOf(a) === form.account_provider) ??
-					dispatchAccounts.find((a) => a.name === form.account))
-			: undefined
+		form.account ? dispatchAccounts.find((a) => a.name === form.account) : undefined
 	);
-	const selectedProvider = $derived(selectedAccount ? primaryProvider(selectedAccount) : undefined);
+	const selectedProvider = $derived(providerForAdapter(selectedAccount, 'claude-code'));
 	const accountModelOptions = $derived((selectedProvider?.models ?? []).map((m) => ({ v: m.model, label: m.label })));
 	const usesAccountModels = $derived(!!selectedProvider && isCompatibleProvider(selectedProvider.provider));
 	// Native claude families annotated with the selected account's alias targets.
@@ -44,15 +41,12 @@
 	$effect(() => {
 		if (form.account && !dispatchAccounts.some((a) => a.name === form.account)) {
 			form.account = '';
-			form.account_provider = '';
 		}
 	});
-
-	function onAccountChange(value: string) {
-		form.account = value;
-		const acct = value ? dispatchAccounts.find((a) => a.name === value) : undefined;
-		form.account_provider = acct ? providerOf(acct) : '';
-	}
+	// Keep account_provider tracking the credential actually in use.
+	$effect(() => {
+		form.account_provider = selectedProvider?.provider ?? '';
+	});
 </script>
 
 {#if dispatcherIds.length >= 1}
@@ -107,9 +101,11 @@
 
 {#if dispatchAccounts.length}
 	<Field label="Account (optional)" for="sp-account-d">
-		<Select id="sp-account-d" value={form.account} onchange={(e) => onAccountChange((e.currentTarget as HTMLSelectElement).value)}>
+		<Select id="sp-account-d" bind:value={form.account}>
 			<option value="">Default (no account)</option>
-			{#each dispatchAccounts as a (a.id)}<option value={a.name}>{a.name} ({providerOf(a)})</option>{/each}
+			{#each dispatchAccounts as a (a.id)}
+				<option value={a.name}>{a.name} ({providerForAdapter(a, 'claude-code')?.provider})</option>
+			{/each}
 		</Select>
 		<Text tone="faint" size="xs">Routes the worker through the passthrough gateway under this account.</Text>
 	</Field>

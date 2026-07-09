@@ -47,9 +47,18 @@ async fn reconcile_migration_checksums(pool: &PgPool) -> Result<(), sqlx::Error>
     }
 
     const RECONCILED: &[(i64, &str)] = &[
-        (51, "41e5695b0fb3238b1d8ecc979de99c2daff7289615cbf8b08c68f9c9d5b9b4b8bfb3bc2d2183f339fa4f2a6c0aa508ad"),
-        (55, "c23c56dd3c04b56e6874526fd3a43f783e9ff844ccff98e8531d984628725bbf2e1014a19df3204234b3079345a6d177"),
-        (60, "8d0caf988684f0c4894fe6ea43ec74c44453e79c23a68518604e77e78e9a57466d792b8e6253090b80eea4c278d400dd"),
+        (
+            51,
+            "41e5695b0fb3238b1d8ecc979de99c2daff7289615cbf8b08c68f9c9d5b9b4b8bfb3bc2d2183f339fa4f2a6c0aa508ad",
+        ),
+        (
+            55,
+            "c23c56dd3c04b56e6874526fd3a43f783e9ff844ccff98e8531d984628725bbf2e1014a19df3204234b3079345a6d177",
+        ),
+        (
+            60,
+            "8d0caf988684f0c4894fe6ea43ec74c44453e79c23a68518604e77e78e9a57466d792b8e6253090b80eea4c278d400dd",
+        ),
     ];
 
     for (version, checksum_hex) in RECONCILED {

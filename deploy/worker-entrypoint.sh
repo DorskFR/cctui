@@ -342,8 +342,9 @@ phase_workspace() {
 # ── Phase 3: Context pack ───────────────────────────────────────────────────
 # Operator-plane: CONTEXT_PACK_URL/REF (+ optional TOKEN, SUBDIR). git clone
 # --depth 1 the pinned ref into /opt/context (root-side, pre-lockdown), then
-# wire its CLAUDE.md / docs / skills / prompts / style / guard-rules.md into the
-# locations the agent expects. FAIL-CLOSED: when CONTEXT_PACK_URL is set the
+# wire its CLAUDE.md / guard-rules.md and the dirs its pack.toml [dirs] table
+# declares (falling back to the v1 set: skills/rules/docs/style/projects) into
+# the locations the agent expects. FAIL-CLOSED: when CONTEXT_PACK_URL is set the
 # fetch MUST succeed (the pack defines the guard rules). Skipped entirely when
 # CONTEXT_PACK_URL is unset.
 #
@@ -352,6 +353,44 @@ phase_workspace() {
 # dispatch payload's `env` map (TASK_PAYLOAD_JSON.env, the operator-controlled
 # automation dispatcher) — letting a flow select its pack without baking it into the
 # template, while a template that pins the pack still overrides the payload.
+# [dirs] table from the merged pack manifest ($CONTEXT_DIR/pack.toml), one
+# `key srcdir` pair per line. Empty when the pack ships no manifest / no [dirs].
+pack_dirs() {
+    [ -f "$CONTEXT_DIR/pack.toml" ] || return 0
+    sed -n '/^\[dirs\]/,/^\[/s/^[[:space:]]*\([A-Za-z0-9_-][A-Za-z0-9_-]*\)[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1 \2/p' \
+        "$CONTEXT_DIR/pack.toml"
+}
+
+# Source dir (relative to $CONTEXT_DIR) declared for a [dirs] key in $_dirs;
+# empty when the key is not declared.
+pack_dir_src() {
+    printf '%s\n' "$_dirs" | while read -r _k _s; do
+        [ "$_k" = "$1" ] || continue
+        printf '%s' "${_s:-$1}"
+        break
+    done
+}
+
+# Home-relative wiring target for a [dirs] key. rules/ = always-on guidance
+# (Claude Code auto-loads each *.md — the CCT-490 push seam); docs/ = on-demand
+# reference pulled by path (@~/.claude/docs/<x>.md), not auto-loaded; hooks/ =
+# PreToolUse scripts (chmod +x here, registered in phase_permissions). prompts/
+# and scripts/ stay in /opt/context (TASK_PROMPT_FILE / absolute paths resolve
+# there). Unknown keys land under ~/.claude/<key> — a per-pod emptyDir, so a new
+# pack dir never writes to the NFS-shared home root.
+pack_dir_target() {
+    case "$1" in
+        skills)          printf '.claude/skills' ;;
+        rules)           printf '.claude/rules' ;;
+        docs)            printf '.claude/docs' ;;
+        hooks)           printf '.claude/hooks' ;;
+        style)           printf 'style' ;;
+        projects)        printf 'projects' ;;
+        prompts|scripts) ;;
+        *)               printf '.claude/%s' "$1" ;;
+    esac
+}
+
 phase_context_pack() {
     if [ -n "${TASK_PAYLOAD_JSON:-}" ]; then
         for _k in CONTEXT_PACK_URL CONTEXT_PACK_REF CONTEXT_PACK_TOKEN CONTEXT_PACK_SUBDIR; do
@@ -495,6 +534,17 @@ phase_context_pack() {
     # so landlock RO on /opt/context covers them.
     _home="/home/${WORKER_USER}"
 
+    # The pack manifest's [dirs] table is authoritative when present (CCT-576):
+    # `key = "srcdir"` lines declare which pack dirs get wired into the home, so
+    # a pack can add a new dir (e.g. hooks/) without an entrypoint change. Absent
+    # a manifest/table we fall back to the v1 hardcoded set below.
+    _dirs=$(pack_dirs)
+    [ -n "$_dirs" ] || _dirs="skills skills
+rules rules
+docs docs
+style style
+projects projects"
+
     # Per-pod isolation of the home paths the pack overwrites. /home/worker is a
     # ReadWriteMany NFS volume shared across concurrent workers, so writing the
     # pack's CLAUDE.md / projects / style straight onto it would race-corrupt
@@ -507,7 +557,8 @@ phase_context_pack() {
         _iso="/overlay/pack-home"
         mkdir -p "$_iso"
         for _p in projects style; do
-            if [ -d "$CONTEXT_DIR/$_p" ]; then
+            _s=$(pack_dir_src "$_p")
+            if [ -n "$_s" ] && [ -d "$CONTEXT_DIR/$_s" ]; then
                 mkdir -p "$_iso/$_p" "${_home}/$_p"
                 mount --bind "$_iso/$_p" "${_home}/$_p" 2>/dev/null || true
             fi
@@ -520,35 +571,26 @@ phase_context_pack() {
     fi
 
     [ -f "$CONTEXT_DIR/CLAUDE.md" ] && cp -f "$CONTEXT_DIR/CLAUDE.md" "${_home}/CLAUDE.md"
-    if [ -d "$CONTEXT_DIR/skills" ]; then
-        mkdir -p "${_home}/.claude/skills"
-        cp -a "$CONTEXT_DIR/skills/." "${_home}/.claude/skills/" 2>/dev/null || true
-    fi
-    # rules/ = always-on guidance: wire to ~/.claude/rules so Claude Code
-    # auto-loads each *.md as instructions on every task (the CCT-490 push seam).
-    if [ -d "$CONTEXT_DIR/rules" ]; then
-        mkdir -p "${_home}/.claude/rules"
-        cp -a "$CONTEXT_DIR/rules/." "${_home}/.claude/rules/" 2>/dev/null || true
-    fi
-    # docs/ = on-demand reference: wire to ~/.claude/docs so prompts can pull a
-    # specific doc by path (@~/.claude/docs/<x>.md). Not auto-loaded.
-    if [ -d "$CONTEXT_DIR/docs" ]; then
-        mkdir -p "${_home}/.claude/docs"
-        cp -a "$CONTEXT_DIR/docs/." "${_home}/.claude/docs/" 2>/dev/null || true
-    fi
-    if [ -d "$CONTEXT_DIR/style" ]; then
-        mkdir -p "${_home}/style"
-        cp -a "$CONTEXT_DIR/style/." "${_home}/style/" 2>/dev/null || true
-    fi
-    if [ -d "$CONTEXT_DIR/projects" ]; then
-        mkdir -p "${_home}/projects"
-        cp -a "$CONTEXT_DIR/projects/." "${_home}/projects/" 2>/dev/null || true
-    fi
-    # chown ONLY the paths we just copied in — NOT the whole (NFS-backed) home,
-    # which would hang in NFS RPC like the credentials chown (CCT-457).
-    for _p in CLAUDE.md .claude/skills .claude/rules .claude/docs style projects; do
-        [ -e "${_home}/${_p}" ] \
-            && chown -R "${WORKER_UID}:${WORKER_UID}" "${_home}/${_p}" 2>/dev/null || true
+    # chown ONLY the paths we copy in — NOT the whole (NFS-backed) home, which
+    # would hang in NFS RPC like the credentials chown (CCT-457).
+    [ -e "${_home}/CLAUDE.md" ] \
+        && chown "${WORKER_UID}:${WORKER_UID}" "${_home}/CLAUDE.md" 2>/dev/null || true
+    printf '%s\n' "$_dirs" | while read -r _key _srcd; do
+        [ -n "$_key" ] || continue
+        [ -n "$_srcd" ] || _srcd="$_key"
+        # Confine the declared source to the pack tree: a crafted pack.toml must
+        # not pull from outside $CONTEXT_DIR.
+        case "$_srcd" in
+            /*|*..*) log "WARNING: context pack: ignoring unsafe [dirs] path ${_key}=\"${_srcd}\""; continue ;;
+        esac
+        _tgt=$(pack_dir_target "$_key")
+        [ -n "$_tgt" ] || continue
+        [ -d "$CONTEXT_DIR/$_srcd" ] || continue
+        mkdir -p "${_home}/${_tgt}"
+        cp -a "$CONTEXT_DIR/$_srcd/." "${_home}/${_tgt}/" 2>/dev/null || true
+        [ "$_key" = hooks ] && chmod +x "${_home}/${_tgt}"/*.sh 2>/dev/null || true
+        chown -R "${WORKER_UID}:${WORKER_UID}" "${_home}/${_tgt}" 2>/dev/null || true
+        log "context pack: wired ${_srcd}/ -> ~/${_tgt}"
     done
     # /opt/context stays root-owned + RO under landlock, but must be world-
     # READABLE/traversable: the dropped-privilege daemon (worker uid) reads the
@@ -850,6 +892,25 @@ phase_permissions() {
         jq -nc --arg cwd "$_cwd" \
             '{skipDangerousModePermissionPrompt: true, permissions: {defaultMode: "bypassPermissions", additionalDirectories: [$cwd]}}' \
             > "$_settings"
+    fi
+    # Register context-pack PreToolUse hooks (CCT-576): every *.sh the pack
+    # staged into ~/.claude/hooks becomes a PreToolUse entry. Claude Code unions
+    # hooks across settings sources, so these run ALONGSIDE the daemon-managed
+    # hooks (all matching hooks get the same stdin; any deny blocks). Matcher
+    # "*": the scripts self-filter on tool_name, and a deny-only hook is safe on
+    # every tool. Idempotent — a command already present is not re-added.
+    _hooksdir="/home/${WORKER_USER}/.claude/hooks"
+    if [ -d "$_hooksdir" ]; then
+        for _hk in "$_hooksdir"/*.sh; do
+            [ -f "$_hk" ] || continue
+            _t=$(mktemp) && jq --arg cmd "$_hk" \
+                '.hooks = ((.hooks // {})
+                 | .PreToolUse = ((.PreToolUse // [])
+                   | if any(.[]?; ((.hooks // [])[]?.command // "") == $cmd) then .
+                     else . + [{matcher: "*", hooks: [{type: "command", command: $cmd}]}] end))' \
+                "$_settings" > "$_t" && mv "$_t" "$_settings"
+            log "permissions: registered PreToolUse hook $(basename "$_hk")"
+        done
     fi
     # .claude is a per-pod emptyDir (not the NFS home), so a recursive chown is
     # safe here (unlike the home — CCT-457).

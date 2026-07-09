@@ -1,6 +1,7 @@
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -165,4 +166,63 @@ pub async fn deenroll(
 
     tracing::info!(machine_id = %machine_id, "machine deenrolled (self)");
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// `GET /api/v1/machines/{machine_id}/status` — enrolment/connectivity
+/// snapshot for one machine (CCT-548). Backs `cctui-daemon enroll
+/// <ssh-target>`'s verification step: the operator polls this until the
+/// freshly installed daemon shows `connected`. Owner-or-admin via the
+/// route's `Authz::Resource(Machine, Read)` guard.
+#[derive(Serialize)]
+pub struct MachineStatusResponse {
+    pub machine_id: Uuid,
+    pub name: String,
+    /// A daemon WS for this machine is currently terminated by some pod
+    /// (this one, or a peer per `ws_presence`). Stronger than `liveness`,
+    /// which a just-inserted row satisfies before any daemon ever connects.
+    pub connected: bool,
+    pub liveness: cctui_proto::models::MachineLiveness,
+    pub last_seen_at: DateTime<Utc>,
+    pub revoked: bool,
+}
+
+pub async fn machine_status(
+    State(state): State<AppState>,
+    Path(machine_id): Path<Uuid>,
+) -> Result<Json<MachineStatusResponse>, (StatusCode, Json<ApiError>)> {
+    let row: Option<(String, DateTime<Utc>, Option<DateTime<Utc>>)> = sqlx::query_as(
+        "SELECT name, last_seen_at, revoked_at FROM machines \
+         WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(machine_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("db error: {e}");
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+    })?;
+    let Some((name, last_seen_at, revoked_at)) = row else {
+        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "machine not found".into() })));
+    };
+    // Local pod first; fall back to `ws_presence` so a WS terminated by a
+    // peer replica still reads as connected. The 45s freshness window
+    // mirrors `presence::LIVE_WITHIN_SECS`.
+    let connected = state.bus.daemon_connected(machine_id)
+        || sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM ws_presence \
+             WHERE kind = 'daemon' AND entity_id = $1 \
+               AND heartbeat_at > now() - interval '45 seconds')",
+        )
+        .bind(machine_id)
+        .fetch_one(&state.pool)
+        .await
+        .unwrap_or(false);
+    Ok(Json(MachineStatusResponse {
+        machine_id,
+        name,
+        connected,
+        liveness: crate::machine_liveness::derive(last_seen_at),
+        last_seen_at,
+        revoked: revoked_at.is_some(),
+    }))
 }

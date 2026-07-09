@@ -159,10 +159,10 @@ export interface OAuthAccount {
   // over the API (may hold secrets), exactly like the OAuth tokens.
 }
 
-/** TODO(CCT-562): single-provider back-compat for the SPAWN surfaces. The
- *  accounts page renders the full provider array (CCT-560); the spawn/dispatch
- *  pickers still assume one credential per account and read the first provider
- *  row until they grow a provider dimension. */
+/** Single-provider back-compat: the spawn/dispatch pickers derive the
+ *  credential from the account's provider-family union (CCT-562); the
+ *  remaining first-row readers are DispatchersPanel + AccountSwitchModal
+ *  until they grow a provider dimension. */
 export const primaryProvider = (a: OAuthAccount): AccountProvider | undefined => a.providers[0];
 
 /** One usage window from Anthropic's free OAuth usage API (CCT-306):

@@ -416,7 +416,8 @@ mod tests {
 
         // Cursor is keyed on the tip — a re-run replays nothing.
         let mut cursor2 = CursorFile::open(cfg.cursor_path.clone());
-        let n2 = run_once(&cfg, &HashSet::default(), &tx, &mut cursor2, &mut offsets).await.unwrap();
+        let n2 =
+            run_once(&cfg, &HashSet::default(), &tx, &mut cursor2, &mut offsets).await.unwrap();
         assert_eq!(n2, 0, "tip already backfilled; must not replay");
     }
 
@@ -439,7 +440,8 @@ mod tests {
         assert_eq!(n1, 1);
         // Reload cursor from disk → should still skip.
         let mut cursor2 = CursorFile::open(cfg.cursor_path.clone());
-        let n2 = run_once(&cfg, &HashSet::default(), &tx, &mut cursor2, &mut offsets).await.unwrap();
+        let n2 =
+            run_once(&cfg, &HashSet::default(), &tx, &mut cursor2, &mut offsets).await.unwrap();
         assert_eq!(n2, 0);
     }
 }
