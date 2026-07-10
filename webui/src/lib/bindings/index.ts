@@ -36,6 +36,7 @@ export type * from './DraftAuthorKind';
 export type * from './DraftCommentInfo';
 export type * from './DraftStatus';
 export type * from './EffectiveState';
+export type * from './EnvKind';
 export type * from './EnvVar';
 export type * from './ForkRequest';
 export type * from './ForkResponse';
