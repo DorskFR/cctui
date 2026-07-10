@@ -3002,7 +3002,19 @@ pub(super) fn ensure_hook_settings(
             "timeout": 600,
         }],
     });
-    let pre_hooks = json!([hook("pre"), perm_hook]);
+    // EnterPlanMode guard (CCT-544). Registered UNCONDITIONALLY of the whip
+    // flag: the deny is decided at runtime from the payload's live
+    // `permission_mode` (see `enter_plan_mode_decision`), so it must ride the
+    // pre event for both Yolo and Whip; `deny` here only sets the posture label.
+    let plan_guard = json!({
+        "matcher": "EnterPlanMode",
+        "hooks": [{
+            "type": "command",
+            "command": format!("{exe} ask-hook --event pre --sock {sock}{deny}"),
+            "timeout": 5,
+        }],
+    });
+    let pre_hooks = json!([hook("pre"), perm_hook, plan_guard]);
     let hooks = if whip {
         json!({
             "PreToolUse": pre_hooks,

@@ -55,6 +55,15 @@ account: string | null,
  */
 provider: string | null, 
 /**
+ * Explicit unbound spawn (CCT-582): when true the server does NOT resolve a
+ * default account for an empty `account` — the worker runs on the machine's
+ * own ambient login (no gateway env, no session token). This is distinct
+ * from an unset `account`, which auto-binds the caller's single
+ * matching-family account (CCT-574). Ignored when `account` names an
+ * account (a named account always binds).
+ */
+no_account: boolean, 
+/**
  * Stage this spawn as a draft instead of dispatching it (CCT-394). When
  * true the server validates + persists a `draft` session row carrying the
  * spawn payload in `metadata.draft` and does NOT mint account env or

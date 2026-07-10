@@ -490,6 +490,18 @@ async fn process_frame(
     }
 }
 
+/// CCT-586: auto-approve is scoped to tool-use permissions. `ExitPlanMode` and
+/// `AskUserQuestion` are user decision points that must always be answered by
+/// the user, so they are excluded from the auto-approve short-circuit even when
+/// the session flag is set.
+fn is_auto_approve_excluded(tool: &str) -> bool {
+    tool == "ExitPlanMode" || tool == "AskUserQuestion"
+}
+
+fn should_auto_approve(tool: &str, auto_approve_enabled: bool) -> bool {
+    auto_approve_enabled && !is_auto_approve_excluded(tool)
+}
+
 #[allow(clippy::too_many_lines)]
 #[allow(clippy::cognitive_complexity)]
 async fn handle_event(
@@ -597,7 +609,17 @@ async fn handle_event(
             };
             // Auto-approve (CCT-151): if the session is in auto-approve mode,
             // answer `allow` immediately without prompting any client.
-            if state.permission_store.read().await.is_auto_approve(&local_id) {
+            let auto_approve_enabled =
+                state.permission_store.read().await.is_auto_approve(&local_id);
+            if auto_approve_enabled && is_auto_approve_excluded(&tool) {
+                tracing::debug!(
+                    session_id = %local_id,
+                    request_id = %request_id,
+                    tool = %tool,
+                    "skipping auto-approve for plan/ask decision prompt"
+                );
+            }
+            if should_auto_approve(&tool, auto_approve_enabled) {
                 tracing::info!(
                     session_id = %local_id,
                     request_id = %request_id,
@@ -1146,8 +1168,23 @@ pub async fn mint_user_token(
 
 #[cfg(test)]
 mod tests {
-    use super::strip_nul;
+    use super::{should_auto_approve, strip_nul};
     use serde_json::json;
+
+    #[test]
+    fn auto_approve_excludes_plan_and_ask_but_allows_tools() {
+        assert!(should_auto_approve("Bash", true));
+        assert!(should_auto_approve("Edit", true));
+        assert!(should_auto_approve("Write", true));
+        assert!(!should_auto_approve("ExitPlanMode", true));
+        assert!(!should_auto_approve("AskUserQuestion", true));
+    }
+
+    #[test]
+    fn auto_approve_off_never_approves() {
+        assert!(!should_auto_approve("Bash", false));
+        assert!(!should_auto_approve("ExitPlanMode", false));
+    }
 
     #[test]
     fn strip_nul_cleans_nested_strings() {

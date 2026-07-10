@@ -53,7 +53,12 @@
 	import MachineFields from './spawn/MachineFields.svelte';
 	import DispatchFields from './spawn/DispatchFields.svelte';
 	import type { Form, Target } from './spawn/types';
-	import { effectiveAdapterFor, providerForAdapter, isCompatibleProvider } from './spawn/options';
+	import {
+		accountBacksAdapter,
+		providerForAdapter,
+		isCompatibleProvider,
+		NO_ACCOUNT
+	} from './spawn/options';
 	import { settings } from '$lib/settings.svelte';
 
 	let {
@@ -366,10 +371,17 @@
 	// family backs the effective harness (CCT-562).
 	const allAccounts = $derived($accounts.data ?? []);
 	const selectedAccount = $derived(
-		form.account ? allAccounts.find((a) => a.name === form.account) : undefined
+		form.account && form.account !== NO_ACCOUNT
+			? allAccounts.find((a) => a.name === form.account)
+			: undefined
 	);
-	const effectiveAdapter = $derived(effectiveAdapterFor(selectedAccount, form.adapter_id));
+	// The submitted harness is always the user's pick (CCT-581): never the
+	// silently-swapped effective adapter, which regressed codex to claude-code.
+	const effectiveAdapter = $derived(form.adapter_id);
 	const spawnProvider = $derived(providerForAdapter(selectedAccount, effectiveAdapter)?.provider);
+	// A named account that can't back the picked harness blocks the spawn with a
+	// visible error (MachineFields) instead of submitting the wrong harness.
+	const harnessValid = $derived(accountBacksAdapter(selectedAccount, form.adapter_id));
 	// Dispatch runs a claude worker → its gateway routing always uses the
 	// account's anthropic-family credential.
 	const dispatchProvider = $derived(providerForAdapter(selectedAccount, 'claude-code')?.provider);
@@ -414,7 +426,7 @@
 	}
 	const removeFile = (name: string) => (files = removeFileByName(files, name));
 
-	const spawnValid = $derived(!!form.machine_id && !!form.working_dir.trim());
+	const spawnValid = $derived(!!form.machine_id && !!form.working_dir.trim() && harnessValid);
 	// A dispatched worker needs a dispatcher and something to run (inline prompt
 	// or a server-side prompt file). The repo is optional (the worker falls back
 	// to its default cwd), but in practice you'll want one.
@@ -427,9 +439,10 @@
 	// immediate spawn and the "Save as draft" path (CCT-394); `save_draft` and
 	// `env` are overridden by the caller as needed.
 	function buildSpawnBody(): SpawnRequest {
-		// The account bounds the harness to its provider families (CCT-562);
-		// "Default" keeps the adapter-first selection.
-		const adapter = effectiveAdapter;
+		// The harness is always the user's pick (CCT-581).
+		const adapter = form.adapter_id;
+		// Explicit unbound spawn (CCT-582): the machine's own login, no gateway.
+		const noAccount = form.account === NO_ACCOUNT;
 		const compatible = !!spawnProvider && isCompatibleProvider(spawnProvider);
 		const model = compatible
 			? form.model_account || null
@@ -447,10 +460,11 @@
 			effort: (adapter === 'codex' ? form.effort_codex : form.effort_claude) || null,
 			model,
 			env: envMap(),
-			account: form.account.trim() || null,
+			account: noAccount ? null : form.account.trim() || null,
 			// The provider credential backing the chosen harness (CCT-562), so the
 			// server resolves the exact credential under the account identity.
-			provider: spawnProvider || null,
+			provider: noAccount ? null : spawnProvider || null,
+			no_account: noAccount,
 			save_draft: false
 		};
 	}
@@ -479,6 +493,9 @@
 		const labelMachine = form.machine_id;
 		const requestedAt = Date.now();
 		const res = await actions.spawn(body, files);
+		// Surface which credential the server bound (CCT-582) — chiefly an
+		// auto-bound default the user never named.
+		if (res.account) toasts.push(`Bound account: ${res.account}`, 'info');
 		drafts.set(LAST_MACHINE, form.machine_id);
 		// An empty submitted name clears the proposal (drafts.set removes the key).
 		drafts.set(LAST_SPAWN_NAME, form.name.trim());
@@ -560,8 +577,9 @@
 			notify_url: null,
 			notify_secret: null,
 			// Account routing on the dispatch path (CCT-399): the server mints the
-			// gateway token + merges its base-url/token into payload.env.
-			account: form.account.trim() || null,
+			// gateway token + merges its base-url/token into payload.env. The
+			// no-account sentinel (CCT-582) is a machine-tab concept → treat as null.
+			account: form.account === NO_ACCOUNT ? null : form.account.trim() || null,
 			provider: dispatchProvider || null,
 			// Multi-account routing (CCT-508) isn't driven from the modal; the
 			// singular account/provider pair above is the modal's contract.

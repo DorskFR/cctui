@@ -1234,11 +1234,79 @@ pub async fn update_provider(
     if updated.is_none() {
         return Err(err(StatusCode::NOT_FOUND, "no such provider"));
     }
+    if soft_provided {
+        let caps = crate::soft_limit::SoftLimits {
+            pct_5h: soft_5h,
+            pct_7d: weekly_pct,
+            bypass_5h_minutes: bypass_5h,
+            bypass_7d_minutes: bypass_weekly,
+        };
+        reevaluate_soft_limit_block(&state, provider_id, &caps).await;
+    }
     let info = fetch_provider_info(&state.pool, provider_id)
         .await
         .map_err(|e| db_err(&e))?
         .ok_or_else(|| err(StatusCode::NOT_FOUND, "no such provider"))?;
     Ok(Json(info))
+}
+
+/// Blocked sessions among `candidates` that now evaluate to `Allow` under `caps`.
+/// Clear-only (no re-block) per CCT-584; pure so it is unit-testable.
+fn soft_limit_blocks_to_clear(
+    candidates: &[String],
+    blocked: &DashMap<String, ()>,
+    usage: Option<&serde_json::Value>,
+    caps: &crate::soft_limit::SoftLimits,
+    now: DateTime<Utc>,
+) -> Vec<String> {
+    candidates
+        .iter()
+        .filter(|sid| blocked.contains_key(*sid))
+        .filter(|_| {
+            matches!(
+                crate::soft_limit::evaluate_soft_limit(usage, caps, now),
+                crate::soft_limit::Decision::Allow
+            )
+        })
+        .cloned()
+        .collect()
+}
+
+/// After a provider's soft-limit config is raised, lift the blocks it holds that
+/// are now under cap (CCT-584). Best-effort: any DB/usage error is swallowed so
+/// the surrounding PATCH still succeeds.
+async fn reevaluate_soft_limit_block(
+    state: &AppState,
+    provider_id: Uuid,
+    caps: &crate::soft_limit::SoftLimits,
+) {
+    if state.soft_limit_blocked.is_empty() {
+        return;
+    }
+    let candidates: Vec<String> = match sqlx::query_scalar(
+        "SELECT session_id FROM session_tokens WHERE account_id = $1 AND revoked_at IS NULL",
+    )
+    .bind(provider_id)
+    .fetch_all(&state.pool)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(%provider_id, error = %e, "soft-limit re-eval: session lookup failed");
+            return;
+        }
+    };
+    let usage = gateway::usage_for_soft_limit(state, provider_id).await;
+    let to_clear = soft_limit_blocks_to_clear(
+        &candidates,
+        &state.soft_limit_blocked,
+        usage.as_ref(),
+        caps,
+        Utc::now(),
+    );
+    for session_id in to_clear {
+        gateway::clear_soft_limit_block(state, &session_id).await;
+    }
 }
 
 /// `DELETE /api/v1/accounts/{id}/providers/{provider_id}` — remove one provider
@@ -2023,6 +2091,48 @@ pub async fn revoke_share(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn soft_now() -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339("2026-06-19T12:00:00Z").unwrap().with_timezone(&Utc)
+    }
+
+    fn hot_usage() -> serde_json::Value {
+        serde_json::json!({
+            "five_hour": { "utilization": 90.0, "resets_at": "2026-06-19T16:00:00Z" },
+            "seven_day": { "utilization": 10.0, "resets_at": "2026-06-26T00:00:00Z" },
+        })
+    }
+
+    #[test]
+    fn raising_cap_over_usage_clears_only_blocked_sessions() {
+        let blocked: DashMap<String, ()> = DashMap::new();
+        blocked.insert("s-blocked".into(), ());
+        let caps = crate::soft_limit::SoftLimits { pct_5h: Some(95), ..Default::default() };
+        let candidates = vec!["s-blocked".to_owned(), "s-unblocked".to_owned()];
+        let cleared = soft_limit_blocks_to_clear(
+            &candidates,
+            &blocked,
+            Some(&hot_usage()),
+            &caps,
+            soft_now(),
+        );
+        assert_eq!(cleared, vec!["s-blocked".to_owned()]);
+    }
+
+    #[test]
+    fn still_over_new_cap_clears_nothing() {
+        let blocked: DashMap<String, ()> = DashMap::new();
+        blocked.insert("s-blocked".into(), ());
+        let caps = crate::soft_limit::SoftLimits { pct_5h: Some(85), ..Default::default() };
+        let cleared = soft_limit_blocks_to_clear(
+            &["s-blocked".to_owned()],
+            &blocked,
+            Some(&hot_usage()),
+            &caps,
+            soft_now(),
+        );
+        assert!(cleared.is_empty());
+    }
 
     #[test]
     fn splits_code_and_state() {

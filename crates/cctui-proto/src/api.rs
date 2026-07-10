@@ -472,6 +472,14 @@ pub struct SpawnRequest {
     /// → fall back to the adapter-derived family.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
+    /// Explicit unbound spawn (CCT-582): when true the server does NOT resolve a
+    /// default account for an empty `account` — the worker runs on the machine's
+    /// own ambient login (no gateway env, no session token). This is distinct
+    /// from an unset `account`, which auto-binds the caller's single
+    /// matching-family account (CCT-574). Ignored when `account` names an
+    /// account (a named account always binds).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_account: bool,
     /// Stage this spawn as a draft instead of dispatching it (CCT-394). When
     /// true the server validates + persists a `draft` session row carrying the
     /// spawn payload in `metadata.draft` and does NOT mint account env or
@@ -496,6 +504,7 @@ impl std::fmt::Debug for SpawnRequest {
             .field("model", &self.model)
             .field("account", &self.account)
             .field("provider", &self.provider)
+            .field("no_account", &self.no_account)
             .field("env", &format_args!("<{} secret(s) redacted>", self.env.len()))
             .field("save_draft", &self.save_draft)
             .finish()
@@ -507,6 +516,11 @@ impl std::fmt::Debug for SpawnRequest {
 pub struct SpawnResponse {
     pub command_id: Uuid,
     pub status: String,
+    /// Account the spawn bound (CCT-582), surfaced so the client can show which
+    /// credential is in play — chiefly for an auto-bound default the user never
+    /// named. `None` for an unbound spawn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
 }
 
 /// Body for `POST /api/v1/sessions/{id}/launch` (CCT-394) — promote a draft

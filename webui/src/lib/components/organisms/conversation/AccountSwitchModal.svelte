@@ -8,7 +8,7 @@
 	// negotiated the auth scheme, so a cross-family rebind is rejected with 409).
 	// Picking one calls `onswitch`, a pure server-side rebind: the worker keeps
 	// running and its next upstream call lands on the chosen account.
-	import { Button, Heading, Text } from '@dorsk/tsumikit';
+	import { Button, Field, Heading, Select, Text } from '@dorsk/tsumikit';
 	import type { SoftLimit } from '$lib/ws.svelte';
 	import { primaryProvider, type OAuthAccount } from '$lib/queries';
 	import UsageBars from '$lib/components/molecules/UsageBars.svelte';
@@ -60,23 +60,36 @@
 			: []
 	);
 
-	// The switch in flight (account id) + any error from the last attempt.
+	// The same-family CREDENTIAL id for a target, not the identity id (CCT-565):
+	// the switch endpoint rebinds session_tokens.account_id, which points at
+	// provider rows. (The server also resolves identity ids as a fallback, but
+	// only backfilled accounts share the two by uuid reuse.)
+	const credIdOf = (a: OAuthAccount) =>
+		a.providers.find((p) => current && family(p.provider) === family(providerOf(current)))?.id ??
+		a.id;
+
+	// Options keyed by the credential id that gets sent to the switch endpoint.
+	const options = $derived(targets.map((a) => ({ account: a, credId: credIdOf(a) })));
+
+	// The selected credential id (nothing chosen until the user picks one).
+	let chosen = $state<string | null>(null);
+	const selected = $derived(options.find((o) => o.credId === chosen)?.account ?? null);
+
+	// A soft-limit open preselects the first target so the switch is one click.
+	$effect(() => {
+		if (softLimit && chosen === null && options.length) chosen = options[0].credId;
+	});
+
+	// The switch in flight (credential id) + any error from the last attempt.
 	let switching = $state<string | null>(null);
 	let error = $state<string | null>(null);
 
-	async function pick(a: OAuthAccount) {
-		if (switching) return;
-		switching = a.id;
+	async function confirm() {
+		if (switching || !chosen) return;
+		switching = chosen;
 		error = null;
 		try {
-			// Send the same-family CREDENTIAL id, not the identity id (CCT-565):
-			// the switch endpoint rebinds session_tokens.account_id, which points
-			// at provider rows. (The server also resolves identity ids as a
-			// fallback, but only backfilled accounts share the two by uuid reuse.)
-			const cred = a.providers.find(
-				(p) => current && family(p.provider) === family(providerOf(current))
-			);
-			await onswitch(cred?.id ?? a.id);
+			await onswitch(chosen);
 			onclose();
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'switch failed';
@@ -113,27 +126,24 @@
 		</Text>
 	{/if}
 
-	{#if targets.length}
+	{#if options.length}
 		<div class="picker">
-			{#each targets as a (a.id)}
-				<div class="target">
-					<Button
-						size="sm"
-						variant="default"
-						disabled={switching !== null}
-						loading={switching === a.id}
-						onclick={() => pick(a)}
-					>
-						Continue on {a.name}
-					</Button>
-					<UsageBars
-						id={primaryProvider(a)?.id ?? a.id}
-						provider={providerOf(a)}
-						cap5h={primaryProvider(a)?.soft_limit_5h_pct ?? null}
-						cap7d={primaryProvider(a)?.soft_limit_7d_pct ?? null}
-					/>
-				</div>
-			{/each}
+			<Field label="Account">
+				<Select bind:value={chosen} disabled={switching !== null}>
+					<option value={null} disabled>Select an account…</option>
+					{#each options as o (o.credId)}
+						<option value={o.credId}>{o.account.name}</option>
+					{/each}
+				</Select>
+			</Field>
+			{#if selected}
+				<UsageBars
+					id={primaryProvider(selected)?.id ?? selected.id}
+					provider={providerOf(selected)}
+					cap5h={primaryProvider(selected)?.soft_limit_5h_pct ?? null}
+					cap7d={primaryProvider(selected)?.soft_limit_7d_pct ?? null}
+				/>
+			{/if}
 		</div>
 	{:else}
 		<Text size="sm" tone="muted">
@@ -145,6 +155,17 @@
 	{/if}
 	<div class="acct-foot">
 		<Button size="sm" variant="ghost" onclick={onclose}>Close</Button>
+		{#if options.length}
+			<Button
+				size="sm"
+				variant="default"
+				disabled={!chosen || switching !== null}
+				loading={switching !== null}
+				onclick={confirm}
+			>
+				Switch
+			</Button>
+		{/if}
 	</div>
 </div>
 
@@ -179,14 +200,10 @@
 		flex-direction: column;
 		gap: var(--sp-3);
 	}
-	.target {
-		display: flex;
-		flex-direction: column;
-		gap: var(--sp-1);
-	}
 	.acct-foot {
 		display: flex;
 		justify-content: flex-end;
+		gap: var(--sp-2);
 		margin-top: var(--sp-1);
 	}
 </style>

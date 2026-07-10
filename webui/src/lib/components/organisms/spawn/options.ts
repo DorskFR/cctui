@@ -78,6 +78,20 @@ export const effectiveAdapterFor = (a: OAuthAccount | undefined, adapterId: stri
 	return allowed.includes(adapterId as Adapter) ? adapterId : (allowed[0] ?? adapterId);
 };
 
+// Whether the account can back this harness (has a provider in its family).
+// Drives the CCT-581 validation that replaced the silent adapter swap: a named
+// account that can't back the picked harness blocks the spawn with an explicit
+// error instead of quietly submitting the account's own family. No account =
+// always valid (Default/no-account runs any harness).
+export const accountBacksAdapter = (a: OAuthAccount | undefined, adapter: string): boolean =>
+	!a || accountAdapters(a).includes(adapter as Adapter);
+
+// Sentinel account value for an explicit unbound "no account" spawn (CCT-582):
+// distinct from '' (Auto — let the server bind the single matching account) and
+// from a named account. Kept out of the account-name space so it can never
+// collide with a real account name.
+export const NO_ACCOUNT = '\x00no-account';
+
 // A compatible-endpoint account carries its own model list; a native
 // subscription account uses the harness's native families.
 export const isCompatibleProvider = (provider: string): boolean =>

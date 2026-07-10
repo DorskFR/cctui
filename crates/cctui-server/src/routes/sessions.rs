@@ -1359,7 +1359,11 @@ pub async fn interrupt_session(
     tracing::info!(session_id = %session_id, %command_id, "session interrupted");
     Ok((
         StatusCode::ACCEPTED,
-        Json(cctui_proto::api::SpawnResponse { command_id, status: "dispatched".into() }),
+        Json(cctui_proto::api::SpawnResponse {
+            command_id,
+            status: "dispatched".into(),
+            account: None,
+        }),
     ))
 }
 

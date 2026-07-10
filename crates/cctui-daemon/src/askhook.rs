@@ -64,6 +64,13 @@ pub fn run(event: &str, sock: &Path, deny: bool) -> anyhow::Result<()> {
 
     let tool_name = payload.get("tool_name").and_then(Value::as_str).unwrap_or_default();
 
+    if tool_name == "EnterPlanMode" {
+        if let Some(decision) = enter_plan_mode_decision(&payload, deny) {
+            println!("{decision}");
+        }
+        return Ok(());
+    }
+
     let line = if event == "post" {
         // One PostToolUse hook fires for both AskUserQuestion and ExitPlanMode;
         // tell the daemon which kind resolved so it drops the right live card.
@@ -171,6 +178,32 @@ fn perm_hook_defers(payload: &Value, tool: &str) -> bool {
         return true;
     }
     payload.get("permission_mode").and_then(Value::as_str) == Some("bypassPermissions")
+}
+
+/// `EnterPlanMode` deny decision (CCT-544). Approving a plan switches the
+/// session to whichever mode the approval selects and never restores
+/// `bypassPermissions`; the default Bg control socket has no in-place
+/// set-permission-mode op, so a yolo/whip worker that enters plan mode silently
+/// and unrecoverably drops out of bypass and wedges on prompts. Returns a `deny`
+/// only while the live payload `permission_mode` is `bypassPermissions`;
+/// otherwise `None` (defer, print nothing) so plan mode works normally in every
+/// prompting mode. `whip` only picks the posture label in the reason.
+fn enter_plan_mode_decision(payload: &Value, whip: bool) -> Option<Value> {
+    if payload.get("permission_mode").and_then(Value::as_str) != Some("bypassPermissions") {
+        return None;
+    }
+    let posture = if whip { "Whip" } else { "Yolo" };
+    Some(json!({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": format!(
+                "{posture} mode: plan mode is disabled because approving a plan would drop the \
+                 session out of bypassPermissions with no way to restore it in place. Proceed \
+                 and do the work directly."
+            ),
+        },
+    }))
 }
 
 fn run_perm(sock: &Path, session_id: &str, payload: &Value) {
@@ -481,5 +514,37 @@ mod tests {
         // AskUserQuestion is never a tool permission, in any mode.
         assert!(perm_hook_defers(&json!({"permission_mode": "default"}), "AskUserQuestion"));
         assert!(perm_hook_defers(&json!({}), "AskUserQuestion"));
+    }
+
+    #[test]
+    fn enter_plan_mode_denies_only_in_bypass() {
+        let bypass = json!({"tool_name": "EnterPlanMode", "permission_mode": "bypassPermissions"});
+        let decision = enter_plan_mode_decision(&bypass, false).expect("deny in bypass");
+        let out = &decision["hookSpecificOutput"];
+        assert_eq!(out["hookEventName"], "PreToolUse");
+        assert_eq!(out["permissionDecision"], "deny");
+        assert!(
+            out["permissionDecisionReason"].as_str().unwrap().starts_with("Yolo mode:"),
+            "yolo posture label"
+        );
+
+        let whip = enter_plan_mode_decision(&bypass, true).expect("deny in bypass");
+        assert!(
+            whip["hookSpecificOutput"]["permissionDecisionReason"]
+                .as_str()
+                .unwrap()
+                .starts_with("Whip mode:"),
+            "whip posture label"
+        );
+    }
+
+    #[test]
+    fn enter_plan_mode_defers_in_prompting_modes() {
+        for mode in ["default", "acceptEdits", "plan"] {
+            let payload = json!({"tool_name": "EnterPlanMode", "permission_mode": mode});
+            assert!(enter_plan_mode_decision(&payload, false).is_none(), "defer in {mode}");
+            assert!(enter_plan_mode_decision(&payload, true).is_none(), "defer in {mode} (whip)");
+        }
+        assert!(enter_plan_mode_decision(&json!({"tool_name": "EnterPlanMode"}), true).is_none());
     }
 }

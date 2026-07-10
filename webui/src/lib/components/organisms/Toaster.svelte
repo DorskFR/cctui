@@ -1,18 +1,33 @@
 <script lang="ts">
 	import { toasts } from '$lib/toast.svelte';
 	import { Card } from '@dorsk/tsumikit';
+
+	let wrapEl: HTMLDivElement | undefined = $state();
+
+	// Render the toast stack in the top layer so it paints above any open
+	// tsumikit Modal (a `showModal()` <dialog>). z-index alone can't win against
+	// the top layer, so we drive a manual popover — same pattern as SpawnModal's
+	// label menu. Guarded for browsers without the Popover API.
+	$effect(() => {
+		const el = wrapEl;
+		if (!el) return;
+		try {
+			if (toasts.items.length) el.showPopover();
+			else el.hidePopover();
+		} catch {
+			// Popover API unsupported: toast falls back to its z-index stacking.
+		}
+	});
 </script>
 
-{#if toasts.items.length}
-	<div class="toast-wrap">
-		{#each toasts.items as t (t.id)}
-			<Card
-				as="button"
-				class="toast {t.kind === 'err' ? 'toast-err' : ''} {t.kind === 'ok' ? 'toast-ok' : ''}"
-				onclick={() => toasts.dismiss(t.id)}
-			>
-				{t.text}
-			</Card>
-		{/each}
-	</div>
-{/if}
+<div class="toast-wrap" bind:this={wrapEl} popover="manual">
+	{#each toasts.items as t (t.id)}
+		<Card
+			as="button"
+			class="toast {t.kind === 'err' ? 'toast-err' : ''} {t.kind === 'ok' ? 'toast-ok' : ''}"
+			onclick={() => toasts.dismiss(t.id)}
+		>
+			{t.text}
+		</Card>
+	{/each}
+</div>
