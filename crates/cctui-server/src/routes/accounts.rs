@@ -468,6 +468,11 @@ pub struct UpdateAccount {
     pub name: Option<String>,
     #[serde(default)]
     pub env_json: Option<std::collections::HashMap<String, String>>,
+    /// Names to remove from the stored env without re-sending the other values
+    /// (CCT-591): decrypt → drop names → re-encrypt, all server-side. Ignored
+    /// when `env_json` is provided (replace-all wins).
+    #[serde(default)]
+    pub env_remove: Option<Vec<String>>,
     // Legacy pre-CCT-558 provider fields (any shape): presence ⇒ 400 pointing at
     // PATCH /accounts/{id}/providers/{provider_id}.
     #[serde(default)]
@@ -587,7 +592,9 @@ pub struct SettingsCatalogResponse {
 pub async fn settings_catalog() -> Json<SettingsCatalogResponse> {
     let c = crate::settings_catalog::catalog();
     let mut preset = c.quiet_defaults().clone();
-    preset.settings.retain(|name, _| c.key(name).is_some_and(|k| k.account_exposable()));
+    preset.settings.retain(|name, _| {
+        c.key(name).is_some_and(crate::settings_catalog::SettingKey::account_exposable)
+    });
     Json(SettingsCatalogResponse {
         keys: c.exposable_keys().cloned().collect(),
         env: c.env_allowlist().to_vec(),
@@ -639,13 +646,17 @@ fn validate_env_json(
 /// values (CCT-591). A missing/undecryptable/malformed blob yields an empty list
 /// — the names are a display convenience, never a hard dependency.
 fn env_names_from_enc(enc: Option<&str>, key: &[u8]) -> Vec<String> {
-    let Some(enc) = enc else { return Vec::new() };
-    let Some(json) = crate::crypto::deobfuscate(enc, key) else { return Vec::new() };
-    let mut names = serde_json::from_str::<std::collections::BTreeMap<String, String>>(&json)
-        .map(|m| m.into_keys().collect::<Vec<_>>())
-        .unwrap_or_default();
-    names.sort();
-    names
+    env_map_from_enc(enc, key).into_keys().collect()
+}
+
+/// Decrypt a stored `env_json` blob to its full map, server-side only.
+/// Missing/undecryptable/malformed ⇒ empty map.
+fn env_map_from_enc(enc: Option<&str>, key: &[u8]) -> std::collections::BTreeMap<String, String> {
+    let Some(enc) = enc else { return std::collections::BTreeMap::new() };
+    let Some(json) = crate::crypto::deobfuscate(enc, key) else {
+        return std::collections::BTreeMap::new();
+    };
+    serde_json::from_str(&json).unwrap_or_default()
 }
 
 /// Validate + encrypt an extra-env map (CCT-538). Empty ⇒ `None` (clears).
@@ -955,8 +966,27 @@ pub async fn update_account(
     let name = req.name.as_deref().map(str::trim).map(str::to_owned);
     // env_json: provided → re-encrypt + replace (empty map clears); absent →
     // unchanged. COALESCE can't distinguish those, so carry a provided-flag.
-    let env_provided = req.env_json.is_some();
-    let enc_env = encrypt_env(req.env_json.as_ref())?;
+    let (env_provided, enc_env) = if req.env_json.is_none()
+        && let Some(remove) = req.env_remove.as_ref().filter(|r| !r.is_empty())
+    {
+        let stored: Option<Option<String>> = sqlx::query_scalar(
+            "SELECT env_json FROM accounts              WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)",
+        )
+        .bind(id)
+        .bind(ctx.owner_filter())
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| db_err(&e))?;
+        let key = crate::crypto::vault_key();
+        let mut map = env_map_from_enc(stored.flatten().as_deref(), &key);
+        map.retain(|name, _| !remove.contains(name));
+        let enc = (!map.is_empty()).then(|| {
+            crate::crypto::obfuscate(&serde_json::to_string(&map).unwrap_or_default(), &key)
+        });
+        (true, enc)
+    } else {
+        (req.env_json.is_some(), encrypt_env(req.env_json.as_ref())?)
+    };
 
     let updated: Option<Uuid> = sqlx::query_scalar(
         "UPDATE accounts SET \
@@ -1921,15 +1951,20 @@ pub async fn grant_share(
     if ident.is_empty() {
         return Err(err(StatusCode::BAD_REQUEST, "user required"));
     }
-    let target: Option<Uuid> = if let Ok(uuid) = Uuid::parse_str(ident) {
-        sqlx::query_scalar("SELECT id FROM users WHERE id = $1 AND revoked_at IS NULL").bind(uuid)
-    } else {
-        sqlx::query_scalar("SELECT id FROM users WHERE name = $1 AND revoked_at IS NULL")
-            .bind(ident)
-    }
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    let target: Option<Uuid> = Uuid::parse_str(ident)
+        .map_or_else(
+            |_| {
+                sqlx::query_scalar("SELECT id FROM users WHERE name = $1 AND revoked_at IS NULL")
+                    .bind(ident)
+            },
+            |uuid| {
+                sqlx::query_scalar("SELECT id FROM users WHERE id = $1 AND revoked_at IS NULL")
+                    .bind(uuid)
+            },
+        )
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| db_err(&e))?;
     let Some(target) = target else {
         return Err(err(StatusCode::NOT_FOUND, "no such user"));
     };
@@ -2135,6 +2170,24 @@ mod tests {
         // No blob ⇒ empty; a garbage blob degrades to empty, never panics.
         assert!(env_names_from_enc(None, &key).is_empty());
         assert!(env_names_from_enc(Some("not-hex-zz"), &key).is_empty());
+    }
+
+    #[test]
+    fn env_remove_drops_names_and_reencrypts() {
+        let key = b"test-key-32-bytes-test-key-32byt".to_vec();
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("KEEP".to_string(), "k".to_string());
+        map.insert("DROP".to_string(), "d".to_string());
+        let enc = crate::crypto::obfuscate(&serde_json::to_string(&map).unwrap(), &key);
+
+        let mut decrypted = env_map_from_enc(Some(&enc), &key);
+        decrypted.retain(|name, _| name != "DROP");
+        assert_eq!(decrypted.get("KEEP").map(String::as_str), Some("k"), "values survive");
+        let reenc = crate::crypto::obfuscate(&serde_json::to_string(&decrypted).unwrap(), &key);
+        assert_eq!(env_names_from_enc(Some(&reenc), &key), vec!["KEEP".to_string()]);
+
+        decrypted.retain(|name, _| name != "KEEP");
+        assert!(decrypted.is_empty(), "removing every name clears the blob");
     }
 
     #[test]

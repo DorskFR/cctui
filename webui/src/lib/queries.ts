@@ -257,6 +257,9 @@ export interface UpdateAccount {
    *  (an empty map clears it); absent → unchanged. WRITE-ONLY: never returned,
    *  so the editor only ever sends new values, it can't display stored ones. */
   env_json?: Record<string, string>;
+  /** Stored env var names to delete server-side (CCT-591); ignored when
+   *  `env_json` is provided (replace-all wins). */
+  env_remove?: string[];
 }
 
 /** Provider-credential edit payload (CCT-558, formerly the provider half of the

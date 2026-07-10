@@ -707,6 +707,13 @@ mod tests {
         let dnt = c.env("DO_NOT_TRACK").expect("DO_NOT_TRACK present");
         assert_eq!(dnt.env_alias_of.as_deref(), Some("DISABLE_TELEMETRY"));
 
+        // Only channel dispatched workers honor for the bg edit guard — must stay curated and off the denylist.
+        let bg = c.env("CLAUDE_BG_ISOLATION").expect("CLAUDE_BG_ISOLATION present");
+        assert_eq!(bg.kind, EnvKind::Enum);
+        assert!(bg.values.as_ref().is_some_and(|v| v.contains(&"none".to_string())));
+        assert!(bg.settings_equiv.is_none());
+        assert!(!c.env_denylisted("CLAUDE_BG_ISOLATION"));
+
         // Every curated env var carries a label for the row.
         for e in c.env_allowlist() {
             assert!(e.label.is_some(), "{} has no label", e.name);

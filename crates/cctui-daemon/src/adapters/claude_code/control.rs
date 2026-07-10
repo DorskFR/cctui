@@ -2951,6 +2951,7 @@ pub(super) fn merge_account_under_managed(
 /// block (and any other key the daemon sets) ALWAYS WINS — a malicious or
 /// stale account blob that specifies its own `hooks` can never disable the
 /// ask/permission/Stop hooks. `None` → managed settings only, exactly as before.
+#[allow(clippy::cognitive_complexity)]
 pub(super) fn ensure_hook_settings(
     sock: &std::path::Path,
     whip: bool,

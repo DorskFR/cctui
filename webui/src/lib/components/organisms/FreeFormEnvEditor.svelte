@@ -4,7 +4,9 @@
 	// this shows what is currently stored and lets the operator type arbitrary
 	// NAME=VALUE pairs. Any well-formed name is accepted except a denylist of
 	// session-critical / gateway-managed vars (the server is the real boundary;
-	// these checks are fast feedback). Saving replaces the whole stored blob.
+	// these checks are fast feedback). Saving replaces the whole stored blob;
+	// stored names can also be deleted individually via `env_remove` (the server
+	// drops them from the decrypted blob without the other values round-tripping).
 	import { Button, Input, Text } from '@dorsk/tsumikit';
 	import Error from '$lib/components/atoms/Error.svelte';
 
@@ -16,10 +18,12 @@
 	let {
 		envRows = $bindable([]),
 		replaceEnv = $bindable(false),
+		envRemove = $bindable([]),
 		storedNames = []
 	}: {
 		envRows?: EnvRow[];
 		replaceEnv?: boolean;
+		envRemove?: string[];
 		storedNames?: string[];
 	} = $props();
 
@@ -45,16 +49,32 @@
 	}
 	const nameErrors = $derived(envRows.map((r) => nameError(r.name)).filter((e) => e));
 
+	let revealed = $state<Set<number>>(new Set());
+	function toggleReveal(i: number) {
+		const next = new Set(revealed);
+		if (next.has(i)) next.delete(i);
+		else next.add(i);
+		revealed = next;
+	}
+
 	function addEnvRow() {
 		envRows = [...envRows, { name: '', value: '' }];
 		replaceEnv = true;
 	}
 	function removeEnvRow(i: number) {
 		envRows = envRows.filter((_, j) => j !== i);
+		revealed = new Set([...revealed].filter((j) => j !== i).map((j) => (j > i ? j - 1 : j)));
 		replaceEnv = true;
 	}
 	function onEdit() {
 		replaceEnv = true;
+	}
+
+	function markRemove(name: string) {
+		if (!envRemove.includes(name)) envRemove = [...envRemove, name];
+	}
+	function unmarkRemove(name: string) {
+		envRemove = envRemove.filter((n) => n !== name);
 	}
 </script>
 
@@ -69,8 +89,25 @@
 		<div class="stored">
 			<Text as="div" tone="muted" size="xs">Currently set (values hidden)</Text>
 			<div class="chips">
-				{#each storedNames as n (n)}<span class="chip">{n}</span>{/each}
+				{#each storedNames as n (n)}
+					{#if envRemove.includes(n)}
+						<span class="chip removing">
+							<s>{n}</s>
+							<button class="chip-x" onclick={() => unmarkRemove(n)} aria-label={`Keep ${n}`}>↩</button>
+						</span>
+					{:else}
+						<span class="chip">
+							{n}
+							<button class="chip-x" onclick={() => markRemove(n)} aria-label={`Delete ${n}`}>✕</button>
+						</span>
+					{/if}
+				{/each}
 			</div>
+			{#if envRemove.length}
+				<Text as="div" tone="warn" size="xs">
+					On save, {envRemove.join(', ')} will be deleted from the stored environment.
+				</Text>
+			{/if}
 		</div>
 	{/if}
 
@@ -96,11 +133,14 @@
 					<Input
 						bind:value={row.value}
 						oninput={onEdit}
-						type="password"
+						type={revealed.has(i) ? 'text' : 'password'}
 						mono
 						placeholder="value"
 						aria-label="Env var value"
 					/>
+					<Button onclick={() => toggleReveal(i)} aria-label={revealed.has(i) ? 'Hide value' : 'Show value'}>
+						{revealed.has(i) ? '🙈' : '👁'}
+					</Button>
 					<Button variant="danger" onclick={() => removeEnvRow(i)} aria-label="Remove env var">✕</Button>
 				</div>
 			{/each}
@@ -129,11 +169,26 @@
 		gap: var(--sp-1);
 	}
 	.chip {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.35em;
 		font-family: var(--font-mono, monospace);
 		font-size: var(--fs-xs);
 		padding: 0.1em 0.5em;
 		border-radius: var(--r-sm);
 		background: var(--surface-2, color-mix(in srgb, var(--text) 8%, transparent));
+	}
+	.chip.removing {
+		opacity: 0.6;
+	}
+	.chip-x {
+		border: none;
+		background: none;
+		cursor: pointer;
+		padding: 0;
+		font-size: var(--fs-xs);
+		color: inherit;
+		line-height: 1;
 	}
 	.env-rows {
 		display: flex;
@@ -142,7 +197,7 @@
 	}
 	.env-row {
 		display: grid;
-		grid-template-columns: 1fr 1fr auto;
+		grid-template-columns: 1fr 1fr auto auto;
 		gap: var(--sp-2);
 		align-items: center;
 	}

@@ -1073,6 +1073,15 @@ kind = "flag"
 label = "Disable feedback survey"
 notes = "quality-survey prompts off (=1)"
 
+[[env]]
+name = "CLAUDE_BG_ISOLATION"
+group = "sessions"
+tag = "safe"
+kind = "enum"
+values = ["none", "worktree"]
+label = "Bg isolation guard"
+notes = "background-session edit guard; `none` edits the checkout in place — the env var is the ONLY channel dispatched workers honor (job record snapshots ignore settings.json / worktree.bgIsolation)"
+
 [[presets]]
 id = "quiet-defaults"
 name = "Quiet defaults"

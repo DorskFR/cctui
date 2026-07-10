@@ -553,7 +553,7 @@ fn parse_user(local_id: &str, line: &Value, out: &mut Vec<AdapterEvent>) {
     if !texts.is_empty() || has_attachment {
         let mut joined = texts.join("\n");
         if has_attachment && joined.trim().is_empty() {
-            joined = "[image attachment]".to_owned();
+            "[image attachment]".clone_into(&mut joined);
         }
         out.push(AdapterEvent::Message {
             local_id: local_id.to_owned(),

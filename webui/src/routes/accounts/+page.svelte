@@ -116,6 +116,7 @@
 	let acctSettings = $state<Record<string, unknown>>({});
 	let acctEnvRows = $state<{ name: string; value: string }[]>([]);
 	let acctReplaceEnv = $state(false);
+	let acctEnvRemove = $state<string[]>([]);
 	// Move-provider target (CCT-558 merge path): another account of the same owner.
 	let moveTarget = $state('');
 
@@ -201,6 +202,7 @@
 		acctSettings = {};
 		acctEnvRows = [];
 		acctReplaceEnv = false;
+		acctEnvRemove = [];
 		moveTarget = '';
 	}
 
@@ -352,6 +354,7 @@
 				}
 				const identity: UpdateAccount = { name: name.trim() };
 				if (acctReplaceEnv) identity.env_json = envObject();
+				else if (acctEnvRemove.length) identity.env_remove = acctEnvRemove;
 				await actions.update(editor.accountId, identity);
 				toasts.ok('Account updated');
 			} else if (mode === 'edit-provider' && editor?.accountId && editor.providerId) {
@@ -632,6 +635,7 @@
 					<FreeFormEnvEditor
 						bind:envRows={acctEnvRows}
 						bind:replaceEnv={acctReplaceEnv}
+						bind:envRemove={acctEnvRemove}
 						storedNames={editingAccount?.env_names ?? []}
 					/>
 				{:else}
