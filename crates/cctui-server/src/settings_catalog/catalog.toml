@@ -831,180 +831,246 @@ notes = "session-only, not read from settings.json; via /effort ultracode/--sett
 name = "ANTHROPIC_MODEL"
 group = "model"
 tag = "safe"
+kind = "string"
+settings_equiv = "model"
+label = "Model"
 notes = "primary model id; overrides `model`, overridden by --model/ /model"
 
 [[env]]
 name = "CLAUDE_CODE_SUBAGENT_MODEL"
 group = "model"
 tag = "safe"
+kind = "string"
+label = "Subagent model"
 notes = "model for subagents; `inherit` == unset"
 
 [[env]]
 name = "CLAUDE_CODE_EFFORT_LEVEL"
 group = "model"
 tag = "safe"
+kind = "enum"
+values = ["low", "medium", "high", "xhigh", "max", "auto"]
+settings_equiv = "effortLevel"
+label = "Reasoning effort"
 notes = "reasoning effort low/medium/high/xhigh/max/auto; precedence over effortLevel"
 
 [[env]]
 name = "CLAUDE_CODE_DISABLE_1M_CONTEXT"
 group = "context"
 tag = "safe"
+kind = "flag"
+label = "Disable 1M context"
 notes = "disable 1M context; Sonnet treated as 200K (=1)"
 
 [[env]]
 name = "CLAUDE_CODE_MAX_CONTEXT_TOKENS"
 group = "context"
 tag = "care"
+kind = "number"
+label = "Max context tokens"
 notes = "override assumed context window (tokens)"
 
 [[env]]
 name = "CLAUDE_CODE_AUTO_COMPACT_WINDOW"
 group = "context"
 tag = "care"
+kind = "number"
+label = "Auto-compact window"
 notes = "context capacity for auto-compaction (tokens)"
 
 [[env]]
 name = "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"
 group = "context"
 tag = "care"
+kind = "number"
+label = "Auto-compact % override"
 notes = "%-of-window compaction trigger, lowers only (1-100)"
 
 [[env]]
 name = "MAX_THINKING_TOKENS"
 group = "thinking"
 tag = "safe"
+kind = "number"
+label = "Max thinking tokens"
 notes = "extended-thinking budget; 0 disables on Anthropic API"
 
 [[env]]
 name = "CLAUDE_CODE_DISABLE_THINKING"
 group = "thinking"
 tag = "care"
+kind = "flag"
+label = "Disable thinking"
 notes = "omit thinking param, proxy compat (=1)"
 
 [[env]]
 name = "CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING"
 group = "thinking"
 tag = "care"
+kind = "flag"
+label = "Disable adaptive thinking"
 notes = "fixed MAX_THINKING_TOKENS instead of adaptive (=1)"
 
 [[env]]
 name = "DISABLE_INTERLEAVED_THINKING"
 group = "thinking"
 tag = "care"
+kind = "flag"
+label = "Disable interleaved thinking"
 notes = "drop interleaved-thinking beta header (=1)"
 
 [[env]]
 name = "CLAUDE_CODE_MAX_OUTPUT_TOKENS"
 group = "tokens"
 tag = "care"
+kind = "number"
+label = "Max output tokens"
 notes = "max output tokens/request (reduces effective context)"
 
 [[env]]
 name = "CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS"
 group = "tokens"
 tag = "safe"
+kind = "number"
+label = "File-read max tokens"
 notes = "file-read token cap"
 
 [[env]]
 name = "MAX_MCP_OUTPUT_TOKENS"
 group = "tokens"
 tag = "safe"
+kind = "number"
+label = "Max MCP output tokens"
 notes = "max tokens in MCP tool responses (default 25000)"
 
 [[env]]
 name = "TASK_MAX_OUTPUT_LENGTH"
 group = "tokens"
 tag = "safe"
+kind = "number"
+label = "Subagent output cap"
 notes = "subagent output char cap (default 32000, max 160000)"
 
 [[env]]
 name = "BASH_MAX_OUTPUT_LENGTH"
 group = "tokens"
 tag = "safe"
+kind = "number"
+label = "Bash output cap"
 notes = "bash output char cap before file spill"
 
 [[env]]
 name = "CLAUDE_CODE_DISABLE_BUNDLED_SKILLS"
 group = "skills"
 tag = "safe"
+kind = "flag"
+settings_equiv = "disableBundledSkills"
+label = "Disable bundled skills"
 notes = "disable bundled skills/workflows (== disableBundledSkills)"
 
 [[env]]
 name = "CLAUDE_CODE_DISABLE_WORKFLOWS"
 group = "skills"
 tag = "safe"
+kind = "flag"
+settings_equiv = "disableWorkflows"
+label = "Disable workflows"
 notes = "disable dynamic + bundled workflows (== disableWorkflows)"
 
 [[env]]
 name = "CLAUDE_CODE_DISABLE_POLICY_SKILLS"
 group = "skills"
 tag = "care"
+kind = "flag"
+label = "Disable policy skills"
 notes = "skip system-wide managed skills dir (=1)"
 
 [[env]]
 name = "API_TIMEOUT_MS"
 group = "timeouts"
 tag = "safe"
+kind = "number"
+label = "API timeout (ms)"
 notes = "API request timeout, default 600000 (10m)"
 
 [[env]]
 name = "BASH_DEFAULT_TIMEOUT_MS"
 group = "timeouts"
 tag = "safe"
+kind = "number"
+label = "Bash default timeout (ms)"
 notes = "default long bash timeout, default 120000 (2m)"
 
 [[env]]
 name = "BASH_MAX_TIMEOUT_MS"
 group = "timeouts"
 tag = "safe"
+kind = "number"
+label = "Bash max timeout (ms)"
 notes = "max bash timeout the model can set, default 600000"
 
 [[env]]
 name = "MCP_TIMEOUT"
 group = "timeouts"
 tag = "safe"
+kind = "number"
+label = "MCP startup timeout (ms)"
 notes = "MCP server startup, default 30000"
 
 [[env]]
 name = "MCP_TOOL_TIMEOUT"
 group = "timeouts"
 tag = "safe"
+kind = "number"
+label = "MCP tool timeout (ms)"
 notes = "MCP tool execution timeout"
 
 [[env]]
 name = "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"
 group = "telemetry"
 tag = "safe"
+kind = "flag"
+label = "Disable nonessential traffic"
 notes = "umbrella: autoupdater + feedback + error-reporting + telemetry off (=1)"
 
 [[env]]
 name = "DISABLE_TELEMETRY"
 group = "telemetry"
 tag = "safe"
+kind = "flag"
+label = "Disable telemetry"
 notes = "opt out of telemetry + GrowthBook flags (=1)"
 
 [[env]]
 name = "DO_NOT_TRACK"
 group = "telemetry"
 tag = "safe"
+kind = "flag"
+env_alias_of = "DISABLE_TELEMETRY"
+label = "Do not track"
 notes = "cross-tool opt-out == DISABLE_TELEMETRY (=1)"
 
 [[env]]
 name = "DISABLE_ERROR_REPORTING"
 group = "telemetry"
 tag = "safe"
+kind = "flag"
+label = "Disable error reporting"
 notes = "disable error reporting (=1)"
 
 [[env]]
 name = "DISABLE_AUTOUPDATER"
 group = "telemetry"
 tag = "safe"
+kind = "flag"
+label = "Disable auto-updater"
 notes = "disable background auto-updates (=1)"
 
 [[env]]
 name = "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY"
 group = "telemetry"
 tag = "safe"
+kind = "flag"
+label = "Disable feedback survey"
 notes = "quality-survey prompts off (=1)"
 
 [[presets]]

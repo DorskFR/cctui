@@ -3297,6 +3297,28 @@ mod tests {
     }
 
     #[test]
+    fn account_env_block_reaches_settings_but_managed_env_wins() {
+        // CCT-591: curated env vars persist in the account `settings_json.env`
+        // block. That block must survive the merge under managed settings so it
+        // reaches the worker's process env — but a managed gateway env key of the
+        // same name always wins (routing can never be clobbered).
+        let managed = managed_settings(
+            managed_ask_settings()["hooks"].clone(),
+            &env_of(&[("ANTHROPIC_BASE_URL", "https://x/gateway/anthropic")]),
+            None,
+            None,
+        );
+        let account = json!({
+            "env": { "DISABLE_TELEMETRY": "1", "ANTHROPIC_BASE_URL": "https://evil" },
+        });
+        let merged = merge_account_under_managed(managed, Some(&account));
+        // Account's own curated env var survives.
+        assert_eq!(merged["env"]["DISABLE_TELEMETRY"], json!("1"));
+        // Managed gateway env wins over an account attempt to override it.
+        assert_eq!(merged["env"]["ANTHROPIC_BASE_URL"], json!("https://x/gateway/anthropic"));
+    }
+
+    #[test]
     fn no_account_settings_is_managed_only() {
         let managed = managed_ask_settings();
         assert_eq!(merge_account_under_managed(managed.clone(), None), managed);

@@ -122,6 +122,22 @@ impl SettingKey {
     }
 }
 
+/// Control shape for a curated env var in the account-settings editor (CCT-591).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "lowercase")]
+pub enum EnvKind {
+    /// Present as `"1"` / absent (a boolean switch).
+    #[default]
+    Flag,
+    /// A numeric literal stored as a string.
+    Number,
+    /// A free-form string literal.
+    String,
+    /// One of a fixed set of values (`values`).
+    Enum,
+}
+
 /// A curated environment variable exposed as an account default.
 #[derive(Debug, Clone, Serialize, TS)]
 #[ts(export)]
@@ -133,6 +149,18 @@ pub struct EnvVar {
     pub group: String,
     /// Exposure policy tag.
     pub tag: Policy,
+    /// Control shape rendered by the editor (CCT-591).
+    pub kind: EnvKind,
+    /// Allowed values for an `enum`-kind var (e.g. effort levels).
+    pub values: Option<Vec<String>>,
+    /// settings.json key this env var aliases (CCT-591), when one exists — the
+    /// editor merges the two into ONE row that reads/writes the settings key.
+    pub settings_equiv: Option<String>,
+    /// Another env var this is an exact alias of (`DO_NOT_TRACK` == `DISABLE_TELEMETRY`).
+    /// The editor folds aliases into the primary's row so only one renders.
+    pub env_alias_of: Option<String>,
+    /// Human-readable row label (like curated settings keys have).
+    pub label: Option<String>,
     /// Human-readable notes.
     pub notes: Option<String>,
 }
@@ -155,6 +183,31 @@ pub struct Preset {
 
 /// The `"quiet-defaults"` preset id, referenced by the webui and server.
 pub const QUIET_DEFAULTS_ID: &str = "quiet-defaults";
+
+/// Session-critical / gateway-managed env vars that must NEVER be set from a
+/// per-account env blob (CCT-591). Setting any of these would hijack gateway
+/// routing or the session's identity. The full denylist also includes every
+/// catalog env entry tagged `managed` (see [`Catalog::env_denylisted`]).
+pub const ENV_DENYLIST: &[&str] = &[
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "CLAUDE_CODE_SESSION_KIND",
+    "CLAUDE_BG_SOURCE",
+    "CLAUDE_BG_BACKEND",
+    "CLAUDE_BG_CLAIM_AUTH",
+];
+
+/// Whether a name is a POSIX-shell-safe env var name (`^[A-Za-z_][A-Za-z0-9_]*$`).
+#[must_use]
+pub fn valid_env_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
 
 /// A single allowlist violation from [`Catalog::validate_settings`] /
 /// [`Catalog::validate_env`].
@@ -263,7 +316,7 @@ impl Catalog {
             });
             return ValidationReport { violations };
         };
-        for name in obj.keys() {
+        for (name, value) in obj {
             match self.key(name) {
                 None => violations.push(Violation {
                     key: name.clone(),
@@ -277,6 +330,79 @@ impl Catalog {
                     ),
                 }),
                 Some(_) => {}
+            }
+            // The nested `env` block (CCT-591) applies env to the live process:
+            // it must be an object of string values, each a well-formed,
+            // non-denylisted name — the same free-form rules as the account env.
+            if name == "env" {
+                self.validate_settings_env(value, &mut violations);
+            }
+        }
+        ValidationReport { violations }
+    }
+
+    /// Validate the nested `settings_json.env` block (CCT-591): a JSON object of
+    /// string values whose names are well-formed and not denylisted. Appends any
+    /// violations (keyed `env.NAME`) to `out`.
+    fn validate_settings_env(&self, value: &Value, out: &mut Vec<Violation>) {
+        let Some(env) = value.as_object() else {
+            out.push(Violation {
+                key: "env".to_string(),
+                reason: "settings `env` must be a JSON object of string values".to_string(),
+            });
+            return;
+        };
+        for (name, v) in env {
+            if !v.is_string() {
+                out.push(Violation {
+                    key: format!("env.{name}"),
+                    reason: "env values must be strings".to_string(),
+                });
+            }
+            if !valid_env_name(name) {
+                out.push(Violation {
+                    key: format!("env.{name}"),
+                    reason: "invalid env var name (must match [A-Za-z_][A-Za-z0-9_]*)".to_string(),
+                });
+            } else if self.env_denylisted(name) {
+                out.push(Violation {
+                    key: format!("env.{name}"),
+                    reason: "env var is session-critical / gateway-managed and cannot be set \
+                             per-account"
+                        .to_string(),
+                });
+            }
+        }
+    }
+
+    /// Whether an env var name is denylisted for per-account use (CCT-591): the
+    /// fixed [`ENV_DENYLIST`] plus every catalog env entry tagged `managed`.
+    #[must_use]
+    pub fn env_denylisted(&self, name: &str) -> bool {
+        ENV_DENYLIST.contains(&name)
+            || self.env(name).is_some_and(|v| matches!(v.tag, Policy::Managed | Policy::System))
+    }
+
+    /// Validate a FREE-FORM per-account env map (CCT-591): each name must be a
+    /// well-formed env var name and NOT denylisted. Values are arbitrary (they may
+    /// be secrets). This replaces the old curated-allowlist gate for the
+    /// account-level encrypted env blob.
+    #[must_use]
+    pub fn validate_free_env(&self, env: &BTreeMap<String, String>) -> ValidationReport {
+        let mut violations = Vec::new();
+        for name in env.keys() {
+            if !valid_env_name(name) {
+                violations.push(Violation {
+                    key: name.clone(),
+                    reason: "invalid env var name (must match [A-Za-z_][A-Za-z0-9_]*)".to_string(),
+                });
+            } else if self.env_denylisted(name) {
+                violations.push(Violation {
+                    key: name.clone(),
+                    reason: "env var is session-critical / gateway-managed and cannot be set \
+                             per-account"
+                        .to_string(),
+                });
             }
         }
         ValidationReport { violations }
@@ -337,6 +463,12 @@ struct RawEnv {
     name: String,
     group: String,
     tag: Policy,
+    #[serde(default)]
+    kind: EnvKind,
+    values: Option<Vec<String>>,
+    settings_equiv: Option<String>,
+    env_alias_of: Option<String>,
+    label: Option<String>,
     notes: Option<String>,
 }
 
@@ -418,7 +550,17 @@ fn build() -> Catalog {
     let mut env_by_name = BTreeMap::new();
     for (i, e) in raw.env.into_iter().enumerate() {
         env_by_name.insert(e.name.clone(), i);
-        env.push(EnvVar { name: e.name, group: e.group, tag: e.tag, notes: e.notes });
+        env.push(EnvVar {
+            name: e.name,
+            group: e.group,
+            tag: e.tag,
+            kind: e.kind,
+            values: e.values,
+            settings_equiv: e.settings_equiv,
+            env_alias_of: e.env_alias_of,
+            label: e.label,
+            notes: e.notes,
+        });
     }
 
     let presets: Vec<Preset> = raw
@@ -542,6 +684,81 @@ mod tests {
 
         // Non-object payload is a single violation.
         assert!(!c.validate_settings(&serde_json::json!([1, 2, 3])).ok());
+    }
+
+    #[test]
+    fn env_entries_carry_kind_and_aliases() {
+        let c = catalog();
+        let effort = c.env("CLAUDE_CODE_EFFORT_LEVEL").expect("effort env present");
+        assert_eq!(effort.kind, EnvKind::Enum);
+        assert_eq!(effort.settings_equiv.as_deref(), Some("effortLevel"));
+        assert!(effort.values.as_ref().is_some_and(|v| v.iter().any(|s| s == "max")));
+        assert_eq!(effort.label.as_deref(), Some("Reasoning effort"));
+
+        let model = c.env("ANTHROPIC_MODEL").expect("model env present");
+        assert_eq!(model.kind, EnvKind::String);
+        assert_eq!(model.settings_equiv.as_deref(), Some("model"));
+
+        let bundled = c.env("CLAUDE_CODE_DISABLE_BUNDLED_SKILLS").expect("bundled env present");
+        assert_eq!(bundled.kind, EnvKind::Flag);
+        assert_eq!(bundled.settings_equiv.as_deref(), Some("disableBundledSkills"));
+
+        // DO_NOT_TRACK is folded into DISABLE_TELEMETRY so the editor renders one row.
+        let dnt = c.env("DO_NOT_TRACK").expect("DO_NOT_TRACK present");
+        assert_eq!(dnt.env_alias_of.as_deref(), Some("DISABLE_TELEMETRY"));
+
+        // Every curated env var carries a label for the row.
+        for e in c.env_allowlist() {
+            assert!(e.label.is_some(), "{} has no label", e.name);
+        }
+    }
+
+    #[test]
+    fn free_env_accepts_freeform_rejects_denylist() {
+        let c = catalog();
+        let mut ok = BTreeMap::new();
+        ok.insert("MY_TOKEN".to_string(), "secret".to_string());
+        ok.insert("_x1".to_string(), "v".to_string());
+        assert!(c.validate_free_env(&ok).ok(), "well-formed free-form names accepted");
+
+        for denied in [
+            "ANTHROPIC_BASE_URL",
+            "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_API_KEY",
+            "CLAUDE_CODE_SESSION_KIND",
+            "CLAUDE_BG_SOURCE",
+            "CLAUDE_BG_BACKEND",
+            "CLAUDE_BG_CLAIM_AUTH",
+        ] {
+            let mut bad = BTreeMap::new();
+            bad.insert(denied.to_string(), "x".to_string());
+            assert!(!c.validate_free_env(&bad).ok(), "{denied} must be denylisted");
+        }
+
+        // Malformed names are rejected.
+        let mut malformed = BTreeMap::new();
+        malformed.insert("1BAD".to_string(), "x".to_string());
+        malformed.insert("has-dash".to_string(), "x".to_string());
+        let report = c.validate_free_env(&malformed);
+        assert_eq!(report.violations.len(), 2);
+    }
+
+    #[test]
+    fn validate_settings_checks_nested_env_block() {
+        let c = catalog();
+        // A well-formed env block passes.
+        let ok = serde_json::json!({ "env": { "DISABLE_TELEMETRY": "1", "MY_VAR": "x" } });
+        assert!(c.validate_settings(&ok).ok());
+
+        // Denylisted names inside env are rejected.
+        let denied = serde_json::json!({ "env": { "ANTHROPIC_AUTH_TOKEN": "sk" } });
+        let report = c.validate_settings(&denied);
+        assert!(!report.ok());
+        assert!(report.violations.iter().any(|v| v.key == "env.ANTHROPIC_AUTH_TOKEN"));
+
+        // Non-string values and a non-object env are rejected.
+        assert!(!c.validate_settings(&serde_json::json!({ "env": { "X": 1 } })).ok());
+        assert!(!c.validate_settings(&serde_json::json!({ "env": [1, 2] })).ok());
     }
 
     #[test]

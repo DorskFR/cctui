@@ -262,9 +262,13 @@ pub struct AccountInfo {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub providers: Vec<ProviderInfo>,
-    // NOTE: `env_json` is deliberately NOT a field here — it holds encrypted
-    // extra environment (possibly secrets) and is WRITE-ONLY, never returned over
-    // the API, exactly like the OAuth tokens.
+    /// Names (only) of the account's free-form extra env vars (CCT-591), sorted.
+    /// Values stay WRITE-ONLY (encrypted, never returned) — the names let the UI
+    /// show what is currently set with a replace-on-save affordance.
+    pub env_names: Vec<String>,
+    // NOTE: env VALUES are deliberately NOT a field here — the `env_json` blob
+    // holds encrypted extra environment (possibly secrets) and is WRITE-ONLY,
+    // never returned over the API, exactly like the OAuth tokens.
 }
 
 /// Identity-row projection (`accounts` + owner name); providers are attached
@@ -277,10 +281,13 @@ struct AccountRow {
     user_name: Option<String>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
+    /// Encrypted extra-env blob; decrypted to NAMES only for the API (CCT-591).
+    env_json: Option<String>,
 }
 
 impl AccountRow {
-    fn into_info(self, providers: Vec<ProviderInfo>) -> AccountInfo {
+    fn into_info(self, providers: Vec<ProviderInfo>, key: &[u8]) -> AccountInfo {
+        let env_names = env_names_from_enc(self.env_json.as_deref(), key);
         AccountInfo {
             id: self.id,
             name: self.name,
@@ -289,6 +296,7 @@ impl AccountRow {
             created_at: self.created_at,
             updated_at: self.updated_at,
             providers,
+            env_names,
         }
     }
 }
@@ -331,7 +339,8 @@ const PROVIDER_SELECT: &str = "SELECT p.id, p.account_id, p.provider, p.family, 
      ) t ON t.account_id = p.id";
 
 /// Identity SELECT for [`AccountRow`]. Append a `WHERE`/`ORDER BY` before use.
-const ACCOUNT_SELECT: &str = "SELECT a.id, a.name, a.user_id, u.name AS user_name, a.created_at, a.updated_at \
+const ACCOUNT_SELECT: &str = "SELECT a.id, a.name, a.user_id, u.name AS user_name, a.created_at, a.updated_at, \
+     a.env_json \
      FROM accounts a JOIN users u ON u.id = a.user_id";
 
 /// Fetch one account (owner-scoped: `owner` NULL = admin sees all) with its
@@ -354,7 +363,8 @@ async fn fetch_account_info(
             .bind(id)
             .fetch_all(pool)
             .await?;
-    Ok(Some(row.into_info(providers)))
+    let key = crate::crypto::vault_key();
+    Ok(Some(row.into_info(providers, &key)))
 }
 
 /// Fetch one provider row by id. `Ok(None)` = no such provider.
@@ -603,22 +613,39 @@ fn validate_settings_json(
     ))
 }
 
-/// Validate an extra-env map against the catalog's curated per-account allowlist
-/// (CCT-538/CCT-537) before it is encrypted and stored. Fail-closed.
+/// Validate the account-level free-form extra-env map (CCT-591) before it is
+/// encrypted and stored: any well-formed env var name is accepted EXCEPT a
+/// denylist of session-critical / gateway-managed vars (values are arbitrary and
+/// may be secrets). Fail-closed with a per-name reason.
 fn validate_env_json(
     env: &std::collections::HashMap<String, String>,
 ) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
     let map: std::collections::BTreeMap<String, String> =
         env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-    let report = crate::settings_catalog::catalog().validate_env(&map);
+    let report = crate::settings_catalog::catalog().validate_free_env(&map);
     if report.ok() {
         return Ok(());
     }
-    let detail = report.violations.iter().map(|v| v.key.as_str()).collect::<Vec<_>>().join(", ");
-    Err(err(
-        StatusCode::BAD_REQUEST,
-        &format!("env_json rejected — not in the per-account allowlist: {detail}"),
-    ))
+    let detail = report
+        .violations
+        .iter()
+        .map(|v| format!("{}: {}", v.key, v.reason))
+        .collect::<Vec<_>>()
+        .join("; ");
+    Err(err(StatusCode::BAD_REQUEST, &format!("env_json rejected — {detail}")))
+}
+
+/// Decrypt a stored `env_json` blob to its var NAMES only (sorted), never the
+/// values (CCT-591). A missing/undecryptable/malformed blob yields an empty list
+/// — the names are a display convenience, never a hard dependency.
+fn env_names_from_enc(enc: Option<&str>, key: &[u8]) -> Vec<String> {
+    let Some(enc) = enc else { return Vec::new() };
+    let Some(json) = crate::crypto::deobfuscate(enc, key) else { return Vec::new() };
+    let mut names = serde_json::from_str::<std::collections::BTreeMap<String, String>>(&json)
+        .map(|m| m.into_keys().collect::<Vec<_>>())
+        .unwrap_or_default();
+    names.sort();
+    names
 }
 
 /// Validate + encrypt an extra-env map (CCT-538). Empty ⇒ `None` (clears).
@@ -816,11 +843,12 @@ pub async fn list_accounts(
     for p in providers {
         by_account.entry(p.account_id).or_default().push(p);
     }
+    let key = crate::crypto::vault_key();
     let rows = accounts
         .into_iter()
         .map(|a| {
             let providers = by_account.remove(&a.id).unwrap_or_default();
-            a.into_info(providers)
+            a.into_info(providers, &key)
         })
         .collect();
     Ok(Json(rows))
@@ -2069,6 +2097,44 @@ mod tests {
         // Identity-only create: no provider block.
         let body: CreateAccount = serde_json::from_str(r#"{"name":"work"}"#).unwrap();
         assert!(body.provider.provider.is_none());
+    }
+
+    #[test]
+    fn free_form_env_json_denylist_and_acceptance() {
+        // Free-form names accepted (CCT-591).
+        let mut ok = std::collections::HashMap::new();
+        ok.insert("MY_TOKEN".to_string(), "secret".to_string());
+        ok.insert("HTTP_PROXY".to_string(), "http://p".to_string());
+        assert!(validate_env_json(&ok).is_ok());
+
+        // Denylisted gateway/session vars rejected with a clear per-name reason.
+        for denied in ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_BG_CLAIM_AUTH"] {
+            let mut bad = std::collections::HashMap::new();
+            bad.insert(denied.to_string(), "x".to_string());
+            let e = validate_env_json(&bad).expect_err("denylisted name must be rejected");
+            assert_eq!(e.0, StatusCode::BAD_REQUEST);
+        }
+
+        // Malformed name rejected.
+        let mut malformed = std::collections::HashMap::new();
+        malformed.insert("1BAD".to_string(), "x".to_string());
+        assert!(validate_env_json(&malformed).is_err());
+    }
+
+    #[test]
+    fn env_names_round_trip_names_only_sorted() {
+        // A fixed key exercises the encrypt→decrypt-names path without a vault env.
+        let key = b"test-key-32-bytes-test-key-32byt".to_vec();
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("ZED".to_string(), "z".to_string());
+        map.insert("ALPHA".to_string(), "a".to_string());
+        let enc = crate::crypto::obfuscate(&serde_json::to_string(&map).unwrap(), &key);
+
+        let names = env_names_from_enc(Some(&enc), &key);
+        assert_eq!(names, vec!["ALPHA".to_string(), "ZED".to_string()], "sorted names only");
+        // No blob ⇒ empty; a garbage blob degrades to empty, never panics.
+        assert!(env_names_from_enc(None, &key).is_empty());
+        assert!(env_names_from_enc(Some("not-hex-zz"), &key).is_empty());
     }
 
     #[test]

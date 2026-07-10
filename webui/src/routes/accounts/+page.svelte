@@ -18,7 +18,8 @@
 	import AccountShares from '$lib/components/molecules/AccountShares.svelte';
 	import GithubConnectors from '$lib/components/organisms/GithubConnectors.svelte';
 	import DispatchersPanel from '$lib/components/organisms/DispatchersPanel.svelte';
-	import AccountSettingsEditor from '$lib/components/organisms/AccountSettingsEditor.svelte';
+	import ProviderSettingsList from '$lib/components/organisms/ProviderSettingsList.svelte';
+	import FreeFormEnvEditor from '$lib/components/organisms/FreeFormEnvEditor.svelte';
 	import {
 		AutoGrid,
 		Button,
@@ -592,7 +593,7 @@
 </Tabs>
 
 {#if editor !== null}
-	<Modal title={modalTitle} onclose={close}>
+	<Modal title={modalTitle} onclose={close} size="lg" resizeKey="account-editor">
 		{#snippet body()}
 			<div class="editor-body">
 				{#if editor?.mode === 'create' || editor?.mode === 'edit-account'}
@@ -626,12 +627,12 @@
 				{/if}
 
 				{#if editor?.mode === 'edit-account'}
-					<!-- Identity half (CCT-560): the write-only extra env lives on the
-					     account; provider settings are edited per provider. -->
-					<AccountSettingsEditor
+					<!-- Identity half (CCT-560/591): free-form write-only extra env lives
+					     on the account; curated provider settings are edited per provider. -->
+					<FreeFormEnvEditor
 						bind:envRows={acctEnvRows}
 						bind:replaceEnv={acctReplaceEnv}
-						showSettings={false}
+						storedNames={editingAccount?.env_names ?? []}
 					/>
 				{:else}
 					{#if isCompatible}
@@ -800,7 +801,7 @@
 					     anthropic-family providers get the toggle list. -->
 					{#if editor?.mode === 'edit-provider' && editingProvider}
 						{#if editingProvider.family === 'anthropic'}
-							<AccountSettingsEditor bind:settings={acctSettings} showEnv={false} />
+							<ProviderSettingsList bind:settings={acctSettings} />
 						{:else}
 							<Text tone="faint" size="sm">
 								No per-provider settings for Codex yet — model aliases and soft

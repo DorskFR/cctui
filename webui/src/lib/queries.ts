@@ -157,8 +157,12 @@ export interface OAuthAccount {
   created_at: string;
   updated_at: string;
   providers: AccountProvider[];
-  // NOTE: `env_json` is deliberately absent — it is write-only, never returned
-  // over the API (may hold secrets), exactly like the OAuth tokens.
+  /** Names (only) of the account's free-form extra env vars (CCT-591), sorted.
+   *  Values stay write-only (never returned); the names drive the "currently
+   *  set" display + replace-on-save affordance in the account editor. */
+  env_names: string[];
+  // NOTE: env VALUES are deliberately absent — the `env_json` blob is write-only,
+  // never returned over the API (may hold secrets), exactly like the OAuth tokens.
 }
 
 /** Single-provider back-compat: the spawn/dispatch pickers derive the
