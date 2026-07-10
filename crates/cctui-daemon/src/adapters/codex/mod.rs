@@ -261,17 +261,23 @@ async fn command_pump(
                             }
                             continue;
                         };
-                        // CCT-461: pull the launch-time gateway env from the
-                        // server's durable binding, keyed by the pre-minted
-                        // session id the server bound the gateway token to
-                        // (`session_tokens.session_id`), and merge it over the
-                        // carried `spec.env`. Fail-closed: an account-bound
+                        // CCT-461/CCT-581: pull the launch-time gateway env from
+                        // the server's durable binding, keyed by the id the
+                        // server bound the gateway token to — the pre-minted
+                        // session id when present, else `command_id` (codex mints
+                        // its own thread id, so the server keys its token on
+                        // command_id, spawn.rs). Never pull with an empty id (it
+                        // would hit `/sessions//gateway-env` and never match).
+                        // Merge over the carried `spec.env`. Fail-closed: an
+                        // account-bound
                         // session with empty gateway env refuses to launch
                         // rather than starting env-less and 401ing (CCT-460).
                         let env = match resolve_launch_env(
                             server.as_ref(),
                             machine_key.as_ref(),
-                            &session_id.map_or_else(String::new, |id| id.to_string()),
+                            &session_id
+                                .or(command_id)
+                                .map_or_else(String::new, |id| id.to_string()),
                             &spec.env,
                         )
                         .await

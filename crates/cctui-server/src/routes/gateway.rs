@@ -1675,7 +1675,7 @@ fn usage_cache_stale(entry_age: Option<std::time::Duration>, ttl: std::time::Dur
 /// so the rate-limited endpoint is never spammed). On a fetch error it falls back
 /// to the last cached value, else `None` (fail open). Unlike the accounts-page
 /// route, this exists so the cap holds even when no human is viewing the account.
-async fn usage_for_soft_limit(state: &AppState, account_id: Uuid) -> Option<serde_json::Value> {
+pub async fn usage_for_soft_limit(state: &AppState, account_id: Uuid) -> Option<serde_json::Value> {
     let ttl = crate::routes::accounts::USAGE_CACHE_TTL.to_std().unwrap_or_default();
     let entry_age = state.account_usage_cache.get(&account_id).map(|h| h.fetched_at.elapsed());
     if !usage_cache_stale(entry_age, ttl) {

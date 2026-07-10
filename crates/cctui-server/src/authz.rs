@@ -291,14 +291,13 @@ impl Authz {
     }
 }
 
-/// Resolve a path-sourced resource id from the matched route. axum exposes the
-/// captured path params on the request extensions as `RawPathParams` once the
-/// router has matched the route, which is the case by the time this layer runs.
-fn resolve_id(req: &Request, id_from: IdFrom) -> Option<String> {
+// `RawPathParams` is an extractor, not a request extension: it must be run via
+// `extract_parts`, never `extensions().get()` (that always returns None — CCT-569).
+async fn resolve_id(req: &mut Request, id_from: IdFrom) -> Option<String> {
+    use axum::RequestExt;
     let name = id_from.param();
-    req.extensions()
-        .get::<axum::extract::RawPathParams>()
-        .and_then(|raw| raw.iter().find(|(k, _)| *k == name).map(|(_, v)| v.to_string()))
+    let raw = req.extract_parts::<axum::extract::RawPathParams>().await.ok()?;
+    raw.iter().find(|(k, _)| *k == name).map(|(_, v)| v.to_string())
 }
 
 /// RBAC capability insertion point (CCT-422). The FIRST step of an
@@ -652,7 +651,7 @@ impl Default for Routes {
 /// removes the ordering hazard entirely: there is no cross-layer handoff.
 async fn enforce_route(
     State(policy): State<Arc<Authz>>,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
     // Every `/api/v1` route is authenticated by the outer `auth_middleware`,
@@ -660,9 +659,10 @@ async fn enforce_route(
     // established.
     let ctx = request.extensions().get::<AuthContext>().cloned().ok_or(StatusCode::UNAUTHORIZED)?;
 
-    // Resolve any path-sourced id BEFORE awaiting so the enforce future borrows
-    // nothing from the (non-`Send`) request.
-    let id = policy.id_from().and_then(|id_from| resolve_id(&request, id_from));
+    let id = match policy.id_from() {
+        Some(id_from) => resolve_id(&mut request, id_from).await,
+        None => None,
+    };
 
     // The pool is needed ONLY for per-object [`Authz::Resource`] policies; the
     // scope/authenticated/custom arms never touch it, so look it up lazily.
@@ -1088,5 +1088,42 @@ mod tests {
 
         let allowed = one_route_app(Authz::Scope(Scope::Admin), Some(admin()));
         assert_eq!(status_of(allowed, "/r").await, StatusCode::OK);
+    }
+
+    /// CCT-569 regression. A `Resource`-guarded route with a `{id}` path param,
+    /// hit by a NON-admin principal, must resolve that id from the matched route
+    /// and authorize an OWNED object (200) while denying a non-owner (403). This
+    /// exercises `resolve_id` through the real request stack, where the old
+    /// `extensions().get::<RawPathParams>()` returned `None` and fails-closed 403'd
+    /// every non-admin. `ResourceKind::User` (id IS the owner) needs no live DB.
+    #[tokio::test]
+    async fn resource_route_resolves_id_for_non_admin() {
+        use axum::routing::get;
+
+        fn app(ctx: AuthContext) -> Router {
+            let pool = sqlx::PgPool::connect_lazy("postgres://invalid").unwrap();
+            let cfg = crate::auth::AuthConfig::new(Vec::new(), pool);
+            let policy = Authz::Resource(ResourceKind::User, Action::Read, IdFrom::Path("id"));
+            let route = get(|| async { "ok" })
+                .route_layer(middleware::from_fn_with_state(Arc::new(policy), enforce_route));
+            Router::new().route("/u/{id}", route).layer(middleware::from_fn(
+                move |mut req: Request, next: Next| {
+                    let ctx = ctx.clone();
+                    let cfg = cfg.clone();
+                    async move {
+                        req.extensions_mut().insert(ctx);
+                        req.extensions_mut().insert(cfg);
+                        next.run(req).await
+                    }
+                },
+            ))
+        }
+
+        let uid = Uuid::new_v4();
+        // Owner: the resolved `{id}` equals the principal's user_id → 200.
+        assert_eq!(status_of(app(user(uid)), &format!("/u/{uid}")).await, StatusCode::OK);
+        // Non-owner: id resolves to a DIFFERENT user → 403 (not a masked default-deny).
+        let other = Uuid::new_v4();
+        assert_eq!(status_of(app(user(uid)), &format!("/u/{other}")).await, StatusCode::FORBIDDEN);
     }
 }

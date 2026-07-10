@@ -100,7 +100,8 @@
 		<Toggle
 			pressed={autoApprove}
 			style="--toggle-accent: var(--warn)"
-			title="Auto-approve permission requests for this session"
+			title="Auto-approve tool-use permission requests for this session — tool use only, plans still ask"
+			aria-label="Auto-approve tool-use permissions — tool use only, plans still ask"
 			onclick={ontoggleAuto}
 		>⚡ Auto-approve</Toggle>
 		{#if ondiagnose}

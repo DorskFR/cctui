@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { AccountProvider, OAuthAccount } from '$lib/queries';
 import {
 	accountAdapters,
+	accountBacksAdapter,
 	adapterForProvider,
 	effectiveAdapterFor,
 	providerForAdapter,
@@ -56,6 +57,28 @@ describe('effectiveAdapterFor', () => {
 	it('falls back to the account first family when the pick is not offered', () => {
 		expect(effectiveAdapterFor(account('anthropic'), 'codex')).toBe('claude-code');
 		expect(effectiveAdapterFor(account('openai-compatible'), 'claude-code')).toBe('codex');
+	});
+});
+
+describe('accountBacksAdapter', () => {
+	// CCT-581: the submitted harness is the user's pick, gated by this predicate,
+	// NOT rewritten by effectiveAdapterFor. A named anthropic-only account that
+	// can't back codex blocks the spawn instead of silently submitting claude.
+	it('is true with no account (Auto / No account runs any harness)', () => {
+		expect(accountBacksAdapter(undefined, 'codex')).toBe(true);
+		expect(accountBacksAdapter(undefined, 'claude-code')).toBe(true);
+	});
+	it('is true only when the account has a provider of that family', () => {
+		expect(accountBacksAdapter(account('anthropic', 'openai'), 'codex')).toBe(true);
+		expect(accountBacksAdapter(account('anthropic'), 'claude-code')).toBe(true);
+	});
+	it('is false when the account cannot back the picked harness', () => {
+		// The exact regression: anthropic-only account + codex pick. The old
+		// effectiveAdapterFor would coerce this to claude-code; the predicate now
+		// rejects it so the submitted adapter_id is never silently swapped.
+		expect(accountBacksAdapter(account('anthropic'), 'codex')).toBe(false);
+		expect(effectiveAdapterFor(account('anthropic'), 'codex')).toBe('claude-code');
+		expect(accountBacksAdapter(account('openai-compatible'), 'claude-code')).toBe(false);
 	});
 });
 

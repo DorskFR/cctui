@@ -290,6 +290,16 @@ svg[aria-hidden="true"] {
 
 /* ---------- toast ---------- */
 .toast-wrap {
+  /* popover="manual" renders in the top layer (above tsumikit's <dialog>-based
+     Modal, which z-index can't beat). Reset the [popover] UA defaults
+     (inset:0; margin:auto; border; padding; background) so our own fixed
+     placement below is preserved. */
+  margin: 0;
+  inset: auto;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  overflow: visible;
   position: fixed;
   left: 50%;
   transform: translateX(-50%);

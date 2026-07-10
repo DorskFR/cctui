@@ -157,11 +157,19 @@ async fn dispatch_spawn(
     // With no account named: exactly one matching-family account → bind it;
     // several → 400 (pick explicitly, never guess); none → unbound as before
     // (setups with no accounts configured keep working).
-    let account_choice = match req.account.as_deref().map(str::trim).filter(|a| !a.is_empty()) {
-        Some(a) => Some(a.to_owned()),
-        None => default_account_name(state, uid, &adapter_id).await?,
+    let decision = decide_account(req.account.as_deref(), req.no_account);
+    let auto_bound = matches!(decision, AccountDecision::ResolveDefault);
+    let account_choice = match decision {
+        AccountDecision::Named(a) => Some(a),
+        AccountDecision::Unbound => None,
+        AccountDecision::ResolveDefault => default_account_name(state, uid, &adapter_id).await?,
     };
     if let Some(account_name) = account_choice.as_deref() {
+        let acct_ref = if auto_bound {
+            format!("your default account {account_name:?}")
+        } else {
+            format!("account {account_name:?}")
+        };
         // Resolution is by (account identity, harness family) (CCT-559): the
         // adapter names the family, and the identity carries at most one
         // provider row per family (CCT-558). The request's legacy `provider`
@@ -189,7 +197,11 @@ async fn dispatch_spawn(
             Err(crate::routes::gateway::MintSessionEnvError::NoAccount) => {
                 return Err((
                     StatusCode::NOT_FOUND,
-                    Json(ApiError { error: format!("no account named {account_name:?}") }),
+                    Json(ApiError {
+                        error: format!(
+                            "{acct_ref} does not exist — connect it on the accounts page"
+                        ),
+                    }),
                 ));
             }
             Err(crate::routes::gateway::MintSessionEnvError::NoProviderForFamily(f)) => {
@@ -197,7 +209,7 @@ async fn dispatch_spawn(
                     StatusCode::NOT_FOUND,
                     Json(ApiError {
                         error: format!(
-                            "account {account_name:?} has no {} provider (required by adapter \
+                            "{acct_ref} has no {} provider (required by adapter \
                              {adapter_id:?}) — connect one on the accounts page",
                             f.label()
                         ),
@@ -262,7 +274,10 @@ async fn dispatch_spawn(
     })?;
 
     tracing::info!(machine = %req.machine_id, %command_id, %adapter_id, "spawn dispatched");
-    Ok((StatusCode::ACCEPTED, Json(SpawnResponse { command_id, status: "dispatched".into() })))
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(SpawnResponse { command_id, status: "dispatched".into(), account: account_choice }),
+    ))
 }
 
 /// Resolve `req.machine_id` (a UUID) to the owning user, enforcing
@@ -308,7 +323,41 @@ async fn default_account_name(
         tracing::error!("resolving default account: {e}");
         (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
     })?;
-    match names.as_slice() {
+    resolve_default_account(&names, user_id, adapter_id)
+}
+
+/// The account path a spawn resolves to before any DB default lookup (CCT-582).
+#[derive(Debug, PartialEq, Eq)]
+enum AccountDecision {
+    /// The caller named an account explicitly — always binds it.
+    Named(String),
+    /// The caller asked for an explicit unbound spawn (`no_account`): skip
+    /// `default_account_name`, run on the machine's own ambient login.
+    Unbound,
+    /// No account named, no unbound request: fall back to the single
+    /// matching-family account, if any (CCT-574 auto-bind).
+    ResolveDefault,
+}
+
+/// Pure so the "`no_account` bypasses default resolution" contract is testable
+/// without a DB (CCT-582). A named account wins even if `no_account` is set, so
+/// a stale flag can never suppress an explicit pick.
+fn decide_account(account: Option<&str>, no_account: bool) -> AccountDecision {
+    match account.map(str::trim).filter(|a| !a.is_empty()) {
+        Some(a) => AccountDecision::Named(a.to_owned()),
+        None if no_account => AccountDecision::Unbound,
+        None => AccountDecision::ResolveDefault,
+    }
+}
+
+/// The 0/1/N decision over the family-filtered candidate names (CCT-574), split
+/// from the DB query so it is unit-testable.
+fn resolve_default_account(
+    names: &[String],
+    user_id: Uuid,
+    adapter_id: &str,
+) -> Result<Option<String>, (StatusCode, Json<ApiError>)> {
+    match names {
         [] => Ok(None),
         [one] => {
             tracing::info!(%user_id, account = %one, %adapter_id, "spawn named no account — binding the user's only matching account (CCT-574)");
@@ -398,7 +447,10 @@ async fn save_draft(
     })?;
 
     tracing::info!(machine = %req.machine_id, draft = %draft_id, "draft session saved");
-    Ok((StatusCode::CREATED, Json(SpawnResponse { command_id: draft_id, status: "draft".into() })))
+    Ok((
+        StatusCode::CREATED,
+        Json(SpawnResponse { command_id: draft_id, status: "draft".into(), account: None }),
+    ))
 }
 
 /// `POST /api/v1/sessions/{id}/launch` (CCT-394). Promote a draft to a live
@@ -536,4 +588,45 @@ pub async fn get_machine_commands(
         registry.take_machine_commands(&machine_id)
     };
     Json(commands)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AccountDecision, decide_account, resolve_default_account};
+    use uuid::Uuid;
+
+    #[test]
+    fn named_account_always_wins() {
+        assert_eq!(
+            decide_account(Some(" acme "), false),
+            AccountDecision::Named("acme".to_owned())
+        );
+        assert_eq!(decide_account(Some("acme"), true), AccountDecision::Named("acme".to_owned()));
+    }
+
+    #[test]
+    fn no_account_bypasses_default_resolution() {
+        assert_eq!(decide_account(None, true), AccountDecision::Unbound);
+        assert_eq!(decide_account(Some("   "), true), AccountDecision::Unbound);
+    }
+
+    #[test]
+    fn unset_account_resolves_default() {
+        assert_eq!(decide_account(None, false), AccountDecision::ResolveDefault);
+        assert_eq!(decide_account(Some(""), false), AccountDecision::ResolveDefault);
+    }
+
+    #[test]
+    fn default_account_zero_one_many() {
+        let uid = Uuid::nil();
+        assert_eq!(resolve_default_account(&[], uid, "codex").unwrap(), None);
+        assert_eq!(
+            resolve_default_account(&["solo".to_owned()], uid, "codex").unwrap(),
+            Some("solo".to_owned())
+        );
+        let err =
+            resolve_default_account(&["a".to_owned(), "b".to_owned()], uid, "codex").unwrap_err();
+        assert_eq!(err.0, axum::http::StatusCode::BAD_REQUEST);
+        assert!(err.1.0.error.contains("a, b"));
+    }
 }

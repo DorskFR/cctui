@@ -59,3 +59,20 @@ When something doesn't fit a Tsumikit component:
   app-specific layout, and scope it to the component.
 - Favour composition (small atoms/molecules) over configuration flags that make
   one component do many things.
+
+## Z-scale and the top layer
+
+- We keep a z-index scale in `variables.css` (`--z-header/nav: 50`,
+  `--z-drawer: 100`, `--z-modal: 200`, `--z-toast: 300`) to order elements
+  **within the normal stacking layer**.
+- **Caveat: z-index does not beat the top layer.** Tsumikit's `Modal` is a
+  native `<dialog>` opened with `showModal()`, which the browser paints in the
+  **top layer** — above the entire normal layer regardless of z-index. So
+  overlay UI that must sit above a modal (toasts, popovers, menus raised from
+  inside a modal) must itself be **top-layer**, not merely a high z-index.
+- The way to enter the top layer is the **Popover API** (`popover` +
+  `showPopover()`/`hidePopover()`) or a `<dialog>`. Example: `Toaster.svelte`
+  makes its wrapper a `popover="manual"` element so error/success toasts render
+  above any open modal; `SpawnModal.svelte`'s label menu does the same. Keep the
+  z-index too (it still orders elements among other top-layer popovers), but
+  never rely on it alone to clear a modal.

@@ -24,10 +24,11 @@
 		allAdapters,
 		accountAdapters,
 		providerForAdapter,
-		effectiveAdapterFor,
 		isCompatibleProvider,
 		withAliasTargets,
-		adapterLabel
+		adapterLabel,
+		NO_ACCOUNT,
+		type Adapter
 	} from './options';
 	import { submitChordLabel, isSubmitChord } from '$lib/platform';
 	import type { Form } from './types';
@@ -49,18 +50,31 @@
 		onsubmit?: () => void;
 	} = $props();
 
-	// Accounts are identities (CCT-558): matched by name. Empty = "Default".
+	// Accounts are identities (CCT-558): matched by name. '' = Auto, the
+	// NO_ACCOUNT sentinel = explicit unbound — both resolve to no selected
+	// account here (Auto lets the server bind, unbound skips binding).
 	const selectedAccount = $derived(
-		form.account ? accounts.find((a) => a.name === form.account) : undefined
+		form.account && form.account !== NO_ACCOUNT
+			? accounts.find((a) => a.name === form.account)
+			: undefined
 	);
 
 	// Harnesses the selected account can run (provider-family union, CCT-562);
-	// no account = both. The effective harness is the user's pick when allowed,
-	// else the account's first family.
+	// no account = both. The harness in effect is always the user's pick
+	// (CCT-581) — never silently swapped; clicking a card the account can't back
+	// drops to Auto instead.
 	const allowedAdapters = $derived(selectedAccount ? accountAdapters(selectedAccount) : allAdapters);
-	const effectiveAdapter = $derived(effectiveAdapterFor(selectedAccount, form.adapter_id));
-	// The provider credential backing the effective harness on this account.
+	const effectiveAdapter = $derived(form.adapter_id);
+	// The provider credential backing the picked harness on this account.
 	const selectedProvider = $derived(providerForAdapter(selectedAccount, effectiveAdapter));
+
+	// Auto (empty account) binds the single account whose provider family can run
+	// the picked harness (CCT-574/CCT-582): resolve it client-side so the picker
+	// can name the credential Auto would use, mirroring the server.
+	const autoAccount = $derived.by(() => {
+		const family = accounts.filter((a) => accountAdapters(a).includes(effectiveAdapter as Adapter));
+		return family.length === 1 ? family[0].name : undefined;
+	});
 
 	// Model options for the chosen axis (CCT-399):
 	//  * compatible account → its own declared models;
@@ -80,7 +94,11 @@
 	// reloaded); keep account_provider tracking the credential actually in use so
 	// the spawn request stays unambiguous.
 	$effect(() => {
-		if (form.account && !accounts.some((a) => a.name === form.account)) {
+		if (
+			form.account &&
+			form.account !== NO_ACCOUNT &&
+			!accounts.some((a) => a.name === form.account)
+		) {
 			form.account = '';
 		}
 	});
@@ -102,9 +120,12 @@
 	const summaryEffort = $derived(
 		effectiveAdapter === 'codex' ? form.effort_codex : form.effort_claude
 	);
+	const accountSummary = $derived(
+		form.account === NO_ACCOUNT ? 'no account' : form.account || 'auto'
+	);
 	const configSummary = $derived(
 		[
-			form.account || 'default',
+			accountSummary,
 			effectiveAdapter,
 			summaryModel || 'default',
 			summaryEffort || 'default',
@@ -179,17 +200,22 @@
 		<div class="config-fields">
 			<Field label="Account" for="sp-account">
 				<Select id="sp-account" bind:value={form.account}>
-					<option value="">Default (no account)</option>
+					<option value="">Auto{autoAccount ? ` — ${autoAccount}` : ''}</option>
+					<option value={NO_ACCOUNT}>No account — machine's own login</option>
 					{#each accounts as a (a.id)}
 						<option value={a.name}>
 							{a.name} ({a.providers.map((p) => p.provider).join(', ') || 'no provider'})
 						</option>
 					{/each}
 				</Select>
-				{#if selectedAccount}
+				{#if form.account === NO_ACCOUNT}
+					<Text tone="faint" size="xs">Runs on the worker's own login — no gateway, no account binding.</Text>
+				{:else if selectedAccount}
 					<Text tone="faint" size="xs">Runs through the passthrough gateway under this account.</Text>
+				{:else if autoAccount}
+					<Text tone="faint" size="xs">Auto-binds your account "{autoAccount}" through the gateway.</Text>
 				{:else}
-					<Text tone="faint" size="xs">Default uses the worker's own auth.</Text>
+					<Text tone="faint" size="xs">Auto binds your only matching account, or falls back to the machine's own login.</Text>
 				{/if}
 			</Field>
 
@@ -201,11 +227,11 @@
 					{#each allAdapters as ad (ad)}
 						<OptionButton
 							row
-							disabled={!!selectedAccount && !allowedAdapters.includes(ad)}
-							selected={effectiveAdapter === ad}
+							selected={form.adapter_id === ad}
 							style="--opt-accent: {ad === 'codex' ? 'var(--c-blue)' : 'var(--c-amber)'}"
 							onclick={() => {
-								if (!selectedAccount || allowedAdapters.includes(ad)) form.adapter_id = ad;
+								form.adapter_id = ad;
+								if (selectedAccount && !allowedAdapters.includes(ad)) form.account = '';
 							}}
 						>
 							<BrandLogo adapter={ad} size={18} />
@@ -213,8 +239,11 @@
 						</OptionButton>
 					{/each}
 				</div>
-				{#if selectedAccount && allowedAdapters.length < allAdapters.length}
-					<Text tone="faint" size="xs">The selected account's providers limit the harness.</Text>
+				{#if selectedAccount && !allowedAdapters.includes(form.adapter_id as Adapter)}
+					<Text size="xs" style="color:var(--c-red)">
+						Account "{form.account}" has no {adapterLabel(form.adapter_id)} credential — switch to
+						Auto/No account or pick another account.
+					</Text>
 				{/if}
 			</Field>
 
