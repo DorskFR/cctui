@@ -628,6 +628,7 @@ impl SdkDriver {
 /// EOF (child exit) emit an idle [`AdapterEvent::Status`] so the session stays
 /// resumable — the persistent child is NOT torn down on `result` (CCT-498). On
 /// EOF the child has exited; the next Reply/Resume cold-relaunches it.
+#[allow(clippy::cognitive_complexity)]
 async fn pump_stdout(
     local_id: String,
     stdout: ChildStdout,

@@ -1844,8 +1844,8 @@ mod tests {
         // Real-shaped `wham/usage` body (CCT-527): primary=5h, secondary=7d.
         let body = serde_json::json!({
             "rate_limit": {
-                "primary_window":   { "used_percent": 1,  "limit_window_seconds": 18000,  "reset_at": 1_782_955_425i64 },
-                "secondary_window": { "used_percent": 14, "limit_window_seconds": 604800, "reset_at": 1_783_403_309i64 },
+                "primary_window":   { "used_percent": 1,  "limit_window_seconds": 18_000,  "reset_at": 1_782_955_425i64 },
+                "secondary_window": { "used_percent": 14, "limit_window_seconds": 604_800, "reset_at": 1_783_403_309i64 },
             }
         });
         let mapped = map_wham_usage(&body).expect("rate_limit present");

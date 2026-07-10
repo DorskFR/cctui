@@ -38,14 +38,6 @@ pub async fn connect(database_url: &str) -> Result<PgPool, sqlx::Error> {
 }
 
 async fn reconcile_migration_checksums(pool: &PgPool) -> Result<(), sqlx::Error> {
-    let table_exists: bool =
-        sqlx::query_scalar("SELECT to_regclass('_sqlx_migrations') IS NOT NULL")
-            .fetch_one(pool)
-            .await?;
-    if !table_exists {
-        return Ok(());
-    }
-
     const RECONCILED: &[(i64, &str)] = &[
         (
             51,
@@ -60,6 +52,13 @@ async fn reconcile_migration_checksums(pool: &PgPool) -> Result<(), sqlx::Error>
             "8d0caf988684f0c4894fe6ea43ec74c44453e79c23a68518604e77e78e9a57466d792b8e6253090b80eea4c278d400dd",
         ),
     ];
+    let table_exists: bool =
+        sqlx::query_scalar("SELECT to_regclass('_sqlx_migrations') IS NOT NULL")
+            .fetch_one(pool)
+            .await?;
+    if !table_exists {
+        return Ok(());
+    }
 
     for (version, checksum_hex) in RECONCILED {
         let checksum = hex::decode(checksum_hex).expect("static checksum hex is valid");
