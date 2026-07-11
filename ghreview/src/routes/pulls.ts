@@ -1,4 +1,6 @@
 import { createRoute, type OpenAPIHono, z } from "@hono/zod-openapi";
+import { findDocument, listDocuments } from "../db/documents.ts";
+import type { AppDeps } from "../deps.ts";
 import {
   ErrorSchema,
   PaginationQuerySchema,
@@ -48,10 +50,25 @@ const getPull = createRoute({
   },
 });
 
-export function registerPulls(app: OpenAPIHono) {
-  app.openapi(listPulls, (c) => c.json({ items: [], next_cursor: null }, 200));
-  app.openapi(getPull, (c) => {
+export function registerPulls(app: OpenAPIHono, deps: AppDeps = {}) {
+  app.openapi(listPulls, async (c) => {
+    const { owner, repo } = c.req.valid("param");
+    const { account, limit, cursor } = c.req.valid("query");
+    if (!deps.db) return c.json({ items: [], next_cursor: null }, 200);
+    const page = await listDocuments(deps.db, "pull_request", {
+      account,
+      keyPrefix: `${owner}/${repo}#`,
+      limit,
+      cursor,
+    });
+    return c.json(page, 200);
+  });
+  app.openapi(getPull, async (c) => {
     const { owner, repo, number } = c.req.valid("param");
+    const doc = deps.db
+      ? await findDocument(deps.db, "pull_request", `${owner}/${repo}#${number}`)
+      : null;
+    if (doc) return c.json(doc, 200);
     return c.json(
       {
         error: {

@@ -2,14 +2,15 @@
 
 Versioned HTTP + SSE contract for the cctui GitHub review center (epic CCT-600).
 
-This package is the **contract surface only** (CCT-604). It is a Bun + TypeScript
-service built on [Hono](https://hono.dev) + [`@hono/zod-openapi`](https://github.com/honojs/middleware/tree/main/packages/zod-openapi):
+It is a Bun + TypeScript service built on [Hono](https://hono.dev) +
+[`@hono/zod-openapi`](https://github.com/honojs/middleware/tree/main/packages/zod-openapi):
 the `/v1` routes and their zod schemas are the source of truth, and the OpenAPI
 document + TypeScript client are generated from them.
 
-Handlers return stubbed/empty data — the sync daemon that fills the store lands in
-CCT-601. The shapes, pagination params, error model and event catalogue are the
-real, frozen contract.
+The contract surface was frozen in CCT-604. CCT-601 adds the **sync daemon**: an
+ETag polling loop over octokit, a Postgres JSONB document store, and SSE push via
+`LISTEN/NOTIFY`. The read routes now serve real envelopes from the store; when
+`DATABASE_URL` is unset the service still boots and serves the empty contract.
 
 ## Design
 
@@ -56,7 +57,69 @@ ignore.
 
 Events are **change hints**, not the data itself — clients refetch the relevant
 envelope over HTTP. This keeps the SSE stream small and the HTTP cache warm.
-Later tickets (CCT-601/602) wire these to Postgres `LISTEN/NOTIFY`.
+They are wired to Postgres `LISTEN/NOTIFY`: a document upsert that changes the
+payload fires `NOTIFY ghreview_events`; the SSE endpoint `LISTEN`s and re-broadcasts
+mapped events, so multiple replicas each see every write.
+
+## Sync daemon (CCT-601)
+
+The daemon keeps a warm, GitHub-shaped cache so reads never touch GitHub.
+
+### Runbook — environment
+
+| Var | Default | Purpose |
+| --- | ------- | ------- |
+| `DATABASE_URL` | — | Postgres DSN. Unset ⇒ contract-only mode (no sync, empty store). |
+| `GHREVIEW_SCHEMA` | `ghreview` | Dedicated schema inside the shared cctui database. |
+| `GITHUB_TOKEN` | — | PAT used for octokit REST + GraphQL. |
+| `GITHUB_ACCOUNT` | — | Account login the poller runs for. Unset ⇒ store + SSE only, no polling. |
+| `GHREVIEW_POLL_INTERVAL_MS` | `30000` | Delay between poll sweeps. |
+| `GHREVIEW_BUDGET_CEILING` | `0.2` | Fraction of the hourly rate budget the poller may spend. |
+| `GHREVIEW_RATE_LIMIT` | `5000` | Per-PAT hourly request budget. |
+| `GHREVIEW_WEBHOOK_SECRET` | — | Shared secret for `X-Hub-Signature-256` on `POST /v1/webhook`. |
+| `PORT` | `8790` | HTTP port. |
+
+Single-account for this ticket; CCT-603 adds the multi-account model. The poller is
+built around an `Account` abstraction (`src/github/account.ts`) so 603 slots in.
+
+### Migrations
+
+SQL files in `migrations/*.sql` are applied idempotently at boot by
+`src/db/migrate.ts` (tracked in `ghreview.schema_migrations`, run in order, skipping
+already-applied files). Tables: `subscriptions` (what to poll), `documents`
+(envelope + JSONB payload with a GIN index, unique on `(account, kind, key)`), and
+`sync_state` (etags, cursors, rate snapshots).
+
+### Polling budget
+
+Every response updates a per-account `BudgetTracker` from the `x-ratelimit-*`
+headers. **A `304 Not Modified` costs nothing against the GitHub rate limit**, so
+only `200`/error responses increment `spent`. When `spent` reaches the ceiling
+(`GHREVIEW_BUDGET_CEILING` × `GHREVIEW_RATE_LIMIT`, default 20% of 5000 = 1000/hour)
+the sweep stops until the window resets. A secondary-rate-limit response
+(`403`/`429` with `Retry-After`) forces a backoff window. This keeps sustained
+polling of a warm PR set well under 20% of one account's budget: after the first
+sync every unchanged PR returns `304` and is free.
+
+Notifications polling honours `Last-Modified` / `If-Modified-Since` and the
+`X-Poll-Interval` hint that the notifications API is designed around.
+
+### Webhook (optional)
+
+`POST /v1/webhook` verifies `X-Hub-Signature-256` (HMAC-SHA256 of the raw body with
+`GHREVIEW_WEBHOOK_SECRET`) and upserts the payload exactly like a poll result.
+Polling remains the universal path; the webhook is an optional latency shortcut for
+org repos that can install one.
+
+### GraphQL surface
+
+GitHub's public GraphQL schema is vendored at `schema/github.graphql` (fetched from
+`docs.github.com/public/fpt/schema.docs.graphql`, then run through
+`scripts/sanitize-schema.ts` to drop a handful of spec-invalid `@deprecated`
+directives GitHub ships that graphql-js rejects). `bun run gen:graphql` regenerates
+`src/generated/github-graphql.ts` from the `src/graphql/*.graphql` operations. A thin
+`createGraphqlClient` wrapper (`src/graphql/client.ts`) exposes the review-threads
+query proving the surface; full GraphQL use lands in a later ticket.
 
 ## Development
 
@@ -74,9 +137,11 @@ bun run check      # typecheck + lint + test — the CI gate
 | ------- | ------ |
 | `bun run gen:openapi` | `openapi.json` — OpenAPI 3.0.3 doc generated from the routes. |
 | `bun run gen:client` | regenerates `openapi.json` **and** `src/generated/api.ts` (the TS client types via `openapi-typescript`). |
+| `bun run gen:graphql` | regenerates `src/generated/github-graphql.ts` from the vendored GitHub schema + `src/graphql/*.graphql` operations. |
 
-Both are checked in. `bun run gen` (alias for `gen:client`) refreshes both after
-any route/schema change; the contract test fails if the route surface drifts.
+All are checked in. `bun run gen` refreshes the OpenAPI doc, the TS client and the
+GraphQL types after any route/schema change; the contract test fails if the route
+surface drifts.
 
 The frontend (`cctui-ui`) consumes `src/generated/api.ts` — framework-agnostic
 `paths`/`components` types it can pair with `openapi-fetch` or a thin `fetch`

@@ -1,6 +1,8 @@
 import type { OpenAPIHono } from "@hono/zod-openapi";
 import { z } from "@hono/zod-openapi";
 import { streamSSE } from "hono/streaming";
+import type { AppDeps } from "../deps.ts";
+import type { SseMessage } from "../events/bus.ts";
 import { AccountSchema } from "../schemas.ts";
 
 export const PrUpdatedEventSchema = z
@@ -41,7 +43,7 @@ export const SseEventSchema = z
   ])
   .openapi("SseEvent");
 
-export function registerEvents(app: OpenAPIHono) {
+export function registerEvents(app: OpenAPIHono, deps: AppDeps = {}) {
   app.openAPIRegistry.register("SseEvent", SseEventSchema);
   app.openAPIRegistry.registerPath({
     method: "get",
@@ -65,10 +67,21 @@ export function registerEvents(app: OpenAPIHono) {
 
   app.get("/v1/events", (c) =>
     streamSSE(c, async (stream) => {
+      const queue: SseMessage[] = [];
+      const unsubscribe = deps.bus?.subscribe((msg) => queue.push(msg));
       await stream.writeSSE({ event: "sync.status", data: JSON.stringify({ ready: true }) });
-      while (!stream.closed) {
-        await stream.writeSSE({ event: "ping", data: "" });
-        await stream.sleep(15_000);
+      try {
+        while (!stream.closed) {
+          let msg = queue.shift();
+          while (msg) {
+            await stream.writeSSE({ event: msg.event, data: JSON.stringify(msg.data) });
+            msg = queue.shift();
+          }
+          await stream.writeSSE({ event: "ping", data: "" });
+          await stream.sleep(1_000);
+        }
+      } finally {
+        unsubscribe?.();
       }
     }),
   );
