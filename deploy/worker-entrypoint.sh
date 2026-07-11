@@ -1020,6 +1020,12 @@ WAIT_POLL_SECS="${WORKER_DONE_POLL_SECS:-2}"
 # POSTs the callback promptly.
 WORKER_BOOT_DEADLINE_SECS="${WORKER_BOOT_DEADLINE_SECS:-120}"
 
+# Belt-and-suspenders result grace (CCT-525): under GUARD_ON a finished session
+# that wrote a valid RESULT_FILE but never POSTed /transition exit would block to
+# the 24h activeDeadlineSeconds. Arm a countdown on a valid RESULT_FILE and exit
+# the wait even under guard once it elapses; guard-exit stays the fast path.
+WORKER_RESULT_GRACE_SECS="${WORKER_RESULT_GRACE_SECS:-60}"
+
 # Turn-complete marker (CCT-513): cctui-daemon writes
 # ~worker/.claude/jobs/<short>/dispatch_done once the session it dispatched at
 # boot has been busy at least once and then settled idle (default 60s,
@@ -1044,10 +1050,15 @@ guard_exited() {
     [ "$_step" = "-1" ]
 }
 
+# The session wrote a valid result JSON, ignoring the guard gate (CCT-525).
+result_valid() {
+    [ -s "$RESULT_FILE" ] && jq -e . "$RESULT_FILE" >/dev/null 2>&1
+}
+
 # Guard-less done: the session wrote a valid result JSON.
 result_ready() {
     [ "$GUARD_ON" = on ] && return 1
-    [ -s "$RESULT_FILE" ] && jq -e . "$RESULT_FILE" >/dev/null 2>&1
+    result_valid
 }
 
 # Per-session liveness backstop — sourced from the cctui-daemon's own
@@ -1109,6 +1120,7 @@ await_dispatch_done() {
     log "wait: blocking on dual signal (guard=$GUARD_ON, session=${SESSION_ID:-none})"
     _waited=0
     _next_probe=0
+    _result_armed=-1
     while :; do
         # The daemon process going away is itself terminal — nothing left to
         # finish the task, so stop waiting and let the trap synthesize a verdict.
@@ -1128,6 +1140,18 @@ await_dispatch_done() {
         if dispatch_done_marker; then
             log "wait: daemon wrote dispatch_done marker (turn complete, CCT-513)"
             return 0
+        fi
+        # CCT-525 fallback: intentionally uses result_valid (no guard gate), so it
+        # also fires under GUARD_ON where result_ready cannot; guard_exited above
+        # stays the immediate fast path.
+        if result_valid; then
+            if [ "$_result_armed" -lt 0 ]; then
+                _result_armed="$_waited"
+                log "wait: valid RESULT_FILE seen; arming ${WORKER_RESULT_GRACE_SECS}s grace exit (guard=$GUARD_ON)"
+            elif [ "$((_waited - _result_armed))" -ge "$WORKER_RESULT_GRACE_SECS" ]; then
+                log "wait: RESULT_FILE grace elapsed (${WORKER_RESULT_GRACE_SECS}s) without a done-signal; exiting wait"
+                return 0
+            fi
         fi
         # Daemon-sourced liveness — throttled server probe (not every 2s).
         if [ "$_waited" -ge "$_next_probe" ]; then

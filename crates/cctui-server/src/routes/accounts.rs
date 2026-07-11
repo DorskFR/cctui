@@ -836,14 +836,22 @@ pub async fn list_accounts(
 ) -> Result<Json<Vec<AccountInfo>>, (StatusCode, Json<serde_json::Value>)> {
     require_human(&ctx)?;
     let accounts: Vec<AccountRow> = sqlx::query_as(&format!(
-        "{ACCOUNT_SELECT} WHERE $1::uuid IS NULL OR a.user_id = $1 ORDER BY a.name"
+        "{ACCOUNT_SELECT} WHERE $1::uuid IS NULL OR a.user_id = $1 \
+           OR EXISTS (SELECT 1 FROM resource_shares s \
+                      WHERE s.resource_type = 'account' AND s.resource_id = a.id \
+                        AND s.grantee_id = $1 AND s.revoked_at IS NULL) \
+         ORDER BY a.name"
     ))
     .bind(ctx.owner_filter())
     .fetch_all(&state.pool)
     .await
     .map_err(|e| db_err(&e))?;
     let providers: Vec<ProviderInfo> = sqlx::query_as(&format!(
-        "{PROVIDER_SELECT} WHERE $1::uuid IS NULL OR p.user_id = $1 ORDER BY p.family"
+        "{PROVIDER_SELECT} WHERE $1::uuid IS NULL OR p.user_id = $1 \
+           OR EXISTS (SELECT 1 FROM resource_shares s \
+                      WHERE s.resource_type = 'account' AND s.resource_id = p.account_id \
+                        AND s.grantee_id = $1 AND s.revoked_at IS NULL) \
+         ORDER BY p.family"
     ))
     .bind(ctx.owner_filter())
     .fetch_all(&state.pool)
@@ -1983,9 +1991,10 @@ pub async fn list_shares(
     require_human(&ctx)?;
     require_account_owner(&state, &ctx, id).await?;
     let rows: Vec<ShareInfo> = sqlx::query_as(
-        "SELECT s.account_id, s.user_id, u.name AS user_name, s.action, s.granted_at \
-         FROM account_shares s JOIN users u ON u.id = s.user_id \
-         WHERE s.account_id = $1 AND s.revoked_at IS NULL \
+        "SELECT s.resource_id AS account_id, s.grantee_id AS user_id, u.name AS user_name, \
+                s.action, s.granted_at \
+         FROM resource_shares s JOIN users u ON u.id = s.grantee_id \
+         WHERE s.resource_type = 'account' AND s.resource_id = $1 AND s.revoked_at IS NULL \
          ORDER BY u.name",
     )
     .bind(id)
@@ -2038,8 +2047,9 @@ pub async fn grant_share(
     };
 
     sqlx::query(
-        "INSERT INTO account_shares (account_id, user_id, action) VALUES ($1, $2, $3) \
-         ON CONFLICT (account_id, user_id, action) \
+        "INSERT INTO resource_shares (resource_type, resource_id, grantee_id, action) \
+         VALUES ('account', $1, $2, $3) \
+         ON CONFLICT (resource_type, resource_id, grantee_id, action) \
          DO UPDATE SET revoked_at = NULL, granted_at = now()",
     )
     .bind(id)
@@ -2050,9 +2060,11 @@ pub async fn grant_share(
     .map_err(|e| db_err(&e))?;
 
     let info: ShareInfo = sqlx::query_as(
-        "SELECT s.account_id, s.user_id, u.name AS user_name, s.action, s.granted_at \
-         FROM account_shares s JOIN users u ON u.id = s.user_id \
-         WHERE s.account_id = $1 AND s.user_id = $2 AND s.action = $3",
+        "SELECT s.resource_id AS account_id, s.grantee_id AS user_id, u.name AS user_name, \
+                s.action, s.granted_at \
+         FROM resource_shares s JOIN users u ON u.id = s.grantee_id \
+         WHERE s.resource_type = 'account' AND s.resource_id = $1 \
+           AND s.grantee_id = $2 AND s.action = $3",
     )
     .bind(id)
     .bind(target)
@@ -2074,8 +2086,9 @@ pub async fn revoke_share(
     require_human(&ctx)?;
     require_account_owner(&state, &ctx, id).await?;
     let res = sqlx::query(
-        "UPDATE account_shares SET revoked_at = now() \
-         WHERE account_id = $1 AND user_id = $2 AND revoked_at IS NULL",
+        "UPDATE resource_shares SET revoked_at = now() \
+         WHERE resource_type = 'account' AND resource_id = $1 \
+           AND grantee_id = $2 AND revoked_at IS NULL",
     )
     .bind(id)
     .bind(user_id)

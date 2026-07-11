@@ -94,7 +94,10 @@ pub async fn list_dispatchers(
     // dispatchers; a user sees only their own.
     let rows: Vec<DispatcherRow> = sqlx::query_as(&format!(
         "SELECT {SELECT_COLS} \
-         WHERE ($1::uuid IS NULL OR user_id = $1) \
+         WHERE ($1::uuid IS NULL OR user_id = $1 \
+                OR EXISTS (SELECT 1 FROM resource_shares s \
+                           WHERE s.resource_type = 'dispatcher' AND s.resource_id = dispatchers.id \
+                             AND s.grantee_id = $1 AND s.revoked_at IS NULL)) \
          AND deleted_at IS NULL AND revoked_at IS NULL ORDER BY name"
     ))
     .bind(ctx.owner_filter())

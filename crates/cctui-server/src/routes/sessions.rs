@@ -808,34 +808,129 @@ fn ilike_contains(q: &str) -> String {
     format!("%{escaped}%")
 }
 
-/// Split a query into terms (CCT-187): whitespace-separated, but a `"…"`-quoted
-/// span is one exact term (spaces preserved). Capped at 8 terms. Terms are
-/// AND-matched; the webui uses the same split to highlight every term.
-fn tokenize_query(q: &str) -> Vec<String> {
-    let mut terms = Vec::new();
-    let mut cur = String::new();
-    let mut in_quote = false;
-    for c in q.chars() {
-        match c {
-            '"' => {
-                if !cur.is_empty() {
-                    terms.push(std::mem::take(&mut cur));
-                }
-                in_quote = !in_quote;
-            }
-            c if c.is_whitespace() && !in_quote => {
-                if !cur.is_empty() {
-                    terms.push(std::mem::take(&mut cur));
-                }
-            }
-            c => cur.push(c),
+/// A positional bind for the compiled query — kept typed so `pinned` binds a
+/// real `bool` and every other leaf binds text (raw for `=`, `%…%` for ILIKE).
+enum SqlParam {
+    Text(String),
+    Bool(bool),
+}
+
+fn ph_text(params: &mut Vec<SqlParam>, s: String) -> usize {
+    params.push(SqlParam::Text(s));
+    params.len()
+}
+
+/// SQL predicate for one fielded value. The bind is appended to `params` and
+/// the returned string references it by its `$N` position (1-based).
+fn leaf_predicate(field: &str, value: &str, params: &mut Vec<SqlParam>) -> String {
+    match field {
+        "machine" => {
+            let p = ph_text(params, value.to_string());
+            format!(
+                "(lower(COALESCE(m.display_name, m.name)) = lower(${p}) \
+                  OR lower(s.machine_id) = lower(${p}))"
+            )
+        }
+        "account" => {
+            let p = ph_text(params, value.to_string());
+            format!(
+                "EXISTS (SELECT 1 FROM session_tokens st \
+                  JOIN account_providers ap ON ap.id = st.account_id \
+                  JOIN accounts a ON a.id = ap.account_id \
+                  WHERE st.session_id = s.id AND st.revoked_at IS NULL \
+                  AND lower(a.name) = lower(${p}))"
+            )
+        }
+        "tag" => {
+            let p = ph_text(params, value.to_string());
+            format!(
+                "EXISTS (SELECT 1 FROM session_labels sl \
+                  JOIN labels l ON l.id = sl.label_id \
+                  WHERE sl.session_id = s.id AND lower(l.name) = lower(${p}))"
+            )
+        }
+        "title" => {
+            let p = ph_text(params, ilike_contains(value));
+            format!("COALESCE(s.session_name, '') ILIKE ${p}")
+        }
+        "status" => {
+            let p = ph_text(params, value.to_string());
+            format!("lower(s.status) = lower(${p})")
+        }
+        "model" => {
+            let p = ph_text(params, ilike_contains(value));
+            format!("COALESCE(s.model, '') ILIKE ${p}")
+        }
+        "effort" => {
+            let p = ph_text(params, value.to_string());
+            format!("lower(COALESCE(s.effort, '')) = lower(${p})")
+        }
+        "adapter" => {
+            let p = ph_text(params, value.to_string());
+            format!("lower(COALESCE(s.adapter_id, '')) = lower(${p})")
+        }
+        "pinned" => {
+            params.push(SqlParam::Bool(value.eq_ignore_ascii_case("true")));
+            format!("s.pinned = ${}", params.len())
+        }
+        "dir" => {
+            let p = ph_text(params, ilike_contains(value));
+            format!("s.working_dir ILIKE ${p}")
+        }
+        _ => {
+            let p = ph_text(params, ilike_contains(value));
+            free_text_predicate(p)
         }
     }
-    if !cur.is_empty() {
-        terms.push(cur);
+}
+
+/// The residual free-text path: id / name / dir / trgm-accelerated transcript.
+fn free_text_predicate(p: usize) -> String {
+    format!(
+        "(s.id ILIKE ${p} OR COALESCE(s.session_name, '') ILIKE ${p} \
+          OR s.working_dir ILIKE ${p} \
+          OR EXISTS (SELECT 1 FROM stream_events e \
+                     WHERE e.session_id::text = s.id AND e.search_text ILIKE ${p}))"
+    )
+}
+
+fn compile_filter(filter: &cctui_query::Filter, params: &mut Vec<SqlParam>) -> String {
+    let preds: Vec<String> =
+        filter.values.iter().map(|v| leaf_predicate(&filter.field, v, params)).collect();
+    let joined = match preds.len() {
+        0 => "TRUE".to_string(),
+        1 => preds.into_iter().next().unwrap(),
+        _ => format!("({})", preds.join(" OR ")),
+    };
+    if filter.op == cctui_query::FilterOp::Ne { format!("(NOT {joined})") } else { joined }
+}
+
+/// Walk the query AST into a parameterised SQL `WHERE` fragment (CCT-465),
+/// pushing binds onto `params` in `$1…$N` order. Fielded leaves become column
+/// predicates / join-EXISTS, free text takes the `pg_trgm` path, and the
+/// boolean/negation structure maps straight to `AND`/`OR`/`NOT`.
+fn compile_node(node: &cctui_query::Node, params: &mut Vec<SqlParam>) -> String {
+    use cctui_query::Node;
+    match node {
+        Node::Empty => "TRUE".to_string(),
+        Node::Text { value } => {
+            let p = ph_text(params, ilike_contains(value));
+            free_text_predicate(p)
+        }
+        Node::Filter { filter } => compile_filter(filter, params),
+        Node::Not { child } => format!("(NOT {})", compile_node(child, params)),
+        Node::And { children } => join_children(children, "AND", params),
+        Node::Or { children } => join_children(children, "OR", params),
     }
-    terms.truncate(8);
-    terms
+}
+
+fn join_children(children: &[cctui_query::Node], sep: &str, params: &mut Vec<SqlParam>) -> String {
+    let preds: Vec<String> = children.iter().map(|c| compile_node(c, params)).collect();
+    if preds.is_empty() {
+        "TRUE".to_string()
+    } else {
+        format!("({})", preds.join(&format!(" {sep} ")))
+    }
 }
 
 /// Build a ~200-char snippet of `text` centered on the earliest case-insensitive
@@ -873,14 +968,14 @@ pub async fn search_sessions(
     Query(params): Query<SearchParams>,
 ) -> Result<Json<SessionListResponse>, (StatusCode, Json<ApiError>)> {
     let uid = ctx.owner_filter();
-    let terms = tokenize_query(params.q.trim());
-    let browse = terms.is_empty();
-    // No terms + live-only scope: nothing to do — the bucketed list owns the
-    // live view. No terms + archived scope means "browse the archive".
+    // Parse the raw `q` into the CCT-465 AST. A blank query → `Empty` → browse.
+    // A plain keyword parses to a single free-text leaf, so back-compat holds.
+    let root = cctui_query::parse(params.q.trim());
+    let browse = root.is_empty();
     if browse && !params.include_archived {
         return Ok(Json(SessionListResponse { sessions: vec![] }));
     }
-    let patterns: Vec<String> = terms.iter().map(|t| ilike_contains(t)).collect();
+    let text_terms = root.free_text_terms();
     let limit = params.limit.unwrap_or(SEARCH_DEFAULT_LIMIT).clamp(1, SEARCH_MAX_LIMIT);
     let offset = params.offset.unwrap_or(0).max(0);
 
@@ -894,10 +989,8 @@ pub async fn search_sessions(
         );
         sqlx::query_as(&sql).bind(limit).bind(offset).bind(uid).fetch_all(&state.pool).await
     } else {
-        // AND across terms: a session matches only if EVERY term hits somewhere
-        // — its transcript (trgm-accelerated EXISTS) or its id / name / dir.
-        // Terms may hit in different events; that's the "convo contains all the
-        // words" model. The scope clause keeps archived rows out unless asked.
+        // Compile the AST to a WHERE tree; `ast_params` are the leading `$1…$N`
+        // binds. Ownership/scope stay outer constraints appended after them.
         //
         // Live-only scope normally drops archived rows, but a session that's
         // currently live in the in-memory registry (e.g. a dispatched worker
@@ -906,6 +999,9 @@ pub async fn search_sessions(
         // would otherwise be the one place they vanish (CCT-298 item 2). OR in
         // the live registry ids so they're never filtered by status. With
         // include_archived the scope is already open, so no extra bind is needed.
+        let mut ast_params: Vec<SqlParam> = Vec::new();
+        let where_sql = compile_node(&root, &mut ast_params);
+        let n = ast_params.len();
         let live_ids: Vec<String> = if params.include_archived {
             Vec::new()
         } else {
@@ -915,33 +1011,23 @@ pub async fn search_sessions(
         let scope = if params.include_archived {
             "TRUE".to_string()
         } else {
-            format!("(s.status <> 'archived' OR s.id = ANY(${}))", patterns.len() + 1)
+            format!("(s.status <> 'archived' OR s.id = ANY(${}))", n + 1)
         };
         // Whether we bound the live_ids array (1) or not (0) — shifts limit/offset.
         let extra = usize::from(!params.include_archived);
-        let clauses: Vec<String> = (1..=patterns.len())
-            .map(|i| {
-                format!(
-                    "(s.id ILIKE ${i} OR COALESCE(s.session_name, '') ILIKE ${i} \
-                      OR s.working_dir ILIKE ${i} \
-                      OR EXISTS (SELECT 1 FROM stream_events e \
-                                 WHERE e.session_id::text = s.id AND e.search_text ILIKE ${i}))"
-                )
-            })
-            .collect();
-        let (li, oi) = (patterns.len() + 1 + extra, patterns.len() + 2 + extra);
-        // Owner filter (NULL = admin) is the final positional bind, after
-        // limit/offset.
+        let (li, oi) = (n + 1 + extra, n + 2 + extra);
         let ui = oi + 1;
         let sql = format!(
-            "{SEARCH_SELECT} WHERE ({scope}) AND {} \
+            "{SEARCH_SELECT} WHERE ({scope}) AND ({where_sql}) \
              AND (${ui}::uuid IS NULL OR m.user_id = ${ui}) \
-             ORDER BY s.registered_at DESC LIMIT ${li} OFFSET ${oi}",
-            clauses.join(" AND "),
+             ORDER BY s.registered_at DESC LIMIT ${li} OFFSET ${oi}"
         );
         let mut query = sqlx::query_as::<_, DbSession>(&sql);
-        for p in &patterns {
-            query = query.bind(p);
+        for p in &ast_params {
+            query = match p {
+                SqlParam::Text(s) => query.bind(s.clone()),
+                SqlParam::Bool(b) => query.bind(*b),
+            };
         }
         if !params.include_archived {
             query = query.bind(live_ids);
@@ -1003,9 +1089,10 @@ pub async fn search_sessions(
     // searchable text, windowed around the keyword. Sessions matched only by
     // id/name/dir have no transcript hit and keep `match_snippet = None`.
     let ids: Vec<String> = sessions.iter().map(|s| s.id.clone()).collect();
-    if !browse && !ids.is_empty() {
-        // Snippet from the most recent event matching ANY term ($1 = ids,
-        // $2.. = patterns); windowed around the earliest term in that text.
+    if !browse && !ids.is_empty() && !text_terms.is_empty() {
+        // Snippet from the most recent event matching ANY free-text term
+        // ($1 = ids, $2.. = patterns); windowed around the earliest term.
+        let patterns: Vec<String> = text_terms.iter().map(|t| ilike_contains(t)).collect();
         let or = (2..=patterns.len() + 1)
             .map(|i| format!("search_text ILIKE ${i}"))
             .collect::<Vec<_>>()
@@ -1024,14 +1111,98 @@ pub async fn search_sessions(
             tracing::error!("db error (search snippets): {e}");
             (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
         })?;
-        let mut by_session: std::collections::HashMap<String, String> =
-            snippet_rows.into_iter().map(|(id, text)| (id, make_snippet(&text, &terms))).collect();
+        let mut by_session: std::collections::HashMap<String, String> = snippet_rows
+            .into_iter()
+            .map(|(id, text)| (id, make_snippet(&text, &text_terms)))
+            .collect();
         for s in &mut sessions {
             s.match_snippet = by_session.remove(&s.id);
         }
     }
 
     Ok(Json(SessionListResponse { sessions }))
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct FieldValuesParams {
+    pub field: String,
+    #[serde(default)]
+    pub q: Option<String>,
+}
+
+const FIELD_VALUES_LIMIT: i64 = 50;
+
+/// `GET /sessions/search/values?field=…&q=…` (CCT-465): autocomplete suggestions
+/// for a search field. Static enums come from the query registry; dynamic
+/// fields (machine/account/tag/model) are distinct values from the caller's own
+/// sessions (admin sees all). Unknown fields → empty list, never an error.
+pub async fn search_field_values(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Query(params): Query<FieldValuesParams>,
+) -> Result<Json<Vec<String>>, (StatusCode, Json<ApiError>)> {
+    let uid = ctx.owner_filter();
+    let Some(def) = cctui_query::resolve(&params.field) else {
+        return Ok(Json(vec![]));
+    };
+    if !def.enum_values.is_empty() {
+        let prefix = params.q.unwrap_or_default().to_lowercase();
+        return Ok(Json(
+            def.enum_values
+                .iter()
+                .filter(|v| v.to_lowercase().starts_with(&prefix))
+                .map(ToString::to_string)
+                .collect(),
+        ));
+    }
+    let like = params.q.as_deref().filter(|s| !s.is_empty()).map(ilike_contains);
+    let sql = match def.name {
+        "machine" => {
+            "SELECT DISTINCT COALESCE(m.display_name, m.name) AS v FROM machines m \
+             WHERE ($1::uuid IS NULL OR m.user_id = $1) \
+             AND ($2::text IS NULL OR COALESCE(m.display_name, m.name) ILIKE $2) \
+             ORDER BY v LIMIT $3"
+        }
+        "account" => {
+            "SELECT DISTINCT a.name AS v FROM session_tokens st \
+             JOIN account_providers ap ON ap.id = st.account_id \
+             JOIN accounts a ON a.id = ap.account_id \
+             JOIN sessions s ON s.id = st.session_id \
+             LEFT JOIN machines m ON m.id = s.machine_uuid \
+             WHERE ($1::uuid IS NULL OR m.user_id = $1) \
+             AND ($2::text IS NULL OR a.name ILIKE $2) \
+             ORDER BY v LIMIT $3"
+        }
+        "tag" => {
+            "SELECT DISTINCT l.name AS v FROM labels l \
+             JOIN session_labels sl ON sl.label_id = l.id \
+             JOIN sessions s ON s.id = sl.session_id \
+             LEFT JOIN machines m ON m.id = s.machine_uuid \
+             WHERE ($1::uuid IS NULL OR m.user_id = $1) \
+             AND ($2::text IS NULL OR l.name ILIKE $2) \
+             ORDER BY v LIMIT $3"
+        }
+        "model" => {
+            "SELECT DISTINCT s.model AS v FROM sessions s \
+             LEFT JOIN machines m ON m.id = s.machine_uuid \
+             WHERE s.model IS NOT NULL AND s.model <> '' \
+             AND ($1::uuid IS NULL OR m.user_id = $1) \
+             AND ($2::text IS NULL OR s.model ILIKE $2) \
+             ORDER BY v LIMIT $3"
+        }
+        _ => return Ok(Json(vec![])),
+    };
+    let rows: Vec<(String,)> = sqlx::query_as(sql)
+        .bind(uid)
+        .bind(&like)
+        .bind(FIELD_VALUES_LIMIT)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("db error (field values): {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+        })?;
+    Ok(Json(rows.into_iter().map(|(v,)| v).collect()))
 }
 
 pub async fn get_session(
@@ -1997,10 +2168,136 @@ fn normalize_last_message(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        attention_from_bucket, bucket_from_signals, derive_liveness, normalize_last_message,
+        SqlParam, attention_from_bucket, bucket_from_signals, compile_node, derive_liveness,
+        normalize_last_message,
     };
     use cctui_proto::models::{Attention, Liveness};
     use chrono::{Duration, Utc};
+
+    fn compile(q: &str) -> (String, Vec<String>) {
+        let mut params = Vec::new();
+        let sql = compile_node(&cctui_query::parse(q), &mut params);
+        let texts = params
+            .into_iter()
+            .map(|p| match p {
+                SqlParam::Text(s) => s,
+                SqlParam::Bool(b) => b.to_string(),
+            })
+            .collect();
+        (sql, texts)
+    }
+
+    #[test]
+    fn compile_plain_keyword_matches_legacy_shape() {
+        let (sql, params) = compile("hello");
+        assert!(sql.contains("s.id ILIKE $1"));
+        assert!(sql.contains("s.working_dir ILIKE $1"));
+        assert!(sql.contains("e.search_text ILIKE $1"));
+        assert_eq!(params, vec!["%hello%".to_string()]);
+    }
+
+    #[test]
+    fn compile_multi_keywords_and() {
+        let (sql, params) = compile("foo bar");
+        assert!(sql.contains(" AND "));
+        assert_eq!(params, vec!["%foo%".to_string(), "%bar%".to_string()]);
+        assert!(sql.contains("$1") && sql.contains("$2"));
+    }
+
+    #[test]
+    fn compile_or_between_keywords() {
+        let (sql, _) = compile("foo OR bar");
+        // Terms joined by OR at the top level; the only AND is the one inside
+        // the free-text EXISTS subquery, never a top-level `) AND (` join.
+        assert!(sql.contains(") OR ("), "top-level OR join:\n{sql}");
+        assert!(!sql.contains(") AND ("), "no top-level AND join:\n{sql}");
+    }
+
+    #[test]
+    fn compile_machine_filter() {
+        let (sql, params) = compile("machine:dev1");
+        assert!(sql.contains("COALESCE(m.display_name, m.name)) = lower($1)"));
+        assert!(sql.contains("lower(s.machine_id) = lower($1)"));
+        assert_eq!(params, vec!["dev1".to_string()]);
+    }
+
+    #[test]
+    fn compile_tag_filter_uses_label_join() {
+        let (sql, params) = compile("tag:infra");
+        assert!(sql.contains("session_labels"));
+        assert!(sql.contains("lower(l.name) = lower($1)"));
+        assert_eq!(params, vec!["infra".to_string()]);
+    }
+
+    #[test]
+    fn compile_account_filter_uses_token_join() {
+        let (sql, _) = compile("account:personal");
+        assert!(sql.contains("session_tokens"));
+        assert!(sql.contains("lower(a.name) = lower($1)"));
+    }
+
+    #[test]
+    fn compile_title_contains() {
+        let (sql, params) = compile("title:fix");
+        assert!(sql.contains("s.session_name, '') ILIKE $1"));
+        assert_eq!(params, vec!["%fix%".to_string()]);
+    }
+
+    #[test]
+    fn compile_negation() {
+        let (sql, _) = compile("-machine:dev1");
+        assert!(sql.starts_with("(NOT "));
+    }
+
+    #[test]
+    fn compile_group_or_and_keyword() {
+        let (sql, params) = compile("( machine:m2pro OR machine:dev1 ) AND keyword");
+        assert!(sql.contains(" OR "));
+        assert!(sql.contains(" AND "));
+        assert_eq!(params.len(), 3);
+        assert_eq!(params[2], "%keyword%");
+    }
+
+    #[test]
+    fn compile_pinned_binds_bool() {
+        let mut params = Vec::new();
+        let sql = compile_node(&cctui_query::parse("pinned:true"), &mut params);
+        assert!(sql.contains("s.pinned = $1"));
+        assert!(matches!(params.as_slice(), [SqlParam::Bool(true)]));
+    }
+
+    #[test]
+    fn compile_status_in_list() {
+        let (sql, params) = compile("status:active,inactive");
+        assert!(sql.contains("lower(s.status) = lower($1)"));
+        assert!(sql.contains("lower(s.status) = lower($2)"));
+        assert!(sql.contains(" OR "));
+        assert_eq!(params, vec!["active".to_string(), "inactive".to_string()]);
+    }
+
+    #[test]
+    fn compile_malformed_degrades_to_text_not_error() {
+        let (sql, params) = compile("( machine:dev1 AND");
+        assert!(sql.contains("lower(s.machine_id) = lower($1)"));
+        assert_eq!(params, vec!["dev1".to_string()]);
+        let (sql, _) = compile("unknown:field:mess ((");
+        assert!(sql.contains("ILIKE $1"));
+    }
+
+    #[test]
+    fn compile_empty_is_true() {
+        let (sql, params) = compile("");
+        assert_eq!(sql, "TRUE");
+        assert!(params.is_empty());
+    }
+
+    #[test]
+    fn compile_dir_and_effort() {
+        let (sql, params) = compile("dir:cctui effort:high");
+        assert!(sql.contains("s.working_dir ILIKE $1"));
+        assert!(sql.contains("lower(COALESCE(s.effort, '')) = lower($2)"));
+        assert_eq!(params, vec!["%cctui%".to_string(), "high".to_string()]);
+    }
 
     fn attention_from_signals(
         tempo: Option<&str>,

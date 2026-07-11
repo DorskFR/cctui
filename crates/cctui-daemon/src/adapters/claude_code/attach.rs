@@ -67,6 +67,14 @@ const LIVENESS_PROBE_INTERVAL: Duration = Duration::from_secs(20);
 /// reconnect rather than blocking on `read` indefinitely.
 const READ_STALL_TIMEOUT: Duration = Duration::from_secs(90);
 
+/// Window over which the drain loop's bytes/min rate is computed; older byte
+/// counts are dropped so the rate reflects recent output (CCT-546).
+const BYTES_RATE_WINDOW: Duration = Duration::from_secs(60);
+
+/// Minimum PTY quiet before a probe tick counts as an idle confirmation — a
+/// worker that just emitted bytes is not idle (CCT-546).
+const IDLE_OUTPUT_QUIET: Duration = Duration::from_secs(5);
+
 /// Count of held attaches found dead by the periodic liveness probe (CCT-487).
 /// The daemon has no metrics exporter, so this process-local counter is surfaced
 /// in the `warn!` it accompanies, making the prod frequency of
@@ -84,8 +92,32 @@ pub(super) struct AttachSnapshot {
     /// Outcome + time of the last liveness `has` probe (CCT-487).
     pub last_probe_alive: Option<bool>,
     pub last_probe_at: Option<SystemTime>,
+    /// When the drain loop last read PTY bytes for this short (CCT-546). The
+    /// activity signal state derivation weighs against hook freshness.
+    pub last_output_at: Option<SystemTime>,
+    /// Start of the current bytes/min rate window (CCT-546).
+    pub window_start: Option<SystemTime>,
+    /// Bytes read since `window_start` (CCT-546).
+    pub window_bytes: u64,
+    /// Consecutive probe ticks observed with the PTY quiet — hysteresis input
+    /// before state derivation flips the session to idle (CCT-546).
+    pub idle_confirmations: u32,
     /// When the current/most recent state was recorded.
     pub updated_at: Option<SystemTime>,
+}
+
+impl AttachSnapshot {
+    /// Recent PTY throughput in bytes/min over the rolling window, or `None`
+    /// when no output window is open (CCT-546).
+    pub(super) fn bytes_per_min(&self, now: SystemTime) -> Option<f64> {
+        let start = self.window_start?;
+        let secs = now.duration_since(start).ok()?.as_secs_f64();
+        if secs <= 0.0 {
+            return None;
+        }
+        #[allow(clippy::cast_precision_loss)]
+        Some(self.window_bytes as f64 / secs * 60.0)
+    }
 }
 
 /// Shared `short → AttachSnapshot` map: written by the attach tasks, read by
@@ -191,6 +223,47 @@ impl AttachTask {
             let snap = m.entry(self.short.clone()).or_default();
             f(snap);
             snap.updated_at = Some(SystemTime::now());
+        }
+    }
+
+    /// Record `n` PTY bytes read by the drain loop (CCT-546): stamp
+    /// `last_output_at`, roll/extend the bytes/min window, and clear the idle
+    /// hysteresis counter — output means the worker is not idle.
+    fn note_output(&self, n: usize) {
+        if n == 0 {
+            return;
+        }
+        if let Ok(mut m) = self.status.lock() {
+            let snap = m.entry(self.short.clone()).or_default();
+            let now = SystemTime::now();
+            let roll = snap
+                .window_start
+                .is_none_or(|ws| now.duration_since(ws).is_ok_and(|d| d > BYTES_RATE_WINDOW));
+            if roll {
+                snap.window_start = Some(now);
+                snap.window_bytes = 0;
+            }
+            snap.window_bytes = snap.window_bytes.saturating_add(n as u64);
+            snap.last_output_at = Some(now);
+            snap.idle_confirmations = 0;
+            snap.updated_at = Some(now);
+        }
+    }
+
+    /// Count one idle confirmation for the hysteresis gate (CCT-546): a probe
+    /// tick that found the PTY quiet for at least `IDLE_OUTPUT_QUIET`. Output
+    /// resets the counter; state derivation only flips to idle after several.
+    fn note_idle_tick(&self) {
+        if let Ok(mut m) = self.status.lock()
+            && let Some(snap) = m.get_mut(&self.short)
+        {
+            let quiet = snap.last_output_at.is_none_or(|t| {
+                SystemTime::now().duration_since(t).is_ok_and(|d| d >= IDLE_OUTPUT_QUIET)
+            });
+            if quiet {
+                snap.idle_confirmations = snap.idle_confirmations.saturating_add(1);
+                snap.updated_at = Some(SystemTime::now());
+            }
         }
     }
 
@@ -331,11 +404,12 @@ impl AttachTask {
                     if let Some(outcome) = self.probe_liveness(sock).await {
                         return Ok(outcome);
                     }
+                    self.note_idle_tick();
                 }
                 read = tokio::time::timeout(READ_STALL_TIMEOUT, reader.read(&mut buf)) => {
                     match read {
                         Ok(Ok(0)) => return Ok(AttachOutcome::Detached), // server FIN
-                        Ok(Ok(_)) => {} // discard PTY bytes
+                        Ok(Ok(n)) => self.note_output(n), // record activity, discard bytes
                         Ok(Err(err)) => {
                             tracing::debug!(short = %self.short, %err, "attach stream read error");
                             return Ok(AttachOutcome::Retry);
@@ -517,6 +591,40 @@ mod tests {
         assert!(!has_reports_alive(&json!({"ok": false, "code": "ENOJOB"})));
         // Defensive: a non-bool `alive` must not read as alive.
         assert!(!has_reports_alive(&json!({"alive": "yes"})));
+    }
+
+    /// A tracked short's drain loop records PTY output (last-seen + bytes/min
+    /// window) and idle confirmations, and output resets the idle counter — the
+    /// raw activity signal CCT-546 feeds into state derivation.
+    #[test]
+    fn note_output_and_idle_track_activity() {
+        let status = AttachStatusMap::default();
+        let task = AttachTask {
+            discovery: Discovery::with_base(std::env::temp_dir()),
+            short: "aaaaaaaa".to_owned(),
+            cancel: CancellationToken::new(),
+            status: status.clone(),
+        };
+        // Mirrors reconcile's seeding: ticks only count for seeded shorts.
+        status.lock().unwrap().insert("aaaaaaaa".to_owned(), AttachSnapshot::default());
+
+        // No output yet: idle ticks accumulate for the hysteresis gate.
+        task.note_idle_tick();
+        task.note_idle_tick();
+        assert_eq!(status.lock().unwrap()["aaaaaaaa"].idle_confirmations, 2);
+
+        // Output stamps last_output_at, opens a byte window, and resets idle.
+        task.note_output(4096);
+        let snap = status.lock().unwrap()["aaaaaaaa"].clone();
+        assert_eq!(snap.idle_confirmations, 0);
+        assert!(snap.last_output_at.is_some());
+        assert_eq!(snap.window_bytes, 4096);
+        let bpm = snap.bytes_per_min(SystemTime::now()).unwrap();
+        assert!(bpm > 0.0, "flowing bytes → positive rate, got {bpm}");
+
+        // A zero-length read is not output; counters unchanged.
+        task.note_output(0);
+        assert_eq!(status.lock().unwrap()["aaaaaaaa"].window_bytes, 4096);
     }
 
     /// Reconcile spawns one task per live short and cancels tasks whose session

@@ -1,0 +1,22 @@
+[Unit]
+Description=claude on-demand daemon (supervised, decoupled from cctui-daemon)
+Documentation=https://github.com/DorskFR/cctui
+
+[Service]
+Type=simple
+ExecStart=__CLAUDE_BIN__ daemon run
+Restart=on-failure
+RestartSec=5s
+
+# Give the supervisor an augmented PATH so its own exec'd tooling resolves
+# regardless of the (possibly minimal) inherited environment (CCT-138).
+Environment=PATH=__CLAUDE_DAEMON_PATH__
+
+# NOTE: this is deliberately its OWN user unit, NOT part of
+# cctui-daemon.service. cctui-daemon.service runs KillMode=control-group, so
+# co-locating the claude daemon in that cgroup would make a cctui-daemon
+# restart SIGTERM the claude supervisor too — the exact lifecycle coupling
+# CCT-590 removes. Keeping a separate unit gives it a separate cgroup.
+
+[Install]
+WantedBy=default.target

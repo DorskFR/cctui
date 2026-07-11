@@ -15,7 +15,7 @@
 	import { toasts } from '$lib/toast.svelte';
 	import { providerFamily, providerLabel, PROVIDER_KINDS, type ProviderKind } from '$lib/providers';
 	import ProviderPanel from '$lib/components/molecules/ProviderPanel.svelte';
-	import AccountShares from '$lib/components/molecules/AccountShares.svelte';
+	import ResourceShares from '$lib/components/molecules/ResourceShares.svelte';
 	import GithubConnectors from '$lib/components/organisms/GithubConnectors.svelte';
 	import DispatchersPanel from '$lib/components/organisms/DispatchersPanel.svelte';
 	import ProviderSettingsList from '$lib/components/organisms/ProviderSettingsList.svelte';
@@ -572,7 +572,12 @@
 									<!-- Sharing management (CCT-510): owner-only surface to view/grant/
 									     revoke who may USE this account. The list endpoint is
 									     owner-scoped, so only render (and fetch) it for the owner/admin. -->
-									<AccountShares id={a.id} enabled={tab === 'ai'} />
+									<ResourceShares
+										resourceType="account"
+										id={a.id}
+										noun="this account"
+										enabled={tab === 'ai'}
+									/>
 								{/if}
 							</Stack>
 							<Cluster as="footer" gap="var(--sp-1)" justify="flex-end" class="card-foot">

@@ -13,26 +13,6 @@ pub struct Config {
     pub server_url: String,
     pub machine_key: String,
     pub machine_id: Option<uuid::Uuid>,
-    /// Periodic archive sync settings (CCT-362). Absent / `enabled = false`
-    /// (the default) means the daemon never uploads local transcripts. Old
-    /// config files without this section deserialize to the default.
-    #[serde(default)]
-    pub archive: ArchiveSyncConfig,
-}
-
-/// Opt-in mirror of local session transcripts to the server archive (CCT-362).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ArchiveSyncConfig {
-    /// Master switch. Off by default — no bandwidth, no uploads.
-    pub enabled: bool,
-    /// Seconds between sync passes. Default 900 (15 min).
-    pub sync_interval_secs: u64,
-}
-
-impl Default for ArchiveSyncConfig {
-    fn default() -> Self {
-        Self { enabled: false, sync_interval_secs: 900 }
-    }
 }
 
 impl Config {
@@ -69,12 +49,7 @@ impl Config {
             .or_else(|_| std::env::var("CCTUI_URL"))
             .ok()
             .filter(|s| !s.is_empty())?;
-        Some(Self {
-            server_url,
-            machine_key,
-            machine_id: None,
-            archive: ArchiveSyncConfig::default(),
-        })
+        Some(Self { server_url, machine_key, machine_id: None })
     }
 
     /// Resolve config for `run`: prefer the env-provided shared key (dispatch

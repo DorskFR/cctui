@@ -142,9 +142,9 @@ pub struct AttachStatus {
     pub last_probe_at_ms: Option<i64>,
 }
 
-/// PTY output freshness/throughput. Slot only — the sensing depends on
-/// CCT-546 (PTY output capture), which has not landed; until then the fact is
-/// always `missing`.
+/// PTY output freshness/throughput sensed by the held-attach drain loop
+/// (CCT-546): the second, hook-independent activity signal. `missing` until
+/// the drain loop has read bytes for the session.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct PtyOutputStats {
@@ -243,7 +243,8 @@ pub struct SessionDiagnose {
     pub effective_state: DiagnoseFact<EffectiveState>,
     pub last_hook_event: DiagnoseFact<HookEvent>,
     pub attach: DiagnoseFact<AttachStatus>,
-    /// Always missing until CCT-546 (PTY output capture) lands.
+    /// Held-attach PTY output age/throughput (CCT-546); the second activity
+    /// signal, hook-independent.
     pub pty_output: DiagnoseFact<PtyOutputStats>,
     pub claude_socket: DiagnoseFact<SocketStatus>,
     pub transcript: DiagnoseFact<TranscriptStatus>,

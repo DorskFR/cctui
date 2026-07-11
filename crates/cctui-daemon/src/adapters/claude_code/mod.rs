@@ -14,6 +14,7 @@
 
 mod attach;
 mod backfill;
+mod claude_service;
 mod control;
 pub(crate) use control::stage_mid_chat_files;
 mod diagnose;

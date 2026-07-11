@@ -168,9 +168,9 @@ pub async fn account_provider_rows(
         "SELECT a.id FROM accounts a \
          WHERE a.name = $2 \
            AND (a.user_id = $1 OR EXISTS ( \
-               SELECT 1 FROM account_shares s \
-                WHERE s.account_id = a.id \
-                  AND s.user_id = $1 AND s.revoked_at IS NULL)) \
+               SELECT 1 FROM resource_shares s \
+                WHERE s.resource_type = 'account' AND s.resource_id = a.id \
+                  AND s.grantee_id = $1 AND s.revoked_at IS NULL)) \
          ORDER BY (a.user_id = $1) DESC LIMIT 1",
     )
     .bind(user_id)

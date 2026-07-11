@@ -1,27 +1,16 @@
-//! Self-heal the on-demand `claude daemon` (CCT-194).
+//! Self-heal the on-demand `claude daemon` (CCT-194, CCT-590).
 //!
-//! The claude supervisor runs *on demand*: `claude daemon` reports it "runs
-//! on demand and exits when the last client disconnects", and its own status
-//! line attributes a live instance to `origin: transient — started on-demand
-//! by claude agents`. So after an idle period, laptop sleep, or a control-
-//! socket teardown there is frequently **no** `control.sock` at all — every
-//! `list` poll and every `dispatch` from this adapter then fails with "no
-//! claude daemon socket present", and the user has to wake it by hand.
+//! The claude supervisor runs *on demand*: after an idle period, laptop sleep,
+//! or a control-socket teardown there is frequently **no** `control.sock` at
+//! all — every `list` poll and every `dispatch` from this adapter then fails
+//! with "no claude daemon socket present".
 //!
-//! We boot it with `claude daemon run` — the documented "Run the supervisor
-//! in the foreground" entrypoint — spawned **detached** (its own process
-//! group, stdin/stdout/stderr to /dev/null) and *not* awaited: it stays up as
-//! the supervisor while we poll for its socket to appear.
-//!
-//! NB: `claude agents --json` is the wrong primitive (the original CCT-194
-//! attempt). Despite "does not require a TTY", it is a read-only scripting
-//! query that connects-or-returns and exits 0 *without* booting the daemon
-//! when none is running — verified: socket stays absent. Only a client that
-//! actually spins up the supervisor (the interactive `claude agents` TUI, or
-//! `claude daemon run`) brings the socket up. We use `daemon run` because it
-//! needs no TTY.
+//! Rather than spawn `claude daemon run` as our own child (which coupled its
+//! lifetime to cctui-daemon and left `Z <defunct>` zombies when the in-runtime
+//! reaper missed the exit — CCT-590), we ensure the supervisor is installed
+//! and running under the OS user service manager (see [`super::claude_service`]).
+//! The service manager parents and reaps it; we only ever poll for its socket.
 
-use std::process::Stdio;
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -53,53 +42,24 @@ impl Kickstarter {
         permit
     }
 
-    /// Boot the on-demand `claude daemon` by spawning `claude daemon run`
-    /// detached. Unless `force`, no-ops if a previous attempt was made within
+    /// Ensure the managed `claude daemon` service is installed and running.
+    /// Unless `force`, no-ops if a previous attempt was made within
     /// [`KICKSTART_MIN_INTERVAL`]. Best-effort: failures are logged, never
     /// propagated — a still-missing socket surfaces as the usual poll/dispatch
     /// error on the next attempt.
     ///
-    /// The child is *not* awaited: `claude daemon run` is the supervisor
-    /// itself and stays in the foreground for its whole life. We put it in its
-    /// own process group so our signals don't reach it, and reap it from a
-    /// detached task so it never lingers as a zombie once it does exit (e.g.
-    /// when it idle-shuts-down). The caller polls for the socket to appear.
-    ///
-    /// Spawns and returns immediately (no `.await`); must be called from
-    /// within a Tokio runtime so the reaper task can be spawned.
+    /// [`super::claude_service::ensure`] shells the OS service manager, so it
+    /// runs on a blocking pool; must be called from within a Tokio runtime.
+    /// Returns immediately (no `.await`) — the caller polls for the socket.
     pub(super) fn kick(&self, force: bool) {
         if !self.gate(Instant::now(), force) {
             return;
         }
-        tracing::info!("no claude daemon socket — booting via `claude daemon run`");
-        let mut cmd = tokio::process::Command::new(&self.claude_bin);
-        cmd.args(["daemon", "run"])
-            // `claude` lives in `~/.local/bin`, off launchd's minimal PATH
-            // (CCT-138) — give the child an augmented PATH so exec succeeds.
-            .env("PATH", crate::childenv::child_path())
-            // No TTY, no stdin: `daemon run` logs to its own daemon.log; detach
-            // every stdio so it never blocks on or inherits our handles.
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        // Detach into its own process group so a SIGTERM/SIGINT to this daemon
-        // (and Ctrl-C in a foreground run) doesn't tear the supervisor down.
-        #[cfg(unix)]
-        cmd.process_group(0);
-        match cmd.spawn() {
-            Ok(mut child) => {
-                tracing::info!("spawned detached `claude daemon run` supervisor");
-                tokio::spawn(async move {
-                    match child.wait().await {
-                        Ok(s) => {
-                            tracing::info!(code = ?s.code(), "`claude daemon run` exited");
-                        }
-                        Err(err) => tracing::warn!(%err, "waiting on `claude daemon run`"),
-                    }
-                });
-            }
-            Err(err) => tracing::warn!(%err, "failed to spawn `claude daemon run`"),
-        }
+        let claude_bin = self.claude_bin.clone();
+        tokio::task::spawn_blocking(move || match super::claude_service::ensure(&claude_bin) {
+            Ok(()) => tracing::debug!("managed claude daemon service ensured running"),
+            Err(err) => tracing::warn!(%err, "failed to ensure managed claude daemon service"),
+        });
     }
 }
 

@@ -6,16 +6,13 @@
 //!   - `enroll` uses a user token (`--token` / `CCTUI_USER_TOKEN` or
 //!     `~/.config/cctui/user.json`) and writes a new `machine.json`.
 
-mod path_remap;
-
 use anyhow::{Context, Result, bail};
-use cctui_proto::api::{ArchiveIndexEntry, SkillIndexEntry};
+use cctui_proto::api::SkillIndexEntry;
 use cctui_proto::identity::{
     MachineIdentity, UserIdentity, load_machine, load_user, save_machine, save_user,
 };
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
-use path_remap::Rules;
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -56,55 +53,11 @@ enum Command {
         #[arg(long, env = "CCTUI_USER_TOKEN")]
         user_token: Option<String>,
     },
-    /// List archived sessions reachable via the caller's user.
-    Archive {
-        #[command(subcommand)]
-        cmd: ArchiveCmd,
-    },
     /// Sync `~/.claude/skills/<name>/` bundles with the server.
     Skills {
         #[command(subcommand)]
         cmd: SkillsCmd,
     },
-    /// Export all of this user's archived sessions into a coach-ingestable
-    /// `~/.claude`-shaped tree (CCT-364). With `--out <dir>` the bundle is
-    /// extracted in place; with `--out <file.tar.gz>` the raw bundle is saved.
-    Export {
-        /// Target directory (extracted) or `*.tar.gz` file (saved as-is).
-        /// Defaults to `./cctui-export` (extracted).
-        #[arg(long)]
-        out: Option<std::path::PathBuf>,
-    },
-    /// Pull an archived session's raw JSONL onto this host so Claude can
-    /// resume it. Auth uses the local machine.json (fallback: --token as a
-    /// user token).
-    Pull {
-        /// Claude session UUID (the `.jsonl` filename stem).
-        session_id: String,
-        /// Source machine UUID. Required if the same `session_id` exists on
-        /// multiple machines; optional otherwise (server returns 409 if
-        /// ambiguous).
-        #[arg(long)]
-        machine: Option<Uuid>,
-        /// Comma-separated path remaps in `from=to` form (prefix match,
-        /// first-match-wins). Example:
-        /// `--remap /Users/user=/home/user,/Users/user/work=/srv/work`
-        #[arg(long, default_value = "")]
-        remap: String,
-        /// Root under which to write `<encoded-cwd>/<session-id>.jsonl`.
-        /// Defaults to `~/.claude/projects`.
-        #[arg(long)]
-        out_root: Option<std::path::PathBuf>,
-        /// Overwrite an existing local JSONL.
-        #[arg(long)]
-        force: bool,
-    },
-}
-
-#[derive(Subcommand)]
-enum ArchiveCmd {
-    /// List everything visible to this user across all their machines.
-    List,
 }
 
 #[derive(Subcommand)]
@@ -214,27 +167,8 @@ async fn main() -> Result<()> {
         Command::Enroll { hostname, user_token } => {
             enroll_cmd(&client, &cli.server, user_token, hostname).await
         }
-        Command::Archive { cmd } => {
-            archive_cmd(&client, &cli.server, cli.token.as_deref(), cmd).await
-        }
         Command::Skills { cmd } => {
             skills_cmd(&client, &cli.server, cli.token.as_deref(), cmd).await
-        }
-        Command::Export { out } => {
-            export_cmd(&client, &cli.server, cli.token.as_deref(), out).await
-        }
-        Command::Pull { session_id, machine, remap, out_root, force } => {
-            pull_cmd(
-                &client,
-                &cli.server,
-                cli.token.as_deref(),
-                session_id,
-                machine,
-                remap,
-                out_root,
-                force,
-            )
-            .await
         }
     }
 }
@@ -358,9 +292,8 @@ async fn enroll_cmd(
     Ok(())
 }
 
-/// Resolve (`server_url`, `token`) for archive read ops (list/pull).
-/// Precedence: CLI `--token` > machine.json > user.json. Pull requires a
-/// Machine or User role server-side.
+/// Resolve (`server_url`, `token`) for user read ops.
+/// Precedence: CLI `--token` > machine.json > user.json.
 fn resolve_read_auth(server_flag: &str, token: Option<&str>) -> Result<(String, String)> {
     if let Some(t) = token.filter(|t| !t.is_empty()) {
         return Ok((server_flag.to_string(), t.to_string()));
@@ -375,144 +308,6 @@ fn resolve_read_auth(server_flag: &str, token: Option<&str>) -> Result<(String, 
         "no credentials — enrol this host (`cctui-admin enroll`) or pass --token / \
          CCTUI_USER_TOKEN"
     )
-}
-
-async fn archive_cmd(
-    client: &Client,
-    server: &str,
-    token: Option<&str>,
-    cmd: ArchiveCmd,
-) -> Result<()> {
-    let (server_url, tok) = resolve_read_auth(server, token)?;
-    match cmd {
-        ArchiveCmd::List => {
-            let url = format!("{server_url}/api/v1/archive/index");
-            let rows: Vec<ArchiveIndexEntry> = get_json(client, &url, &tok).await?;
-            print_archives(&rows);
-        }
-    }
-    Ok(())
-}
-
-/// Download the user's export bundle (`GET /api/v1/archive/export`) and either
-/// save it as-is (when `out` ends in `.tar.gz`/`.tgz`) or extract it into a
-/// directory the coach can be pointed at (CCT-364).
-async fn export_cmd(
-    client: &Client,
-    server: &str,
-    token: Option<&str>,
-    out: Option<std::path::PathBuf>,
-) -> Result<()> {
-    let (server_url, tok) = resolve_read_auth(server, token)?;
-    let url = format!("{server_url}/api/v1/archive/export");
-    let resp = client.get(&url).bearer_auth(&tok).send().await?;
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        bail!("{status}: {body}");
-    }
-    let bytes = resp.bytes().await.context("read export body")?;
-
-    let out = out.unwrap_or_else(|| std::path::PathBuf::from("cctui-export"));
-    let name = out.to_string_lossy();
-    if name.ends_with(".tar.gz") || name.ends_with(".tgz") {
-        std::fs::write(&out, &bytes).with_context(|| format!("write {}", out.display()))?;
-        println!("wrote bundle: {} ({} bytes)", out.display(), bytes.len());
-        return Ok(());
-    }
-
-    // Extract into the directory.
-    std::fs::create_dir_all(&out).with_context(|| format!("mkdir {}", out.display()))?;
-    let dec = flate2::read::GzDecoder::new(std::io::Cursor::new(bytes.as_ref()));
-    let mut tar = tar::Archive::new(dec);
-    tar.unpack(&out).with_context(|| format!("extract into {}", out.display()))?;
-    println!("extracted into: {}", out.display());
-    println!("point the coach at this directory (it contains claude/projects/…).");
-    Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn pull_cmd(
-    client: &Client,
-    server: &str,
-    token: Option<&str>,
-    session_id: String,
-    machine: Option<Uuid>,
-    remap_spec: String,
-    out_root: Option<std::path::PathBuf>,
-    force: bool,
-) -> Result<()> {
-    let (server_url, tok) = resolve_read_auth(server, token)?;
-    let rules = Rules::parse(&remap_spec).context("parse --remap")?;
-
-    // The archive is keyed by (machine_id, session_id) server-side, but the
-    // client only knows session_id — resolve via index first so we can learn
-    // the project_dir (needed for the GET path) and catch ambiguity early.
-    let url = format!("{server_url}/api/v1/archive/index");
-    let rows: Vec<ArchiveIndexEntry> = get_json(client, &url, &tok).await?;
-    let matches: Vec<&ArchiveIndexEntry> = rows
-        .iter()
-        .filter(|e| e.session_id == session_id)
-        .filter(|e| machine.is_none_or(|m| e.machine_id == m))
-        .collect();
-
-    let entry = match matches.as_slice() {
-        [] => bail!(
-            "no archive found for session {session_id}{}",
-            machine.map(|m| format!(" on machine {m}")).unwrap_or_default()
-        ),
-        [one] => *one,
-        many => {
-            eprintln!("ambiguous — session {session_id} exists on {} machines:", many.len());
-            for e in many {
-                eprintln!("  --machine {}  (project_dir={})", e.machine_id, e.project_dir);
-            }
-            bail!("pass --machine <uuid> to disambiguate");
-        }
-    };
-
-    // Fetch raw bytes.
-    let get_url = format!(
-        "{server_url}/api/v1/archive/{}/{}?machine_id={}",
-        entry.project_dir, entry.session_id, entry.machine_id
-    );
-    let resp = client.get(&get_url).bearer_auth(&tok).send().await?;
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        bail!("{status}: {body}");
-    }
-    let bytes = resp.bytes().await.context("read archive body")?;
-    let text = std::str::from_utf8(&bytes).context("archive is not utf-8")?;
-
-    // Apply remaps to both the file contents and the target project_dir name.
-    let rewritten = rules.apply_jsonl(text);
-    let source_cwd = path_remap::decode_project_dir(&entry.project_dir);
-    let target_cwd = rules.apply_str(&source_cwd);
-    let target_dir_name = path_remap::encode_project_dir(&target_cwd);
-
-    let root = if let Some(p) = out_root {
-        p
-    } else {
-        let home = std::env::var("HOME").context("HOME not set")?;
-        std::path::PathBuf::from(home).join(".claude").join("projects")
-    };
-    let out_dir = root.join(&target_dir_name);
-    let out_path = out_dir.join(format!("{}.jsonl", entry.session_id));
-    if out_path.exists() && !force {
-        bail!("{} already exists — pass --force to overwrite", out_path.display());
-    }
-    std::fs::create_dir_all(&out_dir).with_context(|| format!("mkdir {}", out_dir.display()))?;
-    std::fs::write(&out_path, rewritten.as_bytes())
-        .with_context(|| format!("write {}", out_path.display()))?;
-
-    println!("session:     {}", entry.session_id);
-    println!("machine:     {}", entry.machine_id);
-    println!("source cwd:  {source_cwd}");
-    println!("target cwd:  {target_cwd}");
-    println!("wrote:       {}", out_path.display());
-    println!("size:        {} bytes", rewritten.len());
-    Ok(())
 }
 
 async fn skills_cmd(
@@ -616,24 +411,6 @@ fn print_skills(rows: &[SkillIndexEntry]) {
             truncate(&r.name, 32),
             r.sha256,
             r.size_bytes,
-            r.uploaded_at.format("%Y-%m-%d %H:%M:%S"),
-        );
-    }
-}
-
-fn print_archives(rows: &[ArchiveIndexEntry]) {
-    println!(
-        "{:<38}  {:<38}  {:<32}  {:>10}  {:<8}  uploaded",
-        "machine_id", "session_id", "project_dir", "bytes", "source"
-    );
-    for r in rows {
-        println!(
-            "{:<38}  {:<38}  {:<32}  {:>10}  {:<8}  {}",
-            r.machine_id,
-            r.session_id,
-            truncate(&r.project_dir, 32),
-            r.size_bytes,
-            r.source,
             r.uploaded_at.format("%Y-%m-%d %H:%M:%S"),
         );
     }
