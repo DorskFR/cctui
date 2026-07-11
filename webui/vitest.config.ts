@@ -5,7 +5,11 @@ import { defineConfig } from 'vitest/config';
 // aliases so the conversation formatting helpers import cleanly under vitest.
 export default defineConfig({
 	plugins: [sveltekit()],
+	resolve: {
+		conditions: ['browser']
+	},
 	test: {
+		environment: 'happy-dom',
 		include: ['src/**/*.test.ts']
 	}
 });
