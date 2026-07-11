@@ -102,11 +102,14 @@ RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
 # it would clobber codex's own runtime writes (trust_level) and pin a stale
 # base_url. The entrypoint's phase_codex_config MERGES the cctui gateway provider
 # in at runtime from the injected OPENAI_* env (CCT-517).
-ARG CODEX_VERSION=0.142.4
+# Keep CODEX_VERSION in lockstep with contract::CODEX_PINNED_VERSION
+# (crates/cctui-daemon/src/adapters/codex/contract.rs) — CI enforces it via
+# scripts/check-codex-version-drift.sh.
+ARG CODEX_VERSION=0.144.1
 RUN arch="$(dpkg --print-architecture)" \
     && case "$arch" in \
-         amd64) target=x86_64-unknown-linux-musl;  sha=f0ac43751c6d3b29a973a860a8de528ad79cb20cc1296611930a3d5c91ddef95 ;; \
-         arm64) target=aarch64-unknown-linux-musl; sha=a546ee05915313fea340f8315b54f43d077f4390afbb5af2de944d48013d447f ;; \
+         amd64) target=x86_64-unknown-linux-musl;  sha=84091ae20c65fcc7d4120db97d1bd57d7ff8df9c7609fb781c78c2ebbd4f5a28 ;; \
+         arm64) target=aarch64-unknown-linux-musl; sha=b9f8ef5f98e46ced4dbbd3756a4223e3ee299a457ff488a3305bea455da8b5b8 ;; \
          *) echo "codex: unsupported arch '$arch'" >&2; exit 1 ;; \
        esac \
     && curl -fsSL "https://github.com/openai/codex/releases/download/rust-v${CODEX_VERSION}/codex-${target}.tar.gz" \

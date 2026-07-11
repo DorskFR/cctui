@@ -7,8 +7,11 @@
 //! rollout file refer to the same `local_id`.
 //!
 //! `codex app-server` speaks newline-delimited JSON-RPC 2.0 over stdio
-//! (stderr is logs). The handshake is `initialize` → `thread/start { cwd }`
-//! → `turn/start { threadId, input }`. A stale cctui-owned thread is revived
+//! (stderr is logs). The handshake is `initialize` (declaring client
+//! capabilities) → `initialized` notification → `thread/start { cwd }`
+//! → `turn/start { threadId, input }`. The pinned/minimum supported Codex
+//! version and the retained JSON Schema live in [`super::contract`]. A stale
+//! cctui-owned thread is revived
 //! with `thread/resume { threadId }` before the next `turn/start` (CCT-229).
 //! Streaming arrives as id-less
 //! notifications (`item/completed`, `turn/completed`, …); tool approvals
@@ -30,6 +33,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
+
+use super::contract;
 
 /// Outbound request id seeds. The handshake uses fixed ids so the driver
 /// can recognise the responses it is waiting for; everything after is
@@ -259,13 +264,64 @@ pub fn thread_info(result: &Value) -> Option<ThreadInfo> {
     })
 }
 
+/// Build the documented `initialize` request (CCT-630). Capabilities are
+/// declared explicitly rather than left to defaults so a protocol change that
+/// flips a default is visible here: cctui speaks the stable (non-experimental)
+/// API and does not participate in upstream attestation.
 fn initialize_req() -> Value {
     json!({
         "jsonrpc": "2.0",
         "id": ID_INITIALIZE,
         "method": "initialize",
-        "params": {"clientInfo": {"name": "cctui", "version": env!("CARGO_PKG_VERSION")}},
+        "params": {
+            "clientInfo": {"name": "cctui", "version": env!("CARGO_PKG_VERSION")},
+            "capabilities": {
+                "experimentalApi": false,
+                "requestAttestation": false,
+            },
+        },
     })
+}
+
+/// The `initialized` notification that completes the handshake. Codex expects
+/// it after the client has processed the `initialize` response; only then is
+/// the server fully ready for `thread/*` requests.
+fn initialized_notification() -> Value {
+    json!({"jsonrpc": "2.0", "method": "initialized"})
+}
+
+/// Pull the Codex version out of an `initialize` response and log a diagnostic:
+/// info when supported, a loud warning when the server is below
+/// [`contract::CODEX_MIN_VERSION`] (the protocol shapes cctui relies on are not
+/// guaranteed there). The version is returned so it can ride on the
+/// [`AdapterEvent::SessionStarted`] meta for downstream diagnose reports.
+fn record_codex_version(response: &Value) -> Option<String> {
+    let user_agent = response.pointer("/result/userAgent").and_then(Value::as_str);
+    let version = user_agent.and_then(contract::version_from_user_agent);
+    match &version {
+        Some(v) if contract::version_supported(v) => {
+            tracing::info!(
+                codex_version = %v,
+                pinned = contract::CODEX_PINNED_VERSION,
+                "codex app-server handshake: supported version",
+            );
+        }
+        Some(v) => {
+            tracing::warn!(
+                codex_version = %v,
+                min = contract::CODEX_MIN_VERSION,
+                pinned = contract::CODEX_PINNED_VERSION,
+                "codex app-server is below the minimum supported version; protocol may drift",
+            );
+        }
+        None => {
+            tracing::warn!(
+                user_agent = user_agent.unwrap_or("<missing>"),
+                "codex app-server initialize response had no parseable version",
+            );
+        }
+    }
+    version
 }
 
 fn thread_start_req(cwd: &str) -> Value {
@@ -703,6 +759,7 @@ impl CodexSession {
         // Handshake: initialize → thread/start or thread/resume.
         write_json(&mut stdin, &initialize_req()).await?;
         let mut local_id = String::new();
+        let mut codex_version: Option<String> = None;
         let mut next_id = RUN_BASE;
         // request_id (surfaced to TUI) → (rpc_id echoed to codex, decision kind).
         let mut pending_approvals: HashMap<String, (Value, ApprovalKind)> = HashMap::new();
@@ -822,7 +879,11 @@ impl CodexSession {
                     };
                     match classify(&local_id, &value) {
                         Incoming::Response { id, value } if id == ID_INITIALIZE => {
-                            let _ = value;
+                            codex_version = record_codex_version(&value);
+                            // Complete the documented handshake before any
+                            // thread request (CCT-630): the server treats
+                            // `thread/*` sent before `initialized` as premature.
+                            write_json(&mut stdin, &initialized_notification()).await?;
                             match &self.launch {
                                 SessionLaunch::Fresh { .. } => {
                                     write_json(&mut stdin, &thread_start_req(&self.cwd)).await?;
@@ -863,6 +924,7 @@ impl CodexSession {
                                         extra: json!({
                                             "source": "codex-app-server",
                                             "rollout_path": info.rollout_path,
+                                            "codex_version": codex_version,
                                         }),
                                     },
                                 })
@@ -1397,6 +1459,34 @@ mod tests {
             approval_reply(&json!(0), ApprovalKind::ApprovedDenied, false)["result"]["decision"],
             "denied"
         );
+    }
+
+    #[test]
+    fn initialize_declares_capabilities_and_handshake() {
+        let init = initialize_req();
+        assert_eq!(init["method"], "initialize");
+        assert_eq!(init["params"]["capabilities"]["experimentalApi"], false);
+        assert_eq!(init["params"]["capabilities"]["requestAttestation"], false);
+        assert_eq!(init["params"]["clientInfo"]["name"], "cctui");
+
+        let done = initialized_notification();
+        assert_eq!(done["method"], "initialized");
+        assert!(done.get("id").is_none(), "initialized is a notification, not a request");
+    }
+
+    #[test]
+    fn record_codex_version_extracts_from_user_agent() {
+        let resp = json!({
+            "id": 1,
+            "result": {
+                "userAgent": "cctui/0.144.1 (Ubuntu 24.4.0; x86_64) xterm-256color (cctui; 0.0.0)",
+                "platformOs": "linux",
+            },
+        });
+        assert_eq!(record_codex_version(&resp).as_deref(), Some("0.144.1"));
+
+        let missing = json!({"id": 1, "result": {"platformOs": "linux"}});
+        assert_eq!(record_codex_version(&missing), None);
     }
 
     #[test]
