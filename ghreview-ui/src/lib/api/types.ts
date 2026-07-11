@@ -1,0 +1,107 @@
+import type { components } from "../../generated/api";
+
+export type Schemas = components["schemas"];
+
+export type PullRequestEnvelope = Schemas["PullRequestEnvelope"];
+export type RepoEnvelope = Schemas["RepoEnvelope"];
+export type NotificationInboxItem = Schemas["NotificationInboxItem"];
+export type NotificationInboxPage = Schemas["NotificationInboxPage"];
+export type NotificationState = Schemas["NotificationState"];
+export type PullRequestPage = Schemas["PullRequestPage"];
+export type RepoPage = Schemas["RepoPage"];
+export type StatusPayload = Schemas["Status"];
+export type SseEvent = Schemas["SseEvent"];
+
+export type PrState = "open" | "draft" | "merged" | "closed";
+export type CiState = "pending" | "success" | "failure" | "none";
+
+export interface GithubUser {
+  login: string;
+  avatar_url?: string;
+}
+
+export interface GithubRef {
+  ref: string;
+  sha: string;
+  label?: string;
+}
+
+export interface GithubFile {
+  filename: string;
+  previous_filename?: string;
+  status: "added" | "removed" | "modified" | "renamed" | "copied" | "changed" | "unchanged";
+  additions: number;
+  deletions: number;
+  changes: number;
+  patch?: string;
+  sha?: string;
+}
+
+export interface GithubPull {
+  number: number;
+  title: string;
+  state: "open" | "closed";
+  draft?: boolean;
+  merged?: boolean;
+  merged_at?: string | null;
+  mergeable?: boolean | null;
+  mergeable_state?: string | null;
+  additions?: number;
+  deletions?: number;
+  changed_files?: number;
+  user?: GithubUser | null;
+  requested_reviewers?: GithubUser[];
+  head?: GithubRef;
+  base?: GithubRef;
+  html_url?: string;
+  body?: string | null;
+  updated_at?: string;
+  files?: GithubFile[];
+  ci?: CiState;
+}
+
+export interface GithubRepo {
+  name: string;
+  full_name: string;
+  owner?: GithubUser | null;
+  description?: string | null;
+  private?: boolean;
+}
+
+export interface GithubNotificationSubject {
+  title: string;
+  url: string | null;
+  type: string;
+}
+
+export interface GithubNotification {
+  id: string;
+  reason: string;
+  unread: boolean;
+  updated_at: string;
+  subject: GithubNotificationSubject;
+  repository?: { full_name: string; name?: string };
+}
+
+export function pullOf(env: PullRequestEnvelope): GithubPull {
+  return (env.payload ?? {}) as unknown as GithubPull;
+}
+
+export function repoOf(env: RepoEnvelope): GithubRepo {
+  return (env.payload ?? {}) as unknown as GithubRepo;
+}
+
+export function notificationOf(item: NotificationInboxItem): GithubNotification {
+  return (item.payload ?? {}) as unknown as GithubNotification;
+}
+
+export function prStateOf(pull: GithubPull): PrState {
+  if (pull.merged || pull.merged_at) return "merged";
+  if (pull.state === "closed") return "closed";
+  if (pull.draft) return "draft";
+  return "open";
+}
+
+export function ciStateOf(pull: GithubPull): CiState {
+  return pull.ci ?? "none";
+}
