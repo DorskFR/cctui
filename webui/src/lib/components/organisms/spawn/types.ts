@@ -17,6 +17,11 @@ export interface Form {
 	permission_mode: PermissionMode | '';
 	// dispatch-only fields (forwarded to the dispatcher as `payload`).
 	dispatcher: string;
+	// The harness the dispatched worker runs (CCT-643): 'claude-code' (default,
+	// backward compatible) drives a claude worker via the control socket; 'codex'
+	// runs headless `codex exec` in the worker. Selects which model/effort field
+	// applies, mirroring the machine-tab adapter.
+	dispatch_adapter: string;
 	identity: string;
 	repo: string;
 	ticket: string;

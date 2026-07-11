@@ -1,11 +1,24 @@
 <script lang="ts">
 	// The "Dispatch (k8s)" branch of the spawn form, extracted from SpawnModal:
-	// dispatcher selection + the fields forwarded to the dispatcher as `payload`
-	// (name, identity, repo, ticket, prompt, prompt file, model, timeout, effort).
-	// Dispatch runs a claude worker, so it uses the claude model/effort sets.
+	// dispatcher + adapter selection and the fields forwarded to the dispatcher as
+	// `payload` (name, identity, repo, ticket, prompt, prompt file, model, timeout,
+	// effort). The adapter picker (CCT-643) chooses the claude or codex worker; the
+	// model/effort sets follow it.
 	import EffortSlider from './EffortSlider.svelte';
 	import { Field, Input, Select, Text, Textarea } from '@dorsk/tsumikit';
-	import { claudeModels, claudeEfforts, accountAdapters, providerForAdapter, isCompatibleProvider, withAliasTargets } from './options';
+	import {
+		claudeModels,
+		claudeEfforts,
+		codexModels,
+		codexEfforts,
+		accountAdapters,
+		providerForAdapter,
+		isCompatibleProvider,
+		withAliasTargets,
+		allAdapters,
+		adapterLabel,
+		type Adapter
+	} from './options';
 	import { submitChordLabel, isSubmitChord } from '$lib/platform';
 	import type { OAuthAccount } from '$lib/queries';
 	import type { Form } from './types';
@@ -18,25 +31,32 @@
 	}: {
 		form: Form;
 		dispatcherIds: string[];
-		// The caller's accounts (CCT-399). Dispatch runs a claude worker, so only
-		// Claude-family accounts can route through it.
+		// The caller's accounts (CCT-399). Filtered per selected adapter below.
 		accounts: OAuthAccount[];
 		// Submit the spawn form from the prompt textarea (Ctrl/⌘+Enter).
 		onsubmit?: () => void;
 	} = $props();
 
-	// Dispatch runs a claude worker → only accounts holding an anthropic-family
-	// provider apply (provider-family union, CCT-562). The credential in play is
-	// the account's anthropic-family provider.
-	const dispatchAccounts = $derived(accounts.filter((a) => accountAdapters(a).includes('claude-code')));
+	const adapter = $derived(form.dispatch_adapter || 'claude-code');
+	const isCodex = $derived(adapter === 'codex');
+
+	// Only accounts whose provider family backs the selected harness apply
+	// (provider-family union, CCT-562): a claude worker needs an anthropic-family
+	// provider, a codex worker an openai-family one.
+	const dispatchAccounts = $derived(accounts.filter((a) => accountAdapters(a).includes(adapter as Adapter)));
 	const selectedAccount = $derived(
 		form.account ? dispatchAccounts.find((a) => a.name === form.account) : undefined
 	);
-	const selectedProvider = $derived(providerForAdapter(selectedAccount, 'claude-code'));
+	const selectedProvider = $derived(providerForAdapter(selectedAccount, adapter));
 	const accountModelOptions = $derived((selectedProvider?.models ?? []).map((m) => ({ v: m.model, label: m.label })));
 	const usesAccountModels = $derived(!!selectedProvider && isCompatibleProvider(selectedProvider.provider));
-	// Native claude families annotated with the selected account's alias targets.
-	const claudeModelOptions = $derived(withAliasTargets(claudeModels, selectedProvider?.model_aliases));
+	// Native families for the selected harness. Codex dispatch uses the static
+	// offline catalog (an ephemeral worker has no machine-scoped catalog); claude
+	// families are annotated with the account's alias targets.
+	const nativeModelOptions = $derived(
+		isCodex ? codexModels : withAliasTargets(claudeModels, selectedProvider?.model_aliases)
+	);
+	const nativeEfforts = $derived(isCodex ? codexEfforts : claudeEfforts);
 
 	$effect(() => {
 		if (form.account && !dispatchAccounts.some((a) => a.name === form.account)) {
@@ -56,6 +76,15 @@
 		</Select>
 	</Field>
 {/if}
+
+<Field label="Harness" for="sp-adapter-d">
+	<Select id="sp-adapter-d" bind:value={form.dispatch_adapter}>
+		{#each allAdapters as a (a)}<option value={a}>{adapterLabel(a)}</option>{/each}
+	</Select>
+	<Text tone="faint" size="xs">
+		{isCodex ? 'Runs headless codex exec in the worker.' : 'Runs a claude worker via the control socket.'}
+	</Text>
+</Field>
 
 <Field label="Name (optional)" for="sp-name-d">
 	<Input id="sp-name-d" placeholder="session label" bind:value={form.name} />
@@ -104,7 +133,7 @@
 		<Select id="sp-account-d" bind:value={form.account}>
 			<option value="">Default (no account)</option>
 			{#each dispatchAccounts as a (a.id)}
-				<option value={a.name}>{a.name} ({providerForAdapter(a, 'claude-code')?.provider})</option>
+				<option value={a.name}>{a.name} ({providerForAdapter(a, adapter)?.provider})</option>
 			{/each}
 		</Select>
 		<Text tone="faint" size="xs">Routes the worker through the passthrough gateway under this account.</Text>
@@ -119,10 +148,13 @@
 					{#if !accountModelOptions.length}<option value="">Default</option>{/if}
 					{#each accountModelOptions as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
 				</Select>
+			{:else if isCodex}
+				<Select id="sp-model" bind:value={form.model_codex}>
+					{#each nativeModelOptions as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
+				</Select>
 			{:else}
-				<!-- Dispatch runs a claude worker → claude families. -->
 				<Select id="sp-model" bind:value={form.model_claude}>
-					{#each claudeModelOptions as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
+					{#each nativeModelOptions as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
 				</Select>
 			{/if}
 		</Field>
@@ -134,13 +166,21 @@
 	</div>
 </div>
 
-<!-- Dispatch runs a claude worker → claude effort levels. -->
-<EffortSlider
-	id="sp-effort-d"
-	levels={claudeEfforts}
-	current={form.effort_claude}
-	onset={(v) => (form.effort_claude = v)}
-/>
+{#if isCodex}
+	<EffortSlider
+		id="sp-effort-d"
+		levels={nativeEfforts}
+		current={form.effort_codex}
+		onset={(v) => (form.effort_codex = v)}
+	/>
+{:else}
+	<EffortSlider
+		id="sp-effort-d"
+		levels={nativeEfforts}
+		current={form.effort_claude}
+		onset={(v) => (form.effort_claude = v)}
+	/>
+{/if}
 
 <style>
 	.row.gap {

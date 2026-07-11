@@ -100,6 +100,7 @@
 		// default permission mode (else claude's own) applies unless overridden.
 		permission_mode: '' as Form['permission_mode'],
 		dispatcher: '',
+		dispatch_adapter: 'claude-code',
 		identity: '',
 		repo: '',
 		ticket: '',
@@ -382,9 +383,12 @@
 	// A named account that can't back the picked harness blocks the spawn with a
 	// visible error (MachineFields) instead of submitting the wrong harness.
 	const harnessValid = $derived(accountBacksAdapter(selectedAccount, form.adapter_id));
-	// Dispatch runs a claude worker → its gateway routing always uses the
-	// account's anthropic-family credential.
-	const dispatchProvider = $derived(providerForAdapter(selectedAccount, 'claude-code')?.provider);
+	// Dispatch gateway routing uses the account's provider for the selected
+	// dispatch harness (CCT-643): claude worker → anthropic family, codex worker
+	// → openai family.
+	const dispatchProvider = $derived(
+		providerForAdapter(selectedAccount, form.dispatch_adapter || 'claude-code')?.provider
+	);
 
 	const actions = useSessionActions();
 	let busy = $state(false);
@@ -552,12 +556,22 @@
 		if (form.ticket.trim()) payload.context = { issue_id: form.ticket.trim() };
 		if (form.prompt.trim()) payload.prompt = form.prompt.trim();
 		if (form.prompt_file.trim()) payload.prompt_file = form.prompt_file.trim();
+		// Adapter choice (CCT-643): omit for the claude-code default so an older
+		// server/worker stays backward compatible; set it for a codex worker.
+		const dispatchAdapter = form.dispatch_adapter || 'claude-code';
+		if (dispatchAdapter === 'codex') payload.adapter = 'codex';
 		// The model is account-driven for a compatible account (CCT-399), else the
-		// claude family.
+		// per-adapter family field.
 		const dispatchCompatible = !!dispatchProvider && isCompatibleProvider(dispatchProvider);
-		const dispatchModel = dispatchCompatible ? form.model_account.trim() : form.model_claude.trim();
+		const dispatchModel = dispatchCompatible
+			? form.model_account.trim()
+			: dispatchAdapter === 'codex'
+				? form.model_codex.trim()
+				: form.model_claude.trim();
 		if (dispatchModel) payload.model = dispatchModel;
-		if (form.effort_claude.trim()) payload.effort = form.effort_claude.trim();
+		const dispatchEffort =
+			dispatchAdapter === 'codex' ? form.effort_codex.trim() : form.effort_claude.trim();
+		if (dispatchEffort) payload.effort = dispatchEffort;
 		// Environment secrets (CCT-202): the external dispatcher turns `env` into
 		// pod env / an ephemeral Secret. The server redacts these from its dispatch
 		// notifications and never persists them.

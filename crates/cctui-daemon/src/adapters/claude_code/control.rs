@@ -1520,6 +1520,26 @@ impl Driver {
                 return;
             }
         };
+        // Codex-native dispatch (CCT-643): a `adapter = "codex"` payload runs
+        // headlessly via `codex exec`, NOT the claude control socket. This path
+        // is separate from the interactive codex app-server adapter.
+        let adapter = crate::dispatch_codex::payload_adapter(&payload);
+        if crate::dispatch_codex::is_codex_adapter(&adapter) {
+            match crate::dispatch_codex::CodexDispatch::from_payload(&payload) {
+                Ok(dispatch) => {
+                    tracing::info!(session_id = %session_id, "dispatch-on-start: launching codex dispatch");
+                    tokio::spawn(async move {
+                        if let Err(err) = dispatch.run().await {
+                            tracing::error!(%err, "dispatch-on-start: codex dispatch failed");
+                        }
+                    });
+                }
+                Err(err) => {
+                    tracing::error!(%err, "dispatch-on-start: could not build codex dispatch");
+                }
+            }
+            return;
+        }
         let spec = match Self::build_dispatch_spec(&payload) {
             Ok(spec) => spec,
             Err(err) => {
@@ -1597,32 +1617,7 @@ impl Driver {
     /// searched across `CCTUI_DISPATCH_PROMPT_DIRS` (default
     /// `/opt/context/prompts:/prompts`). An absolute `prompt_file` is read as-is.
     fn resolve_dispatch_prompt(payload: &serde_json::Value) -> anyhow::Result<String> {
-        if let Some(p) = payload.get("prompt").and_then(serde_json::Value::as_str)
-            && !p.is_empty()
-        {
-            return Ok(p.to_owned());
-        }
-        let file = payload
-            .get("prompt_file")
-            .and_then(serde_json::Value::as_str)
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| {
-                anyhow::anyhow!("dispatch payload has neither prompt nor prompt_file")
-            })?;
-        if file.starts_with('/') {
-            return std::fs::read_to_string(file)
-                .with_context(|| format!("reading prompt file {file}"));
-        }
-        let dirs = std::env::var("CCTUI_DISPATCH_PROMPT_DIRS")
-            .unwrap_or_else(|_| "/opt/context/prompts:/prompts".to_owned());
-        for dir in dirs.split(':').filter(|d| !d.is_empty()) {
-            let path = std::path::Path::new(dir).join(file);
-            if path.is_file() {
-                return std::fs::read_to_string(&path)
-                    .with_context(|| format!("reading prompt file {}", path.display()));
-            }
-        }
-        anyhow::bail!("prompt_file {file} not found under {dirs}")
+        crate::dispatch_codex::resolve_dispatch_prompt(payload)
     }
 
     /// Spawn a fresh claude session via the `dispatch` op on the `claude
