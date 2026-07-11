@@ -2,6 +2,7 @@
 
 pub mod claude_code;
 pub mod codex;
+pub mod uploads;
 
 use crate::adapter_runtime::AdapterFactory;
 

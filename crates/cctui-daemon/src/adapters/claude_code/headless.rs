@@ -178,7 +178,8 @@ impl SdkDriver {
                     let command_id = match &cmd {
                         AdapterCommand::Spawn { command_id, .. }
                         | AdapterCommand::Fork { command_id, .. }
-                        | AdapterCommand::Interrupt { command_id, .. } => *command_id,
+                        | AdapterCommand::Interrupt { command_id, .. }
+                        | AdapterCommand::SetModel { command_id, .. } => *command_id,
                         _ => None,
                     };
                     let res = self.handle_command(cmd).await;
@@ -283,7 +284,7 @@ impl SdkDriver {
                 self.names.insert(local_id, name);
                 Ok(())
             }
-            AdapterCommand::SetModel { local_id, model, effort } => {
+            AdapterCommand::SetModel { local_id, model, effort, command_id: _ } => {
                 self.set_model(&local_id, model, effort).await
             }
             _ => {

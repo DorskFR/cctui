@@ -19,7 +19,7 @@ export interface SessionActionApi {
 	archive: (id: string) => Promise<unknown>;
 	interrupt: (id: string) => Promise<{ command_id: string }>;
 	resume: (id: string) => Promise<unknown>;
-	setModel: (id: string, model: string, effort: string) => Promise<unknown>;
+	setModel: (id: string, model: string, effort: string) => Promise<{ command_id: string }>;
 	setAutoApprove: (id: string, want: boolean) => Promise<unknown>;
 }
 
@@ -116,11 +116,20 @@ export class SessionActions {
 	};
 
 	// In-place model/effort switch (CCT-303), codex only — the editor UI lives in
-	// DrawerHeader, this just dispatches the change.
+	// DrawerHeader, this just dispatches the change. Awaits the adapter's ack
+	// (CCT-635) so a rejected change surfaces as an error instead of a false
+	// "Model updated"; the chip itself flips off the daemon's Status echo.
 	setModel = async (model: string, effort: string) => {
 		try {
-			await this.#opts.actions.setModel(this.#opts.id(), model, effort);
-			toasts.ok('Model updated');
+			const res = await this.#opts.actions.setModel(this.#opts.id(), model, effort);
+			const ack = await ws.awaitCommand(res.command_id, 8_000);
+			if (ack.ok) {
+				toasts.ok('Model updated');
+			} else if (ack.timedOut) {
+				toasts.push('Model change sent — no confirmation yet', 'info');
+			} else {
+				toasts.err(ack.error ?? 'Model change not acknowledged');
+			}
 		} catch (e) {
 			toasts.err((e as Error).message);
 		}

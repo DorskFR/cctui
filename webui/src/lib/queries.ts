@@ -1293,15 +1293,18 @@ export function useSessionActions() {
      *  accepted the interrupt instead of firing-and-forgetting. */
     interrupt: async (id: string) =>
       api.post<SpawnResponse>(`/sessions/${id}/interrupt`),
-    // In-place model/effort switch (CCT-303). Codex applies it on the live
-    // thread and echoes the resolved values back via Status; claude rejects
-    // it (the UI offers fork-to-change-model for claude instead).
+    // In-place model/effort switch (CCT-303). Codex carries it on the next
+    // turn/start and echoes the resolved values back via Status; claude rejects
+    // it (the UI offers fork-to-change-model for claude instead). Returns a
+    // `command_id` to await on the ws (CCT-635) so the caller confirms the
+    // change only once the adapter truthfully applied it.
     setModel: async (id: string, model?: string, effort?: string) => {
-      await api.post<void>(`/sessions/${id}/set-model`, {
+      const res = await api.post<SpawnResponse>(`/sessions/${id}/set-model`, {
         model: model || null,
         effort: effort || null,
       });
       inval();
+      return res;
     },
     setAutoApprove: async (id: string, enabled: boolean) => {
       await api.post<void>(`/sessions/${id}/auto-approve`, { enabled });
