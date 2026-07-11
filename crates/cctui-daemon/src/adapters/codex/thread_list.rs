@@ -60,6 +60,8 @@ pub struct ThreadEntry {
     /// `status.type`: `active` / `idle` / `notLoaded` / `systemError`.
     pub status: Option<String>,
     pub parent_id: Option<String>,
+    /// Thread `updatedAt` (unix seconds).
+    pub updated_at: Option<i64>,
 }
 
 /// Canonical `UUIDv7` form (lowercase, hyphenated) for a codex thread id, so
@@ -127,6 +129,7 @@ pub fn parse_thread(v: &Value) -> Option<ThreadEntry> {
         source: v.get("source").and_then(parse_source),
         status: v.pointer("/status/type").and_then(Value::as_str).map(str::to_owned),
         parent_id: parse_parent(v),
+        updated_at: v.get("updatedAt").and_then(Value::as_i64),
     })
 }
 
@@ -190,6 +193,13 @@ fn next_cursor(result: &Value) -> Option<String> {
     result.get("nextCursor").and_then(Value::as_str).filter(|c| !c.is_empty()).map(str::to_owned)
 }
 
+/// String `SubAgentSource`s (`review`/`compact`/`memory_consolidation`) carry
+/// no parent id on the wire, so such threads can never nest — skip them.
+#[must_use]
+pub fn is_orphan_subagent(entry: &ThreadEntry) -> bool {
+    entry.parent_id.is_none() && entry.source.as_deref().is_some_and(|s| s.starts_with("subAgent"))
+}
+
 /// Build the `SessionStarted` meta for an inventory thread. The preview seeds
 /// a first user `Message` separately; here we record cwd + source so the list
 /// row renders like a claude-observed session.
@@ -199,6 +209,7 @@ fn started_meta(entry: &ThreadEntry) -> SessionMeta {
         parent_local_id: entry.parent_id.clone(),
         extra: json!({
             "source": format!("codex-thread-list:{}", entry.source.as_deref().unwrap_or("unknown")),
+            "observed_at": entry.updated_at,
         }),
     }
 }
@@ -294,6 +305,9 @@ impl ThreadListInventory {
         for entry in entries {
             // cctui drives this thread live — let the driver own its events.
             if owned.contains(&entry.id) {
+                continue;
+            }
+            if is_orphan_subagent(&entry) {
                 continue;
             }
             let prev = self.seen.lock().await.get(&entry.id).cloned();
@@ -782,6 +796,7 @@ mod tests {
         let entry = ThreadEntry {
             id: "x".into(),
             parent_id: None,
+            updated_at: None,
             preview: None,
             name: None,
             cwd: Some("/repo".into()),
@@ -792,6 +807,44 @@ mod tests {
         assert_eq!(meta.working_dir.as_deref(), Some("/repo"));
         assert_eq!(meta.extra["source"], "codex-thread-list:exec");
         assert_eq!(meta.parent_local_id, None);
+        assert!(meta.extra["observed_at"].is_null());
+    }
+
+    #[test]
+    fn started_meta_carries_observed_at() {
+        let entry = ThreadEntry {
+            id: "x".into(),
+            parent_id: None,
+            updated_at: Some(1_762_000_000),
+            preview: None,
+            name: None,
+            cwd: None,
+            source: Some("cli".into()),
+            status: None,
+        };
+        assert_eq!(started_meta(&entry).extra["observed_at"], 1_762_000_000_i64);
+    }
+
+    #[test]
+    fn orphan_subagents_are_skipped_linked_ones_are_not() {
+        let mut entry = ThreadEntry {
+            id: "x".into(),
+            parent_id: None,
+            updated_at: None,
+            preview: None,
+            name: None,
+            cwd: None,
+            source: Some("subAgent".into()),
+            status: None,
+        };
+        assert!(is_orphan_subagent(&entry));
+        entry.parent_id = Some("p".into());
+        assert!(!is_orphan_subagent(&entry));
+        entry.parent_id = None;
+        entry.source = Some("cli".into());
+        assert!(!is_orphan_subagent(&entry));
+        entry.source = None;
+        assert!(!is_orphan_subagent(&entry));
     }
 
     #[test]
@@ -799,6 +852,7 @@ mod tests {
         let entry = ThreadEntry {
             id: "child".into(),
             parent_id: Some("parent".into()),
+            updated_at: None,
             preview: None,
             name: None,
             cwd: Some("/repo".into()),
@@ -838,6 +892,7 @@ mod tests {
         let entry = ThreadEntry {
             id: "t1".into(),
             parent_id: None,
+            updated_at: None,
             preview: Some("hello".into()),
             name: Some("nm".into()),
             cwd: Some("/w".into()),
@@ -884,6 +939,7 @@ mod tests {
         let entry = ThreadEntry {
             id: "child".into(),
             parent_id: Some("parent".into()),
+            updated_at: None,
             preview: None,
             name: None,
             cwd: Some("/w".into()),
@@ -907,6 +963,7 @@ mod tests {
             ThreadEntry {
                 id: "mine".into(),
                 parent_id: None,
+                updated_at: None,
                 preview: None,
                 name: Some("nm".into()),
                 cwd: Some("/repo".into()),
@@ -916,6 +973,7 @@ mod tests {
             ThreadEntry {
                 id: "cli-one".into(),
                 parent_id: None,
+                updated_at: None,
                 preview: None,
                 name: None,
                 cwd: Some("/elsewhere".into()),
@@ -949,6 +1007,7 @@ mod tests {
             ThreadEntry {
                 id: "live".into(),
                 parent_id: None,
+                updated_at: None,
                 preview: None,
                 name: Some("from-inventory".into()),
                 cwd: Some("/other".into()),
@@ -958,6 +1017,7 @@ mod tests {
             ThreadEntry {
                 id: "rediscovered".into(),
                 parent_id: None,
+                updated_at: None,
                 preview: None,
                 name: None,
                 cwd: Some("/repo".into()),
@@ -1008,6 +1068,7 @@ mod tests {
         inv.reconcile(vec![ThreadEntry {
             id: "owned1".into(),
             parent_id: None,
+            updated_at: None,
             preview: Some("x".into()),
             name: None,
             cwd: None,
