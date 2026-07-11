@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "example-stdio": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-everything"],
+      "env": { "EXAMPLE_FLAG": "1" }
+    },
+    "example-http": {
+      "type": "http",
+      "url": "https://mcp.example.internal/v1",
+      "bearer_token_env_var": "EXAMPLE_MCP_TOKEN"
+    }
+  }
+}

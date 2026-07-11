@@ -85,6 +85,13 @@ POLICY_FILE=/var/run/guard-proxy/policy.json
 GUARD_STATE=/var/run/workflow-guard/state
 CONTEXT_DIR=/opt/context
 
+adapter_is_codex() {
+    case "${TASK_ADAPTER:-}" in
+        codex | codex-cli) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 # host:port from a URL (defaulting the port by scheme). Empty on no input.
 url_hostport() {
     _u="$1"
@@ -592,6 +599,22 @@ projects projects"
         chown -R "${WORKER_UID}:${WORKER_UID}" "${_home}/${_tgt}" 2>/dev/null || true
         log "context pack: wired ${_srcd}/ -> ~/${_tgt}"
     done
+    # Merge (not overwrite): a credential helper may already own ~/.mcp.json.
+    if [ -f "$CONTEXT_DIR/mcp.json" ] && ! adapter_is_codex; then
+        _mcpf="${_home}/.mcp.json"
+        _t=$(mktemp)
+        if [ -f "$_mcpf" ]; then
+            jq -s '.[0] * {mcpServers: ((.[0].mcpServers // {}) + (.[1].mcpServers // {}))}' \
+                "$_mcpf" "$CONTEXT_DIR/mcp.json" > "$_t" 2>/dev/null \
+                && mv "$_t" "$_mcpf" || rm -f "$_t"
+        else
+            jq '{mcpServers: (.mcpServers // {})}' "$CONTEXT_DIR/mcp.json" > "$_t" 2>/dev/null \
+                && mv "$_t" "$_mcpf" || rm -f "$_t"
+        fi
+        [ -f "$_mcpf" ] && chown "${WORKER_UID}:${WORKER_UID}" "$_mcpf" 2>/dev/null || true
+        log "context pack: merged mcp.json -> ${_mcpf}"
+    fi
+
     # /opt/context stays root-owned + RO under landlock, but must be world-
     # READABLE/traversable: the dropped-privilege daemon (worker uid) reads the
     # prompt + guard-rules from here. mkdir inherits root's umask (077 -> 700),
@@ -670,6 +693,22 @@ phase_extensions() {
 # OPENAI_API_KEY is unset.
 CODEX_MARKER_BEGIN="# >>> cctui codex model_provider (CCT-517) >>>"
 CODEX_MARKER_END="# <<< cctui codex model_provider (CCT-517) <<<"
+
+# Server names must be TOML-bare-key safe (emitted unquoted in the table header).
+codex_mcp_toml() {
+    [ -f "$1" ] || return 0
+    jq -r '
+      (.mcpServers // {}) | to_entries[] |
+      "[mcp_servers." + .key + "]",
+      (if .value.command then "command = " + (.value.command|@json) else empty end),
+      (if (.value.args|type)=="array" then "args = " + (.value.args|tojson) else empty end),
+      (if (.value.env|type)=="object" then "env = { " + ((.value.env|to_entries|map((.key|@json)+" = "+(.value|@json))|join(", "))) + " }" else empty end),
+      (if .value.url then "url = " + (.value.url|@json) else empty end),
+      (if .value.bearer_token_env_var then "bearer_token_env_var = " + (.value.bearer_token_env_var|@json) else empty end),
+      ""
+    ' "$1" 2>/dev/null || true
+}
+
 phase_codex_config() {
     [ -n "${OPENAI_API_KEY:-}" ] || { log "codex: OPENAI_API_KEY unset, skipping model_provider"; return 0; }
     _base="${OPENAI_BASE_URL:-}"
@@ -733,10 +772,45 @@ phase_codex_config() {
         printf 'wire_api = "responses"\n'
         printf '[features]\n'
         printf 'fast_mode = false\n'
+        # MCP tables MUST stay last: a bare key after a [table] binds to it.
+        if adapter_is_codex && [ -f "$CONTEXT_DIR/mcp.json" ]; then
+            codex_mcp_toml "$CONTEXT_DIR/mcp.json"
+        fi
         printf '%s\n' "$CODEX_MARKER_END"
     } > "$_cfg"
     chown -R "${WORKER_UID}:${WORKER_UID}" "$_cfgdir" 2>/dev/null || true
     log "codex: model_provider 'cctui' wired into $_cfg (base_url from OPENAI_BASE_URL)"
+}
+
+# ── Phase 4c: Codex context-pack staging ────────────────────────────────────
+# Codex ignores ~/.claude and ~/CLAUDE.md: it reads AGENTS.md walked up from cwd
+# (+ the ~/.codex/AGENTS.md global) and prompts from ~/.codex/prompts/. MCP
+# servers are wired into config.toml by phase_codex_config, not here.
+phase_codex_pack() {
+    adapter_is_codex || return 0
+    [ -d "$CONTEXT_DIR" ] || return 0
+    _home="/home/${WORKER_USER}"
+    _cfgdir="${CODEX_HOME:-${_home}/.codex}"
+
+    _instr=""
+    [ -f "$CONTEXT_DIR/AGENTS.md" ] && _instr="$CONTEXT_DIR/AGENTS.md"
+    [ -z "$_instr" ] && [ -f "$CONTEXT_DIR/CLAUDE.md" ] && _instr="$CONTEXT_DIR/CLAUDE.md"
+    if [ -n "$_instr" ]; then
+        _wroot="${CCTUI_DISPATCH_WORKDIR:-/workspace}"
+        mkdir -p "$_wroot" "$_cfgdir"
+        cp -f "$_instr" "$_wroot/AGENTS.md" 2>/dev/null \
+            && chown "${WORKER_UID}:${WORKER_UID}" "$_wroot/AGENTS.md" 2>/dev/null || true
+        cp -f "$_instr" "$_cfgdir/AGENTS.md" 2>/dev/null || true
+        log "codex: staged AGENTS.md (<- $(basename "$_instr")) into $_wroot and $_cfgdir"
+    fi
+
+    if [ -d "$CONTEXT_DIR/prompts" ]; then
+        mkdir -p "$_cfgdir/prompts"
+        cp -a "$CONTEXT_DIR/prompts/." "$_cfgdir/prompts/" 2>/dev/null || true
+        log "codex: staged prompts/ -> $_cfgdir/prompts"
+    fi
+
+    chown -R "${WORKER_UID}:${WORKER_UID}" "$_cfgdir" 2>/dev/null || true
 }
 
 # ── Phase 5: Result callback trap ───────────────────────────────────────────
@@ -958,6 +1032,7 @@ if [ -z "${TASK_PROMPT_FILE:-}" ] && [ -n "${CONTEXT_PACK_URL:-}" ] && [ -n "${T
 fi
 phase_extensions
 phase_codex_config
+phase_codex_pack
 phase_callback
 phase_guard
 phase_permissions
