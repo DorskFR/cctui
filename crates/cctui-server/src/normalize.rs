@@ -129,6 +129,11 @@ fn agent_event_from_canonical(v: &Value, ts: i64) -> Option<AgentEvent> {
 /// `type`. Unknown items return `None` (dropped from the conversation).
 fn codex(_event_type: &str, payload: &Value) -> Option<Value> {
     match payload.get("type").and_then(Value::as_str).unwrap_or_default() {
+        // Rollout JSONL envelopes: text comes from `event_msg` and tool activity
+        // from `response_item` — both streams carry the same turns, so splitting
+        // them by source is what prevents every message rendering twice.
+        "event_msg" => payload.get("payload").and_then(codex_event_msg),
+        "response_item" => payload.get("payload").and_then(codex_response_item),
         // Final assistant answer + plan updates → assistant text.
         "agentMessage" | "plan" => {
             let text = payload.get("text").and_then(Value::as_str).unwrap_or_default();
@@ -200,6 +205,79 @@ fn codex(_event_type: &str, payload: &Value) -> Option<Value> {
 fn codex_content_text(content: Option<&Value>) -> String {
     let Some(arr) = content.and_then(Value::as_array) else { return String::new() };
     arr.iter().filter_map(|c| c.get("text").and_then(Value::as_str)).collect::<Vec<_>>().join("\n")
+}
+
+/// Map a rollout `event_msg` payload onto the canonical client shape. These are
+/// the clean conversational turns: `user_message`/`agent_message` carry a plain
+/// `message` string. `token_count` and lifecycle events have no transcript value.
+fn codex_event_msg(inner: &Value) -> Option<Value> {
+    match inner.get("type").and_then(Value::as_str).unwrap_or_default() {
+        "user_message" => {
+            let text = inner.get("message").and_then(Value::as_str).unwrap_or_default();
+            if text.is_empty() {
+                return None;
+            }
+            Some(json!({ "type": "text", "content": format!("▷ User: {text}") }))
+        }
+        "agent_message" => {
+            let text = inner.get("message").and_then(Value::as_str).unwrap_or_default();
+            if text.is_empty() {
+                return None;
+            }
+            Some(json!({ "type": "text", "content": text, "role": "Assistant" }))
+        }
+        _ => None,
+    }
+}
+
+/// Map a rollout `response_item` payload (raw `OpenAI` Responses-API item) onto the
+/// canonical client shape. Only tool activity is taken here — `message` items are
+/// dropped because their text is already surfaced via `event_msg` (see [`codex`]).
+fn codex_response_item(inner: &Value) -> Option<Value> {
+    match inner.get("type").and_then(Value::as_str).unwrap_or_default() {
+        "function_call" => {
+            let tool = inner.get("name").and_then(Value::as_str).unwrap_or_default();
+            let input = inner
+                .get("arguments")
+                .and_then(Value::as_str)
+                .and_then(|s| serde_json::from_str::<Value>(s).ok())
+                .or_else(|| inner.get("arguments").cloned())
+                .unwrap_or(Value::Null);
+            Some(json!({ "type": "tool_call", "tool": tool, "input": input }))
+        }
+        "custom_tool_call" => {
+            let tool = inner.get("name").and_then(Value::as_str).unwrap_or_default();
+            let input = match inner.get("input") {
+                Some(Value::String(s)) => json!({ "input": s }),
+                Some(other) => other.clone(),
+                None => Value::Null,
+            };
+            Some(json!({ "type": "tool_call", "tool": tool, "input": input }))
+        }
+        "function_call_output" | "custom_tool_call_output" => Some(
+            json!({ "type": "tool_result", "output_summary": codex_output_summary(inner.get("output")) }),
+        ),
+        "reasoning" => {
+            let text = codex_content_text(inner.get("summary"));
+            if text.is_empty() {
+                return None;
+            }
+            Some(json!({ "type": "text", "content": text, "role": "Reasoning" }))
+        }
+        _ => None,
+    }
+}
+
+/// Flatten a tool-call output into a capped summary string. Outputs are either a
+/// plain string or an array of `{type, text}` content parts.
+fn codex_output_summary(output: Option<&Value>) -> String {
+    let raw = match output {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Array(_)) => codex_content_text(output),
+        Some(other) => other.to_string(),
+        None => String::new(),
+    };
+    raw.chars().take(4000).collect()
 }
 
 fn claude_code(event_type: &str, payload: Value) -> Option<Value> {
@@ -418,6 +496,87 @@ mod tests {
     #[test]
     fn codex_unknown_item_dropped() {
         let p = json!({ "type": "contextCompaction", "id": "x" });
+        assert_eq!(for_client("codex", "message", p), None);
+    }
+
+    // --- codex rollout envelopes (CCT-633); shapes captured from codex 0.144.1 ---
+
+    #[test]
+    fn codex_event_msg_user_message_maps_to_user_text() {
+        let p = json!({ "type": "event_msg",
+            "payload": { "type": "user_message", "message": "do a thing", "text_elements": [] } });
+        let n = for_client("codex", "message", p).unwrap();
+        assert_eq!(n["type"], "text");
+        assert_eq!(n["content"], "▷ User: do a thing");
+    }
+
+    #[test]
+    fn codex_event_msg_agent_message_maps_to_assistant_text() {
+        let p = json!({ "type": "event_msg",
+            "payload": { "type": "agent_message", "message": "the answer", "phase": "final_answer" } });
+        let n = for_client("codex", "message", p).unwrap();
+        assert_eq!(n["content"], "the answer");
+        assert_eq!(n["role"], "Assistant");
+    }
+
+    #[test]
+    fn codex_response_item_message_dropped_to_avoid_dupe() {
+        // The assistant text is surfaced via event_msg; the raw response_item
+        // message must NOT render a second copy.
+        let p = json!({ "type": "response_item", "payload": {
+            "type": "message", "role": "assistant",
+            "content": [{ "type": "output_text", "text": "the answer" }] } });
+        assert_eq!(for_client("codex", "message", p), None);
+    }
+
+    #[test]
+    fn codex_response_item_custom_tool_call_maps_to_tool_call() {
+        let p = json!({ "type": "response_item", "payload": {
+            "type": "custom_tool_call", "name": "exec", "call_id": "call_a",
+            "input": "const r = await tools.exec_command({cmd:\"ls\"});" } });
+        let n = for_client("codex", "tool_use", p).unwrap();
+        assert_eq!(n["type"], "tool_call");
+        assert_eq!(n["tool"], "exec");
+        assert_eq!(n["input"]["input"], "const r = await tools.exec_command({cmd:\"ls\"});");
+    }
+
+    #[test]
+    fn codex_response_item_function_call_parses_arguments() {
+        let p = json!({ "type": "response_item", "payload": {
+            "type": "function_call", "name": "wait", "call_id": "call_b",
+            "arguments": "{\"cell_id\":\"5\",\"yield_time_ms\":1000}" } });
+        let n = for_client("codex", "tool_use", p).unwrap();
+        assert_eq!(n["tool"], "wait");
+        assert_eq!(n["input"]["cell_id"], "5");
+        assert_eq!(n["input"]["yield_time_ms"], 1000);
+    }
+
+    #[test]
+    fn codex_response_item_tool_output_maps_to_tool_result() {
+        let arr = json!({ "type": "response_item", "payload": {
+            "type": "custom_tool_call_output", "call_id": "call_a",
+            "output": [{ "type": "input_text", "text": "done\n" }, { "type": "input_text", "text": "Cargo.toml\n" }] } });
+        let n = for_client("codex", "tool_use", arr).unwrap();
+        assert_eq!(n["type"], "tool_result");
+        assert_eq!(n["output_summary"], "done\n\nCargo.toml\n");
+
+        let str_out = json!({ "type": "response_item", "payload": {
+            "type": "function_call_output", "call_id": "call_b", "output": "running\n" } });
+        let m = for_client("codex", "tool_use", str_out).unwrap();
+        assert_eq!(m["output_summary"], "running\n");
+    }
+
+    #[test]
+    fn codex_encrypted_reasoning_dropped() {
+        let p = json!({ "type": "response_item", "payload": {
+            "type": "reasoning", "id": "rs_1", "summary": [], "encrypted_content": "gAAAA" } });
+        assert_eq!(for_client("codex", "message", p), None);
+    }
+
+    #[test]
+    fn codex_token_count_envelope_dropped_from_transcript() {
+        let p = json!({ "type": "event_msg", "payload": {
+            "type": "token_count", "info": { "total_token_usage": { "total_tokens": 1 } } } });
         assert_eq!(for_client("codex", "message", p), None);
     }
 
