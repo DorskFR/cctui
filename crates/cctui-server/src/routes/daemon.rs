@@ -428,7 +428,8 @@ async fn process_frame(
 ) -> anyhow::Result<()> {
     match frame {
         DaemonFrameUp::SessionRegistered { adapter_id, local_id } => {
-            upsert_session(state, machine_id, user_id, &adapter_id, &local_id, None, None).await
+            upsert_session(state, machine_id, user_id, &adapter_id, &local_id, None, None, None)
+                .await
         }
         DaemonFrameUp::Event { adapter_id, event } => {
             // Machine-scoped codex model catalog (CCT-641): cache it by
@@ -546,6 +547,7 @@ async fn handle_event(
     match event {
         AdapterEvent::SessionStarted { local_id, meta } => {
             let working_dir = meta.working_dir.clone();
+            let observed_at = meta.extra.get("observed_at").and_then(serde_json::Value::as_i64);
             upsert_session(
                 state,
                 machine_id,
@@ -554,6 +556,7 @@ async fn handle_event(
                 &local_id,
                 working_dir,
                 meta.parent_local_id.clone(),
+                observed_at,
             )
             .await?;
         }
@@ -863,6 +866,7 @@ async fn bump_heartbeat(state: &AppState, local_id: &str) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn upsert_session(
     state: &AppState,
     machine_id: Uuid,
@@ -871,6 +875,7 @@ async fn upsert_session(
     local_id: &str,
     working_dir: Option<String>,
     parent_local_id: Option<String>,
+    observed_at: Option<i64>,
 ) -> anyhow::Result<()> {
     // `parent_id` (CCT-141): resolve via a subquery rather than binding the
     // raw value so a not-yet-known parent yields NULL instead of an FK
@@ -890,9 +895,12 @@ async fn upsert_session(
             (id, parent_id, account_id, machine_id, working_dir, status, registered_at,
              last_heartbeat, metadata, user_id, machine_uuid, adapter_id)
           VALUES ($1, (SELECT id FROM sessions WHERE id = $7), NULL, $2, $3, 'active',
-                  now(), now(), '{}'::jsonb, $4, $5, $6)
+                  COALESCE(to_timestamp($8::double precision), now()),
+                  COALESCE(to_timestamp($8::double precision), now()),
+                  '{}'::jsonb, $4, $5, $6)
           ON CONFLICT (id) DO UPDATE SET
-            last_heartbeat = now(),
+            last_heartbeat = GREATEST(sessions.last_heartbeat,
+                                      COALESCE(to_timestamp($8::double precision), now())),
             status = CASE WHEN sessions.status IN ('inactive', 'archived', 'ended') THEN sessions.status ELSE 'active' END,
             adapter_id = EXCLUDED.adapter_id,
             parent_id = COALESCE(sessions.parent_id, EXCLUDED.parent_id)",
@@ -904,6 +912,7 @@ async fn upsert_session(
     .bind(machine_id)
     .bind(adapter_id)
     .bind(parent_local_id)
+    .bind(observed_at)
     .execute(&state.pool)
     .await?;
     // Repair the durable account binding (CCT-565): the dispatch path mints the
