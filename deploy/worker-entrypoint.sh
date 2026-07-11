@@ -683,19 +683,19 @@ phase_codex_config() {
 
     # Model + reasoning effort, pinned per-pod so one-off `codex exec` (and the
     # codex-run shim) need no --model/-c flags — config.toml owns them. Model
-    # defaults to a known-good PLAIN variant; the `-codex` family (e.g.
-    # gpt-5.5-codex) is rejected by the gateway account, so callers must not pin
-    # one. Overridden only by TASK_CODEX_MODEL — NEVER by TASK_MODEL, which is
-    # the primary (Claude) agent's model (e.g. `opus`); feeding that to codex
-    # writes an OpenAI-invalid model the gateway rejects (CCT-526 regression).
-    # Effort maps TASK_EFFORT onto codex's scale (which adds `xhigh` above
-    # `high`); `low` is honored (cheaper) rather than floored up to medium.
-    _model="${TASK_CODEX_MODEL:-gpt-5.5}"
-    case "${TASK_EFFORT:-high}" in
-        low)                _effort=low ;;
-        medium)             _effort=medium ;;
-        max|xhigh|veryhigh) _effort=xhigh ;;
-        high|*)             _effort=high ;;
+    # names are BARE (no `-codex` suffix); default is the gpt-5.6-sol frontier.
+    # Overridden only by TASK_CODEX_MODEL — NEVER by TASK_MODEL, which is the
+    # primary (Claude) agent's model (e.g. `opus`); feeding that to codex writes
+    # an OpenAI-invalid model the gateway rejects (CCT-526 regression).
+    _model="${TASK_CODEX_MODEL:-gpt-5.6-sol}"
+    case "${TASK_EFFORT:-medium}" in
+        low)          _effort=low ;;
+        medium)       _effort=medium ;;
+        high)         _effort=high ;;
+        xhigh)        _effort=xhigh ;;
+        max)          _effort=max ;;
+        ultra)        _effort=ultra ;;
+        *)            _effort=medium ;;
     esac
 
     # Preserve any existing config MINUS our managed region and the top-level

@@ -6,28 +6,21 @@
 // model/effort so a plain fork preserves them.
 import type { SessionListItem } from '@bindings/SessionListItem';
 import { toasts } from '$lib/toast.svelte';
+import {
+	codexModels as CODEX_MODELS,
+	codexEfforts as CODEX_EFFORTS,
+	claudeModels as CLAUDE_MODELS,
+	claudeEfforts as CLAUDE_EFFORTS,
+	type ModelOption
+} from '$lib/harnessModels';
 
-export interface ModelOption {
-	v: string;
-	label: string;
-}
-
-// In-place model/effort option lists. The codex set also drives the fork dialog's
-// codex branch; the editor UI itself lives in DrawerHeader (CCT-303).
-export const CODEX_EFFORTS = ['', 'low', 'medium', 'high', 'xhigh'];
-export const CODEX_MODELS: ModelOption[] = [
-	{ v: '', label: 'Default' },
-	{ v: 'gpt-5.5-codex', label: 'GPT-5.5 Codex' },
-	{ v: 'gpt-5.4-codex', label: 'GPT-5.4 Codex' }
-];
-export const CLAUDE_EFFORTS = ['', 'low', 'medium', 'high', 'xhigh', 'max'];
-export const CLAUDE_MODELS: ModelOption[] = [
-	{ v: '', label: 'Default' },
-	{ v: 'haiku', label: 'Haiku' },
-	{ v: 'sonnet', label: 'Sonnet' },
-	{ v: 'opus', label: 'Opus' },
-	{ v: 'fable', label: 'Fable' }
-];
+export {
+	CODEX_MODELS,
+	CODEX_EFFORTS,
+	CLAUDE_MODELS,
+	CLAUDE_EFFORTS,
+	type ModelOption
+};
 
 export interface ForkOpts {
 	id: () => string;

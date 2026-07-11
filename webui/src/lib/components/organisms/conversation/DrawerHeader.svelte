@@ -19,6 +19,7 @@
 	import WorkingDir from '$lib/components/molecules/WorkingDir.svelte';
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
 	import { Badge, IconButton, Input, Select, SelectButton, Text } from '@dorsk/tsumikit';
+	import { codexModels, codexEfforts } from '$lib/harnessModels';
 
 	let {
 		session,
@@ -79,13 +80,6 @@
 	const labelEditable = $derived(!!onAttachLabel);
 
 	const headTitle = $derived(session.name || session.working_dir);
-
-	const codexEfforts = ['', 'low', 'medium', 'high', 'xhigh'];
-	const codexModels = [
-		{ v: '', label: 'Default' },
-		{ v: 'gpt-5.5-codex', label: 'GPT-5.5 Codex' },
-		{ v: 'gpt-5.4-codex', label: 'GPT-5.4 Codex' }
-	];
 
 	let renaming = $state(false);
 	let newName = $state(session.name ?? '');
