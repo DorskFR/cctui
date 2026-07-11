@@ -329,17 +329,25 @@ agent its documentation environment. Anyone can define their own dispatch types
 ```
 <pack repo root or CONTEXT_PACK_SUBDIR>/
   CLAUDE.md          # home-level instructions  -> /home/worker/CLAUDE.md
+  AGENTS.md          # codex instructions (optional; falls back to CLAUDE.md)
   rules/             # always-on guidance (push) -> ~/.claude/rules/ (auto-loaded)
   docs/              # on-demand reference (pull) -> ~/.claude/docs/
   prompts/           # dispatch prompts; TASK_PROMPT_FILE resolves here
   skills/            # skill dirs (SKILL.md …)   -> ~/.claude/skills/
   projects/          # per-repo CLAUDE.md overlays -> /home/worker/projects/
   style/             # output styles               -> /home/worker/style/
+  mcp.json           # adapter-neutral MCP servers (mcpServers map)
   guard-rules.md     # tool-set + network-set definitions for cctui-guard
   pack.toml          # optional manifest; may declare a shared base layer
 ```
 
 A neutral fixture pack lives at `deploy/examples/context-pack/`.
+
+The above targets are the **Claude** staging. A pack is **portable**: the same
+neutral content stages to Codex targets (AGENTS.md, `~/.codex/config.toml` MCP
+entries, `~/.codex/prompts/`) when a dispatch selects `adapter: "codex"`. See
+*Codex context-pack packaging* below and `docs/context-packs.md` for the full
+adapter-target matrix.
 
 ### Shared base layer (monorepo of packs)
 
@@ -395,6 +403,37 @@ selected; with no `_base` present the pack is used as-is (unchanged behaviour).
   (always-on guardrails/conventions). `docs/` is **pull** — copied to
   `~/.claude/docs/` and referenced on demand by a prompt that needs it
   (`@~/.claude/docs/<x>.md`); it is not auto-loaded.
+
+### Codex context-pack packaging (CCT-644)
+
+The staging above is Claude-shaped (`.claude` conventions). A pack is
+**adapter-portable**: it declares content once, in an adapter-neutral form, and
+the entrypoint stages it to the harness the dispatch selects (`payload.adapter`).
+For `adapter: "codex"` the entrypoint **additively** stages the Codex targets
+(the Claude path is byte-for-byte unchanged and never sees these):
+
+- **Instructions → `AGENTS.md`.** Codex reads project instructions from an
+  `AGENTS.md` walked up from the working dir plus a `~/.codex/AGENTS.md` global —
+  never `~/CLAUDE.md`. `phase_codex_pack` stages the pack's `AGENTS.md` (or, when
+  absent, its `CLAUDE.md`) to `AGENTS.md` at the dispatch workdir root
+  (`CCTUI_DISPATCH_WORKDIR`, default `/workspace`) and to `~/.codex/AGENTS.md`.
+- **MCP servers → `config.toml`.** A pack's neutral `mcp.json` (standard
+  `mcpServers` map) is translated by `phase_codex_config` into
+  `~/.codex/config.toml` `[mcp_servers.<name>]` tables, appended inside the
+  managed model-provider region. stdio servers map `command`/`args`/`env`;
+  streamable-HTTP servers map `url` + `bearer_token_env_var`. The same `mcp.json`
+  merges into `~/.mcp.json` on the Claude path. Server names must be
+  TOML-bare-key safe.
+- **Prompts → `~/.codex/prompts/`.** The pack's `prompts/` are copied into
+  `~/.codex/prompts/` as custom slash-prompts (in addition to remaining under
+  `/opt/context/prompts/`, where `TASK_PROMPT_FILE` resolves for both adapters).
+- **Model provider + account config.** The `cctui` gateway provider, model,
+  effort, approvals, and sandbox mode come from `phase_codex_config` as before
+  (from `OPENAI_API_KEY`/`OPENAI_BASE_URL` + `TASK_CODEX_MODEL`/`TASK_EFFORT`).
+
+`skills/`, `hooks/`, and Claude-only conventions have no Codex target and are
+skipped for Codex; always-on `rules/` are best folded into `AGENTS.md` by the
+pack author. Full adapter-target matrix: `docs/context-packs.md`.
 
 ### Security rationale
 
