@@ -79,6 +79,156 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/accounts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List the caller's GitHub accounts (no secrets) */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The caller's accounts */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AccountList"];
+                    };
+                };
+                /** @description Store unavailable */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        /** Add a GitHub account (validates the PAT, seals it, never returns it) */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["AccountCreate"];
+                };
+            };
+            responses: {
+                /** @description The created account (no secrets) */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AccountSummary"];
+                    };
+                };
+                /** @description Invalid PAT */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Login already owned */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Store/sealer unavailable */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/accounts/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Remove one of the caller's GitHub accounts */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Deleted */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description Not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Store unavailable */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/repos": {
         parameters: {
             query?: never;
@@ -270,7 +420,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List the notifications inbox */
+        /** The notifications inbox feed (documents + local state) */
         get: {
             parameters: {
                 query?: {
@@ -279,6 +429,18 @@ export interface paths {
                     limit?: number;
                     /** @description Opaque cursor from a previous page's next_cursor */
                     cursor?: string;
+                    /** @description GitHub reason (review_requested/mention/ci_activity; aliases review-requested/ci) */
+                    reason?: string;
+                    /** @description Filter by repository full name */
+                    repo?: string;
+                    /** @description true: only unread & not locally read; false: read */
+                    unread?: "true" | "false";
+                    /** @description true: only not-done; false: only done */
+                    undone?: "true" | "false";
+                    /** @description true: only archived; default/false: hide archived */
+                    archived?: "true" | "false";
+                    /** @description Only notifications updated at/after this ISO timestamp */
+                    since?: string;
                 };
                 header?: never;
                 path?: never;
@@ -286,19 +448,137 @@ export interface paths {
             };
             requestBody?: never;
             responses: {
-                /** @description A page of notification envelopes */
+                /** @description A page of inbox items (envelope + read/done/archived state) */
                 200: {
                     headers: {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["NotificationPage"];
+                        "application/json": components["schemas"]["NotificationInboxPage"];
                     };
                 };
             };
         };
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/notifications/state": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Bulk mark notifications read/done/archived */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["NotificationBulkState"];
+                };
+            };
+            responses: {
+                /** @description The updated state for each thread */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["NotificationStateResult"];
+                    };
+                };
+                /** @description Invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description State store unavailable */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/notifications/{id}/state": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Mark one notification read/done/archived */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["NotificationSingleState"];
+                };
+            };
+            responses: {
+                /** @description The updated state for the thread */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["NotificationStateResult"];
+                    };
+                };
+                /** @description Invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description State store unavailable */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
         delete?: never;
         options?: never;
         head?: never;
@@ -314,7 +594,7 @@ export interface paths {
         };
         /**
          * Server-Sent Events stream
-         * @description text/event-stream of the documented event catalogue. Each message carries an `event:` name (pr.updated, notification.new, sync.status) and a JSON `data:` payload matching SseEvent.
+         * @description text/event-stream of the documented event catalogue. Each message carries an `event:` name (pr.updated, notification.new, notification.updated, sync.status) and a JSON `data:` payload matching SseEvent.
          */
         get: {
             parameters: {
@@ -392,7 +672,7 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
-        SseEvent: components["schemas"]["PrUpdatedEvent"] | components["schemas"]["NotificationNewEvent"] | components["schemas"]["SyncStatusEvent"];
+        SseEvent: components["schemas"]["PrUpdatedEvent"] | components["schemas"]["NotificationNewEvent"] | components["schemas"]["NotificationUpdatedEvent"] | components["schemas"]["SyncStatusEvent"];
         PrUpdatedEvent: {
             /**
              * @description discriminator enum property added by openapi-typescript
@@ -416,6 +696,21 @@ export interface components {
              * @enum {string}
              */
             event: "notification.new";
+            data: {
+                /**
+                 * @description GitHub account/login the record was synced for
+                 * @example DorskFR
+                 */
+                account: string;
+                id: string;
+            };
+        };
+        NotificationUpdatedEvent: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            event: "notification.updated";
             data: {
                 /**
                  * @description GitHub account/login the record was synced for
@@ -458,6 +753,44 @@ export interface components {
             last_run: string | null;
             accounts: string[];
         };
+        AccountList: {
+            items: components["schemas"]["AccountSummary"][];
+        };
+        AccountSummary: {
+            id: string;
+            /**
+             * @description GitHub account/login the record was synced for
+             * @example DorskFR
+             */
+            login: string;
+            poll_interval_ms: number | null;
+            budget_ceiling: number | null;
+            rate_limit: number | null;
+            active: boolean;
+            created_at: string | null;
+        };
+        Error: {
+            error: {
+                /**
+                 * @description Stable machine-readable error code
+                 * @example not_found
+                 */
+                code: string;
+                /** @example Pull request not found */
+                message: string;
+                /** @description Optional structured context */
+                details?: Record<string, never>;
+            };
+        };
+        AccountCreate: {
+            /** @description GitHub PAT (fine-grained preferred); validated, sealed, never returned */
+            token: string;
+            /** @description Expected login; rejected if it does not match the PAT's account */
+            login?: string;
+            poll_interval_ms?: number;
+            budget_ceiling?: number;
+            rate_limit?: number;
+        };
         RepoPage: {
             items: components["schemas"]["RepoEnvelope"][];
             /**
@@ -490,19 +823,6 @@ export interface components {
             etag: string | null;
             /** @description GitHub-shaped JSONB payload, relayed verbatim (narrow with octokit types) */
             payload?: Record<string, never>;
-        };
-        Error: {
-            error: {
-                /**
-                 * @description Stable machine-readable error code
-                 * @example not_found
-                 */
-                code: string;
-                /** @example Pull request not found */
-                message: string;
-                /** @description Optional structured context */
-                details?: Record<string, never>;
-            };
         };
         PullRequestPage: {
             items: components["schemas"]["PullRequestEnvelope"][];
@@ -537,15 +857,15 @@ export interface components {
             /** @description GitHub-shaped JSONB payload, relayed verbatim (narrow with octokit types) */
             payload?: Record<string, never>;
         };
-        NotificationPage: {
-            items: components["schemas"]["NotificationEnvelope"][];
+        NotificationInboxPage: {
+            items: components["schemas"]["NotificationInboxItem"][];
             /**
              * @description Cursor for the next page, or null at the end
              * @example null
              */
             next_cursor: string | null;
         };
-        NotificationEnvelope: {
+        NotificationInboxItem: {
             /**
              * @description GitHub account/login the record was synced for
              * @example DorskFR
@@ -569,6 +889,58 @@ export interface components {
             etag: string | null;
             /** @description GitHub-shaped JSONB payload, relayed verbatim (narrow with octokit types) */
             payload?: Record<string, never>;
+            state: components["schemas"]["NotificationState"];
+        };
+        NotificationState: {
+            /** @description Locally marked read (also pushed to GitHub) */
+            read: boolean;
+            /** @description Locally marked done (local-only state) */
+            done: boolean;
+            /** @description Locally archived (local-only state) */
+            archived: boolean;
+            read_at: string | null;
+            done_at: string | null;
+            archived_at: string | null;
+            /** @description A mark-as-read still owed to GitHub; retried on the next poll */
+            push_pending: boolean;
+            /** @description Last push failure, if any */
+            last_error: string | null;
+            updated_at: string | null;
+        };
+        NotificationStateResult: {
+            items: components["schemas"]["NotificationStateItem"][];
+        };
+        NotificationStateItem: {
+            thread_id: string;
+            state: components["schemas"]["NotificationState"];
+        };
+        NotificationBulkState: {
+            /**
+             * @description GitHub account/login the record was synced for
+             * @example DorskFR
+             */
+            account: string;
+            /** @description Notification thread ids to mutate */
+            thread_ids: string[];
+            /** @description Set read; true pushes to GitHub */
+            read?: boolean;
+            /** @description Set done (local-only) */
+            done?: boolean;
+            /** @description Set archived (local-only) */
+            archived?: boolean;
+        };
+        NotificationSingleState: {
+            /**
+             * @description GitHub account/login the record was synced for
+             * @example DorskFR
+             */
+            account: string;
+            /** @description Set read; true pushes to GitHub */
+            read?: boolean;
+            /** @description Set done (local-only) */
+            done?: boolean;
+            /** @description Set archived (local-only) */
+            archived?: boolean;
         };
     };
     responses: never;

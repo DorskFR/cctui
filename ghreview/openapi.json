@@ -21,6 +21,9 @@
             "$ref": "#/components/schemas/NotificationNewEvent"
           },
           {
+            "$ref": "#/components/schemas/NotificationUpdatedEvent"
+          },
+          {
             "$ref": "#/components/schemas/SyncStatusEvent"
           }
         ],
@@ -29,6 +32,7 @@
           "mapping": {
             "pr.updated": "#/components/schemas/PrUpdatedEvent",
             "notification.new": "#/components/schemas/NotificationNewEvent",
+            "notification.updated": "#/components/schemas/NotificationUpdatedEvent",
             "sync.status": "#/components/schemas/SyncStatusEvent"
           }
         }
@@ -83,6 +87,39 @@
             "type": "string",
             "enum": [
               "notification.new"
+            ]
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "account": {
+                "type": "string",
+                "minLength": 1,
+                "example": "DorskFR",
+                "description": "GitHub account/login the record was synced for"
+              },
+              "id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "account",
+              "id"
+            ]
+          }
+        },
+        "required": [
+          "event",
+          "data"
+        ]
+      },
+      "NotificationUpdatedEvent": {
+        "type": "object",
+        "properties": {
+          "event": {
+            "type": "string",
+            "enum": [
+              "notification.updated"
             ]
           },
           "data": {
@@ -210,6 +247,123 @@
           "accounts"
         ]
       },
+      "AccountList": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountSummary"
+            }
+          }
+        },
+        "required": [
+          "items"
+        ]
+      },
+      "AccountSummary": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "login": {
+            "type": "string",
+            "minLength": 1,
+            "example": "DorskFR",
+            "description": "GitHub account/login the record was synced for"
+          },
+          "poll_interval_ms": {
+            "type": "integer",
+            "nullable": true
+          },
+          "budget_ceiling": {
+            "type": "number",
+            "nullable": true
+          },
+          "rate_limit": {
+            "type": "integer",
+            "nullable": true
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "created_at": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": [
+          "id",
+          "login",
+          "poll_interval_ms",
+          "budget_ceiling",
+          "rate_limit",
+          "active",
+          "created_at"
+        ]
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string",
+                "example": "not_found",
+                "description": "Stable machine-readable error code"
+              },
+              "message": {
+                "type": "string",
+                "example": "Pull request not found"
+              },
+              "details": {
+                "type": "object",
+                "description": "Optional structured context"
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ]
+          }
+        },
+        "required": [
+          "error"
+        ]
+      },
+      "AccountCreate": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string",
+            "minLength": 1,
+            "description": "GitHub PAT (fine-grained preferred); validated, sealed, never returned"
+          },
+          "login": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Expected login; rejected if it does not match the PAT's account"
+          },
+          "poll_interval_ms": {
+            "type": "integer",
+            "minimum": 1000
+          },
+          "budget_ceiling": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "rate_limit": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "token"
+        ]
+      },
       "RepoPage": {
         "type": "object",
         "properties": {
@@ -269,36 +423,6 @@
           "kind",
           "synced_at",
           "etag"
-        ]
-      },
-      "Error": {
-        "type": "object",
-        "properties": {
-          "error": {
-            "type": "object",
-            "properties": {
-              "code": {
-                "type": "string",
-                "example": "not_found",
-                "description": "Stable machine-readable error code"
-              },
-              "message": {
-                "type": "string",
-                "example": "Pull request not found"
-              },
-              "details": {
-                "type": "object",
-                "description": "Optional structured context"
-              }
-            },
-            "required": [
-              "code",
-              "message"
-            ]
-          }
-        },
-        "required": [
-          "error"
         ]
       },
       "PullRequestPage": {
@@ -362,13 +486,13 @@
           "etag"
         ]
       },
-      "NotificationPage": {
+      "NotificationInboxPage": {
         "type": "object",
         "properties": {
           "items": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/NotificationEnvelope"
+              "$ref": "#/components/schemas/NotificationInboxItem"
             }
           },
           "next_cursor": {
@@ -383,7 +507,7 @@
           "next_cursor"
         ]
       },
-      "NotificationEnvelope": {
+      "NotificationInboxItem": {
         "type": "object",
         "properties": {
           "account": {
@@ -414,13 +538,162 @@
           "payload": {
             "type": "object",
             "description": "GitHub-shaped JSONB payload, relayed verbatim (narrow with octokit types)"
+          },
+          "state": {
+            "$ref": "#/components/schemas/NotificationState"
           }
         },
         "required": [
           "account",
           "kind",
           "synced_at",
-          "etag"
+          "etag",
+          "state"
+        ]
+      },
+      "NotificationState": {
+        "type": "object",
+        "properties": {
+          "read": {
+            "type": "boolean",
+            "description": "Locally marked read (also pushed to GitHub)"
+          },
+          "done": {
+            "type": "boolean",
+            "description": "Locally marked done (local-only state)"
+          },
+          "archived": {
+            "type": "boolean",
+            "description": "Locally archived (local-only state)"
+          },
+          "read_at": {
+            "type": "string",
+            "nullable": true
+          },
+          "done_at": {
+            "type": "string",
+            "nullable": true
+          },
+          "archived_at": {
+            "type": "string",
+            "nullable": true
+          },
+          "push_pending": {
+            "type": "boolean",
+            "description": "A mark-as-read still owed to GitHub; retried on the next poll"
+          },
+          "last_error": {
+            "type": "string",
+            "nullable": true,
+            "description": "Last push failure, if any"
+          },
+          "updated_at": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": [
+          "read",
+          "done",
+          "archived",
+          "read_at",
+          "done_at",
+          "archived_at",
+          "push_pending",
+          "last_error",
+          "updated_at"
+        ]
+      },
+      "NotificationStateResult": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NotificationStateItem"
+            }
+          }
+        },
+        "required": [
+          "items"
+        ]
+      },
+      "NotificationStateItem": {
+        "type": "object",
+        "properties": {
+          "thread_id": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/NotificationState"
+          }
+        },
+        "required": [
+          "thread_id",
+          "state"
+        ]
+      },
+      "NotificationBulkState": {
+        "type": "object",
+        "properties": {
+          "account": {
+            "type": "string",
+            "minLength": 1,
+            "example": "DorskFR",
+            "description": "GitHub account/login the record was synced for"
+          },
+          "thread_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1,
+            "maxItems": 200,
+            "description": "Notification thread ids to mutate"
+          },
+          "read": {
+            "type": "boolean",
+            "description": "Set read; true pushes to GitHub"
+          },
+          "done": {
+            "type": "boolean",
+            "description": "Set done (local-only)"
+          },
+          "archived": {
+            "type": "boolean",
+            "description": "Set archived (local-only)"
+          }
+        },
+        "required": [
+          "account",
+          "thread_ids"
+        ]
+      },
+      "NotificationSingleState": {
+        "type": "object",
+        "properties": {
+          "account": {
+            "type": "string",
+            "minLength": 1,
+            "example": "DorskFR",
+            "description": "GitHub account/login the record was synced for"
+          },
+          "read": {
+            "type": "boolean",
+            "description": "Set read; true pushes to GitHub"
+          },
+          "done": {
+            "type": "boolean",
+            "description": "Set done (local-only)"
+          },
+          "archived": {
+            "type": "boolean",
+            "description": "Set archived (local-only)"
+          }
+        },
+        "required": [
+          "account"
         ]
       }
     },
@@ -471,6 +744,137 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Status"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/accounts": {
+      "get": {
+        "summary": "List the caller's GitHub accounts (no secrets)",
+        "tags": [
+          "accounts"
+        ],
+        "responses": {
+          "200": {
+            "description": "The caller's accounts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountList"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Store unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Add a GitHub account (validates the PAT, seals it, never returns it)",
+        "tags": [
+          "accounts"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AccountCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The created account (no secrets)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountSummary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid PAT",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Login already owned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Store/sealer unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/accounts/{id}": {
+      "delete": {
+        "summary": "Remove one of the caller's GitHub accounts",
+        "tags": [
+          "accounts"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "1"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Store unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             }
@@ -721,7 +1125,7 @@
     },
     "/v1/notifications": {
       "get": {
-        "summary": "List the notifications inbox",
+        "summary": "The notifications inbox feed (documents + local state)",
         "tags": [
           "notifications"
         ],
@@ -759,15 +1163,198 @@
             "description": "Opaque cursor from a previous page's next_cursor",
             "name": "cursor",
             "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "GitHub reason (review_requested/mention/ci_activity; aliases review-requested/ci)"
+            },
+            "required": false,
+            "description": "GitHub reason (review_requested/mention/ci_activity; aliases review-requested/ci)",
+            "name": "reason",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "DorskFR/cctui",
+              "description": "Filter by repository full name"
+            },
+            "required": false,
+            "description": "Filter by repository full name",
+            "name": "repo",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ],
+              "description": "true: only unread & not locally read; false: read"
+            },
+            "required": false,
+            "description": "true: only unread & not locally read; false: read",
+            "name": "unread",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ],
+              "description": "true: only not-done; false: only done"
+            },
+            "required": false,
+            "description": "true: only not-done; false: only done",
+            "name": "undone",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ],
+              "description": "true: only archived; default/false: hide archived"
+            },
+            "required": false,
+            "description": "true: only archived; default/false: hide archived",
+            "name": "archived",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "description": "Only notifications updated at/after this ISO timestamp"
+            },
+            "required": false,
+            "description": "Only notifications updated at/after this ISO timestamp",
+            "name": "since",
+            "in": "query"
           }
         ],
         "responses": {
           "200": {
-            "description": "A page of notification envelopes",
+            "description": "A page of inbox items (envelope + read/done/archived state)",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/NotificationPage"
+                  "$ref": "#/components/schemas/NotificationInboxPage"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/notifications/state": {
+      "post": {
+        "summary": "Bulk mark notifications read/done/archived",
+        "tags": [
+          "notifications"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NotificationBulkState"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The updated state for each thread",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationStateResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "State store unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/notifications/{id}/state": {
+      "post": {
+        "summary": "Mark one notification read/done/archived",
+        "tags": [
+          "notifications"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "thread-42"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NotificationSingleState"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The updated state for the thread",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationStateResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "State store unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             }
@@ -778,7 +1365,7 @@
     "/v1/events": {
       "get": {
         "summary": "Server-Sent Events stream",
-        "description": "text/event-stream of the documented event catalogue. Each message carries an `event:` name (pr.updated, notification.new, sync.status) and a JSON `data:` payload matching SseEvent.",
+        "description": "text/event-stream of the documented event catalogue. Each message carries an `event:` name (pr.updated, notification.new, notification.updated, sync.status) and a JSON `data:` payload matching SseEvent.",
         "tags": [
           "events"
         ],

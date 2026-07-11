@@ -18,6 +18,14 @@ describe("mapNotice", () => {
     });
   });
 
+  test("maps a notification_state notice to notification.updated", () => {
+    const msg = mapNotice({ account: "DorskFR", kind: "notification_state", key: "thread-9" });
+    expect(msg).toEqual({
+      event: "notification.updated",
+      data: { account: "DorskFR", id: "thread-9" },
+    });
+  });
+
   test("returns null for kinds without a catalogued event", () => {
     expect(mapNotice({ account: "DorskFR", kind: "repo", key: "DorskFR/cctui" })).toBeNull();
   });
