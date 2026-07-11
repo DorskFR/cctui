@@ -11,7 +11,14 @@ export const modes: { v: PermissionMode; label: string; hint: string }[] = [
 	{ v: 'whip', label: 'Whip 🐎', hint: 'Yolo + no asking, no stalling' }
 ];
 
-export { codexModels, codexEfforts, claudeModels, claudeEfforts } from '$lib/harnessModels';
+export {
+	codexModels,
+	codexEfforts,
+	codexModelsFor,
+	codexEffortsFor,
+	claudeModels,
+	claudeEfforts
+} from '$lib/harnessModels';
 
 // Annotate native-family options with the per-account alias target (CCT-406)
 // so the picker reads e.g. "Opus (claude-opus-4-8[1m])" instead of a bare

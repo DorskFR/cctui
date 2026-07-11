@@ -109,6 +109,7 @@ async fn main() -> anyhow::Result<()> {
         soft_limit_blocked: Arc::new(dashmap::DashMap::new()),
         gateway_orphan_spam: Arc::new(dashmap::DashMap::new()),
         account_reauth: Arc::new(dashmap::DashMap::new()),
+        codex_catalogs: Arc::new(dashmap::DashMap::new()),
     };
 
     // Warm the reauth gate from the persisted flag (CCT-512) so a restart doesn't
@@ -854,6 +855,14 @@ fn build_api_routes() -> Routes {
             Authn::Bearer,
             // Machine-owner guard (CCT-420): `machines.user_id`, id from the
             // `{machine_id}` path param.
+            Authz::Resource(ResourceKind::Machine, Action::Read, IdFrom::Path("machine_id")),
+        )
+        .add(
+            &[GET],
+            "/machines/{machine_id}/codex-models",
+            "Machine/account-scoped codex model catalog (CCT-641).",
+            get(routes::codex_models::get_codex_models),
+            Authn::Bearer,
             Authz::Resource(ResourceKind::Machine, Action::Read, IdFrom::Path("machine_id")),
         )
         .add(

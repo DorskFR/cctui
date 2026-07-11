@@ -1000,6 +1000,12 @@ impl PendingRpcs {
         self.inner.drain().collect()
     }
 
+    /// Methods of every outstanding request (CCT-640 diagnostics).
+    #[must_use]
+    pub fn pending_methods(&self) -> Vec<String> {
+        self.inner.values().map(|p| p.method.clone()).collect()
+    }
+
     #[cfg(test)]
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -1091,6 +1097,9 @@ pub enum SessionCommand {
     /// webui chip updates live. `command_id` correlates the outcome back as an
     /// [`AdapterEvent::CommandResult`].
     SetModel { model: Option<String>, effort: Option<String>, command_id: Option<Uuid> },
+    /// Gather a point-in-time snapshot of the live driver's internal state for
+    /// the adapter-neutral diagnose report (CCT-640) and return it on `reply`.
+    Diagnose { reply: mpsc::Sender<CodexLiveSnapshot> },
 }
 
 impl SessionCommand {
@@ -1098,6 +1107,19 @@ impl SessionCommand {
     pub const fn is_resumable(&self) -> bool {
         matches!(self, Self::Send { .. } | Self::Rename { .. } | Self::SetModel { .. })
     }
+}
+
+/// Point-in-time snapshot of a live codex session's internal driver state,
+/// gathered on demand for the diagnose report (CCT-640).
+#[derive(Debug, Clone, Default)]
+pub struct CodexLiveSnapshot {
+    pub codex_version: Option<String>,
+    pub pid: Option<u32>,
+    pub active_turn_id: Option<String>,
+    pub pending_rpc_methods: Vec<String>,
+    pub last_protocol_error: Option<String>,
+    pub rollout_path: Option<String>,
+    pub rollout_size_bytes: Option<u64>,
 }
 
 /// Live command registry: `local_id` → command sender for the owning app-server
@@ -1449,6 +1471,8 @@ impl CodexSession {
         write_json(&mut stdin, &initialize_req()).await?;
         let mut local_id = String::new();
         let mut codex_version: Option<String> = None;
+        let mut rollout_path: Option<String> = None;
+        let mut last_protocol_error: Option<String> = None;
         let mut next_id = RUN_BASE;
         // request_id (surfaced to TUI) → (rpc_id echoed to codex, decision kind).
         let mut pending_approvals: HashMap<String, (Value, ApprovalKind)> = HashMap::new();
@@ -1612,6 +1636,21 @@ impl CodexSession {
                             )
                             .await;
                         }
+                        Some(SessionCommand::Diagnose { reply }) => {
+                            let snapshot = CodexLiveSnapshot {
+                                codex_version: codex_version.clone(),
+                                pid: child.id(),
+                                active_turn_id: active_turn.id().map(str::to_owned),
+                                pending_rpc_methods: pending_rpcs.pending_methods(),
+                                last_protocol_error: last_protocol_error.clone(),
+                                rollout_path: rollout_path.clone(),
+                                rollout_size_bytes: rollout_path
+                                    .as_ref()
+                                    .and_then(|p| std::fs::metadata(p).ok())
+                                    .map(|m| m.len()),
+                            };
+                            let _ = reply.send(snapshot).await;
+                        }
                         None => break,
                     }
                 }
@@ -1645,6 +1684,9 @@ impl CodexSession {
                                 tracing::debug!(rpc_id = id, "codex: response for unknown request id");
                                 continue;
                             };
+                            if let Err(ref e) = outcome {
+                                last_protocol_error = Some(format!("{}: {e}", pending.method));
+                            }
                             match (pending.method.as_str(), outcome) {
                         ("initialize", Ok(_)) => {
                             codex_version = record_codex_version(&value);
@@ -1676,6 +1718,7 @@ impl CodexSession {
                                 anyhow::bail!("codex thread/start response missing thread id");
                             };
                             local_id.clone_from(&info.thread_id);
+                            rollout_path.clone_from(&info.rollout_path);
                             // Link a forked thread back to its parent (CCT-302)
                             // so the server resolves `parent_id`.
                             let parent_local_id = match &self.launch {

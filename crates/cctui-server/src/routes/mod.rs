@@ -2,6 +2,7 @@ pub mod accounts;
 pub mod admin_auth;
 pub mod auth;
 pub mod capabilities;
+pub mod codex_models;
 pub mod credentials;
 pub mod daemon;
 pub mod diagnose;

@@ -302,6 +302,12 @@ pub enum AdapterEvent {
         request_id: Uuid,
         report: Box<crate::diagnose::SessionDiagnose>,
     },
+    /// Machine/account-scoped codex model catalog from `model/list` (CCT-641).
+    /// Keyed by `machine_id`, not a session — the server keeps the latest per
+    /// machine so the picker offers the account's real models, static fallback.
+    CodexModels {
+        catalog: crate::codex_catalog::CodexModelCatalog,
+    },
 }
 
 /// Child reference attached to a session — typically a linked PR. Drives the
@@ -664,6 +670,32 @@ mod tests {
     }
 
     #[test]
+    fn adapter_event_codex_models_roundtrips() {
+        let evt = AdapterEvent::CodexModels {
+            catalog: crate::codex_catalog::CodexModelCatalog {
+                models: vec![crate::codex_catalog::CodexModel {
+                    id: "gpt-5.6-sol".into(),
+                    model: "gpt-5.6-sol".into(),
+                    display_name: "GPT-5.6 Sol".into(),
+                    description: String::new(),
+                    hidden: false,
+                    is_default: true,
+                    supported_efforts: vec!["low".into(), "high".into()],
+                    default_effort: "medium".into(),
+                    input_modalities: vec!["text".into()],
+                    upgrade: None,
+                }],
+            },
+        };
+        let json = serde_json::to_string(&evt).unwrap();
+        assert!(json.contains(r#""kind":"codex_models""#));
+        let back: AdapterEvent = serde_json::from_str(&json).unwrap();
+        let AdapterEvent::CodexModels { catalog } = back else { panic!("wrong variant") };
+        assert_eq!(catalog.models[0].id, "gpt-5.6-sol");
+        assert_eq!(catalog.models[0].supported_efforts, ["low", "high"]);
+    }
+
+    #[test]
     fn adapter_event_session_started_roundtrips() {
         let evt = AdapterEvent::SessionStarted {
             local_id: "abc".into(),
@@ -845,6 +877,7 @@ mod tests {
             permission_mode: crate::diagnose::DiagnoseFact::missing("spawn", "none"),
             dispatch: crate::diagnose::DiagnoseFact::missing("dispatch", "none"),
             gateway: crate::diagnose::DiagnoseFact::missing("daemon-config", "none"),
+            codex: None,
         };
         let evt = AdapterEvent::Diagnose {
             local_id: "s1".into(),

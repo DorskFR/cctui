@@ -1210,6 +1210,7 @@ impl Driver {
             permission_mode,
             dispatch,
             gateway,
+            codex: None,
         };
         self.events
             .send(AdapterEvent::Diagnose {

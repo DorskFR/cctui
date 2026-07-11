@@ -431,6 +431,13 @@ async fn process_frame(
             upsert_session(state, machine_id, user_id, &adapter_id, &local_id, None, None).await
         }
         DaemonFrameUp::Event { adapter_id, event } => {
+            // Machine-scoped codex model catalog (CCT-641): cache it by
+            // machine_id — it is not a session event and never reaches the
+            // per-session handler below.
+            if let AdapterEvent::CodexModels { catalog } = event {
+                state.codex_catalogs.insert(machine_id, catalog);
+                return Ok(());
+            }
             tracing::debug!(
                 %adapter_id,
                 kind = event_kind(&event),

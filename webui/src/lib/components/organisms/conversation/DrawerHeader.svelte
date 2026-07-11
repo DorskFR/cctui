@@ -19,7 +19,8 @@
 	import WorkingDir from '$lib/components/molecules/WorkingDir.svelte';
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
 	import { Badge, IconButton, Input, Select, SelectButton, Text } from '@dorsk/tsumikit';
-	import { codexModels, codexEfforts } from '$lib/harnessModels';
+	import { codexModelsFor, codexEffortsFor } from '$lib/harnessModels';
+	import { useCodexModels } from '$lib/queries';
 
 	let {
 		session,
@@ -91,6 +92,14 @@
 	let modelEditing = $state(false);
 	let pendingModel = $state('');
 	let pendingEffort = $state('');
+
+	// Machine-scoped codex catalog (CCT-641): fetched only while the editor is
+	// open, offers the account's real models + supported efforts, static fallback.
+	const codexCatalog = useCodexModels(() =>
+		isCodexSession && modelEditing ? session.machine_id : ''
+	);
+	const codexModelOptions = $derived(codexModelsFor($codexCatalog.data));
+	const codexEffortOptions = $derived(codexEffortsFor($codexCatalog.data, pendingModel));
 
 	function doRename() {
 		const n = newName.trim();
@@ -295,10 +304,10 @@
 				<span class="model-edit">
 					<Badge class="row" style="gap:var(--sp-1);padding:0.05rem var(--sp-1)">
 						<Select compact chevron={false} bind:value={pendingModel} aria-label="Model">
-							{#each codexModels as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
+							{#each codexModelOptions as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
 						</Select>
 						<Select compact chevron={false} bind:value={pendingEffort} aria-label="Effort">
-							{#each codexEfforts as e (e)}<option value={e}>{e || 'default effort'}</option>{/each}
+							{#each codexEffortOptions as e (e)}<option value={e}>{e || 'default effort'}</option>{/each}
 						</Select>
 						<IconButton class="tapbtn" icon="check"  label="Apply" onclick={applyModelChange} />
 						<IconButton class="tapbtn" icon="x"  label="Cancel" onclick={() => (modelEditing = false)} />

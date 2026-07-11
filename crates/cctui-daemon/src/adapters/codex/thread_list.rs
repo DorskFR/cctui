@@ -59,6 +59,7 @@ pub struct ThreadEntry {
     pub source: Option<String>,
     /// `status.type`: `active` / `idle` / `notLoaded` / `systemError`.
     pub status: Option<String>,
+    pub parent_id: Option<String>,
 }
 
 /// Canonical `UUIDv7` form (lowercase, hyphenated) for a codex thread id, so
@@ -91,6 +92,22 @@ pub fn parse_source(v: &Value) -> Option<String> {
     }
 }
 
+/// Extract the parent thread id of a codex subagent thread, preferring the
+/// top-level `parentThreadId` and falling back to the structured
+/// `source.subAgent.thread_spawn.parent_thread_id`. Canonicalized so it matches
+/// the parent's `local_id`. `None` for plain cli/vscode/exec/appServer threads.
+#[must_use]
+pub fn parse_parent(v: &Value) -> Option<String> {
+    let raw = v.get("parentThreadId").and_then(Value::as_str).filter(|s| !s.is_empty()).or_else(
+        || {
+            v.pointer("/source/subAgent/thread_spawn/parent_thread_id")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+        },
+    )?;
+    Some(canonical_id(raw))
+}
+
 /// Parse a single `thread/list` `data[]` element. Returns `None` for entries
 /// without a usable thread id (which cannot be addressed as a session).
 #[must_use]
@@ -109,6 +126,7 @@ pub fn parse_thread(v: &Value) -> Option<ThreadEntry> {
         cwd: s("cwd"),
         source: v.get("source").and_then(parse_source),
         status: v.pointer("/status/type").and_then(Value::as_str).map(str::to_owned),
+        parent_id: parse_parent(v),
     })
 }
 
@@ -178,10 +196,10 @@ fn next_cursor(result: &Value) -> Option<String> {
 fn started_meta(entry: &ThreadEntry) -> SessionMeta {
     SessionMeta {
         working_dir: entry.cwd.clone(),
+        parent_local_id: entry.parent_id.clone(),
         extra: json!({
             "source": format!("codex-thread-list:{}", entry.source.as_deref().unwrap_or("unknown")),
         }),
-        ..SessionMeta::default()
     }
 }
 
@@ -710,6 +728,40 @@ mod tests {
     }
 
     #[test]
+    fn parse_parent_prefers_top_level_field() {
+        let entry = parse_thread(&json!({
+            "id": "child",
+            "sessionId": "child",
+            "source": {"subAgent": "review"},
+            "parentThreadId": "019EA66A-CF6E-73B1-8000-0000000000AB",
+        }))
+        .unwrap();
+        assert_eq!(entry.parent_id.as_deref(), Some("019ea66a-cf6e-73b1-8000-0000000000ab"));
+    }
+
+    #[test]
+    fn parse_parent_falls_back_to_structured_source() {
+        let entry = parse_thread(&json!({
+            "id": "child",
+            "sessionId": "child",
+            "source": {"subAgent": {"thread_spawn": {
+                "depth": 1,
+                "parent_thread_id": "019EA66A-CF6E-73B1-8000-000000000ABC",
+            }}},
+        }))
+        .unwrap();
+        assert_eq!(entry.parent_id.as_deref(), Some("019ea66a-cf6e-73b1-8000-000000000abc"));
+    }
+
+    #[test]
+    fn parse_parent_none_for_plain_threads() {
+        for src in [json!("cli"), json!("appServer"), json!({"custom": "cctui"})] {
+            let entry = parse_thread(&json!({"id": "t", "sessionId": "t", "source": src})).unwrap();
+            assert_eq!(entry.parent_id, None);
+        }
+    }
+
+    #[test]
     fn status_mapping() {
         let active = status_event("t", Some("active")).unwrap();
         let AdapterEvent::Status { tempo, state, .. } = active else { panic!() };
@@ -729,6 +781,7 @@ mod tests {
     fn started_meta_carries_cwd_and_source() {
         let entry = ThreadEntry {
             id: "x".into(),
+            parent_id: None,
             preview: None,
             name: None,
             cwd: Some("/repo".into()),
@@ -738,6 +791,22 @@ mod tests {
         let meta = started_meta(&entry);
         assert_eq!(meta.working_dir.as_deref(), Some("/repo"));
         assert_eq!(meta.extra["source"], "codex-thread-list:exec");
+        assert_eq!(meta.parent_local_id, None);
+    }
+
+    #[test]
+    fn started_meta_propagates_parent_link() {
+        let entry = ThreadEntry {
+            id: "child".into(),
+            parent_id: Some("parent".into()),
+            preview: None,
+            name: None,
+            cwd: Some("/repo".into()),
+            source: Some("subAgent".into()),
+            status: None,
+        };
+        let meta = started_meta(&entry);
+        assert_eq!(meta.parent_local_id.as_deref(), Some("parent"));
     }
 
     #[test]
@@ -768,6 +837,7 @@ mod tests {
         );
         let entry = ThreadEntry {
             id: "t1".into(),
+            parent_id: None,
             preview: Some("hello".into()),
             name: Some("nm".into()),
             cwd: Some("/w".into()),
@@ -801,6 +871,33 @@ mod tests {
         assert!(rx.try_recv().is_err());
     }
 
+    #[tokio::test]
+    async fn reconcile_emits_started_with_parent_link_for_subagent() {
+        let (tx, mut rx) = mpsc::channel(64);
+        let inv = ThreadListInventory::new(
+            ThreadListConfig::from_value(&json!({})),
+            tx,
+            CancellationToken::new(),
+            SessionRegistry::default(),
+            SeenIds::default(),
+        );
+        let entry = ThreadEntry {
+            id: "child".into(),
+            parent_id: Some("parent".into()),
+            preview: None,
+            name: None,
+            cwd: Some("/w".into()),
+            source: Some("subAgent".into()),
+            status: Some("active".into()),
+        };
+        inv.reconcile(vec![entry]).await;
+        let AdapterEvent::SessionStarted { local_id, meta } = rx.recv().await.unwrap() else {
+            panic!("expected SessionStarted")
+        };
+        assert_eq!(local_id, "child");
+        assert_eq!(meta.parent_local_id.as_deref(), Some("parent"));
+    }
+
     #[test]
     fn owned_records_seeds_only_app_server_threads() {
         // CCT-339: startup rediscovery re-seeds the durable registry from the
@@ -809,6 +906,7 @@ mod tests {
         let entries = vec![
             ThreadEntry {
                 id: "mine".into(),
+                parent_id: None,
                 preview: None,
                 name: Some("nm".into()),
                 cwd: Some("/repo".into()),
@@ -817,6 +915,7 @@ mod tests {
             },
             ThreadEntry {
                 id: "cli-one".into(),
+                parent_id: None,
                 preview: None,
                 name: None,
                 cwd: Some("/elsewhere".into()),
@@ -849,6 +948,7 @@ mod tests {
         let entries = vec![
             ThreadEntry {
                 id: "live".into(),
+                parent_id: None,
                 preview: None,
                 name: Some("from-inventory".into()),
                 cwd: Some("/other".into()),
@@ -857,6 +957,7 @@ mod tests {
             },
             ThreadEntry {
                 id: "rediscovered".into(),
+                parent_id: None,
                 preview: None,
                 name: None,
                 cwd: Some("/repo".into()),
@@ -906,6 +1007,7 @@ mod tests {
         );
         inv.reconcile(vec![ThreadEntry {
             id: "owned1".into(),
+            parent_id: None,
             preview: Some("x".into()),
             name: None,
             cwd: None,

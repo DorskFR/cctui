@@ -11,15 +11,16 @@
 	// backing the effective harness drives the model list + aliases.
 	import type { MachineRow } from '@bindings/MachineRow';
 	import type { OAuthAccount } from '$lib/queries';
+	import { useCodexModels } from '$lib/queries';
 	import BrandLogo from '$lib/components/atoms/BrandLogo.svelte';
 	import { Field, IconButton, Input, OptionButton, Select, Text, Textarea } from '@dorsk/tsumikit';
 	import CwdCombo from './CwdCombo.svelte';
 	import EffortSlider from './EffortSlider.svelte';
 	import {
 		claudeModels,
-		codexModels,
 		claudeEfforts,
-		codexEfforts,
+		codexModelsFor,
+		codexEffortsFor,
 		modes,
 		allAdapters,
 		accountAdapters,
@@ -89,6 +90,12 @@
 	const claudeModelOptions = $derived(
 		withAliasTargets(claudeModels, selectedProvider?.model_aliases)
 	);
+
+	// Machine-scoped codex catalog (CCT-641): the picker offers the account's
+	// real models + supported efforts, falling back to the static offline list.
+	const codexCatalog = useCodexModels(() => (effectiveAdapter === 'codex' ? form.machine_id : ''));
+	const codexModelOptions = $derived(codexModelsFor($codexCatalog.data));
+	const codexEffortOptions = $derived(codexEffortsFor($codexCatalog.data, form.model_codex));
 
 	// Clear a stale account selection if it no longer exists (e.g. accounts
 	// reloaded); keep account_provider tracking the credential actually in use so
@@ -259,7 +266,7 @@
 					</Select>
 				{:else if effectiveAdapter === 'codex'}
 					<Select id="sp-model" bind:value={form.model_codex}>
-						{#each codexModels as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
+						{#each codexModelOptions as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
 					</Select>
 				{:else}
 					<Select id="sp-model" bind:value={form.model_claude}>
@@ -273,7 +280,7 @@
 			{#if effectiveAdapter === 'codex'}
 				<EffortSlider
 					id="sp-effort-codex"
-					levels={codexEfforts}
+					levels={codexEffortOptions}
 					current={form.effort_codex}
 					onset={(v) => (form.effort_codex = v)}
 				/>
