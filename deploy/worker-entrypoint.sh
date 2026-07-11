@@ -930,6 +930,7 @@ if [ -n "${TASK_PAYLOAD_JSON:-}" ]; then
     [ -z "${TASK_REPO:-}" ]     && { _v=$(_pj '.repo');     [ -n "$_v" ] && export TASK_REPO="$_v"; }
     [ -z "${TASK_EFFORT:-}" ]   && { _v=$(_pj '.effort');   [ -n "$_v" ] && export TASK_EFFORT="$_v"; }
     [ -z "${TASK_MODEL:-}" ]    && { _v=$(_pj '.model');    [ -n "$_v" ] && export TASK_MODEL="$_v"; }
+    [ -z "${TASK_ADAPTER:-}" ]  && { _v=$(_pj '.adapter');  [ -n "$_v" ] && export TASK_ADAPTER="$_v"; }
     if [ -z "${TASK_CONTEXT_JSON:-}" ]; then
         _v=$(printf '%s' "$TASK_PAYLOAD_JSON" | jq -c '.context // empty' 2>/dev/null || true)
         [ -n "$_v" ] && export TASK_CONTEXT_JSON="$_v"
@@ -1082,7 +1083,16 @@ result_ready() {
 _SESSIONS_URL="${CCTUI_BASE_URL%/}/api/v1/sessions"
 _PROBE_BODY=/tmp/cctui-liveness-probe.json
 WORKER_LIVENESS_POLL_SECS="${WORKER_LIVENESS_POLL_SECS:-10}"
-_SEEN_ALIVE=0
+# Codex dispatch (CCT-643) runs headless `codex exec` inside the daemon and never
+# registers a server session, so the registration-sourced liveness probe and its
+# boot deadline can never fire for it. Its done-signal is RESULT_FILE and its
+# backstop is daemon death (`kill -0 $DAEMON_PID`); pre-seed seen-alive so the
+# boot bound is a no-op and a codex run over WORKER_BOOT_DEADLINE_SECS isn't
+# guillotined mid-work.
+case "${TASK_ADAPTER:-}" in
+    codex|codex-cli) _SEEN_ALIVE=1 ;;
+    *)               _SEEN_ALIVE=0 ;;
+esac
 _PROBE_LOGGED_CODE=""
 # Probe the daemon's server-side registration for OUR session id. Echoes:
 #   registered — our id present with status "active"/"new": the daemon holds

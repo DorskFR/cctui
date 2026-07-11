@@ -218,6 +218,52 @@ blocked. The array is consumed by the PR renderer (one section per surface) and,
 longer-term, by `cctui-github` (diff viewer + review-draft store + evidence
 attachments) — the not-yet-built crate is the natural home for richer rendering.
 
+## Codex-native dispatch (CCT-643)
+
+A dispatch payload carries an optional **`adapter`** key selecting which harness
+the worker runs:
+
+- `adapter` absent, `"claude"`, or `"claude-code"` (the default — backward
+  compatible) → the claude worker path: `cctui-daemon` self-issues a `dispatch`
+  on the `claude daemon` control socket and observes the session.
+- `adapter: "codex"` → the **codex dispatch runner** (`crates/cctui-daemon/src/
+  dispatch_codex.rs`): the daemon runs one headless `codex exec --json` in
+  `/workspace`, parses its JSONL event stream, and writes the verdict to
+  `RESULT_FILE` — the same envelope the callback trap POSTs. `payload.model` /
+  `payload.effort` become `codex exec -m` / `-c model_reasoning_effort`;
+  approvals, sandbox mode, and the cctui gateway provider still come from the
+  per-pod `~/.codex/config.toml` the entrypoint hardens (`phase_codex_config`).
+
+This runner is **separate from, and does not replace,** the interactive Rust
+app-server adapter in `crates/cctui-daemon/src/adapters/codex/`. That adapter
+drives long-lived, attachable Codex threads for machine-hosted sessions; a
+dispatch is a one-shot, fire-and-report job with no attach surface.
+
+### Spike: Python Codex SDK vs `codex exec`
+
+The runner shells out to `codex exec` rather than embedding the Python Codex
+SDK. Rationale:
+
+- **Symmetry with the claude path.** The claude dispatch runner shells out to a
+  CLI (`claude` via the control socket). Shelling out to `codex exec` keeps both
+  runners the same shape — build an argv, run a process, parse its structured
+  output into `RESULT_FILE` — with one result-reporting seam instead of two.
+- **No Python runtime in the worker.** The SDK is a Python library that pins its
+  own Codex runtime; adopting it would add a Python layer (and a second,
+  independently-versioned Codex) to an image that already ships the pinned
+  `codex` binary (`ARG CODEX_VERSION`, drift-checked against
+  `contract::CODEX_PINNED_VERSION`). `codex exec` reuses that one binary.
+- **Reuses existing hardening.** `phase_codex_config` already writes a locked-down
+  `config.toml` (approvals off, full-access sandbox — the pod is the sandbox — and
+  the cctui gateway model provider). `codex exec` honours it verbatim; the SDK
+  would need that posture re-expressed programmatically.
+
+The SDK's advantage — a typed, programmatic turn API — buys little here: a
+dispatch runs exactly one turn and reports a verdict, which `codex exec --json`
+already emits as a parseable event stream (`item.completed` agent messages,
+`turn.completed` usage, `error`/`turn.failed`). So `codex exec` wins on
+simplicity, image weight, and consistency.
+
 ## Hardening report
 
 Two parts, surfaced for the daemon to attach as session metadata:
