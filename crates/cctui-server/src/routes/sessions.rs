@@ -884,13 +884,18 @@ fn leaf_predicate(field: &str, value: &str, params: &mut Vec<SqlParam>) -> Strin
     }
 }
 
+/// Must match the `idx_stream_events_search_trgm_capped` expression (migration
+/// 065) exactly, or the ILIKE silently stops using the index.
+const SEARCH_TEXT_CAP: u32 = 8192;
+
 /// The residual free-text path: id / name / dir / trgm-accelerated transcript.
 fn free_text_predicate(p: usize) -> String {
     format!(
         "(s.id ILIKE ${p} OR COALESCE(s.session_name, '') ILIKE ${p} \
           OR s.working_dir ILIKE ${p} \
           OR EXISTS (SELECT 1 FROM stream_events e \
-                     WHERE e.session_id::text = s.id AND e.search_text ILIKE ${p}))"
+                     WHERE e.session_id = s.id \
+                     AND left(e.search_text, {SEARCH_TEXT_CAP}) ILIKE ${p}))"
     )
 }
 
@@ -1001,6 +1006,7 @@ pub async fn search_sessions(
         // include_archived the scope is already open, so no extra bind is needed.
         let mut ast_params: Vec<SqlParam> = Vec::new();
         let where_sql = compile_node(&root, &mut ast_params);
+        tracing::debug!(q = %params.q, %where_sql, "compiled session search");
         let n = ast_params.len();
         let live_ids: Vec<String> = if params.include_archived {
             Vec::new()
@@ -1094,13 +1100,14 @@ pub async fn search_sessions(
         // ($1 = ids, $2.. = patterns); windowed around the earliest term.
         let patterns: Vec<String> = text_terms.iter().map(|t| ilike_contains(t)).collect();
         let or = (2..=patterns.len() + 1)
-            .map(|i| format!("search_text ILIKE ${i}"))
+            .map(|i| format!("left(search_text, {SEARCH_TEXT_CAP}) ILIKE ${i}"))
             .collect::<Vec<_>>()
             .join(" OR ");
         let sql = format!(
-            "SELECT DISTINCT ON (session_id) session_id::text, search_text \
+            "SELECT DISTINCT ON (session_id) session_id, \
+             left(search_text, {SEARCH_TEXT_CAP}) \
              FROM stream_events \
-             WHERE session_id::text = ANY($1) AND ({or}) \
+             WHERE session_id = ANY($1) AND ({or}) \
              ORDER BY session_id, created_at DESC"
         );
         let mut query = sqlx::query_as::<_, (String, String)>(&sql).bind(&ids);
@@ -1135,7 +1142,9 @@ const FIELD_VALUES_LIMIT: i64 = 50;
 /// `GET /sessions/search/values?field=…&q=…` (CCT-465): autocomplete suggestions
 /// for a search field. Static enums come from the query registry; dynamic
 /// fields (machine/account/tag/model) are distinct values from the caller's own
-/// sessions (admin sees all). Unknown fields → empty list, never an error.
+/// sessions (admin sees all). Machine suggestions exclude ephemeral/dispatch
+/// worker machines and soft-deleted rows — searching them by name still works,
+/// they're just not suggested. Unknown fields → empty list, never an error.
 pub async fn search_field_values(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -1159,7 +1168,8 @@ pub async fn search_field_values(
     let sql = match def.name {
         "machine" => {
             "SELECT DISTINCT COALESCE(m.display_name, m.name) AS v FROM machines m \
-             WHERE ($1::uuid IS NULL OR m.user_id = $1) \
+             WHERE m.kind = 'persistent' AND m.deleted_at IS NULL \
+             AND ($1::uuid IS NULL OR m.user_id = $1) \
              AND ($2::text IS NULL OR COALESCE(m.display_name, m.name) ILIKE $2) \
              ORDER BY v LIMIT $3"
         }
@@ -2192,7 +2202,7 @@ mod tests {
         let (sql, params) = compile("hello");
         assert!(sql.contains("s.id ILIKE $1"));
         assert!(sql.contains("s.working_dir ILIKE $1"));
-        assert!(sql.contains("e.search_text ILIKE $1"));
+        assert!(sql.contains("left(e.search_text, 8192) ILIKE $1"));
         assert_eq!(params, vec!["%hello%".to_string()]);
     }
 
