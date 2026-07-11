@@ -1,0 +1,800 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "cctui gh-review API",
+    "version": "0.0.1",
+    "description": "Versioned HTTP+SSE contract for the GitHub review center. Relays GitHub-shaped JSONB payloads verbatim inside typed envelopes."
+  },
+  "servers": [
+    {
+      "url": "/"
+    }
+  ],
+  "components": {
+    "schemas": {
+      "SseEvent": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/PrUpdatedEvent"
+          },
+          {
+            "$ref": "#/components/schemas/NotificationNewEvent"
+          },
+          {
+            "$ref": "#/components/schemas/SyncStatusEvent"
+          }
+        ],
+        "discriminator": {
+          "propertyName": "event",
+          "mapping": {
+            "pr.updated": "#/components/schemas/PrUpdatedEvent",
+            "notification.new": "#/components/schemas/NotificationNewEvent",
+            "sync.status": "#/components/schemas/SyncStatusEvent"
+          }
+        }
+      },
+      "PrUpdatedEvent": {
+        "type": "object",
+        "properties": {
+          "event": {
+            "type": "string",
+            "enum": [
+              "pr.updated"
+            ]
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "account": {
+                "type": "string",
+                "minLength": 1,
+                "example": "DorskFR",
+                "description": "GitHub account/login the record was synced for"
+              },
+              "owner": {
+                "type": "string"
+              },
+              "repo": {
+                "type": "string"
+              },
+              "number": {
+                "type": "integer",
+                "minimum": 0,
+                "exclusiveMinimum": true
+              }
+            },
+            "required": [
+              "account",
+              "owner",
+              "repo",
+              "number"
+            ]
+          }
+        },
+        "required": [
+          "event",
+          "data"
+        ]
+      },
+      "NotificationNewEvent": {
+        "type": "object",
+        "properties": {
+          "event": {
+            "type": "string",
+            "enum": [
+              "notification.new"
+            ]
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "account": {
+                "type": "string",
+                "minLength": 1,
+                "example": "DorskFR",
+                "description": "GitHub account/login the record was synced for"
+              },
+              "id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "account",
+              "id"
+            ]
+          }
+        },
+        "required": [
+          "event",
+          "data"
+        ]
+      },
+      "SyncStatusEvent": {
+        "type": "object",
+        "properties": {
+          "event": {
+            "type": "string",
+            "enum": [
+              "sync.status"
+            ]
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "account": {
+                "type": "string",
+                "minLength": 1,
+                "example": "DorskFR",
+                "description": "GitHub account/login the record was synced for"
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "idle",
+                  "syncing",
+                  "error"
+                ]
+              },
+              "last_run": {
+                "type": "string",
+                "nullable": true,
+                "format": "date-time"
+              }
+            },
+            "required": [
+              "account",
+              "state",
+              "last_run"
+            ]
+          }
+        },
+        "required": [
+          "event",
+          "data"
+        ]
+      },
+      "Status": {
+        "type": "object",
+        "properties": {
+          "service": {
+            "type": "string",
+            "enum": [
+              "gh-review"
+            ]
+          },
+          "version": {
+            "type": "string",
+            "example": "0.0.1"
+          },
+          "api": {
+            "type": "string",
+            "enum": [
+              "v1"
+            ]
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "sync": {
+            "$ref": "#/components/schemas/SyncStatus"
+          }
+        },
+        "required": [
+          "service",
+          "version",
+          "api",
+          "ok",
+          "sync"
+        ]
+      },
+      "SyncStatus": {
+        "type": "object",
+        "properties": {
+          "last_run": {
+            "type": "string",
+            "nullable": true,
+            "format": "date-time"
+          },
+          "accounts": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "example": "DorskFR",
+              "description": "GitHub account/login the record was synced for"
+            }
+          }
+        },
+        "required": [
+          "last_run",
+          "accounts"
+        ]
+      },
+      "RepoPage": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RepoEnvelope"
+            }
+          },
+          "next_cursor": {
+            "type": "string",
+            "nullable": true,
+            "description": "Cursor for the next page, or null at the end",
+            "example": null
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ]
+      },
+      "RepoEnvelope": {
+        "type": "object",
+        "properties": {
+          "account": {
+            "type": "string",
+            "minLength": 1,
+            "example": "DorskFR",
+            "description": "GitHub account/login the record was synced for"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "repo"
+            ],
+            "example": "repo"
+          },
+          "synced_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-07-12T09:00:00Z",
+            "description": "When the server last synced this record"
+          },
+          "etag": {
+            "type": "string",
+            "nullable": true,
+            "example": "W/\"a1b2c3\"",
+            "description": "GitHub ETag captured at sync time, if any"
+          },
+          "payload": {
+            "type": "object",
+            "description": "GitHub-shaped JSONB payload, relayed verbatim (narrow with octokit types)"
+          }
+        },
+        "required": [
+          "account",
+          "kind",
+          "synced_at",
+          "etag"
+        ]
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string",
+                "example": "not_found",
+                "description": "Stable machine-readable error code"
+              },
+              "message": {
+                "type": "string",
+                "example": "Pull request not found"
+              },
+              "details": {
+                "type": "object",
+                "description": "Optional structured context"
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ]
+          }
+        },
+        "required": [
+          "error"
+        ]
+      },
+      "PullRequestPage": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PullRequestEnvelope"
+            }
+          },
+          "next_cursor": {
+            "type": "string",
+            "nullable": true,
+            "description": "Cursor for the next page, or null at the end",
+            "example": null
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ]
+      },
+      "PullRequestEnvelope": {
+        "type": "object",
+        "properties": {
+          "account": {
+            "type": "string",
+            "minLength": 1,
+            "example": "DorskFR",
+            "description": "GitHub account/login the record was synced for"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "pull_request"
+            ],
+            "example": "pull_request"
+          },
+          "synced_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-07-12T09:00:00Z",
+            "description": "When the server last synced this record"
+          },
+          "etag": {
+            "type": "string",
+            "nullable": true,
+            "example": "W/\"a1b2c3\"",
+            "description": "GitHub ETag captured at sync time, if any"
+          },
+          "payload": {
+            "type": "object",
+            "description": "GitHub-shaped JSONB payload, relayed verbatim (narrow with octokit types)"
+          }
+        },
+        "required": [
+          "account",
+          "kind",
+          "synced_at",
+          "etag"
+        ]
+      },
+      "NotificationPage": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NotificationEnvelope"
+            }
+          },
+          "next_cursor": {
+            "type": "string",
+            "nullable": true,
+            "description": "Cursor for the next page, or null at the end",
+            "example": null
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ]
+      },
+      "NotificationEnvelope": {
+        "type": "object",
+        "properties": {
+          "account": {
+            "type": "string",
+            "minLength": 1,
+            "example": "DorskFR",
+            "description": "GitHub account/login the record was synced for"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "notification"
+            ],
+            "example": "notification"
+          },
+          "synced_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-07-12T09:00:00Z",
+            "description": "When the server last synced this record"
+          },
+          "etag": {
+            "type": "string",
+            "nullable": true,
+            "example": "W/\"a1b2c3\"",
+            "description": "GitHub ETag captured at sync time, if any"
+          },
+          "payload": {
+            "type": "object",
+            "description": "GitHub-shaped JSONB payload, relayed verbatim (narrow with octokit types)"
+          }
+        },
+        "required": [
+          "account",
+          "kind",
+          "synced_at",
+          "etag"
+        ]
+      }
+    },
+    "parameters": {}
+  },
+  "paths": {
+    "/v1/health": {
+      "get": {
+        "summary": "Liveness probe",
+        "tags": [
+          "system"
+        ],
+        "responses": {
+          "200": {
+            "description": "Service is up",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  },
+                  "required": [
+                    "ok"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/status": {
+      "get": {
+        "summary": "Service and sync status",
+        "tags": [
+          "system"
+        ],
+        "responses": {
+          "200": {
+            "description": "Current service and sync status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Status"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/repos": {
+      "get": {
+        "summary": "List synced repositories",
+        "tags": [
+          "repos"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "example": "DorskFR",
+              "description": "Filter to a single account; omit to span all synced accounts"
+            },
+            "required": false,
+            "description": "Filter to a single account; omit to span all synced accounts",
+            "name": "account",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 30,
+              "example": 30
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Opaque cursor from a previous page's next_cursor"
+            },
+            "required": false,
+            "description": "Opaque cursor from a previous page's next_cursor",
+            "name": "cursor",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of repository envelopes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoPage"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/repos/{owner}/{repo}": {
+      "get": {
+        "summary": "Get a synced repository",
+        "tags": [
+          "repos"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "DorskFR"
+            },
+            "required": true,
+            "name": "owner",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "cctui"
+            },
+            "required": true,
+            "name": "repo",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The repository envelope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not synced",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/repos/{owner}/{repo}/pulls": {
+      "get": {
+        "summary": "List synced pull requests for a repository",
+        "tags": [
+          "pulls"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "DorskFR"
+            },
+            "required": true,
+            "name": "owner",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "cctui"
+            },
+            "required": true,
+            "name": "repo",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "example": "DorskFR",
+              "description": "Filter to a single account; omit to span all synced accounts"
+            },
+            "required": false,
+            "description": "Filter to a single account; omit to span all synced accounts",
+            "name": "account",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 30,
+              "example": 30
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Opaque cursor from a previous page's next_cursor"
+            },
+            "required": false,
+            "description": "Opaque cursor from a previous page's next_cursor",
+            "name": "cursor",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of pull request envelopes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PullRequestPage"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/repos/{owner}/{repo}/pulls/{number}": {
+      "get": {
+        "summary": "Get a synced pull request",
+        "tags": [
+          "pulls"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "DorskFR"
+            },
+            "required": true,
+            "name": "owner",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "cctui"
+            },
+            "required": true,
+            "name": "repo",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "example": 42
+            },
+            "required": true,
+            "name": "number",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The pull request envelope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PullRequestEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not synced",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/notifications": {
+      "get": {
+        "summary": "List the notifications inbox",
+        "tags": [
+          "notifications"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "example": "DorskFR",
+              "description": "Filter to a single account; omit to span all synced accounts"
+            },
+            "required": false,
+            "description": "Filter to a single account; omit to span all synced accounts",
+            "name": "account",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 30,
+              "example": 30
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Opaque cursor from a previous page's next_cursor"
+            },
+            "required": false,
+            "description": "Opaque cursor from a previous page's next_cursor",
+            "name": "cursor",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of notification envelopes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationPage"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/events": {
+      "get": {
+        "summary": "Server-Sent Events stream",
+        "description": "text/event-stream of the documented event catalogue. Each message carries an `event:` name (pr.updated, notification.new, sync.status) and a JSON `data:` payload matching SseEvent.",
+        "tags": [
+          "events"
+        ],
+        "responses": {
+          "200": {
+            "description": "An SSE stream of SseEvent messages",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/SseEvent"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
