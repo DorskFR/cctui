@@ -155,4 +155,85 @@ mod tests {
         let terms = parsed.free_text_terms();
         assert_eq!(terms, vec!["hello".to_string(), "world".to_string()]);
     }
+
+    // tsumikit FilterSearchBar wire-format fixtures: each string below is the
+    // exact output of tsumikit's serialize() for a chip the webui can build.
+
+    #[test]
+    fn tsumikit_eq_code() {
+        assert_eq!(parse("machine=blackfish"), filter("machine", FilterOp::Eq, &["blackfish"]));
+        assert_eq!(parse("status=active"), filter("status", FilterOp::Eq, &["active"]));
+    }
+
+    #[test]
+    fn tsumikit_eq_quoted_value() {
+        assert_eq!(parse("machine=\"foo bar\""), filter("machine", FilterOp::Eq, &["foo bar"]));
+    }
+
+    #[test]
+    fn tsumikit_contains_quoted() {
+        assert_eq!(
+            parse("title:\"hello world\""),
+            filter("title", FilterOp::Contains, &["hello world"])
+        );
+    }
+
+    #[test]
+    fn tsumikit_ne_code() {
+        assert_eq!(
+            parse("status!=archived"),
+            Node::Not { child: Box::new(filter("status", FilterOp::Eq, &["archived"])) }
+        );
+    }
+
+    #[test]
+    fn tsumikit_not_contains_code() {
+        assert_eq!(
+            parse("title!:\"wip\""),
+            Node::Not { child: Box::new(filter("title", FilterOp::Contains, &["wip"])) }
+        );
+    }
+
+    #[test]
+    fn tsumikit_in_list() {
+        assert_eq!(
+            parse("machine in (dev1, m2pro)"),
+            filter("machine", FilterOp::In, &["dev1", "m2pro"])
+        );
+        assert_eq!(parse("tag in (a, \"b c\")"), filter("tag", FilterOp::In, &["a", "b c"]));
+    }
+
+    #[test]
+    fn tsumikit_not_keyword() {
+        assert_eq!(
+            parse("NOT status=archived"),
+            Node::Not { child: Box::new(filter("status", FilterOp::Eq, &["archived"])) }
+        );
+    }
+
+    #[test]
+    fn incomplete_filter_is_neutral() {
+        assert!(parse("machine=").is_empty());
+        assert!(parse("title:\"\"").is_empty());
+        assert_eq!(parse("machine= hello"), text("hello"));
+    }
+
+    #[test]
+    fn tsumikit_bool_eq() {
+        assert_eq!(parse("pinned=true"), filter("pinned", FilterOp::Eq, &["true"]));
+    }
+
+    #[test]
+    fn tsumikit_mixed_chips_and_text() {
+        assert_eq!(
+            parse("machine=dev1 title:\"fix bug\" oops"),
+            Node::And {
+                children: vec![
+                    filter("machine", FilterOp::Eq, &["dev1"]),
+                    filter("title", FilterOp::Contains, &["fix bug"]),
+                    text("oops"),
+                ]
+            }
+        );
+    }
 }

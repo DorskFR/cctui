@@ -110,10 +110,22 @@
 		align-self: center;
 		flex: none;
 	}
-	/* Search fills the gap between the title and the right-hand controls. */
+	/* Search fills the gap between the title and the right-hand controls.
+	   display:contents promotes the FilterSearchBar's bar and chips to sibling
+	   flex items, so the chips wrap onto their own full-width row instead of
+	   growing the first row — opening/typing must never move the input or the
+	   surrounding controls (CCT-589 follow-up). */
 	.bar :global(.search-box) {
-		flex: 1;
+		display: contents;
+	}
+	.bar :global(.search-box .fsb) {
+		flex: 1 1 0;
 		min-width: 0;
+	}
+	.bar :global(.search-box .fsb__chips) {
+		flex: 0 0 100%;
+		order: 5;
+		margin-top: 0;
 	}
 	.bar :global(.toolbar-new) {
 		flex: none;
@@ -154,11 +166,15 @@
 		}
 		/* Row 2: search takes only the leftover space (basis:0 so it never demands
 		   its intrinsic input width) and shrinks freely; the tools follow on the
-		   right, all on one row. */
-		.bar :global(.search-box) {
+		   right, all on one row. The `.bar > *` order reset above can't reach the
+		   display:contents children, so they're ordered here explicitly. */
+		.bar :global(.search-box .fsb) {
 			order: 2;
 			flex: 1 1 0;
 			min-width: 0;
+		}
+		.bar :global(.search-box .fsb__chips) {
+			order: 5;
 		}
 	}
 </style>
