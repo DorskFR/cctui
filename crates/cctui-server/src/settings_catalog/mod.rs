@@ -640,7 +640,7 @@ mod tests {
 
     #[test]
     fn docs_only_keys_present() {
-        for name in ["disableBundledSkills", "disableWorkflows", "disableArtifact", "fallbackModel"]
+        for name in ["disableSideloadFlags", "enableArtifact", "forceLoginGatewayUrl", "ultracode"]
         {
             let k = catalog().key(name).unwrap_or_else(|| panic!("{name} missing"));
             assert_eq!(k.source, Source::Docs, "{name} should be a docs-delta key");

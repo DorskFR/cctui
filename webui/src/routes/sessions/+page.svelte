@@ -17,6 +17,12 @@
 	import { notify } from '$lib/notify.svelte';
 	import { settings } from '$lib/settings.svelte';
 	import { tokenizeQuery } from '$lib/search';
+	import { freeText, parse } from '@dorsk/tsumikit';
+	import {
+		buildSessionSearchSchema,
+		matchesClientFilters,
+		splitQuery
+	} from '$lib/searchSchema';
 	import {
 		parseSections,
 		PAGE,
@@ -286,8 +292,11 @@
 	//     (unticked = live only, ticked = all). Split into Live / Archived.
 	//   • not searching + showArchived → browse the archive (empty q), paged.
 	// Live-only with no query needs no pager — the bucketed list owns it.
-	// `rawQuery` is the live input (debounced into `query`); the SearchBox molecule
-	// binds to it and owns the field UI (clear button, focus).
+	// `rawQuery` is the live input (debounced into `query`); the FilterSearchBar
+	// organism binds to it and owns the field UI (chips, autocomplete, clear).
+	const searchSchema = buildSessionSearchSchema((field, q) =>
+		endpoints.searchFieldValues(field, q)
+	);
 	let rawQuery = $state('');
 	let query = $state('');
 	$effect(() => {
@@ -295,10 +304,17 @@
 		const t = setTimeout(() => (query = v), 200);
 		return () => clearTimeout(t);
 	});
-	const searching = $derived(query.length > 0);
+	// Server-evaluable clauses + free text ride the raw string to the search
+	// endpoint; `id`/`created` clauses are peeled off and narrowed client-side.
+	const split = $derived(splitQuery(query, searchSchema));
+	const serverQuery = $derived(split.serverQuery);
+	const clientFilters = $derived(split.clientFilters);
+	const searching = $derived(serverQuery.length > 0);
 	const pagerActive = $derived(searching || showArchived);
-	// Parsed terms to highlight in result snippets + the opened chat (CCT-187).
-	const searchTerms = $derived(tokenizeQuery(query));
+	const matchesClient = (s: SessionListItem): boolean =>
+		matchesClientFilters(s, clientFilters);
+	// Highlight only the free-text portion of the query (field clauses excluded).
+	const searchTerms = $derived(tokenizeQuery(freeText(parse(query, searchSchema))));
 
 	let pageRows = $state<SessionListItem[]>([]);
 	let pageOffset = $state(0);
@@ -317,7 +333,7 @@
 		try {
 			// not searching ⇒ browse archive (empty q, archived scope).
 			const res = await endpoints.searchSessions(
-				query,
+				serverQuery,
 				searching ? showArchived : true,
 				PAGE,
 				offset
@@ -336,7 +352,7 @@
 
 	// Reset + reload page 0 whenever the mode (query / scope) changes, or an
 	// archive action bumps refreshTick.
-	const pagerKey = $derived(`${searching ? `q:${query}` : 'browse'}|${showArchived}`);
+	const pagerKey = $derived(`${searching ? `q:${serverQuery}` : 'browse'}|${showArchived}`);
 	$effect(() => {
 		void pagerKey;
 		void refreshTick;
@@ -608,7 +624,11 @@
 	const groups = $derived(
 		BUCKETS.filter((b) => bucketInSection(b.key)).map((b) => ({
 			...b,
-			sessions: sortRows(topLevel.filter((s) => groupOf(s) === b.key && matchesLabelFilter(s)))
+			sessions: sortRows(
+				topLevel.filter(
+					(s) => groupOf(s) === b.key && matchesLabelFilter(s) && matchesClient(s)
+				)
+			)
 		})).filter((g) => g.sessions.length > 0)
 	);
 
@@ -627,6 +647,7 @@
 
 <SessionControls
 	bind:rawQuery
+	{searchSchema}
 	bind:sections
 	labels={allLabels}
 	bind:labelFilter
@@ -819,14 +840,14 @@
 	{#if pageLoading && pageRows.length === 0}
 		<div class="empty"><span class="spin"></span></div>
 	{:else if pageRows.length === 0}
-		<div class="empty"><Text tone="muted">No chats match “{query}”{showArchived ? '' : ' (live only — pick Archived to search all)'}.</Text></div>
+		<div class="empty"><Text tone="muted">No chats match “{serverQuery}”{showArchived ? '' : ' (live only — pick Archived to search all)'}.</Text></div>
 	{:else}
 		<!-- Nest over the whole result set so a parent and its subagents stay
 		     grouped even if they land in different status sections; then split
 		     the top-level rows into Live / Archived (CCT-298 item 1). -->
 		{@const ns = nest(pageRows)}
 		{@const scoped = ns.topLevel.filter(
-			(s) => inEnabledSections(s, sections) && matchesLabelFilter(s)
+			(s) => inEnabledSections(s, sections) && matchesLabelFilter(s) && matchesClient(s)
 		)}
 		{@const liveTop = scoped.filter((s) => s.status !== 'archived')}
 		{@const archTop = scoped.filter((s) => s.status === 'archived')}
@@ -926,7 +947,7 @@
 		{#if showArchived}
 			{@const ns = nest(pageRows)}
 			{@const archTop = ns.topLevel.filter(
-				(s) => matchesLabelFilter(s) && !pinnedArchivedKidIds.has(s.id)
+				(s) => matchesLabelFilter(s) && matchesClient(s) && !pinnedArchivedKidIds.has(s.id)
 			)}
 			<div class="section">
 				<div class="group-header">Archived <Text class="count">{archTop.length}</Text></div>

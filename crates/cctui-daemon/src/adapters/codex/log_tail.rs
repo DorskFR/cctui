@@ -247,6 +247,9 @@ fn parse_line(local_id: &str, line: &str) -> AdapterEvent {
         {
             return status;
         }
+        if let Some(usage) = token_usage_event(local_id, &value) {
+            return usage;
+        }
         // Heuristic: lines that look like tool calls.
         if value.get("tool").is_some()
             || value.get("function_call").is_some()
@@ -289,6 +292,46 @@ fn turn_context_status(local_id: &str, value: &Value) -> Option<AdapterEvent> {
         model,
         effort,
         children: vec![],
+    })
+}
+
+/// Map a codex `event_msg`/`token_count` rollout line → [`AdapterEvent::TokenUsage`]
+/// (CCT-597). Codex writes one after every model response with
+/// `info.last_token_usage` = that response's delta and `info.total_token_usage`
+/// = the running session total. We emit the `last` delta so the server's
+/// per-message SUM reconstructs the total, exactly like the app-server driver's
+/// [`super::app_server`] `thread/tokenUsage/updated` mapping (`inputTokens`
+/// includes the cached count, so subtract it for the non-cached/cached split
+/// the claude + app-server adapters use).
+///
+/// `message_id` is derived from the line's own content — the timestamp plus the
+/// strictly-monotonic cumulative total — so re-tailing the same rollout file
+/// after a daemon restart re-emits identical ids and the server's
+/// `ON CONFLICT (session_id, message_id) DO NOTHING` upsert refuses to
+/// double-count. Returns `None` for non-token lines so `parse_line` continues.
+fn token_usage_event(local_id: &str, value: &Value) -> Option<AdapterEvent> {
+    if value.get("type").and_then(Value::as_str) != Some("event_msg") {
+        return None;
+    }
+    let payload = value.get("payload")?;
+    if payload.get("type").and_then(Value::as_str) != Some("token_count") {
+        return None;
+    }
+    let last = payload.pointer("/info/last_token_usage");
+    let g = |k: &str| last.and_then(|l| l.get(k)).and_then(Value::as_u64).unwrap_or(0);
+    let cached = g("cached_input_tokens");
+    let cumulative = payload
+        .pointer("/info/total_token_usage/total_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let ts = value.get("timestamp").and_then(Value::as_str).unwrap_or("");
+    Some(AdapterEvent::TokenUsage {
+        local_id: local_id.to_owned(),
+        message_id: format!("codex-tokens-{ts}-{cumulative}"),
+        input_tokens: g("input_tokens").saturating_sub(cached),
+        output_tokens: g("output_tokens"),
+        cache_read_tokens: cached,
+        cache_creation_tokens: 0,
     })
 }
 
@@ -467,5 +510,81 @@ mod tests {
     fn turn_context_without_model_or_effort_falls_through_to_message() {
         let line = r#"{"type":"turn_context","payload":{"cwd":"/w"}}"#;
         assert!(matches!(parse_line("s1", line), AdapterEvent::Message { .. }));
+    }
+
+    const ROLLOUT_FIXTURE: &str = include_str!("fixtures/rollout_token_usage.jsonl");
+
+    #[test]
+    fn token_count_line_emits_token_usage() {
+        let line = r#"{"timestamp":"2026-05-30T07:37:04.869Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":23695},"last_token_usage":{"input_tokens":11860,"cached_input_tokens":9600,"output_tokens":214,"reasoning_output_tokens":117,"total_tokens":12074}}}}"#;
+        match parse_line("sess", line) {
+            AdapterEvent::TokenUsage {
+                local_id,
+                input_tokens,
+                output_tokens,
+                cache_read_tokens,
+                cache_creation_tokens,
+                ..
+            } => {
+                assert_eq!(local_id, "sess");
+                assert_eq!(input_tokens, 11860 - 9600);
+                assert_eq!(output_tokens, 214);
+                assert_eq!(cache_read_tokens, 9600);
+                assert_eq!(cache_creation_tokens, 0);
+            }
+            other => panic!("expected TokenUsage, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn token_usage_message_id_is_stable_and_distinct_per_line() {
+        let a = r#"{"timestamp":"2026-05-30T07:36:59.740Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":11621},"last_token_usage":{"input_tokens":11111,"cached_input_tokens":9600,"output_tokens":510,"total_tokens":11621}}}}"#;
+        let b = r#"{"timestamp":"2026-05-30T07:37:04.869Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":23695},"last_token_usage":{"input_tokens":11860,"cached_input_tokens":9600,"output_tokens":214,"total_tokens":12074}}}}"#;
+        let id = |line: &str| match parse_line("s", line) {
+            AdapterEvent::TokenUsage { message_id, .. } => message_id,
+            other => panic!("expected TokenUsage, got {other:?}"),
+        };
+        assert_eq!(id(a), id(a));
+        assert_ne!(id(a), id(b));
+    }
+
+    #[test]
+    fn fixture_rollout_accumulates_per_turn_token_usage() {
+        let events: Vec<AdapterEvent> = ROLLOUT_FIXTURE
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| parse_line("fixture", l.trim()))
+            .collect();
+        let usages: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                AdapterEvent::TokenUsage {
+                    message_id,
+                    input_tokens,
+                    output_tokens,
+                    cache_read_tokens,
+                    ..
+                } => Some((message_id.clone(), *input_tokens, *output_tokens, *cache_read_tokens)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(usages.len(), 3);
+        let ids: HashSet<&String> = usages.iter().map(|(id, ..)| id).collect();
+        assert_eq!(ids.len(), 3, "message ids must be unique per token_count line");
+        let sum_in: u64 = usages.iter().map(|(_, i, ..)| i).sum();
+        let sum_out: u64 = usages.iter().map(|(_, _, o, _)| o).sum();
+        let sum_cache: u64 = usages.iter().map(|(.., c)| c).sum();
+        assert_eq!(sum_in, (11111 - 9600) + (11860 - 9600) + (12134 - 10624));
+        assert_eq!(sum_out, 510 + 214 + 61);
+        assert_eq!(sum_cache, 9600 + 9600 + 10624);
+        // token_count lines must NOT also surface as transcript messages.
+        assert!(
+            !events.iter().any(|e| matches!(
+                e,
+                AdapterEvent::Message { payload, .. }
+                    if payload.pointer("/payload/type").and_then(Value::as_str) == Some("token_count")
+            )),
+            "token_count lines must map to TokenUsage, not Message"
+        );
     }
 }
