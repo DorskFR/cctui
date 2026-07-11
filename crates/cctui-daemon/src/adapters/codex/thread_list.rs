@@ -33,10 +33,11 @@ use tokio::sync::Mutex;
 
 use cctui_proto::adapter::{AdapterEvent, SessionMeta};
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 use super::app_server::{AppServerConfig, SessionRecord, SessionRegistry};
 
@@ -60,6 +61,36 @@ pub struct ThreadEntry {
     pub status: Option<String>,
 }
 
+/// Canonical `UUIDv7` form (lowercase, hyphenated) for a codex thread id, so
+/// identity matches across list discovery, resume, and the session registry.
+/// Non-UUID ids fall back to a trimmed lowercase form.
+#[must_use]
+pub fn canonical_id(raw: &str) -> String {
+    Uuid::parse_str(raw.trim())
+        .map_or_else(|_| raw.trim().to_lowercase(), |u| u.hyphenated().to_string())
+}
+
+/// Reduce a `SessionSource` (bare string, `{custom}`, or `{subAgent}` object)
+/// to a stable source label. Newer codex builds report subagent/custom sources
+/// as objects, which the string-only parser used to drop.
+#[must_use]
+pub fn parse_source(v: &Value) -> Option<String> {
+    match v {
+        Value::String(s) => Some(s.clone()),
+        Value::Object(map) => map.get("custom").and_then(Value::as_str).map_or_else(
+            || {
+                if map.contains_key("subAgent") {
+                    Some("subAgent".to_owned())
+                } else {
+                    map.keys().next().cloned()
+                }
+            },
+            |c| Some(c.to_owned()),
+        ),
+        _ => None,
+    }
+}
+
 /// Parse a single `thread/list` `data[]` element. Returns `None` for entries
 /// without a usable thread id (which cannot be addressed as a session).
 #[must_use]
@@ -70,13 +101,13 @@ pub fn parse_thread(v: &Value) -> Option<ThreadEntry> {
         .or_else(|| v.get("id"))
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
-        .map(str::to_owned)?;
+        .map(canonical_id)?;
     Some(ThreadEntry {
         id,
         preview: s("preview").filter(|p| !p.is_empty()),
         name: s("name").filter(|n| !n.is_empty()),
         cwd: s("cwd"),
-        source: s("source"),
+        source: v.get("source").and_then(parse_source),
         status: v.pointer("/status/type").and_then(Value::as_str).map(str::to_owned),
     })
 }
@@ -100,13 +131,45 @@ fn initialize_req() -> Value {
     })
 }
 
-fn thread_list_req(page_size: u32) -> Value {
+/// Every codex `ThreadSourceKind`. Omitting `sourceKinds` makes the app-server
+/// default to interactive sources (`cli`/`vscode`), so cctui-owned `appServer`
+/// threads never come back and the rediscovery branch misses them after a
+/// daemon restart (CCT-632). Request all kinds explicitly.
+const SOURCE_KINDS: &[&str] = &[
+    "cli",
+    "vscode",
+    "exec",
+    "appServer",
+    "subAgent",
+    "subAgentReview",
+    "subAgentCompact",
+    "subAgentThreadSpawn",
+    "subAgentOther",
+    "unknown",
+];
+
+/// Upper bound on pages followed in one poll — a guard against a server that
+/// keeps handing back a non-null cursor.
+const MAX_PAGES: usize = 100;
+
+fn thread_list_req(id: i64, limit: u32, cursor: Option<&str>) -> Value {
+    let mut params = serde_json::Map::new();
+    params.insert("limit".to_owned(), json!(limit));
+    params.insert("sourceKinds".to_owned(), json!(SOURCE_KINDS));
+    if let Some(cursor) = cursor {
+        params.insert("cursor".to_owned(), json!(cursor));
+    }
     json!({
         "jsonrpc": "2.0",
-        "id": 2,
+        "id": id,
         "method": "thread/list",
-        "params": {"pageSize": page_size},
+        "params": Value::Object(params),
     })
+}
+
+#[must_use]
+fn next_cursor(result: &Value) -> Option<String> {
+    result.get("nextCursor").and_then(Value::as_str).filter(|c| !c.is_empty()).map(str::to_owned)
 }
 
 /// Build the `SessionStarted` meta for an inventory thread. The preview seeds
@@ -269,7 +332,7 @@ impl ThreadListInventory {
 /// `thread/list`, and return the parsed entries. The process is reaped before
 /// returning. Shared by the periodic inventory poll and the startup
 /// rediscovery (CCT-339).
-async fn poll_threads(app: &AppServerConfig, page_size: u32) -> anyhow::Result<Vec<ThreadEntry>> {
+async fn poll_threads(app: &AppServerConfig, limit: u32) -> anyhow::Result<Vec<ThreadEntry>> {
     let mut cmd = Command::new(&app.bin);
     cmd.arg("app-server")
         // No turn is started, so sandbox mode only matters because codex
@@ -285,22 +348,23 @@ async fn poll_threads(app: &AppServerConfig, page_size: u32) -> anyhow::Result<V
     let mut stdin = child.stdin.take().context_stdin()?;
     let stdout = child.stdout.take().context_stdout()?;
 
-    write_line(&mut stdin, &initialize_req()).await?;
-    write_line(&mut stdin, &thread_list_req(page_size)).await?;
-
-    let result = tokio::time::timeout(Duration::from_secs(20), async {
+    let entries = tokio::time::timeout(Duration::from_secs(30), async {
         let mut lines = BufReader::new(stdout).lines();
-        while let Some(line) = lines.next_line().await? {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let Ok(v) = serde_json::from_str::<Value>(trimmed) else { continue };
-            if v.get("id").and_then(Value::as_i64) == Some(2) {
-                return anyhow::Ok(v.get("result").cloned().unwrap_or(Value::Null));
+        write_line(&mut stdin, &initialize_req()).await?;
+
+        let mut entries = Vec::new();
+        let mut cursor: Option<String> = None;
+        for page in 0..MAX_PAGES {
+            let req_id = 2 + i64::try_from(page).unwrap_or(i64::MAX);
+            write_line(&mut stdin, &thread_list_req(req_id, limit, cursor.as_deref())).await?;
+            let result = read_response(&mut lines, req_id).await?;
+            entries.extend(parse_thread_list(&result));
+            match next_cursor(&result) {
+                Some(next) => cursor = Some(next),
+                None => break,
             }
         }
-        anyhow::bail!("thread/list response not received before EOF")
+        anyhow::Ok(entries)
     })
     .await;
 
@@ -309,8 +373,29 @@ async fn poll_threads(app: &AppServerConfig, page_size: u32) -> anyhow::Result<V
     let _ = child.start_kill();
     let _ = child.wait().await;
 
-    let result = result.map_err(|_| anyhow::anyhow!("thread/list timed out"))??;
-    Ok(parse_thread_list(&result))
+    entries.map_err(|_| anyhow::anyhow!("thread/list timed out"))?
+}
+
+/// Read stdout until the JSON-RPC response with `id` arrives, skipping
+/// notifications and unrelated responses. Errors on a JSON-RPC `error` object.
+async fn read_response<R: AsyncBufRead + Unpin>(
+    lines: &mut Lines<R>,
+    id: i64,
+) -> anyhow::Result<Value> {
+    while let Some(line) = lines.next_line().await? {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(trimmed) else { continue };
+        if v.get("id").and_then(Value::as_i64) == Some(id) {
+            if let Some(err) = v.get("error") {
+                anyhow::bail!("thread/list error: {err}");
+            }
+            return Ok(v.get("result").cloned().unwrap_or(Value::Null));
+        }
+    }
+    anyhow::bail!("thread/list response {id} not received before EOF")
 }
 
 /// `appServer`-source threads from a `thread/list` snapshot are the ones cctui
@@ -496,10 +581,132 @@ mod tests {
     #[test]
     fn request_builders_shape() {
         assert_eq!(initialize_req()["method"], "initialize");
-        let lr = thread_list_req(42);
+        let lr = thread_list_req(2, 42, None);
         assert_eq!(lr["method"], "thread/list");
         assert_eq!(lr["id"], 2);
-        assert_eq!(lr["params"]["pageSize"], 42);
+        // CCT-632: paginate with `limit`, never the removed `pageSize`.
+        assert_eq!(lr["params"]["limit"], 42);
+        assert!(lr["params"].get("pageSize").is_none());
+        assert!(lr["params"].get("cursor").is_none());
+    }
+
+    #[test]
+    fn thread_list_req_asks_for_all_source_kinds() {
+        // Omitting `sourceKinds` defaults to cli/vscode, hiding cctui's own
+        // appServer threads (CCT-632). Every ThreadSourceKind must be requested.
+        let lr = thread_list_req(2, 100, None);
+        let kinds: Vec<&str> = lr["params"]["sourceKinds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        for expected in [
+            "cli",
+            "vscode",
+            "exec",
+            "appServer",
+            "subAgent",
+            "subAgentReview",
+            "subAgentCompact",
+            "subAgentThreadSpawn",
+            "subAgentOther",
+            "unknown",
+        ] {
+            assert!(kinds.contains(&expected), "missing source kind {expected}");
+        }
+    }
+
+    #[test]
+    fn thread_list_req_carries_cursor_when_paginating() {
+        let lr = thread_list_req(3, 100, Some("CUR-2"));
+        assert_eq!(lr["id"], 3);
+        assert_eq!(lr["params"]["cursor"], "CUR-2");
+    }
+
+    #[test]
+    fn next_cursor_follows_until_null() {
+        assert_eq!(next_cursor(&json!({"nextCursor": "abc"})).as_deref(), Some("abc"));
+        assert_eq!(next_cursor(&json!({"nextCursor": ""})), None);
+        assert_eq!(next_cursor(&json!({"nextCursor": Value::Null})), None);
+        assert_eq!(next_cursor(&json!({})), None);
+    }
+
+    #[tokio::test]
+    async fn read_response_paginates_to_exhaustion() {
+        // Two `thread/list` pages (ids 2, 3) with a notification and the
+        // initialize reply interleaved; the reader must skip non-matching lines
+        // and follow the cursor until `nextCursor` is null.
+        let stream = concat!(
+            r#"{"jsonrpc":"2.0","id":1,"result":{"ok":true}}"#,
+            "\n",
+            r#"{"jsonrpc":"2.0","method":"thread/status/changed","params":{}}"#,
+            "\n",
+            r#"{"jsonrpc":"2.0","id":2,"result":{"data":[{"id":"019ea66a-cf6e-73b1-8000-000000000001","sessionId":"019ea66a-cf6e-73b1-8000-000000000001"}],"nextCursor":"p2"}}"#,
+            "\n",
+            r#"{"jsonrpc":"2.0","id":3,"result":{"data":[{"id":"019ea66a-cf6e-73b1-8000-000000000002","sessionId":"019ea66a-cf6e-73b1-8000-000000000002"}],"nextCursor":null}}"#,
+            "\n",
+        );
+        let mut lines = BufReader::new(stream.as_bytes()).lines();
+
+        let mut entries = Vec::new();
+        let mut cursor: Option<String> = None;
+        for page in 0..MAX_PAGES {
+            let req_id = 2 + i64::try_from(page).unwrap();
+            let result = read_response(&mut lines, req_id).await.unwrap();
+            entries.extend(parse_thread_list(&result));
+            match next_cursor(&result) {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        assert_eq!(cursor.as_deref(), Some("p2"));
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].id, "019ea66a-cf6e-73b1-8000-000000000001");
+        assert_eq!(entries[1].id, "019ea66a-cf6e-73b1-8000-000000000002");
+    }
+
+    #[tokio::test]
+    async fn read_response_surfaces_jsonrpc_error() {
+        let stream =
+            concat!(r#"{"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"boom"}}"#, "\n",);
+        let mut lines = BufReader::new(stream.as_bytes()).lines();
+        assert!(read_response(&mut lines, 2).await.is_err());
+    }
+
+    #[test]
+    fn canonical_id_normalizes_uuids() {
+        assert_eq!(
+            canonical_id("019EA66A-CF6E-73B1-8000-0000000000AB"),
+            "019ea66a-cf6e-73b1-8000-0000000000ab"
+        );
+        // Non-UUID ids stay addressable, just lowercased/trimmed.
+        assert_eq!(canonical_id("  Weird-ID  "), "weird-id");
+    }
+
+    #[test]
+    fn parse_source_handles_string_and_object_variants() {
+        assert_eq!(parse_source(&json!("appServer")).as_deref(), Some("appServer"));
+        assert_eq!(parse_source(&json!({"custom": "cctui"})).as_deref(), Some("cctui"));
+        assert_eq!(
+            parse_source(&json!({"subAgent": {"thread_spawn": {"depth": 1}}})).as_deref(),
+            Some("subAgent")
+        );
+        assert_eq!(parse_source(&json!({"subAgent": "review"})).as_deref(), Some("subAgent"));
+        assert_eq!(parse_source(&Value::Null), None);
+    }
+
+    #[test]
+    fn parse_thread_canonicalizes_and_reads_structured_source() {
+        let entry = parse_thread(&json!({
+            "id": "019EA66A-CF6E-73B1-8000-0000000000AB",
+            "sessionId": "019EA66A-CF6E-73B1-8000-0000000000AB",
+            "source": {"subAgent": {"thread_spawn": {"depth": 2}}},
+            "status": {"type": "active"},
+        }))
+        .unwrap();
+        assert_eq!(entry.id, "019ea66a-cf6e-73b1-8000-0000000000ab");
+        assert_eq!(entry.source.as_deref(), Some("subAgent"));
     }
 
     #[test]

@@ -112,7 +112,6 @@ impl LogTail {
     }
 
     async fn scan_once(&mut self) {
-        let Ok(entries) = std::fs::read_dir(&self.cfg.sessions_root) else { return };
         // App-server-owned session ids (rollout UUIDv7). Files whose stem
         // ends with one of these are driven directly via app-server and must
         // not be tailed here.
@@ -127,11 +126,11 @@ impl LogTail {
         // empty conversation ("No events yet"). The app-server `owned` set
         // above is still skipped — those threads are driven live by cctui.
         let mut alive: HashSet<PathBuf> = HashSet::new();
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
+        // CCT-633: real rollouts live under YYYY/MM/DD subdirectories, not
+        // directly under the sessions root, so the scan recurses.
+        let mut files = Vec::new();
+        collect_rollout_files(&self.cfg.sessions_root, 0, &mut files);
+        for path in files {
             let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
             if owned.iter().any(|id| stem.ends_with(id.as_str())) {
                 continue;
@@ -164,7 +163,8 @@ impl LogTail {
     }
 
     async fn tail_file(&mut self, path: PathBuf) {
-        let local_id = path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown").to_owned();
+        let local_id =
+            self.sessions.get(&path).map_or_else(|| derive_local_id(&path), |s| s.local_id.clone());
 
         let is_new = !self.sessions.contains_key(&path);
         let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
@@ -212,6 +212,76 @@ impl LogTail {
             let _ = self.events.send(evt).await;
         }
     }
+}
+
+/// Recursively collect rollout files under `dir`. Codex nests sessions as
+/// `sessions/YYYY/MM/DD/rollout-*.jsonl`; depth is capped so a symlink cycle or
+/// unexpected tree can't spin the scan forever. Flat files directly under the
+/// root (used by tests and older layouts) are still picked up at depth 0.
+fn collect_rollout_files(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+    if depth > 6 {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_rollout_files(&path, depth + 1, out);
+        } else if path.is_file() {
+            out.push(path);
+        }
+    }
+}
+
+/// Canonical thread id for a rollout file (CCT-633). The identity is the
+/// `session_meta` payload `id` (a UUID), not the filename — the app-server
+/// registry and `thread/list` inventory key off the same UUID, so deriving it
+/// from the file avoids a second, filename-shaped local id for one thread.
+/// Falls back to a UUID embedded in the filename, then the bare stem.
+fn derive_local_id(path: &Path) -> String {
+    if let Some(id) = session_meta_id(path) {
+        return id;
+    }
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown");
+    uuid_from_stem(stem).unwrap_or_else(|| stem.to_owned())
+}
+
+/// Read the `session_meta` line (first line of a well-formed rollout) and return
+/// its lowercased payload `id`. Scans a bounded prefix in case the meta isn't
+/// strictly first; returns `None` for files that carry no `session_meta`.
+fn session_meta_id(path: &Path) -> Option<String> {
+    use std::io::{BufRead, BufReader};
+    let file = std::fs::File::open(path).ok()?;
+    let reader = BufReader::new(file);
+    for line in reader.lines().take(64).map_while(Result::ok) {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(trimmed) else { continue };
+        if value.get("type").and_then(Value::as_str) == Some("session_meta")
+            && let Some(id) = value.pointer("/payload/id").and_then(Value::as_str)
+        {
+            return Some(id.to_ascii_lowercase());
+        }
+    }
+    None
+}
+
+/// Extract a canonical 8-4-4-4-12 hex UUID from a rollout filename stem such as
+/// `rollout-2026-07-12T01-25-55-019f51ff-f19f-7ed2-bf2a-bbb0d5cc5b90` by scanning
+/// hyphen-separated segments for the five-group UUID window.
+fn uuid_from_stem(stem: &str) -> Option<String> {
+    let segs: Vec<&str> = stem.split('-').collect();
+    let is_hex = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_hexdigit());
+    for w in segs.windows(5) {
+        if [8, 4, 4, 4, 12] == [w[0].len(), w[1].len(), w[2].len(), w[3].len(), w[4].len()]
+            && w.iter().all(|s| is_hex(s))
+        {
+            return Some(w.join("-").to_ascii_lowercase());
+        }
+    }
+    None
 }
 
 fn read_new_lines(path: &Path, offset: u64, local_id: &str) -> std::io::Result<Vec<AdapterEvent>> {
@@ -513,6 +583,106 @@ mod tests {
     }
 
     const ROLLOUT_FIXTURE: &str = include_str!("fixtures/rollout_token_usage.jsonl");
+    const HISTORY_FIXTURE: &str = include_str!("fixtures/rollout_history.jsonl");
+
+    #[test]
+    fn uuid_from_stem_extracts_canonical_uuid() {
+        let stem = "rollout-2026-07-12T01-25-55-019f51ff-f19f-7ed2-bf2a-bbb0d5cc5b90";
+        assert_eq!(uuid_from_stem(stem).as_deref(), Some("019f51ff-f19f-7ed2-bf2a-bbb0d5cc5b90"));
+        assert_eq!(uuid_from_stem("no-uuid-here"), None);
+    }
+
+    #[test]
+    fn derive_local_id_prefers_session_meta_over_filename() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Filename UUID differs from the session_meta id to prove meta wins.
+        let path = tmp
+            .path()
+            .join("rollout-2026-07-12T01-25-55-ffffffff-0000-7000-8000-000000000000.jsonl");
+        std::fs::write(&path, HISTORY_FIXTURE).unwrap();
+        assert_eq!(derive_local_id(&path), "019f5200-aaaa-7bbb-8ccc-000000000001");
+    }
+
+    #[test]
+    fn derive_local_id_falls_back_to_filename_uuid() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp
+            .path()
+            .join("rollout-2026-07-12T01-25-55-019f51ff-f19f-7ed2-bf2a-bbb0d5cc5b90.jsonl");
+        std::fs::write(&path, r#"{"role":"assistant","text":"no meta"}"#).unwrap();
+        assert_eq!(derive_local_id(&path), "019f51ff-f19f-7ed2-bf2a-bbb0d5cc5b90");
+    }
+
+    #[tokio::test]
+    async fn recursive_scan_finds_nested_rollout_with_canonical_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions = tmp.path().to_path_buf();
+        let nested = sessions.join("2026").join("07").join("12");
+        std::fs::create_dir_all(&nested).unwrap();
+        let path =
+            nested.join("rollout-2026-07-12T01-25-55-ffffffff-0000-7000-8000-000000000000.jsonl");
+        std::fs::write(&path, HISTORY_FIXTURE).unwrap();
+        let (tx, mut rx) = mpsc::channel(64);
+        let mut tail = LogTail::new(
+            LogTailConfig {
+                sessions_root: sessions,
+                poll_interval: Duration::from_millis(10),
+                quiesce: Duration::from_secs(3600),
+            },
+            tx,
+            CancellationToken::new(),
+        );
+        tail.scan_once().await;
+        let started = rx.recv().await.unwrap();
+        match started {
+            AdapterEvent::SessionStarted { local_id, .. } => {
+                assert_eq!(local_id, "019f5200-aaaa-7bbb-8ccc-000000000001");
+            }
+            other => panic!("expected SessionStarted, got {other:?}"),
+        }
+        // Every subsequent event must carry the canonical id, not the filename.
+        let mut saw_message = false;
+        while let Ok(evt) = rx.try_recv() {
+            let id = match &evt {
+                AdapterEvent::Message { local_id, .. }
+                | AdapterEvent::ToolUse { local_id, .. }
+                | AdapterEvent::Status { local_id, .. }
+                | AdapterEvent::TokenUsage { local_id, .. } => local_id.clone(),
+                other => panic!("unexpected event {other:?}"),
+            };
+            assert_eq!(id, "019f5200-aaaa-7bbb-8ccc-000000000001");
+            if matches!(evt, AdapterEvent::Message { .. }) {
+                saw_message = true;
+            }
+        }
+        assert!(saw_message, "nested rollout transcript must be tailed");
+    }
+
+    #[test]
+    fn history_fixture_response_and_event_envelopes_parse() {
+        let events: Vec<AdapterEvent> = HISTORY_FIXTURE
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| parse_line("hist", l.trim()))
+            .collect();
+        // token_count → TokenUsage, turn_context → Status, the rest → Message.
+        assert_eq!(
+            events.iter().filter(|e| matches!(e, AdapterEvent::TokenUsage { .. })).count(),
+            1
+        );
+        assert_eq!(events.iter().filter(|e| matches!(e, AdapterEvent::Status { .. })).count(), 1);
+        // The response_item / event_msg envelopes are preserved verbatim as
+        // Message payloads so the server-side normalizer can unwrap them.
+        let has_envelope = |t: &str| {
+            events.iter().any(|e| {
+                matches!(e,
+                AdapterEvent::Message { payload, .. }
+                    if payload.get("type").and_then(Value::as_str) == Some(t))
+            })
+        };
+        assert!(has_envelope("response_item"));
+        assert!(has_envelope("event_msg"));
+    }
 
     #[test]
     fn token_count_line_emits_token_usage() {
