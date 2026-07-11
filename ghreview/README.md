@@ -34,11 +34,16 @@ ETag polling loop over octokit, a Postgres JSONB document store, and SSE push vi
 | ------ | ---- | ------- |
 | GET | `/v1/health` | Liveness probe (`{ ok: true }`). |
 | GET | `/v1/status` | Service + sync status. |
+| GET | `/v1/accounts` | List the caller's GitHub accounts (no secrets). |
+| POST | `/v1/accounts` | Add an account: validate the PAT against `/user`, seal it, store it. |
+| DELETE | `/v1/accounts/{id}` | Remove one of the caller's accounts. |
 | GET | `/v1/repos` | List synced repositories (page of envelopes). |
 | GET | `/v1/repos/{owner}/{repo}` | One repository envelope. |
 | GET | `/v1/repos/{owner}/{repo}/pulls` | List synced PRs for a repo. |
 | GET | `/v1/repos/{owner}/{repo}/pulls/{number}` | One PR envelope. |
-| GET | `/v1/notifications` | Notifications inbox (page of envelopes). |
+| GET | `/v1/notifications` | Notifications inbox feed — envelopes joined with local state, with filters (see below). |
+| POST | `/v1/notifications/state` | Bulk mark threads read/done/archived. |
+| POST | `/v1/notifications/{id}/state` | Mark one thread read/done/archived. |
 | GET | `/v1/events` | Server-Sent Events stream (see below). |
 | GET | `/v1/openapi.json` | The generated OpenAPI document. |
 
@@ -53,6 +58,7 @@ ignore.
 | ------- | ---- | -------------- |
 | `pr.updated` | A synced PR's payload changed (new commit, review, comment, CI, merge state). | `{ account, owner, repo, number }` — a hint to refetch `/v1/repos/{owner}/{repo}/pulls/{number}`. |
 | `notification.new` | A new GitHub notification landed for an account. | `{ account, id }` |
+| `notification.updated` | A notification's local state changed (read/done/archived). | `{ account, id }` |
 | `sync.status` | The sync daemon changed state (idle → syncing → error). | `{ account, state: "idle" \| "syncing" \| "error", last_run }` |
 
 Events are **change hints**, not the data itself — clients refetch the relevant
@@ -78,17 +84,47 @@ The daemon keeps a warm, GitHub-shaped cache so reads never touch GitHub.
 | `GHREVIEW_RATE_LIMIT` | `5000` | Per-PAT hourly request budget. |
 | `GHREVIEW_WEBHOOK_SECRET` | — | Shared secret for `X-Hub-Signature-256` on `POST /v1/webhook`. |
 | `PORT` | `8790` | HTTP port. |
+| `GHREVIEW_SEAL_KEY` | — | 32-byte AES key (hex/base64/raw) that seals PATs at rest. Unset ⇒ accounts + poller disabled (store + auth only). Vault delivers it in prod (CCT-612). |
+| `GHREVIEW_AUTH_MODE` | `cctui` | `cctui` verifies bearer tokens against the shared cctui DB; `static` uses `GHREVIEW_AUTH_TOKENS`. |
+| `GHREVIEW_AUTH_TOKENS` | — | Static-mode `token:userId,token2:userId2` map (dev / standalone). |
+| `GHREVIEW_CCTUI_SCHEMA` | `public` | Schema holding cctui's `auth_keys`/`users` for `cctui` auth mode. |
+| `GITHUB_ACCOUNT` + `GITHUB_TOKEN` | — | Optional single-account bootstrap: seeds one `gh_accounts` row (owner `env`) when a seal key is set. Managing accounts via `/v1/accounts` is the multi-account path. |
 
-Single-account for this ticket; CCT-603 adds the multi-account model. The poller is
-built around an `Account` abstraction (`src/github/account.ts`) so 603 slots in.
+## Multi-account, auth & isolation (CCT-603)
+
+gh-review is a second backend beside the cctui Rust server. **AuthN reuses cctui's
+bearer tokens**: cctui hashes tokens with `sha256(token)` and resolves them in
+`auth_keys JOIN users`, and gh-review shares that Postgres, so the primary
+(`GHREVIEW_AUTH_MODE=cctui`) resolver verifies a token with one query and no
+network hop — the review UI mounted in cctui-ui (CCT-610) needs no second login.
+A deliberately thin `static` mode (`GHREVIEW_AUTH_TOKENS`) keeps the service
+standalone-capable and testable without a cctui DB. Auth is enforced on every
+`/v1` route except `/v1/health`, `/v1/status`, `/v1/webhook` (HMAC-signed) and the
+OpenAPI doc.
+
+**Accounts.** `gh_accounts(id, user_id, login UNIQUE, encrypted_pat, poll/budget
+overrides)` maps a user to N GitHub accounts. `login` is globally unique, so the
+`documents`/`notification_state`/`sync_state` tables (keyed by `account` = login)
+map 1:1 to exactly one owner. PATs are sealed with AES-256-GCM (`GHREVIEW_SEAL_KEY`)
+— symmetric AEAD because the same service seals (on create) and opens (in the
+poller); they are never returned by any API and never stored in plaintext.
+
+**Isolation.** Every read/mutation is scoped at the storage layer by an ownership
+predicate (`EXISTS (SELECT 1 FROM gh_accounts ga WHERE ga.login = account AND
+ga.user_id = :user)`), so even a handler that forgets to filter cannot leak across
+users; `subscriptions` carries an `account_id` FK. `GET /v1/events` is filtered to
+the caller's set of logins. Per-account `poll_interval_ms` / `budget_ceiling` /
+`rate_limit` overrides drive an `AccountManager` that runs one budgeted `Poller`
+per active account and reconciles them as accounts are added/removed.
 
 ### Migrations
 
 SQL files in `migrations/*.sql` are applied idempotently at boot by
 `src/db/migrate.ts` (tracked in `ghreview.schema_migrations`, run in order, skipping
 already-applied files). Tables: `subscriptions` (what to poll), `documents`
-(envelope + JSONB payload with a GIN index, unique on `(account, kind, key)`), and
-`sync_state` (etags, cursors, rate snapshots).
+(envelope + JSONB payload with a GIN index, unique on `(account, kind, key)`),
+`sync_state` (etags, cursors, rate snapshots), and `notification_state`
+(read/done/archived flags per thread, with a partial index on `push_pending`).
 
 ### Polling budget
 
@@ -103,6 +139,36 @@ sync every unchanged PR returns `304` and is free.
 
 Notifications polling honours `Last-Modified` / `If-Modified-Since` and the
 `X-Poll-Interval` hint that the notifications API is designed around.
+
+### Notification state (CCT-602)
+
+GitHub's notifications API only models `unread`. On top of it we keep a
+server-managed state layer in `notification_state` (one row per `(account,
+thread_id)`): `read`, `done`, `archived` booleans with their timestamps. A row is
+absent until first touched, so the inbox defaults everything to `false`.
+
+- **Inbox feed** — `GET /v1/notifications` left-joins `documents(kind=notification)`
+  with `notification_state` and returns cursor-paginated items shaped as an envelope
+  plus a `state` object. Filters (all optional, combinable):
+  - `reason` — GitHub reason (`review_requested`, `mention`, `ci_activity`); the
+    aliases `review-requested` and `ci` are accepted.
+  - `repo` — repository `full_name` (e.g. `DorskFR/cctui`).
+  - `unread` — `true` shows only threads GitHub marks unread that are not locally
+    read; `false` shows the read ones.
+  - `undone` — `true` hides done threads; `false` shows only done ones.
+  - `archived` — defaults to hiding archived; `true` shows only archived.
+  - `since` — ISO timestamp; only notifications whose payload `updated_at` is at or
+    after it (the age filter).
+- **Mutations** — `POST /v1/notifications/state` (bulk, `thread_ids[]`) and
+  `POST /v1/notifications/{id}/state` (single). Body carries `account` and any of
+  `read`/`done`/`archived`; at least one is required. Both return the updated state
+  per thread and emit `notification.updated`.
+- **Two-way** — `read: true` is pushed back to GitHub via
+  `PATCH /notifications/threads/{id}` (budget-aware, like the poller). `done` and
+  `archived` are local-only. A read that has not yet been confirmed pushed keeps
+  `push_pending = true` (with `last_error` on failure); the poller drains pending
+  reads on every tick, so a push failure never loses the local flag. A re-polled
+  notification upserts only the `documents` payload — it never clobbers state.
 
 ### Webhook (optional)
 

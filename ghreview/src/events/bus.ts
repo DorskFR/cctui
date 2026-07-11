@@ -31,6 +31,9 @@ export function mapNotice(notice: DocumentNotice): SseMessage | null {
   if (notice.kind === "notification") {
     return { event: "notification.new", data: { account: notice.account, id: notice.key } };
   }
+  if (notice.kind === "notification_state") {
+    return { event: "notification.updated", data: { account: notice.account, id: notice.key } };
+  }
   return null;
 }
 

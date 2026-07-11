@@ -10,6 +10,7 @@ import {
   syncPull,
   syncRepo,
 } from "./handlers.ts";
+import { drainPendingReads } from "./notificationPush.ts";
 
 export interface PollerOptions {
   db: DbHandle;
@@ -53,6 +54,13 @@ export class Poller {
         account.budget.record(res.status, res.rate);
         if (res.secondaryLimit) account.budget.noteSecondaryLimit(res.retryAfter ?? undefined);
         if (res.status >= 400 && res.status !== 404) errored = true;
+      } catch {
+        errored = true;
+      }
+    }
+    if (account.budget.canSpend()) {
+      try {
+        await drainPendingReads(db, account);
       } catch {
         errored = true;
       }

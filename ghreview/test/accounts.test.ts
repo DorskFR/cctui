@@ -1,0 +1,220 @@
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { randomBytes } from "node:crypto";
+import { createApp } from "../src/app.ts";
+import { createStaticResolver, parseStaticTokens } from "../src/auth/resolver.ts";
+import { createSealer } from "../src/crypto/seal.ts";
+import { createGhAccount } from "../src/db/accounts.ts";
+import { createDb, type DbHandle } from "../src/db/client.ts";
+import { upsertDocument } from "../src/db/documents.ts";
+import { runMigrations } from "../src/db/migrate.ts";
+import type { AppDeps } from "../src/deps.ts";
+import type { PatValidator } from "../src/github/validate.ts";
+
+const DATABASE_URL = process.env.DATABASE_URL;
+const guarded = DATABASE_URL ? describe : describe.skip;
+
+let db: DbHandle;
+const sealer = createSealer(randomBytes(32).toString("base64"));
+const auth = createStaticResolver(parseStaticTokens("tokA:userA,tokB:userB"));
+
+const patToLogin: Record<string, string> = {
+  "pat-alpha": "alpha",
+  "pat-beta": "beta",
+};
+const validatePat: PatValidator = async (token) => {
+  const login = patToLogin[token];
+  return login ? { ok: true, login, status: 200 } : { ok: false, status: 401 };
+};
+
+function appDeps(extra: Partial<AppDeps> = {}): AppDeps {
+  return { db, auth, sealer, validatePat, ...extra };
+}
+
+const A = { authorization: "Bearer tokA", "content-type": "application/json" };
+const B = { authorization: "Bearer tokB", "content-type": "application/json" };
+
+guarded("account CRUD", () => {
+  beforeAll(async () => {
+    db = createDb(DATABASE_URL as string, "ghreview");
+    await db.sql.unsafe("DROP SCHEMA IF EXISTS ghreview CASCADE");
+    await runMigrations(db);
+  });
+  afterAll(async () => {
+    if (db) await db.close();
+  });
+  beforeEach(async () => {
+    await db.sql.unsafe("DELETE FROM gh_accounts");
+  });
+
+  test("create validates the PAT, seals it, and never returns a secret", async () => {
+    const app = createApp(appDeps());
+    const res = await app.request("/v1/accounts", {
+      method: "POST",
+      headers: A,
+      body: JSON.stringify({ token: "pat-alpha" }),
+    });
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.login).toBe("alpha");
+    expect(JSON.stringify(body)).not.toContain("pat-alpha");
+    expect(body).not.toHaveProperty("encrypted_pat");
+    expect(body).not.toHaveProperty("token");
+
+    const [row] = await db.sql<{ encrypted_pat: string }[]>`
+      SELECT encrypted_pat FROM gh_accounts WHERE login = 'alpha'
+    `;
+    expect(row?.encrypted_pat).not.toContain("pat-alpha");
+    expect(sealer.open(row?.encrypted_pat as string)).toBe("pat-alpha");
+  });
+
+  test("rejects an invalid PAT and a login mismatch", async () => {
+    const app = createApp(appDeps());
+    const bad = await app.request("/v1/accounts", {
+      method: "POST",
+      headers: A,
+      body: JSON.stringify({ token: "unknown" }),
+    });
+    expect(bad.status).toBe(400);
+
+    const mismatch = await app.request("/v1/accounts", {
+      method: "POST",
+      headers: A,
+      body: JSON.stringify({ token: "pat-alpha", login: "notalpha" }),
+    });
+    expect(mismatch.status).toBe(400);
+    expect(((await mismatch.json()) as { error: { code: string } }).error.code).toBe(
+      "login_mismatch",
+    );
+  });
+
+  test("list shows only the caller's accounts; delete is owner-scoped", async () => {
+    await createGhAccount(db, { userId: "userA", login: "alpha", encryptedPat: sealer.seal("x") });
+    await createGhAccount(db, { userId: "userB", login: "beta", encryptedPat: sealer.seal("y") });
+    const app = createApp(appDeps());
+
+    const listA = await app.request("/v1/accounts", { headers: A });
+    const bodyA = (await listA.json()) as { items: { login: string; id: string }[] };
+    expect(bodyA.items.map((i) => i.login)).toEqual(["alpha"]);
+
+    const alphaId = bodyA.items[0]?.id as string;
+    const delByB = await app.request(`/v1/accounts/${alphaId}`, { method: "DELETE", headers: B });
+    expect(delByB.status).toBe(404);
+
+    const delByA = await app.request(`/v1/accounts/${alphaId}`, { method: "DELETE", headers: A });
+    expect(delByA.status).toBe(204);
+  });
+
+  test("a login cannot be claimed by a second user", async () => {
+    await createGhAccount(db, { userId: "userA", login: "alpha", encryptedPat: sealer.seal("x") });
+    const app = createApp(appDeps());
+    const res = await app.request("/v1/accounts", {
+      method: "POST",
+      headers: B,
+      body: JSON.stringify({ token: "pat-alpha" }),
+    });
+    expect(res.status).toBe(409);
+  });
+});
+
+guarded("ownership isolation across users", () => {
+  beforeAll(async () => {
+    db = createDb(DATABASE_URL as string, "ghreview");
+    await db.sql.unsafe("DROP SCHEMA IF EXISTS ghreview CASCADE");
+    await runMigrations(db);
+    await db.sql.unsafe(
+      "DELETE FROM documents; DELETE FROM notification_state; DELETE FROM gh_accounts",
+    );
+    await createGhAccount(db, { userId: "userA", login: "alpha", encryptedPat: sealer.seal("x") });
+    await createGhAccount(db, { userId: "userB", login: "beta", encryptedPat: sealer.seal("y") });
+    await upsertDocument(db, {
+      account: "alpha",
+      kind: "repo",
+      key: "alpha/repo",
+      etag: null,
+      payload: { full_name: "alpha/repo" },
+    });
+    await upsertDocument(db, {
+      account: "beta",
+      kind: "repo",
+      key: "beta/repo",
+      etag: null,
+      payload: { full_name: "beta/repo" },
+    });
+    await upsertDocument(db, {
+      account: "alpha",
+      kind: "pull_request",
+      key: "alpha/repo#1",
+      etag: null,
+      payload: { number: 1 },
+    });
+    await upsertDocument(db, {
+      account: "beta",
+      kind: "pull_request",
+      key: "beta/repo#1",
+      etag: null,
+      payload: { number: 1 },
+    });
+    await upsertDocument(db, {
+      account: "beta",
+      kind: "notification",
+      key: "bthread",
+      etag: null,
+      payload: {
+        id: "bthread",
+        reason: "mention",
+        unread: true,
+        updated_at: "2026-07-12T00:00:00Z",
+      },
+    });
+  });
+  afterAll(async () => {
+    if (db) await db.close();
+  });
+
+  test("repo list is scoped to the caller's accounts", async () => {
+    const app = createApp(appDeps());
+    const a = (await (await app.request("/v1/repos", { headers: A })).json()) as {
+      items: { account: string }[];
+    };
+    expect(a.items.map((i) => i.account)).toEqual(["alpha"]);
+    const b = (await (await app.request("/v1/repos", { headers: B })).json()) as {
+      items: { account: string }[];
+    };
+    expect(b.items.map((i) => i.account)).toEqual(["beta"]);
+  });
+
+  test("user A cannot fetch user B's repo or pull by direct URL", async () => {
+    const app = createApp(appDeps());
+    expect((await app.request("/v1/repos/beta/repo", { headers: A })).status).toBe(404);
+    expect((await app.request("/v1/repos/beta/repo/pulls/1", { headers: A })).status).toBe(404);
+    expect((await app.request("/v1/repos/beta/repo/pulls/1", { headers: B })).status).toBe(200);
+  });
+
+  test("notifications inbox is scoped by owner", async () => {
+    const app = createApp(appDeps());
+    const a = (await (await app.request("/v1/notifications", { headers: A })).json()) as {
+      items: unknown[];
+    };
+    expect(a.items.length).toBe(0);
+    const b = (await (await app.request("/v1/notifications", { headers: B })).json()) as {
+      items: { account: string }[];
+    };
+    expect(b.items.map((i) => i.account)).toEqual(["beta"]);
+  });
+
+  test("user A cannot mutate user B's notification state", async () => {
+    const app = createApp(appDeps());
+    const res = await app.request("/v1/notifications/state", {
+      method: "POST",
+      headers: A,
+      body: JSON.stringify({ account: "beta", thread_ids: ["bthread"], done: true }),
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { items: unknown[] }).items.length).toBe(0);
+
+    const [row] = await db.sql<{ done: boolean }[]>`
+      SELECT done FROM notification_state WHERE account = 'beta' AND thread_id = 'bthread'
+    `;
+    expect(row).toBeUndefined();
+  });
+});

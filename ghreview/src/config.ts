@@ -1,3 +1,5 @@
+export type AuthMode = "cctui" | "static";
+
 export interface Config {
   databaseUrl: string | undefined;
   schema: string;
@@ -8,6 +10,10 @@ export interface Config {
   rateLimitPerHour: number;
   webhookSecret: string | undefined;
   port: number;
+  sealKey: string | undefined;
+  authMode: AuthMode;
+  authTokens: string | undefined;
+  cctuiSchema: string;
 }
 
 function num(value: string | undefined, fallback: number): number {
@@ -27,5 +33,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     rateLimitPerHour: num(env.GHREVIEW_RATE_LIMIT, 5000),
     webhookSecret: env.GHREVIEW_WEBHOOK_SECRET,
     port: num(env.PORT, 8790),
+    sealKey: env.GHREVIEW_SEAL_KEY,
+    authMode: env.GHREVIEW_AUTH_MODE === "static" ? "static" : "cctui",
+    authTokens: env.GHREVIEW_AUTH_TOKENS,
+    cctuiSchema: env.GHREVIEW_CCTUI_SCHEMA ?? "public",
   };
 }

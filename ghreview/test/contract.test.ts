@@ -21,9 +21,13 @@ describe("openapi contract", () => {
   test("exposes the /v1 route surface", async () => {
     const s = await spec();
     expect(Object.keys(s.paths).sort()).toEqual([
+      "/v1/accounts",
+      "/v1/accounts/{id}",
       "/v1/events",
       "/v1/health",
       "/v1/notifications",
+      "/v1/notifications/state",
+      "/v1/notifications/{id}/state",
       "/v1/repos",
       "/v1/repos/{owner}/{repo}",
       "/v1/repos/{owner}/{repo}/pulls",
@@ -38,14 +42,23 @@ describe("openapi contract", () => {
     for (const expected of [
       "RepoEnvelope",
       "PullRequestEnvelope",
-      "NotificationEnvelope",
       "RepoPage",
       "PullRequestPage",
-      "NotificationPage",
+      "NotificationInboxItem",
+      "NotificationInboxPage",
+      "NotificationState",
+      "NotificationStateItem",
+      "NotificationStateResult",
+      "NotificationBulkState",
+      "NotificationSingleState",
+      "AccountCreate",
+      "AccountSummary",
+      "AccountList",
       "Error",
       "SseEvent",
       "PrUpdatedEvent",
       "NotificationNewEvent",
+      "NotificationUpdatedEvent",
       "SyncStatusEvent",
     ]) {
       expect(names).toContain(expected);

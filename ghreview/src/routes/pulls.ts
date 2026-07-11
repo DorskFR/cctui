@@ -1,4 +1,5 @@
 import { createRoute, type OpenAPIHono, z } from "@hono/zod-openapi";
+import { getUserId } from "../auth/middleware.ts";
 import { findDocument, listDocuments } from "../db/documents.ts";
 import type { AppDeps } from "../deps.ts";
 import {
@@ -55,18 +56,21 @@ export function registerPulls(app: OpenAPIHono, deps: AppDeps = {}) {
     const { owner, repo } = c.req.valid("param");
     const { account, limit, cursor } = c.req.valid("query");
     if (!deps.db) return c.json({ items: [], next_cursor: null }, 200);
+    const userId = getUserId(c);
     const page = await listDocuments(deps.db, "pull_request", {
       account,
       keyPrefix: `${owner}/${repo}#`,
       limit,
       cursor,
+      userId,
     });
     return c.json(page, 200);
   });
   app.openapi(getPull, async (c) => {
     const { owner, repo, number } = c.req.valid("param");
+    const userId = getUserId(c);
     const doc = deps.db
-      ? await findDocument(deps.db, "pull_request", `${owner}/${repo}#${number}`)
+      ? await findDocument(deps.db, "pull_request", `${owner}/${repo}#${number}`, { userId })
       : null;
     if (doc) return c.json(doc, 200);
     return c.json(

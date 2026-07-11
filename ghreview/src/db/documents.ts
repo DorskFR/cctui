@@ -83,14 +83,21 @@ export async function findDocument<K extends string>(
   db: DbHandle,
   kind: K,
   key: string,
-  account?: string,
+  opts: { account?: string; userId?: string } = {},
 ): Promise<Envelope<K> | null> {
-  const rows = await db.sql<Envelope<K>[]>`
+  const { sql } = db;
+  const rows = await sql<Envelope<K>[]>`
     SELECT account, kind, to_char(synced_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS synced_at,
            etag, payload
     FROM documents
     WHERE kind = ${kind} AND key = ${key}
-      ${account ? db.sql`AND account = ${account}` : db.sql``}
+      ${opts.account ? sql`AND account = ${opts.account}` : sql``}
+      ${
+        opts.userId
+          ? sql`AND EXISTS (SELECT 1 FROM gh_accounts ga
+                 WHERE ga.login = documents.account AND ga.user_id = ${opts.userId})`
+          : sql``
+      }
     ORDER BY updated_at DESC
     LIMIT 1
   `;
@@ -127,6 +134,7 @@ export interface ListOptions {
   keyPrefix?: string;
   limit: number;
   cursor?: string;
+  userId?: string;
 }
 
 export async function listDocuments<K extends string>(
@@ -143,6 +151,12 @@ export async function listDocuments<K extends string>(
     WHERE kind = ${kind}
       ${opts.account ? sql`AND account = ${opts.account}` : sql``}
       ${opts.keyPrefix ? sql`AND key LIKE ${`${opts.keyPrefix}%`}` : sql``}
+      ${
+        opts.userId
+          ? sql`AND EXISTS (SELECT 1 FROM gh_accounts ga
+                 WHERE ga.login = documents.account AND ga.user_id = ${opts.userId})`
+          : sql``
+      }
       ${
         decoded
           ? sql`AND (updated_at, key) < (${decoded.updatedAt}::timestamptz, ${decoded.key})`

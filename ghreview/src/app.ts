@@ -1,5 +1,7 @@
 import { OpenAPIHono } from "@hono/zod-openapi";
+import { authMiddleware } from "./auth/middleware.ts";
 import type { AppDeps } from "./deps.ts";
+import { registerAccounts } from "./routes/accounts.ts";
 import { registerEvents } from "./routes/events.ts";
 import { registerHealth } from "./routes/health.ts";
 import { registerNotifications } from "./routes/notifications.ts";
@@ -7,6 +9,8 @@ import { registerPulls } from "./routes/pulls.ts";
 import { registerRepos } from "./routes/repos.ts";
 import { registerWebhook } from "./routes/webhook.ts";
 import { version } from "./version.ts";
+
+const AUTH_EXEMPT = new Set(["/v1/health", "/v1/status", "/v1/webhook", "/v1/openapi.json"]);
 
 export function createApp(deps: AppDeps = {}) {
   const app = new OpenAPIHono({
@@ -26,7 +30,16 @@ export function createApp(deps: AppDeps = {}) {
     },
   });
 
+  if (deps.auth) {
+    const guard = authMiddleware(deps.auth);
+    app.use("/v1/*", async (c, next) => {
+      if (AUTH_EXEMPT.has(c.req.path)) return next();
+      return guard(c, next);
+    });
+  }
+
   registerHealth(app, deps);
+  registerAccounts(app, deps);
   registerRepos(app, deps);
   registerPulls(app, deps);
   registerNotifications(app, deps);
