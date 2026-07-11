@@ -470,18 +470,21 @@ pub enum AdapterCommand {
     /// Change the model and/or reasoning effort of an already-running session
     /// **in place**, without spawning a new conversation (CCT-303). Applies to
     /// subsequent turns on the same thread. Agent-asymmetric: the codex adapter
-    /// sends `thread/settings/update` to the live app-server thread (and echoes
-    /// the resolved model/effort back via [`AdapterEvent::Status`]); the
-    /// claude-code adapter has no non-interactive set-model lever on its control
-    /// socket, so it surfaces a clear "not supported in place — fork to change
-    /// model" error (the supported substitute is fork-with-`--model`, CCT-302).
-    /// At least one of `model`/`effort` is expected to be set.
+    /// carries the override on the next `turn/start` (a stable per-turn override
+    /// codex promotes to the later default, CCT-635) and echoes the resolved
+    /// values via [`AdapterEvent::Status`]; the claude-code adapter has no
+    /// non-interactive set-model lever, so it errors "fork to change model"
+    /// (fork-with-`--model`, CCT-302). At least one of `model`/`effort` is
+    /// expected. `command_id` correlates the outcome as an
+    /// [`AdapterEvent::CommandResult`] the webui awaits before confirming.
     SetModel {
         local_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         model: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         effort: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        command_id: Option<Uuid>,
     },
     /// Snapshot everything the adapter knows about a session (CCT-547). The
     /// adapter answers with an [`AdapterEvent::Diagnose`] echoing

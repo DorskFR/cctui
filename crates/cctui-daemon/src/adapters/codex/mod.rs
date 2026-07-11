@@ -324,12 +324,40 @@ async fn command_pump(
                         {
                             cfg.model = Some(model.to_owned());
                         }
+                        // Stage spawn attachments (CCT-636). A staging failure is
+                        // fatal to the spawn — silently dropping a file the user
+                        // expects the session to read is the P0 bug this fixes.
+                        // Keyed by the same id the gateway env used so the staging
+                        // dir is stable across the session lifetime.
+                        let stage_id = session_id
+                            .or(command_id)
+                            .map_or_else(String::new, |id| id.to_string());
+                        let attachments = match crate::adapters::uploads::stage_bootstrap(
+                            &stage_id,
+                            &spec.bootstrap,
+                        ) {
+                            Ok(paths) => paths,
+                            Err(err) => {
+                                tracing::error!(%err, "codex spawn: attachment staging failed");
+                                if let Some(command_id) = command_id {
+                                    let _ = events
+                                        .send(AdapterEvent::CommandResult {
+                                            command_id,
+                                            ok: false,
+                                            error: Some(format!("attachment staging failed: {err}")),
+                                        })
+                                        .await;
+                                }
+                                continue;
+                            }
+                        };
                         let session = CodexSession::new_fresh(
                             cfg,
                             working_dir,
                             env,
                             spec.prompt.clone(),
                             spec.name.clone(),
+                            attachments,
                             command_id,
                             events.clone(),
                             live.clone(),
@@ -394,6 +422,30 @@ async fn command_pump(
                         {
                             cfg.model = Some(model.to_owned());
                         }
+                        // Stage fork attachments (CCT-636), fatal on failure — same
+                        // contract as spawn.
+                        let stage_id = session_id
+                            .clone()
+                            .unwrap_or_else(|| parent_local_id.clone());
+                        let attachments = match crate::adapters::uploads::stage_bootstrap(
+                            &stage_id,
+                            &spec.bootstrap,
+                        ) {
+                            Ok(paths) => paths,
+                            Err(err) => {
+                                tracing::error!(%err, "codex fork: attachment staging failed");
+                                if let Some(command_id) = command_id {
+                                    let _ = events
+                                        .send(AdapterEvent::CommandResult {
+                                            command_id,
+                                            ok: false,
+                                            error: Some(format!("attachment staging failed: {err}")),
+                                        })
+                                        .await;
+                                }
+                                continue;
+                            }
+                        };
                         let session = CodexSession::new_fork(
                             cfg,
                             working_dir,
@@ -401,6 +453,7 @@ async fn command_pump(
                             parent_local_id,
                             spec.prompt.clone(),
                             spec.name.clone(),
+                            attachments,
                             command_id,
                             events.clone(),
                             live.clone(),
@@ -517,8 +570,8 @@ async fn command_pump(
                         .await;
                         registry.lock().await.remove(&local_id);
                     }
-                    AdapterCommand::SetModel { local_id, model, effort } => {
-                        forward(
+                    AdapterCommand::SetModel { local_id, model, effort, command_id } => {
+                        let handled = forward(
                             &live,
                             &registry,
                             &events,
@@ -526,9 +579,21 @@ async fn command_pump(
                             server.as_ref(),
                             machine_key.as_ref(),
                             &local_id,
-                            SessionCommand::SetModel { model, effort },
+                            SessionCommand::SetModel { model, effort, command_id },
                         )
                         .await;
+                        // Delivered/resumed paths resolve `command_id` in the
+                        // driver; an untracked session resolves it as failure
+                        // here so the webui doesn't wait out the ack (CCT-635).
+                        if !handled && let Some(command_id) = command_id {
+                            let _ = events
+                                .send(AdapterEvent::CommandResult {
+                                    command_id,
+                                    ok: false,
+                                    error: Some("no codex session to change model on".to_owned()),
+                                })
+                                .await;
+                        }
                     }
                     _ => tracing::warn!("codex: unhandled AdapterCommand variant"),
                 }
@@ -550,9 +615,9 @@ async fn forward(
     machine_key: Option<&String>,
     local_id: &str,
     cmd: SessionCommand,
-) {
+) -> bool {
     match route_or_prepare_resume(live, registry, local_id, cmd).await {
-        RouteAction::Delivered => {}
+        RouteAction::Delivered => true,
         RouteAction::Resume { mut record, command } if command.is_resumable() => {
             tracing::info!(%local_id, ?command, "codex: resuming hibernated app-server session");
             // CCT-482: a thread REDISCOVERED from `thread/list` after a daemon
@@ -568,7 +633,7 @@ async fn forward(
                     Ok(env) => record.env = env,
                     Err(err) => {
                         tracing::error!(%local_id, %err, "codex resume: refusing env-less launch");
-                        return;
+                        return false;
                     }
                 }
             }
@@ -581,6 +646,7 @@ async fn forward(
                 registry.clone(),
                 shutdown.clone(),
             );
+            true
         }
         RouteAction::Resume { command, .. } => {
             tracing::warn!(%local_id, ?command, "codex: command cannot be applied to hibernated session");
@@ -593,9 +659,11 @@ async fn forward(
                     })
                     .await;
             }
+            false
         }
         RouteAction::Missing => {
             tracing::warn!(%local_id, "codex: no app-server session for command");
+            false
         }
     }
 }

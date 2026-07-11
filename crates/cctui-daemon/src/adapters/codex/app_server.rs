@@ -422,38 +422,184 @@ fn thread_name_set_req(id: i64, thread_id: &str, name: &str) -> Value {
     })
 }
 
-/// Build a `thread/settings/update` request that persistently overrides the
-/// model and/or reasoning effort for subsequent turns on `thread_id` (CCT-303).
-/// Only the provided fields are sent so a partial update leaves the other
-/// setting untouched.
-fn thread_settings_update_req(
+/// Build the `input` array for a turn (CCT-636). Staged image attachments ride
+/// as native `localImage` items so codex feeds the picture to the model; every
+/// other staged file keeps the path/text semantics — its absolute path is
+/// listed in the text item, matching the adapter-neutral mid-chat injection.
+/// The array is never empty: a turn with only images still carries a text item
+/// so an image-only prompt is valid.
+fn turn_input_items(text: &str, attachments: &[String]) -> Vec<Value> {
+    use std::fmt::Write as _;
+
+    let mut body = text.to_owned();
+    let non_images: Vec<&str> = attachments
+        .iter()
+        .map(String::as_str)
+        .filter(|p| !crate::adapters::uploads::is_image_path(p))
+        .collect();
+    if !non_images.is_empty() {
+        if !body.is_empty() {
+            body.push_str("\n\n");
+        }
+        body.push_str("Attached files:");
+        for p in non_images {
+            let _ = write!(body, "\n  - {p}");
+        }
+    }
+
+    let mut items = Vec::new();
+    if !body.is_empty() {
+        items.push(json!({"type": "text", "text": body}));
+    }
+    for p in attachments.iter().filter(|p| crate::adapters::uploads::is_image_path(p)) {
+        items.push(json!({"type": "localImage", "path": p}));
+    }
+    if items.is_empty() {
+        items.push(json!({"type": "text", "text": ""}));
+    }
+    items
+}
+
+/// Build a `turn/start`. An in-place model/effort change (CCT-635) rides here
+/// as a per-turn override that codex promotes to the later default — the stable
+/// alternative to the `experimentalApi`-gated `thread/settings/update`. Only
+/// set fields are sent so an unchanged setting keeps codex's own default.
+/// Staged attachments (CCT-636) become native image / path-in-text inputs.
+fn turn_start_req(
     id: i64,
     thread_id: &str,
+    text: &str,
+    attachments: &[String],
     model: Option<&str>,
     effort: Option<&str>,
 ) -> Value {
     let mut params = serde_json::Map::new();
     params.insert("threadId".to_owned(), json!(thread_id));
+    params.insert("input".to_owned(), json!(turn_input_items(text, attachments)));
     if let Some(model) = model {
         params.insert("model".to_owned(), json!(model));
     }
     if let Some(effort) = effort {
         params.insert("effort".to_owned(), json!(effort));
     }
-    json!({"jsonrpc": "2.0", "id": id, "method": "thread/settings/update", "params": params})
+    json!({"jsonrpc": "2.0", "id": id, "method": "turn/start", "params": params})
 }
 
-fn turn_start_req(id: i64, thread_id: &str, text: &str) -> Value {
+/// Steer a user message into the currently active turn (CCT-634). Unlike
+/// `turn/start` — which codex rejects while a turn is in flight — `turn/steer`
+/// appends the input to the running turn. `expectedTurnId` is a precondition:
+/// the request fails if it no longer matches the active turn (it just ended),
+/// which the driver recovers from by falling back to `turn/start`. Attachments
+/// (CCT-636) build the same native image / path-in-text inputs as a start.
+fn turn_steer_req(
+    id: i64,
+    thread_id: &str,
+    expected_turn_id: &str,
+    text: &str,
+    attachments: &[String],
+) -> Value {
     json!({
         "jsonrpc": "2.0",
         "id": id,
-        "method": "turn/start",
-        "params": {"threadId": thread_id, "input": [{"type": "text", "text": text}]},
+        "method": "turn/steer",
+        "params": {
+            "threadId": thread_id,
+            "expectedTurnId": expected_turn_id,
+            "input": turn_input_items(text, attachments),
+        },
     })
 }
 
 fn turn_interrupt_req(id: i64, thread_id: &str) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "method": "turn/interrupt", "params": {"threadId": thread_id}})
+}
+
+/// A turn lifecycle transition parsed from a `turn/started` or `turn/completed`
+/// notification (CCT-634). The driver tracks the active turn id from these so a
+/// follow-up message is routed via `turn/steer` into the running turn instead
+/// of a second `turn/start` codex would reject.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TurnLifecycle {
+    Started { turn_id: String },
+    Completed { turn_id: String },
+}
+
+/// Extract a [`TurnLifecycle`] from a `turn/started` / `turn/completed`
+/// notification. Both carry `params.turn.id`; anything else yields `None`.
+#[must_use]
+pub fn turn_lifecycle(v: &Value) -> Option<TurnLifecycle> {
+    let method = v.get("method").and_then(Value::as_str)?;
+    let turn_id = v.pointer("/params/turn/id").and_then(Value::as_str)?.to_owned();
+    match method {
+        "turn/started" => Some(TurnLifecycle::Started { turn_id }),
+        "turn/completed" => Some(TurnLifecycle::Completed { turn_id }),
+        _ => None,
+    }
+}
+
+/// Tracks the session's in-flight turn (CCT-634). `turn/started` sets the
+/// active turn; a `turn/completed` for the SAME turn clears it. The active id
+/// selects `turn/steer` (with it as `expectedTurnId`) over `turn/start`.
+#[derive(Debug, Default)]
+pub struct ActiveTurn {
+    id: Option<String>,
+}
+
+impl ActiveTurn {
+    pub fn apply(&mut self, ev: &TurnLifecycle) {
+        match ev {
+            TurnLifecycle::Started { turn_id } => self.id = Some(turn_id.clone()),
+            TurnLifecycle::Completed { turn_id } => {
+                if self.id.as_deref() == Some(turn_id.as_str()) {
+                    self.id = None;
+                }
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+
+    pub fn clear(&mut self) {
+        self.id = None;
+    }
+}
+
+/// How a user message is delivered given the current active turn (CCT-634):
+/// steer into a running turn, else start a fresh one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PromptDispatch {
+    Start,
+    Steer { turn_id: String },
+}
+
+#[must_use]
+pub fn prompt_dispatch(active: &ActiveTurn) -> PromptDispatch {
+    active.id().map_or(PromptDispatch::Start, |turn_id| PromptDispatch::Steer {
+        turn_id: turn_id.to_owned(),
+    })
+}
+
+/// How to recover from a `turn/steer` failure (CCT-634). A turn that just ended
+/// (the common `expectedTurnId` race) frees the turn slot, so the message is
+/// retried as a fresh `turn/start`; a turn that is running but non-steerable
+/// (`/review` or manual `/compact`, `activeTurnNotSteerable`) would reject a
+/// `turn/start` too, so the message is rejected visibly instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SteerRecovery {
+    FallbackToStart,
+    Reject,
+}
+
+#[must_use]
+pub fn steer_recovery(error: &str) -> SteerRecovery {
+    if error.to_lowercase().contains("steerable") {
+        SteerRecovery::Reject
+    } else {
+        SteerRecovery::FallbackToStart
+    }
 }
 
 /// Reply to a server-issued approval request. `rpc_id` must be the exact
@@ -605,10 +751,12 @@ pub enum SessionCommand {
     /// JSON-RPC outcome back to an [`AdapterEvent::CommandResult`] (CCT-631).
     Interrupt { command_id: Option<Uuid> },
     /// Change the model and/or reasoning effort of the running thread in place
-    /// (CCT-303): sends `thread/settings/update { threadId, model?, effort? }`
-    /// so subsequent turns use the new settings, and echoes the resolved values
-    /// back via [`AdapterEvent::Status`] so the webui chip updates live.
-    SetModel { model: Option<String>, effort: Option<String> },
+    /// (CCT-303): records the override so the next `turn/start` carries it (a
+    /// stable per-turn override codex promotes to the later default, CCT-635),
+    /// and echoes the resolved values back via [`AdapterEvent::Status`] so the
+    /// webui chip updates live. `command_id` correlates the outcome back as an
+    /// [`AdapterEvent::CommandResult`].
+    SetModel { model: Option<String>, effort: Option<String>, command_id: Option<Uuid> },
 }
 
 impl SessionCommand {
@@ -767,6 +915,8 @@ enum SessionLaunch {
     Fresh {
         prompt: Option<String>,
         name: Option<String>,
+        /// Staged spawn-attachment paths (CCT-636), fed into the first turn.
+        attachments: Vec<String>,
     },
     Resume {
         thread_id: String,
@@ -780,6 +930,7 @@ enum SessionLaunch {
         parent_thread_id: String,
         prompt: Option<String>,
         name: Option<String>,
+        attachments: Vec<String>,
     },
 }
 
@@ -810,6 +961,7 @@ impl CodexSession {
         env: std::collections::BTreeMap<String, String>,
         prompt: Option<String>,
         name: Option<String>,
+        attachments: Vec<String>,
         command_id: Option<Uuid>,
         events: mpsc::Sender<AdapterEvent>,
         live: LiveSessionRegistry,
@@ -820,7 +972,7 @@ impl CodexSession {
             cfg,
             cwd,
             env,
-            launch: SessionLaunch::Fresh { prompt, name },
+            launch: SessionLaunch::Fresh { prompt, name, attachments },
             command_id,
             events,
             live,
@@ -837,6 +989,7 @@ impl CodexSession {
         parent_thread_id: String,
         prompt: Option<String>,
         name: Option<String>,
+        attachments: Vec<String>,
         command_id: Option<Uuid>,
         events: mpsc::Sender<AdapterEvent>,
         live: LiveSessionRegistry,
@@ -847,7 +1000,7 @@ impl CodexSession {
             cfg,
             cwd,
             env,
-            launch: SessionLaunch::Fork { parent_thread_id, prompt, name },
+            launch: SessionLaunch::Fork { parent_thread_id, prompt, name, attachments },
             command_id,
             events,
             live,
@@ -972,6 +1125,14 @@ impl CodexSession {
         // the non-zero exit as a crash.
         let mut killed = false;
         let mut retry_after_hibernate: Option<SessionCommand> = None;
+        let mut active_turn = ActiveTurn::default();
+        // In-place model/effort override (CCT-635). A SetModel records it here;
+        // every subsequent `turn/start` carries it so codex adopts it as the
+        // later default. Left `None` at launch — the spawn-time `-c model=`/
+        // `-c model_reasoning_effort=` flags already seed the initial turns.
+        let mut override_model: Option<String> = None;
+        let mut override_effort: Option<String> = None;
+        let mut steer_texts: HashMap<i64, String> = HashMap::new();
         let mut sweep = tokio::time::interval(Duration::from_secs(1));
         sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
@@ -1020,14 +1181,33 @@ impl CodexSession {
                             }
                         }
                         Some(SessionCommand::Send { text }) => {
-                            let req = turn_start_req(next_id, &local_id, &text);
-                            pending_rpcs.insert(next_id, "turn/start", None, Instant::now() + RPC_TIMEOUT);
+                            let (req, method) = match prompt_dispatch(&active_turn) {
+                                PromptDispatch::Steer { turn_id } => {
+                                    steer_texts.insert(next_id, text.clone());
+                                    (turn_steer_req(next_id, &local_id, &turn_id, &text, &[]), "turn/steer")
+                                }
+                                PromptDispatch::Start => {
+                                    (
+                                        turn_start_req(
+                                            next_id,
+                                            &local_id,
+                                            &text,
+                                            &[],
+                                            override_model.as_deref(),
+                                            override_effort.as_deref(),
+                                        ),
+                                        "turn/start",
+                                    )
+                                }
+                            };
+                            pending_rpcs.insert(next_id, method, None, Instant::now() + RPC_TIMEOUT);
                             next_id += 1;
                             // A write failure here means the app-server is gone
                             // — remember the turn and let the epilogue revive
                             // the thread if this was a clean hibernation exit.
                             if let Err(e) = write_json(&mut stdin, &req).await {
-                                tracing::warn!(%e, "codex: turn/start write failed; ending session");
+                                tracing::warn!(%e, "codex: turn dispatch write failed; ending session");
+                                steer_texts.remove(&(next_id - 1));
                                 retry_after_hibernate = Some(SessionCommand::Send { text });
                                 break;
                             }
@@ -1068,23 +1248,18 @@ impl CodexSession {
                                 break;
                             }
                         }
-                        Some(SessionCommand::SetModel { model, effort }) => {
-                            if let Err(e) = set_thread_model(
-                                &mut stdin,
-                                &mut next_id,
-                                &mut pending_rpcs,
-                                &local_id,
+                        Some(SessionCommand::SetModel { model, effort, command_id }) => {
+                            record_model_override(
+                                &mut override_model,
+                                &mut override_effort,
                                 model.as_deref(),
                                 effort.as_deref(),
+                                &local_id,
                                 &self.events,
                                 &self.registry,
+                                command_id,
                             )
-                            .await
-                            {
-                                tracing::warn!(%e, "codex: thread/settings/update write failed; ending session");
-                                retry_after_hibernate = Some(SessionCommand::SetModel { model, effort });
-                                break;
-                            }
+                            .await;
                         }
                         None => break,
                     }
@@ -1108,6 +1283,9 @@ impl CodexSession {
                         tracing::debug!(line = %trimmed, "codex: non-JSON line");
                         continue;
                     };
+                    if let Some(ev) = turn_lifecycle(&value) {
+                        active_turn.apply(&ev);
+                    }
                     match classify(&local_id, &value) {
                         Incoming::Response { id, value } => {
                             let Some((pending, outcome)) = pending_rpcs.resolve(id, &value) else {
@@ -1216,8 +1394,8 @@ impl CodexSession {
 
                             let mut end_after_initial = false;
                             match &self.launch {
-                                SessionLaunch::Fresh { name, prompt }
-                                | SessionLaunch::Fork { name, prompt, .. } => {
+                                SessionLaunch::Fresh { name, prompt, attachments }
+                                | SessionLaunch::Fork { name, prompt, attachments, .. } => {
                                     if let Some(name) = name.as_deref() {
                                         let result = set_thread_name(
                                             &mut stdin,
@@ -1236,10 +1414,22 @@ impl CodexSession {
                                             end_after_initial = true;
                                         }
                                     }
+                                    // Send the first turn when there is a prompt OR
+                                    // staged attachments (CCT-636) — an image-only
+                                    // spawn carries no prompt text but must still
+                                    // reach codex as a `localImage` turn input.
                                     if !end_after_initial
-                                        && let Some(prompt) = prompt.as_deref()
+                                        && (prompt.is_some() || !attachments.is_empty())
                                     {
-                                        let req = turn_start_req(next_id, &local_id, prompt);
+                                        let prompt_text = prompt.as_deref().unwrap_or("");
+                                        let req = turn_start_req(
+                                            next_id,
+                                            &local_id,
+                                            prompt_text,
+                                            attachments,
+                                            override_model.as_deref(),
+                                            override_effort.as_deref(),
+                                        );
                                         pending_rpcs.insert(
                                             next_id,
                                             "turn/start",
@@ -1250,7 +1440,7 @@ impl CodexSession {
                                         if let Err(e) = write_json(&mut stdin, &req).await {
                                             tracing::warn!(%e, "codex: initial prompt write failed; ending session");
                                             retry_after_hibernate =
-                                                Some(SessionCommand::Send { text: prompt.to_owned() });
+                                                Some(SessionCommand::Send { text: prompt_text.to_owned() });
                                             end_after_initial = true;
                                         }
                                     }
@@ -1259,7 +1449,14 @@ impl CodexSession {
                                     for command in initial_commands.clone() {
                                         match command {
                                             SessionCommand::Send { text } => {
-                                                let req = turn_start_req(next_id, &local_id, &text);
+                                                let req = turn_start_req(
+                                                    next_id,
+                                                    &local_id,
+                                                    &text,
+                                                    &[],
+                                                    override_model.as_deref(),
+                                                    override_effort.as_deref(),
+                                                );
                                                 pending_rpcs.insert(
                                                     next_id,
                                                     "turn/start",
@@ -1294,25 +1491,18 @@ impl CodexSession {
                                                     break;
                                                 }
                                             }
-                                            SessionCommand::SetModel { model, effort } => {
-                                                if let Err(e) = set_thread_model(
-                                                    &mut stdin,
-                                                    &mut next_id,
-                                                    &mut pending_rpcs,
-                                                    &local_id,
+                                            SessionCommand::SetModel { model, effort, command_id } => {
+                                                record_model_override(
+                                                    &mut override_model,
+                                                    &mut override_effort,
                                                     model.as_deref(),
                                                     effort.as_deref(),
+                                                    &local_id,
                                                     &self.events,
                                                     &self.registry,
+                                                    command_id,
                                                 )
-                                                .await
-                                                {
-                                                    tracing::warn!(%e, "codex: resumed thread/settings/update write failed");
-                                                    retry_after_hibernate =
-                                                        Some(SessionCommand::SetModel { model, effort });
-                                                    end_after_initial = true;
-                                                    break;
-                                                }
+                                                .await;
                                             }
                                             other => {
                                                 tracing::warn!(?other, "codex: ignoring non-resumable initial command");
@@ -1343,6 +1533,51 @@ impl CodexSession {
                             }
                             if let Err(err) = outcome {
                                 tracing::warn!(%err, "codex: turn/interrupt failed");
+                            }
+                        }
+                        ("turn/steer", Ok(_)) => {
+                            steer_texts.remove(&id);
+                        }
+                        ("turn/steer", Err(err)) => {
+                            let text = steer_texts.remove(&id);
+                            match (steer_recovery(&err), text) {
+                                (SteerRecovery::FallbackToStart, Some(text)) => {
+                                    active_turn.clear();
+                                    tracing::info!(%err, "codex: turn/steer stale; falling back to turn/start");
+                                    let req = turn_start_req(
+                                        next_id,
+                                        &local_id,
+                                        &text,
+                                        &[],
+                                        override_model.as_deref(),
+                                        override_effort.as_deref(),
+                                    );
+                                    pending_rpcs.insert(next_id, "turn/start", None, Instant::now() + RPC_TIMEOUT);
+                                    next_id += 1;
+                                    if let Err(e) = write_json(&mut stdin, &req).await {
+                                        tracing::warn!(%e, "codex: turn/start fallback write failed; ending session");
+                                        retry_after_hibernate = Some(SessionCommand::Send { text });
+                                        break;
+                                    }
+                                }
+                                (recovery, _) => {
+                                    tracing::warn!(%err, ?recovery, "codex: turn/steer rejected");
+                                    self.events
+                                        .send(AdapterEvent::Status {
+                                            local_id: local_id.clone(),
+                                            tempo: None,
+                                            state: Some("failed".to_owned()),
+                                            detail: Some(err),
+                                            activity: Some("failure".to_owned()),
+                                            name: None,
+                                            intent: None,
+                                            model: None,
+                                            effort: None,
+                                            children: vec![],
+                                        })
+                                        .await
+                                        .ok();
+                                }
                             }
                         }
                         (method, Err(err)) => {
@@ -1519,26 +1754,31 @@ async fn set_thread_name<W: AsyncWriteExt + Unpin>(
     Ok(())
 }
 
-/// Apply an in-place model/effort change (CCT-303): send
-/// `thread/settings/update` to the running thread, update the durable
-/// `SessionRecord` cfg so a later resume keeps the new settings, and echo the
-/// resolved values back via [`AdapterEvent::Status`] so the webui chip updates
-/// live (codex emits a `thread/settings/updated` notification too, but we
-/// surface the requested values directly for immediacy).
+/// Record an in-place model/effort change (CCT-303, CCT-635). Stashes the
+/// override in `override_model`/`override_effort` (carried on the next
+/// `turn/start`, which codex promotes to the later default — the stable path,
+/// vs the `experimentalApi`-gated `thread/settings/update` codex 0.144.1
+/// rejects) and folds it into the durable `SessionRecord` cfg so a resume
+/// relaunches with matching `-c model=`/`-c model_reasoning_effort=` flags.
+/// No app-server round-trip can reject it, so the chip (`Status`) and the
+/// `command_id` ack (`CommandResult`) are truthful the moment they fire here.
 #[allow(clippy::too_many_arguments)]
-async fn set_thread_model<W: AsyncWriteExt + Unpin>(
-    stdin: &mut W,
-    next_id: &mut i64,
-    pending_rpcs: &mut PendingRpcs,
-    thread_id: &str,
+async fn record_model_override(
+    override_model: &mut Option<String>,
+    override_effort: &mut Option<String>,
     model: Option<&str>,
     effort: Option<&str>,
+    thread_id: &str,
     events: &mpsc::Sender<AdapterEvent>,
     registry: &SessionRegistry,
-) -> Result<()> {
-    pending_rpcs.insert(*next_id, "thread/settings/update", None, Instant::now() + RPC_TIMEOUT);
-    write_json(stdin, &thread_settings_update_req(*next_id, thread_id, model, effort)).await?;
-    *next_id += 1;
+    command_id: Option<Uuid>,
+) {
+    if let Some(model) = model {
+        *override_model = Some(model.to_owned());
+    }
+    if let Some(effort) = effort {
+        *override_effort = Some(effort.to_owned());
+    }
     if let Some(record) = registry.lock().await.get_mut(thread_id) {
         if let Some(model) = model {
             record.cfg.model = Some(model.to_owned());
@@ -1562,7 +1802,12 @@ async fn set_thread_model<W: AsyncWriteExt + Unpin>(
         })
         .await
         .ok();
-    Ok(())
+    if let Some(command_id) = command_id {
+        events
+            .send(AdapterEvent::CommandResult { command_id, ok: true, error: None })
+            .await
+            .ok();
+    }
 }
 
 pub fn spawn_resumed_session(
@@ -1834,33 +2079,110 @@ mod tests {
         assert_eq!(rename["id"], 101);
         assert_eq!(rename["params"]["threadId"], "tid");
         assert_eq!(rename["params"]["name"], "build fix");
-        let turn = turn_start_req(100, "tid", "hello");
+        let turn = turn_start_req(100, "tid", "hello", &[], None, None);
         assert_eq!(turn["params"]["threadId"], "tid");
         assert_eq!(turn["params"]["input"][0]["text"], "hello");
     }
 
     #[test]
-    fn thread_settings_update_req_sends_only_provided_fields() {
-        // Both fields.
-        let both = thread_settings_update_req(102, "tid", Some("gpt-5-codex"), Some("high"));
-        assert_eq!(both["method"], "thread/settings/update");
-        assert_eq!(both["id"], 102);
-        assert_eq!(both["params"]["threadId"], "tid");
+    fn turn_start_req_carries_only_provided_overrides() {
+        // No override — model/effort keys absent so codex keeps its defaults.
+        let plain = turn_start_req(100, "tid", "hi", &[], None, None);
+        assert!(plain["params"].get("model").is_none());
+        assert!(plain["params"].get("effort").is_none());
+        // Both overrides ride the turn (CCT-635 per-turn model change).
+        let both = turn_start_req(101, "tid", "hi", &[], Some("gpt-5-codex"), Some("high"));
+        assert_eq!(both["method"], "turn/start");
         assert_eq!(both["params"]["model"], "gpt-5-codex");
         assert_eq!(both["params"]["effort"], "high");
-        // Model only — effort key must be absent so codex keeps its current effort.
-        let model_only = thread_settings_update_req(103, "tid", Some("gpt-5-codex"), None);
+        // Model only — effort key must be absent.
+        let model_only = turn_start_req(102, "tid", "hi", &[], Some("gpt-5-codex"), None);
         assert_eq!(model_only["params"]["model"], "gpt-5-codex");
         assert!(model_only["params"].get("effort").is_none());
-        // Effort only.
-        let effort_only = thread_settings_update_req(104, "tid", None, Some("low"));
-        assert_eq!(effort_only["params"]["effort"], "low");
-        assert!(effort_only["params"].get("model").is_none());
+    }
+
+    #[test]
+    fn turn_input_items_sends_images_native_and_files_in_text() {
+        let attachments = vec![
+            "/tmp/cctui-uploads/s/diagram.png".to_owned(),
+            "/tmp/cctui-uploads/s/report.pdf".to_owned(),
+            "/tmp/cctui-uploads/s/photo.JPEG".to_owned(),
+        ];
+        let items = turn_input_items("look at these", &attachments);
+        // Text item first: prompt plus a listing of the non-image file only.
+        assert_eq!(items[0]["type"], "text");
+        let text = items[0]["text"].as_str().unwrap();
+        assert!(text.contains("look at these"));
+        assert!(text.contains("report.pdf"));
+        assert!(!text.contains("diagram.png"), "images are native, not text paths");
+        // Both images become localImage inputs carrying their local paths.
+        let images: Vec<&Value> =
+            items.iter().filter(|i| i["type"] == "localImage").collect();
+        assert_eq!(images.len(), 2);
+        assert_eq!(images[0]["path"], "/tmp/cctui-uploads/s/diagram.png");
+        assert_eq!(images[1]["path"], "/tmp/cctui-uploads/s/photo.JPEG");
+    }
+
+    #[test]
+    fn turn_input_items_image_only_prompt_has_no_empty_text_gap() {
+        // An image-only spawn (no prompt text) still yields a valid input array:
+        // just the localImage item, no stray empty text item.
+        let items = turn_input_items("", &["/tmp/s/shot.png".to_owned()]);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["type"], "localImage");
+        // No attachments and no text falls back to a single empty text item.
+        let empty = turn_input_items("", &[]);
+        assert_eq!(empty.len(), 1);
+        assert_eq!(empty[0]["type"], "text");
+    }
+
+    #[tokio::test]
+    async fn record_model_override_updates_state_and_acks() {
+        let registry = SessionRegistry::default();
+        registry.lock().await.insert(
+            "tid".to_owned(),
+            SessionRecord {
+                cfg: AppServerConfig::default(),
+                cwd: "/tmp".to_owned(),
+                name: None,
+                env: std::collections::BTreeMap::new(),
+            },
+        );
+        let (tx, mut rx) = mpsc::channel(8);
+        let mut model = None;
+        let mut effort = None;
+        let command_id = Uuid::new_v4();
+        record_model_override(
+            &mut model,
+            &mut effort,
+            Some("gpt-5-codex"),
+            Some("high"),
+            "tid",
+            &tx,
+            &registry,
+            Some(command_id),
+        )
+        .await;
+        // Override recorded for the next turn/start.
+        assert_eq!(model.as_deref(), Some("gpt-5-codex"));
+        assert_eq!(effort.as_deref(), Some("high"));
+        // Durable cfg folded in for a later resume's `-c` flags.
+        let rec = registry.lock().await.get("tid").cloned().unwrap();
+        assert_eq!(rec.cfg.model.as_deref(), Some("gpt-5-codex"));
+        assert_eq!(rec.cfg.reasoning_effort.as_deref(), Some("high"));
+        // Chip Status then a truthful ok CommandResult.
+        let status = rx.recv().await.unwrap();
+        assert!(matches!(status, AdapterEvent::Status { model: Some(m), .. } if m == "gpt-5-codex"));
+        let ack = rx.recv().await.unwrap();
+        assert!(matches!(ack, AdapterEvent::CommandResult { ok: true, command_id: c, .. } if c == command_id));
     }
 
     #[test]
     fn set_model_is_resumable() {
-        assert!(SessionCommand::SetModel { model: Some("m".into()), effort: None }.is_resumable());
+        assert!(
+            SessionCommand::SetModel { model: Some("m".into()), effort: None, command_id: None }
+                .is_resumable()
+        );
     }
 
     #[tokio::test]
@@ -1952,6 +2274,7 @@ mod tests {
             std::collections::BTreeMap::new(),
             None, // no prompt → no turn/start, so no model auth needed
             None,
+            Vec::new(),
             None,
             tx,
             live,
@@ -2262,5 +2585,82 @@ mod tests {
         let v = json!({"method": "turn/completed", "params": {"threadId": "t", "turn": {
             "id": "u", "items": [], "status": "completed"}}});
         assert!(matches!(classify("t", &v), Incoming::Ignored));
+    }
+
+    // --- CCT-634: active-turn routing via turn/steer ------------------------
+
+    #[test]
+    fn turn_lifecycle_parses_started_and_completed() {
+        let started = json!({"method": "turn/started", "params": {"threadId": "t", "turn": {
+            "id": "turn-1", "items": [], "status": "inProgress"}}});
+        assert_eq!(
+            turn_lifecycle(&started),
+            Some(TurnLifecycle::Started { turn_id: "turn-1".to_owned() })
+        );
+        let completed = json!({"method": "turn/completed", "params": {"threadId": "t", "turn": {
+            "id": "turn-1", "items": [], "status": "completed"}}});
+        assert_eq!(
+            turn_lifecycle(&completed),
+            Some(TurnLifecycle::Completed { turn_id: "turn-1".to_owned() })
+        );
+        assert_eq!(
+            turn_lifecycle(&json!({"method": "thread/status/changed", "params": {}})),
+            None
+        );
+        assert_eq!(turn_lifecycle(&json!({"method": "turn/started", "params": {}})), None);
+    }
+
+    #[test]
+    fn active_turn_tracks_started_then_completed() {
+        let mut active = ActiveTurn::default();
+        assert_eq!(active.id(), None);
+        active.apply(&TurnLifecycle::Started { turn_id: "turn-1".to_owned() });
+        assert_eq!(active.id(), Some("turn-1"));
+        active.apply(&TurnLifecycle::Completed { turn_id: "other".to_owned() });
+        assert_eq!(active.id(), Some("turn-1"));
+        active.apply(&TurnLifecycle::Completed { turn_id: "turn-1".to_owned() });
+        assert_eq!(active.id(), None);
+    }
+
+    #[test]
+    fn active_turn_started_supersedes_previous() {
+        let mut active = ActiveTurn::default();
+        active.apply(&TurnLifecycle::Started { turn_id: "turn-1".to_owned() });
+        active.apply(&TurnLifecycle::Started { turn_id: "turn-2".to_owned() });
+        assert_eq!(active.id(), Some("turn-2"));
+        active.clear();
+        assert_eq!(active.id(), None);
+    }
+
+    #[test]
+    fn prompt_dispatch_selects_steer_when_turn_active() {
+        let mut active = ActiveTurn::default();
+        assert_eq!(prompt_dispatch(&active), PromptDispatch::Start);
+        active.apply(&TurnLifecycle::Started { turn_id: "turn-9".to_owned() });
+        assert_eq!(prompt_dispatch(&active), PromptDispatch::Steer { turn_id: "turn-9".to_owned() });
+    }
+
+    #[test]
+    fn steer_recovery_rejects_non_steerable_else_falls_back() {
+        assert_eq!(
+            steer_recovery("codex app-server error -32000: activeTurnNotSteerable"),
+            SteerRecovery::Reject
+        );
+        assert_eq!(steer_recovery("turn is not steerable"), SteerRecovery::Reject);
+        assert_eq!(
+            steer_recovery("codex app-server error -32602: expectedTurnId mismatch"),
+            SteerRecovery::FallbackToStart
+        );
+    }
+
+    #[test]
+    fn turn_steer_req_shape() {
+        let req = turn_steer_req(100, "tid", "turn-1", "keep going", &[]);
+        assert_eq!(req["method"], "turn/steer");
+        assert_eq!(req["id"], 100);
+        assert_eq!(req["params"]["threadId"], "tid");
+        assert_eq!(req["params"]["expectedTurnId"], "turn-1");
+        assert_eq!(req["params"]["input"][0]["type"], "text");
+        assert_eq!(req["params"]["input"][0]["text"], "keep going");
     }
 }

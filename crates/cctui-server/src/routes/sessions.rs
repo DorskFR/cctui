@@ -1752,17 +1752,23 @@ pub async fn resume_session(
 
 /// `POST /api/v1/sessions/{id}/set-model` — change the model and/or reasoning
 /// effort of a running session in place (CCT-303). Agent-asymmetric: the codex
-/// adapter applies it via `thread/settings/update` on the live thread and
-/// echoes the resolved model/effort back as an `AdapterEvent::Status` (which
-/// updates the DB row + chip); the claude-code adapter rejects it with a clear
-/// "fork to change model" error (the webui pre-empts that by offering the fork
-/// affordance for claude sessions). Best-effort dispatch — the chip reflects
-/// the change once the daemon echoes Status, matching the interrupt pattern.
+/// adapter records the override and carries it on the next `turn/start` (a
+/// stable per-turn override, CCT-635), then echoes the resolved model/effort
+/// back as an `AdapterEvent::Status` (which updates the DB row + chip); the
+/// claude-code adapter rejects it with a clear "fork to change model" error
+/// (the webui pre-empts that by offering the fork affordance for claude
+/// sessions).
+///
+/// Mints a `command_id` (CCT-635) so the adapter echoes back an
+/// `AdapterEvent::CommandResult` → `ServerEvent::CommandResult`; the webui
+/// awaits it before confirming the change, rather than the old fire-and-forget
+/// 204 that reported success even when the app-server rejected the change.
+/// Returns the id in the response body, mirroring interrupt.
 pub async fn set_model(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
     Json(req): Json<cctui_proto::api::SetModelRequest>,
-) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+) -> Result<(StatusCode, Json<cctui_proto::api::SpawnResponse>), (StatusCode, Json<ApiError>)> {
     let norm = |s: Option<String>| s.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
     let model = norm(req.model);
     let effort = norm(req.effort);
@@ -1772,6 +1778,7 @@ pub async fn set_model(
             Json(ApiError { error: "model or effort must be set".into() }),
         ));
     }
+    let command_id = uuid::Uuid::new_v4();
     let _ = crate::bus::dispatch(
         &state,
         &session_id,
@@ -1779,11 +1786,19 @@ pub async fn set_model(
             local_id: session_id.clone(),
             model: model.clone(),
             effort: effort.clone(),
+            command_id: Some(command_id),
         },
     )
     .await;
-    tracing::info!(session_id = %session_id, ?model, ?effort, "set-model dispatched");
-    Ok(StatusCode::NO_CONTENT)
+    tracing::info!(session_id = %session_id, %command_id, ?model, ?effort, "set-model dispatched");
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(cctui_proto::api::SpawnResponse {
+            command_id,
+            status: "dispatched".into(),
+            account: None,
+        }),
+    ))
 }
 
 /// `POST /api/v1/sessions/{id}/fork` — fork an existing conversation into a
