@@ -59,9 +59,9 @@ pub async fn register(
     // (e.g. Claude restart) is treated the same way: status=new, let the
     // first activity promote it.
     sqlx::query(
-        r"INSERT INTO sessions (id, parent_id, account_id, machine_id, machine_uuid, working_dir, status, registered_at, last_heartbeat, metadata)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-           ON CONFLICT (id) DO UPDATE SET status = 'new', last_heartbeat = $9, metadata = $10, machine_uuid = COALESCE(sessions.machine_uuid, EXCLUDED.machine_uuid)",
+        r"INSERT INTO sessions (id, parent_id, account_id, machine_id, machine_uuid, working_dir, status, registered_at, last_heartbeat, metadata, model)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULLIF($10->>'model', ''))
+           ON CONFLICT (id) DO UPDATE SET status = 'new', last_heartbeat = $9, metadata = $10, machine_uuid = COALESCE(sessions.machine_uuid, EXCLUDED.machine_uuid), model = COALESCE(sessions.model, EXCLUDED.model)",
     )
     .bind(&session.id)
     .bind(&session.parent_id)
@@ -859,7 +859,7 @@ fn leaf_predicate(field: &str, value: &str, params: &mut Vec<SqlParam>) -> Strin
         }
         "model" => {
             let p = ph_text(params, ilike_contains(value));
-            format!("COALESCE(s.model, '') ILIKE ${p}")
+            format!("COALESCE(s.model, s.metadata->>'model', '') ILIKE ${p}")
         }
         "effort" => {
             let p = ph_text(params, value.to_string());
@@ -1193,11 +1193,11 @@ pub async fn search_field_values(
              ORDER BY v LIMIT $3"
         }
         "model" => {
-            "SELECT DISTINCT s.model AS v FROM sessions s \
+            "SELECT DISTINCT COALESCE(s.model, s.metadata->>'model') AS v FROM sessions s \
              LEFT JOIN machines m ON m.id = s.machine_uuid \
-             WHERE s.model IS NOT NULL AND s.model <> '' \
+             WHERE COALESCE(s.model, s.metadata->>'model', '') <> '' \
              AND ($1::uuid IS NULL OR m.user_id = $1) \
-             AND ($2::text IS NULL OR s.model ILIKE $2) \
+             AND ($2::text IS NULL OR COALESCE(s.model, s.metadata->>'model') ILIKE $2) \
              ORDER BY v LIMIT $3"
         }
         _ => return Ok(Json(vec![])),
@@ -2251,6 +2251,13 @@ mod tests {
         let (sql, params) = compile("title:fix");
         assert!(sql.contains("s.session_name, '') ILIKE $1"));
         assert_eq!(params, vec!["%fix%".to_string()]);
+    }
+
+    #[test]
+    fn compile_model_filter_falls_back_to_metadata() {
+        let (sql, params) = compile("model:claude-opus-4-7[1m]");
+        assert!(sql.contains("COALESCE(s.model, s.metadata->>'model', '') ILIKE $1"));
+        assert_eq!(params, vec!["%claude-opus-4-7[1m]%".to_string()]);
     }
 
     #[test]
