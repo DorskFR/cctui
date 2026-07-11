@@ -295,6 +295,23 @@ fn resolve_dispatch_session_id(logical: Option<&str>) -> (String, Option<String>
     }
 }
 
+/// Rewrite `payload.model` to `mapped` iff it differs from `raw`, returning
+/// whether a rewrite happened (CCT-583). The dispatch model-alias decision,
+/// factored out of the async per-account resolution loop so it's unit-testable
+/// without a DB: an unchanged mapping (an alias miss, since `resolve_account_model`
+/// fails soft to its input) is a no-op that leaves `model` — and every other
+/// key, e.g. `effort` — verbatim.
+fn rewrite_model_if_aliased(payload: &mut serde_json::Value, raw: &str, mapped: &str) -> bool {
+    if mapped == raw {
+        return false;
+    }
+    if let Some(obj) = payload.as_object_mut() {
+        obj.insert("model".into(), serde_json::Value::String(mapped.to_owned()));
+        return true;
+    }
+    false
+}
+
 /// The account identity a dispatcher is bound to (CCT-427 / CCT-559), resolved
 /// to the identity *name* `mint` resolution consumes — default injection mints
 /// ALL of that identity's providers, so no provider hint travels with it.
@@ -567,6 +584,37 @@ pub async fn dispatch(
             req.accounts.iter().map(|a| (a.account.clone(), a.provider.clone())).collect()
         };
 
+        // Map `payload.model` through the resolved account(s) `model_aliases`
+        // (CCT-583), mirroring the spawn path. Try Anthropic then Openai per
+        // account; first rewrite wins. `resolve_account_model` fails soft
+        // (returns input unchanged on any miss), so a non-alias model or an
+        // unresolved account passes through untouched; `effort` is never touched.
+        if let Some(raw_model) = forwarded_payload
+            .get("model")
+            .and_then(serde_json::Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+        {
+            'resolve: for (account_name, _hint) in &accounts {
+                for family in [
+                    crate::routes::gateway::Family::Anthropic,
+                    crate::routes::gateway::Family::Openai,
+                ] {
+                    let mapped = crate::routes::gateway::resolve_account_model(
+                        &state,
+                        uid,
+                        account_name,
+                        family,
+                        &raw_model,
+                    )
+                    .await;
+                    if rewrite_model_if_aliased(&mut forwarded_payload, &raw_model, &mapped) {
+                        break 'resolve;
+                    }
+                }
+            }
+        }
+
         // Expand each named account into the provider rows to mint: the hinted
         // family's row only, or every row for a bare name.
         let mut mints: Vec<crate::routes::gateway::ProviderRow> = Vec::new();
@@ -781,7 +829,10 @@ pub async fn dispatch(
 
 #[cfg(test)]
 mod tests {
-    use super::{colliding_family, resolve_dispatch_account, resolve_dispatch_session_id};
+    use super::{
+        colliding_family, resolve_dispatch_account, resolve_dispatch_session_id,
+        rewrite_model_if_aliased,
+    };
     use crate::routes::gateway::Family;
 
     #[test]
@@ -884,5 +935,27 @@ mod tests {
             colliding_family([Family::Anthropic, Family::Openai, Family::Openai]),
             Some(Family::Openai)
         ));
+    }
+
+    #[test]
+    fn alias_hit_rewrites_model_and_leaves_effort_untouched() {
+        // CCT-583: a resolved model differing from the request model rewrites
+        // `payload.model` in place; `effort` (and any other key) is untouched.
+        let mut payload =
+            serde_json::json!({ "model": "opus", "effort": "high", "flow": "triage" });
+        assert!(rewrite_model_if_aliased(&mut payload, "opus", "claude-opus-4-8[1m]"));
+        assert_eq!(payload["model"], "claude-opus-4-8[1m]");
+        assert_eq!(payload["effort"], "high", "effort never rewritten");
+        assert_eq!(payload["flow"], "triage", "unrelated keys preserved");
+    }
+
+    #[test]
+    fn alias_miss_passes_model_through_verbatim() {
+        // CCT-583: when resolution fails soft (mapped == raw), nothing changes —
+        // no account / no alias leaves the forwarded model verbatim.
+        let mut payload = serde_json::json!({ "model": "opus", "effort": "high" });
+        assert!(!rewrite_model_if_aliased(&mut payload, "opus", "opus"));
+        assert_eq!(payload["model"], "opus", "unchanged on alias miss");
+        assert_eq!(payload["effort"], "high");
     }
 }

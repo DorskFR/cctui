@@ -1,8 +1,8 @@
 <script lang="ts">
 	import type { Label } from '@bindings/Label';
 	import type { Section } from '../../../routes/sessions/sessions.logic';
-	import { Button, Heading, Icon } from '@dorsk/tsumikit';
-	import SearchBox from '../molecules/SearchBox.svelte';
+	import { Button, FilterSearchBar, Heading, Icon, type Schema } from '@dorsk/tsumikit';
+	import { SESSION_SEARCH_PLACEHOLDER } from '$lib/searchSchema';
 	import SectionFilter from '../molecules/SectionFilter.svelte';
 	import LabelFilter from '../molecules/LabelFilter.svelte';
 	import ViewPicker from '../molecules/ViewPicker.svelte';
@@ -14,6 +14,7 @@
 	// drafts) and flows in via bindable props.
 	let {
 		rawQuery = $bindable(),
+		searchSchema,
 		sections = $bindable(),
 		labels,
 		labelFilter = $bindable(),
@@ -28,6 +29,7 @@
 		onDeleteLabel
 	}: {
 		rawQuery: string;
+		searchSchema: Schema;
 		sections: Set<Section>;
 		labels: Label[];
 		labelFilter: Set<string>;
@@ -45,7 +47,13 @@
 
 <div class="bar row">
 	<Heading level={1} class="page-title">Sessions</Heading>
-	<SearchBox bind:value={rawQuery} />
+	<div class="search-box">
+		<FilterSearchBar
+			schema={searchSchema}
+			bind:value={rawQuery}
+			placeholder={SESSION_SEARCH_PLACEHOLDER}
+		/>
+	</div>
 	<SectionFilter bind:sections />
 	<LabelFilter {labels} bind:selected={labelFilter} onUpdate={onUpdateLabel} onDelete={onDeleteLabel} />
 	<ViewPicker bind:cardView bind:dense />

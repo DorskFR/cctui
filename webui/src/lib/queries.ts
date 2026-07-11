@@ -403,6 +403,11 @@ export const endpoints = {
       limit,
       offset,
     }),
+  searchFieldValues: (field: string, q: string) =>
+    api.get<string[]>("/sessions/search/values", {
+      field,
+      q: q || undefined,
+    }),
   session: (id: string) => api.get<SessionListItem>(`/sessions/${id}`),
   conversation: (id: string) =>
     api.get<AgentEvent[]>(`/sessions/${id}/conversation`),
