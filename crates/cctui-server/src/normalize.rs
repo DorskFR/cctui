@@ -117,6 +117,7 @@ fn agent_event_from_canonical(v: &Value, ts: i64) -> Option<AgentEvent> {
                 .to_owned(),
             ts,
         }),
+        "context_reset" => Some(AgentEvent::ContextReset { ts }),
         _ => None,
     }
 }
@@ -127,6 +128,7 @@ fn agent_event_from_canonical(v: &Value, ts: i64) -> Option<AgentEvent> {
 /// `codex app-server generate-json-schema`, codex-cli 0.135). The `event_type`
 /// column (`message` / `tool_use`) is advisory only — we key off the item
 /// `type`. Unknown items return `None` (dropped from the conversation).
+#[allow(clippy::too_many_lines)]
 fn codex(_event_type: &str, payload: &Value) -> Option<Value> {
     match payload.get("type").and_then(Value::as_str).unwrap_or_default() {
         // Rollout JSONL envelopes: text comes from `event_msg` and tool activity
@@ -142,13 +144,46 @@ fn codex(_event_type: &str, payload: &Value) -> Option<Value> {
             }
             Some(json!({ "type": "text", "content": text, "role": "Assistant" }))
         }
-        // Model reasoning → text (content is an array of {type, text}).
+        // Model reasoning → text. App-server v2 items carry `content`/`summary`
+        // as arrays of plain strings; rollout items use arrays of {type, text}.
+        // `codex_text_parts` handles both; fall back to `summary` when the
+        // visible reasoning lives there.
         "reasoning" => {
-            let text = codex_content_text(payload.get("content"));
+            let text = {
+                let c = codex_text_parts(payload.get("content"));
+                if c.is_empty() { codex_text_parts(payload.get("summary")) } else { c }
+            };
             if text.is_empty() {
                 return None;
             }
             Some(json!({ "type": "text", "content": text, "role": "Reasoning" }))
+        }
+        // Review mode boundaries (CCT-638) → assistant-side note.
+        "enteredReviewMode" => {
+            let r = payload.get("review").and_then(Value::as_str).unwrap_or_default();
+            let content = if r.is_empty() {
+                "Entered review mode".to_owned()
+            } else {
+                format!("Entered review mode: {r}")
+            };
+            Some(json!({ "type": "text", "content": content, "role": "Review" }))
+        }
+        "exitedReviewMode" => {
+            let r = payload.get("review").and_then(Value::as_str).unwrap_or_default();
+            let content = if r.is_empty() {
+                "Exited review mode".to_owned()
+            } else {
+                format!("Review result: {r}")
+            };
+            Some(json!({ "type": "text", "content": content, "role": "Review" }))
+        }
+        // A context compaction boundary renders like a /clear cut (CCT-638).
+        "contextCompaction" => Some(json!({ "type": "context_reset" })),
+        // Sub-agent hand-off activity → a compact status line.
+        "subAgentActivity" => {
+            let kind = payload.get("kind").and_then(Value::as_str).unwrap_or_default();
+            let path = payload.get("agentPath").and_then(Value::as_str).unwrap_or_default();
+            Some(json!({ "type": "text", "content": format!("· sub-agent {kind}: {path}") }))
         }
         // User turn input (content is an array of {type:"text", text}).
         "userMessage" => {
@@ -196,8 +231,65 @@ fn codex(_event_type: &str, payload: &Value) -> Option<Value> {
             "tool": "WebSearch",
             "input": { "query": payload.get("query").and_then(Value::as_str).unwrap_or_default() },
         })),
+        // A dynamic (namespaced) tool call (CCT-638) → tool_call, keeping the
+        // `namespace__tool` name so the renderer groups it like an MCP call.
+        "dynamicToolCall" => {
+            let tool = payload.get("tool").and_then(Value::as_str).unwrap_or_default();
+            let name = match payload.get("namespace").and_then(Value::as_str) {
+                Some(ns) if !ns.is_empty() => format!("{ns}__{tool}"),
+                _ => tool.to_owned(),
+            };
+            Some(json!({
+                "type": "tool_call",
+                "tool": name,
+                "input": payload.get("arguments").cloned().unwrap_or(Value::Null),
+            }))
+        }
+        // Collaboration hand-off to another agent (CCT-638) → tool_call carrying
+        // the delegated prompt/model.
+        "collabAgentToolCall" => {
+            let tool = payload.get("tool").and_then(Value::as_str).unwrap_or("collab");
+            let mut input = json!({});
+            if let Some(p) = payload.get("prompt").filter(|v| !v.is_null()) {
+                input["prompt"] = p.clone();
+            }
+            if let Some(m) = payload.get("model").filter(|v| !v.is_null()) {
+                input["model"] = m.clone();
+            }
+            Some(json!({ "type": "tool_call", "tool": tool, "input": input }))
+        }
+        // Image items (CCT-638): a viewed local image or a generated one.
+        "imageView" => Some(json!({
+            "type": "tool_call",
+            "tool": "view_image",
+            "input": { "path": payload.get("path").cloned().unwrap_or(Value::Null) },
+        })),
+        "imageGeneration" => {
+            let mut input = json!({});
+            if let Some(p) = payload.get("revisedPrompt").filter(|v| !v.is_null()) {
+                input["prompt"] = p.clone();
+            }
+            if let Some(p) = payload.get("savedPath").filter(|v| !v.is_null()) {
+                input["saved_path"] = p.clone();
+            }
+            Some(json!({ "type": "tool_call", "tool": "image_generation", "input": input }))
+        }
         _ => None,
     }
+}
+
+/// Join the text of a codex content array, accepting both the app-server v2
+/// shape (array of plain strings) and the rollout shape (array of {type, text}).
+fn codex_text_parts(content: Option<&Value>) -> String {
+    let Some(arr) = content.and_then(Value::as_array) else { return String::new() };
+    arr.iter()
+        .filter_map(|c| match c {
+            Value::String(s) => Some(s.as_str()),
+            _ => c.get("text").and_then(Value::as_str),
+        })
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Join the `text` fields of a codex content array (`userMessage.content`,
@@ -495,8 +587,91 @@ mod tests {
 
     #[test]
     fn codex_unknown_item_dropped() {
-        let p = json!({ "type": "contextCompaction", "id": "x" });
+        let p = json!({ "type": "sleep", "id": "x", "durationMs": 500 });
         assert_eq!(for_client("codex", "message", p), None);
+    }
+
+    // --- CCT-638: expanded item fidelity ------------------------------------
+
+    #[test]
+    fn codex_reasoning_app_server_string_content() {
+        // App-server v2 reasoning items carry `content` as an array of strings.
+        let p = json!({ "type": "reasoning", "content": ["First I will list the files."], "summary": [] });
+        let n = for_client("codex", "message", p).unwrap();
+        assert_eq!(n["type"], "text");
+        assert_eq!(n["content"], "First I will list the files.");
+        assert_eq!(n["role"], "Reasoning");
+    }
+
+    #[test]
+    fn codex_reasoning_falls_back_to_summary() {
+        let p = json!({ "type": "reasoning", "content": [], "summary": ["short recap"] });
+        let n = for_client("codex", "message", p).unwrap();
+        assert_eq!(n["content"], "short recap");
+    }
+
+    #[test]
+    fn codex_review_modes_map_to_review_text() {
+        let entered = json!({ "type": "enteredReviewMode", "review": "check the diff" });
+        let n = for_client("codex", "message", entered).unwrap();
+        assert_eq!(n["role"], "Review");
+        assert_eq!(n["content"], "Entered review mode: check the diff");
+        let exited = json!({ "type": "exitedReviewMode", "review": "looks good" });
+        let m = for_client("codex", "message", exited).unwrap();
+        assert_eq!(m["content"], "Review result: looks good");
+    }
+
+    #[test]
+    fn codex_context_compaction_maps_to_context_reset() {
+        let p = json!({ "type": "contextCompaction", "id": "x" });
+        let n = for_client("codex", "message", p.clone()).unwrap();
+        assert_eq!(n["type"], "context_reset");
+        // Live path lifts it onto the ContextReset broadcast event.
+        match to_agent_event("codex", "message", &p) {
+            Some(AgentEvent::ContextReset { .. }) => {}
+            other => panic!("expected ContextReset, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn codex_dynamic_tool_call_namespaced() {
+        let p = json!({ "type": "dynamicToolCall", "namespace": "browser", "tool": "navigate",
+            "arguments": { "url": "https://example.com" }, "status": "completed" });
+        let n = for_client("codex", "tool_use", p).unwrap();
+        assert_eq!(n["type"], "tool_call");
+        assert_eq!(n["tool"], "browser__navigate");
+        assert_eq!(n["input"]["url"], "https://example.com");
+    }
+
+    #[test]
+    fn codex_collab_agent_tool_call_carries_prompt() {
+        let p = json!({ "type": "collabAgentToolCall", "tool": "delegate",
+            "prompt": "do the thing", "model": "gpt-5-codex", "status": "completed" });
+        let n = for_client("codex", "tool_use", p).unwrap();
+        assert_eq!(n["tool"], "delegate");
+        assert_eq!(n["input"]["prompt"], "do the thing");
+        assert_eq!(n["input"]["model"], "gpt-5-codex");
+    }
+
+    #[test]
+    fn codex_image_items_map_to_tool_calls() {
+        let view = json!({ "type": "imageView", "path": "/repo/diagram.png" });
+        let n = for_client("codex", "tool_use", view).unwrap();
+        assert_eq!(n["tool"], "view_image");
+        assert_eq!(n["input"]["path"], "/repo/diagram.png");
+        let generated = json!({ "type": "imageGeneration", "revisedPrompt": "a cat", "savedPath": "/tmp/cat.png" });
+        let m = for_client("codex", "tool_use", generated).unwrap();
+        assert_eq!(m["tool"], "image_generation");
+        assert_eq!(m["input"]["prompt"], "a cat");
+        assert_eq!(m["input"]["saved_path"], "/tmp/cat.png");
+    }
+
+    #[test]
+    fn codex_sub_agent_activity_maps_to_status_line() {
+        let p = json!({ "type": "subAgentActivity", "kind": "started",
+            "agentPath": "reviewer", "agentThreadId": "t2" });
+        let n = for_client("codex", "message", p).unwrap();
+        assert_eq!(n["content"], "· sub-agent started: reviewer");
     }
 
     // --- codex rollout envelopes (CCT-633); shapes captured from codex 0.144.1 ---
