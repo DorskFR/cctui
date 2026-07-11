@@ -28,6 +28,7 @@
 //! `$XDG_RUNTIME_DIR/cctui-codex.sock`.
 
 mod app_server;
+mod contract;
 mod log_tail;
 mod thread_list;
 
