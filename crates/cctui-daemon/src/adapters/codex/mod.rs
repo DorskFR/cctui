@@ -552,11 +552,13 @@ async fn command_pump(
                         .await;
                     }
                     AdapterCommand::Remove { local_id } => {
-                        // Codex sessions have no external agent-view (no
-                        // ~/.claude/jobs entry) to purge, so removal is just
-                        // terminating the worker; cctui's own archived state
-                        // hides it from the list. The app-server session
-                        // already cleans up its temp transcript on exit.
+                        // Stop the live worker, drop the durable record, then
+                        // archive the thread natively (CCT-639) so it disappears
+                        // from codex's own views too — the analogue of claude's
+                        // `claude rm`, keeping the transcript recoverable.
+                        // Idempotent: archiving an already-archived / missing
+                        // thread succeeds. Runs off the pump so a 30s app-server
+                        // spawn can't stall other commands.
                         forward(
                             &live,
                             &registry,
@@ -569,6 +571,37 @@ async fn command_pump(
                         )
                         .await;
                         registry.lock().await.remove(&local_id);
+                        let cfg = app_cfg.clone();
+                        tokio::spawn(async move {
+                            if let Err(err) = app_server::run_thread_lifecycle(
+                                &cfg,
+                                &local_id,
+                                app_server::LifecycleOp::Archive,
+                            )
+                            .await
+                            {
+                                tracing::warn!(%local_id, %err, "codex: native thread/archive failed");
+                            }
+                        });
+                    }
+                    AdapterCommand::Resume { local_id, .. } => {
+                        // Reopen the thread natively (CCT-639): un-archive it so
+                        // it reappears in codex's own views. Idempotent —
+                        // unarchiving a non-archived / missing thread succeeds.
+                        // cctui-side revival stays lazy: the next message resumes
+                        // the hibernated app-server via the registry.
+                        let cfg = app_cfg.clone();
+                        tokio::spawn(async move {
+                            if let Err(err) = app_server::run_thread_lifecycle(
+                                &cfg,
+                                &local_id,
+                                app_server::LifecycleOp::Unarchive,
+                            )
+                            .await
+                            {
+                                tracing::warn!(%local_id, %err, "codex: native thread/unarchive failed");
+                            }
+                        });
                     }
                     AdapterCommand::SetModel { local_id, model, effort, command_id } => {
                         let handled = forward(

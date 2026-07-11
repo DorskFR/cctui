@@ -97,6 +97,13 @@ pub enum Incoming {
     /// verbatim in the reply; `request_id` is the stable id surfaced to the
     /// TUI via [`AdapterEvent::PermissionRequest`].
     Approval { rpc_id: Value, request_id: String, tool: String, kind: ApprovalKind, input: Value },
+    /// `item/tool/requestUserInput` (CCT-637): codex's `AskUserQuestion`.
+    /// `question_ids` are needed to key the [`ToolRequestUserInputResponse`].
+    Question { rpc_id: Value, question: String, questions: Value, question_ids: Vec<String> },
+    /// A server→client request cctui cannot fulfil. It carries an `id`, so
+    /// leaving it unanswered blocks codex forever; `reply` is the decline/error
+    /// to write back immediately instead (CCT-637).
+    Decline { reply: Value },
     /// A notification we mapped onto an adapter event.
     Event(AdapterEvent),
     /// Anything we don't act on (turn lifecycle, unknown notifications).
@@ -122,29 +129,98 @@ pub fn classify(local_id: &str, v: &Value) -> Incoming {
 }
 
 fn classify_server_request(method: &str, v: &Value) -> Incoming {
-    // Map the approval method to its decision vocabulary + a tool label.
-    // `item/permissions/requestApproval` (sandbox-permission elevation) is
-    // deliberately not relayed: its reply is a permission-profile grant,
-    // not a simple allow/deny — see the module-level note / CCT-98.
+    let params = v.get("params").cloned().unwrap_or(Value::Null);
+    let rpc_id = v.get("id").cloned().unwrap_or(Value::Null);
     let (kind, tool) = match method {
         "item/commandExecution/requestApproval" => (ApprovalKind::AcceptDecline, "shell"),
         "item/fileChange/requestApproval" => (ApprovalKind::AcceptDecline, "file_change"),
         "applyPatchApproval" => (ApprovalKind::ApprovedDenied, "apply_patch"),
         "execCommandApproval" => (ApprovalKind::ApprovedDenied, "shell"),
-        _ => return Incoming::Ignored,
+        "item/tool/requestUserInput" => return classify_user_input(rpc_id, &params),
+        // Known-but-unsupported requests get their schema-correct decline reply
+        // so codex isn't blocked forever (CCT-637); everything else (dynamic
+        // tool call, token refresh, attestation, future methods) gets a generic
+        // method-not-supported error.
+        "mcpServer/elicitation/request" => {
+            return Incoming::Decline { reply: elicitation_decline(&rpc_id) };
+        }
+        "item/permissions/requestApproval" => {
+            return Incoming::Decline { reply: permissions_decline(&rpc_id) };
+        }
+        _ => return Incoming::Decline { reply: request_not_supported(&rpc_id, method) },
     };
-    let params = v.get("params").cloned().unwrap_or(Value::Null);
-    let rpc_id = v.get("id").cloned().unwrap_or(Value::Null);
-    let item_id = params.get("itemId").and_then(Value::as_str);
-    let request_id = item_id
+    let request_id = params
+        .get("itemId")
+        .and_then(Value::as_str)
         .map_or_else(|| format!("codex-approval-{rpc_id}"), std::string::ToString::to_string);
     Incoming::Approval { rpc_id, request_id, tool: tool.to_string(), kind, input: params }
 }
 
+/// Classify an `item/tool/requestUserInput` request into a [`Incoming::Question`]
+/// (CCT-637). Flattens the per-question `header`/`question` into a single text
+/// (for the flattened claude field) while passing the raw `questions` array
+/// through for the interactive card, and collects the question ids the answer
+/// must be keyed on.
+fn classify_user_input(rpc_id: Value, params: &Value) -> Incoming {
+    let questions = params.get("questions").cloned().unwrap_or_else(|| json!([]));
+    let list = questions.as_array().cloned().unwrap_or_default();
+    let question_ids: Vec<String> = list
+        .iter()
+        .filter_map(|q| q.get("id").and_then(Value::as_str).map(str::to_owned))
+        .collect();
+    let question = list
+        .iter()
+        .filter_map(|q| {
+            let text = q.get("question").and_then(Value::as_str)?;
+            Some(
+                q.get("header")
+                    .and_then(Value::as_str)
+                    .filter(|h| !h.is_empty())
+                    .map_or_else(|| text.to_owned(), |header| format!("{header} — {text}")),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    Incoming::Question { rpc_id, question, questions, question_ids }
+}
+
+/// Decline an MCP `elicitation/create` request (CCT-637). cctui does not render
+/// the typed form, so it answers `decline` — the schema's neutral "user did not
+/// provide input" action — rather than leaving the turn blocked.
+fn elicitation_decline(rpc_id: &Value) -> Value {
+    json!({"jsonrpc": "2.0", "id": rpc_id, "result": {"action": "decline"}})
+}
+
+/// Decline a sandbox-permission elevation request (CCT-637). Granting nothing
+/// (an empty `GrantedPermissionProfile`) is the deny: codex continues the turn
+/// without the extra permissions instead of waiting on a reply that never comes.
+fn permissions_decline(rpc_id: &Value) -> Value {
+    json!({"jsonrpc": "2.0", "id": rpc_id, "result": {"permissions": {}}})
+}
+
+/// Reject a server request method cctui does not implement with a JSON-RPC
+/// method-not-found error, so codex fails the request fast instead of blocking.
+fn request_not_supported(rpc_id: &Value, method: &str) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": rpc_id,
+        "error": {"code": -32601, "message": format!("cctui does not support server request {method}")},
+    })
+}
+
+/// Reply to an `item/tool/requestUserInput` request (CCT-637). The single free
+/// text answer is mapped onto every question id — requestUserInput forms are
+/// single-question in practice, and codex feeds the string straight to the tool.
+fn user_input_reply(rpc_id: &Value, question_ids: &[String], answer: &str) -> Value {
+    let answers: serde_json::Map<String, Value> =
+        question_ids.iter().map(|id| (id.clone(), json!({"answers": [answer]}))).collect();
+    json!({"jsonrpc": "2.0", "id": rpc_id, "result": {"answers": answers}})
+}
+
 fn map_notification(local_id: &str, method: &str, v: &Value) -> Incoming {
     match method {
-        // We emit on `item/completed` only (final state) to avoid duplicate
-        // events from the matching `item/started`.
+        // Emit on `item/completed` only; `item/started` and `item/<kind>/delta`
+        // are consumed by [`ItemAccumulator`] in the driver, not here (CCT-638).
         "item/completed" => map_item_completed(local_id, v),
         // Thread liveness/attention → Status (drives the dots + ✋, CCT-124).
         "thread/status/changed" => map_status(local_id, v),
@@ -215,9 +291,14 @@ fn map_item_completed(local_id: &str, v: &Value) -> Incoming {
     let ty = item.get("type").and_then(Value::as_str).unwrap_or("");
     let payload = item.clone();
     let evt = match ty {
-        "commandExecution" | "fileChange" | "mcpToolCall" => {
-            AdapterEvent::ToolUse { local_id: local_id.to_owned(), payload }
-        }
+        "commandExecution"
+        | "fileChange"
+        | "mcpToolCall"
+        | "dynamicToolCall"
+        | "collabAgentToolCall"
+        | "webSearch"
+        | "imageView"
+        | "imageGeneration" => AdapterEvent::ToolUse { local_id: local_id.to_owned(), payload },
         _ => AdapterEvent::Message { local_id: local_id.to_owned(), payload },
     };
     Incoming::Event(evt)
@@ -422,6 +503,134 @@ fn thread_name_set_req(id: i64, thread_id: &str, name: &str) -> Value {
     })
 }
 
+/// A native codex thread lifecycle operation (CCT-639). Each maps to a single
+/// JSON-RPC method taking `{ threadId }`. Archive/unarchive are wired to the
+/// CCTUI archive/reopen actions; `Delete` implements the third native op for
+/// parity (no CCTUI destructive-delete action wires to it yet).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LifecycleOp {
+    Archive,
+    Unarchive,
+    #[allow(dead_code)]
+    Delete,
+}
+
+impl LifecycleOp {
+    #[must_use]
+    const fn method(self) -> &'static str {
+        match self {
+            Self::Archive => "thread/archive",
+            Self::Unarchive => "thread/unarchive",
+            Self::Delete => "thread/delete",
+        }
+    }
+}
+
+fn thread_lifecycle_req(id: i64, op: LifecycleOp, thread_id: &str) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": op.method(),
+        "params": {"threadId": thread_id},
+    })
+}
+
+/// Whether a `thread/{archive,unarchive,delete}` JSON-RPC error can be treated
+/// as success for idempotency (CCT-639): the thread is already in the target
+/// state or no longer exists, so CCTUI and native lifecycle state can't wedge
+/// each other. Matched on the codex error text since the app-server exposes no
+/// stable machine codes for these.
+#[must_use]
+pub fn is_idempotent_lifecycle_error(op: LifecycleOp, err: &str) -> bool {
+    let e = err.to_lowercase();
+    // A missing thread makes any lifecycle op a no-op success.
+    let missing = e.contains("not found")
+        || e.contains("no such")
+        || e.contains("does not exist")
+        || e.contains("doesn't exist")
+        || e.contains("unknown thread")
+        || e.contains("no thread");
+    // Already in the requested terminal state.
+    let already = match op {
+        LifecycleOp::Archive => e.contains("already archived"),
+        LifecycleOp::Unarchive => e.contains("already unarchived") || e.contains("not archived"),
+        LifecycleOp::Delete => e.contains("already deleted"),
+    };
+    missing || already
+}
+
+/// Run a native codex thread lifecycle op via a short-lived stdio
+/// `codex app-server` (CCT-639), mirroring the one-shot pattern the
+/// [`super::thread_list`] inventory poll uses. Spawns the app-server, sends
+/// `initialize` → `initialized` → the lifecycle RPC, correlates the response by
+/// id, and reaps the process. Idempotent: an "already in target state" /
+/// "thread missing" error resolves as success ([`is_idempotent_lifecycle_error`])
+/// so CCTUI and native lifecycle state can't wedge each other. No gateway env is
+/// needed — no turn is started.
+pub async fn run_thread_lifecycle(
+    app: &AppServerConfig,
+    thread_id: &str,
+    op: LifecycleOp,
+) -> Result<()> {
+    let mut cmd = Command::new(&app.bin);
+    cmd.arg("app-server")
+        // No turn is started, so sandbox mode only matters because codex
+        // refuses to boot when it cannot create the bwrap namespace on some
+        // kernels — pass the configured (host-default) mode through.
+        .arg("-c")
+        .arg(format!("sandbox_mode=\"{}\"", app.sandbox_mode))
+        .env("PATH", crate::childenv::child_path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child = cmd.spawn()?;
+    let mut stdin = child.stdin.take().context("codex app-server stdin unavailable")?;
+    let stdout = child.stdout.take().context("codex app-server stdout unavailable")?;
+
+    let req_id = RUN_BASE;
+    let outcome = tokio::time::timeout(RPC_TIMEOUT, async {
+        let mut lines = BufReader::new(stdout).lines();
+        write_json(&mut stdin, &initialize_req()).await?;
+        write_json(&mut stdin, &initialized_notification()).await?;
+        write_json(&mut stdin, &thread_lifecycle_req(req_id, op, thread_id)).await?;
+        while let Some(line) = lines.next_line().await? {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let Ok(v) = serde_json::from_str::<Value>(trimmed) else { continue };
+            if v.get("id").and_then(Value::as_i64) == Some(req_id) {
+                return anyhow::Ok(response_outcome(&v));
+            }
+        }
+        anyhow::bail!("codex {} response not received before EOF", op.method())
+    })
+    .await;
+
+    // Close stdin and reap regardless of how the read went.
+    drop(stdin);
+    let _ = child.start_kill();
+    let _ = child.wait().await;
+
+    match outcome {
+        Err(_) => anyhow::bail!("codex {} timed out", op.method()),
+        Ok(Err(e)) => Err(e),
+        Ok(Ok(Ok(_))) => Ok(()),
+        Ok(Ok(Err(msg))) => {
+            if is_idempotent_lifecycle_error(op, &msg) {
+                tracing::info!(
+                    %thread_id,
+                    op = op.method(),
+                    "codex lifecycle op idempotent no-op: {msg}"
+                );
+                Ok(())
+            } else {
+                Err(anyhow::anyhow!(msg))
+            }
+        }
+    }
+}
+
 /// Build the `input` array for a turn (CCT-636). Staged image attachments ride
 /// as native `localImage` items so codex feeds the picture to the model; every
 /// other staged file keeps the path/text semantics — its absolute path is
@@ -564,6 +773,131 @@ impl ActiveTurn {
 
     pub fn clear(&mut self) {
         self.id = None;
+    }
+}
+
+/// Accumulates streamed item deltas by item id (CCT-638). Codex ships an item
+/// as `item/started` → `item/<kind>/delta`* → `item/completed`. The completed
+/// item is authoritative for rendering — mirroring the claude adapter, which
+/// drops partial SSE deltas in favour of the coalesced final frame — so deltas
+/// never emit their own events. They are consumed here only to back-fill a
+/// completed item the server left text-empty: reasoning items in particular
+/// ship `content: []` / encrypted content while the visible reasoning arrived
+/// solely via `item/reasoning/textDelta`, so without this they render blank.
+#[derive(Debug, Default)]
+pub struct ItemAccumulator {
+    /// `agentMessage` / `plan` text (`item/agentMessage|plan/delta`).
+    text: HashMap<String, String>,
+    /// `reasoning` content (`item/reasoning/textDelta`).
+    reasoning: HashMap<String, String>,
+    /// `reasoning` summary (`item/reasoning/summaryTextDelta`).
+    summary: HashMap<String, String>,
+    /// `commandExecution` aggregated output (`item/commandExecution/outputDelta`).
+    output: HashMap<String, String>,
+    /// itemId → item type, seeded from `item/started`.
+    started: HashMap<String, String>,
+}
+
+fn push_delta(map: &mut HashMap<String, String>, v: &Value) {
+    if let (Some(id), Some(delta)) = (
+        v.pointer("/params/itemId").and_then(Value::as_str),
+        v.pointer("/params/delta").and_then(Value::as_str),
+    ) {
+        map.entry(id.to_owned()).or_default().push_str(delta);
+    }
+}
+
+/// A JSON `content`/`summary` field carries no renderable text: absent, an
+/// empty array, or an array of only empty strings.
+fn is_text_empty(field: Option<&Value>) -> bool {
+    match field {
+        None | Some(Value::Null) => true,
+        Some(Value::Array(a)) => {
+            a.iter().all(|e| e.as_str().is_none_or(str::is_empty) && e.get("text").is_none())
+        }
+        Some(Value::String(s)) => s.is_empty(),
+        _ => false,
+    }
+}
+
+impl ItemAccumulator {
+    /// Feed one inbound notification: record `item/started` item types and
+    /// append `item/*/delta` text by item id. No-op for anything else.
+    pub fn note(&mut self, v: &Value) {
+        match v.get("method").and_then(Value::as_str) {
+            Some("item/started") => {
+                if let (Some(id), Some(ty)) = (
+                    v.pointer("/params/item/id").and_then(Value::as_str),
+                    v.pointer("/params/item/type").and_then(Value::as_str),
+                ) {
+                    self.started.insert(id.to_owned(), ty.to_owned());
+                }
+            }
+            Some("item/agentMessage/delta" | "item/plan/delta") => push_delta(&mut self.text, v),
+            Some("item/reasoning/textDelta") => push_delta(&mut self.reasoning, v),
+            Some("item/reasoning/summaryTextDelta") => push_delta(&mut self.summary, v),
+            Some("item/commandExecution/outputDelta" | "command/exec/outputDelta") => {
+                push_delta(&mut self.output, v);
+            }
+            _ => {}
+        }
+    }
+
+    /// If `v` is an `item/completed`, back-fill any empty text/output field on
+    /// the item from the accumulated stream, then forget that item's buffers.
+    /// Every other notification is returned unchanged.
+    #[must_use]
+    pub fn enrich_completed(&mut self, mut v: Value) -> Value {
+        if v.get("method").and_then(Value::as_str) != Some("item/completed") {
+            return v;
+        }
+        let Some(item) = v.pointer_mut("/params/item") else { return v };
+        let Some(id) = item.get("id").and_then(Value::as_str).map(str::to_owned) else {
+            return v;
+        };
+        match item.get("type").and_then(Value::as_str).unwrap_or_default() {
+            "agentMessage" | "plan" => {
+                if let Some(buf) = self.text.get(&id).filter(|b| !b.is_empty())
+                    && item.get("text").and_then(Value::as_str).unwrap_or_default().is_empty()
+                {
+                    item["text"] = json!(buf);
+                }
+            }
+            "reasoning" => {
+                if let Some(buf) = self.reasoning.get(&id).filter(|b| !b.is_empty())
+                    && is_text_empty(item.get("content"))
+                {
+                    item["content"] = json!([buf]);
+                }
+                if let Some(buf) = self.summary.get(&id).filter(|b| !b.is_empty())
+                    && is_text_empty(item.get("summary"))
+                {
+                    item["summary"] = json!([buf]);
+                }
+            }
+            "commandExecution" => {
+                if let Some(buf) = self.output.get(&id).filter(|b| !b.is_empty())
+                    && item
+                        .get("aggregatedOutput")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .is_empty()
+                {
+                    item["aggregatedOutput"] = json!(buf);
+                }
+            }
+            _ => {}
+        }
+        self.forget(&id);
+        v
+    }
+
+    fn forget(&mut self, id: &str) {
+        self.text.remove(id);
+        self.reasoning.remove(id);
+        self.summary.remove(id);
+        self.output.remove(id);
+        self.started.remove(id);
     }
 }
 
@@ -1118,6 +1452,10 @@ impl CodexSession {
         let mut next_id = RUN_BASE;
         // request_id (surfaced to TUI) → (rpc_id echoed to codex, decision kind).
         let mut pending_approvals: HashMap<String, (Value, ApprovalKind)> = HashMap::new();
+        // Parked `item/tool/requestUserInput` requests (CCT-637): the next user
+        // reply answers the oldest one (codex blocks the turn on it) rather than
+        // starting a fresh turn.
+        let mut pending_questions: VecDeque<(Value, Vec<String>)> = VecDeque::new();
         let (cmd_tx, mut cmd_rx) = mpsc::channel::<SessionCommand>(32);
         let mut registered = false;
         // Set when the session is terminated on purpose (daemon shutdown or a
@@ -1126,6 +1464,7 @@ impl CodexSession {
         let mut killed = false;
         let mut retry_after_hibernate: Option<SessionCommand> = None;
         let mut active_turn = ActiveTurn::default();
+        let mut items = ItemAccumulator::default();
         // In-place model/effort override (CCT-635). A SetModel records it here;
         // every subsequent `turn/start` carries it so codex adopts it as the
         // later default. Left `None` at launch — the spawn-time `-c model=`/
@@ -1181,6 +1520,18 @@ impl CodexSession {
                             }
                         }
                         Some(SessionCommand::Send { text }) => {
+                            if let Some((rpc_id, question_ids)) = pending_questions.pop_front() {
+                                let reply = user_input_reply(&rpc_id, &question_ids, &text);
+                                if let Err(e) = write_json(&mut stdin, &reply).await {
+                                    tracing::warn!(%e, "codex: requestUserInput answer write failed; ending session");
+                                    break;
+                                }
+                                self.events
+                                    .send(AdapterEvent::AskResolved { local_id: local_id.clone() })
+                                    .await
+                                    .ok();
+                                continue;
+                            }
                             let (req, method) = match prompt_dispatch(&active_turn) {
                                 PromptDispatch::Steer { turn_id } => {
                                     steer_texts.insert(next_id, text.clone());
@@ -1286,6 +1637,8 @@ impl CodexSession {
                     if let Some(ev) = turn_lifecycle(&value) {
                         active_turn.apply(&ev);
                     }
+                    items.note(&value);
+                    let value = items.enrich_completed(value);
                     match classify(&local_id, &value) {
                         Incoming::Response { id, value } => {
                             let Some((pending, outcome)) = pending_rpcs.resolve(id, &value) else {
@@ -1624,6 +1977,24 @@ impl CodexSession {
                                 .await
                                 .ok();
                         }
+                        Incoming::Question { rpc_id, question, questions, question_ids } => {
+                            pending_questions.push_back((rpc_id, question_ids));
+                            self.events
+                                .send(AdapterEvent::AskQuestion {
+                                    local_id: local_id.clone(),
+                                    question,
+                                    questions: Some(questions),
+                                    preamble: None,
+                                })
+                                .await
+                                .ok();
+                        }
+                        Incoming::Decline { reply } => {
+                            if let Err(e) = write_json(&mut stdin, &reply).await {
+                                tracing::warn!(%e, "codex: decline write failed; ending session");
+                                break;
+                            }
+                        }
                         Incoming::Event(evt) => {
                             self.events.send(evt).await.ok();
                         }
@@ -1803,10 +2174,7 @@ async fn record_model_override(
         .await
         .ok();
     if let Some(command_id) = command_id {
-        events
-            .send(AdapterEvent::CommandResult { command_id, ok: true, error: None })
-            .await
-            .ok();
+        events.send(AdapterEvent::CommandResult { command_id, ok: true, error: None }).await.ok();
     }
 }
 
@@ -1939,10 +2307,94 @@ mod tests {
     }
 
     #[test]
-    fn permissions_approval_is_not_relayed() {
-        // Sandbox-permission elevation has no simple allow/deny reply.
+    fn permissions_approval_is_declined_not_left_blocking() {
+        // Sandbox-permission elevation has no simple allow/deny reply, so it is
+        // declined (empty grant) rather than left hanging (CCT-637).
         let v = json!({"method": "item/permissions/requestApproval", "id": 1, "params": {}});
-        assert!(matches!(classify("s", &v), Incoming::Ignored));
+        match classify("s", &v) {
+            Incoming::Decline { reply } => {
+                assert_eq!(reply["id"], json!(1));
+                assert_eq!(reply["result"]["permissions"], json!({}));
+            }
+            other => panic!("expected Decline, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mcp_elicitation_is_declined() {
+        let v = json!({"method": "mcpServer/elicitation/request", "id": 3,
+            "params": {"serverName": "s", "threadId": "t", "message": "pick", "mode": "form"}});
+        match classify("s", &v) {
+            Incoming::Decline { reply } => {
+                assert_eq!(reply["id"], json!(3));
+                assert_eq!(reply["result"]["action"], "decline");
+            }
+            other => panic!("expected Decline, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unknown_server_request_is_declined_with_error() {
+        // A dynamic tool call / future method cctui does not implement must not
+        // hang codex: it is answered with a JSON-RPC method-not-found error.
+        let v = json!({"method": "item/tool/call", "id": 9, "params": {}});
+        match classify("s", &v) {
+            Incoming::Decline { reply } => {
+                assert_eq!(reply["id"], json!(9));
+                assert_eq!(reply["error"]["code"], -32601);
+                assert!(reply["error"]["message"].as_str().unwrap().contains("item/tool/call"));
+            }
+            other => panic!("expected Decline, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn request_user_input_maps_to_question() {
+        let v = json!({"method": "item/tool/requestUserInput", "id": 4, "params": {
+        "itemId": "call_42", "threadId": "t", "turnId": "u",
+        "questions": [
+            {"id": "q1", "header": "Deploy", "question": "Which env?",
+             "options": [{"label": "prod", "description": "production"},
+                         {"label": "staging", "description": "staging"}]},
+        ]}});
+        match classify("sess", &v) {
+            Incoming::Question { rpc_id, question, questions, question_ids } => {
+                assert_eq!(rpc_id, json!(4));
+                assert_eq!(question, "Deploy — Which env?");
+                assert_eq!(question_ids, vec!["q1".to_owned()]);
+                assert_eq!(questions[0]["options"][0]["label"], "prod");
+            }
+            other => panic!("expected Question, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn request_user_input_with_no_question_ids_still_maps() {
+        let v = json!({"method": "item/tool/requestUserInput", "id": 7,
+            "params": {"threadId": "t", "turnId": "u", "questions": []}});
+        match classify("s", &v) {
+            Incoming::Question { rpc_id, question_ids, .. } => {
+                assert_eq!(rpc_id, json!(7));
+                assert!(question_ids.is_empty());
+            }
+            other => panic!("expected Question, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn user_input_reply_keys_answer_by_question_id() {
+        let reply =
+            user_input_reply(&json!(4), &["q1".to_owned(), "q2".to_owned()], "prod, us-east");
+        assert_eq!(reply["id"], json!(4));
+        assert_eq!(reply["result"]["answers"]["q1"]["answers"][0], "prod, us-east");
+        assert_eq!(reply["result"]["answers"]["q2"]["answers"][0], "prod, us-east");
+    }
+
+    #[test]
+    fn decline_reply_builders_shape() {
+        assert_eq!(elicitation_decline(&json!(1))["result"]["action"], "decline");
+        assert_eq!(permissions_decline(&json!(2))["result"]["permissions"], json!({}));
+        assert_eq!(request_not_supported(&json!(3), "x/y")["error"]["code"], -32601);
     }
 
     #[test]
@@ -2116,8 +2568,7 @@ mod tests {
         assert!(text.contains("report.pdf"));
         assert!(!text.contains("diagram.png"), "images are native, not text paths");
         // Both images become localImage inputs carrying their local paths.
-        let images: Vec<&Value> =
-            items.iter().filter(|i| i["type"] == "localImage").collect();
+        let images: Vec<&Value> = items.iter().filter(|i| i["type"] == "localImage").collect();
         assert_eq!(images.len(), 2);
         assert_eq!(images[0]["path"], "/tmp/cctui-uploads/s/diagram.png");
         assert_eq!(images[1]["path"], "/tmp/cctui-uploads/s/photo.JPEG");
@@ -2172,9 +2623,13 @@ mod tests {
         assert_eq!(rec.cfg.reasoning_effort.as_deref(), Some("high"));
         // Chip Status then a truthful ok CommandResult.
         let status = rx.recv().await.unwrap();
-        assert!(matches!(status, AdapterEvent::Status { model: Some(m), .. } if m == "gpt-5-codex"));
+        assert!(
+            matches!(status, AdapterEvent::Status { model: Some(m), .. } if m == "gpt-5-codex")
+        );
         let ack = rx.recv().await.unwrap();
-        assert!(matches!(ack, AdapterEvent::CommandResult { ok: true, command_id: c, .. } if c == command_id));
+        assert!(
+            matches!(ack, AdapterEvent::CommandResult { ok: true, command_id: c, .. } if c == command_id)
+        );
     }
 
     #[test]
@@ -2523,6 +2978,52 @@ mod tests {
     }
 
     #[test]
+    fn lifecycle_request_shapes() {
+        for (op, method) in [
+            (LifecycleOp::Archive, "thread/archive"),
+            (LifecycleOp::Unarchive, "thread/unarchive"),
+            (LifecycleOp::Delete, "thread/delete"),
+        ] {
+            let req = thread_lifecycle_req(7, op, "thread-abc");
+            assert_eq!(req["jsonrpc"], "2.0");
+            assert_eq!(req["id"], 7);
+            assert_eq!(req["method"], method);
+            assert_eq!(req["params"]["threadId"], "thread-abc");
+        }
+    }
+
+    #[test]
+    fn lifecycle_idempotency_maps_already_in_state() {
+        assert!(is_idempotent_lifecycle_error(
+            LifecycleOp::Archive,
+            "codex app-server error: thread is already archived"
+        ));
+        assert!(is_idempotent_lifecycle_error(LifecycleOp::Unarchive, "thread is not archived"));
+        assert!(is_idempotent_lifecycle_error(LifecycleOp::Unarchive, "already unarchived"));
+        assert!(is_idempotent_lifecycle_error(LifecycleOp::Delete, "already deleted"));
+    }
+
+    #[test]
+    fn lifecycle_idempotency_maps_missing_thread_for_every_op() {
+        for op in [LifecycleOp::Archive, LifecycleOp::Unarchive, LifecycleOp::Delete] {
+            assert!(is_idempotent_lifecycle_error(op, "thread not found"));
+            assert!(is_idempotent_lifecycle_error(op, "No such thread: abc"));
+            assert!(is_idempotent_lifecycle_error(op, "thread does not exist"));
+        }
+    }
+
+    #[test]
+    fn lifecycle_idempotency_rejects_real_errors() {
+        assert!(!is_idempotent_lifecycle_error(
+            LifecycleOp::Archive,
+            "codex app-server error 500: internal error"
+        ));
+        assert!(!is_idempotent_lifecycle_error(LifecycleOp::Unarchive, "permission denied"));
+        // An archive-specific "already" must not mask a genuine unarchive fault.
+        assert!(!is_idempotent_lifecycle_error(LifecycleOp::Unarchive, "already archived"));
+    }
+
+    #[test]
     fn handshake_methods_are_flagged() {
         for m in ["initialize", "thread/start", "thread/resume", "thread/fork"] {
             let p = PendingRpc { method: m.to_owned(), command_id: None, deadline: Instant::now() };
@@ -2603,10 +3104,7 @@ mod tests {
             turn_lifecycle(&completed),
             Some(TurnLifecycle::Completed { turn_id: "turn-1".to_owned() })
         );
-        assert_eq!(
-            turn_lifecycle(&json!({"method": "thread/status/changed", "params": {}})),
-            None
-        );
+        assert_eq!(turn_lifecycle(&json!({"method": "thread/status/changed", "params": {}})), None);
         assert_eq!(turn_lifecycle(&json!({"method": "turn/started", "params": {}})), None);
     }
 
@@ -2637,7 +3135,10 @@ mod tests {
         let mut active = ActiveTurn::default();
         assert_eq!(prompt_dispatch(&active), PromptDispatch::Start);
         active.apply(&TurnLifecycle::Started { turn_id: "turn-9".to_owned() });
-        assert_eq!(prompt_dispatch(&active), PromptDispatch::Steer { turn_id: "turn-9".to_owned() });
+        assert_eq!(
+            prompt_dispatch(&active),
+            PromptDispatch::Steer { turn_id: "turn-9".to_owned() }
+        );
     }
 
     #[test]
@@ -2662,5 +3163,178 @@ mod tests {
         assert_eq!(req["params"]["expectedTurnId"], "turn-1");
         assert_eq!(req["params"]["input"][0]["type"], "text");
         assert_eq!(req["params"]["input"][0]["text"], "keep going");
+    }
+
+    // --- CCT-638: item/started + delta accumulation, new item types ---------
+
+    const ITEM_STREAM_FIXTURE: &str = include_str!("fixtures/item_stream.jsonl");
+
+    fn fixture_lines() -> Vec<Value> {
+        ITEM_STREAM_FIXTURE
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| serde_json::from_str::<Value>(l).expect("fixture line is valid JSON"))
+            .collect()
+    }
+
+    #[test]
+    fn item_started_and_deltas_are_ignored_by_classify() {
+        for v in fixture_lines() {
+            let method = v.get("method").and_then(Value::as_str).unwrap_or_default();
+            if method == "item/started" || method.ends_with("Delta") || method.contains("/delta") {
+                assert!(
+                    matches!(classify("t", &v), Incoming::Ignored),
+                    "{method} must not emit its own event",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn accumulator_backfills_agent_message_text() {
+        // A completed agentMessage whose `text` the server left empty is
+        // back-filled from the concatenated `item/agentMessage/delta` stream.
+        let mut acc = ItemAccumulator::default();
+        acc.note(
+            &json!({"method":"item/started","params":{"item":{"id":"m","type":"agentMessage"}}}),
+        );
+        acc.note(
+            &json!({"method":"item/agentMessage/delta","params":{"itemId":"m","delta":"Hel"}}),
+        );
+        acc.note(&json!({"method":"item/agentMessage/delta","params":{"itemId":"m","delta":"lo"}}));
+        let completed = json!({"method":"item/completed","params":{"item":{"id":"m","type":"agentMessage","text":""}}});
+        let enriched = acc.enrich_completed(completed);
+        assert_eq!(enriched.pointer("/params/item/text").and_then(Value::as_str), Some("Hello"));
+    }
+
+    #[test]
+    fn accumulator_keeps_authoritative_completed_text() {
+        // When the completed item already carries text, the stream is dropped
+        // (the completed frame is authoritative) — no duplication.
+        let mut acc = ItemAccumulator::default();
+        acc.note(
+            &json!({"method":"item/agentMessage/delta","params":{"itemId":"m","delta":"partial"}}),
+        );
+        let completed = json!({"method":"item/completed","params":{"item":{"id":"m","type":"agentMessage","text":"final answer"}}});
+        let enriched = acc.enrich_completed(completed);
+        assert_eq!(
+            enriched.pointer("/params/item/text").and_then(Value::as_str),
+            Some("final answer")
+        );
+    }
+
+    #[test]
+    fn accumulator_backfills_reasoning_from_text_deltas() {
+        // Reasoning ships `content: []` + encrypted content on completion; the
+        // visible reasoning only arrived via `item/reasoning/textDelta`.
+        let mut acc = ItemAccumulator::default();
+        acc.note(&json!({"method":"item/started","params":{"item":{"id":"r","type":"reasoning"}}}));
+        acc.note(&json!({"method":"item/reasoning/textDelta","params":{"itemId":"r","contentIndex":0,"delta":"think "}}));
+        acc.note(&json!({"method":"item/reasoning/textDelta","params":{"itemId":"r","contentIndex":0,"delta":"hard"}}));
+        let completed = json!({"method":"item/completed","params":{"item":{
+            "id":"r","type":"reasoning","content":[],"summary":[],"encrypted_content":"gAAAA"}}});
+        let enriched = acc.enrich_completed(completed);
+        let content = enriched.pointer("/params/item/content").and_then(Value::as_array).unwrap();
+        assert_eq!(content[0].as_str(), Some("think hard"));
+    }
+
+    #[test]
+    fn accumulator_backfills_command_output() {
+        let mut acc = ItemAccumulator::default();
+        acc.note(&json!({"method":"item/commandExecution/outputDelta","params":{"itemId":"c","delta":"line1\n"}}));
+        let completed = json!({"method":"item/completed","params":{"item":{
+            "id":"c","type":"commandExecution","command":"ls","aggregatedOutput":""}}});
+        let enriched = acc.enrich_completed(completed);
+        assert_eq!(
+            enriched.pointer("/params/item/aggregatedOutput").and_then(Value::as_str),
+            Some("line1\n")
+        );
+    }
+
+    #[test]
+    fn accumulator_forgets_item_after_completion() {
+        // A second item reusing a fresh id must not inherit a prior buffer.
+        let mut acc = ItemAccumulator::default();
+        acc.note(&json!({"method":"item/agentMessage/delta","params":{"itemId":"m","delta":"x"}}));
+        let _ = acc.enrich_completed(
+            json!({"method":"item/completed","params":{"item":{"id":"m","type":"agentMessage","text":""}}}),
+        );
+        // Re-completing the same id with empty text now has nothing to inject.
+        let again = acc.enrich_completed(
+            json!({"method":"item/completed","params":{"item":{"id":"m","type":"agentMessage","text":""}}}),
+        );
+        assert_eq!(again.pointer("/params/item/text").and_then(Value::as_str), Some(""));
+    }
+
+    #[test]
+    fn enrich_completed_passes_non_completed_through() {
+        let mut acc = ItemAccumulator::default();
+        let v = json!({"method":"turn/started","params":{"turn":{"id":"t"}}});
+        assert_eq!(acc.enrich_completed(v.clone()), v);
+    }
+
+    #[test]
+    fn fixture_stream_drives_full_pipeline() {
+        // The full started→delta→completed sequence in the fixture: only the
+        // completed items emit events, deltas are accumulated, and the empty
+        // reasoning item is back-filled from its text deltas.
+        let mut acc = ItemAccumulator::default();
+        let mut completed_types: Vec<String> = Vec::new();
+        let mut reasoning_text: Option<String> = None;
+        for v in fixture_lines() {
+            acc.note(&v);
+            let v = acc.enrich_completed(v);
+            if let Incoming::Event(evt) = classify("t", &v) {
+                match evt {
+                    AdapterEvent::Message { payload, .. }
+                    | AdapterEvent::ToolUse { payload, .. } => {
+                        if let Some(ty) = payload.get("type").and_then(Value::as_str) {
+                            completed_types.push(ty.to_owned());
+                            if ty == "reasoning" {
+                                reasoning_text = payload
+                                    .get("content")
+                                    .and_then(Value::as_array)
+                                    .and_then(|a| a.first())
+                                    .and_then(Value::as_str)
+                                    .map(str::to_owned);
+                            }
+                        }
+                    }
+                    // The failed turn/completed surfaces a failed Status.
+                    AdapterEvent::Status { state, .. } => {
+                        assert_eq!(state.as_deref(), Some("failed"));
+                    }
+                    other => panic!("unexpected event {other:?}"),
+                }
+            }
+        }
+        for ty in [
+            "agentMessage",
+            "reasoning",
+            "commandExecution",
+            "plan",
+            "fileChange",
+            "enteredReviewMode",
+            "mcpToolCall",
+            "dynamicToolCall",
+            "imageView",
+            "contextCompaction",
+        ] {
+            assert!(completed_types.contains(&ty.to_owned()), "missing completed item {ty}");
+        }
+        assert_eq!(reasoning_text.as_deref(), Some("First I will list the files."));
+    }
+
+    #[test]
+    fn new_tool_items_classify_as_tool_use() {
+        for ty in
+            ["dynamicToolCall", "collabAgentToolCall", "webSearch", "imageView", "imageGeneration"]
+        {
+            let v = json!({"method":"item/completed","params":{"item":{"type":ty,"id":"x"}}});
+            assert!(
+                matches!(classify("s", &v), Incoming::Event(AdapterEvent::ToolUse { .. })),
+                "{ty} should be a ToolUse",
+            );
+        }
     }
 }
