@@ -298,18 +298,9 @@ async fn command_pump(
                                 continue;
                             }
                         };
-                        if let Some(command_id) = command_id {
-                            // The codex session launches asynchronously; report
-                            // that dispatch was accepted. Runtime failures
-                            // surface as session events (CCT-131).
-                            let _ = events
-                                .send(AdapterEvent::CommandResult {
-                                    command_id,
-                                    ok: true,
-                                    error: None,
-                                })
-                                .await;
-                        }
+                        // The CommandResult for `command_id` is deferred to the
+                        // session driver: it reports ok only after
+                        // `thread/start` succeeds (CCT-631).
                         // Per-spawn permission posture (CCT-149): override the
                         // host default sandbox_mode + approval_policy. None →
                         // keep the daemon.toml defaults (which a no-userns host
@@ -339,6 +330,7 @@ async fn command_pump(
                             env,
                             spec.prompt.clone(),
                             spec.name.clone(),
+                            command_id,
                             events.clone(),
                             live.clone(),
                             registry.clone(),
@@ -386,15 +378,6 @@ async fn command_pump(
                                 continue;
                             }
                         };
-                        if let Some(command_id) = command_id {
-                            let _ = events
-                                .send(AdapterEvent::CommandResult {
-                                    command_id,
-                                    ok: true,
-                                    error: None,
-                                })
-                                .await;
-                        }
                         let mut cfg = app_cfg.clone();
                         if let Some(mode) = spec.permission_mode {
                             let (sandbox, approval) = mode.codex_sandbox_approval();
@@ -418,6 +401,7 @@ async fn command_pump(
                             parent_local_id,
                             spec.prompt.clone(),
                             spec.name.clone(),
+                            command_id,
                             events.clone(),
                             live.clone(),
                             registry.clone(),
@@ -470,33 +454,34 @@ async fn command_pump(
                         .await;
                     }
                     AdapterCommand::Interrupt { local_id, command_id } => {
-                        // CCT-339: surface whether the app-server actually
-                        // received the interrupt. `turn/interrupt` only makes
-                        // sense for a LIVE session (a hibernated thread has no
-                        // in-flight turn to abort), so delivery to the live
-                        // command channel == accepted; anything else is a
-                        // no-op we report as a failure so the webui can say so.
+                        // `turn/interrupt` only makes sense for a LIVE session
+                        // (a hibernated thread has no in-flight turn to abort).
+                        // When delivered, the session driver answers
+                        // `command_id` from the correlated `turn/interrupt`
+                        // JSON-RPC outcome (CCT-631); a non-delivery is
+                        // reported as a failure here so the webui can say so.
                         let delivered = matches!(
                             route_or_prepare_resume(
                                 &live,
                                 &registry,
                                 &local_id,
-                                SessionCommand::Interrupt,
+                                SessionCommand::Interrupt { command_id },
                             )
                             .await,
                             RouteAction::Delivered
                         );
-                        if let Some(command_id) = command_id {
-                            let (ok, error) = if delivered {
-                                (true, None)
-                            } else {
-                                (false, Some("no live codex session to interrupt".to_owned()))
-                            };
-                            let _ = events
-                                .send(AdapterEvent::CommandResult { command_id, ok, error })
-                                .await;
-                        }
                         if !delivered {
+                            if let Some(command_id) = command_id {
+                                let _ = events
+                                    .send(AdapterEvent::CommandResult {
+                                        command_id,
+                                        ok: false,
+                                        error: Some(
+                                            "no live codex session to interrupt".to_owned(),
+                                        ),
+                                    })
+                                    .await;
+                            }
                             tracing::warn!(%local_id, "codex: interrupt for non-live session");
                         }
                     }

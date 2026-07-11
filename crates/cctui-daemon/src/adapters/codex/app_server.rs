@@ -25,6 +25,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::process::Stdio;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use cctui_proto::adapter::{AdapterEvent, EndReason, SessionMeta};
@@ -33,6 +34,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 use super::contract;
 
@@ -49,6 +51,12 @@ const RUN_BASE: i64 = 100;
 /// the [`EndReason::Crashed`] detail instead of being discarded to
 /// `/dev/null`.
 const STDERR_RING: usize = 40;
+
+const RPC_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// `thread/resume` of a long transcript can legitimately exceed the normal
+/// RPC deadline, so handshake requests get a longer one.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(120);
 
 // ---------------------------------------------------------------------------
 // Pure protocol layer
@@ -144,8 +152,62 @@ fn map_notification(local_id: &str, method: &str, v: &Value) -> Incoming {
         "thread/tokenUsage/updated" => map_token_usage(local_id, v),
         // Thread rename → Status carrying just the name (display gated on CCT-113).
         "thread/name/updated" => map_name(local_id, v),
+        // Structured turn errors → failed Status (CCT-631).
+        "error" => map_error_notification(local_id, v),
+        "turn/completed" => map_turn_completed(local_id, v),
         _ => Incoming::Ignored,
     }
+}
+
+/// Map the structured `error` notification → [`AdapterEvent::Status`].
+/// `willRetry: true` means codex is retrying the turn itself, so only the
+/// detail is surfaced; a non-retried error marks the session failed.
+fn map_error_notification(local_id: &str, v: &Value) -> Incoming {
+    let Some(message) = v.pointer("/params/error/message").and_then(Value::as_str) else {
+        return Incoming::Ignored;
+    };
+    let will_retry = v.pointer("/params/willRetry").and_then(Value::as_bool).unwrap_or(false);
+    let (state, activity) =
+        if will_retry { (None, None) } else { (Some("failed"), Some("failure")) };
+    Incoming::Event(AdapterEvent::Status {
+        local_id: local_id.to_owned(),
+        tempo: None,
+        state: state.map(str::to_owned),
+        detail: Some(message.to_owned()),
+        activity: activity.map(str::to_owned),
+        name: None,
+        intent: None,
+        model: None,
+        effort: None,
+        children: vec![],
+    })
+}
+
+/// Map `turn/completed` whose `turn.status == "failed"` → failed
+/// [`AdapterEvent::Status`] carrying the turn error message (CCT-631).
+/// Successful turns stay ignored: idle status arrives via
+/// `thread/status/changed`.
+fn map_turn_completed(local_id: &str, v: &Value) -> Incoming {
+    if v.pointer("/params/turn/status").and_then(Value::as_str) != Some("failed") {
+        return Incoming::Ignored;
+    }
+    let detail = v
+        .pointer("/params/turn/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or("turn failed")
+        .to_owned();
+    Incoming::Event(AdapterEvent::Status {
+        local_id: local_id.to_owned(),
+        tempo: None,
+        state: Some("failed".to_owned()),
+        detail: Some(detail),
+        activity: Some("failure".to_owned()),
+        name: None,
+        intent: None,
+        model: None,
+        effort: None,
+        children: vec![],
+    })
 }
 
 fn map_item_completed(local_id: &str, v: &Value) -> Incoming {
@@ -400,9 +462,126 @@ fn approval_reply(rpc_id: &Value, kind: ApprovalKind, allow: bool) -> Value {
     json!({"jsonrpc": "2.0", "id": rpc_id, "result": {"decision": kind.decision(allow)}})
 }
 
+/// One outstanding outbound JSON-RPC request (CCT-631).
+#[derive(Debug)]
+pub struct PendingRpc {
+    pub method: String,
+    /// Server-minted correlation id: when set, the request's outcome is
+    /// reported back as an [`AdapterEvent::CommandResult`].
+    pub command_id: Option<Uuid>,
+    pub deadline: Instant,
+}
+
+impl PendingRpc {
+    /// Whether this request is part of the session-establishing handshake —
+    /// its failure means the session cannot run at all.
+    #[must_use]
+    pub fn is_handshake(&self) -> bool {
+        matches!(
+            self.method.as_str(),
+            "initialize" | "thread/start" | "thread/resume" | "thread/fork"
+        )
+    }
+}
+
+/// Correlation table for outbound JSON-RPC requests, keyed by request id
+/// (CCT-631). The driver inserts before each write, resolves on the matching
+/// response (propagating `error` objects as failures), expires entries past
+/// their deadline, and drains everything when the app-server process exits.
+#[derive(Debug, Default)]
+pub struct PendingRpcs {
+    inner: HashMap<i64, PendingRpc>,
+}
+
+impl PendingRpcs {
+    pub fn insert(&mut self, id: i64, method: &str, command_id: Option<Uuid>, deadline: Instant) {
+        self.inner.insert(id, PendingRpc { method: method.to_owned(), command_id, deadline });
+    }
+
+    /// Resolve the pending request matching a response `id`. Returns the
+    /// entry plus the parsed outcome; `None` for an unknown id.
+    pub fn resolve(
+        &mut self,
+        id: i64,
+        response: &Value,
+    ) -> Option<(PendingRpc, Result<Value, String>)> {
+        let pending = self.inner.remove(&id)?;
+        Some((pending, response_outcome(response)))
+    }
+
+    /// Remove and return every request whose deadline has passed.
+    pub fn expire(&mut self, now: Instant) -> Vec<(i64, PendingRpc)> {
+        self.inner.extract_if(|_, p| p.deadline <= now).collect()
+    }
+
+    /// Remove and return everything — the process is gone, nothing pending
+    /// can ever resolve.
+    pub fn drain(&mut self) -> Vec<(i64, PendingRpc)> {
+        self.inner.drain().collect()
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+}
+
+/// Parse a JSON-RPC response into success (`result`) or failure (the `error`
+/// object rendered as a message).
+fn response_outcome(v: &Value) -> Result<Value, String> {
+    let Some(err) = v.get("error").filter(|e| !e.is_null()) else {
+        return Ok(v.get("result").cloned().unwrap_or(Value::Null));
+    };
+    let message = err.get("message").and_then(Value::as_str).unwrap_or("unknown error");
+    let mut out = err.get("code").and_then(Value::as_i64).map_or_else(
+        || format!("codex app-server error: {message}"),
+        |code| format!("codex app-server error {code}: {message}"),
+    );
+    if let Some(data) = err.get("data").filter(|d| !d.is_null()) {
+        use std::fmt::Write as _;
+        let _ = write!(out, " ({data})");
+    }
+    Err(out)
+}
+
 // ---------------------------------------------------------------------------
 // Async driver
 // ---------------------------------------------------------------------------
+
+/// Holds the spawn/fork `command_id` until the launch outcome is known: the
+/// success ack is deferred to `thread/start`/`thread/resume`/`thread/fork`
+/// succeeding, and every failure path (JSON-RPC error, timeout, process exit,
+/// spawn error) resolves it as a failure instead (CCT-631). One-shot: the
+/// first resolution wins, later calls are no-ops.
+struct SpawnAck {
+    command_id: Option<Uuid>,
+    events: mpsc::Sender<AdapterEvent>,
+}
+
+impl SpawnAck {
+    async fn ok(&mut self) {
+        if let Some(command_id) = self.command_id.take() {
+            let _ = self
+                .events
+                .send(AdapterEvent::CommandResult { command_id, ok: true, error: None })
+                .await;
+        }
+    }
+
+    async fn fail(&mut self, error: &str) {
+        if let Some(command_id) = self.command_id.take() {
+            let _ = self
+                .events
+                .send(AdapterEvent::CommandResult {
+                    command_id,
+                    ok: false,
+                    error: Some(error.to_owned()),
+                })
+                .await;
+        }
+    }
+}
 
 /// Per-session commands routed from the adapter-level command pump.
 #[derive(Debug, Clone)]
@@ -422,8 +601,9 @@ pub enum SessionCommand {
     /// Interrupt the in-flight turn but KEEP the session alive (CCT-210):
     /// sends `turn/interrupt` WITHOUT terminating the app-server, so the
     /// thread stays resumable. Distinct from `Kill`, which interrupts *and*
-    /// terminates the child.
-    Interrupt,
+    /// terminates the child. `command_id` correlates the `turn/interrupt`
+    /// JSON-RPC outcome back to an [`AdapterEvent::CommandResult`] (CCT-631).
+    Interrupt { command_id: Option<Uuid> },
     /// Change the model and/or reasoning effort of the running thread in place
     /// (CCT-303): sends `thread/settings/update { threadId, model?, effort? }`
     /// so subsequent turns use the new settings, and echoes the resolved values
@@ -613,6 +793,9 @@ pub struct CodexSession {
     /// fork / resume; see [`SessionRecord::env`].
     env: std::collections::BTreeMap<String, String>,
     launch: SessionLaunch,
+    /// Spawn/fork correlation id (CCT-631): resolved as an
+    /// [`AdapterEvent::CommandResult`] only once the launch outcome is known.
+    command_id: Option<Uuid>,
     events: mpsc::Sender<AdapterEvent>,
     live: LiveSessionRegistry,
     registry: SessionRegistry,
@@ -627,6 +810,7 @@ impl CodexSession {
         env: std::collections::BTreeMap<String, String>,
         prompt: Option<String>,
         name: Option<String>,
+        command_id: Option<Uuid>,
         events: mpsc::Sender<AdapterEvent>,
         live: LiveSessionRegistry,
         registry: SessionRegistry,
@@ -637,6 +821,7 @@ impl CodexSession {
             cwd,
             env,
             launch: SessionLaunch::Fresh { prompt, name },
+            command_id,
             events,
             live,
             registry,
@@ -652,6 +837,7 @@ impl CodexSession {
         parent_thread_id: String,
         prompt: Option<String>,
         name: Option<String>,
+        command_id: Option<Uuid>,
         events: mpsc::Sender<AdapterEvent>,
         live: LiveSessionRegistry,
         registry: SessionRegistry,
@@ -662,6 +848,7 @@ impl CodexSession {
             cwd,
             env,
             launch: SessionLaunch::Fork { parent_thread_id, prompt, name },
+            command_id,
             events,
             live,
             registry,
@@ -686,6 +873,7 @@ impl CodexSession {
             cwd,
             env,
             launch: SessionLaunch::Resume { thread_id, initial_commands },
+            command_id: None,
             events,
             live,
             registry,
@@ -695,8 +883,20 @@ impl CodexSession {
 
     /// Spawn the subprocess, complete the handshake, then pump IO until the
     /// process exits, the session is killed, or the daemon shuts down.
+    /// The spawn/fork `command_id` (when present) is resolved exactly once:
+    /// `ok` after the thread request succeeds, failure on any other outcome.
+    pub async fn run(mut self) -> Result<()> {
+        let mut ack = SpawnAck { command_id: self.command_id.take(), events: self.events.clone() };
+        let res = self.run_inner(&mut ack).await;
+        match &res {
+            Err(err) => ack.fail(&err.to_string()).await,
+            Ok(()) => ack.fail("codex app-server exited before the thread was started").await,
+        }
+        res
+    }
+
     #[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
-    pub async fn run(self) -> Result<()> {
+    async fn run_inner(&self, ack: &mut SpawnAck) -> Result<()> {
         let cwd_path = std::path::Path::new(&self.cwd);
         if !cwd_path.is_dir() {
             anyhow::bail!("spawn: working_dir does not exist or is not a directory: {}", self.cwd);
@@ -757,6 +957,8 @@ impl CodexSession {
         }
 
         // Handshake: initialize → thread/start or thread/resume.
+        let mut pending_rpcs = PendingRpcs::default();
+        pending_rpcs.insert(ID_INITIALIZE, "initialize", None, Instant::now() + RPC_TIMEOUT);
         write_json(&mut stdin, &initialize_req()).await?;
         let mut local_id = String::new();
         let mut codex_version: Option<String> = None;
@@ -770,6 +972,8 @@ impl CodexSession {
         // the non-zero exit as a crash.
         let mut killed = false;
         let mut retry_after_hibernate: Option<SessionCommand> = None;
+        let mut sweep = tokio::time::interval(Duration::from_secs(1));
+        sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         loop {
             tokio::select! {
@@ -777,6 +981,29 @@ impl CodexSession {
                     let _ = child.start_kill();
                     killed = true;
                     break;
+                }
+                _ = sweep.tick() => {
+                    let mut handshake_dead = false;
+                    for (id, pending) in pending_rpcs.expire(Instant::now()) {
+                        tracing::warn!(rpc_id = id, method = %pending.method, "codex: JSON-RPC request timed out");
+                        if let Some(command_id) = pending.command_id {
+                            let _ = self.events
+                                .send(AdapterEvent::CommandResult {
+                                    command_id,
+                                    ok: false,
+                                    error: Some(format!("codex {} timed out", pending.method)),
+                                })
+                                .await;
+                        }
+                        if pending.is_handshake() {
+                            ack.fail(&format!("codex {} timed out", pending.method)).await;
+                            handshake_dead = true;
+                        }
+                    }
+                    if handshake_dead {
+                        let _ = child.start_kill();
+                        break;
+                    }
                 }
                 cmd = cmd_rx.recv(), if registered => {
                     match cmd {
@@ -794,6 +1021,7 @@ impl CodexSession {
                         }
                         Some(SessionCommand::Send { text }) => {
                             let req = turn_start_req(next_id, &local_id, &text);
+                            pending_rpcs.insert(next_id, "turn/start", None, Instant::now() + RPC_TIMEOUT);
                             next_id += 1;
                             // A write failure here means the app-server is gone
                             // — remember the turn and let the epilogue revive
@@ -808,6 +1036,7 @@ impl CodexSession {
                             if let Err(e) = set_thread_name(
                                 &mut stdin,
                                 &mut next_id,
+                                &mut pending_rpcs,
                                 &local_id,
                                 &name,
                                 &self.events,
@@ -827,11 +1056,12 @@ impl CodexSession {
                             killed = true;
                             break;
                         }
-                        Some(SessionCommand::Interrupt) => {
+                        Some(SessionCommand::Interrupt { command_id }) => {
                             // Keep-alive interrupt (CCT-210): abort the turn but
                             // leave the app-server running so the session keeps
                             // going — unlike Kill, we do NOT terminate the child.
                             let req = turn_interrupt_req(next_id, &local_id);
+                            pending_rpcs.insert(next_id, "turn/interrupt", command_id, Instant::now() + RPC_TIMEOUT);
                             next_id += 1;
                             if let Err(e) = write_json(&mut stdin, &req).await {
                                 tracing::warn!(%e, "codex: turn/interrupt write failed; ending session");
@@ -842,6 +1072,7 @@ impl CodexSession {
                             if let Err(e) = set_thread_model(
                                 &mut stdin,
                                 &mut next_id,
+                                &mut pending_rpcs,
                                 &local_id,
                                 model.as_deref(),
                                 effort.as_deref(),
@@ -878,31 +1109,38 @@ impl CodexSession {
                         continue;
                     };
                     match classify(&local_id, &value) {
-                        Incoming::Response { id, value } if id == ID_INITIALIZE => {
+                        Incoming::Response { id, value } => {
+                            let Some((pending, outcome)) = pending_rpcs.resolve(id, &value) else {
+                                tracing::debug!(rpc_id = id, "codex: response for unknown request id");
+                                continue;
+                            };
+                            match (pending.method.as_str(), outcome) {
+                        ("initialize", Ok(_)) => {
                             codex_version = record_codex_version(&value);
                             // Complete the documented handshake before any
                             // thread request (CCT-630): the server treats
                             // `thread/*` sent before `initialized` as premature.
                             write_json(&mut stdin, &initialized_notification()).await?;
-                            match &self.launch {
+                            let (req, method) = match &self.launch {
                                 SessionLaunch::Fresh { .. } => {
-                                    write_json(&mut stdin, &thread_start_req(&self.cwd)).await?;
+                                    (thread_start_req(&self.cwd), "thread/start")
                                 }
                                 SessionLaunch::Resume { thread_id, .. } => {
-                                    write_json(&mut stdin, &thread_resume_req(thread_id, &self.cwd))
-                                        .await?;
+                                    (thread_resume_req(thread_id, &self.cwd), "thread/resume")
                                 }
                                 SessionLaunch::Fork { parent_thread_id, .. } => {
-                                    write_json(
-                                        &mut stdin,
-                                        &thread_fork_req(parent_thread_id, &self.cwd),
-                                    )
-                                    .await?;
+                                    (thread_fork_req(parent_thread_id, &self.cwd), "thread/fork")
                                 }
-                            }
+                            };
+                            pending_rpcs.insert(
+                                ID_THREAD_START,
+                                method,
+                                None,
+                                Instant::now() + HANDSHAKE_TIMEOUT,
+                            );
+                            write_json(&mut stdin, &req).await?;
                         }
-                        Incoming::Response { id, value } if id == ID_THREAD_START => {
-                            let result = value.get("result").cloned().unwrap_or(Value::Null);
+                        ("thread/start" | "thread/resume" | "thread/fork", Ok(result)) => {
                             let Some(info) = thread_info(&result) else {
                                 anyhow::bail!("codex thread/start response missing thread id");
                             };
@@ -951,6 +1189,7 @@ impl CodexSession {
                             );
                             self.live.lock().await.insert(local_id.clone(), cmd_tx.clone());
                             registered = true;
+                            ack.ok().await;
                             // Surface the configured model + reasoning effort so
                             // the session list shows them (claude gets this for
                             // free via state.json; codex has no equivalent feed).
@@ -983,6 +1222,7 @@ impl CodexSession {
                                         let result = set_thread_name(
                                             &mut stdin,
                                             &mut next_id,
+                                            &mut pending_rpcs,
                                             &local_id,
                                             name,
                                             &self.events,
@@ -1000,6 +1240,12 @@ impl CodexSession {
                                         && let Some(prompt) = prompt.as_deref()
                                     {
                                         let req = turn_start_req(next_id, &local_id, prompt);
+                                        pending_rpcs.insert(
+                                            next_id,
+                                            "turn/start",
+                                            None,
+                                            Instant::now() + RPC_TIMEOUT,
+                                        );
                                         next_id += 1;
                                         if let Err(e) = write_json(&mut stdin, &req).await {
                                             tracing::warn!(%e, "codex: initial prompt write failed; ending session");
@@ -1014,6 +1260,12 @@ impl CodexSession {
                                         match command {
                                             SessionCommand::Send { text } => {
                                                 let req = turn_start_req(next_id, &local_id, &text);
+                                                pending_rpcs.insert(
+                                                    next_id,
+                                                    "turn/start",
+                                                    None,
+                                                    Instant::now() + RPC_TIMEOUT,
+                                                );
                                                 next_id += 1;
                                                 if let Err(e) = write_json(&mut stdin, &req).await {
                                                     tracing::warn!(%e, "codex: resumed turn/start write failed");
@@ -1027,6 +1279,7 @@ impl CodexSession {
                                                 if let Err(e) = set_thread_name(
                                                     &mut stdin,
                                                     &mut next_id,
+                                                    &mut pending_rpcs,
                                                     &local_id,
                                                     &name,
                                                     &self.events,
@@ -1045,6 +1298,7 @@ impl CodexSession {
                                                 if let Err(e) = set_thread_model(
                                                     &mut stdin,
                                                     &mut next_id,
+                                                    &mut pending_rpcs,
                                                     &local_id,
                                                     model.as_deref(),
                                                     effort.as_deref(),
@@ -1071,6 +1325,58 @@ impl CodexSession {
                                 break;
                             }
                         }
+                        (method, Err(err)) if pending.is_handshake() => {
+                            tracing::error!(%err, %method, "codex: handshake request failed; ending session");
+                            ack.fail(&err).await;
+                            let _ = child.start_kill();
+                            break;
+                        }
+                        ("turn/interrupt", outcome) => {
+                            if let Some(command_id) = pending.command_id {
+                                let (ok, error) = match &outcome {
+                                    Ok(_) => (true, None),
+                                    Err(e) => (false, Some(e.clone())),
+                                };
+                                let _ = self.events
+                                    .send(AdapterEvent::CommandResult { command_id, ok, error })
+                                    .await;
+                            }
+                            if let Err(err) = outcome {
+                                tracing::warn!(%err, "codex: turn/interrupt failed");
+                            }
+                        }
+                        (method, Err(err)) => {
+                            tracing::warn!(%err, %method, "codex: JSON-RPC request failed");
+                            if let Some(command_id) = pending.command_id {
+                                let _ = self.events
+                                    .send(AdapterEvent::CommandResult {
+                                        command_id,
+                                        ok: false,
+                                        error: Some(err.clone()),
+                                    })
+                                    .await;
+                            }
+                            if method == "turn/start" {
+                                self.events
+                                    .send(AdapterEvent::Status {
+                                        local_id: local_id.clone(),
+                                        tempo: None,
+                                        state: Some("failed".to_owned()),
+                                        detail: Some(err),
+                                        activity: Some("failure".to_owned()),
+                                        name: None,
+                                        intent: None,
+                                        model: None,
+                                        effort: None,
+                                        children: vec![],
+                                    })
+                                    .await
+                                    .ok();
+                            }
+                        }
+                        (_, Ok(_)) => {}
+                            }
+                        }
                         Incoming::Approval { rpc_id, request_id, tool, kind, input } => {
                             pending_approvals.insert(request_id.clone(), (rpc_id, kind));
                             self.events
@@ -1086,9 +1392,26 @@ impl CodexSession {
                         Incoming::Event(evt) => {
                             self.events.send(evt).await.ok();
                         }
-                        Incoming::Response { .. } | Incoming::Ignored => {}
+                        Incoming::Ignored => {}
                     }
                 }
+            }
+        }
+
+        for (id, pending) in pending_rpcs.drain() {
+            tracing::warn!(rpc_id = id, method = %pending.method, "codex: cancelling pending request — app-server gone");
+            if let Some(command_id) = pending.command_id {
+                let _ = self
+                    .events
+                    .send(AdapterEvent::CommandResult {
+                        command_id,
+                        ok: false,
+                        error: Some(format!(
+                            "codex {}: app-server exited before responding",
+                            pending.method
+                        )),
+                    })
+                    .await;
             }
         }
 
@@ -1162,14 +1485,17 @@ impl CodexSession {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn set_thread_name<W: AsyncWriteExt + Unpin>(
     stdin: &mut W,
     next_id: &mut i64,
+    pending_rpcs: &mut PendingRpcs,
     thread_id: &str,
     name: &str,
     events: &mpsc::Sender<AdapterEvent>,
     registry: &SessionRegistry,
 ) -> Result<()> {
+    pending_rpcs.insert(*next_id, "thread/name/set", None, Instant::now() + RPC_TIMEOUT);
     write_json(stdin, &thread_name_set_req(*next_id, thread_id, name)).await?;
     *next_id += 1;
     if let Some(record) = registry.lock().await.get_mut(thread_id) {
@@ -1203,12 +1529,14 @@ async fn set_thread_name<W: AsyncWriteExt + Unpin>(
 async fn set_thread_model<W: AsyncWriteExt + Unpin>(
     stdin: &mut W,
     next_id: &mut i64,
+    pending_rpcs: &mut PendingRpcs,
     thread_id: &str,
     model: Option<&str>,
     effort: Option<&str>,
     events: &mpsc::Sender<AdapterEvent>,
     registry: &SessionRegistry,
 ) -> Result<()> {
+    pending_rpcs.insert(*next_id, "thread/settings/update", None, Instant::now() + RPC_TIMEOUT);
     write_json(stdin, &thread_settings_update_req(*next_id, thread_id, model, effort)).await?;
     *next_id += 1;
     if let Some(record) = registry.lock().await.get_mut(thread_id) {
@@ -1624,6 +1952,7 @@ mod tests {
             std::collections::BTreeMap::new(),
             None, // no prompt → no turn/start, so no model auth needed
             None,
+            None,
             tx,
             live,
             registry.clone(),
@@ -1800,5 +2129,138 @@ mod tests {
             }
             other => panic!("expected Status, got {other:?}"),
         }
+    }
+
+    // --- CCT-631: correlated JSON-RPC outcomes -----------------------------
+
+    #[test]
+    fn pending_rpcs_resolves_success_response() {
+        let mut table = PendingRpcs::default();
+        table.insert(100, "turn/start", None, Instant::now() + RPC_TIMEOUT);
+        let resp = json!({"id": 100, "result": {"turn": {"id": "t1"}}});
+        let (pending, outcome) = table.resolve(100, &resp).expect("pending entry");
+        assert_eq!(pending.method, "turn/start");
+        assert_eq!(outcome.unwrap().pointer("/turn/id").and_then(Value::as_str), Some("t1"));
+        assert!(table.is_empty());
+        assert!(table.resolve(100, &resp).is_none(), "entry is one-shot");
+    }
+
+    #[test]
+    fn pending_rpcs_propagates_error_response() {
+        let mut table = PendingRpcs::default();
+        let cid = Uuid::new_v4();
+        table.insert(2, "thread/start", Some(cid), Instant::now() + HANDSHAKE_TIMEOUT);
+        let resp = json!({"id": 2, "error": {"code": -32600, "message": "bad thread", "data": {"hint": "x"}}});
+        let (pending, outcome) = table.resolve(2, &resp).expect("pending entry");
+        assert_eq!(pending.command_id, Some(cid));
+        assert!(pending.is_handshake());
+        let err = outcome.unwrap_err();
+        assert!(err.contains("-32600"), "{err}");
+        assert!(err.contains("bad thread"), "{err}");
+        assert!(err.contains("hint"), "{err}");
+    }
+
+    #[test]
+    fn pending_rpcs_expires_only_past_deadline() {
+        let mut table = PendingRpcs::default();
+        let now = Instant::now();
+        table.insert(1, "turn/start", None, now + Duration::from_secs(5));
+        table.insert(2, "turn/interrupt", Some(Uuid::new_v4()), now + Duration::from_secs(60));
+        let expired = table.expire(now + Duration::from_secs(30));
+        assert_eq!(expired.len(), 1);
+        assert_eq!(expired[0].0, 1);
+        assert_eq!(expired[0].1.method, "turn/start");
+        assert!(!table.is_empty());
+        assert!(table.expire(now + Duration::from_secs(120)).len() == 1);
+        assert!(table.is_empty());
+    }
+
+    #[test]
+    fn pending_rpcs_drain_cancels_everything_on_process_exit() {
+        let mut table = PendingRpcs::default();
+        let now = Instant::now();
+        table.insert(1, "initialize", None, now + RPC_TIMEOUT);
+        table.insert(100, "turn/start", None, now + RPC_TIMEOUT);
+        table.insert(101, "turn/interrupt", Some(Uuid::new_v4()), now + RPC_TIMEOUT);
+        let drained = table.drain();
+        assert_eq!(drained.len(), 3);
+        assert!(table.is_empty());
+        assert_eq!(drained.iter().filter(|(_, p)| p.command_id.is_some()).count(), 1);
+    }
+
+    #[test]
+    fn response_outcome_shapes() {
+        assert_eq!(
+            response_outcome(&json!({"id": 1, "result": {"ok": 1}})).unwrap(),
+            json!({"ok": 1})
+        );
+        assert_eq!(response_outcome(&json!({"id": 1})).unwrap(), Value::Null);
+        let err = response_outcome(&json!({"id": 1, "error": {"message": "nope"}})).unwrap_err();
+        assert!(err.contains("nope"), "{err}");
+    }
+
+    #[test]
+    fn handshake_methods_are_flagged() {
+        for m in ["initialize", "thread/start", "thread/resume", "thread/fork"] {
+            let p = PendingRpc { method: m.to_owned(), command_id: None, deadline: Instant::now() };
+            assert!(p.is_handshake(), "{m}");
+        }
+        let p = PendingRpc {
+            method: "turn/start".to_owned(),
+            command_id: None,
+            deadline: Instant::now(),
+        };
+        assert!(!p.is_handshake());
+    }
+
+    #[test]
+    fn error_notification_without_retry_maps_to_failed_status() {
+        let v = json!({"method": "error", "params": {
+            "threadId": "t", "turnId": "u", "willRetry": false,
+            "error": {"message": "usage limit exceeded", "codexErrorInfo": "usageLimitExceeded"}}});
+        match classify("t", &v) {
+            Incoming::Event(AdapterEvent::Status { state, detail, activity, .. }) => {
+                assert_eq!(state.as_deref(), Some("failed"));
+                assert_eq!(detail.as_deref(), Some("usage limit exceeded"));
+                assert_eq!(activity.as_deref(), Some("failure"));
+            }
+            other => panic!("expected Status, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn error_notification_with_retry_surfaces_detail_only() {
+        let v = json!({"method": "error", "params": {
+            "threadId": "t", "turnId": "u", "willRetry": true,
+            "error": {"message": "server overloaded"}}});
+        match classify("t", &v) {
+            Incoming::Event(AdapterEvent::Status { state, detail, activity, .. }) => {
+                assert_eq!(state, None);
+                assert_eq!(activity, None);
+                assert_eq!(detail.as_deref(), Some("server overloaded"));
+            }
+            other => panic!("expected Status, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn failed_turn_completed_maps_to_failed_status() {
+        let v = json!({"method": "turn/completed", "params": {"threadId": "t", "turn": {
+            "id": "u", "items": [], "status": "failed",
+            "error": {"message": "context window exceeded"}}}});
+        match classify("t", &v) {
+            Incoming::Event(AdapterEvent::Status { state, detail, .. }) => {
+                assert_eq!(state.as_deref(), Some("failed"));
+                assert_eq!(detail.as_deref(), Some("context window exceeded"));
+            }
+            other => panic!("expected Status, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn successful_turn_completed_stays_ignored() {
+        let v = json!({"method": "turn/completed", "params": {"threadId": "t", "turn": {
+            "id": "u", "items": [], "status": "completed"}}});
+        assert!(matches!(classify("t", &v), Incoming::Ignored));
     }
 }
