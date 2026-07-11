@@ -167,8 +167,14 @@ impl LogTail {
             self.sessions.get(&path).map_or_else(|| derive_local_id(&path), |s| s.local_id.clone());
 
         let is_new = !self.sessions.contains_key(&path);
-        let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let meta = std::fs::metadata(&path).ok();
+        let len = meta.as_ref().map_or(0, std::fs::Metadata::len);
         if is_new {
+            let observed_at = meta
+                .as_ref()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
             // Emit SessionStarted with no cwd yet; we'll update once we
             // see a line that carries one. Working dir refinement can
             // happen in a follow-up.
@@ -178,7 +184,7 @@ impl LogTail {
                     local_id: local_id.clone(),
                     meta: SessionMeta {
                         working_dir: None,
-                        extra: json!({"source": "codex-log-tail"}),
+                        extra: json!({"source": "codex-log-tail", "observed_at": observed_at}),
                         ..SessionMeta::default()
                     },
                 })
