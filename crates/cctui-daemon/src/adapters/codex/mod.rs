@@ -30,6 +30,7 @@
 mod app_server;
 mod contract;
 mod log_tail;
+mod model_list;
 mod thread_list;
 
 use std::path::PathBuf;
@@ -42,8 +43,11 @@ use tokio::sync::mpsc;
 use crate::adapter_runtime::{Adapter, AdapterCtx, AdapterFactory};
 use crate::client::ServerClient;
 use app_server::{
-    AppServerConfig, CodexSession, LiveSessionRegistry, RouteAction, SessionCommand,
-    SessionRegistry, route_or_prepare_resume, spawn_resumed_session,
+    AppServerConfig, CodexLiveSnapshot, CodexSession, LiveSessionRegistry, RouteAction,
+    SessionCommand, SessionRegistry, route_or_prepare_resume, spawn_resumed_session,
+};
+use cctui_proto::diagnose::{
+    CodexDiagnose, DiagnoseFact, EffectiveState, GatewayStatus, SessionDiagnose,
 };
 
 /// Decide the codex launch env from a server `GatewayEnvResponse` (CCT-461),
@@ -208,6 +212,19 @@ async fn run_default(ctx: AdapterCtx) -> anyhow::Result<()> {
 
     let log_handle = tokio::spawn(log.run());
 
+    // CCT-641: ship the machine/account-scoped codex model catalog (model/list)
+    // to the server so the webui picker offers the account's real models.
+    let model_catalog_handle = if model_list::ModelListConfig::enabled(&ctx.config) {
+        let poll = model_list::ModelCatalogPoll::new(
+            model_list::ModelListConfig::from_value(&ctx.config),
+            ctx.events.clone(),
+            ctx.shutdown.clone(),
+        );
+        Some(tokio::spawn(poll.run()))
+    } else {
+        None
+    };
+
     let pump = command_pump(
         ctx.commands,
         ctx.events.clone(),
@@ -221,6 +238,9 @@ async fn run_default(ctx: AdapterCtx) -> anyhow::Result<()> {
     pump.await;
     log_handle.abort();
     if let Some(h) = inventory_handle {
+        h.abort();
+    }
+    if let Some(h) = model_catalog_handle {
         h.abort();
     }
     Ok(())
@@ -628,11 +648,160 @@ async fn command_pump(
                                 .await;
                         }
                     }
+                    AdapterCommand::Diagnose { local_id, request_id } => {
+                        let report = build_diagnose(
+                            &live,
+                            &registry,
+                            server.as_ref(),
+                            machine_key.as_ref(),
+                            &local_id,
+                        )
+                        .await;
+                        let _ = events
+                            .send(AdapterEvent::Diagnose {
+                                local_id,
+                                request_id,
+                                report: Box::new(report),
+                            })
+                            .await;
+                    }
                     _ => tracing::warn!("codex: unhandled AdapterCommand variant"),
                 }
             }
         }
     }
+}
+
+/// Assemble the adapter-neutral diagnose report for a codex session (CCT-640):
+/// the claude-only facts come back `missing`, and the codex section carries the
+/// app-server / thread / rpc / rollout state. Gathered from the live driver
+/// (via a `SessionCommand::Diagnose` round-trip) when one is running, else from
+/// the durable registry record for a hibernated thread.
+async fn build_diagnose(
+    live: &LiveSessionRegistry,
+    registry: &SessionRegistry,
+    server: Option<&ServerClient>,
+    machine_key: Option<&String>,
+    local_id: &str,
+) -> SessionDiagnose {
+    let now_ms = now_unix_ms();
+    let live_present = live.lock().await.contains_key(local_id);
+    let record = registry.lock().await.get(local_id).cloned();
+    let registered = record.is_some();
+
+    let snapshot = if live_present { request_live_snapshot(live, local_id).await } else { None };
+
+    let has_turn = snapshot.as_ref().and_then(|s| s.active_turn_id.as_ref()).is_some();
+    let (verdict, state) = if live_present {
+        if has_turn { ("active/working", "working") } else { ("idle", "idle") }
+    } else if registered {
+        ("hibernated", "hibernated")
+    } else {
+        ("unknown session", "unknown")
+    };
+    let effective_state = DiagnoseFact::fresh(
+        EffectiveState {
+            verdict: verdict.to_owned(),
+            tempo: None,
+            state: Some(state.to_owned()),
+            detail: None,
+            activity: None,
+        },
+        "codex-adapter",
+        now_ms,
+    );
+
+    let auth_state = record.as_ref().map(|r| {
+        if r.env.keys().any(|k| k == "OPENAI_BASE_URL" || k == "OPENAI_API_KEY") {
+            "gateway env present".to_owned()
+        } else {
+            "no gateway env (default upstream)".to_owned()
+        }
+    });
+    let registry_live_mismatch = (live_present && !registered)
+        .then(|| "live command channel exists but no durable registry record".to_owned());
+
+    let codex = CodexDiagnose {
+        codex_version: snapshot.as_ref().and_then(|s| s.codex_version.clone()),
+        pinned_version: contract::CODEX_PINNED_VERSION.to_owned(),
+        min_version: contract::CODEX_MIN_VERSION.to_owned(),
+        version_supported: snapshot
+            .as_ref()
+            .and_then(|s| s.codex_version.as_deref())
+            .map(contract::version_supported),
+        transport: "stdio".to_owned(),
+        app_server_pid: snapshot.as_ref().and_then(|s| s.pid),
+        live: live_present,
+        registered,
+        thread_id: Some(local_id.to_owned()),
+        active_turn_id: snapshot.as_ref().and_then(|s| s.active_turn_id.clone()),
+        turn_status: if has_turn { "working".to_owned() } else { "idle".to_owned() },
+        pending_rpc_count: snapshot
+            .as_ref()
+            .map_or(0, |s| u32::try_from(s.pending_rpc_methods.len()).unwrap_or(u32::MAX)),
+        pending_rpc_methods: snapshot
+            .as_ref()
+            .map(|s| s.pending_rpc_methods.clone())
+            .unwrap_or_default(),
+        last_protocol_error: snapshot.as_ref().and_then(|s| s.last_protocol_error.clone()),
+        rollout_path: snapshot.as_ref().and_then(|s| s.rollout_path.clone()),
+        rollout_size_bytes: snapshot.as_ref().and_then(|s| s.rollout_size_bytes),
+        auth_state,
+        registry_live_mismatch,
+    };
+
+    let gateway = DiagnoseFact::fresh(
+        GatewayStatus { server_configured: server.is_some() && machine_key.is_some() },
+        "daemon-config",
+        now_ms,
+    );
+
+    SessionDiagnose {
+        local_id: local_id.to_owned(),
+        short: None,
+        generated_at_ms: now_ms,
+        adapter: "codex".to_owned(),
+        effective_state,
+        last_hook_event: na(),
+        attach: na(),
+        pty_output: na(),
+        claude_socket: na(),
+        transcript: na(),
+        prompts: na(),
+        permission_mode: na(),
+        dispatch: na(),
+        gateway,
+        codex: Some(codex),
+    }
+}
+
+/// A claude-only fact rendered not-applicable for a codex session.
+fn na<T>() -> DiagnoseFact<T> {
+    DiagnoseFact::missing("codex", "claude-only fact; see the codex section")
+}
+
+/// Round-trip a `SessionCommand::Diagnose` to the live session driver, bounded
+/// so a wedged session can't stall the report.
+async fn request_live_snapshot(
+    live: &LiveSessionRegistry,
+    local_id: &str,
+) -> Option<CodexLiveSnapshot> {
+    let sender = live.lock().await.get(local_id).cloned()?;
+    let (tx, mut rx) = mpsc::channel(1);
+    if sender.send(SessionCommand::Diagnose { reply: tx }).await.is_err() {
+        return None;
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv()).await.ok().flatten()
+}
+
+fn now_unix_ms() -> i64 {
+    i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+    )
+    .unwrap_or(i64::MAX)
 }
 
 // Translates codex app-server frames into adapter events; complexity is the

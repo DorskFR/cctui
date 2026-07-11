@@ -5,6 +5,7 @@
 	// Read-only observability; the only action is an explicit refresh (the
 	// call round-trips server → daemon → adapter, so no background polling).
 	import { useSessionDiagnose } from '$lib/queries';
+	import type { CodexDiagnose } from '@bindings/CodexDiagnose';
 	import type { DiagnoseFact } from '@bindings/DiagnoseFact';
 	import { Button, Heading, Text } from '@dorsk/tsumikit';
 
@@ -56,6 +57,44 @@
 			{ name: 'gateway', fact: d.gateway }
 		];
 	});
+
+	// For a codex session the claude-only facts come back as placeholder
+	// `missing` rows sourced `codex`; hide those and let the Codex section carry
+	// the real state.
+	const visibleRows = $derived(
+		rows.filter((r) => !(r.fact.value === null && r.fact.source === 'codex'))
+	);
+
+	function codexRows(cx: CodexDiagnose): { name: string; value: string }[] {
+		const version = cx.codex_version
+			? `${cx.codex_version}${cx.version_supported === false ? ' (below min!)' : ''}`
+			: 'unknown';
+		const turn = cx.active_turn_id ? `${cx.turn_status} · ${cx.active_turn_id}` : cx.turn_status;
+		const pending =
+			cx.pending_rpc_count > 0
+				? `${cx.pending_rpc_count} (${cx.pending_rpc_methods.join(', ')})`
+				: '0';
+		const rollout = cx.rollout_path
+			? `${cx.rollout_path}${cx.rollout_size_bytes !== null ? ` · ${cx.rollout_size_bytes} bytes` : ''}`
+			: '—';
+		const out: { name: string; value: string }[] = [
+			{ name: 'version', value: `${version} · pinned ${cx.pinned_version} · min ${cx.min_version}` },
+			{
+				name: 'app-server',
+				value: `${cx.transport}${cx.app_server_pid !== null ? ` · pid ${cx.app_server_pid}` : ''} · live ${cx.live} · registered ${cx.registered}`
+			},
+			{ name: 'thread', value: cx.thread_id ?? '—' },
+			{ name: 'turn', value: turn },
+			{ name: 'pending RPCs', value: pending },
+			{ name: 'rollout', value: rollout }
+		];
+		if (cx.auth_state) out.push({ name: 'auth', value: cx.auth_state });
+		if (cx.last_protocol_error)
+			out.push({ name: 'last protocol error', value: cx.last_protocol_error });
+		if (cx.registry_live_mismatch)
+			out.push({ name: 'registry mismatch', value: cx.registry_live_mismatch });
+		return out;
+	}
 </script>
 
 <div
@@ -108,7 +147,7 @@
 				report from daemon · adapter {resp.daemon.adapter} · worker {resp.daemon.short ?? '?'}
 			</Text>
 			<div class="facts" role="table" aria-label="Diagnose facts">
-				{#each rows as row (row.name)}
+				{#each visibleRows as row (row.name)}
 					<div class="fact" role="row">
 						<span class="name">{row.name}</span>
 						<span class="meta">
@@ -123,6 +162,19 @@
 					</div>
 				{/each}
 			</div>
+
+			{#if resp.daemon.codex}
+				{@const cx = resp.daemon.codex}
+				<Heading level={4}>Codex</Heading>
+				<div class="facts" role="table" aria-label="Codex diagnose facts">
+					{#each codexRows(cx) as row (row.name)}
+						<div class="fact codex-fact" role="row">
+							<span class="name">{row.name}</span>
+							<span class="val">{row.value}</span>
+						</div>
+					{/each}
+				</div>
+			{/if}
 		{/if}
 	{/if}
 </div>

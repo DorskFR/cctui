@@ -25,6 +25,7 @@ import type { MintKeyResponse } from "@bindings/MintKeyResponse";
 import type { VersionInfo } from "@bindings/VersionInfo";
 import type { MeResponse } from "@bindings/MeResponse";
 import type { CapabilitiesResponse } from "@bindings/CapabilitiesResponse";
+import type { CodexModelCatalog } from "@bindings/CodexModelCatalog";
 import type { ConnectorInfo } from "@bindings/ConnectorInfo";
 import type { CreateConnector } from "@bindings/CreateConnector";
 import type { UpdateConnector } from "@bindings/UpdateConnector";
@@ -424,6 +425,10 @@ export const endpoints = {
    *  autocomplete in the spawn dialog. */
   machineDirs: (machineId: string, path: string) =>
     api.get<{ dirs: string[] }>(`/machines/${machineId}/fs/dirs`, { path }),
+  /** Machine/account-scoped codex model catalog (CCT-641). Empty `models`
+   *  when none is cached yet — the picker falls back to its static list. */
+  codexModels: (machineId: string) =>
+    api.get<CodexModelCatalog>(`/machines/${machineId}/codex-models`),
   users: () => api.get<UserRow[]>("/admin/users"),
   machines: (userId: string) =>
     api.get<MachineRow[]>(`/admin/users/${userId}/machines`),
@@ -842,6 +847,17 @@ export const useMachineDirs = (machineId: () => string, path: () => string) =>
       queryFn: () => endpoints.machineDirs(machineId(), path()),
       enabled: !!machineId() && !!path(),
       staleTime: 10_000,
+      retry: false,
+    })),
+  );
+
+export const useCodexModels = (machineId: () => string) =>
+  createQuery(
+    toStore(() => ({
+      queryKey: ["codex-models", machineId()],
+      queryFn: () => endpoints.codexModels(machineId()),
+      enabled: !!machineId(),
+      staleTime: 60_000,
       retry: false,
     })),
   );

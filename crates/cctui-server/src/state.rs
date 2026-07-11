@@ -98,6 +98,12 @@ pub struct AppState {
     /// single DB write only on the actual transition — without this in-memory
     /// gate every successful passthrough would issue a conditional UPDATE.
     pub account_reauth: Arc<DashMap<Uuid, ()>>,
+    /// Latest machine/account-scoped codex model catalog per machine (CCT-641),
+    /// keyed by `machine_id`. The daemon re-ships it on every connect, so an
+    /// in-memory cache is authoritative enough — a fresh row after a server
+    /// restart is simply absent until the next daemon poll, and the webui falls
+    /// back to its static offline model list meanwhile.
+    pub codex_catalogs: Arc<DashMap<Uuid, cctui_proto::codex_catalog::CodexModelCatalog>>,
 }
 
 /// Sliding-window spam state for one orphan token fingerprint. See

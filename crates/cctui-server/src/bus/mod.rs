@@ -966,6 +966,7 @@ mod tests {
             permission_mode: DiagnoseFact::missing("spawn", "n/a"),
             dispatch: DiagnoseFact::missing("dispatch", "n/a"),
             gateway: DiagnoseFact::missing("daemon-config", "n/a"),
+            codex: None,
         }
     }
 

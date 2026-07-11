@@ -224,8 +224,73 @@ pub struct GatewayStatus {
     pub server_configured: bool,
 }
 
+/// Codex-adapter-specific diagnostics (CCT-640).
+///
+/// Present only when the session is driven by the codex adapter; `None` for
+/// claude-code, whose facts are the neutral top-level fields instead. Kept as
+/// an optional tagged section so the claude wire shape stays unchanged
+/// (additive-only).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CodexDiagnose {
+    /// Discovered `codex app-server` version (from the `initialize` userAgent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_version: Option<String>,
+    /// The Codex version cctui is built/tested against (`CODEX_PINNED_VERSION`).
+    pub pinned_version: String,
+    /// The minimum app-server protocol version still spoken (`CODEX_MIN_VERSION`).
+    pub min_version: String,
+    /// Whether the discovered version is at or above `min_version`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version_supported: Option<bool>,
+    /// Transport to the app-server child (always `stdio` today).
+    pub transport: String,
+    /// app-server child PID, when a live session owns one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_server_pid: Option<u32>,
+    /// Whether a live command channel exists for this session.
+    pub live: bool,
+    /// Whether the durable session registry holds a resumable record.
+    pub registered: bool,
+    /// The active thread id (the codex `local_id`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    /// In-flight turn id, when a turn is running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_turn_id: Option<String>,
+    /// Turn status: `working` (a turn is in flight) or `idle`.
+    pub turn_status: String,
+    /// Count of outstanding outbound JSON-RPC requests.
+    pub pending_rpc_count: u32,
+    /// Methods of the outstanding JSON-RPC requests.
+    pub pending_rpc_methods: Vec<String>,
+    /// Last JSON-RPC protocol error seen on this session, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_protocol_error: Option<String>,
+    /// Rollout (transcript) file path for the thread.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rollout_path: Option<String>,
+    /// Rollout file size in bytes at report time — the tail-offset analogue for
+    /// an app-server-owned rollout (no external tail consumes it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rollout_size_bytes: Option<u64>,
+    /// Cheap auth/account posture: whether the launch env carries gateway
+    /// routing credentials.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_state: Option<String>,
+    /// Registry↔live mismatch description, when the two disagree abnormally
+    /// (e.g. a live channel with no durable record).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry_live_mismatch: Option<String>,
+}
+
 /// Everything the daemon knows about one session, dated (CCT-547). Assembled
 /// by the adapter from state it already tracks — aggregation, not new sensing.
+///
+/// The named facts below are the adapter-neutral / claude-code set. Adapters
+/// with their own diagnostics attach an optional tagged section (currently
+/// [`SessionDiagnose::codex`]); this keeps the claude wire shape stable while
+/// letting each adapter carry its own payload (CCT-640).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct SessionDiagnose {
@@ -254,6 +319,9 @@ pub struct SessionDiagnose {
     pub permission_mode: DiagnoseFact<String>,
     pub dispatch: DiagnoseFact<DispatchStatus>,
     pub gateway: DiagnoseFact<GatewayStatus>,
+    /// Codex-adapter-specific section (CCT-640); `None` for claude-code.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex: Option<CodexDiagnose>,
 }
 
 /// Server-side facts merged into the diagnose response (the daemon cannot see
@@ -362,6 +430,7 @@ mod tests {
                 "daemon-config",
                 1_700_000_100_000,
             ),
+            codex: None,
         }
     }
 
@@ -404,6 +473,56 @@ mod tests {
         assert_eq!(json["pty_output"]["missing_reason"], "depends on CCT-546 (not landed)");
         assert_eq!(json["effective_state"]["age_ms"], 1_000);
         assert_eq!(json["effective_state"]["source"], "activity");
+    }
+
+    #[test]
+    fn claude_report_omits_codex_section() {
+        let json = serde_json::to_value(sample_report()).unwrap();
+        assert!(json.get("codex").is_none(), "claude report must not carry a codex section");
+        for key in [
+            "effective_state",
+            "last_hook_event",
+            "attach",
+            "pty_output",
+            "claude_socket",
+            "transcript",
+            "prompts",
+            "permission_mode",
+            "dispatch",
+            "gateway",
+        ] {
+            assert!(json.get(key).is_some(), "claude wire shape must keep `{key}`");
+        }
+    }
+
+    #[test]
+    fn codex_section_round_trips() {
+        let mut report = sample_report();
+        report.adapter = "codex".into();
+        report.codex = Some(CodexDiagnose {
+            codex_version: Some("0.144.1".into()),
+            pinned_version: "0.144.1".into(),
+            min_version: "0.142.0".into(),
+            version_supported: Some(true),
+            transport: "stdio".into(),
+            app_server_pid: Some(4242),
+            live: true,
+            registered: true,
+            thread_id: Some("019e6628".into()),
+            active_turn_id: Some("turn-1".into()),
+            turn_status: "working".into(),
+            pending_rpc_count: 1,
+            pending_rpc_methods: vec!["turn/start".into()],
+            last_protocol_error: None,
+            rollout_path: Some("/home/u/.codex/sessions/x/019e6628.jsonl".into()),
+            rollout_size_bytes: Some(2048),
+            auth_state: Some("gateway env present".into()),
+            registry_live_mismatch: None,
+        });
+        let json = serde_json::to_string(&report).unwrap();
+        let back: SessionDiagnose = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, report);
+        assert_eq!(back.codex.unwrap().active_turn_id.as_deref(), Some("turn-1"));
     }
 
     #[test]
