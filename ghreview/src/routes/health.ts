@@ -1,4 +1,5 @@
 import { createRoute, type OpenAPIHono, z } from "@hono/zod-openapi";
+import type { AppDeps } from "../deps.ts";
 import { StatusSchema } from "../schemas.ts";
 import { version } from "../version.ts";
 
@@ -28,18 +29,19 @@ const statusRoute = createRoute({
   },
 });
 
-export function registerHealth(app: OpenAPIHono) {
+export function registerHealth(app: OpenAPIHono, deps: AppDeps = {}) {
   app.openapi(healthRoute, (c) => c.json({ ok: true as const }, 200));
-  app.openapi(statusRoute, (c) =>
-    c.json(
+  app.openapi(statusRoute, (c) => {
+    const snap = deps.syncSnapshot?.() ?? { last_run: null, accounts: [] as string[] };
+    return c.json(
       {
         service: "gh-review" as const,
         version,
         api: "v1" as const,
         ok: true,
-        sync: { last_run: null, accounts: [] as string[] },
+        sync: { last_run: snap.last_run, accounts: snap.accounts },
       },
       200,
-    ),
-  );
+    );
+  });
 }

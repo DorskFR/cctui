@@ -795,6 +795,23 @@
           }
         }
       }
+    },
+    "/v1/webhook": {
+      "post": {
+        "summary": "GitHub webhook ingestion",
+        "description": "Optional push path for org repos that can install a webhook. Verifies X-Hub-Signature-256 (HMAC-SHA256 of the raw body with the shared secret) and upserts the payload exactly like a poll result. Polling remains the universal path.",
+        "tags": [
+          "events"
+        ],
+        "responses": {
+          "202": {
+            "description": "Accepted and stored"
+          },
+          "401": {
+            "description": "Missing or invalid signature"
+          }
+        }
+      }
     }
   }
 }

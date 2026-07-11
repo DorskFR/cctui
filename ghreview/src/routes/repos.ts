@@ -1,4 +1,6 @@
 import { createRoute, type OpenAPIHono, z } from "@hono/zod-openapi";
+import { findDocument, listDocuments } from "../db/documents.ts";
+import type { AppDeps } from "../deps.ts";
 import {
   ErrorSchema,
   PaginationQuerySchema,
@@ -40,10 +42,17 @@ const getRepo = createRoute({
   },
 });
 
-export function registerRepos(app: OpenAPIHono) {
-  app.openapi(listRepos, (c) => c.json({ items: [], next_cursor: null }, 200));
-  app.openapi(getRepo, (c) => {
+export function registerRepos(app: OpenAPIHono, deps: AppDeps = {}) {
+  app.openapi(listRepos, async (c) => {
+    const { account, limit, cursor } = c.req.valid("query");
+    if (!deps.db) return c.json({ items: [], next_cursor: null }, 200);
+    const page = await listDocuments(deps.db, "repo", { account, limit, cursor });
+    return c.json(page, 200);
+  });
+  app.openapi(getRepo, async (c) => {
     const { owner, repo } = c.req.valid("param");
+    const doc = deps.db ? await findDocument(deps.db, "repo", `${owner}/${repo}`) : null;
+    if (doc) return c.json(doc, 200);
     return c.json(
       { error: { code: "not_found", message: `Repository ${owner}/${repo} is not synced` } },
       404,
