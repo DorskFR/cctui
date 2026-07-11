@@ -5,7 +5,6 @@ use dashmap::DashMap;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::archive_store::ArchiveStore;
 use crate::auth::AuthConfig;
 use crate::bus::Bus;
 use crate::config::Config;
@@ -26,7 +25,6 @@ pub struct AppState {
     pub bus: Bus,
     #[allow(dead_code)]
     pub auth_config: AuthConfig,
-    pub archive: Arc<ArchiveStore>,
     pub skills: Arc<SkillStore>,
     /// This pod's identity for replica-aware WS presence (CCT-567). Rows in
     /// `ws_presence` record which pod terminates each daemon/dispatcher WS so

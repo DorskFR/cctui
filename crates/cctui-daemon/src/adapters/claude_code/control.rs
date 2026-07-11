@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::Context;
 use cctui_proto::adapter::{AdapterCommand, AdapterEvent, EndReason, JobShort, SessionMeta};
@@ -27,7 +27,10 @@ use cctui_proto::diagnose::{
 };
 
 use super::backfill::{self, BackfillConfig, CursorFile, default_cursor_path};
-use super::diagnose::{ArbitrationInput, arbitrate, now_unix_ms, to_unix_ms};
+use super::diagnose::{
+    ActivityInput, ActivityVerdict, ArbitrationInput, arbitrate, arbitrate_activity, now_unix_ms,
+    to_unix_ms,
+};
 use super::discovery::Discovery;
 use super::dispatch_done::{self, DispatchDoneTracker};
 use super::kickstart::Kickstarter;
@@ -978,6 +981,19 @@ impl Driver {
         // Control-socket permission prompt (CCT-211), keyed by short.
         let pending_perm = short.as_deref().and_then(|s| self.pending_perms.get(s)).cloned();
 
+        // Held-attach keep-alive + PTY-activity snapshot (CCT-209/487/546),
+        // reused by the effective-state activity signal, the attach fact, and
+        // the PTY-output fact below.
+        let attach_snap = short.as_deref().and_then(|s| self.attach.snapshot(s));
+
+        // Hook-event freshness feeds the PTY-vs-hook arbitration (CCT-546).
+        let hook_age_ms = self
+            .hook_log
+            .lock()
+            .ok()
+            .and_then(|m| m.get(local_id).map(|(_, at)| to_unix_ms(*at)))
+            .map(|at| now_ms - at);
+
         // Effective state + arbitration verdict.
         let effective_state = if let Some(short) = short.as_deref() {
             let snap = self.last_status.get(short);
@@ -991,12 +1007,37 @@ impl Driver {
                 tempo: snap.and_then(|s| s.tempo.as_deref()),
                 state: snap.and_then(|s| s.state.as_deref()),
             });
+            // Second (PTY) signal: herdr-style arbitration of held-attach byte
+            // flow against hook freshness (CCT-546). Surfaced on `activity`
+            // when it carries a real verdict, never clobbering a status one.
+            let pty_activity = {
+                let av = arbitrate_activity(&ActivityInput {
+                    hook_age_ms,
+                    pty_last_output_age_ms: attach_snap
+                        .as_ref()
+                        .and_then(|s| s.last_output_at)
+                        .map(|at| now_ms - to_unix_ms(at)),
+                    pty_bytes_per_min: attach_snap
+                        .as_ref()
+                        .and_then(|s| s.bytes_per_min(SystemTime::now()))
+                        .unwrap_or(0.0),
+                    liveness_alive: attach_snap
+                        .as_ref()
+                        .and_then(|s| s.last_probe_alive)
+                        .unwrap_or_else(|| self.roster.contains(short)),
+                    idle_confirmations: attach_snap.as_ref().map_or(0, |s| s.idle_confirmations),
+                });
+                match av {
+                    ActivityVerdict::Uncertain => None,
+                    v => Some(v.as_str().to_owned()),
+                }
+            };
             let value = EffectiveState {
                 verdict,
                 tempo: snap.and_then(|s| s.tempo.clone()),
                 state: snap.and_then(|s| s.state.clone()),
                 detail: snap.and_then(|s| s.detail.clone()),
-                activity: snap.and_then(|s| s.activity.clone()),
+                activity: pty_activity.or_else(|| snap.and_then(|s| s.activity.clone())),
             };
             match self.last_status_at.get(short) {
                 Some(at) => DiagnoseFact::observed(value, source.as_str(), to_unix_ms(*at), now_ms),
@@ -1014,7 +1055,7 @@ impl Driver {
                 },
             );
 
-        let attach = short.as_deref().and_then(|s| self.attach.snapshot(s)).map_or_else(
+        let attach = attach_snap.as_ref().map_or_else(
             || DiagnoseFact::missing("attach", "no keep-alive attach task for this session"),
             |snap| {
                 let value = AttachStatus {
@@ -1032,11 +1073,22 @@ impl Driver {
             },
         );
 
-        // Typed slot only until PTY output capture (CCT-546) lands.
-        let pty_output: DiagnoseFact<PtyOutputStats> = DiagnoseFact::missing(
-            "pty",
-            "PTY output age/throughput depends on CCT-546 (PTY output capture), not landed",
-        );
+        // PTY output age/throughput from the held-attach drain loop (CCT-546):
+        // the raw activity signal state derivation weighs against hook freshness.
+        let pty_output: DiagnoseFact<PtyOutputStats> = match attach_snap
+            .as_ref()
+            .filter(|s| s.last_output_at.is_some())
+        {
+            Some(snap) => {
+                let last = snap.last_output_at.expect("filtered to Some");
+                let value = PtyOutputStats {
+                    last_output_age_ms: Some(now_ms - to_unix_ms(last)),
+                    recent_bytes_per_min: snap.bytes_per_min(SystemTime::now()),
+                };
+                DiagnoseFact::observed(value, "pty", to_unix_ms(last), now_ms)
+            }
+            None => DiagnoseFact::missing("pty", "no PTY output observed on the held attach yet"),
+        };
 
         // Live probe at report time: which socket discovery picks, and the
         // full candidate list. Bounded (per-candidate probe timeout), no
@@ -4193,8 +4245,9 @@ mod tests {
         // Nothing pending, nothing recorded → honest missing/false facts.
         let p = report.prompts.value.as_ref().unwrap();
         assert!(!p.pending_ask && !p.parked_perm_hook);
-        assert!(report.pty_output.value.is_none(), "CCT-546 slot must be missing");
-        assert!(report.pty_output.missing_reason.as_deref().unwrap().contains("CCT-546"));
+        // No held-attach task in this unit driver, so no PTY output observed.
+        assert!(report.pty_output.value.is_none(), "no attach → no PTY output");
+        assert!(report.pty_output.missing_reason.as_deref().unwrap().contains("PTY output"));
         assert!(report.dispatch.value.is_none(), "not a dispatched session");
         assert!(report.permission_mode.value.is_none(), "posture never recorded");
         assert!(report.last_hook_event.value.is_none());

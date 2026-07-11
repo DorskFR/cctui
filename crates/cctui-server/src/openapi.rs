@@ -66,7 +66,6 @@ fn group_of(path: &str) -> &'static str {
         "prompts" => "prompts",
         "settings" | "me" | "capabilities" | "version" => "meta",
         "skills" => "skills",
-        "archive" => "archive",
         "admin" | "users" => "admin",
         "machines" | "manifest" | "daemon" | "enroll" | "deenroll" => "machines",
         "permissions" => "permissions",

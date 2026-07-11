@@ -34,7 +34,8 @@ generated_at_ms: number, adapter: string,
  */
 effective_state: DiagnoseFact<EffectiveState>, last_hook_event: DiagnoseFact<HookEvent>, attach: DiagnoseFact<AttachStatus>, 
 /**
- * Always missing until CCT-546 (PTY output capture) lands.
+ * Held-attach PTY output age/throughput (CCT-546); the second activity
+ * signal, hook-independent.
  */
 pty_output: DiagnoseFact<PtyOutputStats>, claude_socket: DiagnoseFact<SocketStatus>, transcript: DiagnoseFact<TranscriptStatus>, prompts: DiagnoseFact<PendingPrompts>, 
 /**

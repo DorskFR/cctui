@@ -346,10 +346,20 @@ enum Decision {
 /// touching neither the guard nor any endpoint. A resource type overrides
 /// `authorize` only when its access rule is more than ownership (e.g. shares).
 trait Resource {
+    /// The `resource_shares.resource_type` for a shareable kind, or `None` when
+    /// the kind confers no grants (ownership-only). This is the CCT-531 sharing
+    /// seam made concrete: the default [`authorize`](Resource::authorize)
+    /// composes [`shares::granted`] onto ownership for any kind that sets this,
+    /// so a shareable kind needs ONLY this associated const — no per-kind
+    /// `authorize` override.
+    const SHARE_TYPE: Option<&'static str> = None;
+
     async fn owner_of(id: &str, pool: &PgPool) -> Result<Option<Uuid>, sqlx::Error>;
 
-    /// Default: admin bypass, else owner match, else denied. Override point for
-    /// share grants — see the module doc's sharing extension point.
+    /// Default: admin bypass, else owner match, else — for a shareable kind — a
+    /// live `use` grant, else denied. The single sharing-composition point
+    /// (CCT-422/531): every [`Authz::Resource`] route inherits grants via this
+    /// method, touching neither the guard nor any handler.
     async fn authorize(
         ctx: &AuthContext,
         _action: Action,
@@ -361,7 +371,14 @@ trait Resource {
         }
         match Self::owner_of(id, pool).await? {
             Some(uid) if uid == ctx.user_id => Ok(Decision::Allowed),
-            Some(_) => Ok(Decision::Denied),
+            Some(_) => {
+                if let (Some(share_type), Ok(uuid)) = (Self::SHARE_TYPE, Uuid::parse_str(id))
+                    && crate::routes::shares::granted(pool, share_type, uuid, ctx.user_id).await?
+                {
+                    return Ok(Decision::Allowed);
+                }
+                Ok(Decision::Denied)
+            }
             None => Ok(Decision::NotFound),
         }
     }
@@ -388,6 +405,7 @@ impl Resource for SessionResource {
 /// filesystem route (`fs::list_dirs`). The id is the machine UUID as text.
 struct MachineResource;
 impl Resource for MachineResource {
+    const SHARE_TYPE: Option<&'static str> = Some("machine");
     async fn owner_of(id: &str, pool: &PgPool) -> Result<Option<Uuid>, sqlx::Error> {
         let Ok(uuid) = Uuid::parse_str(id) else {
             // A non-UUID id can never name a real machine → treat as absent
@@ -404,6 +422,7 @@ impl Resource for MachineResource {
 /// Dispatchers are owned directly (`dispatchers.user_id`).
 struct DispatcherResource;
 impl Resource for DispatcherResource {
+    const SHARE_TYPE: Option<&'static str> = Some("dispatcher");
     async fn owner_of(id: &str, pool: &PgPool) -> Result<Option<Uuid>, sqlx::Error> {
         let Ok(uuid) = Uuid::parse_str(id) else { return Ok(None) };
         sqlx::query_scalar("SELECT user_id FROM dispatchers WHERE id = $1 AND deleted_at IS NULL")
@@ -422,46 +441,20 @@ impl Resource for UserResource {
 }
 
 /// Accounts (identities, CCT-558) are owned directly (`accounts.user_id`) and
-/// may be SHARED to other users via `account_shares` (CCT-458). This overrides the
-/// default `authorize` to add the grant lookup — the CCT-422 sharing seam in
-/// use: admin → owner → live share grant → denied. Mutation stays owner-only
-/// (the edit/delete handlers fold ownership into their SQL, CCT-420), so a
-/// grant only ever confers use/read here.
+/// may be SHARED to other users via `resource_shares` (CCT-531, née
+/// `account_shares` CCT-458). Sharing is expressed by the `SHARE_TYPE` const, so
+/// the default `authorize` composes the grant lookup: admin → owner → live share
+/// grant → denied. Mutation stays owner-only (the edit/delete handlers fold
+/// ownership into their SQL, CCT-420), so a grant only ever confers use/read.
 struct AccountResource;
 impl Resource for AccountResource {
+    const SHARE_TYPE: Option<&'static str> = Some("account");
     async fn owner_of(id: &str, pool: &PgPool) -> Result<Option<Uuid>, sqlx::Error> {
         let Ok(uuid) = Uuid::parse_str(id) else { return Ok(None) };
         sqlx::query_scalar("SELECT user_id FROM accounts WHERE id = $1")
             .bind(uuid)
             .fetch_optional(pool)
             .await
-    }
-
-    async fn authorize(
-        ctx: &AuthContext,
-        _action: Action,
-        id: &str,
-        pool: &PgPool,
-    ) -> Result<Decision, sqlx::Error> {
-        if ctx.is_admin() {
-            return Ok(Decision::Allowed);
-        }
-        match Self::owner_of(id, pool).await? {
-            Some(uid) if uid == ctx.user_id => Ok(Decision::Allowed),
-            Some(_) => {
-                let Ok(uuid) = Uuid::parse_str(id) else { return Ok(Decision::NotFound) };
-                let granted: Option<i32> = sqlx::query_scalar(
-                    "SELECT 1 FROM account_shares \
-                     WHERE account_id = $1 AND user_id = $2 AND revoked_at IS NULL LIMIT 1",
-                )
-                .bind(uuid)
-                .bind(ctx.user_id)
-                .fetch_optional(pool)
-                .await?;
-                Ok(if granted.is_some() { Decision::Allowed } else { Decision::Denied })
-            }
-            None => Ok(Decision::NotFound),
-        }
     }
 }
 
@@ -1022,6 +1015,37 @@ mod tests {
             SharedThing::authorize(&admin(), Action::Write, "whatever", &pool).await.unwrap(),
             Decision::Allowed
         );
+    }
+
+    /// CCT-531 seam wiring. Every shareable kind declares its
+    /// `resource_shares.resource_type` via `SHARE_TYPE`, and ownership-only kinds
+    /// declare `None`. Because the default `authorize` composes
+    /// `shares::granted(SHARE_TYPE, ..)` onto ownership, this const IS the grant
+    /// wiring for a kind — asserting it proves grants compose with ownership for
+    /// account/machine/dispatcher and stay off for the rest, on one path. Each
+    /// shareable type must also be a type the shares CRUD/table recognize.
+    #[test]
+    fn shareable_kinds_declare_share_type() {
+        assert_eq!(AccountResource::SHARE_TYPE, Some("account"));
+        assert_eq!(MachineResource::SHARE_TYPE, Some("machine"));
+        assert_eq!(DispatcherResource::SHARE_TYPE, Some("dispatcher"));
+        assert_eq!(SessionResource::SHARE_TYPE, None);
+        assert_eq!(UserResource::SHARE_TYPE, None);
+        assert_eq!(PromptResource::SHARE_TYPE, None);
+        assert_eq!(ApiKeyResource::SHARE_TYPE, None);
+        for st in [
+            AccountResource::SHARE_TYPE,
+            MachineResource::SHARE_TYPE,
+            DispatcherResource::SHARE_TYPE,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            assert!(
+                crate::routes::shares::is_shareable(st),
+                "authz SHARE_TYPE {st:?} must be a shares CRUD/table shareable type"
+            );
+        }
     }
 
     // ---- request-level layer-ordering regression (CCT-423) -------------------

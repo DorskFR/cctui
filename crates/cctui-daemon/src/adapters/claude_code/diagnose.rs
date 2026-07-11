@@ -121,6 +121,76 @@ pub(super) fn arbitrate(input: &ArbitrationInput<'_>) -> (String, VerdictSource)
     }
 }
 
+/// Max hook-event age still considered authoritative (CCT-546). Past this a
+/// live PTY byte stream is trusted to infer working / suspect the hooks dead.
+const HOOK_FRESH_MS: i64 = 10_000;
+
+/// Max age of the last PTY read for the byte stream to count as "flowing"
+/// (CCT-546).
+const PTY_FLOW_FRESH_MS: i64 = 5_000;
+
+/// Consecutive idle confirmations required before flipping a live-but-quiet
+/// session to idle — hysteresis against flicker (herdr uses ~3, CCT-546).
+const IDLE_HYSTERESIS: u32 = 3;
+
+/// The PTY-activity signals arbitrated against hook freshness (CCT-546). Ages
+/// are millis relative to report build time; `None` means never observed.
+#[derive(Debug, Default)]
+pub(super) struct ActivityInput {
+    pub hook_age_ms: Option<i64>,
+    pub pty_last_output_age_ms: Option<i64>,
+    pub pty_bytes_per_min: f64,
+    pub liveness_alive: bool,
+    pub idle_confirmations: u32,
+}
+
+/// Herdr-style verdict from the PTY-activity vs hook arbitration (CCT-546).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ActivityVerdict {
+    /// A fresh hook, or flowing PTY under a still-fresh hook, says working.
+    Working,
+    /// PTY bytes are flowing but no hook has fired recently — the hook channel
+    /// is likely dead/wedged; infer working but flag the discrepancy.
+    HooksSuspectDead,
+    /// No fresh hook, no PTY flow, liveness alive, hysteresis satisfied.
+    Idle,
+    /// Not enough signal (or confirmations) to commit to idle yet.
+    Uncertain,
+}
+
+impl ActivityVerdict {
+    pub(super) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Working => "working",
+            Self::HooksSuspectDead => "hooks-suspect-dead (pty active, hooks silent)",
+            Self::Idle => "idle",
+            Self::Uncertain => "uncertain",
+        }
+    }
+}
+
+/// Arbitrate the second (PTY) activity signal against hook authority, herdr-
+/// style (CCT-546):
+///   - a fresh hook is authoritative → working;
+///   - else PTY bytes flowing → hooks are dead/wedged, infer working & flag;
+///   - else (quiet) liveness-alive + enough idle confirmations → idle;
+///   - otherwise uncertain (hold, don't flicker to idle).
+pub(super) fn arbitrate_activity(input: &ActivityInput) -> ActivityVerdict {
+    let hook_fresh = input.hook_age_ms.is_some_and(|a| a <= HOOK_FRESH_MS);
+    if hook_fresh {
+        return ActivityVerdict::Working;
+    }
+    let pty_flowing = input.pty_bytes_per_min > 0.0
+        && input.pty_last_output_age_ms.is_some_and(|a| a <= PTY_FLOW_FRESH_MS);
+    if pty_flowing {
+        return ActivityVerdict::HooksSuspectDead;
+    }
+    if input.liveness_alive && input.idle_confirmations >= IDLE_HYSTERESIS {
+        return ActivityVerdict::Idle;
+    }
+    ActivityVerdict::Uncertain
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,6 +269,79 @@ mod tests {
         let (verdict, source) = arbitrate(&input);
         assert_eq!(source, VerdictSource::Timeout);
         assert!(verdict.starts_with("unknown"));
+    }
+
+    #[test]
+    fn fresh_hooks_win_over_pty() {
+        // Fresh hook + flowing PTY → hooks authoritative, verdict working.
+        let v = arbitrate_activity(&ActivityInput {
+            hook_age_ms: Some(500),
+            pty_last_output_age_ms: Some(100),
+            pty_bytes_per_min: 4_000.0,
+            liveness_alive: true,
+            idle_confirmations: 9,
+        });
+        assert_eq!(v, ActivityVerdict::Working);
+    }
+
+    #[test]
+    fn stale_hooks_with_flowing_pty_flags_dead() {
+        // Hook silent past the freshness window but PTY bytes still flowing:
+        // the hook channel is suspect, infer working.
+        let v = arbitrate_activity(&ActivityInput {
+            hook_age_ms: Some(60_000),
+            pty_last_output_age_ms: Some(200),
+            pty_bytes_per_min: 1_200.0,
+            liveness_alive: true,
+            idle_confirmations: 0,
+        });
+        assert_eq!(v, ActivityVerdict::HooksSuspectDead);
+
+        // Never a hook at all, PTY flowing → same verdict.
+        let v = arbitrate_activity(&ActivityInput {
+            hook_age_ms: None,
+            pty_last_output_age_ms: Some(0),
+            pty_bytes_per_min: 10.0,
+            liveness_alive: true,
+            ..Default::default()
+        });
+        assert_eq!(v, ActivityVerdict::HooksSuspectDead);
+    }
+
+    #[test]
+    fn idle_needs_hysteresis_before_flipping() {
+        let quiet = |confirmations| ActivityInput {
+            hook_age_ms: Some(60_000),
+            pty_last_output_age_ms: Some(60_000),
+            pty_bytes_per_min: 0.0,
+            liveness_alive: true,
+            idle_confirmations: confirmations,
+        };
+        // Below the confirmation threshold: hold, don't flicker to idle.
+        assert_eq!(arbitrate_activity(&quiet(0)), ActivityVerdict::Uncertain);
+        assert_eq!(arbitrate_activity(&quiet(IDLE_HYSTERESIS - 1)), ActivityVerdict::Uncertain);
+        // Enough confirmations, liveness alive → idle.
+        assert_eq!(arbitrate_activity(&quiet(IDLE_HYSTERESIS)), ActivityVerdict::Idle);
+
+        // Quiet + confirmed but liveness says not-alive → never asserts idle
+        // (the lifecycle verdict, not activity, owns dead/hibernated).
+        let mut dead = quiet(IDLE_HYSTERESIS + 2);
+        dead.liveness_alive = false;
+        assert_eq!(arbitrate_activity(&dead), ActivityVerdict::Uncertain);
+    }
+
+    #[test]
+    fn stale_pty_output_does_not_count_as_flowing() {
+        // A positive rate but a long-stale last read is not "flowing"; with no
+        // fresh hook and no confirmations that is uncertain, not working.
+        let v = arbitrate_activity(&ActivityInput {
+            hook_age_ms: None,
+            pty_last_output_age_ms: Some(30_000),
+            pty_bytes_per_min: 500.0,
+            liveness_alive: true,
+            idle_confirmations: 0,
+        });
+        assert_eq!(v, ActivityVerdict::Uncertain);
     }
 
     #[test]

@@ -31,7 +31,7 @@ use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
 use crate::client::ServerClient;
-use crate::config::{ArchiveSyncConfig, Config};
+use crate::config::Config;
 use crate::{selfupdate, service};
 
 /// Remote paths, all under the target user's `$HOME` (expanded remotely).
@@ -346,7 +346,6 @@ pub async fn run(opts: RemoteEnrollOpts) -> Result<()> {
             server_url: server_url.clone(),
             machine_key: resp.machine_key,
             machine_id: Some(resp.machine_id),
-            archive: ArchiveSyncConfig::default(),
         };
         let raw = toml::to_string_pretty(&cfg)?;
         ssh(target, WRITE_CONFIG_SCRIPT, Some(raw.as_bytes()))

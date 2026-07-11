@@ -1,25 +1,30 @@
 <script lang="ts">
-	import { useAccountShares, useAccountActions } from '$lib/queries';
+	import { useResourceShares, useResourceShareActions } from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
 	import { Button, Input, Text, Timestamp } from '@dorsk/tsumikit';
 
-	// "Shared with" section on an account card (CCT-510): lists the live grants,
-	// a user-picker (login or UUID) to grant `use`, and a per-row revoke button.
-	// Only rendered by the page for the account owner/admin — the list endpoint is
-	// owner-scoped server-side, so `enabled` gates the fetch to avoid a 404 churn.
+	// "Shared with" section for any shareable resource (CCT-531): lists live
+	// grants, a user-picker (login or UUID) to grant `use`, and a per-row revoke.
+	// Only rendered for the resource owner/admin — the list endpoint is
+	// owner-scoped server-side, so `enabled` gates the fetch to avoid 404 churn.
 	let {
+		resourceType,
 		id,
+		noun = 'this resource',
 		enabled = true
 	}: {
+		resourceType: string;
 		id: string;
+		noun?: string;
 		enabled?: boolean;
 	} = $props();
 
-	const shares = useAccountShares(
+	const shares = useResourceShares(
+		() => resourceType,
 		() => id,
 		() => enabled
 	);
-	const actions = useAccountActions();
+	const actions = useResourceShareActions();
 
 	let grantee = $state('');
 	let busy = $state(false);
@@ -32,7 +37,7 @@
 		}
 		busy = true;
 		try {
-			await actions.grantShare(id, { user });
+			await actions.grant(resourceType, id, { user });
 			grantee = '';
 			toasts.ok('Shared');
 		} catch (e) {
@@ -43,9 +48,9 @@
 	}
 
 	async function revoke(userId: string, name: string) {
-		if (!confirm(`Revoke ${name}'s access to this account?`)) return;
+		if (!confirm(`Revoke ${name}'s access to ${noun}?`)) return;
 		try {
-			await actions.revokeShare(id, userId);
+			await actions.revoke(resourceType, id, userId);
 			toasts.ok('Revoked');
 		} catch (e) {
 			toasts.err((e as Error).message);

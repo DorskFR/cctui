@@ -1,4 +1,3 @@
-mod archive_store;
 mod auth;
 mod authz;
 mod bus;
@@ -13,7 +12,6 @@ mod ntfy;
 mod openapi;
 mod policy;
 mod presence;
-mod rebuild;
 mod registry;
 mod routes;
 mod settings_catalog;
@@ -59,7 +57,6 @@ async fn main() -> anyhow::Result<()> {
     // rather than a user_id=None ghost. Idempotent, best-effort.
     auth_config.seed_admin().await;
 
-    let archive = init_archive_store().await;
     let skills = init_skill_store().await;
     let dispatchers = init_dispatchers(&config);
 
@@ -94,7 +91,6 @@ async fn main() -> anyhow::Result<()> {
         // the transport behind it is chosen above (CCT-573).
         bus: bus::Bus::new(transport),
         auth_config: auth_config.clone(),
-        archive,
         skills,
         presence,
         internal_secret,
@@ -449,6 +445,14 @@ fn build_api_routes() -> Routes {
             "/sessions/search",
             "Full-text search across your sessions.",
             get(routes::sessions::search_sessions),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[GET],
+            "/sessions/search/values",
+            "Autocomplete values for a search field.",
+            get(routes::sessions::search_field_values),
             Authn::Bearer,
             Authenticated,
         )
@@ -815,6 +819,25 @@ fn build_api_routes() -> Routes {
             Authn::Bearer,
             Authenticated,
         )
+        // Generic resource-sharing CRUD (CCT-531): owner-scoped in the handler
+        // (require_owner) for any shareable kind. The account routes above are
+        // static-path back-compat aliases; these serve machine/dispatcher/etc.
+        .add(
+            &[GET, Method::POST],
+            "/{resource_type}/{id}/shares",
+            "List or grant shares of a resource to other users.",
+            get(routes::shares::list_shares).post(routes::shares::grant_share),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[Method::DELETE],
+            "/{resource_type}/{id}/shares/{user_id}",
+            "Revoke a user's share of a resource.",
+            delete(routes::shares::revoke_share),
+            Authn::Bearer,
+            Authenticated,
+        )
         .add(
             &[GET],
             "/machines/{machine_id}/commands/pending",
@@ -980,63 +1003,6 @@ fn build_api_routes() -> Routes {
             Authn::Bearer,
             ScopeAz(auth::Scope::Admin),
         )
-        // Archive: machine/scope checks performed in the handlers.
-        .add(
-            &[GET],
-            "/archive/index",
-            "List archived transcript entries.",
-            get(routes::archive::index),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[GET],
-            "/archive/status",
-            "Get archive storage status.",
-            get(routes::archive::get_status),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[Method::POST],
-            "/archive/manifest",
-            "Post an archive manifest (sync negotiation).",
-            post(routes::archive::post_manifest).layer(DefaultBodyLimit::max(8 * 1024 * 1024)),
-            Authn::Bearer,
-            Authenticated,
-        )
-        // Rebuild a transcript from stored stream_events (CCT-363). `rebuild`
-        // is a literal first segment, so it must NOT collide with the
-        // `{project_dir}/{session_id}` matcher below — keep session_id in the
-        // query string rather than a second path segment.
-        .add(
-            &[Method::POST],
-            "/archive/rebuild",
-            "Rebuild a transcript from stored stream events.",
-            post(routes::archive::rebuild),
-            Authn::Bearer,
-            Authenticated,
-        )
-        // Export the caller's archives as a coach-ingestable tar.gz (CCT-364).
-        .add(
-            &[GET],
-            "/archive/export",
-            "Export your archives as a tar.gz bundle.",
-            get(routes::archive::export),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[Method::PUT, Method::HEAD, GET],
-            "/archive/{project_dir}/{session_id}",
-            "Upload, probe, or download an archived transcript blob.",
-            put(routes::archive::put)
-                .head(routes::archive::head)
-                .get(routes::archive::get)
-                .layer(DefaultBodyLimit::max(100 * 1024 * 1024)),
-            Authn::Bearer,
-            Authenticated,
-        )
         .add(
             &[GET],
             "/permissions/pending",
@@ -1126,16 +1092,6 @@ async fn github_identity(
         request.extensions_mut().insert(identity);
     }
     next.run(request).await
-}
-
-async fn init_archive_store() -> Arc<archive_store::ArchiveStore> {
-    let root: PathBuf =
-        std::env::var("CCTUI_ARCHIVE_PATH").unwrap_or_else(|_| "/archive".into()).into();
-    let store = Arc::new(archive_store::ArchiveStore::new(root.clone()));
-    if let Err(e) = store.ensure_root().await {
-        tracing::warn!(path = %root.display(), "archive root ensure_root failed: {e}");
-    }
-    store
 }
 
 async fn init_skill_store() -> Arc<skill_store::SkillStore> {

@@ -328,6 +328,18 @@ export interface GrantShare {
   action?: string;
 }
 
+/** One live share grant on any shareable resource (CCT-531): the polymorphic
+ *  generalization of {@link ShareInfo}. `resource_type` is the DB kind
+ *  (`account` | `machine` | `dispatcher` | `context_pack`). */
+export interface ResourceShareInfo {
+  resource_type: string;
+  resource_id: string;
+  user_id: string;
+  user_name: string;
+  action: string;
+  granted_at: string;
+}
+
 /** Centralised query keys so invalidation stays consistent. */
 export const qk = {
   version: ["version"] as const,
@@ -348,6 +360,8 @@ export const qk = {
   userKeys: (userId: string) => ["users", userId, "keys"] as const,
   labels: ["labels"] as const,
   accountShares: (accountId: string) => ["accounts", accountId, "shares"] as const,
+  resourceShares: (resourceType: string, id: string) =>
+    ["resource-shares", resourceType, id] as const,
   settingsCatalog: ["settings-catalog"] as const,
 };
 
@@ -505,6 +519,14 @@ export const endpoints = {
     api.post<ShareInfo>(`/accounts/${id}/shares`, body),
   revokeShare: (id: string, userId: string) =>
     api.del<void>(`/accounts/${id}/shares/${userId}`),
+  /** Generic resource sharing (CCT-531). `resourceType` is the DB kind
+   *  (`account` | `machine` | `dispatcher` | `context_pack`); owner-scoped. */
+  resourceShares: (resourceType: string, id: string) =>
+    api.get<ResourceShareInfo[]>(`/${resourceType}/${id}/shares`),
+  grantResourceShare: (resourceType: string, id: string, body: GrantShare) =>
+    api.post<ResourceShareInfo>(`/${resourceType}/${id}/shares`, body),
+  revokeResourceShare: (resourceType: string, id: string, userId: string) =>
+    api.del<void>(`/${resourceType}/${id}/shares/${userId}`),
   oauthStart: (provider: string, userId?: string, accountId?: string) =>
     api.post<OAuthStartResponse>("/accounts/oauth/start", {
       provider,
@@ -907,6 +929,39 @@ export const useAccountShares = (
       retry: false,
     })),
   );
+
+/** Who a resource is shared with (CCT-531), for any shareable kind. Owner-scoped
+ *  server-side (404s for a non-owner), so callers gate `enabled` accordingly. */
+export const useResourceShares = (
+  resourceType: () => string,
+  id: () => string,
+  enabled: () => boolean = () => true,
+) =>
+  createQuery(
+    toStore(() => ({
+      queryKey: qk.resourceShares(resourceType(), id()),
+      queryFn: () => endpoints.resourceShares(resourceType(), id()),
+      enabled: enabled(),
+      retry: false,
+    })),
+  );
+
+/** Grant/revoke actions for generic resource sharing (CCT-531); each invalidates
+ *  that resource's shares query. */
+export function useResourceShareActions() {
+  const qc = useQueryClient();
+  return {
+    grant: async (resourceType: string, id: string, body: GrantShare) => {
+      const r = await endpoints.grantResourceShare(resourceType, id, body);
+      qc.invalidateQueries({ queryKey: qk.resourceShares(resourceType, id) });
+      return r;
+    },
+    revoke: async (resourceType: string, id: string, userId: string) => {
+      await endpoints.revokeResourceShare(resourceType, id, userId);
+      qc.invalidateQueries({ queryKey: qk.resourceShares(resourceType, id) });
+    },
+  };
+}
 
 export type { ConnectorInfo, CreateConnector, UpdateConnector };
 

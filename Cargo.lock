@@ -427,7 +427,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-admin"
-version = "0.7.127"
+version = "0.7.128"
 dependencies = [
  "anyhow",
  "cctui-proto",
@@ -444,7 +444,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-daemon"
-version = "0.7.127"
+version = "0.7.128"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -471,8 +471,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "cctui-dispatcher-apple"
+version = "0.7.128"
+dependencies = [
+ "anyhow",
+ "cctui-proto",
+ "chrono",
+ "clap",
+ "dirs",
+ "futures-util",
+ "hex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha1",
+ "tokio",
+ "tokio-tungstenite 0.26.2",
+ "tokio-util",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "cctui-dispatcher-docker"
-version = "0.7.127"
+version = "0.7.128"
 dependencies = [
  "anyhow",
  "bollard",
@@ -497,7 +521,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-dispatcher-kube"
-version = "0.7.127"
+version = "0.7.128"
 dependencies = [
  "anyhow",
  "cctui-proto",
@@ -523,7 +547,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-github"
-version = "0.7.127"
+version = "0.7.128"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -544,7 +568,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-guard"
-version = "0.7.127"
+version = "0.7.128"
 dependencies = [
  "anyhow",
  "axum",
@@ -560,7 +584,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-guard-proxy"
-version = "0.7.127"
+version = "0.7.128"
 dependencies = [
  "anyhow",
  "clap",
@@ -576,7 +600,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-proto"
-version = "0.7.127"
+version = "0.7.128"
 dependencies = [
  "chrono",
  "hex",
@@ -588,8 +612,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "cctui-query"
+version = "0.7.128"
+dependencies = [
+ "serde",
+ "serde_json",
+ "ts-rs",
+]
+
+[[package]]
 name = "cctui-server"
-version = "0.7.127"
+version = "0.7.128"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -598,6 +631,7 @@ dependencies = [
  "bollard",
  "cctui-github",
  "cctui-proto",
+ "cctui-query",
  "chrono",
  "dashmap",
  "flate2",
@@ -631,7 +665,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-supervisor"
-version = "0.7.127"
+version = "0.7.128"
 dependencies = [
  "anyhow",
  "caps",
@@ -647,7 +681,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-tui"
-version = "0.7.127"
+version = "0.7.128"
 dependencies = [
  "anyhow",
  "cctui-proto",
