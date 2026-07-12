@@ -1,6 +1,7 @@
 <script lang="ts">
 	import '$lib/styles/app.css';
 	import { QueryClient, QueryClientProvider } from '@tanstack/svelte-query';
+	import { page } from '$app/state';
 	import { auth } from '$lib/auth.svelte';
 	import { settings } from '$lib/settings.svelte';
 	import { ws } from '$lib/ws.svelte';
@@ -12,6 +13,10 @@
 	import { Container } from '@dorsk/tsumikit';
 
 	let { children } = $props();
+
+	// The embedded review center (CCT-610) manages its own full-height layout, so
+	// it renders outside the width-capped Container and without content padding.
+	const isReview = $derived(page.url.pathname.startsWith('/review'));
 
 	// One delegated listener for every code-block copy button (CCT-297 #20).
 	$effect(() => {
@@ -48,10 +53,14 @@
 	{#if auth.isAuthed}
 		<div class="app">
 			<Header />
-			<main class="content">
-				<Container>
+			<main class="content" class:review={isReview}>
+				{#if isReview}
 					{@render children?.()}
-				</Container>
+				{:else}
+					<Container>
+						{@render children?.()}
+					</Container>
+				{/if}
 			</main>
 			<BottomNav />
 		</div>
@@ -72,5 +81,14 @@
 		/* clear the fixed header and bottom nav (+ safe areas) */
 		padding-top: calc(var(--header-h) + var(--safe-top) + var(--sp-3));
 		padding-bottom: calc(var(--nav-h) + var(--safe-bottom) + var(--sp-4));
+	}
+	/* The review center fills the viewport between header and nav and scrolls
+	   internally, so drop the content padding and pin a definite height. */
+	.content.review {
+		display: flex;
+		flex-direction: column;
+		height: 100dvh;
+		padding-top: calc(var(--header-h) + var(--safe-top));
+		padding-bottom: calc(var(--nav-h) + var(--safe-bottom));
 	}
 </style>

@@ -32,8 +32,12 @@ export function applyTheme(theme: Theme): void {
   document.documentElement.setAttribute("data-theme", theme);
 }
 
-export function setTheme(theme: Theme): void {
+export function storeTheme(theme: Theme): void {
   localStorage.setItem(STORAGE_KEY, theme);
+}
+
+export function setTheme(theme: Theme): void {
+  storeTheme(theme);
   applyTheme(theme);
 }
 

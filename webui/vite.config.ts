@@ -14,6 +14,18 @@ export default defineConfig({
 	define: {
 		__CLIENT_VERSION__: JSON.stringify(clientVersion)
 	},
+	resolve: {
+		// The embedded gh-review UI (CCT-610) is a sibling workspace; alias its
+		// source so it is imported by path, not by package name — that keeps
+		// svelte-check from parsing it (an ambient decl types the import instead)
+		// and avoids pulling a second copy of svelte into the type program.
+		alias: {
+			$ghreview: new URL('../ghreview-ui/src', import.meta.url).pathname
+		},
+		// A single svelte (and query) runtime is mandatory: gh-review's context /
+		// runes must share the host's instance or setContext/getContext break.
+		dedupe: ['svelte', '@tanstack/svelte-query']
+	},
 	server: {
 		host: true,
 		port: 5273,

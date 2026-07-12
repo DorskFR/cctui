@@ -1,0 +1,42 @@
+/*
+ * Embedded stylesheet (CCT-610). Imported by Review.svelte when gh-review is
+ * mounted inside cctui-ui. It reuses the shared design tokens but scopes the
+ * base element rules under `.ghreview-embed` so they never leak onto the host
+ * app's <body>/<a>/<button>. The `[data-theme]` token blocks match the embed
+ * container (Review sets the attribute there, not on <html>), so switching the
+ * review theme repaints only the review subtree — the cctui chrome keeps its
+ * own theme.
+ */
+@import "./tokens.css";
+
+.ghreview-embed {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  background: var(--gh-bg);
+  color: var(--gh-fg);
+  font-family: var(--gh-font);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.ghreview-embed *,
+.ghreview-embed *::before,
+.ghreview-embed *::after {
+  box-sizing: border-box;
+}
+
+.ghreview-embed a {
+  color: var(--gh-accent-fg);
+  text-decoration: none;
+}
+
+.ghreview-embed a:hover {
+  text-decoration: underline;
+}
+
+.ghreview-embed button {
+  font-family: inherit;
+}

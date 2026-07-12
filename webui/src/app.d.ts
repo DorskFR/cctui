@@ -11,6 +11,7 @@ declare global {
 	interface Window {
 		CCTUI_CONFIG?: {
 			apiBase?: string;
+			ghreviewUrl?: string;
 		};
 	}
 

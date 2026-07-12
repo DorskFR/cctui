@@ -1,10 +1,14 @@
 <script lang="ts">
+  import { getContext } from "svelte";
   import { rewriteGithubUrl } from "../bookmarklet";
+  import { EMBED_THEME_KEY, type EmbedThemeContext } from "../embed/context";
   import { router } from "../router/router.svelte";
   import { currentTheme, setTheme, type Theme, THEME_LABELS, THEMES } from "../theme/theme";
 
+  const embedTheme = getContext<EmbedThemeContext | undefined>(EMBED_THEME_KEY);
+
   let prUrl = $state("");
-  let theme = $state<Theme>(currentTheme());
+  let theme = $state<Theme>(embedTheme ? embedTheme.get() : currentTheme());
 
   function openUrl(e: SubmitEvent): void {
     e.preventDefault();
@@ -17,7 +21,8 @@
 
   function onThemeChange(e: Event): void {
     theme = (e.currentTarget as HTMLSelectElement).value as Theme;
-    setTheme(theme);
+    if (embedTheme) embedTheme.set(theme);
+    else setTheme(theme);
   }
 </script>
 
