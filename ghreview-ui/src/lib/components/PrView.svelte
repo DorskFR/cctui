@@ -23,8 +23,19 @@
     setPreferredRendererKind,
   } from "../diff/renderer";
   import { resolveKey, type KeymapState } from "../keyboard/keymap";
+  import {
+    type PrContentTab,
+    defaultPrTab,
+    deserializePrTab,
+    prTabStorageKey,
+  } from "../stores/pr-tabs-core";
   import { tabs } from "../stores/tabs.svelte";
   import FileTree from "./FileTree.svelte";
+  import PrChecks from "./PrChecks.svelte";
+  import PrCommits from "./PrCommits.svelte";
+  import PrConversation from "./PrConversation.svelte";
+  import PrDescription from "./PrDescription.svelte";
+  import PrTabs from "./PrTabs.svelte";
 
   interface Props {
     owner: string;
@@ -138,6 +149,22 @@
     }
   }
 
+  let activeTab = $state<PrContentTab>(defaultPrTab());
+  let tabLoaded = false;
+
+  $effect(() => {
+    const key = prTabStorageKey(owner, repo, number);
+    if (!tabLoaded) {
+      activeTab = deserializePrTab(localStorage.getItem(key));
+      tabLoaded = true;
+    }
+  });
+
+  function selectTab(tab: PrContentTab): void {
+    activeTab = tab;
+    localStorage.setItem(prTabStorageKey(owner, repo, number), tab);
+  }
+
   let rendererKind = $state<RendererKind>(getPreferredRendererKind());
   const DiffComponent = $derived(getRenderer(rendererKind)?.component);
 
@@ -192,25 +219,39 @@
       </div>
     </header>
 
-    <div class="split">
-      <aside class="tree">
-        <FileTree
-          model={displayModel}
-          {focusRow}
-          {viewed}
-          onselect={selectFile}
-          onToggleViewed={toggleViewed}
-        />
-      </aside>
-      <section class="diff">
-        {#if files.length === 0}
-          <div class="msg">No file patches in the synced payload.</div>
-        {:else if DiffComponent}
-          {#key rendererKind}
-            <DiffComponent model={displayModel} {nav} {focusRow} onFocusRow={(r) => (focusRow = r)} />
-          {/key}
-        {/if}
-      </section>
+    <PrTabs active={activeTab} counts={{ diff: files.length }} onselect={selectTab} />
+
+    <div class="content">
+      {#if activeTab === "description"}
+        <PrDescription body={pull.body} />
+      {:else if activeTab === "conversation"}
+        <PrConversation {pull} />
+      {:else if activeTab === "commits"}
+        <PrCommits {pull} />
+      {:else if activeTab === "checks"}
+        <PrChecks {pull} />
+      {:else}
+        <div class="split">
+          <aside class="tree">
+            <FileTree
+              model={displayModel}
+              {focusRow}
+              {viewed}
+              onselect={selectFile}
+              onToggleViewed={toggleViewed}
+            />
+          </aside>
+          <section class="diff">
+            {#if files.length === 0}
+              <div class="msg">No file patches in the synced payload.</div>
+            {:else if DiffComponent}
+              {#key rendererKind}
+                <DiffComponent model={displayModel} {nav} {focusRow} onFocusRow={(r) => (focusRow = r)} />
+              {/key}
+            {/if}
+          </section>
+        </div>
+      {/if}
     </div>
   {/if}
 </div>
@@ -301,6 +342,12 @@
   .renderer-toggle button.active {
     background: var(--gh-accent);
     color: white;
+  }
+  .content {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
   }
   .split {
     flex: 1;

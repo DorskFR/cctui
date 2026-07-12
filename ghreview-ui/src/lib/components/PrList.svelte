@@ -2,27 +2,28 @@
   import { createQuery } from "@tanstack/svelte-query";
   import { api } from "../api/client";
   import { getAccount } from "../api/config";
-  import { ciStateOf, type GithubPull, prStateOf, pullOf, repoOf } from "../api/types";
+  import { ciStateOf, prStateOf, pullOf, repoOf } from "../api/types";
+  import {
+    collectAuthors,
+    collectLabels,
+    collectRepos,
+    emptyCriteria,
+    filterEntries,
+    type PrEntry,
+  } from "../filter/prfilter";
   import { pullPath } from "../router/route";
   import { router } from "../router/router.svelte";
   import { tabs } from "../stores/tabs.svelte";
+  import FilterSearchBar from "./FilterSearchBar.svelte";
   import StatusDot from "./StatusDot.svelte";
 
-  type Filter = "review" | "authored" | "all";
-  let filter = $state<Filter>("review");
-  let repoFilter = $state<string>("");
+  let criteria = $state({ ...emptyCriteria });
 
   const account = getAccount() ?? "";
 
-  interface Entry {
-    owner: string;
-    repo: string;
-    pull: GithubPull;
-  }
-
   const query = createQuery({
     queryKey: ["pulls", "home", account],
-    queryFn: async (): Promise<Entry[]> => {
+    queryFn: async (): Promise<PrEntry[]> => {
       const repos = await api.repos(account || undefined);
       const results = await Promise.all(
         repos.items.map(async (env) => {
@@ -36,26 +37,13 @@
     },
   });
 
-  const repos = $derived.by(() => {
-    const set = new Set<string>();
-    for (const e of $query.data ?? []) set.add(`${e.owner}/${e.repo}`);
-    return [...set].sort();
-  });
+  const entries = $derived($query.data ?? []);
+  const repos = $derived(collectRepos(entries));
+  const authors = $derived(collectAuthors(entries));
+  const labels = $derived(collectLabels(entries));
+  const filtered = $derived(filterEntries(entries, criteria, account));
 
-  const filtered = $derived.by(() => {
-    let entries = $query.data ?? [];
-    if (repoFilter) entries = entries.filter((e) => `${e.owner}/${e.repo}` === repoFilter);
-    if (filter === "authored") {
-      entries = entries.filter((e) => e.pull.user?.login === account);
-    } else if (filter === "review") {
-      entries = entries.filter((e) =>
-        (e.pull.requested_reviewers ?? []).some((u) => u.login === account),
-      );
-    }
-    return entries;
-  });
-
-  function open(e: Entry): void {
+  function open(e: PrEntry): void {
     const p = e.pull;
     tabs.open(e.owner, e.repo, p.number, p.title);
     tabs.setStatus(`pr-${e.owner}-${e.repo}-${p.number}`, {
@@ -68,23 +56,7 @@
 </script>
 
 <div class="wrap">
-  <div class="filters">
-    <div class="chips">
-      <button class:on={filter === "review"} onclick={() => (filter = "review")}>
-        Review requested
-      </button>
-      <button class:on={filter === "authored"} onclick={() => (filter = "authored")}>
-        Authored
-      </button>
-      <button class:on={filter === "all"} onclick={() => (filter = "all")}>All</button>
-    </div>
-    <select bind:value={repoFilter}>
-      <option value="">All repos</option>
-      {#each repos as r (r)}
-        <option value={r}>{r}</option>
-      {/each}
-    </select>
-  </div>
+  <FilterSearchBar bind:criteria {repos} {authors} {labels} />
 
   {#if $query.isLoading}
     <div class="msg">Loading warm cache…</div>
@@ -114,37 +86,6 @@
 <style>
   .wrap {
     padding: var(--gh-space-3);
-  }
-  .filters {
-    display: flex;
-    justify-content: space-between;
-    gap: var(--gh-space-3);
-    margin-bottom: var(--gh-space-3);
-  }
-  .chips {
-    display: flex;
-    gap: var(--gh-space-1);
-  }
-  .chips button {
-    background: var(--gh-bg-elev);
-    border: 1px solid var(--gh-border);
-    color: var(--gh-fg-muted);
-    border-radius: 999px;
-    padding: 2px 12px;
-    cursor: pointer;
-    font-size: 12px;
-  }
-  .chips button.on {
-    background: var(--gh-accent);
-    color: white;
-    border-color: var(--gh-accent);
-  }
-  select {
-    background: var(--gh-bg-elev);
-    border: 1px solid var(--gh-border);
-    color: var(--gh-fg);
-    border-radius: var(--gh-radius);
-    padding: 2px 8px;
   }
   .list {
     list-style: none;

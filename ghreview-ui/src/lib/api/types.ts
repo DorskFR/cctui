@@ -22,6 +22,11 @@ export interface GithubUser {
   avatar_url?: string;
 }
 
+export interface GithubLabel {
+  name: string;
+  color?: string;
+}
+
 export interface GithubRef {
   ref: string;
   sha: string;
@@ -53,6 +58,7 @@ export interface GithubPull {
   changed_files?: number;
   user?: GithubUser | null;
   requested_reviewers?: GithubUser[];
+  labels?: GithubLabel[];
   head?: GithubRef;
   base?: GithubRef;
   html_url?: string;
