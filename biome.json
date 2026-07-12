@@ -8,7 +8,8 @@
       "**/*.md",
       "!**/target/",
       "!**/.sqlx/",
-      "!**/.superpowers/"
+      "!**/.superpowers/",
+      "!**/adapters/codex/schema/**"
     ]
   },
   "formatter": {
