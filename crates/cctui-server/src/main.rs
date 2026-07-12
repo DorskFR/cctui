@@ -522,6 +522,14 @@ fn build_api_routes() -> Routes {
             sess_read(),
         )
         .add(
+            &[GET],
+            "/sessions/{id}/langfuse",
+            "Langfuse cost/usage rollup for a session (CCT-564).",
+            get(routes::langfuse::session_langfuse),
+            Authn::Bearer,
+            sess_read(),
+        )
+        .add(
             &[Method::POST],
             "/sessions/{id}/message",
             "Send a message to a live session.",

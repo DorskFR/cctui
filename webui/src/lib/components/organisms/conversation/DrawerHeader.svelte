@@ -19,6 +19,7 @@
 	import LabelBadge from '$lib/components/molecules/LabelBadge.svelte';
 	import WorkingDir from '$lib/components/molecules/WorkingDir.svelte';
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
+	import LangfuseChip from '$lib/components/molecules/LangfuseChip.svelte';
 	import { Badge, IconButton, Input, Select, SelectButton, Text } from '@dorsk/tsumikit';
 	import { codexModelsFor, codexEffortsFor } from '$lib/harnessModels';
 	import { useCodexModels } from '$lib/queries';
@@ -313,6 +314,7 @@
 		<WorkingDir path={session.working_dir} />
 		<div class="meta-trail">
 		<TokenUsage usage={session.token_usage} />
+		<LangfuseChip id={session.id} />
 		{#if isCodexSession && !archived}
 			{#if modelEditing}
 				<!-- display:contents wrapper exists only to give the compact Selects a

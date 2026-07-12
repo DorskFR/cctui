@@ -18,8 +18,14 @@
 //!   or error is logged at `debug` and dropped. Backpressure is shed by simply
 //!   not awaiting.
 
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
 use base64::Engine;
+use dashmap::DashMap;
+use serde::Serialize;
 use serde_json::{Value, json};
+use ts_rs::TS;
 
 /// Langfuse sink configuration (`[langfuse]` block / `CCTUI_LANGFUSE_*` env).
 /// Built only when host + public + secret are all present.
@@ -87,11 +93,104 @@ pub struct TracePayload {
 pub struct LangfuseClient {
     config: LangfuseConfig,
     http: reqwest::Client,
+    /// `OnceCell<Option>`: outer = "resolved yet?", inner = the project id (or
+    /// `None` when the `GET /projects` lookup could not identify one).
+    project_id: Arc<tokio::sync::OnceCell<Option<String>>>,
+    usage_cache: Arc<DashMap<String, CachedSessionUsage>>,
+}
+
+struct CachedSessionUsage {
+    fetched_at: Instant,
+    usage: LangfuseSessionUsage,
+}
+
+const USAGE_TTL: Duration = Duration::from_secs(60);
+
+/// Cost + `trace_count` are exact off the traces list; token classes are
+/// best-effort — only populated when the deployment carries per-trace
+/// `usageDetails` (legacy self-hosted trace lists often don't).
+#[derive(Debug, Clone, Default, Serialize, TS)]
+#[ts(export)]
+pub struct LangfuseSessionUsage {
+    pub cost_usd: f64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read: u64,
+    pub trace_count: u64,
 }
 
 impl LangfuseClient {
-    pub const fn new(config: LangfuseConfig, http: reqwest::Client) -> Self {
-        Self { config, http }
+    pub fn new(config: LangfuseConfig, http: reqwest::Client) -> Self {
+        Self {
+            config,
+            http,
+            project_id: Arc::new(tokio::sync::OnceCell::new()),
+            usage_cache: Arc::new(DashMap::new()),
+        }
+    }
+
+    /// Base host for building `<host>/project/<id>/sessions/<uuid>` deep links.
+    pub fn host(&self) -> &str {
+        &self.config.host
+    }
+
+    /// Resolve the Langfuse project id once (via `GET /api/public/projects`) and
+    /// memoize it for deep links. Fail-open: an error yields `None`.
+    pub async fn project_id(&self) -> Option<String> {
+        self.project_id
+            .get_or_init(|| async { self.fetch_project_id().await.ok().flatten() })
+            .await
+            .clone()
+    }
+
+    async fn fetch_project_id(&self) -> Result<Option<String>, String> {
+        let resp = self
+            .http
+            .get(format!("{}/api/public/projects", self.config.host))
+            .header(reqwest::header::AUTHORIZATION, self.config.basic_auth())
+            .send()
+            .await
+            .map_err(|e| format!("transport: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("status {}", resp.status()));
+        }
+        let body: Value = resp.json().await.map_err(|e| format!("decode: {e}"))?;
+        Ok(body
+            .get("data")
+            .and_then(Value::as_array)
+            .and_then(|a| a.first())
+            .and_then(|p| p.get("id"))
+            .and_then(Value::as_str)
+            .map(str::to_owned))
+    }
+
+    /// Aggregate one cctui session's Langfuse traces into a cost/usage rollup,
+    /// serving a fresh-enough cached value without touching upstream (CCT-564).
+    pub async fn session_usage(&self, session_id: &str) -> Result<LangfuseSessionUsage, String> {
+        if let Some(hit) = self.usage_cache.get(session_id)
+            && hit.fetched_at.elapsed() < USAGE_TTL
+        {
+            return Ok(hit.usage.clone());
+        }
+        let resp = self
+            .http
+            .get(format!("{}/api/public/traces", self.config.host))
+            .query(&[("sessionId", session_id)])
+            .header(reqwest::header::AUTHORIZATION, self.config.basic_auth())
+            .send()
+            .await
+            .map_err(|e| format!("transport: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("status {}", resp.status()));
+        }
+        let body: Value = resp.json().await.map_err(|e| format!("decode: {e}"))?;
+        let data = body.get("data").and_then(Value::as_array).map_or(&[][..], Vec::as_slice);
+        let usage = aggregate_traces(data);
+        self.usage_cache.insert(
+            session_id.to_string(),
+            CachedSessionUsage { fetched_at: Instant::now(), usage: usage.clone() },
+        );
+        Ok(usage)
     }
 
     /// Whether this call should be sampled (cheap, sync — checked before the
@@ -330,6 +429,24 @@ fn normalize_usage(u: &Value) -> Value {
     )
 }
 
+/// Fold a Langfuse `GET /traces?sessionId=` `data[]` array into a session
+/// rollup. `totalCost` and the row count are authoritative; token classes are
+/// read from an optional per-trace `usageDetails` object when present.
+fn aggregate_traces(data: &[Value]) -> LangfuseSessionUsage {
+    let mut out = LangfuseSessionUsage::default();
+    for trace in data {
+        out.trace_count += 1;
+        out.cost_usd += trace.get("totalCost").and_then(Value::as_f64).unwrap_or(0.0);
+        if let Some(u) = trace.get("usageDetails").and_then(Value::as_object) {
+            let n = |k: &str| u.get(k).and_then(Value::as_u64).unwrap_or(0);
+            out.input_tokens += n("input");
+            out.output_tokens += n("output");
+            out.cache_read += n("cache_read_input_tokens");
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -400,6 +517,36 @@ mod tests {
     #[test]
     fn short_of_takes_leading_hex() {
         assert_eq!(short_of("0123abcd-ef00-0000-0000-000000000000"), "0123abcd");
+    }
+
+    #[test]
+    fn aggregate_traces_sums_cost_tokens_and_count() {
+        let data = [
+            json!({
+                "id": "t1",
+                "totalCost": 0.012,
+                "usageDetails": {"input": 10, "output": 5, "cache_read_input_tokens": 3},
+            }),
+            json!({
+                "id": "t2",
+                "totalCost": 0.008,
+                "usageDetails": {"input": 20, "output": 7},
+            }),
+            json!({"id": "t3"}),
+        ];
+        let agg = aggregate_traces(&data);
+        assert!((agg.cost_usd - 0.020).abs() < 1e-9);
+        assert_eq!(agg.input_tokens, 30);
+        assert_eq!(agg.output_tokens, 12);
+        assert_eq!(agg.cache_read, 3);
+        assert_eq!(agg.trace_count, 3);
+    }
+
+    #[test]
+    fn aggregate_traces_empty_is_zero() {
+        let agg = aggregate_traces(&[]);
+        assert_eq!(agg.trace_count, 0);
+        assert!(agg.cost_usd.abs() < 1e-9);
     }
 
     #[test]

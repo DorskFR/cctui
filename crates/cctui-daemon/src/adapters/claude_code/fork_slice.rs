@@ -36,12 +36,11 @@ fn is_turn_start(line: &Value) -> bool {
 }
 
 fn has_tool_result(line: &Value) -> bool {
-    line.get("message")
-        .and_then(|m| m.get("content"))
-        .and_then(Value::as_array)
-        .is_some_and(|blocks| {
+    line.get("message").and_then(|m| m.get("content")).and_then(Value::as_array).is_some_and(
+        |blocks| {
             blocks.iter().any(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"))
-        })
+        },
+    )
 }
 
 /// Index of the last conversation line whose assistant `message_id` == `anchor`.
@@ -93,40 +92,34 @@ fn repair_tool_pairs(lines: Vec<Value>) -> Vec<Value> {
     let mut uses: HashSet<String> = HashSet::new();
     let mut results: HashSet<String> = HashSet::new();
     for line in &lines {
-        for_each_block(line, |b| {
-            match b.get("type").and_then(Value::as_str) {
-                Some("tool_use") => {
-                    if let Some(id) = b.get("id").and_then(Value::as_str) {
-                        uses.insert(id.to_owned());
-                    }
+        for_each_block(line, |b| match b.get("type").and_then(Value::as_str) {
+            Some("tool_use") => {
+                if let Some(id) = b.get("id").and_then(Value::as_str) {
+                    uses.insert(id.to_owned());
                 }
-                Some("tool_result") => {
-                    if let Some(id) = b.get("tool_use_id").and_then(Value::as_str) {
-                        results.insert(id.to_owned());
-                    }
-                }
-                _ => {}
             }
+            Some("tool_result") => {
+                if let Some(id) = b.get("tool_use_id").and_then(Value::as_str) {
+                    results.insert(id.to_owned());
+                }
+            }
+            _ => {}
         });
     }
     let valid: HashSet<&String> = uses.intersection(&results).collect();
 
     let mut out = Vec::with_capacity(lines.len());
     for mut line in lines {
-        let had_blocks = line
-            .get("message")
-            .and_then(|m| m.get("content"))
-            .and_then(Value::as_array)
-            .is_some();
-        if let Some(blocks) = line
-            .get_mut("message")
-            .and_then(|m| m.get_mut("content"))
-            .and_then(Value::as_array_mut)
+        let had_blocks =
+            line.get("message").and_then(|m| m.get("content")).and_then(Value::as_array).is_some();
+        if let Some(blocks) =
+            line.get_mut("message").and_then(|m| m.get_mut("content")).and_then(Value::as_array_mut)
         {
             blocks.retain(|b| match b.get("type").and_then(Value::as_str) {
-                Some("tool_use") => {
-                    b.get("id").and_then(Value::as_str).is_some_and(|id| valid.contains(&id.to_owned()))
-                }
+                Some("tool_use") => b
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| valid.contains(&id.to_owned())),
                 Some("tool_result") => b
                     .get("tool_use_id")
                     .and_then(Value::as_str)
@@ -186,12 +179,8 @@ pub fn slice_transcript(
     extract: &ForkExtract,
     child_session_id: &str,
 ) -> anyhow::Result<Vec<Value>> {
-    let conv: Vec<usize> = lines
-        .iter()
-        .enumerate()
-        .filter(|(_, l)| is_conversation(l))
-        .map(|(i, _)| i)
-        .collect();
+    let conv: Vec<usize> =
+        lines.iter().enumerate().filter(|(_, l)| is_conversation(l)).map(|(i, _)| i).collect();
 
     let keep_conv: HashSet<usize> = match extract.mode {
         ForkMode::UpTo => {
@@ -231,22 +220,13 @@ pub fn slice_transcript(
     let mut kept: Vec<Value> = lines
         .iter()
         .enumerate()
-        .filter(|&(i, l)| {
-            if is_conversation(l) {
-                keep_conv.contains(&i)
-            } else {
-                i < first_kept
-            }
-        })
+        .filter(|&(i, l)| if is_conversation(l) { keep_conv.contains(&i) } else { i < first_kept })
         .map(|(_, l)| l.clone())
         .collect();
 
     // A resumable transcript must open on a user turn; drop leading assistant /
     // tool-result lines the cut may have exposed (after/selected modes).
-    while kept
-        .first()
-        .is_some_and(|l| is_conversation(l) && !is_turn_start(l))
-    {
+    while kept.first().is_some_and(|l| is_conversation(l) && !is_turn_start(l)) {
         kept.remove(0);
     }
 
@@ -349,7 +329,8 @@ mod tests {
 
     #[test]
     fn up_to_keeps_prefix_and_drops_rest() {
-        let out = slice_transcript(&chain(), &extract(ForkMode::UpTo, Some("m2"), &[]), "child").unwrap();
+        let out =
+            slice_transcript(&chain(), &extract(ForkMode::UpTo, Some("m2"), &[]), "child").unwrap();
         // header + u1 + m1 + u2 + m2
         assert_eq!(out.len(), 5);
         assert!(message_id(out.last().unwrap()) == Some("m2"));
@@ -359,12 +340,16 @@ mod tests {
         }
         // chain: first conv line roots at null, then links linearly
         assert_eq!(out[1].get("parentUuid"), Some(&Value::Null));
-        assert_eq!(out[2].get("parentUuid").and_then(Value::as_str), out[1].get("uuid").and_then(Value::as_str));
+        assert_eq!(
+            out[2].get("parentUuid").and_then(Value::as_str),
+            out[1].get("uuid").and_then(Value::as_str)
+        );
     }
 
     #[test]
     fn after_keeps_suffix_starting_on_a_user_turn() {
-        let out = slice_transcript(&chain(), &extract(ForkMode::After, Some("m1"), &[]), "child").unwrap();
+        let out = slice_transcript(&chain(), &extract(ForkMode::After, Some("m1"), &[]), "child")
+            .unwrap();
         // drops header (trailing meta not before first kept) + u1 + m1; keeps u2 m2 u3 m3
         assert_eq!(ids(&out), vec!["more", "m2", "again", "m3"]);
         // first conversation line opens on a user turn, re-rooted at null
@@ -375,7 +360,9 @@ mod tests {
 
     #[test]
     fn selected_keeps_whole_turns_of_selected_messages() {
-        let out = slice_transcript(&chain(), &extract(ForkMode::Selected, None, &["m1", "m3"]), "child").unwrap();
+        let out =
+            slice_transcript(&chain(), &extract(ForkMode::Selected, None, &["m1", "m3"]), "child")
+                .unwrap();
         // turn(m1) = u1,a1 ; turn(m3) = u3,a3 ; turn(m2)=u2,a2 dropped
         assert_eq!(ids(&out), vec!["hi", "m1", "again", "m3"]);
     }
@@ -391,7 +378,8 @@ mod tests {
         ];
         // fork up_to m1: keeps u1 + a1(tool t1) but the result comes AFTER m1 and
         // is cut -> the orphan tool_use must be stripped, leaving a1 empty -> gone.
-        let out = slice_transcript(&lines, &extract(ForkMode::UpTo, Some("m1"), &[]), "child").unwrap();
+        let out =
+            slice_transcript(&lines, &extract(ForkMode::UpTo, Some("m1"), &[]), "child").unwrap();
         assert_eq!(ids(&out), vec!["hi"]);
     }
 
@@ -407,18 +395,24 @@ mod tests {
         ];
         // fork after m1: the tool_result for t1 would be orphaned (its tool_use is
         // dropped) -> the leading tool-result line is discarded, opening on U2.
-        let out = slice_transcript(&lines, &extract(ForkMode::After, Some("m1"), &[]), "child").unwrap();
+        let out =
+            slice_transcript(&lines, &extract(ForkMode::After, Some("m1"), &[]), "child").unwrap();
         assert_eq!(ids(&out), vec!["next", "m2"]);
         assert_eq!(out.first().unwrap().get("type").and_then(Value::as_str), Some("user"));
     }
 
     #[test]
     fn unknown_anchor_errors() {
-        assert!(slice_transcript(&chain(), &extract(ForkMode::UpTo, Some("nope"), &[]), "child").is_err());
+        assert!(
+            slice_transcript(&chain(), &extract(ForkMode::UpTo, Some("nope"), &[]), "child")
+                .is_err()
+        );
     }
 
     #[test]
     fn empty_selection_errors() {
-        assert!(slice_transcript(&chain(), &extract(ForkMode::Selected, None, &[]), "child").is_err());
+        assert!(
+            slice_transcript(&chain(), &extract(ForkMode::Selected, None, &[]), "child").is_err()
+        );
     }
 }

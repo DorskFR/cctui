@@ -107,6 +107,86 @@ pub fn harness_mode_to_adapter_token(harness_mode: Option<&str>) -> String {
     }
 }
 
+const WHIP_MODES: [&str; 2] = ["extend", "replace"];
+const DEFAULT_WHIP_MODE: &str = "extend";
+const MAX_WHIP_PHRASES: usize = 200;
+const MAX_WHIP_PHRASE_CHARS: usize = 200;
+const MAX_WHIP_GUIDANCE_CHARS: usize = 2000;
+
+/// Normalize a raw `whipStopPhrases` value (CCT-598) into the clamped block
+/// `{ mode, phrases, guidance? }`, or `None` when it reduces to the default
+/// (`extend` + no phrases + no guidance) so an absent setting stays implicit.
+///
+/// Phrases are trimmed, lowercased (matching is case-insensitive substring), had
+/// empties dropped, deduped, and capped in per-phrase length and count so a
+/// pathological blob can't bloat every worker spawn.
+fn normalize_whip_stop_phrases(raw: Option<&Value>) -> Option<Value> {
+    let obj = raw.and_then(Value::as_object);
+    let mode = obj
+        .and_then(|o| o.get("mode"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|m| WHIP_MODES.contains(m))
+        .unwrap_or(DEFAULT_WHIP_MODE);
+    let mut phrases: Vec<String> = Vec::new();
+    if let Some(arr) = obj.and_then(|o| o.get("phrases")).and_then(Value::as_array) {
+        for p in arr {
+            let Some(s) = p.as_str() else { continue };
+            let s: String = s.trim().to_lowercase().chars().take(MAX_WHIP_PHRASE_CHARS).collect();
+            if s.is_empty() || phrases.iter().any(|e| e == &s) {
+                continue;
+            }
+            phrases.push(s);
+            if phrases.len() >= MAX_WHIP_PHRASES {
+                break;
+            }
+        }
+    }
+    let guidance = obj
+        .and_then(|o| o.get("guidance"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|g| !g.is_empty())
+        .map(|g| g.chars().take(MAX_WHIP_GUIDANCE_CHARS).collect::<String>());
+    if mode == DEFAULT_WHIP_MODE && phrases.is_empty() && guidance.is_none() {
+        return None;
+    }
+    let mut block = serde_json::Map::new();
+    block.insert("mode".to_owned(), Value::String(mode.to_owned()));
+    block.insert(
+        "phrases".to_owned(),
+        Value::Array(phrases.into_iter().map(Value::String).collect()),
+    );
+    if let Some(g) = guidance {
+        block.insert("guidance".to_owned(), Value::String(g));
+    }
+    Some(Value::Object(block))
+}
+
+/// Clamp `data.whipStopPhrases` in place on write (CCT-598), removing the key when
+/// it reduces to the default so a stored row never carries a no-op block.
+fn clamp_whip_stop_phrases(data: &mut Value) {
+    let Some(obj) = data.as_object_mut() else { return };
+    if !obj.contains_key("whipStopPhrases") {
+        return;
+    }
+    match normalize_whip_stop_phrases(obj.get("whipStopPhrases")) {
+        Some(v) => {
+            obj.insert("whipStopPhrases".to_owned(), v);
+        }
+        None => {
+            obj.remove("whipStopPhrases");
+        }
+    }
+}
+
+/// The clamped `whipStopPhrases` block for the daemon gateway-env pull (CCT-598),
+/// or `None` when unset / reduced to the default (hook uses compiled defaults).
+#[must_use]
+pub fn whip_stop_phrases_of(data: &Value) -> Option<Value> {
+    normalize_whip_stop_phrases(data.get("whipStopPhrases"))
+}
+
 pub async fn get_settings(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -145,6 +225,7 @@ pub async fn put_settings(
     // Whitelist harnessMode on write so a typo can't be stored (and later
     // wedge a daemon's reconcile); unknown → bg (CCT-495).
     clamp_harness_mode(&mut data);
+    clamp_whip_stop_phrases(&mut data);
     let new_mode = harness_mode_of(&data);
 
     // Snapshot the stored harnessMode before the upsert so we only push a fresh
@@ -203,7 +284,10 @@ pub async fn put_settings(
 
 #[cfg(test)]
 mod tests {
-    use super::{clamp_harness_mode, harness_mode_of, harness_mode_to_adapter_token};
+    use super::{
+        clamp_harness_mode, clamp_whip_stop_phrases, harness_mode_of,
+        harness_mode_to_adapter_token, whip_stop_phrases_of,
+    };
     use serde_json::json;
 
     #[test]
@@ -225,6 +309,75 @@ mod tests {
         let mut none = json!({ "theme": "dark" });
         clamp_harness_mode(&mut none);
         assert!(none.get("harnessMode").is_none());
+    }
+
+    #[test]
+    fn whip_phrases_absent_stays_none() {
+        assert_eq!(whip_stop_phrases_of(&json!({})), None);
+        let mut data = json!({ "theme": "dark" });
+        clamp_whip_stop_phrases(&mut data);
+        assert!(data.get("whipStopPhrases").is_none());
+    }
+
+    #[test]
+    fn whip_phrases_default_block_is_dropped() {
+        let mut data = json!({ "whipStopPhrases": { "mode": "extend", "phrases": [] } });
+        clamp_whip_stop_phrases(&mut data);
+        assert!(data.get("whipStopPhrases").is_none());
+    }
+
+    #[test]
+    fn whip_phrases_trims_lowercases_dedupes_and_drops_empties() {
+        let mut data = json!({
+            "whipStopPhrases": {
+                "mode": "extend",
+                "phrases": ["  Pour Une Autre Session ", "", "pour une autre session", "  "]
+            }
+        });
+        clamp_whip_stop_phrases(&mut data);
+        assert_eq!(
+            data["whipStopPhrases"],
+            json!({ "mode": "extend", "phrases": ["pour une autre session"] })
+        );
+    }
+
+    #[test]
+    fn whip_phrases_replace_mode_and_guidance_survive() {
+        let mut data = json!({
+            "whipStopPhrases": {
+                "mode": "replace",
+                "phrases": ["prêt pour ta relecture"],
+                "guidance": "  Continue en français.  "
+            }
+        });
+        clamp_whip_stop_phrases(&mut data);
+        assert_eq!(
+            data["whipStopPhrases"],
+            json!({
+                "mode": "replace",
+                "phrases": ["prêt pour ta relecture"],
+                "guidance": "Continue en français."
+            })
+        );
+    }
+
+    #[test]
+    fn whip_phrases_unknown_mode_clamps_to_extend() {
+        let block = whip_stop_phrases_of(&json!({
+            "whipStopPhrases": { "mode": "wat", "phrases": ["x"] }
+        }))
+        .unwrap();
+        assert_eq!(block["mode"], "extend");
+    }
+
+    #[test]
+    fn whip_phrases_caps_count() {
+        let many: Vec<String> = (0..500).map(|i| format!("phrase {i}")).collect();
+        let block = whip_stop_phrases_of(&json!({
+            "whipStopPhrases": { "mode": "replace", "phrases": many }
+        }))
+        .unwrap();
+        assert_eq!(block["phrases"].as_array().unwrap().len(), super::MAX_WHIP_PHRASES);
     }
 
     #[test]

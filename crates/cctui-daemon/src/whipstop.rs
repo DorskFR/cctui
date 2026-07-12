@@ -84,8 +84,12 @@ const STALL_PHRASES: &[&str] = &[
 
 /// Run the `Stop` hook. Reads the hook JSON on stdin; returns the process exit
 /// code (`0` = allow stop, `2` = block stop and emit guidance on stderr).
+///
+/// `phrases_path` is the per-session whip phrase override file (CCT-598) the
+/// daemon writes at spawn. Absent / unreadable / malformed → the compiled
+/// [`STALL_PHRASES`] defaults, so the zero-config path is unchanged.
 #[must_use]
-pub fn run() -> i32 {
+pub fn run(phrases_path: Option<&std::path::Path>) -> i32 {
     let mut input = String::new();
     if std::io::stdin().read_to_string(&mut input).is_err() {
         return 0;
@@ -110,22 +114,65 @@ pub fn run() -> i32 {
         return 0;
     };
 
-    if let Some(matched) = first_stall_phrase(&last) {
-        eprintln!(
-            "Whip mode (🐎): early-stop language detected (\"{matched}\").\n\
-             \n\
-             Do not stop yet. Either:\n\
-               1. Actually finish the work — run the failing thing, fix the \
-             \"pre-existing\" issue, verify end to end — or\n\
-               2. If you genuinely cannot proceed, state the one concrete \
-             blocker in a single line and stop. Do not narrate a graceful exit, \
-             ask the user to review, or hand work back.\n\
-             \n\
-             Re-examine the task. What concretely remains? Keep going."
-        );
+    let config = load_phrase_config(phrases_path);
+    let phrases = effective_phrases(config.as_ref());
+    if let Some(matched) = first_stall_phrase(&phrases, &last) {
+        match guidance_of(config.as_ref()) {
+            Some(g) => {
+                eprintln!("Whip mode (🐎): early-stop language detected (\"{matched}\").\n\n{g}");
+            }
+            None => eprintln!(
+                "Whip mode (🐎): early-stop language detected (\"{matched}\").\n\
+                 \n\
+                 Do not stop yet. Either:\n\
+                   1. Actually finish the work — run the failing thing, fix the \
+                 \"pre-existing\" issue, verify end to end — or\n\
+                   2. If you genuinely cannot proceed, state the one concrete \
+                 blocker in a single line and stop. Do not narrate a graceful exit, \
+                 ask the user to review, or hand work back.\n\
+                 \n\
+                 Re-examine the task. What concretely remains? Keep going."
+            ),
+        }
         return 2;
     }
     0
+}
+
+/// Load the whip phrase override block from `path` (CCT-598), or `None` when the
+/// path is absent / unreadable / not valid JSON — the caller then uses defaults.
+fn load_phrase_config(path: Option<&std::path::Path>) -> Option<Value> {
+    let bytes = std::fs::read(path?).ok()?;
+    serde_json::from_slice::<Value>(&bytes).ok()
+}
+
+/// The effective, ordered, lowercase phrase list (CCT-598): `extend` (default)
+/// appends the config's phrases to the compiled [`STALL_PHRASES`]; `replace`
+/// swaps them out. `None` config → the compiled defaults.
+fn effective_phrases(config: Option<&Value>) -> Vec<String> {
+    let builtin = || STALL_PHRASES.iter().map(|p| (*p).to_owned());
+    let Some(cfg) = config else { return builtin().collect() };
+    let replace = cfg.get("mode").and_then(Value::as_str) == Some("replace");
+    let mut out: Vec<String> = if replace { Vec::new() } else { builtin().collect() };
+    if let Some(arr) = cfg.get("phrases").and_then(Value::as_array) {
+        for p in arr.iter().filter_map(Value::as_str) {
+            let p = p.trim().to_lowercase();
+            if !p.is_empty() && !out.iter().any(|e| e == &p) {
+                out.push(p);
+            }
+        }
+    }
+    out
+}
+
+/// The user's custom stderr guidance from the config (CCT-598), if any.
+fn guidance_of(config: Option<&Value>) -> Option<String> {
+    config
+        .and_then(|c| c.get("guidance"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|g| !g.is_empty())
+        .map(str::to_owned)
 }
 
 /// The most recent `type:"assistant"` message's concatenated text blocks, or
@@ -163,42 +210,102 @@ fn last_assistant_text(body: &str) -> Option<String> {
     last
 }
 
-/// First stall phrase found in `text` (case-insensitive substring), or `None`.
-fn first_stall_phrase(text: &str) -> Option<&'static str> {
+/// First phrase in `phrases` found in `text` (case-insensitive substring), or
+/// `None`. `phrases` are already lowercase; `text` is lowercased here.
+fn first_stall_phrase(phrases: &[String], text: &str) -> Option<String> {
     let lower = text.to_lowercase();
-    STALL_PHRASES.iter().copied().find(|p| lower.contains(p))
+    phrases.iter().find(|p| lower.contains(p.as_str())).cloned()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn defaults() -> Vec<String> {
+        effective_phrases(None)
+    }
+
     #[test]
     fn detects_handback_language() {
+        let p = defaults();
         assert_eq!(
-            first_stall_phrase("All set — let me know if you want more."),
+            first_stall_phrase(&p, "All set — let me know if you want more.").as_deref(),
             Some("let me know if")
         );
         assert_eq!(
-            first_stall_phrase("This is a good stopping point."),
+            first_stall_phrase(&p, "This is a good stopping point.").as_deref(),
             Some("good stopping point")
         );
-        assert_eq!(first_stall_phrase("Want me to take it to prod?"), Some("want me to"));
-        assert_eq!(first_stall_phrase("Ready for your review."), Some("ready for your review"));
+        assert_eq!(
+            first_stall_phrase(&p, "Want me to take it to prod?").as_deref(),
+            Some("want me to")
+        );
+        assert_eq!(
+            first_stall_phrase(&p, "Ready for your review.").as_deref(),
+            Some("ready for your review")
+        );
     }
 
     #[test]
     fn allows_genuine_completion() {
+        let p = defaults();
         assert_eq!(
-            first_stall_phrase("Done. Tests pass and the deploy is verified in prod."),
+            first_stall_phrase(&p, "Done. Tests pass and the deploy is verified in prod."),
             None
         );
-        assert_eq!(first_stall_phrase("result: shipped v1.2.3, prod returns 200."), None);
+        assert_eq!(first_stall_phrase(&p, "result: shipped v1.2.3, prod returns 200."), None);
     }
 
     #[test]
     fn case_insensitive() {
-        assert_eq!(first_stall_phrase("SHALL I continue?"), Some("shall i"));
+        assert_eq!(
+            first_stall_phrase(&defaults(), "SHALL I continue?").as_deref(),
+            Some("shall i")
+        );
+    }
+
+    #[test]
+    fn extend_appends_custom_phrases_keeping_defaults() {
+        let cfg = serde_json::json!({
+            "mode": "extend",
+            "phrases": ["pour une autre session"]
+        });
+        let p = effective_phrases(Some(&cfg));
+        assert_eq!(
+            first_stall_phrase(&p, "Je garde ça pour une autre session.").as_deref(),
+            Some("pour une autre session")
+        );
+        assert_eq!(first_stall_phrase(&p, "Shall I continue?").as_deref(), Some("shall i"));
+    }
+
+    #[test]
+    fn replace_swaps_the_list_entirely() {
+        let cfg = serde_json::json!({
+            "mode": "replace",
+            "phrases": ["prêt pour ta relecture"]
+        });
+        let p = effective_phrases(Some(&cfg));
+        assert_eq!(
+            first_stall_phrase(&p, "C'est prêt pour ta relecture.").as_deref(),
+            Some("prêt pour ta relecture")
+        );
+        assert_eq!(first_stall_phrase(&p, "Ready for your review.").as_deref(), None);
+    }
+
+    #[test]
+    fn missing_or_malformed_config_falls_back_to_defaults() {
+        assert_eq!(effective_phrases(None), defaults());
+        assert_eq!(load_phrase_config(Some(std::path::Path::new("/no/such/file"))), None);
+        assert_eq!(effective_phrases(load_phrase_config(None).as_ref()), defaults());
+    }
+
+    #[test]
+    fn custom_guidance_is_read_when_present() {
+        let cfg =
+            serde_json::json!({ "mode": "extend", "phrases": [], "guidance": "  keep going  " });
+        assert_eq!(guidance_of(Some(&cfg)).as_deref(), Some("keep going"));
+        assert_eq!(guidance_of(None), None);
+        assert_eq!(guidance_of(Some(&serde_json::json!({ "mode": "extend" }))), None);
     }
 
     #[test]

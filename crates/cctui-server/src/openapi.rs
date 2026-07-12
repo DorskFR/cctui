@@ -245,6 +245,8 @@ mod tests {
         assert_eq!(dispatch["x-required-scope"], "dispatch");
         // The list route is present.
         assert!(paths["/api/v1/sessions"]["get"].is_object());
+        // The Langfuse read proxy (CCT-564) is session-read scoped.
+        assert_eq!(paths["/api/v1/sessions/{id}/langfuse"]["get"]["x-required-scope"], "read");
     }
 
     #[test]

@@ -8,8 +8,8 @@
 	import { theme, THEMES } from '$lib/theme.svelte';
 	import { fontScale, SCALE_LEVELS } from '$lib/fontscale.svelte';
 	import { notify } from '$lib/notify.svelte';
-	import { Card, Heading, Select, Stack, Switch, Text } from '@dorsk/tsumikit';
-	import type { HarnessMode } from '$lib/settings.svelte';
+	import { Card, Heading, Select, Stack, Switch, Text, Textarea, Field } from '@dorsk/tsumikit';
+	import type { HarnessMode, WhipMode } from '$lib/settings.svelte';
 
 	const sl = $derived(settings.state.sessionList);
 
@@ -60,6 +60,58 @@
 		}
 	];
 	const harnessHelp = $derived(harnessOpts.find((o) => o.v === harnessMode)?.help ?? '');
+
+	// Whip-mode stall-phrase override (CCT-598). `extend` appends to the daemon's
+	// compiled defaults; `replace` swaps them. The phrase textarea is one phrase
+	// per line; the server trims/lowercases/dedupes/caps on save.
+	const whip = $derived(settings.whipStopPhrases);
+	const whipPhrasesText = $derived(whip.phrases.join('\n'));
+	function setWhipPhrasesText(text: string) {
+		const phrases = text
+			.split('\n')
+			.map((p) => p.trim())
+			.filter((p) => p.length > 0);
+		settings.setWhipStopPhrases({ phrases });
+	}
+	// Mirrors the daemon's compiled STALL_PHRASES (crates/cctui-daemon/src/whipstop.rs)
+	// so users can see what `extend` extends — kept in sync by hand (read-only view).
+	const BUILTIN_STALL_PHRASES = [
+		'out of scope',
+		'not in scope',
+		'beyond the scope',
+		'left this for',
+		'for a follow-up',
+		'next session',
+		'future session',
+		'can be done later',
+		'punting on',
+		'pre-existing issue',
+		'stopping here',
+		'pausing here',
+		'good stopping point',
+		'natural stopping point',
+		'good place to stop',
+		'good checkpoint',
+		'handing this back',
+		'handing it back',
+		'over to you',
+		'your call',
+		'let me know if',
+		'let me know how',
+		'feel free to',
+		'ready for your review',
+		'ready for review',
+		'for your review',
+		'waiting for your',
+		'would you like me to',
+		'do you want me to',
+		'want me to',
+		'shall i',
+		'should i proceed',
+		"if you'd like",
+		'happy to continue',
+		'happy to keep going'
+	];
 </script>
 
 <Stack gap="lg">
@@ -218,6 +270,74 @@
 		</Stack>
 	</Card>
 
+	<!-- ── Whip mode stall phrases (CCT-598) ────────────────────────────── -->
+	<Card>
+		<Stack gap="md">
+			<Heading level={2}>Whip mode (🐎)</Heading>
+			<Text size="sm" tone="faint">
+				Whip mode blocks a worker from stopping early with hand-back language. Add your own
+				stall phrases (e.g. other languages) — matched case-insensitively as substrings of the
+				final message. Takes effect on the next spawn; only affects whip-mode sessions.
+			</Text>
+			<dl class="props">
+				<div class="prop">
+					<dt>
+						<Text weight="semibold">Phrase list</Text>
+						<Text size="sm" tone="faint">
+							{whip.mode === 'replace'
+								? 'Replace: only these phrases are matched (defaults ignored).'
+								: 'Extend: these are added to the built-in defaults below.'}
+						</Text>
+					</dt>
+					<dd>
+						<Select
+							value={whip.mode}
+							onchange={(e) =>
+								settings.setWhipStopPhrases({
+									mode: (e.currentTarget as HTMLSelectElement).value as WhipMode
+								})}
+						>
+							<option value="extend">Extend defaults</option>
+							<option value="replace">Replace defaults</option>
+						</Select>
+					</dd>
+				</div>
+			</dl>
+			<Field label="Your phrases (one per line)">
+				<Textarea
+					mono
+					autoresize
+					rows={4}
+					value={whipPhrasesText}
+					placeholder={'pour une autre session\nprêt pour ta relecture'}
+					onchange={(e) => setWhipPhrasesText((e.currentTarget as HTMLTextAreaElement).value)}
+				/>
+			</Field>
+			<Field
+				label="Custom guidance (optional)"
+				hint="Shown to the model instead of the default keep-going message when a stall is blocked."
+			>
+				<Textarea
+					autoresize
+					rows={2}
+					value={whip.guidance}
+					onchange={(e) =>
+						settings.setWhipStopPhrases({
+							guidance: (e.currentTarget as HTMLTextAreaElement).value.trim()
+						})}
+				/>
+			</Field>
+			<details class="defaults">
+				<summary><Text size="sm" tone="faint">Built-in default phrases (excerpt)</Text></summary>
+				<ul>
+					{#each BUILTIN_STALL_PHRASES as p (p)}
+						<li><Text size="sm" tone="faint">{p}</Text></li>
+					{/each}
+				</ul>
+			</details>
+		</Stack>
+	</Card>
+
 	<!-- ── Notifications ────────────────────────────────────────────────── -->
 	<Card>
 		<Stack gap="md">
@@ -289,5 +409,15 @@
 	.prop + .prop {
 		border-top: 1px solid var(--border);
 		padding-top: var(--sp-3);
+	}
+	.defaults ul {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--sp-1) var(--sp-3);
+		margin: var(--sp-2) 0 0;
+		padding: 0 0 0 var(--sp-3);
+	}
+	.defaults summary {
+		cursor: pointer;
 	}
 </style>

@@ -59,9 +59,7 @@ fn record_at(candidates: &[PathBuf], json: &str) -> Option<PathBuf> {
 }
 
 fn read_at(candidates: &[PathBuf]) -> Option<Runtime> {
-    candidates
-        .iter()
-        .find_map(|p| serde_json::from_str(&std::fs::read_to_string(p).ok()?).ok())
+    candidates.iter().find_map(|p| serde_json::from_str(&std::fs::read_to_string(p).ok()?).ok())
 }
 
 /// Record the current process as the running daemon. Best-effort: a failure to
@@ -126,10 +124,8 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0o555)).unwrap();
         }
-        let cands = vec![
-            denied.join("cctui").join(FILE_NAME),
-            tmp.path().join("writable").join(FILE_NAME),
-        ];
+        let cands =
+            vec![denied.join("cctui").join(FILE_NAME), tmp.path().join("writable").join(FILE_NAME)];
 
         let written = record_at(&cands, &sample_json()).expect("a fallback candidate must work");
         assert_eq!(written, cands[1]);

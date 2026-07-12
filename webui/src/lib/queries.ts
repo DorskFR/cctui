@@ -25,6 +25,7 @@ import type { MintKeyResponse } from "@bindings/MintKeyResponse";
 import type { VersionInfo } from "@bindings/VersionInfo";
 import type { MeResponse } from "@bindings/MeResponse";
 import type { CapabilitiesResponse } from "@bindings/CapabilitiesResponse";
+import type { LangfuseSessionUsage } from "@bindings/LangfuseSessionUsage";
 import type { CodexModelCatalog } from "@bindings/CodexModelCatalog";
 import type { ConnectorInfo } from "@bindings/ConnectorInfo";
 import type { CreateConnector } from "@bindings/CreateConnector";
@@ -420,6 +421,10 @@ export const endpoints = {
    *  merged with the server-side gateway/account binding facts. */
   sessionDiagnose: (id: string) =>
     api.get<SessionDiagnoseResponse>(`/sessions/${id}/diagnose`),
+  /** Per-session Langfuse cost/usage rollup (CCT-564), proxied server-side so
+   *  the project keys never reach the browser. */
+  sessionLangfuse: (id: string) =>
+    api.get<LangfuseSessionUsage>(`/sessions/${id}/langfuse`),
   recentDirs: (machineId: string) =>
     api.get<string[]>("/sessions/recent-dirs", {
       machine_id: machineId || undefined,
@@ -829,6 +834,24 @@ export const useSessionDiagnose = (
       queryFn: () => endpoints.sessionDiagnose(id()),
       enabled: enabled() && !!id(),
       staleTime: 0,
+      retry: false,
+    })),
+  );
+
+/** Per-session Langfuse cost/usage chip (CCT-564). Lazy — fetched only while
+ *  the drawer is open and the capability is present; the server caches ~60s so
+ *  a short client stale time won't hammer upstream. Fail-open: on error the
+ *  chip simply hides. */
+export const useSessionLangfuse = (
+  id: () => string,
+  enabled: () => boolean = () => true,
+) =>
+  createQuery(
+    toStore(() => ({
+      queryKey: ["session-langfuse", id()],
+      queryFn: () => endpoints.sessionLangfuse(id()),
+      enabled: enabled() && !!id(),
+      staleTime: 60_000,
       retry: false,
     })),
   );

@@ -79,7 +79,12 @@ enum Cmd {
     /// Internal: the Claude Code `Stop` hook for whip mode (🐎, CCT-352). Reads
     /// the hook JSON on stdin; exits 2 with guidance on stderr when the final
     /// message reads as a graceful early exit / hand-back, else exits 0.
-    WhipStopHook,
+    WhipStopHook {
+        /// Per-session whip phrase override file (CCT-598) written by the daemon
+        /// at spawn. Absent/unreadable → the compiled default phrase list.
+        #[arg(long)]
+        phrases: Option<PathBuf>,
+    },
     /// Check for a newer release, swap the binary in place, and restart
     /// the daemon service (if one is running) so it picks up the new binary.
     Update,
@@ -259,6 +264,8 @@ async fn main() -> anyhow::Result<()> {
         },
         Cmd::Status => print_status(&path),
         Cmd::AskHook { event, sock, deny } => cctui_daemon::askhook::run(&event, &sock, deny),
-        Cmd::WhipStopHook => std::process::exit(cctui_daemon::whipstop::run()),
+        Cmd::WhipStopHook { phrases } => {
+            std::process::exit(cctui_daemon::whipstop::run(phrases.as_deref()))
+        }
     }
 }
