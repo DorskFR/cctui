@@ -61,6 +61,7 @@ export interface NotificationFilter {
   since?: string;
   limit?: number;
   cursor?: string;
+  all?: "true";
 }
 
 export const api = {

@@ -3,20 +3,23 @@
   import { toStore } from "svelte/store";
   import { api, type NotificationFilter } from "../api/client";
   import { getAccount } from "../api/config";
-  import { notificationOf } from "../api/types";
+  import { type NotificationInboxItem, notificationOf } from "../api/types";
+  import RepoBadge from "./RepoBadge.svelte";
+
+  type Status = "all" | "unread" | "read" | "done" | "archived";
 
   const account = getAccount() ?? "";
   const client = useQueryClient();
 
   let reason = $state<string>("");
-  let showArchived = $state(false);
+  let repoFilter = $state<string>("");
+  let status = $state<Status>("unread");
   let selected = $state<Set<string>>(new Set());
 
   const filter = $derived<NotificationFilter>({
     account: account || undefined,
     reason: reason || undefined,
-    undone: showArchived ? undefined : "true",
-    archived: showArchived ? "true" : undefined,
+    all: "true",
   });
 
   const query = createQuery(
@@ -26,6 +29,49 @@
     })),
   );
 
+  const items = $derived<NotificationInboxItem[]>($query.data?.items ?? []);
+
+  function repoName(item: NotificationInboxItem): string {
+    return notificationOf(item).repository?.full_name ?? "";
+  }
+
+  function matchesStatus(item: NotificationInboxItem): boolean {
+    const s = item.state;
+    const unread = notificationOf(item).unread && !s.read;
+    switch (status) {
+      case "unread":
+        return unread && !s.archived;
+      case "read":
+        return !unread && !s.done && !s.archived;
+      case "done":
+        return s.done && !s.archived;
+      case "archived":
+        return s.archived;
+      default:
+        return true;
+    }
+  }
+
+  const repos = $derived(
+    [...new Set(items.map(repoName).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
+  );
+
+  const repoCounts = $derived.by(() => {
+    const counts = new Map<string, number>();
+    for (const item of items) {
+      if (!matchesStatus(item)) continue;
+      const r = repoName(item);
+      if (r) counts.set(r, (counts.get(r) ?? 0) + 1);
+    }
+    return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  });
+
+  const visible = $derived(
+    items.filter(
+      (item) => matchesStatus(item) && (!repoFilter || repoName(item) === repoFilter),
+    ),
+  );
+
   function toggle(id: string): void {
     const next = new Set(selected);
     if (next.has(id)) next.delete(id);
@@ -33,62 +79,85 @@
     selected = next;
   }
 
-  async function bulk(patch: { read?: boolean; done?: boolean; archived?: boolean }): Promise<void> {
-    const ids = [...selected];
-    if (ids.length === 0 || !account) return;
-    await api.setNotificationState(account, ids, patch);
-    selected = new Set();
-    client.invalidateQueries({ queryKey: ["notifications"] });
-  }
+  const markDonePatch = { read: true, done: true, archived: true };
 
-  async function one(id: string, patch: { read?: boolean; done?: boolean; archived?: boolean }): Promise<void> {
-    if (!account) return;
-    await api.setNotificationState(account, [id], patch);
+  async function markDone(ids: string[]): Promise<void> {
+    if (ids.length === 0 || !account) return;
+    await api.setNotificationState(account, ids, markDonePatch);
+    selected = new Set([...selected].filter((id) => !ids.includes(id)));
     client.invalidateQueries({ queryKey: ["notifications"] });
   }
 </script>
 
 <div class="wrap">
   <div class="toolbar">
+    <select bind:value={status}>
+      <option value="unread">Unread</option>
+      <option value="read">Read</option>
+      <option value="done">Done</option>
+      <option value="archived">Archived</option>
+      <option value="all">All statuses</option>
+    </select>
     <select bind:value={reason}>
       <option value="">All reasons</option>
       <option value="review_requested">Review requested</option>
       <option value="mention">Mention</option>
       <option value="ci_activity">CI activity</option>
     </select>
-    <label class="check">
-      <input type="checkbox" bind:checked={showArchived} /> Archived
-    </label>
+    <select bind:value={repoFilter}>
+      <option value="">All repos</option>
+      {#each repos as r (r)}
+        <option value={r}>{r}</option>
+      {/each}
+    </select>
     <div class="spacer"></div>
-    <button disabled={selected.size === 0} onclick={() => bulk({ read: true })}>Read</button>
-    <button disabled={selected.size === 0} onclick={() => bulk({ done: true })}>Done</button>
-    <button disabled={selected.size === 0} onclick={() => bulk({ archived: true })}>Archive</button>
+    <button disabled={selected.size === 0} onclick={() => markDone([...selected])}>
+      Mark done{selected.size ? ` (${selected.size})` : ""}
+    </button>
   </div>
+
+  {#if repoCounts.length > 0}
+    <div class="badges">
+      {#each repoCounts as [repo, count] (repo)}
+        <button
+          type="button"
+          class="badge-btn"
+          class:active={repoFilter === repo}
+          onclick={() => (repoFilter = repoFilter === repo ? "" : repo)}
+        >
+          <RepoBadge {repo} {count} />
+        </button>
+      {/each}
+    </div>
+  {/if}
 
   {#if $query.isLoading}
     <div class="msg">Loading…</div>
   {:else if $query.isError}
     <div class="msg err">{($query.error as Error).message}</div>
-  {:else if ($query.data?.items.length ?? 0) === 0}
+  {:else if visible.length === 0}
     <div class="msg">Inbox zero.</div>
   {:else}
     <ul class="list">
-      {#each $query.data?.items ?? [] as item (item.payload ? notificationOf(item).id : item.synced_at)}
+      {#each visible as item (notificationOf(item).id || item.synced_at)}
         {@const n = notificationOf(item)}
         <li class:unread={n.unread && !item.state.read}>
-          <input type="checkbox" checked={selected.has(n.id)} onchange={() => toggle(n.id)} />
+          <input
+            type="checkbox"
+            checked={selected.has(n.id)}
+            onchange={() => toggle(n.id)}
+          />
           <div class="body">
             <span class="subject">{n.subject.title}</span>
-            <span class="sub">{n.repository?.full_name ?? ""} · {n.reason}</span>
+            <div class="sub">
+              {#if n.repository?.full_name}
+                <RepoBadge repo={n.repository.full_name} />
+              {/if}
+              <span class="reason">{n.reason}</span>
+            </div>
           </div>
           <div class="actions">
-            {#if !item.state.read}
-              <button onclick={() => one(n.id, { read: true })}>read</button>
-            {/if}
-            {#if !item.state.done}
-              <button onclick={() => one(n.id, { done: true })}>done</button>
-            {/if}
-            <button onclick={() => one(n.id, { archived: true })}>archive</button>
+            <button onclick={() => markDone([n.id])}>Mark done</button>
           </div>
         </li>
       {/each}
@@ -109,13 +178,6 @@
   .spacer {
     flex: 1;
   }
-  .check {
-    color: var(--gh-fg-muted);
-    font-size: 12px;
-    display: flex;
-    align-items: center;
-    gap: 4px;
-  }
   select,
   button {
     background: var(--gh-bg-elev);
@@ -128,6 +190,23 @@
   button:disabled {
     opacity: 0.4;
     cursor: default;
+  }
+  .badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--gh-space-2);
+    margin-bottom: var(--gh-space-3);
+  }
+  .badge-btn {
+    padding: 0;
+    background: none;
+    border: none;
+    border-radius: var(--gh-radius-sm);
+    max-width: 240px;
+  }
+  .badge-btn.active {
+    outline: 1px solid var(--gh-accent);
+    outline-offset: 1px;
   }
   .list {
     list-style: none;
@@ -150,6 +229,7 @@
     flex: 1;
     display: flex;
     flex-direction: column;
+    gap: 4px;
     min-width: 0;
   }
   .subject {
@@ -158,8 +238,17 @@
     white-space: nowrap;
   }
   .sub {
+    display: flex;
+    align-items: center;
+    gap: var(--gh-space-2);
+    min-width: 0;
     color: var(--gh-fg-muted);
     font-size: 12px;
+  }
+  .reason {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .actions {
     display: flex;
