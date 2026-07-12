@@ -22,3 +22,14 @@ export function parseRoute(pathname: string): Route {
 export function pullPath(owner: string, repo: string, number: number): string {
   return `/${owner}/${repo}/pull/${number}`;
 }
+
+const PULL_API_RE = /\/repos\/([^/]+)\/([^/]+)\/pulls\/(\d+)(?:$|[/?#])/;
+
+export function parsePullApiUrl(
+  url: string | null | undefined,
+): { owner: string; repo: string; number: number } | null {
+  if (!url) return null;
+  const m = PULL_API_RE.exec(url);
+  if (!m) return null;
+  return { owner: m[1], repo: m[2], number: Number(m[3]) };
+}

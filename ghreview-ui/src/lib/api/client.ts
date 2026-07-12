@@ -1,3 +1,4 @@
+import type { components } from "../../generated/api";
 import { baseUrl, getToken } from "./config";
 import type {
   NotificationInboxPage,
@@ -8,6 +9,11 @@ import type {
   StatusPayload,
   ViewedStateResult,
 } from "./types";
+
+type Schemas = components["schemas"];
+export type Subscription = Schemas["Subscription"];
+export type SubscriptionKind = Subscription["kind"];
+export type GithubRepo = Schemas["GithubRepo"];
 
 export class ApiError extends Error {
   constructor(
@@ -106,4 +112,19 @@ export const api = {
       "/v1/notifications/state",
       { method: "POST", body: JSON.stringify({ account, thread_ids: threadIds, ...patch }) },
     ),
+
+  listSubscriptions: (account?: string) =>
+    request<{ items: Subscription[] }>(`/v1/subscriptions${qs({ account })}`),
+
+  subscribe: (target: string, kind: SubscriptionKind = "pull_request", account?: string) =>
+    request<Subscription>("/v1/subscriptions", {
+      method: "POST",
+      body: JSON.stringify({ kind, target, account }),
+    }),
+
+  unsubscribe: (id: string) =>
+    request<void>(`/v1/subscriptions/${encodeURIComponent(id)}`, { method: "DELETE" }),
+
+  githubRepos: (account: string) =>
+    request<{ items: GithubRepo[] }>(`/v1/github/repos${qs({ account })}`),
 };

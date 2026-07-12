@@ -3,7 +3,14 @@
   import { toStore } from "svelte/store";
   import { api, type NotificationFilter } from "../api/client";
   import { getAccount } from "../api/config";
-  import { type NotificationInboxItem, notificationOf } from "../api/types";
+  import {
+    type GithubNotification,
+    type NotificationInboxItem,
+    notificationOf,
+  } from "../api/types";
+  import { parsePullApiUrl, pullPath } from "../router/route";
+  import { router } from "../router/router.svelte";
+  import { tabs } from "../stores/tabs.svelte";
   import RepoBadge from "./RepoBadge.svelte";
 
   type Status = "all" | "unread" | "read" | "done" | "archived";
@@ -79,6 +86,17 @@
     selected = next;
   }
 
+  function isPull(n: GithubNotification): boolean {
+    return n.subject.type === "PullRequest" && parsePullApiUrl(n.subject.url) !== null;
+  }
+
+  function openPull(n: GithubNotification): void {
+    const ref = parsePullApiUrl(n.subject.url);
+    if (!ref) return;
+    tabs.open(ref.owner, ref.repo, ref.number, n.subject.title);
+    router.navigate(pullPath(ref.owner, ref.repo, ref.number));
+  }
+
   const markDonePatch = { read: true, done: true, archived: true };
 
   async function markDone(ids: string[]): Promise<void> {
@@ -146,16 +164,29 @@
             type="checkbox"
             checked={selected.has(n.id)}
             onchange={() => toggle(n.id)}
+            onclick={(e) => e.stopPropagation()}
           />
-          <div class="body">
-            <span class="subject">{n.subject.title}</span>
-            <div class="sub">
-              {#if n.repository?.full_name}
-                <RepoBadge repo={n.repository.full_name} />
-              {/if}
-              <span class="reason">{n.reason}</span>
+          {#if isPull(n)}
+            <button type="button" class="body open" onclick={() => openPull(n)}>
+              <span class="subject">{n.subject.title}</span>
+              <div class="sub">
+                {#if n.repository?.full_name}
+                  <RepoBadge repo={n.repository.full_name} />
+                {/if}
+                <span class="reason">{n.reason}</span>
+              </div>
+            </button>
+          {:else}
+            <div class="body">
+              <span class="subject">{n.subject.title}</span>
+              <div class="sub">
+                {#if n.repository?.full_name}
+                  <RepoBadge repo={n.repository.full_name} />
+                {/if}
+                <span class="reason">{n.reason}</span>
+              </div>
             </div>
-          </div>
+          {/if}
           <div class="actions">
             <button onclick={() => markDone([n.id])}>Mark done</button>
           </div>
@@ -231,6 +262,18 @@
     flex-direction: column;
     gap: 4px;
     min-width: 0;
+  }
+  button.body {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--gh-fg);
+    align-items: flex-start;
+    text-align: left;
+    cursor: pointer;
+  }
+  button.body:hover .subject {
+    text-decoration: underline;
   }
   .subject {
     overflow: hidden;
