@@ -141,4 +141,45 @@ last_heartbeat: string | null,
  * icon + name tooltip). `None` for sessions with no minted gateway token
  * (e.g. local sessions that never routed through the cctui gateway).
  */
-account_name: string | null, };
+account_name: string | null, 
+/**
+ * Unread assistant `message` events for the calling user (CCT-580):
+ * messages newer than that user's `session_reads.last_seen_at` (all when
+ * never seen), capped at 99. Only the live list populates it; search and
+ * get-one default it to `0`.
+ */
+unread_count: number, 
+/**
+ * Live activity headline (CCT-594): the daemon's spinner text from the
+ * claude-daemon control-socket `list` snapshot (`sessions.activity`), e.g.
+ * "Central verify + cascade cleanup…". Already persisted per Status event;
+ * now surfaced on the list so a working row shows *what* it's doing without
+ * opening the conversation. `None` when the session has no headline.
+ */
+activity_detail: string | null, 
+/**
+ * When the session (or any subagent, rolled up the `parent_id` chain like
+ * the heartbeat) last emitted a `ToolUse` (CCT-594). Lets clients tell a
+ * *grinding* session (fresh tool calls) from one that's *asleep* — a bare
+ * heartbeat with no tool activity for minutes — far tighter than the 30-min
+ * `last_heartbeat` staleness. `None` when no tool call has been observed.
+ */
+last_tool_at: string | null, 
+/**
+ * Name of the most recent tool call feeding `last_tool_at` (CCT-594), e.g.
+ * `"Read"`, `"Edit"`. `None` when no tool call has been observed.
+ */
+last_tool_name: string | null, 
+/**
+ * Running count of this session's `ToolUse` events for the current turn
+ * (CCT-594), reset on a new user prompt. This session's own count only —
+ * a parent's rolled-up child activity shows via `last_tool_at`, not this.
+ */
+tool_use_count: number, 
+/**
+ * Live token↔account credential binding (CCT-555): a non-revoked
+ * `session_tokens` row with a present `encrypted_token`. Distinct from
+ * `account_name`, which is `None` when the token's `accounts` row was
+ * deleted even though the binding still exists.
+ */
+has_token_credentials: boolean, };

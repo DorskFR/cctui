@@ -789,13 +789,39 @@ async fn handle_event(
         }
         _ => {}
     }
+    // CCT-594: fold the tool-activity counters into the same heartbeat write for
+    // a real `ToolCall` (a tool_result normalizes to `ToolResult` → plain bump).
+    let tool_name = match &broadcast_pair {
+        Some((_, cctui_proto::ws::AgentEvent::ToolCall { tool, .. })) => Some(tool.as_str()),
+        _ => None,
+    };
     if let Some(id) = local_id_for_bump {
-        bump_heartbeat(state, &id).await;
+        // Only a *newly-inserted* tool call advances the counters: a daemon
+        // replaying history on reconnect must bump the heartbeat (as it always
+        // did) without re-inflating `tool_use_count` or churning `last_tool_at`.
+        match tool_name {
+            Some(tool) if newly_inserted => bump_tool_activity(state, &id, tool).await,
+            _ => bump_heartbeat(state, &id).await,
+        }
+        if newly_inserted && is_user_turn(broadcast_pair.as_ref().map(|(_, e)| e)) {
+            reset_tool_count(state, &id).await;
+        }
     }
     if newly_inserted && let Some((session_id, data)) = broadcast_pair {
         state.bus.publish_server(cctui_proto::ws::ServerEvent::Stream { session_id, data });
     }
     Ok(())
+}
+
+/// A `Message` that normalized to a non-meta user turn (`▷ User:` prefix, shared
+/// by every adapter's user text) starts a new turn, so the per-turn tool count
+/// resets (CCT-594).
+fn is_user_turn(event: Option<&cctui_proto::ws::AgentEvent>) -> bool {
+    matches!(
+        event,
+        Some(cctui_proto::ws::AgentEvent::Text { content, meta: false, .. })
+            if content.starts_with("▷ User:")
+    )
 }
 
 /// Latest classifier signals + display metadata from a Status event.
@@ -863,6 +889,47 @@ async fn bump_heartbeat(state: &AppState, local_id: &str) {
     .await
     {
         tracing::warn!(%err, %local_id, "heartbeat bump failed");
+    }
+}
+
+/// Heartbeat bump plus the live tool-activity projection (CCT-594): sets
+/// `last_tool_at`/`last_tool_name` for the whole `parent_id` chain (rolled up so
+/// a grinding subagent freshens the parent row), and increments `tool_use_count`
+/// on the leaf only (each session tracks its own per-turn count). One recursive
+/// CTE round-trip — the heartbeat write, augmented, so there is no extra UPDATE
+/// per tool call beyond what `bump_heartbeat` already cost.
+async fn bump_tool_activity(state: &AppState, local_id: &str, tool: &str) {
+    if let Err(err) = sqlx::query(
+        r"WITH RECURSIVE chain AS (
+            SELECT id, parent_id FROM sessions WHERE id = $1
+            UNION ALL
+            SELECT s.id, s.parent_id FROM sessions s JOIN chain c ON s.id = c.parent_id
+        )
+        UPDATE sessions SET
+            last_heartbeat = now(),
+            last_tool_at = now(),
+            last_tool_name = $2,
+            tool_use_count = CASE WHEN id = $1 THEN tool_use_count + 1 ELSE tool_use_count END
+        WHERE id IN (SELECT id FROM chain)",
+    )
+    .bind(local_id)
+    .bind(tool)
+    .execute(&state.pool)
+    .await
+    {
+        tracing::warn!(%err, %local_id, "tool-activity bump failed");
+    }
+}
+
+/// Reset the leaf session's per-turn tool count on a new user prompt (CCT-594).
+/// Leaf only: ancestors keep their own per-turn counts.
+async fn reset_tool_count(state: &AppState, local_id: &str) {
+    if let Err(err) = sqlx::query("UPDATE sessions SET tool_use_count = 0 WHERE id = $1")
+        .bind(local_id)
+        .execute(&state.pool)
+        .await
+    {
+        tracing::warn!(%err, %local_id, "tool-count reset failed");
     }
 }
 

@@ -130,6 +130,16 @@ fn session_line(s: &SessionListItem) -> ListItem<'static> {
     spans.push(Span::styled(format!("  {uptime}"), theme::DIM));
     spans.push(Span::styled(format!("  {cost}"), theme::COST));
 
+    // Live tool cadence (CCT-594): grinding sessions (incl. subagent roll-ups)
+    // show a fresh age so they read as busy, not asleep.
+    if let Some(last) = s.last_tool_at {
+        let age = (chrono::Utc::now() - last).num_seconds().max(0);
+        spans.push(Span::styled(
+            format!("  ⚙{} {}", s.tool_use_count, format_uptime(age)),
+            theme::DIM,
+        ));
+    }
+
     ListItem::new(Line::from(spans))
 }
 

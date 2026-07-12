@@ -1,10 +1,18 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import NavLink from '$lib/components/atoms/NavLink.svelte';
-	import { useCapabilities } from '$lib/queries';
+	import { useCapabilities, useSessions } from '$lib/queries';
 	import { ghreviewUrl } from '$lib/config';
 
 	const caps = useCapabilities();
+
+	// Aggregate unread count (CCT-580) across the live list, surfaced as a red
+	// pill on the Sessions item. The list is already fetched app-wide (Header),
+	// so this shares the query cache — no extra request.
+	const sessions = useSessions(() => false);
+	const totalUnread = $derived(
+		($sessions.data?.sessions ?? []).reduce((n, s) => n + (s.unread_count ?? 0), 0)
+	);
 
 	// gh-review connector (CCT-610) is gated on a client-side deploy config value
 	// (`ghreviewUrl`), not a server capability like GitHub below.
@@ -33,7 +41,11 @@
 	<div class="nav-inner">
 		{#each items as it (it.href)}
 			<NavLink href={it.href} class="nav-btn {active(it.href) ? 'active' : ''}">
-				<span class="ico">{it.icon}</span>
+				<span class="ico"
+					>{it.icon}{#if it.href === '/sessions' && totalUnread > 0}<span
+							class="unread-badge">{totalUnread > 99 ? '99+' : totalUnread}</span
+						>{/if}</span
+				>
 				<span class="lbl">{it.label}</span>
 			</NavLink>
 		{/each}
@@ -76,6 +88,23 @@
 	:global(.nav-btn) .ico {
 		font-size: 1.25rem;
 		line-height: 1;
+		position: relative;
+	}
+	.unread-badge {
+		position: absolute;
+		top: -0.4rem;
+		left: 60%;
+		min-width: 1rem;
+		height: 1rem;
+		padding: 0 0.22rem;
+		border-radius: 999px;
+		background: var(--danger);
+		color: var(--text-on-accent, #fff);
+		font-size: 0.62rem;
+		font-weight: var(--fw-semibold);
+		line-height: 1rem;
+		text-align: center;
+		pointer-events: none;
 	}
 	:global(.nav-btn.active) {
 		color: var(--accent);

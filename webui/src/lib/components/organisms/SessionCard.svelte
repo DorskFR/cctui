@@ -3,6 +3,7 @@
 	import { statusBadgeClass, modelShort, modelFamily } from '$lib/format';
 	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
 	import AccountBadge from '$lib/components/molecules/AccountBadge.svelte';
+	import SessionDot from '$lib/components/molecules/SessionDot.svelte';
 	import LabelBadge from '$lib/components/molecules/LabelBadge.svelte';
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
 	import WorkingDir from '$lib/components/molecules/WorkingDir.svelte';
@@ -12,7 +13,7 @@
 	import { Badge, Button, Card, Cluster, Stack, Text, Timestamp } from '@dorsk/tsumikit';
 	import { escapeHtml } from '$lib/markdown';
 	import { highlightTerms } from '$lib/search';
-	import { isStaleWorking } from '../../../routes/sessions/sessions.logic';
+	import { isStaleWorking, toolActivity, formatAgo } from '../../../routes/sessions/sessions.logic';
 	import { onMount } from 'svelte';
 
 	let {
@@ -21,6 +22,7 @@
 		compact: dense = false,
 		grid = false,
 		pendingCount = 0,
+		unreadCount = 0,
 		onopen,
 		selectable = false,
 		selected = false,
@@ -61,6 +63,10 @@
 		// detailed card keeps wrapping the full path (seeing it whole is the point).
 		grid?: boolean;
 		pendingCount?: number;
+		// Unread assistant messages (CCT-580): a red count pill, distinct from the
+		// amber pending-permission badge. Suppressed at 0 or for the open session
+		// (the caller passes 0 there).
+		unreadCount?: number;
 		onopen: (s: SessionListItem) => void;
 		// Search terms to highlight in the match snippet (CCT-187).
 		highlight?: string[];
@@ -141,12 +147,15 @@
 	// re-evaluates on a clock tick (60s — the 30-min horizon doesn't need finer)
 	// and clears the instant fresh activity (a newer `last_heartbeat`, bumped by
 	// subagent work too per CCT-366) arrives. Not a persisted state.
+	// 5s tick (CCT-594): the tool-cadence age needs second-ish freshness to read
+	// "grinding" vs "asleep"; the coarse 30-min stale signal rides the same clock.
 	let now = $state(Date.now());
 	onMount(() => {
-		const t = setInterval(() => (now = Date.now()), 60_000);
+		const t = setInterval(() => (now = Date.now()), 5_000);
 		return () => clearInterval(t);
 	});
 	const stale = $derived(isStaleWorking(s, now));
+	const act = $derived(toolActivity(s, now));
 	const livenessClass = $derived(
 		s.hibernated
 			? 'dot-hibernated'
@@ -349,6 +358,8 @@
 				{/if}
 				<!-- No working-dir chip in compact list: the basename already leads the
 				     title, and a bare folder glyph here can't be hovered or copied. -->
+				{@render activity()}
+				{@render unreadBadge()}
 				{@render time()}
 				{#if s.model}<Text tone="muted" size="xs" style="flex:none;white-space:nowrap">{modelFamily(s.model)}</Text>{/if}
 				{#if draft}{@render draftActions()}{:else}{@render logo()}{/if}
@@ -382,9 +393,11 @@
 								onDelete={onDeleteLabel}
 							/>
 						{/if}
+						{@render activity()}
 					</span>
 					<span class="trail">
 						{#if showStatusBadge}<Badge class={statusBadgeClass(s.status)} style="padding:0.05rem var(--sp-2)">{s.status}</Badge>{/if}
+						{@render unreadBadge()}
 						{#if pendingCount > 0}<Badge tone="warn" style="padding:0.05rem var(--sp-2)">{pendingCount} perm</Badge>{/if}
 						{#if s.auto_approve}<Badge tone="warn" style="padding:0.05rem var(--sp-2)" title="Auto-approve enabled — approves tool use without asking (tool use only, plans still ask)">⚡</Badge>{/if}
 						{@render time()}
@@ -470,7 +483,7 @@
 {/snippet}
 
 {#snippet engine()}
-	<span class="dot {livenessClass}"></span>
+	<SessionDot session={s} {livenessClass} {now} />
 	{#if stale}
 		<Badge tone="warn" style="padding:0.05rem var(--sp-2)" title="No activity for over 30 minutes">stale</Badge>
 	{/if}
@@ -509,6 +522,36 @@
 
 {#snippet logo()}
 	<span style="flex:none;display:inline-flex"><AdapterIcon adapter={s.adapter_id} size={14} /></span>
+{/snippet}
+
+{#snippet unreadBadge()}
+	{#if unreadCount > 0}<Badge
+			tone="danger"
+			active
+			size="sm"
+			style="flex:none"
+			title="{unreadCount} unread message{unreadCount === 1 ? '' : 's'}">{unreadCount}</Badge
+		>{/if}
+{/snippet}
+
+<!-- Live tool cadence (CCT-594): a dense "⚙N · Xs" chip that distinguishes a
+     grinding session (fresh tool calls, incl. subagent roll-ups) from one that
+     looks alive but is asleep (no tool call for minutes → amber). The detail
+     headline rides alongside in the roomier detailed/grid bands only. -->
+{#snippet activity()}
+	{#if act.show && !stale}
+		<span
+			class="activity"
+			class:asleep={act.asleep}
+			title={act.detail ??
+				(act.asleep ? 'No tool activity for minutes — may be wedged' : 'Live tool activity')}
+		>
+			<span class="act-cadence"
+				>⚙{act.count}{#if act.ageMs !== null}&nbsp;·&nbsp;{formatAgo(act.ageMs)}{/if}</span
+			>
+			{#if act.detail && !dense}<span class="act-detail">{act.detail}</span>{/if}
+		</span>
+	{/if}
 {/snippet}
 
 <!-- Draft action group (CCT-394): Launch / Edit / Discard. Each stops propagation
@@ -689,6 +732,37 @@
 	}
 	.star:hover {
 		color: var(--warn, #e0a800);
+	}
+	/* Live tool-cadence chip (CCT-594). Dense, muted, single line; the cadence
+	   count/age stays whole while the optional detail headline ellipsises. Amber
+	   when asleep — the evidence-based "looks alive but wedged" tell. */
+	.activity {
+		display: inline-flex;
+		align-items: baseline;
+		gap: var(--sp-1);
+		min-width: 0;
+		flex: 0 1 auto;
+		font-size: var(--fs-xs);
+		color: var(--text-faint);
+		white-space: nowrap;
+	}
+	.act-cadence {
+		flex: none;
+		font-variant-numeric: tabular-nums;
+	}
+	.act-detail {
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		color: var(--text-muted);
+		max-width: 22rem;
+	}
+	.activity.asleep {
+		color: var(--warn);
+	}
+	.activity.asleep .act-detail {
+		color: var(--warn);
 	}
 	/* Search match snippet (CCT-184): accent rule + clamp, sharing the .preview
 	   sizing above so the snippet sits in the same slot as the message preview. */

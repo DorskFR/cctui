@@ -358,6 +358,12 @@ pub async fn list_sessions(
                         labels: Vec::new(),
                         last_heartbeat: Some(handle.session.last_heartbeat),
                         account_name: None,
+                        unread_count: 0,
+                        activity_detail: None,
+                        last_tool_at: None,
+                        last_tool_name: None,
+                        tool_use_count: 0,
+                        has_token_credentials: false,
                     },
                 )
             })
@@ -448,12 +454,24 @@ pub async fn list_sessions(
                 labels: Vec::new(),
                 last_heartbeat: Some(row.last_heartbeat),
                 account_name: None,
+                unread_count: 0,
+                activity_detail: None,
+                last_tool_at: None,
+                last_tool_name: None,
+                tool_use_count: 0,
+                has_token_credentials: false,
             },
         ));
     }
 
-    let sessions = enrich_and_sort(&state, with_ts).await?;
+    let sessions = enrich_and_sort(&state, Some(ctx.user_id), with_ts).await?;
     Ok(Json(SessionListResponse { sessions }))
+}
+
+/// Cap a raw unread `COUNT(*)` to the badge's display ceiling (99). Negative or
+/// overflowing DB values clamp into `0..=99`.
+fn cap_unread(n: i64) -> u32 {
+    n.clamp(0, 99) as u32
 }
 
 /// Shared enrichment for both the sessions list and search: resolve machine
@@ -463,6 +481,7 @@ pub async fn list_sessions(
 #[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
 async fn enrich_and_sort(
     state: &AppState,
+    viewer: Option<uuid::Uuid>,
     mut with_ts: Vec<(DateTime<Utc>, SessionListItem)>,
 ) -> Result<Vec<SessionListItem>, (StatusCode, Json<ApiError>)> {
     // Resolve machine names in one query. Historical sessions for purged
@@ -584,6 +603,38 @@ async fn enrich_and_sort(
         }
     }
 
+    // Unread assistant `message` count per session for the calling user
+    // (CCT-580): messages newer than the viewer's `session_reads.last_seen_at`,
+    // all of them when the user has never seen the session. One batched query
+    // over the same `session_ids` fan-out; capped at 99 to keep the badge tidy.
+    if let Some(uid) = viewer
+        && !session_ids.is_empty()
+    {
+        let rows: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT se.session_id, COUNT(*) \
+             FROM stream_events se \
+             LEFT JOIN session_reads sr \
+               ON sr.session_id = se.session_id AND sr.user_id = $2 \
+             WHERE se.session_id = ANY($1) \
+               AND se.event_type = 'message' \
+               AND (sr.last_seen_at IS NULL OR se.created_at > sr.last_seen_at) \
+             GROUP BY se.session_id",
+        )
+        .bind(&session_ids)
+        .bind(uid)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("db error (unread count lookup): {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+        })?;
+        let mut by_session: std::collections::HashMap<String, u32> =
+            rows.into_iter().map(|(sid, n)| (sid, cap_unread(n))).collect();
+        for (_, s) in &mut with_ts {
+            s.unread_count = by_session.remove(&s.id).unwrap_or(0);
+        }
+    }
+
     // Status signals + display metadata from the session row, applied
     // uniformly to live + historical items: the ✋ attention glyph (from the
     // classifier) and the name/model/effort columns.
@@ -598,10 +649,13 @@ async fn enrich_and_sort(
             Option<String>,
             bool,
             Option<String>,
+            Option<DateTime<Utc>>,
+            Option<String>,
+            i32,
         );
         let rows: Vec<SignalRow> = sqlx::query_as(
             "SELECT id, tempo, agent_state, activity, session_name, model, effort, pinned, \
-                    soft_limit_reason \
+                    soft_limit_reason, last_tool_at, last_tool_name, tool_use_count \
              FROM sessions WHERE id = ANY($1)",
         )
         .bind(&session_ids)
@@ -627,6 +681,9 @@ async fn enrich_and_sort(
                 effort,
                 pinned,
                 soft_limit_reason,
+                last_tool_at,
+                last_tool_name,
+                tool_use_count,
             )) = by_session.remove(&s.id)
             {
                 let bucket = bucket_from_signals(
@@ -645,6 +702,10 @@ async fn enrich_and_sort(
                 s.model = model;
                 s.effort = effort;
                 s.pinned = pinned;
+                s.activity_detail = activity;
+                s.last_tool_at = last_tool_at;
+                s.last_tool_name = last_tool_name;
+                s.tool_use_count = tool_use_count.clamp(0, i32::MAX) as u32;
             }
         }
     }
@@ -705,6 +766,29 @@ async fn enrich_and_sort(
             if let Some(name) = by_session.remove(&s.id) {
                 s.account_name = Some(name);
             }
+        }
+    }
+
+    // Live token↔account credential binding (CCT-555). Independent of the
+    // account-name join above: a token whose `accounts` row was deleted (or that
+    // never resolved a name) still counts as holding credentials. `true` iff a
+    // non-revoked `session_tokens` row with a present `encrypted_token` exists.
+    if !session_ids.is_empty() {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT DISTINCT session_id FROM session_tokens \
+             WHERE session_id = ANY($1) AND revoked_at IS NULL AND encrypted_token IS NOT NULL",
+        )
+        .bind(&session_ids)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("db error (credential lookup): {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+        })?;
+        let with_creds: std::collections::HashSet<String> =
+            rows.into_iter().map(|(id,)| id).collect();
+        for (_, s) in &mut with_ts {
+            s.has_token_credentials = with_creds.contains(&s.id);
         }
     }
 
@@ -1084,12 +1168,18 @@ pub async fn search_sessions(
                     labels: Vec::new(),
                     last_heartbeat: Some(row.last_heartbeat),
                     account_name: None,
+                    unread_count: 0,
+                    activity_detail: None,
+                    last_tool_at: None,
+                    last_tool_name: None,
+                    tool_use_count: 0,
+                    has_token_credentials: false,
                 },
             )
         })
         .collect();
 
-    let mut sessions = enrich_and_sort(&state, with_ts).await?;
+    let mut sessions = enrich_and_sort(&state, None, with_ts).await?;
 
     // Attach a transcript snippet per session: the most recent matching event's
     // searchable text, windowed around the keyword. Sessions matched only by
@@ -1215,6 +1305,7 @@ pub async fn search_field_values(
     Ok(Json(rows.into_iter().map(|(v,)| v).collect()))
 }
 
+#[allow(clippy::too_many_lines)]
 pub async fn get_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
@@ -1259,6 +1350,12 @@ pub async fn get_session(
                 labels: Vec::new(),
                 last_heartbeat: Some(handle.session.last_heartbeat),
                 account_name: None,
+                unread_count: 0,
+                activity_detail: None,
+                last_tool_at: None,
+                last_tool_name: None,
+                tool_use_count: 0,
+                has_token_credentials: false,
             };
             return Ok(Json(item));
         }
@@ -1323,6 +1420,12 @@ pub async fn get_session(
         labels: Vec::new(),
         last_heartbeat: Some(row.last_heartbeat),
         account_name: None,
+        unread_count: 0,
+        activity_detail: None,
+        last_tool_at: None,
+        last_tool_name: None,
+        tool_use_count: 0,
+        has_token_credentials: false,
     };
     Ok(Json(item))
 }
@@ -1475,6 +1578,32 @@ pub async fn rename_session(
         },
     )
     .await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /sessions/{id}/seen` (CCT-580): mark this session's messages seen for
+/// the calling user by upserting the read high-water mark to `now()`. `GREATEST`
+/// keeps it monotonic so a stale/out-of-order call can never rewind the cursor.
+/// Owner-scoped by the `sess_write` route guard.
+pub async fn mark_seen(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(session_id): Path<String>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    sqlx::query(
+        "INSERT INTO session_reads (user_id, session_id, last_seen_at) \
+         VALUES ($1, $2, now()) \
+         ON CONFLICT (user_id, session_id) \
+         DO UPDATE SET last_seen_at = GREATEST(session_reads.last_seen_at, EXCLUDED.last_seen_at)",
+    )
+    .bind(ctx.user_id)
+    .bind(&session_id)
+    .execute(&state.pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("db error (mark seen): {e}");
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+    })?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -2193,8 +2322,8 @@ fn normalize_last_message(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        SqlParam, attention_from_bucket, bucket_from_signals, compile_node, derive_liveness,
-        normalize_last_message,
+        SqlParam, attention_from_bucket, bucket_from_signals, cap_unread, compile_node,
+        derive_liveness, normalize_last_message,
     };
     use cctui_proto::models::{Attention, Liveness};
     use chrono::{Duration, Utc};
@@ -2210,6 +2339,16 @@ mod tests {
             })
             .collect();
         (sql, texts)
+    }
+
+    #[test]
+    fn cap_unread_clamps_to_badge_ceiling() {
+        assert_eq!(cap_unread(0), 0);
+        assert_eq!(cap_unread(5), 5);
+        assert_eq!(cap_unread(99), 99);
+        assert_eq!(cap_unread(100), 99);
+        assert_eq!(cap_unread(1_000_000), 99);
+        assert_eq!(cap_unread(-1), 0);
     }
 
     #[test]
