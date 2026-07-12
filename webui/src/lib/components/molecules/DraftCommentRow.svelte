@@ -26,7 +26,9 @@
 	}
 	const { comment, composing = false, busy = false, onsave, ondelete, oncancel }: Props = $props();
 
+	// svelte-ignore state_referenced_locally
 	let editing = $state(composing);
+	// svelte-ignore state_referenced_locally
 	let text = $state(comment?.body ?? '');
 
 	function start() {
