@@ -11,11 +11,16 @@
     prStateOf,
     type PullRequestEnvelope,
     pullOf,
+    type ReviewDraftResult,
+    type ReviewPublishResult,
+    type ReviewThreadList,
+    type ReviewVerdict,
     type ViewedStateResult,
   } from "../api/types";
   import { collapseViewedFiles } from "../diff/collapse";
   import { buildDiffModel } from "../diff/parse";
   import { buildNavIndex } from "../diff/navindex";
+  import { buildAnchors, type LineAddress } from "../review/anchors";
   import {
     getPreferredRendererKind,
     getRenderer,
@@ -31,6 +36,7 @@
   } from "../stores/pr-tabs-core";
   import { tabs } from "../stores/tabs.svelte";
   import FileTree from "./FileTree.svelte";
+  import ReviewSummaryBar from "./ReviewSummaryBar.svelte";
   import PrChecks from "./PrChecks.svelte";
   import PrCommits from "./PrCommits.svelte";
   import PrConversation from "./PrConversation.svelte";
@@ -99,6 +105,98 @@
     expandedPaths = still;
     $viewedMutation.mutate({ paths, viewed: next });
   }
+
+  const draftQuery = createQuery(
+    toStore(() => ({
+      queryKey: keys.reviewDraft(owner, repo, number),
+      queryFn: () => api.reviewDraft(owner, repo, number, account as string),
+      enabled: account !== null,
+    })),
+  );
+  const threadsQuery = createQuery(
+    toStore(() => ({
+      queryKey: keys.reviewThreads(owner, repo, number),
+      queryFn: () => api.reviewThreads(owner, repo, number, account as string),
+      enabled: account !== null,
+    })),
+  );
+
+  const drafts = $derived($draftQuery.data?.draft?.comments ?? []);
+  const threads = $derived($threadsQuery.data?.items ?? []);
+  const anchors = $derived(buildAnchors(displayModel, drafts, threads));
+
+  let reviewPending = $state(false);
+  let publishSkipped = $state<ReviewPublishResult["skipped"]>([]);
+  let publishError = $state<string | null>(null);
+
+  function setDraft(result: ReviewDraftResult): void {
+    queryClient.setQueryData(keys.reviewDraft(owner, repo, number), result);
+  }
+
+  async function addComment(addr: LineAddress, body: string): Promise<void> {
+    if (!account) return;
+    reviewPending = true;
+    try {
+      const result = await api.addReviewComment(owner, repo, number, {
+        account,
+        path: addr.path,
+        side: addr.side,
+        line: addr.line,
+        start_line: addr.start_line ?? null,
+        start_side: addr.start_side ?? null,
+        body,
+        head_sha: pull?.head?.sha,
+      });
+      setDraft(result);
+    } finally {
+      reviewPending = false;
+    }
+  }
+
+  async function editComment(id: string, body: string): Promise<void> {
+    if (!account) return;
+    reviewPending = true;
+    try {
+      setDraft(await api.editReviewComment(owner, repo, number, id, { account, body }));
+    } finally {
+      reviewPending = false;
+    }
+  }
+
+  async function deleteComment(id: string): Promise<void> {
+    if (!account) return;
+    reviewPending = true;
+    try {
+      setDraft(await api.deleteReviewComment(owner, repo, number, id, account));
+    } finally {
+      reviewPending = false;
+    }
+  }
+
+  async function publishReview(verdict: ReviewVerdict, body: string): Promise<void> {
+    if (!account) return;
+    reviewPending = true;
+    publishError = null;
+    publishSkipped = [];
+    try {
+      const result = await api.publishReview(owner, repo, number, { account, verdict, body });
+      publishSkipped = result.skipped;
+      queryClient.invalidateQueries({ queryKey: keys.reviewDraft(owner, repo, number) });
+      queryClient.invalidateQueries({ queryKey: keys.reviewThreads(owner, repo, number) });
+    } catch (e) {
+      publishError = (e as Error).message;
+    } finally {
+      reviewPending = false;
+    }
+  }
+
+  const review = $derived({
+    anchors,
+    addComment,
+    editComment,
+    deleteComment,
+    pending: reviewPending,
+  });
 
   function selectFile(rowIndex: number, path: string): void {
     if (viewed.has(path) && !expandedPaths.has(path)) {
@@ -216,6 +314,13 @@
             onclick={() => toggleRenderer("canvas")}
           >Canvas</button>
         </span>
+        <ReviewSummaryBar
+          draftCount={drafts.length}
+          publishing={reviewPending}
+          skipped={publishSkipped}
+          error={publishError}
+          onpublish={publishReview}
+        />
       </div>
     </header>
 
@@ -246,7 +351,13 @@
               <div class="msg">No file patches in the synced payload.</div>
             {:else if DiffComponent}
               {#key rendererKind}
-                <DiffComponent model={displayModel} {nav} {focusRow} onFocusRow={(r) => (focusRow = r)} />
+                <DiffComponent
+                  model={displayModel}
+                  {nav}
+                  {focusRow}
+                  {review}
+                  onFocusRow={(r) => (focusRow = r)}
+                />
               {/key}
             {/if}
           </section>

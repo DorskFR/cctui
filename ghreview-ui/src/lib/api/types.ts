@@ -14,6 +14,15 @@ export type RepoPage = Schemas["RepoPage"];
 export type StatusPayload = Schemas["Status"];
 export type SseEvent = Schemas["SseEvent"];
 
+export type ReviewDraft = NonNullable<Schemas["ReviewDraft"]>;
+export type ReviewDraftComment = Schemas["ReviewDraftComment"];
+export type ReviewSide = ReviewDraftComment["side"];
+export type ReviewVerdict = ReviewDraft["verdict"];
+export type ReviewDraftResult = Schemas["ReviewDraftResult"];
+export type ReviewPublishResult = Schemas["ReviewPublishResult"];
+export type ReviewThreadComment = Schemas["ReviewThreadComment"];
+export type ReviewThreadList = Schemas["ReviewThreadList"];
+
 export type PrState = "open" | "draft" | "merged" | "closed";
 export type CiState = "pending" | "success" | "failure" | "none";
 

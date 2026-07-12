@@ -3,22 +3,43 @@
   import type { DiffModel } from "../diff/parse";
   import { ROW_HEIGHT } from "../diff/canvas/layout";
   import { computeWindow } from "../diff/virtual";
+  import { type LineAddress, type ReviewController, rowToAddress } from "../review/anchors";
+  import InlineCommentComposer from "./InlineCommentComposer.svelte";
+  import InlineThread from "./InlineThread.svelte";
 
   interface Props {
     model: DiffModel;
     nav: NavIndex;
     focusRow: number;
     onFocusRow: (rowIndex: number) => void;
+    review?: ReviewController;
   }
-  let { model, focusRow, onFocusRow }: Props = $props();
+  let { model, focusRow, onFocusRow, review }: Props = $props();
 
   const ROW_H = ROW_HEIGHT;
   let scrollTop = $state(0);
   let viewportH = $state(600);
   let container = $state<HTMLDivElement | null>(null);
 
+  let pendingAddr = $state<{ addr: LineAddress; rowIndex: number } | null>(null);
+  let openAnchor = $state<number | null>(null);
+
   const win = $derived(computeWindow(scrollTop, viewportH, ROW_H, model.rows.length, 40));
   const visible = $derived(model.rows.slice(win.start, win.end));
+
+  function openComposer(rowIndex: number): void {
+    if (!review) return;
+    const addr = rowToAddress(model, rowIndex);
+    if (!addr) return;
+    pendingAddr = { addr, rowIndex };
+    openAnchor = null;
+  }
+
+  function submitNew(body: string): void {
+    if (!pendingAddr) return;
+    review?.addComment(pendingAddr.addr, body);
+    pendingAddr = null;
+  }
 
   $effect(() => {
     const el = container;
@@ -60,10 +81,60 @@
             <span class="gutter">{row.newLine ?? ""}</span>
             <span class="marker">{row.kind === "add" ? "+" : row.kind === "del" ? "−" : ""}</span>
             <span class="code">{row.content}</span>
+            {#if review}
+              <button
+                type="button"
+                class="add-comment"
+                aria-label="Comment on this line"
+                onclick={(e) => {
+                  e.stopPropagation();
+                  openComposer(idx);
+                }}
+              >+</button>
+            {/if}
           {/if}
         </div>
       {/each}
     </div>
+
+    {#if review}
+      <div class="threads">
+        {#each review.anchors as anchor (anchor.rowIndex)}
+          {#if openAnchor === anchor.rowIndex}
+            <div class="panel" style:top="{(anchor.rowIndex + 1) * ROW_H}px">
+              <InlineThread
+                {anchor}
+                pending={review.pending}
+                onAdd={(body) => review?.addComment({ path: anchor.path, side: anchor.side, line: anchor.line }, body)}
+                onEdit={(id, body) => review?.editComment(id, body)}
+                onDelete={(id) => review?.deleteComment(id)}
+                onClose={() => (openAnchor = null)}
+              />
+            </div>
+          {:else}
+            <button
+              type="button"
+              class="thread-badge"
+              style:top="{anchor.rowIndex * ROW_H}px"
+              onclick={() => {
+                openAnchor = anchor.rowIndex;
+                pendingAddr = null;
+              }}
+            >{anchor.drafts.length + anchor.published.length}</button>
+          {/if}
+        {/each}
+
+        {#if pendingAddr}
+          <div class="panel" style:top="{(pendingAddr.rowIndex + 1) * ROW_H}px">
+            <InlineCommentComposer
+              pending={review.pending}
+              onsubmit={submitNew}
+              oncancel={() => (pendingAddr = null)}
+            />
+          </div>
+        {/if}
+      </div>
+    {/if}
   </div>
 </div>
 
@@ -90,10 +161,57 @@
     white-space: pre;
     contain: layout paint;
     line-height: 20px;
+    position: relative;
   }
   .row.focus {
     box-shadow: inset 2px 0 0 var(--gh-accent);
     background: color-mix(in srgb, var(--gh-accent) 8%, transparent);
+  }
+  .add-comment {
+    position: absolute;
+    left: 96px;
+    width: 16px;
+    height: 16px;
+    line-height: 14px;
+    padding: 0;
+    font-size: 13px;
+    color: white;
+    background: var(--gh-accent);
+    border: none;
+    border-radius: var(--gh-radius-sm);
+    cursor: pointer;
+    opacity: 0;
+  }
+  .row:hover .add-comment {
+    opacity: 1;
+  }
+  .threads {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    pointer-events: none;
+  }
+  .panel {
+    position: absolute;
+    left: 110px;
+    right: 12px;
+    pointer-events: auto;
+  }
+  .thread-badge {
+    position: absolute;
+    left: 84px;
+    height: 16px;
+    min-width: 18px;
+    padding: 0 4px;
+    font-size: 10px;
+    line-height: 14px;
+    color: white;
+    background: var(--gh-accent);
+    border: none;
+    border-radius: 999px;
+    cursor: pointer;
+    pointer-events: auto;
   }
   .gutter {
     flex: none;

@@ -12,6 +12,7 @@ describe("sseActions", () => {
     expect(sseActions(event)).toEqual([
       { type: "invalidate", key: ["pull", "o", "r", 7] },
       { type: "invalidate", key: ["pull-viewed", "o", "r", 7] },
+      { type: "invalidate", key: ["review-threads", "o", "r", 7] },
       { type: "invalidate", key: ["pulls"] },
     ]);
   });
@@ -50,9 +51,10 @@ describe("applySseEvent", () => {
       event: "pr.updated",
       data: { account: "a", owner: "o", repo: "r", number: 7 },
     });
-    expect(invalidateQueries).toHaveBeenCalledTimes(3);
+    expect(invalidateQueries).toHaveBeenCalledTimes(4);
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["pull", "o", "r", 7] });
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["pull-viewed", "o", "r", 7] });
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["review-threads", "o", "r", 7] });
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["pulls"] });
   });
 });

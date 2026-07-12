@@ -6,6 +6,11 @@ import type {
   PullRequestEnvelope,
   PullRequestPage,
   RepoPage,
+  ReviewDraftResult,
+  ReviewPublishResult,
+  ReviewSide,
+  ReviewThreadList,
+  ReviewVerdict,
   StatusPayload,
   ViewedStateResult,
 } from "./types";
@@ -127,4 +132,69 @@ export const api = {
 
   githubRepos: (account: string) =>
     request<{ items: GithubRepo[] }>(`/v1/github/repos${qs({ account })}`),
+
+  reviewDraft: (owner: string, repo: string, number: number, account: string) =>
+    request<ReviewDraftResult>(
+      `/v1/repos/${owner}/${repo}/pulls/${number}/review-draft${qs({ account })}`,
+    ),
+
+  addReviewComment: (
+    owner: string,
+    repo: string,
+    number: number,
+    input: {
+      account: string;
+      path: string;
+      side: ReviewSide;
+      line: number;
+      start_line?: number | null;
+      start_side?: ReviewSide | null;
+      body: string;
+      head_sha?: string;
+    },
+  ) =>
+    request<ReviewDraftResult>(`/v1/repos/${owner}/${repo}/pulls/${number}/review-draft/comments`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+
+  editReviewComment: (
+    owner: string,
+    repo: string,
+    number: number,
+    commentId: string,
+    input: { account: string; body?: string; line?: number; side?: ReviewSide },
+  ) =>
+    request<ReviewDraftResult>(
+      `/v1/repos/${owner}/${repo}/pulls/${number}/review-draft/comments/${encodeURIComponent(commentId)}`,
+      { method: "PATCH", body: JSON.stringify(input) },
+    ),
+
+  deleteReviewComment: (
+    owner: string,
+    repo: string,
+    number: number,
+    commentId: string,
+    account: string,
+  ) =>
+    request<ReviewDraftResult>(
+      `/v1/repos/${owner}/${repo}/pulls/${number}/review-draft/comments/${encodeURIComponent(commentId)}${qs({ account })}`,
+      { method: "DELETE" },
+    ),
+
+  publishReview: (
+    owner: string,
+    repo: string,
+    number: number,
+    input: { account: string; verdict: ReviewVerdict; body: string },
+  ) =>
+    request<ReviewPublishResult>(
+      `/v1/repos/${owner}/${repo}/pulls/${number}/review-draft/publish`,
+      { method: "POST", body: JSON.stringify(input) },
+    ),
+
+  reviewThreads: (owner: string, repo: string, number: number, account: string) =>
+    request<ReviewThreadList>(
+      `/v1/repos/${owner}/${repo}/pulls/${number}/comments${qs({ account })}`,
+    ),
 };

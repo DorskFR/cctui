@@ -13,6 +13,7 @@ export function sseActions(event: SseEvent): QueryKeyAction[] {
       return [
         { type: "invalidate", key: ["pull", owner, repo, number] },
         { type: "invalidate", key: ["pull-viewed", owner, repo, number] },
+        { type: "invalidate", key: ["review-threads", owner, repo, number] },
         { type: "invalidate", key: ["pulls"] },
       ];
     }

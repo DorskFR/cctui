@@ -1,4 +1,5 @@
 import type { Component } from "svelte";
+import type { ReviewController } from "../review/anchors";
 import type { SelectionEvent } from "./canvas/selection";
 import type { NavIndex } from "./navindex";
 import type { DiffModel } from "./parse";
@@ -9,6 +10,7 @@ export interface DiffRendererProps {
   focusRow: number;
   onFocusRow: (rowIndex: number) => void;
   onSelectRange?: (event: SelectionEvent) => void;
+  review?: ReviewController;
 }
 
 export interface DiffRenderer {

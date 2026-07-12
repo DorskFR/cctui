@@ -765,6 +765,443 @@
           "viewed"
         ]
       },
+      "ReviewDraftResult": {
+        "type": "object",
+        "properties": {
+          "draft": {
+            "$ref": "#/components/schemas/ReviewDraft"
+          }
+        },
+        "required": [
+          "draft"
+        ]
+      },
+      "ReviewDraft": {
+        "type": "object",
+        "nullable": true,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "account": {
+            "type": "string",
+            "minLength": 1,
+            "example": "DorskFR",
+            "description": "GitHub account/login the record was synced for"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "repo": {
+            "type": "string"
+          },
+          "pr_number": {
+            "type": "integer"
+          },
+          "head_sha": {
+            "type": "string",
+            "nullable": true,
+            "description": "PR head captured when opened"
+          },
+          "verdict": {
+            "type": "string",
+            "enum": [
+              "comment",
+              "approve",
+              "request_changes"
+            ],
+            "example": "comment",
+            "description": "Review event when published to GitHub"
+          },
+          "body": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "nullable": true
+          },
+          "updated_at": {
+            "type": "string",
+            "nullable": true
+          },
+          "comments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReviewDraftComment"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "account",
+          "owner",
+          "repo",
+          "pr_number",
+          "head_sha",
+          "verdict",
+          "body",
+          "created_at",
+          "updated_at",
+          "comments"
+        ]
+      },
+      "ReviewDraftComment": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string",
+            "example": "src/app.ts"
+          },
+          "side": {
+            "type": "string",
+            "enum": [
+              "LEFT",
+              "RIGHT"
+            ],
+            "example": "RIGHT",
+            "description": "Diff side: LEFT (old) or RIGHT (new)"
+          },
+          "line": {
+            "type": "integer",
+            "example": 42,
+            "description": "Line in the diff (GitHub line)"
+          },
+          "start_line": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Start of a multi-line range"
+          },
+          "start_side": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "LEFT",
+              "RIGHT",
+              null
+            ],
+            "example": "RIGHT",
+            "description": "Diff side: LEFT (old) or RIGHT (new)"
+          },
+          "body": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "nullable": true
+          },
+          "updated_at": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": [
+          "id",
+          "path",
+          "side",
+          "line",
+          "start_line",
+          "start_side",
+          "body",
+          "created_at",
+          "updated_at"
+        ]
+      },
+      "ReviewDraftMeta": {
+        "type": "object",
+        "properties": {
+          "account": {
+            "type": "string",
+            "minLength": 1,
+            "example": "DorskFR",
+            "description": "GitHub account/login the record was synced for"
+          },
+          "verdict": {
+            "type": "string",
+            "enum": [
+              "comment",
+              "approve",
+              "request_changes"
+            ],
+            "example": "comment",
+            "description": "Review event when published to GitHub"
+          },
+          "body": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "account"
+        ]
+      },
+      "ReviewDraftCommentCreate": {
+        "type": "object",
+        "properties": {
+          "account": {
+            "type": "string",
+            "minLength": 1,
+            "example": "DorskFR",
+            "description": "GitHub account/login the record was synced for"
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "side": {
+            "type": "string",
+            "enum": [
+              "LEFT",
+              "RIGHT"
+            ],
+            "default": "RIGHT",
+            "example": "RIGHT",
+            "description": "Diff side: LEFT (old) or RIGHT (new)"
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 0,
+            "exclusiveMinimum": true
+          },
+          "start_line": {
+            "type": "integer",
+            "nullable": true,
+            "minimum": 0,
+            "exclusiveMinimum": true
+          },
+          "start_side": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "LEFT",
+              "RIGHT",
+              null
+            ],
+            "example": "RIGHT",
+            "description": "Diff side: LEFT (old) or RIGHT (new)"
+          },
+          "body": {
+            "type": "string",
+            "minLength": 1
+          },
+          "head_sha": {
+            "type": "string",
+            "description": "PR head to pin a new draft to"
+          }
+        },
+        "required": [
+          "account",
+          "path",
+          "line",
+          "body"
+        ]
+      },
+      "ReviewDraftCommentEdit": {
+        "type": "object",
+        "properties": {
+          "account": {
+            "type": "string",
+            "minLength": 1,
+            "example": "DorskFR",
+            "description": "GitHub account/login the record was synced for"
+          },
+          "body": {
+            "type": "string",
+            "minLength": 1
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 0,
+            "exclusiveMinimum": true
+          },
+          "side": {
+            "type": "string",
+            "enum": [
+              "LEFT",
+              "RIGHT"
+            ],
+            "example": "RIGHT",
+            "description": "Diff side: LEFT (old) or RIGHT (new)"
+          },
+          "start_line": {
+            "type": "integer",
+            "nullable": true,
+            "minimum": 0,
+            "exclusiveMinimum": true
+          },
+          "start_side": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "LEFT",
+              "RIGHT",
+              null
+            ],
+            "example": "RIGHT",
+            "description": "Diff side: LEFT (old) or RIGHT (new)"
+          }
+        },
+        "required": [
+          "account"
+        ]
+      },
+      "ReviewPublishResult": {
+        "type": "object",
+        "properties": {
+          "published": {
+            "type": "boolean"
+          },
+          "review_id": {
+            "type": "integer",
+            "nullable": true
+          },
+          "posted": {
+            "type": "integer",
+            "description": "Comments accepted into the review"
+          },
+          "skipped": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SkippedReviewComment"
+            }
+          }
+        },
+        "required": [
+          "published",
+          "review_id",
+          "posted",
+          "skipped"
+        ]
+      },
+      "SkippedReviewComment": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "line": {
+            "type": "integer"
+          },
+          "reason": {
+            "type": "string",
+            "example": "path not in pull request diff"
+          }
+        },
+        "required": [
+          "path",
+          "line",
+          "reason"
+        ]
+      },
+      "ReviewPublish": {
+        "type": "object",
+        "properties": {
+          "account": {
+            "type": "string",
+            "minLength": 1,
+            "example": "DorskFR",
+            "description": "GitHub account/login the record was synced for"
+          },
+          "verdict": {
+            "type": "string",
+            "enum": [
+              "comment",
+              "approve",
+              "request_changes"
+            ],
+            "example": "comment",
+            "description": "Review event when published to GitHub"
+          },
+          "body": {
+            "type": "string",
+            "default": ""
+          }
+        },
+        "required": [
+          "account",
+          "verdict"
+        ]
+      },
+      "ReviewThreadList": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReviewThreadComment"
+            }
+          }
+        },
+        "required": [
+          "items"
+        ]
+      },
+      "ReviewThreadComment": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "path": {
+            "type": "string",
+            "nullable": true
+          },
+          "line": {
+            "type": "integer",
+            "nullable": true
+          },
+          "original_line": {
+            "type": "integer",
+            "nullable": true
+          },
+          "side": {
+            "type": "string",
+            "nullable": true
+          },
+          "start_line": {
+            "type": "integer",
+            "nullable": true
+          },
+          "diff_hunk": {
+            "type": "string",
+            "nullable": true
+          },
+          "body": {
+            "type": "string"
+          },
+          "user": {
+            "type": "string",
+            "nullable": true
+          },
+          "in_reply_to_id": {
+            "type": "integer",
+            "nullable": true
+          },
+          "created_at": {
+            "type": "string",
+            "nullable": true
+          },
+          "html_url": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": [
+          "id",
+          "path",
+          "line",
+          "original_line",
+          "side",
+          "start_line",
+          "diff_hunk",
+          "body",
+          "user",
+          "in_reply_to_id",
+          "created_at",
+          "html_url"
+        ]
+      },
       "NotificationInboxPage": {
         "type": "object",
         "properties": {
@@ -1728,6 +2165,593 @@
           },
           "503": {
             "description": "State store unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/repos/{owner}/{repo}/pulls/{number}/review-draft": {
+      "get": {
+        "summary": "Get the caller's review draft for a pull request",
+        "tags": [
+          "reviews"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "DorskFR"
+            },
+            "required": true,
+            "name": "owner",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "cctui"
+            },
+            "required": true,
+            "name": "repo",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "example": 42
+            },
+            "required": true,
+            "name": "number",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "example": "DorskFR"
+            },
+            "required": true,
+            "name": "account",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The review draft, or null when none exists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewDraftResult"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Store unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "summary": "Update the draft verdict/summary body",
+        "tags": [
+          "reviews"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "DorskFR"
+            },
+            "required": true,
+            "name": "owner",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "cctui"
+            },
+            "required": true,
+            "name": "repo",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "example": 42
+            },
+            "required": true,
+            "name": "number",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewDraftMeta"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The updated draft",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewDraftResult"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No draft / account not owned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Store unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/repos/{owner}/{repo}/pulls/{number}/review-draft/comments": {
+      "post": {
+        "summary": "Add a per-line comment to the draft (opens one if needed)",
+        "tags": [
+          "reviews"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "DorskFR"
+            },
+            "required": true,
+            "name": "owner",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "cctui"
+            },
+            "required": true,
+            "name": "repo",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "example": 42
+            },
+            "required": true,
+            "name": "number",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewDraftCommentCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The updated draft",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewDraftResult"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Account not owned by the caller",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Store unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/repos/{owner}/{repo}/pulls/{number}/review-draft/comments/{commentId}": {
+      "patch": {
+        "summary": "Edit a draft comment",
+        "tags": [
+          "reviews"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "DorskFR"
+            },
+            "required": true,
+            "name": "owner",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "cctui"
+            },
+            "required": true,
+            "name": "repo",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "example": 42
+            },
+            "required": true,
+            "name": "number",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "1"
+            },
+            "required": true,
+            "name": "commentId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewDraftCommentEdit"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The updated draft",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewDraftResult"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Comment not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Store unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete a draft comment",
+        "tags": [
+          "reviews"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "DorskFR"
+            },
+            "required": true,
+            "name": "owner",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "cctui"
+            },
+            "required": true,
+            "name": "repo",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "example": 42
+            },
+            "required": true,
+            "name": "number",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "1"
+            },
+            "required": true,
+            "name": "commentId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "example": "DorskFR"
+            },
+            "required": true,
+            "name": "account",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The updated draft",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewDraftResult"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Comment not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Store unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/repos/{owner}/{repo}/pulls/{number}/review-draft/publish": {
+      "post": {
+        "summary": "Publish the draft as one batched GitHub review",
+        "tags": [
+          "reviews"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "DorskFR"
+            },
+            "required": true,
+            "name": "owner",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "cctui"
+            },
+            "required": true,
+            "name": "repo",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "example": 42
+            },
+            "required": true,
+            "name": "number",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewPublish"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Publish result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewPublishResult"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No draft / account not owned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "PR head moved since the draft was opened",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Nothing to publish",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Store unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/repos/{owner}/{repo}/pulls/{number}/comments": {
+      "get": {
+        "summary": "List existing published review comments for a pull request",
+        "tags": [
+          "reviews"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "DorskFR"
+            },
+            "required": true,
+            "name": "owner",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "cctui"
+            },
+            "required": true,
+            "name": "repo",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "example": 42
+            },
+            "required": true,
+            "name": "number",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "example": "DorskFR"
+            },
+            "required": true,
+            "name": "account",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Published review comments",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewThreadList"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller does not own the account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Account not managed",
             "content": {
               "application/json": {
                 "schema": {
