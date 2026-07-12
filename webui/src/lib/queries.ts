@@ -410,6 +410,9 @@ export const endpoints = {
       q: q || undefined,
     }),
   session: (id: string) => api.get<SessionListItem>(`/sessions/${id}`),
+  /** Mark this session's messages seen for the caller (CCT-580) — clears its
+   *  unread badge on the next `/sessions` refetch. */
+  markSeen: (id: string) => api.post<void>(`/sessions/${id}/seen`),
   conversation: (id: string) =>
     api.get<AgentEvent[]>(`/sessions/${id}/conversation`),
   /** One-call session diagnose (CCT-547): everything the daemon knows about
@@ -1227,6 +1230,12 @@ function optimisticDispatchCard(
     labels: [],
     last_heartbeat: null,
     account_name: body.account ?? null,
+    unread_count: 0,
+    activity_detail: null,
+    last_tool_at: null,
+    last_tool_name: null,
+    tool_use_count: 0,
+    has_token_credentials: false,
   };
 }
 
@@ -1238,6 +1247,11 @@ export function useSessionActions() {
     rename: async (id: string, name: string) => {
       await api.patch<void>(`/sessions/${id}`, { name });
       inval();
+    },
+    // Mark a session's messages seen (CCT-580). The caller invalidates the list
+    // itself once the seen-mark lands, so this doesn't refetch on its own.
+    markSeen: async (id: string) => {
+      await endpoints.markSeen(id);
     },
     archive: async (id: string) => {
       await api.post<void>(`/sessions/${id}/archive`);

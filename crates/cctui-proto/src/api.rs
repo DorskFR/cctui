@@ -251,6 +251,41 @@ pub struct SessionListItem {
     /// (e.g. local sessions that never routed through the cctui gateway).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_name: Option<String>,
+    /// Unread assistant `message` events for the calling user (CCT-580):
+    /// messages newer than that user's `session_reads.last_seen_at` (all when
+    /// never seen), capped at 99. Only the live list populates it; search and
+    /// get-one default it to `0`.
+    #[serde(default)]
+    pub unread_count: u32,
+    /// Live activity headline (CCT-594): the daemon's spinner text from the
+    /// claude-daemon control-socket `list` snapshot (`sessions.activity`), e.g.
+    /// "Central verify + cascade cleanup…". Already persisted per Status event;
+    /// now surfaced on the list so a working row shows *what* it's doing without
+    /// opening the conversation. `None` when the session has no headline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity_detail: Option<String>,
+    /// When the session (or any subagent, rolled up the `parent_id` chain like
+    /// the heartbeat) last emitted a `ToolUse` (CCT-594). Lets clients tell a
+    /// *grinding* session (fresh tool calls) from one that's *asleep* — a bare
+    /// heartbeat with no tool activity for minutes — far tighter than the 30-min
+    /// `last_heartbeat` staleness. `None` when no tool call has been observed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_tool_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Name of the most recent tool call feeding `last_tool_at` (CCT-594), e.g.
+    /// `"Read"`, `"Edit"`. `None` when no tool call has been observed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_tool_name: Option<String>,
+    /// Running count of this session's `ToolUse` events for the current turn
+    /// (CCT-594), reset on a new user prompt. This session's own count only —
+    /// a parent's rolled-up child activity shows via `last_tool_at`, not this.
+    #[serde(default)]
+    pub tool_use_count: u32,
+    /// Live token↔account credential binding (CCT-555): a non-revoked
+    /// `session_tokens` row with a present `encrypted_token`. Distinct from
+    /// `account_name`, which is `None` when the token's `accounts` row was
+    /// deleted even though the binding still exists.
+    #[serde(default)]
+    pub has_token_credentials: bool,
 }
 
 /// A reusable, user-defined colored label (CCT-360).

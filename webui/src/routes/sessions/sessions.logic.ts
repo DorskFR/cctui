@@ -15,17 +15,30 @@ export const VIEW_OPTIONS = [
 ] as const;
 
 // ── Section filter (CCT-322 / CCT-345) ──────────────────────────────────────
-export type Section = 'starred' | 'live' | 'dispatched' | 'drafts' | 'archived';
-export const SECTIONS: { value: Section; label: string; icon: 'star' | 'live' | 'send' | 'file-text' | 'archive' }[] = [
+export type Section = 'starred' | 'live' | 'dispatched' | 'drafts' | 'archived' | 'unread';
+export const SECTIONS: { value: Section; label: string; icon: 'star' | 'live' | 'send' | 'file-text' | 'archive' | 'bell' }[] = [
 	{ value: 'starred', label: 'Starred', icon: 'star' },
 	{ value: 'live', label: 'Live', icon: 'live' },
 	{ value: 'dispatched', label: 'Dispatched', icon: 'send' },
 	// Draft/staged sessions (CCT-394) — buffered spawns not yet launched.
 	{ value: 'drafts', label: 'Drafts', icon: 'file-text' },
-	{ value: 'archived', label: 'Archived', icon: 'archive' }
+	{ value: 'archived', label: 'Archived', icon: 'archive' },
+	// Unread (CCT-580): a cross-cutting AND-filter (unread_count > 0), not an
+	// ownership bucket — it narrows whatever buckets are shown.
+	{ value: 'unread', label: 'Unread', icon: 'bell' }
 ];
 export const isSection = (v: string): v is Section =>
-	v === 'starred' || v === 'live' || v === 'dispatched' || v === 'drafts' || v === 'archived';
+	v === 'starred' ||
+	v === 'live' ||
+	v === 'dispatched' ||
+	v === 'drafts' ||
+	v === 'archived' ||
+	v === 'unread';
+
+// Unread section (CCT-580) is a predicate over rendered rows, not a bucket: a
+// row survives when the filter is off, or when it has unread messages.
+export const matchesUnreadFilter = (s: SessionListItem, sections: Set<Section>): boolean =>
+	!sections.has('unread') || (s.unread_count ?? 0) > 0;
 export const parseSections = (raw: string | null): Set<Section> => {
 	const set = new Set<Section>((raw ?? '').split(',').filter(isSection));
 	// Never strand the user on an empty list (would render nothing).
@@ -230,6 +243,86 @@ export function isStaleWorking(s: SessionListItem, now: number): boolean {
 	if (!s.last_heartbeat) return false;
 	return now - new Date(s.last_heartbeat).getTime() > STALE_WORKING_AFTER_MS;
 }
+
+// ── Live tool activity: asleep vs. grinding (CCT-594) ────────────────────────
+// A Working session with a fresh `last_tool_at` (bumped by its own tool calls
+// AND, rolled up the parent chain like the heartbeat, by any subagent's) is
+// visibly grinding; one whose newest tool call is older than this — while still
+// in the Working bucket — reads as asleep/wedged. Much tighter than the 30-min
+// STALE_WORKING horizon and evidence-based (a real ToolUse resets it), so a
+// churning subagent keeps the parent alive while a truly wedged parent surfaces.
+export const TOOL_ASLEEP_AFTER_MS = 2 * 60 * 1000; // 2 minutes
+
+export type ToolActivity = {
+	// Whether to show the activity snippet at all (working + something to show).
+	show: boolean;
+	// This session's own per-turn tool count.
+	count: number;
+	// ms since the newest tool call (own or rolled-up subagent); null when none.
+	ageMs: number | null;
+	// Current spinner headline, when the daemon reported one.
+	detail: string | null;
+	// Working but no tool call for longer than TOOL_ASLEEP_AFTER_MS → wedged.
+	asleep: boolean;
+};
+
+export function toolActivity(s: SessionListItem, now: number): ToolActivity {
+	const working = groupOf(s) === 'working' && s.status !== 'archived';
+	const ageMs = s.last_tool_at ? Math.max(0, now - new Date(s.last_tool_at).getTime()) : null;
+	const count = s.tool_use_count ?? 0;
+	const detail = s.activity_detail ?? null;
+	const asleep = working && ageMs !== null && ageMs > TOOL_ASLEEP_AFTER_MS;
+	const show = working && (ageMs !== null || !!detail);
+	return { show, count, ageMs, detail, asleep };
+}
+
+// Compact "12s" / "3m" / "1h" age label for the tool-cadence indicator.
+export function formatAgo(ms: number): string {
+	const s = Math.max(0, Math.round(ms / 1000));
+	if (s < 60) return `${s}s`;
+	const m = Math.floor(s / 60);
+	if (m < 60) return `${m}m`;
+	return `${Math.floor(m / 60)}h`;
+}
+// ── Debug tooltip on the activity dot (CCT-555) ──────────────────────────────
+// Key/value rows for the dot's hover panel. Pure + testable; the session id is
+// rendered separately (copyable) by the component. Nulls render as "—", never
+// "null". Timestamps carry both a relative age and the raw ISO.
+export type DebugRow = { label: string; value: string };
+
+export function fmtWhen(iso: string | null | undefined, now: number): string {
+	if (!iso) return '—';
+	const t = new Date(iso).getTime();
+	if (Number.isNaN(t)) return '—';
+	return `${formatAgo(now - t)} ago · ${iso}`;
+}
+
+export function sessionDebugRows(s: SessionListItem, now: number): DebugRow[] {
+	const machine = s.machine_name
+		? s.machine_kind && s.machine_kind !== 'persistent'
+			? `${s.machine_name} (${s.machine_kind})`
+			: s.machine_name
+		: '—';
+	const statusWord = s.hibernated
+		? 'hibernated'
+		: isStaleWorking(s, now)
+			? 'stale'
+			: (s.liveness ?? 'dead');
+	const creds = s.has_token_credentials
+		? 'live token binding'
+		: s.account_name
+			? 'account only (token revoked/absent)'
+			: 'none';
+	return [
+		{ label: 'account', value: s.account_name ?? '—' },
+		{ label: 'created', value: fmtWhen(s.registered_at, now) },
+		{ label: 'machine', value: machine },
+		{ label: 'keepalive', value: fmtWhen(s.last_heartbeat, now) },
+		{ label: 'creds', value: creds },
+		{ label: 'status', value: statusWord }
+	];
+}
+
 export const groupOf = (s: SessionListItem): GroupKey => {
 	if (s.pinned) return 'pinned';
 	const bucket = s.bucket ?? 'working';

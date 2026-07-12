@@ -519,6 +519,14 @@ fn build_api_routes() -> Routes {
             Authn::Bearer,
             sess_write(),
         )
+        .add(
+            &[Method::POST],
+            "/sessions/{id}/seen",
+            "Mark this session's messages seen for the caller (CCT-580).",
+            post(routes::sessions::mark_seen),
+            Authn::Bearer,
+            sess_write(),
+        )
         // Draft sessions (CCT-394): launch promotes a draft to a live spawn
         // (env entered fresh in the body), discard deletes the draft row.
         .add(

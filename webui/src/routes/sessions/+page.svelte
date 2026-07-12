@@ -35,6 +35,7 @@
 		isDispatched,
 		groupOf,
 		inEnabledSections,
+		matchesUnreadFilter,
 		type Section,
 		type SubGroup
 	} from './sessions.logic';
@@ -461,6 +462,20 @@
 		};
 	});
 
+	// Unread tracking (CCT-580): mark the open session's messages seen server-side,
+	// then refetch so its badge drops to zero. `changeTick` re-runs it as new
+	// messages stream in while the drawer stays open, keeping the open session at
+	// zero instead of re-accumulating unread.
+	$effect(() => {
+		void ws.changeTick;
+		const id = openSession?.id ?? null;
+		if (!id) return;
+		void actions
+			.markSeen(id)
+			.then(() => qc.invalidateQueries({ queryKey: ['sessions'] }))
+			.catch(() => {});
+	});
+
 	// A clicked notification asks us to open its session's drawer.
 	$effect(() => {
 		const id = notify.pendingOpen;
@@ -626,7 +641,11 @@
 			...b,
 			sessions: sortRows(
 				topLevel.filter(
-					(s) => groupOf(s) === b.key && matchesLabelFilter(s) && matchesClient(s)
+					(s) =>
+						groupOf(s) === b.key &&
+						matchesLabelFilter(s) &&
+						matchesClient(s) &&
+						matchesUnreadFilter(s, sections)
 				)
 			)
 		})).filter((g) => g.sessions.length > 0)
@@ -699,6 +718,7 @@
 			grid
 			stacked={subGroups.length > 0}
 			pendingCount={pending(s.id)}
+			unreadCount={openSession?.id === s.id ? 0 : (s.unread_count ?? 0)}
 			onopen={(x) => (openSession = x)}
 			selectable={selecting}
 			selected={selected.has(s.id)}
@@ -766,6 +786,7 @@
 				child={depth > 0}
 				compact={dense}
 				pendingCount={pending(s.id)}
+				unreadCount={openSession?.id === s.id ? 0 : (s.unread_count ?? 0)}
 				onopen={(x) => (openSession = x)}
 				selectable={allowSelect && selecting}
 				selected={selected.has(s.id)}
@@ -847,7 +868,11 @@
 		     the top-level rows into Live / Archived (CCT-298 item 1). -->
 		{@const ns = nest(pageRows)}
 		{@const scoped = ns.topLevel.filter(
-			(s) => inEnabledSections(s, sections) && matchesLabelFilter(s) && matchesClient(s)
+			(s) =>
+				inEnabledSections(s, sections) &&
+				matchesLabelFilter(s) &&
+				matchesClient(s) &&
+				matchesUnreadFilter(s, sections)
 		)}
 		{@const liveTop = scoped.filter((s) => s.status !== 'archived')}
 		{@const archTop = scoped.filter((s) => s.status === 'archived')}
@@ -947,7 +972,11 @@
 		{#if showArchived}
 			{@const ns = nest(pageRows)}
 			{@const archTop = ns.topLevel.filter(
-				(s) => matchesLabelFilter(s) && matchesClient(s) && !pinnedArchivedKidIds.has(s.id)
+				(s) =>
+					matchesLabelFilter(s) &&
+					matchesClient(s) &&
+					matchesUnreadFilter(s, sections) &&
+					!pinnedArchivedKidIds.has(s.id)
 			)}
 			<div class="section">
 				<div class="group-header">Archived <Text class="count">{archTop.length}</Text></div>
