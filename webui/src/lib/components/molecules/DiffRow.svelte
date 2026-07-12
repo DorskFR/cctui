@@ -13,6 +13,7 @@
 	import { Badge, Cluster, Text } from '@dorsk/tsumikit';
 	import DraftCommentRow from './DraftCommentRow.svelte';
 	import type { DiffSide } from '@bindings/DiffSide';
+	import { m } from '$lib/paraglide/messages';
 
 	interface Props {
 		row: DiffRow;
@@ -91,7 +92,7 @@
 		class:active
 		class:reviewed
 		onclick={() => ontoggleFile?.(row.fileKey)}
-		title={fileCollapsed ? 'Expand file' : 'Collapse file'}
+		title={fileCollapsed ? m.diff_expand_file() : m.diff_collapse_file()}
 	>
 		<Cluster gap="var(--sp-2)" align="center" justify="space-between">
 			<Cluster gap="var(--sp-2)" align="baseline">
@@ -114,8 +115,8 @@
 					class:on={reviewed}
 					role="checkbox"
 					aria-checked={reviewed}
-					aria-label={reviewed ? 'Mark file unreviewed' : 'Mark file reviewed'}
-					title={reviewed ? 'Reviewed — click to unmark' : 'Mark reviewed'}
+					aria-label={reviewed ? m.review_mark_unreviewed() : m.review_mark_reviewed()}
+					title={reviewed ? m.review_reviewed_unmark_title() : m.review_mark_reviewed_title()}
 					tabindex="0"
 					onclick={(e) => {
 						e.stopPropagation();
@@ -129,7 +130,7 @@
 						}
 					}}
 				>
-					{reviewed ? '☑ reviewed' : '☐ reviewed'}
+					{reviewed ? m.review_reviewed_checked() : m.review_reviewed_unchecked()}
 				</span>
 			</Cluster>
 		</Cluster>
@@ -138,7 +139,7 @@
 	<div class="hunk" class:active>{row.header}</div>
 {:else if row.kind === 'collapsed'}
 	<button type="button" class="collapsed" onclick={() => onexpand?.(row.regionId)}>
-		⋯ {row.count} unchanged {row.count === 1 ? 'line' : 'lines'} — click to expand
+		{m.diff_collapsed_lines({ count: row.count })}
 	</button>
 {:else if row.kind === 'line'}
 	<div class="line k-{row.line.kind}" class:active class:commentable>
@@ -148,7 +149,7 @@
 			<button
 				type="button"
 				class="add-comment"
-				title="Add a draft comment on this line"
+				title={m.review_add_comment_title()}
 				disabled={busy}
 				onclick={() => oncommentLine?.(row.fileKey, anchor.side, anchor.line)}>+</button
 			>
@@ -156,7 +157,7 @@
 				<button
 					type="button"
 					class="ask-agent"
-					title="Ask the review agent about this line"
+					title={m.review_ask_agent_title()}
 					disabled={busy}
 					onclick={() =>
 						onaskLine?.(row.fileKey, anchor.side, anchor.line, row.line.content)}>?</button
@@ -184,7 +185,7 @@
 					<button
 						type="button"
 						class="add-comment"
-						title="Add a draft comment on this line"
+						title={m.review_add_comment_title()}
 						disabled={busy}
 						onclick={() => oncommentLine?.(row.fileKey, 'old', leftAnchor.line)}>+</button
 					>
@@ -210,7 +211,7 @@
 					<button
 						type="button"
 						class="add-comment"
-						title="Add a draft comment on this line"
+						title={m.review_add_comment_title()}
 						disabled={busy}
 						onclick={() => oncommentLine?.(row.fileKey, 'new', rightAnchor.line)}>+</button
 					>
@@ -218,7 +219,7 @@
 						<button
 							type="button"
 							class="ask-agent"
-							title="Ask the review agent about this line"
+							title={m.review_ask_agent_title()}
 							disabled={busy}
 							onclick={() =>
 								onaskLine?.(row.fileKey, 'new', rightAnchor.line, rightContent)}>?</button
@@ -250,7 +251,7 @@
 	<div class="thread">
 		<Cluster gap="var(--sp-2)" align="center">
 			<Badge tone="neutral">GitHub</Badge>
-			{#if row.thread.resolved}<Text tone="muted" size="xs">resolved</Text>{/if}
+			{#if row.thread.resolved}<Text tone="muted" size="xs">{m.review_thread_resolved()}</Text>{/if}
 		</Cluster>
 		{#each row.thread.comments as c (c.comment_id)}
 			<div class="tc">
@@ -260,14 +261,13 @@
 		{/each}
 	</div>
 {:else if row.kind === 'binary'}
-	<div class="note"><Badge tone="neutral">binary</Badge> Binary file not shown</div>
+	<div class="note"><Badge tone="neutral">{m.diff_binary_badge()}</Badge> {m.diff_binary_not_shown()}</div>
 {:else if row.kind === 'truncated'}
 	<div class="note">
-		<Badge tone="warn">large</Badge> This file's diff was too large to inline. Open it on GitHub to
-		view the full change.
+		<Badge tone="warn">{m.diff_large_badge()}</Badge> {m.diff_truncated_note()}
 	</div>
 {:else if row.kind === 'empty'}
-	<div class="note"><Text tone="muted">No textual changes.</Text></div>
+	<div class="note"><Text tone="muted">{m.diff_no_textual_changes()}</Text></div>
 {/if}
 
 <style>

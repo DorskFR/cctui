@@ -33,6 +33,7 @@
 	} from './options';
 	import { submitChordLabel, isSubmitChord } from '$lib/platform';
 	import type { Form } from './types';
+	import { m } from '$lib/paraglide/messages';
 
 	let {
 		form = $bindable(),
@@ -153,10 +154,10 @@
 <!-- Machine · working dir · label share one row (CCT-562). The label
      auto-fills from the (machine, cwd) memory (CCT-561, in SpawnModal). -->
 <div class="top-row">
-	<Field label="Machine" for="sp-machine">
+	<Field label={m.spawn_machine_label()} for="sp-machine">
 		<Select id="sp-machine" bind:value={form.machine_id}>
 			{#if !machines.length}
-				<option value="">No machines enrolled</option>
+				<option value="">{m.spawn_no_machines()}</option>
 			{/if}
 			{#each machines as mc (mc.id)}
 				<option value={mc.id}>{mc.display_name || mc.name}</option>
@@ -166,16 +167,16 @@
 
 	<CwdCombo machineId={form.machine_id} bind:value={form.working_dir} {recentDirs} />
 
-	<Field label="Label (optional)" for="sp-name">
-		<Input id="sp-name" placeholder="session label" bind:value={form.name} />
+	<Field label={m.spawn_label_label()} for="sp-name">
+		<Input id="sp-name" placeholder={m.spawn_session_label_placeholder()} bind:value={form.name} />
 	</Field>
 </div>
 
-<Field label="Prompt (optional)" for="sp-prompt">
+<Field label={m.spawn_prompt_label()} for="sp-prompt">
 	<Textarea
 		id="sp-prompt"
 		style="min-height:8rem;max-height:14rem;resize:vertical;overflow-y:auto"
-		placeholder="Initial prompt…"
+		placeholder={m.spawn_prompt_placeholder()}
 		bind:value={form.prompt}
 		autoresize
 		onkeydown={(e: KeyboardEvent) => {
@@ -185,7 +186,7 @@
 			}
 		}}
 	/>
-	<Text size="xs" tone="faint" style="display:block;margin-top:var(--sp-1)">{submitChordLabel()} to create</Text>
+	<Text size="xs" tone="faint" style="display:block;margin-top:var(--sp-1)">{m.spawn_prompt_submit_hint({ chord: submitChordLabel() })}</Text>
 </Field>
 
 <!-- Account · harness · model · effort · permission mode, collapsed into one
@@ -196,7 +197,7 @@
 		<Text size="sm" tone="faint" truncate title={configSummary}>{configSummary}</Text>
 		<IconButton
 			icon="settings"
-			label="Session configuration"
+			label={m.spawn_config_label()}
 			aria-expanded={configOpen}
 			pressed={configOpen}
 			onclick={() => (configOpen = !configOpen)}
@@ -205,31 +206,31 @@
 
 	{#if configOpen}
 		<div class="config-fields">
-			<Field label="Account" for="sp-account">
+			<Field label={m.spawn_account_label()} for="sp-account">
 				<Select id="sp-account" bind:value={form.account}>
-					<option value="">Auto{autoAccount ? ` — ${autoAccount}` : ''}</option>
-					<option value={NO_ACCOUNT}>No account — machine's own login</option>
+					<option value="">{m.spawn_account_auto()}{autoAccount ? ` — ${autoAccount}` : ''}</option>
+					<option value={NO_ACCOUNT}>{m.spawn_account_none()}</option>
 					{#each accounts as a (a.id)}
 						<option value={a.name}>
-							{a.name} ({a.providers.map((p) => p.provider).join(', ') || 'no provider'})
+							{a.name} ({a.providers.map((p) => p.provider).join(', ') || m.spawn_no_provider()})
 						</option>
 					{/each}
 				</Select>
 				{#if form.account === NO_ACCOUNT}
-					<Text tone="faint" size="xs">Runs on the worker's own login — no gateway, no account binding.</Text>
+					<Text tone="faint" size="xs">{m.spawn_account_none_hint()}</Text>
 				{:else if selectedAccount}
-					<Text tone="faint" size="xs">Runs through the passthrough gateway under this account.</Text>
+					<Text tone="faint" size="xs">{m.spawn_account_gateway_hint()}</Text>
 				{:else if autoAccount}
-					<Text tone="faint" size="xs">Auto-binds your account "{autoAccount}" through the gateway.</Text>
+					<Text tone="faint" size="xs">{m.spawn_account_auto_hint({ account: autoAccount })}</Text>
 				{:else}
-					<Text tone="faint" size="xs">Auto binds your only matching account, or falls back to the machine's own login.</Text>
+					<Text tone="faint" size="xs">{m.spawn_account_auto_fallback_hint()}</Text>
 				{/if}
 			</Field>
 
 			<!-- Harness: same two cards always; a card is disabled when the selected
 			     account has no provider of that family (CCT-562), so the layout
 			     never shifts. -->
-			<Field label="Harness">
+			<Field label={m.spawn_field_harness()}>
 				<div class="adapters">
 					{#each allAdapters as ad (ad)}
 						<OptionButton
@@ -248,19 +249,21 @@
 				</div>
 				{#if selectedAccount && !allowedAdapters.includes(form.adapter_id as Adapter)}
 					<Text size="xs" style="color:var(--c-red)">
-						Account "{form.account}" has no {adapterLabel(form.adapter_id)} credential — switch to
-						Auto/No account or pick another account.
+						{m.spawn_harness_no_credential({
+							account: form.account,
+							harness: adapterLabel(form.adapter_id)
+						})}
 					</Text>
 				{/if}
 			</Field>
 
 			<!-- Model: driven by the effective harness — the account's own models for
 			     a compatible endpoint, else the harness's native families. -->
-			<Field label="Model" for="sp-model">
+			<Field label={m.spawn_field_model()} for="sp-model">
 				{#if usesAccountModels}
 					<Select id="sp-model" bind:value={form.model_account}>
 						{#if !accountModelOptions.length}
-							<option value="">Default</option>
+							<option value="">{m.spawn_model_default()}</option>
 						{/if}
 						{#each accountModelOptions as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
 					</Select>
@@ -293,7 +296,7 @@
 				/>
 			{/if}
 
-			<Field label="Permission mode">
+			<Field label={m.spawn_permission_mode_label()}>
 				<div class="modes">
 					<!-- "Default" (unset) leaves the mode to claude's own default — no mode
 					     is forced into the spawn (CCT-542/CCT-558). -->
@@ -301,8 +304,8 @@
 						selected={form.permission_mode === ''}
 						onclick={() => (form.permission_mode = '')}
 					>
-						<strong>Default</strong>
-						<Text tone="faint" size="xs">Claude default</Text>
+						<strong>{m.spawn_mode_default_label()}</strong>
+						<Text tone="faint" size="xs">{m.spawn_mode_default_hint()}</Text>
 					</OptionButton>
 					{#each modes as md (md.v)}
 						<OptionButton

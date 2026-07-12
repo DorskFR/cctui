@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { Label } from '@bindings/Label';
 	import { IconButton } from '@dorsk/tsumikit';
+	import { m } from '$lib/paraglide/messages';
 	import { clickOutside } from '$lib/clickOutside';
 	import LabelMenu from './LabelMenu.svelte';
 
@@ -40,8 +41,8 @@
 			variant="default"
 			class="btn-control-square"
 			icon="tag"
-			label="Filter by label"
-			title={selected.size > 0 ? `Filtering by ${selected.size} label(s)` : 'Filter by label'}
+			label={m.sessions_filter_by_label()}
+			title={selected.size > 0 ? m.sessions_filtering_by_labels({ count: selected.size }) : m.sessions_filter_by_label()}
 			aria-haspopup="true"
 			aria-expanded={open}
 			aria-pressed={selected.size > 0}
@@ -53,7 +54,7 @@
 			<div
 				class="menu"
 				role="menu"
-				aria-label="Labels"
+				aria-label={m.sessions_labels_menu()}
 				tabindex="-1"
 				onkeydown={(e) => {
 					if (e.key === 'Escape') open = false;

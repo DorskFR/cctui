@@ -23,6 +23,7 @@
 	import { Badge, IconButton, Input, Select, SelectButton, Text } from '@dorsk/tsumikit';
 	import { codexModelsFor, codexEffortsFor } from '$lib/harnessModels';
 	import { useCodexModels } from '$lib/queries';
+	import { m } from '$lib/paraglide/messages';
 
 	let {
 		session,
@@ -156,16 +157,16 @@
 
 <div class="dhead">
 	<div class="hrow">
-		<IconButton class="tapbtn back" icon="back"  label="Back" onclick={onclose} />
+		<IconButton class="tapbtn back" icon="back"  label={m.drawer_back()} onclick={onclose} />
 		{#if onTogglePin}
 			<span
 				class="star"
 				class:on={session.pinned}
 				role="button"
 				tabindex="0"
-				title={session.pinned ? 'Unpin' : 'Pin to top (exempt from auto-archive)'}
+				title={session.pinned ? m.drawer_unpin_title() : m.drawer_pin_title()}
 				aria-pressed={session.pinned}
-				aria-label={session.pinned ? 'Unpin session' : 'Pin session'}
+				aria-label={session.pinned ? m.drawer_unpin_aria() : m.drawer_pin_aria()}
 				onclick={() => onTogglePin?.(session)}
 				onkeydown={(e: KeyboardEvent) => {
 					if (e.key === 'Enter' || e.key === ' ') {
@@ -208,8 +209,8 @@
 		<SelectButton
 			class="font-pick"
 			glyph="A"
-			label="Font size"
-			title="UI font size"
+			label={m.drawer_font_size_label()}
+			title={m.drawer_font_size_title()}
 			value={fontScale.levelId}
 			options={SCALE_LEVELS.map((l) => ({ value: l.id, label: l.label }))}
 			onchange={(v) => fontScale.set(v)}
@@ -219,13 +220,13 @@
 		     A single fork lives at the end of the group (CCT-345). -->
 		<div class="secondary" class:open={moreOpen || renaming}>
 		{#if renaming}
-			<IconButton class="tapbtn" icon="check"  label="Save" onclick={doRename} />
+			<IconButton class="tapbtn" icon="check"  label={m.common_save()} onclick={doRename} />
 		{:else}
 			<IconButton
 				class="tapbtn"
 				icon="edit"
 
-				label="Rename"
+				label={m.drawer_rename()}
 				onclick={() => {
 					renaming = true;
 					newName = session.name ?? '';
@@ -236,40 +237,40 @@
 			class="tapbtn"
 			icon="link"
 
-			label="Copy shareable link"
-			title="Copy a stable link to this session (paste in a PR — login-gated)"
+			label={m.drawer_copy_link_label()}
+			title={m.drawer_copy_link_title()}
 			onclick={oncopylink}
 		/>
 		<IconButton
 			class="tapbtn"
 			icon="markdown"
 
-			label="Copy conversation as Markdown"
-			title="Copy the whole conversation as Markdown (honors the view filters)"
+			label={m.drawer_copy_markdown_label()}
+			title={m.drawer_copy_markdown_title()}
 			onclick={oncopymarkdown}
 		/>
 		<IconButton
 			class="tapbtn"
 			icon="download"
 
-			label="Export conversation"
-			title="Download transcript as HTML (print it for a PDF)"
+			label={m.drawer_export_label()}
+			title={m.drawer_export_title()}
 			onclick={onexport}
 		/>
 		<IconButton
 			class="tapbtn fork-action"
 			icon="fork"
 
-			label="Fork conversation"
-			title="Fork into a new conversation (optionally change model)"
+			label={m.drawer_fork_label()}
+			title={m.drawer_fork_title()}
 			onclick={onfork}
 		/>
 		{#if onforkselect}
 			<IconButton
 				class="tapbtn fork-select-action"
 				icon="check"
-				label="Select messages to fork"
-				title="Pick messages, then fork a session from just that selection"
+				label={m.drawer_fork_select_label()}
+				title={m.drawer_fork_select_title()}
 				aria-pressed={forkSelectActive}
 				onclick={onforkselect}
 			/>
@@ -280,14 +281,14 @@
 			class="tapbtn more"
 			icon="more"
 
-			label="More actions"
+			label={m.drawer_more_actions()}
 			aria-expanded={moreOpen}
-			title="More actions"
+			title={m.drawer_more_actions()}
 			onclick={() => (moreOpen = !moreOpen)}
 		/>
 		{#if !archived}
-			<IconButton class="tapbtn interrupt" icon="stop"  label="Interrupt turn" title="Interrupt the in-flight turn" onclick={oninterrupt} />
-			<IconButton class="tapbtn archive" icon="archive"  label="Archive" onclick={onarchive} />
+			<IconButton class="tapbtn interrupt" icon="stop"  label={m.drawer_interrupt_label()} title={m.drawer_interrupt_title()} onclick={oninterrupt} />
+			<IconButton class="tapbtn archive" icon="archive"  label={m.drawer_archive()} onclick={onarchive} />
 		{/if}
 	</div>
 	{#if session.labels.length > 0}
@@ -322,29 +323,29 @@
 				     isn't a document-wide :global leak. -->
 				<span class="model-edit">
 					<Badge class="row" style="gap:var(--sp-1);padding:0.05rem var(--sp-1)">
-						<Select compact chevron={false} bind:value={pendingModel} aria-label="Model">
-							{#each codexModelOptions as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
+						<Select compact chevron={false} bind:value={pendingModel} aria-label={m.drawer_model_aria()}>
+							{#each codexModelOptions as opt (opt.v)}<option value={opt.v}>{opt.label}</option>{/each}
 						</Select>
-						<Select compact chevron={false} bind:value={pendingEffort} aria-label="Effort">
-							{#each codexEffortOptions as e (e)}<option value={e}>{e || 'default effort'}</option>{/each}
+						<Select compact chevron={false} bind:value={pendingEffort} aria-label={m.drawer_effort_aria()}>
+							{#each codexEffortOptions as e (e)}<option value={e}>{e || m.drawer_default_effort()}</option>{/each}
 						</Select>
-						<IconButton class="tapbtn" icon="check"  label="Apply" onclick={applyModelChange} />
-						<IconButton class="tapbtn" icon="x"  label="Cancel" onclick={() => (modelEditing = false)} />
+						<IconButton class="tapbtn" icon="check"  label={m.common_apply()} onclick={applyModelChange} />
+						<IconButton class="tapbtn" icon="x"  label={m.common_cancel()} onclick={() => (modelEditing = false)} />
 					</Badge>
 				</span>
 			{:else}
 				<Badge
 					as="button"
 					mono
-					title="Change model / effort for the next turn"
+					title={m.drawer_change_model_title()}
 					onclick={openModelEditor}
-				>{session.model ?? 'default'}{session.effort ? ` · ${session.effort}` : ''} ✎</Badge>
+				>{session.model ?? m.drawer_default_model()}{session.effort ? ` · ${session.effort}` : ''} ✎</Badge>
 			{/if}
 		{:else if session.model || session.effort}
 			<Badge
 				as="button"
 				mono
-				title="Claude can't switch model in place — fork to change model"
+				title={m.drawer_no_inplace_model_title()}
 				onclick={onfork}
 			>{session.model ?? ''}{session.effort ? ` · ${session.effort}` : ''} ⑂</Badge>
 		{/if}

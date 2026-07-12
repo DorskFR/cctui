@@ -7,6 +7,7 @@
 	import type { ApiKeyRow } from '@bindings/ApiKeyRow';
 	import { toasts } from '$lib/toast.svelte';
 	import { Badge, Button, Card, Heading, IconButton, Input, Switch, Text, Timestamp } from '@dorsk/tsumikit';
+	import { m } from '$lib/paraglide/messages';
 
 	let {
 		userId,
@@ -42,7 +43,7 @@
 		guard(
 			actions
 				.setUserScopes(userId, [...next])
-				.then(() => toasts.ok(`Scope ${scope} ${on ? 'granted' : 'revoked'}`))
+				.then(() => toasts.ok(on ? m.users_scope_granted({ scope }) : m.users_scope_revoked({ scope })))
 		);
 	}
 
@@ -58,7 +59,7 @@
 	async function mint() {
 		try {
 			const r = await actions.mintKey(userId, newLabel.trim() || null, [...newScopes]);
-			onsecret(`Key — ${newLabel.trim() || 'unlabeled'}`, r.key);
+			onsecret(m.users_key_secret_title({ label: newLabel.trim() || m.users_unlabeled_plain() }), r.key);
 			newLabel = '';
 			newScopes = new Set(['read']);
 		} catch (e) {
@@ -70,12 +71,12 @@
 		const next = new Set(key.scopes as ScopeName[]);
 		if (on) next.add(scope);
 		else next.delete(scope);
-		guard(actions.setKeyScopes(userId, key.id, [...next]).then(() => toasts.ok('Key scopes updated')));
+		guard(actions.setKeyScopes(userId, key.id, [...next]).then(() => toasts.ok(m.users_key_scopes_updated())));
 	}
 	function revokeKey(key: ApiKeyRow) {
-		if (!confirm(`Revoke key ${key.label ?? key.key_preview ?? key.id}? It stops working immediately.`))
+		if (!confirm(m.users_confirm_revoke_key({ key: key.label ?? key.key_preview ?? key.id })))
 			return;
-		guard(actions.revokeKey(userId, key.id).then(() => toasts.ok('Key revoked')));
+		guard(actions.revokeKey(userId, key.id).then(() => toasts.ok(m.users_key_revoked())));
 	}
 
 	// A scope can be granted to a key only if it's within the owner's ceiling.
@@ -84,10 +85,9 @@
 </script>
 
 <Card>
-	<Heading level={3}>Scopes (ceiling)</Heading>
+	<Heading level={3}>{m.users_scopes_ceiling_title()}</Heading>
 	<Text as="p" size="sm" tone="faint">
-		The capabilities this user may delegate to its keys. A key's effective authority is its grant
-		intersected with this ceiling — removing a scope here immediately limits every key.
+		{m.users_scopes_ceiling_help()}
 	</Text>
 	<div class="scopes">
 		{#each ALL_SCOPES as s (s)}
@@ -95,7 +95,7 @@
 				checked={ceiling.has(s)}
 				label={s}
 				disabled={!canEditCeiling}
-				title={canEditCeiling ? `Toggle ${s}` : 'Admin scope required to edit the ceiling'}
+				title={canEditCeiling ? m.users_scope_toggle({ scope: s }) : m.users_scope_admin_required()}
 				onclick={() => toggleCeiling(s, !ceiling.has(s))}
 			/>
 		{/each}
@@ -104,26 +104,25 @@
 
 {#if canManageKeys}
 	<Card>
-		<Heading level={3}>API keys</Heading>
+		<Heading level={3}>{m.users_api_keys_title()}</Heading>
 		<Text as="p" size="sm" tone="faint">
-			Mint scoped tokens (e.g. a dispatch-only key for automation). Scopes are editable in place — the
-			secret is never re-minted to re-scope. New grants are clamped to the ceiling above.
+			{m.users_api_keys_help()}
 		</Text>
 
 		<div class="mint">
-			<Input mono placeholder="label (optional)" bind:value={newLabel} />
+			<Input mono placeholder={m.users_label_optional_placeholder()} bind:value={newLabel} />
 			<div class="scopes">
 				{#each ALL_SCOPES as s (s)}
 					<Switch
 						checked={newScopes.has(s)}
 						label={s}
 						disabled={!ceiling.has(s)}
-						title={ceiling.has(s) ? `Grant ${s}` : 'Not in the ceiling'}
+						title={ceiling.has(s) ? m.users_scope_grant({ scope: s }) : m.users_scope_not_in_ceiling()}
 						onclick={() => toggleNewScope(s, !newScopes.has(s))}
 					/>
 				{/each}
 			</div>
-			<Button variant="primary" onclick={mint} disabled={newScopes.size === 0}>+ Mint key</Button>
+			<Button variant="primary" onclick={mint} disabled={newScopes.size === 0}>{m.users_mint_key()}</Button>
 		</div>
 
 		{#if liveKeys.length}
@@ -131,12 +130,12 @@
 				{#each liveKeys as k (k.id)}
 					<li class="key">
 						<div class="key-head">
-							<Text weight="semibold">{k.label ?? '(unlabeled)'}</Text>
+							<Text weight="semibold">{k.label ?? m.users_unlabeled()}</Text>
 							<Badge tone="neutral">{k.kind}</Badge>
 							<Text variant="code" tone="faint" size="xs">{k.key_preview ?? '••••'}</Text>
 							<div class="spacer"></div>
 							<Timestamp value={k.created_at} mode="date" size="xs" tone="faint" />
-							<IconButton inline icon="trash" size={14} title="Revoke key" label="Revoke key" onclick={() => revokeKey(k)} />
+							<IconButton inline icon="trash" size={14} title={m.users_revoke_key()} label={m.users_revoke_key()} onclick={() => revokeKey(k)} />
 						</div>
 						<div class="scopes">
 							{#each ALL_SCOPES as s (s)}
@@ -144,7 +143,7 @@
 									checked={(k.scopes as string[]).includes(s)}
 									label={s}
 									disabled={!ceiling.has(s)}
-									title={ceiling.has(s) ? `Toggle ${s} on this key` : 'Not in the ceiling'}
+									title={ceiling.has(s) ? m.users_scope_toggle_key({ scope: s }) : m.users_scope_not_in_ceiling()}
 									onclick={() => toggleKeyScope(k, s, !(k.scopes as string[]).includes(s))}
 								/>
 							{/each}
@@ -153,18 +152,18 @@
 				{/each}
 			</ul>
 		{:else}
-			<Text as="p" tone="faint" size="sm">No active keys.</Text>
+			<Text as="p" tone="faint" size="sm">{m.users_no_active_keys()}</Text>
 		{/if}
 
 		{#if revokedKeys.length}
 			<details class="revoked">
-				<summary><Text size="sm" tone="faint">Revoked keys ({revokedKeys.length})</Text></summary>
+				<summary><Text size="sm" tone="faint">{m.users_revoked_keys({ count: revokedKeys.length })}</Text></summary>
 				<ul class="keys">
 					{#each revokedKeys as k (k.id)}
 						<li class="key dim">
-							<Text size="sm">{k.label ?? '(unlabeled)'}</Text>
+							<Text size="sm">{k.label ?? m.users_unlabeled()}</Text>
 							<Text variant="code" tone="faint" size="xs">{k.key_preview ?? '••••'}</Text>
-							<Badge tone="danger">revoked</Badge>
+							<Badge tone="danger">{m.users_badge_revoked()}</Badge>
 						</li>
 					{/each}
 				</ul>

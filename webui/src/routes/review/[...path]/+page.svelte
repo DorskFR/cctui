@@ -9,6 +9,7 @@
 	import { ghreviewUrl } from '$lib/config';
 	import { ensureGhreviewToken } from '$lib/ghreview';
 	import { Card, Heading, Stack, Text } from '@dorsk/tsumikit';
+	import { m } from '$lib/paraglide/messages';
 
 	const url = ghreviewUrl();
 
@@ -26,22 +27,22 @@
 {#if !booted}
 	<Card>
 		<Stack gap="var(--sp-2)">
-			<Heading level={2}>Review center not configured</Heading>
+			<Heading level={2}>{m.review_center_not_configured()}</Heading>
 			<Text tone="faint">
-				Set <code>ghreviewUrl</code> in the deployment config to enable the gh-review integration.
+				{m.review_config_hint_prefix()} <code>ghreviewUrl</code> {m.review_config_hint_suffix()}
 			</Text>
 		</Stack>
 	</Card>
 {:else}
 	{#await booted}
-		<Text tone="faint">Loading review center…</Text>
+		<Text tone="faint">{m.review_center_loading()}</Text>
 	{:then { Review, token, base }}
 		<Review baseUrl={base} {token} basePath="/review" />
 	{:catch}
 		<Card>
 			<Stack gap="var(--sp-2)">
-				<Heading level={2}>Review center unavailable</Heading>
-				<Text tone="faint">Could not reach the gh-review backend or mint an access token.</Text>
+				<Heading level={2}>{m.review_center_unavailable()}</Heading>
+				<Text tone="faint">{m.review_center_unreachable()}</Text>
 			</Stack>
 		</Card>
 	{/await}

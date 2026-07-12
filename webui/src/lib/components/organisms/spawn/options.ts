@@ -3,12 +3,45 @@
 // selectors and permission-mode picker.
 import type { PermissionMode } from '@bindings/PermissionMode';
 import type { AccountProvider, OAuthAccount } from '$lib/queries';
+import { m } from '$lib/paraglide/messages';
 
 export const modes: { v: PermissionMode; label: string; hint: string }[] = [
-	{ v: 'ask', label: 'Ask', hint: 'Prompt on every action' },
-	{ v: 'auto', label: 'Auto', hint: 'Auto-apply, sandbox on' },
-	{ v: 'yolo', label: 'Yolo', hint: 'No prompts, full access' },
-	{ v: 'whip', label: 'Whip 🐎', hint: 'Yolo + no asking, no stalling' }
+	{
+		v: 'ask',
+		get label() {
+			return m.spawn_mode_ask_label();
+		},
+		get hint() {
+			return m.spawn_mode_ask_hint();
+		}
+	},
+	{
+		v: 'auto',
+		get label() {
+			return m.spawn_mode_auto_label();
+		},
+		get hint() {
+			return m.spawn_mode_auto_hint();
+		}
+	},
+	{
+		v: 'yolo',
+		get label() {
+			return m.spawn_mode_yolo_label();
+		},
+		get hint() {
+			return m.spawn_mode_yolo_hint();
+		}
+	},
+	{
+		v: 'whip',
+		get label() {
+			return m.spawn_mode_whip_label();
+		},
+		get hint() {
+			return m.spawn_mode_whip_hint();
+		}
+	}
 ];
 
 export {

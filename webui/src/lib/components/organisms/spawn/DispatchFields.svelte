@@ -22,6 +22,7 @@
 	import { submitChordLabel, isSubmitChord } from '$lib/platform';
 	import type { OAuthAccount } from '$lib/queries';
 	import type { Form } from './types';
+	import { m } from '$lib/paraglide/messages';
 
 	let {
 		form = $bindable(),
@@ -70,47 +71,47 @@
 </script>
 
 {#if dispatcherIds.length >= 1}
-	<Field label="Dispatcher" for="sp-dispatcher">
+	<Field label={m.dispatch_dispatcher_label()} for="sp-dispatcher">
 		<Select id="sp-dispatcher" bind:value={form.dispatcher}>
 			{#each dispatcherIds as d (d)}<option value={d}>{d}</option>{/each}
 		</Select>
 	</Field>
 {/if}
 
-<Field label="Harness" for="sp-adapter-d">
+<Field label={m.spawn_field_harness()} for="sp-adapter-d">
 	<Select id="sp-adapter-d" bind:value={form.dispatch_adapter}>
 		{#each allAdapters as a (a)}<option value={a}>{adapterLabel(a)}</option>{/each}
 	</Select>
 	<Text tone="faint" size="xs">
-		{isCodex ? 'Runs headless codex exec in the worker.' : 'Runs a claude worker via the control socket.'}
+		{isCodex ? m.dispatch_harness_codex_hint() : m.dispatch_harness_claude_hint()}
 	</Text>
 </Field>
 
-<Field label="Name (optional)" for="sp-name-d">
-	<Input id="sp-name-d" placeholder="session label" bind:value={form.name} />
-	<Text tone="faint" size="xs">Passed to the worker as <Text variant="code">--name</Text>.</Text>
+<Field label={m.dispatch_name_label()} for="sp-name-d">
+	<Input id="sp-name-d" placeholder={m.spawn_session_label_placeholder()} bind:value={form.name} />
+	<Text tone="faint" size="xs">{m.dispatch_name_hint_pre()}<Text variant="code">--name</Text>{m.dispatch_name_hint_post()}</Text>
 </Field>
 
-<Field label="Identity (optional)" for="sp-identity">
+<Field label={m.dispatch_identity_label()} for="sp-identity">
 	<Input id="sp-identity" mono placeholder="alice" bind:value={form.identity} />
-	<Text tone="faint" size="xs">Which account the worker acts as. Empty = worker default.</Text>
+	<Text tone="faint" size="xs">{m.dispatch_identity_hint()}</Text>
 </Field>
 
-<Field label="Repo" for="sp-repo">
+<Field label={m.dispatch_repo_label()} for="sp-repo">
 	<Input id="sp-repo" mono placeholder="cctui" bind:value={form.repo} />
-	<Text tone="faint" size="xs">Checked out under the worker's /workspace (optional).</Text>
+	<Text tone="faint" size="xs">{m.dispatch_repo_hint()}</Text>
 </Field>
 
-<Field label="Ticket (optional)" for="sp-ticket">
+<Field label={m.dispatch_ticket_label()} for="sp-ticket">
 	<Input id="sp-ticket" mono placeholder="PROJ-1234" bind:value={form.ticket} />
-	<Text tone="faint" size="xs">Issue id for the flow's context (e.g. an implement prompt).</Text>
+	<Text tone="faint" size="xs">{m.dispatch_ticket_hint()}</Text>
 </Field>
 
-<Field label="Prompt" for="sp-prompt-d">
+<Field label={m.dispatch_prompt_label()} for="sp-prompt-d">
 	<Textarea
 		id="sp-prompt-d"
 		style="min-height:8rem;max-height:60vh;resize:none;overflow-y:auto"
-		placeholder="What should the worker do? (e.g. work on CCT-123 / a PR)"
+		placeholder={m.dispatch_prompt_placeholder()}
 		bind:value={form.prompt}
 		autoresize
 		onkeydown={(e: KeyboardEvent) => {
@@ -120,32 +121,32 @@
 			}
 		}}
 	/>
-	<Text size="xs" tone="faint" style="display:block;margin-top:var(--sp-1)">{submitChordLabel()} to dispatch</Text>
+	<Text size="xs" tone="faint" style="display:block;margin-top:var(--sp-1)">{m.dispatch_prompt_submit_hint({ chord: submitChordLabel() })}</Text>
 </Field>
 
-<Field label="Prompt file (optional)" for="sp-prompt-file">
+<Field label={m.dispatch_prompt_file_label()} for="sp-prompt-file">
 	<Input id="sp-prompt-file" mono placeholder="implement-from-ticket.md" bind:value={form.prompt_file} />
-	<Text tone="faint" size="xs">A file under the worker's /prompts. Overrides the inline prompt.</Text>
+	<Text tone="faint" size="xs">{m.dispatch_prompt_file_hint()}</Text>
 </Field>
 
 {#if dispatchAccounts.length}
-	<Field label="Account (optional)" for="sp-account-d">
+	<Field label={m.dispatch_account_label()} for="sp-account-d">
 		<Select id="sp-account-d" bind:value={form.account}>
-			<option value="">Default (no account)</option>
+			<option value="">{m.dispatch_account_default()}</option>
 			{#each dispatchAccounts as a (a.id)}
 				<option value={a.name}>{a.name} ({providerForAdapter(a, adapter)?.provider})</option>
 			{/each}
 		</Select>
-		<Text tone="faint" size="xs">Routes the worker through the passthrough gateway under this account.</Text>
+		<Text tone="faint" size="xs">{m.dispatch_account_hint()}</Text>
 	</Field>
 {/if}
 
 <div class="row gap">
 	<div class="grow">
-		<Field label="Model" for="sp-model">
+		<Field label={m.spawn_field_model()} for="sp-model">
 			{#if usesAccountModels}
 				<Select id="sp-model" bind:value={form.model_account}>
-					{#if !accountModelOptions.length}<option value="">Default</option>{/if}
+					{#if !accountModelOptions.length}<option value="">{m.spawn_model_default()}</option>{/if}
 					{#each accountModelOptions as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
 				</Select>
 			{:else if isCodex}
@@ -160,8 +161,8 @@
 		</Field>
 	</div>
 	<div class="grow">
-		<Field label="Timeout min" for="sp-timeout">
-			<Input id="sp-timeout" mono inputmode="numeric" placeholder="default" bind:value={form.timeout} />
+		<Field label={m.dispatch_timeout_label()} for="sp-timeout">
+			<Input id="sp-timeout" mono inputmode="numeric" placeholder={m.dispatch_timeout_placeholder()} bind:value={form.timeout} />
 		</Field>
 	</div>
 </div>

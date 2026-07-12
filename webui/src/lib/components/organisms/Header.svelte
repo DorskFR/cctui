@@ -9,6 +9,7 @@
 	import { IconButton, SelectButton, Text } from '@dorsk/tsumikit';
 	import NavLink from '$lib/components/atoms/NavLink.svelte';
 	import { settings } from '$lib/settings.svelte';
+	import { m } from '$lib/paraglide/messages';
 
 	const version = useVersion();
 
@@ -37,16 +38,16 @@
 	async function toggleNotify() {
 		if (notify.enabled) {
 			notify.disable();
-			toasts.push('Notifications off', 'info');
+			toasts.push(m.nav_notify_off(), 'info');
 			return;
 		}
 		if (!notify.supported) {
-			toasts.err('Notifications not supported in this browser');
+			toasts.err(m.nav_notify_unsupported());
 			return;
 		}
 		const ok = await notify.enable();
-		if (ok) toasts.ok('Notifications on');
-		else toasts.err('Notifications blocked by browser');
+		if (ok) toasts.ok(m.nav_notify_on());
+		else toasts.err(m.nav_notify_blocked());
 	}
 </script>
 
@@ -60,10 +61,10 @@
 			class="conn"
 			class:on={ws.status === 'open'}
 			class:mid={ws.status === 'connecting'}
-			title={`websocket: ${ws.status}`}
+			title={m.nav_ws_status({ status: ws.status })}
 		></span>
 		<div class="spacer"></div>
-		<a class="mode-chip" href="/settings" title={`Claude harness mode: ${harnessMode} — change in Settings (Codex sessions ignore this)`}>
+		<a class="mode-chip" href="/settings" title={m.nav_harness_mode_tooltip({ mode: harnessMode })}>
 			<Text size="xs" tone="faint" variant="code">⚙ {harnessMode}</Text>
 		</a>
 		{#if $version.data}
@@ -82,13 +83,13 @@
 		<IconButton
 			emoji={notify.enabled ? '🔔' : '🔕'}
 			size={12}
-			label={notify.enabled ? 'Notifications on — click to mute' : 'Notify me when a session needs input'}
+			label={notify.enabled ? m.nav_notify_on_label() : m.nav_notify_off_label()}
 			pressed={notify.enabled}
 			onclick={toggleNotify}
 			oncontextmenu={(e: MouseEvent) => {
 				e.preventDefault();
 				notify.setSound(!notify.sound);
-				toasts.push(notify.sound ? 'Sound on' : 'Sound off', 'info');
+				toasts.push(notify.sound ? m.nav_sound_on() : m.nav_sound_off(), 'info');
 			}}
 		/>
 		<!-- UI font size as 5 discrete levels (CCT-297 #11): a native <select>
@@ -96,8 +97,8 @@
 		     "seizure" the continuous slider caused. -->
 		<SelectButton
 			glyph="A"
-			label="UI font size"
-			title="UI font size"
+			label={m.nav_font_size()}
+			title={m.nav_font_size()}
 			value={fontScale.levelId}
 			options={SCALE_LEVELS.map((l) => ({ value: l.id, label: l.label }))}
 			onchange={(v) => fontScale.set(v)}
@@ -106,19 +107,19 @@
 		     light/dark sections (TSU-1 / CCT-401) so the long list stays scannable. -->
 		<SelectButton
 			glyph={theme.icon}
-			label="Theme"
-			title={`Theme: ${theme.label}`}
+			label={m.nav_theme()}
+			title={m.nav_theme_tooltip({ theme: theme.label })}
 			value={theme.current}
 			groups={[
 				{
-					label: '— light',
+					label: m.nav_theme_light(),
 					options: THEMES.filter((t) => t.mode === 'light').map((t) => ({
 						value: t.id,
 						label: `${t.icon}  ${t.label}`
 					}))
 				},
 				{
-					label: '— dark',
+					label: m.nav_theme_dark(),
 					options: THEMES.filter((t) => t.mode === 'dark').map((t) => ({
 						value: t.id,
 						label: `${t.icon}  ${t.label}`

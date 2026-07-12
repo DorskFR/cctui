@@ -8,6 +8,7 @@
 	import type { CodexDiagnose } from '@bindings/CodexDiagnose';
 	import type { DiagnoseFact } from '@bindings/DiagnoseFact';
 	import { Button, Heading, Text } from '@dorsk/tsumikit';
+	import { m } from '$lib/paraglide/messages';
 
 	let {
 		sessionId,
@@ -20,11 +21,11 @@
 	const query = useSessionDiagnose(() => sessionId);
 
 	function fmtAge(ms: number | null): string {
-		if (ms === null) return 'undated';
-		if (ms < 1_000) return `${ms}ms ago`;
-		if (ms < 60_000) return `${Math.floor(ms / 1_000)}s ago`;
-		if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m ago`;
-		return `${Math.floor(ms / 3_600_000)}h ago`;
+		if (ms === null) return m.diagnose_undated();
+		if (ms < 1_000) return m.diagnose_age_ms({ ms });
+		if (ms < 60_000) return m.diagnose_age_s({ s: Math.floor(ms / 1_000) });
+		if (ms < 3_600_000) return m.diagnose_age_m({ min: Math.floor(ms / 60_000) });
+		return m.diagnose_age_h({ h: Math.floor(ms / 3_600_000) });
 	}
 
 	// Compact one-line rendering of a fact value: strings as-is, objects as
@@ -45,16 +46,16 @@
 		const d = $query.data?.daemon;
 		if (!d) return [];
 		return [
-			{ name: 'effective state', fact: d.effective_state },
-			{ name: 'last hook event', fact: d.last_hook_event },
-			{ name: 'attach', fact: d.attach },
-			{ name: 'PTY output', fact: d.pty_output },
-			{ name: 'claude socket', fact: d.claude_socket },
-			{ name: 'transcript', fact: d.transcript },
-			{ name: 'pending prompts', fact: d.prompts },
-			{ name: 'permission mode', fact: d.permission_mode },
-			{ name: 'dispatch', fact: d.dispatch },
-			{ name: 'gateway', fact: d.gateway }
+			{ name: m.diagnose_fact_effective_state(), fact: d.effective_state },
+			{ name: m.diagnose_fact_last_hook_event(), fact: d.last_hook_event },
+			{ name: m.diagnose_fact_attach(), fact: d.attach },
+			{ name: m.diagnose_fact_pty_output(), fact: d.pty_output },
+			{ name: m.diagnose_fact_claude_socket(), fact: d.claude_socket },
+			{ name: m.diagnose_fact_transcript(), fact: d.transcript },
+			{ name: m.diagnose_fact_pending_prompts(), fact: d.prompts },
+			{ name: m.diagnose_fact_permission_mode(), fact: d.permission_mode },
+			{ name: m.diagnose_fact_dispatch(), fact: d.dispatch },
+			{ name: m.diagnose_fact_gateway(), fact: d.gateway }
 		];
 	});
 
@@ -67,8 +68,8 @@
 
 	function codexRows(cx: CodexDiagnose): { name: string; value: string }[] {
 		const version = cx.codex_version
-			? `${cx.codex_version}${cx.version_supported === false ? ' (below min!)' : ''}`
-			: 'unknown';
+			? `${cx.codex_version}${cx.version_supported === false ? ` ${m.diagnose_below_min()}` : ''}`
+			: m.diagnose_unknown();
 		const turn = cx.active_turn_id ? `${cx.turn_status} · ${cx.active_turn_id}` : cx.turn_status;
 		const pending =
 			cx.pending_rpc_count > 0
@@ -78,21 +79,21 @@
 			? `${cx.rollout_path}${cx.rollout_size_bytes !== null ? ` · ${cx.rollout_size_bytes} bytes` : ''}`
 			: '—';
 		const out: { name: string; value: string }[] = [
-			{ name: 'version', value: `${version} · pinned ${cx.pinned_version} · min ${cx.min_version}` },
+			{ name: m.diagnose_codex_version(), value: `${version} · pinned ${cx.pinned_version} · min ${cx.min_version}` },
 			{
-				name: 'app-server',
+				name: m.diagnose_codex_app_server(),
 				value: `${cx.transport}${cx.app_server_pid !== null ? ` · pid ${cx.app_server_pid}` : ''} · live ${cx.live} · registered ${cx.registered}`
 			},
-			{ name: 'thread', value: cx.thread_id ?? '—' },
-			{ name: 'turn', value: turn },
-			{ name: 'pending RPCs', value: pending },
-			{ name: 'rollout', value: rollout }
+			{ name: m.diagnose_codex_thread(), value: cx.thread_id ?? '—' },
+			{ name: m.diagnose_codex_turn(), value: turn },
+			{ name: m.diagnose_codex_pending_rpcs(), value: pending },
+			{ name: m.diagnose_codex_rollout(), value: rollout }
 		];
-		if (cx.auth_state) out.push({ name: 'auth', value: cx.auth_state });
+		if (cx.auth_state) out.push({ name: m.diagnose_codex_auth(), value: cx.auth_state });
 		if (cx.last_protocol_error)
-			out.push({ name: 'last protocol error', value: cx.last_protocol_error });
+			out.push({ name: m.diagnose_codex_last_protocol_error(), value: cx.last_protocol_error });
 		if (cx.registry_live_mismatch)
-			out.push({ name: 'registry mismatch', value: cx.registry_live_mismatch });
+			out.push({ name: m.diagnose_codex_registry_mismatch(), value: cx.registry_live_mismatch });
 		return out;
 	}
 </script>
@@ -101,52 +102,52 @@
 	class="diag-scrim"
 	role="button"
 	tabindex="-1"
-	aria-label="Close diagnose panel"
+	aria-label={m.diagnose_close_aria()}
 	onclick={onclose}
 	onkeydown={(e) => e.key === 'Escape' && onclose()}
 ></div>
-<div class="diag-modal" role="dialog" aria-modal="true" aria-label="Session diagnose">
+<div class="diag-modal" role="dialog" aria-modal="true" aria-label={m.diagnose_title()}>
 	<div class="diag-head">
-		<Heading level={3}>Session diagnose</Heading>
+		<Heading level={3}>{m.diagnose_title()}</Heading>
 		<div class="diag-actions">
 			<Button size="sm" variant="ghost" onclick={() => $query.refetch()} loading={$query.isFetching}>
-				Refresh
+				{m.diagnose_refresh()}
 			</Button>
-			<Button size="sm" variant="ghost" onclick={onclose}>Close</Button>
+			<Button size="sm" variant="ghost" onclick={onclose}>{m.common_close()}</Button>
 		</div>
 	</div>
 	<Text size="xs" tone="muted">{sessionId}</Text>
 
 	{#if $query.isLoading}
-		<Text size="sm" tone="muted">Asking the daemon…</Text>
+		<Text size="sm" tone="muted">{m.diagnose_asking()}</Text>
 	{:else if $query.error}
 		<Text size="sm" tone="danger">
-			{$query.error instanceof Error ? $query.error.message : 'diagnose failed'}
+			{$query.error instanceof Error ? $query.error.message : m.diagnose_failed()}
 		</Text>
 	{:else if $query.data}
 		{@const resp = $query.data}
 		<div class="server-facts">
-			<span class="src">server</span>
+			<span class="src">{m.diagnose_src_server()}</span>
 			<span>
 				status: {resp.server.status ?? '?'} · adapter: {resp.server.adapter_id ?? '?'} ·
-				account: {resp.server.account_bound ? resp.server.accounts.join(', ') : 'not bound'}
+				account: {resp.server.account_bound ? resp.server.accounts.join(', ') : m.diagnose_not_bound()}
 				{#if resp.server.machine_last_seen_ms !== null}
-					· daemon heartbeat {fmtAge(Date.now() - resp.server.machine_last_seen_ms)}
+					· {m.diagnose_daemon_heartbeat({ age: fmtAge(Date.now() - resp.server.machine_last_seen_ms) })}
 				{/if}
 			</span>
 		</div>
 
 		{#if resp.daemon_error}
 			<div class="daemon-error">
-				<Text size="sm" tone="danger">daemon unavailable — {resp.daemon_error}</Text>
+				<Text size="sm" tone="danger">{m.diagnose_daemon_unavailable({ error: resp.daemon_error })}</Text>
 			</div>
 		{/if}
 
 		{#if resp.daemon}
 			<Text size="xs" tone="muted">
-				report from daemon · adapter {resp.daemon.adapter} · worker {resp.daemon.short ?? '?'}
+				{m.diagnose_report_from({ adapter: resp.daemon.adapter, worker: resp.daemon.short ?? '?' })}
 			</Text>
-			<div class="facts" role="table" aria-label="Diagnose facts">
+			<div class="facts" role="table" aria-label={m.diagnose_facts_aria()}>
 				{#each visibleRows as row (row.name)}
 					<div class="fact" role="row">
 						<span class="name">{row.name}</span>
@@ -157,7 +158,7 @@
 						{#if row.fact.value !== null}
 							<span class="val">{fmtValue(row.fact.value)}</span>
 						{:else}
-							<span class="val missing">— {row.fact.missing_reason ?? 'missing'}</span>
+							<span class="val missing">— {row.fact.missing_reason ?? m.diagnose_missing()}</span>
 						{/if}
 					</div>
 				{/each}
@@ -166,7 +167,7 @@
 			{#if resp.daemon.codex}
 				{@const cx = resp.daemon.codex}
 				<Heading level={4}>Codex</Heading>
-				<div class="facts" role="table" aria-label="Codex diagnose facts">
+				<div class="facts" role="table" aria-label={m.diagnose_codex_facts_aria()}>
 					{#each codexRows(cx) as row (row.name)}
 						<div class="fact codex-fact" role="row">
 							<span class="name">{row.name}</span>

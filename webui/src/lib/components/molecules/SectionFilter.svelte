@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { Icon, IconButton } from '@dorsk/tsumikit';
+	import { m } from '$lib/paraglide/messages';
 	import { clickOutside } from '$lib/clickOutside';
 	import { SECTIONS, type Section } from '../../../routes/sessions/sessions.logic';
 
@@ -26,8 +27,8 @@
 		variant="default"
 		class="btn-control-square"
 		icon="filter"
-		label="Filter sections"
-		title="Filter sections ({count}/{SECTIONS.length})"
+		label={m.sessions_filter_sections()}
+		title={m.sessions_filter_sections_count({ count, total: SECTIONS.length })}
 		aria-haspopup="true"
 		aria-expanded={open}
 		aria-pressed={count < SECTIONS.length}
@@ -35,7 +36,7 @@
 	/>
 	{#if count < SECTIONS.length}<span class="count-badge" aria-hidden="true">{count}</span>{/if}
 	{#if open}
-		<div class="menu" role="menu" aria-label="Sections">
+		<div class="menu" role="menu" aria-label={m.sessions_sections_aria()}>
 			{#each SECTIONS as sec (sec.value)}
 				<button
 					type="button"

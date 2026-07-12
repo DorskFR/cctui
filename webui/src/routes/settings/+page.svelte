@@ -5,10 +5,12 @@
 	// matching the settings catalogue. New-session launch defaults were removed
 	// in CCT-563: the per-(machine, cwd) spawn memory (CCT-561) supersedes them.
 	import { settings } from '$lib/settings.svelte';
+	import { LOCALE_LABELS, LOCALES, type Locale } from '$lib/locale.svelte';
 	import { theme, THEMES } from '$lib/theme.svelte';
 	import { fontScale, SCALE_LEVELS } from '$lib/fontscale.svelte';
 	import { notify } from '$lib/notify.svelte';
 	import { Card, Heading, Select, Stack, Switch, Text, Textarea, Field } from '@dorsk/tsumikit';
+	import { m } from '$lib/paraglide/messages';
 	import type { HarnessMode, WhipMode } from '$lib/settings.svelte';
 
 	const sl = $derived(settings.state.sessionList);
@@ -45,18 +47,18 @@
 	const harnessOpts: { v: HarnessMode; label: string; help: string }[] = [
 		{
 			v: 'bg',
-			label: 'Background (default)',
-			help: 'Full live fidelity with native FleetView — live PTY, mid-turn control.'
+			label: m.settings_harness_bg_label(),
+			help: m.settings_harness_bg_help()
 		},
 		{
 			v: 'sdk',
-			label: 'SDK',
-			help: 'Persistent, structured session. No PTY.'
+			label: m.settings_harness_sdk_label(),
+			help: m.settings_harness_sdk_help()
 		},
 		{
 			v: 'oneshot',
-			label: 'One-shot',
-			help: 'Ephemeral, per-turn. No live mid-turn control.'
+			label: m.settings_harness_oneshot_label(),
+			help: m.settings_harness_oneshot_help()
 		}
 	];
 	const harnessHelp = $derived(harnessOpts.find((o) => o.v === harnessMode)?.help ?? '');
@@ -116,17 +118,17 @@
 
 <Stack gap="lg">
 	<header class="head">
-		<Heading level={1}>Settings</Heading>
-		<Text tone="faint">Your preferences, saved to your account.</Text>
+		<Heading level={1}>{m.settings_title()}</Heading>
+		<Text tone="faint">{m.settings_subtitle()}</Text>
 	</header>
 
 	<!-- ── Session list ─────────────────────────────────────────────────── -->
 	<Card>
 		<Stack gap="md">
-			<Heading level={2}>Session list</Heading>
+			<Heading level={2}>{m.settings_session_list_title()}</Heading>
 			<dl class="props">
 				<div class="prop">
-					<dt><Text weight="semibold">Sort</Text></dt>
+					<dt><Text weight="semibold">{m.settings_sort_label()}</Text></dt>
 					<dd>
 						<Select
 							value={sl.sort}
@@ -135,14 +137,14 @@
 									sort: (e.currentTarget as HTMLSelectElement).value as typeof sl.sort
 								})}
 						>
-							<option value="activity">Recent activity</option>
-							<option value="created">Created</option>
-							<option value="name">Name</option>
+							<option value="activity">{m.settings_sort_activity()}</option>
+							<option value="created">{m.settings_sort_created()}</option>
+							<option value="name">{m.settings_sort_name()}</option>
 						</Select>
 					</dd>
 				</div>
 				<div class="prop">
-					<dt><Text weight="semibold">View</Text></dt>
+					<dt><Text weight="semibold">{m.settings_view_label()}</Text></dt>
 					<dd>
 						<Select
 							value={sl.view}
@@ -151,13 +153,13 @@
 									view: (e.currentTarget as HTMLSelectElement).value as typeof sl.view
 								})}
 						>
-							<option value="list">List</option>
-							<option value="card">Cards</option>
+							<option value="list">{m.settings_view_list()}</option>
+							<option value="card">{m.settings_view_cards()}</option>
 						</Select>
 					</dd>
 				</div>
 				<div class="prop">
-					<dt><Text weight="semibold">Density</Text></dt>
+					<dt><Text weight="semibold">{m.settings_density_label()}</Text></dt>
 					<dd>
 						<Select
 							value={sl.density}
@@ -166,22 +168,22 @@
 									density: (e.currentTarget as HTMLSelectElement).value as typeof sl.density
 								})}
 						>
-							<option value="normal">Detailed</option>
-							<option value="compact">Compact</option>
+							<option value="normal">{m.settings_density_detailed()}</option>
+							<option value="compact">{m.settings_density_compact()}</option>
 						</Select>
 					</dd>
 				</div>
 				<div class="prop">
 					<dt>
-						<Text weight="semibold">Sections</Text>
-						<Text size="sm" tone="faint">{sl.section || 'All'}</Text>
+						<Text weight="semibold">{m.settings_sections_label()}</Text>
+						<Text size="sm" tone="faint">{sl.section || m.common_all()}</Text>
 					</dt>
 					<dd></dd>
 				</div>
 				<div class="prop">
 					<dt>
-						<Text weight="semibold">Label filter</Text>
-						<Text size="sm" tone="faint">{csv(sl.labelFilter) || 'None'}</Text>
+						<Text weight="semibold">{m.settings_label_filter_label()}</Text>
+						<Text size="sm" tone="faint">{csv(sl.labelFilter) || m.common_none()}</Text>
 					</dt>
 					<dd></dd>
 				</div>
@@ -192,10 +194,10 @@
 	<!-- ── Display ──────────────────────────────────────────────────────── -->
 	<Card>
 		<Stack gap="md">
-			<Heading level={2}>Display</Heading>
+			<Heading level={2}>{m.settings_display_title()}</Heading>
 			<dl class="props">
 				<div class="prop">
-					<dt><Text weight="semibold">Theme</Text></dt>
+					<dt><Text weight="semibold">{m.settings_theme_label()}</Text></dt>
 					<dd>
 						<Select
 							value={theme.current}
@@ -208,7 +210,7 @@
 					</dd>
 				</div>
 				<div class="prop">
-					<dt><Text weight="semibold">Font size</Text></dt>
+					<dt><Text weight="semibold">{m.settings_font_size_label()}</Text></dt>
 					<dd>
 						<Select
 							value={fontScale.levelId}
@@ -222,18 +224,48 @@
 				</div>
 				<div class="prop">
 					<dt>
-						<Text weight="semibold">Archive shortcut</Text>
+						<Text weight="semibold">{m.settings_archive_shortcut_label()}</Text>
 						<Text size="sm" tone="faint">
-							In an open conversation, ⌘ E (Mac) / Ctrl + E interrupts any running turn
-							and archives the session.
+							{m.settings_archive_shortcut_help()}
 						</Text>
 					</dt>
 					<dd>
 						<Switch
 							checked={settings.state.display.archiveShortcut}
-							label="Archive shortcut"
+							label={m.settings_archive_shortcut_label()}
 							onclick={() => settings.toggleArchiveShortcut()}
 						/>
+					</dd>
+				</div>
+			</dl>
+		</Stack>
+	</Card>
+
+	<!-- ── Language (CCT-599) ────────────────────────────────────────────── -->
+	<Card>
+		<Stack gap="md">
+			<Heading level={2}>{m.settings_language_title()}</Heading>
+			<dl class="props">
+				<div class="prop">
+					<dt>
+						<Text weight="semibold">{m.settings_interface_language_label()}</Text>
+						<Text size="sm" tone="faint">
+							{m.settings_interface_language_help()}
+						</Text>
+					</dt>
+					<dd>
+						<Select
+							value={settings.locale ?? 'auto'}
+							onchange={(e) => {
+								const v = (e.currentTarget as HTMLSelectElement).value;
+								settings.setLocale(v === 'auto' ? null : (v as Locale));
+							}}
+						>
+							<option value="auto">{m.settings_language_auto()}</option>
+							{#each LOCALES as l (l)}
+								<option value={l}>{LOCALE_LABELS[l]}</option>
+							{/each}
+						</Select>
 					</dd>
 				</div>
 			</dl>
@@ -243,15 +275,14 @@
 	<!-- ── Claude harness mode (epic CCT-494) ───────────────────────────── -->
 	<Card>
 		<Stack gap="md">
-			<Heading level={2}>Claude harness mode</Heading>
+			<Heading level={2}>{m.settings_harness_title()}</Heading>
 			<dl class="props">
 				<div class="prop">
 					<dt>
-						<Text weight="semibold">Execution mode</Text>
+						<Text weight="semibold">{m.settings_harness_execution_label()}</Text>
 						<Text size="sm" tone="faint">{harnessHelp}</Text>
 						<Text size="sm" tone="faint">
-							Applies to all your machines and takes effect within ~1s. Only affects
-							Claude sessions — Codex sessions ignore this.
+							{m.settings_harness_execution_help()}
 						</Text>
 					</dt>
 					<dd>
@@ -273,20 +304,18 @@
 	<!-- ── Whip mode stall phrases (CCT-598) ────────────────────────────── -->
 	<Card>
 		<Stack gap="md">
-			<Heading level={2}>Whip mode (🐎)</Heading>
+			<Heading level={2}>{m.settings_whip_title()}</Heading>
 			<Text size="sm" tone="faint">
-				Whip mode blocks a worker from stopping early with hand-back language. Add your own
-				stall phrases (e.g. other languages) — matched case-insensitively as substrings of the
-				final message. Takes effect on the next spawn; only affects whip-mode sessions.
+				{m.settings_whip_intro()}
 			</Text>
 			<dl class="props">
 				<div class="prop">
 					<dt>
-						<Text weight="semibold">Phrase list</Text>
+						<Text weight="semibold">{m.settings_whip_phrase_list_label()}</Text>
 						<Text size="sm" tone="faint">
 							{whip.mode === 'replace'
-								? 'Replace: only these phrases are matched (defaults ignored).'
-								: 'Extend: these are added to the built-in defaults below.'}
+								? m.settings_whip_mode_replace_help()
+								: m.settings_whip_mode_extend_help()}
 						</Text>
 					</dt>
 					<dd>
@@ -297,13 +326,13 @@
 									mode: (e.currentTarget as HTMLSelectElement).value as WhipMode
 								})}
 						>
-							<option value="extend">Extend defaults</option>
-							<option value="replace">Replace defaults</option>
+							<option value="extend">{m.settings_whip_mode_extend()}</option>
+							<option value="replace">{m.settings_whip_mode_replace()}</option>
 						</Select>
 					</dd>
 				</div>
 			</dl>
-			<Field label="Your phrases (one per line)">
+			<Field label={m.settings_whip_phrases_field_label()}>
 				<Textarea
 					mono
 					autoresize
@@ -314,8 +343,8 @@
 				/>
 			</Field>
 			<Field
-				label="Custom guidance (optional)"
-				hint="Shown to the model instead of the default keep-going message when a stall is blocked."
+				label={m.settings_whip_guidance_label()}
+				hint={m.settings_whip_guidance_hint()}
 			>
 				<Textarea
 					autoresize
@@ -328,7 +357,7 @@
 				/>
 			</Field>
 			<details class="defaults">
-				<summary><Text size="sm" tone="faint">Built-in default phrases (excerpt)</Text></summary>
+				<summary><Text size="sm" tone="faint">{m.settings_whip_defaults_summary()}</Text></summary>
 				<ul>
 					{#each BUILTIN_STALL_PHRASES as p (p)}
 						<li><Text size="sm" tone="faint">{p}</Text></li>
@@ -341,28 +370,28 @@
 	<!-- ── Notifications ────────────────────────────────────────────────── -->
 	<Card>
 		<Stack gap="md">
-			<Heading level={2}>Notifications</Heading>
+			<Heading level={2}>{m.settings_notifications_title()}</Heading>
 			<dl class="props">
 				<div class="prop">
 					<dt>
-						<Text weight="semibold">Notify on input needed</Text>
+						<Text weight="semibold">{m.settings_notify_input_label()}</Text>
 						<Text size="sm" tone="faint">
-							A browser notification when a session is waiting for you.
+							{m.settings_notify_input_help()}
 						</Text>
 					</dt>
 					<dd>
 						<Switch
 							checked={notify.enabled}
-							label="Notifications"
+							label={m.settings_notifications_title()}
 							disabled={!notify.supported}
 							onclick={() => void toggleNotify()}
 						/>
 					</dd>
 				</div>
 				<div class="prop">
-					<dt><Text weight="semibold">Sound</Text></dt>
+					<dt><Text weight="semibold">{m.settings_sound_label()}</Text></dt>
 					<dd>
-						<Switch checked={notify.sound} label="Notification sound" onclick={toggleNotifySound} />
+						<Switch checked={notify.sound} label={m.settings_notification_sound_label()} onclick={toggleNotifySound} />
 					</dd>
 				</div>
 			</dl>
@@ -372,8 +401,8 @@
 	<!-- ── Keyboard ─────────────────────────────────────────────────────── -->
 	<Card>
 		<Stack gap="md">
-			<Heading level={2}>Keyboard</Heading>
-			<Text tone="faint">Custom keyboard shortcuts are coming soon.</Text>
+			<Heading level={2}>{m.settings_keyboard_title()}</Heading>
+			<Text tone="faint">{m.settings_keyboard_soon()}</Text>
 		</Stack>
 	</Card>
 </Stack>

@@ -2,6 +2,7 @@
 	import { useAccountUsage } from '$lib/queries';
 	import { relativeTime } from '$lib/format';
 	import { Text } from '@dorsk/tsumikit';
+	import { m } from '$lib/paraglide/messages';
 
 	// Per-account subscription-usage chip (CCT-306). Shows the 5h/7d window
 	// utilization for an account: Anthropic's free OAuth usage windows for claude
@@ -45,10 +46,12 @@
 	const tip = $derived(
 		[
 			fiveHour
-				? `5h: ${fivePct}%${fiveHour.resets_at ? ` · resets ${relativeTime(fiveHour.resets_at)}` : ''}`
+				? m.sessions_usage_5h({ pct: fivePct ?? 0 }) +
+					(fiveHour.resets_at ? m.sessions_usage_resets({ time: relativeTime(fiveHour.resets_at) }) : '')
 				: null,
 			sevenDay
-				? `7d: ${sevenPct}%${sevenDay.resets_at ? ` · resets ${relativeTime(sevenDay.resets_at)}` : ''}`
+				? m.sessions_usage_7d({ pct: sevenPct ?? 0 }) +
+					(sevenDay.resets_at ? m.sessions_usage_resets({ time: relativeTime(sevenDay.resets_at) }) : '')
 				: null
 		]
 			.filter(Boolean)
@@ -61,11 +64,11 @@
 		{#if fivePct !== null}<Text
 				numeric
 				weight={tone === 'hot' ? 'semibold' : 'normal'}
-				tone={tone === 'hot' ? 'danger' : tone === 'warm' ? 'warn' : 'muted'}>5h {fivePct}%</Text>{/if}
+				tone={tone === 'hot' ? 'danger' : tone === 'warm' ? 'warn' : 'muted'}>{m.sessions_usage_5h_chip({ pct: fivePct })}</Text>{/if}
 		{#if sevenPct !== null}<Text
 				numeric
 				weight={tone === 'hot' ? 'semibold' : 'normal'}
-				tone={tone === 'hot' ? 'danger' : tone === 'warm' ? 'warn' : 'faint'}>7d {sevenPct}%</Text>{/if}
+				tone={tone === 'hot' ? 'danger' : tone === 'warm' ? 'warn' : 'faint'}>{m.sessions_usage_7d_chip({ pct: sevenPct })}</Text>{/if}
 	</span>
 {:else if active && $q.isLoading}
 	<span class="spin"></span>

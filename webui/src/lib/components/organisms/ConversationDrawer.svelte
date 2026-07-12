@@ -23,6 +23,7 @@
 	import { ScrollController } from './conversation/scroll.svelte';
 	import { ForkController } from './conversation/fork.svelte';
 	import { SessionActions } from './conversation/sessionActions.svelte';
+	import { m } from '$lib/paraglide/messages';
 
 	let {
 		session,
@@ -272,7 +273,7 @@
 				};
 			case 'context_reset':
 				// /clear: the session id rotated under the same worker (CCT-158).
-				return { role: 'reset', ts: Number(e.ts), text: 'context reset · /clear or /compact' };
+				return { role: 'reset', ts: Number(e.ts), text: m.conversation_context_reset() };
 			case 'compact_summary':
 				// /compact appends a summary in place (no session-id rotation), so it
 				// arrives with its text (CCT-159).
@@ -512,7 +513,7 @@
 	<div
 		class="resize-handle"
 		role="separator"
-		aria-label="Resize panel"
+		aria-label={m.drawer_resize_panel()}
 		aria-orientation="vertical"
 		onpointerdown={startResize}
 		onpointermove={onResize}
@@ -525,7 +526,7 @@
 	<Dropzone
 		overlay
 		multiple
-		label="Drop files to attach"
+		label={m.composer_drop_files()}
 		disabled={!supportsAttachments || archived}
 		onfiles={(f) => composer?.addFiles(f)}
 		onactive={(a) => composer?.setDragActive(a)}
@@ -579,16 +580,16 @@
 	{/if}
 
 	{#if needsInput}
-		<div class="attn-banner">✋ Waiting for your input</div>
+		<div class="attn-banner">{m.conversation_waiting_input()}</div>
 	{/if}
 
 	{#if stream.softLimit}
 		<!-- Slim notice once the auto-opened modal is dismissed, so the stalled chat
 		     keeps an obvious way back to the switcher (CCT-444). -->
 		<div class="attn-banner soft-limit-notice">
-			<span>⏳ Soft limit reached on {stream.softLimit.account_name}.</span>
+			<span>{m.conversation_soft_limit_reached({ account: stream.softLimit.account_name })}</span>
 			<button type="button" class="soft-limit-switch" onclick={() => (acctModalOpen = true)}>
-				Switch account
+				{m.conversation_switch_account()}
 			</button>
 		</div>
 	{/if}
@@ -651,11 +652,11 @@
 
 {#if selectMode}
 	<div class="fork-select-bar row">
-		<span class="fork-select-count">{selected.size} selected</span>
+		<span class="fork-select-count">{m.fork_selected_count({ count: selected.size })}</span>
 		<Button variant="primary" onclick={forkSelection} disabled={selected.size === 0}>
-			Fork selection
+			{m.fork_selection()}
 		</Button>
-		<Button onclick={exitSelect}>Cancel</Button>
+		<Button onclick={exitSelect}>{m.common_cancel()}</Button>
 	</div>
 {/if}
 

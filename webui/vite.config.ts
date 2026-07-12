@@ -1,3 +1,4 @@
+import { paraglideVitePlugin } from '@inlang/paraglide-js';
 import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vite';
 
@@ -10,7 +11,17 @@ declare const process: { env: Record<string, string | undefined> };
 const clientVersion = process.env.CLIENT_VERSION || 'dev';
 
 export default defineConfig({
-	plugins: [sveltekit()],
+	plugins: [
+		// No URL/cookie strategy: this SPA drives locale imperatively via setLocale
+		// from the settings store, so the runtime must not auto-resolve from a path.
+		paraglideVitePlugin({
+			project: './project.inlang',
+			outdir: './src/lib/paraglide',
+			strategy: ['localStorage', 'preferredLanguage', 'baseLocale'],
+			disableAsyncLocalStorage: true
+		}),
+		sveltekit()
+	],
 	define: {
 		__CLIENT_VERSION__: JSON.stringify(clientVersion)
 	},

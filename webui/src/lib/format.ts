@@ -1,3 +1,5 @@
+import { getLocale } from './paraglide/runtime';
+
 /** Compact token count: 1234 → "1.2k", 1_200_000 → "1.2M". */
 export function compact(n: number): string {
 	if (n < 1000) return String(n);
@@ -5,20 +7,22 @@ export function compact(n: number): string {
 	return `${(n / 1_000_000).toFixed(1)}M`;
 }
 
-/** "3m ago", "2h ago", "5d ago" from an ISO datetime (or null → ""). */
+/** Relative time from an ISO datetime, in the active locale ("3m ago" / "il y a
+ *  3 min"); null → "". Falls back to a localized date past ~30 days. */
 export function relativeTime(iso: string | null | undefined): string {
 	if (!iso) return '';
 	const then = new Date(iso).getTime();
 	if (Number.isNaN(then)) return '';
+	const rtf = new Intl.RelativeTimeFormat(getLocale(), { numeric: 'always', style: 'narrow' });
 	const secs = Math.max(0, Math.floor((Date.now() - then) / 1000));
-	if (secs < 60) return `${secs}s ago`;
+	if (secs < 60) return rtf.format(-secs, 'second');
 	const mins = Math.floor(secs / 60);
-	if (mins < 60) return `${mins}m ago`;
+	if (mins < 60) return rtf.format(-mins, 'minute');
 	const hrs = Math.floor(mins / 60);
-	if (hrs < 24) return `${hrs}h ago`;
+	if (hrs < 24) return rtf.format(-hrs, 'hour');
 	const days = Math.floor(hrs / 24);
-	if (days < 30) return `${days}d ago`;
-	return new Date(iso).toLocaleDateString();
+	if (days < 30) return rtf.format(-days, 'day');
+	return new Date(iso).toLocaleDateString(getLocale());
 }
 
 /** Human uptime from seconds: "2d 3h", "4h 10m", "12m". */

@@ -6,6 +6,7 @@
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
 	import { Badge, Button, IconButton, Text, Timestamp, Tooltip } from '@dorsk/tsumikit';
 	import type { Line } from './types';
+	import { m } from '$lib/paraglide/messages';
 	import './bubble.css';
 
 	let {
@@ -63,8 +64,8 @@
 				type="checkbox"
 				class="fork-select-check"
 				checked={selectedForFork}
-				aria-label="Select this message for fork"
-				title="Include this message in the fork selection"
+				aria-label={m.fork_select_message_aria()}
+				title={m.fork_select_message_title()}
 				onchange={() => ontoggleselect?.(forkAnchor)}
 			/>
 		{/if}
@@ -82,37 +83,37 @@
 		{/if}
 		<Timestamp value={ln.ts} mode="time" tone="faint" size="xs" />
 		{#if ln.failed}
-			<Text class="not-delivered" tone="danger" size="xs" title={ln.failed}>⚠ Not delivered</Text>
+			<Text class="not-delivered" tone="danger" size="xs" title={ln.failed}>{m.conversation_not_delivered()}</Text>
 			{#if !archived}
 				<Button
 					variant="ghost"
 					class="retry-failed"
-					title="Resend this message ({ln.failed})"
-					onclick={() => onretry(ln.ts)}>↻ Retry</Button>
+					title={m.conversation_resend_title({ reason: ln.failed })}
+					onclick={() => onretry(ln.ts)}>↻ {m.common_retry()}</Button>
 				<IconButton
 					class="edit-pending"
 					icon="edit"
 
-					label="Edit message"
-					title="Pull this message back into the composer to edit and resend"
+					label={m.conversation_edit_message_label()}
+					title={m.conversation_edit_message_title()}
 					onclick={() => onedit(ln.text ?? '', ln.ts)}
 				/>
 			{/if}
 		{:else if ln.pending}
 			{#if ln.retrying}
-				<Text class="sending" tone="inherit" size="xs" title="Delivery failed — retrying with backoff"
-					>retrying… ({ln.retrying.attempt}/{ln.retrying.max})</Text
+				<Text class="sending" tone="inherit" size="xs" title={m.conversation_retrying_title()}
+					>{m.conversation_retrying({ attempt: ln.retrying.attempt, max: ln.retrying.max })}</Text
 				>
 			{:else}
-				<Text class="sending" tone="inherit" size="xs">sending…</Text>
+				<Text class="sending" tone="inherit" size="xs">{m.conversation_sending()}</Text>
 			{/if}
 			{#if !archived}
 				<IconButton
 					class="edit-pending"
 					icon="edit"
 
-					label="Edit pending message"
-					title="Pull this still-pending message back into the composer to edit and resend"
+					label={m.conversation_edit_pending_label()}
+					title={m.conversation_edit_pending_title()}
 					onclick={() => onedit(ln.text ?? '', ln.ts)}
 				/>
 			{/if}
@@ -125,31 +126,31 @@
 				class="copy"
 				icon="image"
 
-				label="Save as image"
-				title="Save this message as an image"
+				label={m.conversation_save_image_label()}
+				title={m.conversation_save_image_title()}
 				onclick={(e) => onsaveimage(e, ln)}
 			/>
 			<IconButton
 				class="copy"
 				icon="markdown"
 
-				label="Copy as Markdown"
-				title="Copy this message as Markdown"
+				label={m.conversation_copy_markdown_label()}
+				title={m.conversation_copy_markdown_title()}
 				onclick={() => oncopymarkdown(ln)}
 			/>
 			{#if forkAnchor && !selectMode}
 				<IconButton
 					class="copy fork-from"
 					icon="fork"
-					label="Fork from here"
-					title="Fork a new session keeping everything up to and including this message"
+					label={m.fork_from_here_label()}
+					title={m.fork_from_here_title()}
 					onclick={() => onforkfrom?.(forkAnchor)}
 				/>
 				<IconButton
 					class="copy fork-after"
 					icon="fork"
-					label="Fork after here"
-					title="Fork a new session keeping everything after this message"
+					label={m.fork_after_here_label()}
+					title={m.fork_after_here_title()}
 					onclick={() => onforkafter?.(forkAnchor)}
 				/>
 			{/if}

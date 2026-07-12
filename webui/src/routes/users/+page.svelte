@@ -19,6 +19,7 @@
 		Timestamp
 	} from '@dorsk/tsumikit';
 	import { auth } from '$lib/auth.svelte';
+	import { m } from '$lib/paraglide/messages';
 
 	const me = useMe();
 	// Only an admin may list all users; a non-admin uses the self-service view.
@@ -43,23 +44,20 @@
 		try {
 			const r = await actions.create(name);
 			selectedId = r.id;
-			showSecret(`Key — ${r.name}`, r.key);
+			showSecret(m.users_key_secret_title({ label: r.name }), r.key);
 		} catch (e) {
 			toasts.err((e as Error).message);
 		}
 	}
 	function rename(id: string, name: string | null) {
-		if (name) guard(actions.rename(id, name).then(() => toasts.ok('Renamed')));
+		if (name) guard(actions.rename(id, name).then(() => toasts.ok(m.users_renamed())));
 	}
 	function revoke(id: string, name: string) {
 		if (
-			!confirm(
-				`Revoke ${name}? ALL their user tokens and machine keys stop working permanently. ` +
-					`To turn a user off temporarily, use the active toggle instead.`
-			)
+			!confirm(m.users_confirm_revoke_user({ name }))
 		)
 			return;
-		guard(actions.revoke(id).then(() => toasts.ok('Revoked')));
+		guard(actions.revoke(id).then(() => toasts.ok(m.users_revoked())));
 	}
 	// Non-destructive on/off (CCT-251): auth fails while disabled, nothing is
 	// invalidated, flipping back restores everything.
@@ -67,14 +65,14 @@
 		guard(
 			actions
 				.setDisabled(id, disabled)
-				.then(() => toasts.ok(disabled ? `${name} disabled` : `${name} enabled`))
+				.then(() => toasts.ok(disabled ? m.users_user_disabled({ name }) : m.users_user_enabled({ name })))
 		);
 	}
 	function purgeUser(id: string, name: string) {
-		if (!confirm(`Permanently delete ${name}? This cannot be undone.`)) return;
+		if (!confirm(m.users_confirm_purge_user({ name }))) return;
 		guard(
 			actions.purgeUser(id).then(() => {
-				toasts.ok('User deleted');
+				toasts.ok(m.users_user_deleted());
 				if (selectedId === id) selectedId = '';
 			})
 		);
@@ -87,30 +85,29 @@
 </script>
 
 <div class="bar row">
-	<Heading level={1}>Users</Heading>
+	<Heading level={1}>{m.users_title()}</Heading>
 	<div class="spacer"></div>
 	{#if $me.data?.role === 'admin'}
-		<Button control variant="primary" onclick={() => (createOpen = true)}>+ New user</Button>
+		<Button control variant="primary" onclick={() => (createOpen = true)}>{m.users_new_user()}</Button>
 	{/if}
 </div>
 
 <!-- Who am I (CCT-251): role + identity + a non-secret preview of the stored
      bearer, so "user token required" errors stop being a mystery. -->
 {#if $me.data}
-	{@const m = $me.data}
+	{@const meData = $me.data}
 	<div class="card whoami row">
-		<Text tone="faint">Signed in as</Text>
-		<Badge tone={m.role === 'admin' ? 'warn' : m.role === 'user' ? 'ok' : 'neutral'}>{m.role}</Badge>
-		{#if m.user_name}<Text weight="semibold">{m.user_name}</Text>{/if}
-		<Text variant="code" tone="faint" size="xs">{m.token_preview}</Text>
-		{#if m.role === 'admin'}
+		<Text tone="faint">{m.users_signed_in_as()}</Text>
+		<Badge tone={meData.role === 'admin' ? 'warn' : meData.role === 'user' ? 'ok' : 'neutral'}>{meData.role}</Badge>
+		{#if meData.user_name}<Text weight="semibold">{meData.user_name}</Text>{/if}
+		<Text variant="code" tone="faint" size="xs">{meData.token_preview}</Text>
+		{#if meData.role === 'admin'}
 			<Text tone="faint" size="xs"
-				>The admin token is server-wide and owns no machines or accounts — OAuth accounts are
-				created under a user.</Text
+				>{m.users_admin_token_note()}</Text
 			>
 		{/if}
 		<div class="spacer"></div>
-		<Button onclick={() => void auth.logout()}>⏻ Log out</Button>
+		<Button onclick={() => void auth.logout()}>{m.users_log_out()}</Button>
 	</div>
 {/if}
 
@@ -127,14 +124,14 @@
 	<div class="empty"><span class="spin"></span></div>
 {:else}
 	<div class="picker">
-		<Field label="Select a user" for="user-select">
+		<Field label={m.users_select_user()} for="user-select">
 			<Select id="user-select" bind:value={selectedId}>
-				<option value="">Select a user…</option>
-				<optgroup label="Active">
+				<option value="">{m.users_select_user_placeholder()}</option>
+				<optgroup label={m.users_group_active()}>
 					{#each active as u (u.id)}<option value={u.id}>{u.name}</option>{/each}
 				</optgroup>
 				{#if revoked.length}
-					<optgroup label="Revoked">
+					<optgroup label={m.users_group_revoked()}>
 						{#each revoked as u (u.id)}<option value={u.id}>{u.name}</option>{/each}
 					</optgroup>
 				{/if}
@@ -149,19 +146,19 @@
 				<header class="head">
 					<Heading level={2}>{u.name}</Heading>
 					{#if u.revoked_at}
-						<Badge tone="danger">revoked</Badge>
+						<Badge tone="danger">{m.users_badge_revoked()}</Badge>
 					{:else if u.disabled_at}
-						<Badge tone="warn">disabled</Badge>
+						<Badge tone="warn">{m.users_badge_disabled()}</Badge>
 					{:else}
-						<Badge tone="ok">active</Badge>
+						<Badge tone="ok">{m.users_badge_active()}</Badge>
 					{/if}
 					{#if !u.revoked_at}
 						<IconButton
 							inline
 							icon="edit"
 							size={14}
-							title="Rename user"
-							label="Rename user"
+							title={m.users_rename_user()}
+							label={m.users_rename_user()}
 							onclick={() => (renameUser = u)}
 						/>
 					{/if}
@@ -169,16 +166,16 @@
 
 				<dl class="props">
 					<div class="prop">
-						<dt><Text size="sm" tone="faint">Created</Text></dt>
+						<dt><Text size="sm" tone="faint">{m.users_prop_created()}</Text></dt>
 						<dd><Timestamp value={u.created_at} mode="date" size="sm" tone="inherit" /></dd>
 					</div>
 					<div class="prop">
-						<dt><Text size="sm" tone="faint">Active</Text></dt>
+						<dt><Text size="sm" tone="faint">{m.users_prop_active()}</Text></dt>
 						<dd>
 							<Switch
 								checked={!u.disabled_at}
-								label="Active"
-								title={u.disabled_at ? 'Enable user' : 'Disable user (temporary)'}
+								label={m.users_prop_active()}
+								title={u.disabled_at ? m.users_enable_user() : m.users_disable_user()}
 								disabled={!!u.revoked_at}
 								onclick={() => toggleDisabled(u.id, u.name, !u.disabled_at)}
 							/>
@@ -186,16 +183,16 @@
 					</div>
 				</dl>
 					<Text size="xs" tone="faint"
-						>Dispatch permission is now the <Text variant="code">dispatch</Text> scope below.</Text
+						>{m.users_dispatch_note_before()}<Text variant="code">dispatch</Text>{m.users_dispatch_note_after()}</Text
 					>
 
 				<footer class="acts">
 					{#if u.revoked_at}
 						<Button variant="danger" onclick={() => purgeUser(u.id, u.name)}
-							>Delete permanently</Button
+							>{m.users_delete_permanently()}</Button
 						>
 					{:else}
-						<Button variant="danger" onclick={() => revoke(u.id, u.name)}>Revoke</Button>
+						<Button variant="danger" onclick={() => revoke(u.id, u.name)}>{m.users_revoke()}</Button>
 					{/if}
 				</footer>
 			</Card>
@@ -216,10 +213,10 @@
 
 {#if createOpen}
 	<EditEntityModal
-		title="New user"
-		fieldLabel="User name"
-		placeholder="e.g. alice"
-		saveLabel="Create user"
+		title={m.users_new_user_title()}
+		fieldLabel={m.users_field_user_name()}
+		placeholder={m.users_user_name_placeholder()}
+		saveLabel={m.users_create_user()}
 		onsave={(name) => createUser(name)}
 		onclose={() => (createOpen = false)}
 	/>
@@ -228,8 +225,8 @@
 {#if renameUser}
 	{@const u = renameUser}
 	<EditEntityModal
-		title="Rename user"
-		fieldLabel="User name"
+		title={m.users_rename_user()}
+		fieldLabel={m.users_field_user_name()}
 		name={u.name}
 		onsave={(name) => rename(u.id, name)}
 		onclose={() => (renameUser = null)}

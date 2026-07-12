@@ -11,6 +11,7 @@
 	import type { Label } from '@bindings/Label';
 	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
 	import { Badge, Button, Card, Cluster, Stack, Text, Timestamp } from '@dorsk/tsumikit';
+	import { m } from '$lib/paraglide/messages';
 	import { escapeHtml } from '$lib/markdown';
 	import { highlightTerms } from '$lib/search';
 	import { isStaleWorking, toolActivity, formatAgo } from '../../../routes/sessions/sessions.logic';
@@ -28,7 +29,7 @@
 		selected = false,
 		onToggleSelect,
 		swipeable = false,
-		swipeLabel = 'Archive',
+		swipeLabel = m.sessions_archive(),
 		onSwipe,
 		onTogglePin,
 		highlight = [],
@@ -177,6 +178,25 @@
 	// Liveness is conveyed by the colored dot, so the badge only carries the
 	// meaningful lifecycle states ("new", "archived"), not active/inactive.
 	const showStatusBadge = $derived(s.status === 'new' || s.status === 'archived');
+	// Translate the server status enum at render (never the raw value itself).
+	const statusLabel = (st: string): string => {
+		switch (st) {
+			case 'new':
+				return m.sessions_status_new();
+			case 'archived':
+				return m.sessions_status_archived();
+			case 'active':
+				return m.sessions_status_active();
+			case 'inactive':
+				return m.sessions_status_inactive();
+			case 'dead':
+				return m.sessions_status_dead();
+			case 'draft':
+				return m.sessions_status_draft();
+			default:
+				return st;
+		}
+	};
 	// Label picker is only interactive on top-level rows with an attach handler.
 	const labelEditable = $derived(!!onAttachLabel && !child);
 
@@ -319,7 +339,7 @@
 					<path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8" />
 					<path d="M9 12h6" />
 				</svg>
-				<span>{swipeProgress >= 1 ? `Release to ${swipeLabel.toLowerCase()}` : swipeLabel}</span>
+				<span>{swipeProgress >= 1 ? m.sessions_swipe_release({ action: swipeLabel.toLowerCase() }) : swipeLabel}</span>
 			</div>
 		</div>
 	{/if}
@@ -406,10 +426,10 @@
 						{@render activity()}
 					</span>
 					<span class="trail">
-						{#if showStatusBadge}<Badge class={statusBadgeClass(s.status)} style="padding:0.05rem var(--sp-2)">{s.status}</Badge>{/if}
+						{#if showStatusBadge}<Badge class={statusBadgeClass(s.status)} style="padding:0.05rem var(--sp-2)">{statusLabel(s.status)}</Badge>{/if}
 						{@render unreadBadge()}
-						{#if pendingCount > 0}<Badge tone="warn" style="padding:0.05rem var(--sp-2)">{pendingCount} perm</Badge>{/if}
-						{#if s.auto_approve}<Badge tone="warn" style="padding:0.05rem var(--sp-2)" title="Auto-approve enabled — approves tool use without asking (tool use only, plans still ask)">⚡</Badge>{/if}
+						{#if pendingCount > 0}<Badge tone="warn" style="padding:0.05rem var(--sp-2)">{m.sessions_perm_count({ count: pendingCount })}</Badge>{/if}
+						{#if s.auto_approve}<Badge tone="warn" style="padding:0.05rem var(--sp-2)" title={m.sessions_auto_approve_title()}>⚡</Badge>{/if}
 						{@render time()}
 					</span>
 				</Cluster>
@@ -464,16 +484,16 @@
 				/>
 			{/each}
 			{#if child}
-				<span class="gutter indent" title="subagent" aria-hidden="true">↳</span>
+				<span class="gutter indent" title={m.sessions_subagent_badge()} aria-hidden="true">↳</span>
 			{:else if onTogglePin}
 				<span
 					class="gutter star"
 					class:on={s.pinned}
 					role="button"
 					tabindex="0"
-					title={s.pinned ? 'Unpin' : 'Pin to top (exempt from auto-archive)'}
+					title={s.pinned ? m.sessions_unpin_title() : m.sessions_pin_title()}
 					aria-pressed={s.pinned}
-					aria-label={s.pinned ? 'Unpin session' : 'Pin session'}
+					aria-label={s.pinned ? m.sessions_unpin_aria() : m.sessions_pin_aria()}
 					onpointerdown={(e) => e.stopPropagation()}
 					onclick={(e) => {
 						e.stopPropagation();
@@ -495,10 +515,10 @@
 {#snippet engine()}
 	<SessionDot session={s} {livenessClass} {now} />
 	{#if stale}
-		<Badge tone="warn" style="padding:0.05rem var(--sp-2)" title="No activity for over 30 minutes">stale</Badge>
+		<Badge tone="warn" style="padding:0.05rem var(--sp-2)" title={m.sessions_stale_title()}>{m.sessions_stale_badge()}</Badge>
 	{/if}
 	{#if child}
-		<Badge tone="info" style="padding:0.05rem var(--sp-2)">subagent</Badge>
+		<Badge tone="info" style="padding:0.05rem var(--sp-2)">{m.sessions_subagent_badge()}</Badge>
 	{:else}
 		<MachineBadge name={s.machine_name} id={s.machine_id} hue={s.machine_hue} mono />
 		<AccountBadge name={s.account_name} />
@@ -540,7 +560,7 @@
 			active
 			size="sm"
 			style="flex:none"
-			title="{unreadCount} unread message{unreadCount === 1 ? '' : 's'}">{unreadCount}</Badge
+			title={m.sessions_unread_title({ count: unreadCount })}>{unreadCount}</Badge
 		>{/if}
 {/snippet}
 
@@ -554,7 +574,7 @@
 			class="activity"
 			class:asleep={act.asleep}
 			title={act.detail ??
-				(act.asleep ? 'No tool activity for minutes — may be wedged' : 'Live tool activity')}
+				(act.asleep ? m.sessions_activity_asleep_title() : m.sessions_activity_live_title())}
 		>
 			<span class="act-cadence"
 				>⚙{act.count}{#if act.ageMs !== null}&nbsp;·&nbsp;{formatAgo(act.ageMs)}{/if}</span
@@ -576,10 +596,10 @@
 	>
 		<Button size="sm" variant="primary" disabled={draftLaunching} onclick={() => onLaunch?.(s)}>
 			{#if draftLaunching}<span class="spin"></span>{/if}
-			Launch
+			{m.sessions_launch()}
 		</Button>
-		<Button size="sm" onclick={() => onEdit?.(s)}>Edit</Button>
-		<Button size="sm" variant="danger" onclick={() => onDiscard?.(s)}>Discard</Button>
+		<Button size="sm" onclick={() => onEdit?.(s)}>{m.common_edit()}</Button>
+		<Button size="sm" variant="danger" onclick={() => onDiscard?.(s)}>{m.sessions_discard()}</Button>
 	</span>
 {/snippet}
 

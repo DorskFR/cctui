@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { Button, Modal, Text } from '@dorsk/tsumikit';
+	import { m } from '$lib/paraglide/messages';
 	import { toasts } from '$lib/toast.svelte';
 
 	let { title, secret, onclose }: { title: string; secret: string; onclose: () => void } =
@@ -8,9 +9,9 @@
 	async function copy() {
 		try {
 			await navigator.clipboard.writeText(secret);
-			toasts.ok('Copied to clipboard');
+			toasts.ok(m.users_secret_copied());
 		} catch {
-			toasts.err('Clipboard unavailable');
+			toasts.err(m.users_secret_clipboard_unavailable());
 		}
 	}
 </script>
@@ -18,13 +19,13 @@
 <Modal {title} {onclose}>
 	{#snippet body()}
 		<div class="stack">
-			<Text as="p" tone="muted">Copy this now — it is shown only once and cannot be retrieved later.</Text>
+			<Text as="p" tone="muted">{m.users_secret_warning()}</Text>
 			<Text variant="code" size="sm" tone="accent" class="secret">{secret}</Text>
 		</div>
 	{/snippet}
 	{#snippet footer()}
-		<Button block onclick={onclose}>Done</Button>
-		<Button block variant="primary" onclick={copy}>Copy</Button>
+		<Button block onclick={onclose}>{m.users_secret_done()}</Button>
+		<Button block variant="primary" onclick={copy}>{m.common_copy()}</Button>
 	{/snippet}
 </Modal>
 

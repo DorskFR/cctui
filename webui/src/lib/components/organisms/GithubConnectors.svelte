@@ -30,6 +30,7 @@
 		Text,
 		Timestamp
 	} from '@dorsk/tsumikit';
+	import { m } from '$lib/paraglide/messages';
 
 	type CredentialKind = CreateConnector['credential_kind'];
 
@@ -90,15 +91,15 @@
 
 	async function save() {
 		if (!name.trim()) {
-			toasts.err('Name is required');
+			toasts.err(m.github_name_required());
 			return;
 		}
 		if (!editing && !credential.trim()) {
-			toasts.err('A credential is required for a new connector');
+			toasts.err(m.github_credential_required());
 			return;
 		}
 		if (!editing && isAdmin && !ownerId) {
-			toasts.err('Pick an owning user');
+			toasts.err(m.github_pick_owner());
 			return;
 		}
 		saving = true;
@@ -112,7 +113,7 @@
 					webhook_secret: webhookSecret.trim() || null
 				};
 				await actions.update(editingId, body);
-				toasts.ok(`Connector ${name.trim()} updated`);
+				toasts.ok(m.github_connector_updated({ name: name.trim() }));
 			} else {
 				const body: CreateConnector = {
 					name: name.trim(),
@@ -123,11 +124,11 @@
 					user_id: isAdmin ? ownerId : null
 				};
 				await actions.create(body);
-				toasts.ok(`Connector ${body.name} added`);
+				toasts.ok(m.github_connector_added({ name: body.name }));
 			}
 			showModal = false;
 		} catch (e) {
-			toasts.err(e instanceof Error ? e.message : 'Failed to save connector');
+			toasts.err(e instanceof Error ? e.message : m.github_save_failed());
 		} finally {
 			saving = false;
 		}
@@ -139,43 +140,42 @@
 		syncingId = id;
 		try {
 			const c = await actions.sync(id);
-			if (c.last_error) toasts.err(`Poll failed: ${c.last_error}`);
-			else toasts.ok('Refreshed from GitHub');
+			if (c.last_error) toasts.err(m.github_poll_failed({ error: c.last_error }));
+			else toasts.ok(m.github_refreshed());
 		} catch (e) {
-			toasts.err(e instanceof Error ? e.message : 'Failed to refresh');
+			toasts.err(e instanceof Error ? e.message : m.github_refresh_failed());
 		} finally {
 			syncingId = null;
 		}
 	}
 
 	async function remove(id: string, label: string) {
-		if (!confirm(`Remove the GitHub connector "${label}"? Its credential is deleted.`)) return;
+		if (!confirm(m.github_remove_confirm({ label }))) return;
 		try {
 			await actions.remove(id);
-			toasts.ok('Connector removed');
+			toasts.ok(m.github_connector_removed());
 		} catch (e) {
-			toasts.err(e instanceof Error ? e.message : 'Failed to remove connector');
+			toasts.err(e instanceof Error ? e.message : m.github_remove_failed());
 		}
 	}
 
-	const kindLabel = (k: string) => (k === 'app_installation' ? 'GitHub App' : 'Fine-grained PAT');
+	const kindLabel = (k: string) => (k === 'app_installation' ? m.github_kind_app() : m.github_kind_pat());
 	const list = $derived($connectors.data ?? []);
 </script>
 
 <Stack gap="var(--sp-4)">
 	<Cluster justify="space-between" align="center">
-		<Heading level={2}>Connectors</Heading>
-		<Button onclick={openCreate}>Add connector</Button>
+		<Heading level={2}>{m.github_connectors_heading()}</Heading>
+		<Button onclick={openCreate}>{m.github_add_connector()}</Button>
 	</Cluster>
 
 	<Text as="p" tone="muted" size="sm">
-		Configure GitHub accounts one at a time. The credential is encrypted on the server and never
-		shown again — only a masked preview.
+		{m.github_connectors_intro()}
 	</Text>
 
 	{#if list.length === 0}
 		<Card>
-			<Text tone="muted">No connectors yet. Add one to enable pull-request review.</Text>
+			<Text tone="muted">{m.github_no_connectors()}</Text>
 		</Card>
 	{:else}
 		<Stack gap="var(--sp-2)">
@@ -188,22 +188,22 @@
 								<Text tone="muted" size="sm">{kindLabel(c.credential_kind)}</Text>
 							</Cluster>
 							<Text tone="muted" size="sm">
-								Credential {c.credential_preview}
-								{#if c.has_webhook_secret}· webhook secret set{/if}
+								{m.github_credential_preview({ preview: c.credential_preview })}
+								{#if c.has_webhook_secret}{m.github_webhook_secret_set()}{/if}
 							</Text>
 							{#if c.repos.length > 0}
-								<Text tone="muted" size="sm">Repos: {c.repos.join(', ')}</Text>
+								<Text tone="muted" size="sm">{m.github_repos_label({ repos: c.repos.join(', ') })}</Text>
 							{/if}
 							<Text tone="muted" size="xs">
-								Added <Timestamp value={c.created_at} mode="relative" />
+								{m.github_added_label()} <Timestamp value={c.created_at} mode="relative" />
 								{#if c.last_polled_at}
-									· polled <Timestamp value={c.last_polled_at} mode="relative" />
+									{m.github_polled_label()} <Timestamp value={c.last_polled_at} mode="relative" />
 								{:else}
-									· not polled yet
+									{m.github_not_polled()}
 								{/if}
 							</Text>
 							{#if c.last_error}
-								<Text tone="danger" size="sm">⚠ Last poll failed: {c.last_error}</Text>
+								<Text tone="danger" size="sm">{m.github_last_poll_failed({ error: c.last_error })}</Text>
 							{/if}
 						</Stack>
 						<Cluster gap="var(--sp-2)" align="center">
@@ -211,10 +211,10 @@
 								disabled={syncingId === c.id}
 								onclick={() => refresh(c.id)}
 							>
-								{syncingId === c.id ? 'Refreshing…' : 'Refresh now'}
+								{syncingId === c.id ? m.github_refreshing() : m.github_refresh_now()}
 							</Button>
-							<Button onclick={() => openEdit(c)}>Edit</Button>
-							<Button variant="danger" onclick={() => remove(c.id, c.name)}>Remove</Button>
+							<Button onclick={() => openEdit(c)}>{m.common_edit()}</Button>
+							<Button variant="danger" onclick={() => remove(c.id, c.name)}>{m.common_remove()}</Button>
 						</Cluster>
 					</Cluster>
 				</Card>
@@ -225,13 +225,13 @@
 
 {#if showModal}
 	<Modal
-		title={editing ? 'Edit GitHub connector' : 'Add GitHub connector'}
+		title={editing ? m.github_edit_connector_title() : m.github_add_connector_title()}
 		onclose={() => (showModal = false)}
 	>
 		{#snippet body()}
 			<Stack gap="var(--sp-3)">
 				{#if isAdmin && !editing}
-					<Field label="Owner">
+					<Field label={m.github_field_owner()}>
 						<Select bind:value={ownerId}>
 							{#each activeUsers as u (u.id)}
 								<option value={u.id}>{u.name}</option>
@@ -239,26 +239,26 @@
 						</Select>
 					</Field>
 				{/if}
-				<Field label="Name">
-					<Input bind:value={name} placeholder="personal" />
+				<Field label={m.github_field_name()}>
+					<Input bind:value={name} placeholder={m.github_name_placeholder()} />
 				</Field>
 				{#if !editing}
-					<Field label="Credential type">
+					<Field label={m.github_field_credential_type()}>
 						<Select bind:value={credentialKind}>
-							<option value="pat">Fine-grained PAT</option>
-							<option value="app_installation">GitHub App installation token</option>
+							<option value="pat">{m.github_kind_pat()}</option>
+							<option value="app_installation">{m.github_credential_app_option()}</option>
 						</Select>
 					</Field>
 				{/if}
 				<Field
 					label={editing
-						? 'New credential (leave blank to keep current)'
-						: 'Credential (stored encrypted; never shown again)'}
+						? m.github_field_new_credential()
+						: m.github_field_credential()}
 				>
 					<Input
 						bind:value={credential}
 						type="password"
-						placeholder={editing ? 'leave blank to keep current' : 'github_pat_…'}
+						placeholder={editing ? m.github_credential_placeholder_keep() : 'github_pat_…'}
 					/>
 				</Field>
 				{#if credentialKind === 'pat'}
@@ -286,7 +286,7 @@
 						connector.
 					</Text>
 				{/if}
-				<Field label="Repos (space/comma-separated owner/name, optional)">
+				<Field label={m.github_field_repos()}>
 					<Input bind:value={reposText} placeholder="dorskfr/kusaritoi dorskfr/cctui" />
 				</Field>
 				<Text as="p" tone="muted" size="xs">
@@ -294,13 +294,13 @@
 					by spaces or commas — not a username and not a URL. A bare <code>owner</code> tracks every
 					repo that owner exposes to the token. Leave empty to track every repo the token can see.
 				</Text>
-				<Field label="Webhook secret (optional, stored encrypted)">
+				<Field label={m.github_field_webhook_secret()}>
 					<Input bind:value={webhookSecret} type="password" />
 				</Field>
 				<Cluster justify="flex-end" gap="var(--sp-2)">
-					<Button onclick={() => (showModal = false)}>Cancel</Button>
+					<Button onclick={() => (showModal = false)}>{m.common_cancel()}</Button>
 					<Button variant="primary" disabled={saving} onclick={save}>
-						{saving ? 'Saving…' : editing ? 'Save changes' : 'Add connector'}
+						{saving ? m.github_saving() : editing ? m.github_save_changes() : m.github_add_connector()}
 					</Button>
 				</Cluster>
 			</Stack>

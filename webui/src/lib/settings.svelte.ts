@@ -1,6 +1,7 @@
 import { browser } from '$app/environment';
 import { api } from './api';
 import { auth } from './auth.svelte';
+import { clampLocale, locale as localeStore, type Locale } from './locale.svelte';
 import type { SettingsPayload } from '@bindings/SettingsPayload';
 import {
 	latestDirFor,
@@ -98,6 +99,10 @@ export interface SettingsState {
 	// Reserved for a future keyboard-shortcuts surface (no UI yet, CCT-426).
 	shortcutsEnabled: boolean;
 	keymap: Record<string, string>;
+	// UI language (CCT-599). Top-level so it serializes as `data.locale`, which
+	// the server clamps to en|fr|null. `null` means "auto" — fall back to the
+	// browser's language / the base locale (Paraglide resolves it at runtime).
+	locale: Locale | null;
 }
 
 const DEFAULTS: SettingsState = {
@@ -121,7 +126,8 @@ const DEFAULTS: SettingsState = {
 	whipStopPhrases: { mode: DEFAULT_WHIP_MODE, phrases: [], guidance: '' },
 	spawnMemory: {},
 	shortcutsEnabled: false,
-	keymap: {}
+	keymap: {},
+	locale: null
 };
 
 // Deep-merge a partial saved blob over DEFAULTS so a value missing from an older
@@ -140,7 +146,8 @@ function mergeDefaults(partial: Partial<SettingsState> | null | undefined): Sett
 		whipStopPhrases: mergeWhipStopPhrases(p.whipStopPhrases),
 		spawnMemory: p.spawnMemory ?? {},
 		shortcutsEnabled: p.shortcutsEnabled ?? DEFAULTS.shortcutsEnabled,
-		keymap: p.keymap ?? DEFAULTS.keymap
+		keymap: p.keymap ?? DEFAULTS.keymap,
+		locale: clampLocale(p.locale)
 	};
 }
 
@@ -198,6 +205,7 @@ class Settings {
 			const migrated = migrate(payload.data, payload.version ?? CURRENT_VERSION);
 			this.state = mergeDefaults(migrated);
 			this.writeCache();
+			if (this.state.locale) localeStore.set(this.state.locale);
 		} catch {
 			// 401 / offline / decode error — keep the cached or default state.
 		}
@@ -286,6 +294,18 @@ class Settings {
 	 *  (which then keys the full recall). */
 	lastDirFor(machineId: string): string | null {
 		return latestDirFor(this.state.spawnMemory, machineId);
+	}
+
+	// UI language (CCT-599). Drives the Paraglide runtime immediately and persists
+	// top-level as `data.locale` (server clamps to en|fr|null). `null` = auto.
+	setLocale(next: Locale | null) {
+		this.state.locale = clampLocale(next);
+		if (this.state.locale) localeStore.set(this.state.locale);
+		this.persist();
+	}
+
+	get locale(): Locale | null {
+		return this.state.locale;
 	}
 
 	toggleArchiveShortcut() {

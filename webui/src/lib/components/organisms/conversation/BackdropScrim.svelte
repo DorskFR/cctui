@@ -3,6 +3,7 @@
 	// over the rest of the viewport so clicking outside the pane (or Escape)
 	// closes it, instead of hunting for the ‹ icon. Hidden on mobile where the
 	// drawer is full-width.
+	import { m } from '$lib/paraglide/messages';
 	let { onclose }: { onclose: () => void } = $props();
 </script>
 
@@ -10,7 +11,7 @@
 	class="scrim"
 	role="button"
 	tabindex="-1"
-	aria-label="Close conversation"
+	aria-label={m.conversation_close_aria()}
 	onclick={onclose}
 	onkeydown={(e) => e.key === 'Escape' && onclose()}
 ></div>

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { Label } from '@bindings/Label';
 	import { Badge, Icon, Popover } from '@dorsk/tsumikit';
+	import { m } from '$lib/paraglide/messages';
 	import LabelMenu from './LabelMenu.svelte';
 	import { labelTint, hueToColor } from '$lib/labels';
 
@@ -87,7 +88,7 @@
 
 		{#if editable}
 			<span class="add">
-				<Popover label="Edit labels" placement="bottom-start" triggerClass="tag-trigger">
+				<Popover label={m.sessions_edit_labels()} placement="bottom-start" triggerClass="tag-trigger">
 					{#snippet trigger()}<Icon name="tag" />{/snippet}
 					<LabelMenu
 						labels={allLabels}

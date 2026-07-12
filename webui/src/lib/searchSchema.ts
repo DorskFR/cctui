@@ -1,5 +1,6 @@
 import { filters, parse, type FilterNode, type Schema, type ValueOption } from '@dorsk/tsumikit';
 import type { SessionListItem } from '@bindings/SessionListItem';
+import { m } from '$lib/paraglide/messages';
 
 export const SERVER_FIELDS = new Set([
 	'machine',
@@ -14,8 +15,9 @@ export const SERVER_FIELDS = new Set([
 	'dir'
 ]);
 
-export const SESSION_SEARCH_PLACEHOLDER =
-	'Search — status:active machine:… label:… or free text';
+/** The free-text search bar placeholder, in the active locale. A function (not a
+ *  const) so it re-reads the locale each render. */
+export const sessionSearchPlaceholder = (): string => m.search_bar_placeholder();
 
 export type FetchValues = (field: string, q: string) => Promise<string[]>;
 
@@ -31,15 +33,15 @@ export function buildSessionSearchSchema(fetchValues: FetchValues): Schema {
 		fields: [
 			{
 				name: 'title',
-				label: 'Title',
+				label: m.search_field_title(),
 				type: 'string',
 				aliases: ['name'],
 				operators: ['contains', 'not_contains'],
-				valuePlaceholder: 'session title…'
+				valuePlaceholder: m.search_placeholder_title()
 			},
 			{
 				name: 'machine',
-				label: 'Machine',
+				label: m.search_field_machine(),
 				type: 'id',
 				aliases: ['m'],
 				operators: ['eq', 'ne', 'in'],
@@ -47,7 +49,7 @@ export function buildSessionSearchSchema(fetchValues: FetchValues): Schema {
 			},
 			{
 				name: 'account',
-				label: 'Account',
+				label: m.search_field_account(),
 				type: 'id',
 				aliases: ['acct'],
 				operators: ['eq', 'ne', 'in'],
@@ -55,7 +57,7 @@ export function buildSessionSearchSchema(fetchValues: FetchValues): Schema {
 			},
 			{
 				name: 'tag',
-				label: 'Label',
+				label: m.search_field_label(),
 				type: 'enum',
 				aliases: ['label'],
 				operators: ['eq', 'ne', 'in'],
@@ -63,7 +65,7 @@ export function buildSessionSearchSchema(fetchValues: FetchValues): Schema {
 			},
 			{
 				name: 'status',
-				label: 'Status',
+				label: m.search_field_status(),
 				type: 'enum',
 				operators: ['eq', 'ne', 'in'],
 				options: ['new', 'active', 'inactive', 'archived', 'draft'].map((v) => ({
@@ -73,28 +75,28 @@ export function buildSessionSearchSchema(fetchValues: FetchValues): Schema {
 			},
 			{
 				name: 'model',
-				label: 'Model',
+				label: m.search_field_model(),
 				type: 'string',
 				operators: ['contains', 'not_contains'],
 				provider: providerFor('model', fetchValues)
 			},
 			{
 				name: 'effort',
-				label: 'Effort',
+				label: m.search_field_effort(),
 				type: 'enum',
 				operators: ['eq', 'ne'],
 				options: ['low', 'high'].map((v) => ({ value: v, label: v }))
 			},
 			{
 				name: 'adapter',
-				label: 'Adapter',
+				label: m.search_field_adapter(),
 				type: 'enum',
 				operators: ['eq', 'ne'],
 				options: ['claude-code', 'codex'].map((v) => ({ value: v, label: v }))
 			},
 			{
 				name: 'pinned',
-				label: 'Pinned',
+				label: m.search_field_pinned(),
 				type: 'bool',
 				aliases: ['starred'],
 				operators: ['eq'],
@@ -105,7 +107,7 @@ export function buildSessionSearchSchema(fetchValues: FetchValues): Schema {
 			},
 			{
 				name: 'dir',
-				label: 'Directory',
+				label: m.search_field_dir(),
 				type: 'string',
 				aliases: ['cwd'],
 				operators: ['contains', 'not_contains'],
@@ -113,14 +115,14 @@ export function buildSessionSearchSchema(fetchValues: FetchValues): Schema {
 			},
 			{
 				name: 'id',
-				label: 'Session ID',
+				label: m.search_field_id(),
 				type: 'string',
 				operators: ['contains', 'not_contains'],
-				valuePlaceholder: 'id fragment…'
+				valuePlaceholder: m.search_placeholder_id()
 			},
 			{
 				name: 'created',
-				label: 'Created',
+				label: m.search_field_created(),
 				type: 'date',
 				aliases: ['time'],
 				operators: ['gte', 'lte', 'gt', 'lt', 'range'],

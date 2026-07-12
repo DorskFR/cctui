@@ -5,12 +5,13 @@
 	// MachineBadge showing the current color); `value`/`onchange` carry the hue.
 	import type { Snippet } from 'svelte';
 	import Swatch from '$lib/components/atoms/Swatch.svelte';
+	import { m } from '$lib/paraglide/messages';
 
 	let {
 		value = null,
 		hues,
 		disabled = false,
-		label = 'Color',
+		label = m.misc_color_label(),
 		onchange,
 		trigger
 	}: {
@@ -48,16 +49,16 @@
 				<Swatch
 					hue={null}
 					active={value == null}
-					title="Auto (name hash)"
-					aria-label="Auto color"
+					title={m.misc_color_auto_title()}
+					aria-label={m.misc_color_auto_label()}
 					onclick={() => select(null)}>A</Swatch
 				>
 				{#each hues as h (h)}
 					<Swatch
 						hue={h}
 						active={value === h}
-						title={`Hue ${h}`}
-						aria-label={`Hue ${h}`}
+						title={m.misc_hue_value({ hue: h })}
+						aria-label={m.misc_hue_value({ hue: h })}
 						onclick={() => select(h)}
 					/>
 				{/each}

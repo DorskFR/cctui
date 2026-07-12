@@ -1,5 +1,6 @@
 import { browser } from "$app/environment";
 import { goto } from "$app/navigation";
+import { m } from "$lib/paraglide/messages";
 import type { SessionListItem } from "@bindings/SessionListItem";
 
 const KEY_ENABLED = "cctui_notify_enabled";
@@ -110,7 +111,7 @@ class Notifier {
 
   private fire(s: SessionListItem) {
     try {
-      const n = new Notification("cctui — needs input", {
+      const n = new Notification(m.notify_needs_input_title(), {
         body: s.last_message_text
           ? `${this.label(s)}\n${s.last_message_text}`
           : this.label(s),

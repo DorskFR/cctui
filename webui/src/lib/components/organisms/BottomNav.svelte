@@ -3,6 +3,7 @@
 	import NavLink from '$lib/components/atoms/NavLink.svelte';
 	import { useCapabilities, useSessions } from '$lib/queries';
 	import { ghreviewUrl } from '$lib/config';
+	import { m } from '$lib/paraglide/messages';
 
 	const caps = useCapabilities();
 
@@ -25,13 +26,13 @@
 	// also moved under Accounts, which is now the single home for everything that
 	// connects to something external.
 	const items = $derived([
-		{ href: '/', label: 'Overview', icon: '◧' },
-		{ href: '/sessions', label: 'Sessions', icon: '◰' },
-		{ href: '/users', label: 'Users', icon: '◍' },
-		{ href: '/accounts', label: 'Accounts', icon: '◉' },
-		...($caps.data?.github.enabled ? [{ href: '/github', label: 'GitHub', icon: '◐' }] : []),
-		...(reviewEnabled ? [{ href: '/review', label: 'Review', icon: '◫' }] : []),
-		{ href: '/settings', label: 'Settings', icon: '⚙' }
+		{ href: '/', label: m.nav_overview(), icon: '◧' },
+		{ href: '/sessions', label: m.nav_sessions(), icon: '◰' },
+		{ href: '/users', label: m.nav_users(), icon: '◍' },
+		{ href: '/accounts', label: m.nav_accounts(), icon: '◉' },
+		...($caps.data?.github.enabled ? [{ href: '/github', label: m.nav_github(), icon: '◐' }] : []),
+		...(reviewEnabled ? [{ href: '/review', label: m.nav_review(), icon: '◫' }] : []),
+		{ href: '/settings', label: m.nav_settings(), icon: '⚙' }
 	]);
 	const active = (href: string) =>
 		href === '/' ? page.url.pathname === '/' : page.url.pathname.startsWith(href);

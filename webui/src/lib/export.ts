@@ -24,6 +24,7 @@ import {
   escapeHtml,
 } from "$lib/markdown";
 import { USER_PREFIX } from "$lib/ws.svelte";
+import { getLocale } from "$lib/paraglide/runtime";
 
 /** The subset of the drawer's ViewOpts the export honors. */
 // Mirrors the drawer's ViewOpts filter model (CCT-250 item 2). Each message
@@ -226,7 +227,7 @@ const ROLE_LABEL: Record<Block["role"], string> = {
 
 function fmtTs(ts: number): string {
   const d = new Date(ts);
-  return isNaN(d.getTime()) ? "" : d.toLocaleString();
+  return isNaN(d.getTime()) ? "" : d.toLocaleString(getLocale());
 }
 
 // ── Theme capture ────────────────────────────────────────────────────────────
@@ -381,7 +382,7 @@ export function buildConversationHtml(
 <div class="page">
 <header><h1>${escapeHtml(title)}</h1><div class="meta">${meta.join("")}</div></header>
 ${body}
-<footer>Exported from cctui · ${escapeHtml(new Date().toLocaleString())} · use your browser's Print → Save as PDF for a PDF copy</footer>
+<footer>Exported from cctui · ${escapeHtml(new Date().toLocaleString(getLocale()))} · use your browser's Print → Save as PDF for a PDF copy</footer>
 </div>
 </body>
 </html>

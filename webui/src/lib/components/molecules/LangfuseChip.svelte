@@ -2,6 +2,7 @@
 	import { useCapabilities, useSessionLangfuse } from '$lib/queries';
 	import { compact } from '$lib/format';
 	import { Text } from '@dorsk/tsumikit';
+	import { m } from '$lib/paraglide/messages';
 
 	// Per-session Langfuse cost/usage chip (CCT-564). Shows `$cost · N calls`
 	// with a deep link into Langfuse, gated on the server capability so it stays
@@ -42,8 +43,8 @@
 	const tip = $derived(
 		usage
 			? [
-					`Langfuse cost: ${costLabel}`,
-					`${usage.trace_count} gateway calls`,
+					m.sessions_langfuse_cost({ cost: costLabel }),
+					m.sessions_langfuse_calls({ count: usage.trace_count }),
 					`↑${compact(Number(usage.input_tokens))} ↓${compact(Number(usage.output_tokens))} ⚡${compact(Number(usage.cache_read))}`
 				].join('\n')
 			: ''
@@ -55,11 +56,11 @@
 		{#if deepLink}
 			<a href={deepLink} target="_blank" rel="noopener noreferrer" class="lf-link">
 				<Text numeric size="xs" tone="muted" weight="semibold">{costLabel}</Text>
-				<Text size="xs" tone="faint">· {usage?.trace_count} calls ↗</Text>
+				<Text size="xs" tone="faint">{m.sessions_langfuse_calls_short({ count: usage?.trace_count ?? 0 })} ↗</Text>
 			</a>
 		{:else}
 			<Text numeric size="xs" tone="muted" weight="semibold">{costLabel}</Text>
-			<Text size="xs" tone="faint">· {usage?.trace_count} calls</Text>
+			<Text size="xs" tone="faint">{m.sessions_langfuse_calls_short({ count: usage?.trace_count ?? 0 })}</Text>
 		{/if}
 	</span>
 {/if}

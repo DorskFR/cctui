@@ -2,6 +2,7 @@
 	import { useResourceShares, useResourceShareActions } from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
 	import { Button, Input, Text, Timestamp } from '@dorsk/tsumikit';
+	import { m } from '$lib/paraglide/messages';
 
 	// "Shared with" section for any shareable resource (CCT-531): lists live
 	// grants, a user-picker (login or UUID) to grant `use`, and a per-row revoke.
@@ -10,7 +11,7 @@
 	let {
 		resourceType,
 		id,
-		noun = 'this resource',
+		noun = m.providers_share_noun_default(),
 		enabled = true
 	}: {
 		resourceType: string;
@@ -32,14 +33,14 @@
 	async function grant() {
 		const user = grantee.trim();
 		if (!user) {
-			toasts.err('Enter a user login or id');
+			toasts.err(m.providers_share_err_enter_user());
 			return;
 		}
 		busy = true;
 		try {
 			await actions.grant(resourceType, id, { user });
 			grantee = '';
-			toasts.ok('Shared');
+			toasts.ok(m.providers_share_shared());
 		} catch (e) {
 			toasts.err((e as Error).message);
 		} finally {
@@ -48,10 +49,10 @@
 	}
 
 	async function revoke(userId: string, name: string) {
-		if (!confirm(`Revoke ${name}'s access to ${noun}?`)) return;
+		if (!confirm(m.providers_share_confirm_revoke({ name, noun }))) return;
 		try {
 			await actions.revoke(resourceType, id, userId);
-			toasts.ok('Revoked');
+			toasts.ok(m.providers_share_revoked());
 		} catch (e) {
 			toasts.err((e as Error).message);
 		}
@@ -61,9 +62,9 @@
 </script>
 
 <div class="shares">
-	<Text as="div" tone="muted" size="xs" class="shares-head">Shared with</Text>
+	<Text as="div" tone="muted" size="xs" class="shares-head">{m.providers_share_heading()}</Text>
 	{#if rows.length === 0}
-		<Text as="div" tone="faint" size="xs">Not shared with anyone.</Text>
+		<Text as="div" tone="faint" size="xs">{m.providers_share_empty()}</Text>
 	{:else}
 		<ul class="share-list">
 			{#each rows as s (s.user_id)}
@@ -74,14 +75,14 @@
 							{s.action} · <Timestamp value={s.granted_at} mode="relative" tone="inherit" />
 						</Text>
 					</span>
-					<Button variant="danger" onclick={() => revoke(s.user_id, s.user_name)}>Revoke</Button>
+					<Button variant="danger" onclick={() => revoke(s.user_id, s.user_name)}>{m.providers_share_revoke()}</Button>
 				</li>
 			{/each}
 		</ul>
 	{/if}
 	<div class="share-add">
-		<Input bind:value={grantee} placeholder="user login or id" />
-		<Button disabled={busy} onclick={grant}>{busy ? 'Sharing…' : 'Share'}</Button>
+		<Input bind:value={grantee} placeholder={m.providers_share_input_placeholder()} />
+		<Button disabled={busy} onclick={grant}>{busy ? m.providers_share_sharing() : m.providers_share_button()}</Button>
 	</div>
 </div>
 

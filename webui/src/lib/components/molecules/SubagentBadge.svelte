@@ -4,6 +4,7 @@
 	// >= 3 agents; smaller groups render inline, always expanded. Composes the
 	// base Badge as an interactive (info-toned) button.
 	import { Badge } from '@dorsk/tsumikit';
+	import { m } from '$lib/paraglide/messages';
 
 	let {
 		count,
@@ -22,12 +23,12 @@
 
 	const done = $derived(count - running);
 	const title = $derived(
-		`${label} - ${count} total` +
-			(running > 0 ? `, ${running} running` : '') +
-			(done > 0 ? `, ${done} done` : '') +
-			(open ? ' (click to collapse)' : ' (click to expand)')
+		m.sessions_subagent_total({ label, count }) +
+			(running > 0 ? m.sessions_subagent_running({ count: running }) : '') +
+			(done > 0 ? m.sessions_subagent_done({ count: done }) : '') +
+			(open ? m.sessions_subagent_collapse() : m.sessions_subagent_expand())
 	);
-	const ariaLabel = $derived(`${open ? 'Collapse' : 'Expand'} ${title}`);
+	const ariaLabel = $derived(`${open ? m.sessions_collapse() : m.sessions_expand()} ${title}`);
 </script>
 
 <span class="subagent-badge">

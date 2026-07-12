@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { Label } from '@bindings/Label';
 	import { Badge, Button, Field, Icon, Input, Modal } from '@dorsk/tsumikit';
+	import { m } from '$lib/paraglide/messages';
 	import Swatch from '$lib/components/atoms/Swatch.svelte';
 	import { LABEL_HUES, labelTint, storedHue, hueToColor } from '$lib/labels';
 
@@ -63,11 +64,11 @@
 		placeholder ??
 			(onCreate
 				? more
-					? `Filter ${labels.length} labels or create…`
-					: 'Filter or create…'
+					? m.sessions_label_filter_create_n({ count: labels.length })
+					: m.sessions_label_filter_create()
 				: more
-					? `Filter ${labels.length} labels…`
-					: 'Filter labels…')
+					? m.sessions_label_filter_n({ count: labels.length })
+					: m.sessions_label_filter())
 	);
 	// Capped in BOTH states — searching must not blow the list past `cap`.
 	const matches = $derived(
@@ -119,7 +120,7 @@
 		if (!editing || !onUpdate || editBusy) return;
 		const name = editName.trim();
 		if (!name) {
-			editError = 'Name is required.';
+			editError = m.sessions_name_required();
 			return;
 		}
 		editBusy = true;
@@ -130,7 +131,7 @@
 			await onUpdate(editing.id, patch);
 			closeEdit();
 		} catch (e) {
-			editError = e instanceof Error ? e.message : 'Could not save the label.';
+			editError = e instanceof Error ? e.message : m.sessions_label_save_failed();
 		} finally {
 			editBusy = false;
 		}
@@ -144,7 +145,7 @@
 			await onDelete(editing.id);
 			closeEdit();
 		} catch (e) {
-			editError = e instanceof Error ? e.message : 'Could not delete the label.';
+			editError = e instanceof Error ? e.message : m.sessions_label_delete_failed();
 		} finally {
 			editBusy = false;
 		}
@@ -162,7 +163,7 @@
 	{#if showCreate}
 		<button type="button" class="opt create" disabled={busy} onclick={create}>
 			<span class="check check-action" aria-hidden="true">+</span>
-			<span class="create-label">Create</span>
+			<span class="create-label">{m.sessions_label_create()}</span>
 			<Badge
 				size="sm"
 				class="label"
@@ -193,7 +194,7 @@
 				<button
 					type="button"
 					class="edit"
-					aria-label={`Edit ${l.name}`}
+					aria-label={m.sessions_label_edit_aria({ name: l.name })}
 					disabled={busy}
 					onclick={() => openEdit(l)}
 				>
@@ -205,14 +206,14 @@
 
 	{#if filtered.length === 0 && !showCreate}
 		<p class="empty">
-			{onCreate ? 'No labels yet — type to create one.' : 'No matching labels'}
+			{onCreate ? m.sessions_labels_empty_create() : m.sessions_labels_no_match()}
 		</p>
 	{/if}
 
 	{#if onClear && selectedIds.size > 0}
 		<button type="button" class="opt clear" onclick={onClear}>
 			<span class="check check-action" aria-hidden="true">✕</span>
-			<span class="clear-label">Clear filter</span>
+			<span class="clear-label">{m.sessions_clear_filter()}</span>
 		</button>
 	{/if}
 </div>
@@ -228,14 +229,14 @@
 		onclick={(e) => e.stopPropagation()}
 		onkeydown={(e) => e.stopPropagation()}
 	>
-		<Modal title="Edit label" size="sm" onclose={closeEdit}>
+		<Modal title={m.sessions_edit_label()} size="sm" onclose={closeEdit}>
 			{#snippet body()}
 				<div class="edit-form">
-					<Field label="Name">
+					<Field label={m.sessions_field_name()}>
 						<Input
 							bind:value={editName}
 							maxlength={40}
-							placeholder="Label name"
+							placeholder={m.sessions_label_name_placeholder()}
 							onkeydown={(e: KeyboardEvent) => {
 								if (e.key === 'Enter') {
 									e.preventDefault();
@@ -244,33 +245,33 @@
 							}}
 						/>
 					</Field>
-					<Field label="Color">
-						<div class="hues" role="radiogroup" aria-label="Label color">
+					<Field label={m.sessions_field_color()}>
+						<div class="hues" role="radiogroup" aria-label={m.sessions_label_color_aria()}>
 							<Swatch
 								hue={null}
 								active={editHue == null}
-								title="Auto (name hash)"
-								aria-label="Auto color"
+								title={m.sessions_color_auto_title()}
+								aria-label={m.sessions_color_auto_aria()}
 								onclick={() => (editHue = null)}>A</Swatch
 							>
 							{#each LABEL_HUES as h (h)}
 								<Swatch
 									hue={h}
 									active={editHue === h}
-									title={`Hue ${h}`}
-									aria-label={`Hue ${h}`}
+									title={m.sessions_hue({ hue: h })}
+									aria-label={m.sessions_hue({ hue: h })}
 									onclick={() => (editHue = h)}
 								/>
 							{/each}
 						</div>
 					</Field>
 					<div class="preview-row">
-						<span class="preview-label">Preview</span>
+						<span class="preview-label">{m.sessions_preview()}</span>
 						<Badge
 							class="label"
-							style="{labelTint({ name: editName || 'label', color: hueToColor(editHue) })};border-radius:var(--r-sm)"
+							style="{labelTint({ name: editName || m.sessions_label_placeholder_word(), color: hueToColor(editHue) })};border-radius:var(--r-sm)"
 						>
-							<span class="opt-name">{editName || 'label'}</span>
+							<span class="opt-name">{editName || m.sessions_label_placeholder_word()}</span>
 						</Badge>
 					</div>
 					{#if editError}<p class="edit-error">{editError}</p>{/if}
@@ -278,10 +279,10 @@
 			{/snippet}
 			{#snippet footer()}
 				{#if onDelete}
-					<Button variant="danger" disabled={editBusy} onclick={deleteEditing}>Delete</Button>
+					<Button variant="danger" disabled={editBusy} onclick={deleteEditing}>{m.common_delete()}</Button>
 				{/if}
 				<Button variant="primary" block disabled={editBusy || !editName.trim()} onclick={saveEdit}>
-					{#if editBusy}<span class="spin"></span>{:else}Save{/if}
+					{#if editBusy}<span class="spin"></span>{:else}{m.common_save()}{/if}
 				</Button>
 			{/snippet}
 		</Modal>

@@ -6,11 +6,12 @@
 // carries no internals.
 import type { HandleClientError } from '@sveltejs/kit';
 import { toasts } from '$lib/toast.svelte';
+import { m } from '$lib/paraglide/messages';
 
 function message(err: unknown): string {
 	if (err instanceof Error && err.message) return err.message;
 	if (typeof err === 'string' && err.trim()) return err;
-	return 'Something went wrong';
+	return m.common_error();
 }
 
 if (typeof window !== 'undefined') {

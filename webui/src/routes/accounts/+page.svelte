@@ -37,6 +37,7 @@
 		Timestamp,
 		type TabItem
 	} from '@dorsk/tsumikit';
+	import { m } from '$lib/paraglide/messages';
 
 	const caps = useCapabilities();
 	// Accounts is the single home for everything external (CCT-403): AI provider
@@ -44,9 +45,9 @@
 	// appears when the integration is compiled in (`available`).
 	let tab = $state('ai');
 	const tabs = $derived<TabItem[]>([
-		{ id: 'ai', label: 'AI accounts' },
-		...($caps.data?.github.available ? [{ id: 'connectors', label: 'Connectors' }] : []),
-		{ id: 'dispatchers', label: 'Dispatchers' }
+		{ id: 'ai', label: m.accounts_tab_ai() },
+		...($caps.data?.github.available ? [{ id: 'connectors', label: m.accounts_tab_connectors() }] : []),
+		{ id: 'dispatchers', label: m.accounts_tab_dispatchers() }
 	]);
 
 	const accounts = useAccounts();
@@ -211,7 +212,7 @@
 	// "Sign in with ChatGPT" for Codex (openai) — CCT-243/CCT-244.
 	async function startOAuthLogin() {
 		if (isAdmin && !ownerId && !oauthAttachAccountId) {
-			toasts.err('Pick the owning user first');
+			toasts.err(m.accounts_err_pick_owner());
 			return;
 		}
 		oauthBusy = true;
@@ -224,11 +225,9 @@
 			oauthNonce = r.nonce;
 			window.open(r.authorize_url, '_blank', 'noopener');
 			if (provider === 'openai') {
-				toasts.ok(
-					'Opened ChatGPT — authorize, then copy the localhost:1455 URL and paste it below',
-				);
+				toasts.ok(m.accounts_oauth_opened_chatgpt());
 			} else {
-				toasts.ok('Opened claude.ai — authorize, then paste the code below');
+				toasts.ok(m.accounts_oauth_opened_claude());
 			}
 		} catch (e) {
 			toasts.err((e as Error).message);
@@ -244,14 +243,14 @@
 	// name is ignored server-side.
 	async function finishOAuthLogin() {
 		if (!oauthAttachAccountId && !name.trim()) {
-			toasts.err('Name is required');
+			toasts.err(m.accounts_err_name_required());
 			return;
 		}
 		if (!oauthNonce || !oauthCode.trim()) {
 			toasts.err(
 				provider === 'openai'
-					? 'Paste the localhost:1455 URL first'
-					: 'Paste the code from claude.ai first',
+					? m.accounts_err_paste_url_first()
+					: m.accounts_err_paste_code_first(),
 			);
 			return;
 		}
@@ -263,7 +262,7 @@
 					? { nonce: oauthNonce, name: acctName, callback_url: oauthCode.trim() }
 					: { nonce: oauthNonce, name: acctName, code: oauthCode.trim() },
 			);
-			toasts.ok(oauthAttachAccountId ? 'Provider added' : 'Account added');
+			toasts.ok(oauthAttachAccountId ? m.accounts_provider_added() : m.accounts_account_added());
 			close();
 		} catch (e) {
 			toasts.err((e as Error).message);
@@ -349,14 +348,14 @@
 		try {
 			if (mode === 'edit-account' && editor?.accountId) {
 				if (!name.trim()) {
-					toasts.err('Name is required');
+					toasts.err(m.accounts_err_name_required());
 					return;
 				}
 				const identity: UpdateAccount = { name: name.trim() };
 				if (acctReplaceEnv) identity.env_json = envObject();
 				else if (acctEnvRemove.length) identity.env_remove = acctEnvRemove;
 				await actions.update(editor.accountId, identity);
-				toasts.ok('Account updated');
+				toasts.ok(m.accounts_account_updated());
 			} else if (mode === 'edit-provider' && editor?.accountId && editor.providerId) {
 				// Always send the alias map + soft limits + settings so clearing
 				// them sticks (empty object clears the stored blob). Settings only
@@ -373,7 +372,7 @@
 					if (authScheme !== 'keep') body.auth_scheme = authScheme;
 				}
 				await actions.updateProvider(editor.accountId, editor.providerId, body);
-				toasts.ok('Provider updated');
+				toasts.ok(m.accounts_provider_updated());
 			} else if (mode === 'add-provider' && editor?.accountId) {
 				// Native OAuth adds go through finishOAuthLogin instead; this path is
 				// the compatible-endpoint / pasted-refresh-token attach (CCT-558).
@@ -384,7 +383,7 @@
 				};
 				if (isCompatible) {
 					if (!baseUrl.trim()) {
-						toasts.err('Base URL is required for a compatible endpoint');
+						toasts.err(m.accounts_err_base_url_required());
 						return;
 					}
 					spec.base_url = baseUrl.trim();
@@ -394,27 +393,27 @@
 					if (models.length) spec.models = models;
 				} else {
 					if (!refreshToken.trim()) {
-						toasts.err('Refresh token is required');
+						toasts.err(m.accounts_err_refresh_token_required());
 						return;
 					}
 					spec.refresh_token = refreshToken.trim();
 				}
 				await actions.addProvider(editor.accountId, spec);
-				toasts.ok('Provider added');
+				toasts.ok(m.accounts_provider_added());
 			} else {
 				// create: identity + first credential in one call.
 				if (!name.trim()) {
-					toasts.err('Name is required');
+					toasts.err(m.accounts_err_name_required());
 					return;
 				}
 				if (isAdmin && !ownerId) {
-					toasts.err('Pick the owning user first');
+					toasts.err(m.accounts_err_pick_owner());
 					return;
 				}
 				let body: CreateAccount;
 				if (isCompatible) {
 					if (!baseUrl.trim()) {
-						toasts.err('Base URL is required for a compatible endpoint');
+						toasts.err(m.accounts_err_base_url_required());
 						return;
 					}
 					const models = modelList();
@@ -431,7 +430,7 @@
 					};
 				} else {
 					if (!refreshToken.trim()) {
-						toasts.err('Refresh token is required');
+						toasts.err(m.accounts_err_refresh_token_required());
 						return;
 					}
 					body = {
@@ -444,7 +443,7 @@
 					};
 				}
 				await actions.create(body);
-				toasts.ok('Account added');
+				toasts.ok(m.accounts_account_added());
 			}
 			close();
 		} catch (e) {
@@ -453,25 +452,25 @@
 	}
 
 	function removeAccount(a: OAuthAccount) {
-		if (!confirm(`Delete account "${a.name}" and all its provider credentials?`)) return;
-		guard(actions.remove(a.id).then(() => toasts.ok('Deleted')));
+		if (!confirm(m.accounts_confirm_delete_account({ name: a.name }))) return;
+		guard(actions.remove(a.id).then(() => toasts.ok(m.accounts_deleted())));
 	}
 
 	function removeProvider(a: OAuthAccount, p: AccountProvider) {
 		if (
 			!confirm(
-				`Remove the ${providerLabel(p.provider)} credential from "${a.name}"? The account and its other providers stay.`
+				m.accounts_confirm_remove_provider({ provider: providerLabel(p.provider), name: a.name })
 			)
 		)
 			return;
-		guard(actions.removeProvider(a.id, p.id).then(() => toasts.ok('Provider removed')));
+		guard(actions.removeProvider(a.id, p.id).then(() => toasts.ok(m.accounts_provider_removed())));
 	}
 
 	async function moveProvider() {
 		if (!editor?.accountId || !editor.providerId || !moveTarget) return;
 		try {
 			await actions.moveProvider(editor.accountId, editor.providerId, moveTarget);
-			toasts.ok('Provider moved');
+			toasts.ok(m.accounts_provider_moved());
 			close();
 		} catch (e) {
 			toasts.err((e as Error).message);
@@ -505,36 +504,33 @@
 
 	const modalTitle = $derived(
 		editor?.mode === 'create'
-			? 'New account'
+			? m.accounts_modal_new_account()
 			: editor?.mode === 'add-provider'
-				? `Add provider to "${editingAccount?.name ?? ''}"`
+				? m.accounts_modal_add_provider({ name: editingAccount?.name ?? '' })
 				: editor?.mode === 'edit-account'
-					? 'Edit account'
+					? m.accounts_modal_edit_account()
 					: reauthing
-						? 'Reauthenticate provider'
-						: `Edit ${providerLabel(editingProvider?.provider ?? '')} provider`
+						? m.accounts_modal_reauth()
+						: m.accounts_modal_edit_provider({ provider: providerLabel(editingProvider?.provider ?? '') })
 	);
 </script>
 
-<Heading level={1} class="page-title">Accounts</Heading>
+<Heading level={1} class="page-title">{m.accounts_title()}</Heading>
 
-<Tabs {tabs} bind:value={tab} label="Account sections">
+<Tabs {tabs} bind:value={tab} label={m.accounts_sections_label()}>
 	{#snippet panel(id)}
 		{#if id === 'ai'}
 			<Cluster class="bar" justify="space-between" align="center" gap="var(--sp-3)">
 				<Text as="p" tone="muted" size="sm" class="intro">
-					Named accounts for Claude and Codex, plus self-hosted OpenAI/Anthropic-compatible
-					endpoints. An account can hold one credential per provider family; pick one per job
-					at spawn time and the session runs through a passthrough gateway under it. Tokens
-					are stored encrypted and never shown again.
+					{m.accounts_ai_intro()}
 				</Text>
-				<Button control variant="primary" onclick={openCreate}>+ New account</Button>
+				<Button control variant="primary" onclick={openCreate}>{m.accounts_new_account()}</Button>
 			</Cluster>
 
 			{#if $accounts.isLoading}
 				<div class="empty"><span class="spin"></span></div>
 			{:else if rows.length === 0}
-				<div class="empty"><Text tone="muted">No accounts yet.</Text></div>
+				<div class="empty"><Text tone="muted">{m.accounts_empty()}</Text></div>
 			{:else}
 				<AutoGrid min="22rem" gap="var(--sp-3)">
 					{#each rows as a (a.id)}
@@ -554,19 +550,19 @@
 										onremove={() => removeProvider(a, p)}
 									/>
 								{:else}
-									<Text tone="faint" size="sm">No provider credentials yet.</Text>
+									<Text tone="faint" size="sm">{m.accounts_no_credentials()}</Text>
 								{/each}
 								{#if !isManaged(a) && availableKinds(a).length}
 									<Button size="sm" style="align-self: flex-start" onclick={() => openAddProvider(a)}>
-										+ Add provider
+										{m.accounts_add_provider()}
 									</Button>
 								{/if}
 
 								<dl class="stats">
 									{#if isAdmin}
-										<div><dt>Owner</dt><dd>{a.user_name ?? '—'}</dd></div>
+										<div><dt>{m.accounts_stat_owner()}</dt><dd>{a.user_name ?? '—'}</dd></div>
 									{/if}
-									<div><dt>Created</dt><dd><Timestamp value={a.created_at} mode="date" tone="inherit" /></dd></div>
+									<div><dt>{m.accounts_stat_created()}</dt><dd><Timestamp value={a.created_at} mode="date" tone="inherit" /></dd></div>
 								</dl>
 								{#if !isManaged(a) && (isAdmin || a.user_id === $me.data?.user_id)}
 									<!-- Sharing management (CCT-510): owner-only surface to view/grant/
@@ -575,17 +571,17 @@
 									<ResourceShares
 										resourceType="account"
 										id={a.id}
-										noun="this account"
+										noun={m.accounts_share_noun()}
 										enabled={tab === 'ai'}
 									/>
 								{/if}
 							</Stack>
 							<Cluster as="footer" gap="var(--sp-1)" justify="flex-end" class="card-foot">
 								{#if isManaged(a)}
-									<Text tone="faint" size="xs">Managed (read-only)</Text>
+									<Text tone="faint" size="xs">{m.accounts_managed_readonly()}</Text>
 								{:else}
-									<Button onclick={() => openEditAccount(a)}>Edit</Button>
-									<Button variant="danger" onclick={() => removeAccount(a)}>Delete</Button>
+									<Button onclick={() => openEditAccount(a)}>{m.common_edit()}</Button>
+									<Button variant="danger" onclick={() => removeAccount(a)}>{m.common_delete()}</Button>
 								{/if}
 							</Cluster>
 						</Card>
@@ -605,12 +601,12 @@
 		{#snippet body()}
 			<div class="editor-body">
 				{#if editor?.mode === 'create' || editor?.mode === 'edit-account'}
-					<Field label="Name">
-						<Input bind:value={name} placeholder="personal" />
+					<Field label={m.accounts_field_name()}>
+						<Input bind:value={name} placeholder={m.accounts_field_name_placeholder()} />
 					</Field>
 				{/if}
 				{#if editor?.mode === 'create' && isAdmin}
-					<Field label="Owner">
+					<Field label={m.accounts_field_owner()}>
 						<Select bind:value={ownerId}>
 							{#each activeUsers as u (u.id)}
 								<option value={u.id}>{u.name}</option>
@@ -619,7 +615,7 @@
 					</Field>
 				{/if}
 				{#if editor?.mode === 'create' || editor?.mode === 'add-provider'}
-					<Field label="Provider">
+					<Field label={m.accounts_field_provider()}>
 						<Select
 							bind:value={provider}
 							onchange={() => {
@@ -651,36 +647,36 @@
 						     place; base URL / credential / scheme are write-only — blank or
 						     "keep" leaves the stored value untouched. -->
 						{@const isEdit = editor?.mode === 'edit-provider'}
-						<Field label="Base URL">
+						<Field label={m.accounts_field_base_url()}>
 							<Input
 								bind:value={baseUrl}
-								placeholder={isEdit ? 'leave blank to keep current' : 'https://litellm.example/v1'}
+								placeholder={isEdit ? m.accounts_placeholder_keep_current() : 'https://litellm.example/v1'}
 							/>
 						</Field>
-						<Field label="Auth scheme">
+						<Field label={m.accounts_field_auth_scheme()}>
 							<Select bind:value={authScheme}>
 								{#if isEdit}
-									<option value="keep">Keep current</option>
+									<option value="keep">{m.accounts_auth_keep()}</option>
 								{/if}
-								<option value="bearer">Bearer token</option>
-								<option value="api_key">API key</option>
+								<option value="bearer">{m.accounts_auth_bearer()}</option>
+								<option value="api_key">{m.accounts_auth_api_key()}</option>
 							</Select>
 						</Field>
-						<Field label="Credential (optional)">
+						<Field label={m.accounts_field_credential()}>
 							<Input
 								type="password"
 								bind:value={credential}
 								placeholder={isEdit
-									? 'leave blank to keep current'
-									: 'bearer / API key (blank for an open proxy)'}
+									? m.accounts_placeholder_keep_current()
+									: m.accounts_placeholder_credential()}
 							/>
 						</Field>
 						<div class="models">
-							<Text as="div" tone="muted" size="sm">Models</Text>
+							<Text as="div" tone="muted" size="sm">{m.accounts_models_label()}</Text>
 							{#each modelRows as row, i (i)}
 								<div class="model-row">
-									<Input bind:value={row.model} placeholder="model code (e.g. qwen3-coder)" />
-									<Input bind:value={row.label} placeholder="label (optional)" />
+									<Input bind:value={row.model} placeholder={m.accounts_placeholder_model_code()} />
+									<Input bind:value={row.label} placeholder={m.accounts_placeholder_model_label()} />
 									<Button
 										variant="danger"
 										onclick={() => (modelRows = modelRows.filter((_, j) => j !== i))}
@@ -690,7 +686,7 @@
 							{/each}
 							<Button
 								onclick={() => (modelRows = [...modelRows, { model: '', label: '' }])}
-								>+ Add model</Button
+								>{m.accounts_add_model()}</Button
 							>
 						</div>
 					{:else if editor?.mode === 'create' || editor?.mode === 'add-provider' || reauthing}
@@ -704,41 +700,40 @@
 								onclick={startOAuthLogin}
 							>
 								{oauthBusy
-									? 'Opening…'
+									? m.accounts_oauth_opening()
 									: provider === 'openai'
-										? 'Sign in with ChatGPT'
-										: 'Sign in with Claude'}
+										? m.accounts_signin_chatgpt()
+										: m.accounts_signin_claude()}
 							</Button>
 						{:else}
-							<Field label={provider === 'openai' ? 'URL from ChatGPT' : 'Code from claude.ai'}>
+							<Field label={provider === 'openai' ? m.accounts_oauth_url_label() : m.accounts_oauth_code_label()}>
 								<Input
 									bind:value={oauthCode}
 									placeholder={provider === 'openai'
-										? 'paste the http://localhost:1455/auth/callback?... URL'
-										: 'paste the code#state shown after authorizing'}
+										? m.accounts_oauth_url_placeholder()
+										: m.accounts_oauth_code_placeholder()}
 								/>
 							</Field>
 							{#if provider === 'openai'}
 								<Text as="p" tone="muted" size="sm">
-									The browser tab will fail to load localhost:1455 — that's expected.
-									Copy the full URL from its address bar and paste it above.
+									{m.accounts_oauth_localhost_note()}
 								</Text>
 							{/if}
 							<Text as="p" tone="muted" size="sm">
-								Didn't get {provider === 'openai' ? 'a URL' : 'a code'}?
+								{provider === 'openai' ? m.accounts_oauth_missing_url() : m.accounts_oauth_missing_code()}
 								<Link onclick={startOAuthLogin}
-									>Open {provider === 'openai' ? 'ChatGPT' : 'claude.ai'} again</Link
+									>{provider === 'openai' ? m.accounts_oauth_reopen_chatgpt() : m.accounts_oauth_reopen_claude()}</Link
 								>
 							</Text>
 						{/if}
 						{#if !reauthing}
 							<details bind:open={showAdvanced} class="adv">
-								<summary><Text tone="muted" size="sm">Advanced: paste a refresh token instead</Text></summary>
-								<Field label="OAuth refresh token" class="adv-fld">
+								<summary><Text tone="muted" size="sm">{m.accounts_adv_refresh_summary()}</Text></summary>
+								<Field label={m.accounts_refresh_token_label()} class="adv-fld">
 									<Input
 										type="password"
 										bind:value={refreshToken}
-										placeholder="paste the OAuth refresh token"
+										placeholder={m.accounts_refresh_token_placeholder()}
 									/>
 								</Field>
 							</details>
@@ -749,15 +744,14 @@
 					     resolved server-side at spawn; works for every provider. -->
 					{#if editor?.mode === 'edit-provider' || isCompatible}
 						<div class="models">
-							<Text as="div" tone="muted" size="sm">Model aliases</Text>
+							<Text as="div" tone="muted" size="sm">{m.accounts_aliases_label()}</Text>
 							<Text as="div" tone="faint" size="xs">
-								Map a logical name to the model this account launches (e.g.
-								<code>opus</code> -> <code>claude-opus-4-8[1m]</code>).
+								{m.accounts_aliases_help()}
 							</Text>
 							{#each aliasRows as row, i (i)}
 								<div class="model-row">
-									<Input bind:value={row.alias} placeholder="logical name (e.g. opus)" />
-									<Input bind:value={row.model} placeholder="model code (e.g. claude-opus-4-8[1m])" />
+									<Input bind:value={row.alias} placeholder={m.accounts_placeholder_alias_name()} />
+									<Input bind:value={row.model} placeholder={m.accounts_placeholder_alias_model()} />
 									<Button
 										variant="danger"
 										onclick={() => (aliasRows = aliasRows.filter((_, j) => j !== i))}>✕</Button
@@ -765,7 +759,7 @@
 								</div>
 							{/each}
 							<Button onclick={() => (aliasRows = [...aliasRows, { alias: '', model: '' }])}
-								>+ Add alias</Button
+								>{m.accounts_add_alias()}</Button
 							>
 						</div>
 					{/if}
@@ -776,29 +770,25 @@
 					     API) and openai (locally metered, CCT-511). -->
 					{#if provider === 'anthropic' || provider === 'anthropic-compatible' || provider === 'openai'}
 						<div class="models">
-							<Text as="div" tone="muted" size="sm">Soft limits</Text>
+							<Text as="div" tone="muted" size="sm">{m.accounts_soft_limits_label()}</Text>
 							<Text as="div" tone="faint" size="xs">
-								Cap cctui's own share of each usage window (%). Over the cap, cctui's
-								spawned workers get a 429 instead of consuming more — leaving headroom
-								for your own Claude Code. Blank = no cap. A bypass ignores its window's
-								cap when that window resets within that many minutes — the 7d window
-								usually needs a much longer bypass than the 5h one.
+								{m.accounts_soft_limits_help()}
 							</Text>
 							<div class="soft-grid">
 								<label class="soft-field">
-									<Text as="div" tone="faint" size="xs">5h cap %</Text>
+									<Text as="div" tone="faint" size="xs">{m.accounts_soft_5h_cap()}</Text>
 									<Input type="number" bind:value={soft5h} placeholder="e.g. 80" />
 								</label>
 								<label class="soft-field">
-									<Text as="div" tone="faint" size="xs">7d cap %</Text>
+									<Text as="div" tone="faint" size="xs">{m.accounts_soft_7d_cap()}</Text>
 									<Input type="number" bind:value={soft7d} placeholder="e.g. 80" />
 								</label>
 								<label class="soft-field">
-									<Text as="div" tone="faint" size="xs">5h bypass (min)</Text>
+									<Text as="div" tone="faint" size="xs">{m.accounts_soft_5h_bypass()}</Text>
 									<Input type="number" bind:value={softBypass5h} placeholder="e.g. 30" />
 								</label>
 								<label class="soft-field">
-									<Text as="div" tone="faint" size="xs">7d bypass (min)</Text>
+									<Text as="div" tone="faint" size="xs">{m.accounts_soft_7d_bypass()}</Text>
 									<Input type="number" bind:value={softBypass7d} placeholder="e.g. 360" />
 								</label>
 							</div>
@@ -813,8 +803,7 @@
 							<ProviderSettingsList bind:settings={acctSettings} />
 						{:else}
 							<Text tone="faint" size="sm">
-								No per-provider settings for Codex yet — model aliases and soft
-								limits above are the available knobs.
+								{m.accounts_no_codex_settings()}
 							</Text>
 						{/if}
 
@@ -822,21 +811,18 @@
 						     the same owner — the merge path for migrated split rows. -->
 						{#if !reauthing && moveTargets.length}
 							<div class="models">
-								<Text as="div" tone="muted" size="sm">Move to another account</Text>
+								<Text as="div" tone="muted" size="sm">{m.accounts_move_label()}</Text>
 								<Text as="div" tone="faint" size="xs">
-									Re-parent this credential onto another of this owner's accounts
-									(e.g. merging "alice (anthropic)" + "alice (openai)" into one
-									"alice"). Only accounts with a free {editingProvider.family} slot
-									are listed.
+									{m.accounts_move_help({ family: editingProvider.family })}
 								</Text>
 								<div class="move-row">
 									<Select bind:value={moveTarget}>
-										<option value="">Pick an account…</option>
+										<option value="">{m.accounts_move_pick()}</option>
 										{#each moveTargets as t (t.id)}
 											<option value={t.id}>{t.name}</option>
 										{/each}
 									</Select>
-									<Button disabled={!moveTarget} onclick={moveProvider}>Move</Button>
+									<Button disabled={!moveTarget} onclick={moveProvider}>{m.accounts_move_button()}</Button>
 								</div>
 							</div>
 						{/if}
@@ -846,11 +832,11 @@
 		{/snippet}
 		{#snippet footer()}
 			<div class="spacer"></div>
-			<Button onclick={close}>Cancel</Button>
+			<Button onclick={close}>{m.common_cancel()}</Button>
 			{#if oauthSaves}
-				<Button variant="primary" disabled={oauthBusy} onclick={finishOAuthLogin}>Save</Button>
+				<Button variant="primary" disabled={oauthBusy} onclick={finishOAuthLogin}>{m.common_save()}</Button>
 			{:else}
-				<Button variant="primary" onclick={save}>Save</Button>
+				<Button variant="primary" onclick={save}>{m.common_save()}</Button>
 			{/if}
 		{/snippet}
 	</Modal>

@@ -8,6 +8,7 @@ import type { SessionListItem } from '@bindings/SessionListItem';
 import type { ForkExtract } from '@bindings/ForkExtract';
 import type { ForkRequest } from '@bindings/ForkRequest';
 import { toasts } from '$lib/toast.svelte';
+import { m } from '$lib/paraglide/messages';
 import {
 	codexModels as CODEX_MODELS,
 	codexEfforts as CODEX_EFFORTS,
@@ -88,9 +89,9 @@ export class ForkController {
 	get extractLabel(): string | null {
 		const x = this.extract;
 		if (!x) return null;
-		if (x.mode === 'up_to') return 'from this message (keep everything up to it)';
-		if (x.mode === 'after') return 'after this message (keep everything below it)';
-		return `${x.selected_message_ids.length} selected message(s)`;
+		if (x.mode === 'up_to') return m.fork_extract_up_to();
+		if (x.mode === 'after') return m.fork_extract_after();
+		return m.fork_extract_selected({ count: x.selected_message_ids.length });
 	}
 
 	cancel = () => {
@@ -111,10 +112,10 @@ export class ForkController {
 			this.open = false;
 			toasts.ok(
 				this.extract
-					? 'Forked from selected messages'
+					? m.fork_toast_from_selected()
 					: this.#opts.archived()
-						? 'Reopened as a new conversation'
-						: 'Forked conversation'
+						? m.fork_toast_reopened()
+						: m.fork_toast_forked()
 			);
 			this.#opts.onForked(res?.session_id);
 		} catch (e) {

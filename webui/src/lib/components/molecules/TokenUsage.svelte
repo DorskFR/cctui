@@ -2,6 +2,7 @@
 	import type { TokenUsage } from '@bindings/TokenUsage';
 	import { compact } from '$lib/format';
 	import { Cluster, Text, Tooltip } from '@dorsk/tsumikit';
+	import { m } from '$lib/paraglide/messages';
 
 	// Canonical token-usage readout — the SINGLE token block, shared by the session
 	// list/card, the chat header, and each assistant/result line in the conversation.
@@ -43,14 +44,11 @@
 	);
 	const total = $derived(sum ?? Number(usage.tokens_in) + Number(usage.tokens_out) + cacheTotal);
 
-	const sumHint =
-		'Σ — cumulative session usage (↑ + ↓ + ⚡), summed over every turn. This is lifetime billing-style throughput, NOT the current context size: ⚡ re-counts the cached context on each turn so Σ climbs well past what /context reports as loaded right now.';
-	const inHint =
-		'↑ — new (uncached) input tokens, summed over the session. Small because each turn re-sends the bulk of the context as a cache read (⚡), not fresh input.';
-	const outHint = '↓ — output (generated) tokens, summed over the session.';
-	const cacheHint =
-		'⚡ — cache read + create tokens, counted every turn. The whole context is re-read from cache each turn, so this accumulates ≈ window size × turns and dominates Σ. It is cumulative throughput, not current context occupancy.';
-	const coldHint = 'Cache went cold — the next send re-bills the full context';
+	const sumHint = m.sessions_token_sum_hint();
+	const inHint = m.sessions_token_in_hint();
+	const outHint = m.sessions_token_out_hint();
+	const cacheHint = m.sessions_token_cache_hint();
+	const coldHint = m.sessions_token_cold_hint();
 </script>
 
 <!-- Cluster owns the layout (row, single gap, optional wrap); each segment is its

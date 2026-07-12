@@ -11,6 +11,7 @@
 <script lang="ts">
 	import type { DraftCommentInfo } from '@bindings/DraftCommentInfo';
 	import { Button, Cluster, Stack, Text, Textarea } from '@dorsk/tsumikit';
+	import { m } from '$lib/paraglide/messages';
 
 	interface Props {
 		/** An existing draft comment to display (omit when `composing`). */
@@ -61,28 +62,28 @@
 			<Textarea
 				bind:value={text}
 				rows={3}
-				placeholder="Leave a draft comment (Cmd/Ctrl+Enter to add)…"
+				placeholder={m.review_comment_placeholder()}
 				{onkeydown}
 				autofocus
 			/>
 			<Cluster gap="var(--sp-2)">
 				<Button onclick={save} disabled={busy || !text.trim()}>
-					{composing ? 'Add comment' : 'Save'}
+					{composing ? m.review_add_comment() : m.common_save()}
 				</Button>
-				<Button variant="ghost" onclick={cancel} disabled={busy}>Cancel</Button>
+				<Button variant="ghost" onclick={cancel} disabled={busy}>{m.common_cancel()}</Button>
 			</Cluster>
 		</Stack>
 	{:else if comment}
 		<Stack gap="var(--sp-1)">
 			<div class="body"><Text size="sm">{comment.body}</Text></div>
 			<Cluster gap="var(--sp-2)" align="center">
-				<Text tone="muted" size="xs">draft</Text>
-				<button type="button" class="link" onclick={start} disabled={busy}>Edit</button>
+				<Text tone="muted" size="xs">{m.review_draft_label()}</Text>
+				<button type="button" class="link" onclick={start} disabled={busy}>{m.common_edit()}</button>
 				<button
 					type="button"
 					class="link danger"
 					onclick={() => ondelete?.(comment.id)}
-					disabled={busy}>Delete</button
+					disabled={busy}>{m.common_delete()}</button
 				>
 			</Cluster>
 		</Stack>

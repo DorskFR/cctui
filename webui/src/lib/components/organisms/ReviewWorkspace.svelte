@@ -29,6 +29,7 @@
 	import { Button, Cluster, Stack, Text } from '@dorsk/tsumikit';
 	import DiffViewer from './DiffViewer.svelte';
 	import ConversationDrawer from './ConversationDrawer.svelte';
+	import { m } from '$lib/paraglide/messages';
 
 	interface Props {
 		/** The PR's structured diff (GH-VIEW-1), already fetched by the host. */
@@ -76,7 +77,7 @@
 		pending = sel;
 		const text = blockAskMessage(sel);
 		ws.trackedSend(session.id, text, Date.now());
-		toasts.push(`Asked the agent about ${blockLabel(sel)}`, 'info');
+		toasts.push(m.review_asked_agent_about({ block: blockLabel(sel) }), 'info');
 	}
 
 	// 2) Promote the agent's latest answer to a draft comment anchored to the
@@ -101,9 +102,9 @@
 				promoteAnswerToDraft(pending, lastAnswer)
 			);
 			qc.invalidateQueries({ queryKey: githubDraftsKey(connectorId, repo, number) });
-			toasts.push(`Promoted the answer to a draft on ${blockLabel(pending)}`, 'ok');
+			toasts.push(m.review_promoted_answer({ block: blockLabel(pending) }), 'ok');
 		} catch (e) {
-			toasts.push(e instanceof Error ? e.message : 'Could not promote the answer', 'err');
+			toasts.push(e instanceof Error ? e.message : m.review_promote_failed(), 'err');
 		} finally {
 			promoting = false;
 		}
@@ -119,13 +120,13 @@
 			<Cluster gap="var(--sp-2)" align="center" justify="space-between">
 				<Text size="sm" tone="muted">
 					{#if pending}
-						Asked about <code>{blockLabel(pending)}</code>
+						{m.review_asked_about_label()} <code>{blockLabel(pending)}</code>
 					{:else}
-						Select a diff line and “Ask the agent” to discuss a block
+						{m.review_select_line_hint()}
 					{/if}
 				</Text>
 				<Button onclick={promoteAnswer} disabled={!canPromote}>
-					{promoting ? 'Promoting…' : 'Promote answer to draft'}
+					{promoting ? m.review_promoting() : m.review_promote_answer()}
 				</Button>
 			</Cluster>
 			<div class="drawer-host">

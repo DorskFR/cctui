@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { Icon, Select } from '@dorsk/tsumikit';
+	import { m } from '$lib/paraglide/messages';
 	import { VIEW_OPTIONS } from '../../../routes/sessions/sessions.logic';
 
 	// One square control offering the 4 explicit layout × density combinations
@@ -16,7 +17,7 @@
 	const mode = $derived(
 		kanban ? 'kanban' : `${cardView ? 'card' : 'list'}-${dense ? 'compact' : 'detailed'}`
 	);
-	const label = $derived(VIEW_OPTIONS.find((o) => o.value === mode)?.label ?? 'View');
+	const label = $derived(VIEW_OPTIONS.find((o) => o.value === mode)?.label ?? m.sessions_view_label());
 
 	function select(value: string) {
 		const opt = VIEW_OPTIONS.find((o) => o.value === value);
@@ -27,7 +28,7 @@
 	}
 </script>
 
-<div class="view-picker btn-control btn-control-square" title="View: {label}" aria-label="View: {label}">
+<div class="view-picker btn-control btn-control-square" title={m.sessions_view_title({ view: label })} aria-label={m.sessions_view_title({ view: label })}>
 	<!-- Icons at size 18 to match the sibling IconButton controls (the old
 	     unicode glyphs rendered at the inherited font size, so they read smaller).
 	     `menu` for list; a raw layout-grid svg (no grid glyph in the registry) for
@@ -44,7 +45,7 @@
 	{/if}
 	<Select
 		variant="ghost"
-		aria-label="Choose list view"
+		aria-label={m.sessions_view_choose()}
 		value={mode}
 		onchange={(e) => select((e.currentTarget as HTMLSelectElement).value)}
 	>

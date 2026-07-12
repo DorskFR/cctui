@@ -107,6 +107,24 @@ pub fn harness_mode_to_adapter_token(harness_mode: Option<&str>) -> String {
     }
 }
 
+/// Recognized UI locales (CCT-599). An unknown/missing value is left as the
+/// implicit "auto" (no key), so the webui falls back to the browser language.
+const LOCALES: [&str; 2] = ["en", "fr"];
+
+/// Clamp `data.locale` in place on write (CCT-599): drop the key unless it is a
+/// recognized locale, so a stored row never carries an unknown language token
+/// (which the webui would ignore anyway). Absence means "auto".
+fn clamp_locale(data: &mut Value) {
+    let Some(obj) = data.as_object_mut() else { return };
+    if !obj.contains_key("locale") {
+        return;
+    }
+    let ok = obj.get("locale").and_then(Value::as_str).is_some_and(|l| LOCALES.contains(&l));
+    if !ok {
+        obj.remove("locale");
+    }
+}
+
 const WHIP_MODES: [&str; 2] = ["extend", "replace"];
 const DEFAULT_WHIP_MODE: &str = "extend";
 const MAX_WHIP_PHRASES: usize = 200;
@@ -226,6 +244,7 @@ pub async fn put_settings(
     // wedge a daemon's reconcile); unknown → bg (CCT-495).
     clamp_harness_mode(&mut data);
     clamp_whip_stop_phrases(&mut data);
+    clamp_locale(&mut data);
     let new_mode = harness_mode_of(&data);
 
     // Snapshot the stored harnessMode before the upsert so we only push a fresh
@@ -285,7 +304,7 @@ pub async fn put_settings(
 #[cfg(test)]
 mod tests {
     use super::{
-        clamp_harness_mode, clamp_whip_stop_phrases, harness_mode_of,
+        clamp_harness_mode, clamp_locale, clamp_whip_stop_phrases, harness_mode_of,
         harness_mode_to_adapter_token, whip_stop_phrases_of,
     };
     use serde_json::json;
@@ -378,6 +397,30 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(block["phrases"].as_array().unwrap().len(), super::MAX_WHIP_PHRASES);
+    }
+
+    #[test]
+    fn clamp_locale_keeps_known_drops_unknown_and_leaves_absence() {
+        let mut en = json!({ "locale": "en", "theme": "dark" });
+        clamp_locale(&mut en);
+        assert_eq!(en["locale"], "en");
+        assert_eq!(en["theme"], "dark");
+
+        let mut fr = json!({ "locale": "fr" });
+        clamp_locale(&mut fr);
+        assert_eq!(fr["locale"], "fr");
+
+        let mut bad = json!({ "locale": "de" });
+        clamp_locale(&mut bad);
+        assert!(bad.get("locale").is_none());
+
+        let mut typed = json!({ "locale": 3 });
+        clamp_locale(&mut typed);
+        assert!(typed.get("locale").is_none());
+
+        let mut absent = json!({ "theme": "dark" });
+        clamp_locale(&mut absent);
+        assert!(absent.get("locale").is_none());
     }
 
     #[test]

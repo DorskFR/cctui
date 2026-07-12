@@ -11,6 +11,7 @@
 	}
 	import { IconButton, Input, Text } from '@dorsk/tsumikit';
 	import Error from '$lib/components/atoms/Error.svelte';
+	import { m } from '$lib/paraglide/messages';
 
 	let {
 		envRows = $bindable(),
@@ -32,22 +33,22 @@
 					mono
 					style="flex:1;min-width:0"
 					placeholder="API_KEY"
-					aria-label="Secret name"
+					aria-label={m.spawn_secret_name_aria()}
 					bind:value={row.key}
 				/>
 				<Input
 					mono
 					style="flex:1;min-width:0"
 					type="password"
-					placeholder="value"
-					aria-label="Secret value"
+					placeholder={m.spawn_secret_value_placeholder()}
+					aria-label={m.spawn_secret_value_aria()}
 					bind:value={row.value}
 				/>
-				<IconButton icon="trash" label="Remove secret" hoverDanger onclick={() => removeEnvRow(i)} />
+				<IconButton icon="trash" label={m.spawn_remove_secret()} hoverDanger onclick={() => removeEnvRow(i)} />
 			</div>
 		{/each}
 		{#if invalid}
-			<Error>Keys must match <Text variant="code">^[A-Z_][A-Z0-9_]*$</Text></Error>
+			<Error>{m.spawn_secret_key_error()} <Text variant="code">^[A-Z_][A-Z0-9_]*$</Text></Error>
 		{/if}
 	</div>
 {/if}

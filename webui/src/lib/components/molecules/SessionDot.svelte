@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import { Tooltip, copyToClipboard } from '@dorsk/tsumikit';
+	import { m } from '$lib/paraglide/messages';
 	import { sessionDebugRows } from '../../../routes/sessions/sessions.logic';
 
 	// Activity dot (CCT-555): the liveness dot carries a rich debug tooltip —
@@ -33,14 +34,14 @@
 			class="dot {livenessClass}"
 			role="img"
 			tabindex="0"
-			aria-label="session debug info"
+			aria-label={m.sessions_dot_aria()}
 		></span>
 	{/snippet}
 	{#snippet content()}
 		<div class="dbg">
 			<div class="idrow">
 				<code class="id">{session.id}</code>
-				<button type="button" class="copy" onclick={copyId} title="Copy session id">
+				<button type="button" class="copy" onclick={copyId} title={m.sessions_copy_id_title()}>
 					{copied ? '✓' : '⧉'}
 				</button>
 			</div>

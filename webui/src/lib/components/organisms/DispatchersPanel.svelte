@@ -14,6 +14,7 @@
 	import { toasts } from '$lib/toast.svelte';
 	import { Badge, Button, Field, Heading, Input, Modal, Select, Text, Timestamp } from '@dorsk/tsumikit';
 	import { livenessLabel, livenessTone } from '$lib/dispatchers.logic';
+	import { m } from '$lib/paraglide/messages';
 
 	// When embedded under Accounts the page already shows an <h1>, so the panel's
 	// own heading drops a level; standalone it stays an <h1>.
@@ -66,13 +67,13 @@
 
 	async function save() {
 		if (!name.trim()) {
-			toasts.err('Name is required');
+			toasts.err(m.dispatch_err_name_required());
 			return;
 		}
 		try {
 			if (editing) {
 				await actions.rename(editing, { name: name.trim() });
-				toasts.ok('Dispatcher renamed');
+				toasts.ok(m.dispatch_toast_renamed());
 				close();
 			} else {
 				const [account, provider] = accountKey ? accountKey.split('\0') : [];
@@ -81,7 +82,7 @@
 					kind,
 					...(account ? { account, provider } : {}),
 				});
-				toasts.ok('Dispatcher enrolled');
+				toasts.ok(m.dispatch_toast_enrolled());
 				close();
 				newKey = r.dispatcher_key;
 			}
@@ -91,17 +92,17 @@
 	}
 
 	function remove(d: UserDispatcher) {
-		if (!confirm(`Remove dispatcher "${d.name}"?`)) return;
-		guard(actions.remove(d.id).then(() => toasts.ok('Removed')));
+		if (!confirm(m.dispatch_confirm_remove({ name: d.name }))) return;
+		guard(actions.remove(d.id).then(() => toasts.ok(m.dispatch_toast_removed())));
 	}
 
 	async function copyKey() {
 		if (!newKey) return;
 		try {
 			await navigator.clipboard.writeText(newKey);
-			toasts.ok('Key copied');
+			toasts.ok(m.dispatch_toast_key_copied());
 		} catch {
-			toasts.err('Copy failed — select and copy manually');
+			toasts.err(m.dispatch_err_copy_failed());
 		}
 	}
 
@@ -109,35 +110,32 @@
 </script>
 
 <div class="bar row">
-	{#if heading}<Heading level={1}>Dispatchers</Heading>{/if}
+	{#if heading}<Heading level={1}>{m.dispatch_heading()}</Heading>{/if}
 	<div class="spacer"></div>
-	<Button control variant="primary" onclick={openEnroll}>+ Enroll dispatcher</Button>
+	<Button control variant="primary" onclick={openEnroll}>{m.dispatch_enroll_button()}</Button>
 </div>
 
 <div class="intro">
 	<Text as="p" tone="muted" size="sm">
-		Standalone executor services enrolled to your account. Each dials out to the server over a
-		WebSocket and runs dispatched workers on its host. Reference one by its name in
-		<Text variant="code">/dispatch</Text>; a name here overrides a global dispatcher of the same
-		name, for you only.
+		{m.dispatch_intro_pre()}<Text variant="code">/dispatch</Text>{m.dispatch_intro_post()}
 	</Text>
 </div>
 
 {#if $dispatchers.isLoading}
 	<div class="empty"><span class="spin"></span></div>
 {:else if rows.length === 0}
-	<div class="empty"><Text tone="muted">No dispatchers enrolled yet.</Text></div>
+	<div class="empty"><Text tone="muted">{m.dispatch_empty()}</Text></div>
 {:else}
 	<div class="card table-card">
 		<table class="disp">
 			<thead>
 				<tr>
-					<th class="col-name">Name</th>
-					<th class="col-kind">Type</th>
-					<th class="col-status">Status</th>
-					<th class="col-key faint">Key</th>
-					<th class="col-seen">Last seen</th>
-					<th class="col-actions">Actions</th>
+					<th class="col-name">{m.dispatch_col_name()}</th>
+					<th class="col-kind">{m.dispatch_col_type()}</th>
+					<th class="col-status">{m.dispatch_col_status()}</th>
+					<th class="col-key faint">{m.dispatch_col_key()}</th>
+					<th class="col-seen">{m.dispatch_col_last_seen()}</th>
+					<th class="col-actions">{m.dispatch_col_actions()}</th>
 				</tr>
 			</thead>
 			<tbody>
@@ -150,8 +148,8 @@
 						<td class="col-seen faint"><Timestamp value={d.last_seen_at} mode="relative" tone="inherit" /></td>
 						<td class="col-actions">
 							<div class="row acts">
-								<Button onclick={() => openRename(d)}>Rename</Button>
-								<Button variant="danger" onclick={() => remove(d)}>Remove</Button>
+								<Button onclick={() => openRename(d)}>{m.dispatch_rename()}</Button>
+								<Button variant="danger" onclick={() => remove(d)}>{m.common_remove()}</Button>
 							</div>
 						</td>
 					</tr>
@@ -162,59 +160,56 @@
 {/if}
 
 {#if editing !== undefined}
-	<Modal title={editing ? 'Rename dispatcher' : 'Enroll dispatcher'} onclose={close}>
+	<Modal title={editing ? m.dispatch_modal_rename_title() : m.dispatch_modal_enroll_title()} onclose={close}>
 		{#snippet body()}
 			<div class="editor-body">
-				<Field label="Name">
+				<Field label={m.dispatch_field_name()}>
 					<Input bind:value={name} placeholder="my-worker" />
 				</Field>
 				{#if !editing}
-					<Field label="Type">
+					<Field label={m.dispatch_field_type()}>
 						<Select bind:value={kind}>
 							<option value="kubernetes">kubernetes</option>
 							<option value="docker">docker</option>
 							<option value="http">http</option>
 						</Select>
 					</Field>
-					<Field label="Default account (optional)">
+					<Field label={m.dispatch_field_default_account()}>
 						<Select bind:value={accountKey}>
-							<option value="">None — explicit account per dispatch</option>
+							<option value="">{m.dispatch_account_none_option()}</option>
 							{#each $accounts.data ?? [] as a (a.id)}
-								<option value={`${a.name}\0${primaryProvider(a)?.provider ?? ''}`}>{a.name} ({primaryProvider(a)?.provider ?? 'no provider'})</option>
+								<option value={`${a.name}\0${primaryProvider(a)?.provider ?? ''}`}>{a.name} ({primaryProvider(a)?.provider ?? m.spawn_no_provider()})</option>
 							{/each}
 						</Select>
 					</Field>
 					<Text as="p" tone="muted" size="sm">
-						A dispatch with no explicit account routes its model traffic through the gateway under
-						this account. An enrollment key is generated and shown once; configure your dispatcher
-						binary with it so it can dial out.
+						{m.dispatch_enroll_hint()}
 					</Text>
 				{/if}
 			</div>
 		{/snippet}
 		{#snippet footer()}
 			<div class="spacer"></div>
-			<Button onclick={close}>Cancel</Button>
-			<Button variant="primary" onclick={save}>{editing ? 'Save' : 'Enroll'}</Button>
+			<Button onclick={close}>{m.common_cancel()}</Button>
+			<Button variant="primary" onclick={save}>{editing ? m.common_save() : m.dispatch_enroll_action()}</Button>
 		{/snippet}
 	</Modal>
 {/if}
 
 {#if newKey}
-	<Modal title="Dispatcher enrolled" onclose={() => (newKey = null)}>
+	<Modal title={m.dispatch_modal_enrolled_title()} onclose={() => (newKey = null)}>
 		{#snippet body()}
 			<div class="editor-body">
 				<Text as="p" tone="muted" size="sm">
-					Copy this enrollment key now — it is shown only once and cannot be retrieved later.
-					Configure your dispatcher binary with it.
+					{m.dispatch_key_reveal_hint()}
 				</Text>
 				<div class="keybox"><code>{newKey}</code></div>
 			</div>
 		{/snippet}
 		{#snippet footer()}
 			<div class="spacer"></div>
-			<Button onclick={copyKey}>Copy</Button>
-			<Button variant="primary" onclick={() => (newKey = null)}>Done</Button>
+			<Button onclick={copyKey}>{m.common_copy()}</Button>
+			<Button variant="primary" onclick={() => (newKey = null)}>{m.dispatch_done()}</Button>
 		{/snippet}
 	</Modal>
 {/if}
