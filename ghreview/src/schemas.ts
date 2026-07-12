@@ -293,6 +293,126 @@ export const SubscriptionListSchema = z
   .object({ items: z.array(SubscriptionSchema) })
   .openapi("SubscriptionList");
 
+export const ReviewSideSchema = z
+  .enum(["LEFT", "RIGHT"])
+  .openapi({ example: "RIGHT", description: "Diff side: LEFT (old) or RIGHT (new)" });
+
+export const ReviewVerdictSchema = z
+  .enum(["comment", "approve", "request_changes"])
+  .openapi({ example: "comment", description: "Review event when published to GitHub" });
+
+export const ReviewDraftCommentSchema = z
+  .object({
+    id: z.string(),
+    path: z.string().openapi({ example: "src/app.ts" }),
+    side: ReviewSideSchema,
+    line: z.number().int().openapi({ example: 42, description: "Line in the diff (GitHub line)" }),
+    start_line: z.number().int().nullable().openapi({ description: "Start of a multi-line range" }),
+    start_side: ReviewSideSchema.nullable(),
+    body: z.string(),
+    created_at: z.string().nullable(),
+    updated_at: z.string().nullable(),
+  })
+  .openapi("ReviewDraftComment");
+
+export const ReviewDraftSchema = z
+  .object({
+    id: z.string(),
+    account: AccountSchema,
+    owner: z.string(),
+    repo: z.string(),
+    pr_number: z.number().int(),
+    head_sha: z.string().nullable().openapi({ description: "PR head captured when opened" }),
+    verdict: ReviewVerdictSchema,
+    body: z.string(),
+    created_at: z.string().nullable(),
+    updated_at: z.string().nullable(),
+    comments: z.array(ReviewDraftCommentSchema),
+  })
+  .openapi("ReviewDraft");
+
+export const ReviewDraftResultSchema = z
+  .object({ draft: ReviewDraftSchema.nullable() })
+  .openapi("ReviewDraftResult");
+
+export const ReviewDraftCommentCreateSchema = z
+  .object({
+    account: AccountSchema,
+    path: z.string().min(1),
+    side: ReviewSideSchema.default("RIGHT"),
+    line: z.number().int().positive(),
+    start_line: z.number().int().positive().nullable().optional(),
+    start_side: ReviewSideSchema.nullable().optional(),
+    body: z.string().min(1),
+    head_sha: z.string().optional().openapi({ description: "PR head to pin a new draft to" }),
+  })
+  .openapi("ReviewDraftCommentCreate");
+
+export const ReviewDraftCommentEditSchema = z
+  .object({
+    account: AccountSchema,
+    body: z.string().min(1).optional(),
+    line: z.number().int().positive().optional(),
+    side: ReviewSideSchema.optional(),
+    start_line: z.number().int().positive().nullable().optional(),
+    start_side: ReviewSideSchema.nullable().optional(),
+  })
+  .openapi("ReviewDraftCommentEdit");
+
+export const ReviewDraftMetaSchema = z
+  .object({
+    account: AccountSchema,
+    verdict: ReviewVerdictSchema.optional(),
+    body: z.string().optional(),
+  })
+  .openapi("ReviewDraftMeta");
+
+export const ReviewPublishSchema = z
+  .object({
+    account: AccountSchema,
+    verdict: ReviewVerdictSchema,
+    body: z.string().default(""),
+  })
+  .openapi("ReviewPublish");
+
+export const SkippedReviewCommentSchema = z
+  .object({
+    path: z.string(),
+    line: z.number().int(),
+    reason: z.string().openapi({ example: "path not in pull request diff" }),
+  })
+  .openapi("SkippedReviewComment");
+
+export const ReviewPublishResultSchema = z
+  .object({
+    published: z.boolean(),
+    review_id: z.number().int().nullable(),
+    posted: z.number().int().openapi({ description: "Comments accepted into the review" }),
+    skipped: z.array(SkippedReviewCommentSchema),
+  })
+  .openapi("ReviewPublishResult");
+
+export const ReviewThreadCommentSchema = z
+  .object({
+    id: z.number().int(),
+    path: z.string().nullable(),
+    line: z.number().int().nullable(),
+    original_line: z.number().int().nullable(),
+    side: z.string().nullable(),
+    start_line: z.number().int().nullable(),
+    diff_hunk: z.string().nullable(),
+    body: z.string(),
+    user: z.string().nullable(),
+    in_reply_to_id: z.number().int().nullable(),
+    created_at: z.string().nullable(),
+    html_url: z.string().nullable(),
+  })
+  .openapi("ReviewThreadComment");
+
+export const ReviewThreadListSchema = z
+  .object({ items: z.array(ReviewThreadCommentSchema) })
+  .openapi("ReviewThreadList");
+
 export const ErrorSchema = z
   .object({
     error: z.object({

@@ -21,6 +21,10 @@ export const keys = {
   pull: (owner: string, repo: string, number: number) => ["pull", owner, repo, number] as const,
   pullViewed: (owner: string, repo: string, number: number) =>
     ["pull-viewed", owner, repo, number] as const,
+  reviewDraft: (owner: string, repo: string, number: number) =>
+    ["review-draft", owner, repo, number] as const,
+  reviewThreads: (owner: string, repo: string, number: number) =>
+    ["review-threads", owner, repo, number] as const,
   notifications: (filter: NotificationFilter) => ["notifications", JSON.stringify(filter)] as const,
 };
 

@@ -711,6 +711,413 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/repos/{owner}/{repo}/pulls/{number}/review-draft": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get the caller's review draft for a pull request */
+        get: {
+            parameters: {
+                query: {
+                    account: string;
+                };
+                header?: never;
+                path: {
+                    owner: string;
+                    repo: string;
+                    number: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The review draft, or null when none exists */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ReviewDraftResult"];
+                    };
+                };
+                /** @description Store unavailable */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Update the draft verdict/summary body */
+        patch: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    owner: string;
+                    repo: string;
+                    number: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["ReviewDraftMeta"];
+                };
+            };
+            responses: {
+                /** @description The updated draft */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ReviewDraftResult"];
+                    };
+                };
+                /** @description No draft / account not owned */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Store unavailable */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        trace?: never;
+    };
+    "/v1/repos/{owner}/{repo}/pulls/{number}/review-draft/comments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Add a per-line comment to the draft (opens one if needed) */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    owner: string;
+                    repo: string;
+                    number: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["ReviewDraftCommentCreate"];
+                };
+            };
+            responses: {
+                /** @description The updated draft */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ReviewDraftResult"];
+                    };
+                };
+                /** @description Account not owned by the caller */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Store unavailable */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/repos/{owner}/{repo}/pulls/{number}/review-draft/comments/{commentId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete a draft comment */
+        delete: {
+            parameters: {
+                query: {
+                    account: string;
+                };
+                header?: never;
+                path: {
+                    owner: string;
+                    repo: string;
+                    number: number;
+                    commentId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The updated draft */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ReviewDraftResult"];
+                    };
+                };
+                /** @description Comment not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Store unavailable */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        /** Edit a draft comment */
+        patch: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    owner: string;
+                    repo: string;
+                    number: number;
+                    commentId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["ReviewDraftCommentEdit"];
+                };
+            };
+            responses: {
+                /** @description The updated draft */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ReviewDraftResult"];
+                    };
+                };
+                /** @description Comment not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Store unavailable */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        trace?: never;
+    };
+    "/v1/repos/{owner}/{repo}/pulls/{number}/review-draft/publish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Publish the draft as one batched GitHub review */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    owner: string;
+                    repo: string;
+                    number: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["ReviewPublish"];
+                };
+            };
+            responses: {
+                /** @description Publish result */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ReviewPublishResult"];
+                    };
+                };
+                /** @description No draft / account not owned */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description PR head moved since the draft was opened */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Nothing to publish */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Store unavailable */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/repos/{owner}/{repo}/pulls/{number}/comments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List existing published review comments for a pull request */
+        get: {
+            parameters: {
+                query: {
+                    account: string;
+                };
+                header?: never;
+                path: {
+                    owner: string;
+                    repo: string;
+                    number: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Published review comments */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ReviewThreadList"];
+                    };
+                };
+                /** @description Caller does not own the account */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Account not managed */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/notifications": {
         parameters: {
             query?: never;
@@ -1262,6 +1669,166 @@ export interface components {
             paths: string[];
             /** @description Target viewed state for all paths */
             viewed: boolean;
+        };
+        ReviewDraftResult: {
+            draft: components["schemas"]["ReviewDraft"];
+        };
+        ReviewDraft: {
+            id: string;
+            /**
+             * @description GitHub account/login the record was synced for
+             * @example DorskFR
+             */
+            account: string;
+            owner: string;
+            repo: string;
+            pr_number: number;
+            /** @description PR head captured when opened */
+            head_sha: string | null;
+            /**
+             * @description Review event when published to GitHub
+             * @example comment
+             * @enum {string}
+             */
+            verdict: "comment" | "approve" | "request_changes";
+            body: string;
+            created_at: string | null;
+            updated_at: string | null;
+            comments: components["schemas"]["ReviewDraftComment"][];
+        } | null;
+        ReviewDraftComment: {
+            id: string;
+            /** @example src/app.ts */
+            path: string;
+            /**
+             * @description Diff side: LEFT (old) or RIGHT (new)
+             * @example RIGHT
+             * @enum {string}
+             */
+            side: "LEFT" | "RIGHT";
+            /**
+             * @description Line in the diff (GitHub line)
+             * @example 42
+             */
+            line: number;
+            /** @description Start of a multi-line range */
+            start_line: number | null;
+            /**
+             * @description Diff side: LEFT (old) or RIGHT (new)
+             * @example RIGHT
+             * @enum {string|null}
+             */
+            start_side: "LEFT" | "RIGHT" | null;
+            body: string;
+            created_at: string | null;
+            updated_at: string | null;
+        };
+        ReviewDraftMeta: {
+            /**
+             * @description GitHub account/login the record was synced for
+             * @example DorskFR
+             */
+            account: string;
+            /**
+             * @description Review event when published to GitHub
+             * @example comment
+             * @enum {string}
+             */
+            verdict?: "comment" | "approve" | "request_changes";
+            body?: string;
+        };
+        ReviewDraftCommentCreate: {
+            /**
+             * @description GitHub account/login the record was synced for
+             * @example DorskFR
+             */
+            account: string;
+            path: string;
+            /**
+             * @description Diff side: LEFT (old) or RIGHT (new)
+             * @default RIGHT
+             * @example RIGHT
+             * @enum {string}
+             */
+            side: "LEFT" | "RIGHT";
+            line: number;
+            start_line?: number | null;
+            /**
+             * @description Diff side: LEFT (old) or RIGHT (new)
+             * @example RIGHT
+             * @enum {string|null}
+             */
+            start_side?: "LEFT" | "RIGHT" | null;
+            body: string;
+            /** @description PR head to pin a new draft to */
+            head_sha?: string;
+        };
+        ReviewDraftCommentEdit: {
+            /**
+             * @description GitHub account/login the record was synced for
+             * @example DorskFR
+             */
+            account: string;
+            body?: string;
+            line?: number;
+            /**
+             * @description Diff side: LEFT (old) or RIGHT (new)
+             * @example RIGHT
+             * @enum {string}
+             */
+            side?: "LEFT" | "RIGHT";
+            start_line?: number | null;
+            /**
+             * @description Diff side: LEFT (old) or RIGHT (new)
+             * @example RIGHT
+             * @enum {string|null}
+             */
+            start_side?: "LEFT" | "RIGHT" | null;
+        };
+        ReviewPublishResult: {
+            published: boolean;
+            review_id: number | null;
+            /** @description Comments accepted into the review */
+            posted: number;
+            skipped: components["schemas"]["SkippedReviewComment"][];
+        };
+        SkippedReviewComment: {
+            path: string;
+            line: number;
+            /** @example path not in pull request diff */
+            reason: string;
+        };
+        ReviewPublish: {
+            /**
+             * @description GitHub account/login the record was synced for
+             * @example DorskFR
+             */
+            account: string;
+            /**
+             * @description Review event when published to GitHub
+             * @example comment
+             * @enum {string}
+             */
+            verdict: "comment" | "approve" | "request_changes";
+            /** @default  */
+            body: string;
+        };
+        ReviewThreadList: {
+            items: components["schemas"]["ReviewThreadComment"][];
+        };
+        ReviewThreadComment: {
+            id: number;
+            path: string | null;
+            line: number | null;
+            original_line: number | null;
+            side: string | null;
+            start_line: number | null;
+            diff_hunk: string | null;
+            body: string;
+            user: string | null;
+            in_reply_to_id: number | null;
+            created_at: string | null;
+            html_url: string | null;
         };
         NotificationInboxPage: {
             items: components["schemas"]["NotificationInboxItem"][];

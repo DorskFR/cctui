@@ -18,6 +18,14 @@
     type SelectionEvent,
   } from "../diff/canvas/selection";
   import { themeTokens, type ThemeTokens } from "../theme/theme";
+  import {
+    type LineAddress,
+    rangeToAddress,
+    type ReviewController,
+    rowToAddress,
+  } from "../review/anchors";
+  import InlineCommentComposer from "./InlineCommentComposer.svelte";
+  import InlineThread from "./InlineThread.svelte";
 
   interface Props {
     model: DiffModel;
@@ -25,8 +33,19 @@
     focusRow: number;
     onFocusRow: (rowIndex: number) => void;
     onSelectRange?: (event: SelectionEvent) => void;
+    review?: ReviewController;
   }
-  let { model, focusRow, onFocusRow, onSelectRange }: Props = $props();
+  let { model, focusRow, onFocusRow, onSelectRange, review }: Props = $props();
+
+  let pendingAddr = $state<{ addr: LineAddress; rowIndex: number } | null>(null);
+  let openAnchor = $state<number | null>(null);
+
+  const visibleAnchors = $derived(
+    (review?.anchors ?? []).filter((a) => {
+      const y = anchorScreenY(a.rowIndex + 1, scrollTop);
+      return y > -200 && y < viewportH + 40;
+    }),
+  );
 
   const FONT_SIZE = 12;
   const FONT_FAMILY =
@@ -229,13 +248,31 @@
       const norm = normalizeSelection(selection);
       if (norm.start === norm.end) {
         onFocusRow(norm.start);
+        openComposer(norm.start, norm.start);
         selection = null;
       } else {
         draft = norm;
         onSelectRange?.(selectionEvent(model, selection));
+        openComposer(norm.start, norm.end);
       }
     }
     dragMode = "none";
+  }
+
+  function openComposer(startRow: number, endRow: number): void {
+    if (!review) return;
+    const addr = rangeToAddress(model, startRow, endRow) ?? rowToAddress(model, endRow);
+    if (!addr) return;
+    pendingAddr = { addr, rowIndex: endRow };
+    openAnchor = null;
+  }
+
+  function submitNew(body: string): void {
+    if (!pendingAddr) return;
+    review?.addComment(pendingAddr.addr, body);
+    pendingAddr = null;
+    draft = null;
+    selection = null;
   }
 
   async function copySelection(): Promise<void> {
@@ -257,10 +294,6 @@
     }
   }
 
-  function dismissDraft(): void {
-    draft = null;
-    selection = null;
-  }
 
   onDestroy(() => {
     stopMomentum();
@@ -288,21 +321,45 @@
     aria-label="Diff"
   ></canvas>
 
-  <div class="overlay" aria-hidden={draft === null}>
-    {#if draft}
-      <div class="draft" style:top="{anchorScreenY(draft.end + 1, scrollTop) + 2}px">
-        <div class="draft-head">
-          Comment on lines {model.rows[draft.start]?.newLine ??
-            model.rows[draft.start]?.oldLine ??
-            draft.start + 1}–{model.rows[draft.end]?.newLine ??
-            model.rows[draft.end]?.oldLine ??
-            draft.end + 1}
-          <button type="button" class="x" onclick={dismissDraft} aria-label="Cancel">×</button>
+  <div class="overlay" aria-hidden={draft === null && pendingAddr === null}>
+    {#each visibleAnchors as anchor (anchor.rowIndex)}
+      {#if openAnchor === anchor.rowIndex}
+        <div class="panel" style:top="{anchorScreenY(anchor.rowIndex + 1, scrollTop) + 2}px">
+          <InlineThread
+            {anchor}
+            pending={review?.pending ?? false}
+            onAdd={(body) => review?.addComment({ path: anchor.path, side: anchor.side, line: anchor.line }, body)}
+            onEdit={(id, body) => review?.editComment(id, body)}
+            onDelete={(id) => review?.deleteComment(id)}
+            onClose={() => (openAnchor = null)}
+          />
         </div>
-        <textarea placeholder="Leave a comment…" rows="3"></textarea>
-        <div class="draft-actions">
-          <button type="button" onclick={() => void copySelection()}>Copy lines</button>
-        </div>
+      {:else}
+        <button
+          type="button"
+          class="badge"
+          style:top="{anchorScreenY(anchor.rowIndex, scrollTop) + 1}px"
+          onclick={() => {
+            openAnchor = anchor.rowIndex;
+            pendingAddr = null;
+          }}
+        >
+          {anchor.drafts.length + anchor.published.length}
+        </button>
+      {/if}
+    {/each}
+
+    {#if pendingAddr}
+      <div class="panel" style:top="{anchorScreenY(pendingAddr.rowIndex + 1, scrollTop) + 2}px">
+        <InlineCommentComposer
+          pending={review?.pending ?? false}
+          onsubmit={submitNew}
+          oncancel={() => {
+            pendingAddr = null;
+            draft = null;
+            selection = null;
+          }}
+        />
       </div>
     {/if}
   </div>
@@ -327,57 +384,25 @@
     inset: 0;
     pointer-events: none;
   }
-  .draft {
+  .panel {
     position: absolute;
     left: 110px;
     right: 12px;
     pointer-events: auto;
-    background: var(--gh-bg-elev);
-    border: 1px solid var(--gh-border);
-    border-radius: var(--gh-radius);
-    padding: var(--gh-space-2);
-    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
   }
-  .draft-head {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    font-size: 12px;
-    color: var(--gh-fg-muted);
-    margin-bottom: var(--gh-space-1);
-  }
-  .draft textarea {
-    width: 100%;
-    box-sizing: border-box;
-    font-family: var(--gh-mono);
-    font-size: 12px;
-    background: var(--gh-bg);
-    color: var(--gh-fg);
-    border: 1px solid var(--gh-border);
-    border-radius: var(--gh-radius-sm);
-    padding: var(--gh-space-1);
-    resize: vertical;
-  }
-  .draft-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: var(--gh-space-2);
-    margin-top: var(--gh-space-1);
-  }
-  .draft-actions button,
-  .draft .x {
-    font-size: 12px;
-    color: var(--gh-fg);
-    background: var(--gh-bg-inset);
-    border: 1px solid var(--gh-border);
-    border-radius: var(--gh-radius-sm);
-    padding: 2px 8px;
-    cursor: pointer;
-  }
-  .draft .x {
-    border: none;
-    background: none;
+  .badge {
+    position: absolute;
+    left: 84px;
+    pointer-events: auto;
+    height: 16px;
+    min-width: 18px;
     padding: 0 4px;
-    color: var(--gh-fg-muted);
+    font-size: 10px;
+    line-height: 14px;
+    color: white;
+    background: var(--gh-accent);
+    border: none;
+    border-radius: 999px;
+    cursor: pointer;
   }
 </style>
