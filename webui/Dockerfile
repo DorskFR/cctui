@@ -15,7 +15,9 @@ RUN cd ghreview-ui && npm install --no-audit --no-fund
 
 WORKDIR /app/webui
 COPY webui/package.json webui/package-lock.json* ./
-RUN npm ci || npm install
+# --ignore-scripts: the `prepare` script compiles the paraglide i18n catalog,
+# which needs project.inlang/ + messages/ that aren't copied yet.
+RUN npm ci --ignore-scripts || npm install --ignore-scripts
 COPY webui/ ./
 # Stamp the client build version (shown in the header next to the server
 # version). Passed by `make ui/image/build` as the workspace version.
@@ -23,7 +25,7 @@ ARG CLIENT_VERSION=dev
 ENV CLIENT_VERSION=$CLIENT_VERSION
 # Bindings are committed (generated from the Rust structs); no Rust toolchain
 # needed here. Build the adapter-static SPA into /app/webui/build.
-RUN npm run build
+RUN npm run prepare && npm run build
 
 # ---- serve ----
 FROM nginx:1.27-alpine
