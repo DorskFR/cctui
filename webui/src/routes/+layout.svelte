@@ -18,7 +18,7 @@
 
 	// The embedded review center (CCT-610) manages its own full-height layout, so
 	// it renders outside the width-capped Container and without content padding.
-	const isReview = $derived(page.url.pathname.startsWith('/review'));
+	const isReview = $derived(page.url.pathname.startsWith('/github'));
 
 	// One delegated listener for every code-block copy button (CCT-297 #20).
 	$effect(() => {

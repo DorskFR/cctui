@@ -41,6 +41,6 @@ describe("Review (embedded mount)", () => {
     const container = document.querySelector(".ghreview-embed");
     expect(container).not.toBeNull();
     expect(container?.hasAttribute("data-theme")).toBe(false);
-    expect(document.body.textContent).toContain("gh-review");
+    expect(document.body.textContent).toContain("Pull requests");
   });
 });

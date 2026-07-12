@@ -1,5 +1,6 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from "@tanstack/svelte-query";
+  import { Button, SegmentedControl, Select } from "@dorsk/tsumikit";
   import { toStore } from "svelte/store";
   import { api, type NotificationFilter } from "../api/client";
   import { getAccount } from "../api/config";
@@ -13,15 +14,21 @@
   import { tabs } from "../stores/tabs.svelte";
   import RepoBadge from "./RepoBadge.svelte";
 
-  type Status = "all" | "unread" | "read" | "done" | "archived";
-
   const account = getAccount() ?? "";
   const client = useQueryClient();
 
   let reason = $state<string>("");
   let repoFilter = $state<string>("");
-  let status = $state<Status>("unread");
+  let status = $state<string>("unread");
   let selected = $state<Set<string>>(new Set());
+
+  const statusOptions = [
+    { value: "unread", label: "Unread" },
+    { value: "read", label: "Read" },
+    { value: "done", label: "Done" },
+    { value: "archived", label: "Archived" },
+    { value: "all", label: "All" },
+  ];
 
   const filter = $derived<NotificationFilter>({
     account: account || undefined,
@@ -109,29 +116,23 @@
 
 <div class="wrap">
   <div class="toolbar">
-    <select bind:value={status}>
-      <option value="unread">Unread</option>
-      <option value="read">Read</option>
-      <option value="done">Done</option>
-      <option value="archived">Archived</option>
-      <option value="all">All statuses</option>
-    </select>
-    <select bind:value={reason}>
+    <SegmentedControl options={statusOptions} bind:value={status} size="sm" label="Status" />
+    <Select compact bind:value={reason} aria-label="Reason">
       <option value="">All reasons</option>
       <option value="review_requested">Review requested</option>
       <option value="mention">Mention</option>
       <option value="ci_activity">CI activity</option>
-    </select>
-    <select bind:value={repoFilter}>
+    </Select>
+    <Select compact bind:value={repoFilter} aria-label="Repository">
       <option value="">All repos</option>
       {#each repos as r (r)}
         <option value={r}>{r}</option>
       {/each}
-    </select>
+    </Select>
     <div class="spacer"></div>
-    <button disabled={selected.size === 0} onclick={() => markDone([...selected])}>
+    <Button size="sm" disabled={selected.size === 0} onclick={() => markDone([...selected])}>
       Mark done{selected.size ? ` (${selected.size})` : ""}
-    </button>
+    </Button>
   </div>
 
   {#if repoCounts.length > 0}
@@ -188,7 +189,7 @@
             </div>
           {/if}
           <div class="actions">
-            <button onclick={() => markDone([n.id])}>Mark done</button>
+            <Button variant="ghost" size="sm" onclick={() => markDone([n.id])}>Mark done</Button>
           </div>
         </li>
       {/each}
@@ -208,19 +209,6 @@
   }
   .spacer {
     flex: 1;
-  }
-  select,
-  button {
-    background: var(--gh-bg-elev);
-    border: 1px solid var(--gh-border);
-    color: var(--gh-fg);
-    border-radius: var(--gh-radius);
-    padding: 2px 10px;
-    cursor: pointer;
-  }
-  button:disabled {
-    opacity: 0.4;
-    cursor: default;
   }
   .badges {
     display: flex;
@@ -296,10 +284,6 @@
   .actions {
     display: flex;
     gap: 4px;
-  }
-  .actions button {
-    font-size: 11px;
-    padding: 1px 8px;
   }
   .msg {
     padding: var(--gh-space-4);
