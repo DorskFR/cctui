@@ -13,8 +13,18 @@
 	import type { OAuthAccount } from '$lib/queries';
 	import { useCodexModels } from '$lib/queries';
 	import BrandLogo from '$lib/components/atoms/BrandLogo.svelte';
-	import { Field, IconButton, Input, OptionButton, Select, Text, Textarea } from '@dorsk/tsumikit';
-	import CwdCombo from './CwdCombo.svelte';
+	import {
+		Field,
+		FilterInput,
+		IconButton,
+		Input,
+		OptionButton,
+		Select,
+		Text,
+		Textarea,
+		type Query
+	} from '@dorsk/tsumikit';
+	import { makeCwdSchema, cwdToQuery, dirFromQuery } from './cwdSchema';
 	import EffortSlider from './EffortSlider.svelte';
 	import {
 		claudeModels,
@@ -51,6 +61,33 @@
 		// Submit the whole spawn form from the prompt textarea (Ctrl/⌘+Enter).
 		onsubmit?: () => void;
 	} = $props();
+
+	// The machine badge + working-dir share one FilterInput (CCT-653): machine is
+	// picked via the inline badge; the dir is a single `cwd:` field whose async
+	// provider serves recent dirs + live typeahead. `form.working_dir` is the
+	// source of truth — the raw query mirrors it both ways, `lastDir` tracking
+	// what the current query represents so the two syncs never loop.
+	const cwdSchema = makeCwdSchema(
+		() => form.machine_id,
+		() => recentDirs,
+		m.spawn_cwd_label()
+	);
+	// svelte-ignore state_referenced_locally
+	let cwdRaw = $state(cwdToQuery(form.working_dir));
+	// svelte-ignore state_referenced_locally
+	let lastDir = form.working_dir;
+	function onCwdChange(q: Query) {
+		const dir = dirFromQuery(q);
+		lastDir = dir;
+		if (form.working_dir !== dir) form.working_dir = dir;
+	}
+	$effect(() => {
+		const dir = form.working_dir;
+		if (dir !== lastDir) {
+			lastDir = dir;
+			cwdRaw = cwdToQuery(dir);
+		}
+	});
 
 	// Accounts are identities (CCT-558): matched by name. '' = Auto, the
 	// NO_ACCOUNT sentinel = explicit unbound — both resolve to no selected
@@ -151,21 +188,37 @@
 	};
 </script>
 
-<!-- Machine · working dir · label share one row (CCT-562). The label
-     auto-fills from the (machine, cwd) memory (CCT-561, in SpawnModal). -->
-<div class="top-row">
-	<Field label={m.spawn_machine_label()} for="sp-machine">
-		<Select id="sp-machine" bind:value={form.machine_id}>
-			{#if !machines.length}
-				<option value="">{m.spawn_no_machines()}</option>
-			{/if}
-			{#each machines as mc (mc.id)}
-				<option value={mc.id}>{mc.display_name || mc.name}</option>
-			{/each}
-		</Select>
+<!-- Machine badge + working dir live in one structured field (CCT-653); the
+     name sits below. The label auto-fills from the (machine, cwd) memory
+     (CCT-561, in SpawnModal). -->
+<div class="top-stack">
+	<Field label={m.spawn_cwd_label()}>
+		<FilterInput
+			schema={cwdSchema}
+			bind:value={cwdRaw}
+			icon={null}
+			showClear={false}
+			placeholder="/home/user/project"
+			onchange={onCwdChange}
+		>
+			{#snippet inline()}
+				<span class="machine-badge">
+					<select
+						class="machine-select"
+						aria-label={m.spawn_machine_label()}
+						bind:value={form.machine_id}
+					>
+						{#if !machines.length}
+							<option value="">{m.spawn_no_machines()}</option>
+						{/if}
+						{#each machines as mc (mc.id)}
+							<option value={mc.id}>{mc.display_name || mc.name}</option>
+						{/each}
+					</select>
+				</span>
+			{/snippet}
+		</FilterInput>
 	</Field>
-
-	<CwdCombo machineId={form.machine_id} bind:value={form.working_dir} {recentDirs} />
 
 	<Field label={m.spawn_label_label()} for="sp-name">
 		<Input id="sp-name" placeholder={m.spawn_session_label_placeholder()} bind:value={form.name} />
@@ -324,16 +377,33 @@
 </div>
 
 <style>
-	.top-row {
-		display: grid;
-		grid-template-columns: minmax(8rem, 1fr) minmax(0, 2fr) minmax(8rem, 1fr);
+	.top-stack {
+		display: flex;
+		flex-direction: column;
 		gap: var(--sp-2);
-		align-items: start;
 	}
-	@media (max-width: 640px) {
-		.top-row {
-			grid-template-columns: 1fr;
-		}
+	.machine-badge {
+		display: inline-flex;
+		align-items: center;
+		flex: none;
+		padding: 2px var(--sp-1) 2px var(--sp-2);
+		border-radius: var(--r-sm);
+		background: color-mix(in srgb, var(--c-blue) 16%, var(--bg));
+		color: var(--c-blue);
+		font-size: var(--fs-xs);
+		font-weight: var(--fw-medium);
+	}
+	.machine-select {
+		border: 0;
+		background: transparent;
+		color: inherit;
+		font: inherit;
+		cursor: pointer;
+		outline: none;
+		max-width: 12rem;
+	}
+	.machine-select option {
+		color: var(--text);
 	}
 	.config {
 		display: flex;

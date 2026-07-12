@@ -246,7 +246,8 @@
 	// Collapse `folder` and `folder/` into one canonical `folder` entry (CCT-491).
 	const recentDirs = $derived([...new Set(($dirsQuery.data ?? []).map(normalizeDir))]);
 
-	// Working-directory autocomplete lives in spawn/CwdCombo.svelte.
+	// Working-directory autocomplete lives in the MachineFields FilterInput
+	// (spawn/cwdSchema.ts), fed the recent dirs below.
 
 	// OAuth accounts (CCT-237). The picker offers only accounts whose provider
 	// matches the selected adapter (codex → openai, else anthropic). Switching
