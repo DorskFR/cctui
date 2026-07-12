@@ -31,6 +31,7 @@ export function defaultStatus(): TabStatus {
 export function openTab(state: TabsState, tab: PrTab): TabsState {
   const existing = state.tabs.find((t) => t.id === tab.id);
   if (existing) {
+    if (existing.title === tab.title && state.activeId === tab.id) return state;
     return {
       tabs: state.tabs.map((t) => (t.id === tab.id ? { ...t, ...tab, status: t.status } : t)),
       activeId: tab.id,
@@ -53,13 +54,24 @@ export function closeTab(state: TabsState, id: string): TabsState {
 
 export function setActive(state: TabsState, id: string | null): TabsState {
   if (id !== null && !state.tabs.some((t) => t.id === id)) return state;
+  if (state.activeId === id) return state;
   return { ...state, activeId: id };
 }
 
 export function updateStatus(state: TabsState, id: string, status: Partial<TabStatus>): TabsState {
+  const target = state.tabs.find((t) => t.id === id);
+  if (!target) return state;
+  const merged = { ...target.status, ...status };
+  if (
+    merged.pr === target.status.pr &&
+    merged.ci === target.status.ci &&
+    merged.mergeable === target.status.mergeable
+  ) {
+    return state;
+  }
   return {
     ...state,
-    tabs: state.tabs.map((t) => (t.id === id ? { ...t, status: { ...t.status, ...status } } : t)),
+    tabs: state.tabs.map((t) => (t.id === id ? { ...t, status: merged } : t)),
   };
 }
 

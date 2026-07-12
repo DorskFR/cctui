@@ -22,7 +22,7 @@ function bearer(header: string | undefined): string | null {
 
 export function authMiddleware(resolver: AuthResolver) {
   return async (c: Context, next: Next) => {
-    const token = bearer(c.req.header("authorization"));
+    const token = bearer(c.req.header("authorization")) ?? c.req.query("access_token") ?? null;
     if (!token) {
       return c.json({ error: { code: "unauthorized", message: "Missing bearer token" } }, 401);
     }

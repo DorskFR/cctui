@@ -26,6 +26,18 @@ describe("auth middleware", () => {
     expect(await res.json()).toEqual({ items: [], next_cursor: null });
   });
 
+  test("accepts a known token via access_token query param (SSE)", async () => {
+    const app = createApp({ auth: resolver });
+    const res = await app.request("/v1/repos?account=x&access_token=tok-a");
+    expect(res.status).not.toBe(401);
+  });
+
+  test("rejects a bad access_token query param", async () => {
+    const app = createApp({ auth: resolver });
+    const res = await app.request("/v1/repos?access_token=nope");
+    expect(res.status).toBe(401);
+  });
+
   test("leaves health, status and webhook exempt", async () => {
     const app = createApp({ auth: resolver });
     expect((await app.request("/v1/health")).status).toBe(200);
