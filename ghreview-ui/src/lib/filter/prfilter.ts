@@ -1,31 +1,13 @@
+import { compilePredicate, parse, type Schema } from "@dorsk/tsumikit";
 import { type GithubPull, prStateOf } from "../api/types";
 
 export type PrRelation = "all" | "review" | "authored";
-export type PrStateFilter = "all" | "open" | "draft" | "merged" | "closed";
 
 export interface PrEntry {
   owner: string;
   repo: string;
   pull: GithubPull;
 }
-
-export interface PrFilterCriteria {
-  text: string;
-  relation: PrRelation;
-  author: string;
-  repo: string;
-  state: PrStateFilter;
-  label: string;
-}
-
-export const emptyCriteria: PrFilterCriteria = {
-  text: "",
-  relation: "all",
-  author: "",
-  repo: "",
-  state: "all",
-  label: "",
-};
 
 export function repoKey(e: PrEntry): string {
   return `${e.owner}/${e.repo}`;
@@ -35,19 +17,58 @@ export function labelNames(pull: GithubPull): string[] {
   return (pull.labels ?? []).map((l) => l.name);
 }
 
-function matchesText(e: PrEntry, needle: string): boolean {
-  const q = needle.trim().toLowerCase();
-  if (!q) return true;
-  const hay = [
-    e.pull.title,
-    e.pull.user?.login ?? "",
-    repoKey(e),
-    `#${e.pull.number}`,
-    ...labelNames(e.pull),
-  ]
-    .join(" ")
-    .toLowerCase();
-  return hay.includes(q);
+export function prRow(e: PrEntry): Record<string, unknown> {
+  return {
+    title: e.pull.title,
+    author: e.pull.user?.login ?? "",
+    repo: repoKey(e),
+    state: prStateOf(e.pull),
+    label: labelNames(e.pull).join(" "),
+    num: `#${e.pull.number}`,
+  };
+}
+
+export function buildPrSchema(repos: string[], authors: string[], labels: string[]): Schema {
+  const opts = (vs: string[]) => vs.map((v) => ({ value: v, label: v }));
+  return {
+    fields: [
+      {
+        name: "title",
+        label: "Title",
+        type: "string",
+        operators: ["contains", "not_contains"],
+      },
+      {
+        name: "repo",
+        label: "Repository",
+        type: "enum",
+        operators: ["eq", "ne", "in"],
+        options: opts(repos),
+      },
+      {
+        name: "author",
+        label: "Author",
+        type: "enum",
+        aliases: ["by"],
+        operators: ["eq", "ne", "in"],
+        options: opts(authors),
+      },
+      {
+        name: "state",
+        label: "State",
+        type: "enum",
+        operators: ["eq", "ne", "in"],
+        options: opts(["open", "draft", "merged", "closed"]),
+      },
+      {
+        name: "label",
+        label: "Label",
+        type: "string",
+        operators: ["contains", "not_contains"],
+        options: opts(labels),
+      },
+    ],
+  };
 }
 
 function matchesRelation(e: PrEntry, relation: PrRelation, account: string): boolean {
@@ -58,20 +79,15 @@ function matchesRelation(e: PrEntry, relation: PrRelation, account: string): boo
   return true;
 }
 
-export function filterEntries(
+export function filterPrs(
   entries: PrEntry[],
-  criteria: PrFilterCriteria,
+  query: string,
+  schema: Schema,
+  relation: PrRelation,
   account: string,
 ): PrEntry[] {
-  return entries.filter((e) => {
-    if (criteria.repo && repoKey(e) !== criteria.repo) return false;
-    if (criteria.author && e.pull.user?.login !== criteria.author) return false;
-    if (criteria.state !== "all" && prStateOf(e.pull) !== criteria.state) return false;
-    if (criteria.label && !labelNames(e.pull).includes(criteria.label)) return false;
-    if (!matchesRelation(e, criteria.relation, account)) return false;
-    if (!matchesText(e, criteria.text)) return false;
-    return true;
-  });
+  const predicate = compilePredicate(parse(query, schema));
+  return entries.filter((e) => matchesRelation(e, relation, account) && predicate(prRow(e)));
 }
 
 export function collectRepos(entries: PrEntry[]): string[] {
@@ -91,4 +107,20 @@ export function collectLabels(entries: PrEntry[]): string[] {
   const set = new Set<string>();
   for (const e of entries) for (const n of labelNames(e.pull)) set.add(n);
   return [...set].sort((a, b) => a.localeCompare(b));
+}
+
+export function groupByRepo(entries: PrEntry[]): { repo: string; entries: PrEntry[] }[] {
+  const groups = new Map<string, PrEntry[]>();
+  for (const e of entries) {
+    const key = repoKey(e);
+    const list = groups.get(key);
+    if (list) list.push(e);
+    else groups.set(key, [e]);
+  }
+  return [...groups.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([repo, list]) => ({
+      repo,
+      entries: list.sort((a, b) => b.pull.number - a.pull.number),
+    }));
 }

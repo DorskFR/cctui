@@ -33,12 +33,6 @@
 </script>
 
 <nav class="tabbar">
-  <button class="home" class:active={router.current.name === "home"} onclick={() => router.navigate("/")}>
-    Home
-  </button>
-  <button class="home" class:active={router.current.name === "inbox"} onclick={() => router.navigate("/inbox")}>
-    Inbox
-  </button>
   <div class="tabs">
     {#each tabs.tabs as tab (tab.id)}
       <div
@@ -68,18 +62,6 @@
     padding: 0 var(--gh-space-2);
     overflow-x: auto;
     z-index: var(--gh-z-header);
-  }
-  .home {
-    background: transparent;
-    border: none;
-    color: var(--gh-fg-muted);
-    padding: var(--gh-space-2) var(--gh-space-3);
-    cursor: pointer;
-    font-size: 12px;
-  }
-  .home.active {
-    color: var(--gh-fg);
-    box-shadow: inset 0 -2px 0 var(--gh-accent);
   }
   .tabs {
     display: flex;

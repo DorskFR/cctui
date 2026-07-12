@@ -15,23 +15,20 @@
 		($sessions.data?.sessions ?? []).reduce((n, s) => n + (s.unread_count ?? 0), 0)
 	);
 
-	// gh-review connector (CCT-610) is gated on a client-side deploy config value
-	// (`ghreviewUrl`), not a server capability like GitHub below.
+	// The unified GitHub review center (CCT-674) is gated on BOTH a client-side
+	// deploy value (`ghreviewUrl`, the ghreview backend origin) AND a configured
+	// connector (`caps.github.enabled`). With ghreviewUrl set but no connector,
+	// /github still routes but shows an unlock screen pointing to Accounts.
 	const reviewEnabled = ghreviewUrl() !== null;
 
-	// The `/github` item is mounted only when the integration is *enabled* (a
-	// connector is configured), NOT merely available (CCT-403) — first-run
-	// connector setup now lives under Accounts, so there's no chicken-and-egg.
-	// This frees nav space for the many users who don't use GitHub. Dispatchers
-	// also moved under Accounts, which is now the single home for everything that
-	// connects to something external.
 	const items = $derived([
 		{ href: '/', label: m.nav_overview(), icon: '◧' },
 		{ href: '/sessions', label: m.nav_sessions(), icon: '◰' },
 		{ href: '/users', label: m.nav_users(), icon: '◍' },
 		{ href: '/accounts', label: m.nav_accounts(), icon: '◉' },
-		...($caps.data?.github.enabled ? [{ href: '/github', label: m.nav_github(), icon: '◐' }] : []),
-		...(reviewEnabled ? [{ href: '/review', label: m.nav_review(), icon: '◫' }] : []),
+		...(reviewEnabled && $caps.data?.github.enabled
+			? [{ href: '/github', label: m.nav_github(), icon: '◐' }]
+			: []),
 		{ href: '/settings', label: m.nav_settings(), icon: '⚙' }
 	]);
 	const active = (href: string) =>

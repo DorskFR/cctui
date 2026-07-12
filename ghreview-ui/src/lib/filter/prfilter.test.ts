@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { GithubPull } from "../api/types";
 import {
+  buildPrSchema,
   collectAuthors,
   collectLabels,
   collectRepos,
-  emptyCriteria,
-  filterEntries,
+  filterPrs,
+  groupByRepo,
   type PrEntry,
-  type PrFilterCriteria,
 } from "./prfilter";
 
 function pull(p: Partial<GithubPull>): GithubPull {
@@ -52,44 +52,49 @@ const entries: PrEntry[] = [
   },
 ];
 
-function crit(over: Partial<PrFilterCriteria>): PrFilterCriteria {
-  return { ...emptyCriteria, ...over };
+const schema = buildPrSchema(
+  collectRepos(entries),
+  collectAuthors(entries),
+  collectLabels(entries),
+);
+
+function run(query: string, relation: "all" | "review" | "authored" = "all"): PrEntry[] {
+  return filterPrs(entries, query, schema, relation, "me");
 }
 
-describe("filterEntries", () => {
+describe("filterPrs", () => {
   it("returns everything by default (All)", () => {
-    expect(filterEntries(entries, emptyCriteria, "me")).toHaveLength(3);
+    expect(run("")).toHaveLength(3);
   });
 
-  it("text matches title, author, repo, number and label", () => {
-    expect(filterEntries(entries, crit({ text: "login" }), "me")).toHaveLength(1);
-    expect(filterEntries(entries, crit({ text: "alice" }), "me")).toHaveLength(1);
-    expect(filterEntries(entries, crit({ text: "cli" }), "me")).toHaveLength(1);
-    expect(filterEntries(entries, crit({ text: "#2" }), "me")).toHaveLength(1);
-    expect(filterEntries(entries, crit({ text: "feature" }), "me")).toHaveLength(1);
+  it("free text matches title, author, repo, number and label", () => {
+    expect(run("login")).toHaveLength(1);
+    expect(run("alice")).toHaveLength(1);
+    expect(run("cli")).toHaveLength(1);
+    expect(run("#2")).toHaveLength(1);
+    expect(run("feature")).toHaveLength(1);
   });
 
   it("relation review / authored use the account", () => {
-    expect(filterEntries(entries, crit({ relation: "review" }), "me")).toHaveLength(1);
-    expect(filterEntries(entries, crit({ relation: "authored" }), "me")).toHaveLength(1);
+    expect(run("", "review")).toHaveLength(1);
+    expect(run("", "authored")).toHaveLength(1);
   });
 
-  it("state filter maps merged/draft/open/closed", () => {
-    expect(filterEntries(entries, crit({ state: "merged" }), "me")).toHaveLength(1);
-    expect(filterEntries(entries, crit({ state: "draft" }), "me")).toHaveLength(1);
-    expect(filterEntries(entries, crit({ state: "open" }), "me")).toHaveLength(1);
+  it("state field maps merged/draft/open/closed", () => {
+    expect(run("state:merged")).toHaveLength(1);
+    expect(run("state:draft")).toHaveLength(1);
+    expect(run("state:open")).toHaveLength(1);
   });
 
-  it("author, repo and label filters", () => {
-    expect(filterEntries(entries, crit({ author: "bob" }), "me")).toHaveLength(1);
-    expect(filterEntries(entries, crit({ repo: "acme/api" }), "me")).toHaveLength(1);
-    expect(filterEntries(entries, crit({ label: "bug" }), "me")).toHaveLength(1);
+  it("author, repo and label fields", () => {
+    expect(run("author:bob")).toHaveLength(1);
+    expect(run("repo:acme/api")).toHaveLength(1);
+    expect(run("label:bug")).toHaveLength(1);
   });
 
-  it("criteria compose", () => {
-    const c = crit({ repo: "acme/web", state: "open", label: "bug", text: "fix" });
-    expect(filterEntries(entries, c, "me")).toHaveLength(1);
-    expect(filterEntries(entries, crit({ author: "alice", state: "merged" }), "me")).toHaveLength(0);
+  it("clauses compose", () => {
+    expect(run("repo:acme/web state:open label:bug fix")).toHaveLength(1);
+    expect(run("author:alice state:merged")).toHaveLength(0);
   });
 });
 
@@ -98,5 +103,13 @@ describe("collectors", () => {
     expect(collectRepos(entries)).toEqual(["acme/api", "acme/web", "other/cli"]);
     expect(collectAuthors(entries)).toEqual(["alice", "bob", "me"]);
     expect(collectLabels(entries)).toEqual(["bug", "feature"]);
+  });
+});
+
+describe("groupByRepo", () => {
+  it("groups entries under sorted repo headers", () => {
+    const groups = groupByRepo(entries);
+    expect(groups.map((g) => g.repo)).toEqual(["acme/api", "acme/web", "other/cli"]);
+    expect(groups[0].entries).toHaveLength(1);
   });
 });

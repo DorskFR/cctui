@@ -1,5 +1,5 @@
 export type Route =
-  | { name: "home" }
+  | { name: "root" }
   | { name: "inbox" }
   | { name: "bookmarklet" }
   | { name: "pull"; owner: string; repo: string; number: number }
@@ -9,7 +9,7 @@ const PULL_RE = /^\/([^/]+)\/([^/]+)\/pull\/(\d+)\/?$/;
 
 export function parseRoute(pathname: string): Route {
   const path = pathname || "/";
-  if (path === "/" || path === "") return { name: "home" };
+  if (path === "/" || path === "") return { name: "root" };
   if (path === "/inbox" || path === "/inbox/") return { name: "inbox" };
   if (path === "/bookmarklet" || path === "/bookmarklet/") return { name: "bookmarklet" };
   const m = PULL_RE.exec(path);

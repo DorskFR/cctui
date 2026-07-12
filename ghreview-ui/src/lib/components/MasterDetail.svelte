@@ -1,41 +1,102 @@
 <script lang="ts">
+  import { Button } from "@dorsk/tsumikit";
   import { router } from "../router/router.svelte";
   import { layout } from "../stores/layout.svelte";
-  import Bookmarklet from "./Bookmarklet.svelte";
-  import Inbox from "./Inbox.svelte";
   import PrList from "./PrList.svelte";
   import PrView from "./PrView.svelte";
   import TabBar from "./TabBar.svelte";
 
   const route = $derived(router.current);
+
+  const WIDTH_KEY = "ghreview:masterWidth";
+  const MIN = 220;
+
+  function loadWidth(): number {
+    const n = Number(localStorage.getItem(WIDTH_KEY));
+    return Number.isFinite(n) && n >= MIN ? n : 320;
+  }
+
+  let masterW = $state(loadWidth());
+  let container = $state<HTMLElement | null>(null);
+  let dragging = false;
+  let rafId = 0;
+  let lastX = 0;
+
+  function maxWidth(): number {
+    const w = container?.clientWidth ?? 900;
+    return Math.max(MIN, Math.round(w * 0.6));
+  }
+
+  function startDrag(e: PointerEvent): void {
+    dragging = true;
+    lastX = e.clientX;
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    e.preventDefault();
+  }
+
+  function onDrag(e: PointerEvent): void {
+    if (!dragging) return;
+    lastX = e.clientX;
+    if (rafId) return;
+    rafId = requestAnimationFrame(() => {
+      rafId = 0;
+      const left = container?.getBoundingClientRect().left ?? 0;
+      masterW = Math.round(Math.max(MIN, Math.min(lastX - left, maxWidth())));
+    });
+  }
+
+  function endDrag(e: PointerEvent): void {
+    if (!dragging) return;
+    dragging = false;
+    if (rafId) {
+      cancelAnimationFrame(rafId);
+      rafId = 0;
+    }
+    try {
+      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    } catch {
+      /* already released */
+    }
+    localStorage.setItem(WIDTH_KEY, String(masterW));
+  }
+
+  const cols = $derived(layout.fullWidth ? "0 1fr" : `${masterW}px 1fr`);
 </script>
 
-<div class="md" class:full={layout.fullWidth}>
+<div class="md" bind:this={container} style="grid-template-columns: {cols}">
   <aside class="master" aria-hidden={layout.fullWidth}>
     <PrList />
   </aside>
+  {#if !layout.fullWidth}
+    <div
+      class="handle"
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="Resize pull request list"
+      onpointerdown={startDrag}
+      onpointermove={onDrag}
+      onpointerup={endDrag}
+      onpointercancel={endDrag}
+    ></div>
+  {/if}
   <section class="detail">
     <div class="detail-bar">
       <TabBar />
-      <button
-        type="button"
-        class="fullwidth"
+      <Button
+        variant="ghost"
+        size="sm"
         aria-pressed={layout.fullWidth}
         title={layout.fullWidth ? "Show PR list" : "Full width"}
         onclick={() => layout.toggleFullWidth()}
       >
         {layout.fullWidth ? "⇥ List" : "⤢ Full width"}
-      </button>
+      </Button>
     </div>
     <div class="detail-body">
       {#if route.name === "pull"}
         {#key `${route.owner}/${route.repo}/${route.number}`}
           <PrView owner={route.owner} repo={route.repo} number={route.number} />
         {/key}
-      {:else if route.name === "inbox"}
-        <Inbox />
-      {:else if route.name === "bookmarklet"}
-        <Bookmarklet />
       {:else if route.name === "notfound"}
         <div class="empty">Not found: {route.path}</div>
       {:else}
@@ -50,19 +111,23 @@
     flex: 1;
     min-height: 0;
     display: grid;
-    grid-template-columns: minmax(280px, 30%) 1fr;
-  }
-  .md.full {
-    grid-template-columns: 0 1fr;
   }
   .master {
     min-height: 0;
     overflow: auto;
-    border-right: 1px solid var(--gh-border);
     background: var(--gh-bg);
   }
-  .md.full .master {
+  .md aside[aria-hidden="true"] {
     display: none;
+  }
+  .handle {
+    width: 6px;
+    cursor: col-resize;
+    background: var(--gh-border);
+    touch-action: none;
+  }
+  .handle:hover {
+    background: var(--gh-accent);
   }
   .detail {
     min-width: 0;
@@ -78,22 +143,6 @@
   .detail-bar :global(.tabbar) {
     flex: 1;
     border-bottom: none;
-  }
-  .fullwidth {
-    background: var(--gh-bg-inset);
-    border: none;
-    border-left: 1px solid var(--gh-border);
-    color: var(--gh-fg-muted);
-    cursor: pointer;
-    font-size: 12px;
-    padding: 0 var(--gh-space-3);
-    white-space: nowrap;
-  }
-  .fullwidth:hover {
-    color: var(--gh-fg);
-  }
-  .fullwidth[aria-pressed="true"] {
-    color: var(--gh-fg);
   }
   .detail-body {
     flex: 1;
