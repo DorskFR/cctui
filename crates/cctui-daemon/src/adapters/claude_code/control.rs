@@ -406,13 +406,14 @@ struct StatusSnapshot {
 }
 
 /// Everything the launch chokepoint pulls from the server's durable binding for
-/// a (re)launch: the gateway-routing `env` (CCT-460) and the per-account
+/// a (re)launch: the gateway-routing `env` (CCT-460), the per-account
 /// `settings_json` (CCT-539/540) the daemon merges under its managed hook
-/// settings.
+/// settings, and the user's `whipStopPhrases` override (CCT-598).
 #[derive(Debug, Default)]
 pub(super) struct LaunchEnv {
     pub env: std::collections::BTreeMap<String, String>,
     pub settings: Option<serde_json::Value>,
+    pub whip_phrases: Option<serde_json::Value>,
 }
 
 /// Decide the launch env from a server `GatewayEnvResponse` (CCT-460), split out
@@ -1309,7 +1310,7 @@ impl Driver {
     ) -> anyhow::Result<LaunchEnv> {
         let (Some(server), Some(mk)) = (self.server.as_ref(), self.machine_key.as_ref()) else {
             // No server configured (tests / legacy): best-effort hint.
-            return Ok(LaunchEnv { env: hint.clone(), settings: None });
+            return Ok(LaunchEnv { env: hint.clone(), ..Default::default() });
         };
         match server.gateway_env(mk, local_id).await {
             // The env decision can fail closed (account-bound but unmintable);
@@ -1317,12 +1318,13 @@ impl Driver {
             Ok(resp) => Ok(LaunchEnv {
                 env: launch_env_decision(local_id, &resp, hint)?,
                 settings: resp.settings,
+                whip_phrases: resp.whip_phrases,
             }),
             Err(e) => {
                 // Pull unavailable (older server / transient). Degrade to the
                 // pushed hint rather than blocking the launch.
                 tracing::warn!(%local_id, "gateway-env pull failed; falling back to pushed env: {e}");
-                Ok(LaunchEnv { env: hint.clone(), settings: None })
+                Ok(LaunchEnv { env: hint.clone(), ..Default::default() })
             }
         }
     }
@@ -1379,6 +1381,7 @@ impl Driver {
             &env,
             st.as_ref().and_then(|s| s.model.as_deref()),
             st.as_ref().and_then(|s| s.effort.as_deref()),
+            launch.whip_phrases.as_ref(),
         )
         .map(|p| p.to_string_lossy().into_owned());
 
@@ -1751,6 +1754,7 @@ impl Driver {
             &launch.env,
             spec.model.as_deref(),
             spec.effort.as_deref(),
+            launch.whip_phrases.as_ref(),
         ) {
             let settings = settings.to_string_lossy().into_owned();
             args.push("--settings".to_owned());
@@ -2036,6 +2040,7 @@ impl Driver {
             &launch.env,
             None,
             None,
+            launch.whip_phrases.as_ref(),
         ) {
             let settings = settings.to_string_lossy().into_owned();
             args.push("--settings".to_owned());
@@ -2940,6 +2945,32 @@ fn hook_settings_path(file: &str) -> Option<PathBuf> {
     Some(base.join("cctui").join(file))
 }
 
+/// Write the per-session whip phrase override file (CCT-598) the `whip-stop-hook`
+/// reads via `--phrases`, returning its path. `None` (unwritable) → the caller
+/// launches the hook without the arg, so it uses its compiled defaults.
+fn write_whip_phrases(short: &str, block: &serde_json::Value) -> Option<PathBuf> {
+    let path = hook_settings_path(&format!("whip-phrases-{short}.json"))?;
+    if let Some(Err(err)) = path.parent().map(std::fs::create_dir_all) {
+        tracing::warn!(%err, "whip-stop: cannot create phrases dir");
+        return None;
+    }
+    match std::fs::write(&path, serde_json::to_vec_pretty(block).ok()?) {
+        Ok(()) => Some(path),
+        Err(err) => {
+            tracing::warn!(%err, path = %path.display(), "whip-stop: cannot write phrases");
+            None
+        }
+    }
+}
+
+/// Delete a stale whip phrase file for `short` so a spawn after the user cleared
+/// the override falls back to the compiled defaults (CCT-598). Best-effort.
+fn remove_whip_phrases(short: &str) {
+    if let Some(path) = hook_settings_path(&format!("whip-phrases-{short}.json")) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 /// Recursively deep-merge `overlay` into `base`, with `overlay` winning at every
 /// level (CCT-540). Object nodes are merged key-by-key (recursing on shared
 /// keys); every other node kind (scalars, arrays) is replaced wholesale by the
@@ -3010,7 +3041,7 @@ pub(super) fn merge_account_under_managed(
 /// block (and any other key the daemon sets) ALWAYS WINS — a malicious or
 /// stale account blob that specifies its own `hooks` can never disable the
 /// ask/permission/Stop hooks. `None` → managed settings only, exactly as before.
-#[allow(clippy::cognitive_complexity)]
+#[allow(clippy::cognitive_complexity, clippy::too_many_arguments)]
 pub(super) fn ensure_hook_settings(
     sock: &std::path::Path,
     whip: bool,
@@ -3019,6 +3050,7 @@ pub(super) fn ensure_hook_settings(
     gateway_env: &std::collections::BTreeMap<String, String>,
     model: Option<&str>,
     effort: Option<&str>,
+    whip_phrases: Option<&serde_json::Value>,
 ) -> Option<PathBuf> {
     let path = hook_settings_path(&format!("hook-settings-{short}.json"))?;
     let exe = std::env::current_exe()
@@ -3074,6 +3106,25 @@ pub(super) fn ensure_hook_settings(
         }],
     });
     let pre_hooks = json!([hook("pre"), perm_hook, plan_guard]);
+    // The whip Stop hook gets the user's phrase override (CCT-598) via a
+    // per-session file it reads with `--phrases`; absent/cleared → the hook falls
+    // back to its compiled defaults, so a stale file from a prior spawn is removed.
+    let whip_stop_command = if whip {
+        let arg = whip_phrases.filter(|v| !v.is_null()).map_or_else(
+            || {
+                remove_whip_phrases(short);
+                String::new()
+            },
+            |v| {
+                write_whip_phrases(short, v)
+                    .map(|p| format!(" --phrases {}", p.to_string_lossy()))
+                    .unwrap_or_default()
+            },
+        );
+        format!("{exe} whip-stop-hook{arg}")
+    } else {
+        String::new()
+    };
     let hooks = if whip {
         json!({
             "PreToolUse": pre_hooks,
@@ -3081,7 +3132,7 @@ pub(super) fn ensure_hook_settings(
             "Stop": [{
                 "hooks": [{
                     "type": "command",
-                    "command": format!("{exe} whip-stop-hook"),
+                    "command": whip_stop_command,
                     "timeout": 10,
                 }],
             }],

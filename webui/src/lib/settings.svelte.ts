@@ -62,12 +62,34 @@ export function clampHarnessMode(v: unknown): HarnessMode {
 	return HARNESS_MODES.includes(v as HarnessMode) ? (v as HarnessMode) : DEFAULT_HARNESS_MODE;
 }
 
+// Whip-mode stall-phrase override (CCT-598). Stored top-level as
+// `data.whipStopPhrases` because the server clamps it there and serves it to the
+// whip Stop hook. `extend` appends to the daemon's compiled defaults; `replace`
+// swaps them out. Empty phrases + extend + no guidance is a no-op the server drops.
+export type WhipMode = 'extend' | 'replace';
+export const WHIP_MODES: readonly WhipMode[] = ['extend', 'replace'];
+export const DEFAULT_WHIP_MODE: WhipMode = 'extend';
+
+export interface WhipStopPhrases {
+	mode: WhipMode;
+	phrases: string[];
+	guidance: string;
+}
+
+/** Clamp a stored value to a known whip mode (mirrors the server's clamp). */
+export function clampWhipMode(v: unknown): WhipMode {
+	return WHIP_MODES.includes(v as WhipMode) ? (v as WhipMode) : DEFAULT_WHIP_MODE;
+}
+
 export interface SettingsState {
 	sessionList: SessionListSettings;
 	display: DisplaySettings;
 	// Claude harness mode (epic CCT-494). Top-level so it serializes as
 	// `data.harnessMode`, which the server reads to drive each daemon's Reconcile.
 	harnessMode: HarnessMode;
+	// Whip-mode stall-phrase override (CCT-598). Top-level so it serializes as
+	// `data.whipStopPhrases`, which the server clamps and feeds to the whip hook.
+	whipStopPhrases: WhipStopPhrases;
 	// Per-(machine, working-dir) spawn memory (CCT-561): the config last
 	// submitted from the spawn modal, keyed by machineMemoryKey/dispatchMemoryKey
 	// (spawnMemory.ts), LRU-capped. Replaces the localStorage per-machine prefs
@@ -96,6 +118,7 @@ const DEFAULTS: SettingsState = {
 		notifySound: true
 	},
 	harnessMode: DEFAULT_HARNESS_MODE,
+	whipStopPhrases: { mode: DEFAULT_WHIP_MODE, phrases: [], guidance: '' },
 	spawnMemory: {},
 	shortcutsEnabled: false,
 	keymap: {}
@@ -114,9 +137,22 @@ function mergeDefaults(partial: Partial<SettingsState> | null | undefined): Sett
 		// Clamp to a known mode so an unknown stored value renders as `bg` (matches
 		// the server's clamp on PUT).
 		harnessMode: clampHarnessMode(p.harnessMode),
+		whipStopPhrases: mergeWhipStopPhrases(p.whipStopPhrases),
 		spawnMemory: p.spawnMemory ?? {},
 		shortcutsEnabled: p.shortcutsEnabled ?? DEFAULTS.shortcutsEnabled,
 		keymap: p.keymap ?? DEFAULTS.keymap
+	};
+}
+
+// Coerce a stored whipStopPhrases value into the UI shape (CCT-598): clamp mode,
+// keep only string phrases, coerce guidance to a string. The server drops a
+// default block, so an absent value renders as the default.
+function mergeWhipStopPhrases(v: Partial<WhipStopPhrases> | undefined): WhipStopPhrases {
+	const raw = (v ?? {}) as Partial<WhipStopPhrases>;
+	return {
+		mode: clampWhipMode(raw.mode),
+		phrases: Array.isArray(raw.phrases) ? raw.phrases.filter((p) => typeof p === 'string') : [],
+		guidance: typeof raw.guidance === 'string' ? raw.guidance : ''
 	};
 }
 
@@ -219,6 +255,17 @@ class Settings {
 
 	get harnessMode(): HarnessMode {
 		return clampHarnessMode(this.state.harnessMode);
+	}
+
+	// Whip stall-phrase override (CCT-598). Persisted top-level; the server clamps
+	// (trim/lowercase/dedupe/cap) and serves it to the whip Stop hook on next spawn.
+	setWhipStopPhrases(patch: Partial<WhipStopPhrases>) {
+		this.state.whipStopPhrases = { ...this.state.whipStopPhrases, ...patch };
+		this.persist();
+	}
+
+	get whipStopPhrases(): WhipStopPhrases {
+		return this.state.whipStopPhrases;
 	}
 
 	// Spawn memory (CCT-561): write on spawn submit, recall on machine/cwd (or

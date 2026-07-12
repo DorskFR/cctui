@@ -113,8 +113,14 @@ pub async fn session_gateway_env(
             account_bound: false,
             env: std::collections::BTreeMap::default(),
             settings: None,
+            whip_phrases: None,
         }));
     }
+
+    // The machine user's whip stall-phrase override (CCT-598) rides this pull to
+    // reach the connectionless `whip-stop-hook`; per-user, so it applies whether
+    // or not the session is account-bound.
+    let whip_phrases = resolve_whip_phrases(&state, ctx.user_id).await;
 
     // Resolve EVERY bound family (one account per family) and re-mint each, so a
     // worker carrying both claude + codex creds gets both restored on launch,
@@ -126,6 +132,7 @@ pub async fn session_gateway_env(
             account_bound: false,
             env: std::collections::BTreeMap::default(),
             settings: None,
+            whip_phrases,
         }));
     }
     let mut env = std::collections::BTreeMap::new();
@@ -160,7 +167,26 @@ pub async fn session_gateway_env(
         .bind(&session_id)
         .execute(&state.pool)
         .await;
-    Ok(Json(cctui_proto::api::GatewayEnvResponse { account_bound: true, env, settings }))
+    Ok(Json(cctui_proto::api::GatewayEnvResponse {
+        account_bound: true,
+        env,
+        settings,
+        whip_phrases,
+    }))
+}
+
+/// The machine user's clamped `whipStopPhrases` block (CCT-598) from
+/// `user_settings.data`, or `None` when unset / reduced to the default. Read from
+/// the DB on the same gateway-env pull that carries the account settings.
+async fn resolve_whip_phrases(state: &AppState, user_id: Uuid) -> Option<serde_json::Value> {
+    let data: Option<serde_json::Value> =
+        sqlx::query_scalar("SELECT data FROM user_settings WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_optional(&state.pool)
+            .await
+            .ok()
+            .flatten();
+    data.as_ref().and_then(crate::routes::settings::whip_stop_phrases_of)
 }
 
 // ---- /api/v1/daemon/sessions/{id}/token-valid ----

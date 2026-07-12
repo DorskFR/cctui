@@ -15,6 +15,7 @@ pub mod gateway;
 pub mod images;
 pub mod internal;
 pub mod labels;
+pub mod langfuse;
 pub mod manifest;
 pub mod me;
 pub mod permissions;

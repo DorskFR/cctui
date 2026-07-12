@@ -53,6 +53,8 @@ export type * from './GithubEventPayload';
 export type * from './HookEvent';
 export type * from './LabelListResponse';
 export type * from './Label';
+export type * from './LangfuseCapability';
+export type * from './LangfuseSessionUsage';
 export type * from './LaunchRequest';
 export type * from './Liveness';
 export type * from './MachineLiveness';

@@ -326,6 +326,7 @@ impl SdkDriver {
             &launch_env.env,
             None,
             None,
+            launch_env.whip_phrases.as_ref(),
         )
         .map(|p| p.to_string_lossy().into_owned());
 
@@ -566,16 +567,17 @@ impl SdkDriver {
         hint: &BTreeMap<String, String>,
     ) -> anyhow::Result<super::control::LaunchEnv> {
         let (Some(server), Some(mk)) = (self.server.as_ref(), self.machine_key.as_ref()) else {
-            return Ok(super::control::LaunchEnv { env: hint.clone(), settings: None });
+            return Ok(super::control::LaunchEnv { env: hint.clone(), ..Default::default() });
         };
         match server.gateway_env(mk, local_id).await {
             Ok(resp) => Ok(super::control::LaunchEnv {
                 env: super::control::launch_env_decision(local_id, &resp, hint)?,
                 settings: resp.settings,
+                whip_phrases: resp.whip_phrases,
             }),
             Err(e) => {
                 tracing::warn!(%local_id, "sdk gateway-env pull failed; using pushed env: {e}");
-                Ok(super::control::LaunchEnv { env: hint.clone(), settings: None })
+                Ok(super::control::LaunchEnv { env: hint.clone(), ..Default::default() })
             }
         }
     }

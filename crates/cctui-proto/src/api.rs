@@ -49,6 +49,12 @@ pub struct GatewayEnvResponse {
     /// older daemons that don't read this field simply ignore it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settings: Option<serde_json::Value>,
+    /// The user's clamped `whipStopPhrases` block (CCT-598): `{ mode, phrases,
+    /// guidance? }`. Per-user, delivered on this pull because the bare
+    /// `whip-stop-hook` subprocess has no server connection; `None` → the hook
+    /// uses its compiled defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub whip_phrases: Option<serde_json::Value>,
 }
 
 /// Response for `GET /api/v1/daemon/sessions/{id}/token-valid?hash=<sha256hex>`
