@@ -76,6 +76,59 @@ guarded("auto-subscription handlers", () => {
     expect(subs.filter((s) => s.kind === "pull_request").length).toBe(1);
   });
 
+  test("CCT-675: syncNotifications paginates past the 50/100 default and ingests every thread", async () => {
+    const total = 230;
+    const perPage = 100;
+    let calls = 0;
+    const octokit: OctokitRequest = {
+      request: async (_route, params = {}) => {
+        calls++;
+        const page = Number((params as { page?: number }).page ?? 1);
+        const start = (page - 1) * perPage;
+        const batch = Array.from(
+          { length: Math.max(0, Math.min(perPage, total - start)) },
+          (_, i) => ({
+            id: `n${start + i + 1}`,
+            reason: "subscribed",
+            subject: { type: "PullRequest" },
+          }),
+        );
+        return { status: 200, headers: {}, data: batch };
+      },
+    };
+    const { ctx } = ctxFor(octokit);
+    await syncNotifications(ctx, {
+      id: "1",
+      account: "auto",
+      kind: "notification",
+      target: null,
+      active: true,
+    });
+
+    expect(calls).toBe(3);
+    const docs = await listDocuments(db, "notification", { account: "auto", limit: 1000 });
+    expect(docs.items.length).toBe(total);
+  });
+
+  test("CCT-675: syncNotifications short-circuits on a 304 without walking pages", async () => {
+    let calls = 0;
+    const octokit: OctokitRequest = {
+      request: async () => {
+        calls++;
+        throw { status: 304, response: { headers: { etag: 'W/"unchanged"' } } };
+      },
+    };
+    const { ctx } = ctxFor(octokit);
+    await syncNotifications(ctx, {
+      id: "1",
+      account: "auto",
+      kind: "notification",
+      target: null,
+      active: true,
+    });
+    expect(calls).toBe(1);
+  });
+
   test("CCT-656: syncRepo enumerates open PRs and subscribes with source=repo", async () => {
     const octokit: OctokitRequest = {
       request: async (route, params = {}) => {

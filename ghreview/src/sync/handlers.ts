@@ -39,6 +39,9 @@ const PULL_FILES_MAX_PAGES = 30;
 const REPO_PULLS_PER_PAGE = 100;
 const REPO_PULLS_MAX_PAGES = 30;
 
+const NOTIFICATIONS_PER_PAGE = 100;
+const NOTIFICATIONS_MAX_PAGES = 50;
+
 const PARTICIPATING_REASONS = new Set([
   "mention",
   "team_mention",
@@ -202,46 +205,80 @@ interface NotificationThread {
   subject?: { type?: string; url?: string };
 }
 
-export async function syncNotifications(ctx: SyncContext, sub: Subscription): Promise<SyncOutcome> {
-  const state = await getSyncState(ctx.db, sub.account, "notification", null);
-  const res = await conditionalRequest<NotificationThread[]>(
-    ctx.account.octokit,
-    "GET /notifications",
-    { all: false },
-    { etag: state?.etag ?? null, lastModified: state?.last_modified ?? null },
-  );
-  if (res.status === 200 && Array.isArray(res.data)) {
-    for (const thread of res.data) {
-      if (!thread?.id) continue;
-      await upsertDocument(ctx.db, {
-        account: sub.account,
-        kind: "notification",
-        key: thread.id,
-        etag: null,
-        payload: thread,
-      });
-      if (
-        thread.subject?.type === "PullRequest" &&
-        thread.reason &&
-        PARTICIPATING_REASONS.has(thread.reason) &&
-        thread.subject.url
-      ) {
-        const pr = parsePullApiUrl(thread.subject.url);
-        if (pr) {
-          await ensurePullSubscription(
-            ctx.db,
-            sub.account,
-            pr.owner,
-            pr.repo,
-            pr.number,
-            "notification",
-          );
-        }
-      }
+async function ingestNotificationThread(
+  ctx: SyncContext,
+  sub: Subscription,
+  thread: NotificationThread,
+): Promise<void> {
+  if (!thread?.id) return;
+  await upsertDocument(ctx.db, {
+    account: sub.account,
+    kind: "notification",
+    key: thread.id,
+    etag: null,
+    payload: thread,
+  });
+  if (
+    thread.subject?.type === "PullRequest" &&
+    thread.reason &&
+    PARTICIPATING_REASONS.has(thread.reason) &&
+    thread.subject.url
+  ) {
+    const pr = parsePullApiUrl(thread.subject.url);
+    if (pr) {
+      await ensurePullSubscription(
+        ctx.db,
+        sub.account,
+        pr.owner,
+        pr.repo,
+        pr.number,
+        "notification",
+      );
     }
   }
-  await persistState(ctx, sub, res);
-  return outcome(res);
+}
+
+export async function syncNotifications(ctx: SyncContext, sub: Subscription): Promise<SyncOutcome> {
+  const state = await getSyncState(ctx.db, sub.account, "notification", null);
+  let firstRes: ConditionalResult<NotificationThread[]> | null = null;
+  let etag = state?.etag ?? null;
+  let lastModified = state?.last_modified ?? null;
+
+  for (let page = 1; page <= NOTIFICATIONS_MAX_PAGES; page++) {
+    if (!ctx.account.budget.canSpend()) break;
+    const res = await conditionalRequest<NotificationThread[]>(
+      ctx.account.octokit,
+      "GET /notifications",
+      { all: false, per_page: NOTIFICATIONS_PER_PAGE, page },
+      page === 1 ? { etag, lastModified } : {},
+    );
+    ctx.account.budget.record(res.status, res.rate);
+    if (res.secondaryLimit) ctx.account.budget.noteSecondaryLimit(res.retryAfter ?? undefined);
+    if (page === 1) {
+      firstRes = res;
+      etag = res.etag;
+      lastModified = res.lastModified;
+      if (res.status === 304) break;
+    }
+    if (res.status !== 200 || !Array.isArray(res.data)) break;
+    for (const thread of res.data) {
+      await ingestNotificationThread(ctx, sub, thread);
+    }
+    if (res.data.length < NOTIFICATIONS_PER_PAGE) break;
+  }
+
+  const res = firstRes ?? {
+    status: 0,
+    etag,
+    lastModified,
+    pollInterval: null,
+    retryAfter: null,
+    secondaryLimit: false,
+    rate: {},
+    data: null,
+  };
+  await persistState(ctx, sub, { ...res, etag, lastModified });
+  return outcome({ ...res, etag, lastModified });
 }
 
 async function persistState(

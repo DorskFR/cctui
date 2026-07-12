@@ -19,7 +19,7 @@ afterEach(async () => {
 });
 
 describe("Review (embedded mount)", () => {
-  it("renders the shell and scopes the theme to its container", async () => {
+  it("renders the shell and inherits the host theme (no local data-theme)", async () => {
     vi.stubGlobal("EventSource", MockEventSource);
     vi.stubGlobal(
       "fetch",
@@ -40,7 +40,7 @@ describe("Review (embedded mount)", () => {
 
     const container = document.querySelector(".ghreview-embed");
     expect(container).not.toBeNull();
-    expect(container?.getAttribute("data-theme")).toBeTruthy();
+    expect(container?.hasAttribute("data-theme")).toBe(false);
     expect(document.body.textContent).toContain("gh-review");
   });
 });

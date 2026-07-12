@@ -1,12 +1,43 @@
-export const THEMES = ["dark", "light", "colorblind-dark", "colorblind-light"] as const;
-export type Theme = (typeof THEMES)[number];
+export interface ThemeOption {
+  id: Theme;
+  label: string;
+  mode: "light" | "dark";
+}
 
-export const THEME_LABELS: Record<Theme, string> = {
-  dark: "Dark",
-  light: "Light",
-  "colorblind-dark": "Colorblind dark",
-  "colorblind-light": "Colorblind light",
-};
+export const THEME_OPTIONS = [
+  { id: "light", label: "Light", mode: "light" },
+  { id: "highcontrast", label: "High Contrast Light", mode: "light" },
+  { id: "gruvboxlight", label: "Gruvbox Light", mode: "light" },
+  { id: "solarizedlight", label: "Solarized Light", mode: "light" },
+  { id: "everforestlight", label: "Everforest Light", mode: "light" },
+  { id: "rosepinedawn", label: "Rosé Pine Dawn", mode: "light" },
+  { id: "latte", label: "Catppuccin Latte", mode: "light" },
+  { id: "nordlight", label: "Nord Light", mode: "light" },
+  { id: "tokyoday", label: "Tokyo Night Day", mode: "light" },
+  { id: "kanagawalotus", label: "Kanagawa Lotus", mode: "light" },
+  { id: "sepia", label: "Sepia", mode: "light" },
+  { id: "dark", label: "Dark", mode: "dark" },
+  { id: "colorblind", label: "Color-blind safe", mode: "dark" },
+  { id: "mocha", label: "Catppuccin Mocha", mode: "dark" },
+  { id: "dracula", label: "Dracula", mode: "dark" },
+  { id: "nord", label: "Nord", mode: "dark" },
+  { id: "tokyonight", label: "Tokyo Night", mode: "dark" },
+  { id: "gruvbox", label: "Gruvbox", mode: "dark" },
+  { id: "solarized", label: "Solarized Dark", mode: "dark" },
+  { id: "rosepine", label: "Rosé Pine", mode: "dark" },
+  { id: "onedark", label: "One Dark", mode: "dark" },
+  { id: "everforest", label: "Everforest", mode: "dark" },
+  { id: "monokai", label: "Monokai", mode: "dark" },
+  { id: "amoled", label: "AMOLED (high contrast)", mode: "dark" },
+] as const;
+
+export type Theme = (typeof THEME_OPTIONS)[number]["id"];
+
+export const THEMES = THEME_OPTIONS.map((t) => t.id) as readonly Theme[];
+
+export const THEME_LABELS: Record<Theme, string> = Object.fromEntries(
+  THEME_OPTIONS.map((t) => [t.id, t.label]),
+) as Record<Theme, string>;
 
 const STORAGE_KEY = "ghreview:theme";
 const DEFAULT_THEME: Theme = "dark";
@@ -55,9 +86,15 @@ export function initTheme(): Theme {
 /**
  * Diff-relevant design tokens resolved to concrete CSS color strings for the
  * active theme. The DOM renderer styles itself with the CSS variables directly;
- * this accessor is the seam CCT-608's canvas renderer uses to read the identical
- * values (canvas cannot reference CSS variables). Every color the renderer draws
- * MUST come from here — no hardcoded colors in either renderer.
+ * this accessor is the seam the canvas renderer uses to read the identical
+ * values (canvas cannot reference CSS variables). Every color the renderer
+ * draws MUST come from here — no hardcoded colors in either renderer.
+ *
+ * Tokens are now derived from tsumikit semantic vars (var()/color-mix), so a
+ * raw getPropertyValue would hand back an unresolved expression. We resolve
+ * each token against `root` (the element carrying the active theme — the embed
+ * root or <html>) through a throwaway probe whose computed `color` the browser
+ * fully resolves to rgb.
  */
 export interface ThemeTokens {
   bg: string;
@@ -92,9 +129,16 @@ export interface ThemeTokens {
 }
 
 export function themeTokens(root: Element = document.documentElement): ThemeTokens {
-  const s = getComputedStyle(root);
-  const v = (name: string) => s.getPropertyValue(name).trim();
-  return {
+  const probe = document.createElement("span");
+  probe.style.cssText =
+    "position:absolute;left:-9999px;top:0;width:0;height:0;visibility:hidden;pointer-events:none";
+  root.appendChild(probe);
+  const cs = getComputedStyle(probe);
+  const v = (name: string): string => {
+    probe.style.color = `var(${name})`;
+    return cs.color.trim();
+  };
+  const tokens: ThemeTokens = {
     bg: v("--gh-bg"),
     fg: v("--gh-fg"),
     fgMuted: v("--gh-fg-muted"),
@@ -125,4 +169,6 @@ export function themeTokens(root: Element = document.documentElement): ThemeToke
       punctuation: v("--gh-syn-punctuation"),
     },
   };
+  probe.remove();
+  return tokens;
 }

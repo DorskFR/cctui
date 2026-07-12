@@ -1,11 +1,6 @@
-import type { Theme } from "../theme/theme";
-
-// When embedded (CCT-610) the theme lives on the mount container, not <html>,
-// so the host app's own theme is never clobbered. Review provides this; TopBar
-// falls back to the global document theme when it is absent (standalone).
-export interface EmbedThemeContext {
-  get(): Theme;
-  set(theme: Theme): void;
+// Presence of this context = embedded: webui owns the theme, so TopBar hides its picker.
+export interface EmbedContext {
+  embedded: true;
 }
 
-export const EMBED_THEME_KEY = Symbol("ghreview:embed-theme");
+export const EMBED_KEY = Symbol("ghreview:embed");
