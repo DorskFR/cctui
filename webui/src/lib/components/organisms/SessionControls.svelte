@@ -245,10 +245,14 @@
 	.row-break {
 		display: none;
 	}
-	/* Mobile (CCT-369): two rows — row 1 title + full "+ New", row 2 the search bar
-	   (which shrinks to fill) followed by the tool controls on the right. `order`
-	   sequences the items; the row-break forces the single wrap. */
-	@media (max-width: 639px) {
+	/* Narrow bar (CCT-369 / CCT-650): two rows — row 1 title + full "+ New", row 2
+	   the search bar (which shrinks to fill) followed by the tool controls on the
+	   right. `order` sequences the items; the row-break forces the single wrap.
+	   Driven by the SAME container query as the fold above (not a viewport media
+	   query): the bar is often narrower than the viewport, so a viewport breakpoint
+	   left a dead band where controls folded but the reorg didn't fire, orphaning
+	   the tools onto a lonely row while search stayed cramped on row 1. */
+	@container sess-bar (max-width: 640px) {
 		/* Default everyone to row 2… */
 		.bar > :global(*) {
 			order: 2;
