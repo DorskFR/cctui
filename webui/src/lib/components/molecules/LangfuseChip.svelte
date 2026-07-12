@@ -35,8 +35,8 @@
 	const costLabel = $derived(`$${cost.toFixed(cost >= 1 ? 2 : 3)}`);
 
 	const deepLink = $derived(
-		lf?.host && lf.project_id
-			? `${lf.host}/project/${lf.project_id}/sessions/${id}`
+		lf?.public_host && lf.project_id
+			? `${lf.public_host}/project/${lf.project_id}/sessions/${id}`
 			: null
 	);
 

@@ -263,19 +263,10 @@
 			icon="fork"
 
 			label={m.drawer_fork_label()}
-			title={m.drawer_fork_title()}
-			onclick={onfork}
+			title={onforkselect ? m.drawer_fork_select_title() : m.drawer_fork_title()}
+			aria-pressed={onforkselect ? forkSelectActive : undefined}
+			onclick={onforkselect ?? onfork}
 		/>
-		{#if onforkselect}
-			<IconButton
-				class="tapbtn fork-select-action"
-				icon="check"
-				label={m.drawer_fork_select_label()}
-				title={m.drawer_fork_select_title()}
-				aria-pressed={forkSelectActive}
-				onclick={onforkselect}
-			/>
-		{/if}
 		</div>
 		<!-- Mobile-only overflow toggle (CCT-301 #7); hidden on desktop. -->
 		<IconButton
