@@ -1979,6 +1979,18 @@ pub async fn fork_session(
         ));
     };
 
+    // Subset forks (CCT-553) slice the parent's on-disk transcript — a claude
+    // primitive only. Codex has no partial-fork mechanism, so reject it here
+    // rather than let the daemon silently full-fork.
+    if req.extract.is_some() && adapter_id != "claude-code" {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(ApiError {
+                error: "partial fork (from/after/selected messages) is only supported for claude sessions".into(),
+            }),
+        ));
+    }
+
     let command_id = uuid::Uuid::new_v4();
     // Pre-mint the child session id for claude (which accepts a caller-supplied
     // `--session-id`) so we can return it and the webui can open the new
@@ -2004,6 +2016,7 @@ pub async fn fork_session(
             spec,
             command_id: Some(command_id),
             session_id: child_session_id.clone(),
+            extract: req.extract,
         }),
     };
     state.bus.command_daemon(machine_uuid, frame).await.map_err(|err| match err {

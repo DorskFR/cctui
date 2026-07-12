@@ -7,7 +7,7 @@
 	import { renderMarkdown, highlightBlock } from '$lib/markdown';
 	import { highlightTerms } from '$lib/search';
 	import { drafts, VIEW_OPTS } from '$lib/drafts';
-	import { Dropzone } from '@dorsk/tsumikit';
+	import { Button, Dropzone } from '@dorsk/tsumikit';
 	import BackdropScrim from './conversation/BackdropScrim.svelte';
 	import ForkModal from './conversation/ForkModal.svelte';
 	import DrawerHeader from './conversation/DrawerHeader.svelte';
@@ -17,7 +17,7 @@
 	import AccountSwitchModal from './conversation/AccountSwitchModal.svelte';
 	import ConversationComposer from './conversation/ConversationComposer.svelte';
 	import { MSG_TYPES, type MsgType, type ViewOpts, type Line } from './conversation/types';
-	import { looksMeta, parseAsk, parsePlan, eventSig, formatToolInput } from './conversation/format';
+	import { looksMeta, parseAsk, parsePlan, eventSig, formatToolInput, stampTurns } from './conversation/format';
 	import { ConversationStream } from './conversation/stream.svelte';
 	import { ScrollController } from './conversation/scroll.svelte';
 	import { ForkController } from './conversation/fork.svelte';
@@ -330,7 +330,7 @@
 				.find((l) => l.role === 'user' || l.role === 'assistant');
 			if (prev && ordered[i].ts > prev.ts) ordered[i].durationMs = ordered[i].ts - prev.ts;
 		}
-		return ordered;
+		return stampTurns(ordered);
 	});
 	// The assistant prose preceding the live question (CCT-213), rendered as
 	// markdown above the card so the user answers with context, not blind.
@@ -392,6 +392,30 @@
 			else onclose();
 		}
 	});
+
+	// Subset fork from a conversation extract (CCT-553). Claude-only; codex has
+	// no partial-fork primitive, so the per-message actions are gated off for it.
+	const forkable = $derived(!isCodexSession && !archived);
+	let selectMode = $state(false);
+	let selected = $state<Set<string>>(new Set());
+	function toggleSelect(messageId: string) {
+		const next = new Set(selected);
+		if (next.has(messageId)) next.delete(messageId);
+		else next.add(messageId);
+		selected = next;
+	}
+	function exitSelect() {
+		selectMode = false;
+		selected = new Set();
+	}
+	function forkSelection() {
+		if (selected.size === 0) return;
+		fork.openExtract({
+			mode: 'selected',
+			anchor_message_id: null,
+			selected_message_ids: [...selected]
+		});
+	}
 
 	// Mid-chat file attachments are supported on filesystem-backed adapters
 	// (CCT-236); the composer owns the attachment state, the viewport's dropzone
@@ -514,6 +538,10 @@
 		oncopymarkdown={sa.copyMarkdown}
 		onexport={sa.export}
 		onfork={fork.openDialog}
+		onforkselect={forkable
+			? () => (selectMode ? exitSelect() : (selectMode = true))
+			: undefined}
+		forkSelectActive={selectMode}
 		oninterrupt={sa.interrupt}
 		onarchive={sa.archive}
 		onstoparchive={sa.stopAndArchive}
@@ -584,6 +612,14 @@
 		onretry={(ts) => stream.retryFailed(ts)}
 		onedit={editPending}
 		onrespondperm={(rid, allow) => ws.respondPermission(id, rid, allow)}
+		{forkable}
+		{selectMode}
+		{selected}
+		onforkfrom={(mid) =>
+			fork.openExtract({ mode: 'up_to', anchor_message_id: mid, selected_message_ids: [] })}
+		onforkafter={(mid) =>
+			fork.openExtract({ mode: 'after', anchor_message_id: mid, selected_message_ids: [] })}
+		ontoggleselect={toggleSelect}
 	/>
 
 	<ConversationComposer
@@ -602,6 +638,16 @@
 	</Dropzone>
 </div>
 
+{#if selectMode}
+	<div class="fork-select-bar row">
+		<span class="fork-select-count">{selected.size} selected</span>
+		<Button variant="primary" onclick={forkSelection} disabled={selected.size === 0}>
+			Fork selection
+		</Button>
+		<Button onclick={exitSelect}>Cancel</Button>
+	</div>
+{/if}
+
 {#if fork.open}
 	<ForkModal
 		{archived}
@@ -610,6 +656,7 @@
 		models={fork.models}
 		efforts={fork.efforts}
 		forking={fork.forking}
+		extractLabel={fork.extractLabel}
 		bind:model={fork.model}
 		bind:effort={fork.effort}
 		oncancel={fork.cancel}
@@ -618,6 +665,24 @@
 {/if}
 
 <style>
+	.fork-select-bar {
+		position: fixed;
+		bottom: 1rem;
+		left: 50%;
+		transform: translateX(-50%);
+		z-index: 199;
+		gap: 0.6rem;
+		align-items: center;
+		padding: 0.5rem 0.8rem;
+		background: var(--bg, #1a1a1a);
+		border: 1px solid var(--border, #333);
+		border-radius: 999px;
+		box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
+	}
+	.fork-select-count {
+		font-size: 0.85rem;
+		opacity: 0.85;
+	}
 	.drawer {
 		position: fixed;
 		inset: 0;

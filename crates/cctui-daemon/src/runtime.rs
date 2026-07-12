@@ -23,15 +23,45 @@ pub struct Runtime {
     pub started_at: String,
 }
 
-/// Prefer the per-user runtime dir (cleared on logout/reboot, so it never goes
-/// stale across a crash) and fall back to the config dir on platforms without
-/// one (e.g. some macOS setups).
-pub fn path() -> PathBuf {
-    dirs::runtime_dir()
-        .or_else(dirs::config_dir)
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("cctui")
-        .join("daemon-runtime.json")
+const FILE_NAME: &str = "daemon-runtime.json";
+
+/// Most preferred first. Worker containers can lack a runtime dir and have a
+/// root-owned `~/.config` where `mkdir` is EACCES (CCT-629); `read()` must
+/// probe this same list so `status` finds whatever `record()` could write.
+fn candidates() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Some(d) = dirs::runtime_dir() {
+        out.push(d.join("cctui").join(FILE_NAME));
+    }
+    if let Some(d) = dirs::config_dir() {
+        out.push(d.join("cctui").join(FILE_NAME));
+    }
+    let uid = rustix::process::getuid().as_raw();
+    out.push(std::env::temp_dir().join(format!("cctui-{uid}")).join(FILE_NAME));
+    out
+}
+
+fn record_at(candidates: &[PathBuf], json: &str) -> Option<PathBuf> {
+    for p in candidates {
+        let Some(dir) = p.parent() else { continue };
+        if let Err(err) = std::fs::create_dir_all(dir) {
+            tracing::debug!(path = %dir.display(), %err, "runtime dir candidate unusable");
+            continue;
+        }
+        match std::fs::write(p, json) {
+            Ok(()) => return Some(p.clone()),
+            Err(err) => {
+                tracing::debug!(path = %p.display(), %err, "runtime state candidate unwritable");
+            }
+        }
+    }
+    None
+}
+
+fn read_at(candidates: &[PathBuf]) -> Option<Runtime> {
+    candidates
+        .iter()
+        .find_map(|p| serde_json::from_str(&std::fs::read_to_string(p).ok()?).ok())
 }
 
 /// Record the current process as the running daemon. Best-effort: a failure to
@@ -42,17 +72,14 @@ pub fn record() {
         pid: std::process::id(),
         started_at: chrono::Utc::now().to_rfc3339(),
     };
-    let p = path();
-    if let Some(dir) = p.parent()
-        && let Err(err) = std::fs::create_dir_all(dir)
-    {
-        tracing::warn!(path = %dir.display(), %err, "failed to create runtime dir");
-        return;
-    }
     match serde_json::to_string_pretty(&rt) {
         Ok(json) => {
-            if let Err(err) = std::fs::write(&p, json) {
-                tracing::warn!(path = %p.display(), %err, "failed to write runtime state");
+            let cands = candidates();
+            if record_at(&cands, &json).is_none() {
+                tracing::warn!(
+                    tried = %cands.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", "),
+                    "failed to write runtime state to any candidate location"
+                );
             }
         }
         Err(err) => tracing::warn!(%err, "failed to serialize runtime state"),
@@ -63,8 +90,7 @@ pub fn record() {
 /// this machine since the file location was last cleared.
 #[must_use]
 pub fn read() -> Option<Runtime> {
-    let data = std::fs::read_to_string(path()).ok()?;
-    serde_json::from_str(&data).ok()
+    read_at(&candidates())
 }
 
 /// Whether the recorded PID is still a live process. Used to tell a current
@@ -75,4 +101,73 @@ pub fn pid_alive(pid: u32) -> bool {
         .ok()
         .and_then(rustix::process::Pid::from_raw)
         .is_some_and(|p| rustix::process::test_kill_process(p).is_ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_json() -> String {
+        serde_json::to_string_pretty(&Runtime {
+            version: "0.0.0-test".into(),
+            pid: std::process::id(),
+            started_at: chrono::Utc::now().to_rfc3339(),
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn record_falls_back_past_uncreatable_dir_and_read_finds_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let denied = tmp.path().join("denied");
+        std::fs::create_dir(&denied).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0o555)).unwrap();
+        }
+        let cands = vec![
+            denied.join("cctui").join(FILE_NAME),
+            tmp.path().join("writable").join(FILE_NAME),
+        ];
+
+        let written = record_at(&cands, &sample_json()).expect("a fallback candidate must work");
+        assert_eq!(written, cands[1]);
+        let rt = read_at(&cands).expect("read probes the same candidate list");
+        assert_eq!(rt.version, "0.0.0-test");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    #[test]
+    fn record_reports_none_when_every_candidate_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let denied = tmp.path().join("denied");
+        std::fs::create_dir(&denied).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0o555)).unwrap();
+        }
+        let cands = vec![denied.join("cctui").join(FILE_NAME)];
+        #[cfg(unix)]
+        assert!(record_at(&cands, &sample_json()).is_none());
+        assert!(read_at(&cands).is_none());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    #[test]
+    fn candidates_always_include_a_temp_fallback() {
+        let cands = candidates();
+        assert!(!cands.is_empty());
+        assert!(cands.last().unwrap().starts_with(std::env::temp_dir()));
+    }
 }

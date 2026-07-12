@@ -62,6 +62,8 @@ export interface Line {
 	// Parsed ExitPlanMode plan markdown (CCT-347) — rendered as a Plan card.
 	plan?: string;
 	durationMs?: number;
+	// 1-based conversation turn (CCT-552); stamped only on assistant lines.
+	turn?: number;
 	messageId?: string;
 	usage?: TokenUsageT;
 }

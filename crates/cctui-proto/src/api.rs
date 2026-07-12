@@ -448,6 +448,11 @@ pub struct ForkRequest {
     pub prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Conversation-extract selector (CCT-553): fork only a slice of the
+    /// parent's history. `None` → full-history fork (CCT-302). Claude-only; the
+    /// server rejects it for codex sessions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extract: Option<crate::adapter::ForkExtract>,
 }
 
 #[derive(Debug, Serialize, Deserialize, TS)]

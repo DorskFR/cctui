@@ -5,6 +5,8 @@
 // it is the "reopen as a new conversation" path. Defaults inherit the parent's
 // model/effort so a plain fork preserves them.
 import type { SessionListItem } from '@bindings/SessionListItem';
+import type { ForkExtract } from '@bindings/ForkExtract';
+import type { ForkRequest } from '@bindings/ForkRequest';
 import { toasts } from '$lib/toast.svelte';
 import {
 	codexModels as CODEX_MODELS,
@@ -28,10 +30,7 @@ export interface ForkOpts {
 	isCodex: () => boolean;
 	session: () => SessionListItem;
 	// Server fork action.
-	fork: (
-		id: string,
-		body: { model: string | null; effort: string | null; prompt: null; name: null }
-	) => Promise<{ session_id?: string | null } | undefined>;
+	fork: (id: string, body: ForkRequest) => Promise<{ session_id?: string | null } | undefined>;
 	// Called on a successful fork with the new session id (claude returns one;
 	// codex returns none → let the caller jump to it or close + refetch).
 	onForked: (newSessionId: string | null | undefined) => void;
@@ -43,6 +42,8 @@ export class ForkController {
 	open = $state(false);
 	model = $state('');
 	effort = $state('');
+	// Conversation-extract selector (CCT-553). Null → full-history fork.
+	extract = $state<ForkExtract | null>(null);
 
 	constructor(opts: ForkOpts) {
 		this.#opts = opts;
@@ -70,8 +71,27 @@ export class ForkController {
 		const s = this.#opts.session();
 		this.model = s.model ?? '';
 		this.effort = s.effort ?? '';
+		this.extract = null;
 		this.open = true;
 	};
+
+	// Open the dialog for a subset fork from an extract of the conversation
+	// (CCT-553). Claude-only; the caller gates these actions off for codex.
+	openExtract = (extract: ForkExtract) => {
+		const s = this.#opts.session();
+		this.model = s.model ?? '';
+		this.effort = s.effort ?? '';
+		this.extract = extract;
+		this.open = true;
+	};
+
+	get extractLabel(): string | null {
+		const x = this.extract;
+		if (!x) return null;
+		if (x.mode === 'up_to') return 'from this message (keep everything up to it)';
+		if (x.mode === 'after') return 'after this message (keep everything below it)';
+		return `${x.selected_message_ids.length} selected message(s)`;
+	}
 
 	cancel = () => {
 		this.open = false;
@@ -85,10 +105,17 @@ export class ForkController {
 				model: this.model.trim() || null,
 				effort: this.effort.trim() || null,
 				prompt: null,
-				name: null
+				name: null,
+				extract: this.extract
 			});
 			this.open = false;
-			toasts.ok(this.#opts.archived() ? 'Reopened as a new conversation' : 'Forked conversation');
+			toasts.ok(
+				this.extract
+					? 'Forked from selected messages'
+					: this.#opts.archived()
+						? 'Reopened as a new conversation'
+						: 'Forked conversation'
+			);
 			this.#opts.onForked(res?.session_id);
 		} catch (e) {
 			toasts.err((e as Error).message);

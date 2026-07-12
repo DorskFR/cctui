@@ -385,6 +385,15 @@ pub enum AdapterCommand {
         /// new `--session-id` instead of minting its own.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
+        /// Conversation-extract selector (CCT-553). `None` → fork the parent's
+        /// full history via the native primitive (CCT-302). `Some` → fork only a
+        /// subset: the claude adapter materializes a sliced copy of the parent's
+        /// on-disk transcript as the child's own `<child>.jsonl` and resumes
+        /// that standalone file (no `--fork-session`). Only supported by the
+        /// claude adapter; codex has no partial-fork primitive, so the server
+        /// rejects subset forks for codex before they reach the daemon.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        extract: Option<ForkExtract>,
     },
     /// Claude-code-specific: inject `text` directly into the worker PTY
     /// via the `reply` op. Distinct from `SendMessage` (which v0 routed
@@ -500,6 +509,36 @@ pub enum AdapterCommand {
         local_id: String,
         request_id: Uuid,
     },
+}
+
+/// Which slice of a parent conversation a subset fork keeps (CCT-553).
+///
+/// All modes anchor on an assistant `message_id` (`msg_…`) — the only
+/// per-message identity present in both the webui line and the on-disk
+/// transcript.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum ForkMode {
+    /// Everything up to and including the anchor message; drop what follows.
+    UpTo,
+    /// Everything after the anchor message; drop the anchor and all before it.
+    After,
+    /// Only the turns containing the selected messages.
+    Selected,
+}
+
+/// Conversation-extract selector for a subset fork (CCT-553).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ForkExtract {
+    pub mode: ForkMode,
+    /// Anchor assistant `message_id` for `up_to`/`after`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor_message_id: Option<String>,
+    /// Selected assistant `message_id`s for `selected`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub selected_message_ids: Vec<String>,
 }
 
 /// Per-spawn permission posture (CCT-149, supersedes the CCT-139

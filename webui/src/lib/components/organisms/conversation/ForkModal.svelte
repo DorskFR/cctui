@@ -13,6 +13,7 @@
 		models,
 		efforts,
 		forking,
+		extractLabel = null,
 		model = $bindable(),
 		effort = $bindable(),
 		oncancel,
@@ -26,6 +27,8 @@
 		models: { v: string; label: string }[];
 		efforts: string[];
 		forking: boolean;
+		// Non-null → subset fork (CCT-553): the slice of the conversation to keep.
+		extractLabel?: string | null;
 		model: string;
 		effort: string;
 		oncancel: () => void;
@@ -42,16 +45,33 @@
 	onkeydown={(e) => e.key === 'Escape' && oncancel()}
 ></div>
 <div class="fork-modal" role="dialog" aria-modal="true" aria-label="Fork conversation">
-	<Heading level={3}>{archived ? 'Reopen as a new conversation' : 'Fork conversation'}</Heading>
-	<Text as="p" class="fork-p" tone="muted" size="sm">
-		Creates a new {isCodexSession ? 'codex thread' : 'claude session'} seeded from this
-		conversation's history. The original is left untouched. Adjust the model/effort below,
-		or keep them to fork as-is.
-	</Text>
-	<Text as="p" class="fork-p fork-cost" tone="muted" size="sm">
-		Your first message on the fork re-sends this conversation's history (~{compact(parentTokens)}
-		tokens from the parent), so the opening turn re-bills that context.
-	</Text>
+	<Heading level={3}
+		>{extractLabel
+			? 'Fork from extract'
+			: archived
+				? 'Reopen as a new conversation'
+				: 'Fork conversation'}</Heading
+	>
+	{#if extractLabel}
+		<Text as="p" class="fork-p fork-extract" tone="accent" size="sm">
+			Seeds the new session with {extractLabel}. Tool calls without their results are
+			trimmed so the branch resumes cleanly.
+		</Text>
+	{:else}
+		<Text as="p" class="fork-p" tone="muted" size="sm">
+			Creates a new {isCodexSession ? 'codex thread' : 'claude session'} seeded from this
+			conversation's history. The original is left untouched. Adjust the model/effort below,
+			or keep them to fork as-is.
+		</Text>
+	{/if}
+	{#if !extractLabel}
+		<Text as="p" class="fork-p fork-cost" tone="muted" size="sm">
+			Your first message on the fork re-sends this conversation's history (~{compact(
+				parentTokens
+			)}
+			tokens from the parent), so the opening turn re-bills that context.
+		</Text>
+	{/if}
 	<label class="fork-field">
 		<Text class="fork-label">Model</Text>
 		<Select class="fork-select" bind:value={model}>

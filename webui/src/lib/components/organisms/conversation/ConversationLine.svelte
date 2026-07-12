@@ -4,7 +4,7 @@
 	// row (role badge, tool name, time, delivery state), the bubble, and the
 	// per-message action buttons, delegating retry/edit/save/copy to callbacks.
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
-	import { Badge, Button, IconButton, Text, Timestamp } from '@dorsk/tsumikit';
+	import { Badge, Button, IconButton, Text, Timestamp, Tooltip } from '@dorsk/tsumikit';
 	import type { Line } from './types';
 	import './bubble.css';
 
@@ -14,7 +14,13 @@
 		onretry,
 		onedit,
 		onsaveimage,
-		oncopymarkdown
+		oncopymarkdown,
+		forkable = false,
+		selectMode = false,
+		selectedForFork = false,
+		onforkfrom,
+		onforkafter,
+		ontoggleselect
 	}: {
 		ln: Line;
 		archived: boolean;
@@ -22,7 +28,19 @@
 		onedit: (text: string, ts: number) => void;
 		onsaveimage: (e: MouseEvent, ln: Line) => void;
 		oncopymarkdown: (ln: Line) => void;
+		// Subset-fork affordances (CCT-553): only assistant lines carry the
+		// `messageId` anchor shared by the line and the on-disk transcript.
+		forkable?: boolean;
+		selectMode?: boolean;
+		selectedForFork?: boolean;
+		onforkfrom?: (messageId: string) => void;
+		onforkafter?: (messageId: string) => void;
+		ontoggleselect?: (messageId: string) => void;
 	} = $props();
+
+	const forkAnchor = $derived(
+		forkable && ln.role === 'assistant' && ln.messageId ? ln.messageId : null
+	);
 
 	function durationLabel(ms: number | undefined): string {
 		if (!ms || ms < 1000) return '';
@@ -40,9 +58,25 @@
 	class:failed={!!ln.failed}
 >
 	<div class="lmeta row">
-		<Badge size="sm" class={`badge-role${ln.mcp ? ' mcp' : ''}`}
-			>{ln.mcp ? 'mcp' : ln.role === 'result' ? 'result' : ln.role}</Badge
-		>
+		{#if selectMode && forkAnchor}
+			<input
+				type="checkbox"
+				class="fork-select-check"
+				checked={selectedForFork}
+				aria-label="Select this message for fork"
+				title="Include this message in the fork selection"
+				onchange={() => ontoggleselect?.(forkAnchor)}
+			/>
+		{/if}
+		{#if ln.role === 'assistant' && ln.turn !== undefined}
+			<Tooltip text={`turn ${ln.turn}`}>
+				{#snippet trigger()}<Badge size="sm" class="badge-role">{ln.role}</Badge>{/snippet}
+			</Tooltip>
+		{:else}
+			<Badge size="sm" class={`badge-role${ln.mcp ? ' mcp' : ''}`}
+				>{ln.mcp ? 'mcp' : ln.role === 'result' ? 'result' : ln.role}</Badge
+			>
+		{/if}
 		{#if ln.role === 'tool' || ln.role === 'result'}
 			<span class="who tool-name">{ln.role === 'result' ? '↳ ' : ''}{ln.tool ?? 'tool'}</span>
 		{/if}
@@ -103,6 +137,22 @@
 				title="Copy this message as Markdown"
 				onclick={() => oncopymarkdown(ln)}
 			/>
+			{#if forkAnchor && !selectMode}
+				<IconButton
+					class="copy fork-from"
+					icon="fork"
+					label="Fork from here"
+					title="Fork a new session keeping everything up to and including this message"
+					onclick={() => onforkfrom?.(forkAnchor)}
+				/>
+				<IconButton
+					class="copy fork-after"
+					icon="fork"
+					label="Fork after here"
+					title="Fork a new session keeping everything after this message"
+					onclick={() => onforkafter?.(forkAnchor)}
+				/>
+			{/if}
 		</span>
 	</div>
 	{#if ln.html}

@@ -21,6 +21,7 @@ mod diagnose;
 mod discovery;
 mod dispatch_done;
 mod envcheck;
+mod fork_slice;
 mod headless;
 mod kickstart;
 mod mode;

@@ -900,8 +900,9 @@ impl Driver {
             AdapterCommand::Spawn { spec, session_id, .. } => {
                 self.spawn(&sock, &spec, session_id.map(|id| id.to_string())).await?;
             }
-            AdapterCommand::Fork { parent_local_id, spec, session_id, .. } => {
-                self.fork(&sock, &parent_local_id, &spec, session_id.as_deref()).await?;
+            AdapterCommand::Fork { parent_local_id, spec, session_id, extract, .. } => {
+                self.fork(&sock, &parent_local_id, &spec, session_id.as_deref(), extract.as_ref())
+                    .await?;
             }
             AdapterCommand::Rename { local_id, name } => {
                 let short = self.resolve_short(&local_id)?;
@@ -1835,6 +1836,52 @@ impl Driver {
     /// The child's `SessionStarted` is emitted later by the roster-discovery
     /// path, which has no fork context, so we stash `parent_local_id` keyed by
     /// the new `short` in `fork_parent_by_short` for it to read.
+    /// Write a sliced copy of the parent transcript as the child's own
+    /// `<child>.jsonl` for a subset fork (CCT-553). Reads the parent JSONL,
+    /// keeps only the lines the `extract` selects, and writes the repaired
+    /// slice to the child's path under the SAME encoded cwd. Writes are strictly
+    /// to the new child file — the parent transcript is never touched.
+    fn materialize_fork_slice(
+        &self,
+        cwd: &str,
+        parent_session_id: &str,
+        child_session_id: &str,
+        extract: &cctui_proto::adapter::ForkExtract,
+    ) -> anyhow::Result<()> {
+        let parent_path =
+            transcript::transcript_path(&self.cfg.projects_root, cwd, parent_session_id);
+        let raw = std::fs::read_to_string(&parent_path).with_context(|| {
+            format!("fork slice: read parent transcript {}", parent_path.display())
+        })?;
+        let lines: Vec<serde_json::Value> = raw
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(serde_json::from_str)
+            .collect::<Result<_, _>>()
+            .with_context(|| format!("fork slice: parse {}", parent_path.display()))?;
+        let kept = super::fork_slice::slice_transcript(&lines, extract, child_session_id)?;
+        let child_path =
+            transcript::transcript_path(&self.cfg.projects_root, cwd, child_session_id);
+        if let Some(dir) = child_path.parent() {
+            std::fs::create_dir_all(dir).with_context(|| {
+                format!("fork slice: create child dir {}", dir.display())
+            })?;
+        }
+        let body: String =
+            kept.iter().map(|l| format!("{l}\n")).collect::<Vec<_>>().concat();
+        std::fs::write(&child_path, body).with_context(|| {
+            format!("fork slice: write child transcript {}", child_path.display())
+        })?;
+        tracing::info!(
+            parent = %parent_path.display(),
+            child = %child_path.display(),
+            kept = kept.len(),
+            mode = ?extract.mode,
+            "materialized subset fork transcript"
+        );
+        Ok(())
+    }
+
     #[allow(clippy::too_many_lines)]
     async fn fork(
         &self,
@@ -1842,6 +1889,7 @@ impl Driver {
         parent_local_id: &str,
         spec: &cctui_proto::adapter::SessionSpec,
         forced_session_id: Option<&str>,
+        extract: Option<&cctui_proto::adapter::ForkExtract>,
     ) -> anyhow::Result<()> {
         let cwd = spec
             .working_dir
@@ -1879,18 +1927,35 @@ impl Driver {
         )
         .unwrap_or(0);
 
-        // Launch argv: resume the parent + fork into the fresh session id. The
-        // `--session-id` we minted is the new (child) id; `--resume`/`--fork-session`
-        // seed it from the parent's history.
-        let mut args = vec![
-            "--resume".to_owned(),
-            resume_id.clone(),
-            "--fork-session".to_owned(),
-            "--session-id".to_owned(),
-            session_id.clone(),
-            "--agent".to_owned(),
-            agent.to_owned(),
-        ];
+        // Subset fork (CCT-553): the child `<child>.jsonl` is a standalone
+        // sliced transcript, so it is resumed WITHOUT `--fork-session` (that
+        // flag branches off the parent's live history, which we don't want).
+        let sliced = if let Some(extract) = extract {
+            self.materialize_fork_slice(cwd, &resume_id, &session_id, extract)?;
+            true
+        } else {
+            false
+        };
+        let mut args = if sliced {
+            vec![
+                "--resume".to_owned(),
+                session_id.clone(),
+                "--session-id".to_owned(),
+                session_id.clone(),
+                "--agent".to_owned(),
+                agent.to_owned(),
+            ]
+        } else {
+            vec![
+                "--resume".to_owned(),
+                resume_id.clone(),
+                "--fork-session".to_owned(),
+                "--session-id".to_owned(),
+                session_id.clone(),
+                "--agent".to_owned(),
+                agent.to_owned(),
+            ]
+        };
         if let Some(name) = &spec.name {
             args.push("--name".to_owned());
             args.push(name.clone());

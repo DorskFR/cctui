@@ -36,6 +36,8 @@
 		oncopymarkdown,
 		onexport,
 		onfork,
+		onforkselect,
+		forkSelectActive = false,
 		oninterrupt,
 		onarchive,
 		onstoparchive,
@@ -64,6 +66,10 @@
 		oncopymarkdown: () => void;
 		onexport: () => void;
 		onfork: () => void;
+		// Toggle multi-select-to-fork mode (CCT-553); omitted → button hidden
+		// (codex sessions have no partial-fork primitive).
+		onforkselect?: () => void;
+		forkSelectActive?: boolean;
 		oninterrupt: () => void;
 		onarchive: () => void;
 		// Stop-then-archive, fired by the ⌘/Ctrl+E keyboard chord.
@@ -257,6 +263,16 @@
 			title="Fork into a new conversation (optionally change model)"
 			onclick={onfork}
 		/>
+		{#if onforkselect}
+			<IconButton
+				class="tapbtn fork-select-action"
+				icon="check"
+				label="Select messages to fork"
+				title="Pick messages, then fork a session from just that selection"
+				aria-pressed={forkSelectActive}
+				onclick={onforkselect}
+			/>
+		{/if}
 		</div>
 		<!-- Mobile-only overflow toggle (CCT-301 #7); hidden on desktop. -->
 		<IconButton

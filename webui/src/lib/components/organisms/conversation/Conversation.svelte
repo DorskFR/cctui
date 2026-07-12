@@ -28,7 +28,13 @@
 		onanswerplan,
 		onretry,
 		onedit,
-		onrespondperm
+		onrespondperm,
+		forkable = false,
+		selectMode = false,
+		selected = new Set<string>(),
+		onforkfrom,
+		onforkafter,
+		ontoggleselect
 	}: {
 		scroll: ScrollController;
 		sessionId: string;
@@ -49,6 +55,13 @@
 		onretry: (ts: number) => void;
 		onedit: (text: string, ts: number) => void;
 		onrespondperm: (requestId: string, allow: boolean) => void;
+		// Subset-fork affordances (CCT-553); off for codex/archived sessions.
+		forkable?: boolean;
+		selectMode?: boolean;
+		selected?: Set<string>;
+		onforkfrom?: (messageId: string) => void;
+		onforkafter?: (messageId: string) => void;
+		ontoggleselect?: (messageId: string) => void;
 	} = $props();
 
 	// ── Lazy render of large transcripts (CCT-279 item 1) ───────────────────
@@ -141,6 +154,12 @@
 					onedit={onedit}
 					onsaveimage={saveLineImage}
 					oncopymarkdown={copyLineMarkdown}
+					{forkable}
+					{selectMode}
+					selectedForFork={ln.messageId ? selected.has(ln.messageId) : false}
+					{onforkfrom}
+					{onforkafter}
+					{ontoggleselect}
 				/>
 			{/if}
 		{/each}

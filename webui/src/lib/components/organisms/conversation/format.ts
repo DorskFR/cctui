@@ -100,6 +100,24 @@ export function eventSig(e: AgentEvent): string {
 // causal-group+seq so reloaded historical asks keep their narrative order
 // WITHOUT corrupting global chronology) is tracked in CCT-481.
 
+// Stamp each assistant line with its 1-based conversation turn (CCT-552). A
+// turn opens on each user/system prompt to the agent; every assistant line up
+// to the next prompt shares it. A `/clear` reset (role 'reset') restarts the
+// counter; a `/compact` summary does not. Derived from role transitions, not
+// raw index, so out-of-`ts` reloads (CCT-475) stay correct. Mutates in place.
+export function stampTurns(lines: Line[]): Line[] {
+	let turn = 0;
+	for (const ln of lines) {
+		if (ln.role === 'reset') turn = 0;
+		else if (ln.role === 'user' || ln.role === 'system') turn++;
+		else if (ln.role === 'assistant') {
+			if (turn === 0) turn = 1;
+			ln.turn = turn;
+		}
+	}
+	return lines;
+}
+
 // JSON.stringify only emits \n / \t inside string literals, so expanding them
 // for display is safe (display-only — the text is never parsed back).
 export function expandJsonEscapes(s: string): string {

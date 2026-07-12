@@ -41,6 +41,8 @@ export type * from './DraftStatus';
 export type * from './EffectiveState';
 export type * from './EnvKind';
 export type * from './EnvVar';
+export type * from './ForkExtract';
+export type * from './ForkMode';
 export type * from './ForkRequest';
 export type * from './ForkResponse';
 export type * from './GatewayStatus';

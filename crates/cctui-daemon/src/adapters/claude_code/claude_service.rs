@@ -52,6 +52,26 @@ pub(super) fn ensure(claude_bin: &str) -> Result<()> {
     anyhow::bail!("claude daemon service: unsupported OS")
 }
 
+/// Whether an OS user service manager is usable here. Worker containers have
+/// no systemd (`/run/systemd/system` absent, no user bus for `systemctl
+/// --user` — CCT-629): the kickstarter must then spawn `claude daemon run` as
+/// a direct child instead of calling [`ensure`].
+#[cfg(target_os = "linux")]
+pub(super) fn manager_available() -> bool {
+    if std::env::var_os("SYSTEMD_OFFLINE").is_some_and(|v| v == "1") {
+        return false;
+    }
+    std::path::Path::new("/run/systemd/system").is_dir()
+}
+#[cfg(target_os = "macos")]
+pub(super) fn manager_available() -> bool {
+    true
+}
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+pub(super) fn manager_available() -> bool {
+    false
+}
+
 /// Resolve `claude_bin` to an absolute path. Service-manager `ExecStart` /
 /// `ProgramArguments` require an absolute program path, but the configured
 /// `claude_bin` is frequently the bare name `"claude"`. Search the augmented
