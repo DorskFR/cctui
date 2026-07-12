@@ -140,6 +140,20 @@ guarded("notification inbox + state", () => {
     expect(recent.items.map((i) => (i.payload as { id: string }).id).sort()).toEqual(["t2", "t3"]);
   });
 
+  test("all mode returns the full set with no cursor and ignores limit", async () => {
+    const page = await listNotificationInbox(db, { account: "nb", limit: 1, all: true });
+    expect(page.items.map((i) => (i.payload as { id: string }).id).sort()).toEqual([
+      "t1",
+      "t2",
+      "t3",
+    ]);
+    expect(page.next_cursor).toBeNull();
+
+    const capped = await listNotificationInbox(db, { account: "nb", limit: 1 });
+    expect(capped.items.length).toBe(1);
+    expect(capped.next_cursor).not.toBeNull();
+  });
+
   test("bulk mark done+archived removes them from the default inbox", async () => {
     const before = await listNotificationInbox(db, { account: "nb", limit: 30 });
     expect(before.items.length).toBe(3);

@@ -319,6 +319,216 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/github/repos": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List GitHub repos the account can access */
+        get: {
+            parameters: {
+                query: {
+                    /** @description The account/login to list accessible GitHub repos for */
+                    account: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Repos the account's PAT can access, GitHub-shaped for a repo-picker */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["GithubRepoList"];
+                    };
+                };
+                /** @description Caller does not own the account */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Account not managed by the sync daemon */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/subscriptions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List the caller's active subscriptions */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Filter to a single account */
+                    account?: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The caller's active subscriptions */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SubscriptionList"];
+                    };
+                };
+                /** @description Store unavailable */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        /** Subscribe to a PR (URL or owner/repo#n) or a repo */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["SubscriptionCreate"];
+                };
+            };
+            responses: {
+                /** @description The created (or reactivated) subscription */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Subscription"];
+                    };
+                };
+                /** @description Invalid target */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description No such account owned by the caller */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Store unavailable */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/subscriptions/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Unsubscribe (deactivate) one of the caller's subscriptions */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Deactivated */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description Not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Store unavailable */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/repos/{owner}/{repo}/pulls": {
         parameters: {
             query?: never;
@@ -514,9 +724,12 @@ export interface paths {
                 query?: {
                     /** @description Filter to a single account; omit to span all synced accounts */
                     account?: string;
+                    /** @description Page size (up to 5000). Ignored when all=true. */
                     limit?: number;
                     /** @description Opaque cursor from a previous page's next_cursor */
                     cursor?: string;
+                    /** @description true: return the entire notification set in one response (ignores limit/cursor) */
+                    all?: "true" | "false";
                     /** @description GitHub reason (review_requested/mention/ci_activity; aliases review-requested/ci) */
                     reason?: string;
                     /** @description Filter by repository full name */
@@ -928,6 +1141,67 @@ export interface components {
             etag: string | null;
             /** @description GitHub-shaped JSONB payload, relayed verbatim (narrow with octokit types) */
             payload?: Record<string, never>;
+        };
+        GithubRepoList: {
+            items: components["schemas"]["GithubRepo"][];
+        };
+        GithubRepo: {
+            /** @example DorskFR/cctui */
+            full_name: string;
+            /** @example false */
+            private: boolean;
+            /** @description Caller's permissions on the repo, as returned by GitHub */
+            permissions: {
+                admin?: boolean;
+                maintain?: boolean;
+                push?: boolean;
+                triage?: boolean;
+                pull?: boolean;
+            } | null;
+            /**
+             * @description Last push time
+             * @example 2026-07-12T09:00:00Z
+             */
+            pushed_at: string | null;
+        };
+        SubscriptionList: {
+            items: components["schemas"]["Subscription"][];
+        };
+        Subscription: {
+            id: string;
+            /**
+             * @description GitHub account/login the record was synced for
+             * @example DorskFR
+             */
+            account: string;
+            /**
+             * @description Subscription kind
+             * @example pull_request
+             * @enum {string}
+             */
+            kind: "repo" | "pull_request" | "notification";
+            target: string | null;
+            active: boolean;
+            created_at: string | null;
+        };
+        SubscriptionCreate: {
+            /**
+             * @description Subscription kind
+             * @default pull_request
+             * @example pull_request
+             * @enum {string}
+             */
+            kind: "repo" | "pull_request" | "notification";
+            /**
+             * @description For pull_request: a github.com PR URL or `owner/repo#number`. For repo: `owner/repo`.
+             * @example https://github.com/DorskFR/cctui/pull/42
+             */
+            target: string;
+            /**
+             * @description The caller's GitHub login to own the subscription; omit when the caller has exactly one account
+             * @example DorskFR
+             */
+            account?: string;
         };
         PullRequestPage: {
             items: components["schemas"]["PullRequestEnvelope"][];

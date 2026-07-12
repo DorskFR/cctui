@@ -472,6 +472,155 @@
           "etag"
         ]
       },
+      "GithubRepoList": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GithubRepo"
+            }
+          }
+        },
+        "required": [
+          "items"
+        ]
+      },
+      "GithubRepo": {
+        "type": "object",
+        "properties": {
+          "full_name": {
+            "type": "string",
+            "example": "DorskFR/cctui"
+          },
+          "private": {
+            "type": "boolean",
+            "example": false
+          },
+          "permissions": {
+            "type": "object",
+            "nullable": true,
+            "properties": {
+              "admin": {
+                "type": "boolean"
+              },
+              "maintain": {
+                "type": "boolean"
+              },
+              "push": {
+                "type": "boolean"
+              },
+              "triage": {
+                "type": "boolean"
+              },
+              "pull": {
+                "type": "boolean"
+              }
+            },
+            "description": "Caller's permissions on the repo, as returned by GitHub"
+          },
+          "pushed_at": {
+            "type": "string",
+            "nullable": true,
+            "example": "2026-07-12T09:00:00Z",
+            "description": "Last push time"
+          }
+        },
+        "required": [
+          "full_name",
+          "private",
+          "permissions",
+          "pushed_at"
+        ]
+      },
+      "SubscriptionList": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Subscription"
+            }
+          }
+        },
+        "required": [
+          "items"
+        ]
+      },
+      "Subscription": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "account": {
+            "type": "string",
+            "minLength": 1,
+            "example": "DorskFR",
+            "description": "GitHub account/login the record was synced for"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "repo",
+              "pull_request",
+              "notification"
+            ],
+            "example": "pull_request",
+            "description": "Subscription kind"
+          },
+          "target": {
+            "type": "string",
+            "nullable": true
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "created_at": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": [
+          "id",
+          "account",
+          "kind",
+          "target",
+          "active",
+          "created_at"
+        ]
+      },
+      "SubscriptionCreate": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "repo",
+              "pull_request",
+              "notification"
+            ],
+            "default": "pull_request",
+            "example": "pull_request",
+            "description": "Subscription kind"
+          },
+          "target": {
+            "type": "string",
+            "minLength": 1,
+            "description": "For pull_request: a github.com PR URL or `owner/repo#number`. For repo: `owner/repo`.",
+            "example": "https://github.com/DorskFR/cctui/pull/42"
+          },
+          "account": {
+            "type": "string",
+            "minLength": 1,
+            "example": "DorskFR",
+            "description": "The caller's GitHub login to own the subscription; omit when the caller has exactly one account"
+          }
+        },
+        "required": [
+          "target"
+        ]
+      },
       "PullRequestPage": {
         "type": "object",
         "properties": {
@@ -1118,6 +1267,204 @@
         }
       }
     },
+    "/v1/github/repos": {
+      "get": {
+        "summary": "List GitHub repos the account can access",
+        "tags": [
+          "repos"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "example": "DorskFR",
+              "description": "The account/login to list accessible GitHub repos for"
+            },
+            "required": true,
+            "description": "The account/login to list accessible GitHub repos for",
+            "name": "account",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Repos the account's PAT can access, GitHub-shaped for a repo-picker",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GithubRepoList"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller does not own the account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Account not managed by the sync daemon",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/subscriptions": {
+      "get": {
+        "summary": "List the caller's active subscriptions",
+        "tags": [
+          "subscriptions"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Filter to a single account"
+            },
+            "required": false,
+            "description": "Filter to a single account",
+            "name": "account",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The caller's active subscriptions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubscriptionList"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Store unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Subscribe to a PR (URL or owner/repo#n) or a repo",
+        "tags": [
+          "subscriptions"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubscriptionCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The created (or reactivated) subscription",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Subscription"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid target",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such account owned by the caller",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Store unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/subscriptions/{id}": {
+      "delete": {
+        "summary": "Unsubscribe (deactivate) one of the caller's subscriptions",
+        "tags": [
+          "subscriptions"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "1"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deactivated"
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Store unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/repos/{owner}/{repo}/pulls": {
       "get": {
         "summary": "List synced pull requests for a repository",
@@ -1415,11 +1762,13 @@
             "schema": {
               "type": "integer",
               "minimum": 1,
-              "maximum": 100,
+              "maximum": 5000,
               "default": 30,
-              "example": 30
+              "example": 30,
+              "description": "Page size (up to 5000). Ignored when all=true."
             },
             "required": false,
+            "description": "Page size (up to 5000). Ignored when all=true.",
             "name": "limit",
             "in": "query"
           },
@@ -1431,6 +1780,20 @@
             "required": false,
             "description": "Opaque cursor from a previous page's next_cursor",
             "name": "cursor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ],
+              "description": "true: return the entire notification set in one response (ignores limit/cursor)"
+            },
+            "required": false,
+            "description": "true: return the entire notification set in one response (ignores limit/cursor)",
+            "name": "all",
             "in": "query"
           },
           {

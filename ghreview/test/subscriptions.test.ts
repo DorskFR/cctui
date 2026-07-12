@@ -1,0 +1,139 @@
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { createApp } from "../src/app.ts";
+import { createStaticResolver, parseStaticTokens } from "../src/auth/resolver.ts";
+import { createGhAccount } from "../src/db/accounts.ts";
+import { createDb, type DbHandle } from "../src/db/client.ts";
+import { runMigrations } from "../src/db/migrate.ts";
+import type { AppDeps } from "../src/deps.ts";
+import { createAccount } from "../src/github/account.ts";
+import type { OctokitRequest, OctokitResponse } from "../src/github/client.ts";
+
+const DATABASE_URL = process.env.DATABASE_URL;
+const guarded = DATABASE_URL ? describe : describe.skip;
+
+let db: DbHandle;
+const auth = createStaticResolver(parseStaticTokens("tokA:userA,tokB:userB"));
+
+const A = { authorization: "Bearer tokA", "content-type": "application/json" };
+const B = { authorization: "Bearer tokB", "content-type": "application/json" };
+
+function pullOctokit(): OctokitRequest {
+  return {
+    request: async (route: string): Promise<OctokitResponse> => {
+      if (route.includes("/files")) return { status: 200, headers: {}, data: [] };
+      return {
+        status: 200,
+        headers: { etag: 'W/"x"' },
+        data: { number: 42, state: "open", title: "hi" },
+      };
+    },
+  };
+}
+
+function deps(extra: Partial<AppDeps> = {}): AppDeps {
+  const account = createAccount({ login: "alpha", token: undefined, octokit: pullOctokit() });
+  return {
+    db,
+    auth,
+    accountFor: (login) => (login === "alpha" ? account : undefined),
+    ...extra,
+  };
+}
+
+guarded("subscription management", () => {
+  beforeAll(async () => {
+    db = createDb(DATABASE_URL as string, "ghreview");
+    await db.sql.unsafe("DROP SCHEMA IF EXISTS ghreview CASCADE");
+    await runMigrations(db);
+  });
+  afterAll(async () => {
+    if (db) await db.close();
+  });
+  beforeEach(async () => {
+    await db.sql.unsafe("DELETE FROM subscriptions");
+    await db.sql.unsafe("DELETE FROM documents");
+    await db.sql.unsafe("DELETE FROM gh_accounts");
+    await createGhAccount(db, { userId: "userA", login: "alpha", encryptedPat: "x" });
+    await createGhAccount(db, { userId: "userB", login: "beta", encryptedPat: "y" });
+  });
+
+  test("subscribe by PR URL parses target, sets account_id, and triggers an immediate sync", async () => {
+    const app = createApp(deps());
+    const res = await app.request("/v1/subscriptions", {
+      method: "POST",
+      headers: A,
+      body: JSON.stringify({ target: "https://github.com/alpha/repo/pull/42" }),
+    });
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { kind: string; target: string; account: string };
+    expect(body.kind).toBe("pull_request");
+    expect(body.target).toBe("alpha/repo#42");
+    expect(body.account).toBe("alpha");
+
+    const [sub] = await db.sql<{ account_id: string | null }[]>`
+      SELECT account_id::text FROM subscriptions WHERE target = 'alpha/repo#42'
+    `;
+    expect(sub?.account_id).not.toBeNull();
+
+    const [doc] = await db.sql<{ n: string }[]>`
+      SELECT count(*)::text AS n FROM documents WHERE kind = 'pull_request'
+    `;
+    expect(doc?.n).toBe("1");
+  });
+
+  test("subscribe accepts owner/repo#n shorthand", async () => {
+    const app = createApp(deps());
+    const res = await app.request("/v1/subscriptions", {
+      method: "POST",
+      headers: A,
+      body: JSON.stringify({ kind: "pull_request", target: "alpha/repo#7", account: "alpha" }),
+    });
+    expect(res.status).toBe(201);
+    expect(((await res.json()) as { target: string }).target).toBe("alpha/repo#7");
+  });
+
+  test("rejects an unparseable target", async () => {
+    const app = createApp(deps());
+    const res = await app.request("/v1/subscriptions", {
+      method: "POST",
+      headers: A,
+      body: JSON.stringify({ target: "not a url" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  test("cannot subscribe under an account the caller does not own", async () => {
+    const app = createApp(deps());
+    const res = await app.request("/v1/subscriptions", {
+      method: "POST",
+      headers: A,
+      body: JSON.stringify({ target: "beta/repo#1", account: "beta" }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  test("list is owner-scoped; delete deactivates and is owner-checked", async () => {
+    const app = createApp(deps());
+    const created = await app.request("/v1/subscriptions", {
+      method: "POST",
+      headers: A,
+      body: JSON.stringify({ target: "alpha/repo#42" }),
+    });
+    const id = ((await created.json()) as { id: string }).id;
+
+    const listA = await app.request("/v1/subscriptions", { headers: A });
+    expect(((await listA.json()) as { items: unknown[] }).items.length).toBe(1);
+
+    const listB = await app.request("/v1/subscriptions", { headers: B });
+    expect(((await listB.json()) as { items: unknown[] }).items.length).toBe(0);
+
+    const delByB = await app.request(`/v1/subscriptions/${id}`, { method: "DELETE", headers: B });
+    expect(delByB.status).toBe(404);
+
+    const delByA = await app.request(`/v1/subscriptions/${id}`, { method: "DELETE", headers: A });
+    expect(delByA.status).toBe(204);
+
+    const after = await app.request("/v1/subscriptions", { headers: A });
+    expect(((await after.json()) as { items: unknown[] }).items.length).toBe(0);
+  });
+});
