@@ -237,11 +237,14 @@
 			// Subagent (child) cards carry an info-tinted border so they read as part
 			// of the parent's stacked group (matches the "subagent" info badge).
 			child && !needsInput ? 'border-color: color-mix(in srgb, var(--info) 45%, var(--border))' : '',
-			// Color-by accent (CCT-466): a left strip in the dimension's hue, resolved
-			// against the theme's --mach-border-sl pair (same infra as MachineBadge).
-			// needsInput keeps its own attention bar; the accent takes the left edge otherwise.
+			// Color-by accent (CCT-466, CCT-651): the dimension's hue tints the whole
+			// card so types read at a distance. The left strip resolves against the
+			// theme's --mach-border-sl pair (same infra as MachineBadge); the body tint
+			// mixes a sliver of the pure hue into --bg-elevated so lightness/contrast
+			// track each theme automatically. needsInput keeps its own opaque attention
+			// fill + bar and stays dominant over the tint.
 			accentHue != null && !needsInput
-				? `--mh:${accentHue}; border-left: 3px solid hsl(var(--mh) var(--mach-border-sl))`
+				? `--mh:${accentHue}; background: color-mix(in srgb, hsl(var(--mh) 65% 50%) 8%, var(--bg-elevated)); border-left: 3px solid hsl(var(--mh) var(--mach-border-sl))`
 				: '',
 			selected
 				? 'background: color-mix(in srgb, var(--accent) 12%, var(--bg-elevated)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent)'

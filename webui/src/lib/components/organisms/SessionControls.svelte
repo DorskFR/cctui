@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { Label } from '@bindings/Label';
 	import type { Section } from '../../../routes/sessions/sessions.logic';
-	import { Button, FilterSearchBar, Heading, Icon, type Schema } from '@dorsk/tsumikit';
+	import { Button, FilterSearchBar, Heading, Icon, IconButton, type Schema } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import { sessionSearchPlaceholder } from '$lib/searchSchema';
 	import SectionFilter from '../molecules/SectionFilter.svelte';
@@ -56,22 +56,34 @@
 		onUpdateLabel?: (labelId: string, patch: { name?: string; color?: string }) => Promise<Label>;
 		onDeleteLabel?: (labelId: string) => void | Promise<void>;
 	} = $props();
+
+	// Overflow menu (CCT-650): the toolbar grew too many buttons and squeezed the
+	// search bar. A ⋯ flyout collapses the secondary controls. On desktop it holds
+	// the two DimensionPickers (color-by · group-by) so the search bar reclaims
+	// width; on narrow widths a container query also folds the label/view/select
+	// controls in, leaving only the section filter inline. Width-driven (container
+	// query) not viewport-driven, mirroring DrawerHeader.
+	let moreOpen = $state(false);
+
+	function closeMoreFromOutside(e: PointerEvent) {
+		if (!moreOpen) return;
+		const t = e.target as HTMLElement | null;
+		if (t?.closest('.secondary') || t?.closest('.more')) return;
+		moreOpen = false;
+	}
+	function onWinKey(e: KeyboardEvent) {
+		if (e.key === 'Escape' && moreOpen) moreOpen = false;
+	}
 </script>
 
-<div class="bar row">
-	<Heading level={1} class="page-title">{m.sessions_title()}</Heading>
-	<div class="search-box">
-		<FilterSearchBar
-			schema={searchSchema}
-			bind:value={rawQuery}
-			placeholder={sessionSearchPlaceholder()}
-		/>
-	</div>
-	<SectionFilter bind:sections />
+<svelte:window onkeydown={onWinKey} onpointerdown={closeMoreFromOutside} />
+
+<!-- Controls that stay inline on desktop but fold into the ⋯ flyout on narrow
+     widths (CCT-650): label filter, view picker, multi-select toggle. Rendered
+     via a snippet so the inline copy and the flyout copy share one source. -->
+{#snippet foldControls()}
 	<LabelFilter {labels} bind:selected={labelFilter} onUpdate={onUpdateLabel} onDelete={onDeleteLabel} />
 	<ViewPicker bind:cardView bind:dense bind:kanban />
-	<DimensionPicker kind="group" value={groupBy} onchange={onGroupBy} />
-	<DimensionPicker kind="color" value={colorBy} onchange={onColorBy} />
 	{#if !searching}
 		{#if selecting}
 			<!-- Cancel selection. -->
@@ -92,6 +104,37 @@
 			</Button>
 		{/if}
 	{/if}
+{/snippet}
+
+<div class="bar row">
+	<Heading level={1} class="page-title">{m.sessions_title()}</Heading>
+	<div class="search-box">
+		<FilterSearchBar
+			schema={searchSchema}
+			bind:value={rawQuery}
+			placeholder={sessionSearchPlaceholder()}
+		/>
+	</div>
+	<SectionFilter bind:sections />
+	<!-- Inline copy of the foldable controls: visible on desktop, hidden by the
+	     container query below (where the flyout copy takes over). display:contents
+	     so each control stays a direct flex item of the bar. -->
+	<div class="inline-fold">{@render foldControls()}</div>
+	<!-- ⋯ overflow flyout: the two DimensionPickers live here at all widths;
+	     narrow widths also receive the foldable controls (menu-only copy). -->
+	<div class="secondary" class:open={moreOpen}>
+		<div class="menu-fold">{@render foldControls()}</div>
+		<DimensionPicker kind="group" value={groupBy} onchange={onGroupBy} />
+		<DimensionPicker kind="color" value={colorBy} onchange={onColorBy} />
+	</div>
+	<IconButton
+		class="more btn-control-square"
+		icon="more"
+		label={m.drawer_more_actions()}
+		title={m.drawer_more_actions()}
+		aria-expanded={moreOpen}
+		onclick={() => (moreOpen = !moreOpen)}
+	/>
 	<Button class="toolbar-new" control variant="primary" title={m.sessions_new_session()} aria-label={m.sessions_new_session()} onclick={onNew}>+<span class="new-label"> {m.sessions_new()}</span></Button>
 	<!-- Mobile-only flex row-break (CCT-369): basis:100% forces row 2 (search +
 	     tools) onto a fresh line below title+New. Hidden on desktop where everything
@@ -116,6 +159,55 @@
 		   the UI scale grows the title/buttons. */
 		flex-wrap: wrap;
 		background: var(--bg);
+		/* Fold the secondary controls based on the bar's own width, not the viewport
+		   (CCT-650), mirroring DrawerHeader. The bar is already position:sticky, so
+		   it also serves as the positioning context for the absolute flyout. */
+		container: sess-bar / inline-size;
+	}
+	/* Inline copy of the foldable controls flows as bar-level flex items. */
+	.inline-fold {
+		display: contents;
+	}
+	/* ⋯ flyout: an absolute dropdown anchored to the bar's right edge, holding the
+	   DimensionPickers at all widths (plus the foldable controls on narrow ones).
+	   Hidden until opened. */
+	.secondary {
+		display: none;
+		position: absolute;
+		top: calc(100% + var(--sp-1));
+		right: 0;
+		z-index: 20;
+		flex-direction: column;
+		align-items: stretch;
+		gap: var(--sp-1);
+		padding: var(--sp-2);
+		background: var(--bg-elevated-2);
+		border: 1px solid var(--border-strong);
+		border-radius: var(--r-md);
+		box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.5));
+	}
+	.secondary.open {
+		display: flex;
+	}
+	/* The foldable controls sit in the flyout ONLY on narrow widths; on desktop
+	   they render inline (via .inline-fold) so the menu holds just the dimensions. */
+	.menu-fold {
+		display: none;
+	}
+	/* Make the flyout's controls fill the column width and read left-aligned. */
+	.secondary :global(.btn-control),
+	.secondary :global(.btn-control-square),
+	.secondary :global(.dim-picker) {
+		width: 100%;
+		justify-content: flex-start;
+	}
+	@container sess-bar (max-width: 640px) {
+		.inline-fold {
+			display: none;
+		}
+		.menu-fold {
+			display: contents;
+		}
 	}
 	/* The title is the Heading atom; target it via :global. Pinned to a fixed px
 	   size (it's toolbar chrome, not content) so the UI font scale doesn't push

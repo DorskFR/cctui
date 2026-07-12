@@ -414,12 +414,28 @@
 		selectMode = false;
 		selected = new Set();
 	}
+	// Forkable assistant anchors in render order (CCT-652): drives the from/to
+	// range picker — the fork spans the checked endpoints inclusively.
+	const forkableIds = $derived(
+		lines
+			.filter((l) => l.role === 'assistant' && l.messageId)
+			.map((l) => l.messageId as string)
+	);
 	function forkSelection() {
 		if (selected.size === 0) return;
+		// Fork the contiguous span between the first and last checked message: a
+		// single check forks just that message; checking a *from* and a *to* forks
+		// everything between them.
+		const idxs = [...selected]
+			.map((mid) => forkableIds.indexOf(mid))
+			.filter((i) => i >= 0)
+			.sort((a, b) => a - b);
+		if (idxs.length === 0) return;
+		const range = forkableIds.slice(idxs[0], idxs[idxs.length - 1] + 1);
 		fork.openExtract({
 			mode: 'selected',
 			anchor_message_id: null,
-			selected_message_ids: [...selected]
+			selected_message_ids: range
 		});
 	}
 
@@ -627,10 +643,6 @@
 		{forkable}
 		{selectMode}
 		{selected}
-		onforkfrom={(mid) =>
-			fork.openExtract({ mode: 'up_to', anchor_message_id: mid, selected_message_ids: [] })}
-		onforkafter={(mid) =>
-			fork.openExtract({ mode: 'after', anchor_message_id: mid, selected_message_ids: [] })}
 		ontoggleselect={toggleSelect}
 	/>
 
@@ -656,6 +668,7 @@
 		<Button variant="primary" onclick={forkSelection} disabled={selected.size === 0}>
 			{m.fork_selection()}
 		</Button>
+		<Button onclick={fork.openDialog}>{m.drawer_fork_label()}</Button>
 		<Button onclick={exitSelect}>{m.common_cancel()}</Button>
 	</div>
 {/if}

@@ -33,6 +33,8 @@ use ts_rs::TS;
 pub struct LangfuseConfig {
     /// Base URL of the Langfuse ingestion server (no trailing `/api/...`).
     pub host: String,
+    /// Browser-facing base URL for deep links (defaults to `host` when unset).
+    pub public_host: String,
     pub public_key: String,
     pub secret_key: String,
     /// Fraction of calls to trace, `0.0..=1.0`. Defaults to `1.0` (trace all).
@@ -46,6 +48,7 @@ impl LangfuseConfig {
     pub fn from_env() -> Option<Self> {
         let nonempty = |k: &str| std::env::var(k).ok().filter(|s| !s.trim().is_empty());
         let host = nonempty("CCTUI_LANGFUSE_HOST")?;
+        let public_host = nonempty("CCTUI_LANGFUSE_PUBLIC_HOST").unwrap_or_else(|| host.clone());
         let public_key = nonempty("CCTUI_LANGFUSE_PUBLIC_KEY")?;
         let secret_key = nonempty("CCTUI_LANGFUSE_SECRET_KEY")?;
         let sample_rate = nonempty("CCTUI_LANGFUSE_SAMPLE_RATE")
@@ -53,6 +56,7 @@ impl LangfuseConfig {
             .map_or(1.0, |r| r.clamp(0.0, 1.0));
         Some(Self {
             host: host.trim_end_matches('/').to_string(),
+            public_host: public_host.trim_end_matches('/').to_string(),
             public_key,
             secret_key,
             sample_rate,
@@ -132,6 +136,12 @@ impl LangfuseClient {
     /// Base host for building `<host>/project/<id>/sessions/<uuid>` deep links.
     pub fn host(&self) -> &str {
         &self.config.host
+    }
+
+    /// Browser-facing base host for deep links (defaults to [`host`] when the
+    /// `CCTUI_LANGFUSE_PUBLIC_HOST` env is unset).
+    pub fn public_host(&self) -> &str {
+        &self.config.public_host
     }
 
     /// Resolve the Langfuse project id once (via `GET /api/public/projects`) and
@@ -458,6 +468,7 @@ mod tests {
         // Just assert the basic-auth + sampling helpers behave.
         let cfg = LangfuseConfig {
             host: "https://lf.example/".into(),
+            public_host: "https://lf.example/".into(),
             public_key: "pk".into(),
             secret_key: "sk".into(),
             sample_rate: 1.0,
@@ -554,6 +565,7 @@ mod tests {
         let c = LangfuseClient::new(
             LangfuseConfig {
                 host: "h".into(),
+                public_host: "h".into(),
                 public_key: "p".into(),
                 secret_key: "s".into(),
                 sample_rate: 1.0,
@@ -564,6 +576,7 @@ mod tests {
         let z = LangfuseClient::new(
             LangfuseConfig {
                 host: "h".into(),
+                public_host: "h".into(),
                 public_key: "p".into(),
                 secret_key: "s".into(),
                 sample_rate: 0.0,

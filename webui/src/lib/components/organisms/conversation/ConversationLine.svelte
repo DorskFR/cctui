@@ -19,8 +19,6 @@
 		forkable = false,
 		selectMode = false,
 		selectedForFork = false,
-		onforkfrom,
-		onforkafter,
 		ontoggleselect
 	}: {
 		ln: Line;
@@ -138,22 +136,6 @@
 				title={m.conversation_copy_markdown_title()}
 				onclick={() => oncopymarkdown(ln)}
 			/>
-			{#if forkAnchor && !selectMode}
-				<IconButton
-					class="copy fork-from"
-					icon="fork"
-					label={m.fork_from_here_label()}
-					title={m.fork_from_here_title()}
-					onclick={() => onforkfrom?.(forkAnchor)}
-				/>
-				<IconButton
-					class="copy fork-after"
-					icon="fork"
-					label={m.fork_after_here_label()}
-					title={m.fork_after_here_title()}
-					onclick={() => onforkafter?.(forkAnchor)}
-				/>
-			{/if}
 		</span>
 	</div>
 	{#if ln.html}
