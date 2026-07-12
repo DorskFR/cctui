@@ -1,18 +1,17 @@
 <script lang="ts">
   import { getContext } from "svelte";
-  import { EMBED_THEME_KEY, type EmbedThemeContext } from "../embed/context";
+  import { EMBED_KEY, type EmbedContext } from "../embed/context";
   import { router } from "../router/router.svelte";
   import { currentTheme, setTheme, type Theme, THEME_LABELS, THEMES } from "../theme/theme";
   import SubscribeMenu from "./SubscribeMenu.svelte";
 
-  const embedTheme = getContext<EmbedThemeContext | undefined>(EMBED_THEME_KEY);
+  const embedded = getContext<EmbedContext | undefined>(EMBED_KEY)?.embedded ?? false;
 
-  let theme = $state<Theme>(embedTheme ? embedTheme.get() : currentTheme());
+  let theme = $state<Theme>(currentTheme());
 
   function onThemeChange(e: Event): void {
     theme = (e.currentTarget as HTMLSelectElement).value as Theme;
-    if (embedTheme) embedTheme.set(theme);
-    else setTheme(theme);
+    setTheme(theme);
   }
 </script>
 
@@ -23,11 +22,13 @@
   <a href="/bookmarklet" onclick={(e) => { e.preventDefault(); router.navigate("/bookmarklet"); }}>
     Bookmarklet
   </a>
-  <select class="theme" value={theme} onchange={onThemeChange} title="Theme" aria-label="Theme">
-    {#each THEMES as t (t)}
-      <option value={t}>{THEME_LABELS[t]}</option>
-    {/each}
-  </select>
+  {#if !embedded}
+    <select class="theme" value={theme} onchange={onThemeChange} title="Theme" aria-label="Theme">
+      {#each THEMES as t (t)}
+        <option value={t}>{THEME_LABELS[t]}</option>
+      {/each}
+    </select>
+  {/if}
 </header>
 
 <style>

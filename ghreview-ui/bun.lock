@@ -5,6 +5,7 @@
     "": {
       "name": "cctui-ghreview-ui",
       "dependencies": {
+        "@dorsk/tsumikit": "^0.12.0",
         "@tanstack/svelte-query": "^5.87.0",
       },
       "devDependencies": {
@@ -38,6 +39,8 @@
     "@biomejs/cli-win32-arm64": ["@biomejs/cli-win32-arm64@2.5.3", "", { "os": "win32", "cpu": "arm64" }, "sha512-cX5z+GYwRcqEok0AH3KSfQGgqYd0Nomfp6Fbe1uiTtELE38hdH2k842wQ9wLNaF/JJ7r4rjJQ4VR+ce+fRmQbw=="],
 
     "@biomejs/cli-win32-x64": ["@biomejs/cli-win32-x64@2.5.3", "", { "os": "win32", "cpu": "x64" }, "sha512-ExSaJWi4/u6+GXCszlSKpWSjKNbDseAYqqkCznsCsZ/4uidZ/BEqsCc5/3ctlq6dfIubdIIRSVLC/PG9xPl70Q=="],
+
+    "@dorsk/tsumikit": ["@dorsk/tsumikit@0.12.0", "", { "peerDependencies": { "svelte": "^5.0.0" } }, "sha512-uhQayYdZySY6q26xT//S6k3vKtTsNLeE47eYjPzfGOCWLupjA78Vy/gPsMeY79OObeRX09wHa0CI/s8o9cYfzQ=="],
 
     "@esbuild/aix-ppc64": ["@esbuild/aix-ppc64@0.28.1", "", { "os": "aix", "cpu": "ppc64" }, "sha512-Svl7tq8k/08+p6CXPpRjQ1fKX+1odH/BQbb48fV6fj3CWHhsoIOoY87w1oHXm0qEpkIK3ZfVgp0hed3XBXzXMQ=="],
 

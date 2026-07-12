@@ -5,9 +5,8 @@
   import { CanvasDiffRenderer } from "./lib/components/CanvasDiffRenderer";
   import { DomDiffRenderer } from "./lib/components/DomDiffRenderer";
   import Shell from "./lib/components/Shell.svelte";
-  import { EMBED_THEME_KEY, type EmbedThemeContext } from "./lib/embed/context";
+  import { EMBED_KEY, type EmbedContext } from "./lib/embed/context";
   import { registerRenderer } from "./lib/diff/renderer";
-  import { getStoredTheme, storeTheme, type Theme } from "./lib/theme/theme";
   import { router } from "./lib/router/router.svelte";
 
   interface Props {
@@ -28,16 +27,9 @@
     router.refresh();
   });
 
-  let theme = $state<Theme>(getStoredTheme() ?? "dark");
-  setContext<EmbedThemeContext>(EMBED_THEME_KEY, {
-    get: () => theme,
-    set: (t) => {
-      theme = t;
-      storeTheme(t);
-    },
-  });
+  setContext<EmbedContext>(EMBED_KEY, { embedded: true });
 </script>
 
-<div class="ghreview-embed" data-theme={theme}>
+<div class="ghreview-embed">
   <Shell />
 </div>
