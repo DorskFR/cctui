@@ -118,6 +118,7 @@ export function registerNotifications(app: OpenAPIHono, deps: AppDeps = {}) {
       account: q.account,
       limit: q.limit,
       cursor: q.cursor,
+      all: toBool(q.all),
       reason,
       repo: q.repo,
       unread: toBool(q.unread),

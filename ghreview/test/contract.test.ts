@@ -24,6 +24,7 @@ describe("openapi contract", () => {
       "/v1/accounts",
       "/v1/accounts/{id}",
       "/v1/events",
+      "/v1/github/repos",
       "/v1/health",
       "/v1/notifications",
       "/v1/notifications/state",
@@ -34,6 +35,8 @@ describe("openapi contract", () => {
       "/v1/repos/{owner}/{repo}/pulls/{number}",
       "/v1/repos/{owner}/{repo}/pulls/{number}/viewed",
       "/v1/status",
+      "/v1/subscriptions",
+      "/v1/subscriptions/{id}",
       "/v1/webhook",
     ]);
   });

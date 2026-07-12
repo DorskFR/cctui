@@ -147,6 +147,25 @@ const boolParam = (name: string, description: string) =>
     .openapi({ param: { name, in: "query" }, description });
 
 export const NotificationInboxQuerySchema = PaginationQuerySchema.extend({
+  limit: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(5000)
+    .default(30)
+    .openapi({
+      param: { name: "limit", in: "query" },
+      example: 30,
+      description: "Page size (up to 5000). Ignored when all=true.",
+    }),
+  all: z
+    .enum(["true", "false"])
+    .optional()
+    .openapi({
+      param: { name: "all", in: "query" },
+      description:
+        "true: return the entire notification set in one response (ignores limit/cursor)",
+    }),
   reason: z
     .string()
     .optional()
@@ -239,6 +258,40 @@ export const AccountSummarySchema = z
 export const AccountListSchema = z
   .object({ items: z.array(AccountSummarySchema) })
   .openapi("AccountList");
+
+export const SubscriptionKindSchema = z
+  .enum(["repo", "pull_request", "notification"])
+  .openapi({ example: "pull_request", description: "Subscription kind" });
+
+export const SubscriptionCreateSchema = z
+  .object({
+    kind: SubscriptionKindSchema.default("pull_request"),
+    target: z.string().min(1).openapi({
+      description:
+        "For pull_request: a github.com PR URL or `owner/repo#number`. For repo: `owner/repo`.",
+      example: "https://github.com/DorskFR/cctui/pull/42",
+    }),
+    account: AccountSchema.optional().openapi({
+      description:
+        "The caller's GitHub login to own the subscription; omit when the caller has exactly one account",
+    }),
+  })
+  .openapi("SubscriptionCreate");
+
+export const SubscriptionSchema = z
+  .object({
+    id: z.string(),
+    account: AccountSchema,
+    kind: SubscriptionKindSchema,
+    target: z.string().nullable(),
+    active: z.boolean(),
+    created_at: z.string().nullable(),
+  })
+  .openapi("Subscription");
+
+export const SubscriptionListSchema = z
+  .object({ items: z.array(SubscriptionSchema) })
+  .openapi("SubscriptionList");
 
 export const ErrorSchema = z
   .object({

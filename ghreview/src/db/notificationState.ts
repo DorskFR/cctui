@@ -33,6 +33,7 @@ export interface InboxFilters {
   since?: string;
   limit: number;
   cursor?: string;
+  all?: boolean;
   userId?: string;
 }
 
@@ -99,7 +100,8 @@ export async function listNotificationInbox(
   filters: InboxFilters,
 ): Promise<InboxPage> {
   const { sql } = db;
-  const decoded = filters.cursor ? decodeCursor(filters.cursor) : null;
+  const all = filters.all ?? false;
+  const decoded = !all && filters.cursor ? decodeCursor(filters.cursor) : null;
   const archived = filters.archived ?? false;
   const rows = await sql<InboxRow[]>`
     SELECT
@@ -155,10 +157,10 @@ export async function listNotificationInbox(
           : sql``
       }
     ORDER BY d.updated_at DESC, d.key DESC
-    LIMIT ${filters.limit + 1}
+    ${all ? sql`` : sql`LIMIT ${filters.limit + 1}`}
   `;
 
-  const hasMore = rows.length > filters.limit;
+  const hasMore = !all && rows.length > filters.limit;
   const pageRows = hasMore ? rows.slice(0, filters.limit) : rows;
   const last = pageRows.at(-1);
   const next_cursor =
