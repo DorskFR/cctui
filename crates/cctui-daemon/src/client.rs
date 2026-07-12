@@ -1,7 +1,8 @@
 //! HTTP + WS client to a cctui-server.
 
 use cctui_proto::api::{
-    DaemonAuthRequest, DaemonAuthResponse, GatewayEnvResponse, TokenValidResponse,
+    DaemonAuthRequest, DaemonAuthResponse, GatewayEnvResponse, SessionImageUploadResponse,
+    TokenValidResponse,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -152,6 +153,39 @@ impl ServerClient {
             anyhow::bail!("session_token_valid failed ({status}): {text}");
         }
         Ok(resp.json().await?)
+    }
+
+    /// Upload an agent-posted image blob (CCT-566) the daemon detected as a
+    /// marker in an assistant message. Raw bytes body; the server sniffs the
+    /// media type from magic bytes and dedups by sha256. Returns the stored blob
+    /// id the caller rewrites into a `cctui-img://<id>` marker.
+    pub async fn upload_session_image(
+        &self,
+        machine_key: &str,
+        session_id: &str,
+        bytes: Vec<u8>,
+        media_type: &str,
+    ) -> anyhow::Result<String> {
+        let url = format!(
+            "{}/api/v1/daemon/sessions/{}/images",
+            self.base_url.trim_end_matches('/'),
+            session_id,
+        );
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(machine_key)
+            .header(reqwest::header::CONTENT_TYPE, media_type)
+            .body(bytes)
+            .send()
+            .await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("upload_session_image failed ({status}): {text}");
+        }
+        let parsed: SessionImageUploadResponse = resp.json().await?;
+        Ok(parsed.image_id)
     }
 
     /// Build the daemon WS URL with the machine key as the `token` query

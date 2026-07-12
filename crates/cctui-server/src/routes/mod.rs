@@ -12,6 +12,7 @@ pub mod dispatchers;
 pub mod enroll;
 pub mod fs;
 pub mod gateway;
+pub mod images;
 pub mod internal;
 pub mod labels;
 pub mod manifest;

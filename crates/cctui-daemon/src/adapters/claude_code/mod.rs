@@ -26,6 +26,7 @@ mod headless;
 mod kickstart;
 mod mode;
 mod oneshot;
+mod pty_view;
 mod socket;
 mod state;
 mod streamjson;

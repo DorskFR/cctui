@@ -349,6 +349,11 @@ pub struct Driver {
     /// worker `short` at spawn/fork time (CCT-547). `Mutex` for the same
     /// reason as `spawn_model_effort`.
     spawn_permission_mode: std::sync::Mutex<HashMap<String, String>>,
+    /// Read-only live-view PTY relay (CCT-545). Opens a fresh viewer attach per
+    /// watched session while a browser has its terminal open, forwarding
+    /// coalesced PTY bytes as `PtyChunk` events. Interior-mutable so the `&self`
+    /// command path can start/stop viewers.
+    pty_view: super::pty_view::PtyViewManager,
 }
 
 #[derive(Debug, Clone)]
@@ -489,6 +494,11 @@ impl Driver {
             .map_or_else(|| OffsetStore::open(None), |p| OffsetStore::open(Some(p)));
         let kickstarter = Kickstarter::new(cfg.claude_bin.clone());
         let attach = super::attach::AttachManager::new(cfg.discovery.clone(), shutdown.clone());
+        let pty_view = super::pty_view::PtyViewManager::new(
+            events.clone(),
+            cfg.discovery.clone(),
+            shutdown.clone(),
+        );
         Self {
             cfg,
             events,
@@ -520,6 +530,7 @@ impl Driver {
             last_status_at: HashMap::new(),
             last_parsed: HashMap::new(),
             spawn_permission_mode: std::sync::Mutex::new(HashMap::new()),
+            pty_view,
         }
     }
 
@@ -784,13 +795,24 @@ impl Driver {
         Ok(())
     }
 
-    #[allow(clippy::cognitive_complexity)]
+    #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
     async fn handle_command(&self, cmd: AdapterCommand) -> anyhow::Result<()> {
         // Diagnose (CCT-547) is read-only aggregation and must answer even
         // when the claude daemon is down (the report *says* the socket is
         // gone), so it is handled before the socket requirement below.
         if let AdapterCommand::Diagnose { local_id, request_id } = cmd {
             return self.handle_diagnose(&local_id, request_id).await;
+        }
+        // Live-view watch toggle (CCT-545) only needs the in-memory short map, and
+        // stopping a viewer must work even when the claude daemon has gone away —
+        // so it is handled before the socket requirement below.
+        if let AdapterCommand::WatchPty { local_id, watch } = cmd {
+            match self.resolve_short(&local_id) {
+                Ok(short) if watch => self.pty_view.watch(local_id, short),
+                Ok(short) => self.pty_view.unwatch(&short),
+                Err(err) => tracing::debug!(%err, watch, "watch_pty for unknown session; ignoring"),
+            }
+            return Ok(());
         }
         // A command (spawn/reply/kill/…) needs a live control socket. If the
         // on-demand claude daemon has shut down, boot it and wait briefly for
@@ -1863,12 +1885,10 @@ impl Driver {
         let child_path =
             transcript::transcript_path(&self.cfg.projects_root, cwd, child_session_id);
         if let Some(dir) = child_path.parent() {
-            std::fs::create_dir_all(dir).with_context(|| {
-                format!("fork slice: create child dir {}", dir.display())
-            })?;
+            std::fs::create_dir_all(dir)
+                .with_context(|| format!("fork slice: create child dir {}", dir.display()))?;
         }
-        let body: String =
-            kept.iter().map(|l| format!("{l}\n")).collect::<Vec<_>>().concat();
+        let body: String = kept.iter().map(|l| format!("{l}\n")).collect::<Vec<_>>().concat();
         std::fs::write(&child_path, body).with_context(|| {
             format!("fork slice: write child transcript {}", child_path.display())
         })?;

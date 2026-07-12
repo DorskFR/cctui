@@ -259,6 +259,12 @@ struct Inner {
     /// `SessionHandle::stream_tx`). Entries live exactly as long as the
     /// session's registry handle: created on register, removed on deregister.
     session_streams: DashMap<String, broadcast::Sender<AgentEvent>>,
+    /// Live count of browsers watching each session's read-only terminal
+    /// (CCT-545). Gates the daemon PTY stream: on the 0↔1 transition the ws
+    /// handler tells the daemon to start/stop the viewer attach, so an unwatched
+    /// session carries no extra stream. Process-local — a multi-pod deploy would
+    /// need this on the transport, but the fan-out already assumes single-pod.
+    pty_watchers: DashMap<String, usize>,
     transport: Box<dyn Transport>,
 }
 
@@ -280,6 +286,7 @@ impl Bus {
                 pending_dispatcher: DashMap::new(),
                 server_tx: broadcast::channel(CHANNEL_CAPACITY).0,
                 session_streams: DashMap::new(),
+                pty_watchers: DashMap::new(),
                 transport,
             }),
         }
@@ -337,6 +344,36 @@ impl Bus {
     /// Whether THIS pod terminates `dispatcher`'s WS.
     pub fn dispatcher_connected(&self, dispatcher: Uuid) -> bool {
         self.inner.dispatchers.contains_key(&dispatcher)
+    }
+
+    // ---- live-view PTY watcher refcount (CCT-545) ----
+
+    /// Register a browser as watching `session`'s live terminal. Returns `true`
+    /// only on the 0→1 transition — the caller then tells the daemon to start
+    /// streaming.
+    pub fn pty_watch_inc(&self, session: &str) -> bool {
+        let mut entry = self.inner.pty_watchers.entry(session.to_owned()).or_insert(0);
+        *entry += 1;
+        *entry == 1
+    }
+
+    /// Drop a watcher. Returns `true` only on the →0 transition (last watcher
+    /// left) — the caller then tells the daemon to stop streaming.
+    pub fn pty_watch_dec(&self, session: &str) -> bool {
+        use dashmap::mapref::entry::Entry;
+        match self.inner.pty_watchers.entry(session.to_owned()) {
+            Entry::Occupied(mut e) => {
+                let v = e.get_mut();
+                *v = v.saturating_sub(1);
+                if *v == 0 {
+                    e.remove();
+                    true
+                } else {
+                    false
+                }
+            }
+            Entry::Vacant(_) => false,
+        }
     }
 
     // ---- point-to-point commands / round-trips ----
@@ -837,6 +874,19 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(rx.recv().await, Some(DaemonFrameDown::Reconcile { .. })));
+    }
+
+    #[test]
+    fn pty_watch_refcount_signals_only_on_edge_transitions() {
+        let bus = bus();
+        assert!(bus.pty_watch_inc("s"), "0→1 must signal start");
+        assert!(!bus.pty_watch_inc("s"), "1→2 must not re-signal");
+        assert!(!bus.pty_watch_inc("s"), "2→3 must not re-signal");
+        assert!(!bus.pty_watch_dec("s"), "3→2 must not signal stop");
+        assert!(!bus.pty_watch_dec("s"), "2→1 must not signal stop");
+        assert!(bus.pty_watch_dec("s"), "1→0 must signal stop");
+        assert!(!bus.pty_watch_dec("s"), "stray dec on unwatched must not signal");
+        assert!(bus.pty_watch_inc("s"), "0→1 again must signal start");
     }
 
     #[tokio::test]

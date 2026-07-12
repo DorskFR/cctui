@@ -308,6 +308,15 @@ pub enum AdapterEvent {
     CodexModels {
         catalog: crate::codex_catalog::CodexModelCatalog,
     },
+    /// A coalesced slice of a watched session's live PTY byte stream (CCT-545).
+    /// Emitted only while a viewer is attached (server-gated via
+    /// [`AdapterCommand::WatchPty`]); `data` is the standard-base64 of the raw
+    /// terminal bytes. Never persisted — the server fans it straight out to the
+    /// browsers watching the session's terminal, nothing is stored.
+    PtyChunk {
+        local_id: String,
+        data: String,
+    },
 }
 
 /// Child reference attached to a session — typically a linked PR. Drives the
@@ -508,6 +517,19 @@ pub enum AdapterCommand {
     Diagnose {
         local_id: String,
         request_id: Uuid,
+    },
+    /// Start (`watch: true`) or stop (`watch: false`) relaying the session's
+    /// live PTY byte stream to the server as [`AdapterEvent::PtyChunk`]
+    /// (CCT-545). The server sends `watch: true` when the first browser opens
+    /// the read-only terminal view and `watch: false` when the last one closes,
+    /// so the daemon only opens the extra viewer attach while someone is
+    /// actually watching. Read-only: the adapter opens a fresh attach purely to
+    /// forward bytes (a fresh attach makes the worker repaint the current
+    /// screen), never injecting keystrokes. Adapters without a PTY (codex)
+    /// ignore it.
+    WatchPty {
+        local_id: String,
+        watch: bool,
     },
 }
 
@@ -932,6 +954,28 @@ mod tests {
                 assert_eq!(*r, report);
             }
             other => panic!("expected Diagnose, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn watch_pty_command_and_pty_chunk_event_roundtrip() {
+        let cmd = AdapterCommand::WatchPty { local_id: "s1".into(), watch: true };
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert!(json.contains(r#""kind":"watch_pty""#));
+        assert!(json.contains(r#""watch":true"#));
+        let back: AdapterCommand = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, AdapterCommand::WatchPty { watch: true, .. }));
+
+        let evt = AdapterEvent::PtyChunk { local_id: "s1".into(), data: "aGk=".into() };
+        let json = serde_json::to_string(&evt).unwrap();
+        assert!(json.contains(r#""kind":"pty_chunk""#));
+        let back: AdapterEvent = serde_json::from_str(&json).unwrap();
+        match back {
+            AdapterEvent::PtyChunk { local_id, data } => {
+                assert_eq!(local_id, "s1");
+                assert_eq!(data, "aGk=");
+            }
+            other => panic!("expected PtyChunk, got {other:?}"),
         }
     }
 

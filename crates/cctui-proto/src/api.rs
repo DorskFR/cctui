@@ -707,6 +707,14 @@ pub struct DispatchResponse {
     pub status: String,
 }
 
+/// Reply to `POST /api/v1/daemon/sessions/{id}/images` (CCT-566): the stored
+/// blob id the daemon rewrites into a `cctui-img://<image_id>` message marker.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionImageUploadResponse {
+    pub image_id: String,
+}
+
 /// One row of the skill registry (one per skill name — last-write-wins).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillIndexEntry {

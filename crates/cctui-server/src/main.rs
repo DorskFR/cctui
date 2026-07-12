@@ -185,6 +185,16 @@ async fn main() -> anyhow::Result<()> {
         // resolves (by sha256 hash — no token material on the wire). Same
         // machine-key self-auth as gateway-env.
         .route("/api/v1/daemon/sessions/{id}/token-valid", get(routes::daemon::session_token_valid))
+        // Agent-posted image upload (CCT-566): the daemon POSTs raw image bytes
+        // it detected as a marker in an assistant message. Self-auths via the
+        // machine-key Bearer like the sibling daemon endpoints, so it sits here
+        // outside the user-token `api_router`. Cap the body a little over the
+        // 5 MiB per-image limit so an over-cap upload 413s in-handler.
+        .route(
+            "/api/v1/daemon/sessions/{id}/images",
+            post(routes::images::upload_session_image)
+                .layer(DefaultBodyLimit::max(6 * 1024 * 1024)),
+        )
         // Enrolled-dispatcher endpoints (CCT-285). Carry their own key auth
         // (dispatcher-key Bearer / `?token=`), so they live outside the
         // user-token `api_router` group, like the daemon endpoints.
@@ -492,6 +502,14 @@ fn build_api_routes() -> Routes {
             "/sessions/{id}/conversation",
             "Fetch a session's normalized conversation transcript.",
             get(routes::sessions::get_conversation),
+            Authn::Bearer,
+            sess_read(),
+        )
+        .add(
+            &[GET],
+            "/sessions/{id}/images/{image_id}",
+            "Fetch an agent-posted image blob (CCT-566).",
+            get(routes::images::get_session_image),
             Authn::Bearer,
             sess_read(),
         )

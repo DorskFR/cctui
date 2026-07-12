@@ -597,6 +597,14 @@ async fn handle_event(
                 tracing::debug!(%request_id, "Diagnose reply for unknown request (timed out?)");
             }
         }
+        AdapterEvent::PtyChunk { local_id, data } => {
+            // Live terminal relay (CCT-545): never persisted — fan the base64
+            // chunk straight out to the browsers watching this session.
+            state.bus.publish_server(cctui_proto::ws::ServerEvent::PtyChunk {
+                session_id: local_id,
+                data,
+            });
+        }
         AdapterEvent::CommandResult { command_id, ok, error } => {
             // Not a session event — rebroadcast straight to clients so the
             // originating spawn request gets a definitive answer (CCT-131).
