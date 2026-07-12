@@ -15,6 +15,7 @@ pub mod client;
 pub mod config;
 pub mod dispatch_codex;
 pub mod enroll;
+pub mod imagepost;
 pub mod listdirs;
 pub mod runtime;
 pub mod selfupdate;

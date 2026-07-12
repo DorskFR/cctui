@@ -277,9 +277,26 @@ function splitRow(row: string): string[] {
   return cells;
 }
 
+// Agent-posted image markers (CCT-566). The daemon rewrites a message's
+// `![alt](/abs/path.png)` into `![alt](cctui-img://<id>)`; only THIS scheme is
+// turned into an <img>, served from the session-scoped, cookie-authed blob
+// endpoint. Remote/model-authored URLs stay escaped (the XSS/track guard). The
+// id is a server-minted uuid, so it is constrained to `[A-Za-z0-9-]` and the
+// alt/session id are attribute-escaped before they reach the DOM.
+const CCTUI_IMG = /!\[([^\]]*)\]\(cctui-img:\/\/([A-Za-z0-9-]+)\)/g;
+
+function imageMarkerHtml(alt: string, id: string, sessionId: string): string {
+  const src = `/api/v1/sessions/${encodeURIComponent(sessionId)}/images/${encodeURIComponent(id)}`;
+  const altAttr = escapeHtml(alt);
+  return (
+    `<img class="md-img" src="${src}" alt="${altAttr}" loading="lazy" ` +
+    `data-lightbox="${src}" title="Click to open full image" />`
+  );
+}
+
 export function renderMarkdown(
   src: string,
-  opts: { tables?: boolean } = {},
+  opts: { tables?: boolean; sessionId?: string } = {},
 ): string {
   // Render GFM tables as real <table>s by default; when `tables` is false
   // (formatting toggle, CCT-250 item 2) leave the pipe rows as plain text.
@@ -288,6 +305,18 @@ export function renderMarkdown(
   src = stripAnsi(src);
   // Protect fenced code blocks before escaping the rest.
   const blocks: string[] = [];
+
+  // Protect image markers into the block table so the raw <img> survives the
+  // escape + inline passes intact (same mechanism as code blocks). Only when a
+  // session id is in scope — without it (export, plan/ask previews) the marker
+  // is left to be escaped as plain text, which degrades safely.
+  if (opts.sessionId) {
+    const sid = opts.sessionId;
+    src = src.replace(CCTUI_IMG, (_m, alt: string, id: string) => {
+      const i = blocks.push(imageMarkerHtml(alt, id, sid)) - 1;
+      return `${BLOCK_L}s${i}${BLOCK_R}`;
+    });
+  }
   let s = src.replace(
     /```([^\n`]*)\n?([\s\S]*?)```/g,
     (_m, info: string, code: string) => {

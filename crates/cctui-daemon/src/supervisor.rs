@@ -221,6 +221,10 @@ impl Supervisor {
         let mut want: HashMap<String, DaemonAdapterConfig> =
             adapters.into_iter().map(|a| (a.adapter_id.to_string(), a)).collect();
 
+        // Allow-list roots for agent-posted image markers (CCT-566), resolved
+        // once per reconcile and shared by every adapter's event pump below.
+        let image_roots = crate::imagepost::default_allowed_roots();
+
         // Stop adapters no longer in the manifest or disabled.
         let to_stop: Vec<String> = running
             .keys()
@@ -286,10 +290,18 @@ impl Supervisor {
             let adapter_id_for_pump = id.clone();
             let event_tx = event_tx.clone();
             let mut events_rx = channels.events_rx;
-            // Pump per-adapter events into the shared event_tx with the
-            // adapter id attached.
+            // Pump per-adapter events into the shared event_tx with the adapter
+            // id attached. Assistant messages pass through the image-marker
+            // rewrite (CCT-566) here — per-adapter task, so an upload can't stall
+            // the WS loop; a non-marker message returns unchanged.
+            let img_client = self.client.clone();
+            let img_key = self.machine_key.clone();
+            let img_roots = image_roots.clone();
             tokio::spawn(async move {
                 while let Some(evt) = events_rx.recv().await {
+                    let evt =
+                        crate::imagepost::process_event(&img_client, &img_key, evt, &img_roots)
+                            .await;
                     if event_tx.send((adapter_id_for_pump.clone(), evt)).await.is_err() {
                         break;
                     }

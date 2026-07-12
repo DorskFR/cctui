@@ -211,7 +211,7 @@ async fn handle_subscribe(
     }
 }
 
-#[allow(clippy::cognitive_complexity)]
+#[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
 async fn run_tui_socket(
     mut stream: futures_util::stream::SplitStream<WebSocket>,
     state: AppState,
@@ -222,6 +222,10 @@ async fn run_tui_socket(
     // the per-session relay and an unsubscribe can tear it down (CCT-182).
     let mut sub_handles: std::collections::HashMap<String, tokio::task::JoinHandle<()>> =
         std::collections::HashMap::new();
+    // Sessions whose live terminal THIS socket is watching (CCT-545). Tracked
+    // per-socket so a disconnect decrements the shared watcher refcount and the
+    // daemon stops streaming to a browser that vanished without unwatching.
+    let mut pty_watches: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     while let Some(msg) = stream.next().await {
         let text = match msg {
@@ -255,6 +259,13 @@ async fn run_tui_socket(
                 if let Some(handle) = sub_handles.remove(&session_id) {
                     handle.abort();
                 }
+            }
+            TuiCommand::WatchTerminal { session_id, watch } => {
+                if !ws_owns_session(&state, &ctx, &session_id).await {
+                    tracing::debug!(session_id = %session_id, user_id = %ctx.user_id, "tui_ws: watch-terminal denied (not owner)");
+                    continue;
+                }
+                handle_watch_terminal(&state, &session_id, watch, &mut pty_watches).await;
             }
             TuiCommand::Message { session_id, content, client_msg_id, ask_picks } => {
                 if !ws_owns_session(&state, &ctx, &session_id).await {
@@ -335,6 +346,54 @@ async fn run_tui_socket(
     for (_, handle) in sub_handles {
         handle.abort();
     }
+    // Decrement every terminal this socket still watched so a browser that
+    // closed the tab (or dropped) releases the daemon PTY stream (CCT-545).
+    for session_id in pty_watches {
+        if state.bus.pty_watch_dec(&session_id) {
+            set_daemon_pty_watch(&state, &session_id, false).await;
+        }
+    }
+}
+
+/// Toggle this socket's live-terminal watch of `session_id` (CCT-545). Ref-count
+/// per session is on the bus; only the 0↔1 edge tells the daemon to start/stop
+/// its viewer PTY attach. Idempotent per socket via `pty_watches`.
+async fn handle_watch_terminal(
+    state: &AppState,
+    session_id: &str,
+    watch: bool,
+    pty_watches: &mut std::collections::HashSet<String>,
+) {
+    if watch {
+        if !pty_watches.insert(session_id.to_owned()) {
+            return;
+        }
+        if state.bus.pty_watch_inc(session_id) {
+            set_daemon_pty_watch(state, session_id, true).await;
+        }
+    } else {
+        if !pty_watches.remove(session_id) {
+            return;
+        }
+        if state.bus.pty_watch_dec(session_id) {
+            set_daemon_pty_watch(state, session_id, false).await;
+        }
+    }
+}
+
+/// Tell the session's daemon to start/stop relaying its PTY. Best-effort: a
+/// session whose daemon is momentarily offline just gets no stream (the browser
+/// re-sends `watch` on reconnect), so `NoDaemon`/`NotFound` are logged at debug.
+async fn set_daemon_pty_watch(state: &AppState, session_id: &str, watch: bool) {
+    let dispatch = crate::bus::dispatch(
+        state,
+        session_id,
+        cctui_proto::adapter::AdapterCommand::WatchPty { local_id: session_id.to_owned(), watch },
+    )
+    .await;
+    if let Err(err) = dispatch {
+        tracing::debug!(%session_id, watch, %err, "watch-terminal daemon dispatch skipped");
+    }
 }
 
 /// The `session_id` a server-initiated event pertains to, if any. Events with a
@@ -354,6 +413,7 @@ fn event_session_id(event: &ServerEvent) -> Option<&str> {
         | ServerEvent::AskResolved { session_id }
         | ServerEvent::PlanRequest { session_id, .. }
         | ServerEvent::PlanResolved { session_id }
+        | ServerEvent::PtyChunk { session_id, .. }
         | ServerEvent::MessageAck { session_id, .. } => Some(session_id),
         // `SessionRegistered` carries a whole Session; resolving its owner from
         // the broadcast path is heavier and it is list-metadata, not the

@@ -10,6 +10,7 @@
 	import Toaster from '$lib/components/organisms/Toaster.svelte';
 	import Login from '$lib/components/organisms/Login.svelte';
 	import { installCodeCopy } from '$lib/codecopy';
+	import { installImageLightbox } from '$lib/imagelightbox';
 	import { Container } from '@dorsk/tsumikit';
 
 	let { children } = $props();
@@ -21,6 +22,11 @@
 	// One delegated listener for every code-block copy button (CCT-297 #20).
 	$effect(() => {
 		installCodeCopy();
+	});
+
+	// One delegated listener for every inline agent-posted image (CCT-566).
+	$effect(() => {
+		installImageLightbox();
 	});
 
 	const queryClient = new QueryClient({

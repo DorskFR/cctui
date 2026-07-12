@@ -712,6 +712,7 @@ fn handle_server_event(app: &mut App, event: ServerEvent) {
         | ServerEvent::GithubEvent { .. }
         | ServerEvent::AskResolved { .. }
         | ServerEvent::SoftLimitReached { .. }
+        | ServerEvent::PtyChunk { .. }
         | ServerEvent::SoftLimitCleared { .. } => {
             // Archive coverage is web-only (CCT-68); spawn feedback
             // (CommandResult, CCT-131) is surfaced in the web client and the

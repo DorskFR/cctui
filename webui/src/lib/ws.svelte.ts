@@ -57,6 +57,7 @@ export function userMsgKey(ev: AgentEvent): string | null {
 
 type Status = 'connecting' | 'open' | 'closed';
 type StreamCb = (ev: AgentEvent) => void;
+type PtyCb = (data: Uint8Array) => void;
 type PermCb = (list: PermReq[]) => void;
 /** A live GitHub inbox nudge (GH-CONN-5): "something about a tracked PR
  * changed" — the `/github` inbox refetches the affected rows in response. */
@@ -157,6 +158,14 @@ interface TrackedSend {
 // always retry manually (which resets the counter).
 const ACK_TIMEOUT_MS = 8000;
 const MAX_ATTEMPTS = 5;
+/** Decode a standard-base64 string to raw bytes (CCT-545 PTY chunks). */
+export function decodeBase64(b64: string): Uint8Array {
+	const bin = atob(b64);
+	const out = new Uint8Array(bin.length);
+	for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+	return out;
+}
+
 const BACKOFF_BASE_MS = 1000;
 const BACKOFF_CAP_MS = 30000;
 function backoffDelay(attempt: number): number {
@@ -204,6 +213,13 @@ class WsClient {
 	private plans = new Map<string, LivePlan>();
 	private softLimits = new Map<string, SoftLimit>();
 	private streamCbs = new Map<string, Set<StreamCb>>();
+	/** Live PTY-view listeners keyed by session id (CCT-545); not reactive. The
+	 * bytes are never buffered — a terminal that mounts late relies on the fresh
+	 * attach's full-screen repaint, not replay. */
+	private ptyCbs = new Map<string, Set<PtyCb>>();
+	/** Sessions this client is watching the live terminal of, re-sent on
+	 * reconnect so the daemon stream resumes after a drop (CCT-545). */
+	private ptyWatched = new Set<string>();
 	private permCbs = new Map<string, Set<PermCb>>();
 	private askCbs = new Map<string, Set<AskCb>>();
 	private planCbs = new Map<string, Set<PlanCb>>();
@@ -251,6 +267,9 @@ class WsClient {
 			this.status = 'open';
 			// re-subscribe everything after a reconnect
 			for (const id of this.subscribed) this.send({ type: 'subscribe', session_id: id });
+			// re-arm live-terminal watches so the daemon PTY stream resumes (CCT-545)
+			for (const id of this.ptyWatched)
+				this.send({ type: 'watch_terminal', session_id: id, watch: true });
 			// A send that failed because the socket was down is parked in `backoff`;
 			// now that we're connected again, retry it immediately rather than
 			// waiting out the timer (CCT-214).
@@ -314,6 +333,15 @@ class WsClient {
 				// otherwise only refreshed on the 15s poll. Coalesce into one list
 				// refresh so the list stays roughly live without refetching per event.
 				this.markListDirty();
+				break;
+			}
+			case 'pty_chunk': {
+				const sid = msg.session_id as string;
+				const set = this.ptyCbs.get(sid);
+				if (set && set.size > 0) {
+					const bytes = decodeBase64(msg.data as string);
+					for (const cb of set) cb(bytes);
+				}
 				break;
 			}
 			case 'permission_request': {
@@ -518,6 +546,35 @@ class WsClient {
 	 * the list re-derives on changeTick, which `setPerms` bumps). */
 	pendingCount(id: string): number {
 		return this.perms.get(id)?.length ?? 0;
+	}
+
+	/** Start relaying a session's live terminal (CCT-545). Idempotent — the
+	 * server ref-counts watchers and only spins up the daemon PTY stream on the
+	 * first watcher. */
+	watchPty(id: string) {
+		if (!this.ptyWatched.has(id)) {
+			this.ptyWatched.add(id);
+			this.send({ type: 'watch_terminal', session_id: id, watch: true });
+		}
+	}
+
+	/** Stop relaying a session's live terminal (CCT-545). */
+	unwatchPty(id: string) {
+		if (this.ptyWatched.delete(id)) {
+			this.send({ type: 'watch_terminal', session_id: id, watch: false });
+		}
+	}
+
+	/** Register a live PTY-byte listener for a session (CCT-545). Returns an
+	 * unsubscribe fn. Bytes are raw terminal output to feed straight into xterm. */
+	onPty(id: string, cb: PtyCb): () => void {
+		let set = this.ptyCbs.get(id);
+		if (!set) {
+			set = new Set();
+			this.ptyCbs.set(id, set);
+		}
+		set.add(cb);
+		return () => set!.delete(cb);
 	}
 
 	/** Register a live-event listener for a session. Returns an unsubscribe fn. */

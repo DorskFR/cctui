@@ -91,6 +91,7 @@ export type * from './ServerDiagnose';
 export type * from './ServerEvent';
 export type * from './SessionDiagnoseResponse';
 export type * from './SessionDiagnose';
+export type * from './SessionImageUploadResponse';
 export type * from './SessionListItem';
 export type * from './SessionListResponse';
 export type * from './SessionStats';

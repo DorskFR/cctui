@@ -15,7 +15,9 @@
 		autoApprove,
 		mobilePanel = $bindable(),
 		ontoggleAuto,
-		ondiagnose
+		ondiagnose,
+		onterminal,
+		terminalOpen = false
 	}: {
 		view: ViewOpts;
 		autoApprove: boolean;
@@ -23,6 +25,9 @@
 		ontoggleAuto: () => void;
 		/** Opens the session diagnose panel (CCT-547); omit to hide the button. */
 		ondiagnose?: () => void;
+		/** Toggles the read-only live terminal (CCT-545); omit to hide (codex). */
+		onterminal?: () => void;
+		terminalOpen?: boolean;
 	} = $props();
 
 	// Cycle a tag: off → include → exclude → off.
@@ -110,6 +115,13 @@
 				title="Everything the daemon knows about this session, dated (CCT-547)"
 				onclick={ondiagnose}
 			>🩺 Diagnose</Toggle>
+		{/if}
+		{#if onterminal}
+			<Toggle
+				pressed={terminalOpen}
+				title="Read-only live view of the session's terminal (CCT-545)"
+				onclick={onterminal}
+			>🖥 Terminal</Toggle>
 		{/if}
 	</div>
 </div>

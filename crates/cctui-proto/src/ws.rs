@@ -263,6 +263,14 @@ pub enum TuiCommand {
     Unsubscribe {
         session_id: String,
     },
+    /// Start (`watch: true`) or stop (`watch: false`) the read-only live
+    /// terminal view for a session (CCT-545). The server ref-counts watchers
+    /// per session and only tells the daemon to open/close its viewer PTY
+    /// attach on the 0↔1 transition, so idle sessions carry no extra stream.
+    WatchTerminal {
+        session_id: String,
+        watch: bool,
+    },
     /// A typed reply from a client. `client_msg_id` (when present) lets the
     /// server ack the send back to the originating socket via
     /// [`ServerEvent::MessageAck`], so the client can render a precise
@@ -446,6 +454,15 @@ pub enum ServerEvent {
     /// per-chat soft-limit banner.
     SoftLimitCleared {
         session_id: String,
+    },
+    /// A coalesced slice of a session's live PTY byte stream, relayed to the
+    /// browsers watching its read-only terminal (CCT-545). `data` is
+    /// standard-base64 of the raw terminal bytes; the client base64-decodes and
+    /// writes it straight into xterm.js. Not persisted — dropped by any client
+    /// not currently rendering the terminal.
+    PtyChunk {
+        session_id: String,
+        data: String,
     },
 }
 
@@ -736,6 +753,21 @@ mod tests {
         assert!(json.contains(r#""type":"list_dirs_result""#));
         assert!(!json.contains("error"), "None error must be skipped: {json}");
         let _back: DaemonFrameUp = serde_json::from_str(&json).unwrap();
+    }
+
+    #[test]
+    fn watch_terminal_command_and_pty_chunk_event_roundtrip() {
+        let cmd = TuiCommand::WatchTerminal { session_id: "s1".into(), watch: true };
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert!(json.contains(r#""type":"watch_terminal""#));
+        assert!(json.contains(r#""watch":true"#));
+        let _back: TuiCommand = serde_json::from_str(&json).unwrap();
+
+        let ev = ServerEvent::PtyChunk { session_id: "s1".into(), data: "aGk=".into() };
+        let json = serde_json::to_string(&ev).unwrap();
+        assert!(json.contains(r#""type":"pty_chunk""#));
+        assert!(json.contains(r#""data":"aGk=""#));
+        let _back: ServerEvent = serde_json::from_str(&json).unwrap();
     }
 
     #[test]

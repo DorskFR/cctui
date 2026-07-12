@@ -476,7 +476,7 @@ impl AttachTask {
 /// `discriminatedUnion("op")`): `proto` must be the integer `1`, `short` an
 /// 8-char hex id, `cols`/`rows` ints in `1..=10000`. `caps` is optional but
 /// when present `terminal`/`mux`/`ssh` are its required members.
-fn attach_request(short: &str, attach_id: &str) -> Value {
+pub(super) fn attach_request(short: &str, attach_id: &str) -> Value {
     let mut req = json!({
         "proto": 1,
         "op": "attach",
