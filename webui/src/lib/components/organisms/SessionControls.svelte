@@ -6,6 +6,8 @@
 	import SectionFilter from '../molecules/SectionFilter.svelte';
 	import LabelFilter from '../molecules/LabelFilter.svelte';
 	import ViewPicker from '../molecules/ViewPicker.svelte';
+	import DimensionPicker from '../molecules/DimensionPicker.svelte';
+	import type { Dimension } from '../../../routes/sessions/sessions.logic';
 
 	// The sessions list toolbar (CCT-369): title + search + section/label filters +
 	// view picker + multi-select toggle + New. A uniform, self-contained block —
@@ -20,6 +22,11 @@
 		labelFilter = $bindable(),
 		cardView = $bindable(),
 		dense = $bindable(),
+		kanban = $bindable(),
+		colorBy,
+		groupBy,
+		onColorBy,
+		onGroupBy,
 		selecting,
 		searching,
 		onStartSelect,
@@ -35,6 +42,11 @@
 		labelFilter: Set<string>;
 		cardView: boolean;
 		dense: boolean;
+		kanban: boolean;
+		colorBy: Dimension;
+		groupBy: Dimension;
+		onColorBy: (v: Dimension) => void;
+		onGroupBy: (v: Dimension) => void;
 		selecting: boolean;
 		searching: boolean;
 		onStartSelect: () => void;
@@ -56,7 +68,9 @@
 	</div>
 	<SectionFilter bind:sections />
 	<LabelFilter {labels} bind:selected={labelFilter} onUpdate={onUpdateLabel} onDelete={onDeleteLabel} />
-	<ViewPicker bind:cardView bind:dense />
+	<ViewPicker bind:cardView bind:dense bind:kanban />
+	<DimensionPicker kind="group" value={groupBy} onchange={onGroupBy} />
+	<DimensionPicker kind="color" value={colorBy} onchange={onColorBy} />
 	{#if !searching}
 		{#if selecting}
 			<!-- Cancel selection. -->

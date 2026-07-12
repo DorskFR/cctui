@@ -9,15 +9,19 @@
 	// detailed) are bindable so the parent keeps owning persistence.
 	let {
 		cardView = $bindable(),
-		dense = $bindable()
-	}: { cardView: boolean; dense: boolean } = $props();
+		dense = $bindable(),
+		kanban = $bindable()
+	}: { cardView: boolean; dense: boolean; kanban: boolean } = $props();
 
-	const mode = $derived(`${cardView ? 'card' : 'list'}-${dense ? 'compact' : 'detailed'}`);
+	const mode = $derived(
+		kanban ? 'kanban' : `${cardView ? 'card' : 'list'}-${dense ? 'compact' : 'detailed'}`
+	);
 	const label = $derived(VIEW_OPTIONS.find((o) => o.value === mode)?.label ?? 'View');
 
 	function select(value: string) {
 		const opt = VIEW_OPTIONS.find((o) => o.value === value);
 		if (!opt) return;
+		kanban = value === 'kanban';
 		cardView = opt.card;
 		dense = opt.dense;
 	}
