@@ -29,6 +29,7 @@
     "@dorsk/tsumikit": "^0.11.2",
     "@tanstack/svelte-query": "^5.87.0",
     "@tanstack/svelte-virtual": "^3.13.29",
+    "cctui-ghreview-ui": "file:../ghreview-ui",
     "highlight.js": "^11.11.1",
     "html-to-image": "^1.11.13"
   }

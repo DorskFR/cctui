@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { contrastRatio } from "./contrast";
 import { THEMES } from "./theme";
 
-const CSS = readFileSync(resolve(process.cwd(), "src/app.css"), "utf8");
+const CSS = readFileSync(resolve(process.cwd(), "src/tokens.css"), "utf8");
 
 function blockFor(theme: string): Record<string, string> {
   const re = new RegExp(`\\[data-theme="${theme}"\\][^{]*\\{([^}]*)\\}`);

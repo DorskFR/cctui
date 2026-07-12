@@ -5,11 +5,31 @@ delivered in **CCT-605**: a tabbed, keyboard-first PR review UI that opens
 instantly from the warm `/v1` backend (`ghreview/`) — **zero GitHub round trips
 in the open path**.
 
-It is a **Svelte 5 + Vite** single-page app, built to run standalone against the
-backend today and to mount into `cctui-ui` in **CCT-610**. It shares webui's
-tooling (Svelte 5 runes, `@tanstack/svelte-query`, biome, vitest) and owns its own
-minimal CSS with design tokens (every color is a CSS custom property in
-`src/app.css`; **CCT-607** formalized four themes and syntax palettes).
+It is a **Svelte 5 + Vite** single-page app that runs **standalone** against the
+backend and **embeds** into `cctui-ui` (the connector, **CCT-610**). It shares
+webui's tooling (Svelte 5 runes, `@tanstack/svelte-query`, biome, vitest) and owns
+its own minimal CSS with design tokens (every color is a CSS custom property in
+`src/tokens.css`; **CCT-607** formalized four themes and syntax palettes).
+
+## Standalone vs embedded
+
+The same code runs two ways, selected by whether an embedder injects a runtime
+config (`configureRuntime()` in `src/lib/api/config.ts`):
+
+- **Standalone** — `src/main.ts` mounts `App.svelte`, which shows the token
+  `AuthGate` and reads backend URL / token / account from `localStorage` +
+  `VITE_*` env. `main.ts` imports `src/app.css` (document-level base rules).
+- **Embedded** — `cctui-ui` imports `src/Review.svelte` and passes
+  `{ baseUrl, token, account?, basePath }` as props. `Review` injects them via
+  `configureRuntime()` (so the API client + SSE use the host's URL + bearer, no
+  login stub), mounts the shared `Shell.svelte`, and imports `src/embed.css` —
+  which reuses `src/tokens.css` but scopes the base rules under `.ghreview-embed`
+  so they never leak onto the host's `<body>`. The theme lives on the embed
+  container (not `<html>`), so switching it never touches the cctui chrome. The
+  router runs under `basePath` (`/review`) while the GitHub-mirrored paths stay
+  intact.
+
+`src/main.ts` and `App.svelte` keep their standalone behaviour unchanged.
 
 ## Run standalone against the backend
 
@@ -23,14 +43,18 @@ The dev server proxies `/v1` (including `/v1/events` SSE) to `GHREVIEW_URL`
 (default `http://localhost:8790`), so the app is same-origin in dev. For a hosted
 build, set `VITE_GHREVIEW_URL` to the backend origin at build time instead.
 
-### Auth stub
+### Auth
 
-Auth reuses cctui bearer tokens (see `ghreview/README.md`). Until **CCT-610**
-wires real cctui auth, the app prompts for a token on first load and stores it in
-`localStorage` (`ghreview:token`) alongside an optional default account
-(`ghreview:account`). `VITE_GHREVIEW_TOKEN` / `VITE_GHREVIEW_ACCOUNT` seed these
-for local dev. The token is sent as `Authorization: Bearer …` on every `/v1` call
-and as `?access_token=` on the SSE stream.
+Auth reuses cctui bearer tokens (see `ghreview/README.md`); the token is sent as
+`Authorization: Bearer …` on every `/v1` call and as `?access_token=` on the SSE
+stream.
+
+- **Standalone** — the `AuthGate` prompts for a token on first load and stores it
+  in `localStorage` (`ghreview:token`) with an optional default account
+  (`ghreview:account`); `VITE_GHREVIEW_TOKEN` / `VITE_GHREVIEW_ACCOUNT` seed these
+  for local dev.
+- **Embedded** — cctui-ui injects a bearer minted for the signed-in user (CCT-603
+  resolves it against the shared DB), so there is no second login.
 
 ## Commands
 
@@ -83,14 +107,18 @@ bun run test        # vitest only
 
 ## Themes (CCT-607)
 
-Four first-class themes, selected by a `data-theme` attribute on `<html>`:
-**dark** (default, matches cctui), **light**, **colorblind-dark**,
-**colorblind-light**. `src/lib/theme/theme.ts` owns selection: the resolved theme
-is an explicit `localStorage` choice (`ghreview:theme`), else `prefers-color-scheme`,
-else dark. `initTheme()` applies it in `main.ts` before mount (no flash); the top-bar
-`<select>` persists changes via `setTheme()`.
+Four first-class themes, selected by a `data-theme` attribute — on `<html>`
+standalone, or on the `.ghreview-embed` container when embedded (so the host's
+theme is untouched): **dark** (default, matches cctui), **light**,
+**colorblind-dark**, **colorblind-light**. `src/lib/theme/theme.ts` owns
+selection: the resolved theme is an explicit `localStorage` choice
+(`ghreview:theme`), else `prefers-color-scheme`, else dark. `initTheme()` applies
+it in `main.ts` before mount (no flash); the top-bar `<select>` persists changes
+via `setTheme()` standalone or the embed theme context.
 
-All colors are CSS custom properties in `src/app.css`, grouped in semantic tiers:
+All colors are CSS custom properties in `src/tokens.css` (shared by both the
+standalone `src/app.css` and the embedded `src/embed.css`), grouped in semantic
+tiers:
 
 - **Chrome** — surface (`--gh-bg`, `--gh-bg-elev`, `--gh-bg-inset`), text
   (`--gh-fg`, `--gh-fg-muted`, `--gh-fg-subtle`), border, accent, status.
@@ -110,8 +138,8 @@ diff + syntax tokens as concrete color strings. Both renderers therefore draw fr
 one source of truth; adding a color means adding a token, not a literal.
 
 WCAG AA (≥4.5:1) is enforced by `src/lib/theme/contrast.test.ts`, which parses the
-`data-theme` blocks out of `app.css` and asserts text and diff fg/bg pairs across all
-four themes (hex→luminance helper in `contrast.ts`).
+`data-theme` blocks out of `tokens.css` and asserts text and diff fg/bg pairs across
+all four themes (hex→luminance helper in `contrast.ts`).
 
 ## Canvas diff pane (CCT-608)
 
@@ -213,8 +241,9 @@ renderer interface.
   **landed** (see above). Still deferred on top of it: whole-file syntax highlighting,
   modified-line pairing + inline word/char diff, and the full comment-submit flow.
 - **CCT-609** — hierarchical, server-synced viewed state.
-- **CCT-610** — mount into cctui-ui; real cctui bearer auth (replaces the token
-  prompt); server-remembered open-tab sets.
+- **CCT-610** — **landed**: mounts into cctui-ui with injected cctui bearer auth
+  (see _Standalone vs embedded_ above). Still deferred: server-remembered
+  open-tab sets.
 - Also deferred here: the command-palette UI + fuzzy file finder (keybind is
   wired), review submit / optimistic comments, side-by-side (split) diff view.
 

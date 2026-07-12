@@ -6,7 +6,10 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
 	plugins: [sveltekit()],
 	resolve: {
-		conditions: ['browser']
+		conditions: ['browser'],
+		alias: {
+			$ghreview: new URL('../ghreview-ui/src', import.meta.url).pathname
+		}
 	},
 	test: {
 		environment: 'happy-dom',

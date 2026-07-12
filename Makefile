@@ -212,7 +212,7 @@ ui/image/build:  ## Build the web UI image ($(UI_IMAGE):$(IMAGE_VERSION) + :late
 	docker build -f webui/Dockerfile \
 	  --build-arg CLIENT_VERSION=$(IMAGE_VERSION) \
 	  -t $(UI_IMAGE):$(IMAGE_VERSION) \
-	  -t $(UI_IMAGE):latest webui
+	  -t $(UI_IMAGE):latest .
 
 ui/image/push:  ## Push the web UI image tags
 	docker push $(UI_IMAGE):$(IMAGE_VERSION)

@@ -2,8 +2,13 @@
 	import { page } from '$app/state';
 	import NavLink from '$lib/components/atoms/NavLink.svelte';
 	import { useCapabilities } from '$lib/queries';
+	import { ghreviewUrl } from '$lib/config';
 
 	const caps = useCapabilities();
+
+	// gh-review connector (CCT-610) is gated on a client-side deploy config value
+	// (`ghreviewUrl`), not a server capability like GitHub below.
+	const reviewEnabled = ghreviewUrl() !== null;
 
 	// The `/github` item is mounted only when the integration is *enabled* (a
 	// connector is configured), NOT merely available (CCT-403) — first-run
@@ -17,6 +22,7 @@
 		{ href: '/users', label: 'Users', icon: '◍' },
 		{ href: '/accounts', label: 'Accounts', icon: '◉' },
 		...($caps.data?.github.enabled ? [{ href: '/github', label: 'GitHub', icon: '◐' }] : []),
+		...(reviewEnabled ? [{ href: '/review', label: 'Review', icon: '◫' }] : []),
 		{ href: '/settings', label: 'Settings', icon: '⚙' }
 	]);
 	const active = (href: string) =>
