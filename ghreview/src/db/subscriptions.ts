@@ -10,16 +10,34 @@ export interface Subscription {
   active: boolean;
 }
 
+export type SubscriptionSource = "user" | "repo" | "notification";
+
 export async function upsertSubscription(
+  db: DbHandle,
+  account: string,
+  kind: SubscriptionKind,
+  target: string | null,
+  source: SubscriptionSource | null = null,
+): Promise<void> {
+  await db.sql`
+    INSERT INTO subscriptions (account, kind, target, active, source)
+    VALUES (${account}, ${kind}, ${target}, true, ${source})
+    ON CONFLICT (account, kind, target) DO UPDATE SET
+      active = true,
+      source = COALESCE(subscriptions.source, EXCLUDED.source)
+  `;
+}
+
+export async function deactivateSubscription(
   db: DbHandle,
   account: string,
   kind: SubscriptionKind,
   target: string | null,
 ): Promise<void> {
   await db.sql`
-    INSERT INTO subscriptions (account, kind, target, active)
-    VALUES (${account}, ${kind}, ${target}, true)
-    ON CONFLICT (account, kind, target) DO UPDATE SET active = true
+    UPDATE subscriptions
+    SET active = false
+    WHERE account = ${account} AND kind = ${kind} AND target = ${target}
   `;
 }
 

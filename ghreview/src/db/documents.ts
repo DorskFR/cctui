@@ -152,6 +152,13 @@ export async function listDocuments<K extends string>(
       ${opts.account ? sql`AND account = ${opts.account}` : sql``}
       ${opts.keyPrefix ? sql`AND key LIKE ${`${opts.keyPrefix}%`}` : sql``}
       ${
+        kind === "pull_request"
+          ? sql`AND EXISTS (SELECT 1 FROM subscriptions s
+                 WHERE s.account = documents.account AND s.kind = 'pull_request'
+                   AND s.target = documents.key AND s.active = true)`
+          : sql``
+      }
+      ${
         opts.userId
           ? sql`AND EXISTS (SELECT 1 FROM gh_accounts ga
                  WHERE ga.login = documents.account AND ga.user_id = ${opts.userId})`

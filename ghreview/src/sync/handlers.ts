@@ -1,7 +1,7 @@
 import type { DbHandle } from "../db/client.ts";
 import { touchDocument, upsertDocument } from "../db/documents.ts";
-import type { Subscription } from "../db/subscriptions.ts";
-import { upsertSubscription } from "../db/subscriptions.ts";
+import type { Subscription, SubscriptionSource } from "../db/subscriptions.ts";
+import { deactivateSubscription, upsertSubscription } from "../db/subscriptions.ts";
 import { getSyncState, saveSyncState } from "../db/syncState.ts";
 import type { Account } from "../github/account.ts";
 import { type ConditionalResult, conditionalRequest } from "../github/client.ts";
@@ -35,6 +35,24 @@ function parsePullTarget(target: string): { owner: string; repo: string; number:
 
 const PULL_FILES_PER_PAGE = 100;
 const PULL_FILES_MAX_PAGES = 30;
+
+const REPO_PULLS_PER_PAGE = 100;
+const REPO_PULLS_MAX_PAGES = 30;
+
+const PARTICIPATING_REASONS = new Set([
+  "mention",
+  "team_mention",
+  "review_requested",
+  "author",
+  "assign",
+  "comment",
+]);
+
+function parsePullApiUrl(url: string): { owner: string; repo: string; number: number } | null {
+  const match = /\/repos\/([^/]+)\/([^/]+)\/pulls\/(\d+)(?:$|[/?#])/.exec(url);
+  if (!match) return null;
+  return { owner: match[1] as string, repo: match[2] as string, number: Number(match[3]) };
+}
 
 export async function fetchPullFiles(
   octokit: Account["octokit"],
@@ -92,7 +110,51 @@ export async function syncRepo(ctx: SyncContext, sub: Subscription): Promise<Syn
     await touchDocument(ctx.db, sub.account, "repo", key);
   }
   await persistState(ctx, sub, res);
+  if (ctx.account.budget.canSpend()) {
+    await syncRepoPulls(ctx, sub, owner, repo);
+  }
   return outcome(res);
+}
+
+interface OpenPull {
+  number?: number;
+}
+
+async function syncRepoPulls(
+  ctx: SyncContext,
+  sub: Subscription,
+  owner: string,
+  repo: string,
+): Promise<void> {
+  const state = await getSyncState(ctx.db, sub.account, "repo_pulls", sub.target);
+  let etag = state?.etag ?? null;
+  let firstStatus: number | null = null;
+  for (let page = 1; page <= REPO_PULLS_MAX_PAGES; page++) {
+    if (!ctx.account.budget.canSpend()) break;
+    const res = await conditionalRequest<OpenPull[]>(
+      ctx.account.octokit,
+      "GET /repos/{owner}/{repo}/pulls",
+      { owner, repo, state: "open", per_page: REPO_PULLS_PER_PAGE, page },
+      { etag: page === 1 ? etag : null },
+    );
+    ctx.account.budget.record(res.status, res.rate);
+    if (res.secondaryLimit) ctx.account.budget.noteSecondaryLimit(res.retryAfter ?? undefined);
+    if (page === 1) {
+      firstStatus = res.status;
+      etag = res.etag;
+      if (res.status === 304) break;
+    }
+    if (res.status !== 200 || !Array.isArray(res.data)) break;
+    for (const pr of res.data) {
+      if (typeof pr?.number !== "number") continue;
+      await ensurePullSubscription(ctx.db, sub.account, owner, repo, pr.number, "repo");
+    }
+    if (res.data.length < REPO_PULLS_PER_PAGE) break;
+  }
+  await saveSyncState(ctx.db, sub.account, "repo_pulls", sub.target, {
+    etag,
+    last_status: firstStatus,
+  });
 }
 
 export async function syncPull(ctx: SyncContext, sub: Subscription): Promise<SyncOutcome> {
@@ -123,6 +185,9 @@ export async function syncPull(ctx: SyncContext, sub: Subscription): Promise<Syn
       res.data,
       ctx.syncViewedFromGithub ?? false,
     );
+    if ((res.data as { state?: string }).state === "closed") {
+      await deactivateSubscription(ctx.db, sub.account, "pull_request", sub.target);
+    }
   } else if (res.status === 304) {
     await touchDocument(ctx.db, sub.account, "pull_request", key);
   }
@@ -133,6 +198,8 @@ export async function syncPull(ctx: SyncContext, sub: Subscription): Promise<Syn
 interface NotificationThread {
   id: string;
   updated_at?: string;
+  reason?: string;
+  subject?: { type?: string; url?: string };
 }
 
 export async function syncNotifications(ctx: SyncContext, sub: Subscription): Promise<SyncOutcome> {
@@ -153,6 +220,24 @@ export async function syncNotifications(ctx: SyncContext, sub: Subscription): Pr
         etag: null,
         payload: thread,
       });
+      if (
+        thread.subject?.type === "PullRequest" &&
+        thread.reason &&
+        PARTICIPATING_REASONS.has(thread.reason) &&
+        thread.subject.url
+      ) {
+        const pr = parsePullApiUrl(thread.subject.url);
+        if (pr) {
+          await ensurePullSubscription(
+            ctx.db,
+            sub.account,
+            pr.owner,
+            pr.repo,
+            pr.number,
+            "notification",
+          );
+        }
+      }
     }
   }
   await persistState(ctx, sub, res);
@@ -186,6 +271,7 @@ export async function ensurePullSubscription(
   owner: string,
   repo: string,
   number: number,
+  source: SubscriptionSource | null = null,
 ): Promise<void> {
-  await upsertSubscription(db, account, "pull_request", `${owner}/${repo}#${number}`);
+  await upsertSubscription(db, account, "pull_request", `${owner}/${repo}#${number}`, source);
 }
