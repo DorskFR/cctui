@@ -14,6 +14,7 @@ export interface Config {
   authMode: AuthMode;
   authTokens: string | undefined;
   cctuiSchema: string;
+  syncViewedFromGithub: boolean;
 }
 
 function num(value: string | undefined, fallback: number): number {
@@ -37,5 +38,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     authMode: env.GHREVIEW_AUTH_MODE === "static" ? "static" : "cctui",
     authTokens: env.GHREVIEW_AUTH_TOKENS,
     cctuiSchema: env.GHREVIEW_CCTUI_SCHEMA ?? "public",
+    syncViewedFromGithub: env.GHREVIEW_SYNC_VIEWED_GITHUB === "true",
   };
 }

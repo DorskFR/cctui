@@ -176,6 +176,38 @@ export const NotificationInboxQuerySchema = PaginationQuerySchema.extend({
     }),
 });
 
+export const ViewedStateItemSchema = z
+  .object({
+    path: z.string().openapi({ description: "File path within the pull request" }),
+    viewed: z.boolean().openapi({ description: "Marked viewed (mirrored to github.com)" }),
+    digest: z
+      .string()
+      .nullable()
+      .openapi({ description: "File blob sha / patch digest recorded at mark time" }),
+    push_pending: z.boolean().openapi({
+      description: "A viewed change still owed to github.com; retried on the next poll",
+    }),
+    last_error: z.string().nullable().openapi({ description: "Last push failure, if any" }),
+    updated_at: z.string().nullable(),
+  })
+  .openapi("ViewedStateItem");
+
+export const ViewedStateResultSchema = z
+  .object({ items: z.array(ViewedStateItemSchema) })
+  .openapi("ViewedStateResult");
+
+export const ViewedStateSetSchema = z
+  .object({
+    account: AccountSchema,
+    paths: z
+      .array(z.string().min(1))
+      .min(1)
+      .max(1000)
+      .openapi({ description: "File paths to mark; a folder op sends every file beneath it" }),
+    viewed: z.boolean().openapi({ description: "Target viewed state for all paths" }),
+  })
+  .openapi("ViewedStateSet");
+
 export const AccountCreateSchema = z
   .object({
     token: z.string().min(1).openapi({

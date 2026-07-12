@@ -32,6 +32,7 @@ describe("openapi contract", () => {
       "/v1/repos/{owner}/{repo}",
       "/v1/repos/{owner}/{repo}/pulls",
       "/v1/repos/{owner}/{repo}/pulls/{number}",
+      "/v1/repos/{owner}/{repo}/pulls/{number}/viewed",
       "/v1/status",
       "/v1/webhook",
     ]);

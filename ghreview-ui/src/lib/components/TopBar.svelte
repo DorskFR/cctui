@@ -1,8 +1,10 @@
 <script lang="ts">
   import { rewriteGithubUrl } from "../bookmarklet";
   import { router } from "../router/router.svelte";
+  import { currentTheme, setTheme, type Theme, THEME_LABELS, THEMES } from "../theme/theme";
 
   let prUrl = $state("");
+  let theme = $state<Theme>(currentTheme());
 
   function openUrl(e: SubmitEvent): void {
     e.preventDefault();
@@ -13,10 +15,9 @@
     }
   }
 
-  function toggleTheme(): void {
-    const root = document.documentElement;
-    const next = root.getAttribute("data-theme") === "light" ? "dark" : "light";
-    root.setAttribute("data-theme", next);
+  function onThemeChange(e: Event): void {
+    theme = (e.currentTarget as HTMLSelectElement).value as Theme;
+    setTheme(theme);
   }
 </script>
 
@@ -34,7 +35,11 @@
   <a href="/bookmarklet" onclick={(e) => { e.preventDefault(); router.navigate("/bookmarklet"); }}>
     Bookmarklet
   </a>
-  <button class="ghost" onclick={toggleTheme} title="Toggle theme">◐</button>
+  <select class="theme" value={theme} onchange={onThemeChange} title="Theme" aria-label="Theme">
+    {#each THEMES as t (t)}
+      <option value={t}>{THEME_LABELS[t]}</option>
+    {/each}
+  </select>
 </header>
 
 <style>
@@ -71,12 +76,14 @@
   .spacer {
     flex: 1;
   }
-  .ghost {
-    background: transparent;
+  .theme {
+    background: var(--gh-bg-inset);
     border: 1px solid var(--gh-border);
     border-radius: var(--gh-radius);
     color: var(--gh-fg-muted);
     cursor: pointer;
     padding: 2px 8px;
+    font-family: inherit;
+    font-size: 12px;
   }
 </style>

@@ -1,0 +1,17 @@
+query PullRequestViewedFiles($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $number) {
+      id
+      files(first: 100, after: $cursor) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        nodes {
+          path
+          viewerViewedState
+        }
+      }
+    }
+  }
+}

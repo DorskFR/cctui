@@ -6,6 +6,7 @@ import type {
   PullRequestPage,
   RepoPage,
   StatusPayload,
+  ViewedStateResult,
 } from "./types";
 
 export class ApiError extends Error {
@@ -73,6 +74,24 @@ export const api = {
 
   pull: (owner: string, repo: string, number: number) =>
     request<PullRequestEnvelope>(`/v1/repos/${owner}/${repo}/pulls/${number}`),
+
+  pullViewed: (owner: string, repo: string, number: number, account: string) =>
+    request<ViewedStateResult>(
+      `/v1/repos/${owner}/${repo}/pulls/${number}/viewed${qs({ account })}`,
+    ),
+
+  setPullViewed: (
+    owner: string,
+    repo: string,
+    number: number,
+    account: string,
+    paths: string[],
+    viewed: boolean,
+  ) =>
+    request<ViewedStateResult>(`/v1/repos/${owner}/${repo}/pulls/${number}/viewed`, {
+      method: "PUT",
+      body: JSON.stringify({ account, paths, viewed }),
+    }),
 
   notifications: (filter: NotificationFilter = {}) =>
     request<NotificationInboxPage>(`/v1/notifications${qs({ ...filter })}`),

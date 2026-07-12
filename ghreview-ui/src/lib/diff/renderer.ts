@@ -1,4 +1,5 @@
 import type { Component } from "svelte";
+import type { SelectionEvent } from "./canvas/selection";
 import type { NavIndex } from "./navindex";
 import type { DiffModel } from "./parse";
 
@@ -7,6 +8,7 @@ export interface DiffRendererProps {
   nav: NavIndex;
   focusRow: number;
   onFocusRow: (rowIndex: number) => void;
+  onSelectRange?: (event: SelectionEvent) => void;
 }
 
 export interface DiffRenderer {
@@ -22,4 +24,17 @@ export function registerRenderer(renderer: DiffRenderer): void {
 
 export function getRenderer(kind: "dom" | "canvas" = "dom"): DiffRenderer | undefined {
   return registry.get(kind) ?? registry.get("dom");
+}
+
+export type RendererKind = "dom" | "canvas";
+
+const RENDERER_STORAGE_KEY = "ghreview:renderer";
+
+export function getPreferredRendererKind(): RendererKind {
+  const v = localStorage.getItem(RENDERER_STORAGE_KEY);
+  return v === "canvas" ? "canvas" : "dom";
+}
+
+export function setPreferredRendererKind(kind: RendererKind): void {
+  localStorage.setItem(RENDERER_STORAGE_KEY, kind);
 }

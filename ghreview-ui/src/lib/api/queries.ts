@@ -19,6 +19,8 @@ export const keys = {
   pulls: (owner: string, repo: string, account?: string) =>
     ["pulls", owner, repo, account ?? "*"] as const,
   pull: (owner: string, repo: string, number: number) => ["pull", owner, repo, number] as const,
+  pullViewed: (owner: string, repo: string, number: number) =>
+    ["pull-viewed", owner, repo, number] as const,
   notifications: (filter: NotificationFilter) => ["notifications", JSON.stringify(filter)] as const,
 };
 

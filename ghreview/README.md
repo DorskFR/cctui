@@ -41,6 +41,8 @@ ETag polling loop over octokit, a Postgres JSONB document store, and SSE push vi
 | GET | `/v1/repos/{owner}/{repo}` | One repository envelope. |
 | GET | `/v1/repos/{owner}/{repo}/pulls` | List synced PRs for a repo. |
 | GET | `/v1/repos/{owner}/{repo}/pulls/{number}` | One PR envelope. |
+| GET | `/v1/repos/{owner}/{repo}/pulls/{number}/viewed` | Per-file viewed state for a PR (see below). |
+| PUT | `/v1/repos/{owner}/{repo}/pulls/{number}/viewed` | Bulk set viewed for a list of paths (one file or a whole folder). |
 | GET | `/v1/notifications` | Notifications inbox feed — envelopes joined with local state, with filters (see below). |
 | POST | `/v1/notifications/state` | Bulk mark threads read/done/archived. |
 | POST | `/v1/notifications/{id}/state` | Mark one thread read/done/archived. |
@@ -57,6 +59,7 @@ ignore.
 | `event` | When | `data` payload |
 | ------- | ---- | -------------- |
 | `pr.updated` | A synced PR's payload changed (new commit, review, comment, CI, merge state). | `{ account, owner, repo, number }` — a hint to refetch `/v1/repos/{owner}/{repo}/pulls/{number}`. |
+| `pr.viewed_state.updated` | A PR's per-file viewed state changed (local mark, folder op, github.com sync, or push-invalidation). | `{ account, owner, repo, number }` — a hint to refetch `…/pulls/{number}/viewed`. |
 | `notification.new` | A new GitHub notification landed for an account. | `{ account, id }` |
 | `notification.updated` | A notification's local state changed (read/done/archived). | `{ account, id }` |
 | `sync.status` | The sync daemon changed state (idle → syncing → error). | `{ account, state: "idle" \| "syncing" \| "error", last_run }` |
@@ -88,6 +91,7 @@ The daemon keeps a warm, GitHub-shaped cache so reads never touch GitHub.
 | `GHREVIEW_AUTH_MODE` | `cctui` | `cctui` verifies bearer tokens against the shared cctui DB; `static` uses `GHREVIEW_AUTH_TOKENS`. |
 | `GHREVIEW_AUTH_TOKENS` | — | Static-mode `token:userId,token2:userId2` map (dev / standalone). |
 | `GHREVIEW_CCTUI_SCHEMA` | `public` | Schema holding cctui's `auth_keys`/`users` for `cctui` auth mode. |
+| `GHREVIEW_SYNC_VIEWED_GITHUB` | `false` | When `true`, each PR content change also pulls github.com's per-file viewed state in via GraphQL. Off by default to bound GraphQL spend. |
 | `GITHUB_ACCOUNT` + `GITHUB_TOKEN` | — | Optional single-account bootstrap: seeds one `gh_accounts` row (owner `env`) when a seal key is set. Managing accounts via `/v1/accounts` is the multi-account path. |
 
 ## Multi-account, auth & isolation (CCT-603)
@@ -170,6 +174,32 @@ absent until first touched, so the inbox defaults everything to `false`.
   reads on every tick, so a push failure never loses the local flag. A re-polled
   notification upserts only the `documents` payload — it never clobbers state.
 
+### Viewed state (CCT-609)
+
+Per-file "viewed" state for a PR lives in `viewed_state` (one row per `(account,
+owner, repo, pull_number, path)`): a `viewed` boolean, the file `digest` (blob sha
+or patch digest) captured at mark time, plus `push_pending`/`last_error`. Rows are
+absent until a file is first marked, so everything defaults to not-viewed. This
+powers the file tree's checkboxes (folder marks cascade to every file beneath) and
+the diff collapse of viewed files.
+
+- **Read** — `GET …/pulls/{number}/viewed?account=<login>` returns one item per
+  marked file. Ownership-scoped like every `/v1` route.
+- **Set** — `PUT …/pulls/{number}/viewed` with `{ account, paths[], viewed }`. One
+  endpoint serves both a single file and a folder op (the UI expands a folder to its
+  file list). The server records each path's digest from the stored PR payload and
+  returns the updated rows; it emits `pr.viewed_state.updated`.
+- **Two-way** — a set is mirrored to github.com via the GraphQL
+  `markFileAsViewed` / `unmarkFileAsViewed` mutations (the PR node id is read from the
+  stored payload). Unconfirmed pushes keep `push_pending = true`; the poller drains
+  them each tick, so a push failure never loses local intent — same pattern as
+  notification reads. With `GHREVIEW_SYNC_VIEWED_GITHUB=true`, a PR content change
+  also pulls github.com's viewed state back in (without clobbering a push still
+  owed).
+- **Invalidation** — when a synced PR's file content changes vs the digest recorded
+  at mark time, the sync path clears that file's viewed flag, mirroring GitHub's own
+  reset-on-change behaviour. This lives in the sync path, not the UI.
+
 ### Webhook (optional)
 
 `POST /v1/webhook` verifies `X-Hub-Signature-256` (HMAC-SHA256 of the raw body with
@@ -185,7 +215,8 @@ GitHub's public GraphQL schema is vendored at `schema/github.graphql` (fetched f
 directives GitHub ships that graphql-js rejects). `bun run gen:graphql` regenerates
 `src/generated/github-graphql.ts` from the `src/graphql/*.graphql` operations. A thin
 `createGraphqlClient` wrapper (`src/graphql/client.ts`) exposes the review-threads
-query proving the surface; full GraphQL use lands in a later ticket.
+query plus the viewed-state query and the `markFileAsViewed`/`unmarkFileAsViewed`
+mutations that back CCT-609's two-way file-viewed sync.
 
 ## Development
 

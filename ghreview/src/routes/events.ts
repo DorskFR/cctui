@@ -33,6 +33,18 @@ export const NotificationUpdatedEventSchema = z
   })
   .openapi("NotificationUpdatedEvent");
 
+export const PrViewedStateUpdatedEventSchema = z
+  .object({
+    event: z.literal("pr.viewed_state.updated"),
+    data: z.object({
+      account: AccountSchema,
+      owner: z.string(),
+      repo: z.string(),
+      number: z.number().int().positive(),
+    }),
+  })
+  .openapi("PrViewedStateUpdatedEvent");
+
 export const SyncStatusEventSchema = z
   .object({
     event: z.literal("sync.status"),
@@ -47,6 +59,7 @@ export const SyncStatusEventSchema = z
 export const SseEventSchema = z
   .discriminatedUnion("event", [
     PrUpdatedEventSchema,
+    PrViewedStateUpdatedEventSchema,
     NotificationNewEventSchema,
     NotificationUpdatedEventSchema,
     SyncStatusEventSchema,
@@ -61,8 +74,8 @@ export function registerEvents(app: OpenAPIHono, deps: AppDeps = {}) {
     summary: "Server-Sent Events stream",
     description:
       "text/event-stream of the documented event catalogue. Each message carries an `event:` " +
-      "name (pr.updated, notification.new, notification.updated, sync.status) and a JSON `data:` " +
-      "payload matching SseEvent.",
+      "name (pr.updated, pr.viewed_state.updated, notification.new, notification.updated, " +
+      "sync.status) and a JSON `data:` payload matching SseEvent.",
     tags: ["events"],
     responses: {
       200: {
