@@ -32,6 +32,7 @@
 	let submitted = $state(false);
 	const live = $derived(interactive && !submitted);
 	// Release the lock if the parent re-enables the card after a failed answer.
+	// svelte-ignore state_referenced_locally
 	let wasInteractive = interactive;
 	$effect(() => {
 		if (interactive && !wasInteractive) submitted = false;

@@ -377,6 +377,7 @@
 	// the estimate) with zero on-screen rows. We instead re-apply options in an
 	// `$effect` that runs AFTER mount, once the scroll element exists.
 	const virtualizer = createVirtualizer<HTMLDivElement, HTMLDivElement>({
+		// svelte-ignore state_referenced_locally
 		count: rows.length,
 		getScrollElement: () => scrollEl ?? null,
 		estimateSize: () => 21,
@@ -626,7 +627,8 @@
 		</div>
 	{/if}
 
-	<!-- svelte-ignore a11y_no_noninteractive_tabindex a11y_no_noninteractive_element_interactions -->
+	<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+	<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 	<div
 		class="scroll"
 		bind:this={scrollEl}

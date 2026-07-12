@@ -92,6 +92,7 @@
 	const headTitle = $derived(session.name || session.working_dir);
 
 	let renaming = $state(false);
+	// svelte-ignore state_referenced_locally
 	let newName = $state(session.name ?? '');
 	// Mobile header overflow menu (CCT-301 #7): on narrow screens only Stop +
 	// Archive stay inline; the rest collapse into a "⋯" flyout. Kept open while

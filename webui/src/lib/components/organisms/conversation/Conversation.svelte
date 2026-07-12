@@ -98,6 +98,7 @@
 </script>
 
 <div class="conv-wrap">
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<div
 		class="conv"
 		bind:this={scroll.scroller}

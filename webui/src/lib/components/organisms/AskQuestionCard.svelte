@@ -35,13 +35,17 @@
 	// the live card instance is reused across successive asks, so without this the
 	// arrays kept the previous ask's length/values — indexing into a stale slot
 	// left `answeredAll` wrong and the answer un-submittable ("stuck pending").
+	// svelte-ignore state_referenced_locally
 	let chosen = $state<Set<number>[]>(questions.map(() => new Set<number>()));
+	// svelte-ignore state_referenced_locally
 	let other = $state<string[]>(questions.map(() => ''));
 	// Which option's preview is shown per question (last hovered/selected).
+	// svelte-ignore state_referenced_locally
 	let focused = $state<number[]>(questions.map(() => 0));
 	// Re-seed on a question-set change. Keyed on a cheap signature (count + the
 	// joined question texts) so an identity-churn from a re-render that carries the
 	// SAME questions doesn't wipe an in-progress selection.
+	// svelte-ignore state_referenced_locally
 	let lastSig = questions.map((q) => q.question).join('\0');
 	$effect(() => {
 		const sig = questions.map((q) => q.question).join('\0');
@@ -63,6 +67,7 @@
 	// true only if that answer failed to deliver (the parent clears its
 	// `answering` lock). Detecting the false→true edge lets a failed answer be
 	// resubmitted instead of staying stuck on "Answering…".
+	// svelte-ignore state_referenced_locally
 	let wasInteractive = interactive;
 	$effect(() => {
 		if (interactive && !wasInteractive) submitted = false;
