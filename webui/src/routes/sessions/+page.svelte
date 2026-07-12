@@ -18,6 +18,7 @@
 	import { notify } from '$lib/notify.svelte';
 	import { settings } from '$lib/settings.svelte';
 	import { tokenizeQuery } from '$lib/search';
+	import { m } from '$lib/paraglide/messages';
 	import { freeText, parse } from '@dorsk/tsumikit';
 	import {
 		buildSessionSearchSchema,
@@ -201,11 +202,11 @@
 			// drop the id (CCT-250 item 6). Transient errors (network, 5xx) leave
 			// the URL intact so a retry/refresh can recover instead of nagging.
 			if (e instanceof ApiError && e.status === 404) {
-				toasts.err('Session not found — it may have been deleted.');
+				toasts.err(m.sessions_toast_not_found());
 				openSession = null;
 				setUrlSession(null, true);
 			} else {
-				toasts.err(`Could not open session: ${(e as Error).message}`);
+				toasts.err(m.sessions_toast_open_failed({ error: (e as Error).message }));
 			}
 		} finally {
 			urlResolving = false;
@@ -232,7 +233,7 @@
 			await qc.invalidateQueries({ queryKey: qk.sessions(false) });
 			await new Promise((r) => setTimeout(r, 500));
 		}
-		toasts.err('Forked conversation is taking a while to appear — it will show in the list shortly.');
+		toasts.err(m.sessions_toast_fork_slow());
 	}
 
 	// URL → drawer: react to the `session` param (initial load, back/forward,
@@ -406,11 +407,11 @@
 	async function archiveSelected() {
 		const ids = [...selected];
 		if (ids.length === 0) return;
-		if (ids.length > 1 && !confirm(`Archive ${ids.length} sessions?`)) return;
+		if (ids.length > 1 && !confirm(m.sessions_confirm_archive_many({ count: ids.length }))) return;
 		archiving = true;
 		try {
 			await actions.archiveMany(ids);
-			toasts.ok(`Archived ${ids.length}`);
+			toasts.ok(m.sessions_toast_archived({ count: ids.length }));
 			exitSelect();
 			refreshTick++;
 		} catch (e) {
@@ -426,12 +427,12 @@
 	async function archiveAllDispatched() {
 		const ids = items.filter(isDispatched).map((s) => s.id);
 		if (ids.length === 0) return;
-		if (!confirm(`Archive all ${ids.length} dispatched conversation${ids.length === 1 ? '' : 's'}?`))
+		if (!confirm(m.sessions_confirm_archive_all_dispatched({ count: ids.length })))
 			return;
 		archiving = true;
 		try {
 			await actions.archiveMany(ids);
-			toasts.ok(`Archived ${ids.length}`);
+			toasts.ok(m.sessions_toast_archived({ count: ids.length }));
 			refreshTick++;
 			qc.invalidateQueries({ queryKey: ['sessions'] });
 		} catch (e) {
@@ -448,7 +449,7 @@
 		try {
 			if (isArchived) await actions.unarchive(s.id);
 			else await actions.archive(s.id);
-			toasts.ok(isArchived ? 'Unarchived' : 'Archived');
+			toasts.ok(isArchived ? m.sessions_toast_unarchived() : m.sessions_toast_archived_one());
 			refreshTick++;
 		} catch (e) {
 			toasts.err((e as Error).message);
@@ -461,7 +462,7 @@
 		try {
 			if (s.pinned) await actions.unpin(s.id);
 			else await actions.pin(s.id);
-			toasts.ok(s.pinned ? 'Unpinned' : 'Pinned');
+			toasts.ok(s.pinned ? m.sessions_toast_unpinned() : m.sessions_toast_pinned());
 			refreshTick++;
 		} catch (e) {
 			toasts.err((e as Error).message);
@@ -538,19 +539,19 @@
 		launchingDraft = s.id;
 		try {
 			await actions.launchDraft(s.id);
-			toasts.ok('Draft launched');
+			toasts.ok(m.sessions_toast_draft_launched());
 		} catch (e) {
-			toasts.err(`Launch failed: ${(e as Error).message}`);
+			toasts.err(m.sessions_toast_launch_failed({ error: (e as Error).message }));
 		} finally {
 			launchingDraft = null;
 		}
 	}
 
 	async function discardDraft(s: SessionListItem) {
-		if (!confirm('Discard this draft?')) return;
+		if (!confirm(m.sessions_confirm_discard_draft())) return;
 		try {
 			await actions.discardDraft(s.id);
-			toasts.ok('Draft discarded');
+			toasts.ok(m.sessions_toast_draft_discarded());
 		} catch (e) {
 			toasts.err((e as Error).message);
 		}
@@ -578,7 +579,7 @@
 		try {
 			await actions.discardDraft(s.id);
 		} catch (e) {
-			toasts.err(`Could not edit draft: ${(e as Error).message}`);
+			toasts.err(m.sessions_toast_edit_draft_failed({ error: (e as Error).message }));
 			return;
 		}
 		spawnPrefill = prefill;
@@ -745,8 +746,8 @@
 
 {#if selecting && !searching}
 		<div class="bulkbar row">
-			<Text class="count" size="sm" weight="semibold" tone="muted">{selected.size} selected</Text>
-			<Button onclick={selectAll}>Select all</Button>
+			<Text class="count" size="sm" weight="semibold" tone="muted">{m.sessions_selected_count({ count: selected.size })}</Text>
+			<Button onclick={selectAll}>{m.sessions_select_all()}</Button>
 			<div class="spacer"></div>
 			<Button
 				variant="danger"
@@ -754,7 +755,7 @@
 				onclick={archiveSelected}
 			>
 				{#if archiving}<span class="spin"></span>{/if}
-				Archive {selected.size || ''}
+				{m.sessions_archive_count({ count: selected.size || '' })}
 			</Button>
 		</div>
 {/if}
@@ -787,7 +788,7 @@
 			selected={selected.has(s.id)}
 			onToggleSelect={toggleSelect}
 			swipeable
-			swipeLabel="Archive"
+			swipeLabel={m.sessions_archive()}
 			onSwipe={swipeArchive}
 			onTogglePin={depth > 0 ? undefined : togglePin}
 			subagentCost={costRollup(s, subGroups)}
@@ -856,7 +857,7 @@
 				selected={selected.has(s.id)}
 				onToggleSelect={toggleSelect}
 				swipeable
-				swipeLabel={s.status === 'archived' ? 'Unarchive' : 'Archive'}
+				swipeLabel={s.status === 'archived' ? m.sessions_unarchive() : m.sessions_archive()}
 				onSwipe={swipeArchive}
 				onTogglePin={depth > 0 ? undefined : togglePin}
 				highlight={hl}
@@ -935,7 +936,7 @@
 			unreadCount={openSession?.id === s.id ? 0 : (s.unread_count ?? 0)}
 			onopen={(x) => (openSession = x)}
 			swipeable
-			swipeLabel="Archive"
+			swipeLabel={m.sessions_archive()}
 			onSwipe={swipeArchive}
 			onTogglePin={togglePin}
 			subagentCost={costRollup(s, subGroups)}
@@ -959,12 +960,12 @@
 
 {#snippet loadMore()}
 	{#if pageError}
-		<div class="empty err"><Text tone="danger">Search failed: {pageError}</Text></div>
+		<div class="empty err"><Text tone="danger">{m.sessions_search_failed({ error: pageError })}</Text></div>
 	{:else if pageLoading}
 		<div class="loadmore"><span class="spin"></span></div>
 		{:else if !pageDone && pageRows.length > 0}
 			<div class="loadmore">
-				<Button onclick={() => loadPage(false)}>Load more</Button>
+				<Button onclick={() => loadPage(false)}>{m.sessions_load_more()}</Button>
 			</div>
 		{/if}
 {/snippet}
@@ -974,7 +975,7 @@
 	{#if pageLoading && pageRows.length === 0}
 		<div class="empty"><span class="spin"></span></div>
 	{:else if pageRows.length === 0}
-		<div class="empty"><Text tone="muted">No chats match “{serverQuery}”{showArchived ? '' : ' (live only — pick Archived to search all)'}.</Text></div>
+		<div class="empty"><Text tone="muted">{m.sessions_search_no_match({ query: serverQuery })}{showArchived ? '.' : ' ' + m.sessions_search_live_only_hint()}</Text></div>
 	{:else}
 		<!-- Nest over the whole result set so a parent and its subagents stay
 		     grouped even if they land in different status sections; then split
@@ -992,18 +993,18 @@
 		<div class="sections" class:tight={dense}>
 			{#if liveTop.length > 0}
 				<div class="section">
-					<div class="group-header">Live <Text class="count">{liveTop.length}</Text></div>
+					<div class="group-header">{m.sessions_section_live()} <Text class="count">{liveTop.length}</Text></div>
 					{@render nestedRows(liveTop, ns.childGroups, false, searchTerms)}
 				</div>
 			{/if}
 			{#if archTop.length > 0}
 				<div class="section">
-					<div class="group-header">Archived <Text class="count">{archTop.length}</Text></div>
+					<div class="group-header">{m.sessions_section_archived()} <Text class="count">{archTop.length}</Text></div>
 					{@render nestedRows(archTop, ns.childGroups, false, searchTerms)}
 				</div>
 			{/if}
 			{#if scoped.length === 0}
-				<div class="empty"><Text tone="muted">No matches in the selected sections — toggle more from the section filter.</Text></div>
+				<div class="empty"><Text tone="muted">{m.sessions_search_no_sections()}</Text></div>
 			{/if}
 			{@render loadMore()}
 		</div>
@@ -1040,7 +1041,7 @@
 			<div class="empty"><span class="spin"></span></div>
 		{:else if !hasLiveRows && !showArchived && !(sections.has('drafts') && draftRows.length > 0)}
 			<div class="empty">
-				<Text tone="muted">No sessions in the selected sections — toggle more from the section filter.</Text>
+				<Text tone="muted">{m.sessions_empty_sections()}</Text>
 			</div>
 		{:else if groupBy !== 'none'}
 			{#each groupedSections as g (g.key)}
@@ -1068,11 +1069,11 @@
 							<Button
 								variant="danger"
 								disabled={archiving}
-								title="Archive all dispatched conversations"
+								title={m.sessions_archive_all_dispatched_title()}
 								onclick={archiveAllDispatched}
 							>
 								{#if archiving}<span class="spin"></span>{/if}
-								Archive all
+								{m.sessions_archive_all()}
 							</Button>
 						</div>
 					{:else}
@@ -1095,7 +1096,7 @@
 			     identically; the card surfaces Launch/Edit/Discard in place of the
 			     live-session affordances. -->
 			<div class="section">
-				<div class="group-header">Drafts <Text class="count">{draftRows.length}</Text></div>
+				<div class="group-header">{m.sessions_section_drafts()} <Text class="count">{draftRows.length}</Text></div>
 				{#if cardView}
 					{#if dense}
 						<AutoGrid min="calc(18rem * var(--fs-scale))" max="calc(26.75rem * var(--fs-scale))" maxCols={2} gap="var(--sp-2)">{@render draftItems(draftRows, true)}</AutoGrid>
@@ -1118,9 +1119,9 @@
 					!pinnedArchivedKidIds.has(s.id)
 			)}
 			<div class="section">
-				<div class="group-header">Archived <Text class="count">{archTop.length}</Text></div>
+				<div class="group-header">{m.sessions_section_archived()} <Text class="count">{archTop.length}</Text></div>
 				{#if pageRows.length === 0 && !pageLoading}
-					<div class="empty"><Text tone="muted">No archived sessions.</Text></div>
+					<div class="empty"><Text tone="muted">{m.sessions_no_archived()}</Text></div>
 				{:else if cardView}
 					<!-- Card mode applies to archived sessions too (CCT-321 parity). -->
 					{@render cardGrid(archTop, ns.childGroups)}

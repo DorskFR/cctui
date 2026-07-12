@@ -48,6 +48,7 @@
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import type { ReviewVerdict } from '@bindings/ReviewVerdict';
 	import type { PublishReviewResult } from '@bindings/PublishReviewResult';
+	import { m } from '$lib/paraglide/messages';
 
 	interface Props {
 		diff: PullDiff;
@@ -220,7 +221,7 @@
 		} catch (e) {
 			// The server returns a clear message for stale-SHA / empty-review / anchor
 			// failures; surface it verbatim (it carries no secrets).
-			publishError = e instanceof Error ? e.message : 'Failed to publish review';
+			publishError = e instanceof Error ? e.message : m.review_publish_failed();
 		} finally {
 			publishing = false;
 		}
@@ -505,7 +506,7 @@
 	}
 
 	const LENSES = $derived([
-		{ id: 'cumulative', label: 'Cumulative' },
+		{ id: 'cumulative', label: m.diff_lens_cumulative() },
 		...commits.map((c) => ({ id: c.sha, label: c.sha.slice(0, 7) }))
 	]);
 </script>
@@ -514,39 +515,43 @@
 	<Cluster gap="var(--sp-3)" align="center" justify="space-between">
 		<Cluster gap="var(--sp-2)" align="center">
 			<Text tone="muted" size="sm"
-				>{diff.total_files} files · {diff.total_changes} changed lines</Text
+				>{m.diff_files_changes_summary({
+					files: diff.total_files,
+					changes: diff.total_changes
+				})}</Text
 			>
 			{#if commentable}
 				<Badge tone={reviewedCount === diff.files.length ? 'ok' : 'neutral'}>
-					{reviewedCount} of {diff.files.length} files reviewed
+					{m.diff_files_reviewed_count({ reviewed: reviewedCount, total: diff.files.length })}
 				</Badge>
 			{/if}
 			{#if diff.huge}
-				<Badge tone="warn">huge diff — showing {diff.files.length} of {diff.total_files} files</Badge
+				<Badge tone="warn"
+					>{m.diff_huge_badge({ shown: diff.files.length, total: diff.total_files })}</Badge
 				>
 			{/if}
 		</Cluster>
 		<Cluster gap="var(--sp-3)" align="center">
 			<Cluster gap="var(--sp-1)" align="center">
-				<Text tone="muted" size="xs">View:</Text>
+				<Text tone="muted" size="xs">{m.diff_view_label()}</Text>
 				<button
 					type="button"
 					class="lens"
 					class:on={viewMode === 'unified'}
-					title="Unified (vertical) diff"
-					onclick={() => setViewMode('unified')}>Unified</button
+					title={m.diff_view_unified_title()}
+					onclick={() => setViewMode('unified')}>{m.diff_view_unified()}</button
 				>
 				<button
 					type="button"
 					class="lens"
 					class:on={viewMode === 'split'}
-					title="Side-by-side (split) diff"
-					onclick={() => setViewMode('split')}>Split</button
+					title={m.diff_view_split_title()}
+					onclick={() => setViewMode('split')}>{m.diff_view_split()}</button
 				>
 			</Cluster>
 			{#if LENSES.length > 1}
 				<Cluster gap="var(--sp-1)" align="center">
-					<Text tone="muted" size="xs">Lens:</Text>
+					<Text tone="muted" size="xs">{m.diff_lens_label()}</Text>
 					{#each LENSES as l (l.id)}
 						<button
 							type="button"
@@ -562,8 +567,7 @@
 
 	{#if diff.huge}
 		<Text tone="muted" size="xs">
-			This PR exceeds the large-diff threshold; GitHub serves it unreliably, so only the first
-			{diff.files.length} files are loaded. Open individual files on GitHub for the rest.
+			{m.diff_huge_explanation({ files: diff.files.length })}
 		</Text>
 	{/if}
 
@@ -573,12 +577,14 @@
 			<Cluster gap="var(--sp-2)" align="center" justify="space-between">
 				<Cluster gap="var(--sp-2)" align="center">
 					<Text size="sm" tone="muted">
-						{openDraft ? `${openDraft.comments.length} draft comment(s)` : 'No open draft'}
+						{openDraft
+							? m.review_draft_comments_count({ count: openDraft.comments.length })
+							: m.review_no_open_draft()}
 					</Text>
 					<Select bind:value={verdict} disabled={!openDraft || publishing}>
-						<option value="comment">Comment</option>
-						<option value="approve">Approve</option>
-						<option value="request_changes">Request changes</option>
+						<option value="comment">{m.review_verdict_comment()}</option>
+						<option value="approve">{m.review_verdict_approve()}</option>
+						<option value="request_changes">{m.review_verdict_request_changes()}</option>
 					</Select>
 				</Cluster>
 				<Button
@@ -586,32 +592,34 @@
 					onclick={publishReview}
 					disabled={!canPublish || publishing}
 				>
-					{publishing ? 'Publishing…' : 'Publish review'}
+					{publishing ? m.review_publishing() : m.review_publish()}
 				</Button>
 			</Cluster>
 			<Textarea
 				bind:value={summary}
 				rows={2}
-				placeholder="Optional review summary…"
+				placeholder={m.review_summary_placeholder()}
 				disabled={!openDraft || publishing}
 			/>
 			{#if publishError}
 				<Text tone="danger" size="sm">{publishError}</Text>
 			{:else if publishResult}
 				<Text tone="success" size="sm">
-					Published {publishResult.submitted} comment(s){publishResult.skipped.length
-						? `, skipped ${publishResult.skipped.length} un-anchorable`
+					{m.review_published_count({ count: publishResult.submitted })}{publishResult.skipped
+						.length
+						? m.review_published_skipped({ count: publishResult.skipped.length })
 						: ''}.
 				</Text>
 				{#each publishResult.skipped as s (s.comment_id)}
 					<Text tone="warn" size="xs">
-						skipped {s.path}:{s.line} — {s.reason.kind === 'stale_head_sha'
-							? 'PR moved (force-push)'
+						{m.review_skipped_prefix({ path: s.path, line: s.line })}{s.reason.kind ===
+						'stale_head_sha'
+							? m.review_skip_reason_stale()
 							: s.reason.kind === 'file_not_found'
-								? 'file no longer in diff'
+								? m.review_skip_reason_file_not_found()
 								: s.reason.kind === 'line_not_in_diff'
-									? 'line no longer in diff'
-									: 'invalid range'}
+									? m.review_skip_reason_line_not_in_diff()
+									: m.review_skip_reason_invalid_range()}
 					</Text>
 				{/each}
 			{/if}
@@ -624,7 +632,7 @@
 		bind:this={scrollEl}
 		tabindex="0"
 		role="group"
-		aria-label="Pull request diff"
+		aria-label={m.diff_aria_label()}
 		{onkeydown}
 	>
 		<div class="spacer" style="height: {$virtualizer.getTotalSize()}px;">
@@ -663,9 +671,7 @@
 		</div>
 	</div>
 	<Text tone="muted" size="xs">
-		j/k line · n/p hunk · ]/[ file · o expand/fold{commentable
-			? ' · c comment · v reviewed'
-			: ''}{askable ? ' · a ask agent' : ''}
+		{m.diff_help_base()}{commentable ? m.diff_help_comment() : ''}{askable ? m.diff_help_ask() : ''}
 	</Text>
 </Stack>
 

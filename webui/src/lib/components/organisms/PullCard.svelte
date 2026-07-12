@@ -7,6 +7,7 @@
 <script lang="ts">
 	import type { PullInboxItem } from '$lib/queries';
 	import { Badge, Button, Card, Cluster, Stack, Text, Timestamp } from '@dorsk/tsumikit';
+	import { m } from '$lib/paraglide/messages';
 
 	interface Props {
 		pull: PullInboxItem;
@@ -47,15 +48,15 @@
 			<Cluster gap="var(--sp-2)" align="baseline">
 				<Text weight="semibold" truncate>{pull.title}</Text>
 				{#if pull.draft}
-					<Badge tone="neutral">draft</Badge>
+					<Badge tone="neutral">{m.pull_draft_badge()}</Badge>
 				{/if}
 			</Cluster>
 			<Cluster gap="var(--sp-2)" align="center">
 				{#if onreview}
-					<Button onclick={review}>Review diff</Button>
+					<Button onclick={review}>{m.pull_review_diff()}</Button>
 				{/if}
 				{#if onreviewagent}
-					<Button onclick={reviewAgent}>Review with agent</Button>
+					<Button onclick={reviewAgent}>{m.pull_review_with_agent()}</Button>
 				{/if}
 				<Text tone="muted" size="xs">
 					<Timestamp value={pull.gh_updated_at} mode="relative" />
@@ -67,16 +68,16 @@
 			<Text tone="muted" size="sm">{pull.repo}#{pull.number}</Text>
 			<Text tone="muted" size="sm">{pull.author}</Text>
 			{#if pull.reviews.changes_requested > 0}
-				<Badge tone="danger">changes requested</Badge>
+				<Badge tone="danger">{m.pull_changes_requested()}</Badge>
 			{:else if pull.reviews.approved > 0}
-				<Badge tone="ok">{pull.reviews.approved} approved</Badge>
+				<Badge tone="ok">{m.pull_approved_count({ count: pull.reviews.approved })}</Badge>
 			{/if}
 			{#if pull.checks.failed > 0}
-				<Badge tone="danger">{pull.checks.failed} CI failed</Badge>
+				<Badge tone="danger">{m.pull_ci_failed_count({ count: pull.checks.failed })}</Badge>
 			{:else if pull.checks.pending > 0}
-				<Badge tone="warn">{pull.checks.pending} CI pending</Badge>
+				<Badge tone="warn">{m.pull_ci_pending_count({ count: pull.checks.pending })}</Badge>
 			{:else if pull.checks.passed > 0}
-				<Badge tone="ok">CI green</Badge>
+				<Badge tone="ok">{m.pull_ci_green()}</Badge>
 			{/if}
 		</Cluster>
 	</Stack>

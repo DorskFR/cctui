@@ -4,6 +4,7 @@
 	import UsageBars from '$lib/components/molecules/UsageBars.svelte';
 	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
 	import { Button, Cluster, Text, Timestamp } from '@dorsk/tsumikit';
+	import { m } from '$lib/paraglide/messages';
 	import { providerLabel } from '$lib/providers';
 
 	// One provider credential inside an account card (CCT-560): an account
@@ -42,16 +43,16 @@
 		</span>
 		<Text as="span" size="sm" weight="semibold" class="panel-title">{providerLabel(p.provider)}</Text>
 		{#if p.managed}
-			<Text as="span" tone="faint" size="xs">managed</Text>
+			<Text as="span" tone="faint" size="xs">{m.providers_managed()}</Text>
 		{/if}
 		<span class="spacer"></span>
 		{#if canManage}
 			{#if p.needs_reauth && native}
-				<Button size="sm" variant="primary" onclick={onreauth}>Reauthenticate</Button>
+				<Button size="sm" variant="primary" onclick={onreauth}>{m.providers_reauthenticate()}</Button>
 			{/if}
-			<Button size="sm" onclick={onedit}>Edit</Button>
+			<Button size="sm" onclick={onedit}>{m.common_edit()}</Button>
 			{#if canRemove}
-				<Button size="sm" variant="danger" onclick={onremove} aria-label={`Remove ${providerLabel(p.provider)} provider`}>✕</Button>
+				<Button size="sm" variant="danger" onclick={onremove} aria-label={m.providers_remove_aria({ provider: providerLabel(p.provider) })}>✕</Button>
 			{/if}
 		{/if}
 	</Cluster>
@@ -60,7 +61,7 @@
 		<!-- Credential rejected (CCT-512): the gateway saw the upstream provider
 		     reject this credential's OAuth grant. -->
 		<div class="reauth-banner" title={p.last_auth_error ?? undefined}>
-			<Text as="span" size="xs">⚠ Credential rejected — reauthenticate</Text>
+			<Text as="span" size="xs">{m.providers_credential_rejected()}</Text>
 		</div>
 	{/if}
 
@@ -75,9 +76,9 @@
 	{/if}
 
 	<dl class="stats">
-		<div><dt>Requests</dt><dd>{compact(p.request_count)}</dd></div>
+		<div><dt>{m.providers_stat_requests()}</dt><dd>{compact(p.request_count)}</dd></div>
 		<div>
-			<dt>Last used</dt>
+			<dt>{m.providers_stat_last_used()}</dt>
 			<dd><Timestamp value={p.last_used_at} mode="relative" tone="inherit" /></dd>
 		</div>
 	</dl>

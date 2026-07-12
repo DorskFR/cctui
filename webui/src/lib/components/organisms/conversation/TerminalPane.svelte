@@ -6,6 +6,7 @@
 	// input upstream — strictly a video feed.
 	import { onMount } from 'svelte';
 	import { ws } from '$lib/ws.svelte';
+	import { m } from '$lib/paraglide/messages';
 
 	// The daemon's held/viewer attach is fixed at 120x40 (ATTACH_COLS/ROWS); size
 	// the viewport to match so the geometry never fights the PTY.
@@ -59,9 +60,9 @@
 	<div class="term-head">
 		<span class="term-title">
 			<span class="term-dot" class:on={live}></span>
-			Terminal (read-only{live ? ', live' : '…'})
+			{live ? m.conversation_terminal_readonly_live() : m.conversation_terminal_readonly()}
 		</span>
-		<button type="button" class="term-close" onclick={onclose} aria-label="Close terminal">✕</button>
+		<button type="button" class="term-close" onclick={onclose} aria-label={m.conversation_terminal_close_aria()}>✕</button>
 	</div>
 	<div class="term-host" bind:this={host}></div>
 </div>

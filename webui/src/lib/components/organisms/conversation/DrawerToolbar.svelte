@@ -5,6 +5,16 @@
 	// mobile collapse behind three text-button tabs opening popovers.
 	import { MSG_TYPES, type MsgType, type ViewOpts } from './types';
 	import { Toggle } from '@dorsk/tsumikit';
+	import { m } from '$lib/paraglide/messages';
+
+	// Human-readable filter state for a tag's tooltip.
+	function tagState(s: 'off' | 'include' | 'exclude'): string {
+		return s === 'include'
+			? m.conversation_filter_state_only()
+			: s === 'exclude'
+				? m.conversation_filter_state_hidden()
+				: m.conversation_filter_state_shown();
+	}
 
 	// The on-state tint for a message-type tag: its role color (result reuses
 	// the tool color), or danger when excluded.
@@ -56,38 +66,38 @@
 	<!-- Mobile (CCT-311): collapse the three control groups into a single row
 	     of text buttons that each open a popover. Hidden on desktop, where the
 	     groups render inline below. -->
-	<div class="mobile-tabs" role="group" aria-label="Chat controls">
+	<div class="mobile-tabs" role="group" aria-label={m.conversation_chat_controls_aria()}>
 		<Toggle
 			class="mtab"
 			pressed={mobilePanel === 'filters'}
 			aria-expanded={mobilePanel === 'filters'}
-			onclick={() => togglePanel('filters')}>Filters</Toggle
+			onclick={() => togglePanel('filters')}>{m.conversation_filters()}</Toggle
 		>
 		<Toggle
 			class="mtab"
 			pressed={mobilePanel === 'format'}
 			aria-expanded={mobilePanel === 'format'}
-			onclick={() => togglePanel('format')}>Format</Toggle
+			onclick={() => togglePanel('format')}>{m.conversation_format()}</Toggle
 		>
 		<Toggle
 			class="mtab"
 			pressed={mobilePanel === 'auto' || autoApprove}
 			style={autoApprove ? '--toggle-accent: var(--warn)' : ''}
 			aria-expanded={mobilePanel === 'auto'}
-			onclick={() => togglePanel('auto')}>Auto-Approve</Toggle
+			onclick={() => togglePanel('auto')}>{m.conversation_auto_approve_tab()}</Toggle
 		>
 	</div>
 	<!-- Message-type filters: click a tag to cycle off → include → exclude.
 	     Active (include) tags wear their message-badge color; excluded tags
 	     show a strike. (CCT-250 item 2) -->
-	<div class="tagbar row row-wrap" class:panel-open={mobilePanel === 'filters'} role="group" aria-label="Message type filter">
+	<div class="tagbar row row-wrap" class:panel-open={mobilePanel === 'filters'} role="group" aria-label={m.conversation_msg_filter_aria()}>
 		{#each MSG_TYPES as t (t.id)}
 			<Toggle
 				pill
 				pressed={view.typeFilter[t.id] !== 'off'}
 				struck={view.typeFilter[t.id] === 'exclude'}
 				style={`--toggle-accent: ${view.typeFilter[t.id] === 'exclude' ? 'var(--danger)' : roleVar(t.id)}`}
-				title={`${t.label}: ${view.typeFilter[t.id] === 'include' ? 'only this' : view.typeFilter[t.id] === 'exclude' ? 'hidden' : 'shown'} — click to cycle`}
+				title={m.conversation_filter_tag_title({ label: t.label, state: tagState(view.typeFilter[t.id]) })}
 				onclick={() => cycleTag(t.id)}
 			>
 				{#if view.typeFilter[t.id] === 'exclude'}✕ {/if}{t.label}
@@ -95,33 +105,33 @@
 		{/each}
 	</div>
 	<!-- Formatting toggles: gray when off, colored when on. -->
-	<div class="fmtbar row row-wrap" class:panel-open={mobilePanel === 'format'} role="group" aria-label="Formatting">
-		<Toggle pressed={view.prettyJson} onclick={() => (view.prettyJson = !view.prettyJson)}>JSON</Toggle>
-		<Toggle pressed={view.prettyDiff} onclick={() => (view.prettyDiff = !view.prettyDiff)}>Diff</Toggle>
-		<Toggle pressed={view.prettyTables} onclick={() => (view.prettyTables = !view.prettyTables)} title="Render markdown tables as tables">Tables</Toggle>
+	<div class="fmtbar row row-wrap" class:panel-open={mobilePanel === 'format'} role="group" aria-label={m.conversation_formatting_aria()}>
+		<Toggle pressed={view.prettyJson} onclick={() => (view.prettyJson = !view.prettyJson)}>{m.conversation_fmt_json()}</Toggle>
+		<Toggle pressed={view.prettyDiff} onclick={() => (view.prettyDiff = !view.prettyDiff)}>{m.conversation_fmt_diff()}</Toggle>
+		<Toggle pressed={view.prettyTables} onclick={() => (view.prettyTables = !view.prettyTables)} title={m.conversation_fmt_tables_title()}>{m.conversation_fmt_tables()}</Toggle>
 	</div>
 	<!-- Behavior toggle: distinct from filters/formatting. -->
-	<div class="behbar row row-wrap" class:panel-open={mobilePanel === 'auto'} role="group" aria-label="Behavior">
+	<div class="behbar row row-wrap" class:panel-open={mobilePanel === 'auto'} role="group" aria-label={m.conversation_behavior_aria()}>
 		<Toggle
 			pressed={autoApprove}
 			style="--toggle-accent: var(--warn)"
-			title="Auto-approve tool-use permission requests for this session — tool use only, plans still ask"
-			aria-label="Auto-approve tool-use permissions — tool use only, plans still ask"
+			title={m.conversation_auto_approve_title()}
+			aria-label={m.conversation_auto_approve_aria()}
 			onclick={ontoggleAuto}
-		>⚡ Auto-approve</Toggle>
+		>{m.conversation_auto_approve_btn()}</Toggle>
 		{#if ondiagnose}
 			<Toggle
 				pressed={false}
-				title="Everything the daemon knows about this session, dated (CCT-547)"
+				title={m.conversation_diagnose_title()}
 				onclick={ondiagnose}
-			>🩺 Diagnose</Toggle>
+			>{m.conversation_diagnose_btn()}</Toggle>
 		{/if}
 		{#if onterminal}
 			<Toggle
 				pressed={terminalOpen}
-				title="Read-only live view of the session's terminal (CCT-545)"
+				title={m.conversation_terminal_title()}
 				onclick={onterminal}
-			>🖥 Terminal</Toggle>
+			>{m.conversation_terminal_btn()}</Toggle>
 		{/if}
 	</div>
 </div>

@@ -4,6 +4,7 @@
 	import { page } from '$app/state';
 	import { auth } from '$lib/auth.svelte';
 	import { settings } from '$lib/settings.svelte';
+	import { locale } from '$lib/locale.svelte';
 	import { ws } from '$lib/ws.svelte';
 	import Header from '$lib/components/organisms/Header.svelte';
 	import BottomNav from '$lib/components/organisms/BottomNav.svelte';
@@ -56,23 +57,27 @@
 </script>
 
 <QueryClientProvider client={queryClient}>
-	{#if auth.isAuthed}
-		<div class="app">
-			<Header />
-			<main class="content" class:review={isReview}>
-				{#if isReview}
-					{@render children?.()}
-				{:else}
-					<Container>
+	<!-- Remount the tree on a language flip so labels captured in component-init
+	     `const`s (not just reactive template reads) re-localize live (CCT-599). -->
+	{#key locale.current}
+		{#if auth.isAuthed}
+			<div class="app">
+				<Header />
+				<main class="content" class:review={isReview}>
+					{#if isReview}
 						{@render children?.()}
-					</Container>
-				{/if}
-			</main>
-			<BottomNav />
-		</div>
-	{:else if !auth.checking}
-		<Login />
-	{/if}
+					{:else}
+						<Container>
+							{@render children?.()}
+						</Container>
+					{/if}
+				</main>
+				<BottomNav />
+			</div>
+		{:else if !auth.checking}
+			<Login />
+		{/if}
+	{/key}
 	<Toaster />
 </QueryClientProvider>
 

@@ -5,6 +5,7 @@
 	import { fmtSize, fileCapError } from '$lib/attachments';
 	import { IconButton, Text } from '@dorsk/tsumikit';
 	import Error from '$lib/components/atoms/Error.svelte';
+	import { m } from '$lib/paraglide/messages';
 
 	let {
 		files,
@@ -21,7 +22,7 @@
 			<li>
 				<Text variant="code" truncate class="grow">{f.name}</Text>
 				<Text size="xs" tone="faint">{fmtSize(f.size)}</Text>
-				<IconButton inline class="hover-danger" icon="x"  label="Remove" title="Remove" onclick={() => onremove(f.name)} />
+				<IconButton inline class="hover-danger" icon="x"  label={m.common_remove()} title={m.common_remove()} onclick={() => onremove(f.name)} />
 			</li>
 		{/each}
 	</ul>

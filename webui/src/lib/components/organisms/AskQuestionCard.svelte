@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { renderMarkdown } from '$lib/markdown';
 	import { Badge, Button, Heading, Text } from '@dorsk/tsumikit';
+	import { m } from '$lib/paraglide/messages';
 
 	interface Opt {
 		label: string;
@@ -114,14 +115,14 @@
 </script>
 
 <div class="ask" class:done={!live}>
-	<Heading level={3} size="sm">❓ Question{questions.length > 1 ? 's' : ''}</Heading>
+	<Heading level={3} size="sm">{questions.length > 1 ? m.ask_questions_heading() : m.ask_question_heading()}</Heading>
 	{#each questions as q, qi (qi)}
 		{@const hasPreview = q.options.some((o) => o.preview)}
 		<div class="q">
 			<div class="q-top">
 				{#if q.header}<Badge>{q.header}</Badge>{/if}
 				<Text weight="medium">{q.question}</Text>
-				{#if q.multiSelect}<Text tone="muted" size="xs">(choose any)</Text>{/if}
+				{#if q.multiSelect}<Text tone="muted" size="xs">{m.ask_choose_any()}</Text>{/if}
 			</div>
 			<div class="q-body" class:split={hasPreview}>
 				<div class="opts">
@@ -145,7 +146,7 @@
 						<span class="mark">✎</span>
 						<input
 							class="other-in"
-							placeholder="Other…"
+							placeholder={m.ask_other_placeholder()}
 							bind:value={other[qi]}
 							disabled={!live}
 						/>
@@ -156,7 +157,7 @@
 						{#if q.options[focused[qi]]?.preview}
 							<div class="preview-body">{@html renderMarkdown(q.options[focused[qi]].preview ?? '')}</div>
 						{:else}
-							<Text as="div" tone="muted" size="xs">No preview for this option.</Text>
+							<Text as="div" tone="muted" size="xs">{m.ask_no_preview()}</Text>
 						{/if}
 					</div>
 				{/if}
@@ -164,11 +165,11 @@
 		</div>
 	{/each}
 	{#if live}
-		<Button variant="primary" style="align-self:flex-start" disabled={!answeredAll} onclick={submit}>Send answer</Button>
+		<Button variant="primary" style="align-self:flex-start" disabled={!answeredAll} onclick={submit}>{m.ask_send_answer()}</Button>
 	{:else if submitted && interactive}
-		<Text as="div" class="answered" tone="muted" size="xs">Answering…</Text>
+		<Text as="div" class="answered" tone="muted" size="xs">{m.ask_answering()}</Text>
 	{:else}
-		<Text as="div" class="answered" tone="muted" size="xs">Answered.</Text>
+		<Text as="div" class="answered" tone="muted" size="xs">{m.ask_answered()}</Text>
 	{/if}
 </div>
 

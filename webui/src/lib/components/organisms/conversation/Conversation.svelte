@@ -8,6 +8,7 @@
 	import type { ScrollController } from './scroll.svelte';
 	import type { AskQuestion, Line } from './types';
 	import type { PermReq, LiveAsk, LivePlan } from '$lib/ws.svelte';
+	import { m } from '$lib/paraglide/messages';
 
 	let {
 		scroll,
@@ -109,15 +110,15 @@
 		{#if isLoading}
 			<div class="empty"><span class="spin"></span></div>
 		{:else if lines.length === 0 && perms.length === 0 && !ask && !plan}
-			<div class="empty"><Text>No events yet.</Text></div>
+			<div class="empty"><Text>{m.conversation_no_events()}</Text></div>
 		{/if}
 
 		{#if hiddenOlder > 0}
 			<!-- Lazy render (CCT-279 item 1): older lines are mounted on demand so a
 			     long transcript opens fast. -->
 			<Button class="load-older" onclick={loadOlder}>
-				↑ Load {Math.min(RENDER_CHUNK, hiddenOlder)} older
-				<Text tone="faint">({hiddenOlder} hidden)</Text>
+				{m.conversation_load_older({ count: Math.min(RENDER_CHUNK, hiddenOlder) })}
+				<Text tone="faint">{m.conversation_hidden_count({ count: hiddenOlder })}</Text>
 			</Button>
 		{/if}
 		{#each visibleLines as ln, i (ln.ts + (ln.text ?? ln.html ?? '').slice(0, 24) + ln.role)}
@@ -143,7 +144,7 @@
 				</div>
 			{:else if ln.role === 'compact'}
 				<div class="compact-block">
-					<div class="compact-head">⟳ context compacted · /compact</div>
+					<div class="compact-head">{m.conversation_context_compacted()}</div>
 					{#if ln.html}<div class="compact-body">{@html ln.html}</div>{/if}
 				</div>
 			{:else}
@@ -214,14 +215,14 @@
 			     the equivalent of the TUI's "Running…" spinner. -->
 			<div class="working" role="status" aria-live="polite">
 				<span class="working-dots" aria-hidden="true"><span></span><span></span><span></span></span>
-				<span class="working-label">Working…</span>
+				<span class="working-label">{m.conversation_working()}</span>
 			</div>
 		{/if}
 	</div>
 
 	{#if !scroll.stuck}
-		<Button class="jump-pill" onclick={scroll.jumpToBottom} aria-label="Jump to bottom">
-			↓ Jump to latest
+		<Button class="jump-pill" onclick={scroll.jumpToBottom} aria-label={m.conversation_jump_to_bottom()}>
+			{m.conversation_jump_to_latest()}
 		</Button>
 	{/if}
 </div>

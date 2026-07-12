@@ -19,6 +19,7 @@
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { Button, Cluster, Modal, Stack, Text } from '@dorsk/tsumikit';
 	import DiffViewer from './DiffViewer.svelte';
+	import { m } from '$lib/paraglide/messages';
 
 	interface Props {
 		pull: PullInboxItem;
@@ -65,16 +66,16 @@
 		<Stack gap="var(--sp-2)">
 			{#if onreviewagent}
 				<Cluster justify="flex-end">
-					<Button onclick={() => onreviewagent(pull)}>Review with agent</Button>
+					<Button onclick={() => onreviewagent(pull)}>{m.pull_review_with_agent()}</Button>
 				</Cluster>
 			{/if}
 			{#if $diff.isLoading}
-				<Text tone="muted">Loading diff…</Text>
+				<Text tone="muted">{m.diff_loading()}</Text>
 			{:else if $diff.isError}
-				<Text tone="danger">Could not load the diff: {$diff.error?.message}</Text>
+				<Text tone="danger">{m.diff_load_error({ message: $diff.error?.message ?? '' })}</Text>
 			{:else if $diff.data}
 				{#if $diff.data.files.length === 0}
-					<Text tone="muted">This pull request has no file changes.</Text>
+					<Text tone="muted">{m.pull_no_file_changes()}</Text>
 				{:else}
 					<DiffViewer diff={$diff.data} {connectorId} {number} />
 				{/if}

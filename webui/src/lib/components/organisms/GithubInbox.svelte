@@ -16,6 +16,7 @@
 	import SearchBox from '../molecules/SearchBox.svelte';
 	import PullCard from './PullCard.svelte';
 	import PullDiffModal from './PullDiffModal.svelte';
+	import { m } from '$lib/paraglide/messages';
 
 	// The PR whose virtualized diff (GH-VIEW-3) is open, or null. Hosting the
 	// modal here keeps the inbox's PR context while the diff viewer is open.
@@ -43,11 +44,11 @@
 
 	// Bucket render order + headers, mirroring the AttentionBucket priority.
 	const BUCKETS: { key: AttentionBucket; label: string }[] = [
-		{ key: 'needs_my_review', label: 'Needs my review' },
-		{ key: 'my_pr_changes_requested', label: 'My PR — changes requested' },
-		{ key: 'my_pr_ci_red', label: 'My PR — CI red' },
-		{ key: 'my_pr_mergeable', label: 'My PR — mergeable' },
-		{ key: 'waiting', label: 'Waiting' }
+		{ key: 'needs_my_review', label: m.github_bucket_needs_my_review() },
+		{ key: 'my_pr_changes_requested', label: m.github_bucket_my_pr_changes_requested() },
+		{ key: 'my_pr_ci_red', label: m.github_bucket_my_pr_ci_red() },
+		{ key: 'my_pr_mergeable', label: m.github_bucket_my_pr_mergeable() },
+		{ key: 'waiting', label: m.github_bucket_waiting() }
 	];
 
 	const all = $derived($pulls.data ?? []);
@@ -70,19 +71,18 @@
 </script>
 
 <Stack gap="var(--sp-4)">
-	<SearchBox bind:value={query} placeholder="Filter PRs by title, repo, author…" />
+	<SearchBox bind:value={query} placeholder={m.github_filter_placeholder()} />
 
 	{#if $pulls.isLoading}
-		<Card><Text tone="muted">Loading pull requests…</Text></Card>
+		<Card><Text tone="muted">{m.github_loading_pulls()}</Text></Card>
 	{:else if all.length === 0}
 		<Card>
 			<Text tone="muted">
-				No tracked pull requests yet. Add a connector and the reconcile poll will hydrate your
-				inbox.
+				{m.github_no_pulls()}
 			</Text>
 		</Card>
 	{:else if groups.length === 0}
-		<Card><Text tone="muted">No pull requests match “{query}”.</Text></Card>
+		<Card><Text tone="muted">{m.github_no_pulls_match({ query })}</Text></Card>
 	{:else}
 		{#each groups as g (g.key)}
 			<Stack gap="var(--sp-2)">

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { useAccountUsage } from '$lib/queries';
 	import { Progress, Text, Timestamp } from '@dorsk/tsumikit';
+	import { m } from '$lib/paraglide/messages';
 
 	// Severity breakpoints on window utilization (%). Below WARN → green ("ok"),
 	// WARN–HOT → amber ("warm"), at/above HOT → red ("hot"). Named so the bar
@@ -72,12 +73,12 @@
 					{b.pct}%{#if b.resets}<Text tone="faint" class="bar-reset"> · resets <Timestamp value={b.resets} mode="relative" tone="faint" /></Text>{/if}
 				</Text>
 				<div class="track-wrap">
-					<Progress value={b.pct} label={`${b.label} usage`} tone={toneFor(b.tone)} class="bar-track" />
+					<Progress value={b.pct} label={m.sessions_usage_bar_aria({ label: b.label })} tone={toneFor(b.tone)} class="bar-track" />
 					{#if b.capPct != null}
 						<span
 							class="cap-marker"
 							style={`left: ${b.capPct}%`}
-							title={`cctui soft limit: ${b.capPct}%`}
+							title={m.sessions_usage_soft_limit({ pct: b.capPct })}
 						></span>
 					{/if}
 				</div>
@@ -87,7 +88,7 @@
 {:else if active && $q.isLoading}
 	<span class="spin"></span>
 {:else}
-	<Text tone="faint">No usage data</Text>
+	<Text tone="faint">{m.sessions_no_usage_data()}</Text>
 {/if}
 
 <style>

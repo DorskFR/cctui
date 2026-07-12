@@ -21,12 +21,13 @@
 	import type { Form } from './spawn/types';
 	import { useCapabilities, endpoints, type PullInboxItem } from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
+	import { m } from '$lib/paraglide/messages';
 
 	const caps = useCapabilities();
 
 	const tabs: TabItem[] = [
-		{ id: 'inbox', label: 'Inbox' },
-		{ id: 'connectors', label: 'Connectors' }
+		{ id: 'inbox', label: m.github_tab_inbox() },
+		{ id: 'connectors', label: m.github_tab_connectors() }
 	];
 	// First run (available but no connector yet) lands on Connectors so the
 	// user can add their first GitHub account; once enabled, default to Inbox.
@@ -65,7 +66,7 @@
 				const resolved = await endpoints.resolveReviewPrompt(owner, name);
 				if (resolved) promptBody = `${resolved.content}\n\n${promptBody}`;
 			} catch {
-				toasts.push('Could not load the review prompt; seeding PR context only', 'info');
+				toasts.push(m.github_review_prompt_load_failed(), 'info');
 			}
 			spawnPrefill = {
 				name: `review ${pull.repo}#${pull.number}`,
@@ -84,7 +85,7 @@
 
 <Stack gap="var(--sp-4)">
 	<Heading level={1}>GitHub</Heading>
-	<Tabs {tabs} bind:value={tab} label="GitHub sections">
+	<Tabs {tabs} bind:value={tab} label={m.github_sections_label()}>
 		{#snippet panel(id)}
 			{#if id === 'inbox'}
 				<GithubInbox onreviewagent={reviewWithAgent} />

@@ -4,6 +4,7 @@
 	// active label is highlighted. Per-adapter level sets are passed in.
 	import { Field } from '@dorsk/tsumikit';
 	import Range from '$lib/components/atoms/Range.svelte';
+	import { m } from '$lib/paraglide/messages';
 
 	let {
 		id,
@@ -20,7 +21,7 @@
 	const idx = $derived(Math.max(0, levels.indexOf(current)));
 </script>
 
-<Field label="Effort" for={id}>
+<Field label={m.spawn_effort_label()} for={id}>
 	<Range
 		{id}
 		style="accent-color:var(--c-blue);margin:2px 0"
@@ -36,7 +37,7 @@
 				type="button"
 				class="tick"
 				class:on={i === idx}
-				onclick={() => onset(lv)}>{lv || 'default'}</button
+				onclick={() => onset(lv)}>{lv || m.spawn_effort_default()}</button
 			>
 		{/each}
 	</div>

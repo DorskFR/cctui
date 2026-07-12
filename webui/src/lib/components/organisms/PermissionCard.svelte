@@ -2,6 +2,7 @@
 	import { renderMarkdown } from '$lib/markdown';
 	import type { PermReq } from '$lib/ws.svelte';
 	import { Badge, Button, Text } from '@dorsk/tsumikit';
+	import { m } from '$lib/paraglide/messages';
 
 	let {
 		req,
@@ -24,7 +25,7 @@
 
 <div class="perm">
 	<div class="row">
-		<Badge tone="warn">permission</Badge>
+		<Badge tone="warn">{m.permission_badge()}</Badge>
 		<Text variant="code" weight="semibold" truncate>{req.tool_name}</Text>
 	</div>
 	{#if req.description}<Text as="p" tone="muted" size="sm">{req.description}</Text>{/if}
@@ -32,8 +33,8 @@
 		<div class="plan-body">{@html renderMarkdown(planMarkdown)}</div>
 	{:else if req.input_preview}<pre class="prev mono">{req.input_preview}</pre>{/if}
 	<div class="row acts">
-		<Button variant="danger" block onclick={() => onrespond(req.request_id, false)}>Deny</Button>
-		<Button variant="primary" block onclick={() => onrespond(req.request_id, true)}>Allow</Button>
+		<Button variant="danger" block onclick={() => onrespond(req.request_id, false)}>{m.permission_deny()}</Button>
+		<Button variant="primary" block onclick={() => onrespond(req.request_id, true)}>{m.permission_allow()}</Button>
 	</div>
 </div>
 

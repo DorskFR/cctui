@@ -6,15 +6,16 @@
 	// (machines), leave it off for plain name/label edits.
 	import { untrack } from 'svelte';
 	import { Button, Field, Input, Modal } from '@dorsk/tsumikit';
+	import { m } from '$lib/paraglide/messages';
 	import Swatch from '$lib/components/atoms/Swatch.svelte';
 
 	let {
 		title,
-		fieldLabel = 'Name',
+		fieldLabel = m.users_field_name_default(),
 		name: initialName = '',
 		placeholder = '',
 		hint,
-		saveLabel = 'Save',
+		saveLabel = m.common_save(),
 		color = false,
 		hue: initialHue = null,
 		hues = [],
@@ -66,21 +67,21 @@
 				<Input id="edit-name" bind:value={name} bind:el={inputEl} {placeholder} />
 			</Field>
 			{#if color}
-				<Field label="Badge colour">
-					<div class="row palette" role="radiogroup" aria-label="Badge colour">
+				<Field label={m.users_badge_colour()}>
+					<div class="row palette" role="radiogroup" aria-label={m.users_badge_colour()}>
 						<Swatch
 							hue={null}
 							active={hue == null}
-							title="Auto (name hash)"
-							aria-label="Auto colour"
+							title={m.users_colour_auto_title()}
+							aria-label={m.users_colour_auto_aria()}
 							onclick={() => (hue = null)}>A</Swatch
 						>
 						{#each hues as h (h)}
 							<Swatch
 								hue={h}
 								active={hue === h}
-								title={`Hue ${h}`}
-								aria-label={`Hue ${h}`}
+								title={m.users_hue({ hue: h })}
+								aria-label={m.users_hue({ hue: h })}
 								onclick={() => (hue = h)}
 							/>
 						{/each}
@@ -90,7 +91,7 @@
 		</form>
 	{/snippet}
 	{#snippet footer()}
-		<Button block onclick={onclose}>Cancel</Button>
+		<Button block onclick={onclose}>{m.common_cancel()}</Button>
 		<Button block variant="primary" onclick={save}>{saveLabel}</Button>
 	{/snippet}
 </Modal>

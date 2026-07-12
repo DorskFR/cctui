@@ -60,6 +60,7 @@
 		NO_ACCOUNT
 	} from './spawn/options';
 	import { settings } from '$lib/settings.svelte';
+	import { m } from '$lib/paraglide/messages';
 
 	let {
 		onclose,
@@ -83,8 +84,8 @@
 	// as tabs (CCT-562); a prefill (re-dispatch) is always a machine spawn.
 	let target = $state<Target>('machine');
 	const targetTabs: TabItem[] = [
-		{ id: 'machine', label: 'Machine' },
-		{ id: 'dispatch', label: 'Dispatch (k8s)' }
+		{ id: 'machine', label: m.spawn_tab_machine() },
+		{ id: 'dispatch', label: m.spawn_tab_dispatch() }
 	];
 
 	// The blank form is all-unset; the per-(machine, cwd) spawn memory (CCT-561)
@@ -480,7 +481,7 @@
 		await actions.spawn(body, []);
 		drafts.set(LAST_MACHINE, form.machine_id);
 		drafts.set(LAST_SPAWN_NAME, form.name.trim());
-		toasts.ok('Saved as draft');
+		toasts.ok(m.spawn_toast_saved_draft());
 		drafts.clear(SPAWN_DRAFT);
 		form = { ...blank, machine_id: form.machine_id, dispatcher: form.dispatcher };
 		envRows = [];
@@ -499,7 +500,7 @@
 		const res = await actions.spawn(body, files);
 		// Surface which credential the server bound (CCT-582) — chiefly an
 		// auto-bound default the user never named.
-		if (res.account) toasts.push(`Bound account: ${res.account}`, 'info');
+		if (res.account) toasts.push(m.spawn_toast_bound_account({ account: res.account }), 'info');
 		drafts.set(LAST_MACHINE, form.machine_id);
 		// An empty submitted name clears the proposal (drafts.set removes the key).
 		drafts.set(LAST_SPAWN_NAME, form.name.trim());
@@ -509,10 +510,10 @@
 		// here pre-selects it. Saved on submit (not just on confirmed success)
 		// so a slow/unconfirmed spawn still records the operator's intent.
 		settings.rememberSpawn(machineMemoryKey(labelMachine, labelCwd), entryFromForm(form));
-		toasts.push('Spawning…', 'info');
+		toasts.push(m.spawn_toast_spawning(), 'info');
 		const result = await ws.awaitCommand(res.command_id);
 		if (result.ok) {
-			toasts.ok('Session spawned');
+			toasts.ok(m.spawn_toast_spawned());
 			// Attach labels to the freshly-registered session (best-effort, async).
 			void attachLabelsToSpawned(labelMachine, labelCwd, requestedAt, labelIds);
 			drafts.clear(SPAWN_DRAFT);
@@ -528,14 +529,11 @@
 			// after the wait. Close + refresh so the new session shows up; keep the
 			// draft so a *real* miss is one re-open away. Re-submitting blindly
 			// would dispatch a second spawn → duplicate agent.
-			toasts.push(
-				'Spawn dispatched but not confirmed yet — check the list before retrying (a retry starts a second session)',
-				'info'
-			);
+			toasts.push(m.spawn_toast_unconfirmed(), 'info');
 			onspawned();
 			onclose();
 		} else {
-			toasts.err(`Spawn failed: ${result.error ?? 'unknown error'}`);
+			toasts.err(m.spawn_toast_spawn_failed({ error: result.error ?? m.spawn_error_unknown() }));
 		}
 	}
 
@@ -612,7 +610,7 @@
 		// client-minted dispatch id, CCT-360).
 		drafts.set(LAST_SPAWN_LABELS, labelIds.join(','));
 		void attachLabelsTo(dispatchedId, labelIds);
-		toasts.ok(`Dispatched to ${res.dispatcher} (${res.handle})`);
+		toasts.ok(m.spawn_toast_dispatched({ dispatcher: res.dispatcher, handle: res.handle }));
 		pendingDispatchId = null;
 		drafts.clear(SPAWN_DRAFT);
 		form = { ...blank, machine_id: form.machine_id, dispatcher: form.dispatcher };
@@ -629,7 +627,12 @@
 			if (target === 'machine') await spawnOnMachine();
 			else await dispatchToK8s();
 		} catch (e) {
-			toasts.err(`${target === 'machine' ? 'Spawn' : 'Dispatch'} failed: ${(e as Error).message}`);
+			const msg = (e as Error).message;
+			toasts.err(
+				target === 'machine'
+					? m.spawn_toast_spawn_failed({ error: msg })
+					: m.spawn_toast_dispatch_failed({ error: msg })
+			);
 		} finally {
 			busy = false;
 		}
@@ -645,7 +648,7 @@
 		try {
 			await saveDraft();
 		} catch (e) {
-			toasts.err(`Save draft failed: ${(e as Error).message}`);
+			toasts.err(m.spawn_toast_save_draft_failed({ error: (e as Error).message }));
 		} finally {
 			busy = false;
 		}
@@ -659,7 +662,7 @@
 	}
 </script>
 
-<Modal title="New session" {onclose} resizeKey="cctui_spawn_modal_width">
+<Modal title={m.spawn_modal_title()} {onclose} resizeKey="cctui_spawn_modal_width">
 	{#snippet body()}
 		<!-- The whole dialog is a file drop area (CCT-236): dragging files over it
 		     shows the tsumikit Dropzone overlay; on drop they're staged as
@@ -668,7 +671,7 @@
 		<Dropzone
 			overlay
 			multiple
-			label="Drop files to attach"
+			label={m.spawn_dropzone_label()}
 			disabled={target !== 'machine'}
 			onfiles={addFiles}
 		>
@@ -694,7 +697,7 @@
 			<!-- Machine / Dispatch are tabs (CCT-562) when a dispatcher exists. -->
 			{#if canDispatch}
 				<Tabs
-					label="Run on"
+					label={m.spawn_run_on_label()}
 					tabs={targetTabs}
 					bind:value={() => target as string, (v) => (target = v === 'dispatch' ? 'dispatch' : 'machine')}
 					panel={targetPanel}
@@ -710,7 +713,7 @@
 			     (a FileButton matches the Button atom by design); two carry an
 			     icon. Grid blockifies the items so each fills its 1fr column. -->
 			<div class="addons">
-				<span class="addon-title">Optional settings</span>
+				<span class="addon-title">{m.spawn_optional_settings()}</span>
 				<AutoGrid min="8rem" gap="var(--sp-2)" maxCols={3}>
 					<div
 						class="label-add"
@@ -723,7 +726,7 @@
 							aria-expanded={labelMenuOpen}
 							onclick={toggleLabelMenu}
 						>
-							<Icon name="tag" />Add label
+							<Icon name="tag" />{m.spawn_add_label()}
 						</Button>
 						<!-- svelte-ignore a11y_no_static_element_interactions -->
 						<div
@@ -731,7 +734,7 @@
 							class="label-menu"
 							popover="manual"
 							role="menu"
-							aria-label="Labels"
+							aria-label={m.spawn_labels_aria()}
 							tabindex="-1"
 							style:top="{labelMenuPos.top}px"
 							style:left="{labelMenuPos.left}px"
@@ -754,9 +757,9 @@
 						</div>
 					</div>
 					{#if target === 'machine'}
-						<FileButton label="Add files" icon="file-text" multiple onfiles={addFiles} />
+						<FileButton label={m.spawn_add_files()} icon="file-text" multiple onfiles={addFiles} />
 					{/if}
-					<Button onclick={addEnvRow}><Icon name="plus" />Add env vars</Button>
+					<Button onclick={addEnvRow}><Icon name="plus" />{m.spawn_add_env_vars()}</Button>
 				</AutoGrid>
 
 				<!-- Each add-on's content, rendered where due: labels, files, env. -->
@@ -782,14 +785,14 @@
 		</Dropzone>
 	{/snippet}
 	{#snippet footer()}
-		<Button size="lg" onclick={clearForm}>Clear</Button>
+		<Button size="lg" onclick={clearForm}>{m.spawn_clear()}</Button>
 		{#if target === 'machine'}
 			<Button size="lg" disabled={busy || !draftValid} onclick={submitDraft}>
-				Save as draft
+				{m.spawn_save_draft()}
 			</Button>
 		{/if}
 		<Button size="lg" variant="primary" block disabled={busy || !valid} onclick={submit}>
-			{#if busy}<span class="spin"></span>{:else}{target === 'machine' ? 'Spawn' : 'Dispatch'}{/if}
+			{#if busy}<span class="spin"></span>{:else}{target === 'machine' ? m.spawn_action_spawn() : m.spawn_action_dispatch()}{/if}
 		</Button>
 	{/snippet}
 </Modal>

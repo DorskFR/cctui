@@ -12,6 +12,7 @@
 	import type { SoftLimit } from '$lib/ws.svelte';
 	import { primaryProvider, type OAuthAccount } from '$lib/queries';
 	import UsageBars from '$lib/components/molecules/UsageBars.svelte';
+	import { m } from '$lib/paraglide/messages';
 
 	let {
 		currentName,
@@ -92,7 +93,7 @@
 			await onswitch(chosen);
 			onclose();
 		} catch (e) {
-			error = e instanceof Error ? e.message : 'switch failed';
+			error = e instanceof Error ? e.message : m.conversation_acct_switch_failed();
 			switching = null;
 		}
 	}
@@ -102,35 +103,32 @@
 	class="acct-scrim"
 	role="button"
 	tabindex="-1"
-	aria-label="Close account switcher"
+	aria-label={m.conversation_acct_close_aria()}
 	onclick={onclose}
 	onkeydown={(e) => e.key === 'Escape' && onclose()}
 ></div>
-<div class="acct-modal" role="dialog" aria-modal="true" aria-label="Switch account">
+<div class="acct-modal" role="dialog" aria-modal="true" aria-label={m.conversation_acct_switch_aria()}>
 	{#if softLimit}
-		<Heading level={3}>Soft limit reached on {softLimit.account_name}</Heading>
+		<Heading level={3}>{m.conversation_acct_soft_limit({ account: softLimit.account_name })}</Heading>
 		<Text as="p" tone="muted" size="sm">
-			cctui's share of this account's usage window is at its cap. Continue this chat on
-			another account — the conversation keeps its history; only the upstream account
-			changes.
+			{m.conversation_acct_soft_desc()}
 		</Text>
 	{:else}
-		<Heading level={3}>Switch account</Heading>
+		<Heading level={3}>{m.conversation_acct_switch_title()}</Heading>
 		<Text as="p" tone="muted" size="sm">
 			{#if current}
-				This chat is running on <strong>{current.name}</strong>. Pick another account to
-				continue on — the conversation keeps its history.
+				{m.conversation_acct_running_pre()}<strong>{current.name}</strong>{m.conversation_acct_running_post()}
 			{:else}
-				Pick an account to run this chat on.
+				{m.conversation_acct_pick()}
 			{/if}
 		</Text>
 	{/if}
 
 	{#if options.length}
 		<div class="picker">
-			<Field label="Account">
+			<Field label={m.conversation_acct_field_label()}>
 				<Select bind:value={chosen} disabled={switching !== null}>
-					<option value={null} disabled>Select an account…</option>
+					<option value={null} disabled>{m.conversation_acct_select_placeholder()}</option>
 					{#each options as o (o.credId)}
 						<option value={o.credId}>{o.account.name}</option>
 					{/each}
@@ -147,14 +145,14 @@
 		</div>
 	{:else}
 		<Text size="sm" tone="muted">
-			No other same-provider account is available to switch to.
+			{m.conversation_acct_none()}
 		</Text>
 	{/if}
 	{#if error}
 		<Text size="xs" tone="danger">{error}</Text>
 	{/if}
 	<div class="acct-foot">
-		<Button size="sm" variant="ghost" onclick={onclose}>Close</Button>
+		<Button size="sm" variant="ghost" onclick={onclose}>{m.common_close()}</Button>
 		{#if options.length}
 			<Button
 				size="sm"
@@ -163,7 +161,7 @@
 				loading={switching !== null}
 				onclick={confirm}
 			>
-				Switch
+				{m.conversation_acct_switch_btn()}
 			</Button>
 		{/if}
 	</div>

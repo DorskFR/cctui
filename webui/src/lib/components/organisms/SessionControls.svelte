@@ -2,7 +2,8 @@
 	import type { Label } from '@bindings/Label';
 	import type { Section } from '../../../routes/sessions/sessions.logic';
 	import { Button, FilterSearchBar, Heading, Icon, type Schema } from '@dorsk/tsumikit';
-	import { SESSION_SEARCH_PLACEHOLDER } from '$lib/searchSchema';
+	import { m } from '$lib/paraglide/messages';
+	import { sessionSearchPlaceholder } from '$lib/searchSchema';
 	import SectionFilter from '../molecules/SectionFilter.svelte';
 	import LabelFilter from '../molecules/LabelFilter.svelte';
 	import ViewPicker from '../molecules/ViewPicker.svelte';
@@ -58,12 +59,12 @@
 </script>
 
 <div class="bar row">
-	<Heading level={1} class="page-title">Sessions</Heading>
+	<Heading level={1} class="page-title">{m.sessions_title()}</Heading>
 	<div class="search-box">
 		<FilterSearchBar
 			schema={searchSchema}
 			bind:value={rawQuery}
-			placeholder={SESSION_SEARCH_PLACEHOLDER}
+			placeholder={sessionSearchPlaceholder()}
 		/>
 	</div>
 	<SectionFilter bind:sections />
@@ -74,14 +75,14 @@
 	{#if !searching}
 		{#if selecting}
 			<!-- Cancel selection. -->
-			<Button class="ctl btn-control-square" icon title="Cancel selection" aria-label="Cancel selection" onclick={onCancelSelect}>
+			<Button class="ctl btn-control-square" icon title={m.sessions_cancel_selection()} aria-label={m.sessions_cancel_selection()} onclick={onCancelSelect}>
 				<Icon name="x" size={18} />
 			</Button>
 		{:else}
 			<!-- "Select multiple" wants a checklist/multi-select glyph the registry
 			     doesn't ship; feed Icon a raw list-checks svg via its children. -->
-			<Button class="ctl btn-control-square" icon title="Select multiple to archive" aria-label="Select multiple to archive" onclick={onStartSelect}>
-				<Icon label="Select multiple to archive" size={18}>
+			<Button class="ctl btn-control-square" icon title={m.sessions_select_multiple()} aria-label={m.sessions_select_multiple()} onclick={onStartSelect}>
+				<Icon label={m.sessions_select_multiple()} size={18}>
 					<path d="m3 17 2 2 4-4" />
 					<path d="m3 7 2 2 4-4" />
 					<path d="M13 6h8" />
@@ -91,7 +92,7 @@
 			</Button>
 		{/if}
 	{/if}
-	<Button class="toolbar-new" control variant="primary" title="New session" aria-label="New session" onclick={onNew}>+<span class="new-label"> New</span></Button>
+	<Button class="toolbar-new" control variant="primary" title={m.sessions_new_session()} aria-label={m.sessions_new_session()} onclick={onNew}>+<span class="new-label"> {m.sessions_new()}</span></Button>
 	<!-- Mobile-only flex row-break (CCT-369): basis:100% forces row 2 (search +
 	     tools) onto a fresh line below title+New. Hidden on desktop where everything
 	     sits on one row. -->

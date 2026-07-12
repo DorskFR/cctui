@@ -8,6 +8,7 @@
 	// stored names can also be deleted individually via `env_remove` (the server
 	// drops them from the decrypted blob without the other values round-tripping).
 	import { Button, Input, Text } from '@dorsk/tsumikit';
+	import { m } from '$lib/paraglide/messages';
 	import Error from '$lib/components/atoms/Error.svelte';
 
 	interface EnvRow {
@@ -43,8 +44,8 @@
 	function nameError(name: string): string {
 		const n = name.trim();
 		if (!n) return '';
-		if (!NAME_RE.test(n)) return `${n}: invalid name (use A–Z, 0–9, _)`;
-		if (DENYLIST.has(n)) return `${n}: session-critical / gateway-managed — not allowed`;
+		if (!NAME_RE.test(n)) return m.providers_env_err_invalid_name({ name: n });
+		if (DENYLIST.has(n)) return m.providers_env_err_denied({ name: n });
 		return '';
 	}
 	const nameErrors = $derived(envRows.map((r) => nameError(r.name)).filter((e) => e));
@@ -80,32 +81,30 @@
 
 <div class="env-editor">
 	<Text as="p" tone="faint" size="xs">
-		Arbitrary environment applied to every session run under this account. Stored
-		encrypted; values are never shown again. Curated Claude Code knobs live on
-		the provider's settings instead.
+		{m.providers_env_intro()}
 	</Text>
 
 	{#if storedNames.length}
 		<div class="stored">
-			<Text as="div" tone="muted" size="xs">Currently set (values hidden)</Text>
+			<Text as="div" tone="muted" size="xs">{m.providers_env_currently_set()}</Text>
 			<div class="chips">
 				{#each storedNames as n (n)}
 					{#if envRemove.includes(n)}
 						<span class="chip removing">
 							<s>{n}</s>
-							<button class="chip-x" onclick={() => unmarkRemove(n)} aria-label={`Keep ${n}`}>↩</button>
+							<button class="chip-x" onclick={() => unmarkRemove(n)} aria-label={m.providers_env_keep_aria({ name: n })}>↩</button>
 						</span>
 					{:else}
 						<span class="chip">
 							{n}
-							<button class="chip-x" onclick={() => markRemove(n)} aria-label={`Delete ${n}`}>✕</button>
+							<button class="chip-x" onclick={() => markRemove(n)} aria-label={m.providers_env_delete_aria({ name: n })}>✕</button>
 						</span>
 					{/if}
 				{/each}
 			</div>
 			{#if envRemove.length}
 				<Text as="div" tone="warn" size="xs">
-					On save, {envRemove.join(', ')} will be deleted from the stored environment.
+					{m.providers_env_will_delete({ names: envRemove.join(', ') })}
 				</Text>
 			{/if}
 		</div>
@@ -113,9 +112,9 @@
 
 	<Text as="div" tone="faint" size="xs">
 		{#if replaceEnv}
-			<Text as="span" tone="warn" size="xs">On save, the stored environment is replaced with the rows below (empty = cleared).</Text>
+			<Text as="span" tone="warn" size="xs">{m.providers_env_replace_warning()}</Text>
 		{:else}
-			<Text as="span" size="xs">Stored environment is left unchanged unless you edit a row.</Text>
+			<Text as="span" size="xs">{m.providers_env_unchanged()}</Text>
 		{/if}
 	</Text>
 
@@ -128,26 +127,26 @@
 						oninput={onEdit}
 						mono
 						placeholder="MY_TOKEN"
-						aria-label="Env var name"
+						aria-label={m.providers_env_name_aria()}
 					/>
 					<Input
 						bind:value={row.value}
 						oninput={onEdit}
 						type={revealed.has(i) ? 'text' : 'password'}
 						mono
-						placeholder="value"
-						aria-label="Env var value"
+						placeholder={m.providers_env_value_placeholder()}
+						aria-label={m.providers_env_value_aria()}
 					/>
-					<Button onclick={() => toggleReveal(i)} aria-label={revealed.has(i) ? 'Hide value' : 'Show value'}>
+					<Button onclick={() => toggleReveal(i)} aria-label={revealed.has(i) ? m.providers_env_hide_value() : m.providers_env_show_value()}>
 						{revealed.has(i) ? '🙈' : '👁'}
 					</Button>
-					<Button variant="danger" onclick={() => removeEnvRow(i)} aria-label="Remove env var">✕</Button>
+					<Button variant="danger" onclick={() => removeEnvRow(i)} aria-label={m.providers_env_remove_aria()}>✕</Button>
 				</div>
 			{/each}
 		</div>
 	{/if}
 	{#each nameErrors as e (e)}<Error>{e}</Error>{/each}
-	<Button onclick={addEnvRow}>+ Add env var</Button>
+	<Button onclick={addEnvRow}>{m.providers_env_add()}</Button>
 </div>
 
 <style>

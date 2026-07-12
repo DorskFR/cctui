@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { Icon, Select } from '@dorsk/tsumikit';
+	import { m } from '$lib/paraglide/messages';
 	import { DIMENSIONS, type Dimension } from '../../../routes/sessions/sessions.logic';
 
 	// Toolbar picker for a session-list dimension (CCT-466 color · CCT-467 group),
@@ -10,10 +11,12 @@
 		kind
 	}: { value: Dimension; onchange: (v: Dimension) => void; kind: 'color' | 'group' } = $props();
 
-	const noun = $derived(kind === 'color' ? 'Color' : 'Group');
-	const current = $derived(DIMENSIONS.find((d) => d.value === value)?.label ?? 'None');
+	const noun = $derived(kind === 'color' ? m.misc_color_noun() : m.misc_group_noun());
+	const current = $derived(DIMENSIONS.find((d) => d.value === value)?.label ?? m.common_none());
 	const active = $derived(value !== 'none');
-	const title = $derived(active ? `${noun} by: ${current}` : `${noun} by…`);
+	const title = $derived(
+		active ? m.misc_dimension_by({ noun, value: current }) : m.misc_dimension_by_prompt({ noun })
+	);
 </script>
 
 <div class="dim-picker btn-control btn-control-square" class:active {title} aria-label={title}>
@@ -33,12 +36,12 @@
 	{/if}
 	<Select
 		variant="ghost"
-		aria-label={`${noun} sessions by`}
+		aria-label={m.misc_dimension_sessions_by({ noun })}
 		{value}
 		onchange={(e) => onchange((e.currentTarget as HTMLSelectElement).value as Dimension)}
 	>
 		{#each DIMENSIONS as d (d.value)}
-			<option value={d.value}>{noun} by: {d.label}</option>
+			<option value={d.value}>{m.misc_dimension_option({ noun, label: d.label })}</option>
 		{/each}
 	</Select>
 </div>

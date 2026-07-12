@@ -4,9 +4,10 @@ import { toasts } from '$lib/toast.svelte';
 import { copyText } from '$lib/clipboard';
 import { lineMarkdown } from './format';
 import type { Line } from './types';
+import { m } from '$lib/paraglide/messages';
 
 export async function copyLineMarkdown(ln: Line) {
-	await copyText(lineMarkdown(ln), 'Copied as Markdown');
+	await copyText(lineMarkdown(ln), m.conversation_copied_markdown());
 }
 
 // Save a single message as a PNG (CCT-297 #18), rendered with the current theme.
@@ -64,8 +65,8 @@ export async function saveLineImage(e: MouseEvent, ln: Line) {
 		a.download = `cctui-message-${ln.ts}.png`;
 		a.href = dataUrl;
 		a.click();
-		toasts.ok('Saved image');
+		toasts.ok(m.conversation_saved_image());
 	} catch (err) {
-		toasts.err(`Image export failed: ${(err as Error).message}`);
+		toasts.err(m.conversation_image_export_failed({ message: (err as Error).message }));
 	}
 }

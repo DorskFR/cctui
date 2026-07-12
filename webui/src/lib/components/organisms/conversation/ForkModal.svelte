@@ -5,6 +5,7 @@
 	// supported "switch model" substitute for claude (no in-place switch, CCT-303).
 	import { compact } from '$lib/format';
 	import { Button, Heading, Select, Text } from '@dorsk/tsumikit';
+	import { m } from '$lib/paraglide/messages';
 
 	let {
 		archived,
@@ -40,54 +41,48 @@
 	class="fork-scrim"
 	role="button"
 	tabindex="-1"
-	aria-label="Cancel fork"
+	aria-label={m.fork_cancel_aria()}
 	onclick={oncancel}
 	onkeydown={(e) => e.key === 'Escape' && oncancel()}
 ></div>
-<div class="fork-modal" role="dialog" aria-modal="true" aria-label="Fork conversation">
+<div class="fork-modal" role="dialog" aria-modal="true" aria-label={m.fork_dialog_aria()}>
 	<Heading level={3}
 		>{extractLabel
-			? 'Fork from extract'
+			? m.fork_title_extract()
 			: archived
-				? 'Reopen as a new conversation'
-				: 'Fork conversation'}</Heading
+				? m.fork_title_reopen()
+				: m.fork_title()}</Heading
 	>
 	{#if extractLabel}
 		<Text as="p" class="fork-p fork-extract" tone="accent" size="sm">
-			Seeds the new session with {extractLabel}. Tool calls without their results are
-			trimmed so the branch resumes cleanly.
+			{m.fork_extract_desc({ label: extractLabel })}
 		</Text>
 	{:else}
 		<Text as="p" class="fork-p" tone="muted" size="sm">
-			Creates a new {isCodexSession ? 'codex thread' : 'claude session'} seeded from this
-			conversation's history. The original is left untouched. Adjust the model/effort below,
-			or keep them to fork as-is.
+			{m.fork_desc({ target: isCodexSession ? m.fork_target_codex() : m.fork_target_claude() })}
 		</Text>
 	{/if}
 	{#if !extractLabel}
 		<Text as="p" class="fork-p fork-cost" tone="muted" size="sm">
-			Your first message on the fork re-sends this conversation's history (~{compact(
-				parentTokens
-			)}
-			tokens from the parent), so the opening turn re-bills that context.
+			{m.fork_cost({ tokens: compact(parentTokens) })}
 		</Text>
 	{/if}
 	<label class="fork-field">
-		<Text class="fork-label">Model</Text>
+		<Text class="fork-label">{m.fork_model()}</Text>
 		<Select class="fork-select" bind:value={model}>
-			{#each models as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
+			{#each models as opt (opt.v)}<option value={opt.v}>{opt.label}</option>{/each}
 		</Select>
 	</label>
 	<label class="fork-field">
-		<Text class="fork-label">Effort</Text>
+		<Text class="fork-label">{m.fork_effort()}</Text>
 		<Select class="fork-select" bind:value={effort}>
-			{#each efforts as e (e)}<option value={e}>{e || 'default'}</option>{/each}
+			{#each efforts as e (e)}<option value={e}>{e || m.fork_default()}</option>{/each}
 		</Select>
 	</label>
 	<div class="fork-actions row">
-		<Button onclick={oncancel} disabled={forking}>Cancel</Button>
+		<Button onclick={oncancel} disabled={forking}>{m.common_cancel()}</Button>
 		<Button variant="primary" onclick={onsubmit} disabled={forking}>
-			{forking ? 'Forking…' : archived ? 'Reopen' : 'Fork'}
+			{forking ? m.fork_forking() : archived ? m.fork_reopen() : m.fork_fork()}
 		</Button>
 	</div>
 </div>

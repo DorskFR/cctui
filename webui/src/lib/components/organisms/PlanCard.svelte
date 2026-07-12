@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { renderMarkdown } from '$lib/markdown';
 	import { Button, Heading, Text } from '@dorsk/tsumikit';
+	import { m } from '$lib/paraglide/messages';
 
 	let {
 		plan,
@@ -21,9 +22,9 @@
 	// The continuation options, mirroring the ExitPlanMode PTY prompt order.
 	// 1-3 are digit-answerable picks; "refine" opens the free-text field.
 	const OPTIONS = [
-		{ label: 'Yes, and auto-accept edits', pick: 0 },
-		{ label: 'Yes, and manually approve edits', pick: 1 },
-		{ label: 'No, keep planning', pick: 2 }
+		{ label: m.plan_opt_auto_accept(), pick: 0 },
+		{ label: m.plan_opt_manual_approve(), pick: 1 },
+		{ label: m.plan_opt_keep_planning(), pick: 2 }
 	];
 
 	// Optimistic local lock (mirrors AskQuestionCard, CCT-190): flip the card to
@@ -56,7 +57,7 @@
 </script>
 
 <div class="plan" class:done={!live}>
-	<Heading level={3} size="sm">📋 Plan</Heading>
+	<Heading level={3} size="sm">{m.plan_heading()}</Heading>
 	<div class="plan-body">{@html renderMarkdown(plan)}</div>
 	{#if live}
 		<div class="opts">
@@ -69,19 +70,19 @@
 				<div class="refine">
 					<textarea
 						class="refine-in"
-						placeholder="Tell Claude what to change…"
+						placeholder={m.plan_refine_prompt()}
 						bind:value={refineText}
 					></textarea>
-					<Button variant="primary" disabled={!refineText.trim()} onclick={sendRefine}>Send</Button>
+					<Button variant="primary" disabled={!refineText.trim()} onclick={sendRefine}>{m.plan_send()}</Button>
 				</div>
 			{:else}
-				<Button variant="ghost" onclick={() => (refining = true)}>Tell Claude what to change…</Button>
+				<Button variant="ghost" onclick={() => (refining = true)}>{m.plan_refine_prompt()}</Button>
 			{/if}
 		</div>
 	{:else if submitted && interactive}
-		<Text as="div" class="answered" tone="muted" size="xs">Answering…</Text>
+		<Text as="div" class="answered" tone="muted" size="xs">{m.plan_answering()}</Text>
 	{:else}
-		<Text as="div" class="answered" tone="muted" size="xs">Answered.</Text>
+		<Text as="div" class="answered" tone="muted" size="xs">{m.plan_answered()}</Text>
 	{/if}
 </div>
 

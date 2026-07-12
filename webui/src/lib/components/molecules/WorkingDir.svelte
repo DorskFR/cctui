@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { Badge, truncate } from '@dorsk/tsumikit';
+	import { m } from '$lib/paraglide/messages';
 	import { copyText } from '$lib/clipboard';
 
 	// Fish-style working-dir chip, shared by the chat header and the session
@@ -98,7 +99,7 @@
 	<Badge
 		as="button"
 		{mono}
-		title="Click to copy — {path}"
+		title={m.sessions_workdir_copy_title({ path })}
 		style="display:inline-flex;align-items:center;gap:0.25em;min-width:0;max-width:100%;overflow:hidden;text-align:left"
 		onpointerdown={(e: PointerEvent) => e.stopPropagation()}
 		onclick={(e: MouseEvent) => {

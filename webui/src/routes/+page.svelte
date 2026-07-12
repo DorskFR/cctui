@@ -5,6 +5,7 @@
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
 	import { AutoGrid, Button, Card, Cluster, Heading, Stack, Text } from '@dorsk/tsumikit';
 	import { asUsage } from './home.logic';
+	import { m } from '$lib/paraglide/messages';
 
 	const users = useUsers();
 	// Aggregate counts from the server, not the capped session list — the list
@@ -15,11 +16,11 @@
 	const tokens = useTokenStats();
 
 	const tokenCards = $derived([
-		{ lbl: 'Last hour', usage: asUsage($tokens.data?.hour) },
-		{ lbl: 'Today', usage: asUsage($tokens.data?.today) },
-		{ lbl: 'Last 24h', usage: asUsage($tokens.data?.day) },
-		{ lbl: 'Last 7d', usage: asUsage($tokens.data?.week) },
-		{ lbl: 'Last 30d', usage: asUsage($tokens.data?.month) }
+		{ lbl: m.home_window_hour(), usage: asUsage($tokens.data?.hour) },
+		{ lbl: m.home_window_today(), usage: asUsage($tokens.data?.today) },
+		{ lbl: m.home_window_day(), usage: asUsage($tokens.data?.day) },
+		{ lbl: m.home_window_week(), usage: asUsage($tokens.data?.week) },
+		{ lbl: m.home_window_month(), usage: asUsage($tokens.data?.month) }
 	]);
 
 	const activeUsers = $derived(($users.data ?? []).filter((u) => !u.revoked_at).length);
@@ -30,12 +31,12 @@
 	const total = $derived($stats.data?.total ?? 0);
 
 	const statCards = $derived([
-		{ lbl: 'Live sessions', num: live },
-		{ lbl: 'Need input', num: needs, warn: needs > 0 },
-		{ lbl: 'Archived', num: archived },
-		{ lbl: 'Active users', num: activeUsers },
-		{ lbl: 'Revoked users', num: revokedUsers },
-		{ lbl: 'Total sessions', num: total }
+		{ lbl: m.home_stat_live(), num: live },
+		{ lbl: m.home_stat_needs_input(), num: needs, warn: needs > 0 },
+		{ lbl: m.home_stat_archived(), num: archived },
+		{ lbl: m.home_stat_active_users(), num: activeUsers },
+		{ lbl: m.home_stat_revoked_users(), num: revokedUsers },
+		{ lbl: m.home_stat_total_sessions(), num: total }
 	]);
 
 	const enrollCmd = $derived(
@@ -45,15 +46,15 @@
 	async function copyEnroll() {
 		try {
 			await navigator.clipboard.writeText(enrollCmd);
-			toasts.ok('Copied');
+			toasts.ok(m.common_copied());
 		} catch {
-			toasts.err('Clipboard unavailable');
+			toasts.err(m.home_clipboard_unavailable());
 		}
 	}
 </script>
 
 <Stack gap="var(--sp-6)">
-		<Heading level={1}>Overview</Heading>
+		<Heading level={1}>{m.home_overview_title()}</Heading>
 
 		<AutoGrid min="10rem" gap="var(--sp-3)" maxCols={3}>
 			{#each statCards as c (c.lbl)}
@@ -71,7 +72,7 @@
 		</AutoGrid>
 
 		<Stack gap="var(--sp-3)">
-			<Heading level={2} size="lg">Token usage</Heading>
+			<Heading level={2} size="lg">{m.home_token_usage()}</Heading>
 			<AutoGrid min="10rem" gap="var(--sp-3)"  maxCols={3}>
 				{#each tokenCards as c (c.lbl)}
 					<Card>
@@ -86,19 +87,19 @@
 
 		<Card>
 			<Stack>
-				<Text weight="bold">Enroll a machine</Text>
+				<Text weight="bold">{m.home_enroll_title()}</Text>
 				<Text as="p" tone="muted" size="sm">
-					Install <Text variant="code">cctui-daemon</Text> on the target host (from GitHub Releases), then
-					enroll it with a user token (create one on the Users page):
+					{m.home_enroll_install_before()} <Text variant="code">cctui-daemon</Text>
+					{m.home_enroll_install_after()}
 				</Text>
 				<Cluster wrap={false} align="center">
 					<!-- as="div": truncate needs a block element — text-overflow:ellipsis is
 					     ignored on an inline <span>, so the long command would spill. -->
 					<div class="cmd"><Text as="div" variant="code" truncate>{enrollCmd}</Text></div>
-					<Button onclick={copyEnroll}>Copy</Button>
+					<Button onclick={copyEnroll}>{m.common_copy()}</Button>
 				</Cluster>
 				<Text as="p" tone="muted" size="sm">
-					Then run it as a service: <Text variant="code">cctui-daemon service install</Text>
+					{m.home_enroll_run_as_service()} <Text variant="code">cctui-daemon service install</Text>
 				</Text>
 			</Stack>
 		</Card>

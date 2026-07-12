@@ -126,4 +126,27 @@ token sizes don't express, so they stay raw spans inside the nav link.
   modifiers (`.btn-icon`, `.btn-control`) that ride on the `Button` atom.
 - `src/lib/components/{atoms,molecules,organisms}/` — the component layers.
 - `src/routes/` — pages: assembly + layout only.
+
+## Localization (i18n, CCT-599)
+
+Every user-visible string goes through a **Paraglide** message function, never a
+raw literal: `import { m } from '$lib/paraglide/messages'` then `m.key()` (params
+as `m.key({ count })`). Catalogs are `messages/en.json` (base) + `messages/fr.json`;
+`src/lib/paraglide/` is generated (gitignored) and compiled by the vite plugin and
+the `paraglide` npm script (run ahead of `check`/`test`). Keys are grouped by
+surface (`sessions_`, `conversation_`, `settings_`, `common_`, …). A bad key is a
+compile error — no runtime dictionary.
+
+- **Do translate:** labels, buttons, empty states, placeholders, tooltips/titles,
+  `aria-*`, confirm dialogs, toasts, client-rendered names for server enums
+  (map the enum value to a key; never translate the raw server value).
+- **Don't translate:** logs/thrown internals, model/adapter/provider IDs, CLI/code
+  snippets, env-var names, DESIGN tokens, server-originated free text (agent output).
+- **Reactivity:** `m.*()` is reactive only when read in a reactive position. Labels
+  built once in a module-level `const` must use a `get label()` getter (see
+  `sessions.logic.ts`); the layout also remounts on a locale flip via
+  `{#key locale.current}` so component-init `const`s re-localize live.
+- Active locale resolves as `user_settings.data.locale` → localStorage → browser →
+  `en`. Feed `getLocale()` to any `Intl`/`toLocale*` call so text and formats switch
+  together. No new hardcoded literal in a component/route should pass review.
 </content>

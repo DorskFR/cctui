@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { auth } from '$lib/auth.svelte';
 	import { Button, Card, Field, Input, Text } from '@dorsk/tsumikit';
+	import { m } from '$lib/paraglide/messages';
 
 	let token = $state('');
 	let err = $state('');
@@ -16,9 +17,9 @@
 			// `HttpOnly` auth cookie (CCT-423). A bad token resolves to 401 → false.
 			// Any authenticated principal (admin, user, machine) is accepted (CCT-407).
 			const ok = await auth.login(token.trim());
-			if (!ok) err = 'Invalid or unauthorized token.';
+			if (!ok) err = m.login_invalid_token();
 		} catch {
-			err = 'Could not reach the server.';
+			err = m.login_server_unreachable();
 		} finally {
 			busy = false;
 		}
@@ -28,20 +29,20 @@
 <div class="login">
 	<Card as="form" class="stack" style="width:100%;max-width:22rem" onsubmit={submit}>
 		<Text size="xl" weight="bold" class="brand"><Text variant="code" tone="accent">»_</Text> cctui</Text>
-		<Text as="p" tone="muted">Enter an admin or user token to continue.</Text>
-		<Field label="Token" for="token">
+		<Text as="p" tone="muted">{m.login_subtitle()}</Text>
+		<Field label={m.login_token_label()} for="token">
 			<Input
 				id="token"
 				mono
 				type="password"
 				autocomplete="current-password"
-				placeholder="cctui token"
+				placeholder={m.login_token_placeholder()}
 				bind:value={token}
 			/>
 		</Field>
 		{#if err}<Text as="div" tone="danger" size="sm">{err}</Text>{/if}
 		<Button variant="primary" block type="submit" disabled={busy || !token.trim()}>
-			{#if busy}<span class="spin"></span>{:else}Sign in{/if}
+			{#if busy}<span class="spin"></span>{:else}{m.login_sign_in()}{/if}
 		</Button>
 	</Card>
 </div>

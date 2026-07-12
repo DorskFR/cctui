@@ -7,6 +7,7 @@
 	import { compact } from '$lib/format';
 	import { toasts } from '$lib/toast.svelte';
 	import type { ScrollController } from './scroll.svelte';
+	import { m } from '$lib/paraglide/messages';
 
 	let {
 		session,
@@ -121,8 +122,8 @@
 			addFiles(files);
 			toasts.ok(
 				files.length === 1
-					? `Attached ${files[0].name}`
-					: `Attached ${files.length} files from clipboard`
+					? m.composer_attached_file({ name: files[0].name })
+					: m.composer_attached_files_clipboard({ count: files.length })
 			);
 			return;
 		}
@@ -132,7 +133,7 @@
 		const name = `paste-${pasteCounter++}.txt`;
 		addFiles([new File([text], name, { type: 'text/plain' })]);
 		const lines = text.split('\n').length;
-		toasts.ok(`Large paste attached as ${name} (${lines} lines)`);
+		toasts.ok(m.composer_large_paste({ name, lines }));
 	}
 
 	// ── Cold-cache Send button (CCT-189) ───────────────────────────────────
@@ -214,7 +215,7 @@
 				body = text ? `${text}\n\n${header}\n${list}` : `${header}\n${list}`;
 				attachments = [];
 			} catch (e) {
-				toasts.err(`Attachment upload failed: ${(e as Error).message}`);
+				toasts.err(m.composer_attachment_upload_failed({ message: (e as Error).message }));
 				return;
 			} finally {
 				uploading = false;
@@ -303,11 +304,11 @@
 <div class="composer" class:dropping={dragActive}>
 	{#if archived}
 		<div class="archived-actions">
-			<div class="hint"><Text tone="muted" size="sm">Session archived (read-only).</Text></div>
+			<div class="hint"><Text tone="muted" size="sm">{m.composer_archived_readonly()}</Text></div>
 			<span class="archived-actions-btns">
-				<Button onclick={onNewFromScript}>New from same script</Button>
-				<Button onclick={onFork}>Fork</Button>
-				<Button variant="primary" onclick={onResume}>Resume</Button>
+				<Button onclick={onNewFromScript}>{m.composer_new_from_script()}</Button>
+				<Button onclick={onFork}>{m.composer_fork()}</Button>
+				<Button variant="primary" onclick={onResume}>{m.composer_resume()}</Button>
 			</span>
 		</div>
 	{:else}
@@ -323,7 +324,7 @@
 				<!-- File picker (CCT-236). Drag-and-drop onto the conversation pane also
 				     adds attachments. Icon-only: the label is hidden (a11y-only) so the
 				     control stays a compact square matching the textarea/Send height. -->
-				<FileButton label="Attach files" multiple iconOnly onfiles={addFiles} />
+				<FileButton label={m.composer_attach_files()} multiple iconOnly onfiles={addFiles} />
 			{/if}
 			<!-- Starts at one row (Textarea's baked-in min-height) and grows with
 			     content (autoresize). The top handle drags a min-height floor so
@@ -335,10 +336,10 @@
 					autoresize
 					resize="top"
 					placeholder={dragActive
-						? 'Drop files to attach'
+						? m.composer_drop_files()
 						: coarsePointer
-							? 'Message…'
-							: 'Message… (Enter to send)'}
+							? m.composer_placeholder_message()
+							: m.composer_placeholder_message_enter()}
 					bind:value={input}
 					bind:el={scroll.textarea}
 					onkeydown={onKey}
@@ -359,16 +360,18 @@
 				onclick={send}
 				title={cacheCold
 					? burstTokens
-						? `Prompt cache is cold — the next send re-writes ~${compact(burstTokens)} tokens to cache`
-						: 'Prompt cache is cold — the next send re-bills the full context'
+						? m.composer_cache_cold_burst({ tokens: compact(burstTokens) })
+						: m.composer_cache_cold()
 					: coldImminent
-						? 'Prompt cache goes cold soon — send now to keep it warm'
+						? m.composer_cache_imminent()
 						: undefined}
 			>
-				{#if uploading}Uploading…{:else if coldImminent}Send (<span class="countdown"
-						>{coldCountdownSecs}s</span
-					>){:else if cacheCold && burstTokens}Send ❄️ ~{compact(burstTokens)}{:else if cacheCold}Send
-					❄️{:else}Send{/if}
+				{#if uploading}{m.composer_uploading()}{:else if coldImminent}{m.composer_send()} (<span
+						class="countdown">{coldCountdownSecs}s</span
+					>){:else if cacheCold && burstTokens}{m.composer_send()} ❄️ ~{compact(
+						burstTokens
+					)}{:else if cacheCold}{m.composer_send()}
+					❄️{:else}{m.composer_send()}{/if}
 			</Button>
 		</div>
 	{/if}

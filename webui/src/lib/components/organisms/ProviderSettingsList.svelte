@@ -10,6 +10,7 @@
 	// same choices. The raw-JSON box stays as the escape hatch for allowlisted
 	// non-curated keys.
 	import { Button, Input, Text } from '@dorsk/tsumikit';
+	import { m } from '$lib/paraglide/messages';
 	import Error from '$lib/components/atoms/Error.svelte';
 	import SegmentedControl from '$lib/components/molecules/SegmentedControl.svelte';
 	import { useSettingsCatalog } from '$lib/queries';
@@ -44,13 +45,13 @@
 	}
 
 	const TRI = [
-		{ value: '', label: 'Default' },
-		{ value: 'true', label: 'On' },
-		{ value: 'false', label: 'Off' }
+		{ value: '', label: m.providers_opt_default() },
+		{ value: 'true', label: m.providers_opt_on() },
+		{ value: 'false', label: m.providers_opt_off() }
 	];
 	const FLAG = [
-		{ value: '', label: 'Default' },
-		{ value: '1', label: 'On' }
+		{ value: '', label: m.providers_opt_default() },
+		{ value: '1', label: m.providers_opt_on() }
 	];
 
 	const catalog = useSettingsCatalog();
@@ -185,7 +186,7 @@
 		}
 	}
 	function enumOptions(k: Knob) {
-		return [{ value: '', label: 'Default' }, ...(k.values ?? []).map((v) => ({ value: v, label: v }))];
+		return [{ value: '', label: m.providers_opt_default() }, ...(k.values ?? []).map((v) => ({ value: v, label: v }))];
 	}
 
 	// --- advanced raw-JSON escape hatch ---------------------------------------
@@ -199,21 +200,21 @@
 		try {
 			parsed = JSON.parse(text);
 		} catch (e) {
-			rawError = `Invalid JSON: ${(e as globalThis.Error).message}`;
+			rawError = m.providers_raw_invalid_json({ message: (e as globalThis.Error).message });
 			return;
 		}
 		if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-			rawError = 'Settings must be a JSON object.';
+			rawError = m.providers_raw_must_be_object();
 			return;
 		}
 		const obj = parsed as Record<string, unknown>;
 		if (!$catalog.data) {
-			rawError = 'Settings catalog is still loading — try again in a moment.';
+			rawError = m.providers_raw_catalog_loading();
 			return;
 		}
 		const bad = Object.keys(obj).filter((k) => !keyNames.has(k));
 		if (bad.length) {
-			rawError = `Not settable per-account (MANAGED/SYSTEM/unknown): ${bad.join(', ')}`;
+			rawError = m.providers_raw_not_settable({ keys: bad.join(', ') });
 			return;
 		}
 		settings = { ...settings, ...obj };
@@ -248,17 +249,16 @@
 
 <div class="settings-editor">
 	<div class="head">
-		<Text as="div" weight="semibold" size="sm">Provider settings</Text>
-		<Button onclick={applyQuietDefaults} disabled={!$catalog.data}>Quiet defaults</Button>
+		<Text as="div" weight="semibold" size="sm">{m.providers_settings_title()}</Text>
+		<Button onclick={applyQuietDefaults} disabled={!$catalog.data}>{m.providers_quiet_defaults()}</Button>
 	</div>
 	<Text as="p" tone="faint" size="xs">
-		Applied to every session run under this provider. Curated settings and
-		environment share one list; the server rejects org-managed keys.
+		{m.providers_settings_help()}
 	</Text>
 
 	{#if !$catalog.data}
 		<Text as="div" tone="faint" size="xs">
-			{$catalog.error ? 'Failed to load the settings catalog.' : 'Loading settings catalog…'}
+			{$catalog.error ? m.providers_catalog_load_failed() : m.providers_catalog_loading()}
 		</Text>
 	{:else}
 		{#each groups as group (group.title)}
@@ -269,7 +269,7 @@
 						<div class="knob-meta">
 							<Text as="div" size="sm">
 								{k.label}
-								{#if k.care}<span class="care" title="Has caveats — set with care">care</span>{/if}
+								{#if k.care}<span class="care" title={m.providers_care_title()}>{m.providers_care()}</span>{/if}
 							</Text>
 							<div class="knob-sub"><Text as="span" tone="faint" size="xs">{k.sub}</Text></div>
 						</div>
@@ -301,7 +301,7 @@
 									oninput={(e: Event) => setKnob(k, (e.currentTarget as HTMLInputElement).value)}
 									type={k.control === 'number' ? 'number' : 'text'}
 									mono
-									placeholder="Default"
+									placeholder={m.providers_opt_default()}
 									aria-label={k.label}
 								/>
 							{/if}
@@ -312,18 +312,17 @@
 		{/each}
 
 		<div class="group">
-			<Text as="div" tone="muted" size="sm">Advanced settings (raw JSON)</Text>
+			<Text as="div" tone="muted" size="sm">{m.providers_advanced_title()}</Text>
 			<Text as="div" tone="faint" size="xs">
-				Paste a settings.json fragment to merge in additional allowlisted keys
-				(e.g. <Text variant="code">"editorMode": "vim"</Text>). MANAGED/SYSTEM keys
-				are rejected.
+				{m.providers_advanced_help_before()}
+				<Text variant="code">"editorMode": "vim"</Text>{m.providers_advanced_help_after()}
 			</Text>
 			{#if advancedEntries.length}
 				<div class="adv-list">
 					{#each advancedEntries as [k, v] (k)}
 						<div class="adv-item">
 							<Text variant="code" size="xs">{k}: {JSON.stringify(v)}</Text>
-							<Button onclick={() => clearAdvancedKey(k)} aria-label={`Remove ${k}`}>✕</Button>
+							<Button onclick={() => clearAdvancedKey(k)} aria-label={m.providers_remove_key_aria({ key: k })}>✕</Button>
 						</div>
 					{/each}
 				</div>
@@ -335,7 +334,7 @@
 				onkeydown={(e: KeyboardEvent) => e.key === 'Enter' && applyRawJson()}
 			/>
 			{#if rawError}<Error>{rawError}</Error>{/if}
-			<Button onclick={applyRawJson} disabled={!rawJson.trim()}>Merge JSON</Button>
+			<Button onclick={applyRawJson} disabled={!rawJson.trim()}>{m.providers_merge_json()}</Button>
 		</div>
 	{/if}
 </div>

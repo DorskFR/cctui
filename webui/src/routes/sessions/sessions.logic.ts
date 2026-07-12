@@ -6,30 +6,31 @@ import type { SessionListItem } from '@bindings/SessionListItem';
 import { SYSTEM_MACHINE_KINDS } from '$lib/queries';
 import { hashHue } from '$lib/format';
 import { labelHue } from '$lib/labels';
+import { m } from '$lib/paraglide/messages';
 
 // ── View picker (CCT-307) ───────────────────────────────────────────────────
 // The 4 explicit layout × density combinations offered by the view picker.
 export const VIEW_OPTIONS = [
-	{ value: 'list-compact', label: 'List · Compact', card: false, dense: true },
-	{ value: 'list-detailed', label: 'List · Detailed', card: false, dense: false },
-	{ value: 'card-compact', label: 'Card · Compact', card: true, dense: true },
-	{ value: 'card-detailed', label: 'Card · Detailed', card: true, dense: false },
+	{ value: 'list-compact', get label() { return m.sessions_view_list_compact(); }, card: false, dense: true },
+	{ value: 'list-detailed', get label() { return m.sessions_view_list_detailed(); }, card: false, dense: false },
+	{ value: 'card-compact', get label() { return m.sessions_view_card_compact(); }, card: true, dense: true },
+	{ value: 'card-detailed', get label() { return m.sessions_view_card_detailed(); }, card: true, dense: false },
 	// Kanban (CCT-579) needs a flag of its own: its card×dense pair collides with card-compact.
-	{ value: 'kanban', label: 'Kanban', card: true, dense: true }
+	{ value: 'kanban', get label() { return m.sessions_view_kanban(); }, card: true, dense: true }
 ] as const;
 
 // ── Section filter (CCT-322 / CCT-345) ──────────────────────────────────────
 export type Section = 'starred' | 'live' | 'dispatched' | 'drafts' | 'archived' | 'unread';
 export const SECTIONS: { value: Section; label: string; icon: 'star' | 'live' | 'send' | 'file-text' | 'archive' | 'bell' }[] = [
-	{ value: 'starred', label: 'Starred', icon: 'star' },
-	{ value: 'live', label: 'Live', icon: 'live' },
-	{ value: 'dispatched', label: 'Dispatched', icon: 'send' },
+	{ value: 'starred', get label() { return m.sessions_section_starred(); }, icon: 'star' },
+	{ value: 'live', get label() { return m.sessions_section_live(); }, icon: 'live' },
+	{ value: 'dispatched', get label() { return m.sessions_dispatched(); }, icon: 'send' },
 	// Draft/staged sessions (CCT-394) — buffered spawns not yet launched.
-	{ value: 'drafts', label: 'Drafts', icon: 'file-text' },
-	{ value: 'archived', label: 'Archived', icon: 'archive' },
+	{ value: 'drafts', get label() { return m.sessions_section_drafts(); }, icon: 'file-text' },
+	{ value: 'archived', get label() { return m.sessions_section_archived(); }, icon: 'archive' },
 	// Unread (CCT-580): a cross-cutting AND-filter (unread_count > 0), not an
 	// ownership bucket — it narrows whatever buckets are shown.
-	{ value: 'unread', label: 'Unread', icon: 'bell' }
+	{ value: 'unread', get label() { return m.sessions_section_unread(); }, icon: 'bell' }
 ];
 export const isSection = (v: string): v is Section =>
 	v === 'starred' ||
@@ -104,7 +105,7 @@ export function groupChildren(kids: SessionListItem[]): SubGroup[] {
 		groups.push({
 			key: 'plain',
 			runId: null,
-			label: 'subagents',
+			label: m.sessions_subagents(),
 			agents: plain,
 			running: runningCount(plain)
 		});
@@ -113,7 +114,7 @@ export function groupChildren(kids: SessionListItem[]): SubGroup[] {
 		groups.push({
 			key: `wf:${runId}`,
 			runId,
-			label: g.name ? `Workflow: ${g.name}` : 'Workflow',
+			label: g.name ? m.sessions_workflow_named({ name: g.name }) : m.sessions_workflow(),
 			agents: g.agents,
 			running: runningCount(g.agents)
 		});
@@ -212,12 +213,12 @@ export const groupId = (parentId: string, key: string) => `${parentId}/${key}`;
 export type GroupKey = SessionListItem['bucket'] | 'dispatched' | 'pinned';
 export const BUCKETS: { key: GroupKey; label: string }[] = [
 	// Pinned/starred sessions (CCT-267) float above every bucket.
-	{ key: 'pinned', label: 'Pinned' },
-	{ key: 'blocked', label: 'Needs input' },
-	{ key: 'review', label: 'Ready for review' },
-	{ key: 'working', label: 'Working' },
-	{ key: 'done', label: 'Completed' },
-	{ key: 'dispatched', label: 'Dispatched' }
+	{ key: 'pinned', get label() { return m.sessions_bucket_pinned(); } },
+	{ key: 'blocked', get label() { return m.sessions_bucket_blocked(); } },
+	{ key: 'review', get label() { return m.sessions_bucket_review(); } },
+	{ key: 'working', get label() { return m.sessions_bucket_working(); } },
+	{ key: 'done', get label() { return m.sessions_bucket_done(); } },
+	{ key: 'dispatched', get label() { return m.sessions_dispatched(); } }
 ];
 export const isDispatched = (s: SessionListItem) =>
 	s.machine_kind != null && SYSTEM_MACHINE_KINDS.has(s.machine_kind);
@@ -350,10 +351,10 @@ export const inEnabledSections = (s: SessionListItem, sections: Set<Section>): b
 // ── Kanban board (CCT-579) ──────────────────────────────────────────────────
 export type KanbanCol = 'drafts' | 'blocked' | 'working' | 'done';
 export const KANBAN_COLS: { key: KanbanCol; label: string }[] = [
-	{ key: 'drafts', label: 'Drafts' },
-	{ key: 'blocked', label: 'Needs input' },
-	{ key: 'working', label: 'Working' },
-	{ key: 'done', label: 'Completed' }
+	{ key: 'drafts', get label() { return m.sessions_section_drafts(); } },
+	{ key: 'blocked', get label() { return m.sessions_bucket_blocked(); } },
+	{ key: 'working', get label() { return m.sessions_bucket_working(); } },
+	{ key: 'done', get label() { return m.sessions_bucket_done(); } }
 ];
 
 // Pinned rows classify by raw `bucket`, not `groupOf` (which short-circuits to
@@ -370,10 +371,10 @@ export function kanbanColOf(s: SessionListItem): KanbanCol | null {
 // ── Color / group dimension (CCT-466 color · CCT-467 group) ──────────────────
 export type Dimension = 'none' | 'label' | 'working_dir' | 'machine';
 export const DIMENSIONS: { value: Dimension; label: string }[] = [
-	{ value: 'none', label: 'None' },
-	{ value: 'label', label: 'Label' },
-	{ value: 'working_dir', label: 'Working dir' },
-	{ value: 'machine', label: 'Machine' }
+	{ value: 'none', get label() { return m.common_none(); } },
+	{ value: 'label', get label() { return m.sessions_dim_label(); } },
+	{ value: 'working_dir', get label() { return m.sessions_dim_working_dir(); } },
+	{ value: 'machine', get label() { return m.sessions_dim_machine(); } }
 ];
 export const isDimension = (v: string): v is Dimension =>
 	v === 'none' || v === 'label' || v === 'working_dir' || v === 'machine';

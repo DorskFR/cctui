@@ -5,6 +5,7 @@
 import type { AgentEvent } from '@bindings/AgentEvent';
 import { userMsgKey } from '$lib/ws.svelte';
 import { prettyJson } from '$lib/markdown';
+import { m } from '$lib/paraglide/messages';
 import type { AskQuestion, Line } from './types';
 
 // Some "user" turns are really harness/system messages directed at the agent
@@ -165,11 +166,11 @@ export function formatToolInput(
 export function lineMarkdown(ln: Line): string {
 	const t = ln.text ?? '';
 	if (ln.role === 'tool') {
-		const label = ln.tool ? `**${ln.mcp ? 'MCP' : 'Tool'} · ${ln.tool}**\n\n` : '';
+		const label = ln.tool ? `**${ln.mcp ? 'MCP' : m.turn_tool_label()} · ${ln.tool}**\n\n` : '';
 		return `${label}\`\`\`${ln.lang ?? ''}\n${t}\n\`\`\``;
 	}
 	if (ln.role === 'result') {
-		const label = ln.tool ? `**Result · ${ln.tool}**\n\n` : '';
+		const label = ln.tool ? `**${m.turn_result_label()} · ${ln.tool}**\n\n` : '';
 		return `${label}\`\`\`\n${t}\n\`\`\``;
 	}
 	return t;

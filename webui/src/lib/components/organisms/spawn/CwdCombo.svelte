@@ -6,6 +6,7 @@
 	// Dotdirs surface only once the typed segment starts with a dot.
 	import { useMachineDirs } from '$lib/queries';
 	import { Field, Input, Select } from '@dorsk/tsumikit';
+	import { m } from '$lib/paraglide/messages';
 
 	let {
 		machineId,
@@ -69,15 +70,15 @@
 	}
 </script>
 
-<Field label="Working directory" for="sp-cwd">
+<Field label={m.spawn_cwd_label()} for="sp-cwd">
 	{#if recentDirs.length}
 		<Select
 			class="mono"
-			aria-label="Recent directories"
+			aria-label={m.spawn_cwd_recent_aria()}
 			value={recentDirs.includes(value) ? value : ''}
 			onchange={(e: Event) => (value = (e.currentTarget as HTMLSelectElement).value)}
 		>
-			<option value="">Recent directories…</option>
+			<option value="">{m.spawn_cwd_recent_placeholder()}</option>
 			{#each recentDirs as d (d)}<option value={d}>{d}</option>{/each}
 		</Select>
 	{/if}
@@ -94,7 +95,7 @@
 			onkeydown={cwdKeydown}
 		/>
 		{#if cwdFocused && cwdSuggestions.length}
-			<ul class="cwd-suggestions" role="listbox" aria-label="Directory suggestions">
+			<ul class="cwd-suggestions" role="listbox" aria-label={m.spawn_cwd_suggestions_aria()}>
 				{#each cwdSuggestions as d, i (d)}
 					<!-- svelte-ignore a11y_click_events_have_key_events -->
 					<li

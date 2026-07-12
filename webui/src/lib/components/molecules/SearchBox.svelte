@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { Input, IconButton } from '@dorsk/tsumikit';
+	import { m } from '$lib/paraglide/messages';
 
 	// The sessions toolbar search field: a control-height search input with an
 	// in-field clear cross (CCT-297 #22). `value` is bindable so the parent owns
@@ -7,7 +8,7 @@
 	// button — lives here.
 	let {
 		value = $bindable(''),
-		placeholder = 'Search all chats…'
+		placeholder = m.misc_search_all_chats_placeholder()
 	}: { value?: string; placeholder?: string } = $props();
 
 	let el = $state<HTMLInputElement | null>(null);
@@ -35,8 +36,8 @@
 			class="search-clear"
 			icon="x"
 			size={13}
-			label="Clear search"
-			title="Clear search"
+			label={m.misc_clear_search()}
+			title={m.misc_clear_search()}
 			onmousedown={(e: MouseEvent) => e.preventDefault()}
 			onclick={() => {
 				value = '';

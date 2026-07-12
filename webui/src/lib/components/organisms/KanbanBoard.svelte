@@ -2,6 +2,7 @@
 	import type { Snippet } from 'svelte';
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import { Text } from '@dorsk/tsumikit';
+	import { m } from '$lib/paraglide/messages';
 
 	type Column = { key: string; label: string; sessions: SessionListItem[] };
 	let { columns, card }: { columns: Column[]; card: Snippet<[SessionListItem]> } = $props();
@@ -15,7 +16,7 @@
 			</div>
 			<div class="col-body">
 				{#if col.sessions.length === 0}
-					<div class="col-empty"><Text size="sm" tone="muted">Nothing here</Text></div>
+					<div class="col-empty"><Text size="sm" tone="muted">{m.sessions_kanban_empty()}</Text></div>
 				{:else}
 					{#each col.sessions as s (s.id)}
 						{@render card(s)}

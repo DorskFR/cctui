@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { Tooltip } from '@dorsk/tsumikit';
+	import { m } from '$lib/paraglide/messages';
 
 	// Which OAuth account a session runs under (CCT-430). A compact key glyph
 	// shown next to the machine/session name; the full account name is revealed
@@ -14,7 +15,7 @@
 </script>
 
 {#if name}
-	<Tooltip text={onclick ? `account: ${name} — click to switch` : `account: ${name}`}>
+	<Tooltip text={onclick ? m.sessions_account_switch_tip({ name }) : m.sessions_account_tip({ name })}>
 		{#snippet trigger()}
 			<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 			<!-- role + tabindex are applied together only when `onclick` is set, so the
@@ -24,7 +25,7 @@
 				class:clickable={!!onclick}
 				role={onclick ? 'button' : undefined}
 				tabindex={onclick ? 0 : undefined}
-				aria-label={onclick ? `Switch account (currently ${name})` : `account: ${name}`}
+				aria-label={onclick ? m.sessions_account_switch_aria({ name }) : m.sessions_account_tip({ name })}
 				{onclick}
 				onkeydown={onclick
 					? (e: KeyboardEvent) => {

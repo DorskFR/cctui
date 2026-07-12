@@ -11,6 +11,7 @@ import { toasts } from '$lib/toast.svelte';
 import { ws } from '$lib/ws.svelte';
 import { clearSessionStorage } from '$lib/drafts';
 import { downloadConversationHtml, conversationToMarkdown } from '$lib/export';
+import { m } from '$lib/paraglide/messages';
 
 // The slice of useSessionActions() this hook drives. Kept structural so the
 // drawer can pass the query mutations straight through.
@@ -45,7 +46,7 @@ export class SessionActions {
 	rename = async (name: string) => {
 		try {
 			await this.#opts.actions.rename(this.#opts.id(), name);
-			toasts.ok('Renamed');
+			toasts.ok(m.conversation_renamed());
 		} catch (e) {
 			toasts.err((e as Error).message);
 		}
@@ -59,7 +60,7 @@ export class SessionActions {
 			// and stop tracking any in-flight/failed sends so auto-retry doesn't run.
 			clearSessionStorage(s.id);
 			ws.clearDelivery(s.id);
-			toasts.ok('Archived');
+			toasts.ok(m.conversation_archived_toast());
 			this.#opts.onclose();
 		} catch (e) {
 			toasts.err((e as Error).message);
@@ -76,11 +77,11 @@ export class SessionActions {
 			// a short wait suffices.
 			const ack = await ws.awaitCommand(res.command_id, 8_000);
 			if (ack.ok) {
-				toasts.ok('Interrupted');
+				toasts.ok(m.conversation_interrupted());
 			} else if (ack.timedOut) {
-				toasts.push('Interrupt sent — no confirmation yet', 'info');
+				toasts.push(m.conversation_interrupt_unconfirmed(), 'info');
 			} else {
-				toasts.err(ack.error ?? 'Interrupt not acknowledged');
+				toasts.err(ack.error ?? m.conversation_interrupt_failed());
 			}
 		} catch (e) {
 			toasts.err((e as Error).message);
@@ -108,7 +109,7 @@ export class SessionActions {
 	resume = async () => {
 		try {
 			await this.#opts.actions.resume(this.#opts.id());
-			toasts.ok('Resume dispatched');
+			toasts.ok(m.conversation_resume_dispatched());
 			this.#opts.onclose();
 		} catch (e) {
 			toasts.err((e as Error).message);
@@ -124,11 +125,11 @@ export class SessionActions {
 			const res = await this.#opts.actions.setModel(this.#opts.id(), model, effort);
 			const ack = await ws.awaitCommand(res.command_id, 8_000);
 			if (ack.ok) {
-				toasts.ok('Model updated');
+				toasts.ok(m.conversation_model_updated());
 			} else if (ack.timedOut) {
-				toasts.push('Model change sent — no confirmation yet', 'info');
+				toasts.push(m.conversation_model_unconfirmed(), 'info');
 			} else {
-				toasts.err(ack.error ?? 'Model change not acknowledged');
+				toasts.err(ack.error ?? m.conversation_model_failed());
 			}
 		} catch (e) {
 			toasts.err((e as Error).message);
@@ -149,7 +150,7 @@ export class SessionActions {
 	export = () => {
 		try {
 			downloadConversationHtml(this.#opts.session(), this.#opts.events(), this.#opts.view());
-			toasts.ok('Transcript downloaded');
+			toasts.ok(m.conversation_transcript_downloaded());
 		} catch (e) {
 			toasts.err((e as Error).message);
 		}
@@ -161,9 +162,9 @@ export class SessionActions {
 		try {
 			const md = conversationToMarkdown(this.#opts.session(), this.#opts.events(), this.#opts.view());
 			await navigator.clipboard.writeText(md);
-			toasts.ok('Copied as Markdown');
+			toasts.ok(m.conversation_copied_markdown());
 		} catch (e) {
-			toasts.err(`Copy failed: ${(e as Error).message}`);
+			toasts.err(m.conversation_copy_failed({ message: (e as Error).message }));
 		}
 	};
 
@@ -172,7 +173,7 @@ export class SessionActions {
 		const url = `${location.origin}/sessions?session=${this.#opts.id()}`;
 		try {
 			await navigator.clipboard.writeText(url);
-			toasts.ok('Link copied');
+			toasts.ok(m.conversation_link_copied());
 		} catch {
 			toasts.err(url);
 		}
