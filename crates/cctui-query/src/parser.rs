@@ -102,12 +102,8 @@ fn raw_lex(input: &str) -> Vec<RawTok> {
     out
 }
 
-const OPS: &[(&str, OpCode)] = &[
-    ("!=", OpCode::NotEq),
-    ("!:", OpCode::NotContains),
-    ("=", OpCode::Eq),
-    (":", OpCode::Colon),
-];
+const OPS: &[(&str, OpCode)] =
+    &[("!=", OpCode::NotEq), ("!:", OpCode::NotContains), ("=", OpCode::Eq), (":", OpCode::Colon)];
 
 /// Find the earliest operator code in the first unquoted run of a word, so
 /// `title:"a b"` splits on the `:` but `"title:x"` stays free text.
@@ -266,8 +262,7 @@ fn field_leaf(field: &str, op: OpCode, raw_values: Vec<String>) -> Node {
         (OpCode::Eq, _) => FilterOp::Eq,
         (OpCode::Colon | OpCode::NotEq | OpCode::NotContains, _) => def.default_op,
     };
-    let node =
-        Node::Filter { filter: Filter { field: def.name.to_string(), op: ast_op, values } };
+    let node = Node::Filter { filter: Filter { field: def.name.to_string(), op: ast_op, values } };
     if matches!(op, OpCode::NotEq | OpCode::NotContains) {
         Node::Not { child: Box::new(node) }
     } else {
