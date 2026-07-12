@@ -9,7 +9,7 @@ It is a **Svelte 5 + Vite** single-page app, built to run standalone against the
 backend today and to mount into `cctui-ui` in **CCT-610**. It shares webui's
 tooling (Svelte 5 runes, `@tanstack/svelte-query`, biome, vitest) and owns its own
 minimal CSS with design tokens (every color is a CSS custom property in
-`src/app.css`; **CCT-607** formalizes themes and syntax palettes).
+`src/app.css`; **CCT-607** formalized four themes and syntax palettes).
 
 ## Run standalone against the backend
 
@@ -49,9 +49,9 @@ bun run test        # vitest only
   GitHub-payload narrowing (`types.ts`). Envelopes' `payload` is narrowed with
   hand-written minimal GitHub-shaped interfaces (no octokit dependency pulled in).
 - **SSE** (`api/sse.ts`) — subscribes to `/v1/events` and turns each change hint
-  (`pr.updated` / `notification.*` / `sync.status`) into tanstack cache
-  invalidations. **No polling in the UI.** `sseActions()` is a pure map that is
-  unit-tested; the EventSource wiring is a thin shell around it.
+  (`pr.updated` / `pr.viewed_state.updated` / `notification.*` / `sync.status`) into
+  tanstack cache invalidations. **No polling in the UI.** `sseActions()` is a pure
+  map that is unit-tested; the EventSource wiring is a thin shell around it.
 - **Router** (`src/lib/router/`) — a tiny history router. Routes mirror GitHub:
   `/` (PR list + filters), `/inbox` (notifications), `/bookmarklet`, and
   `/:owner/:repo/pull/:number` (PR view). `parseRoute()` is pure/tested.
@@ -66,8 +66,115 @@ bun run test        # vitest only
   numbers and first-class file/hunk rows; `navindex.ts` pre-computes the
   file/hunk navigation index (O(1) j/k stepping); `virtual.ts` is the fixed-row
   windowing math; `renderer.ts` is the **`DiffRenderer` seam** — the DOM renderer
-  (`components/DiffView.svelte`) is registered today, and **CCT-608**'s canvas pane
-  registers a `kind: "canvas"` renderer behind the same interface.
+  (`components/DiffView.svelte`) and **CCT-608**'s canvas pane
+  (`components/CanvasDiffView.svelte`) both register behind the same interface and
+  are swappable at runtime (see **Canvas diff pane** below).
+- **Viewed state** (`src/lib/diff/tree.ts`, `collapse.ts`, `api/viewed.ts`) —
+  **CCT-609**. `buildFileTree()` turns the flat file list into a nested,
+  single-child-compressed directory tree; `FileTree.svelte` renders per-file and
+  per-folder checkboxes with `n/m` progress (a folder toggle cascades to every file
+  beneath). Marking a file viewed collapses it in **both** renderers via
+  `collapseViewedFiles()`, a pure row-model transform that drops a viewed file's body
+  rows and leaves a "viewed — N lines hidden" header stub (clicking the file in the
+  tree peek-expands it). State comes from `GET …/pulls/{n}/viewed` via tanstack query
+  and live `pr.viewed_state.updated` SSE; toggles are optimistic
+  (`applyOptimisticViewed`) with rollback on error. `tree.ts`, `collapse.ts` and
+  `viewed.ts` are pure and fully unit-tested.
+
+## Themes (CCT-607)
+
+Four first-class themes, selected by a `data-theme` attribute on `<html>`:
+**dark** (default, matches cctui), **light**, **colorblind-dark**,
+**colorblind-light**. `src/lib/theme/theme.ts` owns selection: the resolved theme
+is an explicit `localStorage` choice (`ghreview:theme`), else `prefers-color-scheme`,
+else dark. `initTheme()` applies it in `main.ts` before mount (no flash); the top-bar
+`<select>` persists changes via `setTheme()`.
+
+All colors are CSS custom properties in `src/app.css`, grouped in semantic tiers:
+
+- **Chrome** — surface (`--gh-bg`, `--gh-bg-elev`, `--gh-bg-inset`), text
+  (`--gh-fg`, `--gh-fg-muted`, `--gh-fg-subtle`), border, accent, status.
+- **Diff** — `--gh-diff-{add,del,context}-{bg,fg}`, `--gh-diff-gutter-{bg,fg}`,
+  `--gh-diff-hunk-{bg,fg}`, plus non-color encoding: `--gh-diff-{add,del}-edge`
+  (left bar) and `--gh-diff-{add,del}-glyph` (the always-rendered `+`/`−` gutter
+  markers). Colorblind themes swap red/green for a blue/orange (deuteranopia/
+  protanopia-safe) palette; the edge bar + glyph mean add/remove never rely on hue.
+- **Syntax** — an 8-color scale `--gh-syn-{keyword,string,number,comment,function,`
+  `variable,type,punctuation}` per theme, stable hooks for the deferred highlighter.
+
+**Tokens contract for renderers.** The DOM renderer (`DiffView.svelte`) styles
+itself with these CSS variables directly and hardcodes no colors. CCT-608's canvas
+renderer cannot reference CSS variables, so it reads identical values through
+`themeTokens()` (`src/lib/theme/theme.ts`) — a computed-style accessor returning the
+diff + syntax tokens as concrete color strings. Both renderers therefore draw from
+one source of truth; adding a color means adding a token, not a literal.
+
+WCAG AA (≥4.5:1) is enforced by `src/lib/theme/contrast.test.ts`, which parses the
+`data-theme` blocks out of `app.css` and asserts text and diff fg/bg pairs across all
+four themes (hex→luminance helper in `contrast.ts`).
+
+## Canvas diff pane (CCT-608)
+
+A second diff renderer paints the diff surface onto a **Canvas 2D** context instead
+of DOM rows, for locked-60fps fling-scroll on 10k+ line diffs. It registers behind
+the same `DiffRenderer` seam as the DOM baseline, so it is a swap, not a fork.
+
+**Toggle.** The PR header has a **DOM / Canvas** switch. The choice persists to
+`localStorage` (`ghreview:renderer`) and **DOM stays the default** until canvas has
+proven itself in the field. Switching remounts the diff (`{#key}`); scroll position
+and the nav index are interchangeable because both renderers key off the same row
+height (`ROW_HEIGHT` in `src/lib/diff/canvas/layout.ts`, imported by `DiffView.svelte`).
+
+**Architecture** (`src/lib/diff/canvas/`):
+
+- `layout.ts` — the shared geometry: row height, gutter/marker/code column x-bounds,
+  `rowTop`/`rowAtY`, `hitTest` (pixel → row + region + file/hunk), `anchorScreenY`
+  (overlay anchor that tracks scroll and zoom), and scroll clamp/reveal math. This is
+  the single source of truth the DOM renderer, canvas paint, hit-testing, and the
+  comment overlay all read, so positions never drift between them.
+- `paint.ts` — a **pure** `paint(ctx, params)` that draws only the virtualized window
+  (visible rows + overscan) from the shared flat row model. It is
+  devicePixelRatio-aware (`setTransform(dpr,…)`) and reads every color from
+  `themeTokens()` (CCT-607) — no hardcoded colors. `ctx` is typed as a structural
+  subset (`Ctx2D`) satisfied by both `CanvasRenderingContext2D` and
+  `OffscreenCanvasRenderingContext2D`, which is what lets the same draw code run on the
+  main thread and in the worker.
+- `paint.worker.ts` — receives an `OffscreenCanvas` via `transferControlToOffscreen()`
+  and calls the same `paint()` off the main thread. `CanvasDiffView.svelte` uses the
+  worker where supported and **falls back to a main-thread 2D context on Safari** (no
+  OffscreenCanvas), transparently.
+- `selection.ts` — line + line-range selection math and the `SelectionEvent` emitted
+  through the `DiffRenderer` seam (`onSelectRange`), plus `rangeToClipboardText`.
+
+**Interactions.** Wheel/pointer/touch scroll with rAF-driven momentum (fling); drag on
+the gutter selects a line range and opens a minimal DOM-overlay **comment draft** widget
+anchored to the range (the full review-submit UX is a later ticket; the overlay seam is
+in place). Click focuses a row (same `onFocusRow` the DOM renderer emits). Keyboard nav
+from `PrView` scrolls the canvas via the shared reveal math.
+
+**Text selection trade-off.** Canvas has no native text selection. Range selection +
+**range copy** is provided instead (`Cmd/Ctrl+C` with a range selected, or the draft
+widget's *Copy lines*), reconstructing unified-diff prefixes. Character-level in-canvas
+selection is intentionally out of scope; the DOM renderer remains available for anyone
+who needs OS-native selection.
+
+**Comment overlay.** Comment widgets live in a DOM layer above the canvas, positioned
+by `anchorScreenY(rowIndex, scrollTop, rowHeight)`. Because that is pure row-offset math,
+anchors stay glued to their line across scroll and zoom (row-height change).
+
+**Measured performance.** `src/lib/diff/canvas/paint.test.ts` runs `paint()` against a
+synthetic **10k-line** model through a stubbed 2D context that counts draw ops. It
+asserts (a) op count is bounded by the visible window (~120 rows), **not** total rows;
+(b) a 500-line and a 10k-line model issue the *identical* op count (virtualization
+proof); and (c) exactly one dpr transform per frame. A wall-clock assert (`< 8ms`) guards
+regressions, but **jsdom/happy-dom draw-call timing is not a real frame budget** —
+treat it only as a relative regression tripwire. For real numbers, profile in a browser:
+open a 10k-line PR, switch to Canvas, and record a Performance trace while fling-scrolling
+— target is a locked 60fps (≤16.6ms/frame, paint typically ≪8ms).
+
+**Limitations.** No syntax highlighting yet (deferred with the DOM renderer); no
+side-by-side/split mode; in-canvas character selection is out of scope (see above);
+the comment draft is a seam, not the full submit flow (later ticket).
 
 ## Keyboard map
 
@@ -102,10 +209,9 @@ renderer interface.
 
 ## Deferred to later tickets
 
-- **CCT-607** — theme system (4 themes incl. colorblind) + syntax palettes. Tokens
-  are already CSS custom properties, and `data-theme` switching is stubbed.
-- **CCT-608** — Canvas 2D diff pane behind the existing `DiffRenderer` seam;
-  whole-file syntax highlighting; modified-line pairing + inline word/char diff.
+- **CCT-608** — Canvas 2D diff pane behind the existing `DiffRenderer` seam is
+  **landed** (see above). Still deferred on top of it: whole-file syntax highlighting,
+  modified-line pairing + inline word/char diff, and the full comment-submit flow.
 - **CCT-609** — hierarchical, server-synced viewed state.
 - **CCT-610** — mount into cctui-ui; real cctui bearer auth (replaces the token
   prompt); server-remembered open-tab sets.

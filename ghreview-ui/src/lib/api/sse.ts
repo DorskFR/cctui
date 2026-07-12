@@ -12,8 +12,13 @@ export function sseActions(event: SseEvent): QueryKeyAction[] {
       const { owner, repo, number } = event.data;
       return [
         { type: "invalidate", key: ["pull", owner, repo, number] },
+        { type: "invalidate", key: ["pull-viewed", owner, repo, number] },
         { type: "invalidate", key: ["pulls"] },
       ];
+    }
+    case "pr.viewed_state.updated": {
+      const { owner, repo, number } = event.data;
+      return [{ type: "invalidate", key: ["pull-viewed", owner, repo, number] }];
     }
     case "notification.new":
     case "notification.updated":
@@ -43,7 +48,13 @@ export function subscribeSse(client: QueryClient, onEvent?: SseListener): SseHan
   if (token) url.searchParams.set("access_token", token);
 
   const source = new EventSource(url.toString());
-  const named = ["pr.updated", "notification.new", "notification.updated", "sync.status"];
+  const named = [
+    "pr.updated",
+    "pr.viewed_state.updated",
+    "notification.new",
+    "notification.updated",
+    "sync.status",
+  ];
 
   const handle = (raw: MessageEvent, name: string) => {
     if (!raw.data) return;

@@ -8,6 +8,7 @@ export interface ManagerDefaults {
   pollIntervalMs: number;
   budgetCeilingFraction: number;
   rateLimitPerHour: number;
+  syncViewedFromGithub?: boolean;
 }
 
 export interface ManagerOptions {
@@ -62,6 +63,7 @@ export class AccountManager {
         account,
         bus: this.opts.bus,
         intervalMs: row.poll_interval_ms ?? this.opts.defaults.pollIntervalMs,
+        syncViewedFromGithub: this.opts.defaults.syncViewedFromGithub,
       });
       poller.start();
       this.managed.set(row.login, { account, poller });

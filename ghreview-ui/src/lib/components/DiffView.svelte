@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { NavIndex } from "../diff/navindex";
   import type { DiffModel } from "../diff/parse";
+  import { ROW_HEIGHT } from "../diff/canvas/layout";
   import { computeWindow } from "../diff/virtual";
 
   interface Props {
@@ -11,7 +12,7 @@
   }
   let { model, focusRow, onFocusRow }: Props = $props();
 
-  const ROW_H = 20;
+  const ROW_H = ROW_HEIGHT;
   let scrollTop = $state(0);
   let viewportH = $state(600);
   let container = $state<HTMLDivElement | null>(null);
@@ -50,7 +51,7 @@
           onkeydown={() => {}}
         >
           {#if row.kind === "file"}
-            <span class="filehdr">{row.content}</span>
+            <span class="filehdr" class:collapsed={row.collapsed}>{row.content}</span>
           {:else if row.kind === "hunk"}
             <span class="gutter"></span>
             <span class="hunkhdr">{row.content}</span>
@@ -99,14 +100,16 @@
     width: 48px;
     text-align: right;
     padding-right: var(--gh-space-2);
-    color: var(--gh-diff-gutter);
+    color: var(--gh-diff-gutter-fg);
+    background: var(--gh-diff-gutter-bg);
     user-select: none;
   }
   .marker {
     flex: none;
     width: 14px;
     text-align: center;
-    color: var(--gh-fg-muted);
+    font-weight: 700;
+    color: var(--gh-fg-subtle);
   }
   .code {
     flex: 1;
@@ -114,10 +117,26 @@
     text-overflow: ellipsis;
   }
   .row-add {
-    background: var(--gh-diff-add-line);
+    background: var(--gh-diff-add-bg);
+    color: var(--gh-diff-add-fg);
+    box-shadow: inset 3px 0 0 var(--gh-diff-add-edge);
+  }
+  .row-add .gutter {
+    background: var(--gh-diff-add-bg);
+  }
+  .row-add .marker {
+    color: var(--gh-diff-add-glyph);
   }
   .row-del {
-    background: var(--gh-diff-del-line);
+    background: var(--gh-diff-del-bg);
+    color: var(--gh-diff-del-fg);
+    box-shadow: inset 3px 0 0 var(--gh-diff-del-edge);
+  }
+  .row-del .gutter {
+    background: var(--gh-diff-del-bg);
+  }
+  .row-del .marker {
+    color: var(--gh-diff-del-glyph);
   }
   .row-file {
     background: var(--gh-bg-inset);
@@ -127,12 +146,17 @@
     padding-left: var(--gh-space-3);
   }
   .row-hunk {
-    color: var(--gh-accent-fg);
-    background: var(--gh-bg-elev);
+    color: var(--gh-diff-hunk-fg);
+    background: var(--gh-diff-hunk-bg);
   }
   .filehdr {
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  .filehdr.collapsed {
+    color: var(--gh-fg-muted);
+    font-weight: 400;
+    font-style: italic;
   }
   .hunkhdr {
     padding-left: var(--gh-space-2);

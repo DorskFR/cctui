@@ -18,6 +18,9 @@
             "$ref": "#/components/schemas/PrUpdatedEvent"
           },
           {
+            "$ref": "#/components/schemas/PrViewedStateUpdatedEvent"
+          },
+          {
             "$ref": "#/components/schemas/NotificationNewEvent"
           },
           {
@@ -31,6 +34,7 @@
           "propertyName": "event",
           "mapping": {
             "pr.updated": "#/components/schemas/PrUpdatedEvent",
+            "pr.viewed_state.updated": "#/components/schemas/PrViewedStateUpdatedEvent",
             "notification.new": "#/components/schemas/NotificationNewEvent",
             "notification.updated": "#/components/schemas/NotificationUpdatedEvent",
             "sync.status": "#/components/schemas/SyncStatusEvent"
@@ -44,6 +48,49 @@
             "type": "string",
             "enum": [
               "pr.updated"
+            ]
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "account": {
+                "type": "string",
+                "minLength": 1,
+                "example": "DorskFR",
+                "description": "GitHub account/login the record was synced for"
+              },
+              "owner": {
+                "type": "string"
+              },
+              "repo": {
+                "type": "string"
+              },
+              "number": {
+                "type": "integer",
+                "minimum": 0,
+                "exclusiveMinimum": true
+              }
+            },
+            "required": [
+              "account",
+              "owner",
+              "repo",
+              "number"
+            ]
+          }
+        },
+        "required": [
+          "event",
+          "data"
+        ]
+      },
+      "PrViewedStateUpdatedEvent": {
+        "type": "object",
+        "properties": {
+          "event": {
+            "type": "string",
+            "enum": [
+              "pr.viewed_state.updated"
             ]
           },
           "data": {
@@ -484,6 +531,89 @@
           "kind",
           "synced_at",
           "etag"
+        ]
+      },
+      "ViewedStateResult": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ViewedStateItem"
+            }
+          }
+        },
+        "required": [
+          "items"
+        ]
+      },
+      "ViewedStateItem": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "File path within the pull request"
+          },
+          "viewed": {
+            "type": "boolean",
+            "description": "Marked viewed (mirrored to github.com)"
+          },
+          "digest": {
+            "type": "string",
+            "nullable": true,
+            "description": "File blob sha / patch digest recorded at mark time"
+          },
+          "push_pending": {
+            "type": "boolean",
+            "description": "A viewed change still owed to github.com; retried on the next poll"
+          },
+          "last_error": {
+            "type": "string",
+            "nullable": true,
+            "description": "Last push failure, if any"
+          },
+          "updated_at": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": [
+          "path",
+          "viewed",
+          "digest",
+          "push_pending",
+          "last_error",
+          "updated_at"
+        ]
+      },
+      "ViewedStateSet": {
+        "type": "object",
+        "properties": {
+          "account": {
+            "type": "string",
+            "minLength": 1,
+            "example": "DorskFR",
+            "description": "GitHub account/login the record was synced for"
+          },
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1,
+            "maxItems": 1000,
+            "description": "File paths to mark; a folder op sends every file beneath it"
+          },
+          "viewed": {
+            "type": "boolean",
+            "description": "Target viewed state for all paths"
+          }
+        },
+        "required": [
+          "account",
+          "paths",
+          "viewed"
         ]
       },
       "NotificationInboxPage": {
@@ -1123,6 +1253,145 @@
         }
       }
     },
+    "/v1/repos/{owner}/{repo}/pulls/{number}/viewed": {
+      "get": {
+        "summary": "Per-file viewed state for a pull request",
+        "tags": [
+          "pulls"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "DorskFR"
+            },
+            "required": true,
+            "name": "owner",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "cctui"
+            },
+            "required": true,
+            "name": "repo",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "example": 42
+            },
+            "required": true,
+            "name": "number",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "example": "DorskFR"
+            },
+            "required": true,
+            "name": "account",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The viewed state per marked file",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ViewedStateResult"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "summary": "Bulk set per-file viewed state (single file or a whole folder)",
+        "tags": [
+          "pulls"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "DorskFR"
+            },
+            "required": true,
+            "name": "owner",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "cctui"
+            },
+            "required": true,
+            "name": "repo",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "example": 42
+            },
+            "required": true,
+            "name": "number",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ViewedStateSet"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The updated viewed state per file",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ViewedStateResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "State store unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/notifications": {
       "get": {
         "summary": "The notifications inbox feed (documents + local state)",
@@ -1365,7 +1634,7 @@
     "/v1/events": {
       "get": {
         "summary": "Server-Sent Events stream",
-        "description": "text/event-stream of the documented event catalogue. Each message carries an `event:` name (pr.updated, notification.new, notification.updated, sync.status) and a JSON `data:` payload matching SseEvent.",
+        "description": "text/event-stream of the documented event catalogue. Each message carries an `event:` name (pr.updated, pr.viewed_state.updated, notification.new, notification.updated, sync.status) and a JSON `data:` payload matching SseEvent.",
         "tags": [
           "events"
         ],

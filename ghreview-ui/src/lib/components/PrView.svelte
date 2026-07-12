@@ -1,8 +1,9 @@
 <script lang="ts">
-  import { createQuery } from "@tanstack/svelte-query";
+  import { createMutation, createQuery } from "@tanstack/svelte-query";
   import { toStore } from "svelte/store";
   import { api } from "../api/client";
-  import { queryClient } from "../api/queries";
+  import { keys, queryClient } from "../api/queries";
+  import { applyOptimisticViewed, viewedSet } from "../api/viewed";
   import {
     ciStateOf,
     type GithubFile,
@@ -10,10 +11,17 @@
     prStateOf,
     type PullRequestEnvelope,
     pullOf,
+    type ViewedStateResult,
   } from "../api/types";
+  import { collapseViewedFiles } from "../diff/collapse";
   import { buildDiffModel } from "../diff/parse";
   import { buildNavIndex } from "../diff/navindex";
-  import { getRenderer } from "../diff/renderer";
+  import {
+    getPreferredRendererKind,
+    getRenderer,
+    type RendererKind,
+    setPreferredRendererKind,
+  } from "../diff/renderer";
   import { resolveKey, type KeymapState } from "../keyboard/keymap";
   import { tabs } from "../stores/tabs.svelte";
   import FileTree from "./FileTree.svelte";
@@ -35,9 +43,58 @@
   );
 
   const pull = $derived<GithubPull | null>($query.data ? pullOf($query.data) : null);
+  const account = $derived<string | null>($query.data?.account ?? null);
   const files = $derived<GithubFile[]>(pull?.files ?? []);
   const model = $derived(buildDiffModel(files));
-  const nav = $derived(buildNavIndex(model));
+
+  const viewedQuery = createQuery(
+    toStore(() => ({
+      queryKey: keys.pullViewed(owner, repo, number),
+      queryFn: () => api.pullViewed(owner, repo, number, account as string),
+      enabled: account !== null,
+    })),
+  );
+  const viewed = $derived(viewedSet($viewedQuery.data));
+
+  let expandedPaths = $state(new Set<string>());
+  const displayModel = $derived(collapseViewedFiles(model, { viewed, expanded: expandedPaths }));
+  const nav = $derived(buildNavIndex(displayModel));
+  const viewedCount = $derived(model.files.filter((f) => viewed.has(f.filename)).length);
+
+  const viewedMutation = createMutation(
+    toStore(() => ({
+      mutationFn: (vars: { paths: string[]; viewed: boolean }) =>
+        api.setPullViewed(owner, repo, number, account as string, vars.paths, vars.viewed),
+      onMutate: async (vars: { paths: string[]; viewed: boolean }) => {
+        const key = keys.pullViewed(owner, repo, number);
+        await queryClient.cancelQueries({ queryKey: key });
+        const previous = queryClient.getQueryData<ViewedStateResult>(key);
+        queryClient.setQueryData(key, applyOptimisticViewed(previous, vars.paths, vars.viewed));
+        return { previous };
+      },
+      onError: (_e: unknown, _vars: unknown, ctx: { previous?: ViewedStateResult } | undefined) => {
+        queryClient.setQueryData(keys.pullViewed(owner, repo, number), ctx?.previous);
+      },
+      onSettled: () => {
+        queryClient.invalidateQueries({ queryKey: keys.pullViewed(owner, repo, number) });
+      },
+    })),
+  );
+
+  function toggleViewed(paths: string[], next: boolean): void {
+    if (!account) return;
+    const still = new Set(expandedPaths);
+    for (const p of paths) still.delete(p);
+    expandedPaths = still;
+    $viewedMutation.mutate({ paths, viewed: next });
+  }
+
+  function selectFile(rowIndex: number, path: string): void {
+    if (viewed.has(path) && !expandedPaths.has(path)) {
+      expandedPaths = new Set(expandedPaths).add(path);
+    }
+    focusRow = rowIndex;
+  }
 
   let focusRow = $state(0);
 
@@ -81,8 +138,13 @@
     }
   }
 
-  const renderer = getRenderer("dom");
-  const DiffComponent = renderer?.component;
+  let rendererKind = $state<RendererKind>(getPreferredRendererKind());
+  const DiffComponent = $derived(getRenderer(rendererKind)?.component);
+
+  function toggleRenderer(kind: RendererKind): void {
+    rendererKind = kind;
+    setPreferredRendererKind(kind);
+  }
 </script>
 
 <svelte:window onkeydown={onKeydown} />
@@ -112,18 +174,41 @@
         </span>
         {#if pull.draft}<span class="chip">draft</span>{/if}
         <span class="chip mono">+{pull.additions ?? 0} −{pull.deletions ?? 0} · {files.length} files</span>
+        {#if files.length > 0}
+          <span class="chip mono">viewed {viewedCount}/{files.length}</span>
+        {/if}
+        <span class="renderer-toggle" role="group" aria-label="Diff renderer">
+          <button
+            type="button"
+            class:active={rendererKind === "dom"}
+            onclick={() => toggleRenderer("dom")}
+          >DOM</button>
+          <button
+            type="button"
+            class:active={rendererKind === "canvas"}
+            onclick={() => toggleRenderer("canvas")}
+          >Canvas</button>
+        </span>
       </div>
     </header>
 
     <div class="split">
       <aside class="tree">
-        <FileTree {model} {focusRow} onselect={(r) => (focusRow = r)} />
+        <FileTree
+          model={displayModel}
+          {focusRow}
+          {viewed}
+          onselect={selectFile}
+          onToggleViewed={toggleViewed}
+        />
       </aside>
       <section class="diff">
         {#if files.length === 0}
           <div class="msg">No file patches in the synced payload.</div>
         {:else if DiffComponent}
-          <DiffComponent {model} {nav} {focusRow} onFocusRow={(r) => (focusRow = r)} />
+          {#key rendererKind}
+            <DiffComponent model={displayModel} {nav} {focusRow} onFocusRow={(r) => (focusRow = r)} />
+          {/key}
         {/if}
       </section>
     </div>
@@ -198,6 +283,24 @@
   }
   .mono {
     font-family: var(--gh-mono);
+  }
+  .renderer-toggle {
+    display: inline-flex;
+    border: 1px solid var(--gh-border);
+    border-radius: var(--gh-radius);
+    overflow: hidden;
+  }
+  .renderer-toggle button {
+    font-size: 12px;
+    padding: 1px 8px;
+    background: transparent;
+    color: var(--gh-fg-muted);
+    border: none;
+    cursor: pointer;
+  }
+  .renderer-toggle button.active {
+    background: var(--gh-accent);
+    color: white;
   }
   .split {
     flex: 1;

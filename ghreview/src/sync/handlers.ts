@@ -5,10 +5,12 @@ import { upsertSubscription } from "../db/subscriptions.ts";
 import { getSyncState, saveSyncState } from "../db/syncState.ts";
 import type { Account } from "../github/account.ts";
 import { type ConditionalResult, conditionalRequest } from "../github/client.ts";
+import { reconcilePullViewed } from "./viewedSync.ts";
 
 export interface SyncContext {
   db: DbHandle;
   account: Account;
+  syncViewedFromGithub?: boolean;
 }
 
 export interface SyncOutcome {
@@ -88,6 +90,13 @@ export async function syncPull(ctx: SyncContext, sub: Subscription): Promise<Syn
       etag: res.etag,
       payload: res.data,
     });
+    await reconcilePullViewed(
+      ctx.db,
+      ctx.account,
+      { owner, repo, number },
+      res.data,
+      ctx.syncViewedFromGithub ?? false,
+    );
   } else if (res.status === 304) {
     await touchDocument(ctx.db, sub.account, "pull_request", key);
   }

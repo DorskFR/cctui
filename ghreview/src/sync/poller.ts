@@ -11,12 +11,14 @@ import {
   syncRepo,
 } from "./handlers.ts";
 import { drainPendingReads } from "./notificationPush.ts";
+import { drainPendingViewed } from "./viewedPush.ts";
 
 export interface PollerOptions {
   db: DbHandle;
   account: Account;
   bus: EventBus;
   intervalMs: number;
+  syncViewedFromGithub?: boolean;
 }
 
 const HANDLERS: Record<string, (ctx: SyncContext, sub: Subscription) => Promise<SyncOutcome>> = {
@@ -50,7 +52,10 @@ export class Poller {
       const handler = HANDLERS[sub.kind];
       if (!handler) continue;
       try {
-        const res = await handler({ db, account }, sub);
+        const res = await handler(
+          { db, account, syncViewedFromGithub: this.opts.syncViewedFromGithub },
+          sub,
+        );
         account.budget.record(res.status, res.rate);
         if (res.secondaryLimit) account.budget.noteSecondaryLimit(res.retryAfter ?? undefined);
         if (res.status >= 400 && res.status !== 404) errored = true;
@@ -61,6 +66,13 @@ export class Poller {
     if (account.budget.canSpend()) {
       try {
         await drainPendingReads(db, account);
+      } catch {
+        errored = true;
+      }
+    }
+    if (account.budget.canSpend()) {
+      try {
+        await drainPendingViewed(db, account);
       } catch {
         errored = true;
       }

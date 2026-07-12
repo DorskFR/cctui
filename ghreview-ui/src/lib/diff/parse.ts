@@ -17,6 +17,8 @@ export interface DiffRow {
   newLine: number | null;
   fileIndex: number;
   hunkIndex: number;
+  collapsed?: boolean;
+  hiddenLines?: number;
 }
 
 export interface DiffHunk {
@@ -36,6 +38,8 @@ export interface DiffFile {
   fileRowIndex: number;
   rowStart: number;
   rowEnd: number;
+  collapsed?: boolean;
+  hiddenLines?: number;
 }
 
 export interface DiffModel {

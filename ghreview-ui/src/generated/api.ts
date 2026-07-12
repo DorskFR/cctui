@@ -413,6 +413,94 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/repos/{owner}/{repo}/pulls/{number}/viewed": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Per-file viewed state for a pull request */
+        get: {
+            parameters: {
+                query: {
+                    account: string;
+                };
+                header?: never;
+                path: {
+                    owner: string;
+                    repo: string;
+                    number: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The viewed state per marked file */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ViewedStateResult"];
+                    };
+                };
+            };
+        };
+        /** Bulk set per-file viewed state (single file or a whole folder) */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    owner: string;
+                    repo: string;
+                    number: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["ViewedStateSet"];
+                };
+            };
+            responses: {
+                /** @description The updated viewed state per file */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ViewedStateResult"];
+                    };
+                };
+                /** @description Invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description State store unavailable */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/notifications": {
         parameters: {
             query?: never;
@@ -594,7 +682,7 @@ export interface paths {
         };
         /**
          * Server-Sent Events stream
-         * @description text/event-stream of the documented event catalogue. Each message carries an `event:` name (pr.updated, notification.new, notification.updated, sync.status) and a JSON `data:` payload matching SseEvent.
+         * @description text/event-stream of the documented event catalogue. Each message carries an `event:` name (pr.updated, pr.viewed_state.updated, notification.new, notification.updated, sync.status) and a JSON `data:` payload matching SseEvent.
          */
         get: {
             parameters: {
@@ -672,13 +760,30 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
-        SseEvent: components["schemas"]["PrUpdatedEvent"] | components["schemas"]["NotificationNewEvent"] | components["schemas"]["NotificationUpdatedEvent"] | components["schemas"]["SyncStatusEvent"];
+        SseEvent: components["schemas"]["PrUpdatedEvent"] | components["schemas"]["PrViewedStateUpdatedEvent"] | components["schemas"]["NotificationNewEvent"] | components["schemas"]["NotificationUpdatedEvent"] | components["schemas"]["SyncStatusEvent"];
         PrUpdatedEvent: {
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
              */
             event: "pr.updated";
+            data: {
+                /**
+                 * @description GitHub account/login the record was synced for
+                 * @example DorskFR
+                 */
+                account: string;
+                owner: string;
+                repo: string;
+                number: number;
+            };
+        };
+        PrViewedStateUpdatedEvent: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            event: "pr.viewed_state.updated";
             data: {
                 /**
                  * @description GitHub account/login the record was synced for
@@ -856,6 +961,33 @@ export interface components {
             etag: string | null;
             /** @description GitHub-shaped JSONB payload, relayed verbatim (narrow with octokit types) */
             payload?: Record<string, never>;
+        };
+        ViewedStateResult: {
+            items: components["schemas"]["ViewedStateItem"][];
+        };
+        ViewedStateItem: {
+            /** @description File path within the pull request */
+            path: string;
+            /** @description Marked viewed (mirrored to github.com) */
+            viewed: boolean;
+            /** @description File blob sha / patch digest recorded at mark time */
+            digest: string | null;
+            /** @description A viewed change still owed to github.com; retried on the next poll */
+            push_pending: boolean;
+            /** @description Last push failure, if any */
+            last_error: string | null;
+            updated_at: string | null;
+        };
+        ViewedStateSet: {
+            /**
+             * @description GitHub account/login the record was synced for
+             * @example DorskFR
+             */
+            account: string;
+            /** @description File paths to mark; a folder op sends every file beneath it */
+            paths: string[];
+            /** @description Target viewed state for all paths */
+            viewed: boolean;
         };
         NotificationInboxPage: {
             items: components["schemas"]["NotificationInboxItem"][];

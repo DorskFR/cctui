@@ -54,6 +54,7 @@ if (config.databaseUrl) {
         pollIntervalMs: config.pollIntervalMs,
         budgetCeilingFraction: config.budgetCeilingFraction,
         rateLimitPerHour: config.rateLimitPerHour,
+        syncViewedFromGithub: config.syncViewedFromGithub,
       },
       open: (sealed) => sealer.open(sealed),
     });

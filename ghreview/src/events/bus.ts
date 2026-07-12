@@ -28,6 +28,19 @@ export function mapNotice(notice: DocumentNotice): SseMessage | null {
       },
     };
   }
+  if (notice.kind === "pull_viewed") {
+    const match = /^(.+?)\/(.+?)#(\d+)$/.exec(notice.key);
+    if (!match) return null;
+    return {
+      event: "pr.viewed_state.updated",
+      data: {
+        account: notice.account,
+        owner: match[1],
+        repo: match[2],
+        number: Number(match[3]),
+      },
+    };
+  }
   if (notice.kind === "notification") {
     return { event: "notification.new", data: { account: notice.account, id: notice.key } };
   }
