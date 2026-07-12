@@ -1,23 +1,13 @@
 <script lang="ts">
   import { getContext } from "svelte";
-  import { rewriteGithubUrl } from "../bookmarklet";
   import { EMBED_THEME_KEY, type EmbedThemeContext } from "../embed/context";
   import { router } from "../router/router.svelte";
   import { currentTheme, setTheme, type Theme, THEME_LABELS, THEMES } from "../theme/theme";
+  import SubscribeMenu from "./SubscribeMenu.svelte";
 
   const embedTheme = getContext<EmbedThemeContext | undefined>(EMBED_THEME_KEY);
 
-  let prUrl = $state("");
   let theme = $state<Theme>(embedTheme ? embedTheme.get() : currentTheme());
-
-  function openUrl(e: SubmitEvent): void {
-    e.preventDefault();
-    const target = rewriteGithubUrl(prUrl.trim(), window.location.origin);
-    if (target) {
-      router.navigate(new URL(target).pathname);
-      prUrl = "";
-    }
-  }
 
   function onThemeChange(e: Event): void {
     theme = (e.currentTarget as HTMLSelectElement).value as Theme;
@@ -28,15 +18,8 @@
 
 <header class="topbar">
   <button class="brand" onclick={() => router.navigate("/")}>gh-review</button>
-  <form class="url" onsubmit={openUrl}>
-    <input
-      type="text"
-      placeholder="Paste a github.com PR URL…"
-      bind:value={prUrl}
-      spellcheck="false"
-    />
-  </form>
   <div class="spacer"></div>
+  <SubscribeMenu />
   <a href="/bookmarklet" onclick={(e) => { e.preventDefault(); router.navigate("/bookmarklet"); }}>
     Bookmarklet
   </a>
@@ -64,19 +47,6 @@
     font-weight: 600;
     cursor: pointer;
     font-size: 14px;
-  }
-  .url {
-    flex: 1;
-    max-width: 420px;
-  }
-  input {
-    width: 100%;
-    background: var(--gh-bg-inset);
-    border: 1px solid var(--gh-border);
-    border-radius: var(--gh-radius);
-    color: var(--gh-fg);
-    padding: var(--gh-space-1) var(--gh-space-2);
-    font-size: 12px;
   }
   .spacer {
     flex: 1;
