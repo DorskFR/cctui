@@ -92,6 +92,8 @@ export const LIST_DENSITY = 'cctui_list_density';
 // Main session list layout: 'list' (rows, default) or 'card' (responsive grid
 // of detailed cards) — CCT-297 item 16.
 export const LIST_VIEW = 'cctui_list_view';
+// Kanban board (CCT-579): '1' when active, overriding the list/card × density picker.
+export const LIST_KANBAN = 'cctui_list_kanban';
 // Which session section is in view (CCT-322): 'starred' | 'live' | 'dispatched'
 // | 'archived'. Replaces the old archived on/off checkbox with a 4-way picker.
 export const LIST_SECTION = 'cctui_list_section';

@@ -31,6 +31,10 @@ export interface SessionListSettings {
 	density: 'compact' | 'normal';
 	section: string;
 	labelFilter: string[];
+	// Card accent color (CCT-466) and section grouping (CCT-467), sharing one
+	// dimension enum (`Dimension` in sessions.logic.ts); both default 'none'.
+	colorBy: 'none' | 'label' | 'working_dir' | 'machine';
+	groupBy: 'none' | 'label' | 'working_dir' | 'machine';
 }
 
 export interface DisplaySettings {
@@ -80,7 +84,9 @@ const DEFAULTS: SettingsState = {
 		view: 'list',
 		density: 'normal',
 		section: '',
-		labelFilter: []
+		labelFilter: [],
+		colorBy: 'none',
+		groupBy: 'none'
 	},
 	display: {
 		theme: 'dark',

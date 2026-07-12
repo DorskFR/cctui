@@ -4,6 +4,8 @@
 // component; only data-shape transforms and static config live here.
 import type { SessionListItem } from '@bindings/SessionListItem';
 import { SYSTEM_MACHINE_KINDS } from '$lib/queries';
+import { hashHue } from '$lib/format';
+import { labelHue } from '$lib/labels';
 
 // ── View picker (CCT-307) ───────────────────────────────────────────────────
 // The 4 explicit layout × density combinations offered by the view picker.
@@ -11,7 +13,9 @@ export const VIEW_OPTIONS = [
 	{ value: 'list-compact', label: 'List · Compact', card: false, dense: true },
 	{ value: 'list-detailed', label: 'List · Detailed', card: false, dense: false },
 	{ value: 'card-compact', label: 'Card · Compact', card: true, dense: true },
-	{ value: 'card-detailed', label: 'Card · Detailed', card: true, dense: false }
+	{ value: 'card-detailed', label: 'Card · Detailed', card: true, dense: false },
+	// Kanban (CCT-579) needs a flag of its own: its card×dense pair collides with card-compact.
+	{ value: 'kanban', label: 'Kanban', card: true, dense: true }
 ] as const;
 
 // ── Section filter (CCT-322 / CCT-345) ──────────────────────────────────────
@@ -342,3 +346,92 @@ export const sectionOf = (s: SessionListItem): Section => {
 };
 export const inEnabledSections = (s: SessionListItem, sections: Set<Section>): boolean =>
 	sections.has(sectionOf(s));
+
+// ── Kanban board (CCT-579) ──────────────────────────────────────────────────
+export type KanbanCol = 'drafts' | 'blocked' | 'working' | 'done';
+export const KANBAN_COLS: { key: KanbanCol; label: string }[] = [
+	{ key: 'drafts', label: 'Drafts' },
+	{ key: 'blocked', label: 'Needs input' },
+	{ key: 'working', label: 'Working' },
+	{ key: 'done', label: 'Completed' }
+];
+
+// Pinned rows classify by raw `bucket`, not `groupOf` (which short-circuits to
+// 'pinned'); dispatched + review fold into Working.
+export function kanbanColOf(s: SessionListItem): KanbanCol | null {
+	if (s.status === 'archived') return null;
+	if (s.status === 'draft') return 'drafts';
+	const bucket = s.bucket ?? 'working';
+	if (bucket === 'blocked') return 'blocked';
+	if (bucket === 'done') return 'done';
+	return 'working';
+}
+
+// ── Color / group dimension (CCT-466 color · CCT-467 group) ──────────────────
+export type Dimension = 'none' | 'label' | 'working_dir' | 'machine';
+export const DIMENSIONS: { value: Dimension; label: string }[] = [
+	{ value: 'none', label: 'None' },
+	{ value: 'label', label: 'Label' },
+	{ value: 'working_dir', label: 'Working dir' },
+	{ value: 'machine', label: 'Machine' }
+];
+export const isDimension = (v: string): v is Dimension =>
+	v === 'none' || v === 'label' || v === 'working_dir' || v === 'machine';
+
+export const DIM_NONE_KEY = '__none__';
+export const DIM_NONE_LABEL = '—';
+
+export type DimGroup = { key: string; label: string; hue: number | null };
+
+// A multi-labelled session is a member of EACH of its labels (the card repeats);
+// working_dir/machine yield exactly one membership.
+export function dimGroupsOf(s: SessionListItem, dim: Dimension): DimGroup[] {
+	if (dim === 'label') {
+		if (s.labels.length === 0)
+			return [{ key: DIM_NONE_KEY, label: DIM_NONE_LABEL, hue: null }];
+		return s.labels.map((l) => ({ key: `label:${l.id}`, label: l.name, hue: labelHue(l) }));
+	}
+	if (dim === 'working_dir') {
+		const dir = s.working_dir ?? '';
+		if (!dir) return [{ key: DIM_NONE_KEY, label: DIM_NONE_LABEL, hue: null }];
+		const name = dir.split('/').filter(Boolean).pop() || dir;
+		return [{ key: `dir:${dir}`, label: name, hue: hashHue(dir) }];
+	}
+	if (dim === 'machine') {
+		const name = s.machine_name;
+		if (!name) return [{ key: DIM_NONE_KEY, label: DIM_NONE_LABEL, hue: null }];
+		// Operator-set machine hue (CCT-222) wins over the name hash so a machine
+		// reads the same color as its badge everywhere.
+		return [{ key: `machine:${name}`, label: name, hue: s.machine_hue ?? hashHue(name) }];
+	}
+	return [];
+}
+
+export function colorHueOf(s: SessionListItem, dim: Dimension): number | null {
+	if (dim === 'none') return null;
+	return dimGroupsOf(s, dim)[0]?.hue ?? null;
+}
+
+export type RowGroup = { key: string; label: string; hue: number | null; sessions: SessionListItem[] };
+
+// Sorted by name, "—" bucket last; input row order preserved within each group.
+export function groupRows(rows: SessionListItem[], dim: Dimension): RowGroup[] {
+	if (dim === 'none') return [{ key: '__all__', label: '', hue: null, sessions: rows }];
+	const map = new Map<string, RowGroup>();
+	for (const s of rows) {
+		for (const g of dimGroupsOf(s, dim)) {
+			let rg = map.get(g.key);
+			if (!rg) {
+				rg = { key: g.key, label: g.label, hue: g.hue, sessions: [] };
+				map.set(g.key, rg);
+			}
+			rg.sessions.push(s);
+		}
+	}
+	return [...map.values()].sort((a, b) => {
+		const au = a.key === DIM_NONE_KEY;
+		const bu = b.key === DIM_NONE_KEY;
+		if (au !== bu) return au ? 1 : -1;
+		return a.label.localeCompare(b.label);
+	});
+}

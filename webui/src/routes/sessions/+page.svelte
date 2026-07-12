@@ -12,8 +12,9 @@
 	import ConversationDrawer from '$lib/components/organisms/ConversationDrawer.svelte';
 	import SpawnModal from '$lib/components/organisms/SpawnModal.svelte';
 	import SessionControls from '$lib/components/organisms/SessionControls.svelte';
+	import KanbanBoard from '$lib/components/organisms/KanbanBoard.svelte';
 	import { AutoGrid, Button, Container, Text } from '@dorsk/tsumikit';
-	import { drafts, LIST_DENSITY, LIST_VIEW, LIST_SECTION, LIST_LABELS } from '$lib/drafts';
+	import { drafts, LIST_DENSITY, LIST_VIEW, LIST_KANBAN, LIST_SECTION, LIST_LABELS } from '$lib/drafts';
 	import { notify } from '$lib/notify.svelte';
 	import { settings } from '$lib/settings.svelte';
 	import { tokenizeQuery } from '$lib/search';
@@ -36,8 +37,13 @@
 		groupOf,
 		inEnabledSections,
 		matchesUnreadFilter,
+		KANBAN_COLS,
+		kanbanColOf,
+		groupRows,
+		colorHueOf,
 		type Section,
-		type SubGroup
+		type SubGroup,
+		type Dimension
 	} from './sessions.logic';
 
 	// Parse the persisted comma-joined label-filter ids back into a list.
@@ -67,6 +73,20 @@
 	$effect(() => {
 		drafts.set(LIST_VIEW, cardView ? 'card' : 'list');
 	});
+
+	// Kanban board view (CCT-579): a distinct layout persisted alongside the
+	// list/card × density picker; when set it overrides the other two.
+	let kanban = $state(drafts.get(LIST_KANBAN) === '1');
+	$effect(() => {
+		drafts.set(LIST_KANBAN, kanban ? '1' : '');
+	});
+
+	// Color-by (CCT-466) and group-by (CCT-467) dimensions, read live from the
+	// server-persisted settings blob (so an async settings.load() reflows the UI)
+	// and written back through settings.setSessionList (localStorage + debounced PUT).
+	const colorBy = $derived(settings.state.sessionList.colorBy as Dimension);
+	const groupBy = $derived(settings.state.sessionList.groupBy as Dimension);
+	const accentOf = (s: SessionListItem) => colorHueOf(s, colorBy);
 
 	// View picker (CCT-307): `cardView` (list ⇄ card) and `dense` (compact ⇄
 	// detailed) round-trip through drafts above; the ViewPicker molecule owns the
@@ -651,6 +671,43 @@
 		})).filter((g) => g.sessions.length > 0)
 	);
 
+	// Group-by (CCT-467): when active, the attention buckets collapse and the
+	// section-enabled top-level rows are re-partitioned by the chosen dimension —
+	// the dimension becomes the outer shell. Within-group sort + subagent nesting
+	// (childGroupsOf) are preserved. Grouping covers the live region only; the
+	// Drafts and Archived sections below keep their own layout.
+	const liveTopFiltered = $derived(
+		topLevel.filter(
+			(s) =>
+				bucketInSection(groupOf(s)) &&
+				matchesLabelFilter(s) &&
+				matchesClient(s) &&
+				matchesUnreadFilter(s, sections)
+		)
+	);
+	const groupedSections = $derived(
+		groupBy === 'none' ? [] : groupRows(sortRows(liveTopFiltered), groupBy)
+	);
+	const hasLiveRows = $derived(groupBy === 'none' ? groups.length > 0 : groupedSections.length > 0);
+
+	// Kanban board columns (CCT-579): nest over every non-archived row (drafts
+	// included — the board has its own Drafts column) and map top-level rows to
+	// their stage column. Ignores the section toggles by design; still honors the
+	// label/search/unread filters so the toolbar stays meaningful.
+	const kanbanNest = $derived(nest(items.filter((s) => s.status !== 'archived')));
+	const kanbanChildGroups = $derived(kanbanNest.childGroups);
+	const kanbanRows = $derived(
+		kanbanNest.topLevel.filter(
+			(s) => matchesLabelFilter(s) && matchesClient(s) && matchesUnreadFilter(s, sections)
+		)
+	);
+	const kanbanColumns = $derived(
+		KANBAN_COLS.map((c) => ({
+			...c,
+			sessions: sortRows(kanbanRows.filter((s) => kanbanColOf(s) === c.key))
+		}))
+	);
+
 	const pending = (id: string) => {
 		void ws.changeTick; // re-derive when perms change (setPerms bumps changeTick)
 		return ws.pendingCount(id);
@@ -672,6 +729,11 @@
 	bind:labelFilter
 	bind:cardView
 	bind:dense
+	bind:kanban
+	{colorBy}
+	{groupBy}
+	onColorBy={(v) => settings.setSessionList({ colorBy: v })}
+	onGroupBy={(v) => settings.setSessionList({ groupBy: v })}
 	{selecting}
 	{searching}
 	onStartSelect={() => (selecting = true)}
@@ -716,6 +778,7 @@
 			child={depth > 0}
 			compact={dense}
 			grid
+			accentHue={accentOf(s)}
 			stacked={subGroups.length > 0}
 			pendingCount={pending(s.id)}
 			unreadCount={openSession?.id === s.id ? 0 : (s.unread_count ?? 0)}
@@ -785,6 +848,7 @@
 				session={s}
 				child={depth > 0}
 				compact={dense}
+				accentHue={accentOf(s)}
 				pendingCount={pending(s.id)}
 				unreadCount={openSession?.id === s.id ? 0 : (s.unread_count ?? 0)}
 				onopen={(x) => (openSession = x)}
@@ -832,6 +896,7 @@
 				session={s}
 				{grid}
 				compact={dense && !grid}
+				accentHue={accentOf(s)}
 				draft
 				draftLaunching={launchingDraft === s.id}
 				preview={draftPromptPreview(s)}
@@ -842,6 +907,54 @@
 			/>
 		</div>
 	{/each}
+{/snippet}
+
+{#snippet kanbanCard(s: SessionListItem)}
+	{#if s.status === 'draft'}
+		<SessionCard
+			session={s}
+			grid
+			compact
+			draft
+			draftLaunching={launchingDraft === s.id}
+			preview={draftPromptPreview(s)}
+			onLaunch={launchDraft}
+			onEdit={editDraft}
+			onDiscard={discardDraft}
+			onopen={() => {}}
+		/>
+	{:else}
+		{@const subGroups = kanbanChildGroups.get(s.id) ?? []}
+		<SessionCard
+			session={s}
+			grid
+			compact
+			accentHue={accentOf(s)}
+			stacked={subGroups.length > 0}
+			pendingCount={pending(s.id)}
+			unreadCount={openSession?.id === s.id ? 0 : (s.unread_count ?? 0)}
+			onopen={(x) => (openSession = x)}
+			swipeable
+			swipeLabel="Archive"
+			onSwipe={swipeArchive}
+			onTogglePin={togglePin}
+			subagentCost={costRollup(s, subGroups)}
+			subagentToggles={subGroups.map((g) => ({
+				key: g.key,
+				count: g.agents.length,
+				running: g.running,
+				open: false,
+				label: g.label,
+				ontoggle: () => {}
+			}))}
+			{allLabels}
+			onCreateLabel={createLabel}
+			onAttachLabel={attachLabel}
+			onDetachLabel={detachLabel}
+			onUpdateLabel={updateLabel}
+			onDeleteLabel={deleteLabel}
+		/>
+	{/if}
 {/snippet}
 
 {#snippet loadMore()}
@@ -895,6 +1008,14 @@
 			{@render loadMore()}
 		</div>
 	{/if}
+{:else if kanban}
+	{#if $sessions.isLoading}
+		<div class="empty"><span class="spin"></span></div>
+	{:else}
+		<Container fullWidth as="div">
+			<KanbanBoard columns={kanbanColumns} card={kanbanCard} />
+		</Container>
+	{/if}
 {:else}
 	<!-- Live buckets first, then the paginated archive — all sections share one
 	     flex container so the inter-section gap is uniform (CCT-298). -->
@@ -907,13 +1028,31 @@
 	{/if}
 {/if}
 
+{#snippet dimHeader(label: string, count: number, hue: number | null)}
+	<div class="group-header dim-header">
+		{#if hue !== null}<span class="dim-swatch" style="--mh:{hue}"></span>{/if}
+		{label} <Text class="count">{count}</Text>
+	</div>
+{/snippet}
+
 {#snippet liveSections()}
 		{#if $sessions.isLoading}
 			<div class="empty"><span class="spin"></span></div>
-		{:else if groups.length === 0 && !showArchived && !(sections.has('drafts') && draftRows.length > 0)}
+		{:else if !hasLiveRows && !showArchived && !(sections.has('drafts') && draftRows.length > 0)}
 			<div class="empty">
 				<Text tone="muted">No sessions in the selected sections — toggle more from the section filter.</Text>
 			</div>
+		{:else if groupBy !== 'none'}
+			{#each groupedSections as g (g.key)}
+				<div class="section">
+					{@render dimHeader(g.label, g.sessions.length, g.hue)}
+					{#if cardView}
+						{@render cardGrid(g.sessions, childGroupsOf)}
+					{:else}
+						{@render nestedRows(g.sessions, childGroupsOf, true, [])}
+					{/if}
+				</div>
+			{/each}
 		{:else}
 			{#each groups as g (g.key)}
 				{@const vis = g.sessions}
@@ -1083,6 +1222,19 @@
 	.group-header :global(.count) {
 		font-weight: 400;
 		opacity: 0.7;
+	}
+	/* Group-by header (CCT-467): a hue swatch keyed to the color-by palette, in the
+	   dimension's own casing (label/dir/machine names aren't uppercased chrome). */
+	.dim-header {
+		text-transform: none;
+		letter-spacing: normal;
+	}
+	.dim-swatch {
+		flex: none;
+		width: 0.7rem;
+		height: 0.7rem;
+		border-radius: var(--r-sm);
+		background: hsl(var(--mh) var(--mach-border-sl));
 	}
 	/* Dispatched group collapse toggle (CCT-279 item 6). */
 	.group-header[data-bucket='blocked'] {

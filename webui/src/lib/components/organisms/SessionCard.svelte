@@ -52,7 +52,8 @@
 		preview = null,
 		onLaunch,
 		onEdit,
-		onDiscard
+		onDiscard,
+		accentHue = null
 	}: {
 		session: SessionListItem;
 		child?: boolean;
@@ -120,6 +121,9 @@
 		onLaunch?: (s: SessionListItem) => void;
 		onEdit?: (s: SessionListItem) => void;
 		onDiscard?: (s: SessionListItem) => void;
+		// Color-by accent hue (CCT-466): a left-border strip tinting the card by its
+		// label / working dir / machine. null = no accent.
+		accentHue?: number | null;
 	} = $props();
 
 	const s = $derived(session);
@@ -213,6 +217,12 @@
 			// Subagent (child) cards carry an info-tinted border so they read as part
 			// of the parent's stacked group (matches the "subagent" info badge).
 			child && !needsInput ? 'border-color: color-mix(in srgb, var(--info) 45%, var(--border))' : '',
+			// Color-by accent (CCT-466): a left strip in the dimension's hue, resolved
+			// against the theme's --mach-border-sl pair (same infra as MachineBadge).
+			// needsInput keeps its own attention bar; the accent takes the left edge otherwise.
+			accentHue != null && !needsInput
+				? `--mh:${accentHue}; border-left: 3px solid hsl(var(--mh) var(--mach-border-sl))`
+				: '',
 			selected
 				? 'background: color-mix(in srgb, var(--accent) 12%, var(--bg-elevated)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent)'
 				: ''
