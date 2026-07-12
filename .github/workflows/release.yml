@@ -176,7 +176,7 @@ jobs:
       - name: Build + push webui image
         uses: docker/build-push-action@v7
         with:
-          context: webui
+          context: .
           file: webui/Dockerfile
           platforms: linux/amd64
           push: true
