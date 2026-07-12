@@ -33,6 +33,31 @@ function parsePullTarget(target: string): { owner: string; repo: string; number:
   return { owner: match[1] as string, repo: match[2] as string, number: Number(match[3]) };
 }
 
+const PULL_FILES_PER_PAGE = 100;
+const PULL_FILES_MAX_PAGES = 30;
+
+export async function fetchPullFiles(
+  octokit: Account["octokit"],
+  owner: string,
+  repo: string,
+  number: number,
+): Promise<unknown[]> {
+  const files: unknown[] = [];
+  for (let page = 1; page <= PULL_FILES_MAX_PAGES; page++) {
+    const res = await octokit.request("GET /repos/{owner}/{repo}/pulls/{pull_number}/files", {
+      owner,
+      repo,
+      pull_number: number,
+      per_page: PULL_FILES_PER_PAGE,
+      page,
+    });
+    const batch = Array.isArray(res.data) ? (res.data as unknown[]) : [];
+    files.push(...batch);
+    if (batch.length < PULL_FILES_PER_PAGE) break;
+  }
+  return files;
+}
+
 function outcome(res: ConditionalResult<unknown>): SyncOutcome {
   return {
     status: res.status,
@@ -83,12 +108,13 @@ export async function syncPull(ctx: SyncContext, sub: Subscription): Promise<Syn
   );
   const key = `${owner}/${repo}#${number}`;
   if (res.status === 200 && res.data) {
+    const files = await fetchPullFiles(ctx.account.octokit, owner, repo, number);
     await upsertDocument(ctx.db, {
       account: sub.account,
       kind: "pull_request",
       key,
       etag: res.etag,
-      payload: res.data,
+      payload: { ...(res.data as Record<string, unknown>), files },
     });
     await reconcilePullViewed(
       ctx.db,
