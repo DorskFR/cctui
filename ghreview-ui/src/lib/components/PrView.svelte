@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import { createMutation, createQuery } from "@tanstack/svelte-query";
   import { toStore } from "svelte/store";
   import { api } from "../api/client";
@@ -209,13 +210,17 @@
 
   $effect(() => {
     if (!pull) return;
-    const id = tabs.open(owner, repo, number, pull.title);
-    tabs.setStatus(id, {
+    const title = pull.title;
+    const status = {
       pr: prStateOf(pull),
       ci: ciStateOf(pull),
       mergeable: pull.mergeable ?? null,
+    };
+    untrack(() => {
+      const id = tabs.open(owner, repo, number, title);
+      tabs.setStatus(id, status);
+      tabs.activate(id);
     });
-    tabs.activate(id);
   });
 
   let keyState: KeymapState = { gPending: false };

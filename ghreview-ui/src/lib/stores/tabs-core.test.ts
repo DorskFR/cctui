@@ -52,6 +52,29 @@ describe("openTab", () => {
     s = openTab(s, tab("o", "r", 1));
     expect(s.tabs[0].status.ci).toBe("success");
   });
+
+  it("returns the same reference when reopening the already-active tab unchanged", () => {
+    const s = openTab(empty, tab("o", "r", 1));
+    expect(openTab(s, tab("o", "r", 1))).toBe(s);
+  });
+});
+
+describe("reference stability (guards the reactive tabs effect from self-looping)", () => {
+  it("setActive returns the same reference when already active", () => {
+    const s = openTab(empty, tab("o", "r", 1));
+    expect(setActive(s, "pr-o-r-1")).toBe(s);
+  });
+
+  it("updateStatus returns the same reference when status is unchanged", () => {
+    let s = openTab(empty, tab("o", "r", 1));
+    s = updateStatus(s, "pr-o-r-1", { ci: "success" });
+    expect(updateStatus(s, "pr-o-r-1", { ci: "success" })).toBe(s);
+  });
+
+  it("updateStatus still produces a new reference on a real change", () => {
+    const s = openTab(empty, tab("o", "r", 1));
+    expect(updateStatus(s, "pr-o-r-1", { ci: "success" })).not.toBe(s);
+  });
 });
 
 describe("closeTab", () => {
