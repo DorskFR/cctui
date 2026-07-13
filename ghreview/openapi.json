@@ -1332,6 +1332,79 @@
           "content"
         ]
       },
+      "RepoLabelList": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Label"
+            }
+          }
+        },
+        "required": [
+          "items"
+        ]
+      },
+      "Label": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "bug"
+          },
+          "color": {
+            "type": "string",
+            "example": "d73a4a",
+            "description": "GitHub hex color, no leading #"
+          },
+          "description": {
+            "type": "string",
+            "nullable": true,
+            "example": "Something isn't working"
+          }
+        },
+        "required": [
+          "name",
+          "color",
+          "description"
+        ]
+      },
+      "PullLabels": {
+        "type": "object",
+        "properties": {
+          "labels": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Label"
+            }
+          }
+        },
+        "required": [
+          "labels"
+        ]
+      },
+      "LabelMutate": {
+        "type": "object",
+        "properties": {
+          "account": {
+            "type": "string",
+            "minLength": 1,
+            "example": "DorskFR",
+            "description": "GitHub account/login the record was synced for"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "example": "bug",
+            "description": "Label name to add"
+          }
+        },
+        "required": [
+          "account",
+          "name"
+        ]
+      },
       "NotificationInboxPage": {
         "type": "object",
         "properties": {
@@ -3106,6 +3179,250 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ReactionSummary"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller does not own the account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Account not managed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/repos/{owner}/{repo}/labels": {
+      "get": {
+        "summary": "List a repository's labels for the label picker",
+        "tags": [
+          "labels"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "DorskFR"
+            },
+            "required": true,
+            "name": "owner",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "cctui"
+            },
+            "required": true,
+            "name": "repo",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "example": "DorskFR",
+              "description": "GitHub account/login the record was synced for"
+            },
+            "required": true,
+            "description": "GitHub account/login the record was synced for",
+            "name": "account",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The repository's labels",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoLabelList"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller does not own the account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Account not managed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/repos/{owner}/{repo}/pulls/{number}/labels": {
+      "post": {
+        "summary": "Add a label to a pull request",
+        "tags": [
+          "labels"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "DorskFR"
+            },
+            "required": true,
+            "name": "owner",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "cctui"
+            },
+            "required": true,
+            "name": "repo",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "example": 42
+            },
+            "required": true,
+            "name": "number",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LabelMutate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The pull request's labels",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PullLabels"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller does not own the account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Account not managed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/repos/{owner}/{repo}/pulls/{number}/labels/{name}": {
+      "delete": {
+        "summary": "Remove a label from a pull request",
+        "tags": [
+          "labels"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "DorskFR"
+            },
+            "required": true,
+            "name": "owner",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "cctui"
+            },
+            "required": true,
+            "name": "repo",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "example": 42
+            },
+            "required": true,
+            "name": "number",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "bug"
+            },
+            "required": true,
+            "name": "name",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "example": "DorskFR",
+              "description": "GitHub account/login the record was synced for"
+            },
+            "required": true,
+            "description": "GitHub account/login the record was synced for",
+            "name": "account",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The pull request's labels",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PullLabels"
                 }
               }
             }

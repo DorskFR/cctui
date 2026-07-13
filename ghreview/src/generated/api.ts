@@ -1304,6 +1304,190 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/repos/{owner}/{repo}/labels": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List a repository's labels for the label picker */
+        get: {
+            parameters: {
+                query: {
+                    /** @description GitHub account/login the record was synced for */
+                    account: string;
+                };
+                header?: never;
+                path: {
+                    owner: string;
+                    repo: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The repository's labels */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["RepoLabelList"];
+                    };
+                };
+                /** @description Caller does not own the account */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Account not managed */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/repos/{owner}/{repo}/pulls/{number}/labels": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Add a label to a pull request */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    owner: string;
+                    repo: string;
+                    number: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["LabelMutate"];
+                };
+            };
+            responses: {
+                /** @description The pull request's labels */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PullLabels"];
+                    };
+                };
+                /** @description Caller does not own the account */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Account not managed */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/repos/{owner}/{repo}/pulls/{number}/labels/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Remove a label from a pull request */
+        delete: {
+            parameters: {
+                query: {
+                    /** @description GitHub account/login the record was synced for */
+                    account: string;
+                };
+                header?: never;
+                path: {
+                    owner: string;
+                    repo: string;
+                    number: number;
+                    name: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The pull request's labels */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PullLabels"];
+                    };
+                };
+                /** @description Caller does not own the account */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Account not managed */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/notifications": {
         parameters: {
             query?: never;
@@ -2053,6 +2237,35 @@ export interface components {
              * @enum {string}
              */
             content: "+1" | "-1" | "laugh" | "confused" | "heart" | "hooray" | "rocket" | "eyes";
+        };
+        RepoLabelList: {
+            items: components["schemas"]["Label"][];
+        };
+        Label: {
+            /** @example bug */
+            name: string;
+            /**
+             * @description GitHub hex color, no leading #
+             * @example d73a4a
+             */
+            color: string;
+            /** @example Something isn't working */
+            description: string | null;
+        };
+        PullLabels: {
+            labels: components["schemas"]["Label"][];
+        };
+        LabelMutate: {
+            /**
+             * @description GitHub account/login the record was synced for
+             * @example DorskFR
+             */
+            account: string;
+            /**
+             * @description Label name to add
+             * @example bug
+             */
+            name: string;
         };
         NotificationInboxPage: {
             items: components["schemas"]["NotificationInboxItem"][];

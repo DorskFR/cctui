@@ -1,0 +1,108 @@
+.markdown {
+  font-size: 14px;
+  line-height: 1.6;
+  word-break: break-word;
+}
+.markdown a {
+  color: var(--gh-accent);
+  text-decoration: none;
+}
+.markdown a:hover {
+  text-decoration: underline;
+}
+.markdown .md-h {
+  display: block;
+  font-weight: 600;
+  margin: var(--gh-space-3) 0 var(--gh-space-1);
+}
+.markdown .md-li {
+  display: block;
+}
+.markdown .md-quote {
+  display: block;
+  border-left: 3px solid var(--gh-border);
+  padding-left: var(--gh-space-2);
+  color: var(--gh-fg-muted);
+}
+.markdown .md-code {
+  font-family: var(--gh-mono);
+  font-size: 0.9em;
+  background: var(--gh-bg-inset);
+  padding: 1px 5px;
+  border-radius: var(--gh-radius-sm);
+}
+.markdown .md-pre {
+  font-family: var(--gh-mono);
+  font-size: 12px;
+  background: var(--gh-bg-inset);
+  border: 1px solid var(--gh-border);
+  border-radius: var(--gh-radius);
+  padding: var(--gh-space-2) var(--gh-space-3);
+  overflow: auto;
+  margin: var(--gh-space-2) 0;
+}
+.markdown .md-pre code {
+  background: none;
+  padding: 0;
+}
+.markdown img {
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--gh-radius-sm);
+}
+.markdown .md-table {
+  border-collapse: collapse;
+  margin: var(--gh-space-2) 0;
+  font-size: 13px;
+}
+.markdown .md-table th,
+.markdown .md-table td {
+  border: 1px solid var(--gh-border);
+  padding: 4px 10px;
+}
+.markdown .md-table th {
+  background: var(--gh-bg-inset);
+  font-weight: 600;
+}
+
+.markdown .hljs-keyword,
+.markdown .hljs-built_in,
+.markdown .hljs-literal {
+  color: var(--gh-syn-keyword);
+}
+.markdown .hljs-string,
+.markdown .hljs-regexp {
+  color: var(--gh-syn-string);
+}
+.markdown .hljs-number {
+  color: var(--gh-syn-number);
+}
+.markdown .hljs-comment {
+  color: var(--gh-syn-comment);
+}
+.markdown .hljs-title,
+.markdown .hljs-function .hljs-title,
+.markdown .hljs-section {
+  color: var(--gh-syn-function);
+}
+.markdown .hljs-variable,
+.markdown .hljs-attr,
+.markdown .hljs-attribute {
+  color: var(--gh-syn-variable);
+}
+.markdown .hljs-type,
+.markdown .hljs-class .hljs-title {
+  color: var(--gh-syn-type);
+}
+.markdown .hljs-punctuation {
+  color: var(--gh-syn-punctuation);
+}
+.markdown .hljs-addition {
+  color: var(--gh-success);
+}
+.markdown .hljs-deletion {
+  color: var(--gh-danger);
+}
+.markdown .hljs-meta {
+  color: var(--gh-fg-muted);
+}

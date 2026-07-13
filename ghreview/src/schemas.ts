@@ -457,6 +457,27 @@ export const ReactionSummarySchema = z
   })
   .openapi("ReactionSummary");
 
+export const LabelSchema = z
+  .object({
+    name: z.string().openapi({ example: "bug" }),
+    color: z.string().openapi({ example: "d73a4a", description: "GitHub hex color, no leading #" }),
+    description: z.string().nullable().openapi({ example: "Something isn't working" }),
+  })
+  .openapi("Label");
+
+export const RepoLabelListSchema = z
+  .object({ items: z.array(LabelSchema) })
+  .openapi("RepoLabelList");
+
+export const LabelMutateSchema = z
+  .object({
+    account: AccountSchema,
+    name: z.string().min(1).openapi({ example: "bug", description: "Label name to add" }),
+  })
+  .openapi("LabelMutate");
+
+export const PullLabelsSchema = z.object({ labels: z.array(LabelSchema) }).openapi("PullLabels");
+
 export const ErrorSchema = z
   .object({
     error: z.object({

@@ -60,7 +60,7 @@
     localStorage.setItem(WIDTH_KEY, String(masterW));
   }
 
-  const cols = $derived(layout.fullWidth ? "0 1fr" : `${masterW}px 1fr`);
+  const cols = $derived(layout.fullWidth ? "1fr" : `${masterW}px 6px 1fr`);
 </script>
 
 <div class="md" bind:this={container} style="grid-template-columns: {cols}">
