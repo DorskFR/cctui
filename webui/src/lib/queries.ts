@@ -30,19 +30,7 @@ import type { CodexModelCatalog } from "@bindings/CodexModelCatalog";
 import type { ConnectorInfo } from "@bindings/ConnectorInfo";
 import type { CreateConnector } from "@bindings/CreateConnector";
 import type { UpdateConnector } from "@bindings/UpdateConnector";
-import type { PullInboxItem } from "@bindings/PullInboxItem";
 import type { Prompt } from "@bindings/Prompt";
-import type { PullDiff } from "@bindings/PullDiff";
-import type { ReviewDraftInfo } from "@bindings/ReviewDraftInfo";
-import type { CreateReviewDraft } from "@bindings/CreateReviewDraft";
-import type { UpdateReviewDraft } from "@bindings/UpdateReviewDraft";
-import type { CreateDraftComment } from "@bindings/CreateDraftComment";
-import type { UpdateDraftComment } from "@bindings/UpdateDraftComment";
-import type { PublishReviewRequest } from "@bindings/PublishReviewRequest";
-import type { PublishReviewResult } from "@bindings/PublishReviewResult";
-import type { ReviewThreadInfo } from "@bindings/ReviewThreadInfo";
-import type { ViewedMarkInfo } from "@bindings/ViewedMarkInfo";
-import type { MarkViewedRequest } from "@bindings/MarkViewedRequest";
 import type { Label } from "@bindings/Label";
 import type { LabelListResponse } from "@bindings/LabelListResponse";
 import type { SettingsCatalogResponse } from "@bindings/SettingsCatalogResponse";
@@ -569,9 +557,6 @@ export const endpoints = {
    *  `last_polled_at`/`last_error` reflect this attempt. */
   syncGithubConnector: (id: string) =>
     api.post<ConnectorInfo>(`/github/connectors/${id}/sync`, {}),
-  /** The PR inbox (GH-UI-1): synced PRs, each with its derived attention
-   *  bucket + CI/review summary, scoped to the caller's connectors. */
-  githubPulls: () => api.get<PullInboxItem[]>("/github/pulls"),
   /** Resolve the effective repo-scoped prompt of `kind` (default `review`) for
    *  `owner/repo`, richelieu-style most-specific-wins (CCT-390): a prompt scoped
    *  to `owner/repo` beats one scoped to the whole owner, which beats a global
@@ -589,135 +574,6 @@ export const endpoints = {
       throw e;
     }
   },
-  /** The structured diff for one PR (GH-VIEW-1): the server proxies + caches
-   *  GitHub's files (paginated, with a blob fallback for truncated patches) and
-   *  returns the parsed files→hunks→lines tree the diff viewer (GH-VIEW-3)
-   *  virtualizes. `repo` is `owner/name`, so it spans two path segments. */
-  githubPullDiff: (connectorId: string, repo: string, number: number) =>
-    api.get<PullDiff>(`/github/pulls/${connectorId}/${repo}/${number}/diff`),
-  /** Review drafts (GH-VIEW-4): the caller's local draft(s) for a PR, each with
-   *  its inline comments. Comments are added INSTANTLY with no GitHub round-trip
-   *  and published later as one batched review (GH-VIEW-5). `repo` is
-   *  `owner/name`, so it spans two path segments. */
-  githubDrafts: (connectorId: string, repo: string, number: number) =>
-    api.get<ReviewDraftInfo[]>(
-      `/github/pulls/${connectorId}/${repo}/${number}/drafts`,
-    ),
-  openGithubDraft: (
-    connectorId: string,
-    repo: string,
-    number: number,
-    body: CreateReviewDraft,
-  ) =>
-    api.post<ReviewDraftInfo>(
-      `/github/pulls/${connectorId}/${repo}/${number}/drafts`,
-      body,
-    ),
-  updateGithubDraft: (
-    connectorId: string,
-    repo: string,
-    number: number,
-    draftId: string,
-    body: UpdateReviewDraft,
-  ) =>
-    api.patch<ReviewDraftInfo>(
-      `/github/pulls/${connectorId}/${repo}/${number}/drafts/${draftId}`,
-      body,
-    ),
-  deleteGithubDraft: (
-    connectorId: string,
-    repo: string,
-    number: number,
-    draftId: string,
-  ) =>
-    api.del<void>(
-      `/github/pulls/${connectorId}/${repo}/${number}/drafts/${draftId}`,
-    ),
-  addGithubDraftComment: (
-    connectorId: string,
-    repo: string,
-    number: number,
-    draftId: string,
-    body: CreateDraftComment,
-  ) =>
-    api.post<ReviewDraftInfo>(
-      `/github/pulls/${connectorId}/${repo}/${number}/drafts/${draftId}/comments`,
-      body,
-    ),
-  updateGithubDraftComment: (
-    connectorId: string,
-    repo: string,
-    number: number,
-    draftId: string,
-    commentId: string,
-    body: UpdateDraftComment,
-  ) =>
-    api.patch<ReviewDraftInfo>(
-      `/github/pulls/${connectorId}/${repo}/${number}/drafts/${draftId}/comments/${commentId}`,
-      body,
-    ),
-  deleteGithubDraftComment: (
-    connectorId: string,
-    repo: string,
-    number: number,
-    draftId: string,
-    commentId: string,
-  ) =>
-    api.del<ReviewDraftInfo>(
-      `/github/pulls/${connectorId}/${repo}/${number}/drafts/${draftId}/comments/${commentId}`,
-    ),
-  /** Publish a draft as ONE batched GitHub review (GH-VIEW-5): resolves each
-   *  comment's anchor against the current head SHA, refuses on a stale head SHA,
-   *  skips un-anchorable comments, submits the batch + verdict. */
-  publishGithubReview: (
-    connectorId: string,
-    repo: string,
-    number: number,
-    body: PublishReviewRequest,
-  ) =>
-    api.post<PublishReviewResult>(
-      `/github/pulls/${connectorId}/${repo}/${number}/publish-review`,
-      body,
-    ),
-  /** Pulled-down existing OPEN GitHub review threads for a PR (GH-VIEW-5),
-   *  rendered inline alongside local drafts. `sync` first refreshes from GitHub. */
-  githubThreads: (
-    connectorId: string,
-    repo: string,
-    number: number,
-    sync = false,
-  ) =>
-    api.get<ReviewThreadInfo[]>(
-      `/github/pulls/${connectorId}/${repo}/${number}/threads${sync ? "?sync=1" : ""}`,
-    ),
-  /** The caller's blob-keyed "reviewed" marks for a PR (GH-VIEW-6). Each mark's
-   *  `blob_sha` is paired with the current diff: a file stays reviewed only
-   *  while its current `DiffFile.blob_sha` still matches, so a push re-flags
-   *  only changed files. */
-  githubViewed: (connectorId: string, repo: string, number: number) =>
-    api.get<ViewedMarkInfo[]>(
-      `/github/pulls/${connectorId}/${repo}/${number}/viewed`,
-    ),
-  markGithubViewed: (
-    connectorId: string,
-    repo: string,
-    number: number,
-    body: MarkViewedRequest,
-  ) =>
-    api.post<void>(
-      `/github/pulls/${connectorId}/${repo}/${number}/mark-viewed`,
-      body,
-    ),
-  unmarkGithubViewed: (
-    connectorId: string,
-    repo: string,
-    number: number,
-    body: MarkViewedRequest,
-  ) =>
-    api.post<void>(
-      `/github/pulls/${connectorId}/${repo}/${number}/unmark-viewed`,
-      body,
-    ),
   /** Every spawnable machine across all active users — for the spawn picker.
    * Excludes server-managed machines (`ephemeral` worker pods and the per-user
    * `dispatch` machine): those aren't somewhere you'd start an interactive
@@ -1047,126 +903,11 @@ export function useGithubConnectorActions() {
     },
     sync: async (id: string) => {
       const r = await endpoints.syncGithubConnector(id);
-      // The poll may upsert PRs and changes poll status; refresh the inbox too.
       inval();
-      qc.invalidateQueries({ queryKey: ["github-pulls"] });
       return r;
     },
   };
 }
-
-export type { PullInboxItem };
-
-/** GitHub PR inbox (GH-UI-1). Polled as a safety net; live `GithubEvent`
- *  pushes drive most refreshes (the inbox view invalidates this key on each
- *  event). Only fetched while the GitHub view is mounted. */
-export const useGithubPulls = (enabled: () => boolean = () => true) =>
-  createQuery(
-    toStore(() => ({
-      queryKey: ["github-pulls"],
-      queryFn: endpoints.githubPulls,
-      enabled: enabled(),
-      refetchInterval: 60_000,
-    })),
-  );
-
-export type { PullDiff };
-
-/** The structured diff for one PR (GH-VIEW-1 → GH-VIEW-3). Keyed on the PR's
- *  locator; the server caches per head SHA so a re-open of an unchanged PR costs
- *  no GitHub round-trip. Long stale time: a diff only changes on a new push,
- *  which arrives as a live `GithubEvent` the viewer reacts to (it invalidates
- *  this key). Only fetched while the viewer is mounted (caller gates `enabled`). */
-export const useGithubPullDiff = (
-  connectorId: () => string,
-  repo: () => string,
-  number: () => number,
-  enabled: () => boolean = () => true,
-) =>
-  createQuery(
-    toStore(() => ({
-      queryKey: ["github-pull-diff", connectorId(), repo(), number()],
-      queryFn: () => endpoints.githubPullDiff(connectorId(), repo(), number()),
-      enabled: enabled() && !!connectorId() && !!repo(),
-      staleTime: 5 * 60_000,
-    })),
-  );
-
-export type { ReviewDraftInfo };
-
-/** The query key for a PR's review drafts (GH-VIEW-4). */
-export const githubDraftsKey = (
-  connectorId: string,
-  repo: string,
-  number: number,
-) => ["github-drafts", connectorId, repo, number] as const;
-
-/** The caller's review drafts (+ inline comments) for one PR. Short stale time:
- *  drafts are local and mutated by the same client, which invalidates this key
- *  on every change so the inline render stays in lockstep. */
-export const useGithubDrafts = (
-  connectorId: () => string,
-  repo: () => string,
-  number: () => number,
-  enabled: () => boolean = () => true,
-) =>
-  createQuery(
-    toStore(() => ({
-      queryKey: githubDraftsKey(connectorId(), repo(), number()),
-      queryFn: () => endpoints.githubDrafts(connectorId(), repo(), number()),
-      enabled: enabled() && !!connectorId() && !!repo(),
-      staleTime: 0,
-    })),
-  );
-
-/** The query key for a PR's pulled-down GitHub review threads (GH-VIEW-5). */
-export const githubThreadsKey = (
-  connectorId: string,
-  repo: string,
-  number: number,
-) => ["github-threads", connectorId, repo, number] as const;
-
-/** A PR's existing OPEN GitHub review threads (the posted side), rendered inline
- *  alongside local drafts. Synced lazily; the viewer can force a `sync` refresh. */
-export const useGithubThreads = (
-  connectorId: () => string,
-  repo: () => string,
-  number: () => number,
-  enabled: () => boolean = () => true,
-) =>
-  createQuery(
-    toStore(() => ({
-      queryKey: githubThreadsKey(connectorId(), repo(), number()),
-      queryFn: () => endpoints.githubThreads(connectorId(), repo(), number()),
-      enabled: enabled() && !!connectorId() && !!repo(),
-      staleTime: 30_000,
-    })),
-  );
-
-/** The query key for a PR's blob-keyed reviewed marks (GH-VIEW-6). */
-export const githubViewedKey = (
-  connectorId: string,
-  repo: string,
-  number: number,
-) => ["github-viewed", connectorId, repo, number] as const;
-
-/** The caller's blob-keyed reviewed marks for a PR (GH-VIEW-6). The viewer
- *  pairs each mark's blob SHA with the current diff to decide which files are
- *  still reviewed after a push. */
-export const useGithubViewed = (
-  connectorId: () => string,
-  repo: () => string,
-  number: () => number,
-  enabled: () => boolean = () => true,
-) =>
-  createQuery(
-    toStore(() => ({
-      queryKey: githubViewedKey(connectorId(), repo(), number()),
-      queryFn: () => endpoints.githubViewed(connectorId(), repo(), number()),
-      enabled: enabled() && !!connectorId() && !!repo(),
-      staleTime: 0,
-    })),
-  );
 
 export const useAllMachines = (enabled: () => boolean) =>
   createQuery(

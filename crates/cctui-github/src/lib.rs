@@ -17,29 +17,20 @@ use axum::Router;
 use axum::routing::{get, post};
 use sqlx::{Connection, Executor, PgPool};
 
-mod anchor;
-mod attention;
 mod classifier_feed;
 mod crypto;
-mod diff;
 mod drafts;
 mod mcp;
-mod publish;
 mod reconcile;
 mod routes;
 mod store;
 mod viewed;
 mod webhook;
 
-pub use anchor::resolve as resolve_comment_anchor;
-pub use attention::{Viewer, derive_bucket, derive_bucket_from_rows};
 pub use classifier_feed::{derive_status, pr_href, publish as publish_pr_status, refresh};
 pub use drafts::{
     DraftError, SummaryUpdate, add_comment, delete_comment, delete_draft, list_drafts,
     mark_published, open_agent_draft, open_user_draft, set_summary, update_comment, update_verdict,
-};
-pub use publish::{
-    PublishError, ReviewPayload, ReviewSubmitClient, assemble_review_payload, verdict_event,
 };
 pub use reconcile::{interval_secs as reconcile_interval_secs, spawn as spawn_reconcile};
 pub use store::{
@@ -76,10 +67,6 @@ pub struct GithubState {
     /// state into it after each upsert. A `cctui-proto` type, so this stays
     /// one-directional — the crate never depends on `cctui-server`.
     pub pr_cache: cctui_proto::classifier::PrStatusCache,
-    /// Per-head-SHA diff cache (GH-VIEW-1). In-memory by design — it holds no
-    /// `github.*` rows, so `DROP SCHEMA github CASCADE` (uninstall) leaves
-    /// nothing stale, and a restart simply re-fetches once.
-    pub diff_cache: diff::DiffCache,
 }
 
 /// Run the crate's embedded migrations against the dedicated `github` Postgres
@@ -209,7 +196,7 @@ pub fn routes(
     events: EventTx,
     pr_cache: cctui_proto::classifier::PrStatusCache,
 ) -> Router {
-    let state = GithubState { pool, events, pr_cache, diff_cache: diff::DiffCache::new() };
+    let state = GithubState { pool, events, pr_cache };
     Router::new()
         .route("/github/connectors", get(routes::list_connectors).post(routes::create_connector))
         .route(
@@ -217,47 +204,6 @@ pub fn routes(
             axum::routing::patch(routes::update_connector).delete(routes::delete_connector),
         )
         .route("/github/connectors/{id}/sync", post(routes::sync_connector))
-        .route("/github/pulls", get(routes::list_pulls))
-        .route(
-            "/github/pulls/{connector_id}/{owner}/{name}/{number}/diff",
-            get(routes::pull_diff),
-        )
-        .route(
-            "/github/pulls/{connector_id}/{owner}/{name}/{number}/drafts",
-            get(routes::list_drafts).post(routes::create_draft),
-        )
-        .route(
-            "/github/pulls/{connector_id}/{owner}/{name}/{number}/drafts/{draft_id}",
-            axum::routing::patch(routes::update_draft).delete(routes::delete_draft),
-        )
-        .route(
-            "/github/pulls/{connector_id}/{owner}/{name}/{number}/drafts/{draft_id}/comments",
-            post(routes::create_draft_comment),
-        )
-        .route(
-            "/github/pulls/{connector_id}/{owner}/{name}/{number}/drafts/{draft_id}/comments/{comment_id}",
-            axum::routing::patch(routes::update_draft_comment).delete(routes::delete_draft_comment),
-        )
-        .route(
-            "/github/pulls/{connector_id}/{owner}/{name}/{number}/publish-review",
-            post(routes::publish_review),
-        )
-        .route(
-            "/github/pulls/{connector_id}/{owner}/{name}/{number}/threads",
-            get(routes::list_threads),
-        )
-        .route(
-            "/github/pulls/{connector_id}/{owner}/{name}/{number}/viewed",
-            get(routes::list_viewed),
-        )
-        .route(
-            "/github/pulls/{connector_id}/{owner}/{name}/{number}/mark-viewed",
-            post(routes::mark_viewed),
-        )
-        .route(
-            "/github/pulls/{connector_id}/{owner}/{name}/{number}/unmark-viewed",
-            post(routes::unmark_viewed),
-        )
         .route("/triggers/github", post(webhook::webhook))
         .with_state(state)
 }
@@ -277,6 +223,6 @@ pub fn mcp_routes(
     events: EventTx,
     pr_cache: cctui_proto::classifier::PrStatusCache,
 ) -> Router {
-    let state = GithubState { pool, events, pr_cache, diff_cache: diff::DiffCache::new() };
+    let state = GithubState { pool, events, pr_cache };
     Router::new().route("/github/mcp", post(mcp::handler)).with_state(state)
 }

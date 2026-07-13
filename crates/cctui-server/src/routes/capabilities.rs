@@ -80,7 +80,9 @@ pub async fn capabilities(State(state): State<AppState>) -> Json<CapabilitiesRes
             public_host: Some(client.public_host().to_string()),
             project_id: client.project_id().await,
         },
-        None => LangfuseCapability { available: false, host: None, public_host: None, project_id: None },
+        None => {
+            LangfuseCapability { available: false, host: None, public_host: None, project_id: None }
+        }
     };
 
     Json(CapabilitiesResponse { github, langfuse })
@@ -92,7 +94,12 @@ mod tests {
 
     #[test]
     fn langfuse_capability_off_hides_host_and_project() {
-        let cap = LangfuseCapability { available: false, host: None, public_host: None, project_id: None };
+        let cap = LangfuseCapability {
+            available: false,
+            host: None,
+            public_host: None,
+            project_id: None,
+        };
         let v = serde_json::to_value(cap).unwrap();
         assert_eq!(v["available"], false);
         assert!(v["host"].is_null());
