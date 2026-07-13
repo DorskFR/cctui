@@ -11,8 +11,9 @@
     account?: string;
     pull: GithubPull;
     fullWidth?: boolean;
+    onmerged?: () => void;
   }
-  let { owner, repo, number, account, pull, fullWidth = false }: Props = $props();
+  let { owner, repo, number, account, pull, fullWidth = false, onmerged }: Props = $props();
 
   let method = $state<MergeMethod>("squash");
   let confirming = $state(false);
@@ -38,14 +39,16 @@
     pending = true;
     error = null;
     try {
-      await api.mergePull(owner, repo, number, {
+      const result = await api.mergePull(owner, repo, number, {
         account,
         merge_method: method,
         expected_head_sha: pull.head?.sha,
       });
+      if (!result.merged) throw new Error(result.message ?? "Pull request was not merged.");
       confirming = false;
       queryClient.invalidateQueries({ queryKey: keys.pull(owner, repo, number) });
-      queryClient.invalidateQueries({ queryKey: ["pulls", owner, repo] });
+      queryClient.invalidateQueries({ queryKey: ["pulls"] });
+      onmerged?.();
     } catch (e) {
       error = (e as Error).message;
     } finally {

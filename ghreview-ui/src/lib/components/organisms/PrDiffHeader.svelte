@@ -27,6 +27,7 @@
     error?: string | null;
     diffMode?: "unified" | "split";
     onpublish: (verdict: ReviewVerdict, body: string) => void;
+    onmerged?: () => void;
   }
 
   let {
@@ -43,6 +44,7 @@
     error = null,
     diffMode = $bindable("unified"),
     onpublish,
+    onmerged,
   }: Props = $props();
 
   const state = $derived(prStateOf(pull));
@@ -123,7 +125,7 @@
       </div>
       {#if state === "open" || state === "draft"}
         <div class="merge-action">
-          <MergeButton {owner} {repo} {number} {account} {pull} fullWidth />
+          <MergeButton {owner} {repo} {number} {account} {pull} fullWidth {onmerged} />
         </div>
       {/if}
     </div>

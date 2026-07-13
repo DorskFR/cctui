@@ -1,7 +1,7 @@
 {
   "name": "cctui-webui",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite dev",
@@ -28,7 +28,7 @@
     "vitest": "^4.1.9"
   },
   "dependencies": {
-    "@dorsk/tsumikit": "^0.12.0",
+    "@dorsk/tsumikit": "^0.13.1",
     "@tanstack/svelte-query": "^5.87.0",
     "@tanstack/svelte-virtual": "^3.13.29",
     "@xterm/addon-fit": "^0.10.0",

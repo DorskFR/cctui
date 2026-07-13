@@ -23,6 +23,7 @@
   import { buildNavIndex } from "../diff/navindex";
   import { buildAnchors, type LineAddress } from "../review/anchors";
   import { resolveKey, type KeymapState } from "../keyboard/keymap";
+  import { router } from "../router/router.svelte";
   import {
     type PrContentTab,
     defaultPrTab,
@@ -266,6 +267,9 @@
 
   let diffMode = $state<"unified" | "split">("unified");
 
+  function onMerged(): void {
+    router.navigate(tabs.closeMerged(owner, repo, number));
+  }
 </script>
 
 <svelte:window onkeydown={onKeydown} />
@@ -294,6 +298,7 @@
       error={publishError}
       bind:diffMode
       onpublish={publishReview}
+      onmerged={onMerged}
     />
 
     <PrTabs active={activeTab} counts={{ diff: files.length }} onselect={selectTab} />
