@@ -32,7 +32,6 @@
   } from "../stores/pr-tabs-core";
   import { tabs } from "../stores/tabs.svelte";
   import DiffView from "./DiffView.svelte";
-  import FileTree from "./FileTree.svelte";
   import PrChecks from "./PrChecks.svelte";
   import PrCommits from "./PrCommits.svelte";
   import PrConversation from "./PrConversation.svelte";
@@ -40,6 +39,7 @@
   import PrDescription from "./PrDescription.svelte";
   import PrTabs from "./PrTabs.svelte";
   import PrDiffHeader from "./organisms/PrDiffHeader.svelte";
+  import PrDiffLayout from "./organisms/PrDiffLayout.svelte";
 
   interface Props {
     owner: string;
@@ -322,34 +322,29 @@
       {:else if activeTab === "activity"}
         <PrActivity {owner} {repo} {number} account={account ?? undefined} />
       {:else}
-        <div class="split">
-          <aside class="tree">
-            <FileTree
+        <PrDiffLayout
+          model={displayModel}
+          {focusRow}
+          {viewed}
+          onselect={selectFile}
+          onToggleViewed={toggleViewed}
+        >
+          {#if files.length === 0}
+            <div class="msg">No file patches in the synced payload.</div>
+          {:else}
+            <DiffView
               model={displayModel}
+              {nav}
               {focusRow}
-              {viewed}
-              onselect={selectFile}
-              onToggleViewed={toggleViewed}
+              {review}
+              mode={diffMode}
+              {owner}
+              {repo}
+              account={account ?? undefined}
+              onFocusRow={(r) => (focusRow = r)}
             />
-          </aside>
-          <section class="diff">
-            {#if files.length === 0}
-              <div class="msg">No file patches in the synced payload.</div>
-            {:else}
-              <DiffView
-                model={displayModel}
-                {nav}
-                {focusRow}
-                {review}
-                mode={diffMode}
-                {owner}
-                {repo}
-                account={account ?? undefined}
-                onFocusRow={(r) => (focusRow = r)}
-              />
-            {/if}
-          </section>
-        </div>
+          {/if}
+        </PrDiffLayout>
       {/if}
     </div>
   {/if}
@@ -366,20 +361,6 @@
     min-height: 0;
     display: flex;
     flex-direction: column;
-  }
-  .split {
-    flex: 1;
-    display: grid;
-    grid-template-columns: 260px 1fr;
-    min-height: 0;
-  }
-  .tree {
-    border-right: 1px solid var(--gh-border);
-    overflow: auto;
-  }
-  .diff {
-    min-width: 0;
-    overflow: hidden;
   }
   .msg {
     padding: var(--gh-space-4);
