@@ -186,15 +186,33 @@ guarded("auto-subscription handlers", () => {
     expect(await sourceOf("auto/repo#1")).toBe("repo");
   });
 
-  test("CCT-658: closed PR is deactivated, excluded from list, still directly fetchable", async () => {
+  test("CCT-694: merged PR is deleted (doc + viewed + draft) and deactivated on sync", async () => {
     await upsertSubscription(db, "auto", "pull_request", "auto/repo#5", "user");
+    await db.sql`
+      INSERT INTO documents (account, kind, key, etag, payload)
+      VALUES ('auto', 'pull_request', 'auto/repo#5', NULL, ${db.sql.json({ number: 5, state: "open" })})
+    `;
+    await db.sql`
+      INSERT INTO viewed_state (account, owner, repo, pull_number, path, viewed)
+      VALUES ('auto', 'auto', 'repo', 5, 'a.ts', true)
+    `;
+    const [acct] = await db.sql<{ id: string }[]>`
+      INSERT INTO gh_accounts (user_id, login, encrypted_pat)
+      VALUES ('userA', 'auto', 'x') RETURNING id::text
+    `;
+    const accountId = acct?.id ?? "";
+    await db.sql`
+      INSERT INTO review_drafts (account_id, account, owner, repo, pr_number)
+      VALUES (${accountId}, 'auto', 'auto', 'repo', 5)
+    `;
+
     const octokit: OctokitRequest = {
       request: async (route) => {
         if (route.includes("/files")) return { status: 200, headers: {}, data: [] };
         return {
           status: 200,
           headers: { etag: 'W/"c"' },
-          data: { number: 5, state: "closed", merged: true, title: "done" },
+          data: { number: 5, state: "closed", merged: true, merged_at: "2026-07-01T00:00:00Z" },
         };
       },
     };
@@ -216,6 +234,97 @@ guarded("auto-subscription handlers", () => {
     expect(page.items.length).toBe(0);
 
     const doc = await findDocument(db, "pull_request", "auto/repo#5", { account: "auto" });
-    expect((doc?.payload as { state?: string } | undefined)?.state).toBe("closed");
+    expect(doc).toBeNull();
+
+    const [viewed] = await db.sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM viewed_state WHERE account = 'auto' AND pull_number = 5
+    `;
+    expect(viewed?.n).toBe(0);
+
+    const [drafts] = await db.sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM review_drafts WHERE account = 'auto' AND pr_number = 5
+    `;
+    expect(drafts?.n).toBe(0);
+  });
+
+  test("CCT-694: syncRepoPulls reconciles PRs that merged between polls", async () => {
+    for (const n of [1, 2, 3]) {
+      await upsertSubscription(db, "auto", "pull_request", `auto/repo#${n}`, "repo");
+      await db.sql`
+        INSERT INTO documents (account, kind, key, etag, payload)
+        VALUES ('auto', 'pull_request', ${`auto/repo#${n}`}, NULL,
+                ${db.sql.json({ number: n, state: "open" })})
+      `;
+    }
+    const octokit: OctokitRequest = {
+      request: async (route) => {
+        if (route === "GET /repos/{owner}/{repo}") {
+          return { status: 200, headers: { etag: 'W/"r"' }, data: { full_name: "auto/repo" } };
+        }
+        return { status: 200, headers: {}, data: [{ number: 1 }, { number: 2 }] };
+      },
+    };
+    const { ctx } = ctxFor(octokit);
+    await syncRepo(ctx, {
+      id: "1",
+      account: "auto",
+      kind: "repo",
+      target: "auto/repo",
+      active: true,
+    });
+
+    expect(await findDocument(db, "pull_request", "auto/repo#3", { account: "auto" })).toBeNull();
+    expect(
+      await findDocument(db, "pull_request", "auto/repo#1", { account: "auto" }),
+    ).not.toBeNull();
+    expect(
+      await findDocument(db, "pull_request", "auto/repo#2", { account: "auto" }),
+    ).not.toBeNull();
+    const [gone] = await db.sql<{ active: boolean }[]>`
+      SELECT active FROM subscriptions WHERE target = 'auto/repo#3'
+    `;
+    expect(gone?.active).toBe(false);
+  });
+
+  test("CCT-694: syncRepoPulls follows Link rel=next so drafts past page 1 are enumerated", async () => {
+    const total = 150;
+    const perPage = 100;
+    let calls = 0;
+    const octokit: OctokitRequest = {
+      request: async (route, params = {}) => {
+        if (route === "GET /repos/{owner}/{repo}") {
+          return { status: 200, headers: { etag: 'W/"r"' }, data: { full_name: "auto/repo" } };
+        }
+        calls++;
+        const page = Number((params as { page?: number }).page ?? 1);
+        const start = (page - 1) * perPage;
+        const batch = Array.from(
+          { length: Math.max(0, Math.min(perPage, total - start)) },
+          (_, i) => ({ number: start + i + 1 }),
+        );
+        const hasNext = start + batch.length < total;
+        return {
+          status: 200,
+          headers: hasNext
+            ? { link: `<https://api.github.com/x?page=${page + 1}>; rel="next"` }
+            : {},
+          data: batch,
+        };
+      },
+    };
+    const { ctx } = ctxFor(octokit);
+    await syncRepo(ctx, {
+      id: "1",
+      account: "auto",
+      kind: "repo",
+      target: "auto/repo",
+      active: true,
+    });
+
+    expect(calls).toBe(2);
+    const subs = await listActiveSubscriptions(db);
+    const pulls = subs.filter((s) => s.kind === "pull_request");
+    expect(pulls.length).toBe(total);
+    expect(pulls.some((s) => s.target === "auto/repo#150")).toBe(true);
   });
 });

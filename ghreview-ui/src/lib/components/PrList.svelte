@@ -17,6 +17,7 @@
   import { pullPath } from "../router/route";
   import { router } from "../router/router.svelte";
   import { tabs } from "../stores/tabs.svelte";
+  import Avatar from "./Avatar.svelte";
   import PrStateIcon from "./PrStateIcon.svelte";
   import RepoBadge from "./RepoBadge.svelte";
 
@@ -101,6 +102,12 @@
                 <button class="row" onclick={() => open(e)}>
                   <PrStateIcon state={prStateOf(e.pull)} size={14} />
                   <span class="title">{e.pull.title}</span>
+                  {#if e.pull.user}
+                    <span class="author">
+                      <Avatar user={e.pull.user} size={16} />
+                      <Text as="span" size="xs" tone="muted">{e.pull.user.login}</Text>
+                    </span>
+                  {/if}
                   <Text as="span" size="xs" tone="muted" numeric>#{e.pull.number}</Text>
                   {#if e.pull.additions != null || e.pull.deletions != null}
                     <span class="counts">
@@ -192,6 +199,19 @@
   }
   .title {
     flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .author {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    max-width: 40%;
+    overflow: hidden;
+  }
+  .author > :global(span:last-child) {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;

@@ -39,6 +39,7 @@
   import PrCommits from "./PrCommits.svelte";
   import PrConversation from "./PrConversation.svelte";
   import PrDescription from "./PrDescription.svelte";
+  import Avatar from "./Avatar.svelte";
   import PrStateIcon from "./PrStateIcon.svelte";
   import PrTabs from "./PrTabs.svelte";
 
@@ -302,6 +303,12 @@
           {prStateOf(pull)}
         </span>
       </div>
+      {#if pull.user}
+        <div class="author">
+          <Avatar user={pull.user} size={22} />
+          <span class="authorname">{pull.user.login}</span>
+        </div>
+      {/if}
       <div class="branches">
         <code>{pull.base?.ref ?? "?"}</code> ← <code>{pull.head?.ref ?? "?"}</code>
       </div>
@@ -452,6 +459,16 @@
   }
   .state-closed {
     background: var(--gh-danger);
+  }
+  .author {
+    display: flex;
+    align-items: center;
+    gap: var(--gh-space-2);
+    margin-top: var(--gh-space-2);
+  }
+  .authorname {
+    font-size: var(--fs-sm);
+    font-weight: 600;
   }
   .branches {
     color: var(--gh-fg-muted);

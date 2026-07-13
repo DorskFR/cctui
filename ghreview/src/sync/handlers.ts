@@ -1,8 +1,15 @@
 import type { DbHandle } from "../db/client.ts";
-import { touchDocument, upsertDocument } from "../db/documents.ts";
+import {
+  deleteDocument,
+  listPullDocumentNumbers,
+  touchDocument,
+  upsertDocument,
+} from "../db/documents.ts";
+import { deleteReviewDraftsForPull } from "../db/reviewDrafts.ts";
 import type { Subscription, SubscriptionSource } from "../db/subscriptions.ts";
 import { deactivateSubscription, upsertSubscription } from "../db/subscriptions.ts";
 import { getSyncState, saveSyncState } from "../db/syncState.ts";
+import { deleteViewedStateForPull } from "../db/viewedState.ts";
 import type { Account } from "../github/account.ts";
 import { type ConditionalResult, conditionalRequest } from "../github/client.ts";
 import { reconcilePullViewed } from "./viewedSync.ts";
@@ -190,35 +197,71 @@ async function syncRepoPulls(
   owner: string,
   repo: string,
 ): Promise<void> {
-  const state = await getSyncState(ctx.db, sub.account, "repo_pulls", sub.target);
-  let etag = state?.etag ?? null;
+  const open = new Set<number>();
   let firstStatus: number | null = null;
+  let walkedFull = false;
   for (let page = 1; page <= REPO_PULLS_MAX_PAGES; page++) {
     if (!ctx.account.budget.canSpend()) break;
     const res = await conditionalRequest<OpenPull[]>(
       ctx.account.octokit,
       "GET /repos/{owner}/{repo}/pulls",
-      { owner, repo, state: "open", per_page: REPO_PULLS_PER_PAGE, page },
-      { etag: page === 1 ? etag : null },
+      {
+        owner,
+        repo,
+        state: "open",
+        sort: "created",
+        direction: "desc",
+        per_page: REPO_PULLS_PER_PAGE,
+        page,
+      },
+      {},
     );
     ctx.account.budget.record(res.status, res.rate);
     if (res.secondaryLimit) ctx.account.budget.noteSecondaryLimit(res.retryAfter ?? undefined);
-    if (page === 1) {
-      firstStatus = res.status;
-      etag = res.etag;
-      if (res.status === 304) break;
-    }
+    if (page === 1) firstStatus = res.status;
     if (res.status !== 200 || !Array.isArray(res.data)) break;
     for (const pr of res.data) {
       if (typeof pr?.number !== "number") continue;
+      open.add(pr.number);
       await ensurePullSubscription(ctx.db, sub.account, owner, repo, pr.number, "repo");
     }
-    if (res.data.length < REPO_PULLS_PER_PAGE) break;
+    if (!res.hasNextPage && res.data.length < REPO_PULLS_PER_PAGE) {
+      walkedFull = true;
+      break;
+    }
   }
+  if (walkedFull) await reconcileRepoPulls(ctx, sub.account, owner, repo, open);
   await saveSyncState(ctx.db, sub.account, "repo_pulls", sub.target, {
-    etag,
     last_status: firstStatus,
   });
+}
+
+async function reconcileRepoPulls(
+  ctx: SyncContext,
+  account: string,
+  owner: string,
+  repo: string,
+  open: Set<number>,
+): Promise<void> {
+  const stored = await listPullDocumentNumbers(ctx.db, account, owner, repo);
+  for (const number of stored) {
+    if (open.has(number)) continue;
+    await removePull(ctx.db, account, owner, repo, number);
+  }
+}
+
+async function removePull(
+  db: DbHandle,
+  account: string,
+  owner: string,
+  repo: string,
+  number: number,
+): Promise<void> {
+  const ref = { owner, repo, number };
+  await deleteDocument(db, account, "pull_request", `${owner}/${repo}#${number}`);
+  await deleteViewedStateForPull(db, account, ref);
+  await deleteReviewDraftsForPull(db, account, ref);
+  await deactivateSubscription(db, account, "pull_request", `${owner}/${repo}#${number}`);
 }
 
 export async function syncPull(ctx: SyncContext, sub: Subscription): Promise<SyncOutcome> {
@@ -234,27 +277,29 @@ export async function syncPull(ctx: SyncContext, sub: Subscription): Promise<Syn
   );
   const key = `${owner}/${repo}#${number}`;
   if (res.status === 200 && res.data) {
-    const files = await fetchPullFiles(ctx.account.octokit, owner, repo, number);
-    const commits = await fetchPullCommits(ctx.account.octokit, owner, repo, number);
-    const payload = enrichPullStats(res.data as Record<string, unknown>, files);
-    payload.files = files;
-    payload.commits_list = commits;
-    await upsertDocument(ctx.db, {
-      account: sub.account,
-      kind: "pull_request",
-      key,
-      etag: res.etag,
-      payload,
-    });
-    await reconcilePullViewed(
-      ctx.db,
-      ctx.account,
-      { owner, repo, number },
-      res.data,
-      ctx.syncViewedFromGithub ?? false,
-    );
-    if ((res.data as { state?: string }).state === "closed") {
-      await deactivateSubscription(ctx.db, sub.account, "pull_request", sub.target);
+    const pr = res.data as { state?: string; merged?: boolean; merged_at?: string | null };
+    if (pr.state === "closed" || pr.merged === true || pr.merged_at != null) {
+      await removePull(ctx.db, sub.account, owner, repo, number);
+    } else {
+      const files = await fetchPullFiles(ctx.account.octokit, owner, repo, number);
+      const commits = await fetchPullCommits(ctx.account.octokit, owner, repo, number);
+      const payload = enrichPullStats(res.data as Record<string, unknown>, files);
+      payload.files = files;
+      payload.commits_list = commits;
+      await upsertDocument(ctx.db, {
+        account: sub.account,
+        kind: "pull_request",
+        key,
+        etag: res.etag,
+        payload,
+      });
+      await reconcilePullViewed(
+        ctx.db,
+        ctx.account,
+        { owner, repo, number },
+        res.data,
+        ctx.syncViewedFromGithub ?? false,
+      );
     }
   } else if (res.status === 304) {
     await touchDocument(ctx.db, sub.account, "pull_request", key);
