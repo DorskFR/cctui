@@ -44,6 +44,7 @@
   import PrCommits from "./PrCommits.svelte";
   import PrConversation from "./PrConversation.svelte";
   import PrDescription from "./PrDescription.svelte";
+  import PrStateIcon from "./PrStateIcon.svelte";
   import PrTabs from "./PrTabs.svelte";
 
   interface Props {
@@ -309,7 +310,10 @@
             {pull.title} <span class="num">#{number}</span>
           {/if}
         </h1>
-        <span class="state state-{prStateOf(pull)}">{prStateOf(pull)}</span>
+        <span class="state state-{prStateOf(pull)}">
+          <PrStateIcon state={prStateOf(pull)} size={14} inherit />
+          {prStateOf(pull)}
+        </span>
       </div>
       <div class="branches">
         <code>{pull.base?.ref ?? "?"}</code> ← <code>{pull.head?.ref ?? "?"}</code>
@@ -455,6 +459,9 @@
     text-decoration: underline;
   }
   .state {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
     text-transform: capitalize;
     border-radius: 999px;
     padding: 1px 10px;

@@ -8,10 +8,14 @@
     type GithubNotification,
     type NotificationInboxItem,
     notificationOf,
+    prStateOf,
+    type PullRequestEnvelope,
+    pullOf,
   } from "../api/types";
   import { parsePullApiUrl, pullPath } from "../router/route";
   import { router } from "../router/router.svelte";
   import { tabs } from "../stores/tabs.svelte";
+  import PrStateIcon, { type IconState } from "./PrStateIcon.svelte";
   import RepoBadge from "./RepoBadge.svelte";
 
   const account = getAccount() ?? "";
@@ -97,6 +101,26 @@
     return n.subject.type === "PullRequest" && parsePullApiUrl(n.subject.url) !== null;
   }
 
+  function iconState(n: GithubNotification): { state: IconState; muted: boolean } | null {
+    if (n.subject.type === "PullRequest") {
+      const ref = parsePullApiUrl(n.subject.url);
+      if (ref) {
+        const env = client.getQueryData<PullRequestEnvelope>([
+          "pull",
+          ref.owner,
+          ref.repo,
+          ref.number,
+        ]);
+        if (env) return { state: prStateOf(pullOf(env)), muted: false };
+      }
+      return { state: "open", muted: true };
+    }
+    if (n.subject.type === "Issue") {
+      return { state: "issue-open", muted: true };
+    }
+    return null;
+  }
+
   function openPull(n: GithubNotification): void {
     const ref = parsePullApiUrl(n.subject.url);
     if (!ref) return;
@@ -160,6 +184,7 @@
     <ul class="list">
       {#each visible as item (notificationOf(item).id || item.synced_at)}
         {@const n = notificationOf(item)}
+        {@const icon = iconState(n)}
         <li class:unread={n.unread && !item.state.read}>
           <input
             type="checkbox"
@@ -167,6 +192,9 @@
             onchange={() => toggle(n.id)}
             onclick={(e) => e.stopPropagation()}
           />
+          {#if icon}
+            <PrStateIcon state={icon.state} muted={icon.muted} size={16} />
+          {/if}
           {#if isPull(n)}
             <button type="button" class="body open" onclick={() => openPull(n)}>
               <span class="subject">{n.subject.title}</span>

@@ -2,6 +2,7 @@ import { OpenAPIHono } from "@hono/zod-openapi";
 import { authMiddleware } from "./auth/middleware.ts";
 import type { AppDeps } from "./deps.ts";
 import { registerAccounts } from "./routes/accounts.ts";
+import { registerComments } from "./routes/comments.ts";
 import { registerEvents } from "./routes/events.ts";
 import { registerHealth } from "./routes/health.ts";
 import { registerLabels } from "./routes/labels.ts";
@@ -51,6 +52,7 @@ export function createApp(deps: AppDeps = {}) {
   registerViewed(app, deps);
   registerReviews(app, deps);
   registerReactions(app, deps);
+  registerComments(app, deps);
   registerLabels(app, deps);
   registerNotifications(app, deps);
   registerEvents(app, deps);
