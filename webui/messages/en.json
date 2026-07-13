@@ -413,7 +413,7 @@
   "github_field_webhook_secret": "Webhook secret (optional, stored encrypted)",
   "github_filter_placeholder": "Filter PRs by title, repo, author…",
   "github_kind_app": "GitHub App",
-  "github_kind_pat": "Fine-grained PAT",
+  "github_kind_pat": "Personal access token (classic or fine-grained)",
   "github_last_poll_failed": "⚠ Last poll failed: {error}",
   "github_loading_pulls": "Loading pull requests…",
   "github_name_placeholder": "personal",

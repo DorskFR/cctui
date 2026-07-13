@@ -413,7 +413,7 @@
   "github_field_webhook_secret": "Secret de webhook (facultatif, stocké chiffré)",
   "github_filter_placeholder": "Filtrer les PR par titre, dépôt, auteur…",
   "github_kind_app": "GitHub App",
-  "github_kind_pat": "PAT à portée fine",
+  "github_kind_pat": "Jeton d'accès personnel (classique ou à portée fine)",
   "github_last_poll_failed": "⚠ Échec de la dernière synchronisation : {error}",
   "github_loading_pulls": "Chargement des pull requests…",
   "github_name_placeholder": "personnel",
