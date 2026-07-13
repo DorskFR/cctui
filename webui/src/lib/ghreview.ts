@@ -2,6 +2,7 @@ import type { MeResponse } from '@bindings/MeResponse';
 import type { MintKeyRequest } from '@bindings/MintKeyRequest';
 import type { MintKeyResponse } from '@bindings/MintKeyResponse';
 import { api } from './api';
+import { ghreviewUrl } from './config';
 
 // The cctui session rides an HttpOnly cookie (CCT-423) that JS cannot read, and
 // gh-review is a separate origin, so the cookie can't authenticate it. Instead
@@ -61,4 +62,95 @@ export function clearGhreviewToken(): void {
 	} catch {
 		void 0;
 	}
+}
+
+// ConnectorInfo never exposes the credential's login; gh-review keys accounts by
+// login, so the connector→login mapping must be cached to resolve deletes.
+const LOGIN_MAP_KEY = 'cctui:ghreview-connector-logins';
+
+interface GhreviewAccount {
+	id: string;
+	login: string;
+}
+
+function readLoginMap(): Record<string, string> {
+	try {
+		const raw = localStorage.getItem(LOGIN_MAP_KEY);
+		if (!raw) return {};
+		const map = JSON.parse(raw) as unknown;
+		return map && typeof map === 'object' ? (map as Record<string, string>) : {};
+	} catch {
+		return {};
+	}
+}
+
+function writeLoginMap(map: Record<string, string>): void {
+	try {
+		localStorage.setItem(LOGIN_MAP_KEY, JSON.stringify(map));
+	} catch {
+		void 0;
+	}
+}
+
+function rememberConnectorLogin(connectorId: string, login: string): void {
+	const map = readLoginMap();
+	map[connectorId] = login;
+	writeLoginMap(map);
+}
+
+function forgetConnectorLogin(connectorId: string): string | null {
+	const map = readLoginMap();
+	const login = map[connectorId] ?? null;
+	if (login !== null) {
+		delete map[connectorId];
+		writeLoginMap(map);
+	}
+	return login;
+}
+
+async function ghreviewError(res: Response): Promise<string> {
+	try {
+		const body = (await res.json()) as { error?: { message?: string } };
+		if (body?.error?.message) return body.error.message;
+	} catch {
+		void 0;
+	}
+	return `gh-review responded ${res.status}`;
+}
+
+export async function provisionGhreviewAccount(
+	connectorId: string,
+	pat: string
+): Promise<string | null> {
+	const base = ghreviewUrl();
+	if (!base) return null;
+	const token = await ensureGhreviewToken();
+	const res = await fetch(`${base}/v1/accounts`, {
+		method: 'POST',
+		headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+		body: JSON.stringify({ token: pat })
+	});
+	if (!res.ok) throw new Error(await ghreviewError(res));
+	const account = (await res.json()) as GhreviewAccount;
+	rememberConnectorLogin(connectorId, account.login);
+	return account.login;
+}
+
+export async function deprovisionGhreviewAccount(connectorId: string): Promise<void> {
+	const base = ghreviewUrl();
+	const login = forgetConnectorLogin(connectorId);
+	if (!base || !login) return;
+	const token = await ensureGhreviewToken();
+	const listRes = await fetch(`${base}/v1/accounts`, {
+		headers: { authorization: `Bearer ${token}` }
+	});
+	if (!listRes.ok) throw new Error(await ghreviewError(listRes));
+	const body = (await listRes.json()) as { items?: GhreviewAccount[] };
+	const match = (body.items ?? []).find((a) => a.login === login);
+	if (!match) return;
+	const delRes = await fetch(`${base}/v1/accounts/${match.id}`, {
+		method: 'DELETE',
+		headers: { authorization: `Bearer ${token}` }
+	});
+	if (!delRes.ok && delRes.status !== 404) throw new Error(await ghreviewError(delRes));
 }

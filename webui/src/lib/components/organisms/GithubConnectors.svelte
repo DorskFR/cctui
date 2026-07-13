@@ -16,6 +16,8 @@
 		type CreateConnector,
 		type UpdateConnector
 	} from '$lib/queries';
+	import { ghreviewUrl } from '$lib/config';
+	import { deprovisionGhreviewAccount, provisionGhreviewAccount } from '$lib/ghreview';
 	import { toasts } from '$lib/toast.svelte';
 	import {
 		Button,
@@ -104,29 +106,43 @@
 		}
 		saving = true;
 		try {
+			const pat = credential.trim();
+			let connectorId: string;
 			if (editing && editingId) {
 				const body: UpdateConnector = {
 					name: name.trim(),
 					repos: parseRepos(),
 					// Blank credential/webhook = leave the stored ones unchanged.
-					credential: credential.trim() || null,
+					credential: pat || null,
 					webhook_secret: webhookSecret.trim() || null
 				};
-				await actions.update(editingId, body);
+				const updated = await actions.update(editingId, body);
+				connectorId = updated.id;
 				toasts.ok(m.github_connector_updated({ name: name.trim() }));
 			} else {
 				const body: CreateConnector = {
 					name: name.trim(),
 					credential_kind: credentialKind,
-					credential: credential.trim(),
+					credential: pat,
 					repos: parseRepos(),
 					webhook_secret: webhookSecret.trim() || null,
 					user_id: isAdmin ? ownerId : null
 				};
-				await actions.create(body);
+				const created = await actions.create(body);
+				connectorId = created.id;
 				toasts.ok(m.github_connector_added({ name: body.name }));
 			}
 			showModal = false;
+			if (credentialKind === 'pat' && pat && ghreviewUrl()) {
+				try {
+					const login = await provisionGhreviewAccount(connectorId, pat);
+					if (login) toasts.ok(m.github_review_provisioned({ login }));
+				} catch (e) {
+					toasts.err(
+						m.github_review_provision_failed({ error: e instanceof Error ? e.message : String(e) })
+					);
+				}
+			}
 		} catch (e) {
 			toasts.err(e instanceof Error ? e.message : m.github_save_failed());
 		} finally {
@@ -154,6 +170,15 @@
 		try {
 			await actions.remove(id);
 			toasts.ok(m.github_connector_removed());
+			if (ghreviewUrl()) {
+				try {
+					await deprovisionGhreviewAccount(id);
+				} catch (e) {
+					toasts.err(
+						m.github_review_deprovision_failed({ error: e instanceof Error ? e.message : String(e) })
+					);
+				}
+			}
 		} catch (e) {
 			toasts.err(e instanceof Error ? e.message : m.github_remove_failed());
 		}
