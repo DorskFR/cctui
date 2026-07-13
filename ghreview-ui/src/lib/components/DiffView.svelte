@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { NavIndex } from "../diff/navindex";
   import type { DiffModel } from "../diff/parse";
+  import { buildSplitModel } from "../diff/split";
   import { ROW_HEIGHT } from "../diff/canvas/layout";
   import { computeWindow } from "../diff/virtual";
   import { type LineAddress, type ReviewController, rowToAddress } from "../review/anchors";
@@ -13,8 +14,13 @@
     focusRow: number;
     onFocusRow: (rowIndex: number) => void;
     review?: ReviewController;
+    mode?: "unified" | "split";
+    owner?: string;
+    repo?: string;
+    account?: string;
   }
-  let { model, focusRow, onFocusRow, review }: Props = $props();
+  let { model, focusRow, onFocusRow, review, mode = "unified", owner, repo, account }: Props =
+    $props();
 
   const ROW_H = ROW_HEIGHT;
   let scrollTop = $state(0);
@@ -24,8 +30,14 @@
   let pendingAddr = $state<{ addr: LineAddress; rowIndex: number } | null>(null);
   let openAnchor = $state<number | null>(null);
 
-  const win = $derived(computeWindow(scrollTop, viewportH, ROW_H, model.rows.length, 40));
+  const split = $derived(mode === "split" ? buildSplitModel(model) : null);
+  const rowCount = $derived(split ? split.rows.length : model.rows.length);
+  const win = $derived(computeWindow(scrollTop, viewportH, ROW_H, rowCount, 40));
   const visible = $derived(model.rows.slice(win.start, win.end));
+  const visibleSplit = $derived(split ? split.rows.slice(win.start, win.end) : []);
+  function displayRow(unifiedIndex: number): number {
+    return split ? (split.unifiedToSplit.get(unifiedIndex) ?? unifiedIndex) : unifiedIndex;
+  }
 
   function openComposer(rowIndex: number): void {
     if (!review) return;
@@ -44,7 +56,7 @@
   $effect(() => {
     const el = container;
     if (!el) return;
-    const top = focusRow * ROW_H;
+    const top = displayRow(focusRow) * ROW_H;
     const bottom = top + ROW_H;
     if (top < el.scrollTop || bottom > el.scrollTop + el.clientHeight) {
       el.scrollTop = Math.max(0, top - el.clientHeight / 3);
@@ -60,50 +72,119 @@
 >
   <div class="spacer" style:height="{win.totalHeight}px">
     <div class="rows" style:transform="translateY({win.offsetY}px)">
-      {#each visible as row, i (win.start + i)}
-        {@const idx = win.start + i}
-        <div
-          class="row row-{row.kind}"
-          class:focus={idx === focusRow}
-          style:height="{ROW_H}px"
-          role="row"
-          tabindex="-1"
-          onclick={() => onFocusRow(idx)}
-          onkeydown={() => {}}
-        >
-          {#if row.kind === "file"}
-            <span class="filehdr" class:collapsed={row.collapsed}>{row.content}</span>
-          {:else if row.kind === "hunk"}
-            <span class="gutter"></span>
-            <span class="hunkhdr">{row.content}</span>
-          {:else}
-            <span class="gutter">{row.oldLine ?? ""}</span>
-            <span class="gutter">{row.newLine ?? ""}</span>
-            <span class="marker">{row.kind === "add" ? "+" : row.kind === "del" ? "−" : ""}</span>
-            <span class="code">{row.content}</span>
-            {#if review}
+      {#if split}
+        {#each visibleSplit as srow, i (win.start + i)}
+          {@const focused =
+            srow.kind === "pair"
+              ? srow.left?.rowIndex === focusRow || srow.right?.rowIndex === focusRow
+              : srow.rowIndex === focusRow}
+          <div class="row row-{srow.kind === "pair" ? "pair" : srow.row.kind}" class:focus={focused} style:height="{ROW_H}px" role="row" tabindex="-1">
+            {#if srow.kind === "file"}
+              <span class="filehdr" class:collapsed={srow.row.collapsed}>{srow.row.content}</span>
+            {:else if srow.kind === "hunk"}
+              <span class="gutter"></span>
+              <span class="hunkhdr">{srow.row.content}</span>
+            {:else}
+              {@const l = srow.left}
+              {@const r = srow.right}
               <button
                 type="button"
-                class="add-comment"
-                aria-label="Comment on this line"
-                onclick={(e) => {
-                  e.stopPropagation();
-                  openComposer(idx);
-                }}
-              >+</button>
+                class="side side-{l ? l.row.kind : "empty"}"
+                tabindex="-1"
+                onclick={() => l && onFocusRow(l.rowIndex)}
+              >
+                <span class="gutter">{l?.row.oldLine ?? ""}</span>
+                <span class="marker">{l?.row.kind === "del" ? "−" : ""}</span>
+                <span class="code">{l?.row.content ?? ""}</span>
+                {#if review && l && l.row.kind !== "context"}
+                  <span
+                    class="add-comment"
+                    role="button"
+                    tabindex="-1"
+                    aria-label="Comment on this line"
+                    onclick={(e) => {
+                      e.stopPropagation();
+                      openComposer(l.rowIndex);
+                    }}
+                    onkeydown={() => {}}
+                  >+</span>
+                {/if}
+              </button>
+              <button
+                type="button"
+                class="side side-{r ? r.row.kind : "empty"}"
+                tabindex="-1"
+                onclick={() => r && onFocusRow(r.rowIndex)}
+              >
+                <span class="gutter">{r?.row.newLine ?? ""}</span>
+                <span class="marker">{r?.row.kind === "add" ? "+" : ""}</span>
+                <span class="code">{r?.row.content ?? ""}</span>
+                {#if review && r && r.row.kind !== "context"}
+                  <span
+                    class="add-comment"
+                    role="button"
+                    tabindex="-1"
+                    aria-label="Comment on this line"
+                    onclick={(e) => {
+                      e.stopPropagation();
+                      openComposer(r.rowIndex);
+                    }}
+                    onkeydown={() => {}}
+                  >+</span>
+                {/if}
+              </button>
             {/if}
-          {/if}
-        </div>
-      {/each}
+          </div>
+        {/each}
+      {:else}
+        {#each visible as row, i (win.start + i)}
+          {@const idx = win.start + i}
+          <div
+            class="row row-{row.kind}"
+            class:focus={idx === focusRow}
+            style:height="{ROW_H}px"
+            role="row"
+            tabindex="-1"
+            onclick={() => onFocusRow(idx)}
+            onkeydown={() => {}}
+          >
+            {#if row.kind === "file"}
+              <span class="filehdr" class:collapsed={row.collapsed}>{row.content}</span>
+            {:else if row.kind === "hunk"}
+              <span class="gutter"></span>
+              <span class="hunkhdr">{row.content}</span>
+            {:else}
+              <span class="gutter">{row.oldLine ?? ""}</span>
+              <span class="gutter">{row.newLine ?? ""}</span>
+              <span class="marker">{row.kind === "add" ? "+" : row.kind === "del" ? "−" : ""}</span>
+              <span class="code">{row.content}</span>
+              {#if review}
+                <button
+                  type="button"
+                  class="add-comment"
+                  aria-label="Comment on this line"
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    openComposer(idx);
+                  }}
+                >+</button>
+              {/if}
+            {/if}
+          </div>
+        {/each}
+      {/if}
     </div>
 
     {#if review}
       <div class="threads">
         {#each review.anchors as anchor (anchor.rowIndex)}
           {#if openAnchor === anchor.rowIndex}
-            <div class="panel" style:top="{(anchor.rowIndex + 1) * ROW_H}px">
+            <div class="panel" style:top="{(displayRow(anchor.rowIndex) + 1) * ROW_H}px">
               <InlineThread
                 {anchor}
+                {owner}
+                {repo}
+                {account}
                 pending={review.pending}
                 onAdd={(body) => review?.addComment({ path: anchor.path, side: anchor.side, line: anchor.line }, body)}
                 onEdit={(id, body) => review?.editComment(id, body)}
@@ -115,7 +196,7 @@
             <button
               type="button"
               class="thread-badge"
-              style:top="{anchor.rowIndex * ROW_H}px"
+              style:top="{displayRow(anchor.rowIndex) * ROW_H}px"
               onclick={() => {
                 openAnchor = anchor.rowIndex;
                 pendingAddr = null;
@@ -125,7 +206,7 @@
         {/each}
 
         {#if pendingAddr}
-          <div class="panel" style:top="{(pendingAddr.rowIndex + 1) * ROW_H}px">
+          <div class="panel" style:top="{(displayRow(pendingAddr.rowIndex) + 1) * ROW_H}px">
             <InlineCommentComposer
               pending={review.pending}
               onsubmit={submitNew}
@@ -166,6 +247,55 @@
   .row.focus {
     box-shadow: inset 2px 0 0 var(--gh-accent);
     background: color-mix(in srgb, var(--gh-accent) 8%, transparent);
+  }
+  .row-pair {
+    padding: 0;
+  }
+  .side {
+    flex: 1 1 0;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    height: 100%;
+    background: transparent;
+    border: none;
+    border-right: 1px solid var(--gh-border-muted);
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    padding: 0;
+    cursor: pointer;
+    position: relative;
+    white-space: pre;
+  }
+  .side:last-child {
+    border-right: none;
+  }
+  .side-add {
+    background: var(--gh-diff-add-bg);
+    color: var(--gh-diff-add-fg);
+    box-shadow: inset 3px 0 0 var(--gh-diff-add-edge);
+  }
+  .side-add .marker {
+    color: var(--gh-diff-add-glyph);
+  }
+  .side-del {
+    background: var(--gh-diff-del-bg);
+    color: var(--gh-diff-del-fg);
+    box-shadow: inset 3px 0 0 var(--gh-diff-del-edge);
+  }
+  .side-del .marker {
+    color: var(--gh-diff-del-glyph);
+  }
+  .side-empty {
+    background: var(--gh-bg-inset);
+    cursor: default;
+  }
+  .side .add-comment {
+    left: 60px;
+  }
+  .side:hover .add-comment {
+    opacity: 1;
   }
   .add-comment {
     position: absolute;

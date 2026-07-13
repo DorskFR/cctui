@@ -11,6 +11,10 @@ export interface DiffRendererProps {
   onFocusRow: (rowIndex: number) => void;
   onSelectRange?: (event: SelectionEvent) => void;
   review?: ReviewController;
+  mode?: "unified" | "split";
+  owner?: string;
+  repo?: string;
+  account?: string;
 }
 
 export interface DiffRenderer {

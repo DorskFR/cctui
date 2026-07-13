@@ -1185,6 +1185,9 @@
           "html_url": {
             "type": "string",
             "nullable": true
+          },
+          "reactions": {
+            "$ref": "#/components/schemas/ReactionRollup"
           }
         },
         "required": [
@@ -1199,7 +1202,134 @@
           "user",
           "in_reply_to_id",
           "created_at",
-          "html_url"
+          "html_url",
+          "reactions"
+        ]
+      },
+      "ReactionRollup": {
+        "type": "object",
+        "nullable": true,
+        "properties": {
+          "+1": {
+            "type": "integer"
+          },
+          "-1": {
+            "type": "integer"
+          },
+          "laugh": {
+            "type": "integer"
+          },
+          "hooray": {
+            "type": "integer"
+          },
+          "confused": {
+            "type": "integer"
+          },
+          "heart": {
+            "type": "integer"
+          },
+          "rocket": {
+            "type": "integer"
+          },
+          "eyes": {
+            "type": "integer"
+          },
+          "total_count": {
+            "type": "integer"
+          }
+        }
+      },
+      "ReactionSummary": {
+        "type": "object",
+        "properties": {
+          "+1": {
+            "type": "integer"
+          },
+          "-1": {
+            "type": "integer"
+          },
+          "laugh": {
+            "type": "integer"
+          },
+          "hooray": {
+            "type": "integer"
+          },
+          "confused": {
+            "type": "integer"
+          },
+          "heart": {
+            "type": "integer"
+          },
+          "rocket": {
+            "type": "integer"
+          },
+          "eyes": {
+            "type": "integer"
+          },
+          "total_count": {
+            "type": "integer"
+          },
+          "viewer_reactions": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "+1",
+                "-1",
+                "laugh",
+                "confused",
+                "heart",
+                "hooray",
+                "rocket",
+                "eyes"
+              ],
+              "example": "+1",
+              "description": "GitHub reaction content"
+            },
+            "description": "Reaction contents the calling account currently holds"
+          }
+        },
+        "required": [
+          "+1",
+          "-1",
+          "laugh",
+          "hooray",
+          "confused",
+          "heart",
+          "rocket",
+          "eyes",
+          "total_count",
+          "viewer_reactions"
+        ]
+      },
+      "ReactionToggle": {
+        "type": "object",
+        "properties": {
+          "account": {
+            "type": "string",
+            "minLength": 1,
+            "example": "DorskFR",
+            "description": "GitHub account/login the record was synced for"
+          },
+          "content": {
+            "type": "string",
+            "enum": [
+              "+1",
+              "-1",
+              "laugh",
+              "confused",
+              "heart",
+              "hooray",
+              "rocket",
+              "eyes"
+            ],
+            "example": "+1",
+            "description": "GitHub reaction content"
+          }
+        },
+        "required": [
+          "account",
+          "content"
         ]
       },
       "NotificationInboxPage": {
@@ -2736,6 +2866,246 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ReviewThreadList"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller does not own the account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Account not managed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/repos/{owner}/{repo}/pulls/{number}/reactions": {
+      "post": {
+        "summary": "Toggle the caller's reaction on a pull request description",
+        "tags": [
+          "reactions"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "DorskFR"
+            },
+            "required": true,
+            "name": "owner",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "cctui"
+            },
+            "required": true,
+            "name": "repo",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "example": 42
+            },
+            "required": true,
+            "name": "number",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReactionToggle"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated reaction summary",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReactionSummary"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller does not own the account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Account not managed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/repos/{owner}/{repo}/issues/comments/{commentId}/reactions": {
+      "post": {
+        "summary": "Toggle the caller's reaction on an issue/conversation comment",
+        "tags": [
+          "reactions"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "DorskFR"
+            },
+            "required": true,
+            "name": "owner",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "cctui"
+            },
+            "required": true,
+            "name": "repo",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "example": 1
+            },
+            "required": true,
+            "name": "commentId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReactionToggle"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated reaction summary",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReactionSummary"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller does not own the account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Account not managed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/repos/{owner}/{repo}/pulls/comments/{commentId}/reactions": {
+      "post": {
+        "summary": "Toggle the caller's reaction on a review (per-line) comment",
+        "tags": [
+          "reactions"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "DorskFR"
+            },
+            "required": true,
+            "name": "owner",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "cctui"
+            },
+            "required": true,
+            "name": "repo",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "example": 1
+            },
+            "required": true,
+            "name": "commentId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReactionToggle"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated reaction summary",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReactionSummary"
                 }
               }
             }

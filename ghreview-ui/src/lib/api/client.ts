@@ -5,6 +5,8 @@ import type {
   NotificationState,
   PullRequestEnvelope,
   PullRequestPage,
+  ReactionContent,
+  ReactionSummary,
   RepoPage,
   ReviewDraftResult,
   ReviewPublishResult,
@@ -197,4 +199,40 @@ export const api = {
     request<ReviewThreadList>(
       `/v1/repos/${owner}/${repo}/pulls/${number}/comments${qs({ account })}`,
     ),
+
+  togglePullReaction: (
+    owner: string,
+    repo: string,
+    number: number,
+    account: string,
+    content: ReactionContent,
+  ) =>
+    request<ReactionSummary>(`/v1/repos/${owner}/${repo}/pulls/${number}/reactions`, {
+      method: "POST",
+      body: JSON.stringify({ account, content }),
+    }),
+
+  toggleIssueCommentReaction: (
+    owner: string,
+    repo: string,
+    commentId: number,
+    account: string,
+    content: ReactionContent,
+  ) =>
+    request<ReactionSummary>(`/v1/repos/${owner}/${repo}/issues/comments/${commentId}/reactions`, {
+      method: "POST",
+      body: JSON.stringify({ account, content }),
+    }),
+
+  toggleReviewCommentReaction: (
+    owner: string,
+    repo: string,
+    commentId: number,
+    account: string,
+    content: ReactionContent,
+  ) =>
+    request<ReactionSummary>(`/v1/repos/${owner}/${repo}/pulls/comments/${commentId}/reactions`, {
+      method: "POST",
+      body: JSON.stringify({ account, content }),
+    }),
 };

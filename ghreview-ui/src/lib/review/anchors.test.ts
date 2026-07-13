@@ -69,6 +69,7 @@ describe("anchors", () => {
         in_reply_to_id: null,
         created_at: null,
         html_url: null,
+        reactions: null,
       },
     ];
     const anchors = buildAnchors(model, [draft({ line: 2 })], published);
