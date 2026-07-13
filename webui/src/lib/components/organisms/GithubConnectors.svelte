@@ -3,8 +3,9 @@
   view can host both the PR inbox (GH-UI-1) and connector settings side by side.
 
   The user configures GitHub accounts one at a time, pasting a credential
-  (fine-grained PAT or GitHub App installation token) that the server encrypts at
-  rest. The webui never sees the stored credential — only a masked preview.
+  (classic PAT, fine-grained PAT, or GitHub App installation token) that the
+  server encrypts at rest. The webui never sees the stored credential — only a
+  masked preview.
 -->
 <script lang="ts">
 	import {
@@ -283,23 +284,22 @@
 					<Input
 						bind:value={credential}
 						type="password"
-						placeholder={editing ? m.github_credential_placeholder_keep() : 'github_pat_…'}
+						placeholder={editing ? m.github_credential_placeholder_keep() : 'ghp_… or github_pat_…'}
 					/>
 				</Field>
 				{#if credentialKind === 'pat'}
 					<Text as="p" tone="muted" size="xs">
-						Create a <strong>fine-grained PAT</strong> at GitHub → Settings → Developer settings →
-						Personal access tokens → Fine-grained tokens. Under <em>Repository access</em> select the
-						repos you list below, then grant these <strong>repository permissions (read-only)</strong>:
-						<strong>Pull requests</strong> and <strong>Contents</strong> (<strong>Metadata</strong> is
-						required and granted automatically). No account/org permissions are needed.
-						<strong>For private org repos</strong> the token must be approved by an org owner /
-						SSO-authorized. A fine-grained PAT works only when you <strong>list explicit repos
-						below</strong> (cctui lists each repo's PRs directly); to track your
-						<strong>whole account</strong> with no repos listed, use a <strong>classic PAT</strong>
-						with <code>repo</code> scope, since fine-grained tokens can't run the cross-repo issue
-						search. cctui polls every ~5 min for PRs you authored or were asked to review; use “Refresh
-						now” to poll on demand.
+						Both token flavors work (GitHub → Settings → Developer settings → Personal access
+						tokens). A <strong>classic PAT</strong> (<code>ghp_…</code>) with <code>repo</code> scope is
+						the simplest: it can track your <strong>whole account</strong> with no repos listed, since
+						only classic tokens can run the cross-repo issue search. A <strong>fine-grained PAT</strong>
+						(<code>github_pat_…</code>) works only when you <strong>list explicit repos below</strong>
+						(cctui lists each repo's PRs directly): under <em>Repository access</em> select those repos,
+						then grant <strong>read-only repository permissions</strong> <strong>Pull requests</strong>
+						and <strong>Contents</strong> (<strong>Metadata</strong> is granted automatically); for
+						private org repos the token must be approved by an org owner / SSO-authorized. cctui polls
+						every ~5 min for PRs you authored or were asked to review; use “Refresh now” to poll on
+						demand.
 					</Text>
 				{:else}
 					<Text as="p" tone="muted" size="xs">
