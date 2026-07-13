@@ -10,8 +10,9 @@
     number: number;
     account?: string;
     pull: GithubPull;
+    fullWidth?: boolean;
   }
-  let { owner, repo, number, account, pull }: Props = $props();
+  let { owner, repo, number, account, pull, fullWidth = false }: Props = $props();
 
   let method = $state<MergeMethod>("squash");
   let confirming = $state(false);
@@ -54,57 +55,59 @@
 </script>
 
 {#if account}
-  <Popover
-    label="Merge pull request"
-    placement="bottom-end"
-    onclose={() => {
-      confirming = false;
-      error = null;
-    }}
-  >
-    {#snippet trigger()}
-      <span class="trigger" class:disabled={pull.draft}>Merge</span>
-    {/snippet}
-    <div class="panel">
-      {#if pull.draft}
-        <p class="muted">This pull request is a draft and cannot be merged.</p>
-      {:else}
-        <div class="state {mergeability.cls}">{mergeability.text}</div>
-        <label class="row">
-          <span>Method</span>
-          <select bind:value={method} disabled={pending}>
-            {#each methods as m (m.value)}
-              <option value={m.value}>{m.label}</option>
-            {/each}
-          </select>
-        </label>
+  <div class="merge-button" class:full-width={fullWidth}>
+    <Popover
+      label="Merge pull request"
+      placement="bottom-end"
+      onclose={() => {
+        confirming = false;
+        error = null;
+      }}
+    >
+      {#snippet trigger()}
+        <span class="trigger" class:disabled={pull.draft}>Merge</span>
+      {/snippet}
+      <div class="panel">
+        {#if pull.draft}
+          <p class="muted">This pull request is a draft and cannot be merged.</p>
+        {:else}
+          <div class="state {mergeability.cls}">{mergeability.text}</div>
+          <label class="row">
+            <span>Method</span>
+            <select bind:value={method} disabled={pending}>
+              {#each methods as m (m.value)}
+                <option value={m.value}>{m.label}</option>
+              {/each}
+            </select>
+          </label>
 
-        {#if error}
-          <div class="err">{error}</div>
-        {/if}
+          {#if error}
+            <div class="err">{error}</div>
+          {/if}
 
-        {#if confirming}
-          <div class="confirm">
-            <span>Merge #{number} with {method}?</span>
+          {#if confirming}
+            <div class="confirm">
+              <span>Merge #{number} with {method}?</span>
+              <div class="actions">
+                <button type="button" class="ghost" disabled={pending} onclick={() => (confirming = false)}>
+                  Cancel
+                </button>
+                <button type="button" class="primary" disabled={pending} onclick={merge}>
+                  {pending ? "Merging…" : "Confirm merge"}
+                </button>
+              </div>
+            </div>
+          {:else}
             <div class="actions">
-              <button type="button" class="ghost" disabled={pending} onclick={() => (confirming = false)}>
-                Cancel
-              </button>
-              <button type="button" class="primary" disabled={pending} onclick={merge}>
-                {pending ? "Merging…" : "Confirm merge"}
+              <button type="button" class="primary" onclick={() => (confirming = true)}>
+                Merge pull request
               </button>
             </div>
-          </div>
-        {:else}
-          <div class="actions">
-            <button type="button" class="primary" onclick={() => (confirming = true)}>
-              Merge pull request
-            </button>
-          </div>
+          {/if}
         {/if}
-      {/if}
-    </div>
-  </Popover>
+      </div>
+    </Popover>
+  </div>
 {/if}
 
 <style>
@@ -199,5 +202,20 @@
   .err {
     color: var(--gh-danger);
     font-size: var(--fs-xs);
+  }
+
+  @media (max-width: 700px) {
+    .merge-button.full-width {
+      display: grid;
+      width: 100%;
+    }
+    .merge-button.full-width .trigger {
+      display: flex;
+      width: 100%;
+      min-height: 2.5rem;
+      box-sizing: border-box;
+      align-items: center;
+      justify-content: center;
+    }
   }
 </style>

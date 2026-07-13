@@ -98,8 +98,9 @@
 <style>
   .reviewers {
     display: flex;
-    flex-direction: column;
-    gap: var(--gh-space-1);
+    min-width: max-content;
+    align-items: center;
+    gap: var(--gh-space-2);
   }
   h2 {
     font-size: var(--fs-xs);
@@ -114,17 +115,21 @@
     margin: 0;
     padding: 0;
     display: flex;
-    flex-direction: column;
-    gap: var(--gh-space-1);
+    align-items: center;
+    gap: var(--gh-space-2);
   }
   li {
     display: flex;
     align-items: center;
     gap: var(--gh-space-2);
     font-size: var(--fs-xs);
+    padding: 4px 8px 4px 5px;
+    border: 1px solid var(--gh-border);
+    border-radius: 999px;
+    background: var(--gh-bg-inset);
   }
   .login {
-    flex: 1;
+    max-width: 12rem;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;

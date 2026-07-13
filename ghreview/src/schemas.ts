@@ -524,8 +524,8 @@ export const SyncRequestSchema = z
 export const SyncResultSchema = z
   .object({
     account: AccountSchema,
-    status: z.enum(["ok", "busy"]).openapi({
-      description: "'ok' when a full re-walk completed; 'busy' when one is already running",
+    status: z.literal("ok").openapi({
+      description: "The incremental poll completed",
     }),
   })
   .openapi("SyncResult");

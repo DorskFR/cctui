@@ -29,13 +29,13 @@
   const q = createQuery({
     queryKey: ["pulls", "root", account],
     queryFn: async (): Promise<PrEntry[]> => {
-      const repos = await api.repos(account || undefined);
+      const repos = await api.allRepos(account || undefined);
       const results = await Promise.all(
-        repos.items.map(async (env) => {
+        repos.map(async (env) => {
           const r = repoOf(env);
           const [owner, name] = r.full_name.split("/");
-          const page = await api.pulls(owner, name, env.account);
-          return page.items.map((p) => ({ owner, repo: name, pull: pullOf(p) }));
+          const pulls = await api.allPulls(owner, name, env.account);
+          return pulls.map((p) => ({ owner, repo: name, pull: pullOf(p) }));
         }),
       );
       return results.flat();

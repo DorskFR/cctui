@@ -1,7 +1,6 @@
 import { type GhAccountWithSecret, listAllActiveAccounts } from "../db/accounts.ts";
 import type { DbHandle } from "../db/client.ts";
 import { upsertSubscription } from "../db/subscriptions.ts";
-import { clearSyncEtags } from "../db/syncState.ts";
 import type { EventBus } from "../events/bus.ts";
 import { type Account, createAccount } from "../github/account.ts";
 import { Poller } from "./poller.ts";
@@ -94,7 +93,6 @@ export class AccountManager {
     if (this.forcing.has(login)) return "busy";
     this.forcing.add(login);
     try {
-      await clearSyncEtags(this.opts.db, login);
       await m.poller.runOnce();
       return "ok";
     } finally {

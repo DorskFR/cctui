@@ -12,9 +12,17 @@
     publishing?: boolean;
     skipped?: Skipped[];
     error?: string | null;
+    fullWidth?: boolean;
     onpublish: (verdict: ReviewVerdict, body: string) => void;
   }
-  let { draftCount, publishing = false, skipped = [], error = null, onpublish }: Props = $props();
+  let {
+    draftCount,
+    publishing = false,
+    skipped = [],
+    error = null,
+    fullWidth = false,
+    onpublish,
+  }: Props = $props();
 
   let verdict = $state<ReviewVerdict>("comment");
   let body = $state("");
@@ -25,7 +33,7 @@
   }
 </script>
 
-<div class="bar">
+<div class="bar" class:full-width={fullWidth}>
   <button type="button" class="toggle" onclick={() => (open = !open)}>
     Review <span class="count">{draftCount}</span>
   </button>
@@ -162,5 +170,19 @@
   .skipped ul {
     margin: 4px 0 0;
     padding-left: 16px;
+  }
+
+  @media (max-width: 700px) {
+    .bar.full-width,
+    .bar.full-width .toggle {
+      width: 100%;
+      box-sizing: border-box;
+    }
+    .bar.full-width .toggle {
+      display: flex;
+      min-height: 2.5rem;
+      align-items: center;
+      justify-content: center;
+    }
   }
 </style>

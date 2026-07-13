@@ -306,10 +306,9 @@
           "status": {
             "type": "string",
             "enum": [
-              "ok",
-              "busy"
+              "ok"
             ],
-            "description": "'ok' when a full re-walk completed; 'busy' when one is already running"
+            "description": "The incremental poll completed"
           }
         },
         "required": [
@@ -2000,7 +1999,7 @@
     },
     "/v1/sync": {
       "post": {
-        "summary": "Force an immediate full poll cycle for an account, ignoring stored ETags",
+        "summary": "Run an immediate incremental poll cycle for an account",
         "tags": [
           "system"
         ],
@@ -2015,7 +2014,7 @@
         },
         "responses": {
           "200": {
-            "description": "Sync completed (or was already running)",
+            "description": "Incremental sync completed",
             "content": {
               "application/json": {
                 "schema": {

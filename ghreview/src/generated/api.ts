@@ -88,7 +88,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Force an immediate full poll cycle for an account, ignoring stored ETags */
+        /** Run an immediate incremental poll cycle for an account */
         post: {
             parameters: {
                 query?: never;
@@ -102,7 +102,7 @@ export interface paths {
                 };
             };
             responses: {
-                /** @description Sync completed (or was already running) */
+                /** @description Incremental sync completed */
                 200: {
                     headers: {
                         [name: string]: unknown;
@@ -2324,10 +2324,10 @@ export interface components {
              */
             account: string;
             /**
-             * @description 'ok' when a full re-walk completed; 'busy' when one is already running
+             * @description The incremental poll completed
              * @enum {string}
              */
-            status: "ok" | "busy";
+            status: "ok";
         };
         Error: {
             error: {
