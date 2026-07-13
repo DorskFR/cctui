@@ -90,16 +90,26 @@
 		{#await booted}
 			<Text tone="faint">{m.review_center_loading()}</Text>
 		{:then { Review, token, base }}
-			{#if accounts.length > 1}
-				<Field label={m.github_account_label()}>
-					<Select bind:value={account}>
-						{#each accounts as a (a.id)}
-							<option value={a.login}>{a.login}</option>
-						{/each}
-					</Select>
-				</Field>
+			{#if accounts.length === 0}
+				<Card>
+					<Stack gap="var(--sp-2)">
+						<Heading level={2}>{m.github_no_review_accounts_heading()}</Heading>
+						<Text tone="faint">{m.github_no_review_accounts_body()}</Text>
+						<Link href="/accounts">{m.github_unlock_cta()}</Link>
+					</Stack>
+				</Card>
+			{:else}
+				{#if accounts.length > 1}
+					<Field label={m.github_account_label()}>
+						<Select bind:value={account}>
+							{#each accounts as a (a.id)}
+								<option value={a.login}>{a.login}</option>
+							{/each}
+						</Select>
+					</Field>
+				{/if}
+				<Review baseUrl={base} {token} {account} basePath="/github" />
 			{/if}
-			<Review baseUrl={base} {token} {account} basePath="/github" />
 		{:catch}
 			<Card>
 				<Stack gap="var(--sp-2)">
