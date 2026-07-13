@@ -32,6 +32,23 @@ async function openPanel(): Promise<void> {
 }
 
 describe("MergeButton", () => {
+  it("exposes its full-width layout through the public prop", () => {
+    component = mount(MergeButton, {
+      target: document.body,
+      props: {
+        owner: "o",
+        repo: "r",
+        number: 42,
+        account: "acct",
+        pull: pull(),
+        fullWidth: true,
+      },
+    });
+
+    expect(document.querySelector(".merge-button.full-width")).not.toBeNull();
+    expect(document.querySelector(".merge-button .trigger")?.textContent).toBe("Merge");
+  });
+
   it("confirms then merges with the selected method and pinned head SHA", async () => {
     const spy = vi
       .spyOn(api, "mergePull")

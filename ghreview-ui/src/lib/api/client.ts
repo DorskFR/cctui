@@ -83,14 +83,44 @@ export interface NotificationFilter {
   all?: "true";
 }
 
+interface CursorPage<T> {
+  items: T[];
+  next_cursor: string | null;
+}
+
+export async function collectCursorPages<T>(
+  fetchPage: (cursor?: string) => Promise<CursorPage<T>>,
+): Promise<T[]> {
+  const items: T[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await fetchPage(cursor);
+    items.push(...page.items);
+    cursor = page.next_cursor ?? undefined;
+  } while (cursor);
+  return items;
+}
+
 export const api = {
   status: () => request<StatusPayload>("/v1/status"),
 
   repos: (account?: string, limit?: number, cursor?: string) =>
     request<RepoPage>(`/v1/repos${qs({ account, limit, cursor })}`),
 
+  allRepos: (account?: string) =>
+    collectCursorPages((cursor) =>
+      request<RepoPage>(`/v1/repos${qs({ account, limit: 100, cursor })}`),
+    ),
+
   pulls: (owner: string, repo: string, account?: string, limit?: number, cursor?: string) =>
     request<PullRequestPage>(`/v1/repos/${owner}/${repo}/pulls${qs({ account, limit, cursor })}`),
+
+  allPulls: (owner: string, repo: string, account?: string) =>
+    collectCursorPages((cursor) =>
+      request<PullRequestPage>(
+        `/v1/repos/${owner}/${repo}/pulls${qs({ account, limit: 100, cursor })}`,
+      ),
+    ),
 
   pull: (owner: string, repo: string, number: number) =>
     request<PullRequestEnvelope>(`/v1/repos/${owner}/${repo}/pulls/${number}`),
@@ -142,7 +172,7 @@ export const api = {
     request<{ items: GithubRepo[] }>(`/v1/github/repos${qs({ account })}`),
 
   forceSync: (account?: string) =>
-    request<{ account: string; status: "ok" | "busy" }>("/v1/sync", {
+    request<{ account: string; status: "ok" }>("/v1/sync", {
       method: "POST",
       body: JSON.stringify({ account }),
     }),

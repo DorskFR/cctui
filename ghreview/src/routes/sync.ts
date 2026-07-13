@@ -7,12 +7,12 @@ import { ErrorSchema, SyncRequestSchema, SyncResultSchema } from "../schemas.ts"
 const forceSync = createRoute({
   method: "post",
   path: "/v1/sync",
-  summary: "Force an immediate full poll cycle for an account, ignoring stored ETags",
+  summary: "Run an immediate incremental poll cycle for an account",
   tags: ["system"],
   request: { body: { content: { "application/json": { schema: SyncRequestSchema } } } },
   responses: {
     200: {
-      description: "Sync completed (or was already running)",
+      description: "Incremental sync completed",
       content: { "application/json": { schema: SyncResultSchema } },
     },
     400: {

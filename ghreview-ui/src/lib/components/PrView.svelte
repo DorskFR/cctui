@@ -1,6 +1,5 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import { SegmentedControl } from "@dorsk/tsumikit";
   import { createMutation, createQuery } from "@tanstack/svelte-query";
   import { toStore } from "svelte/store";
   import { api } from "../api/client";
@@ -33,18 +32,13 @@
   import { tabs } from "../stores/tabs.svelte";
   import DiffView from "./DiffView.svelte";
   import FileTree from "./FileTree.svelte";
-  import LabelPicker from "./LabelPicker.svelte";
-  import MergeButton from "./MergeButton.svelte";
-  import Reviewers from "./Reviewers.svelte";
-  import ReviewSummaryBar from "./ReviewSummaryBar.svelte";
   import PrChecks from "./PrChecks.svelte";
   import PrCommits from "./PrCommits.svelte";
   import PrConversation from "./PrConversation.svelte";
   import PrActivity from "./PrActivity.svelte";
   import PrDescription from "./PrDescription.svelte";
-  import Avatar from "./Avatar.svelte";
-  import PrStateIcon from "./PrStateIcon.svelte";
   import PrTabs from "./PrTabs.svelte";
+  import PrDiffHeader from "./organisms/PrDiffHeader.svelte";
 
   interface Props {
     owner: string;
@@ -272,10 +266,6 @@
 
   let diffMode = $state<"unified" | "split">("unified");
 
-  const diffModeOptions = [
-    { value: "unified", label: "Unified" },
-    { value: "split", label: "Split" },
-  ];
 </script>
 
 <svelte:window onkeydown={onKeydown} />
@@ -290,78 +280,21 @@
       <div class="msg">Not synced yet.</div>
     {/if}
   {:else}
-    <header class="head">
-      <div class="titlerow">
-        <h1>
-          {#if pull.html_url}
-            <a class="titlelink" href={pull.html_url} target="_blank" rel="noopener noreferrer">
-              {pull.title} <span class="num">#{number}</span>
-            </a>
-          {:else}
-            {pull.title} <span class="num">#{number}</span>
-          {/if}
-        </h1>
-        <span class="state state-{prStateOf(pull)}">
-          <PrStateIcon state={prStateOf(pull)} size={14} inherit />
-          {prStateOf(pull)}
-        </span>
-      </div>
-      {#if pull.user}
-        <div class="author">
-          <Avatar user={pull.user} size={22} />
-          <span class="authorname">{pull.user.login}</span>
-        </div>
-      {/if}
-      <div class="branches">
-        <code>{pull.base?.ref ?? "?"}</code> ← <code>{pull.head?.ref ?? "?"}</code>
-      </div>
-      <div class="labelrow">
-        <LabelPicker
-          {owner}
-          {repo}
-          {number}
-          account={account ?? undefined}
-          labels={pull.labels ?? []}
-        />
-      </div>
-      <div class="reviewersrow">
-        <Reviewers {owner} {repo} {number} account={account ?? undefined} />
-      </div>
-      <div class="chips">
-        <span class="chip">CI: {ciStateOf(pull)}</span>
-        <span class="chip">
-          {pull.mergeable === true ? "mergeable" : pull.mergeable === false ? "conflicts" : "mergeability unknown"}
-        </span>
-        {#if pull.draft}<span class="chip">draft</span>{/if}
-        <span class="chip mono">
-          {#if pull.additions != null || pull.deletions != null}
-            <span class="add">+{pull.additions ?? 0}</span>
-            <span class="del">−{pull.deletions ?? 0}</span>
-            ·
-          {/if}
-          {files.length} files
-        </span>
-        {#if files.length > 0}
-          <span class="chip mono">viewed {viewedCount}/{files.length}</span>
-        {/if}
-        <SegmentedControl
-          options={diffModeOptions}
-          bind:value={diffMode}
-          size="sm"
-          label="Diff layout"
-        />
-        <ReviewSummaryBar
-          draftCount={drafts.length}
-          publishing={reviewPending}
-          skipped={publishSkipped}
-          error={publishError}
-          onpublish={publishReview}
-        />
-        {#if prStateOf(pull) === "open" || prStateOf(pull) === "draft"}
-          <MergeButton {owner} {repo} {number} account={account ?? undefined} {pull} />
-        {/if}
-      </div>
-    </header>
+    <PrDiffHeader
+      {owner}
+      {repo}
+      {number}
+      account={account ?? undefined}
+      {pull}
+      {files}
+      {viewedCount}
+      draftCount={drafts.length}
+      publishing={reviewPending}
+      skipped={publishSkipped}
+      error={publishError}
+      bind:diffMode
+      onpublish={publishReview}
+    />
 
     <PrTabs active={activeTab} counts={{ diff: files.length }} onselect={selectTab} />
 
@@ -422,102 +355,6 @@
     display: flex;
     flex-direction: column;
     height: 100%;
-  }
-  .head {
-    padding: var(--gh-space-3);
-    border-bottom: 1px solid var(--gh-border);
-  }
-  .titlerow {
-    display: flex;
-    align-items: center;
-    gap: var(--gh-space-3);
-  }
-  h1 {
-    font-size: var(--fs-md);
-    margin: 0;
-    font-weight: 600;
-  }
-  .num {
-    color: var(--gh-fg-muted);
-    font-weight: 400;
-  }
-  .titlelink {
-    color: inherit;
-    text-decoration: none;
-  }
-  .titlelink:hover {
-    color: var(--gh-accent);
-    text-decoration: underline;
-  }
-  .state {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    text-transform: capitalize;
-    border-radius: 999px;
-    padding: 1px 10px;
-    font-size: var(--fs-xs);
-    color: white;
-  }
-  .state-open {
-    background: var(--gh-success);
-  }
-  .state-draft {
-    background: var(--gh-draft);
-  }
-  .state-merged {
-    background: var(--gh-merged);
-  }
-  .state-closed {
-    background: var(--gh-danger);
-  }
-  .author {
-    display: flex;
-    align-items: center;
-    gap: var(--gh-space-2);
-    margin-top: var(--gh-space-2);
-  }
-  .authorname {
-    font-size: var(--fs-sm);
-    font-weight: 600;
-  }
-  .branches {
-    color: var(--gh-fg-muted);
-    margin-top: var(--gh-space-1);
-  }
-  .labelrow {
-    margin-top: var(--gh-space-2);
-  }
-  .reviewersrow {
-    margin-top: var(--gh-space-2);
-  }
-  code {
-    font-family: var(--gh-mono);
-    background: var(--gh-bg-inset);
-    padding: 0 6px;
-    border-radius: var(--gh-radius-sm);
-  }
-  .chips {
-    display: flex;
-    gap: var(--gh-space-2);
-    margin-top: var(--gh-space-2);
-    flex-wrap: wrap;
-  }
-  .chip {
-    font-size: var(--fs-xs);
-    color: var(--gh-fg-muted);
-    border: 1px solid var(--gh-border);
-    border-radius: var(--gh-radius);
-    padding: 1px 8px;
-  }
-  .mono {
-    font-family: var(--gh-mono);
-  }
-  .add {
-    color: var(--gh-success);
-  }
-  .del {
-    color: var(--gh-danger);
   }
   .content {
     flex: 1;
