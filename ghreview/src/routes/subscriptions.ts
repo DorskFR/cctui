@@ -3,6 +3,7 @@ import { getUserId } from "../auth/middleware.ts";
 import { listGhAccounts } from "../db/accounts.ts";
 import {
   deactivateOwnedSubscription,
+  getOwnedSubscriptionById,
   listSubscriptionsForUser,
   type SubscriptionKind,
   upsertOwnedSubscription,
@@ -105,6 +106,10 @@ const deleteSubscription = createRoute({
   request: { params: IdParam },
   responses: {
     204: { description: "Deactivated" },
+    400: {
+      description: "Subscription cannot be removed (e.g. the permanent notification feed)",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
     404: { description: "Not found", content: { "application/json": { schema: ErrorSchema } } },
     503: {
       description: "Store unavailable",
@@ -181,6 +186,21 @@ export function registerSubscriptions(app: OpenAPIHono, deps: AppDeps = {}) {
       return c.json({ error: { code: "unavailable", message: "Store not configured" } }, 503);
     const uid = getUserId(c) ?? "";
     const { id } = c.req.valid("param");
+    const existing = await getOwnedSubscriptionById(deps.db, uid, id);
+    if (!existing) {
+      return c.json({ error: { code: "not_found", message: `Subscription ${id} not found` } }, 404);
+    }
+    if (existing.kind === "notification") {
+      return c.json(
+        {
+          error: {
+            code: "permanent_subscription",
+            message: "The notification feed is always on and cannot be unsubscribed",
+          },
+        },
+        400,
+      );
+    }
     const row = await deactivateOwnedSubscription(deps.db, uid, id);
     if (!row) {
       return c.json({ error: { code: "not_found", message: `Subscription ${id} not found` } }, 404);

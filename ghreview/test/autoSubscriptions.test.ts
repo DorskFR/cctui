@@ -76,7 +76,26 @@ guarded("auto-subscription handlers", () => {
     expect(subs.filter((s) => s.kind === "pull_request").length).toBe(1);
   });
 
-  test("CCT-675: syncNotifications paginates past the 50/100 default and ingests every thread", async () => {
+  test("CCT-687: syncNotifications requests all=true (full inbox: read + unread)", async () => {
+    let seenAll: unknown;
+    const octokit: OctokitRequest = {
+      request: async (_route, params = {}) => {
+        seenAll = (params as { all?: unknown }).all;
+        return { status: 200, headers: {}, data: [] };
+      },
+    };
+    const { ctx } = ctxFor(octokit);
+    await syncNotifications(ctx, {
+      id: "1",
+      account: "auto",
+      kind: "notification",
+      target: null,
+      active: true,
+    });
+    expect(seenAll).toBe(true);
+  });
+
+  test("CCT-675/687: paginates past the default and ingests every read+unread thread", async () => {
     const total = 230;
     const perPage = 100;
     let calls = 0;
@@ -90,6 +109,7 @@ guarded("auto-subscription handlers", () => {
           (_, i) => ({
             id: `n${start + i + 1}`,
             reason: "subscribed",
+            unread: (start + i) % 2 === 0,
             subject: { type: "PullRequest" },
           }),
         );

@@ -61,6 +61,7 @@ if (config.databaseUrl) {
     await manager.start();
     deps.accountFor = (login) => manager?.accountFor(login);
     deps.syncSnapshot = () => manager?.snapshot() ?? { last_run: null, accounts: [] };
+    deps.forceSync = (login) => manager?.forceSync(login) ?? Promise.resolve("unknown");
   } else {
     console.log("ghreview: GHREVIEW_SEAL_KEY unset — accounts/poller disabled (store + auth only)");
   }

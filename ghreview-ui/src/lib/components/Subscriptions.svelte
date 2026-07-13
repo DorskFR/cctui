@@ -5,7 +5,6 @@
   import { getAccount } from "../api/config";
   import { pullPath } from "../router/route";
   import { router } from "../router/router.svelte";
-  import ManageSubscriptions from "./ManageSubscriptions.svelte";
   import RepoPicker from "./RepoPicker.svelte";
 
   const client = useQueryClient();
@@ -64,18 +63,12 @@
     <Card padding="md" surface="raised">
       <Stack gap="var(--gh-space-2)">
         <Heading level={2} size="sm">Repositories</Heading>
+        <Text size="xs" tone="muted">Toggle a repository to subscribe or unsubscribe.</Text>
         {#if account}
           <RepoPicker />
         {:else}
           <Text size="sm" tone="muted">No account selected — cannot list repos.</Text>
         {/if}
-      </Stack>
-    </Card>
-
-    <Card padding="md" surface="raised">
-      <Stack gap="var(--gh-space-2)">
-        <Heading level={2} size="sm">Manage subscriptions</Heading>
-        <ManageSubscriptions />
       </Stack>
     </Card>
   </Stack>

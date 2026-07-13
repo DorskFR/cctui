@@ -137,6 +137,12 @@ export const api = {
   githubRepos: (account: string) =>
     request<{ items: GithubRepo[] }>(`/v1/github/repos${qs({ account })}`),
 
+  forceSync: (account?: string) =>
+    request<{ account: string; status: "ok" | "busy" }>("/v1/sync", {
+      method: "POST",
+      body: JSON.stringify({ account }),
+    }),
+
   reviewDraft: (owner: string, repo: string, number: number, account: string) =>
     request<ReviewDraftResult>(
       `/v1/repos/${owner}/${repo}/pulls/${number}/review-draft${qs({ account })}`,

@@ -15,6 +15,7 @@ export interface AppDeps {
   bus?: EventBus;
   webhookSecret?: string;
   syncSnapshot?: () => SyncSnapshot;
+  forceSync?: (account: string) => Promise<"ok" | "busy" | "unknown">;
   accountFor?: (account: string) => Account | undefined;
   auth?: AuthResolver;
   sealer?: { seal: (plaintext: string) => string };

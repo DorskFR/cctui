@@ -79,6 +79,82 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Force an immediate full poll cycle for an account, ignoring stored ETags */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["SyncRequest"];
+                };
+            };
+            responses: {
+                /** @description Sync completed (or was already running) */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SyncResult"];
+                    };
+                };
+                /** @description Account required (caller owns more than one) */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description No such account owned by the caller */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description A forced sync is already running for this account */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Store/sync unavailable */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/accounts": {
         parameters: {
             query?: never;
@@ -503,6 +579,15 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content?: never;
+                };
+                /** @description Subscription cannot be removed (e.g. the permanent notification feed) */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
                 };
                 /** @description Not found */
                 404: {
@@ -1970,6 +2055,38 @@ export interface components {
             last_run: string | null;
             accounts: string[];
         };
+        SyncResult: {
+            /**
+             * @description GitHub account/login the record was synced for
+             * @example DorskFR
+             */
+            account: string;
+            /**
+             * @description 'ok' when a full re-walk completed; 'busy' when one is already running
+             * @enum {string}
+             */
+            status: "ok" | "busy";
+        };
+        Error: {
+            error: {
+                /**
+                 * @description Stable machine-readable error code
+                 * @example not_found
+                 */
+                code: string;
+                /** @example Pull request not found */
+                message: string;
+                /** @description Optional structured context */
+                details?: Record<string, never>;
+            };
+        };
+        SyncRequest: {
+            /**
+             * @description The caller's GitHub login to force-sync; omit when the caller has exactly one account
+             * @example DorskFR
+             */
+            account?: string;
+        };
         AccountList: {
             items: components["schemas"]["AccountSummary"][];
         };
@@ -1985,19 +2102,6 @@ export interface components {
             rate_limit: number | null;
             active: boolean;
             created_at: string | null;
-        };
-        Error: {
-            error: {
-                /**
-                 * @description Stable machine-readable error code
-                 * @example not_found
-                 */
-                code: string;
-                /** @example Pull request not found */
-                message: string;
-                /** @description Optional structured context */
-                details?: Record<string, never>;
-            };
         };
         AccountCreate: {
             /** @description GitHub PAT (fine-grained preferred); validated, sealed, never returned */

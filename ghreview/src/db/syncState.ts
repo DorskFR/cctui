@@ -28,6 +28,14 @@ export async function getSyncState(
   return rows[0] ?? null;
 }
 
+export async function clearSyncEtags(db: DbHandle, account: string): Promise<void> {
+  await db.sql`
+    UPDATE sync_state
+    SET etag = NULL, last_modified = NULL
+    WHERE account = ${account}
+  `;
+}
+
 export interface SyncStatePatch {
   etag?: string | null;
   cursor?: string | null;

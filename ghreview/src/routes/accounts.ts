@@ -6,6 +6,7 @@ import {
   deleteGhAccount,
   listGhAccounts,
 } from "../db/accounts.ts";
+import { upsertSubscription } from "../db/subscriptions.ts";
 import type { AppDeps } from "../deps.ts";
 import { validatePat } from "../github/validate.ts";
 import {
@@ -126,6 +127,9 @@ export function registerAccounts(app: OpenAPIHono, deps: AppDeps = {}) {
         budgetCeiling: body.budget_ceiling ?? null,
         rateLimit: body.rate_limit ?? null,
       });
+      await upsertSubscription(deps.db, result.login, "notification", null, "notification").catch(
+        () => {},
+      );
       return c.json(account, 201);
     } catch (err) {
       if (err instanceof AccountConflictError) {
