@@ -329,7 +329,8 @@ export async function syncNotifications(ctx: SyncContext, sub: Subscription): Pr
     for (const thread of res.data) {
       await ingestNotificationThread(ctx, sub, thread);
     }
-    if (res.data.length < NOTIFICATIONS_PER_PAGE) break;
+    // GitHub caps /notifications at 50/page regardless of per_page: a short page is not the last page.
+    if (!res.hasNextPage) break;
   }
 
   const res = firstRes ?? {
@@ -341,6 +342,7 @@ export async function syncNotifications(ctx: SyncContext, sub: Subscription): Pr
     secondaryLimit: false,
     rate: {},
     data: null,
+    hasNextPage: false,
   };
   await persistState(ctx, sub, { ...res, etag, lastModified });
   return outcome({ ...res, etag, lastModified });

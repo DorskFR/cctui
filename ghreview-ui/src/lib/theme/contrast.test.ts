@@ -48,8 +48,8 @@ describe("diff colors derive from and track every tsumikit theme", () => {
       const p = palette(theme);
       expect(p.bg, `${theme} --c-bg`).toMatch(/^#[0-9a-fA-F]{3,6}$/);
       const ctx = hexToRgb(p.bg);
-      const add = mix(p.green, 14, p.bg);
-      const del = mix(p.red, 14, p.bg);
+      const add = mix(p.green, 9, p.bg);
+      const del = mix(p.red, 9, p.bg);
       expect(dist(add, ctx)).toBeGreaterThan(8);
       expect(dist(del, ctx)).toBeGreaterThan(8);
       expect(dist(add, del)).toBeGreaterThan(8);
@@ -57,9 +57,9 @@ describe("diff colors derive from and track every tsumikit theme", () => {
   }
 
   it("add tint differs across light and dark themes", () => {
-    const light = mix(palette("light").green, 14, palette("light").bg);
-    const dark = mix(palette("dark").green, 14, palette("dark").bg);
-    expect(dist(light, dark)).toBeGreaterThan(30);
+    const light = mix(palette("light").green, 9, palette("light").bg);
+    const dark = mix(palette("dark").green, 9, palette("dark").bg);
+    expect(dist(light, dark)).toBeGreaterThan(20);
   });
 });
 

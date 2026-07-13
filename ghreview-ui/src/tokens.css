@@ -10,8 +10,7 @@
  *
  * Diff colors are DERIVED from tsumikit semantic colors (tinting --ok/--danger
  * over --bg), so they follow light / dark / colorblind themes for free — the
- * hue and base flip per theme. Renderers must read ONLY these tokens; the
- * canvas resolves them to concrete colors via themeTokens() in lib/theme/theme.ts.
+ * hue and base flip per theme.
  */
 
 :root {
@@ -31,9 +30,9 @@
   --gh-merged: var(--c-violet);
   --gh-draft: var(--text-faint);
 
-  --gh-diff-add-bg: color-mix(in srgb, var(--ok) 14%, var(--bg));
+  --gh-diff-add-bg: color-mix(in srgb, var(--ok) 9%, var(--bg));
   --gh-diff-add-fg: var(--text);
-  --gh-diff-del-bg: color-mix(in srgb, var(--danger) 14%, var(--bg));
+  --gh-diff-del-bg: color-mix(in srgb, var(--danger) 9%, var(--bg));
   --gh-diff-del-fg: var(--text);
   --gh-diff-context-bg: var(--bg);
   --gh-diff-context-fg: var(--text);

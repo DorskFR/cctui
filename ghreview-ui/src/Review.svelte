@@ -2,11 +2,8 @@
   import { setContext } from "svelte";
   import "./embed.css";
   import { configureRuntime } from "./lib/api/config";
-  import { CanvasDiffRenderer } from "./lib/components/CanvasDiffRenderer";
-  import { DomDiffRenderer } from "./lib/components/DomDiffRenderer";
   import Shell from "./lib/components/Shell.svelte";
   import { EMBED_KEY, type EmbedContext } from "./lib/embed/context";
-  import { registerRenderer } from "./lib/diff/renderer";
   import { router } from "./lib/router/router.svelte";
 
   interface Props {
@@ -16,9 +13,6 @@
     basePath?: string;
   }
   let { baseUrl, token, account = null, basePath = "" }: Props = $props();
-
-  registerRenderer(DomDiffRenderer);
-  registerRenderer(CanvasDiffRenderer);
 
   // pre-effects run ahead of the child query-subscription effects, so the
   // backend URL + token are in place before Shell issues its first request.

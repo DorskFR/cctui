@@ -2,8 +2,10 @@
   import type { NavIndex } from "../diff/navindex";
   import type { DiffModel } from "../diff/parse";
   import { buildSplitModel } from "../diff/split";
-  import { ROW_HEIGHT } from "../diff/canvas/layout";
+  import { highlightLine, langForPath } from "../diff/highlight";
   import { computeWindow } from "../diff/virtual";
+
+  const ROW_HEIGHT = 20;
   import { type LineAddress, type ReviewController, rowToAddress } from "../review/anchors";
   import InlineCommentComposer from "./InlineCommentComposer.svelte";
   import InlineThread from "./InlineThread.svelte";
@@ -29,6 +31,11 @@
 
   let pendingAddr = $state<{ addr: LineAddress; rowIndex: number } | null>(null);
   let openAnchor = $state<number | null>(null);
+
+  const langByFile = $derived(model.files.map((f) => langForPath(f.filename)));
+  function hl(content: string, fileIndex: number): string {
+    return highlightLine(content, langByFile[fileIndex] ?? null);
+  }
 
   const split = $derived(mode === "split" ? buildSplitModel(model) : null);
   const rowCount = $derived(split ? split.rows.length : model.rows.length);
@@ -95,7 +102,7 @@
               >
                 <span class="gutter">{l?.row.oldLine ?? ""}</span>
                 <span class="marker">{l?.row.kind === "del" ? "−" : ""}</span>
-                <span class="code">{l?.row.content ?? ""}</span>
+                <span class="code code-hl">{@html l ? hl(l.row.content, l.row.fileIndex) : ""}</span>
                 {#if review && l && l.row.kind !== "context"}
                   <span
                     class="add-comment"
@@ -118,7 +125,7 @@
               >
                 <span class="gutter">{r?.row.newLine ?? ""}</span>
                 <span class="marker">{r?.row.kind === "add" ? "+" : ""}</span>
-                <span class="code">{r?.row.content ?? ""}</span>
+                <span class="code code-hl">{@html r ? hl(r.row.content, r.row.fileIndex) : ""}</span>
                 {#if review && r && r.row.kind !== "context"}
                   <span
                     class="add-comment"
@@ -157,7 +164,7 @@
               <span class="gutter">{row.oldLine ?? ""}</span>
               <span class="gutter">{row.newLine ?? ""}</span>
               <span class="marker">{row.kind === "add" ? "+" : row.kind === "del" ? "−" : ""}</span>
-              <span class="code">{row.content}</span>
+              <span class="code code-hl">{@html hl(row.content, row.fileIndex)}</span>
               {#if review}
                 <button
                   type="button"

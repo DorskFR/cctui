@@ -23,12 +23,6 @@
   import { buildDiffModel } from "../diff/parse";
   import { buildNavIndex } from "../diff/navindex";
   import { buildAnchors, type LineAddress } from "../review/anchors";
-  import {
-    getPreferredRendererKind,
-    getRenderer,
-    type RendererKind,
-    setPreferredRendererKind,
-  } from "../diff/renderer";
   import { resolveKey, type KeymapState } from "../keyboard/keymap";
   import {
     type PrContentTab,
@@ -37,6 +31,7 @@
     prTabStorageKey,
   } from "../stores/pr-tabs-core";
   import { tabs } from "../stores/tabs.svelte";
+  import DiffView from "./DiffView.svelte";
   import FileTree from "./FileTree.svelte";
   import LabelPicker from "./LabelPicker.svelte";
   import ReviewSummaryBar from "./ReviewSummaryBar.svelte";
@@ -271,20 +266,12 @@
     localStorage.setItem(prTabStorageKey(owner, repo, number), tab);
   }
 
-  let rendererKind = $state<RendererKind>(getPreferredRendererKind());
   let diffMode = $state<"unified" | "split">("unified");
-  const effectiveRenderer = $derived<RendererKind>(diffMode === "split" ? "dom" : rendererKind);
-  const DiffComponent = $derived(getRenderer(effectiveRenderer)?.component);
 
   const diffModeOptions = [
     { value: "unified", label: "Unified" },
     { value: "split", label: "Split" },
   ];
-
-  function toggleRenderer(kind: RendererKind): void {
-    rendererKind = kind;
-    setPreferredRendererKind(kind);
-  }
 </script>
 
 <svelte:window onkeydown={onKeydown} />
@@ -350,18 +337,6 @@
           size="sm"
           label="Diff layout"
         />
-        <span class="renderer-toggle" role="group" aria-label="Diff renderer">
-          <button
-            type="button"
-            class:active={rendererKind === "dom"}
-            onclick={() => toggleRenderer("dom")}
-          >DOM</button>
-          <button
-            type="button"
-            class:active={rendererKind === "canvas"}
-            onclick={() => toggleRenderer("canvas")}
-          >Canvas</button>
-        </span>
         <ReviewSummaryBar
           draftCount={drafts.length}
           publishing={reviewPending}
@@ -404,20 +379,18 @@
           <section class="diff">
             {#if files.length === 0}
               <div class="msg">No file patches in the synced payload.</div>
-            {:else if DiffComponent}
-              {#key effectiveRenderer}
-                <DiffComponent
-                  model={displayModel}
-                  {nav}
-                  {focusRow}
-                  {review}
-                  mode={diffMode}
-                  {owner}
-                  {repo}
-                  account={account ?? undefined}
-                  onFocusRow={(r) => (focusRow = r)}
-                />
-              {/key}
+            {:else}
+              <DiffView
+                model={displayModel}
+                {nav}
+                {focusRow}
+                {review}
+                mode={diffMode}
+                {owner}
+                {repo}
+                account={account ?? undefined}
+                onFocusRow={(r) => (focusRow = r)}
+              />
             {/if}
           </section>
         </div>
@@ -514,24 +487,6 @@
   }
   .del {
     color: var(--gh-danger);
-  }
-  .renderer-toggle {
-    display: inline-flex;
-    border: 1px solid var(--gh-border);
-    border-radius: var(--gh-radius);
-    overflow: hidden;
-  }
-  .renderer-toggle button {
-    font-size: var(--fs-xs);
-    padding: 1px 8px;
-    background: transparent;
-    color: var(--gh-fg-muted);
-    border: none;
-    cursor: pointer;
-  }
-  .renderer-toggle button.active {
-    background: var(--gh-accent);
-    color: white;
   }
   .content {
     flex: 1;
