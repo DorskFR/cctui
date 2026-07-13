@@ -12,6 +12,7 @@
  */
 
 import "./markdown.css";
+import "./hljs-tokens.css";
 
 export function escapeHtml(s: string): string {
   return s

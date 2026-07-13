@@ -95,17 +95,17 @@ guarded("auto-subscription handlers", () => {
     expect(seenAll).toBe(true);
   });
 
-  test("CCT-675/687: paginates past the default and ingests every read+unread thread", async () => {
+  test("CCT-675/687: follows Link rel=next past GitHub's 50/page cap and ingests every read+unread thread", async () => {
     const total = 230;
-    const perPage = 100;
+    const cappedPerPage = 50;
     let calls = 0;
     const octokit: OctokitRequest = {
       request: async (_route, params = {}) => {
         calls++;
         const page = Number((params as { page?: number }).page ?? 1);
-        const start = (page - 1) * perPage;
+        const start = (page - 1) * cappedPerPage;
         const batch = Array.from(
-          { length: Math.max(0, Math.min(perPage, total - start)) },
+          { length: Math.max(0, Math.min(cappedPerPage, total - start)) },
           (_, i) => ({
             id: `n${start + i + 1}`,
             reason: "subscribed",
@@ -113,7 +113,16 @@ guarded("auto-subscription handlers", () => {
             subject: { type: "PullRequest" },
           }),
         );
-        return { status: 200, headers: {}, data: batch };
+        const hasNext = start + batch.length < total;
+        return {
+          status: 200,
+          headers: hasNext
+            ? {
+                link: `<https://api.github.com/notifications?all=true&per_page=100&page=${page + 1}>; rel="next", <https://api.github.com/notifications?all=true&per_page=100&page=5>; rel="last"`,
+              }
+            : {},
+          data: batch,
+        };
       },
     };
     const { ctx } = ctxFor(octokit);
@@ -125,7 +134,7 @@ guarded("auto-subscription handlers", () => {
       active: true,
     });
 
-    expect(calls).toBe(3);
+    expect(calls).toBe(5);
     const docs = await listDocuments(db, "notification", { account: "auto", limit: 1000 });
     expect(docs.items.length).toBe(total);
   });

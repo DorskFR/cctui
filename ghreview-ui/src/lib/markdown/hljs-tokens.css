@@ -1,0 +1,63 @@
+/* Shared highlight.js token palette. Consumed by markdown code blocks
+   (`.markdown` scope) and the diff renderer (`.code-hl` scope) so both stay
+   visually consistent and the palette is defined exactly once. */
+.markdown .hljs-keyword,
+.markdown .hljs-built_in,
+.markdown .hljs-literal,
+.code-hl .hljs-keyword,
+.code-hl .hljs-built_in,
+.code-hl .hljs-literal {
+  color: var(--gh-syn-keyword);
+}
+.markdown .hljs-string,
+.markdown .hljs-regexp,
+.code-hl .hljs-string,
+.code-hl .hljs-regexp {
+  color: var(--gh-syn-string);
+}
+.markdown .hljs-number,
+.code-hl .hljs-number {
+  color: var(--gh-syn-number);
+}
+.markdown .hljs-comment,
+.code-hl .hljs-comment {
+  color: var(--gh-syn-comment);
+}
+.markdown .hljs-title,
+.markdown .hljs-function .hljs-title,
+.markdown .hljs-section,
+.code-hl .hljs-title,
+.code-hl .hljs-function .hljs-title,
+.code-hl .hljs-section {
+  color: var(--gh-syn-function);
+}
+.markdown .hljs-variable,
+.markdown .hljs-attr,
+.markdown .hljs-attribute,
+.code-hl .hljs-variable,
+.code-hl .hljs-attr,
+.code-hl .hljs-attribute {
+  color: var(--gh-syn-variable);
+}
+.markdown .hljs-type,
+.markdown .hljs-class .hljs-title,
+.code-hl .hljs-type,
+.code-hl .hljs-class .hljs-title {
+  color: var(--gh-syn-type);
+}
+.markdown .hljs-punctuation,
+.code-hl .hljs-punctuation {
+  color: var(--gh-syn-punctuation);
+}
+.markdown .hljs-addition,
+.code-hl .hljs-addition {
+  color: var(--gh-success);
+}
+.markdown .hljs-deletion,
+.code-hl .hljs-deletion {
+  color: var(--gh-danger);
+}
+.markdown .hljs-meta,
+.code-hl .hljs-meta {
+  color: var(--gh-fg-muted);
+}

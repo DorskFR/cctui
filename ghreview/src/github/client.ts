@@ -10,6 +10,7 @@ export interface ConditionalResult<T> {
   secondaryLimit: boolean;
   rate: RateHeaders;
   data: T | null;
+  hasNextPage: boolean;
 }
 
 export interface OctokitRequest {
@@ -40,6 +41,7 @@ function toResult<T>(res: OctokitResponse): ConditionalResult<T> {
     secondaryLimit: false,
     rate: parseRateHeaders(headers),
     data: res.data as T,
+    hasNextPage: /(?:^|,)\s*<[^>]*>;\s*rel="next"/.test(headers.link ?? ""),
   };
 }
 
@@ -76,6 +78,7 @@ export async function conditionalRequest<T>(
         secondaryLimit: false,
         rate: parseRateHeaders(resHeaders),
         data: null,
+        hasNextPage: false,
       };
     }
     const retryRaw = resHeaders["retry-after"];
@@ -88,6 +91,7 @@ export async function conditionalRequest<T>(
       secondaryLimit: isSecondaryLimit(resHeaders, status),
       rate: parseRateHeaders(resHeaders),
       data: null,
+      hasNextPage: false,
     };
   }
 }
