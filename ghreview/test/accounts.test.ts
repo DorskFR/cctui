@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { createApp } from "../src/app.ts";
 import { createStaticResolver, parseStaticTokens } from "../src/auth/resolver.ts";
 import { createSealer } from "../src/crypto/seal.ts";
-import { createGhAccount } from "../src/db/accounts.ts";
+import { createGhAccount, deleteGhAccount } from "../src/db/accounts.ts";
 import { createDb, type DbHandle } from "../src/db/client.ts";
 import { upsertDocument } from "../src/db/documents.ts";
 import { runMigrations } from "../src/db/migrate.ts";
@@ -113,6 +113,127 @@ guarded("account CRUD", () => {
       body: JSON.stringify({ token: "pat-alpha" }),
     });
     expect(res.status).toBe(409);
+  });
+});
+
+guarded("account deletion cascades all related resources", () => {
+  beforeAll(async () => {
+    db = createDb(DATABASE_URL as string, "ghreview");
+    await db.sql.unsafe("DROP SCHEMA IF EXISTS ghreview CASCADE");
+    await runMigrations(db);
+  });
+  afterAll(async () => {
+    if (db) await db.close();
+  });
+  beforeEach(async () => {
+    await db.sql.unsafe(
+      `DELETE FROM documents; DELETE FROM sync_state; DELETE FROM notification_state;
+       DELETE FROM viewed_state; DELETE FROM subscriptions; DELETE FROM review_draft_comments;
+       DELETE FROM review_drafts; DELETE FROM gh_accounts`,
+    );
+  });
+
+  test("deleting an account removes every login-keyed row, atomically", async () => {
+    const acct = await createGhAccount(db, {
+      userId: "userA",
+      login: "alpha",
+      encryptedPat: sealer.seal("x"),
+    });
+    await createGhAccount(db, { userId: "userB", login: "beta", encryptedPat: sealer.seal("y") });
+
+    const { sql } = db;
+    for (const login of ["alpha", "beta"]) {
+      const acctRows = await sql<{ id: string }[]>`
+        SELECT id::text FROM gh_accounts WHERE login = ${login}
+      `;
+      const accountId = acctRows[0]?.id as string;
+      await sql`
+        INSERT INTO documents (account, kind, key, payload)
+        VALUES (${login}, 'pull_request', ${`${login}/repo#1`}, '{"number":1}')
+      `;
+      await sql`
+        INSERT INTO sync_state (account, kind, target, etag)
+        VALUES (${login}, 'notification', '', 'e1')
+      `;
+      await sql`
+        INSERT INTO notification_state (account, thread_id, read)
+        VALUES (${login}, 't1', true)
+      `;
+      await sql`
+        INSERT INTO viewed_state (account, owner, repo, pull_number, path, viewed)
+        VALUES (${login}, ${login}, 'repo', 1, 'a.ts', true)
+      `;
+      await sql`
+        INSERT INTO subscriptions (account, kind, target, account_id)
+        VALUES (${login}, 'repo', ${`${login}/repo`}, ${accountId})
+      `;
+      await sql`
+        INSERT INTO subscriptions (account, kind, target, account_id)
+        VALUES (${login}, 'pull', ${`${login}/repo#1`}, NULL)
+      `;
+      const draftRows = await sql<{ id: string }[]>`
+        INSERT INTO review_drafts (account_id, account, owner, repo, pr_number)
+        VALUES (${accountId}, ${login}, ${login}, 'repo', 1)
+        RETURNING id::text
+      `;
+      const draftId = draftRows[0]?.id as string;
+      await sql`
+        INSERT INTO review_draft_comments (draft_id, path, line, body)
+        VALUES (${draftId}, 'a.ts', 1, 'hi')
+      `;
+    }
+
+    const removed = await deleteGhAccount(db, "userA", acct.id);
+    expect(removed).toBe(true);
+
+    const tables = [
+      "documents",
+      "sync_state",
+      "notification_state",
+      "viewed_state",
+      "subscriptions",
+      "review_drafts",
+    ];
+    for (const t of tables) {
+      const rows = await sql<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM ${sql(t)} WHERE account = 'alpha'
+      `;
+      expect(rows[0]?.n).toBe(0);
+    }
+    const orphanComments = await sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM review_draft_comments
+      WHERE draft_id NOT IN (SELECT id FROM review_drafts)
+    `;
+    expect(orphanComments[0]?.n).toBe(0);
+
+    const betaDocs = await sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM documents WHERE account = 'beta'
+    `;
+    expect(betaDocs[0]?.n).toBe(1);
+    const betaComments = await sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM review_draft_comments c
+      JOIN review_drafts d ON d.id = c.draft_id WHERE d.account = 'beta'
+    `;
+    expect(betaComments[0]?.n).toBe(1);
+  });
+
+  test("deleting a non-owned account changes nothing and returns false", async () => {
+    const acct = await createGhAccount(db, {
+      userId: "userA",
+      login: "alpha",
+      encryptedPat: sealer.seal("x"),
+    });
+    const { sql } = db;
+    await sql`
+      INSERT INTO documents (account, kind, key, payload)
+      VALUES ('alpha', 'repo', 'alpha/repo', '{}')
+    `;
+    const removed = await deleteGhAccount(db, "userB", acct.id);
+    expect(removed).toBe(false);
+    const rows = await sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM documents WHERE account = 'alpha'
+    `;
+    expect(rows[0]?.n).toBe(1);
   });
 });
 

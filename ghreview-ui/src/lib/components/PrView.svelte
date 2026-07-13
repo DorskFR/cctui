@@ -34,10 +34,13 @@
   import DiffView from "./DiffView.svelte";
   import FileTree from "./FileTree.svelte";
   import LabelPicker from "./LabelPicker.svelte";
+  import MergeButton from "./MergeButton.svelte";
+  import Reviewers from "./Reviewers.svelte";
   import ReviewSummaryBar from "./ReviewSummaryBar.svelte";
   import PrChecks from "./PrChecks.svelte";
   import PrCommits from "./PrCommits.svelte";
   import PrConversation from "./PrConversation.svelte";
+  import PrActivity from "./PrActivity.svelte";
   import PrDescription from "./PrDescription.svelte";
   import Avatar from "./Avatar.svelte";
   import PrStateIcon from "./PrStateIcon.svelte";
@@ -321,6 +324,9 @@
           labels={pull.labels ?? []}
         />
       </div>
+      <div class="reviewersrow">
+        <Reviewers {owner} {repo} {number} account={account ?? undefined} />
+      </div>
       <div class="chips">
         <span class="chip">CI: {ciStateOf(pull)}</span>
         <span class="chip">
@@ -351,6 +357,9 @@
           error={publishError}
           onpublish={publishReview}
         />
+        {#if prStateOf(pull) === "open" || prStateOf(pull) === "draft"}
+          <MergeButton {owner} {repo} {number} account={account ?? undefined} {pull} />
+        {/if}
       </div>
     </header>
 
@@ -372,6 +381,8 @@
         <PrCommits {pull} {owner} {repo} />
       {:else if activeTab === "checks"}
         <PrChecks {pull} />
+      {:else if activeTab === "activity"}
+        <PrActivity {owner} {repo} {number} account={account ?? undefined} />
       {:else}
         <div class="split">
           <aside class="tree">
@@ -475,6 +486,9 @@
     margin-top: var(--gh-space-1);
   }
   .labelrow {
+    margin-top: var(--gh-space-2);
+  }
+  .reviewersrow {
     margin-top: var(--gh-space-2);
   }
   code {

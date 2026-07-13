@@ -529,3 +529,104 @@ export const SyncResultSchema = z
     }),
   })
   .openapi("SyncResult");
+
+export const MergeMethodSchema = z
+  .enum(["merge", "squash", "rebase"])
+  .openapi({ example: "squash", description: "How GitHub combines the commits when merging" });
+
+export const MergePullSchema = z
+  .object({
+    account: AccountSchema,
+    merge_method: MergeMethodSchema.default("squash"),
+    expected_head_sha: z
+      .string()
+      .optional()
+      .openapi({ description: "Guard: reject when the PR head moved from this SHA" }),
+  })
+  .openapi("MergePull");
+
+export const MergeResultSchema = z
+  .object({
+    merged: z.boolean().openapi({ example: true }),
+    sha: z.string().nullable().openapi({ description: "The resulting merge commit SHA" }),
+    message: z.string().nullable().openapi({ example: "Pull Request successfully merged" }),
+  })
+  .openapi("MergeResult");
+
+export const ReviewerStateSchema = z
+  .enum(["APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED", "PENDING"])
+  .openapi({ example: "APPROVED", description: "Latest effective review state for a reviewer" });
+
+export const ReviewerSchema = z
+  .object({
+    login: z.string().openapi({ example: "octocat" }),
+    avatar_url: z.string().nullable(),
+    state: ReviewerStateSchema,
+    requested: z
+      .boolean()
+      .openapi({ description: "Whether a review is currently requested from this reviewer" }),
+  })
+  .openapi("Reviewer");
+
+export const RequestedTeamSchema = z
+  .object({
+    name: z.string().openapi({ example: "Platform" }),
+    slug: z.string().openapi({ example: "platform" }),
+  })
+  .openapi("RequestedTeam");
+
+export const ReviewersResultSchema = z
+  .object({
+    reviewers: z.array(ReviewerSchema),
+    requested_teams: z.array(RequestedTeamSchema),
+  })
+  .openapi("ReviewersResult");
+
+export const ReRequestReviewersSchema = z
+  .object({
+    account: AccountSchema,
+    reviewers: z.array(z.string().min(1)).min(1),
+  })
+  .openapi("ReRequestReviewers");
+
+export const ActivityActorSchema = z
+  .object({
+    login: z.string().openapi({ example: "octocat" }),
+    avatar_url: z.string().nullable(),
+  })
+  .openapi("ActivityActor");
+
+export const ActivityDetailSchema = z
+  .object({
+    sha: z.string().optional().openapi({ description: "Short commit SHA for commit/merge/close" }),
+    message: z.string().optional().openapi({ description: "Commit subject line" }),
+    author_name: z.string().optional().openapi({ description: "Git author of a commit" }),
+    state: z
+      .string()
+      .optional()
+      .openapi({ example: "APPROVED", description: "Review state, uppercased" }),
+    body: z.string().optional().openapi({ description: "Review/comment body excerpt" }),
+    label: z
+      .object({ name: z.string(), color: z.string().nullable() })
+      .optional()
+      .openapi({ description: "Label added or removed" }),
+    reviewer: ActivityActorSchema.optional().openapi({ description: "Reviewer requested" }),
+    team: z.string().optional().openapi({ description: "Team review requested from" }),
+    assignee: ActivityActorSchema.optional().openapi({ description: "Assignee added or removed" }),
+    from: z.string().optional().openapi({ description: "Previous title on a rename" }),
+    to: z.string().optional().openapi({ description: "New title on a rename" }),
+  })
+  .openapi("ActivityDetail");
+
+export const ActivityEventSchema = z
+  .object({
+    event: z.string().openapi({ example: "reviewed", description: "GitHub timeline event type" }),
+    actor: ActivityActorSchema.nullable(),
+    created_at: z.string().nullable().openapi({ description: "ISO timestamp of the event" }),
+    detail: ActivityDetailSchema.optional(),
+  })
+  .openapi("ActivityEvent");
+
+export const ActivityListSchema = z
+  .object({ items: z.array(ActivityEventSchema) })
+  .openapi("ActivityList");

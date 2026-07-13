@@ -708,6 +708,268 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/repos/{owner}/{repo}/pulls/{number}/merge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Merge a pull request and drop it from the store */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    owner: string;
+                    repo: string;
+                    number: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["MergePull"];
+                };
+            };
+            responses: {
+                /** @description Merge result */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["MergeResult"];
+                    };
+                };
+                /** @description Caller does not own the account */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Account not managed */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Pull request is not mergeable */
+                405: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description PR head moved since the expected SHA */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/repos/{owner}/{repo}/pulls/{number}/reviewers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List requested reviewers, teams, and each reviewer's latest review state */
+        get: {
+            parameters: {
+                query: {
+                    account: string;
+                };
+                header?: never;
+                path: {
+                    owner: string;
+                    repo: string;
+                    number: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Reviewer states */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ReviewersResult"];
+                    };
+                };
+                /** @description Caller does not own the account */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Account not managed */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/repos/{owner}/{repo}/pulls/{number}/reviewers/re-request": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Re-request a review from one or more reviewers */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    owner: string;
+                    repo: string;
+                    number: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["ReRequestReviewers"];
+                };
+            };
+            responses: {
+                /** @description Updated reviewer states */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ReviewersResult"];
+                    };
+                };
+                /** @description Caller does not own the account */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Account not managed */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/repos/{owner}/{repo}/pulls/{number}/activity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Chronological activity timeline for a pull request */
+        get: {
+            parameters: {
+                query: {
+                    account: string;
+                };
+                header?: never;
+                path: {
+                    owner: string;
+                    repo: string;
+                    number: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Normalized activity timeline */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ActivityList"];
+                    };
+                };
+                /** @description Caller does not own the account */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Account not managed */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/repos/{owner}/{repo}/pulls/{number}/viewed": {
         parameters: {
             query?: never;
@@ -2238,6 +2500,108 @@ export interface components {
             etag: string | null;
             /** @description GitHub-shaped JSONB payload, relayed verbatim (narrow with octokit types) */
             payload?: Record<string, never>;
+        };
+        MergeResult: {
+            /** @example true */
+            merged: boolean;
+            /** @description The resulting merge commit SHA */
+            sha: string | null;
+            /** @example Pull Request successfully merged */
+            message: string | null;
+        };
+        MergePull: {
+            /**
+             * @description GitHub account/login the record was synced for
+             * @example DorskFR
+             */
+            account: string;
+            /**
+             * @description How GitHub combines the commits when merging
+             * @default squash
+             * @example squash
+             * @enum {string}
+             */
+            merge_method: "merge" | "squash" | "rebase";
+            /** @description Guard: reject when the PR head moved from this SHA */
+            expected_head_sha?: string;
+        };
+        ReviewersResult: {
+            reviewers: components["schemas"]["Reviewer"][];
+            requested_teams: components["schemas"]["RequestedTeam"][];
+        };
+        Reviewer: {
+            /** @example octocat */
+            login: string;
+            avatar_url: string | null;
+            /**
+             * @description Latest effective review state for a reviewer
+             * @example APPROVED
+             * @enum {string}
+             */
+            state: "APPROVED" | "CHANGES_REQUESTED" | "COMMENTED" | "DISMISSED" | "PENDING";
+            /** @description Whether a review is currently requested from this reviewer */
+            requested: boolean;
+        };
+        RequestedTeam: {
+            /** @example Platform */
+            name: string;
+            /** @example platform */
+            slug: string;
+        };
+        ReRequestReviewers: {
+            /**
+             * @description GitHub account/login the record was synced for
+             * @example DorskFR
+             */
+            account: string;
+            reviewers: string[];
+        };
+        ActivityList: {
+            items: components["schemas"]["ActivityEvent"][];
+        };
+        ActivityEvent: {
+            /**
+             * @description GitHub timeline event type
+             * @example reviewed
+             */
+            event: string;
+            actor: components["schemas"]["ActivityActor"];
+            /** @description ISO timestamp of the event */
+            created_at: string | null;
+            detail?: components["schemas"]["ActivityDetail"];
+        };
+        ActivityActor: {
+            /** @example octocat */
+            login: string;
+            avatar_url: string | null;
+        } | null;
+        ActivityDetail: {
+            /** @description Short commit SHA for commit/merge/close */
+            sha?: string;
+            /** @description Commit subject line */
+            message?: string;
+            /** @description Git author of a commit */
+            author_name?: string;
+            /**
+             * @description Review state, uppercased
+             * @example APPROVED
+             */
+            state?: string;
+            /** @description Review/comment body excerpt */
+            body?: string;
+            /** @description Label added or removed */
+            label?: {
+                name: string;
+                color: string | null;
+            };
+            reviewer?: components["schemas"]["ActivityActor"] & unknown;
+            /** @description Team review requested from */
+            team?: string;
+            assignee?: components["schemas"]["ActivityActor"] & unknown;
+            /** @description Previous title on a rename */
+            from?: string;
+            /** @description New title on a rename */
+            to?: string;
         };
         ViewedStateResult: {
             items: components["schemas"]["ViewedStateItem"][];
