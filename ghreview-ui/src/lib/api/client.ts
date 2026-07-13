@@ -202,6 +202,18 @@ export const api = {
       `/v1/repos/${owner}/${repo}/pulls/${number}/comments${qs({ account })}`,
     ),
 
+  deletePublishedReviewComment: (owner: string, repo: string, commentId: number, account: string) =>
+    request<{ deleted: boolean }>(
+      `/v1/repos/${owner}/${repo}/pulls/comments/${commentId}${qs({ account })}`,
+      { method: "DELETE" },
+    ),
+
+  deleteIssueComment: (owner: string, repo: string, commentId: number, account: string) =>
+    request<{ deleted: boolean }>(
+      `/v1/repos/${owner}/${repo}/issues/comments/${commentId}${qs({ account })}`,
+      { method: "DELETE" },
+    ),
+
   togglePullReaction: (
     owner: string,
     repo: string,

@@ -17,8 +17,8 @@
   import { pullPath } from "../router/route";
   import { router } from "../router/router.svelte";
   import { tabs } from "../stores/tabs.svelte";
+  import PrStateIcon from "./PrStateIcon.svelte";
   import RepoBadge from "./RepoBadge.svelte";
-  import StatusDot from "./StatusDot.svelte";
 
   let query = $state("");
   let relation = $state("all");
@@ -99,7 +99,7 @@
             {#each group.entries as e (`${e.owner}/${e.repo}#${e.pull.number}`)}
               <li>
                 <button class="row" onclick={() => open(e)}>
-                  <StatusDot pr={prStateOf(e.pull)} ci={ciStateOf(e.pull)} />
+                  <PrStateIcon state={prStateOf(e.pull)} size={14} />
                   <span class="title">{e.pull.title}</span>
                   <Text as="span" size="xs" tone="muted" numeric>#{e.pull.number}</Text>
                   {#if e.pull.additions != null || e.pull.deletions != null}

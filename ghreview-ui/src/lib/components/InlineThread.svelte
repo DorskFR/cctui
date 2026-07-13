@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { api } from "../api/client";
+  import { api, ApiError } from "../api/client";
+  import { queryClient } from "../api/queries";
   import type { ReactionContent } from "../api/types";
   import { renderMarkdown } from "../markdown";
   import type { CommentAnchor } from "../review/anchors";
@@ -34,7 +35,33 @@
   let editing = $state<string | null>(null);
   let replying = $state(false);
 
-  const isEmpty = $derived(anchor.drafts.length === 0 && anchor.published.length === 0);
+  let confirmingDelete = $state<number | null>(null);
+  let deleting = $state<number | null>(null);
+  let deletedIds = $state<Set<number>>(new Set());
+  let deleteError = $state<string | null>(null);
+
+  const visiblePublished = $derived(anchor.published.filter((c) => !deletedIds.has(c.id)));
+  const isEmpty = $derived(anchor.drafts.length === 0 && visiblePublished.length === 0);
+
+  function ownsPublished(user: string | null): boolean {
+    return account !== undefined && user !== null && user === account;
+  }
+
+  async function deletePublished(id: number): Promise<void> {
+    if (owner === undefined || repo === undefined || account === undefined) return;
+    deleting = id;
+    deleteError = null;
+    try {
+      await api.deletePublishedReviewComment(owner, repo, id, account);
+      deletedIds = new Set(deletedIds).add(id);
+      confirmingDelete = null;
+      queryClient.invalidateQueries({ queryKey: ["review-threads", owner, repo] });
+    } catch (e) {
+      deleteError = e instanceof ApiError ? e.message : "Failed to delete comment";
+    } finally {
+      deleting = null;
+    }
+  }
 
   $effect(() => {
     if (isEmpty) replying = true;
@@ -47,10 +74,38 @@
     <button type="button" class="x" aria-label="Close" onclick={onClose}>×</button>
   </div>
 
-  {#each anchor.published as c (c.id)}
+  {#each visiblePublished as c (c.id)}
     <div class="comment published">
-      <div class="meta">{c.user ?? "someone"} · published</div>
+      <div class="meta">
+        <span>{c.user ?? "someone"} · published</span>
+        {#if ownsPublished(c.user)}
+          <span class="ctrls">
+            {#if confirmingDelete === c.id}
+              <button
+                type="button"
+                class="danger"
+                disabled={deleting === c.id}
+                onclick={() => deletePublished(c.id)}
+              >{deleting === c.id ? "Deleting…" : "Confirm"}</button>
+              <button type="button" onclick={() => (confirmingDelete = null)}>Cancel</button>
+            {:else}
+              <button
+                type="button"
+                class="danger"
+                aria-label="Delete comment"
+                onclick={() => {
+                  deleteError = null;
+                  confirmingDelete = c.id;
+                }}
+              >Delete</button>
+            {/if}
+          </span>
+        {/if}
+      </div>
       <div class="body markdown">{@html renderMarkdown(c.body ?? "")}</div>
+      {#if deleteError && confirmingDelete === c.id}
+        <div class="err">{deleteError}</div>
+      {/if}
       {#if canReact}
         <ReactionBar
           reactions={c.reactions ?? null}
@@ -167,6 +222,14 @@
   .x {
     color: var(--gh-fg-muted);
     font-size: 14px;
+  }
+  button.danger {
+    color: var(--danger, #f85149);
+  }
+  .err {
+    font-size: 11px;
+    color: var(--danger, #f85149);
+    margin-top: 2px;
   }
   .reply {
     align-self: flex-start;

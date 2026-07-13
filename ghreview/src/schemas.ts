@@ -478,6 +478,10 @@ export const LabelMutateSchema = z
 
 export const PullLabelsSchema = z.object({ labels: z.array(LabelSchema) }).openapi("PullLabels");
 
+export const CommentDeleteResultSchema = z
+  .object({ deleted: z.boolean().openapi({ example: true }) })
+  .openapi("CommentDeleteResult");
+
 export const ErrorSchema = z
   .object({
     error: z.object({
