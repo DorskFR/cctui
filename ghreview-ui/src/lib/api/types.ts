@@ -23,6 +23,21 @@ export type ReviewPublishResult = Schemas["ReviewPublishResult"];
 export type ReviewThreadComment = Schemas["ReviewThreadComment"];
 export type ReviewThreadList = Schemas["ReviewThreadList"];
 
+export type ReactionSummary = Schemas["ReactionSummary"];
+export type ReactionContent = Schemas["ReactionToggle"]["content"];
+
+export interface ReactionRollup {
+  "+1"?: number;
+  "-1"?: number;
+  laugh?: number;
+  hooray?: number;
+  confused?: number;
+  heart?: number;
+  rocket?: number;
+  eyes?: number;
+  total_count?: number;
+}
+
 export type PrState = "open" | "draft" | "merged" | "closed";
 export type CiState = "pending" | "success" | "failure" | "none";
 
@@ -75,6 +90,7 @@ export interface GithubPull {
   updated_at?: string;
   files?: GithubFile[];
   ci?: CiState;
+  reactions?: ReactionRollup;
 }
 
 export interface GithubRepo {

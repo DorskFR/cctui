@@ -1,5 +1,6 @@
 <script lang="ts">
   import { untrack } from "svelte";
+  import { SegmentedControl } from "@dorsk/tsumikit";
   import { createMutation, createQuery } from "@tanstack/svelte-query";
   import { toStore } from "svelte/store";
   import { api } from "../api/client";
@@ -269,7 +270,14 @@
   }
 
   let rendererKind = $state<RendererKind>(getPreferredRendererKind());
-  const DiffComponent = $derived(getRenderer(rendererKind)?.component);
+  let diffMode = $state<"unified" | "split">("unified");
+  const effectiveRenderer = $derived<RendererKind>(diffMode === "split" ? "dom" : rendererKind);
+  const DiffComponent = $derived(getRenderer(effectiveRenderer)?.component);
+
+  const diffModeOptions = [
+    { value: "unified", label: "Unified" },
+    { value: "split", label: "Split" },
+  ];
 
   function toggleRenderer(kind: RendererKind): void {
     rendererKind = kind;
@@ -303,10 +311,23 @@
           {pull.mergeable === true ? "mergeable" : pull.mergeable === false ? "conflicts" : "mergeability unknown"}
         </span>
         {#if pull.draft}<span class="chip">draft</span>{/if}
-        <span class="chip mono">+{pull.additions ?? 0} −{pull.deletions ?? 0} · {files.length} files</span>
+        <span class="chip mono">
+          {#if pull.additions != null || pull.deletions != null}
+            <span class="add">+{pull.additions ?? 0}</span>
+            <span class="del">−{pull.deletions ?? 0}</span>
+            ·
+          {/if}
+          {files.length} files
+        </span>
         {#if files.length > 0}
           <span class="chip mono">viewed {viewedCount}/{files.length}</span>
         {/if}
+        <SegmentedControl
+          options={diffModeOptions}
+          bind:value={diffMode}
+          size="sm"
+          label="Diff layout"
+        />
         <span class="renderer-toggle" role="group" aria-label="Diff renderer">
           <button
             type="button"
@@ -333,9 +354,16 @@
 
     <div class="content">
       {#if activeTab === "description"}
-        <PrDescription body={pull.body} />
+        <PrDescription
+          body={pull.body}
+          {owner}
+          {repo}
+          {number}
+          account={account ?? undefined}
+          reactions={pull.reactions ?? null}
+        />
       {:else if activeTab === "conversation"}
-        <PrConversation {pull} />
+        <PrConversation {pull} {owner} {repo} account={account ?? undefined} />
       {:else if activeTab === "commits"}
         <PrCommits {pull} />
       {:else if activeTab === "checks"}
@@ -355,12 +383,16 @@
             {#if files.length === 0}
               <div class="msg">No file patches in the synced payload.</div>
             {:else if DiffComponent}
-              {#key rendererKind}
+              {#key effectiveRenderer}
                 <DiffComponent
                   model={displayModel}
                   {nav}
                   {focusRow}
                   {review}
+                  mode={diffMode}
+                  {owner}
+                  {repo}
+                  account={account ?? undefined}
                   onFocusRow={(r) => (focusRow = r)}
                 />
               {/key}
@@ -440,6 +472,12 @@
   }
   .mono {
     font-family: var(--gh-mono);
+  }
+  .add {
+    color: var(--gh-success);
+  }
+  .del {
+    color: var(--gh-danger);
   }
   .renderer-toggle {
     display: inline-flex;

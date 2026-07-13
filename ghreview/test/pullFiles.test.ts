@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { OctokitRequest, OctokitResponse } from "../src/github/client.ts";
-import { fetchPullFiles } from "../src/sync/handlers.ts";
+import { enrichPullStats, fetchPullFiles, pullStatsFromFiles } from "../src/sync/handlers.ts";
 
 function fileEntry(i: number): Record<string, unknown> {
   return {
@@ -55,5 +55,40 @@ describe("fetchPullFiles", () => {
     const files = await fetchPullFiles(client, "DorskFR", "cctui", 42);
     expect(files).toHaveLength(0);
     expect(calls).toHaveLength(1);
+  });
+});
+
+describe("pullStatsFromFiles", () => {
+  test("sums additions/deletions and counts changed files", () => {
+    const files = [
+      { filename: "a.ts", additions: 3, deletions: 1 },
+      { filename: "b.ts", additions: 5, deletions: 0 },
+    ];
+    expect(pullStatsFromFiles(files)).toEqual({ additions: 8, deletions: 1, changed_files: 2 });
+  });
+
+  test("ignores non-numeric stat fields", () => {
+    const files = [{ filename: "a.ts" }, { filename: "b.ts", additions: 2, deletions: 4 }];
+    expect(pullStatsFromFiles(files)).toEqual({ additions: 2, deletions: 4, changed_files: 2 });
+  });
+});
+
+describe("enrichPullStats", () => {
+  test("keeps stats the payload already carries (single-PR GET)", () => {
+    const files = [{ filename: "a.ts", additions: 3, deletions: 1 }];
+    const out = enrichPullStats(
+      { number: 1, additions: 40, deletions: 20, changed_files: 7 },
+      files,
+    );
+    expect(out).toMatchObject({ additions: 40, deletions: 20, changed_files: 7 });
+  });
+
+  test("backfills stats from files when the payload omits them (list payload)", () => {
+    const files = [
+      { filename: "a.ts", additions: 3, deletions: 1 },
+      { filename: "b.ts", additions: 5, deletions: 2 },
+    ];
+    const out = enrichPullStats({ number: 1 }, files);
+    expect(out).toMatchObject({ additions: 8, deletions: 3, changed_files: 2 });
   });
 });

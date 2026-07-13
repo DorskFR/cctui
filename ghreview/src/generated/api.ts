@@ -1118,6 +1118,192 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/repos/{owner}/{repo}/pulls/{number}/reactions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Toggle the caller's reaction on a pull request description */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    owner: string;
+                    repo: string;
+                    number: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["ReactionToggle"];
+                };
+            };
+            responses: {
+                /** @description Updated reaction summary */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ReactionSummary"];
+                    };
+                };
+                /** @description Caller does not own the account */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Account not managed */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/repos/{owner}/{repo}/issues/comments/{commentId}/reactions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Toggle the caller's reaction on an issue/conversation comment */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    owner: string;
+                    repo: string;
+                    commentId: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["ReactionToggle"];
+                };
+            };
+            responses: {
+                /** @description Updated reaction summary */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ReactionSummary"];
+                    };
+                };
+                /** @description Caller does not own the account */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Account not managed */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/repos/{owner}/{repo}/pulls/comments/{commentId}/reactions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Toggle the caller's reaction on a review (per-line) comment */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    owner: string;
+                    repo: string;
+                    commentId: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["ReactionToggle"];
+                };
+            };
+            responses: {
+                /** @description Updated reaction summary */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ReactionSummary"];
+                    };
+                };
+                /** @description Caller does not own the account */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Account not managed */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/notifications": {
         parameters: {
             query?: never;
@@ -1829,6 +2015,44 @@ export interface components {
             in_reply_to_id: number | null;
             created_at: string | null;
             html_url: string | null;
+            reactions: components["schemas"]["ReactionRollup"];
+        };
+        ReactionRollup: {
+            "+1"?: number;
+            "-1"?: number;
+            laugh?: number;
+            hooray?: number;
+            confused?: number;
+            heart?: number;
+            rocket?: number;
+            eyes?: number;
+            total_count?: number;
+        } | null;
+        ReactionSummary: {
+            "+1": number;
+            "-1": number;
+            laugh: number;
+            hooray: number;
+            confused: number;
+            heart: number;
+            rocket: number;
+            eyes: number;
+            total_count: number;
+            /** @description Reaction contents the calling account currently holds */
+            viewer_reactions: ("+1" | "-1" | "laugh" | "confused" | "heart" | "hooray" | "rocket" | "eyes")[];
+        };
+        ReactionToggle: {
+            /**
+             * @description GitHub account/login the record was synced for
+             * @example DorskFR
+             */
+            account: string;
+            /**
+             * @description GitHub reaction content
+             * @example +1
+             * @enum {string}
+             */
+            content: "+1" | "-1" | "laugh" | "confused" | "heart" | "hooray" | "rocket" | "eyes";
         };
         NotificationInboxPage: {
             items: components["schemas"]["NotificationInboxItem"][];

@@ -6,6 +6,7 @@ import { registerEvents } from "./routes/events.ts";
 import { registerHealth } from "./routes/health.ts";
 import { registerNotifications } from "./routes/notifications.ts";
 import { registerPulls } from "./routes/pulls.ts";
+import { registerReactions } from "./routes/reactions.ts";
 import { registerRepos } from "./routes/repos.ts";
 import { registerReviews } from "./routes/reviews.ts";
 import { registerSubscriptions } from "./routes/subscriptions.ts";
@@ -48,6 +49,7 @@ export function createApp(deps: AppDeps = {}) {
   registerPulls(app, deps);
   registerViewed(app, deps);
   registerReviews(app, deps);
+  registerReactions(app, deps);
   registerNotifications(app, deps);
   registerEvents(app, deps);
   registerWebhook(app, deps);

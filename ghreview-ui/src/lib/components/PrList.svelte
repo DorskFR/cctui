@@ -102,10 +102,12 @@
                   <StatusDot pr={prStateOf(e.pull)} ci={ciStateOf(e.pull)} />
                   <span class="title">{e.pull.title}</span>
                   <Text as="span" size="xs" tone="muted" numeric>#{e.pull.number}</Text>
-                  <span class="counts">
-                    <span class="add">+{e.pull.additions ?? 0}</span>
-                    <span class="del">−{e.pull.deletions ?? 0}</span>
-                  </span>
+                  {#if e.pull.additions != null || e.pull.deletions != null}
+                    <span class="counts">
+                      <span class="add">+{e.pull.additions ?? 0}</span>
+                      <span class="del">−{e.pull.deletions ?? 0}</span>
+                    </span>
+                  {/if}
                 </button>
               </li>
             {/each}

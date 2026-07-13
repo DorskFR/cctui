@@ -34,8 +34,12 @@
     onFocusRow: (rowIndex: number) => void;
     onSelectRange?: (event: SelectionEvent) => void;
     review?: ReviewController;
+    owner?: string;
+    repo?: string;
+    account?: string;
   }
-  let { model, focusRow, onFocusRow, onSelectRange, review }: Props = $props();
+  let { model, focusRow, onFocusRow, onSelectRange, review, owner, repo, account }: Props =
+    $props();
 
   let pendingAddr = $state<{ addr: LineAddress; rowIndex: number } | null>(null);
   let openAnchor = $state<number | null>(null);
@@ -327,6 +331,9 @@
         <div class="panel" style:top="{anchorScreenY(anchor.rowIndex + 1, scrollTop) + 2}px">
           <InlineThread
             {anchor}
+            {owner}
+            {repo}
+            {account}
             pending={review?.pending ?? false}
             onAdd={(body) => review?.addComment({ path: anchor.path, side: anchor.side, line: anchor.line }, body)}
             onEdit={(id, body) => review?.editComment(id, body)}

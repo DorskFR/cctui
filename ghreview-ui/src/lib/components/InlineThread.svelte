@@ -1,6 +1,9 @@
 <script lang="ts">
+  import { api } from "../api/client";
+  import type { ReactionContent } from "../api/types";
   import type { CommentAnchor } from "../review/anchors";
   import InlineCommentComposer from "./InlineCommentComposer.svelte";
+  import ReactionBar from "./ReactionBar.svelte";
 
   interface Props {
     anchor: CommentAnchor;
@@ -9,8 +12,23 @@
     onDelete: (id: string) => void;
     onClose: () => void;
     pending?: boolean;
+    owner?: string;
+    repo?: string;
+    account?: string;
   }
-  let { anchor, onAdd, onEdit, onDelete, onClose, pending = false }: Props = $props();
+  let {
+    anchor,
+    onAdd,
+    onEdit,
+    onDelete,
+    onClose,
+    pending = false,
+    owner,
+    repo,
+    account,
+  }: Props = $props();
+
+  const canReact = $derived(owner !== undefined && repo !== undefined && account !== undefined);
 
   let editing = $state<string | null>(null);
   let replying = $state(false);
@@ -32,6 +50,19 @@
     <div class="comment published">
       <div class="meta">{c.user ?? "someone"} · published</div>
       <div class="body">{c.body}</div>
+      {#if canReact}
+        <ReactionBar
+          reactions={c.reactions ?? null}
+          onToggle={(content: ReactionContent) =>
+            api.toggleReviewCommentReaction(
+              owner as string,
+              repo as string,
+              c.id,
+              account as string,
+              content,
+            )}
+        />
+      {/if}
     </div>
   {/each}
 

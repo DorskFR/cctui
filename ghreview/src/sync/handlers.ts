@@ -57,6 +57,42 @@ function parsePullApiUrl(url: string): { owner: string; repo: string; number: nu
   return { owner: match[1] as string, repo: match[2] as string, number: Number(match[3]) };
 }
 
+interface PullFileStat {
+  additions?: unknown;
+  deletions?: unknown;
+}
+
+export interface PullStats {
+  additions: number;
+  deletions: number;
+  changed_files: number;
+}
+
+export function pullStatsFromFiles(files: unknown[]): PullStats {
+  let additions = 0;
+  let deletions = 0;
+  for (const f of files) {
+    const stat = f as PullFileStat;
+    if (typeof stat.additions === "number") additions += stat.additions;
+    if (typeof stat.deletions === "number") deletions += stat.deletions;
+  }
+  return { additions, deletions, changed_files: files.length };
+}
+
+export function enrichPullStats(
+  payload: Record<string, unknown>,
+  files: unknown[],
+): Record<string, unknown> {
+  const stats = pullStatsFromFiles(files);
+  return {
+    ...payload,
+    additions: typeof payload.additions === "number" ? payload.additions : stats.additions,
+    deletions: typeof payload.deletions === "number" ? payload.deletions : stats.deletions,
+    changed_files:
+      typeof payload.changed_files === "number" ? payload.changed_files : stats.changed_files,
+  };
+}
+
 export async function fetchPullFiles(
   octokit: Account["octokit"],
   owner: string,
@@ -174,12 +210,14 @@ export async function syncPull(ctx: SyncContext, sub: Subscription): Promise<Syn
   const key = `${owner}/${repo}#${number}`;
   if (res.status === 200 && res.data) {
     const files = await fetchPullFiles(ctx.account.octokit, owner, repo, number);
+    const payload = enrichPullStats(res.data as Record<string, unknown>, files);
+    payload.files = files;
     await upsertDocument(ctx.db, {
       account: sub.account,
       kind: "pull_request",
       key,
       etag: res.etag,
-      payload: { ...(res.data as Record<string, unknown>), files },
+      payload,
     });
     await reconcilePullViewed(
       ctx.db,

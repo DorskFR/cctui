@@ -392,6 +392,21 @@ export const ReviewPublishResultSchema = z
   })
   .openapi("ReviewPublishResult");
 
+export const ReactionRollupSchema = z
+  .object({
+    "+1": z.number().int(),
+    "-1": z.number().int(),
+    laugh: z.number().int(),
+    hooray: z.number().int(),
+    confused: z.number().int(),
+    heart: z.number().int(),
+    rocket: z.number().int(),
+    eyes: z.number().int(),
+    total_count: z.number().int(),
+  })
+  .partial()
+  .openapi("ReactionRollup");
+
 export const ReviewThreadCommentSchema = z
   .object({
     id: z.number().int(),
@@ -406,12 +421,41 @@ export const ReviewThreadCommentSchema = z
     in_reply_to_id: z.number().int().nullable(),
     created_at: z.string().nullable(),
     html_url: z.string().nullable(),
+    reactions: ReactionRollupSchema.nullable(),
   })
   .openapi("ReviewThreadComment");
 
 export const ReviewThreadListSchema = z
   .object({ items: z.array(ReviewThreadCommentSchema) })
   .openapi("ReviewThreadList");
+
+export const ReactionContentSchema = z
+  .enum(["+1", "-1", "laugh", "confused", "heart", "hooray", "rocket", "eyes"])
+  .openapi({ example: "+1", description: "GitHub reaction content" });
+
+export const ReactionToggleSchema = z
+  .object({
+    account: AccountSchema,
+    content: ReactionContentSchema,
+  })
+  .openapi("ReactionToggle");
+
+export const ReactionSummarySchema = z
+  .object({
+    "+1": z.number().int(),
+    "-1": z.number().int(),
+    laugh: z.number().int(),
+    hooray: z.number().int(),
+    confused: z.number().int(),
+    heart: z.number().int(),
+    rocket: z.number().int(),
+    eyes: z.number().int(),
+    total_count: z.number().int(),
+    viewer_reactions: z
+      .array(ReactionContentSchema)
+      .openapi({ description: "Reaction contents the calling account currently holds" }),
+  })
+  .openapi("ReactionSummary");
 
 export const ErrorSchema = z
   .object({

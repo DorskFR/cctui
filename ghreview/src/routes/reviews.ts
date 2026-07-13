@@ -462,6 +462,7 @@ export function registerReviews(app: OpenAPIHono, deps: AppDeps = {}) {
       in_reply_to_id: number | null;
       created_at: string | null;
       html_url: string | null;
+      reactions: Record<string, number> | null;
     }[] = [];
     for (let page = 1; page <= 20; page++) {
       const res = await acct.octokit.request(
@@ -489,6 +490,7 @@ export function registerReviews(app: OpenAPIHono, deps: AppDeps = {}) {
           in_reply_to_id: (rc.in_reply_to_id as number | null | undefined) ?? null,
           created_at: (rc.created_at as string | null | undefined) ?? null,
           html_url: (rc.html_url as string | null | undefined) ?? null,
+          reactions: (rc.reactions as Record<string, number> | null | undefined) ?? null,
         });
       }
       if (batch.length < 100) break;
