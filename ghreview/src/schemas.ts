@@ -511,3 +511,21 @@ export const StatusSchema = z
       .openapi("SyncStatus"),
   })
   .openapi("Status");
+
+export const SyncRequestSchema = z
+  .object({
+    account: AccountSchema.optional().openapi({
+      description:
+        "The caller's GitHub login to force-sync; omit when the caller has exactly one account",
+    }),
+  })
+  .openapi("SyncRequest");
+
+export const SyncResultSchema = z
+  .object({
+    account: AccountSchema,
+    status: z.enum(["ok", "busy"]).openapi({
+      description: "'ok' when a full re-walk completed; 'busy' when one is already running",
+    }),
+  })
+  .openapi("SyncResult");

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import { Badge, Button, Input, Text } from "@dorsk/tsumikit";
-  import { api, type GithubRepo } from "../api/client";
+  import { api, type GithubRepo, type Subscription } from "../api/client";
   import { getAccount } from "../api/config";
 
   const client = useQueryClient();
@@ -14,8 +14,30 @@
     enabled: !!account,
   });
 
+  const subs = createQuery({
+    queryKey: ["subscriptions", account || null],
+    queryFn: () => api.listSubscriptions(account || undefined),
+    enabled: !!account,
+  });
+
+  const subById = $derived.by(() => {
+    const map = new Map<string, string>();
+    for (const s of ($subs.data?.items ?? []) as Subscription[]) {
+      if (s.kind === "repo" && s.target) map.set(s.target, s.id);
+    }
+    return map;
+  });
+
   const subscribe = createMutation({
     mutationFn: (fullName: string) => api.subscribe(fullName, "repo", account),
+    onSuccess: () => {
+      client.invalidateQueries({ queryKey: ["subscriptions"] });
+      client.invalidateQueries({ queryKey: ["pulls"] });
+    },
+  });
+
+  const unsubscribe = createMutation({
+    mutationFn: (id: string) => api.unsubscribe(id),
     onSuccess: () => {
       client.invalidateQueries({ queryKey: ["subscriptions"] });
       client.invalidateQueries({ queryKey: ["pulls"] });
@@ -28,7 +50,19 @@
       ? items.filter((r) => r.full_name.toLowerCase().includes(filter.trim().toLowerCase()))
       : items,
   );
-  const pending = $derived($subscribe.isPending ? $subscribe.variables : null);
+  const busy = $derived($subscribe.isPending || $unsubscribe.isPending);
+
+  function toggle(fullName: string): void {
+    const id = subById.get(fullName);
+    if (id) $unsubscribe.mutate(id);
+    else $subscribe.mutate(fullName);
+  }
+
+  function isPendingRow(fullName: string): boolean {
+    if ($subscribe.isPending && $subscribe.variables === fullName) return true;
+    const id = subById.get(fullName);
+    return !!id && $unsubscribe.isPending && $unsubscribe.variables === id;
+  }
 </script>
 
 <div class="repo-picker">
@@ -42,16 +76,23 @@
   {:else}
     <ul>
       {#each filtered as repo (repo.full_name)}
+        {@const subscribed = subById.has(repo.full_name)}
         <li>
           <span class="name" title={repo.full_name}>{repo.full_name}</span>
           {#if repo.private}<Badge size="sm" tone="neutral">private</Badge>{/if}
           <Button
             size="sm"
-            variant="default"
-            disabled={$subscribe.isPending}
-            onclick={() => $subscribe.mutate(repo.full_name)}
+            variant={subscribed ? "primary" : "default"}
+            disabled={busy}
+            onclick={() => toggle(repo.full_name)}
           >
-            {pending === repo.full_name ? "…" : "Subscribe"}
+            {#if isPendingRow(repo.full_name)}
+              …
+            {:else if subscribed}
+              Subscribed
+            {:else}
+              Subscribe
+            {/if}
           </Button>
         </li>
       {/each}

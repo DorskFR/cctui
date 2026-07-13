@@ -294,6 +294,70 @@
           "accounts"
         ]
       },
+      "SyncResult": {
+        "type": "object",
+        "properties": {
+          "account": {
+            "type": "string",
+            "minLength": 1,
+            "example": "DorskFR",
+            "description": "GitHub account/login the record was synced for"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "busy"
+            ],
+            "description": "'ok' when a full re-walk completed; 'busy' when one is already running"
+          }
+        },
+        "required": [
+          "account",
+          "status"
+        ]
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string",
+                "example": "not_found",
+                "description": "Stable machine-readable error code"
+              },
+              "message": {
+                "type": "string",
+                "example": "Pull request not found"
+              },
+              "details": {
+                "type": "object",
+                "description": "Optional structured context"
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ]
+          }
+        },
+        "required": [
+          "error"
+        ]
+      },
+      "SyncRequest": {
+        "type": "object",
+        "properties": {
+          "account": {
+            "type": "string",
+            "minLength": 1,
+            "example": "DorskFR",
+            "description": "The caller's GitHub login to force-sync; omit when the caller has exactly one account"
+          }
+        }
+      },
       "AccountList": {
         "type": "object",
         "properties": {
@@ -348,36 +412,6 @@
           "rate_limit",
           "active",
           "created_at"
-        ]
-      },
-      "Error": {
-        "type": "object",
-        "properties": {
-          "error": {
-            "type": "object",
-            "properties": {
-              "code": {
-                "type": "string",
-                "example": "not_found",
-                "description": "Stable machine-readable error code"
-              },
-              "message": {
-                "type": "string",
-                "example": "Pull request not found"
-              },
-              "details": {
-                "type": "object",
-                "description": "Optional structured context"
-              }
-            },
-            "required": [
-              "code",
-              "message"
-            ]
-          }
-        },
-        "required": [
-          "error"
         ]
       },
       "AccountCreate": {
@@ -1682,6 +1716,75 @@
         }
       }
     },
+    "/v1/sync": {
+      "post": {
+        "summary": "Force an immediate full poll cycle for an account, ignoring stored ETags",
+        "tags": [
+          "system"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SyncRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Sync completed (or was already running)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyncResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Account required (caller owns more than one)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such account owned by the caller",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A forced sync is already running for this account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Store/sync unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/accounts": {
       "get": {
         "summary": "List the caller's GitHub accounts (no secrets)",
@@ -2093,6 +2196,16 @@
         "responses": {
           "204": {
             "description": "Deactivated"
+          },
+          "400": {
+            "description": "Subscription cannot be removed (e.g. the permanent notification feed)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           },
           "404": {
             "description": "Not found",

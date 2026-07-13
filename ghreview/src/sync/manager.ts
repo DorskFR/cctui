@@ -1,8 +1,12 @@
 import { type GhAccountWithSecret, listAllActiveAccounts } from "../db/accounts.ts";
 import type { DbHandle } from "../db/client.ts";
+import { upsertSubscription } from "../db/subscriptions.ts";
+import { clearSyncEtags } from "../db/syncState.ts";
 import type { EventBus } from "../events/bus.ts";
 import { type Account, createAccount } from "../github/account.ts";
 import { Poller } from "./poller.ts";
+
+export type ForceSyncResult = "ok" | "busy" | "unknown";
 
 export interface ManagerDefaults {
   pollIntervalMs: number;
@@ -28,6 +32,7 @@ export class AccountManager {
   private opts: ManagerOptions;
   private managed = new Map<string, Managed>();
   private timer: ReturnType<typeof setInterval> | null = null;
+  private forcing = new Set<string>();
 
   constructor(opts: ManagerOptions) {
     this.opts = opts;
@@ -67,6 +72,9 @@ export class AccountManager {
       });
       poller.start();
       this.managed.set(row.login, { account, poller });
+      await upsertSubscription(this.opts.db, row.login, "notification", null, "notification").catch(
+        () => {},
+      );
     }
     for (const [login, m] of this.managed) {
       if (!seen.has(login)) {
@@ -78,6 +86,20 @@ export class AccountManager {
 
   accountFor(login: string): Account | undefined {
     return this.managed.get(login)?.account;
+  }
+
+  async forceSync(login: string): Promise<ForceSyncResult> {
+    const m = this.managed.get(login);
+    if (!m) return "unknown";
+    if (this.forcing.has(login)) return "busy";
+    this.forcing.add(login);
+    try {
+      await clearSyncEtags(this.opts.db, login);
+      await m.poller.runOnce();
+      return "ok";
+    } finally {
+      this.forcing.delete(login);
+    }
   }
 
   snapshot(): { last_run: string | null; accounts: string[] } {

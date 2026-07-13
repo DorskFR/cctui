@@ -1,7 +1,9 @@
 <script lang="ts">
   import { QueryClientProvider } from "@tanstack/svelte-query";
   import { getContext, onMount } from "svelte";
-  import { SegmentedControl, Select } from "@dorsk/tsumikit";
+  import { Button, SegmentedControl, Select } from "@dorsk/tsumikit";
+  import { api } from "../api/client";
+  import { getAccount } from "../api/config";
   import { queryClient } from "../api/queries";
   import { subscribeSse } from "../api/sse";
   import { EMBED_KEY, type EmbedContext } from "../embed/context";
@@ -48,11 +50,28 @@
     theme = (e.currentTarget as HTMLSelectElement).value as Theme;
     setTheme(theme);
   }
+
+  let syncing = $state(false);
+  async function runSync(): Promise<void> {
+    if (syncing) return;
+    syncing = true;
+    try {
+      await api.forceSync(getAccount() ?? undefined);
+      await queryClient.invalidateQueries();
+    } catch {
+      /* surfaced via SSE / next poll */
+    } finally {
+      syncing = false;
+    }
+  }
 </script>
 
 <QueryClientProvider client={queryClient}>
   <header class="toolbar">
     <SegmentedControl options={viewOptions} bind:value={view} size="sm" label="View" />
+    <Button size="sm" variant="default" disabled={syncing} onclick={runSync}>
+      {syncing ? "Syncing…" : "Sync"}
+    </Button>
     <div class="spacer"></div>
     {#if !embedded}
       <Select compact value={theme} onchange={onThemeChange} aria-label="Theme">

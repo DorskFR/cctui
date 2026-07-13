@@ -50,6 +50,7 @@ describe("openapi contract", () => {
       "/v1/status",
       "/v1/subscriptions",
       "/v1/subscriptions/{id}",
+      "/v1/sync",
       "/v1/webhook",
     ]);
   });

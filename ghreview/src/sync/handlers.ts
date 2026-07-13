@@ -314,7 +314,7 @@ export async function syncNotifications(ctx: SyncContext, sub: Subscription): Pr
     const res = await conditionalRequest<NotificationThread[]>(
       ctx.account.octokit,
       "GET /notifications",
-      { all: false, per_page: NOTIFICATIONS_PER_PAGE, page },
+      { all: true, per_page: NOTIFICATIONS_PER_PAGE, page },
       page === 1 ? { etag, lastModified } : {},
     );
     ctx.account.budget.record(res.status, res.rate);

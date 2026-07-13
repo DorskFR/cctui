@@ -96,6 +96,26 @@ export async function listSubscriptionsForUser(
   `;
 }
 
+export async function getOwnedSubscriptionById(
+  db: DbHandle,
+  userId: string,
+  id: string,
+): Promise<SubscriptionRow | null> {
+  const { sql } = db;
+  const rows = await sql<SubscriptionRow[]>`
+    SELECT s.id::text, s.account, s.kind, s.target, s.active,
+      to_char(s.created_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS created_at
+    FROM subscriptions s
+    WHERE s.id = ${id}
+      AND EXISTS (
+        SELECT 1 FROM gh_accounts ga
+        WHERE ga.login = s.account AND ga.user_id = ${userId}
+      )
+    LIMIT 1
+  `;
+  return rows[0] ?? null;
+}
+
 export async function deactivateOwnedSubscription(
   db: DbHandle,
   userId: string,

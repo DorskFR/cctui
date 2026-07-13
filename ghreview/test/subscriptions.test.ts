@@ -4,6 +4,7 @@ import { createStaticResolver, parseStaticTokens } from "../src/auth/resolver.ts
 import { createGhAccount } from "../src/db/accounts.ts";
 import { createDb, type DbHandle } from "../src/db/client.ts";
 import { runMigrations } from "../src/db/migrate.ts";
+import { upsertSubscription } from "../src/db/subscriptions.ts";
 import type { AppDeps } from "../src/deps.ts";
 import { createAccount } from "../src/github/account.ts";
 import type { OctokitRequest, OctokitResponse } from "../src/github/client.ts";
@@ -135,5 +136,20 @@ guarded("subscription management", () => {
 
     const after = await app.request("/v1/subscriptions", { headers: A });
     expect(((await after.json()) as { items: unknown[] }).items.length).toBe(0);
+  });
+
+  test("CCT-687: the permanent notification subscription cannot be deleted (400)", async () => {
+    const app = createApp(deps());
+    await upsertSubscription(db, "alpha", "notification", null, "notification");
+    const [row] = await db.sql<{ id: string }[]>`
+      SELECT id::text FROM subscriptions WHERE account = 'alpha' AND kind = 'notification'
+    `;
+    const id = row?.id as string;
+
+    const del = await app.request(`/v1/subscriptions/${id}`, { method: "DELETE", headers: A });
+    expect(del.status).toBe(400);
+    expect(((await del.json()) as { error: { code: string } }).error.code).toBe(
+      "permanent_subscription",
+    );
   });
 });
