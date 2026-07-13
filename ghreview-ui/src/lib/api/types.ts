@@ -49,7 +49,10 @@ export interface GithubUser {
 export interface GithubLabel {
   name: string;
   color?: string;
+  description?: string | null;
 }
+
+export type Label = Schemas["Label"];
 
 export interface GithubRef {
   ref: string;

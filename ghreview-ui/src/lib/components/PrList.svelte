@@ -109,6 +109,18 @@
                     </span>
                   {/if}
                 </button>
+                {#if e.pull.html_url}
+                  <a
+                    class="ext"
+                    href={e.pull.html_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    aria-label="Open on GitHub"
+                    title="Open on GitHub"
+                  >
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                  </a>
+                {/if}
               </li>
             {/each}
           </ul>
@@ -144,23 +156,38 @@
     border-radius: var(--gh-radius);
     overflow: hidden;
   }
+  li {
+    display: flex;
+    align-items: stretch;
+    border-bottom: 1px solid var(--gh-border-muted);
+  }
+  li:last-child {
+    border-bottom: none;
+  }
   .row {
-    width: 100%;
+    flex: 1;
+    min-width: 0;
     display: flex;
     align-items: center;
     gap: var(--gh-space-3);
     background: transparent;
     border: none;
-    border-bottom: 1px solid var(--gh-border-muted);
     color: var(--gh-fg);
     padding: var(--gh-space-2) var(--gh-space-3);
     cursor: pointer;
     text-align: left;
   }
-  li:last-child .row {
-    border-bottom: none;
-  }
   .row:hover {
+    background: var(--gh-bg-elev);
+  }
+  .ext {
+    display: flex;
+    align-items: center;
+    padding: 0 var(--gh-space-3);
+    color: var(--gh-fg-muted);
+  }
+  .ext:hover {
+    color: var(--gh-accent);
     background: var(--gh-bg-elev);
   }
   .title {

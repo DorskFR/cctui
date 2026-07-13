@@ -17,6 +17,8 @@ import type {
   ViewedStateResult,
 } from "./types";
 
+type Label = components["schemas"]["Label"];
+
 type Schemas = components["schemas"];
 export type Subscription = Schemas["Subscription"];
 export type SubscriptionKind = Subscription["kind"];
@@ -235,4 +237,19 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ account, content }),
     }),
+
+  repoLabels: (owner: string, repo: string, account: string) =>
+    request<{ items: Label[] }>(`/v1/repos/${owner}/${repo}/labels${qs({ account })}`),
+
+  addPullLabel: (owner: string, repo: string, number: number, account: string, name: string) =>
+    request<{ labels: Label[] }>(`/v1/repos/${owner}/${repo}/pulls/${number}/labels`, {
+      method: "POST",
+      body: JSON.stringify({ account, name }),
+    }),
+
+  removePullLabel: (owner: string, repo: string, number: number, account: string, name: string) =>
+    request<{ labels: Label[] }>(
+      `/v1/repos/${owner}/${repo}/pulls/${number}/labels/${encodeURIComponent(name)}${qs({ account })}`,
+      { method: "DELETE" },
+    ),
 };

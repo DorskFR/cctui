@@ -1,6 +1,7 @@
 <script lang="ts">
   import { api } from "../api/client";
   import type { GithubPull, ReactionContent, ReactionRollup } from "../api/types";
+  import { renderMarkdown } from "../markdown";
   import PrEmptyTab from "./PrEmptyTab.svelte";
   import ReactionBar from "./ReactionBar.svelte";
 
@@ -43,7 +44,7 @@
     {#each comments as c (c.id ?? `${c.user?.login}-${c.created_at}`)}
       <li>
         <div class="meta">{c.user?.login ?? "unknown"}</div>
-        <div class="body">{(c.body ?? "").trim()}</div>
+        <div class="body markdown">{@html renderMarkdown((c.body ?? "").trim())}</div>
         {#if canReact && commentId(c) !== null}
           <ReactionBar
             reactions={c.reactions ?? null}
@@ -83,10 +84,6 @@
     font-size: 13px;
   }
   .body {
-    white-space: pre-wrap;
-    word-break: break-word;
-    font-size: 14px;
-    line-height: 1.5;
     margin-top: var(--gh-space-1);
   }
 </style>

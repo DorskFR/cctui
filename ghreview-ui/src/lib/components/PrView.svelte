@@ -38,6 +38,7 @@
   } from "../stores/pr-tabs-core";
   import { tabs } from "../stores/tabs.svelte";
   import FileTree from "./FileTree.svelte";
+  import LabelPicker from "./LabelPicker.svelte";
   import ReviewSummaryBar from "./ReviewSummaryBar.svelte";
   import PrChecks from "./PrChecks.svelte";
   import PrCommits from "./PrCommits.svelte";
@@ -299,11 +300,28 @@
   {:else}
     <header class="head">
       <div class="titlerow">
-        <h1>{pull.title} <span class="num">#{number}</span></h1>
+        <h1>
+          {#if pull.html_url}
+            <a class="titlelink" href={pull.html_url} target="_blank" rel="noopener noreferrer">
+              {pull.title} <span class="num">#{number}</span>
+            </a>
+          {:else}
+            {pull.title} <span class="num">#{number}</span>
+          {/if}
+        </h1>
         <span class="state state-{prStateOf(pull)}">{prStateOf(pull)}</span>
       </div>
       <div class="branches">
         <code>{pull.base?.ref ?? "?"}</code> ← <code>{pull.head?.ref ?? "?"}</code>
+      </div>
+      <div class="labelrow">
+        <LabelPicker
+          {owner}
+          {repo}
+          {number}
+          account={account ?? undefined}
+          labels={pull.labels ?? []}
+        />
       </div>
       <div class="chips">
         <span class="chip">CI: {ciStateOf(pull)}</span>
@@ -365,7 +383,7 @@
       {:else if activeTab === "conversation"}
         <PrConversation {pull} {owner} {repo} account={account ?? undefined} />
       {:else if activeTab === "commits"}
-        <PrCommits {pull} />
+        <PrCommits {pull} {owner} {repo} />
       {:else if activeTab === "checks"}
         <PrChecks {pull} />
       {:else}
@@ -428,6 +446,14 @@
     color: var(--gh-fg-muted);
     font-weight: 400;
   }
+  .titlelink {
+    color: inherit;
+    text-decoration: none;
+  }
+  .titlelink:hover {
+    color: var(--gh-accent);
+    text-decoration: underline;
+  }
   .state {
     text-transform: capitalize;
     border-radius: 999px;
@@ -450,6 +476,9 @@
   .branches {
     color: var(--gh-fg-muted);
     margin-top: var(--gh-space-1);
+  }
+  .labelrow {
+    margin-top: var(--gh-space-2);
   }
   code {
     font-family: var(--gh-mono);

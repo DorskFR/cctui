@@ -1,6 +1,7 @@
 <script lang="ts">
   import { api } from "../api/client";
   import type { ReactionContent, ReactionRollup } from "../api/types";
+  import { renderMarkdown } from "../markdown";
   import ReactionBar from "./ReactionBar.svelte";
 
   interface Props {
@@ -21,7 +22,7 @@
 
 <div class="prdesc">
   {#if text}
-    <div class="body">{text}</div>
+    <div class="body markdown">{@html renderMarkdown(text)}</div>
   {:else}
     <div class="msg">No description provided.</div>
   {/if}
@@ -48,10 +49,6 @@
     height: 100%;
   }
   .body {
-    white-space: pre-wrap;
-    word-break: break-word;
-    font-size: 14px;
-    line-height: 1.6;
     max-width: 72ch;
   }
   .msg {

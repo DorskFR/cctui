@@ -36,6 +36,9 @@ function parsePullTarget(target: string): { owner: string; repo: string; number:
 const PULL_FILES_PER_PAGE = 100;
 const PULL_FILES_MAX_PAGES = 30;
 
+const PULL_COMMITS_PER_PAGE = 100;
+const PULL_COMMITS_MAX_PAGES = 30;
+
 const REPO_PULLS_PER_PAGE = 100;
 const REPO_PULLS_MAX_PAGES = 30;
 
@@ -113,6 +116,28 @@ export async function fetchPullFiles(
     if (batch.length < PULL_FILES_PER_PAGE) break;
   }
   return files;
+}
+
+export async function fetchPullCommits(
+  octokit: Account["octokit"],
+  owner: string,
+  repo: string,
+  number: number,
+): Promise<unknown[]> {
+  const commits: unknown[] = [];
+  for (let page = 1; page <= PULL_COMMITS_MAX_PAGES; page++) {
+    const res = await octokit.request("GET /repos/{owner}/{repo}/pulls/{pull_number}/commits", {
+      owner,
+      repo,
+      pull_number: number,
+      per_page: PULL_COMMITS_PER_PAGE,
+      page,
+    });
+    const batch = Array.isArray(res.data) ? (res.data as unknown[]) : [];
+    commits.push(...batch);
+    if (batch.length < PULL_COMMITS_PER_PAGE) break;
+  }
+  return commits;
 }
 
 function outcome(res: ConditionalResult<unknown>): SyncOutcome {
@@ -210,8 +235,10 @@ export async function syncPull(ctx: SyncContext, sub: Subscription): Promise<Syn
   const key = `${owner}/${repo}#${number}`;
   if (res.status === 200 && res.data) {
     const files = await fetchPullFiles(ctx.account.octokit, owner, repo, number);
+    const commits = await fetchPullCommits(ctx.account.octokit, owner, repo, number);
     const payload = enrichPullStats(res.data as Record<string, unknown>, files);
     payload.files = files;
+    payload.commits_list = commits;
     await upsertDocument(ctx.db, {
       account: sub.account,
       kind: "pull_request",

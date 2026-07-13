@@ -1,6 +1,7 @@
 <script lang="ts">
   import { api } from "../api/client";
   import type { ReactionContent } from "../api/types";
+  import { renderMarkdown } from "../markdown";
   import type { CommentAnchor } from "../review/anchors";
   import InlineCommentComposer from "./InlineCommentComposer.svelte";
   import ReactionBar from "./ReactionBar.svelte";
@@ -49,7 +50,7 @@
   {#each anchor.published as c (c.id)}
     <div class="comment published">
       <div class="meta">{c.user ?? "someone"} · published</div>
-      <div class="body">{c.body}</div>
+      <div class="body markdown">{@html renderMarkdown(c.body ?? "")}</div>
       {#if canReact}
         <ReactionBar
           reactions={c.reactions ?? null}
