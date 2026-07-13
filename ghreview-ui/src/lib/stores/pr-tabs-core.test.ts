@@ -12,12 +12,13 @@ describe("pr content tabs", () => {
     expect(defaultPrTab()).toBe("diff");
   });
 
-  it("exposes the five content tabs in order", () => {
+  it("exposes the content tabs in order", () => {
     expect(PR_CONTENT_TABS).toEqual([
       "description",
       "conversation",
       "commits",
       "checks",
+      "activity",
       "diff",
     ]);
   });

@@ -716,6 +716,288 @@
           "etag"
         ]
       },
+      "MergeResult": {
+        "type": "object",
+        "properties": {
+          "merged": {
+            "type": "boolean",
+            "example": true
+          },
+          "sha": {
+            "type": "string",
+            "nullable": true,
+            "description": "The resulting merge commit SHA"
+          },
+          "message": {
+            "type": "string",
+            "nullable": true,
+            "example": "Pull Request successfully merged"
+          }
+        },
+        "required": [
+          "merged",
+          "sha",
+          "message"
+        ]
+      },
+      "MergePull": {
+        "type": "object",
+        "properties": {
+          "account": {
+            "type": "string",
+            "minLength": 1,
+            "example": "DorskFR",
+            "description": "GitHub account/login the record was synced for"
+          },
+          "merge_method": {
+            "type": "string",
+            "enum": [
+              "merge",
+              "squash",
+              "rebase"
+            ],
+            "default": "squash",
+            "example": "squash",
+            "description": "How GitHub combines the commits when merging"
+          },
+          "expected_head_sha": {
+            "type": "string",
+            "description": "Guard: reject when the PR head moved from this SHA"
+          }
+        },
+        "required": [
+          "account"
+        ]
+      },
+      "ReviewersResult": {
+        "type": "object",
+        "properties": {
+          "reviewers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Reviewer"
+            }
+          },
+          "requested_teams": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RequestedTeam"
+            }
+          }
+        },
+        "required": [
+          "reviewers",
+          "requested_teams"
+        ]
+      },
+      "Reviewer": {
+        "type": "object",
+        "properties": {
+          "login": {
+            "type": "string",
+            "example": "octocat"
+          },
+          "avatar_url": {
+            "type": "string",
+            "nullable": true
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "APPROVED",
+              "CHANGES_REQUESTED",
+              "COMMENTED",
+              "DISMISSED",
+              "PENDING"
+            ],
+            "example": "APPROVED",
+            "description": "Latest effective review state for a reviewer"
+          },
+          "requested": {
+            "type": "boolean",
+            "description": "Whether a review is currently requested from this reviewer"
+          }
+        },
+        "required": [
+          "login",
+          "avatar_url",
+          "state",
+          "requested"
+        ]
+      },
+      "RequestedTeam": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "Platform"
+          },
+          "slug": {
+            "type": "string",
+            "example": "platform"
+          }
+        },
+        "required": [
+          "name",
+          "slug"
+        ]
+      },
+      "ReRequestReviewers": {
+        "type": "object",
+        "properties": {
+          "account": {
+            "type": "string",
+            "minLength": 1,
+            "example": "DorskFR",
+            "description": "GitHub account/login the record was synced for"
+          },
+          "reviewers": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1
+          }
+        },
+        "required": [
+          "account",
+          "reviewers"
+        ]
+      },
+      "ActivityList": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ActivityEvent"
+            }
+          }
+        },
+        "required": [
+          "items"
+        ]
+      },
+      "ActivityEvent": {
+        "type": "object",
+        "properties": {
+          "event": {
+            "type": "string",
+            "example": "reviewed",
+            "description": "GitHub timeline event type"
+          },
+          "actor": {
+            "$ref": "#/components/schemas/ActivityActor"
+          },
+          "created_at": {
+            "type": "string",
+            "nullable": true,
+            "description": "ISO timestamp of the event"
+          },
+          "detail": {
+            "$ref": "#/components/schemas/ActivityDetail"
+          }
+        },
+        "required": [
+          "event",
+          "actor",
+          "created_at"
+        ]
+      },
+      "ActivityActor": {
+        "type": "object",
+        "nullable": true,
+        "properties": {
+          "login": {
+            "type": "string",
+            "example": "octocat"
+          },
+          "avatar_url": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": [
+          "login",
+          "avatar_url"
+        ]
+      },
+      "ActivityDetail": {
+        "type": "object",
+        "properties": {
+          "sha": {
+            "type": "string",
+            "description": "Short commit SHA for commit/merge/close"
+          },
+          "message": {
+            "type": "string",
+            "description": "Commit subject line"
+          },
+          "author_name": {
+            "type": "string",
+            "description": "Git author of a commit"
+          },
+          "state": {
+            "type": "string",
+            "example": "APPROVED",
+            "description": "Review state, uppercased"
+          },
+          "body": {
+            "type": "string",
+            "description": "Review/comment body excerpt"
+          },
+          "label": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "color": {
+                "type": "string",
+                "nullable": true
+              }
+            },
+            "required": [
+              "name",
+              "color"
+            ],
+            "description": "Label added or removed"
+          },
+          "reviewer": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ActivityActor"
+              },
+              {
+                "description": "Reviewer requested"
+              }
+            ]
+          },
+          "team": {
+            "type": "string",
+            "description": "Team review requested from"
+          },
+          "assignee": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ActivityActor"
+              },
+              {
+                "description": "Assignee added or removed"
+              }
+            ]
+          },
+          "from": {
+            "type": "string",
+            "description": "Previous title on a rename"
+          },
+          "to": {
+            "type": "string",
+            "description": "New title on a rename"
+          }
+        }
+      },
       "ViewedStateResult": {
         "type": "object",
         "properties": {
@@ -2354,6 +2636,348 @@
           },
           "404": {
             "description": "Not synced",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/repos/{owner}/{repo}/pulls/{number}/merge": {
+      "post": {
+        "summary": "Merge a pull request and drop it from the store",
+        "tags": [
+          "pulls"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "DorskFR"
+            },
+            "required": true,
+            "name": "owner",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "cctui"
+            },
+            "required": true,
+            "name": "repo",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "example": 42
+            },
+            "required": true,
+            "name": "number",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MergePull"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Merge result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MergeResult"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller does not own the account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Account not managed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Pull request is not mergeable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "PR head moved since the expected SHA",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/repos/{owner}/{repo}/pulls/{number}/reviewers": {
+      "get": {
+        "summary": "List requested reviewers, teams, and each reviewer's latest review state",
+        "tags": [
+          "pulls"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "DorskFR"
+            },
+            "required": true,
+            "name": "owner",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "cctui"
+            },
+            "required": true,
+            "name": "repo",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "example": 42
+            },
+            "required": true,
+            "name": "number",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "example": "DorskFR"
+            },
+            "required": true,
+            "name": "account",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Reviewer states",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewersResult"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller does not own the account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Account not managed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/repos/{owner}/{repo}/pulls/{number}/reviewers/re-request": {
+      "post": {
+        "summary": "Re-request a review from one or more reviewers",
+        "tags": [
+          "pulls"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "DorskFR"
+            },
+            "required": true,
+            "name": "owner",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "cctui"
+            },
+            "required": true,
+            "name": "repo",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "example": 42
+            },
+            "required": true,
+            "name": "number",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReRequestReviewers"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated reviewer states",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewersResult"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller does not own the account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Account not managed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/repos/{owner}/{repo}/pulls/{number}/activity": {
+      "get": {
+        "summary": "Chronological activity timeline for a pull request",
+        "tags": [
+          "pulls"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "DorskFR"
+            },
+            "required": true,
+            "name": "owner",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "cctui"
+            },
+            "required": true,
+            "name": "repo",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "example": 42
+            },
+            "required": true,
+            "name": "number",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "example": "DorskFR"
+            },
+            "required": true,
+            "name": "account",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Normalized activity timeline",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActivityList"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller does not own the account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Account not managed",
             "content": {
               "application/json": {
                 "schema": {

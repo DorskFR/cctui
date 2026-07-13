@@ -1,10 +1,17 @@
-export type PrContentTab = "description" | "conversation" | "commits" | "checks" | "diff";
+export type PrContentTab =
+  | "description"
+  | "conversation"
+  | "commits"
+  | "checks"
+  | "activity"
+  | "diff";
 
 export const PR_CONTENT_TABS: readonly PrContentTab[] = [
   "description",
   "conversation",
   "commits",
   "checks",
+  "activity",
   "diff",
 ] as const;
 
@@ -13,6 +20,7 @@ export const PR_CONTENT_TAB_LABELS: Record<PrContentTab, string> = {
   conversation: "Conversation",
   commits: "Commits",
   checks: "Checks",
+  activity: "Activity",
   diff: "Diff",
 };
 

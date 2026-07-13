@@ -88,12 +88,23 @@ export async function getGhAccount(
 
 export async function deleteGhAccount(db: DbHandle, userId: string, id: string): Promise<boolean> {
   const { sql } = db;
-  const rows = await sql<{ id: string }[]>`
-    DELETE FROM gh_accounts
-    WHERE user_id = ${userId} AND id = ${id}
-    RETURNING id::text
-  `;
-  return rows.length > 0;
+  return sql.begin(async (tx) => {
+    const [owned] = await tx<{ login: string }[]>`
+      SELECT login FROM gh_accounts
+      WHERE user_id = ${userId} AND id = ${id}
+      FOR UPDATE
+    `;
+    if (!owned) return false;
+    const { login } = owned;
+    await tx`DELETE FROM documents WHERE account = ${login}`;
+    await tx`DELETE FROM sync_state WHERE account = ${login}`;
+    await tx`DELETE FROM notification_state WHERE account = ${login}`;
+    await tx`DELETE FROM viewed_state WHERE account = ${login}`;
+    await tx`DELETE FROM subscriptions WHERE account = ${login}`;
+    await tx`DELETE FROM review_drafts WHERE account = ${login}`;
+    await tx`DELETE FROM gh_accounts WHERE id = ${id}`;
+    return true;
+  });
 }
 
 export async function listAllActiveAccounts(db: DbHandle): Promise<GhAccountWithSecret[]> {

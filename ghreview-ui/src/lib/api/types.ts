@@ -26,6 +26,14 @@ export type ReviewThreadList = Schemas["ReviewThreadList"];
 export type ReactionSummary = Schemas["ReactionSummary"];
 export type ReactionContent = Schemas["ReactionToggle"]["content"];
 
+export type MergeMethod = Schemas["MergePull"]["merge_method"];
+export type MergeResult = Schemas["MergeResult"];
+export type Reviewer = Schemas["Reviewer"];
+export type ReviewerState = Reviewer["state"];
+export type ReviewersResult = Schemas["ReviewersResult"];
+export type ActivityEvent = Schemas["ActivityEvent"];
+export type ActivityList = Schemas["ActivityList"];
+
 export interface ReactionRollup {
   "+1"?: number;
   "-1"?: number;

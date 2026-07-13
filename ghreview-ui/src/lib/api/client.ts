@@ -1,6 +1,9 @@
 import type { components } from "../../generated/api";
 import { baseUrl, getToken } from "./config";
 import type {
+  ActivityList,
+  MergeMethod,
+  MergeResult,
   NotificationInboxPage,
   NotificationState,
   PullRequestEnvelope,
@@ -9,6 +12,7 @@ import type {
   ReactionSummary,
   RepoPage,
   ReviewDraftResult,
+  ReviewersResult,
   ReviewPublishResult,
   ReviewSide,
   ReviewThreadList,
@@ -255,6 +259,37 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ account, content }),
     }),
+
+  mergePull: (
+    owner: string,
+    repo: string,
+    number: number,
+    input: { account: string; merge_method: MergeMethod; expected_head_sha?: string },
+  ) =>
+    request<MergeResult>(`/v1/repos/${owner}/${repo}/pulls/${number}/merge`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+
+  reviewers: (owner: string, repo: string, number: number, account: string) =>
+    request<ReviewersResult>(
+      `/v1/repos/${owner}/${repo}/pulls/${number}/reviewers${qs({ account })}`,
+    ),
+
+  reRequestReviewers: (
+    owner: string,
+    repo: string,
+    number: number,
+    account: string,
+    reviewers: string[],
+  ) =>
+    request<ReviewersResult>(`/v1/repos/${owner}/${repo}/pulls/${number}/reviewers/re-request`, {
+      method: "POST",
+      body: JSON.stringify({ account, reviewers }),
+    }),
+
+  activity: (owner: string, repo: string, number: number, account: string) =>
+    request<ActivityList>(`/v1/repos/${owner}/${repo}/pulls/${number}/activity${qs({ account })}`),
 
   repoLabels: (owner: string, repo: string, account: string) =>
     request<{ items: Label[] }>(`/v1/repos/${owner}/${repo}/labels${qs({ account })}`),
