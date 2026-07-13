@@ -1,3 +1,4 @@
+import { closeMergedPr } from "./merge-transition";
 import {
   closeTab,
   defaultStatus,
@@ -46,6 +47,13 @@ class TabsStore {
   close(id: string): void {
     this.state = closeTab(this.state, id);
     this.persist();
+  }
+
+  closeMerged(owner: string, repo: string, number: number): string {
+    const transition = closeMergedPr(this.state, owner, repo, number);
+    this.state = transition.state;
+    this.persist();
+    return transition.path;
   }
 
   activate(id: string | null): void {

@@ -1,6 +1,7 @@
 import { mount, tick, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api } from "../api/client";
+import { queryClient } from "../api/queries";
 import type { GithubPull } from "../api/types";
 import MergeButton from "./MergeButton.svelte";
 
@@ -50,12 +51,14 @@ describe("MergeButton", () => {
   });
 
   it("confirms then merges with the selected method and pinned head SHA", async () => {
+    const onmerged = vi.fn();
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
     const spy = vi
       .spyOn(api, "mergePull")
       .mockResolvedValue({ merged: true, sha: "m1", message: "ok" });
     component = mount(MergeButton, {
       target: document.body,
-      props: { owner: "o", repo: "r", number: 42, account: "acct", pull: pull() },
+      props: { owner: "o", repo: "r", number: 42, account: "acct", pull: pull(), onmerged },
     });
     await openPanel();
     expect(document.body.textContent).toContain("Mergeable");
@@ -71,6 +74,8 @@ describe("MergeButton", () => {
       merge_method: "squash",
       expected_head_sha: "sha1",
     });
+    expect(onmerged).toHaveBeenCalledOnce();
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["pulls"] });
   });
 
   it("shows a draft notice and offers no merge action for drafts", async () => {
@@ -86,10 +91,11 @@ describe("MergeButton", () => {
   });
 
   it("surfaces the API error message without merging away the panel", async () => {
+    const onmerged = vi.fn();
     vi.spyOn(api, "mergePull").mockRejectedValue(new Error("not mergeable"));
     component = mount(MergeButton, {
       target: document.body,
-      props: { owner: "o", repo: "r", number: 42, account: "acct", pull: pull() },
+      props: { owner: "o", repo: "r", number: 42, account: "acct", pull: pull(), onmerged },
     });
     await openPanel();
     (document.querySelector(".primary") as HTMLButtonElement).click();
@@ -98,5 +104,30 @@ describe("MergeButton", () => {
     await tick();
     await tick();
     expect(document.querySelector(".err")?.textContent).toContain("not mergeable");
+    expect(document.querySelector(".confirm")).not.toBeNull();
+    expect(onmerged).not.toHaveBeenCalled();
+  });
+
+  it("keeps the view open when the API declines the merge", async () => {
+    const onmerged = vi.fn();
+    vi.spyOn(api, "mergePull").mockResolvedValue({
+      merged: false,
+      sha: null,
+      message: "required checks are pending",
+    });
+    component = mount(MergeButton, {
+      target: document.body,
+      props: { owner: "o", repo: "r", number: 42, account: "acct", pull: pull(), onmerged },
+    });
+    await openPanel();
+    (document.querySelector(".primary") as HTMLButtonElement).click();
+    await tick();
+    (document.querySelector(".confirm .primary") as HTMLButtonElement).click();
+    await tick();
+    await tick();
+
+    expect(document.querySelector(".err")?.textContent).toContain("required checks are pending");
+    expect(document.querySelector(".confirm")).not.toBeNull();
+    expect(onmerged).not.toHaveBeenCalled();
   });
 });
