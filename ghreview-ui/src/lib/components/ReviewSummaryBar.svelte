@@ -76,7 +76,7 @@
     position: relative;
   }
   .toggle {
-    font-size: 12px;
+    font-size: var(--fs-xs);
     border: 1px solid var(--gh-border);
     border-radius: var(--gh-radius);
     background: var(--gh-accent);
@@ -113,12 +113,12 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    font-size: 12px;
+    font-size: var(--fs-xs);
     color: var(--gh-fg-muted);
   }
   select,
   textarea {
-    font-size: 12px;
+    font-size: var(--fs-xs);
     background: var(--gh-bg);
     color: var(--gh-fg);
     border: 1px solid var(--gh-border);
@@ -136,7 +136,7 @@
     justify-content: flex-end;
   }
   .primary {
-    font-size: 12px;
+    font-size: var(--fs-xs);
     background: var(--gh-accent);
     color: white;
     border: 1px solid var(--gh-accent);
@@ -149,11 +149,11 @@
     cursor: default;
   }
   .err {
-    font-size: 11px;
+    font-size: var(--fs-xs);
     color: var(--gh-danger);
   }
   .skipped {
-    font-size: 11px;
+    font-size: var(--fs-xs);
     color: var(--gh-fg-muted);
     border: 1px solid var(--gh-border);
     border-radius: var(--gh-radius-sm);

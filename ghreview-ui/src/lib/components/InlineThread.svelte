@@ -181,7 +181,7 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    font-size: 11px;
+    font-size: var(--fs-xs);
     color: var(--gh-fg-muted);
   }
   .loc {
@@ -198,7 +198,7 @@
   .meta {
     display: flex;
     justify-content: space-between;
-    font-size: 11px;
+    font-size: var(--fs-xs);
     color: var(--gh-fg-muted);
     margin-bottom: 2px;
   }
@@ -207,12 +207,12 @@
     gap: var(--gh-space-2);
   }
   .body {
-    font-size: 12px;
+    font-size: var(--fs-xs);
     white-space: pre-wrap;
     word-break: break-word;
   }
   button {
-    font-size: 11px;
+    font-size: var(--fs-xs);
     background: none;
     border: none;
     color: var(--gh-accent);
@@ -221,13 +221,13 @@
   }
   .x {
     color: var(--gh-fg-muted);
-    font-size: 14px;
+    font-size: var(--fs-base);
   }
   button.danger {
     color: var(--danger, #f85149);
   }
   .err {
-    font-size: 11px;
+    font-size: var(--fs-xs);
     color: var(--danger, #f85149);
     margin-top: 2px;
   }

@@ -81,7 +81,7 @@
     display: flex;
     align-items: baseline;
     gap: var(--gh-space-3);
-    font-size: 13px;
+    font-size: var(--fs-sm);
   }
   .sha {
     font-family: var(--gh-mono);

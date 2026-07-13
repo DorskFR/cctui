@@ -53,7 +53,7 @@
   }
   h1 {
     margin: 0;
-    font-size: 18px;
+    font-size: var(--fs-lg);
   }
   p {
     margin: 0;
@@ -63,7 +63,7 @@
     display: flex;
     flex-direction: column;
     gap: var(--gh-space-1);
-    font-size: 12px;
+    font-size: var(--fs-xs);
     color: var(--gh-fg-muted);
   }
   input {

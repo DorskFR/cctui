@@ -54,7 +54,7 @@
     display: flex;
     justify-content: space-between;
     gap: var(--gh-space-3);
-    font-size: 13px;
+    font-size: var(--fs-sm);
   }
   .state {
     color: var(--gh-fg-muted);

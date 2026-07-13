@@ -198,7 +198,7 @@
   }
   .counts {
     font-family: var(--gh-mono);
-    font-size: 12px;
+    font-size: var(--fs-xs);
   }
   .add {
     color: var(--gh-success);

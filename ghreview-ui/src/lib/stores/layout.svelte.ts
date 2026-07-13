@@ -1,11 +1,9 @@
 import {
   deserialize,
-  type LayoutMode,
   type LayoutState,
   serialize,
-  setMode,
-  toggleFullWidth,
-  toggleMode,
+  setSidebarCollapsed,
+  toggleSidebar,
 } from "./layout-core";
 
 const STORAGE_KEY = "ghreview:layout";
@@ -13,30 +11,21 @@ const STORAGE_KEY = "ghreview:layout";
 class LayoutStore {
   state = $state<LayoutState>(deserialize(localStorage.getItem(STORAGE_KEY)));
 
-  get mode(): LayoutMode {
-    return this.state.mode;
-  }
-
-  get fullWidth(): boolean {
-    return this.state.fullWidth;
+  get sidebarCollapsed(): boolean {
+    return this.state.sidebarCollapsed;
   }
 
   private persist(): void {
     localStorage.setItem(STORAGE_KEY, serialize(this.state));
   }
 
-  toggleMode(): void {
-    this.state = toggleMode(this.state);
+  toggleSidebar(): void {
+    this.state = toggleSidebar(this.state);
     this.persist();
   }
 
-  setMode(mode: LayoutMode): void {
-    this.state = setMode(this.state, mode);
-    this.persist();
-  }
-
-  toggleFullWidth(): void {
-    this.state = toggleFullWidth(this.state);
+  setSidebarCollapsed(collapsed: boolean): void {
+    this.state = setSidebarCollapsed(this.state, collapsed);
     this.persist();
   }
 }
