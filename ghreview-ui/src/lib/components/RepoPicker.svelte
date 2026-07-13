@@ -1,6 +1,6 @@
 <script lang="ts">
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
-  import { Badge, Button, Input, Text } from "@dorsk/tsumikit";
+  import { Badge, Input, Switch, Text } from "@dorsk/tsumikit";
   import { api, type GithubRepo, type Subscription } from "../api/client";
   import { getAccount } from "../api/config";
 
@@ -57,12 +57,6 @@
     if (id) $unsubscribe.mutate(id);
     else $subscribe.mutate(fullName);
   }
-
-  function isPendingRow(fullName: string): boolean {
-    if ($subscribe.isPending && $subscribe.variables === fullName) return true;
-    const id = subById.get(fullName);
-    return !!id && $unsubscribe.isPending && $unsubscribe.variables === id;
-  }
 </script>
 
 <div class="repo-picker">
@@ -80,20 +74,12 @@
         <li>
           <span class="name" title={repo.full_name}>{repo.full_name}</span>
           {#if repo.private}<Badge size="sm" tone="neutral">private</Badge>{/if}
-          <Button
-            size="sm"
-            variant={subscribed ? "primary" : "default"}
+          <Switch
+            checked={subscribed}
+            label={`${subscribed ? "Unsubscribe from" : "Subscribe to"} ${repo.full_name}`}
             disabled={busy}
             onclick={() => toggle(repo.full_name)}
-          >
-            {#if isPendingRow(repo.full_name)}
-              …
-            {:else if subscribed}
-              Subscribed
-            {:else}
-              Subscribe
-            {/if}
-          </Button>
+          />
         </li>
       {/each}
     </ul>

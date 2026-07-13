@@ -51,6 +51,43 @@ export async function upsertDocument(db: DbHandle, input: UpsertInput): Promise<
   return changed;
 }
 
+export async function deleteDocument(
+  db: DbHandle,
+  account: string,
+  kind: string,
+  key: string,
+): Promise<boolean> {
+  const { sql } = db;
+  const rows = await sql<{ key: string }[]>`
+    DELETE FROM documents
+    WHERE account = ${account} AND kind = ${kind} AND key = ${key}
+    RETURNING key
+  `;
+  if (rows.length === 0) return false;
+  const notice = JSON.stringify({ account, kind, key });
+  await sql`SELECT pg_notify(${EVENT_CHANNEL}, ${notice})`;
+  return true;
+}
+
+export async function listPullDocumentNumbers(
+  db: DbHandle,
+  account: string,
+  owner: string,
+  repo: string,
+): Promise<number[]> {
+  const prefix = `${owner}/${repo}#`;
+  const rows = await db.sql<{ key: string }[]>`
+    SELECT key FROM documents
+    WHERE account = ${account} AND kind = 'pull_request' AND key LIKE ${`${prefix}%`}
+  `;
+  const numbers: number[] = [];
+  for (const row of rows) {
+    const n = Number(row.key.slice(prefix.length));
+    if (Number.isInteger(n)) numbers.push(n);
+  }
+  return numbers;
+}
+
 export async function touchDocument(
   db: DbHandle,
   account: string,

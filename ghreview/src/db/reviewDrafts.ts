@@ -244,3 +244,15 @@ export async function deleteDraftComment(
 export async function clearDraft(db: DbHandle, draftId: string): Promise<void> {
   await db.sql`DELETE FROM review_drafts WHERE id = ${draftId}`;
 }
+
+export async function deleteReviewDraftsForPull(
+  db: DbHandle,
+  account: string,
+  ref: PullRef,
+): Promise<void> {
+  await db.sql`
+    DELETE FROM review_drafts
+    WHERE account = ${account} AND owner = ${ref.owner}
+      AND repo = ${ref.repo} AND pr_number = ${ref.number}
+  `;
+}

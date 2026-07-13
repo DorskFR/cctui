@@ -173,6 +173,18 @@ export async function invalidateChangedViewed(
   return cleared;
 }
 
+export async function deleteViewedStateForPull(
+  db: DbHandle,
+  account: string,
+  ref: PullRef,
+): Promise<void> {
+  await db.sql`
+    DELETE FROM viewed_state
+    WHERE account = ${account} AND owner = ${ref.owner}
+      AND repo = ${ref.repo} AND pull_number = ${ref.number}
+  `;
+}
+
 export interface PendingViewed extends PullRef {
   account: string;
   path: string;
