@@ -124,7 +124,7 @@
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    font-size: 12px;
+    font-size: var(--fs-xs);
     line-height: 1;
     padding: 2px 8px;
     border-radius: 999px;
@@ -152,7 +152,7 @@
   .add {
     display: inline-flex;
     align-items: center;
-    font-size: 12px;
+    font-size: var(--fs-xs);
     line-height: 1;
     padding: 2px 6px;
     border-radius: 999px;
@@ -179,7 +179,7 @@
     box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
   }
   .opt {
-    font-size: 15px;
+    font-size: var(--fs-base);
     line-height: 1;
     padding: 3px 5px;
     border-radius: var(--gh-radius);

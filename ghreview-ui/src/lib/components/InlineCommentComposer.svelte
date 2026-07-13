@@ -65,7 +65,7 @@
     width: 100%;
     box-sizing: border-box;
     font-family: var(--gh-mono);
-    font-size: 12px;
+    font-size: var(--fs-xs);
     background: var(--gh-bg);
     color: var(--gh-fg);
     border: 1px solid var(--gh-border);
@@ -79,7 +79,7 @@
     gap: var(--gh-space-2);
   }
   button {
-    font-size: 12px;
+    font-size: var(--fs-xs);
     border-radius: var(--gh-radius-sm);
     padding: 2px 10px;
     cursor: pointer;

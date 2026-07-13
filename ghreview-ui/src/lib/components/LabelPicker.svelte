@@ -136,14 +136,14 @@
     gap: var(--gh-space-1);
   }
   .chip {
-    font-size: 12px;
+    font-size: var(--fs-xs);
     line-height: 1;
     padding: 2px 8px;
     border-radius: 999px;
     border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
   }
   .edit {
-    font-size: 12px;
+    font-size: var(--fs-xs);
     color: var(--gh-fg-muted);
   }
   .panel {
@@ -205,12 +205,12 @@
   }
   .muted {
     color: var(--gh-fg-muted);
-    font-size: 12px;
+    font-size: var(--fs-xs);
     margin: 0;
   }
   .err {
     color: var(--gh-danger);
-    font-size: 12px;
+    font-size: var(--fs-xs);
     margin: 0;
   }
 </style>

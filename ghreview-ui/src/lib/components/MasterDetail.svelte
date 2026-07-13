@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { Button } from "@dorsk/tsumikit";
   import { router } from "../router/router.svelte";
   import { layout } from "../stores/layout.svelte";
   import PrList from "./PrList.svelte";
@@ -7,9 +6,11 @@
   import TabBar from "./TabBar.svelte";
 
   const route = $derived(router.current);
+  const collapsed = $derived(layout.sidebarCollapsed);
 
   const WIDTH_KEY = "ghreview:masterWidth";
   const MIN = 220;
+  const STEP = 24;
 
   function loadWidth(): number {
     const n = Number(localStorage.getItem(WIDTH_KEY));
@@ -18,13 +19,21 @@
 
   let masterW = $state(loadWidth());
   let container = $state<HTMLElement | null>(null);
-  let dragging = false;
+  let dragging = $state(false);
   let rafId = 0;
   let lastX = 0;
 
   function maxWidth(): number {
     const w = container?.clientWidth ?? 900;
     return Math.max(MIN, Math.round(w * 0.6));
+  }
+
+  function setWidth(px: number): void {
+    masterW = Math.round(Math.max(MIN, Math.min(px, maxWidth())));
+  }
+
+  function persistWidth(): void {
+    localStorage.setItem(WIDTH_KEY, String(masterW));
   }
 
   function startDrag(e: PointerEvent): void {
@@ -41,7 +50,7 @@
     rafId = requestAnimationFrame(() => {
       rafId = 0;
       const left = container?.getBoundingClientRect().left ?? 0;
-      masterW = Math.round(Math.max(MIN, Math.min(lastX - left, maxWidth())));
+      setWidth(lastX - left);
     });
   }
 
@@ -57,40 +66,67 @@
     } catch {
       /* already released */
     }
-    localStorage.setItem(WIDTH_KEY, String(masterW));
+    persistWidth();
   }
 
-  const cols = $derived(layout.fullWidth ? "1fr" : `${masterW}px 6px 1fr`);
+  function onHandleKey(e: KeyboardEvent): void {
+    if (e.key === "ArrowLeft") {
+      setWidth(masterW - STEP);
+      persistWidth();
+      e.preventDefault();
+    } else if (e.key === "ArrowRight") {
+      setWidth(masterW + STEP);
+      persistWidth();
+      e.preventDefault();
+    }
+  }
+
+  const cols = $derived(collapsed ? "1fr" : `${masterW}px 1fr`);
 </script>
 
-<div class="md" bind:this={container} style="grid-template-columns: {cols}">
-  <aside class="master" aria-hidden={layout.fullWidth}>
-    <PrList />
-  </aside>
-  {#if !layout.fullWidth}
-    <div
-      class="handle"
-      role="separator"
-      aria-orientation="vertical"
-      aria-label="Resize pull request list"
-      onpointerdown={startDrag}
-      onpointermove={onDrag}
-      onpointerup={endDrag}
-      onpointercancel={endDrag}
-    ></div>
+<div class="md" class:collapsed class:dragging bind:this={container} style="grid-template-columns: {cols}">
+  {#if !collapsed}
+    <aside class="master">
+      <PrList />
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+      <div
+        class="resize"
+        role="separator"
+        tabindex="0"
+        aria-orientation="vertical"
+        aria-label="Resize pull request list"
+        aria-valuenow={masterW}
+        aria-valuemin={MIN}
+        aria-valuemax={maxWidth()}
+        onpointerdown={startDrag}
+        onpointermove={onDrag}
+        onpointerup={endDrag}
+        onpointercancel={endDrag}
+        onkeydown={onHandleKey}
+      >
+        <button
+          type="button"
+          class="collapse-btn"
+          title="Collapse list"
+          aria-label="Collapse list"
+          onpointerdown={(e) => e.stopPropagation()}
+          onclick={() => layout.toggleSidebar()}
+        >‹</button>
+      </div>
+    </aside>
+  {:else}
+    <button
+      type="button"
+      class="expand-btn"
+      title="Show list"
+      aria-label="Show list"
+      onclick={() => layout.toggleSidebar()}
+    >›</button>
   {/if}
   <section class="detail">
     <div class="detail-bar">
       <TabBar />
-      <Button
-        variant="ghost"
-        size="sm"
-        aria-pressed={layout.fullWidth}
-        title={layout.fullWidth ? "Show PR list" : "Full width"}
-        onclick={() => layout.toggleFullWidth()}
-      >
-        {layout.fullWidth ? "⇥ List" : "⤢ Full width"}
-      </Button>
     </div>
     <div class="detail-body">
       {#if route.name === "pull"}
@@ -108,28 +144,102 @@
 
 <style>
   .md {
+    position: relative;
     flex: 1;
     min-height: 0;
     display: grid;
   }
+  .md.dragging {
+    user-select: none;
+    cursor: ew-resize;
+  }
   .master {
+    position: relative;
     min-height: 0;
     overflow: auto;
     background: var(--gh-bg);
+    border-right: 1px solid var(--gh-border);
   }
-  .md aside[aria-hidden="true"] {
-    display: none;
-  }
-  .handle {
-    width: 6px;
-    cursor: col-resize;
-    background: var(--gh-border);
+  /* Splitter: matches Tsumikit AppShell — a thin invisible hit area with a
+     centered grip pill that brightens to the accent on hover / drag. */
+  .resize {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    right: 0;
+    width: 10px;
+    cursor: ew-resize;
     touch-action: none;
+    z-index: 2;
   }
-  .handle:hover {
+  .resize::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    right: 1px;
+    transform: translateY(-50%);
+    width: 3px;
+    height: 28px;
+    border-radius: 999px;
+    background: var(--gh-border);
+    transition: background 0.12s ease;
+  }
+  .resize:hover::after,
+  .resize:focus-visible::after,
+  .md.dragging .resize::after {
     background: var(--gh-accent);
   }
+  .resize:focus-visible {
+    outline: none;
+  }
+  .collapse-btn {
+    position: absolute;
+    top: var(--gh-space-2);
+    right: -1px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 22px;
+    padding: 0;
+    font-size: var(--fs-sm);
+    line-height: 1;
+    color: var(--gh-fg-muted);
+    background: var(--gh-bg-elev);
+    border: 1px solid var(--gh-border);
+    border-radius: var(--gh-radius-sm);
+    cursor: pointer;
+  }
+  .collapse-btn:hover {
+    color: var(--gh-accent);
+    border-color: var(--gh-accent);
+  }
+  .expand-btn {
+    position: absolute;
+    top: var(--gh-space-2);
+    left: 0;
+    z-index: 3;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 24px;
+    padding: 0;
+    font-size: var(--fs-sm);
+    line-height: 1;
+    color: var(--gh-fg-muted);
+    background: var(--gh-bg-elev);
+    border: 1px solid var(--gh-border);
+    border-left: none;
+    border-radius: 0 var(--gh-radius-sm) var(--gh-radius-sm) 0;
+    cursor: pointer;
+  }
+  .expand-btn:hover {
+    color: var(--gh-accent);
+    border-color: var(--gh-accent);
+  }
   .detail {
+    position: relative;
     min-width: 0;
     min-height: 0;
     display: flex;

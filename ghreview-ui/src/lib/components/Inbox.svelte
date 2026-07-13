@@ -302,7 +302,7 @@
     gap: var(--gh-space-2);
     min-width: 0;
     color: var(--gh-fg-muted);
-    font-size: 12px;
+    font-size: var(--fs-xs);
   }
   .reason {
     overflow: hidden;

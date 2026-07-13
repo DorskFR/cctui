@@ -86,14 +86,14 @@
   .label {
     overflow: hidden;
     text-overflow: ellipsis;
-    font-size: 12px;
+    font-size: var(--fs-xs);
   }
   .x {
     background: transparent;
     border: none;
     color: var(--gh-fg-subtle);
     cursor: pointer;
-    font-size: 14px;
+    font-size: var(--fs-base);
     line-height: 1;
     padding: 0 2px;
     border-radius: var(--gh-radius-sm);

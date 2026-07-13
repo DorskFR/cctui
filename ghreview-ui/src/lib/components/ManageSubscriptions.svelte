@@ -1,5 +1,6 @@
 <script lang="ts">
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
+  import { Button, Text } from "@dorsk/tsumikit";
   import { api, type Subscription } from "../api/client";
   import { getAccount } from "../api/config";
 
@@ -31,26 +32,28 @@
 
 <div class="manage">
   {#if $subs.isPending}
-    <p class="muted">Loading…</p>
+    <Text size="sm" tone="muted">Loading…</Text>
   {:else if $subs.isError}
-    <p class="error">{$subs.error.message}</p>
+    <Text size="sm" tone="danger">{$subs.error.message}</Text>
   {:else if items.length === 0}
-    <p class="muted">No active subscriptions.</p>
+    <Text size="sm" tone="muted">No active subscriptions.</Text>
   {:else}
     <ul>
       {#each items as sub (sub.id)}
         <li>
           <span class="body">
             <span class="target" title={sub.target ?? ""}>{label(sub)}</span>
-            <span class="account">{sub.account}</span>
+            <Text size="xs" tone="muted">{sub.account}</Text>
           </span>
-          <button
-            type="button"
+          <Button
+            size="sm"
+            variant="ghost"
+            hoverDanger
             disabled={$remove.isPending}
             onclick={() => $remove.mutate(sub.id)}
           >
             {pending === sub.id ? "…" : "Unsubscribe"}
-          </button>
+          </Button>
         </li>
       {/each}
     </ul>
@@ -68,17 +71,20 @@
     margin: 0;
     padding: 0;
     overflow-y: auto;
-    max-height: 240px;
+    max-height: 360px;
     display: flex;
     flex-direction: column;
-    gap: 2px;
   }
   li {
     display: flex;
     align-items: center;
     gap: var(--gh-space-2);
-    padding: var(--gh-space-1);
+    padding: var(--gh-space-2);
     border-radius: var(--gh-radius-sm);
+    border-bottom: 1px solid var(--gh-border-muted);
+  }
+  li:last-child {
+    border-bottom: none;
   }
   li:hover {
     background: var(--gh-bg-inset);
@@ -90,40 +96,9 @@
     min-width: 0;
   }
   .target {
-    font-size: 12px;
+    font-size: var(--fs-sm);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-  .account {
-    font-size: 10px;
-    color: var(--gh-fg-muted);
-  }
-  button {
-    background: var(--gh-bg-inset);
-    border: 1px solid var(--gh-border);
-    border-radius: var(--gh-radius);
-    color: var(--gh-fg);
-    cursor: pointer;
-    padding: 2px 8px;
-    font-size: 11px;
-  }
-  button:hover:not(:disabled) {
-    border-color: var(--gh-danger);
-    color: var(--gh-danger);
-  }
-  button:disabled {
-    opacity: 0.6;
-    cursor: default;
-  }
-  .muted {
-    color: var(--gh-fg-muted);
-    font-size: 12px;
-    margin: 0;
-  }
-  .error {
-    color: var(--gh-danger);
-    font-size: 12px;
-    margin: 0;
   }
 </style>

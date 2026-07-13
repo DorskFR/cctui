@@ -4,46 +4,33 @@ import {
   deserialize,
   type LayoutState,
   serialize,
-  setMode,
-  toggleFullWidth,
-  toggleMode,
+  setSidebarCollapsed,
+  toggleSidebar,
 } from "./layout-core";
 
 describe("layout defaults", () => {
-  it("defaults to master-detail panels, not full width", () => {
-    expect(defaultLayout()).toEqual({ mode: "panels", fullWidth: false });
+  it("defaults to an expanded sidebar", () => {
+    expect(defaultLayout()).toEqual({ sidebarCollapsed: false });
   });
 });
 
-describe("mode", () => {
-  it("toggles between panels and tabs", () => {
+describe("sidebar collapse", () => {
+  it("toggles the collapsed flag", () => {
     const a = defaultLayout();
-    const b = toggleMode(a);
-    expect(b.mode).toBe("tabs");
-    expect(toggleMode(b).mode).toBe("panels");
+    expect(toggleSidebar(a).sidebarCollapsed).toBe(true);
+    expect(toggleSidebar(toggleSidebar(a)).sidebarCollapsed).toBe(false);
   });
 
-  it("preserves fullWidth across mode toggles", () => {
-    const state: LayoutState = { mode: "panels", fullWidth: true };
-    expect(toggleMode(state).fullWidth).toBe(true);
-  });
-
-  it("sets an explicit mode", () => {
-    expect(setMode(defaultLayout(), "tabs").mode).toBe("tabs");
-  });
-});
-
-describe("fullWidth", () => {
-  it("toggles the master-pane collapse flag", () => {
-    const a = defaultLayout();
-    expect(toggleFullWidth(a).fullWidth).toBe(true);
-    expect(toggleFullWidth(toggleFullWidth(a)).fullWidth).toBe(false);
+  it("sets an explicit collapsed value", () => {
+    expect(setSidebarCollapsed(defaultLayout(), true).sidebarCollapsed).toBe(true);
+    const collapsed: LayoutState = { sidebarCollapsed: true };
+    expect(setSidebarCollapsed(collapsed, false).sidebarCollapsed).toBe(false);
   });
 });
 
 describe("serialization", () => {
   it("round-trips", () => {
-    const state: LayoutState = { mode: "tabs", fullWidth: true };
+    const state: LayoutState = { sidebarCollapsed: true };
     expect(deserialize(serialize(state))).toEqual(state);
   });
 

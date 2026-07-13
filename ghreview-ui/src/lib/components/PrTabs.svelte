@@ -43,7 +43,7 @@
     border: none;
     border-bottom: 2px solid transparent;
     color: var(--gh-fg-muted);
-    font-size: 13px;
+    font-size: var(--fs-sm);
     padding: var(--gh-space-2) var(--gh-space-2);
     cursor: pointer;
   }
@@ -56,7 +56,7 @@
     font-weight: 600;
   }
   .count {
-    font-size: 11px;
+    font-size: var(--fs-xs);
     font-family: var(--gh-mono);
     color: var(--gh-fg-muted);
     background: var(--gh-bg-inset);

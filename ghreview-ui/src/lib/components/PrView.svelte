@@ -442,7 +442,7 @@
     gap: var(--gh-space-3);
   }
   h1 {
-    font-size: 16px;
+    font-size: var(--fs-md);
     margin: 0;
     font-weight: 600;
   }
@@ -465,7 +465,7 @@
     text-transform: capitalize;
     border-radius: 999px;
     padding: 1px 10px;
-    font-size: 12px;
+    font-size: var(--fs-xs);
     color: white;
   }
   .state-open {
@@ -500,7 +500,7 @@
     flex-wrap: wrap;
   }
   .chip {
-    font-size: 12px;
+    font-size: var(--fs-xs);
     color: var(--gh-fg-muted);
     border: 1px solid var(--gh-border);
     border-radius: var(--gh-radius);
@@ -522,7 +522,7 @@
     overflow: hidden;
   }
   .renderer-toggle button {
-    font-size: 12px;
+    font-size: var(--fs-xs);
     padding: 1px 8px;
     background: transparent;
     color: var(--gh-fg-muted);

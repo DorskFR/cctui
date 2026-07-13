@@ -102,7 +102,7 @@
     align-items: center;
     gap: var(--gh-space-2);
     padding-right: var(--gh-space-3);
-    font-size: 12px;
+    font-size: var(--fs-xs);
   }
   .dir {
     color: var(--gh-fg);
@@ -120,7 +120,7 @@
     flex: none;
     color: var(--gh-fg-muted);
     font-family: var(--gh-mono);
-    font-size: 11px;
+    font-size: var(--fs-xs);
   }
   .file.on {
     background: var(--gh-bg-elev);

@@ -24,7 +24,7 @@
     font-weight: 600;
   }
   .detail {
-    font-size: 13px;
+    font-size: var(--fs-sm);
     max-width: 60ch;
   }
 </style>

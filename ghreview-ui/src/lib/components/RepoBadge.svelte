@@ -32,7 +32,7 @@
     gap: 5px;
     max-width: 100%;
     padding: 1px 8px;
-    font-size: 11px;
+    font-size: var(--fs-xs);
     line-height: 18px;
     border-radius: var(--gh-radius-sm);
     background: hsl(var(--h) 60% 50% / 0.14);

@@ -143,7 +143,7 @@
     justify-content: space-between;
     align-items: center;
     font-weight: 600;
-    font-size: 13px;
+    font-size: var(--fs-sm);
   }
   .ctrls {
     display: flex;
@@ -151,7 +151,7 @@
     font-weight: 400;
   }
   .ctrls button {
-    font-size: 11px;
+    font-size: var(--fs-xs);
     background: none;
     border: none;
     color: var(--gh-accent);
@@ -162,7 +162,7 @@
     color: var(--danger, #f85149);
   }
   .err {
-    font-size: 11px;
+    font-size: var(--fs-xs);
     color: var(--danger, #f85149);
     margin-top: var(--gh-space-1);
   }
