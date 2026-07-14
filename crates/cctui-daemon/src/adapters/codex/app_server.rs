@@ -1274,6 +1274,32 @@ impl AppServerConfig {
     }
 }
 
+/// The `-c` overrides that route codex's model provider through the cctui
+/// gateway (CCT-706). Codex does NOT honor `OPENAI_BASE_URL`/`OPENAI_API_KEY`
+/// from the environment alone: launched with only those env vars it POSTs to
+/// api.openai.com with no Authorization header and 401s. It reads them solely
+/// through a `model_providers` entry — `base_url` inlined here, the bearer via
+/// `env_key` from the launch env at request time. Mirrors the worker
+/// entrypoint's `phase_codex_config` (CCT-517), which fixed the same failure
+/// for k8s workers by writing this block into config.toml. Empty when either
+/// var is absent (an unbound session keeps codex's default provider).
+#[must_use]
+pub fn gateway_provider_overrides(
+    env: &std::collections::BTreeMap<String, String>,
+) -> Vec<(String, String)> {
+    let (Some(base_url), Some(_key)) = (env.get("OPENAI_BASE_URL"), env.get("OPENAI_API_KEY"))
+    else {
+        return Vec::new();
+    };
+    vec![
+        ("model_provider".to_owned(), "cctui".to_owned()),
+        ("model_providers.cctui.name".to_owned(), "cctui-gateway".to_owned()),
+        ("model_providers.cctui.base_url".to_owned(), base_url.clone()),
+        ("model_providers.cctui.env_key".to_owned(), "OPENAI_API_KEY".to_owned()),
+        ("model_providers.cctui.wire_api".to_owned(), "responses".to_owned()),
+    ]
+}
+
 #[derive(Debug, Clone)]
 enum SessionLaunch {
     Fresh {
@@ -1422,6 +1448,9 @@ impl CodexSession {
         let mut cmd = Command::new(&self.cfg.bin);
         cmd.arg("app-server");
         for (key, value) in self.cfg.config_overrides() {
+            cmd.arg("-c").arg(format!("{key}=\"{value}\""));
+        }
+        for (key, value) in gateway_provider_overrides(&self.env) {
             cmd.arg("-c").arg(format!("{key}=\"{value}\""));
         }
         // Forward the resolved launch env (CCT-461) — chiefly the gateway
@@ -2360,6 +2389,43 @@ async fn write_json<W: AsyncWriteExt + Unpin>(w: &mut W, v: &Value) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gateway_provider_overrides_route_via_gateway_when_env_bound() {
+        let env: std::collections::BTreeMap<String, String> = [
+            ("OPENAI_BASE_URL".to_owned(), "https://cctui.example/gateway/openai".to_owned()),
+            ("OPENAI_API_KEY".to_owned(), "cctui_s_tok".to_owned()),
+            ("KEEP".to_owned(), "1".to_owned()),
+        ]
+        .into_iter()
+        .collect();
+        let got = gateway_provider_overrides(&env);
+        assert_eq!(
+            got,
+            vec![
+                ("model_provider".to_owned(), "cctui".to_owned()),
+                ("model_providers.cctui.name".to_owned(), "cctui-gateway".to_owned()),
+                (
+                    "model_providers.cctui.base_url".to_owned(),
+                    "https://cctui.example/gateway/openai".to_owned()
+                ),
+                ("model_providers.cctui.env_key".to_owned(), "OPENAI_API_KEY".to_owned()),
+                ("model_providers.cctui.wire_api".to_owned(), "responses".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn gateway_provider_overrides_empty_without_full_gateway_env() {
+        let empty = std::collections::BTreeMap::new();
+        assert!(gateway_provider_overrides(&empty).is_empty());
+        let url_only: std::collections::BTreeMap<String, String> =
+            std::iter::once(("OPENAI_BASE_URL".to_owned(), "https://x".to_owned())).collect();
+        assert!(gateway_provider_overrides(&url_only).is_empty());
+        let key_only: std::collections::BTreeMap<String, String> =
+            std::iter::once(("OPENAI_API_KEY".to_owned(), "tok".to_owned())).collect();
+        assert!(gateway_provider_overrides(&key_only).is_empty());
+    }
 
     #[test]
     fn classifies_response() {
