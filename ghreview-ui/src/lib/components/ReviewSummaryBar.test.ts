@@ -18,7 +18,16 @@ describe("ReviewSummaryBar", () => {
     });
 
     const bar = document.querySelector(".bar.full-width");
+    const trigger = bar?.querySelector('[data-tsu="Popover"]');
     expect(bar).not.toBeNull();
-    expect(bar?.querySelector("button")?.textContent).toContain("Review 3");
+    expect(trigger?.textContent).toContain("Review 3");
+    expect(trigger?.classList.contains("trigger-sm")).toBe(true);
+    expect(trigger?.classList.contains("trigger-primary")).toBe(true);
+    expect(trigger?.classList.contains("trigger-tone-accent")).toBe(true);
+    expect(trigger?.classList.contains("trigger-block")).toBe(true);
+    expect(trigger?.querySelector("button")).toBeNull();
+    expect(bar?.querySelector('[data-action="publish-review"]')?.getAttribute("data-tsu")).toBe(
+      "Button",
+    );
   });
 });

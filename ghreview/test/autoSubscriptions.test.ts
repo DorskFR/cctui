@@ -247,6 +247,53 @@ guarded("auto-subscription handlers", () => {
     expect(drafts?.n).toBe(0);
   });
 
+  test("backfills missing files and commits when the parent pull is unchanged", async () => {
+    await upsertSubscription(db, "auto", "pull_request", "auto/repo#8", "user");
+    await db.sql`
+      INSERT INTO documents (account, kind, key, etag, payload)
+      VALUES ('auto', 'pull_request', 'auto/repo#8', 'W/"same"',
+              ${db.sql.json({ number: 8, state: "open", head: { sha: "head-8" } })})
+    `;
+    await db.sql`
+      INSERT INTO sync_state (account, kind, target, etag)
+      VALUES ('auto', 'pull_request', 'auto/repo#8', 'W/"same"')
+    `;
+    const calls: string[] = [];
+    const octokit: OctokitRequest = {
+      request: async (route) => {
+        calls.push(route);
+        if (route.endsWith("/files")) {
+          return {
+            status: 200,
+            headers: {},
+            data: [{ filename: "a.ts", additions: 1, deletions: 0 }],
+          };
+        }
+        if (route.endsWith("/commits")) {
+          return { status: 200, headers: {}, data: [{ sha: "head-8" }] };
+        }
+        throw { status: 304, response: { headers: { etag: 'W/"same"' } } };
+      },
+    };
+    const { ctx } = ctxFor(octokit);
+    await syncPull(ctx, {
+      id: "1",
+      account: "auto",
+      kind: "pull_request",
+      target: "auto/repo#8",
+      active: true,
+    });
+
+    const doc = await findDocument(db, "pull_request", "auto/repo#8", { account: "auto" });
+    expect(doc?.payload).toMatchObject({
+      files: [{ filename: "a.ts" }],
+      commits_list: [{ sha: "head-8" }],
+      cctui_enriched_head_sha: "head-8",
+    });
+    expect(calls).toContain("GET /repos/{owner}/{repo}/pulls/{pull_number}/files");
+    expect(calls).toContain("GET /repos/{owner}/{repo}/pulls/{pull_number}/commits");
+  });
+
   test("CCT-694: syncRepoPulls reconciles PRs that merged between polls", async () => {
     for (const n of [1, 2, 3]) {
       await upsertSubscription(db, "auto", "pull_request", `auto/repo#${n}`, "repo");

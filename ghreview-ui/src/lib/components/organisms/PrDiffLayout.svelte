@@ -20,7 +20,7 @@
 
 <div class="workspace">
   <ResizablePanel
-    side="right"
+    side="left"
     label="Changed files"
     width={280}
     minWidth={220}

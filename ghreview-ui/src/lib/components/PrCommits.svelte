@@ -1,15 +1,6 @@
 <script lang="ts">
-  import type { GithubPull } from "../api/types";
+  import type { GithubCommit, GithubPull } from "../api/types";
   import PrEmptyTab from "./PrEmptyTab.svelte";
-
-  interface CommitEntry {
-    sha?: string;
-    commit?: {
-      message?: string;
-      author?: { name?: string; date?: string } | null;
-    };
-    author?: { login?: string } | null;
-  }
 
   interface Props {
     pull: GithubPull;
@@ -18,21 +9,17 @@
   }
   let { pull, owner, repo }: Props = $props();
 
-  const commits = $derived(
-    ((pull as unknown as { commits_list?: unknown }).commits_list instanceof Array
-      ? (pull as unknown as { commits_list: CommitEntry[] }).commits_list
-      : []) satisfies CommitEntry[],
-  );
+  const commits = $derived(pull.commits_list ?? []);
 
   function shortSha(sha: string | undefined): string {
     return sha ? sha.slice(0, 7) : "";
   }
 
-  function subject(entry: CommitEntry): string {
+  function subject(entry: GithubCommit): string {
     return (entry.commit?.message ?? "").split("\n")[0];
   }
 
-  function authored(entry: CommitEntry): string {
+  function authored(entry: GithubCommit): string {
     const d = entry.commit?.author?.date;
     return d ? new Date(d).toLocaleDateString() : "";
   }

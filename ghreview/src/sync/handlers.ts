@@ -1,6 +1,7 @@
 import type { DbHandle } from "../db/client.ts";
 import {
   deleteDocument,
+  getDocument,
   listPullDocumentNumbers,
   touchDocument,
   upsertDocument,
@@ -276,16 +277,20 @@ export async function syncPull(ctx: SyncContext, sub: Subscription): Promise<Syn
     { etag: state?.etag ?? null },
   );
   const key = `${owner}/${repo}#${number}`;
+  const existing = await getDocument(ctx.db, sub.account, "pull_request", key);
+  const existingPayload =
+    existing?.payload && typeof existing.payload === "object"
+      ? (existing.payload as Record<string, unknown>)
+      : null;
   if (res.status === 200 && res.data) {
     const pr = res.data as { state?: string; merged?: boolean; merged_at?: string | null };
     if (pr.state === "closed" || pr.merged === true || pr.merged_at != null) {
       await removePull(ctx.db, sub.account, owner, repo, number);
     } else {
-      const files = await fetchPullFiles(ctx.account.octokit, owner, repo, number);
-      const commits = await fetchPullCommits(ctx.account.octokit, owner, repo, number);
-      const payload = enrichPullStats(res.data as Record<string, unknown>, files);
-      payload.files = files;
-      payload.commits_list = commits;
+      const payload = await enrichPullPayload(ctx.account.octokit, owner, repo, number, {
+        ...existingPayload,
+        ...(res.data as Record<string, unknown>),
+      });
       await upsertDocument(ctx.db, {
         account: sub.account,
         kind: "pull_request",
@@ -302,10 +307,60 @@ export async function syncPull(ctx: SyncContext, sub: Subscription): Promise<Syn
       );
     }
   } else if (res.status === 304) {
-    await touchDocument(ctx.db, sub.account, "pull_request", key);
+    if (existingPayload && needsPullEnrichment(existingPayload)) {
+      const payload = await enrichPullPayload(
+        ctx.account.octokit,
+        owner,
+        repo,
+        number,
+        existingPayload,
+      );
+      await upsertDocument(ctx.db, {
+        account: sub.account,
+        kind: "pull_request",
+        key,
+        etag: existing?.etag ?? res.etag,
+        payload,
+      });
+    } else {
+      await touchDocument(ctx.db, sub.account, "pull_request", key);
+    }
   }
   await persistState(ctx, sub, res);
   return outcome(res);
+}
+
+function pullHeadSha(payload: Record<string, unknown>): string | null {
+  const head = payload.head as { sha?: unknown } | undefined;
+  return typeof head?.sha === "string" ? head.sha : null;
+}
+
+function needsPullEnrichment(payload: Record<string, unknown>): boolean {
+  const headSha = pullHeadSha(payload);
+  return (
+    !Array.isArray(payload.files) ||
+    !Array.isArray(payload.commits_list) ||
+    (headSha !== null && payload.cctui_enriched_head_sha !== headSha)
+  );
+}
+
+async function enrichPullPayload(
+  octokit: Account["octokit"],
+  owner: string,
+  repo: string,
+  number: number,
+  payload: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  if (!needsPullEnrichment(payload)) return payload;
+  const [files, commits] = await Promise.all([
+    fetchPullFiles(octokit, owner, repo, number),
+    fetchPullCommits(octokit, owner, repo, number),
+  ]);
+  const enriched = enrichPullStats(payload, files);
+  enriched.files = files;
+  enriched.commits_list = commits;
+  enriched.cctui_enriched_head_sha = pullHeadSha(payload);
+  return enriched;
 }
 
 interface NotificationThread {

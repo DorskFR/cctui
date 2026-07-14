@@ -26,7 +26,7 @@ function pull(overrides: Partial<GithubPull> = {}): GithubPull {
 }
 
 async function openPanel(): Promise<void> {
-  const trigger = document.querySelector(".trigger") as HTMLElement;
+  const trigger = document.querySelector('[data-tsu="Popover"]') as HTMLElement;
   trigger.click();
   await tick();
   await tick();
@@ -47,7 +47,14 @@ describe("MergeButton", () => {
     });
 
     expect(document.querySelector(".merge-button.full-width")).not.toBeNull();
-    expect(document.querySelector(".merge-button .trigger")?.textContent).toBe("Merge");
+    const trigger = document.querySelector('.merge-button [data-tsu="Popover"]');
+    expect(trigger?.textContent).toBe("Merge");
+    expect(trigger?.classList.contains("trigger-sm")).toBe(true);
+    expect(trigger?.classList.contains("trigger-primary")).toBe(true);
+    expect(trigger?.classList.contains("trigger-tone-success")).toBe(true);
+    expect(trigger?.classList.contains("trigger-block")).toBe(true);
+    expect(trigger?.querySelector("button")).toBeNull();
+    expect(document.querySelector(".merge-button .trigger")).toBeNull();
   });
 
   it("confirms then merges with the selected method and pinned head SHA", async () => {
@@ -63,9 +70,9 @@ describe("MergeButton", () => {
     await openPanel();
     expect(document.body.textContent).toContain("Mergeable");
 
-    (document.querySelector(".primary") as HTMLButtonElement).click();
+    (document.querySelector('[data-action="begin-merge"]') as HTMLButtonElement).click();
     await tick();
-    (document.querySelector(".confirm .primary") as HTMLButtonElement).click();
+    (document.querySelector('[data-action="confirm-merge"]') as HTMLButtonElement).click();
     await tick();
     await tick();
 
@@ -84,9 +91,10 @@ describe("MergeButton", () => {
       target: document.body,
       props: { owner: "o", repo: "r", number: 42, account: "acct", pull: pull({ draft: true }) },
     });
-    await openPanel();
+    const trigger = document.querySelector('[data-tsu="Popover"]') as HTMLButtonElement;
+    expect(trigger.disabled).toBe(true);
     expect(document.body.textContent).toContain("draft");
-    expect(document.querySelector(".primary")).toBeNull();
+    expect(document.querySelector('[data-action="begin-merge"]')).toBeNull();
     expect(spy).not.toHaveBeenCalled();
   });
 
@@ -98,9 +106,9 @@ describe("MergeButton", () => {
       props: { owner: "o", repo: "r", number: 42, account: "acct", pull: pull(), onmerged },
     });
     await openPanel();
-    (document.querySelector(".primary") as HTMLButtonElement).click();
+    (document.querySelector('[data-action="begin-merge"]') as HTMLButtonElement).click();
     await tick();
-    (document.querySelector(".confirm .primary") as HTMLButtonElement).click();
+    (document.querySelector('[data-action="confirm-merge"]') as HTMLButtonElement).click();
     await tick();
     await tick();
     expect(document.querySelector(".err")?.textContent).toContain("not mergeable");
@@ -120,9 +128,9 @@ describe("MergeButton", () => {
       props: { owner: "o", repo: "r", number: 42, account: "acct", pull: pull(), onmerged },
     });
     await openPanel();
-    (document.querySelector(".primary") as HTMLButtonElement).click();
+    (document.querySelector('[data-action="begin-merge"]') as HTMLButtonElement).click();
     await tick();
-    (document.querySelector(".confirm .primary") as HTMLButtonElement).click();
+    (document.querySelector('[data-action="confirm-merge"]') as HTMLButtonElement).click();
     await tick();
     await tick();
 

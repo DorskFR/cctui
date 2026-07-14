@@ -1,5 +1,5 @@
 import type { OpenAPIHono } from "@hono/zod-openapi";
-import { upsertDocument } from "../db/documents.ts";
+import { getDocument, upsertDocument } from "../db/documents.ts";
 import type { AppDeps } from "../deps.ts";
 import { verifySignature } from "../github/webhook.ts";
 
@@ -10,6 +10,12 @@ interface PullPayload {
   pull_request?: unknown;
 }
 
+export function mergePullWebhookPayload(prior: unknown, update: unknown): Record<string, unknown> {
+  const oldFields = prior && typeof prior === "object" ? (prior as Record<string, unknown>) : {};
+  const newFields = update && typeof update === "object" ? (update as Record<string, unknown>) : {};
+  return { ...oldFields, ...newFields };
+}
+
 export function registerWebhook(app: OpenAPIHono, deps: AppDeps = {}) {
   app.openAPIRegistry.registerPath({
     method: "post",
@@ -18,7 +24,7 @@ export function registerWebhook(app: OpenAPIHono, deps: AppDeps = {}) {
     description:
       "Optional push path for org repos that can install a webhook. Verifies " +
       "X-Hub-Signature-256 (HMAC-SHA256 of the raw body with the shared secret) and " +
-      "upserts the payload exactly like a poll result. Polling remains the universal path.",
+      "merges the payload into the synced pull request. Polling remains the universal path.",
     tags: ["events"],
     responses: {
       202: { description: "Accepted and stored" },
@@ -43,12 +49,14 @@ export function registerWebhook(app: OpenAPIHono, deps: AppDeps = {}) {
       const repo = body.repository?.name;
       const number = body.number;
       if (owner && repo && number) {
+        const key = `${owner}/${repo}#${number}`;
+        const existing = await getDocument(deps.db, owner, "pull_request", key);
         await upsertDocument(deps.db, {
           account: owner,
           kind: "pull_request",
-          key: `${owner}/${repo}#${number}`,
-          etag: null,
-          payload: body.pull_request,
+          key,
+          etag: existing?.etag ?? null,
+          payload: mergePullWebhookPayload(existing?.payload, body.pull_request),
         });
       }
     }
