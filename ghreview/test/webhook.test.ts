@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createApp } from "../src/app.ts";
 import { signPayload, verifySignature } from "../src/github/webhook.ts";
+import { mergePullWebhookPayload } from "../src/routes/webhook.ts";
 
 const SECRET = "s3cr3t";
 
@@ -51,5 +52,26 @@ describe("POST /v1/webhook", () => {
     const bare = createApp();
     const res = await bare.request("/v1/webhook", { method: "POST", body: "{}" });
     expect(res.status).toBe(503);
+  });
+});
+
+describe("mergePullWebhookPayload", () => {
+  test("retains synchronized files and commits while applying live PR fields", () => {
+    const merged = mergePullWebhookPayload(
+      {
+        title: "old",
+        files: [{ filename: "a.ts" }],
+        commits_list: [{ sha: "abc" }],
+        cctui_enriched_head_sha: "abc",
+      },
+      { title: "new", state: "open" },
+    );
+    expect(merged).toMatchObject({
+      title: "new",
+      state: "open",
+      files: [{ filename: "a.ts" }],
+      commits_list: [{ sha: "abc" }],
+      cctui_enriched_head_sha: "abc",
+    });
   });
 });

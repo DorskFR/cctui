@@ -17,7 +17,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.7.182"
+version = "0.7.183"
 edition = "2024"
 license = "MIT"
 authors = ["DorskFR"]

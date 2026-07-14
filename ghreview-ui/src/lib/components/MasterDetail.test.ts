@@ -60,6 +60,8 @@ describe("MasterDetail", () => {
     const separator = layout.querySelector('[role="separator"]');
 
     expect(layout).not.toBeNull();
+    expect(layout.classList.contains("left")).toBe(true);
+    expect(layout.classList.contains("right")).toBe(false);
     expect(layout.classList.contains("collapsed")).toBe(false);
     expect(layout.getAttribute("style")).toContain("--panel-width: 320px");
     expect(separator?.getAttribute("aria-valuenow")).toBe("320");

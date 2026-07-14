@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Popover } from "@dorsk/tsumikit";
+  import { Button, Popover } from "@dorsk/tsumikit";
   import { api } from "../api/client";
   import { keys, queryClient } from "../api/queries";
   import type { GithubPull, MergeMethod } from "../api/types";
@@ -62,14 +62,17 @@
     <Popover
       label="Merge pull request"
       placement="bottom-end"
+      size="sm"
+      variant="primary"
+      tone="success"
+      block={fullWidth}
+      disabled={pull.draft}
       onclose={() => {
         confirming = false;
         error = null;
       }}
     >
-      {#snippet trigger()}
-        <span class="trigger" class:disabled={pull.draft}>Merge</span>
-      {/snippet}
+      {#snippet trigger()}Merge{/snippet}
       <div class="panel">
         {#if pull.draft}
           <p class="muted">This pull request is a draft and cannot be merged.</p>
@@ -92,19 +95,38 @@
             <div class="confirm">
               <span>Merge #{number} with {method}?</span>
               <div class="actions">
-                <button type="button" class="ghost" disabled={pending} onclick={() => (confirming = false)}>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  data-action="cancel-merge"
+                  disabled={pending}
+                  onclick={() => (confirming = false)}
+                >
                   Cancel
-                </button>
-                <button type="button" class="primary" disabled={pending} onclick={merge}>
+                </Button>
+                <Button
+                  size="sm"
+                  variant="primary"
+                  tone="success"
+                  data-action="confirm-merge"
+                  disabled={pending}
+                  onclick={merge}
+                >
                   {pending ? "Merging…" : "Confirm merge"}
-                </button>
+                </Button>
               </div>
             </div>
           {:else}
             <div class="actions">
-              <button type="button" class="primary" onclick={() => (confirming = true)}>
+              <Button
+                size="sm"
+                variant="primary"
+                tone="success"
+                data-action="begin-merge"
+                onclick={() => (confirming = true)}
+              >
                 Merge pull request
-              </button>
+              </Button>
             </div>
           {/if}
         {/if}
@@ -114,19 +136,6 @@
 {/if}
 
 <style>
-  .trigger {
-    font-size: var(--fs-xs);
-    background: var(--gh-success);
-    color: white;
-    border-radius: var(--gh-radius);
-    padding: 2px 10px;
-    cursor: pointer;
-  }
-  .trigger.disabled {
-    background: var(--gh-bg-inset);
-    color: var(--gh-fg-muted);
-    cursor: default;
-  }
   .panel {
     display: flex;
     flex-direction: column;
@@ -175,28 +184,6 @@
     justify-content: flex-end;
     gap: var(--gh-space-2);
   }
-  .primary {
-    font-size: var(--fs-xs);
-    background: var(--gh-success);
-    color: white;
-    border: 1px solid var(--gh-success);
-    border-radius: var(--gh-radius-sm);
-    padding: 3px 12px;
-    cursor: pointer;
-  }
-  .primary:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
-  .ghost {
-    font-size: var(--fs-xs);
-    background: transparent;
-    color: var(--gh-fg);
-    border: 1px solid var(--gh-border);
-    border-radius: var(--gh-radius-sm);
-    padding: 3px 12px;
-    cursor: pointer;
-  }
   .muted {
     color: var(--gh-fg-muted);
     font-size: var(--fs-xs);
@@ -211,14 +198,6 @@
     .merge-button.full-width {
       display: grid;
       width: 100%;
-    }
-    .merge-button.full-width .trigger {
-      display: flex;
-      width: 100%;
-      min-height: 2.5rem;
-      box-sizing: border-box;
-      align-items: center;
-      justify-content: center;
     }
   }
 </style>

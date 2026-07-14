@@ -64,18 +64,25 @@ describe("normalizeTimelineEvent", () => {
     expect(ev?.detail?.author_name).toBe("Ada");
   });
 
-  test("reviewed: uppercases state, excerpts body, reads user + submitted_at", () => {
+  test("reviewed: preserves identity, full body, reactions, and reads user + submitted_at", () => {
+    const fullBody = `please fix\n\n${"detail ".repeat(80)}`;
     const ev = normalizeTimelineEvent({
+      id: 91,
       event: "reviewed",
       state: "changes_requested",
-      body: "please fix",
+      body: fullBody,
       user: { login: "bob", avatar_url: "b" },
       submitted_at: "2026-07-02T00:00:00Z",
+      html_url: "https://github.com/o/r/pull/42#pullrequestreview-91",
+      reactions: { heart: 2, total_count: 2 },
     });
+    expect(ev?.id).toBe("91");
     expect(ev?.actor).toEqual({ login: "bob", avatar_url: "b" });
     expect(ev?.created_at).toBe("2026-07-02T00:00:00Z");
     expect(ev?.detail?.state).toBe("CHANGES_REQUESTED");
-    expect(ev?.detail?.body).toBe("please fix");
+    expect(ev?.detail?.body).toBe(fullBody.trim());
+    expect(ev?.html_url).toContain("pullrequestreview-91");
+    expect(ev?.reactions).toEqual({ heart: 2, total_count: 2 });
   });
 
   test("labeled: carries label name + color", () => {

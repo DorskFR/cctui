@@ -43,13 +43,14 @@ afterEach(async () => {
 });
 
 describe("PrDiffLayout", () => {
-  it("places the changed-files tree in the configured right panel", async () => {
+  it("places the changed-files tree in the configured left panel", async () => {
     await renderLayout();
 
     const layout = document.querySelector('[data-tsu="ResizablePanel"]') as HTMLElement;
     const separator = layout.querySelector('[role="separator"]');
 
-    expect(layout.classList.contains("right")).toBe(true);
+    expect(layout.classList.contains("left")).toBe(true);
+    expect(layout.classList.contains("right")).toBe(false);
     expect(layout.classList.contains("collapsed")).toBe(false);
     expect(layout.getAttribute("style")).toContain("--panel-width: 280px");
     expect(layout.querySelector('aside[aria-label="Changed files"]')).not.toBeNull();
@@ -62,7 +63,7 @@ describe("PrDiffLayout", () => {
     expect(localStorage.getItem(WIDTH_KEY)).toBeNull();
   });
 
-  it("restores collapse and width, then persists right-side keyboard resizing", async () => {
+  it("restores collapse and width, then persists left-side keyboard resizing", async () => {
     localStorage.setItem(WIDTH_KEY, "400");
     localStorage.setItem(`${WIDTH_KEY}:collapsed`, "true");
     await renderLayout();
@@ -81,12 +82,12 @@ describe("PrDiffLayout", () => {
     expect(localStorage.getItem(`${WIDTH_KEY}:collapsed`)).toBe("false");
 
     const separator = layout.querySelector('[role="separator"]') as HTMLElement;
-    separator.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+    separator.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
     await tick();
     expect(layout.getAttribute("style")).toContain("--panel-width: 424px");
     expect(localStorage.getItem(WIDTH_KEY)).toBe("424");
 
-    separator.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    separator.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
     await tick();
     expect(layout.getAttribute("style")).toContain("--panel-width: 400px");
 
@@ -98,7 +99,7 @@ describe("PrDiffLayout", () => {
     expect(localStorage.getItem(`${WIDTH_KEY}:collapsed`)).toBe("true");
   });
 
-  it("resizes from the right edge with pointer input and persists on release", async () => {
+  it("resizes from the left panel edge with pointer input and persists on release", async () => {
     await renderLayout();
 
     const layout = document.querySelector('[data-tsu="ResizablePanel"]') as HTMLElement;
@@ -126,14 +127,13 @@ describe("PrDiffLayout", () => {
       return event;
     }
 
-    separator.dispatchEvent(pointer("pointerdown", 520));
-    separator.dispatchEvent(pointer("pointermove", 320));
-    await tick();
-    expect(layout.getAttribute("style")).toContain("--panel-width: 480px");
+    separator.dispatchEvent(pointer("pointerdown", 280));
+    separator.dispatchEvent(pointer("pointermove", 480));
     expect(localStorage.getItem(WIDTH_KEY)).toBeNull();
 
-    separator.dispatchEvent(pointer("pointerup", 320));
+    separator.dispatchEvent(pointer("pointerup", 480));
     await tick();
+    expect(layout.getAttribute("style")).toContain("--panel-width: 480px");
     expect(localStorage.getItem(WIDTH_KEY)).toBe("480");
     expect(separator.setPointerCapture).toHaveBeenCalledWith(7);
     expect(separator.releasePointerCapture).toHaveBeenCalledWith(7);

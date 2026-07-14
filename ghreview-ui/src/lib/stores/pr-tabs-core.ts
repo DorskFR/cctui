@@ -1,26 +1,16 @@
-export type PrContentTab =
-  | "description"
-  | "conversation"
-  | "commits"
-  | "checks"
-  | "activity"
-  | "diff";
+export type PrContentTab = "description" | "comments" | "commits" | "diff";
 
 export const PR_CONTENT_TABS: readonly PrContentTab[] = [
   "description",
-  "conversation",
   "commits",
-  "checks",
-  "activity",
+  "comments",
   "diff",
 ] as const;
 
 export const PR_CONTENT_TAB_LABELS: Record<PrContentTab, string> = {
   description: "Description",
-  conversation: "Conversation",
   commits: "Commits",
-  checks: "Checks",
-  activity: "Activity",
+  comments: "Comments",
   diff: "Diff",
 };
 
@@ -37,5 +27,7 @@ export function prTabStorageKey(owner: string, repo: string, number: number): st
 }
 
 export function deserializePrTab(raw: string | null): PrContentTab {
+  if (raw === "conversation" || raw === "activity") return "comments";
+  if (raw === "checks") return "diff";
   return isPrContentTab(raw) ? raw : defaultPrTab();
 }

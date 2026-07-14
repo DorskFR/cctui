@@ -14,6 +14,11 @@
   }
   let { body, owner, repo, number, account, reactions = null }: Props = $props();
   const text = $derived((body ?? "").trim());
+  const markdownBaseUrl = $derived(
+    owner && repo
+      ? `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/`
+      : undefined,
+  );
 
   const canReact = $derived(
     owner !== undefined && repo !== undefined && number !== undefined && account !== undefined,
@@ -22,7 +27,7 @@
 
 <div class="prdesc">
   {#if text}
-    <div class="body markdown">{@html renderMarkdown(text)}</div>
+    <div class="body markdown">{@html renderMarkdown(text, { baseUrl: markdownBaseUrl })}</div>
   {:else}
     <div class="msg">No description provided.</div>
   {/if}
