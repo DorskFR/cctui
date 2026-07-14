@@ -66,13 +66,7 @@
 	{/if}
 
 	{#if native}
-		<UsageBars
-			id={p.id}
-			provider={p.provider}
-			enabled={usageEnabled}
-			cap5h={p.soft_limit_5h_pct}
-			cap7d={p.soft_limit_7d_pct}
-		/>
+		<UsageBars id={p.id} provider={p.provider} enabled={usageEnabled} softLimits={p.soft_limits} />
 	{/if}
 
 	<dl class="stats">

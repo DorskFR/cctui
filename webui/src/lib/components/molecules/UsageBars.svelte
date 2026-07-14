@@ -1,33 +1,26 @@
 <script lang="ts">
+	import type { SoftLimitConfig } from '$lib/queries';
 	import { useAccountUsage } from '$lib/queries';
-	import { Progress, Text, Timestamp } from '@dorsk/tsumikit';
+	import { Text } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
+	import SoftLimit from '$lib/components/molecules/SoftLimit.svelte';
+	import { mergeUsageWindows } from '$lib/components/molecules/usage-windows';
 
-	// Severity breakpoints on window utilization (%). Below WARN → green ("ok"),
-	// WARN–HOT → amber ("warm"), at/above HOT → red ("hot"). Named so the bar
-	// colour and the percent text stay in lockstep (CCT-324).
-	const WARN_PCT = 70;
-	const HOT_PCT = 90;
-
-	// Per-account subscription-usage shown as horizontal bars (CCT-345), styled
-	// after the menubar "Agent Usage" popover: one row per window (5h / 7d) with a
-	// label, a colored fill, and a right-aligned percent + reset hint. Reuses the
-	// same lazy/slow-refresh fetch as UsageChip; renders nothing for providers
-	// without a usage API (Codex) or while there's no data.
+	// Per-account subscription usage shown as horizontal bars (CCT-345/CCT-688):
+	// one SoftLimit row per normalized usage window, plus a separate section for
+	// caps configured on windows the latest response didn't report. Reuses the
+	// lazy/slow-refresh fetch; renders nothing for providers without a usage API.
 	let {
 		id,
 		provider,
 		enabled = true,
-		cap5h = null,
-		cap7d = null
+		softLimits = null
 	}: {
 		id: string;
 		provider: string;
 		enabled?: boolean;
-		/** Per-account soft-limit caps (CCT-411), drawn as a marker on the matching
-		 *  bar so the configured ceiling is visible against live utilization. */
-		cap5h?: number | null;
-		cap7d?: number | null;
+		/** Configured caps (CCT-688), merged onto the matching window by key. */
+		softLimits?: Record<string, SoftLimitConfig> | null;
 	} = $props();
 
 	const active = $derived(enabled && (provider === 'anthropic' || provider === 'openai'));
@@ -36,57 +29,28 @@
 		() => active
 	);
 
-	const usage = $derived($q.data?.usage ?? null);
-
-	type Win = { utilization?: number | null; resets_at?: string | null } | null | undefined;
-	function row(label: string, w: Win, cap: number | null = null) {
-		const u = w?.utilization;
-		if (u === null || u === undefined) return null;
-		const pct = Math.max(0, Math.min(100, Math.round(u)));
-		const tone = pct >= HOT_PCT ? 'hot' : pct >= WARN_PCT ? 'warm' : 'ok';
-		// A configured soft-limit cap (CCT-411) becomes a marker on the bar; an
-		// out-of-range value is ignored.
-		const capPct = cap != null && cap >= 0 && cap <= 100 ? cap : null;
-		return { label, pct, tone, resets: w?.resets_at ?? null, capPct };
-	}
-
-	// Map the severity name to the shared tsumikit tone vocabulary used by both
-	// Text (percent label) and Progress (fill), so they stay in lockstep.
-	const toneFor = (t: string) => (t === 'hot' ? 'danger' : t === 'warm' ? 'warn' : 'success');
-
-	const bars = $derived(
-		[
-			row('5h', usage?.five_hour, cap5h),
-			row('7d', usage?.seven_day, cap7d),
-			row('7d Opus', usage?.seven_day_opus),
-			row('7d Sonnet', usage?.seven_day_sonnet)
-		].filter((r): r is NonNullable<typeof r> => r !== null)
-	);
+	const rows = $derived(mergeUsageWindows($q.data?.windows ?? [], softLimits));
+	const hasRows = $derived(rows.observed.length > 0 || rows.unobserved.length > 0);
 </script>
 
-{#if active && bars.length}
-	<div class="bars">
-		{#each bars as b (b.label)}
-			<div class="bar-row">
-				<Text size="xs" tone="muted" numeric class="bar-label">{b.label}</Text>
-				<Text size="xs" numeric tone={toneFor(b.tone)} class="bar-pct">
-					{b.pct}%{#if b.resets}<Text tone="faint" class="bar-reset"> · resets <Timestamp value={b.resets} mode="relative" tone="faint" /></Text>{/if}
-				</Text>
-				<div class="track-wrap">
-					<Progress value={b.pct} label={m.sessions_usage_bar_aria({ label: b.label })} tone={toneFor(b.tone)} class="bar-track" />
-					{#if b.capPct != null}
-						<span
-							class="cap-marker"
-							style={`left: ${b.capPct}%`}
-							title={m.sessions_usage_soft_limit({ pct: b.capPct })}
-						></span>
-					{/if}
-				</div>
-			</div>
-		{/each}
-	</div>
-{:else if active && $q.isLoading}
+{#if !active}
+	<!-- provider without a usage API: nothing to show -->
+{:else if $q.isLoading}
 	<span class="spin"></span>
+{:else if $q.isError}
+	<Text tone="danger" size="xs">{m.sessions_usage_error()}</Text>
+{:else if hasRows}
+	<div class="bars">
+		{#each rows.observed as r (r.key)}
+			<SoftLimit label={r.label} utilization={r.utilization} resets={r.resets} cap={r.cap} bypass={r.bypass} />
+		{/each}
+		{#if rows.unobserved.length}
+			<Text size="xs" tone="faint">{m.sessions_usage_configured_unreported()}</Text>
+			{#each rows.unobserved as r (r.key)}
+				<SoftLimit label={r.label} utilization={null} cap={r.cap} bypass={r.bypass} observed={false} />
+			{/each}
+		{/if}
+	</div>
 {:else}
 	<Text tone="faint">{m.sessions_no_usage_data()}</Text>
 {/if}
@@ -96,35 +60,5 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-2);
-	}
-	.bar-row {
-		display: grid;
-		grid-template-columns: auto 1fr;
-		align-items: baseline;
-		column-gap: var(--sp-2);
-	}
-	/* Both are rendered by tsumikit atoms; the typography/colour now comes from
-	   Text's `numeric`/`tone` and Progress's `tone`, so only the residual grid
-	   placement is reached in here — scoped under .bar-row so it can't leak. */
-	.bar-row :global(.bar-pct) {
-		justify-self: end;
-	}
-	.track-wrap {
-		grid-column: 1 / -1;
-		position: relative;
-		margin-top: 0.25rem;
-	}
-	/* Soft-limit cap marker (CCT-411): a thin vertical line at the configured % so
-	   the ceiling reads against the live fill. */
-	.cap-marker {
-		position: absolute;
-		top: -1px;
-		bottom: -1px;
-		width: 2px;
-		transform: translateX(-1px);
-		background: var(--text-muted, currentColor);
-		opacity: 0.8;
-		pointer-events: none;
-		border-radius: 1px;
 	}
 </style>

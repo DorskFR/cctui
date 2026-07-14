@@ -138,8 +138,7 @@
 				<UsageBars
 					id={primaryProvider(selected)?.id ?? selected.id}
 					provider={providerOf(selected)}
-					cap5h={primaryProvider(selected)?.soft_limit_5h_pct ?? null}
-					cap7d={primaryProvider(selected)?.soft_limit_7d_pct ?? null}
+					softLimits={primaryProvider(selected)?.soft_limits ?? null}
 				/>
 			{/if}
 		</div>

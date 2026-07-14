@@ -116,13 +116,12 @@ export interface AccountProvider {
   total_tokens: number;
   /** Rough USD cost estimate from tokens (per-provider blended rate, CCT-273). */
   est_cost_usd: number;
-  /** Per-provider soft limits on cctui's own share of the usage windows (CCT-411).
-   *  null on a window ⇒ no cap. The per-window bypass (CCT-484) ignores that
-   *  window's cap when it resets within that many minutes. */
-  soft_limit_5h_pct: number | null;
-  soft_limit_7d_pct: number | null;
-  soft_limit_bypass_5h_minutes: number | null;
-  soft_limit_bypass_7d_minutes: number | null;
+  /** Per-provider soft limits on cctui's own share of the usage windows
+   *  (CCT-411/CCT-688), keyed by canonical window id (`session` | `weekly_all` |
+   *  `weekly_model:<slug>`). Absent key ⇒ no config for that window; null map ⇒
+   *  none at all. The per-window bypass (CCT-484) ignores that window's cap when
+   *  it resets within that many minutes. */
+  soft_limits: Record<string, SoftLimitConfig> | null;
   /** Credential health (CCT-512): true once the gateway saw the upstream provider
    *  reject this credential; cleared on the next successful upstream call. UI
    *  shows a "reauthenticate" badge + button when set. */
@@ -161,27 +160,40 @@ export interface OAuthAccount {
  *  until they grow a provider dimension. */
 export const primaryProvider = (a: OAuthAccount): AccountProvider | undefined => a.providers[0];
 
-/** One usage window from Anthropic's free OAuth usage API (CCT-306):
- *  `utilization` is a 0–100 percentage of the window consumed, `resets_at` an
- *  ISO timestamp. */
-export interface UsageWindow {
-  utilization: number | null;
-  resets_at: string | null;
+/** One window's soft-limit config (CCT-688). Absent field ⇒ unset for that
+ *  window: no `cap_pct` ⇒ no cap; no `bypass_minutes` ⇒ no bypass. */
+export interface SoftLimitConfig {
+  cap_pct?: number | null;
+  bypass_minutes?: number | null;
 }
 
-/** Per-account subscription usage (CCT-306). `usage` is the raw upstream payload
- *  (5h session + 7d weekly windows) for anthropic accounts, or `null` when the
- *  provider has no usage API (Codex) or the account has no active windows — the
- *  UI hides the chip in that case. `age_secs` reflects the slow-refresh cache. */
+/** One normalized, provider-agnostic usage window (CCT-688). `key` is the
+ *  canonical id (`session` | `weekly_all` | `weekly_model:<slug>`), `label` the
+ *  server-supplied display string, `utilization` a 0–100 percent (may exceed). */
+export interface UsageWindow {
+  key: string;
+  kind: string;
+  label: string;
+  utilization: number;
+  resets_at?: string | null;
+  model_id?: string | null;
+  model_display_name?: string | null;
+}
+
+/** Per-account subscription usage (CCT-306/CCT-688). `windows` is the normalized
+ *  collection the UI renders (may be empty — distinct from a fetch error and from
+ *  a provider with no usage API). `usage` keeps the raw upstream payload for the
+ *  legacy chip. `age_secs` reflects the slow-refresh cache. */
 export interface AccountUsage {
   account_id: string;
   provider: string;
   usage: {
-    five_hour?: UsageWindow | null;
-    seven_day?: UsageWindow | null;
-    seven_day_opus?: UsageWindow | null;
-    seven_day_sonnet?: UsageWindow | null;
+    five_hour?: { utilization?: number | null; resets_at?: string | null } | null;
+    seven_day?: { utilization?: number | null; resets_at?: string | null } | null;
+    seven_day_opus?: { utilization?: number | null; resets_at?: string | null } | null;
+    seven_day_sonnet?: { utilization?: number | null; resets_at?: string | null } | null;
   } | null;
+  windows: UsageWindow[];
   age_secs: number;
 }
 
@@ -206,12 +218,8 @@ export interface CreateAccount {
   auth_scheme?: string;
   /** Owner — required when authenticated with the admin token (CCT-251). */
   user_id?: string;
-  /** Per-account soft limits (CCT-411); omit/null for no cap. Bypass is
-   *  per-window (CCT-484). */
-  soft_limit_5h_pct?: number | null;
-  soft_limit_7d_pct?: number | null;
-  soft_limit_bypass_5h_minutes?: number | null;
-  soft_limit_bypass_7d_minutes?: number | null;
+  /** Per-account soft limits keyed by canonical window id (CCT-688). */
+  soft_limits?: Record<string, SoftLimitConfig>;
 }
 
 /** Provider create/attach payload (CCT-558): `POST /accounts/{id}/providers`.
@@ -232,10 +240,7 @@ export interface CreateProvider {
   model_aliases?: Record<string, string>;
   /** `bearer` | `api_key` for a compatible endpoint (CCT-399). */
   auth_scheme?: string;
-  soft_limit_5h_pct?: number | null;
-  soft_limit_7d_pct?: number | null;
-  soft_limit_bypass_5h_minutes?: number | null;
-  soft_limit_bypass_7d_minutes?: number | null;
+  soft_limits?: Record<string, SoftLimitConfig>;
   settings_json?: Record<string, unknown>;
 }
 
@@ -266,15 +271,10 @@ export interface UpdateProvider {
   model_aliases?: Record<string, string>;
   /** New static credential; omit/blank to keep the stored one. */
   access_token?: string;
-  /** Replacement soft-limit config (CCT-411). Provided → replaces every
-   *  column (a null field clears it); absent → unchanged. Bypass is
-   *  per-window (CCT-484). */
-  soft_limits?: {
-    soft_limit_5h_pct: number | null;
-    soft_limit_7d_pct: number | null;
-    soft_limit_bypass_5h_minutes: number | null;
-    soft_limit_bypass_7d_minutes: number | null;
-  };
+  /** Replacement soft-limit map (CCT-688), keyed by canonical window id.
+   *  Provided → REPLACES the whole stored map ({} clears all, a dropped key
+   *  removes that window's config); absent → unchanged. */
+  soft_limits?: Record<string, SoftLimitConfig>;
   /** Replacement validated settings blob (CCT-538/CCT-541). Provided → replaces
    *  the stored settings wholesale (an empty object clears it); absent →
    *  unchanged. Validated against the SAFE/CARE allowlist before persist. */

@@ -29,6 +29,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use cctui_proto::adapter::{AdapterEvent, EndReason, SessionMeta};
+use cctui_proto::codex_catalog::{CodexModel, CodexModelCatalog};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
@@ -37,6 +38,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::contract;
+use super::model_list;
 
 /// Outbound request id seeds. The handshake uses fixed ids so the driver
 /// can recognise the responses it is waiting for; everything after is
@@ -1207,6 +1209,10 @@ pub struct AppServerConfig {
     /// Model passed via `-c model="…"` (CCT-274). `None` keeps the codex
     /// default. Set per-spawn from the spawn request.
     pub model: Option<String>,
+    /// Whether to refresh the codex model catalog on session start (CCT-702)
+    /// by issuing `model/list` over this session's authenticated app-server
+    /// connection. `false` (`model_catalog = false`) disables the refresh.
+    pub model_catalog: bool,
 }
 
 impl Default for AppServerConfig {
@@ -1217,6 +1223,7 @@ impl Default for AppServerConfig {
             sandbox_mode: "workspace-write".to_string(),
             reasoning_effort: None,
             model: None,
+            model_catalog: true,
         }
     }
 }
@@ -1262,6 +1269,7 @@ impl AppServerConfig {
         if let Some(m) = v.get("model").and_then(Value::as_str) {
             cfg.model = Some(m.to_string());
         }
+        cfg.model_catalog = model_list::catalog_enabled(v);
         cfg
     }
 }
@@ -1496,6 +1504,10 @@ impl CodexSession {
         let mut override_model: Option<String> = None;
         let mut override_effort: Option<String> = None;
         let mut steer_texts: HashMap<i64, String> = HashMap::new();
+        // CCT-702: `model/list` pages accumulated over this session's
+        // authenticated connection; the counter bounds `nextCursor` following.
+        let mut model_catalog: Vec<CodexModel> = Vec::new();
+        let mut model_catalog_pages: usize = 0;
         let mut sweep = tokio::time::interval(Duration::from_secs(1));
         sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
@@ -1764,6 +1776,28 @@ impl CodexSession {
                             self.live.lock().await.insert(local_id.clone(), cmd_tx.clone());
                             registered = true;
                             ack.ok().await;
+                            // CCT-702: refresh the account/machine model catalog
+                            // over THIS authenticated connection (the gateway
+                            // credential is in env), so gateway-only machines get
+                            // the current remote list instead of a stale
+                            // unauthenticated fallback. Best-effort: a failure is
+                            // logged, never fatal to the session.
+                            if self.cfg.model_catalog {
+                                pending_rpcs.insert(
+                                    next_id,
+                                    "model/list",
+                                    None,
+                                    Instant::now() + RPC_TIMEOUT,
+                                );
+                                if let Err(e) =
+                                    write_json(&mut stdin, &model_list::model_list_req(next_id, None))
+                                        .await
+                                {
+                                    tracing::debug!(%e, "codex: model/list write failed");
+                                    pending_rpcs.resolve(next_id, &json!({}));
+                                }
+                                next_id += 1;
+                            }
                             // Surface the configured model + reasoning effort so
                             // the session list shows them (claude gets this for
                             // free via state.json; codex has no equivalent feed).
@@ -1930,6 +1964,43 @@ impl CodexSession {
                             if let Err(err) = outcome {
                                 tracing::warn!(%err, "codex: turn/interrupt failed");
                             }
+                        }
+                        ("model/list", Ok(result)) => {
+                            model_catalog.extend(model_list::parse_model_list(&result));
+                            model_catalog_pages += 1;
+                            match model_list::page_step(model_catalog_pages, &result) {
+                                model_list::PageStep::Next { cursor } => {
+                                    pending_rpcs.insert(
+                                        next_id,
+                                        "model/list",
+                                        None,
+                                        Instant::now() + RPC_TIMEOUT,
+                                    );
+                                    if let Err(e) = write_json(
+                                        &mut stdin,
+                                        &model_list::model_list_req(next_id, Some(&cursor)),
+                                    )
+                                    .await
+                                    {
+                                        tracing::debug!(%e, "codex: model/list page write failed");
+                                        pending_rpcs.resolve(next_id, &json!({}));
+                                    }
+                                    next_id += 1;
+                                }
+                                model_list::PageStep::Done => {
+                                    let catalog = CodexModelCatalog {
+                                        models: std::mem::take(&mut model_catalog),
+                                    };
+                                    self.events
+                                        .send(AdapterEvent::CodexModels { catalog })
+                                        .await
+                                        .ok();
+                                }
+                            }
+                        }
+                        ("model/list", Err(err)) => {
+                            tracing::debug!(%err, "codex: model/list refresh failed");
+                            model_catalog.clear();
                         }
                         ("turn/steer", Ok(_)) => {
                             steer_texts.remove(&id);
@@ -2807,6 +2878,13 @@ mod tests {
         assert_eq!(cfg.sandbox_mode, "danger-full-access");
         // Default sandbox_mode is the safe, sandboxed mode.
         assert_eq!(AppServerConfig::default().sandbox_mode, "workspace-write");
+    }
+
+    #[test]
+    fn model_catalog_toggle_defaults_on_and_reads_config() {
+        assert!(AppServerConfig::default().model_catalog);
+        assert!(AppServerConfig::from_value(&json!({})).model_catalog);
+        assert!(!AppServerConfig::from_value(&json!({"model_catalog": false})).model_catalog);
     }
 
     #[test]

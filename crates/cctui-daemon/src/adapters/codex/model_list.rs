@@ -1,26 +1,27 @@
-//! Codex `model/list` catalog poll (CCT-641).
+//! Codex `model/list` catalog protocol (CCT-641, CCT-702).
 //!
-//! A short-lived stdio `codex app-server` per poll (same one-shot pattern as
-//! [`super::thread_list`]): spawn, `initialize` → `model/list`, read the
-//! response, exit. The parsed [`CodexModelCatalog`] is machine/account-scoped —
-//! it reflects exactly the models the signed-in account can use — and is
-//! shipped to the server as an [`AdapterEvent::CodexModels`] event.
+//! The account/machine-scoped model catalog is resolved by codex from a
+//! remote, auth-gated, `client_version`-tagged endpoint
+//! (`https://chatgpt.com/backend-api/codex/models`). When codex cannot refresh
+//! its token it serves a stale bundled fallback, so the list is only trustworthy
+//! over an AUTHENTICATED app-server connection.
+//!
+//! cctui routes codex through a gateway and injects the credential per session
+//! (see [`super::app_server`]). A standalone `codex app-server` spawned with only
+//! `PATH` (the CCT-641 poll) has no gateway credential and 401s on gateway-only
+//! machines — the exact bug CCT-702 fixes. So there is no standalone poll here
+//! anymore: this module is the pure protocol layer (request builder + response
+//! parsing), reused by the session driver to issue `model/list` on the session's
+//! EXISTING authenticated app-server connection at session start. The parsed
+//! [`CodexModelCatalog`] is shipped to the server as an
+//! [`AdapterEvent::CodexModels`](cctui_proto::adapter::AdapterEvent::CodexModels).
 
-use std::process::Stdio;
-use std::time::Duration;
-
-use cctui_proto::adapter::AdapterEvent;
-use cctui_proto::codex_catalog::{CodexModel, CodexModelCatalog};
+use cctui_proto::codex_catalog::CodexModel;
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
-use tokio::process::Command;
-use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
 
-use super::app_server::AppServerConfig;
-
-const MAX_PAGES: usize = 20;
-const POLL_TIMEOUT: Duration = Duration::from_secs(30);
+/// Cap on `model/list` pages followed via `nextCursor` — a guard against a
+/// pathological server that never terminates pagination.
+pub const MAX_PAGES: usize = 20;
 
 /// Parse one `model/list` `data[]` element (codex 0.144.1 `Model`) into a
 /// [`CodexModel`]. Returns `None` for entries missing a usable id.
@@ -70,16 +71,10 @@ pub fn parse_model_list(result: &Value) -> Vec<CodexModel> {
         .unwrap_or_default()
 }
 
-fn initialize_req() -> Value {
-    json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "initialize",
-        "params": {"clientInfo": {"name": "cctui", "version": env!("CARGO_PKG_VERSION")}},
-    })
-}
-
-fn model_list_req(id: i64, cursor: Option<&str>) -> Value {
+/// Build a `model/list` request. `id` is the JSON-RPC correlation id;
+/// `cursor` continues a paginated fetch.
+#[must_use]
+pub fn model_list_req(id: i64, cursor: Option<&str>) -> Value {
     let mut params = serde_json::Map::new();
     params.insert("includeHidden".to_owned(), json!(true));
     if let Some(cursor) = cursor {
@@ -88,143 +83,36 @@ fn model_list_req(id: i64, cursor: Option<&str>) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "method": "model/list", "params": Value::Object(params)})
 }
 
+/// The `nextCursor` of a `model/list` `result`, if pagination continues.
 #[must_use]
-fn next_cursor(result: &Value) -> Option<String> {
+pub fn next_cursor(result: &Value) -> Option<String> {
     result.get("nextCursor").and_then(Value::as_str).filter(|c| !c.is_empty()).map(str::to_owned)
 }
 
-#[derive(Debug, Clone)]
-pub struct ModelListConfig {
-    pub app: AppServerConfig,
-    pub poll_interval: Duration,
+/// What to do after parsing one `model/list` response page: fetch the next
+/// page with the given cursor, or stop and emit the accumulated catalog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PageStep {
+    Next { cursor: String },
+    Done,
 }
 
-impl ModelListConfig {
-    pub fn from_value(v: &Value) -> Self {
-        let mut cfg =
-            Self { app: AppServerConfig::from_value(v), poll_interval: Duration::from_secs(300) };
-        if let Some(ms) = v.get("model_catalog_poll_ms").and_then(Value::as_u64) {
-            cfg.poll_interval = Duration::from_millis(ms);
-        }
-        cfg
-    }
-
-    /// `false` disables the catalog poll (`model_catalog = false`). Enabled by
-    /// default; degrades silently to the webui's static fallback list.
-    pub fn enabled(v: &Value) -> bool {
-        v.get("model_catalog").and_then(Value::as_bool).unwrap_or(true)
+/// Decide whether to follow `nextCursor` into another page. Stops when the
+/// server reports no further cursor or the [`MAX_PAGES`] guard is reached
+/// (`pages_fetched` counts pages already parsed, including this one).
+#[must_use]
+pub fn page_step(pages_fetched: usize, result: &Value) -> PageStep {
+    match next_cursor(result) {
+        Some(cursor) if pages_fetched < MAX_PAGES => PageStep::Next { cursor },
+        _ => PageStep::Done,
     }
 }
 
-/// Poll `model/list` at startup and every `poll_interval`, emitting an
-/// [`AdapterEvent::CodexModels`] each time the catalog is fetched. Probe
-/// failures (codex missing, sandbox/userns, auth) are logged at debug and the
-/// tick continues — the server keeps the last known catalog, the webui the
-/// static fallback.
-pub struct ModelCatalogPoll {
-    cfg: ModelListConfig,
-    events: mpsc::Sender<AdapterEvent>,
-    shutdown: CancellationToken,
-}
-
-impl ModelCatalogPoll {
-    pub const fn new(
-        cfg: ModelListConfig,
-        events: mpsc::Sender<AdapterEvent>,
-        shutdown: CancellationToken,
-    ) -> Self {
-        Self { cfg, events, shutdown }
-    }
-
-    pub async fn run(self) {
-        let mut tick = tokio::time::interval(self.cfg.poll_interval);
-        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            tokio::select! {
-                () = self.shutdown.cancelled() => return,
-                _ = tick.tick() => match poll_models(&self.cfg.app).await {
-                    Ok(models) => {
-                        let catalog = CodexModelCatalog { models };
-                        if self.events.send(AdapterEvent::CodexModels { catalog }).await.is_err() {
-                            return;
-                        }
-                    }
-                    Err(err) => tracing::debug!(%err, "codex model/list catalog poll failed"),
-                },
-            }
-        }
-    }
-}
-
-/// Spawn a short-lived stdio `codex app-server`, run initialize → `model/list`
-/// (paginating on `nextCursor`), and return the parsed models. The process is
-/// reaped before returning.
-pub async fn poll_models(app: &AppServerConfig) -> anyhow::Result<Vec<CodexModel>> {
-    let mut cmd = Command::new(&app.bin);
-    cmd.arg("app-server")
-        .arg("-c")
-        .arg(format!("sandbox_mode=\"{}\"", app.sandbox_mode))
-        .env("PATH", crate::childenv::child_path())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    let mut child = cmd.spawn()?;
-    let mut stdin =
-        child.stdin.take().ok_or_else(|| anyhow::anyhow!("app-server stdin missing"))?;
-    let stdout = child.stdout.take().ok_or_else(|| anyhow::anyhow!("app-server stdout missing"))?;
-
-    let models = tokio::time::timeout(POLL_TIMEOUT, async {
-        let mut lines = BufReader::new(stdout).lines();
-        write_line(&mut stdin, &initialize_req()).await?;
-        let mut models = Vec::new();
-        let mut cursor: Option<String> = None;
-        for page in 0..MAX_PAGES {
-            let req_id = 2 + i64::try_from(page).unwrap_or(i64::MAX);
-            write_line(&mut stdin, &model_list_req(req_id, cursor.as_deref())).await?;
-            let result = read_response(&mut lines, req_id).await?;
-            models.extend(parse_model_list(&result));
-            match next_cursor(&result) {
-                Some(next) => cursor = Some(next),
-                None => break,
-            }
-        }
-        anyhow::Ok(models)
-    })
-    .await;
-
-    drop(stdin);
-    let _ = child.start_kill();
-    let _ = child.wait().await;
-
-    models.map_err(|_| anyhow::anyhow!("model/list timed out"))?
-}
-
-async fn read_response<R: AsyncBufRead + Unpin>(
-    lines: &mut Lines<R>,
-    id: i64,
-) -> anyhow::Result<Value> {
-    while let Some(line) = lines.next_line().await? {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let Ok(v) = serde_json::from_str::<Value>(trimmed) else { continue };
-        if v.get("id").and_then(Value::as_i64) == Some(id) {
-            if let Some(err) = v.get("error") {
-                anyhow::bail!("model/list error: {err}");
-            }
-            return Ok(v.get("result").cloned().unwrap_or(Value::Null));
-        }
-    }
-    anyhow::bail!("model/list response {id} not received before EOF")
-}
-
-async fn write_line<W: AsyncWriteExt + Unpin>(w: &mut W, v: &Value) -> anyhow::Result<()> {
-    let mut line = serde_json::to_string(v)?;
-    line.push('\n');
-    w.write_all(line.as_bytes()).await?;
-    w.flush().await?;
-    Ok(())
+/// `false` disables the session-start catalog refresh (`model_catalog = false`).
+/// Enabled by default; degrades silently to the webui's static fallback list.
+#[must_use]
+pub fn catalog_enabled(v: &Value) -> bool {
+    v.get("model_catalog").and_then(Value::as_bool).unwrap_or(true)
 }
 
 #[cfg(test)]
@@ -303,10 +191,10 @@ mod tests {
     }
 
     #[test]
-    fn request_builders_shape() {
-        assert_eq!(initialize_req()["method"], "initialize");
+    fn request_builder_shape() {
         let r = model_list_req(2, None);
         assert_eq!(r["method"], "model/list");
+        assert_eq!(r["id"], 2);
         assert_eq!(r["params"]["includeHidden"], true);
         assert!(r["params"].get("cursor").is_none());
         assert_eq!(model_list_req(3, Some("CUR"))["params"]["cursor"], "CUR");
@@ -320,10 +208,46 @@ mod tests {
     }
 
     #[test]
-    fn config_defaults_and_toggle() {
-        assert!(ModelListConfig::enabled(&json!({})));
-        assert!(!ModelListConfig::enabled(&json!({"model_catalog": false})));
-        let cfg = ModelListConfig::from_value(&json!({"model_catalog_poll_ms": 1000}));
-        assert_eq!(cfg.poll_interval, Duration::from_millis(1000));
+    fn page_step_stops_without_cursor_and_follows_with_one() {
+        assert_eq!(page_step(1, &json!({"data": [], "nextCursor": null})), PageStep::Done);
+        assert_eq!(
+            page_step(1, &json!({"data": [], "nextCursor": "c2"})),
+            PageStep::Next { cursor: "c2".to_owned() }
+        );
+    }
+
+    #[test]
+    fn page_step_stops_at_max_pages_guard() {
+        assert_eq!(page_step(MAX_PAGES, &json!({"nextCursor": "more"})), PageStep::Done);
+        assert_eq!(
+            page_step(MAX_PAGES - 1, &json!({"nextCursor": "more"})),
+            PageStep::Next { cursor: "more".to_owned() }
+        );
+    }
+
+    #[test]
+    fn session_start_refresh_accumulates_paginated_models() {
+        let page1 = json!({"data": [{"id": "gpt-5.6-sol"}], "nextCursor": "c2"});
+        let page2 = json!({"data": [{"id": "gpt-5.6-terra"}], "nextCursor": null});
+        let mut models = Vec::new();
+        let mut fetched = 0;
+
+        models.extend(parse_model_list(&page1));
+        fetched += 1;
+        assert_eq!(page_step(fetched, &page1), PageStep::Next { cursor: "c2".to_owned() });
+
+        models.extend(parse_model_list(&page2));
+        fetched += 1;
+        assert_eq!(page_step(fetched, &page2), PageStep::Done);
+
+        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["gpt-5.6-sol", "gpt-5.6-terra"]);
+    }
+
+    #[test]
+    fn catalog_enabled_defaults_on_and_toggles_off() {
+        assert!(catalog_enabled(&json!({})));
+        assert!(!catalog_enabled(&json!({"model_catalog": false})));
+        assert!(catalog_enabled(&json!({"model_catalog": true})));
     }
 }
