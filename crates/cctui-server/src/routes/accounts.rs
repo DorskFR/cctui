@@ -230,14 +230,10 @@ pub struct ProviderInfo {
     /// blended rate (CCT-273). An estimate only — OAuth/subscription accounts
     /// aren't metered per token; this is a usage-weight signal, not a bill.
     pub est_cost_usd: f64,
-    /// Per-provider soft limits on cctui's own share of the subscription windows
-    /// (CCT-411). NULL ⇒ no soft limit on that window.
-    pub soft_limit_5h_pct: Option<i32>,
-    pub soft_limit_7d_pct: Option<i32>,
-    /// Per-window bypass (CCT-484): ignore a window's cap when it resets within
-    /// this many minutes. Each window has its own — the 7d one needs hours.
-    pub soft_limit_bypass_5h_minutes: Option<i32>,
-    pub soft_limit_bypass_7d_minutes: Option<i32>,
+    /// Per-provider soft limits (CCT-411, CCT-688): a validated JSONB map keyed by
+    /// canonical window identity (`session` | `weekly_all` | `weekly_model:<id>`),
+    /// each value `{cap_pct?, bypass_minutes?}`. NULL ⇒ no soft limits configured.
+    pub soft_limits: Option<serde_json::Value>,
     /// Credential health (CCT-512): `true` once the gateway saw the upstream
     /// provider reject this credential, cleared on the next successful upstream
     /// call. The accounts UI shows a "reauthenticate" badge.
@@ -312,8 +308,7 @@ const PROVIDER_SELECT: &str = "SELECT p.id, p.account_id, p.provider, p.family, 
             p.base_url, p.auth_scheme, p.provider_account_id, \
             p.expires_at, p.created_at, p.last_used_at, \
             p.request_count, p.bytes_transferred, \
-            p.soft_limit_5h_pct, p.soft_limit_7d_pct, \
-            p.soft_limit_bypass_5h_minutes, p.soft_limit_bypass_7d_minutes, \
+            p.soft_limits_json AS soft_limits, \
             p.needs_reauth, p.last_auth_error, p.last_auth_error_at, p.settings_json, \
             (COALESCE(t.input_tokens,0) + COALESCE(t.output_tokens,0) \
              + COALESCE(t.cache_read_tokens,0) + COALESCE(t.cache_creation_tokens,0))::bigint \
@@ -417,14 +412,17 @@ pub struct ProviderSpec {
     /// (CCT-399). Defaults to `bearer`. Native providers are always `oauth`.
     #[serde(default)]
     pub auth_scheme: Option<String>,
-    /// Per-provider soft limits (CCT-411). All optional; absent ⇒ NULL (no cap).
+    /// Per-provider soft limits (CCT-688): a canonical-key map
+    /// `{ "session": {cap_pct?, bypass_minutes?}, "weekly_all": {…}, … }`.
+    /// Absent ⇒ NULL (no caps). Validated before persist.
+    #[serde(default)]
+    pub soft_limits: Option<serde_json::Value>,
+    /// Legacy pre-CCT-688 scalar soft-limit fields, still accepted on create and
+    /// folded into the `session` / `weekly_all` keys when `soft_limits` is absent.
     #[serde(default)]
     pub soft_limit_5h_pct: Option<i32>,
     #[serde(default)]
     pub soft_limit_7d_pct: Option<i32>,
-    /// Per-window bypass minutes (CCT-484). The legacy single
-    /// `soft_limit_bypass_minutes` is still accepted and fans out to whichever
-    /// of the two is absent.
     #[serde(default)]
     pub soft_limit_bypass_5h_minutes: Option<i32>,
     #[serde(default)]
@@ -518,11 +516,12 @@ pub struct UpdateProvider {
     /// stored one.
     #[serde(default)]
     pub access_token: Option<String>,
-    /// Replacement soft-limit config (CCT-411). Provided → each of the three
-    /// columns is set to its value (a null field clears that column); absent →
-    /// all three unchanged.
+    /// Replacement soft-limit config (CCT-688): a canonical-key map
+    /// `{ key: {cap_pct?, bypass_minutes?} }`. Provided → replaces the whole
+    /// stored map (an empty object clears it, an omitted key drops that window);
+    /// absent → unchanged. Validated before persist.
     #[serde(default)]
-    pub soft_limits: Option<SoftLimitPatch>,
+    pub soft_limits: Option<serde_json::Value>,
     /// Replacement validated settings blob (CCT-538). Provided → replaces the
     /// stored settings wholesale (an empty object clears it); absent → unchanged.
     /// Validated against the allowlist before persist.
@@ -538,25 +537,64 @@ pub struct MoveProvider {
     pub target_account_id: Uuid,
 }
 
-/// The soft-limit columns as a patchable block (CCT-411). A field left
-/// `null`/absent inside a provided block clears that column. The legacy single
-/// `soft_limit_bypass_minutes` (pre-CCT-484) is still accepted and fans out to
-/// whichever per-window bypass is absent.
-// Field names are the JSON API contract (deserialized request body); the shared
-// `soft_limit_` prefix mirrors the DB columns and cannot be dropped.
-#[allow(clippy::struct_field_names)]
-#[derive(Debug, serde::Deserialize)]
-pub struct SoftLimitPatch {
-    #[serde(default)]
-    pub soft_limit_5h_pct: Option<i32>,
-    #[serde(default)]
-    pub soft_limit_7d_pct: Option<i32>,
-    #[serde(default)]
-    pub soft_limit_bypass_5h_minutes: Option<i32>,
-    #[serde(default)]
-    pub soft_limit_bypass_7d_minutes: Option<i32>,
-    #[serde(default)]
-    pub soft_limit_bypass_minutes: Option<i32>,
+/// Validate a canonical-key soft-limit map (CCT-688) into the JSONB blob to
+/// store, folding in any legacy scalar fields. Returns `Ok(None)` when the
+/// result is empty (clears the column). Rejects out-of-range caps/bypasses and
+/// non-canonical keys (which could otherwise inject markup or collide).
+fn build_soft_limits_json(
+    map: Option<&serde_json::Value>,
+    legacy_session_cap: Option<i32>,
+    legacy_weekly_cap: Option<i32>,
+    legacy_session_bypass: Option<i32>,
+    legacy_weekly_bypass: Option<i32>,
+) -> Result<Option<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    use std::collections::BTreeMap;
+    let mut out: BTreeMap<String, serde_json::Value> = BTreeMap::new();
+
+    let mut insert = |key: &str, cap: Option<i32>, bypass: Option<i32>| {
+        if let Some(c) = cap
+            && !(0..=100).contains(&c)
+        {
+            return Err(err(StatusCode::BAD_REQUEST, "soft-limit cap must be 0-100"));
+        }
+        if let Some(b) = bypass
+            && b < 0
+        {
+            return Err(err(StatusCode::BAD_REQUEST, "soft-limit bypass must be >= 0"));
+        }
+        if cap.is_none() && bypass.is_none() {
+            return Ok(());
+        }
+        let Some(canon) = crate::soft_limit::canonicalize_key(key) else {
+            return Err(err(StatusCode::BAD_REQUEST, "unknown soft-limit window key"));
+        };
+        let mut entry = serde_json::Map::new();
+        if let Some(c) = cap {
+            entry.insert("cap_pct".into(), serde_json::json!(c));
+        }
+        if let Some(b) = bypass {
+            entry.insert("bypass_minutes".into(), serde_json::json!(b));
+        }
+        out.insert(canon, serde_json::Value::Object(entry));
+        Ok(())
+    };
+
+    if let Some(obj) = map.and_then(serde_json::Value::as_object) {
+        for (key, v) in obj {
+            let cap = v.get("cap_pct").and_then(serde_json::Value::as_i64).map(|n| n as i32);
+            let bypass =
+                v.get("bypass_minutes").and_then(serde_json::Value::as_i64).map(|n| n as i32);
+            insert(key, cap, bypass)?;
+        }
+    } else if map.is_some_and(|v| !v.is_null()) {
+        return Err(err(StatusCode::BAD_REQUEST, "soft_limits must be an object"));
+    } else {
+        // No map supplied — fold the legacy scalar fields.
+        insert(crate::soft_limit::KEY_SESSION, legacy_session_cap, legacy_session_bypass)?;
+        insert(crate::soft_limit::KEY_WEEKLY_ALL, legacy_weekly_cap, legacy_weekly_bypass)?;
+    }
+
+    Ok((!out.is_empty()).then(|| serde_json::to_value(out).unwrap_or(serde_json::Value::Null)))
 }
 
 fn err(code: StatusCode, msg: &str) -> (StatusCode, Json<serde_json::Value>) {
@@ -679,10 +717,7 @@ struct ProviderWrite {
     auth_scheme: String,
     models: Option<serde_json::Value>,
     model_aliases: Option<serde_json::Value>,
-    soft_limit_5h_pct: Option<i32>,
-    soft_limit_7d_pct: Option<i32>,
-    soft_limit_bypass_5h_minutes: Option<i32>,
-    soft_limit_bypass_7d_minutes: Option<i32>,
+    soft_limits_json: Option<serde_json::Value>,
     settings_json: Option<serde_json::Value>,
 }
 
@@ -779,14 +814,13 @@ fn prepare_provider_write(
         auth_scheme,
         models,
         model_aliases,
-        soft_limit_5h_pct: spec.soft_limit_5h_pct,
-        soft_limit_7d_pct: spec.soft_limit_7d_pct,
-        soft_limit_bypass_5h_minutes: spec
-            .soft_limit_bypass_5h_minutes
-            .or(spec.soft_limit_bypass_minutes),
-        soft_limit_bypass_7d_minutes: spec
-            .soft_limit_bypass_7d_minutes
-            .or(spec.soft_limit_bypass_minutes),
+        soft_limits_json: build_soft_limits_json(
+            spec.soft_limits.as_ref(),
+            spec.soft_limit_5h_pct,
+            spec.soft_limit_7d_pct,
+            spec.soft_limit_bypass_5h_minutes.or(spec.soft_limit_bypass_minutes),
+            spec.soft_limit_bypass_7d_minutes.or(spec.soft_limit_bypass_minutes),
+        )?,
         settings_json,
     })
 }
@@ -803,9 +837,8 @@ async fn insert_provider(
         "INSERT INTO account_providers \
             (user_id, account_id, provider, encrypted_refresh_token, encrypted_access_token, \
              expires_at, base_url, models, auth_scheme, model_aliases, \
-             soft_limit_5h_pct, soft_limit_7d_pct, \
-             soft_limit_bypass_5h_minutes, soft_limit_bypass_7d_minutes, settings_json) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) \
+             soft_limits_json, settings_json) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
          RETURNING id",
     )
     .bind(user_id)
@@ -818,10 +851,7 @@ async fn insert_provider(
     .bind(&w.models)
     .bind(&w.auth_scheme)
     .bind(&w.model_aliases)
-    .bind(w.soft_limit_5h_pct)
-    .bind(w.soft_limit_7d_pct)
-    .bind(w.soft_limit_bypass_5h_minutes)
-    .bind(w.soft_limit_bypass_7d_minutes)
+    .bind(&w.soft_limits_json)
     .bind(&w.settings_json)
     .fetch_one(conn)
     .await
@@ -1177,20 +1207,12 @@ pub async fn update_provider(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(|c| crate::crypto::obfuscate(c, &key));
-    // Soft limits (CCT-411): like aliases, carry a provided-flag so a provided
-    // block replaces every column (a null field clears one) while an absent
-    // block leaves them untouched. The legacy single bypass (pre-CCT-484) fans
-    // out to whichever per-window bypass the client didn't send.
+    // Soft limits (CCT-688): a provided map replaces the whole JSONB column (an
+    // empty object clears it); absent leaves it untouched. Validated before
+    // persist. Carry a provided-flag so CASE-WHEN distinguishes clear/unchanged.
     let soft_provided = req.soft_limits.is_some();
-    let (soft_5h, weekly_pct, bypass_5h, bypass_weekly) =
-        req.soft_limits.as_ref().map_or((None, None, None, None), |s| {
-            (
-                s.soft_limit_5h_pct,
-                s.soft_limit_7d_pct,
-                s.soft_limit_bypass_5h_minutes.or(s.soft_limit_bypass_minutes),
-                s.soft_limit_bypass_7d_minutes.or(s.soft_limit_bypass_minutes),
-            )
-        });
+    let soft_limits_json =
+        build_soft_limits_json(req.soft_limits.as_ref(), None, None, None, None)?;
     // Settings (CCT-538): provided replaces (empty clears), absent untouched;
     // validated against the catalog allowlist before persist.
     let settings_provided = req.settings_json.is_some();
@@ -1209,13 +1231,8 @@ pub async fn update_provider(
             models = COALESCE($6, models), \
             encrypted_access_token = COALESCE($7, encrypted_access_token), \
             model_aliases = CASE WHEN $8 THEN $9 ELSE model_aliases END, \
-            soft_limit_5h_pct = CASE WHEN $10 THEN $11 ELSE soft_limit_5h_pct END, \
-            soft_limit_7d_pct = CASE WHEN $10 THEN $12 ELSE soft_limit_7d_pct END, \
-            soft_limit_bypass_5h_minutes = \
-                CASE WHEN $10 THEN $13 ELSE soft_limit_bypass_5h_minutes END, \
-            soft_limit_bypass_7d_minutes = \
-                CASE WHEN $10 THEN $14 ELSE soft_limit_bypass_7d_minutes END, \
-            settings_json = CASE WHEN $15 THEN $16 ELSE settings_json END \
+            soft_limits_json = CASE WHEN $10 THEN $11 ELSE soft_limits_json END, \
+            settings_json = CASE WHEN $12 THEN $13 ELSE settings_json END \
          WHERE id = $1 AND account_id = $2 \
            AND ($3::uuid IS NULL OR user_id = $3) AND NOT managed \
          RETURNING id",
@@ -1230,10 +1247,7 @@ pub async fn update_provider(
     .bind(aliases_provided)
     .bind(&model_aliases)
     .bind(soft_provided)
-    .bind(soft_5h)
-    .bind(weekly_pct)
-    .bind(bypass_5h)
-    .bind(bypass_weekly)
+    .bind(&soft_limits_json)
     .bind(settings_provided)
     .bind(&settings_json)
     .fetch_optional(&state.pool)
@@ -1243,12 +1257,7 @@ pub async fn update_provider(
         return Err(err(StatusCode::NOT_FOUND, "no such provider"));
     }
     if soft_provided {
-        let caps = crate::soft_limit::SoftLimits {
-            pct_5h: soft_5h,
-            pct_7d: weekly_pct,
-            bypass_5h_minutes: bypass_5h,
-            bypass_7d_minutes: bypass_weekly,
-        };
+        let caps = crate::soft_limit::SoftLimits::from_json(soft_limits_json.as_ref());
         reevaluate_soft_limit_block(&state, provider_id, &caps).await;
     }
     let info = fetch_provider_info(&state.pool, provider_id)
@@ -1263,7 +1272,7 @@ pub async fn update_provider(
 fn soft_limit_blocks_to_clear(
     candidates: &[String],
     blocked: &DashMap<String, ()>,
-    usage: Option<&serde_json::Value>,
+    windows: &[crate::soft_limit::UsageWindow],
     caps: &crate::soft_limit::SoftLimits,
     now: DateTime<Utc>,
 ) -> Vec<String> {
@@ -1272,7 +1281,7 @@ fn soft_limit_blocks_to_clear(
         .filter(|sid| blocked.contains_key(*sid))
         .filter(|_| {
             matches!(
-                crate::soft_limit::evaluate_soft_limit(usage, caps, now),
+                crate::soft_limit::evaluate_soft_limit(windows, caps, now),
                 crate::soft_limit::Decision::Allow
             )
         })
@@ -1305,10 +1314,12 @@ async fn reevaluate_soft_limit_block(
         }
     };
     let usage = gateway::usage_for_soft_limit(state, provider_id).await;
+    let windows =
+        usage.as_ref().map(crate::soft_limit::normalize_usage_windows).unwrap_or_default();
     let to_clear = soft_limit_blocks_to_clear(
         &candidates,
         &state.soft_limit_blocked,
-        usage.as_ref(),
+        &windows,
         caps,
         Utc::now(),
     );
@@ -1853,9 +1864,26 @@ pub struct AccountUsage {
     pub provider: String,
     /// Raw upstream usage JSON (passed through verbatim) or `null`.
     pub usage: Option<serde_json::Value>,
+    /// Normalized, provider-agnostic usage windows (CCT-688): the collection the
+    /// UI renders and the soft-limit evaluator gates on. Empty ⇒ no supported
+    /// windows in the latest response (distinct from a fetch error).
+    pub windows: Vec<crate::soft_limit::UsageWindow>,
     /// Seconds since this usage was fetched upstream (0 = just now). Lets the UI
     /// show staleness; values refresh on the slow cache TTL, not per request.
     pub age_secs: u64,
+}
+
+impl AccountUsage {
+    fn build(
+        account_id: Uuid,
+        provider: String,
+        usage: Option<serde_json::Value>,
+        age_secs: u64,
+    ) -> Self {
+        let windows =
+            usage.as_ref().map(crate::soft_limit::normalize_usage_windows).unwrap_or_default();
+        Self { account_id, provider, usage, windows, age_secs }
+    }
 }
 
 /// `GET /api/v1/accounts/{id}/usage` — current subscription usage for a
@@ -1893,12 +1921,7 @@ pub async fn account_usage(
         && hit.fetched_at.elapsed() < USAGE_CACHE_TTL.to_std().unwrap_or_default()
     {
         let age_secs = hit.fetched_at.elapsed().as_secs();
-        return Ok(Json(AccountUsage {
-            account_id: id,
-            provider,
-            usage: hit.usage.clone(),
-            age_secs,
-        }));
+        return Ok(Json(AccountUsage::build(id, provider, hit.usage.clone(), age_secs)));
     }
 
     // Stale or absent → fetch upstream (anthropic only; Codex returns None).
@@ -1909,12 +1932,7 @@ pub async fn account_usage(
         // cached value if we have one rather than erroring the whole row.
         if let Some(hit) = state.account_usage_cache.get(&id) {
             let age_secs = hit.fetched_at.elapsed().as_secs();
-            return Ok(Json(AccountUsage {
-                account_id: id,
-                provider,
-                usage: hit.usage.clone(),
-                age_secs,
-            }));
+            return Ok(Json(AccountUsage::build(id, provider, hit.usage.clone(), age_secs)));
         }
         // No prior value — surface as "no usage" so the UI just hides the chip.
         None
@@ -1923,7 +1941,7 @@ pub async fn account_usage(
         id,
         crate::state::CachedUsage { fetched_at: std::time::Instant::now(), usage: usage.clone() },
     );
-    Ok(Json(AccountUsage { account_id: id, provider, usage, age_secs: 0 }))
+    Ok(Json(AccountUsage::build(id, provider, usage, 0)))
 }
 
 // ----------------------------------------------------------------------------
@@ -2120,15 +2138,13 @@ mod tests {
     fn raising_cap_over_usage_clears_only_blocked_sessions() {
         let blocked: DashMap<String, ()> = DashMap::new();
         blocked.insert("s-blocked".into(), ());
-        let caps = crate::soft_limit::SoftLimits { pct_5h: Some(95), ..Default::default() };
+        let caps = crate::soft_limit::SoftLimits::from_json(Some(&serde_json::json!({
+            "session": {"cap_pct": 95}
+        })));
         let candidates = vec!["s-blocked".to_owned(), "s-unblocked".to_owned()];
-        let cleared = soft_limit_blocks_to_clear(
-            &candidates,
-            &blocked,
-            Some(&hot_usage()),
-            &caps,
-            soft_now(),
-        );
+        let windows = crate::soft_limit::normalize_usage_windows(&hot_usage());
+        let cleared =
+            soft_limit_blocks_to_clear(&candidates, &blocked, &windows, &caps, soft_now());
         assert_eq!(cleared, vec!["s-blocked".to_owned()]);
     }
 
@@ -2136,11 +2152,14 @@ mod tests {
     fn still_over_new_cap_clears_nothing() {
         let blocked: DashMap<String, ()> = DashMap::new();
         blocked.insert("s-blocked".into(), ());
-        let caps = crate::soft_limit::SoftLimits { pct_5h: Some(85), ..Default::default() };
+        let caps = crate::soft_limit::SoftLimits::from_json(Some(&serde_json::json!({
+            "session": {"cap_pct": 85}
+        })));
+        let windows = crate::soft_limit::normalize_usage_windows(&hot_usage());
         let cleared = soft_limit_blocks_to_clear(
             &["s-blocked".to_owned()],
             &blocked,
-            Some(&hot_usage()),
+            &windows,
             &caps,
             soft_now(),
         );

@@ -212,19 +212,6 @@ async fn run_default(ctx: AdapterCtx) -> anyhow::Result<()> {
 
     let log_handle = tokio::spawn(log.run());
 
-    // CCT-641: ship the machine/account-scoped codex model catalog (model/list)
-    // to the server so the webui picker offers the account's real models.
-    let model_catalog_handle = if model_list::ModelListConfig::enabled(&ctx.config) {
-        let poll = model_list::ModelCatalogPoll::new(
-            model_list::ModelListConfig::from_value(&ctx.config),
-            ctx.events.clone(),
-            ctx.shutdown.clone(),
-        );
-        Some(tokio::spawn(poll.run()))
-    } else {
-        None
-    };
-
     let pump = command_pump(
         ctx.commands,
         ctx.events.clone(),
@@ -238,9 +225,6 @@ async fn run_default(ctx: AdapterCtx) -> anyhow::Result<()> {
     pump.await;
     log_handle.abort();
     if let Some(h) = inventory_handle {
-        h.abort();
-    }
-    if let Some(h) = model_catalog_handle {
         h.abort();
     }
     Ok(())

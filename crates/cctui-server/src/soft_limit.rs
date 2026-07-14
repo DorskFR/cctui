@@ -1,4 +1,4 @@
-//! Per-account soft limit on the subscription usage windows (CCT-411).
+//! Per-account soft limits on the subscription usage windows (CCT-411, CCT-688).
 //!
 //! A cctui account (Anthropic OAuth subscription) is often shared with the user's
 //! own interactive Claude Code and other workloads. Left unchecked, cctui's own
@@ -7,40 +7,278 @@
 //! the whole budget — while bypassing the cap for a window that is about to reset
 //! anyway (no point hoarding it).
 //!
-//! This module is the pure decision helper. It is fed the cached usage payload
-//! (Anthropic's free OAuth usage windows, CCT-306) and the per-account caps, and
-//! returns Allow / Block. The gateway passthrough calls it after resolving the
-//! account; it adds NO upstream fetch (it reuses the existing usage cache and
-//! fails open when there is no cached value).
+//! Anthropic used to report a fixed set of windows (`five_hour`, `seven_day`, …).
+//! It now reports a self-describing `limits` array (session / weekly-all-models /
+//! per-model weekly caps, and whatever it adds next). CCT-688 therefore treats
+//! usage as a *collection* of normalized windows keyed by a stable canonical
+//! identity, and lets each window carry its own independently editable cap +
+//! bypass. This module is the pure decision helper: it normalizes the raw usage
+//! JSON (three shapes), and evaluates a per-key cap map against it. It adds NO
+//! upstream fetch and fails open for any key whose window is missing.
+
+use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
 
-/// Per-account soft-limit configuration. Each field is independently optional;
-/// `None` on a window's cap means "no soft limit on that window" (prior behaviour).
-#[derive(Debug, Clone, Copy, Default)]
+/// Canonical key for the 5h / session window.
+pub const KEY_SESSION: &str = "session";
+/// Canonical key for the weekly all-models window.
+pub const KEY_WEEKLY_ALL: &str = "weekly_all";
+/// Prefix for a per-model weekly window: `weekly_model:<stable-id-or-slug>`.
+pub const WEEKLY_MODEL_PREFIX: &str = "weekly_model:";
+
+/// One window's independently editable soft-limit config. Both fields optional:
+/// `cap_pct` `None` ⇒ no cap on that window; `bypass_minutes` `None` ⇒ no bypass.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SoftLimit {
+    /// Max % of the window cctui will consume before refusing more inference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cap_pct: Option<i32>,
+    /// If the window's `resets_at` is within this many minutes, ignore its cap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bypass_minutes: Option<i32>,
+}
+
+impl SoftLimit {
+    const fn is_empty(&self) -> bool {
+        self.cap_pct.is_none() && self.bypass_minutes.is_none()
+    }
+}
+
+/// Per-account soft-limit configuration: a map from canonical window key to that
+/// window's cap + bypass. Persisted as a validated JSONB map on the provider
+/// credential, so newly discovered model-scoped windows need NO migration.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
 pub struct SoftLimits {
-    /// Max % of the 5h window cctui will consume before refusing more inference.
-    pub pct_5h: Option<i32>,
-    /// Same for the 7d weekly window.
-    pub pct_7d: Option<i32>,
-    /// If the 5h window's `resets_at` is within this many minutes, ignore its cap.
-    pub bypass_5h_minutes: Option<i32>,
-    /// Same for the 7d window (CCT-484) — it needs a much longer bypass than the
-    /// 5h window to ever fire, so each window carries its own.
-    pub bypass_7d_minutes: Option<i32>,
+    pub limits: BTreeMap<String, SoftLimit>,
 }
 
 impl SoftLimits {
-    /// No cap configured on either window ⇒ nothing to evaluate (fast path).
-    pub const fn is_unset(&self) -> bool {
-        self.pct_5h.is_none() && self.pct_7d.is_none()
+    /// No window has a cap configured ⇒ nothing to evaluate (fast path). A bypass
+    /// without a cap is inert, so it does not count as "set".
+    pub fn is_unset(&self) -> bool {
+        !self.limits.values().any(|l| l.cap_pct.is_some())
     }
+
+    /// Parse a stored JSONB soft-limit map. Unknown/malformed keys or entries are
+    /// dropped (best-effort); an absent/`null` blob ⇒ empty config.
+    pub fn from_json(value: Option<&serde_json::Value>) -> Self {
+        let Some(obj) = value.and_then(serde_json::Value::as_object) else {
+            return Self::default();
+        };
+        let mut limits = BTreeMap::new();
+        for (key, v) in obj {
+            let Some(canon) = canonicalize_key(key) else { continue };
+            let limit = SoftLimit {
+                cap_pct: v.get("cap_pct").and_then(serde_json::Value::as_i64).map(|n| n as i32),
+                bypass_minutes: v
+                    .get("bypass_minutes")
+                    .and_then(serde_json::Value::as_i64)
+                    .map(|n| n as i32),
+            };
+            if !limit.is_empty() {
+                limits.insert(canon, limit);
+            }
+        }
+        Self { limits }
+    }
+}
+
+/// A canonical window key is one of: `session`, `weekly_all`, or
+/// `weekly_model:<slug>` where `<slug>` is `[a-z0-9._-]+`. Anything else is
+/// rejected so an upstream label cannot inject markup or collide with another
+/// account's config. Returns the normalized key (model slug re-slugged).
+pub fn canonicalize_key(key: &str) -> Option<String> {
+    let key = key.trim();
+    if key == KEY_SESSION || key == KEY_WEEKLY_ALL {
+        return Some(key.to_owned());
+    }
+    let suffix = key.strip_prefix(WEEKLY_MODEL_PREFIX)?;
+    let slug = slug(suffix);
+    (!slug.is_empty()).then(|| format!("{WEEKLY_MODEL_PREFIX}{slug}"))
+}
+
+/// Lowercase + collapse any run of non-`[a-z0-9._-]` characters to a single `-`,
+/// trimming leading/trailing separators. Stable and markup-free.
+fn slug(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut prev_dash = false;
+    for c in s.trim().chars() {
+        let c = c.to_ascii_lowercase();
+        if c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-' {
+            out.push(c);
+            prev_dash = false;
+        } else if !prev_dash && !out.is_empty() {
+            out.push('-');
+            prev_dash = true;
+        }
+    }
+    out.trim_matches('-').to_owned()
+}
+
+/// Strip markup-ish characters and clamp a display label so an upstream-supplied
+/// name can never inject markup or blow up the UI. Text only; UIs escape anyway.
+fn sanitize_label(s: &str) -> String {
+    let cleaned: String =
+        s.chars().filter(|c| !c.is_control() && *c != '<' && *c != '>').take(64).collect();
+    cleaned.trim().to_owned()
+}
+
+/// One normalized usage window, provider-agnostic and self-describing.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct UsageWindow {
+    /// Stable canonical identity (`session` / `weekly_all` / `weekly_model:<id>`).
+    pub key: String,
+    /// Forward-compatible kind: `session` | `weekly_all` | `weekly_scoped` | other.
+    pub kind: String,
+    /// Human display label (`5h`, `Weekly (all models)`, `Weekly Fable`, …).
+    pub label: String,
+    /// Utilization percent (0–100, may exceed on overage).
+    pub utilization: f64,
+    /// When the window resets (rfc3339 upstream), if known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<DateTime<Utc>>,
+    /// Stable upstream model id for a scoped window, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
+    /// Model display name for a scoped window, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_display_name: Option<String>,
+}
+
+fn parse_resets_at(v: &serde_json::Value) -> Option<DateTime<Utc>> {
+    v.get("resets_at")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.with_timezone(&Utc))
+}
+
+/// Percent for a window, tolerating both the new `percent` and the legacy
+/// `utilization` field names.
+fn parse_percent(v: &serde_json::Value) -> Option<f64> {
+    v.get("percent")
+        .and_then(serde_json::Value::as_f64)
+        .or_else(|| v.get("utilization").and_then(serde_json::Value::as_f64))
+}
+
+/// Normalize any of the three supported usage payloads into a provider-agnostic
+/// collection of windows:
+///   1. New Anthropic `{"limits":[{kind,percent,resets_at,scope?}, …]}`.
+///   2. Legacy Anthropic fixed fields (`five_hour`/`seven_day`/`seven_day_opus`/…).
+///   3. `OpenAI`'s canonical `{five_hour, seven_day}` shape (same as legacy).
+///
+/// Missing/malformed entries omit only themselves — one unknown limit never
+/// collapses the valid ones.
+pub fn normalize_usage_windows(usage: &serde_json::Value) -> Vec<UsageWindow> {
+    if let Some(arr) = usage.get("limits").and_then(serde_json::Value::as_array) {
+        return arr.iter().filter_map(normalize_structured_limit).collect();
+    }
+    normalize_fixed_fields(usage)
+}
+
+/// One entry of the new `limits[]` array → a window (or `None` if malformed).
+fn normalize_structured_limit(entry: &serde_json::Value) -> Option<UsageWindow> {
+    let utilization = parse_percent(entry)?;
+    let resets_at = parse_resets_at(entry);
+    let kind = entry.get("kind").and_then(serde_json::Value::as_str).unwrap_or("");
+    let model = entry.get("scope").and_then(|s| s.get("model"));
+    let model_id = model
+        .and_then(|m| m.get("id"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .filter(|s| !s.is_empty());
+    let model_display_name = model
+        .and_then(|m| m.get("display_name"))
+        .and_then(serde_json::Value::as_str)
+        .map(sanitize_label)
+        .filter(|s| !s.is_empty());
+
+    match kind {
+        "session" => Some(UsageWindow {
+            key: KEY_SESSION.to_owned(),
+            kind: "session".to_owned(),
+            label: "5h".to_owned(),
+            utilization,
+            resets_at,
+            model_id: None,
+            model_display_name: None,
+        }),
+        "weekly_all" => Some(UsageWindow {
+            key: KEY_WEEKLY_ALL.to_owned(),
+            kind: "weekly_all".to_owned(),
+            label: "Weekly (all models)".to_owned(),
+            utilization,
+            resets_at,
+            model_id: None,
+            model_display_name: None,
+        }),
+        // `weekly_scoped` and any future scoped kind: key off the stable model id
+        // when present, else the slugged display name, so a display-name change
+        // never loses config while an id exists.
+        _ => {
+            let slug_src = model_id.as_deref().or(model_display_name.as_deref())?;
+            let s = slug(slug_src);
+            if s.is_empty() {
+                return None;
+            }
+            let label = model_display_name
+                .clone()
+                .map_or_else(|| format!("Weekly {s}"), |n| format!("Weekly {n}"));
+            Some(UsageWindow {
+                key: format!("{WEEKLY_MODEL_PREFIX}{s}"),
+                kind: if kind.is_empty() { "weekly_scoped".to_owned() } else { kind.to_owned() },
+                label: sanitize_label(&label),
+                utilization,
+                resets_at,
+                model_id,
+                model_display_name,
+            })
+        }
+    }
+}
+
+/// Legacy/OpenAI fixed-field shape → windows.
+fn normalize_fixed_fields(usage: &serde_json::Value) -> Vec<UsageWindow> {
+    let mut out = Vec::new();
+    let mut push = |field: &str, key: String, kind: &str, label: &str, model: Option<&str>| {
+        if let Some(w) = usage.get(field)
+            && let Some(utilization) = parse_percent(w)
+        {
+            out.push(UsageWindow {
+                key,
+                kind: kind.to_owned(),
+                label: label.to_owned(),
+                utilization,
+                resets_at: parse_resets_at(w),
+                model_id: model.map(str::to_owned),
+                model_display_name: None,
+            });
+        }
+    };
+    push("five_hour", KEY_SESSION.to_owned(), "session", "5h", None);
+    push("seven_day", KEY_WEEKLY_ALL.to_owned(), "weekly_all", "Weekly (all models)", None);
+    push(
+        "seven_day_opus",
+        format!("{WEEKLY_MODEL_PREFIX}opus"),
+        "weekly_scoped",
+        "Weekly Opus",
+        Some("opus"),
+    );
+    push(
+        "seven_day_sonnet",
+        format!("{WEEKLY_MODEL_PREFIX}sonnet"),
+        "weekly_scoped",
+        "Weekly Sonnet",
+        Some("sonnet"),
+    );
+    out
 }
 
 /// Outcome of evaluating an account's usage against its soft limits.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
-    /// Under cap, within the bypass window, no cap set, or no usage data — proxy.
+    /// Under cap, within a bypass window, no cap set, or no usage data — proxy.
     Allow,
     /// At/over a cap and not within the bypass window — refuse with a reason.
     Block {
@@ -48,60 +286,40 @@ pub enum Decision {
         retry_after_secs: i64,
         /// Human-readable reason surfaced to the worker/UI in the 429 body.
         reason: String,
+        /// Canonical key of the blocking window (identifies a model-scoped block).
+        key: String,
     },
 }
 
-/// One window pulled out of the raw usage JSON.
-struct Window {
-    utilization: f64,
-    resets_at: Option<DateTime<Utc>>,
-}
-
-fn parse_window(usage: &serde_json::Value, key: &str) -> Option<Window> {
-    let w = usage.get(key)?;
-    let utilization = w.get("utilization").and_then(serde_json::Value::as_f64)?;
-    let resets_at = w
-        .get("resets_at")
-        .and_then(serde_json::Value::as_str)
-        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-        .map(|dt| dt.with_timezone(&Utc));
-    Some(Window { utilization, resets_at })
-}
-
-/// Decide whether to allow an inference request for an account, given its cached
-/// usage and configured soft limits.
+/// Decide whether to allow an inference request, given the normalized usage
+/// windows and the per-key cap map.
 ///
-/// Fails open: missing usage, an unparseable window, or no caps ⇒ `Allow`. A
-/// window blocks only when its utilization is at/above the cap AND its reset is
-/// more than its own bypass (`bypass_5h_minutes` / `bypass_7d_minutes`) away
-/// (or its reset time is unknown). When several windows block, the reason names
+/// Each configured window is evaluated INDEPENDENTLY against its matching
+/// normalized window. Fails open: no caps, or a configured key with no matching
+/// window, or no usage ⇒ `Allow` (for that key). A key blocks only when its
+/// utilization is at/above its cap AND its reset is more than its own
+/// `bypass_minutes` away (or unknown). When several keys block, the reason names
 /// the nearest-resetting one and `retry_after` is derived from that reset.
 pub fn evaluate_soft_limit(
-    usage: Option<&serde_json::Value>,
+    windows: &[UsageWindow],
     caps: &SoftLimits,
     now: DateTime<Utc>,
 ) -> Decision {
     if caps.is_unset() {
         return Decision::Allow;
     }
-    let Some(usage) = usage else { return Decision::Allow };
 
-    // Collect every window that is currently blocking, with the seconds until it
-    // resets (used both to apply the bypass window and to size Retry-After).
-    let mut blocking: Vec<(i64, String)> = Vec::new();
-    for (key, label, cap, bypass_minutes) in [
-        ("five_hour", "5h", caps.pct_5h, caps.bypass_5h_minutes),
-        ("seven_day", "7d", caps.pct_7d, caps.bypass_7d_minutes),
-    ] {
-        let Some(cap) = cap else { continue };
-        let bypass = i64::from(bypass_minutes.unwrap_or(0).max(0));
-        let Some(win) = parse_window(usage, key) else { continue };
+    let mut blocking: Vec<(i64, String, String)> = Vec::new();
+    for (key, limit) in &caps.limits {
+        let Some(cap) = limit.cap_pct else { continue };
+        // Missing window for a configured key ⇒ fail open for that key only.
+        let Some(win) = windows.iter().find(|w| &w.key == key) else { continue };
         if win.utilization < f64::from(cap) {
             continue;
         }
+        let bypass = i64::from(limit.bypass_minutes.unwrap_or(0).max(0));
         // Seconds until reset; unknown reset ⇒ treat as far away (can't bypass).
         let secs_to_reset = win.resets_at.map_or(i64::MAX, |r| (r - now).num_seconds());
-        // Within the bypass window (and not already past reset) ⇒ ignore this cap.
         if secs_to_reset > 0 && secs_to_reset <= bypass * 60 {
             continue;
         }
@@ -110,14 +328,16 @@ pub fn evaluate_soft_limit(
         blocking.push((
             retry,
             format!(
-                "cctui soft limit: {label} window at {}% (cap {cap}%), resets in {mins}m",
+                "cctui soft limit: {} window at {}% (cap {cap}%), resets in {mins}m",
+                win.label,
                 win.utilization.round() as i64
             ),
+            key.clone(),
         ));
     }
 
-    match blocking.into_iter().min_by_key(|(secs, _)| *secs) {
-        Some((retry_after_secs, reason)) => Decision::Block { retry_after_secs, reason },
+    match blocking.into_iter().min_by_key(|(secs, _, _)| *secs) {
+        Some((retry_after_secs, reason, key)) => Decision::Block { retry_after_secs, reason, key },
         None => Decision::Allow,
     }
 }
@@ -131,41 +351,148 @@ mod tests {
         DateTime::parse_from_rfc3339("2026-06-19T12:00:00Z").unwrap().with_timezone(&Utc)
     }
 
-    fn usage(five: f64, five_reset: &str, seven: f64, seven_reset: &str) -> serde_json::Value {
+    fn caps(pairs: &[(&str, Option<i32>, Option<i32>)]) -> SoftLimits {
+        let mut limits = BTreeMap::new();
+        for (k, cap, bypass) in pairs {
+            limits.insert((*k).to_owned(), SoftLimit { cap_pct: *cap, bypass_minutes: *bypass });
+        }
+        SoftLimits { limits }
+    }
+
+    fn legacy(five: f64, five_reset: &str, seven: f64, seven_reset: &str) -> serde_json::Value {
         json!({
             "five_hour": { "utilization": five, "resets_at": five_reset },
             "seven_day": { "utilization": seven, "resets_at": seven_reset },
         })
     }
 
+    // ---- normalization -----------------------------------------------------
+
+    #[test]
+    fn structured_limits_render_all_windows() {
+        // Acceptance (1): 5h 3%, weekly-all 82%, weekly Fable 100%.
+        let payload = json!({"limits": [
+            {"kind":"session","percent":3,"resets_at":"2026-06-19T16:00:00Z"},
+            {"kind":"weekly_all","percent":82,"resets_at":"2026-06-26T00:00:00Z"},
+            {"kind":"weekly_scoped","percent":100,"resets_at":"2026-06-26T00:00:00Z",
+             "scope":{"model":{"id":null,"display_name":"Fable"}}},
+        ]});
+        let w = normalize_usage_windows(&payload);
+        assert_eq!(w.len(), 3);
+        assert_eq!(w[0].key, "session");
+        assert!((w[0].utilization - 3.0).abs() < 1e-9);
+        assert_eq!(w[1].key, "weekly_all");
+        assert!((w[1].utilization - 82.0).abs() < 1e-9);
+        assert_eq!(w[2].key, "weekly_model:fable");
+        assert_eq!(w[2].label, "Weekly Fable");
+        assert!((w[2].utilization - 100.0).abs() < 1e-9);
+        assert_eq!(w[2].model_display_name.as_deref(), Some("Fable"));
+    }
+
+    #[test]
+    fn scoped_key_prefers_stable_id_over_display_name() {
+        // Acceptance (6-ish): a display-name change must not move the key when a
+        // stable id exists.
+        let a = json!({"limits":[{"kind":"weekly_scoped","percent":50,
+            "scope":{"model":{"id":"claude-opus-4-8","display_name":"Opus 4.8"}}}]});
+        let b = json!({"limits":[{"kind":"weekly_scoped","percent":50,
+            "scope":{"model":{"id":"claude-opus-4-8","display_name":"Opus (renamed)"}}}]});
+        assert_eq!(normalize_usage_windows(&a)[0].key, normalize_usage_windows(&b)[0].key);
+        assert_eq!(normalize_usage_windows(&a)[0].key, "weekly_model:claude-opus-4-8");
+    }
+
+    #[test]
+    fn dynamic_scoped_model_appears_without_hardcoding() {
+        // Acceptance (3): a never-before-seen model name normalizes fine.
+        let payload = json!({"limits":[{"kind":"weekly_scoped","percent":40,
+            "scope":{"model":{"id":null,"display_name":"Nebula-9"}}}]});
+        let w = normalize_usage_windows(&payload);
+        assert_eq!(w[0].key, "weekly_model:nebula-9");
+        assert_eq!(w[0].label, "Weekly Nebula-9");
+    }
+
+    #[test]
+    fn malformed_entry_omits_only_itself() {
+        // Acceptance (8): one null/garbage entry doesn't hide the valid ones.
+        let payload = json!({"limits":[
+            {"kind":"session","percent":3,"resets_at":"2026-06-19T16:00:00Z"},
+            {"kind":"weekly_scoped","scope":{"model":{"id":null,"display_name":"NoPercent"}}},
+            serde_json::Value::Null,
+            {"kind":"weekly_all","percent":50},
+        ]});
+        let w = normalize_usage_windows(&payload);
+        let keys: Vec<_> = w.iter().map(|x| x.key.as_str()).collect();
+        assert_eq!(keys, ["session", "weekly_all"]);
+    }
+
+    #[test]
+    fn legacy_and_openai_fixed_fields_normalize() {
+        // Acceptance (5): legacy Anthropic / OpenAI shapes still produce windows.
+        let payload = json!({
+            "five_hour": {"utilization": 12.0, "resets_at": "2026-06-19T16:00:00Z"},
+            "seven_day": {"utilization": 34.0, "resets_at": "2026-06-26T00:00:00Z"},
+            "seven_day_opus": {"utilization": 56.0, "resets_at": "2026-06-26T00:00:00Z"},
+        });
+        let w = normalize_usage_windows(&payload);
+        let keys: Vec<_> = w.iter().map(|x| x.key.as_str()).collect();
+        assert_eq!(keys, ["session", "weekly_all", "weekly_model:opus"]);
+        assert_eq!(w[2].label, "Weekly Opus");
+    }
+
+    #[test]
+    fn weekly_only_response_still_yields_a_window() {
+        // Acceptance (4): a weekly-only payload must not be "no usage".
+        let payload = json!({"limits":[{"kind":"weekly_all","percent":70,
+            "resets_at":"2026-06-26T00:00:00Z"}]});
+        assert_eq!(normalize_usage_windows(&payload).len(), 1);
+    }
+
+    #[test]
+    fn label_injection_is_stripped() {
+        let payload = json!({"limits":[{"kind":"weekly_scoped","percent":40,
+            "scope":{"model":{"id":null,"display_name":"<script>x</script>"}}}]});
+        let w = normalize_usage_windows(&payload);
+        assert!(!w[0].label.contains('<'));
+        assert!(!w[0].key.contains('<'));
+    }
+
+    // ---- evaluation --------------------------------------------------------
+
+    fn eval(usage: &serde_json::Value, c: &SoftLimits) -> Decision {
+        evaluate_soft_limit(&normalize_usage_windows(usage), c, now())
+    }
+
     #[test]
     fn no_caps_allows() {
-        let u = usage(99.0, "2026-06-19T16:00:00Z", 99.0, "2026-06-26T00:00:00Z");
-        assert_eq!(evaluate_soft_limit(Some(&u), &SoftLimits::default(), now()), Decision::Allow);
+        let u = legacy(99.0, "2026-06-19T16:00:00Z", 99.0, "2026-06-26T00:00:00Z");
+        assert_eq!(
+            evaluate_soft_limit(&normalize_usage_windows(&u), &SoftLimits::default(), now()),
+            Decision::Allow
+        );
     }
 
     #[test]
     fn missing_usage_allows() {
-        let caps = SoftLimits { pct_5h: Some(80), ..Default::default() };
-        assert_eq!(evaluate_soft_limit(None, &caps, now()), Decision::Allow);
+        let c = caps(&[(KEY_SESSION, Some(80), None)]);
+        assert_eq!(evaluate_soft_limit(&[], &c, now()), Decision::Allow);
     }
 
     #[test]
     fn under_cap_allows() {
-        let caps = SoftLimits { pct_5h: Some(80), ..Default::default() };
-        let u = usage(50.0, "2026-06-19T16:00:00Z", 10.0, "2026-06-26T00:00:00Z");
-        assert_eq!(evaluate_soft_limit(Some(&u), &caps, now()), Decision::Allow);
+        let c = caps(&[(KEY_SESSION, Some(80), None)]);
+        let u = legacy(50.0, "2026-06-19T16:00:00Z", 10.0, "2026-06-26T00:00:00Z");
+        assert_eq!(eval(&u, &c), Decision::Allow);
     }
 
     #[test]
     fn over_cap_blocks_with_reason_and_retry() {
-        let caps = SoftLimits { pct_5h: Some(80), ..Default::default() };
-        // 86% over cap 80, resets in 41 minutes (well outside any bypass).
-        let u = usage(86.0, "2026-06-19T12:41:00Z", 10.0, "2026-06-26T00:00:00Z");
-        match evaluate_soft_limit(Some(&u), &caps, now()) {
-            Decision::Block { retry_after_secs, reason } => {
+        let c = caps(&[(KEY_SESSION, Some(80), None)]);
+        let u = legacy(86.0, "2026-06-19T12:41:00Z", 10.0, "2026-06-26T00:00:00Z");
+        match eval(&u, &c) {
+            Decision::Block { retry_after_secs, reason, key } => {
                 assert_eq!(retry_after_secs, 41 * 60);
                 assert_eq!(reason, "cctui soft limit: 5h window at 86% (cap 80%), resets in 41m");
+                assert_eq!(key, "session");
             }
             d @ Decision::Allow => panic!("expected block, got {d:?}"),
         }
@@ -173,103 +500,99 @@ mod tests {
 
     #[test]
     fn within_bypass_window_allows() {
-        // Over cap, but the window resets in 5 minutes and bypass is 10 ⇒ allow.
-        let caps =
-            SoftLimits { pct_5h: Some(80), bypass_5h_minutes: Some(10), ..Default::default() };
-        let u = usage(95.0, "2026-06-19T12:05:00Z", 10.0, "2026-06-26T00:00:00Z");
-        assert_eq!(evaluate_soft_limit(Some(&u), &caps, now()), Decision::Allow);
+        let c = caps(&[(KEY_SESSION, Some(80), Some(10))]);
+        let u = legacy(95.0, "2026-06-19T12:05:00Z", 10.0, "2026-06-26T00:00:00Z");
+        assert_eq!(eval(&u, &c), Decision::Allow);
     }
 
     #[test]
-    fn outside_bypass_window_blocks() {
-        let caps =
-            SoftLimits { pct_5h: Some(80), bypass_5h_minutes: Some(10), ..Default::default() };
-        // Resets in 30m, bypass only 10m ⇒ still blocks.
-        let u = usage(95.0, "2026-06-19T12:30:00Z", 10.0, "2026-06-26T00:00:00Z");
-        assert!(matches!(evaluate_soft_limit(Some(&u), &caps, now()), Decision::Block { .. }));
-    }
-
-    #[test]
-    fn seven_day_bypass_does_not_leak_to_five_hour() {
-        // 5h over cap, resets in 30m. 7d bypass is a generous 6h but the 5h
-        // bypass is only 10m ⇒ the 5h window still blocks (CCT-484).
-        let caps = SoftLimits {
-            pct_5h: Some(80),
-            bypass_5h_minutes: Some(10),
-            bypass_7d_minutes: Some(360),
-            ..Default::default()
-        };
-        let u = usage(95.0, "2026-06-19T12:30:00Z", 10.0, "2026-06-26T00:00:00Z");
-        assert!(matches!(evaluate_soft_limit(Some(&u), &caps, now()), Decision::Block { .. }));
-    }
-
-    #[test]
-    fn seven_day_within_its_longer_bypass_while_five_hour_blocks_outside_its_own() {
-        // Both windows over cap. 7d resets in 4h — within its 6h bypass ⇒ 7d is
-        // waved through. 5h resets in 30m — outside its 10m bypass ⇒ blocks, and
-        // the reason must name the 5h window.
-        let caps = SoftLimits {
-            pct_5h: Some(80),
-            pct_7d: Some(70),
-            bypass_5h_minutes: Some(10),
-            bypass_7d_minutes: Some(360),
-        };
-        let u = usage(95.0, "2026-06-19T12:30:00Z", 90.0, "2026-06-19T16:00:00Z");
-        match evaluate_soft_limit(Some(&u), &caps, now()) {
-            Decision::Block { reason, .. } => assert!(reason.contains("5h window"), "{reason}"),
-            d @ Decision::Allow => panic!("expected block, got {d:?}"),
-        }
-    }
-
-    #[test]
-    fn five_hour_within_its_bypass_while_seven_day_blocks_outside_its_own() {
-        // Mirror case: 5h resets in 5m (within its 10m bypass ⇒ allowed); 7d
-        // resets in 4h with only a 30m bypass ⇒ 7d blocks.
-        let caps = SoftLimits {
-            pct_5h: Some(80),
-            pct_7d: Some(70),
-            bypass_5h_minutes: Some(10),
-            bypass_7d_minutes: Some(30),
-        };
-        let u = usage(95.0, "2026-06-19T12:05:00Z", 90.0, "2026-06-19T16:00:00Z");
-        match evaluate_soft_limit(Some(&u), &caps, now()) {
-            Decision::Block { reason, .. } => assert!(reason.contains("7d window"), "{reason}"),
-            d @ Decision::Allow => panic!("expected block, got {d:?}"),
-        }
-    }
-
-    #[test]
-    fn both_within_their_own_bypasses_allows() {
-        // 5h resets in 5m (bypass 10m), 7d resets in 4h (bypass 6h) ⇒ allow.
-        let caps = SoftLimits {
-            pct_5h: Some(80),
-            pct_7d: Some(70),
-            bypass_5h_minutes: Some(10),
-            bypass_7d_minutes: Some(360),
-        };
-        let u = usage(95.0, "2026-06-19T12:05:00Z", 90.0, "2026-06-19T16:00:00Z");
-        assert_eq!(evaluate_soft_limit(Some(&u), &caps, now()), Decision::Allow);
-    }
-
-    #[test]
-    fn nearest_resetting_blocking_window_wins() {
-        // Both over cap; 7d resets sooner, so its reason + retry are reported.
-        let caps = SoftLimits { pct_5h: Some(80), pct_7d: Some(70), ..Default::default() };
-        let u = usage(90.0, "2026-06-19T16:00:00Z", 75.0, "2026-06-19T12:20:00Z");
-        match evaluate_soft_limit(Some(&u), &caps, now()) {
-            Decision::Block { retry_after_secs, reason } => {
-                assert_eq!(retry_after_secs, 20 * 60);
-                assert!(reason.contains("7d window"), "{reason}");
+    fn per_window_independent_cap_and_bypass() {
+        // Acceptance (2)/(7): session within its bypass; weekly-all blocks outside.
+        let c = caps(&[(KEY_SESSION, Some(80), Some(10)), (KEY_WEEKLY_ALL, Some(70), Some(30))]);
+        let u = legacy(95.0, "2026-06-19T12:05:00Z", 90.0, "2026-06-19T16:00:00Z");
+        match eval(&u, &c) {
+            Decision::Block { reason, key, .. } => {
+                assert!(reason.contains("Weekly (all models)"), "{reason}");
+                assert_eq!(key, "weekly_all");
             }
             d @ Decision::Allow => panic!("expected block, got {d:?}"),
         }
     }
 
     #[test]
+    fn multi_window_retry_after_is_nearest_reset() {
+        // Acceptance (7): both over cap; nearer reset wins the Retry-After.
+        let c = caps(&[(KEY_SESSION, Some(80), None), (KEY_WEEKLY_ALL, Some(70), None)]);
+        let u = legacy(90.0, "2026-06-19T16:00:00Z", 75.0, "2026-06-19T12:20:00Z");
+        match eval(&u, &c) {
+            Decision::Block { retry_after_secs, key, .. } => {
+                assert_eq!(retry_after_secs, 20 * 60);
+                assert_eq!(key, "weekly_all");
+            }
+            d @ Decision::Allow => panic!("expected block, got {d:?}"),
+        }
+    }
+
+    #[test]
+    fn model_scoped_limit_blocks_and_names_itself() {
+        // Acceptance (7): a model-scoped window is the blocker and is identified.
+        let c = caps(&[("weekly_model:fable", Some(90), None)]);
+        let u = json!({"limits":[{"kind":"weekly_scoped","percent":100,
+            "resets_at":"2026-06-20T12:00:00Z","scope":{"model":{"id":null,"display_name":"Fable"}}}]});
+        match eval(&u, &c) {
+            Decision::Block { key, reason, .. } => {
+                assert_eq!(key, "weekly_model:fable");
+                assert!(reason.contains("Weekly Fable"), "{reason}");
+            }
+            d @ Decision::Allow => panic!("expected block, got {d:?}"),
+        }
+    }
+
+    #[test]
+    fn configured_key_without_window_fails_open() {
+        // Acceptance (8): cap on a key with no matching window ⇒ allow (fail open).
+        let c = caps(&[("weekly_model:ghost", Some(10), None)]);
+        let u = legacy(99.0, "2026-06-19T16:00:00Z", 99.0, "2026-06-26T00:00:00Z");
+        assert_eq!(eval(&u, &c), Decision::Allow);
+    }
+
+    #[test]
     fn cap_only_on_unconfigured_window_allows() {
-        // 7d is hot but only the 5h cap is configured ⇒ allow.
-        let caps = SoftLimits { pct_5h: Some(80), ..Default::default() };
-        let u = usage(10.0, "2026-06-19T16:00:00Z", 99.0, "2026-06-26T00:00:00Z");
-        assert_eq!(evaluate_soft_limit(Some(&u), &caps, now()), Decision::Allow);
+        let c = caps(&[(KEY_SESSION, Some(80), None)]);
+        let u = legacy(10.0, "2026-06-19T16:00:00Z", 99.0, "2026-06-26T00:00:00Z");
+        assert_eq!(eval(&u, &c), Decision::Allow);
+    }
+
+    // ---- persistence round-trip -------------------------------------------
+
+    #[test]
+    fn from_json_round_trips_and_rejects_bad_keys() {
+        let blob = json!({
+            "session": {"cap_pct": 80, "bypass_minutes": 10},
+            "weekly_model:Fable 2.0": {"cap_pct": 100},
+            "<bad>": {"cap_pct": 50},
+            "bypass_only": {"bypass_minutes": 5},
+        });
+        let sl = SoftLimits::from_json(Some(&blob));
+        assert!(sl.limits.contains_key("session"));
+        assert!(sl.limits.contains_key("weekly_model:fable-2.0"));
+        assert!(!sl.limits.keys().any(|k| k.contains('<')));
+        // A bypass-only, cap-less entry is inert ⇒ is_unset stays true if it's the
+        // only thing set.
+        assert!(!sl.is_unset()); // session has a cap
+        let round = SoftLimits::from_json(Some(&serde_json::to_value(&sl).unwrap()));
+        assert_eq!(sl, round);
+    }
+
+    #[test]
+    fn migrated_legacy_config_still_enforces() {
+        // Acceptance (6): 5h→session, 7d→weekly_all migrate without loss.
+        let migrated = json!({
+            "session": {"cap_pct": 80, "bypass_minutes": 10},
+            "weekly_all": {"cap_pct": 70, "bypass_minutes": 360},
+        });
+        let c = SoftLimits::from_json(Some(&migrated));
+        let u = legacy(90.0, "2026-06-19T12:41:00Z", 10.0, "2026-06-26T00:00:00Z");
+        assert!(matches!(eval(&u, &c), Decision::Block { .. }));
     }
 }

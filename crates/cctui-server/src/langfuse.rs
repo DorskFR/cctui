@@ -585,4 +585,50 @@ mod tests {
         );
         assert!(!z.should_sample());
     }
+
+    // CCT-688 regression: generalizing the soft-limit evaluator to a per-window
+    // collection must stay OUT of the Langfuse tracing path. The gateway
+    // evaluates the soft limit BEFORE it ever constructs a tracer, and a blocked
+    // request returns its 429 before any tracing/upstream work. Evaluating the
+    // limit therefore must neither read nor mutate the tracer's usage cache —
+    // assert that a full evaluate (both Block and Allow) leaves it untouched.
+    #[test]
+    fn soft_limit_eval_never_touches_langfuse_usage_cache() {
+        use crate::soft_limit::{
+            Decision, SoftLimits, evaluate_soft_limit, normalize_usage_windows,
+        };
+        let client = LangfuseClient::new(
+            LangfuseConfig {
+                host: "h".into(),
+                public_host: "h".into(),
+                public_key: "p".into(),
+                secret_key: "s".into(),
+                sample_rate: 1.0,
+            },
+            reqwest::Client::new(),
+        );
+        assert!(client.usage_cache.is_empty());
+
+        let now = chrono::DateTime::parse_from_rfc3339("2026-06-19T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let usage = serde_json::json!({"limits":[
+            {"kind":"session","percent":95,"resets_at":"2026-06-19T13:00:00Z"},
+            {"kind":"weekly_all","percent":10,"resets_at":"2026-06-26T00:00:00Z"},
+        ]});
+        let windows = normalize_usage_windows(&usage);
+        let caps = SoftLimits::from_json(Some(&serde_json::json!({
+            "session": {"cap_pct": 80},
+        })));
+        // Blocked case: still no tracing-side effects.
+        assert!(matches!(evaluate_soft_limit(&windows, &caps, now), Decision::Block { .. }));
+        assert!(client.usage_cache.is_empty(), "blocked eval must not warm the trace cache");
+
+        // Allowed case (under cap): likewise untouched.
+        let allow_caps = SoftLimits::from_json(Some(&serde_json::json!({
+            "session": {"cap_pct": 99},
+        })));
+        assert_eq!(evaluate_soft_limit(&windows, &allow_caps, now), Decision::Allow);
+        assert!(client.usage_cache.is_empty(), "allowed eval must not warm the trace cache");
+    }
 }

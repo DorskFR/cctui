@@ -2,6 +2,7 @@
 	import {
 		useAccounts,
 		useAccountActions,
+		useAccountUsage,
 		useCapabilities,
 		useMe,
 		useUsers,
@@ -9,12 +10,15 @@
 		type AccountProvider,
 		type CreateAccount,
 		type CreateProvider,
+		type SoftLimitConfig,
 		type UpdateAccount,
 		type UpdateProvider,
 	} from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
 	import { providerFamily, providerLabel, PROVIDER_KINDS, type ProviderKind } from '$lib/providers';
 	import ProviderPanel from '$lib/components/molecules/ProviderPanel.svelte';
+	import SoftLimit from '$lib/components/molecules/SoftLimit.svelte';
+	import { editorWindowKeys } from '$lib/components/molecules/usage-windows';
 	import ResourceShares from '$lib/components/molecules/ResourceShares.svelte';
 	import GithubConnectors from '$lib/components/organisms/GithubConnectors.svelte';
 	import DispatchersPanel from '$lib/components/organisms/DispatchersPanel.svelte';
@@ -99,16 +103,33 @@
 	// Per-provider model alias map (CCT-406): logical name → concrete model code,
 	// e.g. opus → claude-opus-4-8[1m]. Resolved server-side at spawn.
 	let aliasRows = $state<{ alias: string; model: string }[]>([]);
-	// Per-provider soft limits (CCT-411): cap cctui's own share of the 5h/7d usage
-	// windows so it leaves headroom for the human sharing the subscription. Empty
-	// input = no cap on that window.
-	// `<Input type="number">` makes Svelte coerce `bind:value` to `number | null`
-	// (null when the field is cleared), so these hold numbers, not strings.
-	let soft5h = $state<number | null>(null);
-	let soft7d = $state<number | null>(null);
-	let softBypass5h = $state<number | null>(null);
-	let softBypass7d = $state<number | null>(null);
+	// Per-provider soft limits (CCT-688): cap cctui's own share of each usage
+	// window, keyed by canonical window id. Edited per window via the reusable
+	// SoftLimit component; empty inputs = no cap/bypass on that window.
+	let softEdits = $state<Record<string, { cap: number | null; bypass: number | null }>>({});
 	const isCompatible = $derived(provider.endsWith('-compatible'));
+
+	// Live windows for the provider under edit, so newly discovered (e.g.
+	// model-scoped) windows appear in the editor automatically (CCT-688).
+	const editorUsage = useAccountUsage(
+		() => editingProvider?.id ?? '',
+		() =>
+			!!editingProvider &&
+			(editingProvider.provider === 'anthropic' || editingProvider.provider === 'openai')
+	);
+	const editorWindows = $derived($editorUsage.data?.windows ?? []);
+	// Window keys to offer: baseline + observed + already-configured (CCT-688).
+	const editorRows = $derived(
+		editor?.mode === 'create' || editor?.mode === 'add-provider' || editor?.mode === 'edit-provider'
+			? editorWindowKeys(editorWindows, editingProvider?.soft_limits ?? null)
+			: []
+	);
+	// Ensure every offered key has an edit slot (seeded null; open* seeds configured).
+	$effect(() => {
+		for (const { key } of editorRows) {
+			if (!(key in softEdits)) softEdits[key] = { cap: null, bypass: null };
+		}
+	});
 
 	// Per-provider settings (CCT-541) + per-account env (CCT-538). `settings`
 	// mirrors the provider's settings_json; `envRows` feed the identity's
@@ -129,14 +150,17 @@
 		return Number.isFinite(n) ? Math.max(0, n) : null;
 	}
 
-	/** The soft-limit block to send on save (always sent so clearing works). */
-	function softLimits() {
-		return {
-			soft_limit_5h_pct: softNum(soft5h),
-			soft_limit_7d_pct: softNum(soft7d),
-			soft_limit_bypass_5h_minutes: softNum(softBypass5h),
-			soft_limit_bypass_7d_minutes: softNum(softBypass7d)
-		};
+	/** The soft-limit map to send on save (CCT-688). Always sent as the whole
+	 *  replacement map so clearing a window's cap/bypass sticks; windows with
+	 *  neither cap nor bypass are dropped from the map. */
+	function softLimits(): Record<string, SoftLimitConfig> {
+		const out: Record<string, SoftLimitConfig> = {};
+		for (const [key, v] of Object.entries(softEdits)) {
+			const cap = softNum(v.cap);
+			const bypass = softNum(v.bypass);
+			if (cap !== null || bypass !== null) out[key] = { cap_pct: cap, bypass_minutes: bypass };
+		}
+		return out;
 	}
 
 	/** Collapse the alias rows into the `{alias: model}` object the API expects,
@@ -190,10 +214,7 @@
 		authScheme = 'bearer';
 		modelRows = [{ model: '', label: '' }];
 		aliasRows = [];
-		soft5h = null;
-		soft7d = null;
-		softBypass5h = null;
-		softBypass7d = null;
+		softEdits = {};
 		oauthNonce = null;
 		oauthCode = '';
 		oauthBusy = false;
@@ -315,11 +336,11 @@
 		}
 		// Aliases are editable for every provider (CCT-406).
 		aliasRows = Object.entries(p.model_aliases ?? {}).map(([alias, model]) => ({ alias, model }));
-		// Soft limits are editable for every provider (CCT-411).
-		soft5h = p.soft_limit_5h_pct;
-		soft7d = p.soft_limit_7d_pct;
-		softBypass5h = p.soft_limit_bypass_5h_minutes;
-		softBypass7d = p.soft_limit_bypass_7d_minutes;
+		// Soft limits are editable per window for every provider (CCT-688).
+		softEdits = {};
+		for (const [key, v] of Object.entries(p.soft_limits ?? {})) {
+			softEdits[key] = { cap: v.cap_pct ?? null, bypass: v.bypass_minutes ?? null };
+		}
 		// Settings are editable per provider (CCT-541/CCT-560).
 		acctSettings = { ...(p.settings_json ?? {}) };
 	}
@@ -379,7 +400,7 @@
 				const spec: CreateProvider = {
 					provider,
 					...(Object.keys(model_aliases).length ? { model_aliases } : {}),
-					...softLimits()
+					soft_limits: softLimits()
 				};
 				if (isCompatible) {
 					if (!baseUrl.trim()) {
@@ -425,7 +446,7 @@
 						...(credential.trim() ? { access_token: credential.trim() } : {}),
 						...(models.length ? { models } : {}),
 						...(Object.keys(model_aliases).length ? { model_aliases } : {}),
-						...softLimits(),
+						soft_limits: softLimits(),
 						...(isAdmin ? { user_id: ownerId } : {}),
 					};
 				} else {
@@ -438,7 +459,7 @@
 						provider,
 						refresh_token: refreshToken.trim(),
 						...(Object.keys(model_aliases).length ? { model_aliases } : {}),
-						...softLimits(),
+						soft_limits: softLimits(),
 						...(isAdmin ? { user_id: ownerId } : {}),
 					};
 				}
@@ -764,34 +785,27 @@
 						</div>
 					{/if}
 
-					<!-- Soft limits (CCT-411): cap cctui's own share of the 5h/7d usage
-					     windows so a shared subscription keeps headroom for the human.
-					     Blank ⇒ no cap on that window. Works for anthropic (upstream usage
-					     API) and openai (locally metered, CCT-511). -->
+					<!-- Soft limits (CCT-688): one reusable SoftLimit row per usage window
+					     (baseline + observed + configured), so model-scoped windows appear
+					     automatically. Works for anthropic (upstream usage API) and openai
+					     (locally metered, CCT-511). -->
 					{#if provider === 'anthropic' || provider === 'anthropic-compatible' || provider === 'openai'}
 						<div class="models">
 							<Text as="div" tone="muted" size="sm">{m.accounts_soft_limits_label()}</Text>
 							<Text as="div" tone="faint" size="xs">
 								{m.accounts_soft_limits_help()}
 							</Text>
-							<div class="soft-grid">
-								<label class="soft-field">
-									<Text as="div" tone="faint" size="xs">{m.accounts_soft_5h_cap()}</Text>
-									<Input type="number" bind:value={soft5h} placeholder="e.g. 80" />
-								</label>
-								<label class="soft-field">
-									<Text as="div" tone="faint" size="xs">{m.accounts_soft_7d_cap()}</Text>
-									<Input type="number" bind:value={soft7d} placeholder="e.g. 80" />
-								</label>
-								<label class="soft-field">
-									<Text as="div" tone="faint" size="xs">{m.accounts_soft_5h_bypass()}</Text>
-									<Input type="number" bind:value={softBypass5h} placeholder="e.g. 30" />
-								</label>
-								<label class="soft-field">
-									<Text as="div" tone="faint" size="xs">{m.accounts_soft_7d_bypass()}</Text>
-									<Input type="number" bind:value={softBypass7d} placeholder="e.g. 360" />
-								</label>
-							</div>
+							{#each editorRows as row (row.key)}
+								{#if softEdits[row.key]}
+									<SoftLimit
+										label={row.label}
+										editable
+										observed={false}
+										bind:cap={softEdits[row.key].cap}
+										bind:bypass={softEdits[row.key].bypass}
+									/>
+								{/if}
+							{/each}
 						</div>
 					{/if}
 
@@ -874,17 +888,6 @@
 		margin-top: var(--sp-3);
 		padding-top: var(--sp-3);
 		border-top: 1px solid var(--border);
-	}
-	.soft-grid {
-		display: grid;
-		grid-template-columns: repeat(2, 1fr);
-		gap: var(--sp-2);
-	}
-	.soft-field {
-		display: flex;
-		flex-direction: column;
-		gap: 0.25rem;
-		min-width: 0;
 	}
 	/* Account-level stat list — label over value, no input-like chrome (CCT-345). */
 	.stats {
