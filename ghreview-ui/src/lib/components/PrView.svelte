@@ -32,10 +32,8 @@
   } from "../stores/pr-tabs-core";
   import { tabs } from "../stores/tabs.svelte";
   import DiffView from "./DiffView.svelte";
-  import PrChecks from "./PrChecks.svelte";
+  import PrComments from "./PrComments.svelte";
   import PrCommits from "./PrCommits.svelte";
-  import PrConversation from "./PrConversation.svelte";
-  import PrActivity from "./PrActivity.svelte";
   import PrDescription from "./PrDescription.svelte";
   import PrTabs from "./PrTabs.svelte";
   import PrDiffHeader from "./organisms/PrDiffHeader.svelte";
@@ -313,14 +311,18 @@
           account={account ?? undefined}
           reactions={pull.reactions ?? null}
         />
-      {:else if activeTab === "conversation"}
-        <PrConversation {pull} {owner} {repo} account={account ?? undefined} />
       {:else if activeTab === "commits"}
         <PrCommits {pull} {owner} {repo} />
-      {:else if activeTab === "checks"}
-        <PrChecks {pull} />
-      {:else if activeTab === "activity"}
-        <PrActivity {owner} {repo} {number} account={account ?? undefined} />
+      {:else if activeTab === "comments"}
+        <PrComments
+          {owner}
+          {repo}
+          {number}
+          account={account ?? undefined}
+          inline={threads}
+          inlineLoading={$threadsQuery.isLoading}
+          inlineError={$threadsQuery.error as Error | null}
+        />
       {:else}
         <PrDiffLayout
           model={displayModel}

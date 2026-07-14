@@ -620,9 +620,12 @@ export const ActivityDetailSchema = z
 
 export const ActivityEventSchema = z
   .object({
+    id: z.string().nullable().openapi({ description: "Stable GitHub event identifier" }),
     event: z.string().openapi({ example: "reviewed", description: "GitHub timeline event type" }),
     actor: ActivityActorSchema.nullable(),
     created_at: z.string().nullable().openapi({ description: "ISO timestamp of the event" }),
+    html_url: z.string().nullable(),
+    reactions: ReactionRollupSchema.nullable(),
     detail: ActivityDetailSchema.optional(),
   })
   .openapi("ActivityEvent");

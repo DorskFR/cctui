@@ -79,6 +79,15 @@ export interface GithubFile {
   sha?: string;
 }
 
+export interface GithubCommit {
+  sha?: string;
+  commit?: {
+    message?: string;
+    author?: { name?: string; date?: string } | null;
+  };
+  author?: GithubUser | null;
+}
+
 export interface GithubPull {
   number: number;
   title: string;
@@ -100,6 +109,8 @@ export interface GithubPull {
   body?: string | null;
   updated_at?: string;
   files?: GithubFile[];
+  commits_list?: GithubCommit[];
+  cctui_enriched_head_sha?: string | null;
   ci?: CiState;
   reactions?: ReactionRollup;
 }

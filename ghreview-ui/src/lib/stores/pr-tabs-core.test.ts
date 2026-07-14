@@ -15,18 +15,23 @@ describe("pr content tabs", () => {
   it("exposes the content tabs in order", () => {
     expect(PR_CONTENT_TABS).toEqual([
       "description",
-      "conversation",
       "commits",
-      "checks",
-      "activity",
+      "comments",
       "diff",
     ]);
   });
 
   it("recognizes valid tab ids", () => {
     expect(isPrContentTab("commits")).toBe(true);
+    expect(isPrContentTab("comments")).toBe(true);
     expect(isPrContentTab("nope")).toBe(false);
     expect(isPrContentTab(null)).toBe(false);
+  });
+
+  it("migrates removed content tabs", () => {
+    expect(deserializePrTab("conversation")).toBe("comments");
+    expect(deserializePrTab("activity")).toBe("comments");
+    expect(deserializePrTab("checks")).toBe("diff");
   });
 
   it("builds a per-PR storage key", () => {
@@ -34,7 +39,7 @@ describe("pr content tabs", () => {
   });
 
   it("deserializes to a valid tab or the default", () => {
-    expect(deserializePrTab("checks")).toBe("checks");
+    expect(deserializePrTab("comments")).toBe("comments");
     expect(deserializePrTab(null)).toBe("diff");
     expect(deserializePrTab("garbage")).toBe("diff");
   });

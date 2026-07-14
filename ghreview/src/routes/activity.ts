@@ -41,13 +41,11 @@ const RENDERABLE = new Set([
   "renamed",
 ]);
 
-const EXCERPT_LEN = 280;
-
-function excerpt(body: unknown): string | undefined {
+function bodyText(body: unknown): string | undefined {
   if (typeof body !== "string") return undefined;
   const trimmed = body.trim();
   if (!trimmed) return undefined;
-  return trimmed.length > EXCERPT_LEN ? `${trimmed.slice(0, EXCERPT_LEN)}…` : trimmed;
+  return trimmed;
 }
 
 function actorOf(raw: Record<string, unknown>): ActivityEvent["actor"] {
@@ -70,14 +68,26 @@ export function normalizeTimelineEvent(raw: Record<string, unknown>): ActivityEv
     (raw.author as { date?: string } | undefined)?.date ??
     null;
 
-  const base: ActivityEvent = { event, actor: actorOf(raw), created_at: created_at ?? null };
+  const rawId = raw.id;
+  const id = typeof rawId === "number" || typeof rawId === "string" ? String(rawId) : null;
+  const base: ActivityEvent = {
+    id,
+    event,
+    actor: actorOf(raw),
+    created_at: created_at ?? null,
+    html_url: typeof raw.html_url === "string" ? raw.html_url : null,
+    reactions:
+      raw.reactions && typeof raw.reactions === "object"
+        ? (raw.reactions as ActivityEvent["reactions"])
+        : null,
+  };
   const detail: NonNullable<ActivityEvent["detail"]> = {};
 
   switch (event) {
     case "committed": {
       const sha = shortSha(raw.sha);
       if (sha) detail.sha = sha;
-      const message = excerpt((raw.message as string | undefined)?.split("\n")[0]);
+      const message = bodyText((raw.message as string | undefined)?.split("\n")[0]);
       if (message) detail.message = message;
       const author = raw.author as { name?: string } | undefined;
       if (author?.name) detail.author_name = author.name;
@@ -85,12 +95,12 @@ export function normalizeTimelineEvent(raw: Record<string, unknown>): ActivityEv
     }
     case "reviewed": {
       if (typeof raw.state === "string") detail.state = raw.state.toUpperCase();
-      const body = excerpt(raw.body);
+      const body = bodyText(raw.body);
       if (body) detail.body = body;
       break;
     }
     case "commented": {
-      const body = excerpt(raw.body);
+      const body = bodyText(raw.body);
       if (body) detail.body = body;
       break;
     }

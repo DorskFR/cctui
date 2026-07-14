@@ -881,6 +881,11 @@
       "ActivityEvent": {
         "type": "object",
         "properties": {
+          "id": {
+            "type": "string",
+            "nullable": true,
+            "description": "Stable GitHub event identifier"
+          },
           "event": {
             "type": "string",
             "example": "reviewed",
@@ -894,14 +899,24 @@
             "nullable": true,
             "description": "ISO timestamp of the event"
           },
+          "html_url": {
+            "type": "string",
+            "nullable": true
+          },
+          "reactions": {
+            "$ref": "#/components/schemas/ReactionRollup"
+          },
           "detail": {
             "$ref": "#/components/schemas/ActivityDetail"
           }
         },
         "required": [
+          "id",
           "event",
           "actor",
-          "created_at"
+          "created_at",
+          "html_url",
+          "reactions"
         ]
       },
       "ActivityActor": {
@@ -921,6 +936,39 @@
           "login",
           "avatar_url"
         ]
+      },
+      "ReactionRollup": {
+        "type": "object",
+        "nullable": true,
+        "properties": {
+          "+1": {
+            "type": "integer"
+          },
+          "-1": {
+            "type": "integer"
+          },
+          "laugh": {
+            "type": "integer"
+          },
+          "hooray": {
+            "type": "integer"
+          },
+          "confused": {
+            "type": "integer"
+          },
+          "heart": {
+            "type": "integer"
+          },
+          "rocket": {
+            "type": "integer"
+          },
+          "eyes": {
+            "type": "integer"
+          },
+          "total_count": {
+            "type": "integer"
+          }
+        }
       },
       "ActivityDetail": {
         "type": "object",
@@ -1520,39 +1568,6 @@
           "html_url",
           "reactions"
         ]
-      },
-      "ReactionRollup": {
-        "type": "object",
-        "nullable": true,
-        "properties": {
-          "+1": {
-            "type": "integer"
-          },
-          "-1": {
-            "type": "integer"
-          },
-          "laugh": {
-            "type": "integer"
-          },
-          "hooray": {
-            "type": "integer"
-          },
-          "confused": {
-            "type": "integer"
-          },
-          "heart": {
-            "type": "integer"
-          },
-          "rocket": {
-            "type": "integer"
-          },
-          "eyes": {
-            "type": "integer"
-          },
-          "total_count": {
-            "type": "integer"
-          }
-        }
       },
       "ReactionSummary": {
         "type": "object",
@@ -4643,7 +4658,7 @@
     "/v1/webhook": {
       "post": {
         "summary": "GitHub webhook ingestion",
-        "description": "Optional push path for org repos that can install a webhook. Verifies X-Hub-Signature-256 (HMAC-SHA256 of the raw body with the shared secret) and upserts the payload exactly like a poll result. Polling remains the universal path.",
+        "description": "Optional push path for org repos that can install a webhook. Verifies X-Hub-Signature-256 (HMAC-SHA256 of the raw body with the shared secret) and merges the payload into the synced pull request. Polling remains the universal path.",
         "tags": [
           "events"
         ],

@@ -160,7 +160,7 @@
 
   const query = createQuery(
     toStore(() => ({
-      queryKey: keys.activity(owner, repo, number),
+      queryKey: keys.activity(owner, repo, number, account),
       queryFn: () => api.activity(owner, repo, number, account as string),
       enabled: account != null,
     })),

@@ -92,6 +92,16 @@ describe("PrDiffHeader", () => {
     expect(actions?.textContent).toContain("Merge");
     expect(actions?.querySelector(".bar.full-width")).not.toBeNull();
     expect(actions?.querySelector(".merge-button.full-width")).not.toBeNull();
+    expect(actions?.querySelector('[role="radiogroup"]')?.classList.contains("seg-sm")).toBe(true);
+    const popoverTriggers = actions?.querySelectorAll('[data-tsu="Popover"]');
+    expect(popoverTriggers?.length).toBe(2);
+    expect(popoverTriggers?.[0].classList.contains("trigger-sm")).toBe(true);
+    expect(popoverTriggers?.[0].classList.contains("trigger-primary")).toBe(true);
+    expect(popoverTriggers?.[0].classList.contains("trigger-tone-accent")).toBe(true);
+    expect(popoverTriggers?.[1].classList.contains("trigger-sm")).toBe(true);
+    expect(popoverTriggers?.[1].classList.contains("trigger-primary")).toBe(true);
+    expect(popoverTriggers?.[1].classList.contains("trigger-tone-success")).toBe(true);
+    expect(actions?.querySelector(".trigger")).toBeNull();
   });
 
   it("keeps diff selection interactive and exposes the narrow-screen stacking hooks", async () => {

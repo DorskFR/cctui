@@ -2182,7 +2182,7 @@ export interface paths {
         put?: never;
         /**
          * GitHub webhook ingestion
-         * @description Optional push path for org repos that can install a webhook. Verifies X-Hub-Signature-256 (HMAC-SHA256 of the raw body with the shared secret) and upserts the payload exactly like a poll result. Polling remains the universal path.
+         * @description Optional push path for org repos that can install a webhook. Verifies X-Hub-Signature-256 (HMAC-SHA256 of the raw body with the shared secret) and merges the payload into the synced pull request. Polling remains the universal path.
          */
         post: {
             parameters: {
@@ -2560,6 +2560,8 @@ export interface components {
             items: components["schemas"]["ActivityEvent"][];
         };
         ActivityEvent: {
+            /** @description Stable GitHub event identifier */
+            id: string | null;
             /**
              * @description GitHub timeline event type
              * @example reviewed
@@ -2568,12 +2570,25 @@ export interface components {
             actor: components["schemas"]["ActivityActor"];
             /** @description ISO timestamp of the event */
             created_at: string | null;
+            html_url: string | null;
+            reactions: components["schemas"]["ReactionRollup"];
             detail?: components["schemas"]["ActivityDetail"];
         };
         ActivityActor: {
             /** @example octocat */
             login: string;
             avatar_url: string | null;
+        } | null;
+        ReactionRollup: {
+            "+1"?: number;
+            "-1"?: number;
+            laugh?: number;
+            hooray?: number;
+            confused?: number;
+            heart?: number;
+            rocket?: number;
+            eyes?: number;
+            total_count?: number;
         } | null;
         ActivityDetail: {
             /** @description Short commit SHA for commit/merge/close */
@@ -2791,17 +2806,6 @@ export interface components {
             html_url: string | null;
             reactions: components["schemas"]["ReactionRollup"];
         };
-        ReactionRollup: {
-            "+1"?: number;
-            "-1"?: number;
-            laugh?: number;
-            hooray?: number;
-            confused?: number;
-            heart?: number;
-            rocket?: number;
-            eyes?: number;
-            total_count?: number;
-        } | null;
         ReactionSummary: {
             "+1": number;
             "-1": number;

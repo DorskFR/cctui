@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { Button, Popover } from "@dorsk/tsumikit";
   import type { ReviewVerdict } from "../api/types";
 
   interface Skipped {
@@ -26,7 +27,6 @@
 
   let verdict = $state<ReviewVerdict>("comment");
   let body = $state("");
-  let open = $state(false);
 
   function publish(): void {
     onpublish(verdict, body.trim());
@@ -34,11 +34,15 @@
 </script>
 
 <div class="bar" class:full-width={fullWidth}>
-  <button type="button" class="toggle" onclick={() => (open = !open)}>
-    Review <span class="count">{draftCount}</span>
-  </button>
-
-  {#if open}
+  <Popover
+    label="Publish review"
+    placement="bottom-end"
+    size="sm"
+    variant="primary"
+    tone="accent"
+    block={fullWidth}
+  >
+    {#snippet trigger()}Review <span class="count">{draftCount}</span>{/snippet}
     <div class="panel">
       <label class="row">
         <span>Verdict</span>
@@ -66,32 +70,22 @@
       {/if}
 
       <div class="actions">
-        <button
-          type="button"
-          class="primary"
+        <Button
+          size="sm"
+          variant="primary"
+          tone="accent"
+          data-action="publish-review"
           disabled={publishing || (draftCount === 0 && verdict === "comment" && !body.trim())}
           onclick={publish}
         >
           {publishing ? "Publishing…" : "Publish review"}
-        </button>
+        </Button>
       </div>
     </div>
-  {/if}
+  </Popover>
 </div>
 
 <style>
-  .bar {
-    position: relative;
-  }
-  .toggle {
-    font-size: var(--fs-xs);
-    border: 1px solid var(--gh-border);
-    border-radius: var(--gh-radius);
-    background: var(--gh-accent);
-    color: white;
-    padding: 2px 10px;
-    cursor: pointer;
-  }
   .count {
     display: inline-block;
     min-width: 16px;
@@ -103,15 +97,7 @@
     font-family: var(--gh-mono);
   }
   .panel {
-    position: absolute;
-    right: 0;
-    top: calc(100% + 6px);
-    z-index: var(--z-drawer, 100);
     width: 320px;
-    background: var(--gh-bg-elev);
-    border: 1px solid var(--gh-border);
-    border-radius: var(--gh-radius);
-    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);
     padding: var(--gh-space-2);
     display: flex;
     flex-direction: column;
@@ -143,19 +129,6 @@
     display: flex;
     justify-content: flex-end;
   }
-  .primary {
-    font-size: var(--fs-xs);
-    background: var(--gh-accent);
-    color: white;
-    border: 1px solid var(--gh-accent);
-    border-radius: var(--gh-radius-sm);
-    padding: 3px 12px;
-    cursor: pointer;
-  }
-  .primary:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
   .err {
     font-size: var(--fs-xs);
     color: var(--gh-danger);
@@ -173,16 +146,9 @@
   }
 
   @media (max-width: 700px) {
-    .bar.full-width,
-    .bar.full-width .toggle {
+    .bar.full-width {
       width: 100%;
       box-sizing: border-box;
-    }
-    .bar.full-width .toggle {
-      display: flex;
-      min-height: 2.5rem;
-      align-items: center;
-      justify-content: center;
     }
   }
 </style>

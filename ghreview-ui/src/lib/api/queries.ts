@@ -27,8 +27,8 @@ export const keys = {
     ["review-threads", owner, repo, number] as const,
   reviewers: (owner: string, repo: string, number: number) =>
     ["reviewers", owner, repo, number] as const,
-  activity: (owner: string, repo: string, number: number) =>
-    ["activity", owner, repo, number] as const,
+  activity: (owner: string, repo: string, number: number, account?: string) =>
+    ["activity", owner, repo, number, account ?? "*"] as const,
   notifications: (filter: NotificationFilter) => ["notifications", JSON.stringify(filter)] as const,
 };
 
