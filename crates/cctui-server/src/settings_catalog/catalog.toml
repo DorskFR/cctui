@@ -1164,6 +1164,14 @@ label = "Disable feedback survey"
 notes = "quality-survey prompts off (=1)"
 
 [[env]]
+name = "ENABLE_PROMPT_CACHING_1H"
+group = "cache"
+tag = "safe"
+kind = "flag"
+label = "1-hour prompt cache"
+notes = "request the 1h prompt-cache TTL (== 1); default-on for Claude accounts, set 0 to fall back to the 5-min window"
+
+[[env]]
 name = "CLAUDE_BG_ISOLATION"
 group = "sessions"
 tag = "safe"

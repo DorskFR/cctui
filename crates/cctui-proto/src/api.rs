@@ -398,6 +398,79 @@ pub struct TokenUsageWindows {
     pub month: WindowTokenUsage,
 }
 
+/// One time bucket of aggregate token usage for the Overview usage chart.
+///
+/// (CCT-707.) `bucket` is the `date_trunc`'d instant (RFC3339, in the fixed
+/// reporting timezone anchored by the caller's `tz_offset`, mapped back to a
+/// UTC instant like `today` in [`TokenUsageWindows`]). Missing buckets are
+/// zero-filled client-side, not in SQL.
+#[derive(Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct UsageBucket {
+    /// Start of the bucket as an RFC3339 UTC instant.
+    pub bucket: String,
+    /// Non-cached prompt tokens summed over the bucket.
+    pub input: u64,
+    /// Generated tokens summed over the bucket.
+    pub output: u64,
+    /// Prompt-cache read tokens (⚡) summed over the bucket.
+    pub cache_read: u64,
+    /// Prompt-cache creation tokens summed over the bucket.
+    pub cache_creation: u64,
+}
+
+/// Per-model token + message totals over the reporting range (CCT-707).
+///
+/// Model attribution is session-level (`sessions.model`); per-turn model
+/// accuracy is out of scope. Sessions with no recorded model bucket under
+/// `"unknown"`.
+#[derive(Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ModelUsage {
+    /// `sessions.model`, or `"unknown"` when the session has no model recorded.
+    pub model: String,
+    /// Non-cached prompt tokens attributed to the model.
+    pub input: u64,
+    /// Generated tokens attributed to the model.
+    pub output: u64,
+    /// Prompt-cache read tokens attributed to the model.
+    pub cache_read: u64,
+    /// Assistant messages (rows) attributed to the model.
+    pub messages: u64,
+}
+
+/// One hour-of-week cell of the Overview activity heatmap (CCT-707). Extracted
+/// in the reporting timezone; cells with no activity are absent (the grid is
+/// filled client-side).
+#[derive(Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct HeatmapCell {
+    /// Day of week, 0=Sunday..6=Saturday (Postgres `EXTRACT(dow …)`).
+    pub dow: u8,
+    /// Hour of day, 0..23.
+    pub hour: u8,
+    /// Assistant messages in the cell.
+    pub messages: u64,
+    /// Generated (output) tokens in the cell.
+    pub output: u64,
+}
+
+/// Overview usage analytics (CCT-707): tokens-over-time buckets, per-model
+/// breakdown, and an activity heatmap — one endpoint, one round-trip set for
+/// the whole Overview usage section.
+#[derive(Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct UsageAnalytics {
+    /// Bucket granularity: `"hour"` for short ranges, else `"day"`.
+    pub granularity: String,
+    /// Tokens-over-time buckets, ordered oldest→newest.
+    pub buckets: Vec<UsageBucket>,
+    /// Per-model breakdown, ordered by output-token volume (desc).
+    pub models: Vec<ModelUsage>,
+    /// Sparse hour-of-week activity cells.
+    pub heatmap: Vec<HeatmapCell>,
+}
+
 #[derive(Debug, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct MessageRequest {

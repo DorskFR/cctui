@@ -1,0 +1,10 @@
+/* Bundled monospace webfont for the embedded xterm terminal (CCT-704).
+   Deterministic advance width across client OSes regardless of installed
+   system fonts. Vite fingerprints and copies the woff2 from the URL below. */
+@font-face {
+	font-family: 'JetBrains Mono';
+	font-style: normal;
+	font-weight: 400;
+	font-display: swap;
+	src: url('../assets/fonts/jetbrains-mono-latin-400.woff2') format('woff2');
+}

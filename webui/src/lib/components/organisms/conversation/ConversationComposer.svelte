@@ -7,6 +7,7 @@
 	import { compact } from '$lib/format';
 	import { toasts } from '$lib/toast.svelte';
 	import type { ScrollController } from './scroll.svelte';
+	import { cacheTtlMs } from './cacheTtl';
 	import { m } from '$lib/paraglide/messages';
 
 	let {
@@ -138,10 +139,11 @@
 	}
 
 	// ── Cold-cache Send button (CCT-189) ───────────────────────────────────
-	// Anthropic's prompt cache is a ~5-min sliding window; once it lapses the next
-	// send re-writes the whole context to cache (an expensive "burst"). The
-	// button's "cold now" is purely time-based.
-	const CACHE_TTL_MS = 5 * 60 * 1000;
+	// Once the prompt cache lapses the next send re-writes the whole context to
+	// cache (an expensive "burst"). The button's "cold now" is purely time-based.
+	// The TTL window is provider/family- and model-dependent (CCT-646): Anthropic
+	// 60m, OpenAI GPT-5.6+ 30m, else the 5-min legacy sliding window.
+	const CACHE_TTL_MS = $derived(cacheTtlMs(session.adapter_id, session.model));
 	// Final-minute countdown window (CCT-261).
 	const COLD_WARN_MS = 60 * 1000;
 	let now = $state(Date.now());

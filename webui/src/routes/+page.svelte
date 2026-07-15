@@ -3,6 +3,7 @@
 	import { apiOrigin } from '$lib/config';
 	import { toasts } from '$lib/toast.svelte';
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
+	import UsageAnalyticsSection from '$lib/components/organisms/overview/UsageAnalyticsSection.svelte';
 	import { AutoGrid, Button, Card, Cluster, Heading, Stack, Text } from '@dorsk/tsumikit';
 	import { asUsage } from './home.logic';
 	import { m } from '$lib/paraglide/messages';
@@ -84,6 +85,8 @@
 				{/each}
 			</AutoGrid>
 		</Stack>
+
+		<UsageAnalyticsSection />
 
 		<Card>
 			<Stack>

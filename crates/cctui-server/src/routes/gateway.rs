@@ -428,14 +428,7 @@ async fn mint_env_for_account(
         Family::Anthropic => {
             env.insert("ANTHROPIC_BASE_URL".into(), format!("{base}/gateway/anthropic"));
             env.insert("ANTHROPIC_AUTH_TOKEN".into(), token);
-            // Opt into the 1-hour prompt-cache TTL. The upstream account is a
-            // subscription, so 1h caching is plan-included (no per-token write
-            // premium); but Claude Code only requests it when it sees this flag.
-            // Over a custom base URL it can't tell the gateway is subscription-
-            // backed and otherwise defaults to the 5-minute TTL. Setting it here
-            // — alongside the other injected env — keeps the gateway a verbatim
-            // request passthrough (no body rewrite to add `cache_control.ttl`).
-            env.insert("ENABLE_PROMPT_CACHING_1H".into(), "1".into());
+            apply_anthropic_cache_defaults(&mut env);
         }
         Family::Openai => {
             env.insert("OPENAI_BASE_URL".into(), format!("{base}/gateway/openai"));
@@ -443,6 +436,14 @@ async fn mint_env_for_account(
         }
     }
     Ok(env)
+}
+
+/// Default-on Anthropic 1-hour prompt-cache flag (CCT-646): `or_insert_with`
+/// (not a plain insert) so the account's already-merged resolved env can
+/// override it — `ENABLE_PROMPT_CACHING_1H=0` opts back out — while the default
+/// preserves the prior always-on behaviour. Curated in the settings catalog.
+fn apply_anthropic_cache_defaults(env: &mut std::collections::BTreeMap<String, String>) {
+    env.entry("ENABLE_PROMPT_CACHING_1H".to_string()).or_insert_with(|| "1".to_string());
 }
 
 /// The session's existing stable gateway token for a given provider family
@@ -1829,10 +1830,33 @@ async fn local_window(
 #[cfg(test)]
 mod tests {
     use super::{
-        AuthStage, Family, OrphanSpamMap, auth_error, bump_orphan_401, clear_orphan_fingerprint,
-        map_wham_usage, orphan_is_blocked_at, usage_cache_stale,
+        AuthStage, Family, OrphanSpamMap, apply_anthropic_cache_defaults, auth_error,
+        bump_orphan_401, clear_orphan_fingerprint, map_wham_usage, orphan_is_blocked_at,
+        usage_cache_stale,
     };
+    use std::collections::BTreeMap;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn anthropic_1h_cache_flag_defaults_on_and_is_overridable() {
+        let mut env = BTreeMap::new();
+        apply_anthropic_cache_defaults(&mut env);
+        assert_eq!(env.get("ENABLE_PROMPT_CACHING_1H").map(String::as_str), Some("1"));
+
+        let mut off = BTreeMap::new();
+        off.insert("ENABLE_PROMPT_CACHING_1H".to_string(), "0".to_string());
+        apply_anthropic_cache_defaults(&mut off);
+        assert_eq!(off.get("ENABLE_PROMPT_CACHING_1H").map(String::as_str), Some("0"));
+    }
+
+    #[test]
+    fn anthropic_1h_cache_flag_is_curated_in_catalog() {
+        let e = crate::settings_catalog::catalog()
+            .env("ENABLE_PROMPT_CACHING_1H")
+            .expect("1h cache flag curated in the catalog");
+        assert!(e.tag.account_exposable());
+        assert!(!crate::settings_catalog::catalog().env_denylisted("ENABLE_PROMPT_CACHING_1H"));
+    }
 
     #[test]
     fn wham_usage_maps_to_five_and_seven_windows() {

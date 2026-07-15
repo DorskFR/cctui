@@ -453,6 +453,14 @@ fn build_api_routes() -> Routes {
         )
         .add(
             &[GET],
+            "/sessions/stats/usage",
+            "Overview usage analytics: tokens over time, per-model, heatmap.",
+            get(routes::stats::session_usage_analytics),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[GET],
             "/sessions/search",
             "Full-text search across your sessions.",
             get(routes::sessions::search_sessions),
