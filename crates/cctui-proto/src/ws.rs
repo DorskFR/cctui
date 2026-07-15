@@ -199,6 +199,12 @@ pub enum AgentEvent {
     /// the adapter layer (Claude's `isMeta` + known harness tags) so clients
     /// can render it distinctly without re-sniffing strings. `#[serde(default)]`
     /// keeps older stored payloads (no field) decoding as non-meta.
+    ///
+    /// `seq` (CCT-481) is a monotonic per-session insert sequence
+    /// (`stream_events.id`) so clients order events causally rather than by
+    /// receive-time `ts`, which can tie or invert (a late-flushed
+    /// `AskUserQuestion` carries a `ts` after the user's answer). Optional so
+    /// pre-CCT-481 payloads still decode.
     Text {
         content: String,
         #[serde(default)]
@@ -208,26 +214,36 @@ pub enum AgentEvent {
         message_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         usage: Option<crate::models::TokenUsage>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<i64>,
     },
     ToolCall {
         tool: String,
         input: serde_json::Value,
         ts: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<i64>,
     },
     ToolResult {
         tool: String,
         output_summary: String,
         ts: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<i64>,
     },
     Heartbeat {
         tokens_in: u64,
         tokens_out: u64,
         cost_usd: f64,
         ts: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<i64>,
     },
     Reply {
         content: String,
         ts: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<i64>,
     },
     /// A context reset boundary (`/clear` or `/compact`). The session id rotates
     /// in place under the same worker; rather than splitting into a second
@@ -236,6 +252,8 @@ pub enum AgentEvent {
     /// distinctly (CCT-158).
     ContextReset {
         ts: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<i64>,
     },
     /// A `/compact` boundary. Unlike `/clear`, `/compact` does NOT rotate the
     /// session id — it appends an `isCompactSummary` line to the same
@@ -245,10 +263,50 @@ pub enum AgentEvent {
     CompactSummary {
         content: String,
         ts: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<i64>,
     },
     TurnEnd {
         ts: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<i64>,
     },
+}
+
+impl AgentEvent {
+    /// The monotonic per-session insert sequence (CCT-481), when the server has
+    /// stamped one. `None` for freshly-normalized events before persistence and
+    /// for legacy payloads persisted before the field existed.
+    #[must_use]
+    pub fn seq(&self) -> Option<i64> {
+        match self {
+            AgentEvent::Text { seq, .. }
+            | AgentEvent::ToolCall { seq, .. }
+            | AgentEvent::ToolResult { seq, .. }
+            | AgentEvent::Heartbeat { seq, .. }
+            | AgentEvent::Reply { seq, .. }
+            | AgentEvent::ContextReset { seq, .. }
+            | AgentEvent::CompactSummary { seq, .. }
+            | AgentEvent::TurnEnd { seq, .. } => *seq,
+        }
+    }
+
+    /// Stamp the causal insert sequence (CCT-481). Called by the server right
+    /// after a successful `stream_events` insert so the live broadcast carries
+    /// the same ordering key the reload path derives from `stream_events.id`.
+    pub fn set_seq(&mut self, value: i64) {
+        let slot = match self {
+            AgentEvent::Text { seq, .. }
+            | AgentEvent::ToolCall { seq, .. }
+            | AgentEvent::ToolResult { seq, .. }
+            | AgentEvent::Heartbeat { seq, .. }
+            | AgentEvent::Reply { seq, .. }
+            | AgentEvent::ContextReset { seq, .. }
+            | AgentEvent::CompactSummary { seq, .. }
+            | AgentEvent::TurnEnd { seq, .. } => seq,
+        };
+        *slot = Some(value);
+    }
 }
 
 // --- TUI → Server ---
@@ -478,10 +536,73 @@ mod tests {
             ts: 1_234_567_890,
             message_id: None,
             usage: None,
+            seq: None,
         };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains(r#""type":"text""#));
         assert!(json.contains(r#""content":"hello""#));
+    }
+
+    #[test]
+    fn agent_event_seq_roundtrips_and_defaults_to_none() {
+        // Legacy payload (no seq field) decodes as None.
+        let legacy = r#"{"type":"turn_end","ts":5}"#;
+        let ev: AgentEvent = serde_json::from_str(legacy).unwrap();
+        assert_eq!(ev.seq(), None);
+
+        // A stamped seq survives a wire roundtrip and is readable via `seq()`.
+        let mut ev = AgentEvent::Text {
+            content: "hi".into(),
+            meta: false,
+            ts: 10,
+            message_id: None,
+            usage: None,
+            seq: None,
+        };
+        ev.set_seq(42);
+        assert_eq!(ev.seq(), Some(42));
+        let json = serde_json::to_string(&ev).unwrap();
+        assert!(json.contains(r#""seq":42"#));
+        let back: AgentEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.seq(), Some(42));
+    }
+
+    #[test]
+    fn agent_event_seq_orders_ask_turn_when_ts_ties_or_inverts() {
+        // Reload scenario (CCT-481): a late-flushed AskUserQuestion card+preamble
+        // carry a `ts` at/after the user's answer, but their insert `seq` is
+        // lower. Ordering by `seq` restores causal order; ordering by `ts` does
+        // not. `seq` is the DB insert sequence, always a strict total order.
+        let preamble = AgentEvent::Text {
+            content: "Here is my analysis.".into(),
+            meta: false,
+            ts: 100, // ties the answer's ts
+            message_id: None,
+            usage: None,
+            seq: Some(1),
+        };
+        let card = AgentEvent::ToolCall {
+            tool: "AskUserQuestion".into(),
+            input: serde_json::json!({}),
+            ts: 100, // ties, and flushed late
+            seq: Some(2),
+        };
+        let answer = AgentEvent::Text {
+            content: "▷ User: option A".into(),
+            meta: false,
+            ts: 100,
+            message_id: None,
+            usage: None,
+            seq: Some(3),
+        };
+        // Deliberately shuffled so a stable ts-only sort would leave the answer
+        // ahead of its own question.
+        let mut events = vec![answer, preamble, card];
+        events.sort_by_key(|e| e.seq());
+        let seqs: Vec<Option<i64>> = events.iter().map(AgentEvent::seq).collect();
+        assert_eq!(seqs, vec![Some(1), Some(2), Some(3)]);
+        // The user answer now renders last, after its preamble + card.
+        assert!(matches!(&events[2], AgentEvent::Text { content, .. } if content.contains("User")));
     }
 
     #[test]
@@ -493,7 +614,7 @@ mod tests {
 
     #[test]
     fn agent_event_reply_serialization() {
-        let event = AgentEvent::Reply { content: "acknowledged".into(), ts: 100 };
+        let event = AgentEvent::Reply { content: "acknowledged".into(), ts: 100, seq: None };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains(r#""type":"reply""#));
         assert!(json.contains(r#""content":"acknowledged""#));
@@ -505,6 +626,7 @@ mod tests {
             tool: "Bash".into(),
             input: serde_json::json!({"command": "ls"}),
             ts: 42,
+            seq: None,
         };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains(r#""type":"tool_call""#));
@@ -517,6 +639,7 @@ mod tests {
             tool: "Bash".into(),
             output_summary: "file.txt".into(),
             ts: 42,
+            seq: None,
         };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains(r#""type":"tool_result""#));
@@ -525,8 +648,13 @@ mod tests {
 
     #[test]
     fn agent_event_heartbeat_serialization() {
-        let event =
-            AgentEvent::Heartbeat { tokens_in: 100, tokens_out: 50, cost_usd: 0.01, ts: 42 };
+        let event = AgentEvent::Heartbeat {
+            tokens_in: 100,
+            tokens_out: 50,
+            cost_usd: 0.01,
+            ts: 42,
+            seq: None,
+        };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains(r#""type":"heartbeat""#));
         assert!(json.contains(r#""tokens_in":100"#));
@@ -541,12 +669,29 @@ mod tests {
                 ts: 1,
                 message_id: None,
                 usage: None,
+                seq: None,
             },
-            AgentEvent::ToolCall { tool: "Read".into(), input: serde_json::json!({}), ts: 2 },
-            AgentEvent::ToolResult { tool: "Read".into(), output_summary: "ok".into(), ts: 3 },
-            AgentEvent::Heartbeat { tokens_in: 10, tokens_out: 5, cost_usd: 0.001, ts: 4 },
-            AgentEvent::Reply { content: "done".into(), ts: 5 },
-            AgentEvent::TurnEnd { ts: 6 },
+            AgentEvent::ToolCall {
+                tool: "Read".into(),
+                input: serde_json::json!({}),
+                ts: 2,
+                seq: None,
+            },
+            AgentEvent::ToolResult {
+                tool: "Read".into(),
+                output_summary: "ok".into(),
+                ts: 3,
+                seq: None,
+            },
+            AgentEvent::Heartbeat {
+                tokens_in: 10,
+                tokens_out: 5,
+                cost_usd: 0.001,
+                ts: 4,
+                seq: None,
+            },
+            AgentEvent::Reply { content: "done".into(), ts: 5, seq: None },
+            AgentEvent::TurnEnd { ts: 6, seq: None },
         ];
         for event in variants {
             let json = serde_json::to_string(&event).unwrap();
@@ -566,6 +711,7 @@ mod tests {
                 ts: 1,
                 message_id: None,
                 usage: None,
+                seq: None,
             },
         };
         let json = serde_json::to_string(&event).unwrap();

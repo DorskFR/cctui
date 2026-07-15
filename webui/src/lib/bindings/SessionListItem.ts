@@ -182,4 +182,10 @@ tool_use_count: number,
  * `account_name`, which is `None` when the token's `accounts` row was
  * deleted even though the binding still exists.
  */
-has_token_credentials: boolean, };
+has_token_credentials: boolean, 
+/**
+ * What the session was launched to do (CCT-596): the adapter's `Status`
+ * intent (`sessions.intent`), surfaced as a secondary line / tooltip on the
+ * card. `None` when the session carries no intent.
+ */
+intent: string | null, };

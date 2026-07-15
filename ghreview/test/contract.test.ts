@@ -23,6 +23,7 @@ describe("openapi contract", () => {
     expect(Object.keys(s.paths).sort()).toEqual([
       "/v1/accounts",
       "/v1/accounts/{id}",
+      "/v1/capabilities",
       "/v1/events",
       "/v1/github/repos",
       "/v1/health",
@@ -76,6 +77,9 @@ describe("openapi contract", () => {
       "AccountCreate",
       "AccountSummary",
       "AccountList",
+      "AccountUpdate",
+      "GithubCapability",
+      "Capabilities",
       "Error",
       "SseEvent",
       "PrUpdatedEvent",
@@ -101,6 +105,14 @@ describe("route shapes", () => {
     expect(body.service).toBe("gh-review");
     expect(body.api).toBe("v1");
     expect(body.sync).toEqual({ last_run: null, accounts: [] });
+  });
+
+  test("capabilities reports the integration off when no store is configured", async () => {
+    const res = await app.request("/v1/capabilities");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      github: { available: false, enabled: false, repos: [] },
+    });
   });
 
   test("list endpoints return an empty page envelope", async () => {

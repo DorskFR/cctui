@@ -59,6 +59,56 @@ describe("AccountManager force sync", () => {
     ]);
     expect(conditionalState.etag).toBe('W/"cached"');
   });
+
+  test("reload rebuilds a poller when connector config changes, keeps it otherwise", async () => {
+    let rows: Record<string, unknown>[] = [
+      {
+        id: "1",
+        user_id: "userA",
+        login: "octocat",
+        poll_interval_ms: null,
+        budget_ceiling: null,
+        rate_limit: null,
+        active: true,
+        created_at: null,
+        encrypted_pat: "sealed-1",
+      },
+    ];
+    const sql = Object.assign(
+      async (strings: TemplateStringsArray) =>
+        strings.join("").includes("FROM gh_accounts") ? rows : [],
+      {
+        unsafe: () => "",
+        begin: async () => [],
+        listen: async () => ({ unlisten: async () => {} }),
+      },
+    );
+    const manager = new AccountManager({
+      db: { sql, close: async () => {} } as unknown as DbHandle,
+      bus: new EventBus(),
+      defaults: { pollIntervalMs: 60_000, budgetCeilingFraction: 0.2, rateLimitPerHour: 5_000 },
+      open: (sealed) => sealed,
+    });
+    const internal = manager as unknown as {
+      managed: Map<string, unknown>;
+      reload: () => Promise<void>;
+    };
+
+    await internal.reload();
+    const first = internal.managed.get("octocat");
+    expect(first).toBeDefined();
+
+    await internal.reload();
+    expect(internal.managed.get("octocat")).toBe(first);
+
+    rows = [{ ...rows[0], encrypted_pat: "sealed-2" }];
+    await internal.reload();
+    const second = internal.managed.get("octocat");
+    expect(second).toBeDefined();
+    expect(second).not.toBe(first);
+
+    manager.stop();
+  });
 });
 
 guarded("force sync route", () => {

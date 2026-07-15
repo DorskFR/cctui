@@ -122,7 +122,7 @@
 				<Text tone="faint">{m.conversation_hidden_count({ count: hiddenOlder })}</Text>
 			</Button>
 		{/if}
-		{#each visibleLines as ln, i (ln.ts + (ln.text ?? ln.html ?? '').slice(0, 24) + ln.role)}
+		{#each visibleLines as ln, i (ln.key)}
 			{#if ln.ask && isDupeOfLiveAsk(ln.ask)}
 				<!-- Suppressed: same question is rendered live below (CCT-218). -->
 			{:else if ln.ask}

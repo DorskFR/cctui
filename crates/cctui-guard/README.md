@@ -24,6 +24,11 @@ cctui-guard \
   --judge-cmd 'accept-judge'
 ```
 
+`--prompt` accepts either frontend: prompt **markdown** (the default authoring
+format), or a machine-authored **`workflow.json`** matching the published IR
+schema (detected by a `.json` extension). `--emit-schema` prints that JSON
+Schema and exits.
+
 `--prompt`/`PROMPT_FILE`, `--rules`/`GUARD_RULES_FILE`, and
 `--judge-cmd`/`GUARD_JUDGE_CMD` may be given via env. `--judge-cmd` is the
 command the `[llmjudge]` acceptance judge runs through (see below); leaving it
@@ -152,6 +157,35 @@ explicitly asks to trim.
 
 Step `0` or an unknown current step means "no guard" (everything allowed). The
 engine starts on the lowest-numbered step.
+
+## Compiled IR + JSON schema (CCT-619)
+
+Markdown is the authoring frontend; both frontends **compile** into one canonical
+typed model, the IR, defined by the serde structs in `src/ir.rs`:
+
+```
+Workflow { version, steps: [WorkflowStep] }
+WorkflowStep { id, title, body, allowed, disallowed, network,
+               transition, gate?, compact, judge[] }
+```
+
+The enums are the spec: `allowed`/`disallowed` are a `Rule`
+(`unrestricted` | `wildcard` | `{ list: [..] }`), `transition` is
+`{ to: [N..], exit: bool }`. This replaces spec-by-implementation — the
+**published JSON Schema** (`schema/workflow.v1.json`, regenerate with
+`cargo run -p cctui-guard -- --emit-schema`) is the versioned contract, and a
+lint (separate ticket) validates the IR, covering both frontends for free.
+
+- **Versioning** — a `[guard]: vN` header line above the first step (or the
+  `version` field of a `workflow.json`) selects the IR version; missing ⇒ `v1`.
+  An unsupported version fails loudly at startup.
+- **`workflow.json` frontend** — machine writers can skip markdown and hand the
+  daemon a `workflow.json` that deserializes straight into `Workflow`.
+- **No behavior change** — the IR lowers back into the same internal step model
+  the engine enforces, so its allow/deny decisions are identical to the markdown
+  path. `tests/ir_parity.rs` builds one engine from the markdown parser and one
+  from the compiled IR and asserts they agree on every check, transition, and
+  egress policy (the security-boundary parity guarantee).
 
 ## Rule evaluation
 

@@ -85,6 +85,26 @@ export function eventSig(e: AgentEvent): string {
 	}
 }
 
+// Order the merged history+live event list causally (CCT-481). `seq` is the
+// server's monotonic per-session insert sequence (`stream_events.id`), stamped
+// on both the reload payload and the live broadcast, so it reflects true causal
+// order even when receive-time `ts` ties or inverts — a late-flushed
+// AskUserQuestion card+preamble carry a `ts` at/after the user's answer but a
+// LOWER `seq`, so ordering by `seq` renders the ask before its answer without
+// the CCT-338 structural re-anchor. Falls back to `ts` when either event lacks
+// a `seq` (payloads persisted before CCT-481). Uses a stable sort so equal keys
+// keep history-before-live order (CCT-186).
+export function orderEvents(events: AgentEvent[]): AgentEvent[] {
+	return [...events].sort((a, b) => {
+		const as = a.seq;
+		const bs = b.seq;
+		if (as !== null && as !== undefined && bs !== null && bs !== undefined) {
+			return Number(as) - Number(bs);
+		}
+		return Number(a.ts) - Number(b.ts);
+	});
+}
+
 // NOTE: `orderAskTurns` (the CCT-338 causal re-anchor) was REMOVED in CCT-475.
 //
 // It lifted an assistant preamble + AskUserQuestion card above the user line
@@ -115,6 +135,17 @@ export function stampTurns(lines: Line[]): Line[] {
 			if (turn === 0) turn = 1;
 			ln.turn = turn;
 		}
+	}
+	return lines;
+}
+
+export function assignLineKeys(lines: Line[]): Line[] {
+	const counts = new Map<string, number>();
+	for (const ln of lines) {
+		const base = `${ln.ts}|${ln.role}|${(ln.text ?? ln.html ?? '').slice(0, 24)}`;
+		const n = counts.get(base) ?? 0;
+		counts.set(base, n + 1);
+		ln.key = n === 0 ? base : `${base}#${n}`;
 	}
 	return lines;
 }

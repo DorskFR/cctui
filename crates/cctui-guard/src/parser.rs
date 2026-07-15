@@ -11,7 +11,9 @@ use std::path::Path;
 pub const MAX_JUDGE_QUESTIONS: usize = 12;
 
 /// A single binary acceptance question in a step's `[llmjudge]` block.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 pub struct JudgeQuestion {
     /// The atomic yes/no question. Must be answerable 1 (verifiably yes) or 0.
     pub question: String,

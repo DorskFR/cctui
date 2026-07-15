@@ -860,6 +860,7 @@ mod tests {
             ts: 0,
             message_id: None,
             usage: None,
+            seq: None,
         }
     }
 

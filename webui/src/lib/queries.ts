@@ -1013,6 +1013,7 @@ function optimisticDispatchCard(
     pinned: false,
     labels: [],
     last_heartbeat: null,
+    intent: null,
     account_name: body.account ?? null,
     unread_count: 0,
     activity_detail: null,

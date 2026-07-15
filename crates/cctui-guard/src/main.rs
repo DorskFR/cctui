@@ -10,15 +10,23 @@ use std::sync::Arc;
 use clap::Parser;
 
 use cctui_guard::engine::WorkflowEngine;
-use cctui_guard::parser::{parse_guard_rules_files, parse_steps};
+use cctui_guard::ir::Workflow;
+use cctui_guard::parser::parse_guard_rules_files;
 use cctui_guard::server::router;
 
 #[derive(Parser, Debug)]
 #[command(name = "cctui-guard", about = "Markdown-driven workflow guard daemon")]
 struct Cli {
-    /// Prompt markdown file containing the `# Step N` definitions.
-    #[arg(long, env = "PROMPT_FILE")]
-    prompt: PathBuf,
+    /// Prompt file containing the workflow: markdown with `# Step N`
+    /// definitions, or — for machine writers — a `workflow.json` matching the
+    /// published IR schema (detected by a `.json` extension). Not required when
+    /// `--emit-schema` is set.
+    #[arg(long, env = "PROMPT_FILE", required_unless_present = "emit_schema")]
+    prompt: Option<PathBuf>,
+
+    /// Print the published JSON Schema for the workflow IR to stdout and exit.
+    #[arg(long = "emit-schema")]
+    emit_schema: bool,
 
     /// Operator base guard-rules file, parsed **before** `--rules` so a context
     /// pack can reuse/extend/override its sets (common definitions like
@@ -62,6 +70,20 @@ struct Cli {
     judge_cmd: Option<String>,
 }
 
+/// Load a workflow from either frontend: a `.json` file deserializes straight
+/// into the IR (machine writers), anything else is compiled from prompt
+/// markdown. Both produce the same [`Workflow`].
+fn load_workflow(path: &std::path::Path) -> anyhow::Result<Workflow> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("prompt file {}: {e}", path.display()))?;
+    if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("json")) {
+        Workflow::from_json(&text)
+            .map_err(|e| anyhow::anyhow!("workflow json {}: {e}", path.display()))
+    } else {
+        Workflow::compile(&text).map_err(|e| anyhow::anyhow!("prompt file {}: {e}", path.display()))
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -74,12 +96,16 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
-    let markdown = std::fs::read_to_string(&cli.prompt)
-        .map_err(|e| anyhow::anyhow!("prompt file {}: {e}", cli.prompt.display()))?;
-    let steps = parse_steps(&markdown)
-        .map_err(|e| anyhow::anyhow!("prompt file {}: {e}", cli.prompt.display()))?;
+    if cli.emit_schema {
+        println!("{}", serde_json::to_string_pretty(&cctui_guard::ir::json_schema())?);
+        return Ok(());
+    }
+
+    let prompt = cli.prompt.expect("clap requires --prompt unless --emit-schema");
+    let workflow = load_workflow(&prompt)?;
+    let steps = workflow.into_steps();
     if steps.is_empty() {
-        tracing::warn!("No steps found in {}", cli.prompt.display());
+        tracing::warn!("No steps found in {}", prompt.display());
     }
 
     // Layer the rules: operator base first (if any), then the (pack's) rules

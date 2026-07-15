@@ -41,6 +41,10 @@ pub struct StateJson {
     /// `dispatch` payload (CCT-228).
     #[serde(default)]
     pub cwd: Option<String>,
+    /// `createdAt` (ISO-8601): stable session origin; server `registered_at`
+    /// resets on re-discovery, so age lies after a daemon restart (CCT-596).
+    #[serde(default)]
+    pub created_at: Option<String>,
     #[serde(default)]
     pub children: Vec<StateChild>,
 }
@@ -102,6 +106,7 @@ impl StateJson {
             resume_session_id: get_str("resumeSessionId"),
             session_id: get_str("sessionId"),
             cwd: get_str("cwd"),
+            created_at: get_str("createdAt"),
             children,
         }
     }
@@ -162,6 +167,7 @@ mod tests {
                 "name": "fix bug",
                 "intent": "/work CCT-1",
                 "cwd": "/home/me/repo",
+                "createdAt": "2026-07-15T19:25:30.428Z",
                 "sessionId": "6e189420-f9a4-493f-b3d9-e0a80ac254c1",
                 "children": [
                     {"id": "1972", "href": "https://github.com/o/r/pull/1972", "kind": "pr"}
@@ -172,6 +178,7 @@ mod tests {
         let s = StateJson::read(tmp.path(), short).unwrap();
         assert_eq!(s.name.as_deref(), Some("fix bug"));
         assert_eq!(s.intent.as_deref(), Some("/work CCT-1"));
+        assert_eq!(s.created_at.as_deref(), Some("2026-07-15T19:25:30.428Z"));
         assert_eq!(s.children.len(), 1);
         assert_eq!(s.proto_children()[0].kind, "pr");
         // No reset has happened, so the post-reset id is absent (CCT-160).

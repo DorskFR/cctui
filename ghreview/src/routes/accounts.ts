@@ -4,7 +4,9 @@ import {
   AccountConflictError,
   createGhAccount,
   deleteGhAccount,
+  getGhAccount,
   listGhAccounts,
+  updateGhAccount,
 } from "../db/accounts.ts";
 import { upsertSubscription } from "../db/subscriptions.ts";
 import type { AppDeps } from "../deps.ts";
@@ -13,6 +15,7 @@ import {
   AccountCreateSchema,
   AccountListSchema,
   AccountSummarySchema,
+  AccountUpdateSchema,
   ErrorSchema,
 } from "../schemas.ts";
 
@@ -53,6 +56,29 @@ const createAccount = createRoute({
       description: "Login already owned",
       content: { "application/json": { schema: ErrorSchema } },
     },
+    503: {
+      description: "Store/sealer unavailable",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const patchAccount = createRoute({
+  method: "patch",
+  path: "/v1/accounts/{id}",
+  summary: "Update a connector's poll knobs, or rotate its PAT (never returns the secret)",
+  tags: ["accounts"],
+  request: {
+    params: IdParam,
+    body: { content: { "application/json": { schema: AccountUpdateSchema } } },
+  },
+  responses: {
+    200: {
+      description: "The updated account (no secrets)",
+      content: { "application/json": { schema: AccountSummarySchema } },
+    },
+    400: { description: "Invalid PAT", content: { "application/json": { schema: ErrorSchema } } },
+    404: { description: "Not found", content: { "application/json": { schema: ErrorSchema } } },
     503: {
       description: "Store/sealer unavailable",
       content: { "application/json": { schema: ErrorSchema } },
@@ -137,6 +163,59 @@ export function registerAccounts(app: OpenAPIHono, deps: AppDeps = {}) {
       }
       throw err;
     }
+  });
+
+  app.openapi(patchAccount, async (c) => {
+    const { id } = c.req.valid("param");
+    const body = c.req.valid("json");
+    if (!deps.db)
+      return c.json({ error: { code: "unavailable", message: "Store not configured" } }, 503);
+    const uid = getUserId(c) ?? "";
+    const existing = await getGhAccount(deps.db, uid, id);
+    if (!existing) {
+      return c.json({ error: { code: "not_found", message: `Account ${id} not found` } }, 404);
+    }
+    let encryptedPat: string | undefined;
+    if (body.token !== undefined) {
+      if (!deps.sealer) {
+        return c.json({ error: { code: "unavailable", message: "Sealer not configured" } }, 503);
+      }
+      const validate = deps.validatePat ?? ((t: string) => validatePat(t, deps.octokitForPat));
+      const result = await validate(body.token);
+      if (!result.ok || !result.login) {
+        return c.json(
+          {
+            error: {
+              code: "invalid_pat",
+              message: `GitHub rejected the PAT (status ${result.status})`,
+            },
+          },
+          400,
+        );
+      }
+      if (result.login !== existing.login) {
+        return c.json(
+          {
+            error: {
+              code: "login_mismatch",
+              message: `PAT belongs to ${result.login}, not ${existing.login}`,
+            },
+          },
+          400,
+        );
+      }
+      encryptedPat = deps.sealer.seal(body.token);
+    }
+    const updated = await updateGhAccount(deps.db, uid, id, {
+      pollIntervalMs: body.poll_interval_ms,
+      budgetCeiling: body.budget_ceiling,
+      rateLimit: body.rate_limit,
+      encryptedPat,
+    });
+    if (!updated) {
+      return c.json({ error: { code: "not_found", message: `Account ${id} not found` } }, 404);
+    }
+    return c.json(updated, 200);
   });
 
   app.openapi(deleteAccount, async (c) => {
