@@ -1,0 +1,161 @@
+{
+  "$defs": {
+    "JudgeQuestion": {
+      "description": "A single binary acceptance question in a step's `[llmjudge]` block.",
+      "properties": {
+        "question": {
+          "description": "The atomic yes/no question. Must be answerable 1 (verifiably yes) or 0.",
+          "type": "string"
+        },
+        "violation": {
+          "description": "Optional violation example (`question :: violation example`) anchoring\nwhat a 0 looks like.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "question",
+        "violation"
+      ],
+      "type": "object"
+    },
+    "Rule": {
+      "description": "A capability rule (`[allowed]` / `[disallowed]`).\n\nA wildcard, an explicit keyword/tool-set list, or unrestricted. Matches the\nmarkdown semantics exactly — empty is unrestricted, `*` is the wildcard,\neverything else is a comma-separated list of keywords and tool-set names\nexpanded at check time.",
+      "oneOf": [
+        {
+          "const": "unrestricted",
+          "description": "No restriction — an empty `[allowed]`/`[disallowed]` line.",
+          "type": "string"
+        },
+        {
+          "const": "wildcard",
+          "description": "The `*` wildcard: matches every tool.",
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "description": "An explicit list of keywords and/or tool-set names.",
+          "properties": {
+            "list": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "list"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Transition": {
+      "description": "A typed `[transition]`: the valid next step numbers and whether `Exit` is an\nauthored target (Exit is always allowed regardless, per the engine).",
+      "properties": {
+        "exit": {
+          "description": "Whether `Exit` appears in the authored transition list.",
+          "type": "boolean"
+        },
+        "to": {
+          "description": "Numeric next steps, in authored order.",
+          "items": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "Version": {
+      "description": "The IR schema version. Authored as a `[guard]: v1` header line (or the\n`version` field of a `workflow.json`); missing ⇒ [`Version::V1`].",
+      "enum": [
+        "v1"
+      ],
+      "type": "string"
+    },
+    "WorkflowStep": {
+      "description": "One compiled workflow step: the typed equivalent of a parsed [`Step`].",
+      "properties": {
+        "allowed": {
+          "$ref": "#/$defs/Rule",
+          "description": "Tools permitted in this step."
+        },
+        "body": {
+          "description": "The authoritative prose body re-injected on transition.",
+          "type": "string"
+        },
+        "compact": {
+          "description": "Opt-in `[compact]` directive.",
+          "type": "boolean"
+        },
+        "disallowed": {
+          "$ref": "#/$defs/Rule",
+          "description": "Tools denied in this step."
+        },
+        "gate": {
+          "description": "Optional deterministic completion `[gate]` shell command.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "The step number (`# Step N`).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "judge": {
+          "description": "Optional `[llmjudge]` acceptance questions.",
+          "items": {
+            "$ref": "#/$defs/JudgeQuestion"
+          },
+          "type": "array"
+        },
+        "network": {
+          "description": "Network-set names granted for the step's egress policy.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "title": {
+          "description": "The step title (text after `Step N:`).",
+          "type": "string"
+        },
+        "transition": {
+          "$ref": "#/$defs/Transition",
+          "description": "The valid transitions out of the step."
+        }
+      },
+      "required": [
+        "id",
+        "transition"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "The canonical compiled workflow: a version tag plus the ordered steps.",
+  "properties": {
+    "steps": {
+      "description": "The workflow steps, ordered by step number.",
+      "items": {
+        "$ref": "#/$defs/WorkflowStep"
+      },
+      "type": "array"
+    },
+    "version": {
+      "$ref": "#/$defs/Version",
+      "default": "v1",
+      "description": "The IR schema version."
+    }
+  },
+  "required": [
+    "steps"
+  ],
+  "title": "Workflow",
+  "type": "object"
+}

@@ -24,6 +24,13 @@ export interface CreateAccountInput {
   rateLimit?: number | null;
 }
 
+export interface UpdateAccountInput {
+  pollIntervalMs?: number | null;
+  budgetCeiling?: number | null;
+  rateLimit?: number | null;
+  encryptedPat?: string;
+}
+
 const PUBLIC_COLUMNS = `
   id::text, user_id, login, poll_interval_ms, budget_ceiling, rate_limit, active,
   to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS created_at
@@ -84,6 +91,49 @@ export async function getGhAccount(
     LIMIT 1
   `;
   return row ?? null;
+}
+
+export async function updateGhAccount(
+  db: DbHandle,
+  userId: string,
+  id: string,
+  patch: UpdateAccountInput,
+): Promise<GhAccount | null> {
+  const { sql } = db;
+  return sql.begin(async (tx) => {
+    const [cur] = await tx<GhAccountWithSecret[]>`
+      SELECT ${tx.unsafe(PUBLIC_COLUMNS)}, encrypted_pat
+      FROM gh_accounts
+      WHERE user_id = ${userId} AND id = ${id}
+      FOR UPDATE
+    `;
+    if (!cur) return null;
+    const pollIntervalMs =
+      patch.pollIntervalMs !== undefined ? patch.pollIntervalMs : cur.poll_interval_ms;
+    const budgetCeiling =
+      patch.budgetCeiling !== undefined ? patch.budgetCeiling : cur.budget_ceiling;
+    const rateLimit = patch.rateLimit !== undefined ? patch.rateLimit : cur.rate_limit;
+    const encryptedPat = patch.encryptedPat !== undefined ? patch.encryptedPat : cur.encrypted_pat;
+    const [row] = await tx<GhAccount[]>`
+      UPDATE gh_accounts SET
+        poll_interval_ms = ${pollIntervalMs},
+        budget_ceiling = ${budgetCeiling},
+        rate_limit = ${rateLimit},
+        encrypted_pat = ${encryptedPat},
+        updated_at = now()
+      WHERE id = ${id}
+      RETURNING ${tx.unsafe(PUBLIC_COLUMNS)}
+    `;
+    return row ?? null;
+  });
+}
+
+export async function countGhAccounts(db: DbHandle, userId: string): Promise<number> {
+  const { sql } = db;
+  const [row] = await sql<{ n: number }[]>`
+    SELECT count(*)::int AS n FROM gh_accounts WHERE user_id = ${userId}
+  `;
+  return row?.n ?? 0;
 }
 
 export async function deleteGhAccount(db: DbHandle, userId: string, id: string): Promise<boolean> {

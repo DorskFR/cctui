@@ -18,7 +18,16 @@
 	import AccountSwitchModal from './conversation/AccountSwitchModal.svelte';
 	import ConversationComposer from './conversation/ConversationComposer.svelte';
 	import { MSG_TYPES, type MsgType, type ViewOpts, type Line } from './conversation/types';
-	import { looksMeta, parseAsk, parsePlan, eventSig, formatToolInput, stampTurns } from './conversation/format';
+	import {
+		looksMeta,
+		parseAsk,
+		parsePlan,
+		eventSig,
+		orderEvents,
+		formatToolInput,
+		stampTurns,
+		assignLineKeys
+	} from './conversation/format';
 	import { ConversationStream } from './conversation/stream.svelte';
 	import { ScrollController } from './conversation/scroll.svelte';
 	import { ForkController } from './conversation/fork.svelte';
@@ -180,18 +189,18 @@
 		}
 	});
 
-	// History (fetched) + live (ws) events, merged in order, with live events
-	// already present in history dropped so a reconnect/focus refetch and the
-	// persisted form of an optimistic reply don't render twice. The WHOLE merged
-	// list is ordered by `ts` with a stable sort so an optimistic reply that
-	// survives a refetch lands in its correct chronological place (CCT-186);
-	// equal-`ts` ties keep their original order (history stays ahead of a live
-	// event sharing its `ts`).
+	// History (fetched) + live (ws) events, merged and ordered by causal `seq`
+	// (CCT-481, falling back to `ts`) via `orderEvents`. Live events already
+	// present in history are dropped so a reconnect/focus refetch and the
+	// persisted form of an optimistic reply don't render twice. Ordering by the
+	// server's insert `seq` keeps a reloaded AskUserQuestion above its answer
+	// (which a `ts`-only sort inverted, CCT-475) while an optimistic reply that
+	// survives a refetch still lands in its correct place (CCT-186).
 	const events = $derived.by(() => {
 		const hist = $history.data ?? [];
 		const seen = new Set(hist.map(eventSig));
 		const tail = stream.live.filter((e) => !seen.has(eventSig(e)));
-		return [...hist, ...tail].sort((a, b) => a.ts - b.ts);
+		return orderEvents([...hist, ...tail]);
 	});
 
 	// ── Line building (parse + filter + dedup + delivery tinting) ───────────
@@ -312,9 +321,10 @@
 			}
 			out.push(ln);
 		}
-		// Render strictly in timestamp order (CCT-475). `events` is already sorted
-		// ascending by `ts`, so `out` is built in chronological order and rendered
-		// as-is — no role grouping, no re-anchoring.
+		// `events` is already ordered causally by `orderEvents` (server insert
+		// `seq`, CCT-481), so `out` is built in causal order and rendered as-is —
+		// no role grouping, no structural re-anchoring. Ordering by `seq` is what
+		// keeps a reloaded AskUserQuestion in [preamble, card, answer] order.
 		//
 		// We deliberately REMOVED the CCT-338 `orderAskTurns` re-anchor here: it
 		// lifted an assistant preamble + AskUserQuestion card above the user line
@@ -323,11 +333,9 @@
 		// late-flushed ask inversion (answer stamped before the late preamble+card)
 		// from a normal prior-turn user line — and so pushed later-ts assistant
 		// messages above earlier-ts user messages, breaking chronological order for
-		// EVERY conversation containing an ask (CCT-475). The only remaining cost is
-		// cosmetic: a RELOADED historical ask shows [answer, preamble, card] (answer
-		// above its own question); live asks render via a separate path and are
-		// unaffected. The proper fix (a causal/sequence field on AgentEvent, then
-		// order by causal-group+seq) is tracked in CCT-481.
+		// EVERY conversation containing an ask (CCT-475). CCT-481 replaced that
+		// structural lift with the server insert `seq` above, which restores the
+		// reloaded-ask order WITHOUT corrupting global chronology.
 		const ordered = out;
 		for (let i = 0; i < ordered.length; i++) {
 			if (ordered[i].role !== 'assistant') continue;
@@ -336,7 +344,7 @@
 				.find((l) => l.role === 'user' || l.role === 'assistant');
 			if (prev && ordered[i].ts > prev.ts) ordered[i].durationMs = ordered[i].ts - prev.ts;
 		}
-		return stampTurns(ordered);
+		return assignLineKeys(stampTurns(ordered));
 	});
 	// The assistant prose preceding the live question (CCT-213), rendered as
 	// markdown above the card so the user answers with context, not blind.

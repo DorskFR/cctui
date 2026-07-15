@@ -3,6 +3,7 @@ import { authMiddleware } from "./auth/middleware.ts";
 import type { AppDeps } from "./deps.ts";
 import { registerAccounts } from "./routes/accounts.ts";
 import { registerActivity } from "./routes/activity.ts";
+import { registerCapabilities } from "./routes/capabilities.ts";
 import { registerComments } from "./routes/comments.ts";
 import { registerEvents } from "./routes/events.ts";
 import { registerHealth } from "./routes/health.ts";
@@ -49,6 +50,7 @@ export function createApp(deps: AppDeps = {}) {
   }
 
   registerHealth(app, deps);
+  registerCapabilities(app, deps);
   registerSync(app, deps);
   registerAccounts(app, deps);
   registerRepos(app, deps);

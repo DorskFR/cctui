@@ -25,6 +25,11 @@ export interface ManagerOptions {
 interface Managed {
   account: Account;
   poller: Poller;
+  signature: string;
+}
+
+function signatureOf(row: GhAccountWithSecret): string {
+  return [row.poll_interval_ms, row.budget_ceiling, row.rate_limit, row.encrypted_pat].join("|");
 }
 
 export class AccountManager {
@@ -47,13 +52,20 @@ export class AccountManager {
     const seen = new Set<string>();
     for (const row of rows) {
       seen.add(row.login);
-      if (this.managed.has(row.login)) continue;
+      const signature = signatureOf(row);
+      const current = this.managed.get(row.login);
+      if (current && current.signature === signature) continue;
       let token: string;
       try {
         token = this.opts.open(row.encrypted_pat);
       } catch {
+        if (current) {
+          current.poller.stop();
+          this.managed.delete(row.login);
+        }
         continue;
       }
+      if (current) current.poller.stop();
       const account = createAccount({
         login: row.login,
         token,
@@ -70,7 +82,7 @@ export class AccountManager {
         syncViewedFromGithub: this.opts.defaults.syncViewedFromGithub,
       });
       poller.start();
-      this.managed.set(row.login, { account, poller });
+      this.managed.set(row.login, { account, poller, signature });
       await upsertSubscription(this.opts.db, row.login, "notification", null, "notification").catch(
         () => {},
       );

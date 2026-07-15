@@ -1019,6 +1019,13 @@ if [ -n "${TASK_PAYLOAD_JSON:-}" ]; then
 fi
 phase_network
 phase_workspace
+# CCT-691: the CLI grants edit-in-place only when the session cwd IS a git repo,
+# so default the workdir to the repo (must run after phase_workspace clones it).
+if [ -z "${CCTUI_DISPATCH_WORKDIR:-}" ] && [ -n "${TASK_REPO:-}" ] \
+        && [ -d "/workspace/${TASK_REPO}" ]; then
+    export CCTUI_DISPATCH_WORKDIR="/workspace/${TASK_REPO}"
+    log "dispatch: CCTUI_DISPATCH_WORKDIR defaulted to /workspace/${TASK_REPO} (edit-in-place)"
+fi
 phase_context_pack
 # When a pack is active, drive cctui-guard from the dispatched prompt: derive
 # TASK_PROMPT_FILE from payload.prompt_file so resolve_prompt_path finds the

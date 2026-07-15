@@ -42,6 +42,7 @@ pub fn to_agent_event(adapter_id: &str, event_type: &str, payload: &Value) -> Op
                         ts,
                         message_id: None,
                         usage: None,
+                        seq: None,
                     })
                 }
                 "assistant" | "assistant_thinking" => Some(AgentEvent::Text {
@@ -53,10 +54,11 @@ pub fn to_agent_event(adapter_id: &str, event_type: &str, payload: &Value) -> Op
                         .and_then(Value::as_str)
                         .map(str::to_owned),
                     usage: None,
+                    seq: None,
                 }),
-                "context_reset" => Some(AgentEvent::ContextReset { ts }),
+                "context_reset" => Some(AgentEvent::ContextReset { ts, seq: None }),
                 "compact_summary" => {
-                    Some(AgentEvent::CompactSummary { content: text.to_owned(), ts })
+                    Some(AgentEvent::CompactSummary { content: text.to_owned(), ts, seq: None })
                 }
                 _ => None,
             }
@@ -71,11 +73,12 @@ pub fn to_agent_event(adapter_id: &str, event_type: &str, payload: &Value) -> Op
                     tool: String::new(),
                     output_summary: summary,
                     ts,
+                    seq: None,
                 });
             }
             let tool = payload.get("tool")?.as_str()?.to_owned();
             let input = payload.get("input").cloned().unwrap_or(Value::Null);
-            Some(AgentEvent::ToolCall { tool, input, ts })
+            Some(AgentEvent::ToolCall { tool, input, ts, seq: None })
         }
         _ => None,
     }
@@ -102,11 +105,13 @@ fn agent_event_from_canonical(v: &Value, ts: i64) -> Option<AgentEvent> {
             ts,
             message_id: v.get("message_id").and_then(Value::as_str).map(str::to_owned),
             usage: serde_json::from_value(v.get("usage").cloned().unwrap_or(Value::Null)).ok(),
+            seq: None,
         }),
         "tool_call" => Some(AgentEvent::ToolCall {
             tool: v.get("tool").and_then(Value::as_str).unwrap_or_default().to_owned(),
             input: v.get("input").cloned().unwrap_or(Value::Null),
             ts,
+            seq: None,
         }),
         "tool_result" => Some(AgentEvent::ToolResult {
             tool: String::new(),
@@ -116,8 +121,9 @@ fn agent_event_from_canonical(v: &Value, ts: i64) -> Option<AgentEvent> {
                 .unwrap_or_default()
                 .to_owned(),
             ts,
+            seq: None,
         }),
-        "context_reset" => Some(AgentEvent::ContextReset { ts }),
+        "context_reset" => Some(AgentEvent::ContextReset { ts, seq: None }),
         _ => None,
     }
 }
@@ -405,7 +411,12 @@ fn map_daemon_message(payload: &Value) -> Option<Value> {
             if detail.is_empty() {
                 None
             } else {
-                Some(json!({ "type": "text", "content": format!("· {detail}") }))
+                Some(json!({
+                    "type": "text",
+                    "content": format!("· {detail}"),
+                    "needs_action": payload.get("needs_action").and_then(Value::as_bool).unwrap_or(false),
+                    "status_category": payload.get("status_category"),
+                }))
             }
         }
         "context_reset" => Some(json!({ "type": "context_reset" })),
@@ -422,7 +433,8 @@ fn map_daemon_tool(payload: &Value) -> Option<Value> {
             .get("content")
             .and_then(|v| v.as_str().map(str::to_owned).or_else(|| Some(v.to_string())))
             .unwrap_or_default();
-        return Some(json!({ "type": "tool_result", "output_summary": summary }));
+        let error = payload.get("is_error").and_then(Value::as_bool).unwrap_or(false);
+        return Some(json!({ "type": "tool_result", "output_summary": summary, "error": error }));
     }
     let tool = payload.get("tool")?.clone();
     let input = payload.get("input").cloned().unwrap_or(Value::Null);
@@ -494,6 +506,31 @@ mod tests {
         let n = for_client("claude-code", "tool_use", p).unwrap();
         assert_eq!(n["type"], "tool_result");
         assert_eq!(n["output_summary"], "ok");
+        assert_eq!(n["error"], false);
+    }
+
+    #[test]
+    fn daemon_tool_result_surfaces_is_error() {
+        let p = json!({ "kind": "tool_result", "content": "boom", "is_error": true });
+        let n = for_client("claude-code", "tool_use", p).unwrap();
+        assert_eq!(n["error"], true);
+        let p2 = json!({ "kind": "tool_result", "content": "ok" });
+        let n2 = for_client("claude-code", "tool_use", p2).unwrap();
+        assert_eq!(n2["error"], false);
+    }
+
+    #[test]
+    fn daemon_summary_surfaces_needs_action() {
+        let p = json!({
+            "role": "summary",
+            "status_detail": "waiting for input",
+            "status_category": "blocked",
+            "needs_action": true,
+        });
+        let n = for_client("claude-code", "message", p).unwrap();
+        assert_eq!(n["content"], "· waiting for input");
+        assert_eq!(n["needs_action"], true);
+        assert_eq!(n["status_category"], "blocked");
     }
 
     #[test]

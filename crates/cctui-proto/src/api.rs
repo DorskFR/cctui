@@ -292,6 +292,11 @@ pub struct SessionListItem {
     /// deleted even though the binding still exists.
     #[serde(default)]
     pub has_token_credentials: bool,
+    /// What the session was launched to do (CCT-596): the adapter's `Status`
+    /// intent (`sessions.intent`), surfaced as a secondary line / tooltip on the
+    /// card. `None` when the session carries no intent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intent: Option<String>,
 }
 
 /// A reusable, user-defined colored label (CCT-360).

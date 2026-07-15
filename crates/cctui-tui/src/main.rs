@@ -687,6 +687,7 @@ fn handle_server_event(app: &mut App, event: ServerEvent) {
                     pinned: false,
                     labels: Vec::new(),
                     last_heartbeat: None,
+                    intent: None,
                 });
                 app.update_aggregates();
             }
@@ -874,7 +875,7 @@ fn agent_event_to_line(event: &AgentEvent) -> ConversationLine {
             };
             ConversationLine { timestamp: *ts, kind, text, tool: None, tool_input: None }
         }
-        AgentEvent::ToolCall { tool, input, ts } => {
+        AgentEvent::ToolCall { tool, input, ts, .. } => {
             let detail = views::sessions::format_tool_input(tool, input);
             // Keep raw input for Edit/Write so we can generate diffs during render
             let keep_input = matches!(tool.as_str(), "Edit" | "Write");
@@ -886,14 +887,14 @@ fn agent_event_to_line(event: &AgentEvent) -> ConversationLine {
                 tool_input: if keep_input { Some(input.clone()) } else { None },
             }
         }
-        AgentEvent::ToolResult { tool, output_summary, ts } => ConversationLine {
+        AgentEvent::ToolResult { tool, output_summary, ts, .. } => ConversationLine {
             timestamp: *ts,
             kind: LineKind::ToolResult,
             text: format!("  → {output_summary}"),
             tool: Some(tool.clone()),
             tool_input: None,
         },
-        AgentEvent::Heartbeat { ts, .. } | AgentEvent::TurnEnd { ts } => ConversationLine {
+        AgentEvent::Heartbeat { ts, .. } | AgentEvent::TurnEnd { ts, .. } => ConversationLine {
             timestamp: *ts,
             kind: LineKind::System,
             text: String::new(),
@@ -901,7 +902,7 @@ fn agent_event_to_line(event: &AgentEvent) -> ConversationLine {
             tool_input: None,
         },
         // CCT-158: /clear boundary within one session.
-        AgentEvent::ContextReset { ts } => ConversationLine {
+        AgentEvent::ContextReset { ts, .. } => ConversationLine {
             timestamp: *ts,
             kind: LineKind::System,
             text: "⟳ context reset (/clear · /compact)".to_owned(),
@@ -909,14 +910,14 @@ fn agent_event_to_line(event: &AgentEvent) -> ConversationLine {
             tool_input: None,
         },
         // CCT-159: /compact summary (no rotation; carries the summary text).
-        AgentEvent::CompactSummary { content, ts } => ConversationLine {
+        AgentEvent::CompactSummary { content, ts, .. } => ConversationLine {
             timestamp: *ts,
             kind: LineKind::System,
             text: format!("⟳ context compacted\n{content}"),
             tool: None,
             tool_input: None,
         },
-        AgentEvent::Reply { content, ts } => ConversationLine {
+        AgentEvent::Reply { content, ts, .. } => ConversationLine {
             timestamp: *ts,
             kind: LineKind::Reply,
             text: content.clone(),

@@ -469,15 +469,17 @@ mod tests {
             BusEvent::Server(ServerEvent::AskResolved { session_id }) if session_id == "sess-1"
         ));
 
-        let ev =
-            BusEvent::Session { session_id: "sess-2".into(), event: AgentEvent::TurnEnd { ts: 7 } };
+        let ev = BusEvent::Session {
+            session_id: "sess-2".into(),
+            event: AgentEvent::TurnEnd { ts: 7, seq: None },
+        };
         let wire = WireBusEvent::from(&ev);
         let json = serde_json::to_string(&wire).unwrap();
         assert!(json.contains(r#""kind":"session""#));
         let back: WireBusEvent = serde_json::from_str(&json).unwrap();
         assert!(matches!(
             BusEvent::from(back),
-            BusEvent::Session { session_id, event: AgentEvent::TurnEnd { ts: 7 } }
+            BusEvent::Session { session_id, event: AgentEvent::TurnEnd { ts: 7, .. } }
                 if session_id == "sess-2"
         ));
     }

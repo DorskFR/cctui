@@ -364,6 +364,7 @@ pub async fn list_sessions(
                         last_tool_name: None,
                         tool_use_count: 0,
                         has_token_credentials: false,
+                        intent: None,
                     },
                 )
             })
@@ -460,6 +461,7 @@ pub async fn list_sessions(
                 last_tool_name: None,
                 tool_use_count: 0,
                 has_token_credentials: false,
+                intent: None,
             },
         ));
     }
@@ -652,10 +654,11 @@ async fn enrich_and_sort(
             Option<DateTime<Utc>>,
             Option<String>,
             i32,
+            Option<String>,
         );
         let rows: Vec<SignalRow> = sqlx::query_as(
             "SELECT id, tempo, agent_state, activity, session_name, model, effort, pinned, \
-                    soft_limit_reason, last_tool_at, last_tool_name, tool_use_count \
+                    soft_limit_reason, last_tool_at, last_tool_name, tool_use_count, intent \
              FROM sessions WHERE id = ANY($1)",
         )
         .bind(&session_ids)
@@ -684,6 +687,7 @@ async fn enrich_and_sort(
                 last_tool_at,
                 last_tool_name,
                 tool_use_count,
+                intent,
             )) = by_session.remove(&s.id)
             {
                 let bucket = bucket_from_signals(
@@ -706,6 +710,7 @@ async fn enrich_and_sort(
                 s.last_tool_at = last_tool_at;
                 s.last_tool_name = last_tool_name;
                 s.tool_use_count = tool_use_count.clamp(0, i32::MAX) as u32;
+                s.intent = intent;
             }
         }
     }
@@ -1174,6 +1179,7 @@ pub async fn search_sessions(
                     last_tool_name: None,
                     tool_use_count: 0,
                     has_token_credentials: false,
+                    intent: None,
                 },
             )
         })
@@ -1356,6 +1362,7 @@ pub async fn get_session(
                 last_tool_name: None,
                 tool_use_count: 0,
                 has_token_credentials: false,
+                intent: None,
             };
             return Ok(Json(item));
         }
@@ -1426,6 +1433,7 @@ pub async fn get_session(
         last_tool_name: None,
         tool_use_count: 0,
         has_token_credentials: false,
+        intent: None,
     };
     Ok(Json(item))
 }
@@ -1447,9 +1455,13 @@ pub async fn get_conversation(
                 )
             })?;
 
-    let rows: Vec<(String, serde_json::Value, DateTime<Utc>)> = sqlx::query_as(
-        "SELECT event_type, payload, created_at FROM stream_events \
-         WHERE session_id = $1 ORDER BY created_at ASC",
+    // Order by `id` (the BIGSERIAL insert sequence), not `created_at`: `id` is
+    // the causal `seq` (CCT-481) and is a strict total order, so a late-flushed
+    // AskUserQuestion card+preamble keep their insert position even when their
+    // `created_at` ties or lands after the user's answer.
+    let rows: Vec<(i64, String, serde_json::Value, DateTime<Utc>)> = sqlx::query_as(
+        "SELECT id, event_type, payload, created_at FROM stream_events \
+         WHERE session_id = $1 ORDER BY id ASC",
     )
     .bind(&session_id)
     .fetch_all(&state.pool)
@@ -1494,11 +1506,12 @@ pub async fn get_conversation(
     // their own value.
     let normalized: Vec<serde_json::Value> = rows
         .into_iter()
-        .filter_map(|(event_type, payload, created_at)| {
+        .filter_map(|(id, event_type, payload, created_at)| {
             crate::normalize::for_client(adapter_id, &event_type, payload).map(|mut v| {
                 if let Some(obj) = v.as_object_mut() {
                     obj.entry("ts")
                         .or_insert_with(|| serde_json::json!(created_at.timestamp_millis()));
+                    obj.insert("seq".to_owned(), serde_json::json!(id));
                     if let Some(message_id) =
                         obj.get("message_id").and_then(serde_json::Value::as_str)
                         && let Some(usage) = usage_by_message.get(message_id)

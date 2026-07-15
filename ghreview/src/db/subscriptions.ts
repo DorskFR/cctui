@@ -96,6 +96,21 @@ export async function listSubscriptionsForUser(
   `;
 }
 
+export async function listUserRepoSlugs(db: DbHandle, userId: string): Promise<string[]> {
+  const { sql } = db;
+  const rows = await sql<{ target: string }[]>`
+    SELECT DISTINCT s.target
+    FROM subscriptions s
+    WHERE s.kind = 'repo' AND s.active = true AND s.target IS NOT NULL
+      AND EXISTS (
+        SELECT 1 FROM gh_accounts ga
+        WHERE ga.login = s.account AND ga.user_id = ${userId}
+      )
+    ORDER BY s.target
+  `;
+  return rows.map((r) => r.target);
+}
+
 export async function getOwnedSubscriptionById(
   db: DbHandle,
   userId: string,

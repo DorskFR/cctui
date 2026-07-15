@@ -8,11 +8,13 @@
 //! See the crate README for the canonical prompt-step and guard-rules format.
 
 pub mod engine;
+pub mod ir;
 pub mod parser;
 pub mod rules;
 pub mod server;
 
 pub use engine::WorkflowEngine;
+pub use ir::{Rule, Transition, Version, Workflow, WorkflowStep, json_schema};
 pub use parser::{
     JudgeQuestion, MAX_JUDGE_QUESTIONS, ParseError, Step, parse_guard_rules,
     parse_guard_rules_files, parse_guard_rules_into, parse_guard_rules_str, parse_keywords,

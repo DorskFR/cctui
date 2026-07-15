@@ -243,6 +243,36 @@ export const AccountCreateSchema = z
   })
   .openapi("AccountCreate");
 
+export const AccountUpdateSchema = z
+  .object({
+    token: z.string().min(1).optional().openapi({
+      description:
+        "Rotate the PAT; re-validated and must resolve to the same login. Never returned",
+    }),
+    poll_interval_ms: z.number().int().min(1000).nullable().optional(),
+    budget_ceiling: z.number().min(0).max(1).nullable().optional(),
+    rate_limit: z.number().int().min(1).nullable().optional(),
+  })
+  .openapi("AccountUpdate");
+
+export const GithubCapabilitySchema = z
+  .object({
+    available: z
+      .boolean()
+      .openapi({ description: "The connector store is reachable (gates nav + unlock screen)" }),
+    enabled: z
+      .boolean()
+      .openapi({ description: "The caller has at least one GitHub connector configured" }),
+    repos: z
+      .array(z.string())
+      .openapi({ description: "Distinct repo slugs the caller currently tracks" }),
+  })
+  .openapi("GithubCapability");
+
+export const CapabilitiesSchema = z
+  .object({ github: GithubCapabilitySchema })
+  .openapi("Capabilities");
+
 export const AccountSummarySchema = z
   .object({
     id: z.string(),

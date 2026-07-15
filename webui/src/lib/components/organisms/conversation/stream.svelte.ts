@@ -218,7 +218,10 @@ export class ConversationStream {
 		const known = [...(this.#opts.historyData() ?? []), ...this.live];
 		const maxTs = known.reduce((m, e) => Math.max(m, e.ts), 0);
 		const ts = Math.max(Date.now(), maxTs + 1);
-		const ev: AgentEvent = { type: 'reply', content: text, ts };
+		// Stamp a causal `seq` (CCT-481) just past the newest known event so the
+		// echo sorts last under `orderEvents`, matching the `ts` bump above.
+		const maxSeq = known.reduce((m, e) => Math.max(m, e.seq ?? 0), 0);
+		const ev: AgentEvent = { type: 'reply', content: text, ts, seq: maxSeq + 1 };
 		ws.recordOptimistic(id, ev);
 		this.live = [...this.live, ev];
 		return ts;

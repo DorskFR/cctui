@@ -71,6 +71,7 @@ defines the guard rules; proceeding without it would weaken the sandbox).
 | `CONTEXT_PACK_TOKEN_FROM` | — | Name of an env var holding the pack-clone token, when it differs from the task identity's (e.g. the task identity can't read the pack repo). Resolved before the `GITHUB_TOKEN` fallbacks; keeps a specific identity name out of the image. |
 | `GUARD_RULES_FILE` | `/opt/context/guard-rules.md` | Guard rules path; defaults into the fetched pack (the override/extend layer). |
 | `GUARD_RULES_BASE` | — | Operator base guard-rules parsed **before** `GUARD_RULES_FILE`. When a pack ships `guard-rules.md`, the entrypoint moves any prior `GUARD_RULES_FILE` here so the pack reuses/extends/overrides it. |
+| `CCTUI_DISPATCH_WORKDIR` | `/workspace/$TASK_REPO` if that dir exists (else `/workspace`) | Session working directory. Defaulted to the checked-out repo after `phase_workspace` so the CLI grants edit-in-place (a cwd inside the repo) instead of blocking background edits with "call `EnterWorktree` first"; an explicit operator/dispatcher value always wins. |
 
 ### Tenant plane (from `TASK_PAYLOAD_JSON`)
 
@@ -416,7 +417,8 @@ For `adapter: "codex"` the entrypoint **additively** stages the Codex targets
   `AGENTS.md` walked up from the working dir plus a `~/.codex/AGENTS.md` global —
   never `~/CLAUDE.md`. `phase_codex_pack` stages the pack's `AGENTS.md` (or, when
   absent, its `CLAUDE.md`) to `AGENTS.md` at the dispatch workdir root
-  (`CCTUI_DISPATCH_WORKDIR`, default `/workspace`) and to `~/.codex/AGENTS.md`.
+  (`CCTUI_DISPATCH_WORKDIR`, defaulting to the checked-out `/workspace/$TASK_REPO`
+  when present, else `/workspace`) and to `~/.codex/AGENTS.md`.
 - **MCP servers → `config.toml`.** A pack's neutral `mcp.json` (standard
   `mcpServers` map) is translated by `phase_codex_config` into
   `~/.codex/config.toml` `[mcp_servers.<name>]` tables, appended inside the

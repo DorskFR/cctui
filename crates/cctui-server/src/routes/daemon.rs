@@ -454,8 +454,18 @@ async fn process_frame(
 ) -> anyhow::Result<()> {
     match frame {
         DaemonFrameUp::SessionRegistered { adapter_id, local_id } => {
-            upsert_session(state, machine_id, user_id, &adapter_id, &local_id, None, None, None)
-                .await
+            upsert_session(
+                state,
+                machine_id,
+                user_id,
+                &adapter_id,
+                &local_id,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
         }
         DaemonFrameUp::Event { adapter_id, event } => {
             // Machine-scoped codex model catalog (CCT-641): cache it by
@@ -570,10 +580,14 @@ async fn handle_event(
     // `ON CONFLICT DO NOTHING` dedup already drops the duplicate rows; gating
     // the broadcast on a real insert extends that dedup to the live stream.
     let mut newly_inserted = true;
+    // Causal ordering key (CCT-481): stamped onto the live broadcast so it
+    // matches the reload path's `seq` (both are `stream_events.id`).
+    let mut inserted_seq: Option<i64> = None;
     match event {
         AdapterEvent::SessionStarted { local_id, meta } => {
             let working_dir = meta.working_dir.clone();
             let observed_at = meta.extra.get("observed_at").and_then(serde_json::Value::as_i64);
+            let extra = (!meta.extra.is_null()).then(|| meta.extra.clone());
             upsert_session(
                 state,
                 machine_id,
@@ -583,14 +597,17 @@ async fn handle_event(
                 working_dir,
                 meta.parent_local_id.clone(),
                 observed_at,
+                extra,
             )
             .await?;
         }
         AdapterEvent::Message { local_id, payload } => {
-            newly_inserted = insert_event(state, &local_id, "message", payload).await?;
+            inserted_seq = insert_event(state, &local_id, "message", payload).await?;
+            newly_inserted = inserted_seq.is_some();
         }
         AdapterEvent::ToolUse { local_id, payload } => {
-            newly_inserted = insert_event(state, &local_id, "tool_use", payload).await?;
+            inserted_seq = insert_event(state, &local_id, "tool_use", payload).await?;
+            newly_inserted = inserted_seq.is_some();
         }
         AdapterEvent::SessionEnded { local_id, reason } => {
             mark_session_ended(state, &local_id, &reason).await?;
@@ -782,6 +799,7 @@ async fn handle_event(
             state: agent_state,
             activity,
             name,
+            intent,
             model,
             effort,
             ..
@@ -798,6 +816,7 @@ async fn handle_event(
                     agent_state: agent_state.as_deref(),
                     activity: activity.as_deref(),
                     name: name.as_deref(),
+                    intent: intent.as_deref(),
                     model: model.as_deref(),
                     effort: effort.as_deref(),
                 },
@@ -841,7 +860,10 @@ async fn handle_event(
             reset_tool_count(state, &id).await;
         }
     }
-    if newly_inserted && let Some((session_id, data)) = broadcast_pair {
+    if newly_inserted && let Some((session_id, mut data)) = broadcast_pair {
+        if let Some(seq) = inserted_seq {
+            data.set_seq(seq);
+        }
         state.bus.publish_server(cctui_proto::ws::ServerEvent::Stream { session_id, data });
     }
     Ok(())
@@ -864,6 +886,7 @@ struct StatusSignals<'a> {
     agent_state: Option<&'a str>,
     activity: Option<&'a str>,
     name: Option<&'a str>,
+    intent: Option<&'a str>,
     model: Option<&'a str>,
     effort: Option<&'a str>,
 }
@@ -886,8 +909,9 @@ async fn update_status_signals(
             agent_state = COALESCE($3, agent_state), \
             activity = COALESCE($4, activity), \
             session_name = COALESCE($5, session_name), \
-            model = COALESCE(model, $6), \
-            effort = COALESCE($7, effort) \
+            intent = COALESCE($6, intent), \
+            model = COALESCE(model, $7), \
+            effort = COALESCE($8, effort) \
          WHERE id = $1",
     )
     .bind(local_id)
@@ -895,6 +919,7 @@ async fn update_status_signals(
     .bind(s.agent_state)
     .bind(s.activity)
     .bind(s.name)
+    .bind(s.intent)
     .bind(s.model)
     .bind(s.effort)
     .execute(&state.pool)
@@ -977,6 +1002,7 @@ async fn upsert_session(
     working_dir: Option<String>,
     parent_local_id: Option<String>,
     observed_at: Option<i64>,
+    extra: Option<serde_json::Value>,
 ) -> anyhow::Result<()> {
     // `parent_id` (CCT-141): resolve via a subquery rather than binding the
     // raw value so a not-yet-known parent yields NULL instead of an FK
@@ -998,13 +1024,14 @@ async fn upsert_session(
           VALUES ($1, (SELECT id FROM sessions WHERE id = $7), NULL, $2, $3, 'active',
                   COALESCE(to_timestamp($8::double precision), now()),
                   COALESCE(to_timestamp($8::double precision), now()),
-                  '{}'::jsonb, $4, $5, $6)
+                  COALESCE($9::jsonb, '{}'::jsonb), $4, $5, $6)
           ON CONFLICT (id) DO UPDATE SET
             last_heartbeat = GREATEST(sessions.last_heartbeat,
                                       COALESCE(to_timestamp($8::double precision), now())),
             status = CASE WHEN sessions.status IN ('inactive', 'archived', 'ended') THEN sessions.status ELSE 'active' END,
             adapter_id = EXCLUDED.adapter_id,
-            parent_id = COALESCE(sessions.parent_id, EXCLUDED.parent_id)",
+            parent_id = COALESCE(sessions.parent_id, EXCLUDED.parent_id),
+            metadata = COALESCE(sessions.metadata, '{}'::jsonb) || COALESCE(EXCLUDED.metadata, '{}'::jsonb)",
     )
     .bind(local_id)
     .bind(machine_id.to_string())
@@ -1014,6 +1041,7 @@ async fn upsert_session(
     .bind(adapter_id)
     .bind(parent_local_id)
     .bind(observed_at)
+    .bind(extra)
     .execute(&state.pool)
     .await?;
     // Repair the durable account binding (CCT-565): the dispatch path mints the
@@ -1035,16 +1063,18 @@ async fn upsert_session(
     Ok(())
 }
 
-/// Insert a stream event, returning `true` if a new row was written and
-/// `false` if it was a duplicate suppressed by the dedup constraint. Callers
-/// use the return value to decide whether to broadcast the event live, so a
-/// replayed session history doesn't re-stream to clients (CCT-171).
+/// Insert a stream event, returning `Some(id)` (the `stream_events.id`
+/// BIGSERIAL, used as the causal ordering `seq` — CCT-481) if a new row was
+/// written and `None` if it was a duplicate suppressed by the dedup constraint
+/// (or the session row was absent). Callers use the presence to decide whether
+/// to broadcast the event live, so a replayed session history doesn't re-stream
+/// to clients (CCT-171).
 async fn insert_event(
     state: &AppState,
     local_id: &str,
     event_type: &str,
     mut payload: serde_json::Value,
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<Option<i64>> {
     // Postgres jsonb/text cannot store the NUL code point (`\0`); a
     // payload carrying one (e.g. binary-ish tool output) fails the INSERT and
     // the event is silently lost (CCT-136). Strip NULs from every string so
@@ -1057,17 +1087,18 @@ async fn insert_event(
     // spamming WARN logs and burning a failed DB round-trip per event. The
     // `WHERE EXISTS` makes that case a clean no-op (0 rows) instead — when the
     // session is present this is identical to the old insert (CCT-493).
-    let result = sqlx::query(
+    let id: Option<i64> = sqlx::query_scalar(
         "INSERT INTO stream_events (session_id, event_type, payload) \
          SELECT $1, $2, $3 WHERE EXISTS (SELECT 1 FROM sessions WHERE id = $1) \
-         ON CONFLICT (session_id, event_type, content_hash) DO NOTHING",
+         ON CONFLICT (session_id, event_type, content_hash) DO NOTHING \
+         RETURNING id",
     )
     .bind(local_id)
     .bind(event_type)
     .bind(payload)
-    .execute(&state.pool)
+    .fetch_optional(&state.pool)
     .await?;
-    Ok(result.rows_affected() > 0)
+    Ok(id)
 }
 
 /// Recursively strip NUL (`\0`) from every string in a JSON value.
