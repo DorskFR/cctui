@@ -6,7 +6,10 @@ use axum::{Extension, Json};
 use chrono::{DateTime, Duration, Utc};
 use serde::Deserialize;
 
-use cctui_proto::api::{ApiError, SessionStats, TokenUsageWindows, WindowTokenUsage};
+use cctui_proto::api::{
+    ApiError, HeatmapCell, ModelUsage, SessionStats, TokenUsageWindows, UsageAnalytics,
+    UsageBucket, WindowTokenUsage,
+};
 use cctui_proto::models::SessionStatus;
 
 use crate::auth::AuthContext;
@@ -293,10 +296,318 @@ const fn field(t: &TokenStatsRow, i: usize) -> i64 {
     }
 }
 
+/// Query params for `GET /sessions/stats/usage`. `days` is the reporting range
+/// (clamped 1..=365, default 30); `tz_offset` is the caller's
+/// `Date.getTimezoneOffset()` (minutes; positive west of UTC), used to anchor
+/// day buckets and hour-of-week extraction to the caller's local wall clock —
+/// consistent with how [`session_token_stats`] anchors `today`.
+#[derive(Debug, Deserialize)]
+pub struct UsageAnalyticsParams {
+    #[serde(default = "default_days")]
+    pub days: i64,
+    #[serde(default)]
+    pub tz_offset: i32,
+}
+
+const fn default_days() -> i64 {
+    30
+}
+
+/// Bucket granularity for a range: per-hour for short ranges (last 24-48h),
+/// per-day otherwise. Kept pure for unit testing.
+const fn granularity_for_days(days: i64) -> &'static str {
+    if days <= 2 { "hour" } else { "day" }
+}
+
+type BucketRow = (DateTime<Utc>, i64, i64, i64, i64);
+type ModelRow = (String, i64, i64, i64, i64);
+type HeatRow = (i32, i32, i64, i64);
+
+/// Tokens-over-time aggregate. `$1` granularity (`day`/`hour`), `$2` tz-offset
+/// minutes, `$3` window start, `$4` owner filter (NULL = all). Shared with the
+/// aggregation test so both exercise the exact same SQL.
+const USAGE_BUCKETS_SQL: &str = "SELECT \
+        date_trunc($1, stu.created_at - make_interval(mins => $2)) \
+            + make_interval(mins => $2) AS bucket, \
+        COALESCE(SUM(stu.input_tokens), 0)::bigint, \
+        COALESCE(SUM(stu.output_tokens), 0)::bigint, \
+        COALESCE(SUM(stu.cache_read_tokens), 0)::bigint, \
+        COALESCE(SUM(stu.cache_creation_tokens), 0)::bigint \
+     FROM session_token_usage stu \
+     LEFT JOIN sessions s ON s.id = stu.session_id \
+     LEFT JOIN machines m ON m.id = s.machine_uuid \
+     WHERE stu.created_at >= $3 AND ($4::uuid IS NULL OR m.user_id = $4) \
+     GROUP BY bucket ORDER BY bucket";
+
+/// Per-model breakdown. `$1` window start, `$2` owner filter (NULL = all).
+const USAGE_MODELS_SQL: &str = "SELECT COALESCE(NULLIF(s.model, ''), 'unknown') AS model, \
+        COALESCE(SUM(stu.input_tokens), 0)::bigint, \
+        COALESCE(SUM(stu.output_tokens), 0)::bigint, \
+        COALESCE(SUM(stu.cache_read_tokens), 0)::bigint, \
+        COUNT(*)::bigint \
+     FROM session_token_usage stu \
+     LEFT JOIN sessions s ON s.id = stu.session_id \
+     LEFT JOIN machines m ON m.id = s.machine_uuid \
+     WHERE stu.created_at >= $1 AND ($2::uuid IS NULL OR m.user_id = $2) \
+     GROUP BY model ORDER BY SUM(stu.output_tokens) DESC NULLS LAST";
+
+/// Hour-of-week heatmap. `$1` tz-offset minutes, `$2` window start, `$3` owner
+/// filter (NULL = all).
+const USAGE_HEATMAP_SQL: &str = "SELECT \
+        EXTRACT(dow  FROM stu.created_at - make_interval(mins => $1))::int, \
+        EXTRACT(hour FROM stu.created_at - make_interval(mins => $1))::int, \
+        COUNT(*)::bigint, \
+        COALESCE(SUM(stu.output_tokens), 0)::bigint \
+     FROM session_token_usage stu \
+     LEFT JOIN sessions s ON s.id = stu.session_id \
+     LEFT JOIN machines m ON m.id = s.machine_uuid \
+     WHERE stu.created_at >= $2 AND ($3::uuid IS NULL OR m.user_id = $3) \
+     GROUP BY 1, 2";
+
+/// `GET /sessions/stats/usage?days=30` — Overview usage analytics (CCT-707):
+/// tokens-over-time buckets, per-model breakdown, and an hour-of-week activity
+/// heatmap. One round-trip set (three aggregate scans of `session_token_usage`,
+/// no per-bucket queries). Scoped to the caller like `session_token_stats`.
+///
+/// Bucketing and hour-of-week extraction are done in the caller's reporting
+/// timezone: `created_at` is shifted by `tz_offset` to local wall-clock time
+/// before `date_trunc`/`EXTRACT`, then day buckets are mapped back to a UTC
+/// instant (same convention as `today` in [`session_token_stats`]).
+///
+/// Model attribution is session-level (`sessions.model`; migration 025) via the
+/// PK join `sessions.id = stu.session_id`; NULL/empty models bucket under
+/// `unknown`. Missing time buckets are zero-filled client-side, not in SQL.
+pub async fn session_usage_analytics(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Query(params): Query<UsageAnalyticsParams>,
+) -> Result<Json<UsageAnalytics>, (StatusCode, Json<ApiError>)> {
+    let uid = ctx.owner_filter();
+    let days = params.days.clamp(1, 365);
+    let tz = params.tz_offset;
+    let granularity = granularity_for_days(days);
+    let since = Utc::now() - Duration::days(days);
+
+    let bucket_rows: Vec<BucketRow> = sqlx::query_as(USAGE_BUCKETS_SQL)
+        .bind(granularity)
+        .bind(tz)
+        .bind(since)
+        .bind(uid)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(|e| usage_db_err(&e))?;
+    let model_rows: Vec<ModelRow> = sqlx::query_as(USAGE_MODELS_SQL)
+        .bind(since)
+        .bind(uid)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(|e| usage_db_err(&e))?;
+    let heat_rows: Vec<HeatRow> = sqlx::query_as(USAGE_HEATMAP_SQL)
+        .bind(tz)
+        .bind(since)
+        .bind(uid)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(|e| usage_db_err(&e))?;
+
+    let cast = |v: i64| u64::try_from(v).unwrap_or(0);
+    let buckets = bucket_rows
+        .into_iter()
+        .map(|(bucket, input, output, cache_read, cache_creation)| UsageBucket {
+            bucket: bucket.to_rfc3339(),
+            input: cast(input),
+            output: cast(output),
+            cache_read: cast(cache_read),
+            cache_creation: cast(cache_creation),
+        })
+        .collect();
+    let models = model_rows
+        .into_iter()
+        .map(|(model, input, output, cache_read, messages)| ModelUsage {
+            model,
+            input: cast(input),
+            output: cast(output),
+            cache_read: cast(cache_read),
+            messages: cast(messages),
+        })
+        .collect();
+    let heatmap = heat_rows
+        .into_iter()
+        .map(|(dow, hour, messages, output)| HeatmapCell {
+            dow: dow as u8,
+            hour: hour as u8,
+            messages: cast(messages),
+            output: cast(output),
+        })
+        .collect();
+
+    Ok(Json(UsageAnalytics { granularity: granularity.into(), buckets, models, heatmap }))
+}
+
+fn usage_db_err(e: &sqlx::Error) -> (StatusCode, Json<ApiError>) {
+    tracing::error!("db error (usage analytics): {e}");
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::day_start_for_offset;
-    use chrono::{DateTime, TimeZone, Utc};
+    use super::{day_start_for_offset, granularity_for_days};
+    use chrono::{DateTime, Duration, TimeZone, Utc};
+
+    #[test]
+    fn granularity_hourly_for_short_ranges() {
+        assert_eq!(granularity_for_days(1), "hour");
+        assert_eq!(granularity_for_days(2), "hour");
+        assert_eq!(granularity_for_days(3), "day");
+        assert_eq!(granularity_for_days(30), "day");
+    }
+
+    // SQL aggregation test (CCT-707): needs a migrated Postgres. Point
+    // DATABASE_URL/TEST_DATABASE_URL at one and it runs; otherwise it skips.
+    // Exercises the exact handler query strings (the USAGE_*_SQL consts) for
+    // day bucketing, per-model grouping (incl. NULL model → 'unknown'), and
+    // hour-of-week heatmap extraction.
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)]
+    async fn usage_aggregation_over_db() {
+        use super::{USAGE_BUCKETS_SQL, USAGE_HEATMAP_SQL, USAGE_MODELS_SQL};
+        use sqlx::Row as _;
+
+        let Some(url) =
+            std::env::var("DATABASE_URL").ok().or_else(|| std::env::var("TEST_DATABASE_URL").ok())
+        else {
+            eprintln!("skipping usage_aggregation_over_db: no DATABASE_URL/TEST_DATABASE_URL");
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+
+        let prefix = "cct707-agg";
+        let cleanup = |p: sqlx::PgPool| async move {
+            sqlx::query("DELETE FROM sessions WHERE id LIKE $1")
+                .bind(format!("{prefix}-%"))
+                .execute(&p)
+                .await
+                .expect("cleanup");
+        };
+        cleanup(pool.clone()).await;
+
+        let seed = |n: i64,
+                    model: Option<&'static str>,
+                    at: DateTime<Utc>,
+                    input: i64,
+                    output: i64,
+                    cache_read: i64,
+                    cache_creation: i64| {
+            let pool = pool.clone();
+            async move {
+                let sid = format!("{prefix}-s{n}");
+                sqlx::query(
+                    "INSERT INTO sessions (id, machine_id, working_dir, status, model) \
+                     VALUES ($1, 'test-machine', '/tmp', 'active', $2) \
+                     ON CONFLICT (id) DO UPDATE SET model = EXCLUDED.model",
+                )
+                .bind(&sid)
+                .bind(model)
+                .execute(&pool)
+                .await
+                .expect("insert session");
+                sqlx::query(
+                    "INSERT INTO session_token_usage (session_id, message_id, input_tokens, \
+                     output_tokens, cache_read_tokens, cache_creation_tokens, created_at) \
+                     VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                )
+                .bind(&sid)
+                .bind(format!("{prefix}-m{n}"))
+                .bind(input)
+                .bind(output)
+                .bind(cache_read)
+                .bind(cache_creation)
+                .bind(at)
+                .execute(&pool)
+                .await
+                .expect("insert usage");
+            }
+        };
+
+        let now = Utc::now();
+        let day_a = now - Duration::days(3);
+        let day_a2 = day_a + Duration::hours(2);
+        let day_b = now - Duration::days(5);
+        // Two rows on day_a (one claude, one NULL model → 'unknown'), one on day_b.
+        seed(1, Some("claude-x"), day_a, 100, 10, 5, 1).await;
+        seed(2, None, day_a2, 200, 20, 0, 0).await;
+        seed(3, Some("claude-x"), day_b, 50, 5, 2, 0).await;
+
+        let since = now - Duration::days(30);
+        let no_uid = Option::<uuid::Uuid>::None;
+
+        // Buckets: day_a merges its two rows (100+200), day_b holds 50. Other
+        // rows in a shared DB are ignored by matching our known dates + totals.
+        let rows = sqlx::query(USAGE_BUCKETS_SQL)
+            .bind("day")
+            .bind(0_i32)
+            .bind(since)
+            .bind(no_uid)
+            .fetch_all(&pool)
+            .await
+            .expect("buckets query");
+        let (mut a_in, mut b_in) = (0i64, 0i64);
+        for r in &rows {
+            let bucket: DateTime<Utc> = r.get(0);
+            let input: i64 = r.get(1);
+            if bucket.date_naive() == day_a.date_naive() {
+                a_in += input;
+            } else if bucket.date_naive() == day_b.date_naive() {
+                b_in += input;
+            }
+        }
+        assert!(a_in >= 300, "day_a bucket must include our 300 input, got {a_in}");
+        assert!(b_in >= 50, "day_b bucket must include our 50 input, got {b_in}");
+
+        // Models: claude-x present with >=2 messages, NULL grouped under 'unknown'.
+        let rows = sqlx::query(USAGE_MODELS_SQL)
+            .bind(since)
+            .bind(no_uid)
+            .fetch_all(&pool)
+            .await
+            .expect("models query");
+        let (mut claude_msgs, mut unknown_msgs) = (0i64, 0i64);
+        for r in &rows {
+            let model: String = r.get(0);
+            let messages: i64 = r.get(4);
+            match model.as_str() {
+                "claude-x" => claude_msgs += messages,
+                "unknown" => unknown_msgs += messages,
+                _ => {}
+            }
+        }
+        assert!(claude_msgs >= 2, "claude-x should have >=2 messages, got {claude_msgs}");
+        assert!(unknown_msgs >= 1, "NULL model must bucket under 'unknown'");
+
+        // Heatmap: a cell exists at day_a's (dow, hour).
+        let rows = sqlx::query(USAGE_HEATMAP_SQL)
+            .bind(0_i32)
+            .bind(since)
+            .bind(no_uid)
+            .fetch_all(&pool)
+            .await
+            .expect("heatmap query");
+        let want_dow: i32 = day_a.format("%w").to_string().parse().unwrap();
+        let want_hour: i32 = day_a.format("%H").to_string().parse().unwrap();
+        let hit = rows.iter().any(|r| {
+            let dow: i32 = r.get(0);
+            let hour: i32 = r.get(1);
+            let messages: i64 = r.get(2);
+            dow == want_dow && hour == want_hour && messages >= 1
+        });
+        assert!(hit, "heatmap should have a cell at dow={want_dow} hour={want_hour}");
+
+        cleanup(pool.clone()).await;
+    }
 
     #[test]
     fn day_start_utc_when_no_offset() {

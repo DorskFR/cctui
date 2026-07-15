@@ -4,6 +4,7 @@ import { api, ApiError } from "./api";
 import type { SessionListResponse } from "@bindings/SessionListResponse";
 import type { SessionStats } from "@bindings/SessionStats";
 import type { TokenUsageWindows } from "@bindings/TokenUsageWindows";
+import type { UsageAnalytics } from "@bindings/UsageAnalytics";
 import type { SessionListItem } from "@bindings/SessionListItem";
 import type { AgentEvent } from "@bindings/AgentEvent";
 import type { SpawnRequest } from "@bindings/SpawnRequest";
@@ -337,6 +338,7 @@ export const qk = {
   sessions: (archived: boolean) => ["sessions", { archived }] as const,
   sessionStats: ["session-stats"] as const,
   tokenStats: ["token-stats"] as const,
+  usageAnalytics: (days: number) => ["usage-analytics", { days }] as const,
   // NOT under ['sessions'] on purpose: list invalidations (`['sessions']`,
   // bumped ~every 2s while streaming) must NOT refetch the conversation —
   // a refetched history that overlaps the live ws events produced duplicate
@@ -376,6 +378,14 @@ export const endpoints = {
    * `Date.getTimezoneOffset()` — only used to anchor "today" to local midnight. */
   tokenStats: (tzOffset: number) =>
     api.get<TokenUsageWindows>("/sessions/stats/tokens", {
+      tz_offset: tzOffset,
+    }),
+  /** Overview usage analytics (CCT-707): tokens-over-time buckets, per-model
+   * breakdown, and an hour-of-week activity heatmap. `days` sets the range +
+   * bucket granularity; `tzOffset` anchors buckets/heatmap to local time. */
+  usageAnalytics: (days: number, tzOffset: number) =>
+    api.get<UsageAnalytics>("/sessions/stats/usage", {
+      days,
       tz_offset: tzOffset,
     }),
   // Full-transcript substring search (CCT-184). `includeArchived` sets scope
@@ -664,6 +674,16 @@ export const useTokenStats = () =>
     queryFn: () => endpoints.tokenStats(new Date().getTimezoneOffset()),
     refetchInterval: 15_000,
   });
+
+export const useUsageAnalytics = (days: () => number) =>
+  createQuery(
+    toStore(() => ({
+      queryKey: qk.usageAnalytics(days()),
+      queryFn: () =>
+        endpoints.usageAnalytics(days(), new Date().getTimezoneOffset()),
+      refetchInterval: 60_000,
+    })),
+  );
 
 export const useConversation = (
   id: () => string,

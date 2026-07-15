@@ -7,6 +7,7 @@
 	import { onMount } from 'svelte';
 	import { ws } from '$lib/ws.svelte';
 	import { m } from '$lib/paraglide/messages';
+	import { resolveTerminalFont, BUNDLED_TERMINAL_FONT } from './terminalFont';
 
 	// The daemon's held/viewer attach is fixed at 120x40 (ATTACH_COLS/ROWS); size
 	// the viewport to match so the geometry never fights the PTY.
@@ -27,9 +28,21 @@
 		void (async () => {
 			const [{ Terminal }] = await Promise.all([
 				import('@xterm/xterm'),
-				import('@xterm/xterm/css/xterm.css')
+				import('@xterm/xterm/css/xterm.css'),
+				import('$lib/styles/terminal-font.css')
 			]);
 			if (disposed || !host) return;
+
+			// Measure glyph width only after the bundled font is loaded, else xterm
+			// sizes cells from a fallback font and glyphs come out spaced-out.
+			try {
+				await document.fonts.load(`12px "${BUNDLED_TERMINAL_FONT}"`);
+				await document.fonts.ready;
+			} catch {
+				/* fonts API unavailable — fall through with the resolved stack */
+			}
+			if (disposed || !host) return;
+
 			term = new Terminal({
 				cols: COLS,
 				rows: ROWS,
@@ -37,7 +50,7 @@
 				disableStdin: true,
 				scrollback: 1000,
 				fontSize: 12,
-				fontFamily: 'var(--font-mono, ui-monospace, monospace)',
+				fontFamily: resolveTerminalFont(),
 				theme: { background: '#0b0e14' }
 			});
 			term.open(host);
