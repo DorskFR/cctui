@@ -405,6 +405,90 @@ fn reconstruct_sse(text: &str) -> (Option<String>, Option<Value>) {
     ((!out.is_empty()).then_some(out), usage)
 }
 
+/// Reconstruct the completion text + token usage from an `OpenAI` Responses API
+/// response body (what codex speaks), handling both the buffered single-JSON
+/// shape and the SSE stream (`data: {...}` lines). Returns `(output_text,
+/// usage)`.
+///
+/// SSE reconstruction concatenates `response.output_text.delta` deltas and pulls
+/// usage from the terminal `response.completed`/`response.incomplete` event's
+/// `response.usage` object. Usage maps into the same Langfuse keys the Anthropic
+/// path uses: `input` = `input_tokens - cached_tokens`, `cache_read_input_tokens`
+/// = `cached_tokens`, `output` = `output_tokens` (CCT-710).
+pub fn reconstruct_openai(body: &[u8]) -> (Option<String>, Option<Value>) {
+    let text = String::from_utf8_lossy(body);
+    // Non-SSE: a single Responses object with a top-level `usage` and `output`.
+    if let Ok(v) = serde_json::from_str::<Value>(text.trim())
+        && (v.get("output").is_some() || v.get("usage").is_some())
+    {
+        return (openai_output_text(&v), v.get("usage").map(openai_usage));
+    }
+    reconstruct_openai_sse(&text)
+}
+
+/// Extract concatenated text from a non-streaming Responses `output` array
+/// (`output[].content[]` items of type `output_text`).
+fn openai_output_text(v: &Value) -> Option<String> {
+    let items = v.get("output")?.as_array()?;
+    let s: String = items
+        .iter()
+        .filter_map(|item| item.get("content").and_then(Value::as_array))
+        .flatten()
+        .filter(|c| c.get("type").and_then(Value::as_str) == Some("output_text"))
+        .filter_map(|c| c.get("text").and_then(Value::as_str))
+        .collect();
+    (!s.is_empty()).then_some(s)
+}
+
+/// Reconstruct from an `OpenAI` Responses SSE stream: concatenate
+/// `response.output_text.delta` deltas, pull usage from the terminal
+/// `response.completed`/`response.incomplete` event.
+fn reconstruct_openai_sse(text: &str) -> (Option<String>, Option<Value>) {
+    let mut out = String::new();
+    let mut usage: Option<Value> = None;
+    let mut saw_event = false;
+
+    for line in text.lines() {
+        let Some(data) = line.strip_prefix("data:") else { continue };
+        let trimmed = data.trim();
+        if trimmed == "[DONE]" {
+            continue;
+        }
+        let Ok(ev) = serde_json::from_str::<Value>(trimmed) else { continue };
+        saw_event = true;
+        match ev.get("type").and_then(Value::as_str) {
+            Some("response.output_text.delta") => {
+                if let Some(t) = ev.get("delta").and_then(Value::as_str) {
+                    out.push_str(t);
+                }
+            }
+            Some("response.completed" | "response.incomplete") => {
+                if let Some(u) = ev.pointer("/response/usage") {
+                    usage = Some(openai_usage(u));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if !saw_event {
+        return (None, None);
+    }
+    ((!out.is_empty()).then_some(out), usage)
+}
+
+/// Map an `OpenAI` Responses `usage` object into the shared Langfuse
+/// `usageDetails` shape. `input` is billed non-cached input, so it subtracts the
+/// cached (saturating) tokens; the cached count is reported as
+/// `cache_read_input_tokens`. `OpenAI` has no cache-creation class.
+fn openai_usage(u: &Value) -> Value {
+    let input_tokens = u.get("input_tokens").and_then(Value::as_u64);
+    let cached = u.pointer("/input_tokens_details/cached_tokens").and_then(Value::as_u64);
+    let output_tokens = u.get("output_tokens").and_then(Value::as_u64);
+    let input = input_tokens.map(|i| i.saturating_sub(cached.unwrap_or(0)));
+    usage_details(input, output_tokens, cached, None)
+}
+
 /// Build a Langfuse `usageDetails` map. Keys must match the model's price usage
 /// types so cost is computed per token class (cache reads at ~10% of input);
 /// `None` entries are omitted — a JSON null fails ingestion validation.
@@ -510,6 +594,61 @@ mod tests {
         assert_eq!(u["input"], json!(20));
         assert_eq!(u["output"], json!(7));
         assert_eq!(u["cache_read_input_tokens"], json!(4));
+    }
+
+    #[test]
+    fn reconstruct_openai_sse_stream() {
+        let sse = concat!(
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hel\"}\n\n",
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"lo\"}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":100,\"input_tokens_details\":{\"cached_tokens\":40},\"output_tokens\":12,\"output_tokens_details\":{\"reasoning_tokens\":8},\"total_tokens\":112}}}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let (out, usage) = reconstruct_openai(sse.as_bytes());
+        assert_eq!(out.as_deref(), Some("Hello"));
+        let u = usage.unwrap();
+        assert_eq!(u["input"], json!(60));
+        assert_eq!(u["output"], json!(12));
+        assert_eq!(u["cache_read_input_tokens"], json!(40));
+        assert!(u.get("cache_creation_input_tokens").is_none());
+    }
+
+    #[test]
+    fn reconstruct_openai_non_streaming() {
+        let body = serde_json::to_vec(&json!({
+            "output": [{
+                "type": "message",
+                "content": [
+                    {"type": "output_text", "text": "hello "},
+                    {"type": "output_text", "text": "world"},
+                ],
+            }],
+            "usage": {
+                "input_tokens": 30,
+                "input_tokens_details": {"cached_tokens": 10},
+                "output_tokens": 5,
+                "output_tokens_details": {"reasoning_tokens": 2},
+                "total_tokens": 35,
+            }
+        }))
+        .unwrap();
+        let (out, usage) = reconstruct_openai(&body);
+        assert_eq!(out.as_deref(), Some("hello world"));
+        let u = usage.unwrap();
+        assert_eq!(u["input"], json!(20));
+        assert_eq!(u["output"], json!(5));
+        assert_eq!(u["cache_read_input_tokens"], json!(10));
+        assert!(u.get("cache_creation_input_tokens").is_none());
+    }
+
+    #[test]
+    fn reconstruct_openai_garbage_is_empty() {
+        let (out, usage) = reconstruct_openai(b"not json, not sse");
+        assert!(out.is_none());
+        assert!(usage.is_none());
     }
 
     #[test]

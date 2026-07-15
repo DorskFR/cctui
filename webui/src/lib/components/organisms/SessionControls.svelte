@@ -225,7 +225,7 @@
 	.bar :global(.search-box) {
 		display: contents;
 	}
-	.bar :global(.search-box .fsb) {
+	.bar :global(.search-box .fi) {
 		flex: 1 1 0;
 		min-width: 0;
 	}
@@ -279,7 +279,7 @@
 		   its intrinsic input width) and shrinks freely; the tools follow on the
 		   right, all on one row. The `.bar > *` order reset above can't reach the
 		   display:contents children, so they're ordered here explicitly. */
-		.bar :global(.search-box .fsb) {
+		.bar :global(.search-box .fi) {
 			order: 2;
 			flex: 1 1 0;
 			min-width: 0;

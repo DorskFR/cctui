@@ -25,15 +25,15 @@ async function renderSearchBar() {
 		props: { schema, showChips: false }
 	});
 	await tick();
-	const input = document.querySelector<HTMLInputElement>('.fsb__input');
+	const input = document.querySelector<HTMLInputElement>('.fi__input');
 	expect(input).not.toBeNull();
 	input!.focus();
-	await vi.waitFor(() => expect(document.querySelectorAll('.fsb__opt')).toHaveLength(3));
+	await vi.waitFor(() => expect(document.querySelectorAll('.fi__opt')).toHaveLength(3));
 	return input!;
 }
 
 function selectedOption() {
-	return document.querySelector<HTMLButtonElement>('.fsb__opt[aria-selected="true"]');
+	return document.querySelector<HTMLButtonElement>('.fi__opt[aria-selected="true"]');
 }
 
 describe('cctui FilterSearchBar interaction baseline', () => {
@@ -63,7 +63,7 @@ describe('cctui FilterSearchBar interaction baseline', () => {
 			value: scrollIntoView
 		});
 		await renderSearchBar();
-		const options = document.querySelectorAll<HTMLButtonElement>('.fsb__opt');
+		const options = document.querySelectorAll<HTMLButtonElement>('.fi__opt');
 
 		options[1].dispatchEvent(new MouseEvent('mouseenter'));
 		await tick();

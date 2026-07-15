@@ -1540,13 +1540,18 @@ async fn passthrough(
         account_id: Some(acct.id.to_string()),
         model,
     };
+    let is_openai = Family::from_provider(&acct.provider) == Family::Openai;
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
     tokio::spawn(async move {
         let mut buf = Vec::new();
         while let Some(chunk) = rx.recv().await {
             buf.extend_from_slice(&chunk);
         }
-        let (output, usage) = crate::langfuse::reconstruct_anthropic(&buf);
+        let (output, usage) = if is_openai {
+            crate::langfuse::reconstruct_openai(&buf)
+        } else {
+            crate::langfuse::reconstruct_anthropic(&buf)
+        };
         langfuse.trace(crate::langfuse::TracePayload {
             ctx,
             request: traced_request,
