@@ -37,8 +37,7 @@ use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use super::contract;
-use super::model_list;
+use super::{contract, model_list};
 
 /// Outbound request id seeds. The handshake uses fixed ids so the driver
 /// can recognise the responses it is waiting for; everything after is
