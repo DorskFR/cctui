@@ -1,9 +1,9 @@
 <script lang="ts">
   import { createQuery } from "@tanstack/svelte-query";
-  import { FilterSearchBar, SegmentedControl, Text } from "@dorsk/tsumikit";
+  import { Button, FilterSearchBar, Icon, SegmentedControl, Text } from "@dorsk/tsumikit";
   import { api } from "../api/client";
   import { getAccount } from "../api/config";
-  import { ciStateOf, prStateOf, pullOf, repoOf } from "../api/types";
+  import { ciStateOf, type GithubPull, prStateOf, pullOf, repoOf } from "../api/types";
   import {
     buildPrSchema,
     collectAuthors,
@@ -18,7 +18,7 @@
   import { router } from "../router/router.svelte";
   import { tabs } from "../stores/tabs.svelte";
   import Avatar from "./Avatar.svelte";
-  import PrStateIcon from "./PrStateIcon.svelte";
+  import PrStateIcon, { stateColor } from "./PrStateIcon.svelte";
   import RepoBadge from "./RepoBadge.svelte";
 
   let query = $state("");
@@ -54,6 +54,11 @@
     { value: "review", label: "Review" },
     { value: "authored", label: "Authored" },
   ];
+
+  function isApproved(pull: GithubPull): boolean {
+    const p = pull as unknown as Record<string, unknown>;
+    return (p.review_decision ?? p.reviewDecision) === "APPROVED";
+  }
 
   function open(e: PrEntry): void {
     const p = e.pull;
@@ -98,8 +103,15 @@
           </div>
           <ul class="list">
             {#each group.entries as e (`${e.owner}/${e.repo}#${e.pull.number}`)}
-              <li>
-                <button class="row" onclick={() => open(e)}>
+              <li
+                class:approved={isApproved(e.pull)}
+                style:--marker={stateColor(prStateOf(e.pull))}
+              >
+                <Button
+                  variant="ghost"
+                  onclick={() => open(e)}
+                  style="flex:1;min-width:0;justify-content:flex-start;gap:var(--gh-space-3);padding:var(--gh-space-2) var(--gh-space-3);text-align:left;border-radius:0"
+                >
                   <PrStateIcon state={prStateOf(e.pull)} size={14} />
                   <span class="title">{e.pull.title}</span>
                   {#if e.pull.user}
@@ -115,7 +127,7 @@
                       <span class="del">−{e.pull.deletions ?? 0}</span>
                     </span>
                   {/if}
-                </button>
+                </Button>
                 {#if e.pull.html_url}
                   <a
                     class="ext"
@@ -125,7 +137,7 @@
                     aria-label="Open on GitHub"
                     title="Open on GitHub"
                   >
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                    <Icon name="external" size={13} label="Open on GitHub" />
                   </a>
                 {/if}
               </li>
@@ -167,25 +179,13 @@
     display: flex;
     align-items: stretch;
     border-bottom: 1px solid var(--gh-border-muted);
+    border-left: 2px solid var(--marker, transparent);
   }
   li:last-child {
     border-bottom: none;
   }
-  .row {
-    flex: 1;
-    min-width: 0;
-    display: flex;
-    align-items: center;
-    gap: var(--gh-space-3);
-    background: transparent;
-    border: none;
-    color: var(--gh-fg);
-    padding: var(--gh-space-2) var(--gh-space-3);
-    cursor: pointer;
-    text-align: left;
-  }
-  .row:hover {
-    background: var(--gh-bg-elev);
+  li.approved {
+    background: color-mix(in srgb, var(--gh-success) 8%, transparent);
   }
   .ext {
     display: flex;

@@ -7,45 +7,26 @@
 </script>
 
 <script lang="ts">
+  import { Badge, Dot } from "@dorsk/tsumikit";
+
   interface Props {
     repo: string;
     count?: number;
   }
   const { repo, count }: Props = $props();
   const hue = $derived(repoHue(repo));
+  const style = $derived(
+    `background:hsl(${hue} 60% 50% / 0.14);color:hsl(${hue} 55% 72%);border-color:hsl(${hue} 55% 50% / 0.35)`,
+  );
 </script>
 
-<span
-  class="badge"
-  style="--h: {hue}"
-  title={repo}
->
-  <span class="dot"></span>
+<Badge size="sm" {style} title={repo}>
+  <Dot color="hsl({hue} 65% 58%)" />
   <span class="name">{repo}</span>
   {#if count !== undefined}<span class="count">{count}</span>{/if}
-</span>
+</Badge>
 
 <style>
-  .badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    max-width: 100%;
-    padding: 1px 8px;
-    font-size: var(--fs-xs);
-    line-height: 18px;
-    border-radius: var(--gh-radius-sm);
-    background: hsl(var(--h) 60% 50% / 0.14);
-    color: hsl(var(--h) 55% 72%);
-    border: 1px solid hsl(var(--h) 55% 50% / 0.35);
-  }
-  .dot {
-    flex: none;
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: hsl(var(--h) 65% 58%);
-  }
   .name {
     overflow: hidden;
     text-overflow: ellipsis;

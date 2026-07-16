@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { IconButton } from "@dorsk/tsumikit";
   import { pullPath } from "../router/route";
   import { router } from "../router/router.svelte";
   import { tabs } from "../stores/tabs.svelte";
@@ -9,9 +10,7 @@
     router.navigate(pullPath(owner, repo, number));
   }
 
-  function close(e: MouseEvent, id: string): void {
-    e.stopPropagation();
-    e.preventDefault();
+  function close(id: string): void {
     const wasActive = tabs.activeId === id;
     tabs.close(id);
     if (wasActive) {
@@ -21,8 +20,16 @@
     }
   }
 
+  function closeAll(): void {
+    for (const tab of [...tabs.tabs]) tabs.close(tab.id);
+    router.navigate("/");
+  }
+
   function onAux(e: MouseEvent, id: string): void {
-    if (e.button === 1) close(e, id);
+    if (e.button === 1) {
+      e.preventDefault();
+      close(id);
+    }
   }
 
   const activeId = $derived(
@@ -40,16 +47,40 @@
         class:active={tab.id === activeId}
         role="tab"
         tabindex="0"
+        aria-selected={tab.id === activeId}
         onclick={() => activate(tab.owner, tab.repo, tab.number, tab.id)}
         onauxclick={(e) => onAux(e, tab.id)}
         onkeydown={(e) => e.key === "Enter" && activate(tab.owner, tab.repo, tab.number, tab.id)}
       >
         <StatusDot pr={tab.status.pr} ci={tab.status.ci} />
         <span class="label" title={tab.title}>{tab.owner}/{tab.repo} #{tab.number}</span>
-        <button class="x" title="Close tab" onclick={(e) => close(e, tab.id)}>×</button>
+        <IconButton
+          icon="x"
+          label="Close tab"
+          variant="ghost"
+          size={14}
+          inline
+          hoverDanger
+          onclick={(e) => {
+            e.stopPropagation();
+            close(tab.id);
+          }}
+        />
       </div>
     {/each}
   </div>
+  {#if tabs.tabs.length > 1}
+    <div class="actions">
+      <IconButton
+        icon="trash"
+        label="Close all tabs"
+        variant="ghost"
+        size={16}
+        hoverDanger
+        onclick={closeAll}
+      />
+    </div>
+  {/if}
 </nav>
 
 <style>
@@ -88,18 +119,10 @@
     text-overflow: ellipsis;
     font-size: var(--fs-xs);
   }
-  .x {
-    background: transparent;
-    border: none;
-    color: var(--gh-fg-subtle);
-    cursor: pointer;
-    font-size: var(--fs-base);
-    line-height: 1;
-    padding: 0 2px;
-    border-radius: var(--gh-radius-sm);
-  }
-  .x:hover {
-    color: var(--gh-fg);
-    background: var(--gh-border-muted);
+  .actions {
+    display: flex;
+    align-items: center;
+    margin-left: auto;
+    padding-left: var(--gh-space-2);
   }
 </style>

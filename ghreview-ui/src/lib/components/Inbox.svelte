@@ -1,6 +1,13 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from "@tanstack/svelte-query";
-  import { Button, SegmentedControl, Select } from "@dorsk/tsumikit";
+  import {
+    Button,
+    Checkbox,
+    Cluster,
+    OptionButton,
+    SegmentedControl,
+    Select,
+  } from "@dorsk/tsumikit";
   import { toStore } from "svelte/store";
   import { api, type NotificationFilter } from "../api/client";
   import { getAccount } from "../api/config";
@@ -25,6 +32,7 @@
   let repoFilter = $state<string>("");
   let status = $state<string>("unread");
   let selected = $state<Set<string>>(new Set());
+  let selectMode = $state<boolean>(false);
 
   const statusOptions = [
     { value: "unread", label: "Unread" },
@@ -97,6 +105,27 @@
     selected = next;
   }
 
+  const visibleIds = $derived(visible.map((item) => notificationOf(item).id));
+  const allSelected = $derived(
+    visibleIds.length > 0 && visibleIds.every((id) => selected.has(id)),
+  );
+  const someSelected = $derived(visibleIds.some((id) => selected.has(id)));
+
+  function toggleSelectAll(): void {
+    const next = new Set(selected);
+    if (allSelected) {
+      for (const id of visibleIds) next.delete(id);
+    } else {
+      for (const id of visibleIds) next.add(id);
+    }
+    selected = next;
+  }
+
+  function onRowClick(n: GithubNotification): void {
+    if (selectMode) toggle(n.id);
+    else if (isPull(n)) openPull(n);
+  }
+
   function isPull(n: GithubNotification): boolean {
     return n.subject.type === "PullRequest" && parsePullApiUrl(n.subject.url) !== null;
   }
@@ -140,37 +169,42 @@
 
 <div class="wrap">
   <div class="toolbar">
-    <SegmentedControl options={statusOptions} bind:value={status} size="sm" label="Status" />
-    <Select compact bind:value={reason} aria-label="Reason">
-      <option value="">All reasons</option>
-      <option value="review_requested">Review requested</option>
-      <option value="mention">Mention</option>
-      <option value="ci_activity">CI activity</option>
-    </Select>
-    <Select compact bind:value={repoFilter} aria-label="Repository">
-      <option value="">All repos</option>
-      {#each repos as r (r)}
-        <option value={r}>{r}</option>
-      {/each}
-    </Select>
-    <div class="spacer"></div>
-    <Button size="sm" disabled={selected.size === 0} onclick={() => markDone([...selected])}>
-      Mark done{selected.size ? ` (${selected.size})` : ""}
-    </Button>
+    <Cluster gap="var(--gh-space-2)" align="center">
+      <SegmentedControl options={statusOptions} bind:value={status} size="sm" label="Status" />
+      <Select compact bind:value={reason} aria-label="Reason">
+        <option value="">All reasons</option>
+        <option value="review_requested">Review requested</option>
+        <option value="mention">Mention</option>
+        <option value="ci_activity">CI activity</option>
+      </Select>
+      <Select compact bind:value={repoFilter} aria-label="Repository">
+        <option value="">All repos</option>
+        {#each repos as r (r)}
+          <option value={r}>{r}</option>
+        {/each}
+      </Select>
+      <OptionButton selected={selectMode} onclick={() => (selectMode = !selectMode)}>
+        Select
+      </OptionButton>
+      <div class="spacer"></div>
+      <Button size="sm" disabled={selected.size === 0} onclick={() => markDone([...selected])}>
+        Mark done{selected.size ? ` (${selected.size})` : ""}
+      </Button>
+    </Cluster>
   </div>
 
   {#if repoCounts.length > 0}
     <div class="badges">
-      {#each repoCounts as [repo, count] (repo)}
-        <button
-          type="button"
-          class="badge-btn"
-          class:active={repoFilter === repo}
-          onclick={() => (repoFilter = repoFilter === repo ? "" : repo)}
-        >
-          <RepoBadge {repo} {count} />
-        </button>
-      {/each}
+      <Cluster gap="var(--gh-space-2)" wrap>
+        {#each repoCounts as [repo, count] (repo)}
+          <OptionButton
+            selected={repoFilter === repo}
+            onclick={() => (repoFilter = repoFilter === repo ? "" : repo)}
+          >
+            <RepoBadge {repo} {count} />
+          </OptionButton>
+        {/each}
+      </Cluster>
     </div>
   {/if}
 
@@ -181,21 +215,46 @@
   {:else if visible.length === 0}
     <div class="msg">Inbox zero.</div>
   {:else}
+    <div class="selectall">
+      <Checkbox
+        label="Select all"
+        checked={allSelected}
+        indeterminate={someSelected && !allSelected}
+        onchange={toggleSelectAll}
+      />
+    </div>
     <ul class="list">
       {#each visible as item (notificationOf(item).id || item.synced_at)}
         {@const n = notificationOf(item)}
         {@const icon = iconState(n)}
-        <li class:unread={n.unread && !item.state.read}>
-          <input
-            type="checkbox"
-            checked={selected.has(n.id)}
-            onchange={() => toggle(n.id)}
-            onclick={(e) => e.stopPropagation()}
-          />
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+        <li
+          class:unread={n.unread && !item.state.read}
+          class:selectmode={selectMode}
+          class:selectedrow={selectMode && selected.has(n.id)}
+          onclick={selectMode ? () => onRowClick(n) : undefined}
+          role={selectMode ? "button" : undefined}
+          tabindex={selectMode ? 0 : undefined}
+          onkeydown={selectMode
+            ? (e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  onRowClick(n);
+                }
+              }
+            : undefined}
+        >
+          <span class="rowcheck" onclick={(e) => e.stopPropagation()} role="none">
+            <Checkbox
+              label={n.subject.title}
+              checked={selected.has(n.id)}
+              onchange={() => toggle(n.id)}
+            />
+          </span>
           {#if icon}
             <PrStateIcon state={icon.state} muted={icon.muted} size={16} />
           {/if}
-          {#if isPull(n)}
+          {#if isPull(n) && !selectMode}
             <button type="button" class="body open" onclick={() => openPull(n)}>
               <span class="subject">{n.subject.title}</span>
               <div class="sub">
@@ -216,7 +275,7 @@
               </div>
             </div>
           {/if}
-          <div class="actions">
+          <div class="actions" onclick={(e) => e.stopPropagation()} role="none">
             <Button variant="ghost" size="sm" onclick={() => markDone([n.id])}>Mark done</Button>
           </div>
         </li>
@@ -230,30 +289,18 @@
     padding: var(--gh-space-3);
   }
   .toolbar {
-    display: flex;
-    align-items: center;
-    gap: var(--gh-space-2);
     margin-bottom: var(--gh-space-3);
   }
   .spacer {
     flex: 1;
   }
   .badges {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--gh-space-2);
     margin-bottom: var(--gh-space-3);
   }
-  .badge-btn {
-    padding: 0;
-    background: none;
-    border: none;
-    border-radius: var(--gh-radius-sm);
-    max-width: 240px;
-  }
-  .badge-btn.active {
-    outline: 1px solid var(--gh-accent);
-    outline-offset: 1px;
+  .selectall {
+    display: flex;
+    align-items: center;
+    padding: var(--gh-space-1) var(--gh-space-3);
   }
   .list {
     list-style: none;
@@ -271,6 +318,19 @@
   }
   li.unread {
     box-shadow: inset 2px 0 0 var(--gh-accent);
+  }
+  li.selectmode {
+    cursor: pointer;
+  }
+  li.selectmode:hover {
+    background: var(--gh-bg-muted);
+  }
+  li.selectedrow {
+    background: var(--gh-accent-subtle, var(--gh-bg-muted));
+  }
+  .rowcheck {
+    display: inline-flex;
+    align-items: center;
   }
   .body {
     flex: 1;

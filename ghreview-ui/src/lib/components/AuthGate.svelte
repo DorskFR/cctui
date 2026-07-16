@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { Button, Input } from "@dorsk/tsumikit";
   import { getAccount, setAccount, setToken } from "../api/config";
 
   interface Props {
@@ -24,13 +25,13 @@
     <p>Enter a cctui bearer token to connect to the review backend.</p>
     <label>
       Bearer token
-      <input type="password" bind:value={token} spellcheck="false" autocomplete="off" />
+      <Input type="password" bind:value={token} spellcheck="false" autocomplete="off" />
     </label>
     <label>
       Account (optional)
-      <input type="text" bind:value={account} placeholder="DorskFR" spellcheck="false" />
+      <Input type="text" bind:value={account} placeholder="DorskFR" spellcheck="false" />
     </label>
-    <button type="submit">Connect</button>
+    <Button type="submit" variant="primary" block>Connect</Button>
     <small>Stored in localStorage. CCT-610 wires real cctui auth.</small>
   </form>
 </div>
@@ -65,22 +66,6 @@
     gap: var(--gh-space-1);
     font-size: var(--fs-xs);
     color: var(--gh-fg-muted);
-  }
-  input {
-    background: var(--gh-bg-inset);
-    border: 1px solid var(--gh-border);
-    border-radius: var(--gh-radius);
-    color: var(--gh-fg);
-    padding: var(--gh-space-2);
-  }
-  button {
-    background: var(--gh-accent);
-    border: none;
-    border-radius: var(--gh-radius);
-    color: white;
-    padding: var(--gh-space-2);
-    cursor: pointer;
-    font-weight: 600;
   }
   small {
     color: var(--gh-fg-subtle);

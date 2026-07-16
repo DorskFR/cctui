@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Button, Popover } from "@dorsk/tsumikit";
+  import { Button, Popover, Select, Textarea } from "@dorsk/tsumikit";
   import type { ReviewVerdict } from "../api/types";
 
   interface Skipped {
@@ -46,13 +46,13 @@
     <div class="panel">
       <label class="row">
         <span>Verdict</span>
-        <select bind:value={verdict}>
+        <Select bind:value={verdict} compact>
           <option value="comment">Comment</option>
           <option value="approve">Approve</option>
           <option value="request_changes">Request changes</option>
-        </select>
+        </Select>
       </label>
-      <textarea bind:value={body} rows="3" placeholder="Review summary (optional)"></textarea>
+      <Textarea bind:value={body} rows={3} mono placeholder="Review summary (optional)" />
 
       {#if error}
         <div class="err">{error}</div>
@@ -109,21 +109,6 @@
     justify-content: space-between;
     font-size: var(--fs-xs);
     color: var(--gh-fg-muted);
-  }
-  select,
-  textarea {
-    font-size: var(--fs-xs);
-    background: var(--gh-bg);
-    color: var(--gh-fg);
-    border: 1px solid var(--gh-border);
-    border-radius: var(--gh-radius-sm);
-    padding: var(--gh-space-1);
-  }
-  textarea {
-    width: 100%;
-    box-sizing: border-box;
-    resize: vertical;
-    font-family: var(--gh-mono);
   }
   .actions {
     display: flex;

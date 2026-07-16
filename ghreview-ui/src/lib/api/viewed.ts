@@ -8,6 +8,21 @@ export function viewedSet(result: ViewedStateResult | undefined): Set<string> {
   return set;
 }
 
+export function changedSinceViewed(
+  result: ViewedStateResult | undefined,
+  files: ReadonlyArray<{ filename: string; sha?: string }>,
+): Set<string> {
+  const shaByPath = new Map<string, string | undefined>();
+  for (const file of files) shaByPath.set(file.filename, file.sha);
+  const changed = new Set<string>();
+  for (const item of result?.items ?? []) {
+    if (!item.viewed || item.digest == null) continue;
+    const sha = shaByPath.get(item.path);
+    if (sha != null && sha !== item.digest) changed.add(item.path);
+  }
+  return changed;
+}
+
 export function applyOptimisticViewed(
   current: ViewedStateResult | undefined,
   paths: string[],

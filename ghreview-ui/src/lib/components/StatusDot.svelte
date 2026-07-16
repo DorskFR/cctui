@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { Dot } from "@dorsk/tsumikit";
   import type { CiState, PrState } from "../api/types";
 
   interface Props {
@@ -22,26 +23,4 @@
   const title = $derived(`${pr}${ci !== "none" ? ` · ci ${ci}` : ""}`);
 </script>
 
-<span class="dot" class:pulse={loading} style:background={color} {title}></span>
-
-<style>
-  .dot {
-    display: inline-block;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    flex: none;
-  }
-  .pulse {
-    animation: pulse 1.2s ease-in-out infinite;
-  }
-  @keyframes pulse {
-    0%,
-    100% {
-      opacity: 0.35;
-    }
-    50% {
-      opacity: 1;
-    }
-  }
-</style>
+<Dot {color} glow={loading} {title} />

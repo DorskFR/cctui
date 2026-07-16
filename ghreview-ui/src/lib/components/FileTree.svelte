@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { Button, Checkbox } from "@dorsk/tsumikit";
   import type { DiffModel } from "../diff/parse";
   import {
     buildFileTree,
@@ -40,12 +41,11 @@
     {@const p = viewedProgress(node, viewed)}
     <li>
       <div class="dir" style:padding-left="{depth * 12 + 6}px">
-        <input
-          type="checkbox"
+        <Checkbox
+          label="Mark folder {node.name} viewed"
           checked={p.total > 0 && p.viewed === p.total}
           indeterminate={p.viewed > 0 && p.viewed < p.total}
           onchange={() => toggle(node)}
-          aria-label="Mark folder {node.name} viewed"
         />
         <span class="dname">{node.name}</span>
         <span class="progress">{p.viewed}/{p.total}</span>
@@ -61,19 +61,26 @@
     {@const isViewed = viewed.has(node.path)}
     <li>
       <div class="file" style:padding-left="{depth * 12 + 6}px" class:on>
-        <input
-          type="checkbox"
+        <Checkbox
+          label="Mark {node.path} viewed"
           checked={isViewed}
           onchange={() => onToggleViewed([node.path], !isViewed)}
-          aria-label="Mark {node.path} viewed"
         />
-        <button class:viewed={isViewed} onclick={() => onselect(node.file.fileRowIndex, node.path)}>
-          <span class="name" title={node.path}>{node.name}</span>
+        <Button
+          variant="ghost"
+          block
+          class="filebtn"
+          style="flex: 1; min-width: 0; justify-content: flex-start; gap: var(--gh-space-2); padding: 3px 0; min-height: 0; height: auto; color: {on
+            ? 'var(--gh-fg)'
+            : 'var(--gh-fg-muted)'};"
+          onclick={() => onselect(node.file.fileRowIndex, node.path)}
+        >
+          <span class="name" class:viewed={isViewed} title={node.path}>{node.name}</span>
           <span class="counts">
             <span class="add">+{node.file.additions}</span>
             <span class="del">−{node.file.deletions}</span>
           </span>
-        </button>
+        </Button>
       </div>
     </li>
   {/if}
@@ -125,23 +132,7 @@
   .file.on {
     background: var(--gh-bg-elev);
   }
-  button {
-    flex: 1;
-    min-width: 0;
-    display: flex;
-    align-items: center;
-    gap: var(--gh-space-2);
-    background: transparent;
-    border: none;
-    color: var(--gh-fg-muted);
-    padding: 3px 0;
-    cursor: pointer;
-    text-align: left;
-  }
-  .file.on button {
-    color: var(--gh-fg);
-  }
-  button.viewed .name {
+  .name.viewed {
     text-decoration: line-through;
     opacity: 0.6;
   }
@@ -160,10 +151,5 @@
   }
   .del {
     color: var(--gh-danger);
-  }
-  input[type="checkbox"] {
-    flex: none;
-    cursor: pointer;
-    margin: 0;
   }
 </style>

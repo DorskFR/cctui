@@ -1,4 +1,4 @@
-<script lang="ts">
+<script lang="ts" module>
   export type IconState =
     | "open"
     | "merged"
@@ -7,6 +7,23 @@
     | "issue-open"
     | "issue-closed";
 
+  export function stateColor(state: IconState): string {
+    switch (state) {
+      case "open":
+      case "issue-open":
+        return "var(--gh-success)";
+      case "merged":
+      case "issue-closed":
+        return "var(--gh-merged)";
+      case "closed":
+        return "var(--gh-danger)";
+      case "draft":
+        return "var(--gh-draft)";
+    }
+  }
+</script>
+
+<script lang="ts">
   interface Props {
     state: IconState;
     size?: number;
@@ -32,20 +49,7 @@
   const color = $derived.by(() => {
     if (inherit) return "currentColor";
     if (muted) return "var(--gh-fg-muted)";
-    switch (state) {
-      case "open":
-        return "var(--gh-success)";
-      case "merged":
-        return "var(--gh-merged)";
-      case "closed":
-        return "var(--gh-danger)";
-      case "draft":
-        return "var(--gh-draft)";
-      case "issue-open":
-        return "var(--gh-success)";
-      case "issue-closed":
-        return "var(--gh-merged)";
-    }
+    return stateColor(state);
   });
 
   const label = $derived(state.replace("-", " "));

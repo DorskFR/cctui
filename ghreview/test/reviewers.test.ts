@@ -114,6 +114,26 @@ guarded("reviewers endpoints", () => {
     expect(body.requested_teams[0]?.slug).toBe("platform");
   });
 
+  test("surfaces a requested team when no individual reviewer or review exists", async () => {
+    const app = createApp(
+      deps(
+        reviewersOctokit({
+          reviews: [],
+          requestedReviewers: [],
+          requestedTeams: [{ name: "Grid-devs", slug: "grid-devs" }],
+        }),
+      ),
+    );
+    const res = await app.request(`${URL}?account=alpha`, { headers: A });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      reviewers: { login: string }[];
+      requested_teams: { name: string; slug: string }[];
+    };
+    expect(body.reviewers).toEqual([]);
+    expect(body.requested_teams).toEqual([{ name: "Grid-devs", slug: "grid-devs" }]);
+  });
+
   test("re-requests reviews from the given reviewers", async () => {
     const reRequestCalls: Record<string, unknown>[] = [];
     const app = createApp(deps(reviewersOctokit({ reRequestCalls })));

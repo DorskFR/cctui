@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { Button } from "@dorsk/tsumikit";
   import { api, ApiError } from "../api/client";
   import type { GithubPull, ReactionContent, ReactionRollup } from "../api/types";
   import { renderMarkdown } from "../markdown";
@@ -79,23 +80,24 @@
           {#if ownsComment(c) && commentId(c) !== null}
             <span class="ctrls">
               {#if confirmingDelete === commentId(c)}
-                <button
-                  type="button"
-                  class="danger"
+                <Button
+                  variant="danger"
+                  size="sm"
                   disabled={deleting === commentId(c)}
                   onclick={() => deleteComment(commentId(c) as number)}
-                >{deleting === commentId(c) ? "Deleting…" : "Confirm"}</button>
-                <button type="button" onclick={() => (confirmingDelete = null)}>Cancel</button>
+                >{deleting === commentId(c) ? "Deleting…" : "Confirm"}</Button>
+                <Button variant="ghost" size="sm" onclick={() => (confirmingDelete = null)}>Cancel</Button>
               {:else}
-                <button
-                  type="button"
-                  class="danger"
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  hoverDanger
                   aria-label="Delete comment"
                   onclick={() => {
                     deleteError = null;
                     confirmingDelete = commentId(c);
                   }}
-                >Delete</button>
+                >Delete</Button>
               {/if}
             </span>
           {/if}
@@ -149,17 +151,6 @@
     display: flex;
     gap: var(--gh-space-2);
     font-weight: 400;
-  }
-  .ctrls button {
-    font-size: var(--fs-xs);
-    background: none;
-    border: none;
-    color: var(--gh-accent);
-    cursor: pointer;
-    padding: 0;
-  }
-  .ctrls button.danger {
-    color: var(--danger, #f85149);
   }
   .err {
     font-size: var(--fs-xs);
