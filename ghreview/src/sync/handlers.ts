@@ -6,6 +6,7 @@ import {
   touchDocument,
   upsertDocument,
 } from "../db/documents.ts";
+import { clearSnoozeOnActivity, deleteSnoozeForPull } from "../db/prSnooze.ts";
 import { deleteReviewDraftsForPull } from "../db/reviewDrafts.ts";
 import type { Subscription, SubscriptionSource } from "../db/subscriptions.ts";
 import { deactivateSubscription, upsertSubscription } from "../db/subscriptions.ts";
@@ -338,6 +339,7 @@ async function removePull(
   await deleteDocument(db, account, "pull_request", `${owner}/${repo}#${number}`);
   await deleteViewedStateForPull(db, account, ref);
   await deleteReviewDraftsForPull(db, account, ref);
+  await deleteSnoozeForPull(db, account, ref);
   await deactivateSubscription(db, account, "pull_request", `${owner}/${repo}#${number}`);
 }
 
@@ -374,6 +376,13 @@ export async function syncPull(ctx: SyncContext, sub: Subscription): Promise<Syn
         etag: res.etag,
         payload,
       });
+      const updatedAtRaw = payload.updated_at;
+      if (typeof updatedAtRaw === "string") {
+        const activityAt = new Date(updatedAtRaw);
+        if (!Number.isNaN(activityAt.getTime())) {
+          await clearSnoozeOnActivity(ctx.db, sub.account, { owner, repo, number }, activityAt);
+        }
+      }
       await reconcilePullViewed(
         ctx.db,
         ctx.account,
@@ -462,22 +471,23 @@ async function ingestNotificationThread(
     etag: null,
     payload: thread,
   });
-  if (
-    thread.subject?.type === "PullRequest" &&
-    thread.reason &&
-    PARTICIPATING_REASONS.has(thread.reason) &&
-    thread.subject.url
-  ) {
+  if (thread.subject?.type === "PullRequest" && thread.subject.url) {
     const pr = parsePullApiUrl(thread.subject.url);
     if (pr) {
-      await ensurePullSubscription(
-        ctx.db,
-        sub.account,
-        pr.owner,
-        pr.repo,
-        pr.number,
-        "notification",
-      );
+      const activityAt = thread.updated_at ? new Date(thread.updated_at) : null;
+      if (activityAt && !Number.isNaN(activityAt.getTime())) {
+        await clearSnoozeOnActivity(ctx.db, sub.account, pr, activityAt);
+      }
+      if (thread.reason && PARTICIPATING_REASONS.has(thread.reason)) {
+        await ensurePullSubscription(
+          ctx.db,
+          sub.account,
+          pr.owner,
+          pr.repo,
+          pr.number,
+          "notification",
+        );
+      }
     }
   }
 }

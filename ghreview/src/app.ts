@@ -15,6 +15,7 @@ import { registerReactions } from "./routes/reactions.ts";
 import { registerRepos } from "./routes/repos.ts";
 import { registerReviewers } from "./routes/reviewers.ts";
 import { registerReviews } from "./routes/reviews.ts";
+import { registerSnooze } from "./routes/snooze.ts";
 import { registerSubscriptions } from "./routes/subscriptions.ts";
 import { registerSync } from "./routes/sync.ts";
 import { registerViewed } from "./routes/viewed.ts";
@@ -60,6 +61,7 @@ export function createApp(deps: AppDeps = {}) {
   registerReviewers(app, deps);
   registerActivity(app, deps);
   registerViewed(app, deps);
+  registerSnooze(app, deps);
   registerReviews(app, deps);
   registerReactions(app, deps);
   registerComments(app, deps);

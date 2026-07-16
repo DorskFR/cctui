@@ -24,7 +24,7 @@
     "vitest": "^4.1.9"
   },
   "dependencies": {
-    "@dorsk/tsumikit": "^0.15.0",
+    "@dorsk/tsumikit": "^0.17.0",
     "@tanstack/svelte-query": "^5.87.0",
     "highlight.js": "^11.11.1",
     "marked": "^16.3.0"

@@ -1,6 +1,7 @@
 <script lang="ts">
-  import { createQuery } from "@tanstack/svelte-query";
+  import { createQuery, useQueryClient } from "@tanstack/svelte-query";
   import { Button, FilterSearchBar, Icon, SegmentedControl, Text } from "@dorsk/tsumikit";
+  import { toStore } from "svelte/store";
   import { api } from "../api/client";
   import { getAccount } from "../api/config";
   import { ciStateOf, type GithubPull, prStateOf, pullOf, repoOf } from "../api/types";
@@ -25,6 +26,7 @@
   let relation = $state("all");
 
   const account = getAccount() ?? "";
+  const client = useQueryClient();
 
   const q = createQuery({
     queryKey: ["pulls", "root", account],
@@ -42,18 +44,49 @@
     },
   });
 
-  const entries = $derived($q.data ?? []);
+  const snoozedQ = createQuery(
+    toStore(() => ({
+      queryKey: ["pulls", "snoozed", account],
+      queryFn: async (): Promise<PrEntry[]> => {
+        const res = await api.snoozedPulls(account || undefined);
+        return res.items.map((s) => ({
+          owner: s.owner,
+          repo: s.repo,
+          pull: (s.payload ?? {}) as unknown as GithubPull,
+        }));
+      },
+    })),
+  );
+
+  const isSnoozedView = $derived(relation === "snoozed");
+  const active = $derived(isSnoozedView ? $snoozedQ : $q);
+  const entries = $derived((active.data ?? []) as PrEntry[]);
   const schema = $derived(
     buildPrSchema(collectRepos(entries), collectAuthors(entries), collectLabels(entries)),
   );
-  const filtered = $derived(filterPrs(entries, query, schema, relation as PrRelation, account));
+  const filtered = $derived(
+    filterPrs(entries, query, schema, (isSnoozedView ? "all" : relation) as PrRelation, account),
+  );
   const groups = $derived(groupByRepo(filtered));
 
   const relationOptions = [
     { value: "all", label: "All" },
     { value: "review", label: "Review" },
     { value: "authored", label: "Authored" },
+    { value: "snoozed", label: "Snoozed" },
   ];
+
+  async function snooze(e: PrEntry): Promise<void> {
+    if (!account) return;
+    await api.snoozePull(e.owner, e.repo, e.pull.number, account);
+    client.invalidateQueries({ queryKey: ["pulls"] });
+  }
+
+  async function unsnooze(e: PrEntry): Promise<void> {
+    if (!account) return;
+    await api.unsnoozePull(e.owner, e.repo, e.pull.number, account);
+    client.invalidateQueries({ queryKey: ["pulls"] });
+  }
 
   function isApproved(pull: GithubPull): boolean {
     const p = pull as unknown as Record<string, unknown>;
@@ -88,12 +121,14 @@
     />
   </div>
 
-  {#if $q.isLoading}
+  {#if active.isLoading}
     <div class="msg">Loading warm cache…</div>
-  {:else if $q.isError}
-    <div class="msg err">{($q.error as Error).message}</div>
+  {:else if active.isError}
+    <div class="msg err">{(active.error as Error).message}</div>
   {:else if filtered.length === 0}
-    <div class="msg">No pull requests match this filter.</div>
+    <div class="msg">
+      {isSnoozedView ? "No snoozed pull requests." : "No pull requests match this filter."}
+    </div>
   {:else}
     <div class="groups">
       {#each groups as group (group.repo)}
@@ -128,6 +163,25 @@
                     </span>
                   {/if}
                 </Button>
+                {#if isSnoozedView}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onclick={() => unsnooze(e)}
+                    title="Un-snooze this pull request"
+                  >
+                    Un-snooze
+                  </Button>
+                {:else}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onclick={() => snooze(e)}
+                    title="Snooze this pull request"
+                  >
+                    Snooze
+                  </Button>
+                {/if}
                 {#if e.pull.html_url}
                   <a
                     class="ext"

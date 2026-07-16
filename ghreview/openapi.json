@@ -1222,6 +1222,104 @@
           "viewed"
         ]
       },
+      "SnoozedPullList": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SnoozedPull"
+            }
+          }
+        },
+        "required": [
+          "items"
+        ]
+      },
+      "SnoozedPull": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/PullRequestEnvelope"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "owner": {
+                "type": "string",
+                "example": "DorskFR"
+              },
+              "repo": {
+                "type": "string",
+                "example": "cctui"
+              },
+              "number": {
+                "type": "integer",
+                "example": 42
+              },
+              "snoozed_at": {
+                "type": "string",
+                "format": "date-time",
+                "example": "2026-07-12T09:00:00Z",
+                "description": "When the PR was snoozed"
+              }
+            },
+            "required": [
+              "owner",
+              "repo",
+              "number",
+              "snoozed_at"
+            ]
+          }
+        ]
+      },
+      "SnoozeResult": {
+        "type": "object",
+        "properties": {
+          "account": {
+            "type": "string",
+            "minLength": 1,
+            "example": "DorskFR",
+            "description": "GitHub account/login the record was synced for"
+          },
+          "owner": {
+            "type": "string",
+            "example": "DorskFR"
+          },
+          "repo": {
+            "type": "string",
+            "example": "cctui"
+          },
+          "number": {
+            "type": "integer",
+            "example": 42
+          },
+          "snoozed": {
+            "type": "boolean",
+            "description": "Whether the PR is now snoozed"
+          }
+        },
+        "required": [
+          "account",
+          "owner",
+          "repo",
+          "number",
+          "snoozed"
+        ]
+      },
+      "SnoozeRequest": {
+        "type": "object",
+        "properties": {
+          "account": {
+            "type": "string",
+            "minLength": 1,
+            "example": "DorskFR",
+            "description": "GitHub account/login the record was synced for"
+          }
+        },
+        "required": [
+          "account"
+        ]
+      },
       "ReviewDraftResult": {
         "type": "object",
         "properties": {
@@ -3387,6 +3485,177 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "State store unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/pulls/snoozed": {
+      "get": {
+        "summary": "List snoozed pull requests (excluded from the default list)",
+        "tags": [
+          "pulls"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "example": "DorskFR"
+            },
+            "required": false,
+            "name": "account",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The snoozed pull requests with their envelopes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SnoozedPullList"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/repos/{owner}/{repo}/pulls/{number}/snooze": {
+      "post": {
+        "summary": "Snooze a pull request (hide it from the default list)",
+        "tags": [
+          "pulls"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "DorskFR"
+            },
+            "required": true,
+            "name": "owner",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "cctui"
+            },
+            "required": true,
+            "name": "repo",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "example": 42
+            },
+            "required": true,
+            "name": "number",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SnoozeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The snooze state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SnoozeResult"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "State store unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Un-snooze a pull request (return it to the default list)",
+        "tags": [
+          "pulls"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "DorskFR"
+            },
+            "required": true,
+            "name": "owner",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "cctui"
+            },
+            "required": true,
+            "name": "repo",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "example": 42
+            },
+            "required": true,
+            "name": "number",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "example": "DorskFR"
+            },
+            "required": true,
+            "name": "account",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The snooze state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SnoozeResult"
                 }
               }
             }

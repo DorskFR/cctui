@@ -28,7 +28,7 @@
     "vitest": "^4.1.9"
   },
   "dependencies": {
-    "@dorsk/tsumikit": "^0.16.0",
+    "@dorsk/tsumikit": "^0.17.0",
     "@tanstack/svelte-query": "^5.87.0",
     "@tanstack/svelte-virtual": "^3.13.29",
     "@xterm/addon-fit": "^0.10.0",

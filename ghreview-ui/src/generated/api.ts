@@ -1209,6 +1209,132 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/pulls/snoozed": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List snoozed pull requests (excluded from the default list) */
+        get: {
+            parameters: {
+                query?: {
+                    account?: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The snoozed pull requests with their envelopes */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SnoozedPullList"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/repos/{owner}/{repo}/pulls/{number}/snooze": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Snooze a pull request (hide it from the default list) */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    owner: string;
+                    repo: string;
+                    number: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["SnoozeRequest"];
+                };
+            };
+            responses: {
+                /** @description The snooze state */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SnoozeResult"];
+                    };
+                };
+                /** @description State store unavailable */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        /** Un-snooze a pull request (return it to the default list) */
+        delete: {
+            parameters: {
+                query: {
+                    account: string;
+                };
+                header?: never;
+                path: {
+                    owner: string;
+                    repo: string;
+                    number: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The snooze state */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SnoozeResult"];
+                    };
+                };
+                /** @description State store unavailable */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/repos/{owner}/{repo}/pulls/{number}/review-draft": {
         parameters: {
             query?: never;
@@ -2830,6 +2956,45 @@ export interface components {
             paths: string[];
             /** @description Target viewed state for all paths */
             viewed: boolean;
+        };
+        SnoozedPullList: {
+            items: components["schemas"]["SnoozedPull"][];
+        };
+        SnoozedPull: components["schemas"]["PullRequestEnvelope"] & {
+            /** @example DorskFR */
+            owner: string;
+            /** @example cctui */
+            repo: string;
+            /** @example 42 */
+            number: number;
+            /**
+             * Format: date-time
+             * @description When the PR was snoozed
+             * @example 2026-07-12T09:00:00Z
+             */
+            snoozed_at: string;
+        };
+        SnoozeResult: {
+            /**
+             * @description GitHub account/login the record was synced for
+             * @example DorskFR
+             */
+            account: string;
+            /** @example DorskFR */
+            owner: string;
+            /** @example cctui */
+            repo: string;
+            /** @example 42 */
+            number: number;
+            /** @description Whether the PR is now snoozed */
+            snoozed: boolean;
+        };
+        SnoozeRequest: {
+            /**
+             * @description GitHub account/login the record was synced for
+             * @example DorskFR
+             */
+            account: string;
         };
         ReviewDraftResult: {
             draft: components["schemas"]["ReviewDraft"];

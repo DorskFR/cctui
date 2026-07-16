@@ -17,6 +17,8 @@ import type {
   ReviewSide,
   ReviewThreadList,
   ReviewVerdict,
+  SnoozedPullList,
+  SnoozeResult,
   StatusPayload,
   ViewedStateResult,
 } from "./types";
@@ -121,6 +123,20 @@ export const api = {
         `/v1/repos/${owner}/${repo}/pulls${qs({ account, limit: 100, cursor })}`,
       ),
     ),
+
+  snoozedPulls: (account?: string) =>
+    request<SnoozedPullList>(`/v1/pulls/snoozed${qs({ account })}`),
+
+  snoozePull: (owner: string, repo: string, number: number, account: string) =>
+    request<SnoozeResult>(`/v1/repos/${owner}/${repo}/pulls/${number}/snooze`, {
+      method: "POST",
+      body: JSON.stringify({ account }),
+    }),
+
+  unsnoozePull: (owner: string, repo: string, number: number, account: string) =>
+    request<SnoozeResult>(`/v1/repos/${owner}/${repo}/pulls/${number}/snooze${qs({ account })}`, {
+      method: "DELETE",
+    }),
 
   pull: (owner: string, repo: string, number: number) =>
     request<PullRequestEnvelope>(`/v1/repos/${owner}/${repo}/pulls/${number}`),
