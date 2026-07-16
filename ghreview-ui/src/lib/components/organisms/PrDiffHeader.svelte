@@ -145,13 +145,12 @@
           {publishing}
           {skipped}
           {error}
-          fullWidth
           {onpublish}
         />
       </div>
       {#if state === "open" || state === "draft"}
         <div class="merge-action">
-          <MergeButton {owner} {repo} {number} {account} {pull} fullWidth {onmerged} />
+          <MergeButton {owner} {repo} {number} {account} {pull} {onmerged} />
         </div>
       {/if}
     </Cluster>
@@ -211,6 +210,12 @@
   }
   .reviewers-row {
     min-width: 0;
+  }
+  .diff-mode,
+  .review-action,
+  .merge-action {
+    display: flex;
+    align-items: center;
   }
   .divider {
     height: 1px;

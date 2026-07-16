@@ -475,6 +475,17 @@
     align-items: center;
     padding-right: var(--gh-space-2);
   }
+  .filecheck :global(.label-text) {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+  }
   .filehdr {
     overflow: hidden;
     text-overflow: ellipsis;

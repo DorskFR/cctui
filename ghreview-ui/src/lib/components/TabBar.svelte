@@ -53,7 +53,10 @@
         onkeydown={(e) => e.key === "Enter" && activate(tab.owner, tab.repo, tab.number, tab.id)}
       >
         <StatusDot pr={tab.status.pr} ci={tab.status.ci} />
-        <span class="label" title={tab.title}>{tab.owner}/{tab.repo} #{tab.number}</span>
+        <span class="label" title="{tab.owner}/{tab.repo} #{tab.number} — {tab.title}">
+          <span class="tab-num">#{tab.number}</span>
+          <span class="tab-title">{tab.title || `${tab.owner}/${tab.repo}`}</span>
+        </span>
         <IconButton
           icon="x"
           label="Close tab"
@@ -115,9 +118,21 @@
     box-shadow: inset 0 -2px 0 var(--gh-accent);
   }
   .label {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 5px;
+    overflow: hidden;
+    font-size: var(--fs-xs);
+  }
+  .tab-num {
+    flex: none;
+    font-family: var(--gh-mono);
+    color: var(--gh-fg-muted);
+  }
+  .tab-title {
     overflow: hidden;
     text-overflow: ellipsis;
-    font-size: var(--fs-xs);
+    white-space: nowrap;
   }
   .actions {
     display: flex;

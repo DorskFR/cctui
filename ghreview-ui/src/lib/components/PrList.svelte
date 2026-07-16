@@ -1,6 +1,13 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from "@tanstack/svelte-query";
-  import { Button, FilterSearchBar, Icon, SegmentedControl, Text } from "@dorsk/tsumikit";
+  import {
+    Button,
+    FilterSearchBar,
+    Icon,
+    IconButton,
+    SegmentedControl,
+    Text,
+  } from "@dorsk/tsumikit";
   import { toStore } from "svelte/store";
   import { api } from "../api/client";
   import { getAccount } from "../api/config";
@@ -164,23 +171,21 @@
                   {/if}
                 </Button>
                 {#if isSnoozedView}
-                  <Button
+                  <IconButton
+                    icon="moon"
+                    label="Un-snooze this pull request"
                     variant="ghost"
-                    size="sm"
+                    size={16}
                     onclick={() => unsnooze(e)}
-                    title="Un-snooze this pull request"
-                  >
-                    Un-snooze
-                  </Button>
+                  />
                 {:else}
-                  <Button
+                  <IconButton
+                    icon="moon"
+                    label="Snooze this pull request"
                     variant="ghost"
-                    size="sm"
+                    size={16}
                     onclick={() => snooze(e)}
-                    title="Snooze this pull request"
-                  >
-                    Snooze
-                  </Button>
+                  />
                 {/if}
                 {#if e.pull.html_url}
                   <a
