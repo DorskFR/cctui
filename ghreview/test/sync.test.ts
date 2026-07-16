@@ -6,6 +6,7 @@ import { createDb, type DbHandle } from "../src/db/client.ts";
 import { runMigrations } from "../src/db/migrate.ts";
 import type { AppDeps } from "../src/deps.ts";
 import { EventBus } from "../src/events/bus.ts";
+import { deriveReviewDecision } from "../src/sync/handlers.ts";
 import { AccountManager } from "../src/sync/manager.ts";
 
 const DATABASE_URL = process.env.DATABASE_URL;
@@ -151,5 +152,29 @@ guarded("force sync route", () => {
       body: JSON.stringify({ account: "beta" }),
     });
     expect(res.status).toBe(404);
+  });
+});
+
+describe("deriveReviewDecision", () => {
+  test("returns CHANGES_REQUESTED when any reviewer requested changes", () => {
+    expect(deriveReviewDecision(["APPROVED", "CHANGES_REQUESTED"], 0)).toBe("CHANGES_REQUESTED");
+  });
+
+  test("returns REVIEW_REQUIRED when reviewers are still requested", () => {
+    expect(deriveReviewDecision([], 1)).toBe("REVIEW_REQUIRED");
+    expect(deriveReviewDecision(["COMMENTED"], 2)).toBe("REVIEW_REQUIRED");
+  });
+
+  test("returns APPROVED when approved and nothing pending", () => {
+    expect(deriveReviewDecision(["APPROVED"], 0)).toBe("APPROVED");
+  });
+
+  test("returns null when there is no review signal", () => {
+    expect(deriveReviewDecision([], 0)).toBeNull();
+    expect(deriveReviewDecision(["COMMENTED"], 0)).toBeNull();
+  });
+
+  test("changes-requested wins over a pending re-request", () => {
+    expect(deriveReviewDecision(["CHANGES_REQUESTED"], 1)).toBe("CHANGES_REQUESTED");
   });
 });

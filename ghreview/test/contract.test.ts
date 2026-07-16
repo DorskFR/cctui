@@ -51,6 +51,7 @@ describe("openapi contract", () => {
       "/v1/repos/{owner}/{repo}/pulls/{number}/review-draft/publish",
       "/v1/repos/{owner}/{repo}/pulls/{number}/reviewers",
       "/v1/repos/{owner}/{repo}/pulls/{number}/reviewers/re-request",
+      "/v1/repos/{owner}/{repo}/pulls/{number}/reviewers/request",
       "/v1/repos/{owner}/{repo}/pulls/{number}/viewed",
       "/v1/status",
       "/v1/subscriptions",

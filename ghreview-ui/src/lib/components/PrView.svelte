@@ -304,6 +304,7 @@
       {files}
       {viewedCount}
       draftCount={drafts.length}
+      {drafts}
       publishing={reviewPending}
       skipped={publishSkipped}
       error={publishError}

@@ -79,6 +79,42 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GitHub integration capability, derived from the caller's connector state */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description available: store reachable (gates nav/unlock); enabled: caller has ≥1 connector; repos: distinct tracked repo slugs */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Capabilities"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/sync": {
         parameters: {
             query?: never;
@@ -302,7 +338,60 @@ export interface paths {
         };
         options?: never;
         head?: never;
-        patch?: never;
+        /** Update a connector's poll knobs, or rotate its PAT (never returns the secret) */
+        patch: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["AccountUpdate"];
+                };
+            };
+            responses: {
+                /** @description The updated account (no secrets) */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AccountSummary"];
+                    };
+                };
+                /** @description Invalid PAT */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Store/sealer unavailable */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
         trace?: never;
     };
     "/v1/repos": {
@@ -872,6 +961,68 @@ export interface paths {
             requestBody?: {
                 content: {
                     "application/json": components["schemas"]["ReRequestReviewers"];
+                };
+            };
+            responses: {
+                /** @description Updated reviewer states */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ReviewersResult"];
+                    };
+                };
+                /** @description Caller does not own the account */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Account not managed */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/repos/{owner}/{repo}/pulls/{number}/reviewers/request": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Request a review from new reviewers and/or teams */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    owner: string;
+                    repo: string;
+                    number: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["RequestReviewers"];
                 };
             };
             responses: {
@@ -2317,6 +2468,17 @@ export interface components {
             last_run: string | null;
             accounts: string[];
         };
+        Capabilities: {
+            github: components["schemas"]["GithubCapability"];
+        };
+        GithubCapability: {
+            /** @description The connector store is reachable (gates nav + unlock screen) */
+            available: boolean;
+            /** @description The caller has at least one GitHub connector configured */
+            enabled: boolean;
+            /** @description Distinct repo slugs the caller currently tracks */
+            repos: string[];
+        };
         SyncResult: {
             /**
              * @description GitHub account/login the record was synced for
@@ -2373,6 +2535,13 @@ export interface components {
             poll_interval_ms?: number;
             budget_ceiling?: number;
             rate_limit?: number;
+        };
+        AccountUpdate: {
+            /** @description Rotate the PAT; re-validated and must resolve to the same login. Never returned */
+            token?: string;
+            poll_interval_ms?: number | null;
+            budget_ceiling?: number | null;
+            rate_limit?: number | null;
         };
         RepoPage: {
             items: components["schemas"]["RepoEnvelope"][];
@@ -2555,6 +2724,23 @@ export interface components {
              */
             account: string;
             reviewers: string[];
+        };
+        RequestReviewers: {
+            /**
+             * @description GitHub account/login the record was synced for
+             * @example DorskFR
+             */
+            account: string;
+            /**
+             * @description User logins to request a review from
+             * @default []
+             */
+            reviewers: string[];
+            /**
+             * @description Team slugs to request a review from
+             * @default []
+             */
+            team_reviewers: string[];
         };
         ActivityList: {
             items: components["schemas"]["ActivityEvent"][];

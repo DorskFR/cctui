@@ -57,8 +57,14 @@
   async function addReviewer(): Promise<void> {
     const login = addLogin.trim();
     if (!account || pending || !login) return;
-    await reRequest(login);
-    addLogin = "";
+    pending = login;
+    try {
+      const result = await api.requestReviewers(owner, repo, number, account, [login]);
+      queryClient.setQueryData(keys.reviewers(owner, repo, number), result);
+      addLogin = "";
+    } finally {
+      pending = null;
+    }
   }
 </script>
 

@@ -13,6 +13,7 @@ import { getSyncState, saveSyncState } from "../db/syncState.ts";
 import { deleteViewedStateForPull } from "../db/viewedState.ts";
 import type { Account } from "../github/account.ts";
 import { type ConditionalResult, conditionalRequest } from "../github/client.ts";
+import { reduceReviewStates } from "../routes/reviewers.ts";
 import { reconcilePullViewed } from "./viewedSync.ts";
 
 export interface SyncContext {
@@ -40,6 +41,9 @@ function parsePullTarget(target: string): { owner: string; repo: string; number:
   if (!match) return null;
   return { owner: match[1] as string, repo: match[2] as string, number: Number(match[3]) };
 }
+
+const PULL_REVIEWS_PER_PAGE = 100;
+const PULL_REVIEWS_MAX_PAGES = 20;
 
 const PULL_FILES_PER_PAGE = 100;
 const PULL_FILES_MAX_PAGES = 30;
@@ -146,6 +150,78 @@ export async function fetchPullCommits(
     if (batch.length < PULL_COMMITS_PER_PAGE) break;
   }
   return commits;
+}
+
+export type ReviewDecision = "APPROVED" | "CHANGES_REQUESTED" | "REVIEW_REQUIRED" | null;
+
+interface RawPullReview {
+  user: string | null;
+  avatar_url: string | null;
+  state: string;
+}
+
+export async function fetchPullReviews(
+  octokit: Account["octokit"],
+  owner: string,
+  repo: string,
+  number: number,
+): Promise<RawPullReview[]> {
+  const reviews: RawPullReview[] = [];
+  for (let page = 1; page <= PULL_REVIEWS_MAX_PAGES; page++) {
+    const res = await octokit.request("GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews", {
+      owner,
+      repo,
+      pull_number: number,
+      per_page: PULL_REVIEWS_PER_PAGE,
+      page,
+    });
+    const batch = Array.isArray(res.data) ? (res.data as Record<string, unknown>[]) : [];
+    for (const rv of batch) {
+      const user = (rv.user as { login?: string; avatar_url?: string } | undefined) ?? undefined;
+      reviews.push({
+        user: user?.login ?? null,
+        avatar_url: user?.avatar_url ?? null,
+        state: String(rv.state ?? ""),
+      });
+    }
+    if (batch.length < PULL_REVIEWS_PER_PAGE) break;
+  }
+  return reviews;
+}
+
+function countRequested(payload: Record<string, unknown>): number {
+  const reviewers = Array.isArray(payload.requested_reviewers) ? payload.requested_reviewers : [];
+  const teams = Array.isArray(payload.requested_teams) ? payload.requested_teams : [];
+  return reviewers.length + teams.length;
+}
+
+export function deriveReviewDecision(
+  reviewStates: Iterable<string>,
+  requestedCount: number,
+): ReviewDecision {
+  let hasChanges = false;
+  let hasApproved = false;
+  for (const state of reviewStates) {
+    if (state === "CHANGES_REQUESTED") hasChanges = true;
+    else if (state === "APPROVED") hasApproved = true;
+  }
+  if (hasChanges) return "CHANGES_REQUESTED";
+  if (requestedCount > 0) return "REVIEW_REQUIRED";
+  if (hasApproved) return "APPROVED";
+  return null;
+}
+
+async function computeReviewDecision(
+  octokit: Account["octokit"],
+  owner: string,
+  repo: string,
+  number: number,
+  payload: Record<string, unknown>,
+): Promise<ReviewDecision> {
+  const reviews = await fetchPullReviews(octokit, owner, repo, number);
+  const states = reduceReviewStates(reviews);
+  const stateList = [...states.values()].map((v) => v.state);
+  return deriveReviewDecision(stateList, countRequested(payload));
 }
 
 function outcome(res: ConditionalResult<unknown>): SyncOutcome {
@@ -351,15 +427,18 @@ async function enrichPullPayload(
   number: number,
   payload: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
-  if (!needsPullEnrichment(payload)) return payload;
-  const [files, commits] = await Promise.all([
-    fetchPullFiles(octokit, owner, repo, number),
-    fetchPullCommits(octokit, owner, repo, number),
-  ]);
-  const enriched = enrichPullStats(payload, files);
-  enriched.files = files;
-  enriched.commits_list = commits;
-  enriched.cctui_enriched_head_sha = pullHeadSha(payload);
+  let enriched = payload;
+  if (needsPullEnrichment(payload)) {
+    const [files, commits] = await Promise.all([
+      fetchPullFiles(octokit, owner, repo, number),
+      fetchPullCommits(octokit, owner, repo, number),
+    ]);
+    enriched = enrichPullStats(payload, files);
+    enriched.files = files;
+    enriched.commits_list = commits;
+    enriched.cctui_enriched_head_sha = pullHeadSha(payload);
+  }
+  enriched.review_decision = await computeReviewDecision(octokit, owner, repo, number, enriched);
   return enriched;
 }
 

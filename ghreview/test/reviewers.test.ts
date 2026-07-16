@@ -145,4 +145,31 @@ guarded("reviewers endpoints", () => {
     expect(res.status).toBe(200);
     expect(reRequestCalls[0]?.reviewers).toEqual(["bob"]);
   });
+
+  test("requests new reviewers and teams", async () => {
+    const reRequestCalls: Record<string, unknown>[] = [];
+    const app = createApp(deps(reviewersOctokit({ reRequestCalls })));
+    const res = await app.request(`${URL}/request`, {
+      method: "POST",
+      headers: A,
+      body: JSON.stringify({
+        account: "alpha",
+        reviewers: ["bob"],
+        team_reviewers: ["platform"],
+      }),
+    });
+    expect(res.status).toBe(200);
+    expect(reRequestCalls[0]?.reviewers).toEqual(["bob"]);
+    expect(reRequestCalls[0]?.team_reviewers).toEqual(["platform"]);
+  });
+
+  test("rejects a request with neither reviewers nor teams", async () => {
+    const app = createApp(deps(reviewersOctokit()));
+    const res = await app.request(`${URL}/request`, {
+      method: "POST",
+      headers: A,
+      body: JSON.stringify({ account: "alpha" }),
+    });
+    expect(res.status).toBe(400);
+  });
 });

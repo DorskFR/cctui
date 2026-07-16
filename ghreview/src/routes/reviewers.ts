@@ -3,7 +3,12 @@ import { getUserId } from "../auth/middleware.ts";
 import { accountOwnedBy } from "../db/notificationState.ts";
 import type { AppDeps } from "../deps.ts";
 import type { Account } from "../github/account.ts";
-import { ErrorSchema, ReRequestReviewersSchema, ReviewersResultSchema } from "../schemas.ts";
+import {
+  ErrorSchema,
+  RequestReviewersSchema,
+  ReRequestReviewersSchema,
+  ReviewersResultSchema,
+} from "../schemas.ts";
 
 const PullParams = z.object({
   owner: z.string().openapi({ param: { name: "owner", in: "path" }, example: "DorskFR" }),
@@ -164,6 +169,31 @@ const reRequestRoute = createRoute({
   },
 });
 
+const requestRoute = createRoute({
+  method: "post",
+  path: "/v1/repos/{owner}/{repo}/pulls/{number}/reviewers/request",
+  summary: "Request a review from new reviewers and/or teams",
+  tags: ["pulls"],
+  request: {
+    params: PullParams,
+    body: { content: { "application/json": { schema: RequestReviewersSchema } } },
+  },
+  responses: {
+    200: {
+      description: "Updated reviewer states",
+      content: { "application/json": { schema: ReviewersResultSchema } },
+    },
+    403: {
+      description: "Caller does not own the account",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    404: {
+      description: "Account not managed",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
 async function buildResult(
   octokit: Account["octokit"],
   p: { owner: string; repo: string; number: number },
@@ -235,6 +265,24 @@ export function registerReviewers(app: OpenAPIHono, deps: AppDeps = {}) {
     await auth.acct.octokit.request(
       "POST /repos/{owner}/{repo}/pulls/{pull_number}/requested_reviewers",
       { owner: p.owner, repo: p.repo, pull_number: p.number, reviewers: body.reviewers },
+    );
+    return c.json(await buildResult(auth.acct.octokit, p), 200);
+  });
+
+  app.openapi(requestRoute, async (c) => {
+    const p = c.req.valid("param");
+    const body = c.req.valid("json");
+    const auth = await authAccount(deps, getUserId(c), body.account);
+    if (!auth.ok) return c.json({ error: { code: auth.code, message: auth.message } }, auth.status);
+    await auth.acct.octokit.request(
+      "POST /repos/{owner}/{repo}/pulls/{pull_number}/requested_reviewers",
+      {
+        owner: p.owner,
+        repo: p.repo,
+        pull_number: p.number,
+        reviewers: body.reviewers,
+        team_reviewers: body.team_reviewers,
+      },
     );
     return c.json(await buildResult(auth.acct.octokit, p), 200);
   });

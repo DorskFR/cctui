@@ -619,6 +619,31 @@ export const ReRequestReviewersSchema = z
   })
   .openapi("ReRequestReviewers");
 
+export const RequestReviewersSchema = z
+  .object({
+    account: AccountSchema,
+    reviewers: z
+      .array(z.string().min(1))
+      .default([])
+      .openapi({ description: "User logins to request a review from" }),
+    team_reviewers: z
+      .array(z.string().min(1))
+      .default([])
+      .openapi({ description: "Team slugs to request a review from" }),
+  })
+  .refine((v) => v.reviewers.length > 0 || v.team_reviewers.length > 0, {
+    message: "Provide at least one reviewer or team_reviewer",
+  })
+  .openapi("RequestReviewers");
+
+export const ReviewDecisionSchema = z
+  .enum(["APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED"])
+  .nullable()
+  .openapi({
+    example: "APPROVED",
+    description: "Aggregate review decision for the PR, GitHub reviewDecision semantics",
+  });
+
 export const ActivityActorSchema = z
   .object({
     login: z.string().openapi({ example: "octocat" }),

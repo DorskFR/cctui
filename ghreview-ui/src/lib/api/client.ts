@@ -318,6 +318,19 @@ export const api = {
       body: JSON.stringify({ account, reviewers }),
     }),
 
+  requestReviewers: (
+    owner: string,
+    repo: string,
+    number: number,
+    account: string,
+    reviewers: string[],
+    teamReviewers: string[] = [],
+  ) =>
+    request<ReviewersResult>(`/v1/repos/${owner}/${repo}/pulls/${number}/reviewers/request`, {
+      method: "POST",
+      body: JSON.stringify({ account, reviewers, team_reviewers: teamReviewers }),
+    }),
+
   activity: (owner: string, repo: string, number: number, account: string) =>
     request<ActivityList>(`/v1/repos/${owner}/${repo}/pulls/${number}/activity${qs({ account })}`),
 

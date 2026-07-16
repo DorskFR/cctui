@@ -3,6 +3,7 @@
   import type {
     GithubFile,
     GithubPull,
+    ReviewDraftComment,
     ReviewPublishResult,
     ReviewVerdict,
   } from "../../api/types";
@@ -22,6 +23,7 @@
     files: GithubFile[];
     viewedCount: number;
     draftCount: number;
+    drafts?: ReviewDraftComment[];
     publishing?: boolean;
     skipped?: ReviewPublishResult["skipped"];
     error?: string | null;
@@ -39,6 +41,7 @@
     files,
     viewedCount,
     draftCount,
+    drafts = [],
     publishing = false,
     skipped = [],
     error = null,
@@ -138,6 +141,7 @@
       <div class="review-action">
         <ReviewSummaryBar
           {draftCount}
+          {drafts}
           {publishing}
           {skipped}
           {error}
