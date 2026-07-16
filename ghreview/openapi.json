@@ -294,6 +294,42 @@
           "accounts"
         ]
       },
+      "Capabilities": {
+        "type": "object",
+        "properties": {
+          "github": {
+            "$ref": "#/components/schemas/GithubCapability"
+          }
+        },
+        "required": [
+          "github"
+        ]
+      },
+      "GithubCapability": {
+        "type": "object",
+        "properties": {
+          "available": {
+            "type": "boolean",
+            "description": "The connector store is reachable (gates nav + unlock screen)"
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "The caller has at least one GitHub connector configured"
+          },
+          "repos": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Distinct repo slugs the caller currently tracks"
+          }
+        },
+        "required": [
+          "available",
+          "enabled",
+          "repos"
+        ]
+      },
       "SyncResult": {
         "type": "object",
         "properties": {
@@ -443,6 +479,32 @@
         "required": [
           "token"
         ]
+      },
+      "AccountUpdate": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Rotate the PAT; re-validated and must resolve to the same login. Never returned"
+          },
+          "poll_interval_ms": {
+            "type": "integer",
+            "nullable": true,
+            "minimum": 1000
+          },
+          "budget_ceiling": {
+            "type": "number",
+            "nullable": true,
+            "minimum": 0,
+            "maximum": 1
+          },
+          "rate_limit": {
+            "type": "integer",
+            "nullable": true,
+            "minimum": 1
+          }
+        }
       },
       "RepoPage": {
         "type": "object",
@@ -864,6 +926,38 @@
           "reviewers"
         ]
       },
+      "RequestReviewers": {
+        "type": "object",
+        "properties": {
+          "account": {
+            "type": "string",
+            "minLength": 1,
+            "example": "DorskFR",
+            "description": "GitHub account/login the record was synced for"
+          },
+          "reviewers": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "default": [],
+            "description": "User logins to request a review from"
+          },
+          "team_reviewers": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "default": [],
+            "description": "Team slugs to request a review from"
+          }
+        },
+        "required": [
+          "account"
+        ]
+      },
       "ActivityList": {
         "type": "object",
         "properties": {
@@ -1126,6 +1220,104 @@
           "account",
           "paths",
           "viewed"
+        ]
+      },
+      "SnoozedPullList": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SnoozedPull"
+            }
+          }
+        },
+        "required": [
+          "items"
+        ]
+      },
+      "SnoozedPull": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/PullRequestEnvelope"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "owner": {
+                "type": "string",
+                "example": "DorskFR"
+              },
+              "repo": {
+                "type": "string",
+                "example": "cctui"
+              },
+              "number": {
+                "type": "integer",
+                "example": 42
+              },
+              "snoozed_at": {
+                "type": "string",
+                "format": "date-time",
+                "example": "2026-07-12T09:00:00Z",
+                "description": "When the PR was snoozed"
+              }
+            },
+            "required": [
+              "owner",
+              "repo",
+              "number",
+              "snoozed_at"
+            ]
+          }
+        ]
+      },
+      "SnoozeResult": {
+        "type": "object",
+        "properties": {
+          "account": {
+            "type": "string",
+            "minLength": 1,
+            "example": "DorskFR",
+            "description": "GitHub account/login the record was synced for"
+          },
+          "owner": {
+            "type": "string",
+            "example": "DorskFR"
+          },
+          "repo": {
+            "type": "string",
+            "example": "cctui"
+          },
+          "number": {
+            "type": "integer",
+            "example": 42
+          },
+          "snoozed": {
+            "type": "boolean",
+            "description": "Whether the PR is now snoozed"
+          }
+        },
+        "required": [
+          "account",
+          "owner",
+          "repo",
+          "number",
+          "snoozed"
+        ]
+      },
+      "SnoozeRequest": {
+        "type": "object",
+        "properties": {
+          "account": {
+            "type": "string",
+            "minLength": 1,
+            "example": "DorskFR",
+            "description": "GitHub account/login the record was synced for"
+          }
+        },
+        "required": [
+          "account"
         ]
       },
       "ReviewDraftResult": {
@@ -2012,6 +2204,26 @@
         }
       }
     },
+    "/v1/capabilities": {
+      "get": {
+        "summary": "GitHub integration capability, derived from the caller's connector state",
+        "tags": [
+          "system"
+        ],
+        "responses": {
+          "200": {
+            "description": "available: store reachable (gates nav/unlock); enabled: caller has ≥1 connector; repos: distinct tracked repo slugs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Capabilities"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/sync": {
       "post": {
         "summary": "Run an immediate incremental poll cycle for an account",
@@ -2169,6 +2381,74 @@
       }
     },
     "/v1/accounts/{id}": {
+      "patch": {
+        "summary": "Update a connector's poll knobs, or rotate its PAT (never returns the secret)",
+        "tags": [
+          "accounts"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "1"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AccountUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The updated account (no secrets)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountSummary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid PAT",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Store/sealer unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
       "delete": {
         "summary": "Remove one of the caller's GitHub accounts",
         "tags": [
@@ -2922,6 +3202,86 @@
         }
       }
     },
+    "/v1/repos/{owner}/{repo}/pulls/{number}/reviewers/request": {
+      "post": {
+        "summary": "Request a review from new reviewers and/or teams",
+        "tags": [
+          "pulls"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "DorskFR"
+            },
+            "required": true,
+            "name": "owner",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "cctui"
+            },
+            "required": true,
+            "name": "repo",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "example": 42
+            },
+            "required": true,
+            "name": "number",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RequestReviewers"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated reviewer states",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewersResult"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller does not own the account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Account not managed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/repos/{owner}/{repo}/pulls/{number}/activity": {
       "get": {
         "summary": "Chronological activity timeline for a pull request",
@@ -3125,6 +3485,177 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "State store unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/pulls/snoozed": {
+      "get": {
+        "summary": "List snoozed pull requests (excluded from the default list)",
+        "tags": [
+          "pulls"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "example": "DorskFR"
+            },
+            "required": false,
+            "name": "account",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The snoozed pull requests with their envelopes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SnoozedPullList"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/repos/{owner}/{repo}/pulls/{number}/snooze": {
+      "post": {
+        "summary": "Snooze a pull request (hide it from the default list)",
+        "tags": [
+          "pulls"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "DorskFR"
+            },
+            "required": true,
+            "name": "owner",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "cctui"
+            },
+            "required": true,
+            "name": "repo",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "example": 42
+            },
+            "required": true,
+            "name": "number",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SnoozeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The snooze state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SnoozeResult"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "State store unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Un-snooze a pull request (return it to the default list)",
+        "tags": [
+          "pulls"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "DorskFR"
+            },
+            "required": true,
+            "name": "owner",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "cctui"
+            },
+            "required": true,
+            "name": "repo",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "example": 42
+            },
+            "required": true,
+            "name": "number",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "example": "DorskFR"
+            },
+            "required": true,
+            "name": "account",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The snooze state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SnoozeResult"
                 }
               }
             }

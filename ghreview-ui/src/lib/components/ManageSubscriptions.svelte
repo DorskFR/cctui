@@ -46,7 +46,6 @@
             <Text size="xs" tone="muted">{sub.account}</Text>
           </span>
           <Button
-            size="sm"
             variant="ghost"
             hoverDanger
             disabled={$remove.isPending}

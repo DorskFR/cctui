@@ -427,7 +427,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-admin"
-version = "0.7.187"
+version = "0.7.188"
 dependencies = [
  "anyhow",
  "cctui-proto",
@@ -444,7 +444,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-daemon"
-version = "0.7.187"
+version = "0.7.188"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -472,7 +472,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-dispatcher-apple"
-version = "0.7.187"
+version = "0.7.188"
 dependencies = [
  "anyhow",
  "cctui-proto",
@@ -496,7 +496,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-dispatcher-docker"
-version = "0.7.187"
+version = "0.7.188"
 dependencies = [
  "anyhow",
  "bollard",
@@ -521,7 +521,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-dispatcher-kube"
-version = "0.7.187"
+version = "0.7.188"
 dependencies = [
  "anyhow",
  "cctui-proto",
@@ -547,7 +547,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-github"
-version = "0.7.187"
+version = "0.7.188"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -568,7 +568,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-guard"
-version = "0.7.187"
+version = "0.7.188"
 dependencies = [
  "anyhow",
  "axum",
@@ -585,7 +585,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-guard-proxy"
-version = "0.7.187"
+version = "0.7.188"
 dependencies = [
  "anyhow",
  "clap",
@@ -601,7 +601,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-proto"
-version = "0.7.187"
+version = "0.7.188"
 dependencies = [
  "chrono",
  "hex",
@@ -614,7 +614,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-query"
-version = "0.7.187"
+version = "0.7.188"
 dependencies = [
  "serde",
  "serde_json",
@@ -623,7 +623,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-server"
-version = "0.7.187"
+version = "0.7.188"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -666,7 +666,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-supervisor"
-version = "0.7.187"
+version = "0.7.188"
 dependencies = [
  "anyhow",
  "caps",
@@ -682,7 +682,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-tui"
-version = "0.7.187"
+version = "0.7.188"
 dependencies = [
  "anyhow",
  "cctui-proto",

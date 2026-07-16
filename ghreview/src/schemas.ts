@@ -73,6 +73,29 @@ export const RepoPageSchema = page(RepoEnvelopeSchema, "RepoPage");
 export const PullRequestPageSchema = page(PullRequestEnvelopeSchema, "PullRequestPage");
 export const NotificationPageSchema = page(NotificationEnvelopeSchema, "NotificationPage");
 
+export const SnoozeRequestSchema = z.object({ account: AccountSchema }).openapi("SnoozeRequest");
+
+export const SnoozeResultSchema = z
+  .object({
+    account: AccountSchema,
+    owner: z.string().openapi({ example: "DorskFR" }),
+    repo: z.string().openapi({ example: "cctui" }),
+    number: z.number().int().openapi({ example: 42 }),
+    snoozed: z.boolean().openapi({ description: "Whether the PR is now snoozed" }),
+  })
+  .openapi("SnoozeResult");
+
+export const SnoozedPullSchema = PullRequestEnvelopeSchema.extend({
+  owner: z.string().openapi({ example: "DorskFR" }),
+  repo: z.string().openapi({ example: "cctui" }),
+  number: z.number().int().openapi({ example: 42 }),
+  snoozed_at: SyncedAtSchema.openapi({ description: "When the PR was snoozed" }),
+}).openapi("SnoozedPull");
+
+export const SnoozedPullListSchema = z
+  .object({ items: z.array(SnoozedPullSchema) })
+  .openapi("SnoozedPullList");
+
 export const NotificationStateSchema = z
   .object({
     read: z.boolean().openapi({ description: "Locally marked read (also pushed to GitHub)" }),
@@ -618,6 +641,31 @@ export const ReRequestReviewersSchema = z
     reviewers: z.array(z.string().min(1)).min(1),
   })
   .openapi("ReRequestReviewers");
+
+export const RequestReviewersSchema = z
+  .object({
+    account: AccountSchema,
+    reviewers: z
+      .array(z.string().min(1))
+      .default([])
+      .openapi({ description: "User logins to request a review from" }),
+    team_reviewers: z
+      .array(z.string().min(1))
+      .default([])
+      .openapi({ description: "Team slugs to request a review from" }),
+  })
+  .refine((v) => v.reviewers.length > 0 || v.team_reviewers.length > 0, {
+    message: "Provide at least one reviewer or team_reviewer",
+  })
+  .openapi("RequestReviewers");
+
+export const ReviewDecisionSchema = z
+  .enum(["APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED"])
+  .nullable()
+  .openapi({
+    example: "APPROVED",
+    description: "Aggregate review decision for the PR, GitHub reviewDecision semantics",
+  });
 
 export const ActivityActorSchema = z
   .object({

@@ -272,6 +272,9 @@ guarded("auto-subscription handlers", () => {
         if (route.endsWith("/commits")) {
           return { status: 200, headers: {}, data: [{ sha: "head-8" }] };
         }
+        if (route.endsWith("/reviews")) {
+          return { status: 200, headers: {}, data: [] };
+        }
         throw { status: 304, response: { headers: { etag: 'W/"same"' } } };
       },
     };

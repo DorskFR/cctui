@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Button, Popover } from "@dorsk/tsumikit";
+  import { Badge, Button, Popover, Select } from "@dorsk/tsumikit";
   import { api } from "../api/client";
   import { keys, queryClient } from "../api/queries";
   import type { GithubPull, MergeMethod } from "../api/types";
@@ -26,13 +26,20 @@
     { value: "rebase", label: "Rebase and merge" },
   ];
 
-  const mergeability = $derived(
-    pull.mergeable === true
-      ? { text: "Mergeable", cls: "ok" }
-      : pull.mergeable === false
-        ? { text: `Conflicts${pull.mergeable_state ? ` (${pull.mergeable_state})` : ""}`, cls: "bad" }
-        : { text: "Mergeability unknown", cls: "muted" },
-  );
+  const mergeability = $derived.by<{
+    text: string;
+    tone: "neutral" | "ok" | "warn" | "danger";
+  }>(() => {
+    const s = pull.mergeable_state?.toLowerCase();
+    if (pull.mergeable === false || s === "dirty") {
+      return { text: `Conflicts${s ? ` (${s})` : ""}`, tone: "danger" };
+    }
+    if (s === "blocked" || s === "behind" || s === "unstable" || s === "has_hooks") {
+      return { text: `Not ready (${s})`, tone: "warn" };
+    }
+    if (pull.mergeable === true || s === "clean") return { text: "Mergeable", tone: "ok" };
+    return { text: "Mergeability unknown", tone: "neutral" };
+  });
 
   async function merge(): Promise<void> {
     if (!account || pending) return;
@@ -77,14 +84,16 @@
         {#if pull.draft}
           <p class="muted">This pull request is a draft and cannot be merged.</p>
         {:else}
-          <div class="state {mergeability.cls}">{mergeability.text}</div>
+          <div class="state">
+            <Badge tone={mergeability.tone} size="sm">{mergeability.text}</Badge>
+          </div>
           <label class="row">
             <span>Method</span>
-            <select bind:value={method} disabled={pending}>
+            <Select bind:value={method} disabled={pending} compact>
               {#each methods as m (m.value)}
                 <option value={m.value}>{m.label}</option>
               {/each}
-            </select>
+            </Select>
           </label>
 
           {#if error}
@@ -143,19 +152,6 @@
     width: 260px;
     max-width: 80vw;
   }
-  .state {
-    font-size: var(--fs-xs);
-    font-weight: 600;
-  }
-  .state.ok {
-    color: var(--gh-success);
-  }
-  .state.bad {
-    color: var(--gh-danger);
-  }
-  .state.muted {
-    color: var(--gh-fg-muted);
-  }
   .row {
     display: flex;
     align-items: center;
@@ -163,15 +159,6 @@
     gap: var(--gh-space-2);
     font-size: var(--fs-xs);
     color: var(--gh-fg-muted);
-  }
-  select {
-    flex: 1;
-    font-size: var(--fs-xs);
-    background: var(--gh-bg);
-    color: var(--gh-fg);
-    border: 1px solid var(--gh-border);
-    border-radius: var(--gh-radius-sm);
-    padding: var(--gh-space-1);
   }
   .confirm {
     display: flex;

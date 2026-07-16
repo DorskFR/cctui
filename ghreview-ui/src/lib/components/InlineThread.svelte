@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { Button, IconButton } from "@dorsk/tsumikit";
   import { api, ApiError } from "../api/client";
   import { queryClient } from "../api/queries";
   import type { ReactionContent } from "../api/types";
@@ -33,7 +34,7 @@
   const canReact = $derived(owner !== undefined && repo !== undefined && account !== undefined);
 
   let editing = $state<string | null>(null);
-  let replying = $state(false);
+  let replying = $state(true);
 
   let confirmingDelete = $state<number | null>(null);
   let deleting = $state<number | null>(null);
@@ -71,7 +72,7 @@
 <div class="thread">
   <div class="thead">
     <span class="loc">{anchor.path}:{anchor.line} · {anchor.side}</span>
-    <button type="button" class="x" aria-label="Close" onclick={onClose}>×</button>
+    <IconButton icon="x" label="Close" size={16} onclick={onClose} />
   </div>
 
   {#each visiblePublished as c (c.id)}
@@ -81,23 +82,24 @@
         {#if ownsPublished(c.user)}
           <span class="ctrls">
             {#if confirmingDelete === c.id}
-              <button
-                type="button"
-                class="danger"
+              <Button
+                variant="danger"
+                size="sm"
                 disabled={deleting === c.id}
                 onclick={() => deletePublished(c.id)}
-              >{deleting === c.id ? "Deleting…" : "Confirm"}</button>
-              <button type="button" onclick={() => (confirmingDelete = null)}>Cancel</button>
+              >{deleting === c.id ? "Deleting…" : "Confirm"}</Button>
+              <Button variant="ghost" size="sm" onclick={() => (confirmingDelete = null)}>Cancel</Button>
             {:else}
-              <button
-                type="button"
-                class="danger"
+              <Button
+                variant="ghost"
+                size="sm"
+                hoverDanger
                 aria-label="Delete comment"
                 onclick={() => {
                   deleteError = null;
                   confirmingDelete = c.id;
                 }}
-              >Delete</button>
+              >Delete</Button>
             {/if}
           </span>
         {/if}
@@ -127,10 +129,10 @@
       <div class="meta">
         <span>draft</span>
         <span class="ctrls">
-          <button type="button" onclick={() => (editing = editing === c.id ? null : c.id)}>
+          <Button variant="ghost" size="sm" onclick={() => (editing = editing === c.id ? null : c.id)}>
             {editing === c.id ? "Cancel" : "Edit"}
-          </button>
-          <button type="button" onclick={() => onDelete(c.id)}>Delete</button>
+          </Button>
+          <Button variant="ghost" size="sm" hoverDanger onclick={() => onDelete(c.id)}>Delete</Button>
         </span>
       </div>
       {#if editing === c.id}
@@ -161,7 +163,9 @@
       oncancel={() => (isEmpty ? onClose() : (replying = false))}
     />
   {:else}
-    <button type="button" class="reply" onclick={() => (replying = true)}>Add comment</button>
+    <div class="reply">
+      <Button variant="ghost" size="sm" onclick={() => (replying = true)}>Add comment</Button>
+    </div>
   {/if}
 </div>
 
@@ -210,21 +214,6 @@
     font-size: var(--fs-xs);
     white-space: pre-wrap;
     word-break: break-word;
-  }
-  button {
-    font-size: var(--fs-xs);
-    background: none;
-    border: none;
-    color: var(--gh-accent);
-    cursor: pointer;
-    padding: 0;
-  }
-  .x {
-    color: var(--gh-fg-muted);
-    font-size: var(--fs-base);
-  }
-  button.danger {
-    color: var(--danger, #f85149);
   }
   .err {
     font-size: var(--fs-xs);

@@ -1,5 +1,5 @@
 .markdown {
-  font-size: 14px;
+  font-size: calc(0.875rem * var(--fs-scale, 1));
   line-height: 1.55;
   overflow-wrap: anywhere;
 }
@@ -121,7 +121,7 @@
   border: 1px solid var(--gh-border);
   border-radius: var(--gh-radius);
   background: var(--gh-bg-inset);
-  font-size: 12px;
+  font-size: 0.857em;
 }
 
 .markdown .md-pre code {
@@ -144,7 +144,7 @@
   overflow: auto;
   border-spacing: 0;
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: 0.929em;
 }
 
 .markdown th,

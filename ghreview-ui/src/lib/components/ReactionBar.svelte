@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { Badge, IconButton } from "@dorsk/tsumikit";
   import type { ReactionContent, ReactionRollup, ReactionSummary } from "../api/types";
 
   interface Props {
@@ -68,10 +69,11 @@
 
 <div class="reactions">
   {#each visible as content (content)}
-    <button
-      type="button"
-      class="pill"
-      class:mine={mine.has(content)}
+    <Badge
+      as="button"
+      size="sm"
+      active={mine.has(content)}
+      class={mine.has(content) ? "pill mine" : "pill"}
       {disabled}
       aria-pressed={mine.has(content)}
       title={content}
@@ -79,33 +81,30 @@
     >
       <span class="emoji">{EMOJI[content]}</span>
       <span class="count">{counts[content]}</span>
-    </button>
+    </Badge>
   {/each}
 
   <div class="adder">
-    <button
-      type="button"
+    <IconButton
+      emoji="🙂"
+      size={14}
       class="add"
+      label="Add reaction"
       {disabled}
-      aria-label="Add reaction"
       aria-expanded={menuOpen}
       onclick={() => (menuOpen = !menuOpen)}
-    >
-      🙂<span class="plus">+</span>
-    </button>
+    />
     {#if menuOpen}
       <div class="menu" role="menu">
         {#each ORDER as content (content)}
-          <button
-            type="button"
-            class="opt"
-            class:mine={mine.has(content)}
+          <IconButton
+            emoji={EMOJI[content]}
+            size={16}
+            class={mine.has(content) ? "opt mine" : "opt"}
             role="menuitem"
-            title={content}
+            label={content}
             onclick={() => toggle(content)}
-          >
-            {EMOJI[content]}
-          </button>
+          />
         {/each}
       </div>
     {/if}
@@ -120,50 +119,16 @@
     gap: var(--gh-space-1);
     margin-top: var(--gh-space-2);
   }
-  .pill {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    font-size: var(--fs-xs);
+  .emoji {
     line-height: 1;
-    padding: 2px 8px;
-    border-radius: 999px;
-    border: 1px solid var(--gh-border);
-    background: var(--gh-bg-elev);
-    color: var(--gh-fg);
-    cursor: pointer;
-  }
-  .pill.mine {
-    border-color: var(--gh-accent);
-    background: color-mix(in srgb, var(--gh-accent) 18%, transparent);
-  }
-  .pill:disabled,
-  .add:disabled {
-    cursor: default;
-    opacity: 0.6;
   }
   .count {
     font-variant-numeric: tabular-nums;
+    margin-left: 4px;
   }
   .adder {
     position: relative;
     display: inline-flex;
-  }
-  .add {
-    display: inline-flex;
-    align-items: center;
-    font-size: var(--fs-xs);
-    line-height: 1;
-    padding: 2px 6px;
-    border-radius: 999px;
-    border: 1px solid var(--gh-border);
-    background: var(--gh-bg-elev);
-    color: var(--gh-fg-muted);
-    cursor: pointer;
-  }
-  .plus {
-    font-weight: 600;
-    margin-left: 1px;
   }
   .menu {
     position: absolute;
@@ -177,18 +142,5 @@
     border: 1px solid var(--gh-border);
     background: var(--gh-bg-elev);
     box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
-  }
-  .opt {
-    font-size: var(--fs-base);
-    line-height: 1;
-    padding: 3px 5px;
-    border-radius: var(--gh-radius);
-    border: none;
-    background: none;
-    cursor: pointer;
-  }
-  .opt:hover,
-  .opt.mine {
-    background: color-mix(in srgb, var(--gh-accent) 22%, transparent);
   }
 </style>

@@ -114,6 +114,26 @@ guarded("reviewers endpoints", () => {
     expect(body.requested_teams[0]?.slug).toBe("platform");
   });
 
+  test("surfaces a requested team when no individual reviewer or review exists", async () => {
+    const app = createApp(
+      deps(
+        reviewersOctokit({
+          reviews: [],
+          requestedReviewers: [],
+          requestedTeams: [{ name: "Grid-devs", slug: "grid-devs" }],
+        }),
+      ),
+    );
+    const res = await app.request(`${URL}?account=alpha`, { headers: A });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      reviewers: { login: string }[];
+      requested_teams: { name: string; slug: string }[];
+    };
+    expect(body.reviewers).toEqual([]);
+    expect(body.requested_teams).toEqual([{ name: "Grid-devs", slug: "grid-devs" }]);
+  });
+
   test("re-requests reviews from the given reviewers", async () => {
     const reRequestCalls: Record<string, unknown>[] = [];
     const app = createApp(deps(reviewersOctokit({ reRequestCalls })));
@@ -124,5 +144,32 @@ guarded("reviewers endpoints", () => {
     });
     expect(res.status).toBe(200);
     expect(reRequestCalls[0]?.reviewers).toEqual(["bob"]);
+  });
+
+  test("requests new reviewers and teams", async () => {
+    const reRequestCalls: Record<string, unknown>[] = [];
+    const app = createApp(deps(reviewersOctokit({ reRequestCalls })));
+    const res = await app.request(`${URL}/request`, {
+      method: "POST",
+      headers: A,
+      body: JSON.stringify({
+        account: "alpha",
+        reviewers: ["bob"],
+        team_reviewers: ["platform"],
+      }),
+    });
+    expect(res.status).toBe(200);
+    expect(reRequestCalls[0]?.reviewers).toEqual(["bob"]);
+    expect(reRequestCalls[0]?.team_reviewers).toEqual(["platform"]);
+  });
+
+  test("rejects a request with neither reviewers nor teams", async () => {
+    const app = createApp(deps(reviewersOctokit()));
+    const res = await app.request(`${URL}/request`, {
+      method: "POST",
+      headers: A,
+      body: JSON.stringify({ account: "alpha" }),
+    });
+    expect(res.status).toBe(400);
   });
 });

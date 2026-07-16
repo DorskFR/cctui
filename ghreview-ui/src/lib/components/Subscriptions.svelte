@@ -1,6 +1,6 @@
 <script lang="ts">
   import { createMutation, useQueryClient } from "@tanstack/svelte-query";
-  import { Button, Card, Field, Heading, Input, Stack, Text } from "@dorsk/tsumikit";
+  import { Button, Card, Cluster, Field, Heading, Input, Stack, Text } from "@dorsk/tsumikit";
   import { api, type Subscription } from "../api/client";
   import { getAccount } from "../api/config";
   import { pullPath } from "../router/route";
@@ -37,22 +37,22 @@
     <Card padding="md" surface="raised">
       <Stack gap="var(--gh-space-2)" as="form" onsubmit={submitUrl}>
         <Field label="Subscribe to a pull request" hint="Subscribes and opens the PR once synced.">
-          <div class="url-form">
+          <Cluster gap="var(--gh-space-2)" wrap={false}>
             <Input
               type="text"
               placeholder="github.com PR URL or owner/repo#n"
               bind:value={prUrl}
               spellcheck="false"
+              style="flex: 1;"
             />
             <Button
               type="submit"
               variant="primary"
-              size="sm"
               disabled={$subscribePr.isPending || !prUrl.trim()}
             >
               {$subscribePr.isPending ? "Subscribing…" : "Subscribe"}
             </Button>
-          </div>
+          </Cluster>
         </Field>
         {#if $subscribePr.isError}
           <Text size="xs" tone="danger">{$subscribePr.error.message}</Text>
@@ -79,13 +79,5 @@
     padding: var(--gh-space-4);
     max-width: 720px;
     margin: 0 auto;
-  }
-  .url-form {
-    display: flex;
-    gap: var(--gh-space-2);
-    align-items: center;
-  }
-  .url-form :global(input) {
-    flex: 1;
   }
 </style>

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { Button, Textarea } from "@dorsk/tsumikit";
   import { untrack } from "svelte";
 
   interface Props {
@@ -40,18 +41,21 @@
 
 <div class="composer">
   <!-- svelte-ignore a11y_autofocus -->
-  <textarea
+  <Textarea
     bind:value={body}
     {placeholder}
-    rows="3"
+    rows={3}
+    mono
+    autoresize
+    size="sm"
     autofocus
     onkeydown={onKeydown}
-  ></textarea>
+  />
   <div class="actions">
-    <button type="button" class="ghost" onclick={oncancel}>Cancel</button>
-    <button type="button" class="primary" disabled={pending || !body.trim()} onclick={submit}>
+    <Button variant="ghost" size="sm" onclick={oncancel}>Cancel</Button>
+    <Button variant="primary" size="sm" disabled={pending || !body.trim()} onclick={submit}>
       {submitLabel}
-    </button>
+    </Button>
   </div>
 </div>
 
@@ -61,41 +65,9 @@
     flex-direction: column;
     gap: var(--gh-space-1);
   }
-  textarea {
-    width: 100%;
-    box-sizing: border-box;
-    font-family: var(--gh-mono);
-    font-size: var(--fs-xs);
-    background: var(--gh-bg);
-    color: var(--gh-fg);
-    border: 1px solid var(--gh-border);
-    border-radius: var(--gh-radius-sm);
-    padding: var(--gh-space-1);
-    resize: vertical;
-  }
   .actions {
     display: flex;
     justify-content: flex-end;
     gap: var(--gh-space-2);
-  }
-  button {
-    font-size: var(--fs-xs);
-    border-radius: var(--gh-radius-sm);
-    padding: 2px 10px;
-    cursor: pointer;
-    border: 1px solid var(--gh-border);
-  }
-  .ghost {
-    background: var(--gh-bg-inset);
-    color: var(--gh-fg);
-  }
-  .primary {
-    background: var(--gh-accent);
-    color: white;
-    border-color: var(--gh-accent);
-  }
-  .primary:disabled {
-    opacity: 0.5;
-    cursor: default;
   }
 </style>

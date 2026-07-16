@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Popover } from "@dorsk/tsumikit";
+  import { Badge, Icon, Input, OptionButton, Popover } from "@dorsk/tsumikit";
   import { createQuery } from "@tanstack/svelte-query";
   import { toStore } from "svelte/store";
   import { api } from "../api/client";
@@ -71,28 +71,31 @@
 
 <div class="labels">
   {#each labels as label (label.name)}
-    <span
-      class="chip"
-      style:background={label.color ? `#${label.color}` : "var(--gh-bg-elev)"}
-      style:color={label.color ? textColor(label.color) : "var(--gh-fg)"}
+    <Badge
+      size="sm"
+      style={`background:${label.color ? `#${label.color}` : "var(--gh-bg-elev)"};color:${
+        label.color ? textColor(label.color) : "var(--gh-fg)"
+      };border-color:color-mix(in srgb, currentColor 20%, transparent)`}
       title={label.description ?? label.name}
     >
       {label.name}
-    </span>
+    </Badge>
   {/each}
 
   {#if account}
     <Popover
       label="Edit labels"
       placement="bottom-start"
+      variant="ghost"
+      size="sm"
       onopen={() => (open = true)}
       onclose={() => (open = false)}
     >
-      {#snippet trigger()}<span class="edit" aria-hidden="true">🏷 +</span>{/snippet}
+      {#snippet trigger()}<Icon name="tag" /> +{/snippet}
       <div class="panel">
-        <input
-          class="filter"
+        <Input
           type="text"
+          size="sm"
           placeholder="Filter labels…"
           bind:value={filter}
           spellcheck="false"
@@ -107,18 +110,19 @@
           <ul>
             {#each filtered as label (label.name)}
               <li>
-                <button
-                  type="button"
-                  class="opt"
+                <OptionButton
+                  row
+                  selected={applied.has(label.name)}
                   disabled={pending != null}
-                  aria-pressed={applied.has(label.name)}
                   onclick={() => toggle(label.name)}
                 >
-                  <span class="check">{applied.has(label.name) ? "✓" : ""}</span>
+                  <span class="check">
+                    {#if applied.has(label.name)}<Icon name="check" size={12} />{/if}
+                  </span>
                   <span class="dot" style:background={`#${label.color}`}></span>
                   <span class="name">{label.name}</span>
                   {#if pending === label.name}<span class="muted">…</span>{/if}
-                </button>
+                </OptionButton>
               </li>
             {/each}
           </ul>
@@ -135,17 +139,6 @@
     align-items: center;
     gap: var(--gh-space-1);
   }
-  .chip {
-    font-size: var(--fs-xs);
-    line-height: 1;
-    padding: 2px 8px;
-    border-radius: 999px;
-    border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
-  }
-  .edit {
-    font-size: var(--fs-xs);
-    color: var(--gh-fg-muted);
-  }
   .panel {
     display: flex;
     flex-direction: column;
@@ -153,39 +146,15 @@
     width: 260px;
     max-width: 80vw;
   }
-  .filter {
-    background: var(--gh-bg-inset);
-    border: 1px solid var(--gh-border);
-    border-radius: var(--gh-radius);
-    color: var(--gh-fg);
-    padding: var(--gh-space-1) var(--gh-space-2);
-  }
   ul {
     list-style: none;
     margin: 0;
     padding: 0;
     max-height: 300px;
     overflow: auto;
-  }
-  .opt {
-    width: 100%;
     display: flex;
-    align-items: center;
-    gap: var(--gh-space-2);
-    background: transparent;
-    border: none;
-    color: var(--gh-fg);
-    padding: var(--gh-space-1) var(--gh-space-2);
-    border-radius: var(--gh-radius);
-    cursor: pointer;
-    text-align: left;
-  }
-  .opt:hover {
-    background: var(--gh-bg-elev);
-  }
-  .opt:disabled {
-    cursor: default;
-    opacity: 0.7;
+    flex-direction: column;
+    gap: var(--gh-space-1);
   }
   .check {
     width: 12px;

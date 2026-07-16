@@ -4,6 +4,7 @@
   import { buildSplitModel } from "../diff/split";
   import { highlightLine, langForPath } from "../diff/highlight";
   import { computeWindow } from "../diff/virtual";
+  import { Checkbox } from "@dorsk/tsumikit";
 
   const ROW_HEIGHT = 20;
   import { type LineAddress, type ReviewController, rowToAddress } from "../review/anchors";
@@ -20,9 +21,51 @@
     owner?: string;
     repo?: string;
     account?: string;
+    viewed?: Set<string>;
+    onToggleViewed?: (paths: string[], viewed: boolean) => void;
   }
-  let { model, focusRow, onFocusRow, review, mode = "unified", owner, repo, account }: Props =
-    $props();
+  let {
+    model,
+    focusRow,
+    onFocusRow,
+    review,
+    mode = "unified",
+    owner,
+    repo,
+    account,
+    viewed,
+    onToggleViewed,
+  }: Props = $props();
+
+  function activeFileIndex(row: number): number {
+    let idx = -1;
+    for (let i = 0; i < model.files.length; i++) {
+      if (model.files[i].fileRowIndex <= row) idx = i;
+      else break;
+    }
+    return idx;
+  }
+  const activeFilename = $derived(model.files[activeFileIndex(focusRow)]?.filename ?? null);
+
+  function isEditable(target: EventTarget | null): boolean {
+    const el = target as { tagName?: string; isContentEditable?: boolean } | null;
+    if (!el?.tagName) return false;
+    const tag = el.tagName.toUpperCase();
+    return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || !!el.isContentEditable;
+  }
+
+  function toggleFileViewed(filename: string | null): void {
+    if (!filename || !onToggleViewed) return;
+    onToggleViewed([filename], !(viewed?.has(filename) ?? false));
+  }
+
+  function onViewedHotkey(e: KeyboardEvent): void {
+    if (e.key !== "v" || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (isEditable(e.target)) return;
+    if (!onToggleViewed || !activeFilename) return;
+    e.preventDefault();
+    toggleFileViewed(activeFilename);
+  }
 
   const ROW_H = ROW_HEIGHT;
   let scrollTop = $state(0);
@@ -71,6 +114,8 @@
   });
 </script>
 
+<svelte:window onkeydown={onViewedHotkey} />
+
 <div
   class="scroller"
   bind:this={container}
@@ -87,6 +132,16 @@
               : srow.rowIndex === focusRow}
           <div class="row row-{srow.kind === "pair" ? "pair" : srow.row.kind}" class:focus={focused} style:height="{ROW_H}px" role="row" tabindex="-1">
             {#if srow.kind === "file"}
+              {@const fname = model.files[srow.row.fileIndex]?.filename ?? null}
+              {#if onToggleViewed && fname}
+                <span class="filecheck" role="none" onclick={(e) => e.stopPropagation()}>
+                  <Checkbox
+                    label="Mark {fname} viewed"
+                    checked={viewed?.has(fname) ?? false}
+                    onchange={() => toggleFileViewed(fname)}
+                  />
+                </span>
+              {/if}
               <span class="filehdr" class:collapsed={srow.row.collapsed}>{srow.row.content}</span>
             {:else if srow.kind === "hunk"}
               <span class="gutter"></span>
@@ -156,6 +211,16 @@
             onkeydown={() => {}}
           >
             {#if row.kind === "file"}
+              {@const fname = model.files[row.fileIndex]?.filename ?? null}
+              {#if onToggleViewed && fname}
+                <span class="filecheck" role="none" onclick={(e) => e.stopPropagation()}>
+                  <Checkbox
+                    label="Mark {fname} viewed"
+                    checked={viewed?.has(fname) ?? false}
+                    onchange={() => toggleFileViewed(fname)}
+                  />
+                </span>
+              {/if}
               <span class="filehdr" class:collapsed={row.collapsed}>{row.content}</span>
             {:else if row.kind === "hunk"}
               <span class="gutter"></span>
@@ -403,6 +468,12 @@
   .row-hunk {
     color: var(--gh-diff-hunk-fg);
     background: var(--gh-diff-hunk-bg);
+  }
+  .filecheck {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    padding-right: var(--gh-space-2);
   }
   .filehdr {
     overflow: hidden;

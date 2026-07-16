@@ -1,8 +1,9 @@
 <script lang="ts">
-  import { SegmentedControl } from "@dorsk/tsumikit";
+  import { Badge, Cluster, SegmentedControl } from "@dorsk/tsumikit";
   import type {
     GithubFile,
     GithubPull,
+    ReviewDraftComment,
     ReviewPublishResult,
     ReviewVerdict,
   } from "../../api/types";
@@ -22,6 +23,7 @@
     files: GithubFile[];
     viewedCount: number;
     draftCount: number;
+    drafts?: ReviewDraftComment[];
     publishing?: boolean;
     skipped?: ReviewPublishResult["skipped"];
     error?: string | null;
@@ -39,6 +41,7 @@
     files,
     viewedCount,
     draftCount,
+    drafts = [],
     publishing = false,
     skipped = [],
     error = null,
@@ -48,13 +51,30 @@
   }: Props = $props();
 
   const state = $derived(prStateOf(pull));
-  const mergeability = $derived(
-    pull.mergeable === true
-      ? "mergeable"
-      : pull.mergeable === false
-        ? "conflicts"
-        : "mergeability unknown",
+
+  type BadgeTone = "neutral" | "ok" | "warn" | "danger" | "info";
+
+  const ci = $derived(ciStateOf(pull));
+  const ciTone = $derived<BadgeTone>(
+    ci === "success"
+      ? "ok"
+      : ci === "failure"
+        ? "danger"
+        : ci === "pending"
+          ? "warn"
+          : "neutral",
   );
+
+  const mergeability = $derived.by<{ text: string; tone: BadgeTone }>(() => {
+    const s = pull.mergeable_state?.toLowerCase();
+    if (pull.mergeable === false || s === "dirty") return { text: "conflicts", tone: "danger" };
+    if (s === "blocked" || s === "behind" || s === "unstable" || s === "has_hooks") {
+      return { text: s, tone: "warn" };
+    }
+    if (pull.mergeable === true || s === "clean") return { text: "mergeable", tone: "ok" };
+    return { text: "mergeability unknown", tone: "neutral" };
+  });
+
   const diffModeOptions = [
     { value: "unified", label: "Unified" },
     { value: "split", label: "Split" },
@@ -62,34 +82,26 @@
 </script>
 
 <header class="pr-diff-header">
-  <div class="title-row">
-    <PrHeaderIdentity {owner} {repo} {number} {account} {pull} {state} />
+  <div class="header-top">
+    <div class="title-row">
+      <PrHeaderIdentity {owner} {repo} {number} {account} {pull} {state} />
 
-    <div class="stats" aria-label="Pull request statistics">
-      {#if pull.additions != null || pull.deletions != null}
-        <span class="add">+{pull.additions ?? 0}</span>
-        <span class="del">−{pull.deletions ?? 0}</span>
-        <span class="separator">·</span>
-      {/if}
-      <span>{files.length} files</span>
-      {#if files.length > 0}
-        <span class="separator">·</span>
-        <span>viewed <strong>{viewedCount}/{files.length}</strong></span>
-      {/if}
-      <span class="separator">·</span>
-      <span>CI {ciStateOf(pull)}</span>
-      <span class="separator">·</span>
-      <span>{mergeability}</span>
+      <div class="stats" aria-label="Pull request statistics">
+        {#if pull.additions != null || pull.deletions != null}
+          <span class="add">+{pull.additions ?? 0}</span>
+          <span class="del">−{pull.deletions ?? 0}</span>
+          <span class="separator">·</span>
+        {/if}
+        <span>{files.length} files</span>
+        {#if files.length > 0}
+          <span class="separator">·</span>
+          <span>viewed <strong>{viewedCount}/{files.length}</strong></span>
+        {/if}
+        <Badge tone={ciTone} size="sm">CI {ci}</Badge>
+        <Badge tone={mergeability.tone} size="sm">{mergeability.text}</Badge>
+      </div>
     </div>
-  </div>
 
-  <div class="reviewers-row">
-    <Reviewers {owner} {repo} {number} {account} />
-  </div>
-
-  <div class="divider"></div>
-
-  <div class="lower-row">
     <div class="source">
       {#if pull.user}
         <span class="author">
@@ -103,8 +115,21 @@
         <code>{pull.head?.ref ?? "?"}</code>
       </span>
     </div>
+  </div>
 
-    <div class="actions" aria-label="Pull request actions">
+  <div class="divider"></div>
+
+  <div class="lower-row">
+    <div class="reviewers-row">
+      <Reviewers {owner} {repo} {number} {account} />
+    </div>
+
+    <Cluster
+      class="actions"
+      aria-label="Pull request actions"
+      justify="flex-end"
+      gap="var(--gh-space-2)"
+    >
       <div class="diff-mode">
         <SegmentedControl
           options={diffModeOptions}
@@ -116,6 +141,7 @@
       <div class="review-action">
         <ReviewSummaryBar
           {draftCount}
+          {drafts}
           {publishing}
           {skipped}
           {error}
@@ -128,7 +154,7 @@
           <MergeButton {owner} {repo} {number} {account} {pull} fullWidth {onmerged} />
         </div>
       {/if}
-    </div>
+    </Cluster>
   </div>
 </header>
 
@@ -144,11 +170,16 @@
   .title-row,
   .lower-row,
   .source,
-  .actions,
   .author,
   .branches {
     display: flex;
     align-items: center;
+  }
+  .header-top {
+    display: flex;
+    flex-direction: column;
+    gap: var(--gh-space-1);
+    min-width: 0;
   }
   .title-row {
     gap: var(--gh-space-3);
@@ -211,38 +242,28 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .actions {
-    flex: none;
-    justify-content: flex-end;
-    gap: var(--gh-space-2);
-  }
-
   @media (max-width: 700px) {
     .pr-diff-header {
       gap: var(--gh-space-3);
       padding: var(--gh-space-3);
     }
     .title-row {
-      display: contents;
+      flex-wrap: wrap;
     }
     .stats {
-      order: 2;
       flex-wrap: wrap;
       white-space: normal;
     }
+    .lower-row {
+      flex-direction: column;
+      align-items: stretch;
+      gap: var(--gh-space-3);
+    }
     .reviewers-row {
-      order: 4;
       overflow-x: auto;
       scrollbar-width: thin;
     }
-    .divider {
-      order: 3;
-    }
-    .lower-row {
-      display: contents;
-    }
     .source {
-      order: 1;
       flex-direction: column;
       align-items: flex-start;
       gap: var(--gh-space-2);
@@ -254,8 +275,7 @@
     code {
       max-width: calc(50vw - var(--gh-space-4));
     }
-    .actions {
-      order: 5;
+    .lower-row :global(.actions) {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
       width: 100%;

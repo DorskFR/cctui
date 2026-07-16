@@ -1,16 +1,20 @@
 <script lang="ts" module>
+  import type { IconName } from "@dorsk/tsumikit";
   import type { ReviewerState } from "../api/types";
 
-  const STATE_META: Record<ReviewerState, { icon: string; label: string; cls: string }> = {
-    APPROVED: { icon: "✓", label: "Approved", cls: "approved" },
-    CHANGES_REQUESTED: { icon: "✗", label: "Changes requested", cls: "changes" },
-    COMMENTED: { icon: "💬", label: "Commented", cls: "commented" },
-    DISMISSED: { icon: "⊘", label: "Dismissed", cls: "dismissed" },
-    PENDING: { icon: "…", label: "Awaiting review", cls: "pending" },
+  type BadgeTone = "neutral" | "ok" | "warn" | "danger" | "info";
+
+  const STATE_META: Record<ReviewerState, { icon: IconName; label: string; tone: BadgeTone }> = {
+    APPROVED: { icon: "check-circle", label: "Approved", tone: "ok" },
+    CHANGES_REQUESTED: { icon: "x-circle", label: "Changes requested", tone: "danger" },
+    COMMENTED: { icon: "info", label: "Commented", tone: "info" },
+    DISMISSED: { icon: "minus", label: "Dismissed", tone: "neutral" },
+    PENDING: { icon: "clock", label: "Awaiting review", tone: "neutral" },
   };
 </script>
 
 <script lang="ts">
+  import { Badge, Button, Icon, IconButton, Input, Popover } from "@dorsk/tsumikit";
   import { createQuery } from "@tanstack/svelte-query";
   import { toStore } from "svelte/store";
   import { api } from "../api/client";
@@ -26,6 +30,7 @@
   let { owner, repo, number, account }: Props = $props();
 
   let pending = $state<string | null>(null);
+  let addLogin = $state("");
 
   const query = createQuery(
     toStore(() => ({
@@ -48,6 +53,19 @@
       pending = null;
     }
   }
+
+  async function addReviewer(): Promise<void> {
+    const login = addLogin.trim();
+    if (!account || pending || !login) return;
+    pending = login;
+    try {
+      const result = await api.requestReviewers(owner, repo, number, account, [login]);
+      queryClient.setQueryData(keys.reviewers(owner, repo, number), result);
+      addLogin = "";
+    } finally {
+      pending = null;
+    }
+  }
 </script>
 
 <section class="reviewers">
@@ -58,40 +76,64 @@
     <p class="muted">Loading reviewers…</p>
   {:else if $query.isError}
     <p class="err">{($query.error as Error).message}</p>
-  {:else if reviewers.length === 0 && teams.length === 0}
-    <p class="muted">No reviewers requested.</p>
   {:else}
-    <ul>
-      {#each reviewers as r (r.login)}
-        {@const meta = STATE_META[r.state]}
-        <li>
-          <Avatar user={{ login: r.login, avatar_url: r.avatar_url ?? undefined }} size={20} />
-          <span class="login">{r.login}</span>
-          <span class="badge {meta.cls}" title={meta.label}>
-            <span class="icon" aria-hidden="true">{meta.icon}</span>
-            {meta.label}
-          </span>
-          {#if r.state !== "PENDING"}
-            <button
-              type="button"
-              class="rerequest"
-              disabled={pending != null}
-              title="Re-request review"
-              onclick={() => reRequest(r.login)}
-            >
-              {pending === r.login ? "…" : "↻"}
-            </button>
-          {/if}
-        </li>
-      {/each}
-      {#each teams as t (t.slug)}
-        <li>
-          <span class="teamicon" aria-hidden="true">👥</span>
-          <span class="login">{t.name}</span>
-          <span class="badge pending">Team</span>
-        </li>
-      {/each}
-    </ul>
+    {#if reviewers.length === 0 && teams.length === 0}
+      <p class="muted">No reviewers requested.</p>
+    {:else}
+      <ul>
+        {#each reviewers as r (r.login)}
+          {@const meta = STATE_META[r.state]}
+          {@const requested = r.requested ?? false}
+          <li>
+            <Avatar user={{ login: r.login, avatar_url: r.avatar_url ?? undefined }} size={20} />
+            <span class="login">{r.login}</span>
+            <Badge tone={meta.tone} size="sm">
+              <Icon name={meta.icon} label={meta.label} />
+              {requested && r.state === "PENDING" ? "Requested" : meta.label}
+            </Badge>
+            {#if r.state !== "PENDING"}
+              <IconButton
+                icon="retry"
+                label="Re-request review from {r.login}"
+                size={16}
+                disabled={pending != null}
+                onclick={() => reRequest(r.login)}
+              />
+            {/if}
+          </li>
+        {/each}
+        {#each teams as t (t.slug)}
+          <li>
+            <Icon name="users" label="Team" />
+            <span class="login">{t.name}</span>
+            <Badge tone="neutral" size="sm">Team</Badge>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+    <Popover label="Request a reviewer" placement="bottom-start" size="sm">
+      {#snippet trigger()}<Icon name="plus" /> Add{/snippet}
+      <div class="add-panel">
+        <Input
+          bind:value={addLogin}
+          placeholder="GitHub login"
+          size="sm"
+          disabled={pending != null}
+          onkeydown={(e: KeyboardEvent) => {
+            if (e.key === "Enter") addReviewer();
+          }}
+        />
+        <Button
+          size="sm"
+          variant="primary"
+          tone="accent"
+          disabled={pending != null || !addLogin.trim()}
+          onclick={addReviewer}
+        >
+          Request
+        </Button>
+      </div>
+    </Popover>
   {/if}
 </section>
 
@@ -134,41 +176,11 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .badge {
-    display: inline-flex;
+  .add-panel {
+    display: flex;
     align-items: center;
-    gap: 4px;
-    color: var(--gh-fg-muted);
-  }
-  .icon {
-    font-weight: 700;
-  }
-  .badge.approved {
-    color: var(--gh-success);
-  }
-  .badge.changes {
-    color: var(--gh-danger);
-  }
-  .rerequest {
-    background: transparent;
-    border: 1px solid var(--gh-border);
-    color: var(--gh-fg-muted);
-    border-radius: var(--gh-radius-sm);
-    padding: 0 6px;
-    cursor: pointer;
-    line-height: 1.4;
-  }
-  .rerequest:hover:not(:disabled) {
-    color: var(--gh-accent);
-    border-color: var(--gh-accent);
-  }
-  .rerequest:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
-  .teamicon {
-    width: 20px;
-    text-align: center;
+    gap: var(--gh-space-2);
+    padding: var(--gh-space-2);
   }
   .muted {
     color: var(--gh-fg-muted);

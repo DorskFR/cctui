@@ -4,7 +4,7 @@
   import { toStore } from "svelte/store";
   import { api } from "../api/client";
   import { keys, queryClient } from "../api/queries";
-  import { applyOptimisticViewed, viewedSet } from "../api/viewed";
+  import { applyOptimisticViewed, changedSinceViewed, viewedSet } from "../api/viewed";
   import {
     ciStateOf,
     type GithubFile,
@@ -70,6 +70,19 @@
   const viewed = $derived(viewedSet($viewedQuery.data));
 
   let expandedPaths = $state(new Set<string>());
+  let expandInitKey = $state<string | null>(null);
+
+  $effect(() => {
+    const data = $viewedQuery.data;
+    if (!data || files.length === 0) return;
+    const key = `${owner}/${repo}/${number}`;
+    if (expandInitKey === key) return;
+    untrack(() => {
+      expandedPaths = changedSinceViewed(data, files);
+      expandInitKey = key;
+    });
+  });
+
   const displayModel = $derived(collapseViewedFiles(model, { viewed, expanded: expandedPaths }));
   const nav = $derived(buildNavIndex(displayModel));
   const viewedCount = $derived(model.files.filter((f) => viewed.has(f.filename)).length);
@@ -291,6 +304,7 @@
       {files}
       {viewedCount}
       draftCount={drafts.length}
+      {drafts}
       publishing={reviewPending}
       skipped={publishSkipped}
       error={publishError}
@@ -343,6 +357,8 @@
               {owner}
               {repo}
               account={account ?? undefined}
+              {viewed}
+              onToggleViewed={toggleViewed}
               onFocusRow={(r) => (focusRow = r)}
             />
           {/if}

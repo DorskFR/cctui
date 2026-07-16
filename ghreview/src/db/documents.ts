@@ -192,7 +192,10 @@ export async function listDocuments<K extends string>(
         kind === "pull_request"
           ? sql`AND EXISTS (SELECT 1 FROM subscriptions s
                  WHERE s.account = documents.account AND s.kind = 'pull_request'
-                   AND s.target = documents.key AND s.active = true)`
+                   AND s.target = documents.key AND s.active = true)
+                AND NOT EXISTS (SELECT 1 FROM pr_snooze ps
+                 WHERE ps.account = documents.account
+                   AND documents.key = ps.owner || '/' || ps.repo || '#' || ps.pull_number)`
           : sql``
       }
       ${
