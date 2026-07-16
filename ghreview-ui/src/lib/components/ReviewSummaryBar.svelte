@@ -40,8 +40,7 @@
     label="Publish review"
     placement="bottom-end"
     size="sm"
-    variant="primary"
-    tone="accent"
+    variant="default"
     block={fullWidth}
   >
     {#snippet trigger()}Review <span class="count">{draftCount}</span>{/snippet}
@@ -106,7 +105,7 @@
     display: inline-block;
     min-width: 16px;
     text-align: center;
-    background: rgba(255, 255, 255, 0.25);
+    background: color-mix(in srgb, currentColor 14%, transparent);
     border-radius: 999px;
     padding: 0 5px;
     margin-left: 4px;

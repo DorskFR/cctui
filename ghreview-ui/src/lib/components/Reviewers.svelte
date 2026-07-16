@@ -111,7 +111,7 @@
         {/each}
       </ul>
     {/if}
-    <Popover label="Request a reviewer" placement="bottom-start" size="sm">
+    <Popover label="Request a reviewer" placement="bottom-start" size="sm" variant="default">
       {#snippet trigger()}<Icon name="plus" /> Add{/snippet}
       <div class="add-panel">
         <Input

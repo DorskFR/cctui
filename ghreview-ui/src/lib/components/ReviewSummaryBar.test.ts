@@ -22,8 +22,8 @@ describe("ReviewSummaryBar", () => {
     expect(bar).not.toBeNull();
     expect(trigger?.textContent).toContain("Review 3");
     expect(trigger?.classList.contains("trigger-sm")).toBe(true);
-    expect(trigger?.classList.contains("trigger-primary")).toBe(true);
-    expect(trigger?.classList.contains("trigger-tone-accent")).toBe(true);
+    expect(trigger?.classList.contains("trigger-primary")).toBe(false);
+    expect(trigger?.classList.contains("trigger-tone-accent")).toBe(false);
     expect(trigger?.classList.contains("trigger-block")).toBe(true);
     expect(trigger?.querySelector("button")).toBeNull();
     expect(bar?.querySelector('[data-action="publish-review"]')?.getAttribute("data-tsu")).toBe(

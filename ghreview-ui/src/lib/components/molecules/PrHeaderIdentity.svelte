@@ -29,7 +29,19 @@
       {pull.title}
     {/if}
   </h1>
-  <span class="number">#{number}</span>
+  {#if pull.html_url}
+    <a
+      class="number number-link"
+      href={pull.html_url}
+      target="_blank"
+      rel="noopener noreferrer"
+      title="Open #{number} on GitHub"
+    >
+      #{number}
+    </a>
+  {:else}
+    <span class="number">#{number}</span>
+  {/if}
   <div class="labels" aria-label="Pull request labels">
     <LabelPicker {owner} {repo} {number} {account} labels={pull.labels ?? []} />
   </div>
@@ -93,6 +105,13 @@
     flex: none;
     color: var(--gh-fg-muted);
     font-size: var(--fs-sm);
+  }
+  .number-link {
+    text-decoration: none;
+  }
+  .number-link:hover {
+    color: var(--gh-accent);
+    text-decoration: underline;
   }
   .labels {
     flex: none;
