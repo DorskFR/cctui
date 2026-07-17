@@ -17,6 +17,8 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 anyhow.workspace = true
+chrono.workspace = true
+jsonwebtoken.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -37,3 +39,5 @@ rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", 
 tempfile = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
+rsa = { version = "0.9", features = ["pem"] }
+rand = "0.8"

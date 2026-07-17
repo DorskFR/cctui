@@ -18,7 +18,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.7.193"
+version = "0.7.194"
 edition = "2024"
 license = "MIT"
 authors = ["DorskFR"]
@@ -60,6 +60,9 @@ tar = "0.4"
 flate2 = "1"
 clap = { version = "4", features = ["derive", "env"] }
 axum = { version = "0.8", features = ["ws", "multipart"] }
+# =-pinned: 10.x raises the MSRV past the pinned 1.90.0 toolchain; 9.3 uses the
+# `ring` already in the tree.
+jsonwebtoken = { version = "=9.3.1", default-features = false, features = ["use_pem"] }
 thiserror = "2"
 tempfile = "3"
 tokio-util = "0.7"

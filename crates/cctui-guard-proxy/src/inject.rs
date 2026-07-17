@@ -43,7 +43,8 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::TcpStream;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
-use crate::secrets::{SecretError, SecretSource};
+use crate::ghapp::GhAppMinter;
+use crate::secrets::{Credential, SecretError, SecretSource};
 
 /// How to shape the injected credential for a given host.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -266,6 +267,9 @@ pub struct Injector {
     connector: TlsConnector,
     secrets: Arc<SecretSource>,
     policy: InjectionPolicy,
+    /// When present, the `github` service is served a freshly-minted GitHub App
+    /// installation token (CCT-722) instead of the stored `github` credential.
+    ghapp: Option<Arc<GhAppMinter>>,
 }
 
 impl Injector {
@@ -274,6 +278,7 @@ impl Injector {
         ca: Arc<PerPodCa>,
         secrets: Arc<SecretSource>,
         policy: InjectionPolicy,
+        ghapp: Option<Arc<GhAppMinter>>,
     ) -> anyhow::Result<Self> {
         install_crypto();
         let mut server_config = ServerConfig::builder()
@@ -282,7 +287,7 @@ impl Injector {
         server_config.alpn_protocols = vec![b"http/1.1".to_vec()];
         let acceptor = TlsAcceptor::from(Arc::new(server_config));
         let connector = Self::build_connector(Vec::new());
-        Ok(Self { acceptor, connector, secrets, policy })
+        Ok(Self { acceptor, connector, secrets, policy, ghapp })
     }
 
     fn build_connector(extra_roots: Vec<CertificateDer<'static>>) -> TlsConnector {
@@ -374,7 +379,7 @@ impl Injector {
     /// agent's auth and substitute the real credential. On NotFound/Backend:
     /// forward the ORIGINAL head unchanged (fail-closed — never a blank secret).
     async fn inject_head(&self, host: &str, rule: &InjectionRule, head: &[u8]) -> Vec<u8> {
-        match self.secrets.fetch(&self.policy.identity, &rule.service).await {
+        match self.resolve_credential(&rule.service).await {
             Ok(cred) => {
                 let cookie = if matches!(rule.shape, AuthShape::Slack) {
                     self.secrets
@@ -402,6 +407,23 @@ impl Injector {
                 head.to_vec()
             }
         }
+    }
+
+    /// Resolves the credential for `service`. A configured GitHub-App provider
+    /// mints a short-lived installation token for its service; a `NotFound`
+    /// there (no App key provisioned) falls back to the stored credential,
+    /// which is what keeps the App path inert until an operator wires it up.
+    async fn resolve_credential(&self, service: &str) -> Result<Credential, SecretError> {
+        if let Some(app) = &self.ghapp
+            && app.handles(service)
+        {
+            match app.mint(&self.policy.identity).await {
+                Ok(cred) => return Ok(cred),
+                Err(SecretError::NotFound { .. }) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        self.secrets.fetch(&self.policy.identity, service).await
     }
 }
 
@@ -1002,7 +1024,7 @@ mod tests {
             "acme".to_owned(),
             vec![InjectionRule { host: "localhost".to_owned(), service: "svc".to_owned(), shape }],
         );
-        let mut inj = Injector::new(client_ca.clone(), secrets, policy).unwrap();
+        let mut inj = Injector::new(client_ca.clone(), secrets, policy, None).unwrap();
         // Trust the upstream's self-signed CA so the injector validates it.
         inj.connector = Injector::build_connector(vec![up.ca.ca_der().clone()]);
         (inj, client_ca)

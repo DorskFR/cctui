@@ -82,37 +82,53 @@ defines the guard rules; proceeding without it would weaken the sandbox).
 | `REPLY_URL` | Result-callback target (a bearer capability — never logged). Set ⇒ exit trap installed. Its host is always-allowed. |
 | `RESULT_FILE` | Where the session writes its verdict. Default `/tmp/cctui-result.json`. |
 
-### Credential env — identity resolve + scrub
+### Credential env — placeholders only (CCT-719)
 
-The single secret surface: the pod env carries **every** identity's secrets as
-`VAR_<ID>` (Vault env-from-path) plus optional unsuffixed defaults. `TASK_IDENTITY`
-(derived from `payload.identity`) selects the active one, `<ID>` = uppercased with
-`-` → `_`. The entrypoint then, around the optional credential helper (baked by derived images):
+The worker holds **no real secrets**, in env or on disk. The guard-proxy sidecar
+TLS-terminates github/npm/… and injects the real `Authorization` from its own
+secret source (CCT-716/717/718); the worker's job is only to make each tool
+**emit** an `Authorization` for the proxy to rewrite. So the credential helper
+(`worker-credentials.sh`) materializes **placeholder** tokens, never real ones:
 
-1. **resolve** (before the helper): `VAR = ${VAR_<ID>:-$VAR}` for each secret base
-   (`GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_NAME`, `GITHUB_EMAIL`, `GPG_PRIVATE_KEY`,
-   `YOUTRACK_TOKEN`, `YOUTRACK_API_TOKEN`, `SLACK_TOKEN`) — so the helper and the
-   agent read one canonical var.
-2. **scrub** (after the helper): unset every `VAR_<…>` suffixed variant, so the
-   agent process inherits only the resolved mains — never another identity's
-   secret. (Trade-off: the *pod* still holds all secrets; only the agent's env is
-   narrowed. Per-payload pod-level scoping is a later step.)
+| Tool | Materialized (placeholder) | Kept real |
+| --- | --- | --- |
+| github | `GH_TOKEN=cctui-placeholder` + git credential helper `!gh auth git-credential` (always) | `GITHUB_NAME` / `GITHUB_EMAIL` (non-secret identity) |
+| npm | `~/.npmrc` `_authToken=cctui-placeholder` (always) | — |
+| mcp | `~/.mcp.json` http entry, `Authorization: Bearer cctui-placeholder` | `MCP_<NAME>_URL` server URL |
+| yt | `~/.config/yt/config.json` placeholder token | `YOUTRACK_URL` host |
+| scli | `~/.config/scli/config.json` placeholder token | `SLACK_WORKSPACE` |
 
-The credential helper then materializes the **canonical** vars (all optional,
-skipped silently when absent):
+github/npm placeholders are written **unconditionally** (those tools always need
+a token); the host-targeted blocks (mcp/yt/scli) are skipped when their
+non-secret host/workspace config is absent (nothing to target). Every block is
+idempotent. `GPG_PRIVATE_KEY` is **sidecar-only** (CCT-721) — never imported into
+the worker; a key seen in the worker env is a misconfiguration. `ANTHROPIC_*` /
+`OPENAI_*` model auth is unchanged (platform env passthrough / gateway token).
 
-| Var (canonical) | Effect |
-| --- | --- |
-| `GITHUB_TOKEN` | `GH_TOKEN` + git credential helper `!gh auth git-credential`. |
-| `GITHUB_NAME` | `git config user.name`. |
-| `GITHUB_EMAIL` | `git config user.email`. |
-| `GPG_PRIVATE_KEY` | **Sidecar-only in `transparent-external`.** No longer imported into the worker keyring — the guard-proxy sidecar holds it and forwards a restricted gpg-agent socket instead (see [Remote GPG signing](#remote-gpg-signing-transparent-external-cct-721)). In single-container modes the credential helper still does `gpg --import` + `user.signingkey` + `commit.gpgsign true` in the worker. |
-| `NPM_TOKEN` | `~/.npmrc` registry auth (identity-independent). |
-| `MCP_<NAME>_URL` / `MCP_<NAME>_TOKEN` | `~/.mcp.json` http server entry keyed by lowercase `<NAME>`. |
-| `YOUTRACK_URL` + `YOUTRACK_API_TOKEN` (or `YOUTRACK_TOKEN`) | `~/.config/yt/config.json` for the bundled `yt` YouTrack CLI. Reaching the YouTrack host also needs it on the egress allow-list. |
+No `VAR_<ID>` identity resolve/scrub runs on the worker anymore: real
+per-identity secrets never reach it (the sidecar selects them via
+`GUARD_PROXY_IDENTITY`), so `00-resolve-identity.sh` / `99-identity-scrub.sh` are
+no-ops. `TASK_IDENTITY` is still set from `payload.identity` and labels the
+placeholders + the sidecar's secret selection.
 
-`ANTHROPIC_*` / `OPENAI_*` model auth is **not** handled here — it stays env
-passthrough / gateway token, materialized by the platform exactly as before.
+**Read-deny (defense in depth).** `40-secret-read-guard.sh` writes a Claude Code
+`permissions.deny` Read rule for `~/.gnupg/**`, `~/.npmrc`, `~/.config/yt/**`,
+`~/.config/scli/**`, `~/.mcp.json` into `~/.claude/settings.json`, and drops a
+`PreToolUse` Bash+Read deny hook into `~/.claude/hooks/` (auto-registered by the
+entrypoint's `phase_permissions`, running alongside `cctui-guard`).
+
+**No pod-wide secret injection.** The worker overlay carries the Vault
+`vault-role` annotation but **not** `vault-env-from-path` — from-path injected
+the whole secret path into every container (the worker included). The sidecar
+pulls its per-identity `CRED_*` via explicit per-value `vault:` env refs, which
+need only the role.
+
+> **Dev caveat.** End-to-end auth (placeholder → proxy → real credential) needs
+> the sidecar's `CRED_*` populated in the secret store. Dev lacks them, so the
+> injector forwards the placeholder unchanged and authenticated github/npm calls
+> fail there until an operator wires `CRED_<IDENTITY>_<SERVICE>` on the sidecar.
+> Anonymous reads still work. The boundary (no real secret in the worker) holds
+> regardless.
 
 ### Secret references in `payload.env` (CCT-490)
 
@@ -164,6 +180,16 @@ policy is seeded at boot to always-allow the `CCTUI_URL` + `REPLY_URL` hosts;
 
 The proxy listens on `:15001` (traffic) and `:15002` (`/health`, `/ready`).
 Capabilities are dropped entirely before the daemon runs — see hardening below.
+
+### Daemon child-env capability scrub (CCT-719)
+
+The daemon runs inside the worker and inherits the platform capability vars
+(`CCTUI_MACHINE_KEY[_FILE]`, `REPLY_URL`). A `Command` inherits the daemon's full
+environment by default, so every `claude`/`codex` child it exec's is scrubbed of
+those vars (`childenv::CHILD_ENV_REMOVALS`, applied via `ScrubChildEnv` at every
+spawn site) — the agent (untrusted code that can read its own env) never sees the
+machine key it could impersonate the machine with, or the result-callback bearer
+it could spoof completion with.
 
 ### Metadata/credential deny-list (CCT-720)
 
@@ -329,6 +355,45 @@ intermediate state until the per-identity `CRED_*` wiring lands (CCT-719).
 would break under this MITM, so such hosts must never be listed as inject hosts;
 they get their credential another way. None of the built-in hosts pin certs on
 their HTTPS REST/registry endpoints.
+
+### GitHub App installation tokens (CCT-722)
+
+For the `github` service the sidecar can inject a short-lived, repo-scoped
+GitHub **App installation token** instead of a stored long-lived PAT, so even
+in-session misuse (which the boundary can't prevent) is time- and
+scope-bounded. The App **private key (PEM)** lives in the secret store — fetched
+by the sidecar as `(identity, "github-app-key")`, i.e. `CRED_<IDENTITY>_GITHUB_APP_KEY`
+in env/`vault:` form — never on the worker. At use-time the sidecar signs a
+short RS256 JWT (`iss`=App id, ~9 min lifetime), exchanges it at
+`POST /app/installations/<id>/access_tokens` (scoping to `--github-app-repos`
+when set), and injects the returned ~1h installation token. The token is cached
+until ~5 min before its `expires_at` and re-minted on expiry — never per
+request; neither the token nor the key ever touches disk.
+
+| Flag | Env | Default | Meaning |
+|---|---|---|---|
+| `--github-app-id` | `GUARD_PROXY_GITHUB_APP_ID` | *(unset)* | GitHub App id (JWT `iss`). |
+| `--github-app-installation-id` | `GUARD_PROXY_GITHUB_APP_INSTALLATION_ID` | *(unset)* | Installation id the token is minted for. |
+| `--github-app-repos` | `GUARD_PROXY_GITHUB_APP_REPOS` | *(empty)* | Comma list of bare repo names to scope the token to (empty = installation default). |
+| `--github-app-api-base` | `GUARD_PROXY_GITHUB_APP_API_BASE` | `https://api.github.com` | REST base for the exchange; override only for testing. |
+
+**Inert until configured.** The App path activates only when BOTH
+`--github-app-id` and `--github-app-installation-id` are set. Even then, the key
+fetch being `NotFound` (no `github-app-key` provisioned) falls back to the
+normal stored `github` credential, which itself fail-closes to passthrough — so
+with no App configured behaviour is exactly today's. A token-exchange failure
+(e.g. 401) is a backend error → the injector forwards the agent's original
+header unchanged (fail-closed).
+
+**Operator action required.** Registering the GitHub App (App id, installation,
+private key) and storing the key in the secret store is a one-time human step —
+the mechanism ships **inert** until then. The App path is opt-in **per
+identity**.
+
+**Personal-repo caveat.** A GitHub App bot cannot CREATE PRs on a repo it isn't
+a collaborator on. Where PR creation is needed, keep that identity on the
+injected `NanachiBot` machine-user PAT path (the `github` service credential)
+instead of the App path.
 
 ### Remote GPG signing (`transparent-external`, CCT-721)
 

@@ -838,7 +838,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-admin"
-version = "0.7.193"
+version = "0.7.194"
 dependencies = [
  "anyhow",
  "cctui-proto",
@@ -855,7 +855,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-crypto"
-version = "0.7.193"
+version = "0.7.194"
 dependencies = [
  "chacha20poly1305",
  "hex",
@@ -865,7 +865,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-daemon"
-version = "0.7.193"
+version = "0.7.194"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -893,7 +893,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-dispatcher-apple"
-version = "0.7.193"
+version = "0.7.194"
 dependencies = [
  "anyhow",
  "cctui-proto",
@@ -917,7 +917,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-dispatcher-docker"
-version = "0.7.193"
+version = "0.7.194"
 dependencies = [
  "anyhow",
  "bollard",
@@ -942,7 +942,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-dispatcher-kube"
-version = "0.7.193"
+version = "0.7.194"
 dependencies = [
  "anyhow",
  "cctui-proto",
@@ -968,7 +968,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-github"
-version = "0.7.193"
+version = "0.7.194"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -990,7 +990,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-guard"
-version = "0.7.193"
+version = "0.7.194"
 dependencies = [
  "anyhow",
  "axum",
@@ -1007,7 +1007,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-guard-proxy"
-version = "0.7.193"
+version = "0.7.194"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1015,11 +1015,15 @@ dependencies = [
  "aws-sdk-secretsmanager",
  "axum",
  "base64",
+ "chrono",
  "clap",
+ "jsonwebtoken",
  "libc",
  "nix 0.31.3",
+ "rand 0.8.5",
  "rcgen",
  "reqwest",
+ "rsa",
  "rustls",
  "serde",
  "serde_json",
@@ -1034,7 +1038,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-proto"
-version = "0.7.193"
+version = "0.7.194"
 dependencies = [
  "chrono",
  "hex",
@@ -1047,7 +1051,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-query"
-version = "0.7.193"
+version = "0.7.194"
 dependencies = [
  "serde",
  "serde_json",
@@ -1056,7 +1060,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-server"
-version = "0.7.193"
+version = "0.7.194"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1100,7 +1104,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-supervisor"
-version = "0.7.193"
+version = "0.7.194"
 dependencies = [
  "anyhow",
  "caps",
@@ -1116,7 +1120,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-tui"
-version = "0.7.193"
+version = "0.7.194"
 dependencies = [
  "anyhow",
  "cctui-proto",
@@ -2714,6 +2718,21 @@ dependencies = [
  "fluent-uri",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "jsonwebtoken"
+version = "9.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a87cc7a48537badeae96744432de36f4be2b4a34a05a5ef32e9dd8a1c169dde"
+dependencies = [
+ "base64",
+ "js-sys",
+ "pem",
+ "ring",
+ "serde",
+ "serde_json",
+ "simple_asn1",
 ]
 
 [[package]]
@@ -4558,6 +4577,18 @@ name = "similar"
 version = "2.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
+
+[[package]]
+name = "simple_asn1"
+version = "0.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "297f631f50729c8c99b84667867963997ec0b50f32b2a7dbcab828ef0541e8bb"
+dependencies = [
+ "num-bigint",
+ "num-traits",
+ "thiserror 2.0.18",
+ "time",
+]
 
 [[package]]
 name = "siphasher"
