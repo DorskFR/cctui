@@ -229,7 +229,7 @@ async fn reconcile_once(
     .await?;
 
     for (connector_id, enc_credential, repos) in rows {
-        let Some(credential) = crypto::deobfuscate(&enc_credential, &key) else {
+        let Some(credential) = crypto::decrypt(&enc_credential, &key) else {
             tracing::warn!(%connector_id, "github reconcile: undecryptable credential, skipping");
             record_poll_result(
                 &state.pool,
@@ -282,7 +282,7 @@ pub async fn sync_now(state: &GithubState, connector_id: Uuid) {
             .ok()
             .flatten();
     let Some((enc_credential, repos)) = row else { return };
-    let result = match crypto::deobfuscate(&enc_credential, &key) {
+    let result = match crypto::decrypt(&enc_credential, &key) {
         Some(credential) => {
             let client = HttpSearchClient::new();
             let etags: EtagCache = Arc::new(Mutex::new(HashMap::new()));

@@ -385,10 +385,10 @@ async fn mint_env_for_account(
     } else {
         // First token for this session: mint a fresh opaque token (same
         // shape/entropy as other secrets), store its hash AND its
-        // obfuscated plaintext so resume can re-supply the same string.
+        // encrypted plaintext so resume can re-supply the same string.
         let token = format!("cctui_s_{}", crate::auth::mint_secret());
         let token_hash = crate::auth::sha256_hex(&token);
-        let enc = crate::crypto::obfuscate(&token, &key);
+        let enc = crate::crypto::encrypt(&token, &key);
         sqlx::query(
             "INSERT INTO session_tokens (token_hash, session_id, account_id, encrypted_token) \
                  VALUES ($1, $2, $3, $4)",
@@ -474,7 +474,7 @@ async fn existing_session_token(
     .await
     .ok()
     .flatten()?;
-    crate::crypto::deobfuscate(&enc, key)
+    crate::crypto::decrypt(&enc, key)
 }
 
 /// Resolve a logical model name through a named account's alias map (CCT-406).
@@ -507,7 +507,7 @@ pub async fn resolve_account_model(
 
 /// Decrypt a named account's per-account custom env (`env_json`, CCT-539).
 ///
-/// `env_json` is stored as an obfuscated JSON object of `{VAR: value}` (the
+/// `env_json` is stored as an encrypted JSON object of `{VAR: value}` (the
 /// values may be secrets — daemon-supplied env like a per-account API key — so
 /// the column is encrypted at rest and never serialized back out of the accounts
 /// model). Returns the decoded map, or `None` when the account has no custom env
@@ -532,7 +532,7 @@ async fn account_env_json(
     .ok()
     .flatten()
     .flatten()?;
-    let json = crate::crypto::deobfuscate(&enc, key)?;
+    let json = crate::crypto::decrypt(&enc, key)?;
     serde_json::from_str::<std::collections::BTreeMap<String, String>>(&json).ok()
 }
 
@@ -1005,8 +1005,8 @@ async fn resolve_account(
         return Ok(None);
     };
     let key = crate::crypto::vault_key();
-    let access_token = enc_access.and_then(|e| crate::crypto::deobfuscate(&e, &key));
-    let refresh_token = enc_refresh.and_then(|e| crate::crypto::deobfuscate(&e, &key));
+    let access_token = enc_access.and_then(|e| crate::crypto::decrypt(&e, &key));
+    let refresh_token = enc_refresh.and_then(|e| crate::crypto::decrypt(&e, &key));
     Ok(Some(Account {
         id,
         provider,
@@ -1080,9 +1080,9 @@ async fn refresh_account(state: &AppState, acct: &Account) -> Result<String, Sta
     })?;
 
     let key = crate::crypto::vault_key();
-    let enc_access = crate::crypto::obfuscate(&tok.access_token, &key);
+    let enc_access = crate::crypto::encrypt(&tok.access_token, &key);
     // Refresh tokens are single-use → persist the rotated one when returned.
-    let enc_refresh = tok.refresh_token.as_deref().map(|r| crate::crypto::obfuscate(r, &key));
+    let enc_refresh = tok.refresh_token.as_deref().map(|r| crate::crypto::encrypt(r, &key));
     let expires_at = tok.expires_in.map(|s| Utc::now() + chrono::Duration::seconds(s));
 
     let result = if let Some(enc_refresh) = enc_refresh {
@@ -1175,8 +1175,8 @@ async fn reload_account(state: &AppState, id: Uuid) -> Option<Account> {
     Some(Account {
         id,
         provider,
-        access_token: enc_access.and_then(|e| crate::crypto::deobfuscate(&e, &key)),
-        refresh_token: enc_refresh.and_then(|e| crate::crypto::deobfuscate(&e, &key)),
+        access_token: enc_access.and_then(|e| crate::crypto::decrypt(&e, &key)),
+        refresh_token: enc_refresh.and_then(|e| crate::crypto::decrypt(&e, &key)),
         expires_at,
         provider_account_id,
         base_url,

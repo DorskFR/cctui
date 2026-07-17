@@ -58,7 +58,7 @@ defines the guard rules; proceeding without it would weaken the sandbox).
 
 | Var | Default | Meaning |
 | --- | --- | --- |
-| `WORKER_NET_MODE` | auto | `transparent` or `forward`. Auto = `transparent` when iptables is usable (CAP_NET_ADMIN), else `forward`. |
+| `WORKER_NET_MODE` | auto | `transparent`, `transparent-external`, or `forward`. Auto = `transparent` when iptables is usable (CAP_NET_ADMIN), else `forward`. `transparent-external` is never auto-selected — set it only when the pod runs the guard-proxy sidecar + net-init init container (see below). |
 | `WORKER_NET_EXEMPT` | — | Comma-separated `host:port` that **bypass** the proxy (resolved to a single IP at boot, iptables `RETURN`'d). Transparent mode only. IP-pinned — use only for **IP-stable** hosts; CDN/multi-IP hosts will rotate off the exempted IP. |
 | `WORKER_NET_ALLOW` | — | Comma-separated `host:port` allowed **through** the proxy by **SNI** (IP-independent). Folded into the seeded `policy.json` and re-applied as `cctui-guard --always-allow` so it survives per-step rewrites. The right tool for CDN/multi-IP SaaS APIs (e.g. a YouTrack host). |
 | `WARM_REPO_DIR` | — | Mounted warm-repo dir; becomes the overlayfs lowerdir for `/workspace` (rsync-copy fallback). |
@@ -156,10 +156,49 @@ policy is seeded at boot to always-allow the `CCTUI_URL` + `REPLY_URL` hosts;
 | Mode | Capability at start | Mechanism |
 | --- | --- | --- |
 | `transparent` (default w/ NET_ADMIN) | **CAP_NET_ADMIN** | iptables REDIRECTs worker-uid (1000) TCP egress to `:15001`. Exempts root, the proxy uid, loopback, DNS, the `CCTUI_URL` host, and `WORKER_NET_EXEMPT`. IPv6 egress denied (proxy is IPv4-only — forces IPv4 fallback). |
+| `transparent-external` (explicit only) | **none** (in this container) | Same wire behaviour as `transparent`, but the proxy runs in a **separate sidecar container** and the iptables rules are installed by a **NET_ADMIN init container**. The entrypoint only seeds `policy.json` and waits for the sidecar's `:15002/ready`. |
 | `forward` (no NET_ADMIN) | **none** | No iptables. `HTTP_PROXY`/`HTTPS_PROXY=http://127.0.0.1:15001` exported for the worker tree; `NO_PROXY=127.0.0.1,localhost`. For rootless Docker / gVisor / Apple container. |
 
 The proxy listens on `:15001` (traffic) and `:15002` (`/health`, `/ready`).
 Capabilities are dropped entirely before the daemon runs — see hardening below.
+
+### Sidecar mode (`transparent-external`, CCT-716)
+
+Promotes the guard-proxy out of the worker container so its memory, env, and
+`/proc` live in a namespace the agent cannot read, and lets the worker container
+drop `privileged`/NET_ADMIN. The pod wires three pieces (all runnable from the
+base `ghcr.io/dorskfr/cctui-worker` image — no extra image needed):
+
+1. **`net-init` init container** — `command: ["cctui-worker-net-init"]`, runs as
+   root with `capabilities.add: ["NET_ADMIN"]` (drop ALL otherwise, NOT
+   privileged). The pod network namespace is shared, so the REDIRECT it installs
+   (uid-1000 TCP → `:15001`, exemptions for uid 0 / uid 1337 / loopback / DNS /
+   `WORKER_NET_EXEMPT`, IPv6 deny) governs every container. Honors
+   `WORKER_UID`/`PROXY_UID`/`PROXY_PORT`/`WORKER_NET_EXEMPT` env.
+2. **`guard-proxy` sidecar** — a native sidecar (initContainer with
+   `restartPolicy: Always`) running
+   `cctui-guard-proxy --mode transparent --listen 0.0.0.0:15001
+   --health-listen 0.0.0.0:15002 --policy /var/run/guard-proxy/policy.json` as
+   **uid 1337** (must match the net-init exemption), all caps dropped. Shares
+   with the worker ONLY the `proxy-policy` emptyDir (`/var/run/guard-proxy`) and
+   the pod network — **no `shareProcessNamespace`**. The proxy is fail-closed:
+   it starts deny-all with no policy file and hot-reloads (1s mtime poll) once
+   the worker entrypoint seeds it; `/ready` stays 503 until a policy is loaded.
+3. **Worker container** — `WORKER_NET_MODE=transparent-external`. The entrypoint
+   skips iptables and does not start a proxy; it still seeds `policy.json`
+   (deny-default + structural hosts) into the shared emptyDir and best-effort
+   waits (≤30s) for the sidecar's `/ready` over pod-local net. `cctui-guard`'s
+   per-step policy rewrites keep working unchanged through the shared file.
+
+Worker-container capabilities in this mode: `privileged` and NET_ADMIN are
+gone. The entrypoint still boots as root, so it keeps `drop: ALL` plus the
+minimal add set: `SYS_ADMIN` (overlayfs + `mount --bind` context-pack/home
+isolation), `CHOWN`/`DAC_OVERRIDE`/`FOWNER`/`FSETID` (workspace + home chowns as
+root), `SETUID`/`SETGID` (cctui-supervisor's setresuid/setresgid drop to uid
+1000), `SETPCAP` (the supervisor clears the bounding set), and `KILL` (the
+dispatched-worker wait kills the uid-1000 daemon tree from root). The container
+mounts need an unconfined AppArmor profile where the runtime's default profile
+denies `mount(2)` (previously masked by `privileged: true`).
 
 ## Result callback (tenant-visible wire shape)
 
@@ -276,7 +315,7 @@ Two parts, surfaced for the daemon to attach as session metadata:
   { "net_mode": "transparent", "guard": "on", "supervisor_report": "/tmp/hardening.json" }
   ```
 
-  `net_mode` ∈ `transparent|forward`; `guard` ∈ `on|off`.
+  `net_mode` ∈ `transparent|transparent-external|forward`; `guard` ∈ `on|off`.
 
 - **Supervisor report** — `cctui-supervisor --report /tmp/hardening.json`:
 
@@ -301,7 +340,8 @@ The container starts as root, runs these phases (each skippable on absent
 input), then drops to uid 1000:
 
 1. **Network** — choose mode, seed the deny-default policy, install iptables
-   (transparent) or export proxy env (forward), start `cctui-guard-proxy`.
+   (transparent) or export proxy env (forward), start `cctui-guard-proxy` — or,
+   in `transparent-external`, only seed the policy and wait for the sidecar.
 2. **Workspace** — overlayfs/rsync from `WARM_REPO_DIR`, else shallow-clone
    `TASK_REPO_URL`, else empty `/workspace`; chown worker.
 3. **Context pack** — fetch the pinned ref to `/opt/context` (fail-closed when

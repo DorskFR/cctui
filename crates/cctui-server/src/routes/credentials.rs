@@ -50,7 +50,7 @@ pub async fn create_api_key(
     Json(req): Json<CreateApiKey>,
 ) -> Result<(StatusCode, Json<ApiKeyInfo>), StatusCode> {
     let vault_key = crate::crypto::vault_key();
-    let encrypted = crate::crypto::obfuscate(&req.key, &vault_key);
+    let encrypted = crate::crypto::encrypt(&req.key, &vault_key);
 
     let row: ApiKeyInfo = sqlx::query_as(
         "INSERT INTO api_keys (name, provider, encrypted_key, user_id) VALUES ($1, $2, $3, $4) \
@@ -114,8 +114,8 @@ pub async fn get_api_key_value(
 
     let (encrypted,) = row.ok_or(StatusCode::NOT_FOUND)?;
     let vault_key = crate::crypto::vault_key();
-    let decrypted = crate::crypto::deobfuscate(&encrypted, &vault_key)
-        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let decrypted =
+        crate::crypto::decrypt(&encrypted, &vault_key).ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(Json(serde_json::json!({ "key": decrypted })))
 }

@@ -120,8 +120,12 @@ url_host() {
 #   the proxy; exempt the proxy uid, root, loopback, the CCTUI_URL host, DNS,
 #   and any WORKER_NET_EXEMPT entries; deny IPv6 egress.
 # forward (or no NET_ADMIN): no iptables; export HTTP(S)_PROXY for the worker.
-# In both modes start cctui-guard-proxy (uid 1337) and seed a deny-default
-# policy that always-allows the CCTUI_URL + REPLY_URL hosts.
+# transparent-external (CCT-716, explicit only): the proxy runs as a separate
+#   sidecar container and the iptables REDIRECT was installed by a NET_ADMIN
+#   init container (cctui-worker-net-init) — this container needs neither
+#   privileged nor NET_ADMIN. Only seed the policy and wait for the sidecar.
+# In the two in-container modes start cctui-guard-proxy (uid 1337); in all modes
+# seed a deny-default policy that always-allows the CCTUI_URL + REPLY_URL hosts.
 NET_MODE=""
 phase_network() {
     # Decide the mode. Explicit WORKER_NET_MODE wins; else transparent iff we
@@ -154,6 +158,23 @@ phase_network() {
         | jq -R . | jq -cs 'unique')
     printf '{"allowed_hosts":%s,"default":"deny"}\n' "$_allowed" > "$POLICY_FILE"
     log "seeded guard-proxy policy (allow: ${_cctui_hp}${_reply_hp:+, $_reply_hp}${WORKER_NET_ALLOW:+, $WORKER_NET_ALLOW}; default deny)"
+
+    if [ "$NET_MODE" = transparent-external ]; then
+        # Nothing to start and no iptables here. The sidecar proxy is deny-all
+        # until it hot-reloads the policy seeded above (1s mtime poll), so this
+        # wait only avoids boot-time denials — never fail-open.
+        _i=0
+        while [ "$_i" -lt 60 ]; do
+            if curl -fsS "http://127.0.0.1:${PROXY_HEALTH_PORT}/ready" >/dev/null 2>&1; then
+                log "external guard-proxy ready (:${PROXY_HEALTH_PORT})"
+                return 0
+            fi
+            _i=$((_i + 1))
+            sleep 0.5
+        done
+        log "WARNING: external guard-proxy not ready after 30s (egress stays deny-all)"
+        return 0
+    fi
 
     if [ "$NET_MODE" = transparent ]; then
         if iptables -t nat -L >/dev/null 2>&1; then
