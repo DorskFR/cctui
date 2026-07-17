@@ -13,6 +13,7 @@ use nix::sys::socket::sockopt::OriginalDst;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
+use crate::denylist::{host_is_denied, ip_is_denied};
 use crate::inject::Injector;
 use crate::peek::{extract_http_host, extract_sni};
 use crate::policy::PolicyManager;
@@ -95,6 +96,16 @@ async fn handle_connection(
     // a hostname allow-list — fail closed).
     let name = sni.as_deref().or(http_host.as_deref());
     let policy_target = name.map_or_else(|| host_port.clone(), |n| format!("{n}:{port}"));
+
+    // Built-in deny overrides the allow-list (CCT-720): match on the recovered
+    // name AND the resolved original-destination IP, so an IP-literal metadata
+    // request with no SNI is still caught.
+    if ip_is_denied(*dst.ip()) || name.is_some_and(host_is_denied) {
+        tracing::warn!(
+            "DENY (builtin) transparent {policy_target} (orig={host_port} sni={sni:?} host={http_host:?})"
+        );
+        return Ok(());
+    }
 
     if !policy.is_allowed(&policy_target) {
         tracing::info!(

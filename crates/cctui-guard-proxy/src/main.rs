@@ -10,6 +10,7 @@
 //! IPv4 only — IPv6 egress is denied at the iptables layer by the worker
 //! entrypoint.
 
+mod denylist;
 mod forward;
 mod health;
 mod inject;

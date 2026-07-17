@@ -53,6 +53,15 @@ if [ -n "${WORKER_NET_EXEMPT:-}" ]; then
     IFS=$_OLDIFS
 fi
 
+# CCT-720: hard-REJECT the worker uid's egress to the link-local metadata /
+# credential range (169.254.0.0/16 — cloud IMDS 169.254.169.254, EKS Pod
+# Identity Agent 169.254.170.23), independent of the guard-proxy. RETURN it from
+# nat first (else the REDIRECT below rewrites the dst and filter can't match),
+# then REJECT it in the filter table.
+iptables -t nat -A OUTPUT -m owner --uid-owner "$WORKER_UID" -d 169.254.0.0/16 -j RETURN
+iptables -A OUTPUT -m owner --uid-owner "$WORKER_UID" -d 169.254.0.0/16 -j REJECT
+log "iptables: worker egress to 169.254.0.0/16 REJECTed (metadata/credential deny)"
+
 iptables -t nat -A OUTPUT -p tcp -m owner --uid-owner "$WORKER_UID" \
     -j REDIRECT --to-port "$PROXY_PORT"
 log "iptables: worker egress (uid $WORKER_UID) -> :$PROXY_PORT"

@@ -14,6 +14,7 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
+use crate::denylist::host_is_denied;
 use crate::inject::Injector;
 use crate::policy::PolicyManager;
 
@@ -121,6 +122,13 @@ async fn handle_connect(
 ) -> anyhow::Result<()> {
     let host_port = normalize_authority(target, 443);
 
+    if host_is_denied(&split_host_port(&host_port, 443).0) {
+        tracing::warn!("DENY (builtin) CONNECT {host_port}");
+        conn.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .await?;
+        return Ok(());
+    }
+
     if !policy.is_allowed(&host_port) {
         tracing::info!("DENY CONNECT {host_port}");
         conn.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
@@ -188,6 +196,13 @@ async fn handle_http(
         .await?;
         return Ok(());
     };
+
+    if host_is_denied(&split_host_port(&host_port, 80).0) {
+        tracing::warn!("DENY (builtin) HTTP {} {}", req.method, req.target);
+        conn.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .await?;
+        return Ok(());
+    }
 
     if !policy.is_allowed(&host_port) {
         tracing::info!("DENY HTTP {} {}", req.method, req.target);
@@ -346,6 +361,26 @@ mod tests {
         )
         .await
         .unwrap();
+
+        let mut buf = [0u8; 64];
+        let n = conn.read(&mut buf).await.unwrap();
+        let resp = String::from_utf8_lossy(&buf[..n]);
+        assert!(resp.starts_with("HTTP/1.1 403"), "got: {resp}");
+    }
+
+    #[tokio::test]
+    async fn builtin_deny_overrides_allowlist_connect() {
+        // Even with default=allow AND the metadata IP explicitly allowlisted,
+        // the built-in deny refuses the credential endpoint (CCT-720).
+        let proxy = start_forward(
+            r#"{"allowed_hosts": ["169.254.169.254:443"], "default": "allow"}"#,
+        )
+        .await;
+
+        let mut conn = TcpStream::connect(proxy).await.unwrap();
+        conn.write_all(b"CONNECT 169.254.169.254:443 HTTP/1.1\r\nHost: 169.254.169.254\r\n\r\n")
+            .await
+            .unwrap();
 
         let mut buf = [0u8; 64];
         let n = conn.read(&mut buf).await.unwrap();

@@ -55,7 +55,9 @@ FROM node:22-bookworm-slim
 #   ca-certificates, libssl3 — TLS for the daemon's rustls/native deps.
 #   git, git-lfs            — repo work and large-file fetches.
 #   ripgrep                 — what claude code shells out to for search.
-#   gnupg                   — GPG_PRIVATE_KEY_<ID> import + commit signing.
+#   gnupg                   — sidecar gpg-agent (holds the signing key) + the
+#                             worker-side gpg client that signs over the
+#                             forwarded extra socket (CCT-721).
 #   jq                      — payload unpack + result-callback synthesis.
 #   curl                    — context-pack token auth, result callback, health.
 #   rsync                   — warm-repo workspace fallback when overlayfs is off.
@@ -189,13 +191,18 @@ COPY deploy/worker-net-init.sh     /usr/local/bin/cctui-worker-net-init
 # codex-run — safe one-shot `codex exec` wrapper (model/effort/approvals from
 # config.toml; wrapper adds only --skip-git-repo-check + stdin-close + timeout).
 COPY deploy/codex-run.sh           /usr/local/bin/codex-run
+# guard-proxy-entrypoint — sidecar boot wrapper (CCT-721): stands up a gpg-agent
+# holding the signing key and forwards only its restricted --extra-socket, then
+# exec's cctui-guard-proxy. Passthrough when no GPG_PRIVATE_KEY is present.
+COPY deploy/guard-proxy-entrypoint.sh /usr/local/bin/cctui-guard-proxy-entrypoint
 
 # Sandbox state dirs the entrypoint and proxy/guard write into. /opt/context is
 # the context-pack mount target (read-only after fetch).
 RUN mkdir -p /var/run/guard-proxy /var/run/workflow-guard /workspace /opt/context /opt/worker-entrypoint.d \
     && chmod +x /usr/local/bin/cctui-worker-entrypoint \
                 /usr/local/bin/cctui-worker-net-init \
-                /usr/local/bin/codex-run
+                /usr/local/bin/codex-run \
+                /usr/local/bin/cctui-guard-proxy-entrypoint
 
 # Contract marker: derived images and dispatchers can assert the wire contract.
 LABEL dev.cctui.contract="1"
