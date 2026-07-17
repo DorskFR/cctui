@@ -239,6 +239,57 @@ Backends:
   `vault:` refs into the sidecar container env, so the worker container never
   sees the values.
 
+### TLS-terminating credential injection (CCT-718)
+
+For an **injection allow-list** of hosts the sidecar TLS-terminates the agent's
+connection, STRIPS whatever credential the agent supplied, substitutes the real
+one from the secret source, and re-encrypts to the upstream over real TLS
+(validating the upstream's real cert). This is the strip-then-substitute /
+phantom-token pattern: the task carries only a credential *selector* (its
+identity), never the secret. Hosts NOT on the allow-list keep the SNI-peek
+passthrough splice, so the MITM surface is only the allow-list. Injection is
+**inert** unless BOTH a `--secret-source` and `--inject-hosts` are set — default
+behaviour is unchanged pure passthrough.
+
+| Flag | Env | Default | Meaning |
+|---|---|---|---|
+| `--inject-hosts` | `GUARD_PROXY_INJECT_HOSTS` | *(empty)* | Comma list of hosts to terminate + inject. Each token is `host`, `host=service`, or `host=service:<shape>` (`bearer`\|`basic`/`git`\|`slack`). Unlisted hosts stay passthrough. |
+| `--identity` | `GUARD_PROXY_IDENTITY` | *(empty)* | Task identity — the first half of every `(identity, service)` secret key. Required when `--inject-hosts` is set. |
+| `--ca-cert-out` | `GUARD_PROXY_CA_CERT_OUT` | `/var/run/guard-proxy-ca/ca.pem` | Where the sidecar writes the PUBLIC per-pod CA cert. |
+
+**Per-pod CA.** At boot the sidecar mints a CA (via `rcgen`), keeps the private
+key **in memory only** (never on disk), and writes only the public cert (PEM,
+0644) to `--ca-cert-out` on a shared `emptyDir`. Leaf certs for injection hosts
+are minted on demand from the SNI and cached, signed by that CA. In
+`transparent-external` mode the worker entrypoint waits (bounded) for the CA
+file and installs it — into the system trust store via `update-ca-certificates`
+when writable, and by exporting `NODE_EXTRA_CA_CERTS` (additive) plus
+`GIT_SSL_CAINFO` / `REQUESTS_CA_BUNDLE` / `SSL_CERT_FILE` / `CURL_CA_BUNDLE` at a
+bundle that trusts the public roots **and** the guard CA (never replacing the
+public roots — passthrough hosts keep their real certs). Single-container modes
+never MITM, so they skip this.
+
+**Built-in `host → service` table** (overridable per token): `api.github.com` →
+`github` (bearer), `github.com` → `github` (git Basic, rewritten to
+`x-access-token:<token>`), `registry.npmjs.org` → `npm` (bearer; npm's
+`_authToken` rides as a Bearer header), `slack.com`/`api.slack.com` → `slack`
+(bearer token + `d` cookie companion `<service>-cookie`), `api.figma.com` →
+`figma` (bearer). Sentry/YouTrack and other deployment-specific hosts are added
+via `host=service` tokens.
+
+**Fail-closed on lookup problems.** The agent never holds a real secret, so on
+`NotFound` **or** backend error the injector forwards the agent's ORIGINAL
+`Authorization` UNCHANGED (the upstream rejects the placeholder) — never a blank
+or wrong secret. Only a successful fetch triggers the strip-and-substitute. In
+dev the `CRED_*` vars are absent, so every fetch is `NotFound` → the agent's own
+header passes through and github/npm keep working: that is the expected safe
+intermediate state until the per-identity `CRED_*` wiring lands (CCT-719).
+
+**Cert-pinning hosts are passthrough-only.** A CLI that pins its server cert
+would break under this MITM, so such hosts must never be listed as inject hosts;
+they get their credential another way. None of the built-in hosts pin certs on
+their HTTPS REST/registry endpoints.
+
 ## Result callback (tenant-visible wire shape)
 
 When `REPLY_URL` is set, an EXIT/INT/TERM trap POSTs the result exactly once

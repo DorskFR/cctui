@@ -260,7 +260,10 @@ pub struct AwsSmBackend {
 impl AwsSmBackend {
     pub async fn from_default_chain(prefix: String) -> Self {
         let config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
-        Self { client: aws_sdk_secretsmanager::Client::new(&config), prefix: normalize_prefix(prefix) }
+        Self {
+            client: aws_sdk_secretsmanager::Client::new(&config),
+            prefix: normalize_prefix(prefix),
+        }
     }
 
     pub fn secret_name(prefix: &str, identity: &str, service: &str) -> String {
@@ -328,7 +331,8 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn cache_serves_fresh_hit_without_backend_call() {
         let backend = std::sync::Arc::new(MockBackend::ok("s3cret"));
-        let source = SecretSource::new(Box::new(ArcBackend(backend.clone())), Duration::from_secs(120));
+        let source =
+            SecretSource::new(Box::new(ArcBackend(backend.clone())), Duration::from_secs(120));
         assert_eq!(source.fetch("acme", "github").await.unwrap().expose(), "s3cret");
         tokio::time::advance(Duration::from_secs(119)).await;
         assert_eq!(source.fetch("acme", "github").await.unwrap().expose(), "s3cret");
@@ -338,7 +342,8 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn cache_expiry_refetches_and_picks_up_rotation() {
         let backend = std::sync::Arc::new(MockBackend::ok("v1"));
-        let source = SecretSource::new(Box::new(ArcBackend(backend.clone())), Duration::from_secs(120));
+        let source =
+            SecretSource::new(Box::new(ArcBackend(backend.clone())), Duration::from_secs(120));
         assert_eq!(source.fetch("acme", "github").await.unwrap().expose(), "v1");
 
         *backend.response.lock().unwrap() = Ok("v2".to_owned());
@@ -362,11 +367,9 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn backend_error_fails_closed_and_is_not_cached() {
         let backend = std::sync::Arc::new(MockBackend::failing("boom"));
-        let source = SecretSource::new(Box::new(ArcBackend(backend.clone())), Duration::from_secs(120));
-        assert!(matches!(
-            source.fetch("acme", "github").await,
-            Err(SecretError::Backend(_))
-        ));
+        let source =
+            SecretSource::new(Box::new(ArcBackend(backend.clone())), Duration::from_secs(120));
+        assert!(matches!(source.fetch("acme", "github").await, Err(SecretError::Backend(_))));
         *backend.response.lock().unwrap() = Ok("recovered".to_owned());
         assert_eq!(source.fetch("acme", "github").await.unwrap().expose(), "recovered");
         assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
@@ -375,14 +378,12 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn backend_error_past_ttl_drops_stale_entry() {
         let backend = std::sync::Arc::new(MockBackend::ok("v1"));
-        let source = SecretSource::new(Box::new(ArcBackend(backend.clone())), Duration::from_secs(120));
+        let source =
+            SecretSource::new(Box::new(ArcBackend(backend.clone())), Duration::from_secs(120));
         assert_eq!(source.fetch("acme", "github").await.unwrap().expose(), "v1");
         *backend.response.lock().unwrap() = Err("backend down");
         tokio::time::advance(Duration::from_secs(121)).await;
-        assert!(matches!(
-            source.fetch("acme", "github").await,
-            Err(SecretError::Backend(_))
-        ));
+        assert!(matches!(source.fetch("acme", "github").await, Err(SecretError::Backend(_))));
     }
 
     struct ArcBackend(std::sync::Arc<MockBackend>);
@@ -414,10 +415,7 @@ mod tests {
             _ => None,
         }));
         assert_eq!(backend.fetch("acme", "github").await.unwrap().expose(), "tok");
-        assert!(matches!(
-            backend.fetch("acme", "empty").await,
-            Err(SecretError::NotFound { .. })
-        ));
+        assert!(matches!(backend.fetch("acme", "empty").await, Err(SecretError::NotFound { .. })));
         assert!(matches!(
             backend.fetch("acme", "missing").await,
             Err(SecretError::NotFound { .. })
@@ -426,7 +424,10 @@ mod tests {
 
     #[test]
     fn aws_secret_name_mapping() {
-        assert_eq!(AwsSmBackend::secret_name("cctui/worker/", "acme", "github"), "cctui/worker/acme/github");
+        assert_eq!(
+            AwsSmBackend::secret_name("cctui/worker/", "acme", "github"),
+            "cctui/worker/acme/github"
+        );
         assert_eq!(normalize_prefix("cctui/worker".to_owned()), "cctui/worker/");
         assert_eq!(normalize_prefix("cctui/worker/".to_owned()), "cctui/worker/");
         assert_eq!(normalize_prefix(String::new()), "");
@@ -523,10 +524,7 @@ mod tests {
         let addr = spawn_vault_mock().await;
         let dir = tempfile::tempdir().unwrap();
         let backend = vault_backend(addr, write_token(&dir, "test-jwt"));
-        assert!(matches!(
-            backend.fetch("boom", "github").await,
-            Err(SecretError::Backend(_))
-        ));
+        assert!(matches!(backend.fetch("boom", "github").await, Err(SecretError::Backend(_))));
     }
 
     #[tokio::test]
@@ -534,20 +532,14 @@ mod tests {
         let addr = spawn_vault_mock().await;
         let dir = tempfile::tempdir().unwrap();
         let backend = vault_backend(addr, write_token(&dir, "wrong-jwt"));
-        assert!(matches!(
-            backend.fetch("acme", "github").await,
-            Err(SecretError::Backend(_))
-        ));
+        assert!(matches!(backend.fetch("acme", "github").await, Err(SecretError::Backend(_))));
     }
 
     #[tokio::test]
     async fn vault_backend_unreadable_token_fails_closed() {
         let addr = spawn_vault_mock().await;
         let backend = vault_backend(addr, PathBuf::from("/nonexistent/token"));
-        assert!(matches!(
-            backend.fetch("acme", "github").await,
-            Err(SecretError::Backend(_))
-        ));
+        assert!(matches!(backend.fetch("acme", "github").await, Err(SecretError::Backend(_))));
     }
 
     #[test]
