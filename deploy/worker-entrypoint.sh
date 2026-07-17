@@ -115,6 +115,57 @@ url_host() {
     printf '%s' "$(url_hostport "$1")" | sed 's,:.*$,,'
 }
 
+# CCT-718: the guard-proxy sidecar TLS-terminates injection hosts with leaf certs
+# signed by a per-pod CA it mints at boot, writing the PUBLIC cert (only) to the
+# shared emptyDir below. Trust that CA so the worker's toolchains accept the
+# intercepted TLS — IN ADDITION to the public roots, never replacing them
+# (non-injected hosts stay passthrough with their real certs). Bounded wait +
+# best-effort: if injection is disabled the file never appears, so we log and
+# carry on. transparent-external only; single-container modes never MITM.
+GUARD_CA_FILE="${GUARD_PROXY_CA_FILE:-/var/run/guard-proxy-ca/ca.pem}"
+install_guard_ca() {
+    _i=0
+    while [ "$_i" -lt 20 ]; do
+        [ -s "$GUARD_CA_FILE" ] && break
+        _i=$((_i + 1)); sleep 0.5
+    done
+    if [ ! -s "$GUARD_CA_FILE" ]; then
+        log "guard-proxy CA absent at $GUARD_CA_FILE after 10s — injection off (passthrough only); nothing to install"
+        return 0
+    fi
+
+    _sys=""
+    for _c in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt; do
+        [ -f "$_c" ] && { _sys="$_c"; break; }
+    done
+
+    # Prefer the OS store: update-ca-certificates folds the guard CA into the
+    # system bundle so every OpenSSL client trusts it with no env at all.
+    _bundle="$GUARD_CA_FILE"
+    if command -v update-ca-certificates >/dev/null 2>&1 \
+            && mkdir -p /usr/local/share/ca-certificates 2>/dev/null \
+            && cp "$GUARD_CA_FILE" /usr/local/share/ca-certificates/cctui-guard-proxy.crt 2>/dev/null \
+            && update-ca-certificates >/dev/null 2>&1; then
+        log "guard-proxy CA installed into system trust store"
+        [ -n "$_sys" ] && _bundle="$_sys"
+    elif [ -n "$_sys" ]; then
+        # Store not writable: build a combined bundle (public roots + guard CA)
+        # so the 'replace' env vars below don't drop the public roots.
+        _bundle=/var/run/guard-proxy-ca/bundle.pem
+        cat "$_sys" "$GUARD_CA_FILE" > "$_bundle" 2>/dev/null || _bundle="$GUARD_CA_FILE"
+    fi
+
+    # NODE_EXTRA_CA_CERTS is additive (Node keeps its bundled roots) → guard CA
+    # alone; the rest replace the trust set → the combined bundle. Exported here,
+    # inherited by the supervised daemon/agent tree.
+    export NODE_EXTRA_CA_CERTS="$GUARD_CA_FILE"
+    export GIT_SSL_CAINFO="$_bundle"
+    export REQUESTS_CA_BUNDLE="$_bundle"
+    export SSL_CERT_FILE="$_bundle"
+    export CURL_CA_BUNDLE="$_bundle"
+    log "guard-proxy CA trusted by worker toolchains (bundle=$_bundle)"
+}
+
 # ── Phase 1: Network mode + guard proxy ─────────────────────────────────────
 # transparent (default when CAP_NET_ADMIN): iptables REDIRECT worker egress to
 #   the proxy; exempt the proxy uid, root, loopback, the CCTUI_URL host, DNS,
@@ -167,12 +218,13 @@ phase_network() {
         while [ "$_i" -lt 60 ]; do
             if curl -fsS "http://127.0.0.1:${PROXY_HEALTH_PORT}/ready" >/dev/null 2>&1; then
                 log "external guard-proxy ready (:${PROXY_HEALTH_PORT})"
-                return 0
+                break
             fi
             _i=$((_i + 1))
             sleep 0.5
         done
-        log "WARNING: external guard-proxy not ready after 30s (egress stays deny-all)"
+        [ "$_i" -ge 60 ] && log "WARNING: external guard-proxy not ready after 30s (egress stays deny-all)"
+        install_guard_ca
         return 0
     fi
 

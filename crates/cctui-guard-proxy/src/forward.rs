@@ -14,25 +14,32 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
+use crate::inject::Injector;
 use crate::policy::PolicyManager;
 
 pub struct ForwardListener {
     listener: TcpListener,
     policy: Arc<PolicyManager>,
+    injection: Option<Arc<Injector>>,
 }
 
 impl ForwardListener {
-    pub async fn bind(addr: &str, policy: Arc<PolicyManager>) -> anyhow::Result<Self> {
+    pub async fn bind(
+        addr: &str,
+        policy: Arc<PolicyManager>,
+        injection: Option<Arc<Injector>>,
+    ) -> anyhow::Result<Self> {
         let listener = TcpListener::bind(addr).await?;
-        Ok(Self { listener, policy })
+        Ok(Self { listener, policy, injection })
     }
 
     pub async fn serve(self) -> anyhow::Result<()> {
         loop {
             let (stream, _peer) = self.listener.accept().await?;
             let policy = self.policy.clone();
+            let injection = self.injection.clone();
             tokio::spawn(async move {
-                if let Err(e) = handle_connection(stream, policy).await {
+                if let Err(e) = handle_connection(stream, policy, injection).await {
                     tracing::debug!("forward connection ended: {e}");
                 }
             });
@@ -85,13 +92,17 @@ fn find_header_end(data: &[u8]) -> Option<usize> {
     data.windows(4).position(|w| w == b"\r\n\r\n")
 }
 
-async fn handle_connection(mut conn: TcpStream, policy: Arc<PolicyManager>) -> anyhow::Result<()> {
+async fn handle_connection(
+    mut conn: TcpStream,
+    policy: Arc<PolicyManager>,
+    injection: Option<Arc<Injector>>,
+) -> anyhow::Result<()> {
     let Some(req) = read_request(&mut conn).await? else {
         return Ok(());
     };
 
     if req.method.eq_ignore_ascii_case("CONNECT") {
-        handle_connect(conn, &req.target, &policy).await
+        handle_connect(conn, &req.target, &policy, injection.as_deref()).await
     } else {
         handle_http(conn, &req, &policy).await
     }
@@ -106,6 +117,7 @@ async fn handle_connect(
     mut conn: TcpStream,
     target: &str,
     policy: &PolicyManager,
+    injection: Option<&Injector>,
 ) -> anyhow::Result<()> {
     let host_port = normalize_authority(target, 443);
 
@@ -116,6 +128,16 @@ async fn handle_connect(
         return Ok(());
     }
     tracing::info!("ALLOW CONNECT {host_port}");
+
+    let (host, port) = split_host_port(&host_port, 443);
+
+    if let Some(injector) = injection
+        && injector.should_inject(&host)
+    {
+        tracing::info!("INJECT CONNECT {host}:{port}");
+        conn.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n").await?;
+        return Box::pin(injector.handle(conn, Vec::new(), &host, port)).await;
+    }
 
     let Ok(Ok(mut upstream)) =
         tokio::time::timeout(Duration::from_secs(10), TcpStream::connect(&host_port)).await
@@ -131,6 +153,22 @@ async fn handle_connect(
     conn.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n").await?;
     tokio::io::copy_bidirectional(&mut conn, &mut upstream).await?;
     Ok(())
+}
+
+/// Splits a `host:port` authority into host and port, defaulting the port and
+/// handling bracketed IPv6 literals.
+fn split_host_port(host_port: &str, default_port: u16) -> (String, u16) {
+    if let Some(rest) = host_port.strip_prefix('[') {
+        if let Some(idx) = rest.find("]:") {
+            let port = rest[idx + 2..].parse().unwrap_or(default_port);
+            return (rest[..idx].to_owned(), port);
+        }
+        return (rest.trim_end_matches(']').to_owned(), default_port);
+    }
+    host_port.rsplit_once(':').map_or_else(
+        || (host_port.to_owned(), default_port),
+        |(h, p)| (h.to_owned(), p.parse().unwrap_or(default_port)),
+    )
 }
 
 /// Plain HTTP with an absolute-URI request target (`GET http://host/path …`).
@@ -222,7 +260,7 @@ mod tests {
         std::mem::forget(dir);
         let policy = Arc::new(PolicyManager::new(&path));
         policy.load().unwrap();
-        let listener = ForwardListener::bind("127.0.0.1:0", policy).await.unwrap();
+        let listener = ForwardListener::bind("127.0.0.1:0", policy, None).await.unwrap();
         let addr = listener.listener.local_addr().unwrap();
         tokio::spawn(async move { listener.serve().await });
         addr

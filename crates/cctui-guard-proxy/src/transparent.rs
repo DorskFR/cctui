@@ -13,6 +13,7 @@ use nix::sys::socket::sockopt::OriginalDst;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
+use crate::inject::Injector;
 use crate::peek::{extract_http_host, extract_sni};
 use crate::policy::PolicyManager;
 
@@ -30,20 +31,26 @@ fn original_dst(stream: &TcpStream) -> anyhow::Result<SocketAddrV4> {
 pub struct TransparentListener {
     listener: TcpListener,
     policy: Arc<PolicyManager>,
+    injection: Option<Arc<Injector>>,
 }
 
 impl TransparentListener {
-    pub async fn bind(addr: &str, policy: Arc<PolicyManager>) -> anyhow::Result<Self> {
+    pub async fn bind(
+        addr: &str,
+        policy: Arc<PolicyManager>,
+        injection: Option<Arc<Injector>>,
+    ) -> anyhow::Result<Self> {
         let listener = TcpListener::bind(addr).await?;
-        Ok(Self { listener, policy })
+        Ok(Self { listener, policy, injection })
     }
 
     pub async fn serve(self) -> anyhow::Result<()> {
         loop {
             let (stream, _peer) = self.listener.accept().await?;
             let policy = self.policy.clone();
+            let injection = self.injection.clone();
             tokio::spawn(async move {
-                if let Err(e) = handle_connection(stream, policy).await {
+                if let Err(e) = handle_connection(stream, policy, injection).await {
                     tracing::debug!("transparent connection ended: {e}");
                 }
             });
@@ -55,7 +62,11 @@ impl TransparentListener {
 // flow; complexity is the per-step timeout/error branches, not nesting. Splitting
 // would scatter the security-critical fail-closed control flow across helpers.
 #[allow(clippy::cognitive_complexity)]
-async fn handle_connection(mut conn: TcpStream, policy: Arc<PolicyManager>) -> anyhow::Result<()> {
+async fn handle_connection(
+    mut conn: TcpStream,
+    policy: Arc<PolicyManager>,
+    injection: Option<Arc<Injector>>,
+) -> anyhow::Result<()> {
     let dst = original_dst(&conn)?;
     let host_port = dst.to_string();
     let port = dst.port();
@@ -95,6 +106,16 @@ async fn handle_connection(mut conn: TcpStream, policy: Arc<PolicyManager>) -> a
     tracing::info!(
         "ALLOW transparent {policy_target} (orig={host_port} sni={sni:?} host={http_host:?})"
     );
+
+    // TLS-terminating credential injection for allowlisted hosts (CCT-718). Only
+    // a real TLS ClientHello (SNI recovered) is intercepted; everything else
+    // keeps the passthrough splice below.
+    if let (Some(injector), Some(name)) = (injection.as_ref(), sni.as_deref())
+        && injector.should_inject(name)
+    {
+        tracing::info!("INJECT transparent {name}:{port}");
+        return Box::pin(injector.handle(conn, buf[..n].to_vec(), name, port)).await;
+    }
 
     // Dial the real destination IP:port (not the name — DNS already resolved it).
     let upstream_addr = SocketAddr::V4(dst);
@@ -167,7 +188,7 @@ mod tests {
         let policy = Arc::new(PolicyManager::new(&path));
         policy.load().unwrap();
 
-        let listener = TransparentListener::bind("127.0.0.1:0", policy).await.unwrap();
+        let listener = TransparentListener::bind("127.0.0.1:0", policy, None).await.unwrap();
         let addr = listener.listener.local_addr().unwrap();
         tokio::spawn(async move { listener.serve().await });
 

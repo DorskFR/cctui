@@ -12,11 +12,9 @@
 
 mod forward;
 mod health;
+mod inject;
 mod peek;
 mod policy;
-// Consumed by credential injection in CCT-718; until then only construction
-// (config validation) is exercised from main.
-#[allow(dead_code)]
 mod secrets;
 mod transparent;
 
@@ -28,8 +26,11 @@ use anyhow::Context as _;
 use clap::{Parser, ValueEnum};
 
 use crate::forward::ForwardListener;
+use crate::inject::{InjectionPolicy, Injector, PerPodCa};
 use crate::policy::PolicyManager;
-use crate::secrets::{AwsSmBackend, EnvBackend, SecretBackend, SecretSource, VaultBackend, VaultConfig};
+use crate::secrets::{
+    AwsSmBackend, EnvBackend, SecretBackend, SecretSource, VaultBackend, VaultConfig,
+};
 use crate::transparent::TransparentListener;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -99,6 +100,22 @@ struct Args {
     /// AWS Secrets Manager name prefix; secrets are named `<prefix><identity>/<service>`.
     #[arg(long, default_value = "cctui/worker/", env = "GUARD_PROXY_AWS_SM_PREFIX")]
     aws_sm_prefix: String,
+
+    /// Task identity — the first half of every secret lookup key (CCT-718).
+    /// Required when `--inject-hosts` is non-empty.
+    #[arg(long, default_value = "", env = "GUARD_PROXY_IDENTITY")]
+    identity: String,
+
+    /// Hosts to TLS-terminate + credential-inject (CCT-718). Each token is
+    /// `host`, `host=service`, or `host=service:<shape>` (bearer|basic|slack).
+    /// Empty = passthrough only; injection also needs a real `--secret-source`.
+    #[arg(long, value_delimiter = ',', env = "GUARD_PROXY_INJECT_HOSTS")]
+    inject_hosts: Vec<String>,
+
+    /// Where to write the per-pod CA cert (PEM) for the worker to install. Only
+    /// written when injection is active.
+    #[arg(long, default_value = "/var/run/guard-proxy-ca/ca.pem", env = "GUARD_PROXY_CA_CERT_OUT")]
+    ca_cert_out: PathBuf,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -113,7 +130,7 @@ enum SecretSourceKind {
     AwsSm,
 }
 
-async fn build_secret_source(args: &Args) -> anyhow::Result<Option<SecretSource>> {
+async fn build_secret_source(args: &Args) -> anyhow::Result<Option<Arc<SecretSource>>> {
     let backend: Box<dyn SecretBackend> = match args.secret_source {
         SecretSourceKind::None => return Ok(None),
         SecretSourceKind::Env => Box::new(EnvBackend::from_process_env()),
@@ -144,7 +161,55 @@ async fn build_secret_source(args: &Args) -> anyhow::Result<Option<SecretSource>
         args.secret_source,
         args.secret_ttl_secs
     );
-    Ok(Some(SecretSource::new(backend, Duration::from_secs(args.secret_ttl_secs))))
+    Ok(Some(Arc::new(SecretSource::new(backend, Duration::from_secs(args.secret_ttl_secs)))))
+}
+
+/// Wires the injection layer: parses the host allowlist, mints the per-pod CA,
+/// writes its public cert for the worker to install, and builds the TLS
+/// injector. Returns `None` (passthrough) when there is no secret source or no
+/// inject hosts configured.
+fn build_injection(
+    args: &Args,
+    secret_source: Option<Arc<SecretSource>>,
+) -> anyhow::Result<Option<Arc<Injector>>> {
+    let Some(secrets) = secret_source else {
+        return Ok(None);
+    };
+    let policy = InjectionPolicy::from_hosts(args.identity.clone(), &args.inject_hosts);
+    if policy.is_empty() {
+        tracing::info!("no inject hosts configured — TLS passthrough only");
+        return Ok(None);
+    }
+    anyhow::ensure!(!args.identity.is_empty(), "--identity is required with --inject-hosts");
+
+    let ca = Arc::new(PerPodCa::generate()?);
+    write_ca_cert(&args.ca_cert_out, ca.ca_pem())
+        .with_context(|| format!("writing CA cert to {}", args.ca_cert_out.display()))?;
+    tracing::info!(
+        "per-pod CA minted; wrote CA cert to {} (identity={})",
+        args.ca_cert_out.display(),
+        args.identity
+    );
+
+    let injector = Injector::new(ca, secrets, policy)?;
+    Ok(Some(Arc::new(injector)))
+}
+
+/// Writes the public CA cert (PEM) world-readable so the worker (a different
+/// uid) can install it. The private key never leaves the sidecar process.
+fn write_ca_cert(path: &std::path::Path, pem: &str) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension("pem.tmp");
+    std::fs::write(&tmp, pem.as_bytes())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o644))?;
+    }
+    std::fs::rename(&tmp, path)?;
+    Ok(())
 }
 
 #[tokio::main]
@@ -165,7 +230,8 @@ async fn main() -> anyhow::Result<()> {
         args.policy
     );
 
-    let _secret_source = build_secret_source(&args).await?;
+    let secret_source = build_secret_source(&args).await?;
+    let injection = build_injection(&args, secret_source)?;
 
     let policy = Arc::new(PolicyManager::new(&args.policy));
     if let Err(e) = policy.load() {
@@ -189,12 +255,12 @@ async fn main() -> anyhow::Result<()> {
 
     match args.mode {
         Mode::Transparent => {
-            let listener = TransparentListener::bind(&args.listen, policy).await?;
+            let listener = TransparentListener::bind(&args.listen, policy, injection).await?;
             tracing::info!("transparent proxy listening on {}", args.listen);
             listener.serve().await?;
         }
         Mode::Forward => {
-            let listener = ForwardListener::bind(&args.listen, policy).await?;
+            let listener = ForwardListener::bind(&args.listen, policy, injection).await?;
             tracing::info!("forward proxy listening on {}", args.listen);
             listener.serve().await?;
         }
@@ -270,8 +336,6 @@ mod tests {
 
     #[test]
     fn secret_source_rejects_unknown_backend() {
-        assert!(
-            Args::try_parse_from(["cctui-guard-proxy", "--secret-source", "bogus"]).is_err()
-        );
+        assert!(Args::try_parse_from(["cctui-guard-proxy", "--secret-source", "bogus"]).is_err());
     }
 }
