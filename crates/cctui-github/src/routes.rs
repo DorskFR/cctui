@@ -75,7 +75,7 @@ impl ConnectorRow {
     /// masked preview — the plaintext is dropped immediately and never sent.
     fn into_info(self) -> ConnectorInfo {
         let key = crypto::vault_key();
-        let preview = crypto::deobfuscate(&self.encrypted_credential, &key)
+        let preview = crypto::decrypt(&self.encrypted_credential, &key)
             .as_deref()
             .map_or_else(|| "•••".to_string(), crypto::credential_preview);
         ConnectorInfo {
@@ -153,13 +153,13 @@ pub async fn create_connector(
     }
 
     let key = crypto::vault_key();
-    let enc_credential = crypto::obfuscate(req.credential.trim(), &key);
+    let enc_credential = crypto::encrypt(req.credential.trim(), &key);
     let enc_webhook = req
         .webhook_secret
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(|s| crypto::obfuscate(s, &key));
+        .map(|s| crypto::encrypt(s, &key));
     let repos: Vec<String> =
         req.repos.iter().map(|r| r.trim().to_string()).filter(|r| !r.is_empty()).collect();
 
@@ -222,14 +222,14 @@ pub async fn update_connector(
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(|s| crypto::obfuscate(s, &key));
+        .map(|s| crypto::encrypt(s, &key));
     let rotating = new_credential.is_some();
     // Webhook secret: Some("") clears, Some(non-empty) sets, None leaves as-is.
     // `set_webhook` flags whether to touch the column at all.
     let (set_webhook, new_webhook) = match req.webhook_secret.as_deref().map(str::trim) {
         None => (false, None),
         Some("") => (true, None),
-        Some(s) => (true, Some(crypto::obfuscate(s, &key))),
+        Some(s) => (true, Some(crypto::encrypt(s, &key))),
     };
 
     let row: Result<ConnectorRow, sqlx::Error> = sqlx::query_as(&format!(

@@ -78,7 +78,7 @@ async fn match_connector(state: &GithubState, body: &[u8], signature: &str) -> O
 
     for (id, enc) in rows {
         let Some(enc) = enc else { continue };
-        let Some(secret) = crypto::deobfuscate(&enc, &key) else { continue };
+        let Some(secret) = crypto::decrypt(&enc, &key) else { continue };
         let Ok(mut mac) = HmacSha256::new_from_slice(secret.as_bytes()) else { continue };
         mac.update(body);
         if mac.verify_slice(&expected).is_ok() {

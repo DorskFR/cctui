@@ -183,6 +183,9 @@ COPY --from=builder /app/target/release/cctui-guard-proxy  /usr/local/bin/cctui-
 COPY --from=builder /app/target/release/cctui-supervisor   /usr/local/bin/cctui-supervisor
 COPY --from=builder /app/target/release/cctui-guard        /usr/local/bin/cctui-guard
 COPY deploy/worker-entrypoint.sh   /usr/local/bin/cctui-worker-entrypoint
+# worker-net-init — pod-netns iptables for the k8s sidecar mode (CCT-716): run
+# from a NET_ADMIN init container so the worker container needs no privileged.
+COPY deploy/worker-net-init.sh     /usr/local/bin/cctui-worker-net-init
 # codex-run — safe one-shot `codex exec` wrapper (model/effort/approvals from
 # config.toml; wrapper adds only --skip-git-repo-check + stdin-close + timeout).
 COPY deploy/codex-run.sh           /usr/local/bin/codex-run
@@ -191,6 +194,7 @@ COPY deploy/codex-run.sh           /usr/local/bin/codex-run
 # the context-pack mount target (read-only after fetch).
 RUN mkdir -p /var/run/guard-proxy /var/run/workflow-guard /workspace /opt/context /opt/worker-entrypoint.d \
     && chmod +x /usr/local/bin/cctui-worker-entrypoint \
+                /usr/local/bin/cctui-worker-net-init \
                 /usr/local/bin/codex-run
 
 # Contract marker: derived images and dispatchers can assert the wire contract.

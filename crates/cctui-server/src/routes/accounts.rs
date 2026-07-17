@@ -99,7 +99,7 @@ pub async fn sync_litellm_shim(pool: &sqlx::PgPool, config: &crate::config::Conf
     }
     let key = crate::crypto::vault_key();
     let cred = config.claude_litellm_token.as_deref().unwrap_or("sk-dummy");
-    let enc_access = crate::crypto::obfuscate(cred, &key);
+    let enc_access = crate::crypto::encrypt(cred, &key);
     let models_json = serde_json::to_value(
         models
             .iter()
@@ -691,7 +691,7 @@ fn env_names_from_enc(enc: Option<&str>, key: &[u8]) -> Vec<String> {
 /// Missing/undecryptable/malformed ⇒ empty map.
 fn env_map_from_enc(enc: Option<&str>, key: &[u8]) -> std::collections::BTreeMap<String, String> {
     let Some(enc) = enc else { return std::collections::BTreeMap::new() };
-    let Some(json) = crate::crypto::deobfuscate(enc, key) else {
+    let Some(json) = crate::crypto::decrypt(enc, key) else {
         return std::collections::BTreeMap::new();
     };
     serde_json::from_str(&json).unwrap_or_default()
@@ -704,7 +704,7 @@ fn encrypt_env(
     let Some(map) = env.filter(|m| !m.is_empty()) else { return Ok(None) };
     validate_env_json(map)?;
     let key = crate::crypto::vault_key();
-    Ok(Some(crate::crypto::obfuscate(&serde_json::to_string(map).unwrap_or_default(), &key)))
+    Ok(Some(crate::crypto::encrypt(&serde_json::to_string(map).unwrap_or_default(), &key)))
 }
 
 /// A validated, encrypted provider payload ready to INSERT.
@@ -774,7 +774,7 @@ fn prepare_provider_write(
             .unwrap_or("sk-dummy");
         let key = crate::crypto::vault_key();
         enc_refresh = None;
-        enc_access = Some(crate::crypto::obfuscate(cred, &key));
+        enc_access = Some(crate::crypto::encrypt(cred, &key));
         base_url = Some(base.to_owned());
         auth_scheme = scheme.to_owned();
     } else {
@@ -783,8 +783,8 @@ fn prepare_provider_write(
             return Err(err(StatusCode::BAD_REQUEST, "refresh_token required"));
         };
         let key = crate::crypto::vault_key();
-        enc_refresh = Some(crate::crypto::obfuscate(refresh, &key));
-        enc_access = spec.access_token.as_deref().map(|t| crate::crypto::obfuscate(t, &key));
+        enc_refresh = Some(crate::crypto::encrypt(refresh, &key));
+        enc_access = spec.access_token.as_deref().map(|t| crate::crypto::encrypt(t, &key));
         base_url = None;
         auth_scheme = "oauth".to_owned();
     }
@@ -1019,7 +1019,7 @@ pub async fn update_account(
         let mut map = env_map_from_enc(stored.flatten().as_deref(), &key);
         map.retain(|name, _| !remove.contains(name));
         let enc = (!map.is_empty()).then(|| {
-            crate::crypto::obfuscate(&serde_json::to_string(&map).unwrap_or_default(), &key)
+            crate::crypto::encrypt(&serde_json::to_string(&map).unwrap_or_default(), &key)
         });
         (true, enc)
     } else {
@@ -1206,7 +1206,7 @@ pub async fn update_provider(
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(|c| crate::crypto::obfuscate(c, &key));
+        .map(|c| crate::crypto::encrypt(c, &key));
     // Soft limits (CCT-688): a provided map replaces the whole JSONB column (an
     // empty object clears it); absent leaves it untouched. Validated before
     // persist. Carry a provided-flag so CASE-WHEN distinguishes clear/unchanged.
@@ -1761,8 +1761,8 @@ pub async fn oauth_finish(
         .filter(|_| pending.provider == "openai");
 
     let key = crate::crypto::vault_key();
-    let enc_refresh = crate::crypto::obfuscate(&tok.refresh_token, &key);
-    let enc_access = crate::crypto::obfuscate(&tok.access_token, &key);
+    let enc_refresh = crate::crypto::encrypt(&tok.refresh_token, &key);
+    let enc_access = crate::crypto::encrypt(&tok.access_token, &key);
     let expires_at = tok.expires_in.map(|s| Utc::now() + Duration::seconds(s));
 
     // Resolve the identity: the attach target, or find-or-create by name.
@@ -2305,7 +2305,7 @@ mod tests {
         let mut map = std::collections::BTreeMap::new();
         map.insert("ZED".to_string(), "z".to_string());
         map.insert("ALPHA".to_string(), "a".to_string());
-        let enc = crate::crypto::obfuscate(&serde_json::to_string(&map).unwrap(), &key);
+        let enc = crate::crypto::encrypt(&serde_json::to_string(&map).unwrap(), &key);
 
         let names = env_names_from_enc(Some(&enc), &key);
         assert_eq!(names, vec!["ALPHA".to_string(), "ZED".to_string()], "sorted names only");
@@ -2320,12 +2320,12 @@ mod tests {
         let mut map = std::collections::BTreeMap::new();
         map.insert("KEEP".to_string(), "k".to_string());
         map.insert("DROP".to_string(), "d".to_string());
-        let enc = crate::crypto::obfuscate(&serde_json::to_string(&map).unwrap(), &key);
+        let enc = crate::crypto::encrypt(&serde_json::to_string(&map).unwrap(), &key);
 
         let mut decrypted = env_map_from_enc(Some(&enc), &key);
         decrypted.retain(|name, _| name != "DROP");
         assert_eq!(decrypted.get("KEEP").map(String::as_str), Some("k"), "values survive");
-        let reenc = crate::crypto::obfuscate(&serde_json::to_string(&decrypted).unwrap(), &key);
+        let reenc = crate::crypto::encrypt(&serde_json::to_string(&decrypted).unwrap(), &key);
         assert_eq!(env_names_from_enc(Some(&reenc), &key), vec!["KEEP".to_string()]);
 
         decrypted.retain(|name, _| name != "KEEP");

@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/cctui-admin",
+    "crates/cctui-crypto",
     "crates/cctui-daemon",
     "crates/cctui-dispatcher-apple",
     "crates/cctui-dispatcher-docker",
@@ -17,7 +18,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.7.189"
+version = "0.7.190"
 edition = "2024"
 license = "MIT"
 authors = ["DorskFR"]
@@ -38,6 +39,7 @@ missing_panics_doc = "allow"
 
 [workspace.dependencies]
 cctui-proto = { path = "crates/cctui-proto" }
+cctui-crypto = { path = "crates/cctui-crypto" }
 cctui-query = { path = "crates/cctui-query" }
 cctui-github = { path = "crates/cctui-github" }
 serde = { version = "1", features = ["derive"] }
