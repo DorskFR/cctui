@@ -200,6 +200,45 @@ dispatched-worker wait kills the uid-1000 daemon tree from root). The container
 mounts need an unconfined AppArmor profile where the runtime's default profile
 denies `mount(2)` (previously masked by `privileged: true`).
 
+### Sidecar secret source (CCT-717)
+
+The guard-proxy sidecar can resolve per-`(task identity, service)` credentials
+for the TLS-terminating injection landing in CCT-718. **Default is no secret
+source** — without `--secret-source` the proxy behaves exactly as before.
+Resolved secrets live only in an in-memory TTL cache (default 120s, never
+persisted, never logged); a fetch past TTL re-reads the backend, so store-side
+rotation lands within one TTL. Lookups fail closed: "no credential configured"
+and "backend failure" are distinct errors, and a backend failure never
+degrades to a blank secret.
+
+| Flag | Env | Default | Meaning |
+|---|---|---|---|
+| `--secret-source` | `GUARD_PROXY_SECRET_SOURCE` | `none` | `none`, `env`, `vault`, or `aws-sm`. |
+| `--secret-ttl-secs` | `GUARD_PROXY_SECRET_TTL_SECS` | `120` | In-memory cache TTL. |
+| `--vault-addr` | `GUARD_PROXY_VAULT_ADDR` | — | Vault/OpenBao base URL (required for `vault`). |
+| `--vault-role` | `GUARD_PROXY_VAULT_ROLE` | — | Kubernetes auth role (required for `vault`). |
+| `--vault-mount` | `GUARD_PROXY_VAULT_MOUNT` | `secret` | KV v2 mount. |
+| `--vault-path-prefix` | `GUARD_PROXY_VAULT_PATH_PREFIX` | `cctui/workers` | Secret read at `<mount>/data/<prefix>/<identity>/<service>`. |
+| `--vault-field` | `GUARD_PROXY_VAULT_FIELD` | `value` | Field read from the KV v2 data map. |
+| `--vault-token-path` | `GUARD_PROXY_VAULT_TOKEN_PATH` | `/var/run/secrets/kubernetes.io/serviceaccount/token` | SA token for `POST /v1/auth/kubernetes/login`. |
+| `--aws-sm-prefix` | `GUARD_PROXY_AWS_SM_PREFIX` | `cctui/worker/` | Secret named `<prefix><identity>/<service>`. |
+
+Backends:
+
+- **`aws-sm`** (prod): AWS Secrets Manager through the SDK default credential
+  chain (EKS Pod Identity / IRSA — the sidecar's ambient identity). Which
+  identities a pod may read is enforced in IAM by secret-name prefix, not in
+  code.
+- **`vault`** (dev): KV v2 read over HTTP with Kubernetes auth using the pod
+  SA token.
+- **`env`** (dev fallback): the sidecar's OWN environment,
+  `CRED_<IDENTITY>_<SERVICE>` — ASCII alphanumerics uppercased, every other
+  character mapped to `_` (`acme-corp`/`github` →
+  `CRED_ACME_CORP_GITHUB`). Empty values count as not configured. This is the
+  sanctioned dev path: the dev cluster's vault-env webhook materializes
+  `vault:` refs into the sidecar container env, so the worker container never
+  sees the values.
+
 ## Result callback (tenant-visible wire shape)
 
 When `REPLY_URL` is set, an EXIT/INT/TERM trap POSTs the result exactly once
