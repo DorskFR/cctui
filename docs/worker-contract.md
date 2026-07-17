@@ -106,7 +106,7 @@ skipped silently when absent):
 | `GITHUB_TOKEN` | `GH_TOKEN` + git credential helper `!gh auth git-credential`. |
 | `GITHUB_NAME` | `git config user.name`. |
 | `GITHUB_EMAIL` | `git config user.email`. |
-| `GPG_PRIVATE_KEY` | `gpg --import` + `user.signingkey` + `commit.gpgsign true`. |
+| `GPG_PRIVATE_KEY` | **Sidecar-only in `transparent-external`.** No longer imported into the worker keyring — the guard-proxy sidecar holds it and forwards a restricted gpg-agent socket instead (see [Remote GPG signing](#remote-gpg-signing-transparent-external-cct-721)). In single-container modes the credential helper still does `gpg --import` + `user.signingkey` + `commit.gpgsign true` in the worker. |
 | `NPM_TOKEN` | `~/.npmrc` registry auth (identity-independent). |
 | `MCP_<NAME>_URL` / `MCP_<NAME>_TOKEN` | `~/.mcp.json` http server entry keyed by lowercase `<NAME>`. |
 | `YOUTRACK_URL` + `YOUTRACK_API_TOKEN` (or `YOUTRACK_TOKEN`) | `~/.config/yt/config.json` for the bundled `yt` YouTrack CLI. Reaching the YouTrack host also needs it on the egress allow-list. |
@@ -131,8 +131,10 @@ So by the time the entrypoint runs, every var holds a **real value** — the
 dispatcher never reads the secret, and a `vault:`/`k8s:` value never lands in the
 Job spec or etcd. The boundary is the worker's Vault role scope (tenant prefix)
 and the namespace's k8s secrets, not the reference string (which is untrusted).
-The entrypoint stays product-aware (wires `gh`/`scli`/`yt`, `gpg --import
-$GPG_PRIVATE_KEY`); the dispatcher stays secret-agnostic. `env` is stripped from
+The entrypoint stays product-aware (wires `gh`/`scli`/`yt`); the dispatcher stays
+secret-agnostic. In `transparent-external`, `GPG_PRIVATE_KEY` is delivered to the
+**guard-proxy sidecar** (not the worker) — see [Remote GPG signing](#remote-gpg-signing-transparent-external-cct-721).
+`env` is stripped from
 `TASK_PAYLOAD_JSON` so the daemon cannot re-apply an unresolved reference over
 the resolved pod env.
 
@@ -145,6 +147,7 @@ the resolved pod env.
 | `/opt/context` | RO after fetch | Context pack (prompts, docs, skills, guard rules). |
 | `/home/worker` | RW | Per-session agent state (`.claude`, `.codex`, `.mcp.json`, `.npmrc`, `.gnupg`). |
 | `/var/run/guard-proxy`, `/var/run/workflow-guard` | RW | Proxy policy + guard state. |
+| `/var/run/gpg-agent` | RW | Shared `gpg-agent` emptyDir carrying the forwarded restricted signing socket (`transparent-external` only, CCT-721). |
 | `/tmp` | RW | Scratch, `RESULT_FILE`, hardening report. |
 
 ## Network modes & capability requirements
@@ -161,6 +164,43 @@ policy is seeded at boot to always-allow the `CCTUI_URL` + `REPLY_URL` hosts;
 
 The proxy listens on `:15001` (traffic) and `:15002` (`/health`, `/ready`).
 Capabilities are dropped entirely before the daemon runs — see hardening below.
+
+### Metadata/credential deny-list (CCT-720)
+
+The whole secret-source model depends on the **worker** container being unable to
+reach the credential backend directly — credential-backend reachability is a
+property of the **sidecar** only. Two independent layers enforce this, so neither
+a buggy/malicious `policy.json` nor a compromised proxy can open the hole:
+
+1. **guard-proxy built-in deny** (`crates/cctui-guard-proxy/src/denylist.rs`) —
+   an always-deny set that **overrides** the allow-list. Even if `policy.json`
+   lists them (or sets `default: allow`), these are refused with a `DENY
+   (builtin)` log line:
+   - `169.254.0.0/16` (link-local): AWS/GCP/Azure IMDS (`169.254.169.254`) and
+     the EKS Pod Identity Agent (`169.254.170.23`).
+   - `metadata.google.internal` / `metadata` (GCP metadata DNS names).
+   - Any host in `GUARD_PROXY_DENY_HOSTS` (comma-separated) — in dev this carries
+     the OpenBao host (`openbao.security.svc.cluster.local`). The sidecar reaches
+     OpenBao **directly** (via the `vault-env` webhook, not through its own egress
+     proxy), so denying it here only affects the worker path.
+
+   The check matches on **both** the recovered hostname (SNI/Host) **and** the
+   resolved original-destination IP, so an IP-literal request straight to
+   `169.254.169.254` with no SNI is still caught.
+
+2. **net-init iptables REJECT** (`deploy/worker-net-init.sh`) — belt-and-
+   suspenders at the packet layer: the worker uid's egress to `169.254.0.0/16` is
+   `RETURN`ed from the nat REDIRECT (so it keeps its original dst) and hard-
+   `REJECT`ed in the filter table, independent of the proxy being up.
+
+**Expectations** (verifiable once on the cluster; the live 169.254 refusal cannot
+be exercised in unit tests):
+- Dev: OpenBao is unreachable from the worker (`DENY openbao…` — already observed
+  in live logs before this ticket; now un-allowlistable).
+- Prod (EKS path): `curl http://169.254.169.254/latest/meta-data/` and the Pod
+  Identity Agent at `169.254.170.23` are refused; `aws sts get-caller-identity`
+  from the worker fails to obtain any identity (no IMDS/IRSA reach). The worker
+  carries a non-secret `AWS_REGION` only — a region hint, not a credential.
 
 ### Sidecar mode (`transparent-external`, CCT-716)
 
@@ -289,6 +329,43 @@ intermediate state until the per-identity `CRED_*` wiring lands (CCT-719).
 would break under this MITM, so such hosts must never be listed as inject hosts;
 they get their credential another way. None of the built-in hosts pin certs on
 their HTTPS REST/registry endpoints.
+
+### Remote GPG signing (`transparent-external`, CCT-721)
+
+GPG never touches the network, so the header-injection above cannot deliver a
+signing key — and shipping `GPG_PRIVATE_KEY` to the worker would put the raw key
+in the agent's own container. Instead the key lives **only in the sidecar** and
+the worker signs over a forwarded gpg-agent socket:
+
+1. **Sidecar boot wrapper** — the sidecar's container command is
+   `cctui-guard-proxy-entrypoint` (shipped in the base image) instead of
+   `cctui-guard-proxy` directly. It receives the same flags. When
+   `GPG_PRIVATE_KEY` is present (materialized into the **sidecar** env by the
+   dev vault-env webhook, same pattern as the `CRED_*` vars) it: imports the key
+   into a container-local keyring under `/tmp`, launches gpg-agent with an
+   `extra-socket` at `/var/run/gpg-agent/S.gpg-agent.extra` on the shared
+   `gpg-agent` emptyDir, scrubs the armored key from the env, publishes the
+   PUBLIC key (`pubkey.asc`) + signing key id (`signingkey`) to that emptyDir,
+   then `exec`s `cctui-guard-proxy`. With no key it is a pure passthrough.
+2. **Restricted socket.** gpg-agent's `--extra-socket` can USE the key for
+   signing but **cannot export the secret key** (`gpg --export-secret-keys` over
+   it fails). Only that socket is forwarded — the full socket and the private
+   keyring never leave the sidecar. Proven end-to-end in
+   `tmp/gpg-forward-test.sh`.
+3. **Worker side** — under `transparent-external` the entrypoint bounded-waits
+   for the extra socket, imports the public key into `~worker/.gnupg`, symlinks
+   gpg's expected agent-socket (`gpgconf --list-dirs agent-socket`, plus a
+   homedir `S.gpg-agent` fallback) to the forwarded socket, and sets
+   `user.signingkey` + `commit.gpgsign true` **only when the socket is present**.
+   Absent socket ⇒ logged loud, signing left off (commits unsigned, never
+   failing the boot). The `gpg-agent` emptyDir is added to the supervisor
+   Landlock RW set so `git commit -S` can reach the socket after privilege drop.
+
+**Key setup (recommended).** Use a per-identity **signing subkey with a short
+expiry**, passphrase-less (a headless sidecar has no pinentry). The mechanism
+works with a subkey — gpg selects the signing-capable subkey automatically, and
+`signingkey` is published as the primary fingerprint. Rotating/expiring the
+subkey limits blast radius without touching the worker image.
 
 ## Result callback (tenant-visible wire shape)
 

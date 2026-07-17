@@ -166,6 +166,63 @@ install_guard_ca() {
     log "guard-proxy CA trusted by worker toolchains (bundle=$_bundle)"
 }
 
+# CCT-721: remote GPG signing. The private key never enters this container; the
+# guard-proxy sidecar runs gpg-agent and forwards ONLY its restricted
+# `--extra-socket` (cannot export secret keys) into the shared gpg-agent
+# emptyDir. Here we point the worker's gpg at that forwarded socket: import the
+# PUBLIC key the sidecar published, symlink gpg's expected agent-socket to the
+# extra socket, and set user.signingkey + commit.gpgsign — ONLY when the socket
+# is actually present. Bounded wait, best-effort: if absent (feature off) we log
+# loud and leave signing unconfigured. transparent-external only (same gate as
+# the CA install); single-container modes keep the legacy in-worker key import.
+GPG_AGENT_DIR="${CCTUI_GPG_AGENT_DIR:-/var/run/gpg-agent}"
+GPG_EXTRA_SOCKET="${CCTUI_GPG_EXTRA_SOCKET:-${GPG_AGENT_DIR}/S.gpg-agent.extra}"
+wire_gpg_forwarding() {
+    command -v gpg >/dev/null 2>&1 || { log "gpg missing — skipping remote signing wiring"; return 0; }
+    _i=0
+    while [ "$_i" -lt 20 ]; do
+        [ -S "$GPG_EXTRA_SOCKET" ] && break
+        _i=$((_i + 1)); sleep 0.5
+    done
+    if [ ! -S "$GPG_EXTRA_SOCKET" ]; then
+        log "gpg-agent extra socket absent at $GPG_EXTRA_SOCKET after 10s — remote signing off; commits will be UNSIGNED"
+        return 0
+    fi
+
+    _home="/home/${WORKER_USER}"
+    _gnupg="${_home}/.gnupg"
+    mkdir -p "$_gnupg" && chmod 700 "$_gnupg"
+
+    if [ -s "${GPG_AGENT_DIR}/pubkey.asc" ]; then
+        HOME="$_home" GNUPGHOME="$_gnupg" gpg --batch --import "${GPG_AGENT_DIR}/pubkey.asc" >/dev/null 2>&1 || true
+    fi
+
+    # Point gpg at the forwarded socket. gpgconf reports where THIS gpg expects
+    # the agent socket; symlink both that path and the homedir fallback so gpg
+    # finds it whether or not a /run/user socketdir exists in this container.
+    _sock=$(HOME="$_home" GNUPGHOME="$_gnupg" gpgconf --list-dirs agent-socket 2>/dev/null || true)
+    if [ -n "$_sock" ]; then
+        mkdir -p "$(dirname "$_sock")" 2>/dev/null || true
+        ln -sf "$GPG_EXTRA_SOCKET" "$_sock" 2>/dev/null || true
+    fi
+    ln -sf "$GPG_EXTRA_SOCKET" "${_gnupg}/S.gpg-agent" 2>/dev/null || true
+
+    _signkey=""
+    [ -s "${GPG_AGENT_DIR}/signingkey" ] && _signkey=$(head -n1 "${GPG_AGENT_DIR}/signingkey" 2>/dev/null)
+    [ -n "$_signkey" ] || _signkey=$(HOME="$_home" GNUPGHOME="$_gnupg" gpg --list-keys --with-colons 2>/dev/null \
+        | awk -F: '$1=="fpr"{print $10; exit}')
+
+    chown -R "${WORKER_UID}:${WORKER_UID}" "$_gnupg" 2>/dev/null || true
+    if [ -n "$_signkey" ]; then
+        HOME="$_home" git config --global user.signingkey "$_signkey" 2>/dev/null || true
+        HOME="$_home" git config --global commit.gpgsign true 2>/dev/null || true
+        [ -e "${_home}/.gitconfig" ] && chown "${WORKER_UID}:${WORKER_UID}" "${_home}/.gitconfig" 2>/dev/null || true
+        log "remote signing wired: user.signingkey=$_signkey (agent socket forwarded from sidecar)"
+    else
+        log "WARNING: forwarded gpg socket present but no public key resolved; commit.gpgsign left off"
+    fi
+}
+
 # ── Phase 1: Network mode + guard proxy ─────────────────────────────────────
 # transparent (default when CAP_NET_ADMIN): iptables REDIRECT worker egress to
 #   the proxy; exempt the proxy uid, root, loopback, the CCTUI_URL host, DNS,
@@ -225,6 +282,7 @@ phase_network() {
         done
         [ "$_i" -ge 60 ] && log "WARNING: external guard-proxy not ready after 30s (egress stays deny-all)"
         install_guard_ca
+        wire_gpg_forwarding
         return 0
     fi
 
@@ -1130,7 +1188,7 @@ run_supervised_daemon() {
         --ro "$CONTEXT_DIR" \
         $(extra_ro_flags) \
         --rw /dev --rw /tmp --rw /workspace --rw "/home/${WORKER_USER}" \
-        --rw /var/run/workflow-guard --rw /var/run/guard-proxy \
+        --rw /var/run/workflow-guard --rw /var/run/guard-proxy --rw /var/run/gpg-agent \
         $(extra_rw_flags) \
         --user "$WORKER_UID" \
         --report /tmp/hardening.json \
@@ -1374,7 +1432,7 @@ exec cctui-supervisor \
     --ro "$CONTEXT_DIR" \
     $(extra_ro_flags) \
     --rw /dev --rw /tmp --rw /workspace --rw "/home/${WORKER_USER}" \
-    --rw /var/run/workflow-guard --rw /var/run/guard-proxy \
+    --rw /var/run/workflow-guard --rw /var/run/guard-proxy --rw /var/run/gpg-agent \
     $(extra_rw_flags) \
     --user "$WORKER_UID" \
     --report /tmp/hardening.json \
