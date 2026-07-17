@@ -503,6 +503,7 @@ impl SdkDriver {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        crate::childenv::ScrubChildEnv::scrub_child_env(&mut command);
 
         let mut child = command.spawn().with_context(|| {
             format!("spawning persistent `{}` (sdk) in {cwd}", self.cfg.claude_bin)

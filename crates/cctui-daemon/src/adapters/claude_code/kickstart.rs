@@ -123,6 +123,7 @@ fn direct_command(claude_bin: &str) -> tokio::process::Command {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    crate::childenv::ScrubChildEnv::scrub_child_env(&mut cmd);
     #[cfg(unix)]
     cmd.process_group(0);
     cmd

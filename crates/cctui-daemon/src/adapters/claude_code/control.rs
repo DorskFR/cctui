@@ -1496,12 +1496,14 @@ impl Driver {
     /// refuse and print the path — we log that but do not fail the archive, so
     /// the cctui-side state still moves to `archived`.
     async fn claude_rm(&self, short: &str) -> anyhow::Result<()> {
-        let out = tokio::process::Command::new(&self.cfg.claude_bin)
-            .arg("rm")
+        let mut cmd = tokio::process::Command::new(&self.cfg.claude_bin);
+        cmd.arg("rm")
             .arg(short)
             // `claude` lives in `~/.local/bin`, off launchd's minimal PATH
             // (CCT-138) — give the child an augmented PATH so exec succeeds.
-            .env("PATH", crate::childenv::child_path())
+            .env("PATH", crate::childenv::child_path());
+        crate::childenv::ScrubChildEnv::scrub_child_env(&mut cmd);
+        let out = cmd
             .output()
             .await
             .with_context(|| format!("spawning `{} rm {short}`", self.cfg.claude_bin))?;

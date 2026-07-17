@@ -584,6 +584,7 @@ pub async fn run_thread_lifecycle(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
+    crate::childenv::ScrubChildEnv::scrub_child_env(&mut cmd);
     let mut child = cmd.spawn()?;
     let mut stdin = child.stdin.take().context("codex app-server stdin unavailable")?;
     let stdout = child.stdout.take().context("codex app-server stdout unavailable")?;
@@ -1463,6 +1464,7 @@ impl CodexSession {
         for (key, value) in &self.env {
             cmd.env(key, value);
         }
+        crate::childenv::ScrubChildEnv::scrub_child_env(&mut cmd);
         let mut child = cmd
             .current_dir(cwd_path)
             // launchd strips `PATH` down to a minimal set that omits

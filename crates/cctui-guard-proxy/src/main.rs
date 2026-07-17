@@ -12,6 +12,7 @@
 
 mod denylist;
 mod forward;
+mod ghapp;
 mod health;
 mod inject;
 mod peek;
@@ -27,6 +28,7 @@ use anyhow::Context as _;
 use clap::{Parser, ValueEnum};
 
 use crate::forward::ForwardListener;
+use crate::ghapp::{GhAppConfig, GhAppMinter};
 use crate::inject::{InjectionPolicy, Injector, PerPodCa};
 use crate::policy::PolicyManager;
 use crate::secrets::{
@@ -117,6 +119,31 @@ struct Args {
     /// written when injection is active.
     #[arg(long, default_value = "/var/run/guard-proxy-ca/ca.pem", env = "GUARD_PROXY_CA_CERT_OUT")]
     ca_cert_out: PathBuf,
+
+    /// GitHub App id (CCT-722). Set together with `--github-app-installation-id`
+    /// to mint short-lived installation tokens for the `github` service instead
+    /// of injecting a stored PAT. The App private key is NOT on the CLI: it is
+    /// fetched from the secret store as `(identity, "github-app-key")`. Unset ⇒
+    /// inert (the `github` service uses the stored credential as before).
+    #[arg(long, env = "GUARD_PROXY_GITHUB_APP_ID")]
+    github_app_id: Option<String>,
+
+    /// GitHub App installation id the token is minted for (CCT-722).
+    #[arg(long, env = "GUARD_PROXY_GITHUB_APP_INSTALLATION_ID")]
+    github_app_installation_id: Option<String>,
+
+    /// Optional repository names (bare `name`, not `owner/name`) to scope the
+    /// minted installation token to. Empty = the installation's default set.
+    #[arg(long, value_delimiter = ',', env = "GUARD_PROXY_GITHUB_APP_REPOS")]
+    github_app_repos: Vec<String>,
+
+    /// GitHub REST base for the token exchange; override only for testing.
+    #[arg(
+        long,
+        default_value = crate::ghapp::DEFAULT_API_BASE,
+        env = "GUARD_PROXY_GITHUB_APP_API_BASE"
+    )]
+    github_app_api_base: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -192,8 +219,33 @@ fn build_injection(
         args.identity
     );
 
-    let injector = Injector::new(ca, secrets, policy)?;
+    let ghapp = build_ghapp(args, &secrets)?;
+    let injector = Injector::new(ca, secrets, policy, ghapp)?;
     Ok(Some(Arc::new(injector)))
+}
+
+/// Builds the GitHub-App installation-token minter (CCT-722) when both an App id
+/// and installation id are configured. Returns `None` (stored-PAT/passthrough
+/// behavior) otherwise, so the App path is inert until an operator wires it up.
+fn build_ghapp(
+    args: &Args,
+    secrets: &Arc<SecretSource>,
+) -> anyhow::Result<Option<Arc<GhAppMinter>>> {
+    let (Some(app_id), Some(installation_id)) =
+        (args.github_app_id.clone(), args.github_app_installation_id.clone())
+    else {
+        return Ok(None);
+    };
+    let mut config =
+        GhAppConfig::new(app_id, installation_id, args.github_app_repos.clone());
+    config.api_base.clone_from(&args.github_app_api_base);
+    tracing::info!(
+        "github-app token minting enabled: app_id={} installation_id={} repos={:?}",
+        config.app_id,
+        config.installation_id,
+        config.repositories
+    );
+    Ok(Some(Arc::new(GhAppMinter::new(secrets.clone(), config)?)))
 }
 
 /// Writes the public CA cert (PEM) world-readable so the worker (a different
@@ -338,5 +390,44 @@ mod tests {
     #[test]
     fn secret_source_rejects_unknown_backend() {
         assert!(Args::try_parse_from(["cctui-guard-proxy", "--secret-source", "bogus"]).is_err());
+    }
+
+    #[test]
+    fn github_app_flags_default_inert() {
+        let args = parse(&[]);
+        assert!(args.github_app_id.is_none());
+        assert!(args.github_app_installation_id.is_none());
+        assert!(args.github_app_repos.is_empty());
+        assert_eq!(args.github_app_api_base, crate::ghapp::DEFAULT_API_BASE);
+    }
+
+    #[test]
+    fn github_app_flags_parse() {
+        let args = parse(&[
+            "--github-app-id",
+            "123",
+            "--github-app-installation-id",
+            "456",
+            "--github-app-repos",
+            "cctui,infra",
+        ]);
+        assert_eq!(args.github_app_id.as_deref(), Some("123"));
+        assert_eq!(args.github_app_installation_id.as_deref(), Some("456"));
+        assert_eq!(args.github_app_repos, vec!["cctui", "infra"]);
+    }
+
+    #[tokio::test]
+    async fn ghapp_inert_without_both_ids() {
+        let secrets = build_secret_source(&parse(&["--secret-source", "env"])).await.unwrap().unwrap();
+        assert!(build_ghapp(&parse(&["--github-app-id", "123"]), &secrets).unwrap().is_none());
+        assert!(build_ghapp(&parse(&[]), &secrets).unwrap().is_none());
+        assert!(
+            build_ghapp(
+                &parse(&["--github-app-id", "1", "--github-app-installation-id", "2"]),
+                &secrets
+            )
+            .unwrap()
+            .is_some()
+        );
     }
 }

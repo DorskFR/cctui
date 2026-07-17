@@ -174,6 +174,7 @@ impl CodexDispatch {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        crate::childenv::ScrubChildEnv::scrub_child_env(&mut cmd);
         let outcome = match self.run_inner(cmd).await {
             Ok(outcome) => outcome,
             Err(err) => {

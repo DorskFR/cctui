@@ -376,6 +376,7 @@ async fn poll_threads(app: &AppServerConfig, limit: u32) -> anyhow::Result<Vec<T
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
+    crate::childenv::ScrubChildEnv::scrub_child_env(&mut cmd);
     let mut child = cmd.spawn()?;
     let mut stdin = child.stdin.take().context_stdin()?;
     let stdout = child.stdout.take().context_stdout()?;
