@@ -778,14 +778,6 @@ resolve_prompt_path() {
 }
 
 # ── Phase 4: Extension hooks ────────────────────────────────────────────────
-# Generic seam for DERIVED images to inject boot phases (e.g. credential
-# materialization, extra provisioning) WITHOUT forking this entrypoint. Any
-# snippets in /opt/worker-entrypoint.d/ are sourced in lexical order, after
-# identity-resolve and before identity-scrub, with the full boot env in scope
-# (so a hook can read the resolved canonical vars and write into the worker
-# home before the suffixed variants are scrubbed). The public image ships no
-# hooks, so this is a no-op here; the pattern mirrors nginx/postgres
-# `docker-entrypoint.d`.
 phase_extensions() {
     [ -d /opt/worker-entrypoint.d ] || return 0
     for _ext in /opt/worker-entrypoint.d/*.sh; do

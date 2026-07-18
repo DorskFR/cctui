@@ -105,17 +105,10 @@ idempotent. `GPG_PRIVATE_KEY` is **sidecar-only** (CCT-721) — never imported i
 the worker; a key seen in the worker env is a misconfiguration. `ANTHROPIC_*` /
 `OPENAI_*` model auth is unchanged (platform env passthrough / gateway token).
 
-No `VAR_<ID>` identity resolve/scrub runs on the worker anymore: real
-per-identity secrets never reach it (the sidecar selects them via
-`GUARD_PROXY_IDENTITY`), so `00-resolve-identity.sh` / `99-identity-scrub.sh` are
-no-ops. `TASK_IDENTITY` is still set from `payload.identity` and labels the
-placeholders + the sidecar's secret selection.
-
-**Read-deny (defense in depth).** `40-secret-read-guard.sh` writes a Claude Code
-`permissions.deny` Read rule for `~/.gnupg/**`, `~/.npmrc`, `~/.config/yt/**`,
-`~/.config/scli/**`, `~/.mcp.json` into `~/.claude/settings.json`, and drops a
-`PreToolUse` Bash+Read deny hook into `~/.claude/hooks/` (auto-registered by the
-entrypoint's `phase_permissions`, running alongside `cctui-guard`).
+No identity resolve/scrub runs on the worker: real per-identity secrets never
+reach it (the sidecar selects them via `GUARD_PROXY_IDENTITY`). `TASK_IDENTITY`
+is still set from `payload.identity` and labels the placeholders + the sidecar's
+secret selection.
 
 **No pod-wide secret injection.** The worker overlay carries the Vault
 `vault-role` annotation but **not** `vault-env-from-path` — from-path injected
@@ -580,9 +573,9 @@ input), then drops to uid 1000:
    `CONTEXT_PACK_URL` set); wire `CLAUDE.md`/skills/style/projects into the
    worker home; default `GUARD_RULES_FILE`.
 4. **Extensions** — source any `*.sh` in `/opt/worker-entrypoint.d/` (lexical
-   order), after identity-resolve and before identity-scrub. The generic seam
-   derived images use to inject boot phases (e.g. credential materialization)
-   without forking the entrypoint. No-op on the public image (empty dir).
+   order). The generic seam derived images use to inject boot phases (e.g.
+   credential materialization) without forking the entrypoint. No-op on the
+   public image (empty dir).
 5. **Callback** — install the `REPLY_URL` exit trap.
 6. **Guard** — start `cctui-guard` if the resolved prompt has step blocks
    (`# Step N` + `[allowed]`); always-allow the structural hosts.
