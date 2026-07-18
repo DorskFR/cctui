@@ -10,6 +10,7 @@ members = [
     "crates/cctui-github",
     "crates/cctui-guard",
     "crates/cctui-guard-proxy",
+    "crates/cctui-orchestrator",
     "crates/cctui-proto",
     "crates/cctui-query",
     "crates/cctui-server",
@@ -18,7 +19,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.7.195"
+version = "0.7.196"
 edition = "2024"
 license = "MIT"
 authors = ["DorskFR"]
@@ -70,6 +71,7 @@ async-trait = "0.1"
 # =-pinned: newer AWS SDK releases require rustc 1.94.1, toolchain is pinned to 1.90.0
 aws-config = { version = "=1.8.13", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio"] }
 aws-sdk-secretsmanager = { version = "=1.99.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
-kube = { version = "0.96", default-features = false, features = ["client", "rustls-tls", "runtime"] }
-k8s-openapi = { version = "0.23", features = ["latest"] }
+kube = { version = "0.96", default-features = false, features = ["client", "rustls-tls", "runtime", "derive"] }
+k8s-openapi = { version = "0.23", features = ["latest", "schemars"] }
+schemars = { version = "0.8", features = ["derive"] }
 ts-rs = { version = "10", features = ["chrono-impl", "serde-json-impl", "uuid-impl"] }
