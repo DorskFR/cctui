@@ -4,8 +4,8 @@
 //! For a host on the *injection* allow-list the proxy terminates TLS (presenting
 //! a leaf cert minted on the fly and signed by a per-pod CA), parses each
 //! HTTP/1.1 request, STRIPS whatever credential the agent supplied
-//! (`Authorization` / npm `_authToken` bearer / git Basic / Slack `d` cookie),
-//! looks up the REAL credential by `(host → service, task identity)` from the
+//! (`Authorization` / npm `_authToken` bearer / git Basic / session cookie),
+//! looks up the REAL credential by the rule's explicit [`SecretRef`] via the
 //! [`SecretSource`], substitutes it, and forwards upstream over real TLS
 //! (validating the upstream cert against the public roots). Hosts NOT on the
 //! allow-list keep the SNI-peek passthrough splice in `transparent.rs`, so the
@@ -44,7 +44,7 @@ use tokio::net::TcpStream;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 use crate::ghapp::GhAppMinter;
-use crate::secrets::{Credential, SecretError, SecretSource};
+use crate::secrets::{Credential, SecretError, SecretRef, SecretSource, render_identity};
 
 /// How to shape the injected credential for a given host.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,26 +57,41 @@ pub enum AuthShape {
     /// accepts any username with a token as the password; the convention is
     /// `x-access-token`.
     Basic { username: String },
-    /// `Authorization: Bearer <cred>` plus a `d=<cookie>` cookie — Slack's
-    /// browser (`xoxc`) session tokens. The cookie is fetched as a companion
-    /// secret (`<service>-cookie`).
-    Slack,
+    /// `Authorization: Bearer <cred>` plus a `<cookie_name>=<value>` cookie from
+    /// the rule's companion `cookie_secret` — e.g. Slack's browser (`xoxc`)
+    /// session tokens need their `d` cookie.
+    BearerCookie { cookie_name: String },
 }
 
-/// One allow-listed host and how to inject its credential.
+/// One allow-listed host and how to inject its credential. The secret is an
+/// explicit engine-qualified [`SecretRef`] — the proxy carries no service
+/// taxonomy of its own.
 #[derive(Debug, Clone)]
 pub struct InjectionRule {
     pub host: String,
-    /// Secret-source service key, e.g. `github`, `npm`, `slack`.
+    /// Label for logs and provider matching (the GitHub-App minter), not a
+    /// lookup key.
+    pub service: String,
+    pub shape: AuthShape,
+    pub secret: SecretRef,
+    /// Companion cookie value; required by [`AuthShape::BearerCookie`].
+    pub cookie_secret: Option<SecretRef>,
+}
+
+/// A `host → service/shape` mapping before a secret ref is attached (the legacy
+/// `--inject-hosts` path derives refs from the configured backend).
+#[derive(Debug, Clone)]
+pub struct HostSpec {
+    pub host: String,
     pub service: String,
     pub shape: AuthShape,
 }
 
-/// Built-in `host → (service, shape)` table. `--inject-hosts` selects a subset
-/// of these by hostname, or supplies `host=service` / `host=service:<shape>` to
-/// map a host not covered here (`<shape>` ∈ `bearer` | `basic`/`git` | `slack`).
+/// Convenience `host → (service, shape)` table for the legacy `--inject-hosts`
+/// form. `host=service:<shape>` overrides; the JSON inject config bypasses this
+/// entirely.
 #[must_use]
-pub fn builtin_rule(host: &str) -> Option<InjectionRule> {
+pub fn builtin_rule(host: &str) -> Option<HostSpec> {
     let (service, shape) = match host {
         "api.github.com" => ("github", AuthShape::Bearer),
         // git smart-HTTP clone/fetch/push send Basic auth; rewrite to the
@@ -84,24 +99,26 @@ pub fn builtin_rule(host: &str) -> Option<InjectionRule> {
         "github.com" => ("github", AuthShape::Basic { username: "x-access-token".to_owned() }),
         // npm sends the registry `_authToken` as `Authorization: Bearer`.
         "registry.npmjs.org" => ("npm", AuthShape::Bearer),
-        "slack.com" | "api.slack.com" => ("slack", AuthShape::Slack),
+        "slack.com" | "api.slack.com" => {
+            ("slack", AuthShape::BearerCookie { cookie_name: "d".to_owned() })
+        }
         "api.figma.com" => ("figma", AuthShape::Bearer),
         _ => return None,
     };
-    Some(InjectionRule { host: host.to_owned(), service: service.to_owned(), shape })
+    Some(HostSpec { host: host.to_owned(), service: service.to_owned(), shape })
 }
 
-/// Parses one `--inject-hosts` token into an [`InjectionRule`].
+/// Parses one `--inject-hosts` token into a [`HostSpec`].
 ///
 /// Accepted forms:
-/// - `host` — use the built-in rule; unknown hosts fall back to Bearer with the
-///   host as the service key.
+/// - `host` — use the built-in mapping; unknown hosts fall back to Bearer with
+///   the host as the service label.
 /// - `host=service` — Bearer with an explicit service name.
-/// - `host=service:git` / `:basic` / `:bearer` / `:slack` — explicit shape.
+/// - `host=service:git` / `:basic` / `:bearer` / `:cookie` — explicit shape.
 ///
 /// The host is lowercased; an empty token yields `None`.
 #[must_use]
-pub fn parse_inject_host(token: &str) -> Option<InjectionRule> {
+pub fn parse_inject_host(token: &str) -> Option<HostSpec> {
     let token = token.trim();
     if token.is_empty() {
         return None;
@@ -112,7 +129,7 @@ pub fn parse_inject_host(token: &str) -> Option<InjectionRule> {
         return None;
     }
     let Some(spec) = spec else {
-        return Some(builtin_rule(&host).unwrap_or_else(|| InjectionRule {
+        return Some(builtin_rule(&host).unwrap_or_else(|| HostSpec {
             host: host.clone(),
             service: host,
             shape: AuthShape::Bearer,
@@ -123,36 +140,94 @@ pub fn parse_inject_host(token: &str) -> Option<InjectionRule> {
         "git" | "gitbasic" | "git-basic" | "basic" => {
             AuthShape::Basic { username: "x-access-token".to_owned() }
         }
-        "slack" => AuthShape::Slack,
+        "slack" | "cookie" | "bearer+cookie" => {
+            AuthShape::BearerCookie { cookie_name: "d".to_owned() }
+        }
         _ => AuthShape::Bearer,
     };
-    Some(InjectionRule { host, service: service.trim().to_owned(), shape })
+    Some(HostSpec { host, service: service.trim().to_owned(), shape })
 }
 
-/// The injection allow-list plus the pod's task identity. Hosts NOT listed here
-/// keep today's SNI-peek passthrough (no TLS termination).
+/// One entry of the JSON inject config: which host, what auth shape, and the
+/// explicit secret ref(s) to inject. `${IDENTITY}`/`${identity}` templating
+/// applies to the refs.
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InjectEntry {
+    host: String,
+    #[serde(default)]
+    service: Option<String>,
+    /// `bearer` (default) | `basic`/`git` | `bearer+cookie`/`cookie`.
+    #[serde(default)]
+    shape: Option<String>,
+    /// Basic-auth username; default `x-access-token`.
+    #[serde(default)]
+    username: Option<String>,
+    /// Cookie name for `bearer+cookie`; default `d`.
+    #[serde(default)]
+    cookie_name: Option<String>,
+    secret: String,
+    #[serde(default)]
+    cookie_secret: Option<String>,
+}
+
+impl InjectEntry {
+    fn into_rule(self, identity: &str) -> anyhow::Result<InjectionRule> {
+        let host = self.host.trim().to_ascii_lowercase();
+        anyhow::ensure!(!host.is_empty(), "inject entry with an empty host");
+        let shape =
+            match self.shape.as_deref().unwrap_or("bearer").trim().to_ascii_lowercase().as_str() {
+                "bearer" => AuthShape::Bearer,
+                "basic" | "git" | "gitbasic" | "git-basic" => AuthShape::Basic {
+                    username: self.username.unwrap_or_else(|| "x-access-token".to_owned()),
+                },
+                "bearer+cookie" | "cookie" | "slack" => AuthShape::BearerCookie {
+                    cookie_name: self.cookie_name.unwrap_or_else(|| "d".to_owned()),
+                },
+                other => anyhow::bail!("inject entry for {host}: unknown shape {other:?}"),
+            };
+        let secret = SecretRef::parse(&render_identity(&self.secret, identity)?)?;
+        let cookie_secret = self
+            .cookie_secret
+            .map(|s| SecretRef::parse(&render_identity(&s, identity)?))
+            .transpose()?;
+        anyhow::ensure!(
+            !matches!(shape, AuthShape::BearerCookie { .. }) || cookie_secret.is_some(),
+            "inject entry for {host}: bearer+cookie shape needs cookie_secret"
+        );
+        Ok(InjectionRule {
+            service: self.service.unwrap_or_else(|| host.clone()),
+            host,
+            shape,
+            secret,
+            cookie_secret,
+        })
+    }
+}
+
+/// Parses the JSON inject config (an array of entries) into rules, applying
+/// identity templating to every secret ref. Any malformed entry fails the whole
+/// load — a partially applied credential config is worse than none.
+pub fn load_inject_config(json: &str, identity: &str) -> anyhow::Result<Vec<InjectionRule>> {
+    let entries: Vec<InjectEntry> =
+        serde_json::from_str(json).map_err(|e| anyhow::anyhow!("parsing inject config: {e}"))?;
+    entries.into_iter().map(|e| e.into_rule(identity)).collect()
+}
+
+/// The injection allow-list. Hosts NOT listed here keep today's SNI-peek
+/// passthrough (no TLS termination).
 #[derive(Debug, Clone)]
 pub struct InjectionPolicy {
-    /// Task identity — the first half of the secret lookup key.
-    pub identity: String,
     rules: Vec<InjectionRule>,
     by_host: HashMap<String, usize>,
 }
 
 impl InjectionPolicy {
     #[must_use]
-    pub fn new(identity: String, rules: Vec<InjectionRule>) -> Self {
+    pub fn new(rules: Vec<InjectionRule>) -> Self {
         let by_host =
             rules.iter().enumerate().map(|(i, r)| (r.host.to_ascii_lowercase(), i)).collect();
-        Self { identity, rules, by_host }
-    }
-
-    /// Builds a policy from `--inject-hosts` tokens (each a [`parse_inject_host`]
-    /// form) and the `--inject-identity`. Blank/garbage tokens are skipped.
-    #[must_use]
-    pub fn from_hosts(identity: String, hosts: &[String]) -> Self {
-        let rules = hosts.iter().filter_map(|h| parse_inject_host(h)).collect();
-        Self::new(identity, rules)
+        Self { rules, by_host }
     }
 
     /// The injection rule for `host` (SNI/Host name, case-insensitive), if the
@@ -162,10 +237,6 @@ impl InjectionPolicy {
         self.by_host.get(&host.to_ascii_lowercase()).map(|&i| &self.rules[i])
     }
 
-    #[must_use]
-    pub const fn is_empty(&self) -> bool {
-        self.rules.is_empty()
-    }
 }
 
 /// A per-pod CA (minted once at boot). The private key stays in memory here and
@@ -379,16 +450,13 @@ impl Injector {
     /// agent's auth and substitute the real credential. On NotFound/Backend:
     /// forward the ORIGINAL head unchanged (fail-closed — never a blank secret).
     async fn inject_head(&self, host: &str, rule: &InjectionRule, head: &[u8]) -> Vec<u8> {
-        match self.resolve_credential(&rule.service).await {
+        match self.resolve_credential(rule).await {
             Ok(cred) => {
-                let cookie = if matches!(rule.shape, AuthShape::Slack) {
-                    self.secrets
-                        .fetch(&self.policy.identity, &format!("{}-cookie", rule.service))
-                        .await
-                        .ok()
-                        .map(|c| c.expose().to_owned())
-                } else {
-                    None
+                let cookie = match (&rule.shape, &rule.cookie_secret) {
+                    (AuthShape::BearerCookie { .. }, Some(r)) => {
+                        self.secrets.fetch(r).await.ok().map(|c| c.expose().to_owned())
+                    }
+                    _ => None,
                 };
                 rewrite_head(head, &rule.shape, cred.expose(), cookie.as_deref())
             }
@@ -409,21 +477,22 @@ impl Injector {
         }
     }
 
-    /// Resolves the credential for `service`. A configured GitHub-App provider
-    /// mints a short-lived installation token for its service; a `NotFound`
-    /// there (no App key provisioned) falls back to the stored credential,
-    /// which is what keeps the App path inert until an operator wires it up.
-    async fn resolve_credential(&self, service: &str) -> Result<Credential, SecretError> {
+    /// Resolves the credential for a rule. A configured GitHub-App provider
+    /// mints a short-lived installation token for its service label; a
+    /// `NotFound` there (no App key provisioned) falls back to the rule's own
+    /// secret ref, which is what keeps the App path inert until an operator
+    /// wires it up.
+    async fn resolve_credential(&self, rule: &InjectionRule) -> Result<Credential, SecretError> {
         if let Some(app) = &self.ghapp
-            && app.handles(service)
+            && app.handles(&rule.service)
         {
-            match app.mint(&self.policy.identity).await {
+            match app.mint().await {
                 Ok(cred) => return Ok(cred),
                 Err(SecretError::NotFound { .. }) => {}
                 Err(e) => return Err(e),
             }
         }
-        self.secrets.fetch(&self.policy.identity, service).await
+        self.secrets.fetch(&rule.secret).await
     }
 }
 
@@ -444,8 +513,10 @@ fn rewrite_head(head: &[u8], shape: &AuthShape, credential: &str, cookie: Option
         if name.eq_ignore_ascii_case("authorization") {
             continue; // always strip the agent's Authorization
         }
-        if matches!(shape, AuthShape::Slack) && name.eq_ignore_ascii_case("cookie") {
-            if let Some(rewritten) = strip_d_cookie(line)
+        if let AuthShape::BearerCookie { cookie_name } = shape
+            && name.eq_ignore_ascii_case("cookie")
+        {
+            if let Some(rewritten) = strip_named_cookie(line, cookie_name)
                 && !rewritten.is_empty()
             {
                 kept.push(rewritten);
@@ -456,7 +527,7 @@ fn rewrite_head(head: &[u8], shape: &AuthShape, credential: &str, cookie: Option
     }
 
     match shape {
-        AuthShape::Bearer | AuthShape::Slack => {
+        AuthShape::Bearer | AuthShape::BearerCookie { .. } => {
             kept.push(format!("Authorization: Bearer {credential}"));
         }
         AuthShape::Basic { username } => {
@@ -465,10 +536,10 @@ fn rewrite_head(head: &[u8], shape: &AuthShape, credential: &str, cookie: Option
             kept.push(format!("Authorization: Basic {encoded}"));
         }
     }
-    if matches!(shape, AuthShape::Slack)
+    if let AuthShape::BearerCookie { cookie_name } = shape
         && let Some(c) = cookie
     {
-        kept.push(format!("Cookie: d={c}"));
+        kept.push(format!("Cookie: {cookie_name}={c}"));
     }
 
     let mut out = String::with_capacity(head.len() + 128);
@@ -482,14 +553,15 @@ fn rewrite_head(head: &[u8], shape: &AuthShape, credential: &str, cookie: Option
     out.into_bytes()
 }
 
-/// Removes the `d=<value>` pair from a `Cookie:` header line, returning the line
-/// without it, or `Some("")` if nothing but `d` remained.
-fn strip_d_cookie(line: &str) -> Option<String> {
+/// Removes the `<name>=<value>` pair from a `Cookie:` header line, returning
+/// the line without it, or `Some("")` if nothing but that cookie remained.
+fn strip_named_cookie(line: &str, name: &str) -> Option<String> {
     let value = line.split_once(':')?.1.trim();
+    let prefix = format!("{name}=");
     let kept: Vec<&str> = value
         .split(';')
         .map(str::trim)
-        .filter(|pair| !pair.is_empty() && !pair.starts_with("d="))
+        .filter(|pair| !pair.is_empty() && !pair.starts_with(&prefix))
         .collect();
     if kept.is_empty() { Some(String::new()) } else { Some(format!("Cookie: {}", kept.join("; "))) }
 }
@@ -805,6 +877,22 @@ mod tests {
         String::from_utf8(v.to_vec()).unwrap()
     }
 
+    fn test_ref(var: &str) -> SecretRef {
+        SecretRef::Env { var: var.to_owned() }
+    }
+
+    fn rule_from(spec: HostSpec) -> InjectionRule {
+        let cookie_secret = matches!(spec.shape, AuthShape::BearerCookie { .. })
+            .then(|| test_ref("TEST_COOKIE"));
+        InjectionRule {
+            host: spec.host,
+            service: spec.service,
+            shape: spec.shape,
+            secret: test_ref("TEST_SECRET"),
+            cookie_secret,
+        }
+    }
+
     #[test]
     fn parse_inject_host_forms() {
         assert_eq!(parse_inject_host("api.github.com").unwrap().service, "github");
@@ -813,7 +901,10 @@ mod tests {
         let npm = parse_inject_host("Registry.NPMJS.org").unwrap();
         assert_eq!(npm.host, "registry.npmjs.org");
         assert_eq!(npm.service, "npm");
-        assert!(matches!(parse_inject_host("slack.com").unwrap().shape, AuthShape::Slack));
+        assert!(matches!(
+            parse_inject_host("slack.com").unwrap().shape,
+            AuthShape::BearerCookie { .. }
+        ));
 
         let unknown = parse_inject_host("example.com").unwrap();
         assert_eq!(unknown.service, "example.com");
@@ -825,6 +916,10 @@ mod tests {
         let yt = parse_inject_host("yt.example=youtrack").unwrap();
         assert_eq!(yt.service, "youtrack");
         assert!(matches!(yt.shape, AuthShape::Bearer));
+        assert!(matches!(
+            parse_inject_host("chat.example=chat:cookie").unwrap().shape,
+            AuthShape::BearerCookie { .. }
+        ));
 
         assert!(parse_inject_host("").is_none());
         assert!(parse_inject_host("   ").is_none());
@@ -832,17 +927,64 @@ mod tests {
 
     #[test]
     fn policy_matches_case_insensitively() {
-        let policy = InjectionPolicy::new(
-            "acme".to_owned(),
-            vec![
-                parse_inject_host("api.github.com").unwrap(),
-                parse_inject_host("github.com").unwrap(),
-            ],
-        );
-        assert!(!policy.is_empty());
+        let policy = InjectionPolicy::new(vec![
+            rule_from(parse_inject_host("api.github.com").unwrap()),
+            rule_from(parse_inject_host("github.com").unwrap()),
+        ]);
         assert_eq!(policy.rule_for("API.GitHub.com").unwrap().service, "github");
         assert!(matches!(policy.rule_for("github.com").unwrap().shape, AuthShape::Basic { .. }));
         assert!(policy.rule_for("example.com").is_none());
+    }
+
+    #[test]
+    fn inject_config_parses_shapes_refs_and_templating() {
+        let json = r#"[
+            {"host": "api.github.com", "service": "github",
+             "secret": "vault:kvmount/data/cctui/workers#GITHUB_TOKEN_${IDENTITY}"},
+            {"host": "GitHub.com", "service": "github", "shape": "git",
+             "secret": "vault:kvmount/data/cctui/workers#GITHUB_TOKEN_${IDENTITY}"},
+            {"host": "chat.example.com", "shape": "bearer+cookie", "cookie_name": "sess",
+             "secret": "env:CHAT_TOKEN", "cookie_secret": "k8s:chat-creds#cookie"},
+            {"host": "internal.example.com", "shape": "basic", "username": "svc",
+             "secret": "aws-sm:prod/internal#password"}
+        ]"#;
+        let rules = load_inject_config(json, "acme").unwrap();
+        assert_eq!(rules.len(), 4);
+
+        assert_eq!(rules[0].host, "api.github.com");
+        assert!(matches!(rules[0].shape, AuthShape::Bearer));
+        assert_eq!(
+            rules[0].secret,
+            SecretRef::parse("vault:kvmount/data/cctui/workers#GITHUB_TOKEN_ACME").unwrap()
+        );
+
+        assert_eq!(rules[1].host, "github.com");
+        assert!(
+            matches!(&rules[1].shape, AuthShape::Basic { username } if username == "x-access-token")
+        );
+
+        assert!(
+            matches!(&rules[2].shape, AuthShape::BearerCookie { cookie_name } if cookie_name == "sess")
+        );
+        assert_eq!(rules[2].service, "chat.example.com");
+        assert_eq!(rules[2].cookie_secret, Some(SecretRef::parse("k8s:chat-creds#cookie").unwrap()));
+
+        assert!(matches!(&rules[3].shape, AuthShape::Basic { username } if username == "svc"));
+    }
+
+    #[test]
+    fn inject_config_rejects_bad_entries() {
+        for (json, why) in [
+            (r#"[{"host": "a.com", "secret": "bogus-ref"}]"#, "unknown ref scheme"),
+            (r#"[{"host": "a.com", "shape": "sigv4", "secret": "env:X"}]"#, "unknown shape"),
+            (r#"[{"host": "a.com", "shape": "cookie", "secret": "env:X"}]"#, "missing cookie_secret"),
+            (r#"[{"host": "", "secret": "env:X"}]"#, "empty host"),
+            (r#"[{"host": "a.com", "secret": "env:CRED_${IDENTITY}"}]"#, "placeholder w/o identity"),
+            (r#"[{"host": "a.com", "secret": "env:X", "typo_field": 1}]"#, "unknown field"),
+        ] {
+            let identity = if why.contains("identity") { "" } else { "acme" };
+            assert!(load_inject_config(json, identity).is_err(), "must reject: {why}");
+        }
     }
 
     #[test]
@@ -877,11 +1019,12 @@ mod tests {
     }
 
     #[test]
-    fn slack_injects_bearer_and_d_cookie_stripping_agent_cookie() {
+    fn bearer_cookie_injects_bearer_and_cookie_stripping_agent_cookie() {
         let h = head(
             "POST /api/conversations.list HTTP/1.1\nHost: slack.com\nCookie: b=1; d=agentcookie; lc=2\nAuthorization: Bearer xoxc-agent\n\n",
         );
-        let out = as_text(&rewrite_head(&h, &AuthShape::Slack, "xoxc-real", Some("xoxd-real")));
+        let shape = AuthShape::BearerCookie { cookie_name: "d".to_owned() };
+        let out = as_text(&rewrite_head(&h, &shape, "xoxc-real", Some("xoxd-real")));
         assert!(out.contains("Authorization: Bearer xoxc-real\r\n"), "{out}");
         assert!(out.contains("Cookie: b=1; lc=2\r\n"), "non-d cookies kept: {out}");
         assert!(out.contains("Cookie: d=xoxd-real\r\n"), "real d cookie injected: {out}");
@@ -997,18 +1140,14 @@ mod tests {
     struct MockBackend(Result<&'static str, ()>);
 
     #[async_trait::async_trait]
-    impl crate::secrets::SecretBackend for MockBackend {
-        async fn fetch(
+    impl crate::secrets::RefResolver for MockBackend {
+        async fn resolve(
             &self,
-            identity: &str,
-            service: &str,
+            r: &SecretRef,
         ) -> Result<crate::secrets::Credential, SecretError> {
             match self.0 {
                 Ok(v) => Ok(crate::secrets::Credential::new(v.to_owned())),
-                Err(()) => Err(SecretError::NotFound {
-                    identity: identity.to_owned(),
-                    service: service.to_owned(),
-                }),
+                Err(()) => Err(SecretError::NotFound { what: r.to_string() }),
             }
         }
     }
@@ -1020,10 +1159,13 @@ mod tests {
     ) -> (Injector, Arc<PerPodCa>) {
         let client_ca = Arc::new(PerPodCa::generate().unwrap());
         let secrets = Arc::new(SecretSource::new(Box::new(backend), Duration::from_secs(120)));
-        let policy = InjectionPolicy::new(
-            "acme".to_owned(),
-            vec![InjectionRule { host: "localhost".to_owned(), service: "svc".to_owned(), shape }],
-        );
+        let policy = InjectionPolicy::new(vec![InjectionRule {
+            host: "localhost".to_owned(),
+            service: "svc".to_owned(),
+            shape,
+            secret: test_ref("TEST_SECRET"),
+            cookie_secret: None,
+        }]);
         let mut inj = Injector::new(client_ca.clone(), secrets, policy, None).unwrap();
         // Trust the upstream's self-signed CA so the injector validates it.
         inj.connector = Injector::build_connector(vec![up.ca.ca_der().clone()]);

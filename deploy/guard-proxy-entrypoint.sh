@@ -26,6 +26,21 @@ log() { echo "guard-proxy-entrypoint: $*"; }
 GPG_AGENT_DIR="${CCTUI_GPG_AGENT_DIR:-/var/run/gpg-agent}"
 GPG_EXTRA_SOCKET="${CCTUI_GPG_EXTRA_SOCKET:-${GPG_AGENT_DIR}/S.gpg-agent.extra}"
 
+# GUARD_PROXY_GPG_SECRET is a secret REF resolved via the proxy's own engines,
+# so no armored key ever sits in the pod spec.
+fetch_gpg_key() {
+    [ -z "${GPG_PRIVATE_KEY:-}" ] || return 0
+    [ -n "${GUARD_PROXY_GPG_SECRET:-}" ] || return 0
+    if GPG_PRIVATE_KEY=$(cctui-guard-proxy fetch-secret "$GUARD_PROXY_GPG_SECRET") \
+        && [ -n "$GPG_PRIVATE_KEY" ]; then
+        export GPG_PRIVATE_KEY
+        log "fetched GPG signing key from $GUARD_PROXY_GPG_SECRET"
+    else
+        unset GPG_PRIVATE_KEY
+        log "WARNING: fetch-secret $GUARD_PROXY_GPG_SECRET failed — remote signing unavailable"
+    fi
+}
+
 start_signing_agent() {
     [ -n "${GPG_PRIVATE_KEY:-}" ] || { log "GPG_PRIVATE_KEY unset — no signing agent (proxy passthrough)"; return 0; }
     command -v gpg >/dev/null 2>&1 || { log "gpg missing — cannot start signing agent"; return 0; }
@@ -77,6 +92,7 @@ start_signing_agent() {
     log "gpg-agent up; extra socket forwarded at $GPG_EXTRA_SOCKET (signingkey=${_fpr:-unknown})"
 }
 
+fetch_gpg_key
 start_signing_agent
 
 exec cctui-guard-proxy "$@"

@@ -248,6 +248,9 @@ impl Spawner {
             }
         }
 
+        let identity =
+            payload.get("identity").and_then(Value::as_str).map(ToOwned::to_owned);
+
         let worker = pod_template
             .pointer_mut("/spec/containers/0")
             .and_then(Value::as_object_mut)
@@ -259,6 +262,21 @@ impl Spawner {
         worker.remove("args");
         Self::merge_env(worker, &overrides);
         Self::merge_env_secret_refs(worker, &secret_refs);
+
+        // Identity goes on the SIDECAR (it selects per-identity secret refs);
+        // the worker must never carry it as a credential surface (CCT-719).
+        if let Some(identity) = identity.filter(|i| !i.is_empty())
+            && let Some(sidecar) = pod_template
+                .pointer_mut("/spec/initContainers")
+                .and_then(Value::as_array_mut)
+                .and_then(|cs| {
+                    cs.iter_mut()
+                        .find(|c| c.get("name").and_then(Value::as_str) == Some("guard-proxy"))
+                })
+                .and_then(Value::as_object_mut)
+        {
+            Self::merge_env(sidecar, &[("GUARD_PROXY_IDENTITY".into(), identity)]);
+        }
 
         // Stamp origin/session labels + the full-id annotation.
         let meta =
@@ -633,6 +651,17 @@ mod tests {
                             "metadata": { "labels": { "app.kubernetes.io/name": "claude-worker" } },
                             "spec": {
                                 "restartPolicy": "Never",
+                                "initContainers": [
+                                    { "name": "net-init", "image": "example.com/worker:latest" },
+                                    {
+                                        "name": "guard-proxy",
+                                        "image": "example.com/worker:latest",
+                                        "restartPolicy": "Always",
+                                        "env": [
+                                            { "name": "GUARD_PROXY_IDENTITY", "value": "acme" }
+                                        ]
+                                    }
+                                ],
                                 "containers": [{
                                     "name": "worker",
                                     "image": "example.com/worker:latest",
@@ -776,6 +805,50 @@ mod tests {
         assert_eq!(Spawner::default_deadline_secs(Some(" 120 ")), 7200);
         assert_eq!(Spawner::default_deadline_secs(Some("nope")), 3600);
         assert_eq!(Spawner::default_deadline_secs(Some("0")), 3600);
+    }
+
+    #[test]
+    fn payload_identity_is_stamped_on_guard_proxy_sidecar_only() {
+        let s = spec("sess-id", json!({ "flow": "review", "identity": "zephyr" }));
+        let name = Spawner::job_name("sess-id");
+        let job =
+            Spawner::build_job("http://cctui:8700", &sample_cronjob(), &s, &name, 3600).unwrap();
+        let v = serde_json::to_value(&job).unwrap();
+
+        let sidecar_env =
+            v.pointer("/spec/template/spec/initContainers/1/env").unwrap().as_array().unwrap();
+        let identity = sidecar_env
+            .iter()
+            .find(|e| e["name"] == "GUARD_PROXY_IDENTITY")
+            .and_then(|e| e["value"].as_str());
+        assert_eq!(identity, Some("zephyr"), "template default must be overridden");
+
+        assert!(
+            v.pointer("/spec/template/spec/initContainers/0/env").is_none(),
+            "other init containers untouched"
+        );
+        let worker_env =
+            v.pointer("/spec/template/spec/containers/0/env").unwrap().as_array().unwrap();
+        assert!(
+            !worker_env.iter().any(|e| e["name"] == "GUARD_PROXY_IDENTITY"),
+            "identity must not land on the worker container"
+        );
+    }
+
+    #[test]
+    fn missing_identity_keeps_template_sidecar_default() {
+        let s = spec("sess-noid", json!({ "flow": "review" }));
+        let name = Spawner::job_name("sess-noid");
+        let job =
+            Spawner::build_job("http://cctui:8700", &sample_cronjob(), &s, &name, 3600).unwrap();
+        let v = serde_json::to_value(&job).unwrap();
+        let sidecar_env =
+            v.pointer("/spec/template/spec/initContainers/1/env").unwrap().as_array().unwrap();
+        let identity = sidecar_env
+            .iter()
+            .find(|e| e["name"] == "GUARD_PROXY_IDENTITY")
+            .and_then(|e| e["value"].as_str());
+        assert_eq!(identity, Some("acme"), "no payload identity ⇒ template default stays");
     }
 
     #[test]
