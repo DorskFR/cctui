@@ -5,8 +5,8 @@
 //! scope-bounded.
 //!
 //! Mechanism: the App private key (PEM) lives in the secret store — fetched by
-//! the sidecar via `SecretSource::fetch(identity, "github-app-key")`, never on
-//! the worker. At use-time the sidecar signs a short RS256 JWT (`iss`=App id,
+//! the sidecar via its configured key [`SecretRef`], never on the worker. At
+//! use-time the sidecar signs a short RS256 JWT (`iss`=App id,
 //! ~9 min lifetime), exchanges it at `POST /app/installations/<id>/access_tokens`
 //! (optionally scoping to `repositories`), and injects the returned ~1h
 //! installation token. The token is cached until ~5 min before its `expires_at`
@@ -31,14 +31,12 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
-use crate::secrets::{Credential, SecretError, SecretSource};
+use crate::secrets::{Credential, SecretError, SecretRef, SecretSource};
 
 /// Default GitHub REST base; overridable so tests can point at a mock server.
 pub const DEFAULT_API_BASE: &str = "https://api.github.com";
 /// Injection service key this provider mints for.
 const DEFAULT_SERVICE: &str = "github";
-/// Secret-store service key under which the App private-key PEM is stored.
-const APP_KEY_SERVICE: &str = "github-app-key";
 /// Re-mint this long before the token's `expires_at`.
 const EXPIRY_SKEW: Duration = Duration::from_secs(300);
 /// JWT lifetime — GitHub caps App JWTs at 10 min; stay under it.
@@ -100,7 +98,6 @@ struct TokenResponse {
 
 #[derive(Hash, PartialEq, Eq, Clone)]
 struct CacheKey {
-    identity: String,
     installation: String,
     scope: String,
 }
@@ -116,6 +113,7 @@ pub struct GhAppMinter {
     http: reqwest::Client,
     secrets: Arc<SecretSource>,
     config: GhAppConfig,
+    key_ref: SecretRef,
     cache: Mutex<HashMap<CacheKey, CacheEntry>>,
 }
 
@@ -126,13 +124,17 @@ impl std::fmt::Debug for GhAppMinter {
 }
 
 impl GhAppMinter {
-    pub fn new(secrets: Arc<SecretSource>, config: GhAppConfig) -> anyhow::Result<Self> {
+    pub fn new(
+        secrets: Arc<SecretSource>,
+        config: GhAppConfig,
+        key_ref: SecretRef,
+    ) -> anyhow::Result<Self> {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
             .pool_max_idle_per_host(0)
             .user_agent("cctui-guard-proxy")
             .build()?;
-        Ok(Self { http, secrets, config, cache: Mutex::new(HashMap::new()) })
+        Ok(Self { http, secrets, config, key_ref, cache: Mutex::new(HashMap::new()) })
     }
 
     /// True if this provider mints for `service` (the injection service key).
@@ -149,16 +151,15 @@ impl GhAppMinter {
         self.config.repositories.join(",")
     }
 
-    /// Returns a valid installation token for `identity`, minting one if the
-    /// cache is empty or within [`EXPIRY_SKEW`] of expiry.
+    /// Returns a valid installation token, minting one if the cache is empty
+    /// or within [`EXPIRY_SKEW`] of expiry.
     ///
-    /// Errors mirror [`SecretBackend`](crate::secrets::SecretBackend): the App
+    /// Errors mirror [`RefResolver`](crate::secrets::RefResolver): the App
     /// private key being absent is `NotFound` (the injector falls back to the
     /// normal `github` fetch), and any exchange/signing failure is `Backend`
     /// (the injector forwards the agent's original header — fail closed).
-    pub async fn mint(&self, identity: &str) -> Result<Credential, SecretError> {
+    pub async fn mint(&self) -> Result<Credential, SecretError> {
         let key = CacheKey {
-            identity: identity.to_owned(),
             installation: self.config.installation_id.clone(),
             scope: self.scope_key(),
         };
@@ -174,7 +175,7 @@ impl GhAppMinter {
         // NotFound here (no App key configured) propagates so the injector falls
         // back to the stored `github` credential — this is what keeps the whole
         // path inert until an operator provisions the key.
-        let pem = self.secrets.fetch(identity, APP_KEY_SERVICE).await?;
+        let pem = self.secrets.fetch(&self.key_ref).await?;
         let jwt = self.build_jwt(pem.expose())?;
         let (token, cache_for) = self.exchange(&jwt).await?;
 
@@ -244,23 +245,24 @@ fn cache_duration(expires_at: &str) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::secrets::{SecretBackend, SecretError};
+    use crate::secrets::{RefResolver, SecretError};
 
-    /// A secret backend that returns a fixed value for the App-key service and
-    /// `NotFound` for everything else.
+    fn key_ref() -> SecretRef {
+        SecretRef::Env { var: "APP_KEY".to_owned() }
+    }
+
+    /// A resolver that returns a fixed value for the App-key ref and `NotFound`
+    /// for everything else.
     struct KeyBackend {
         pem: Option<String>,
     }
 
     #[async_trait::async_trait]
-    impl SecretBackend for KeyBackend {
-        async fn fetch(&self, identity: &str, service: &str) -> Result<Credential, SecretError> {
-            match (&self.pem, service) {
-                (Some(pem), APP_KEY_SERVICE) => Ok(Credential::new(pem.clone())),
-                _ => Err(SecretError::NotFound {
-                    identity: identity.to_owned(),
-                    service: service.to_owned(),
-                }),
+    impl RefResolver for KeyBackend {
+        async fn resolve(&self, r: &SecretRef) -> Result<Credential, SecretError> {
+            match (&self.pem, r == &key_ref()) {
+                (Some(pem), true) => Ok(Credential::new(pem.clone())),
+                _ => Err(SecretError::NotFound { what: r.to_string() }),
             }
         }
     }
@@ -279,7 +281,7 @@ mod tests {
     fn minter(secrets: Arc<SecretSource>, api_base: String) -> GhAppMinter {
         let mut config = GhAppConfig::new("123456".to_owned(), "42".to_owned(), Vec::new());
         config.api_base = api_base;
-        GhAppMinter::new(secrets, config).unwrap()
+        GhAppMinter::new(secrets, config, key_ref()).unwrap()
     }
 
     fn source(backend: KeyBackend) -> Arc<SecretSource> {
@@ -381,7 +383,7 @@ mod tests {
         let (private_pem, _) = test_rsa_keypair();
         let (base, _calls) = spawn_github_mock(201, 3600).await;
         let m = minter(source(KeyBackend { pem: Some(private_pem) }), base);
-        let cred = m.mint("acme").await.unwrap();
+        let cred = m.mint().await.unwrap();
         assert_eq!(cred.expose(), "ghs_installation_token");
     }
 
@@ -389,7 +391,7 @@ mod tests {
     async fn missing_app_key_is_not_found_so_injector_falls_back() {
         let (base, calls) = spawn_github_mock(201, 3600).await;
         let m = minter(source(KeyBackend { pem: None }), base);
-        assert!(matches!(m.mint("acme").await, Err(SecretError::NotFound { .. })));
+        assert!(matches!(m.mint().await, Err(SecretError::NotFound { .. })));
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
@@ -398,7 +400,7 @@ mod tests {
         let (private_pem, _) = test_rsa_keypair();
         let (base, _calls) = spawn_github_mock(401, 3600).await;
         let m = minter(source(KeyBackend { pem: Some(private_pem) }), base);
-        assert!(matches!(m.mint("acme").await, Err(SecretError::Backend(_))));
+        assert!(matches!(m.mint().await, Err(SecretError::Backend(_))));
     }
 
     #[tokio::test]
@@ -409,8 +411,8 @@ mod tests {
         let (base, calls) = spawn_github_mock(201, 3600).await;
         let m = minter(source(KeyBackend { pem: Some(private_pem) }), base);
 
-        assert_eq!(m.mint("acme").await.unwrap().expose(), "ghs_installation_token");
-        assert_eq!(m.mint("acme").await.unwrap().expose(), "ghs_installation_token");
+        assert_eq!(m.mint().await.unwrap().expose(), "ghs_installation_token");
+        assert_eq!(m.mint().await.unwrap().expose(), "ghs_installation_token");
         assert_eq!(calls.load(Ordering::SeqCst), 1, "second call within lifetime is cached");
     }
 
@@ -424,11 +426,11 @@ mod tests {
         let (base, calls) = spawn_github_mock(201, 301).await;
         let m = minter(source(KeyBackend { pem: Some(private_pem) }), base);
 
-        assert_eq!(m.mint("acme").await.unwrap().expose(), "ghs_installation_token");
+        assert_eq!(m.mint().await.unwrap().expose(), "ghs_installation_token");
         assert_eq!(calls.load(Ordering::SeqCst), 1);
 
         tokio::time::sleep(Duration::from_millis(1500)).await;
-        assert_eq!(m.mint("acme").await.unwrap().expose(), "ghs_installation_token");
+        assert_eq!(m.mint().await.unwrap().expose(), "ghs_installation_token");
         assert_eq!(calls.load(Ordering::SeqCst), 2, "past the expiry horizon must re-mint");
     }
 
