@@ -372,12 +372,26 @@ fn check_worker_env(
 ) -> Result<(), String> {
     for env in worker.env.iter().flatten() {
         if let Some(value_from) = &env.value_from {
-            let declared = profile
-                .env
-                .iter()
-                .flatten()
-                .any(|p| p.name == env.name && p.value_from.as_ref() == Some(value_from));
-            if !declared {
+            // fieldRef/resourceFieldRef reach only the pod's own metadata, so
+            // they stay exempt from the cluster-data smuggling check.
+            let smuggled = match (&value_from.secret_key_ref, &value_from.config_map_key_ref) {
+                (Some(sk), _) => !profile.env.iter().flatten().any(|p| {
+                    p.name == env.name
+                        && p.value_from
+                            .as_ref()
+                            .and_then(|v| v.secret_key_ref.as_ref())
+                            .is_some_and(|d| d.name == sk.name && d.key == sk.key)
+                }),
+                (None, Some(ck)) => !profile.env.iter().flatten().any(|p| {
+                    p.name == env.name
+                        && p.value_from
+                            .as_ref()
+                            .and_then(|v| v.config_map_key_ref.as_ref())
+                            .is_some_and(|d| d.name == ck.name && d.key == ck.key)
+                }),
+                (None, None) => false,
+            };
+            if smuggled {
                 return Err(format!(
                     "worker env `{}` uses a valueFrom reference not present in the profile — the \
                      dispatch must not mount cluster secrets into `{worker_name}`",
@@ -756,6 +770,25 @@ mod tests {
         });
         let src = source("lean", lean_profile());
         assert!(deny_msg(decide(&pod, &src).await).contains("valueFrom"));
+    }
+
+    #[tokio::test]
+    async fn downward_api_fieldref_env_is_allowed() {
+        use k8s_openapi::api::core::v1::{EnvVar, EnvVarSource, ObjectFieldSelector};
+        let mut pod = dispatched_pod("lean", &lean_profile());
+        worker_mut(&mut pod).env.get_or_insert_with(Vec::new).push(EnvVar {
+            name: "POD_NAME".to_owned(),
+            value: None,
+            value_from: Some(EnvVarSource {
+                field_ref: Some(ObjectFieldSelector {
+                    api_version: Some("v1".to_owned()),
+                    field_path: "metadata.name".to_owned(),
+                }),
+                ..EnvVarSource::default()
+            }),
+        });
+        let src = source("lean", lean_profile());
+        assert!(matches!(decide(&pod, &src).await, Decision::Allow));
     }
 
     #[tokio::test]
