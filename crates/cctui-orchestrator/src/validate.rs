@@ -271,8 +271,13 @@ fn check_worker_mounts(
     for m in profile.volume_mounts.iter().flatten() {
         want.insert(m.name.as_str());
     }
-    let have: BTreeSet<&str> =
-        worker.volume_mounts.iter().flatten().map(|m| m.name.as_str()).collect();
+    let have: BTreeSet<&str> = worker
+        .volume_mounts
+        .iter()
+        .flatten()
+        .map(|m| m.name.as_str())
+        .filter(|n| !is_api_server_injected(n))
+        .collect();
     if let Some(extra) = have.difference(&want).next() {
         return Err(format!(
             "worker container `{worker_name}` mounts `{extra}` — not part of the profile or the \
@@ -328,8 +333,20 @@ fn check_volumes(spec: &PodSpec, profile: &WorkerProfileSpec) -> Result<(), Stri
     for v in profile.volumes.iter().flatten() {
         want.insert(v.name.as_str());
     }
-    let have: BTreeSet<&str> = spec.volumes.iter().flatten().map(|v| v.name.as_str()).collect();
+    let have: BTreeSet<&str> = spec
+        .volumes
+        .iter()
+        .flatten()
+        .map(|v| v.name.as_str())
+        .filter(|n| !is_api_server_injected(n))
+        .collect();
     diff_names("volume", &want, &have)
+}
+
+/// Projected SA-token volume/mounts the API server itself adds during
+/// admission — exempt from raw-override rejection.
+fn is_api_server_injected(name: &str) -> bool {
+    name.starts_with("kube-api-access-")
 }
 
 fn diff_names(kind: &str, want: &BTreeSet<&str>, have: &BTreeSet<&str>) -> Result<(), String> {
@@ -514,6 +531,25 @@ mod tests {
     #[tokio::test]
     async fn faithful_dispatched_pod_is_allowed() {
         let pod = dispatched_pod("lean", &lean_profile());
+        let src = source("lean", lean_profile());
+        assert!(matches!(decide(&pod, &src).await, Decision::Allow));
+    }
+
+    #[tokio::test]
+    async fn api_server_injected_sa_token_volume_is_tolerated() {
+        let mut pod = dispatched_pod("lean", &lean_profile());
+        let spec = pod.spec.as_mut().unwrap();
+        spec.volumes.get_or_insert_default().push(k8s_openapi::api::core::v1::Volume {
+            name: "kube-api-access-hw82n".into(),
+            ..Default::default()
+        });
+        for c in &mut spec.containers {
+            c.volume_mounts.get_or_insert_default().push(k8s_openapi::api::core::v1::VolumeMount {
+                name: "kube-api-access-hw82n".into(),
+                mount_path: "/var/run/secrets/kubernetes.io/serviceaccount".into(),
+                ..Default::default()
+            });
+        }
         let src = source("lean", lean_profile());
         assert!(matches!(decide(&pod, &src).await, Decision::Allow));
     }
