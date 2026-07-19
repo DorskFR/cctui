@@ -26,6 +26,7 @@ serde_yaml = "0.9"
 json-patch.workspace = true
 axum.workspace = true
 axum-server.workspace = true
+rustls.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
