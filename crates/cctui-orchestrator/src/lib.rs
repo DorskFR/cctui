@@ -48,9 +48,32 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+pub mod envelope;
+
 /// Container name the injection webhook sandboxes when a profile does not set
 /// [`WorkerProfileSpec::worker_container`].
 pub const DEFAULT_WORKER_CONTAINER: &str = "worker";
+
+/// Pod label carrying the source profile name. Presence is the mutating
+/// webhook's trigger; a pod without it is admitted unchanged.
+pub const LABEL_WORKER_PROFILE: &str = "cctui.dev/worker-profile";
+
+/// Pod annotation naming which container to sandbox. Absent means
+/// [`DEFAULT_WORKER_CONTAINER`].
+pub const ANNOTATION_WORKER_CONTAINER: &str = "cctui.dev/worker-container";
+
+/// Pod annotation carrying the guard-proxy identity. When present the webhook
+/// upserts `GUARD_PROXY_IDENTITY` on the injected sidecar, overriding the
+/// ConfigMap-provided default.
+pub const ANNOTATION_GUARD_IDENTITY: &str = "cctui.dev/guard-identity";
+
+/// Pod annotation (`"true"`) requesting gpg-agent wiring, mirroring
+/// [`WorkerProfileSpec::gpg_signing`].
+pub const ANNOTATION_GPG_SIGNING: &str = "cctui.dev/gpg-signing";
+
+/// Pod annotation the webhook stamps (`"true"`) after injecting the envelope.
+/// Its presence makes re-invocation a no-op.
+pub const ANNOTATION_ENVELOPE_INJECTED: &str = "cctui.dev/envelope-injected";
 
 /// Operator-authored shape of a worker workload.
 ///

@@ -32,12 +32,12 @@ enum Cmd {
         token: String,
         #[arg(long)]
         name: String,
-        /// Namespace the worker Job + source `CronJob` template live in.
+        /// Namespace the worker Job + its `WorkerProfile` resources live in.
         #[arg(long)]
         namespace: String,
-        /// Suspended `CronJob` whose `jobTemplate` is cloned per dispatch.
+        /// `WorkerProfile` instantiated when a dispatch selects none by name.
         #[arg(long)]
-        source_cronjob: String,
+        default_profile: String,
         /// `CCTUI_URL` injected into spawned workers (defaults to `server_url`).
         #[arg(long)]
         worker_cctui_url: Option<String>,
@@ -62,7 +62,7 @@ fn print_status(path: &Path) -> anyhow::Result<()> {
         println!("config: {} (not found)", path.display());
         println!(
             "enrolled: no — run `cctui-dispatcher-kube enroll --server-url <url> \
-             --token <token> --name <name> --namespace <ns> --source-cronjob <name>`"
+             --token <token> --name <name> --namespace <ns> --default-profile <name>`"
         );
         println!("binary version: {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
@@ -75,7 +75,7 @@ fn print_status(path: &Path) -> anyhow::Result<()> {
     }
     println!("dispatcher_key: <redacted>");
     println!("namespace: {}", cfg.namespace);
-    println!("source_cronjob: {}", cfg.source_cronjob);
+    println!("default_profile: {}", cfg.default_profile);
     println!("worker CCTUI_URL: {}", cfg.worker_url());
     println!("binary version: {}", env!("CARGO_PKG_VERSION"));
     Ok(())
@@ -99,7 +99,7 @@ async fn main() -> anyhow::Result<()> {
             token,
             name,
             namespace,
-            source_cronjob,
+            default_profile,
             worker_cctui_url,
             account,
             provider,
@@ -112,7 +112,7 @@ async fn main() -> anyhow::Result<()> {
                 dispatcher_key: resp.dispatcher_key,
                 dispatcher_id: Some(resp.dispatcher_id),
                 namespace,
-                source_cronjob,
+                default_profile,
                 worker_cctui_url,
             };
             cfg.save_to(&path)?;
@@ -127,7 +127,7 @@ async fn main() -> anyhow::Result<()> {
             tracing::info!(user_id = %auth.user_id, "authenticated");
             let spawner = Spawner::connect(
                 cfg.namespace.clone(),
-                cfg.source_cronjob.clone(),
+                cfg.default_profile.clone(),
                 cfg.worker_url().to_owned(),
             )
             .await?;

@@ -119,6 +119,12 @@ pub struct WireDispatchSpec {
     /// `session_id` (each dispatch unique, no dedup).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dedup_key: Option<String>,
+    /// `WorkerProfile` to instantiate, selected by name only. A dispatch may
+    /// only *pick* an operator-authored profile; it can never supply raw
+    /// pod-spec fields. `None` ⇒ the dispatcher falls back to a `profile` key in
+    /// `payload`, then to its configured `default_profile`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
     /// Free-form blob, forwarded verbatim to the worker.
     pub payload: serde_json::Value,
 }
@@ -838,6 +844,7 @@ mod tests {
                 timeout_minutes: Some(30),
                 reply_url: None,
                 dedup_key: None,
+                profile: None,
                 payload: serde_json::json!({"name": "demo"}),
             },
         };

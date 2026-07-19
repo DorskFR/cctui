@@ -12,6 +12,10 @@ workspace = true
 name = "crdgen"
 path = "src/bin/crdgen.rs"
 
+[[bin]]
+name = "cctui-orchestrator"
+path = "src/main.rs"
+
 [dependencies]
 kube.workspace = true
 k8s-openapi.workspace = true
@@ -19,6 +23,15 @@ schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml = "0.9"
+json-patch.workspace = true
+axum.workspace = true
+axum-server.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
 
 [dev-dependencies]
 serde_yaml = "0.9"
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

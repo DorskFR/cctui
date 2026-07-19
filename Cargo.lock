@@ -112,6 +112,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
+name = "arc-swap"
+version = "1.9.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c049c0be4daef0b145cb3555416b3b8ef5b7888a38aea1a3a155801fe7b0810b"
+dependencies = [
+ "rustversion",
+]
+
+[[package]]
 name = "asn1-rs"
 version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -624,6 +633,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "axum-server"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c1ab4a3ec9ea8a657c72d99a03a824af695bd0fb5ec639ccbd9cd3543b41a5f9"
+dependencies = [
+ "arc-swap",
+ "bytes",
+ "fs-err",
+ "http 1.4.0",
+ "http-body 1.0.1",
+ "hyper",
+ "hyper-util",
+ "pin-project-lite",
+ "rustls",
+ "rustls-pemfile",
+ "rustls-pki-types",
+ "tokio",
+ "tokio-rustls",
+ "tower-service",
+]
+
+[[package]]
 name = "backoff"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -838,7 +869,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-admin"
-version = "0.7.196"
+version = "0.7.197"
 dependencies = [
  "anyhow",
  "cctui-proto",
@@ -855,7 +886,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-crypto"
-version = "0.7.196"
+version = "0.7.197"
 dependencies = [
  "chacha20poly1305",
  "hex",
@@ -865,7 +896,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-daemon"
-version = "0.7.196"
+version = "0.7.197"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -893,7 +924,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-dispatcher-apple"
-version = "0.7.196"
+version = "0.7.197"
 dependencies = [
  "anyhow",
  "cctui-proto",
@@ -917,7 +948,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-dispatcher-docker"
-version = "0.7.196"
+version = "0.7.197"
 dependencies = [
  "anyhow",
  "bollard",
@@ -942,9 +973,10 @@ dependencies = [
 
 [[package]]
 name = "cctui-dispatcher-kube"
-version = "0.7.196"
+version = "0.7.197"
 dependencies = [
  "anyhow",
+ "cctui-orchestrator",
  "cctui-proto",
  "chrono",
  "clap",
@@ -968,7 +1000,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-github"
-version = "0.7.196"
+version = "0.7.197"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -990,7 +1022,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-guard"
-version = "0.7.196"
+version = "0.7.197"
 dependencies = [
  "anyhow",
  "axum",
@@ -1007,7 +1039,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-guard-proxy"
-version = "0.7.196"
+version = "0.7.197"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1038,19 +1070,28 @@ dependencies = [
 
 [[package]]
 name = "cctui-orchestrator"
-version = "0.7.196"
+version = "0.7.197"
 dependencies = [
+ "anyhow",
+ "axum",
+ "axum-server",
+ "http-body-util",
+ "json-patch",
  "k8s-openapi",
  "kube",
  "schemars 0.8.22",
  "serde",
  "serde_json",
  "serde_yaml",
+ "tokio",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
 name = "cctui-proto"
-version = "0.7.196"
+version = "0.7.197"
 dependencies = [
  "chrono",
  "hex",
@@ -1063,7 +1104,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-query"
-version = "0.7.196"
+version = "0.7.197"
 dependencies = [
  "serde",
  "serde_json",
@@ -1072,7 +1113,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-server"
-version = "0.7.196"
+version = "0.7.197"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1116,7 +1157,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-supervisor"
-version = "0.7.196"
+version = "0.7.197"
 dependencies = [
  "anyhow",
  "caps",
@@ -1132,7 +1173,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-tui"
-version = "0.7.196"
+version = "0.7.197"
 dependencies = [
  "anyhow",
  "cctui-proto",
@@ -1903,6 +1944,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
 dependencies = [
  "percent-encoding",
+]
+
+[[package]]
+name = "fs-err"
+version = "3.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b91aa448ca50d7e79433bdf3ee8d99215430d2ec02ade5aefab2a073a1822e8a"
+dependencies = [
+ "autocfg",
+ "tokio",
 ]
 
 [[package]]
