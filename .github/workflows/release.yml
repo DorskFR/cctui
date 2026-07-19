@@ -212,6 +212,17 @@ jobs:
             ghcr.io/dorskfr/cctui-dispatcher-kube:${{ steps.ver.outputs.version }}
             ghcr.io/dorskfr/cctui-dispatcher-kube:latest
 
+      - name: Build + push orchestrator image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: deploy/orchestrator.Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ghcr.io/dorskfr/cctui-orchestrator:${{ steps.ver.outputs.version }}
+            ghcr.io/dorskfr/cctui-orchestrator:latest
+
       - name: Build + push ghreview image
         uses: docker/build-push-action@v7
         with:

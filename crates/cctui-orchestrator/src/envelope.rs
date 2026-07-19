@@ -34,6 +34,11 @@ pub const VOL_GUARD_PROXY_INJECT: &str = "guard-proxy-inject";
 pub const VOL_GUARD_PROXY_CA: &str = "guard-proxy-ca";
 pub const VOL_GPG_AGENT: &str = "gpg-agent";
 
+/// Volume names the envelope mounts into the worker container, always. Mirrors
+/// [`sandbox_worker`]; [`VOL_GPG_AGENT`] is added on top only under `gpgSigning`.
+pub const WORKER_ENVELOPE_MOUNTS: [&str; 5] =
+    [VOL_HOME, VOL_OVERLAY, VOL_GUARD_STATE, VOL_PROXY_POLICY, VOL_GUARD_PROXY_CA];
+
 pub const PROXY_UID: i64 = 1337;
 const FS_GROUP: i64 = 1000;
 

@@ -36,12 +36,15 @@
 //! [`WorkerProfileSpec::worker_container`]. Use
 //! [`WorkerProfileSpec::worker_container_name`] to resolve the effective name.
 //! The worker container's shape comes from the first-class fields
-//! ([`image`](WorkerProfileSpec::image), `command`, `args`, `resources`, `env`);
-//! the passthrough `containers` / `init_containers` carry the surrounding app
-//! stack (e.g. a database or auth sidecar), which the webhook leaves untouched.
+//! ([`image`](WorkerProfileSpec::image), `command`, `args`, `resources`, `env`,
+//! [`env_from`](WorkerProfileSpec::env_from),
+//! [`volume_mounts`](WorkerProfileSpec::volume_mounts)); the passthrough
+//! `containers` / `init_containers` carry the surrounding app stack (e.g. a
+//! database or auth sidecar), which the webhook leaves untouched.
 
 use k8s_openapi::api::core::v1::{
-    Container, EnvVar, LocalObjectReference, ResourceRequirements, Volume,
+    Container, EnvFromSource, EnvVar, LocalObjectReference, ResourceRequirements, Volume,
+    VolumeMount,
 };
 use kube::CustomResource;
 use schemars::JsonSchema;
@@ -113,6 +116,18 @@ pub struct WorkerProfileSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env: Option<Vec<EnvVar>>,
 
+    /// `ConfigMap`/`Secret` env sources for the worker container (maps to a
+    /// container's `envFrom`). Non-secret config only — the same rule as
+    /// [`env`](Self::env).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env_from: Option<Vec<EnvFromSource>>,
+
+    /// Volume mounts for the worker container. These name operator-owned
+    /// [`volumes`](Self::volumes); the webhook adds the envelope's own worker
+    /// mounts on top at admission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume_mounts: Option<Vec<VolumeMount>>,
+
     /// Overrides which container the webhook treats as the worker. Defaults to
     /// [`DEFAULT_WORKER_CONTAINER`]. This is the only container the webhook
     /// sandboxes.
@@ -139,6 +154,12 @@ pub struct WorkerProfileSpec {
     /// Node scheduling constraints. Passthrough.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_selector: Option<BTreeMap<String, String>>,
+
+    /// Annotations stamped onto every instantiated pod's template metadata (e.g.
+    /// a role annotation an in-cluster mutating webhook consumes). The
+    /// dispatcher's own `cctui.dev/*` session annotations win on key conflict.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pod_annotations: Option<BTreeMap<String, String>>,
 
     /// Sandbox runtime class for the pod (e.g. gVisor/Kata). Passthrough; left
     /// here so a profile can opt into a hardened runtime later.
@@ -220,6 +241,17 @@ resources:
 env:
   - name: LOG_LEVEL
     value: info
+envFrom:
+  - configMapRef:
+      name: worker-config
+volumeMounts:
+  - name: logs
+    mountPath: /var/log/worker
+  - name: shim
+    mountPath: /usr/local/bin/shim.sh
+    subPath: shim.sh
+podAnnotations:
+  example.dev/role: worker
 nodeSelector:
   kubernetes.io/arch: amd64
 imagePullSecrets:
@@ -252,6 +284,15 @@ containers:
         assert_eq!(spec.init_containers.as_ref().map(Vec::len), Some(1));
         assert_eq!(spec.volumes.as_ref().map(Vec::len), Some(1));
         assert_eq!(spec.image_pull_secrets.as_ref().map(Vec::len), Some(1));
+        assert_eq!(spec.env_from.as_ref().map(Vec::len), Some(1));
+        assert_eq!(spec.volume_mounts.as_ref().map(Vec::len), Some(2));
+        assert_eq!(
+            spec.pod_annotations
+                .as_ref()
+                .and_then(|a| a.get("example.dev/role"))
+                .map(String::as_str),
+            Some("worker")
+        );
     }
 
     #[test]

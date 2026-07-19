@@ -395,6 +395,7 @@ mod tests {
             timeout_minutes: Some(30),
             reply_url: Some("https://cb.example.test".to_owned()),
             dedup_key: None,
+            profile: None,
             payload,
         }
     }

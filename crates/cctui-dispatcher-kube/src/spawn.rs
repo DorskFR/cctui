@@ -7,10 +7,12 @@
 //! override surface would let it reshape its own sandbox.
 //!
 //! Instantiation is mechanical: the worker container is built from the profile
-//! (`image`/`command`/`args`/`resources`/`env`, named
+//! (`image`/`command`/`args`/`resources`/`env`/`envFrom`/`volumeMounts`, named
 //! [`WorkerProfileSpec::worker_container_name`]); everything else on the profile
 //! (extra containers, init containers, volumes, pull secrets, node selector,
-//! runtime class, service account) is passed through untouched. The dispatcher
+//! runtime class, service account, pod annotations) is passed through untouched.
+//! Profile `podAnnotations` land on the pod template metadata; the dispatcher's
+//! own `cctui.dev/*` session annotations win on key conflict. The dispatcher
 //! adds **no** sidecars, security contexts, or credential plumbing — a mutating
 //! admission webhook injects the sandbox at pod admission, keyed off the
 //! stamped `cctui.dev/worker-*` labels/annotations. Secret refs are resolved by
@@ -278,6 +280,9 @@ impl Spawner {
         labels.insert(LABEL_WORKER_PROFILE.into(), json!(Self::label_safe(profile_name)));
 
         let mut annotations = serde_json::Map::new();
+        for (k, v) in profile.pod_annotations.iter().flatten() {
+            annotations.insert(k.clone(), json!(v));
+        }
         annotations.insert(ANNOTATION_SESSION_ID.into(), json!(spec.session_id));
         annotations.insert(ANNOTATION_WORKER_CONTAINER.into(), json!(worker_name));
         if let Some(identity) = identity {
@@ -336,6 +341,12 @@ impl Spawner {
         }
         if let Some(env) = &profile.env {
             worker.insert("env".into(), serde_json::to_value(env)?);
+        }
+        if let Some(env_from) = &profile.env_from {
+            worker.insert("envFrom".into(), serde_json::to_value(env_from)?);
+        }
+        if let Some(mounts) = &profile.volume_mounts {
+            worker.insert("volumeMounts".into(), serde_json::to_value(mounts)?);
         }
         Self::merge_env(&mut worker, overrides);
 
@@ -695,6 +706,15 @@ mod tests {
             "runtimeClassName": "gvisor",
             "resources": { "requests": { "cpu": "2", "memory": "4Gi" } },
             "env": [{ "name": "LOG_LEVEL", "value": "info" }],
+            "envFrom": [{ "configMapRef": { "name": "worker-config" } }],
+            "volumeMounts": [
+                { "name": "logs", "mountPath": "/var/log/worker" },
+                { "name": "shim", "mountPath": "/usr/local/bin/shim.sh", "subPath": "shim.sh" }
+            ],
+            "podAnnotations": {
+                "example.dev/role": "worker",
+                "cctui.dev/session-id": "profile-should-lose"
+            },
             "nodeSelector": { "kubernetes.io/arch": "amd64" },
             "imagePullSecrets": [{ "name": "registry-pull" }],
             "volumes": [
@@ -871,6 +891,17 @@ mod tests {
         assert_eq!(containers[0]["name"], json!("agent"), "worker container name from profile");
         assert_eq!(containers[0]["command"], json!(["/entrypoint"]));
         assert_eq!(containers[0]["args"], json!(["--serve"]));
+        assert_eq!(
+            containers[0]["envFrom"],
+            json!([{ "configMapRef": { "name": "worker-config" } }])
+        );
+        assert_eq!(
+            containers[0]["volumeMounts"],
+            json!([
+                { "name": "logs", "mountPath": "/var/log/worker" },
+                { "name": "shim", "mountPath": "/usr/local/bin/shim.sh", "subPath": "shim.sh" }
+            ])
+        );
         assert_eq!(containers[1]["name"], json!("db"));
         assert_eq!(containers[2]["name"], json!("auth-idp"));
 
@@ -911,6 +942,16 @@ mod tests {
             v.pointer("/spec/template/metadata/annotations/cctui.dev~1guard-identity"),
             Some(&json!("zephyr")),
             "identity goes on the pod annotation, not container env"
+        );
+        assert_eq!(
+            v.pointer("/spec/template/metadata/annotations/example.dev~1role"),
+            Some(&json!("worker")),
+            "profile podAnnotations land on the pod template"
+        );
+        assert_eq!(
+            v.pointer("/spec/template/metadata/annotations/cctui.dev~1session-id"),
+            Some(&json!("sess-full")),
+            "dispatcher session annotation wins over a colliding profile podAnnotation"
         );
         assert!(
             !worker_env(&v).iter().any(|e| e["name"] == "GUARD_PROXY_IDENTITY"),
