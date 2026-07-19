@@ -23,8 +23,8 @@ use std::sync::OnceLock;
 /// Metadata/credential hostnames that are always denied. IP-literal forms are
 /// caught by [`ip_is_denied`] / the IP branch of [`host_is_denied`].
 const DENIED_HOSTNAMES: &[&str] = &[
-    "metadata.google.internal",  // GCP/GKE metadata server DNS name
-    "metadata",                  // short GCP alias
+    "metadata.google.internal", // GCP/GKE metadata server DNS name
+    "metadata",                 // short GCP alias
 ];
 
 /// True if `ip` is in the link-local metadata range (`169.254.0.0/16`), which

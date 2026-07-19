@@ -12,31 +12,42 @@ use crate::{
     ANNOTATION_ENVELOPE_INJECTED, ANNOTATION_GPG_SIGNING, ANNOTATION_GUARD_IDENTITY,
     ANNOTATION_WORKER_CONTAINER, DEFAULT_WORKER_CONTAINER, LABEL_WORKER_PROFILE,
 };
-use k8s_openapi::api::core::v1::Pod;
 use k8s_openapi::api::core::v1::{
     AppArmorProfile, Capabilities, ConfigMapEnvSource, ConfigMapVolumeSource, Container,
-    EmptyDirVolumeSource, EnvFromSource, EnvVar, HTTPGetAction, PodSecurityContext, Probe,
+    EmptyDirVolumeSource, EnvFromSource, EnvVar, HTTPGetAction, Pod, PodSecurityContext, Probe,
     ResourceRequirements, SecurityContext, Volume, VolumeMount,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 use std::collections::BTreeMap;
 
-const NET_INIT_CONTAINER: &str = "net-init";
-const GUARD_PROXY_CONTAINER: &str = "guard-proxy";
+pub const NET_INIT_CONTAINER: &str = "net-init";
+pub const GUARD_PROXY_CONTAINER: &str = "guard-proxy";
 const CONFIGMAP_GUARD_PROXY_ENV: &str = "guard-proxy-env";
 const CONFIGMAP_GUARD_PROXY_INJECT: &str = "guard-proxy-inject";
 
-const VOL_HOME: &str = "home";
-const VOL_OVERLAY: &str = "overlay";
-const VOL_GUARD_STATE: &str = "guard-state";
-const VOL_PROXY_POLICY: &str = "proxy-policy";
-const VOL_GUARD_PROXY_INJECT: &str = "guard-proxy-inject";
-const VOL_GUARD_PROXY_CA: &str = "guard-proxy-ca";
-const VOL_GPG_AGENT: &str = "gpg-agent";
+pub const VOL_HOME: &str = "home";
+pub const VOL_OVERLAY: &str = "overlay";
+pub const VOL_GUARD_STATE: &str = "guard-state";
+pub const VOL_PROXY_POLICY: &str = "proxy-policy";
+pub const VOL_GUARD_PROXY_INJECT: &str = "guard-proxy-inject";
+pub const VOL_GUARD_PROXY_CA: &str = "guard-proxy-ca";
+pub const VOL_GPG_AGENT: &str = "gpg-agent";
 
-const PROXY_UID: i64 = 1337;
+pub const PROXY_UID: i64 = 1337;
 const FS_GROUP: i64 = 1000;
+
+pub const WORKER_ADDED_CAPS: [&str; 9] = [
+    "SYS_ADMIN",
+    "CHOWN",
+    "DAC_OVERRIDE",
+    "FOWNER",
+    "FSETID",
+    "KILL",
+    "SETUID",
+    "SETGID",
+    "SETPCAP",
+];
 
 /// Default sidecar/init image, pinned to this binary's version. Overridable at
 /// runtime via `CCTUI_ORCH_SIDECAR_IMAGE`.
@@ -150,22 +161,7 @@ fn sandbox_worker(worker: &mut Container, cfg: &EnvelopeConfig) {
         }),
         capabilities: Some(Capabilities {
             drop: Some(vec!["ALL".to_owned()]),
-            add: Some(
-                [
-                    "SYS_ADMIN",
-                    "CHOWN",
-                    "DAC_OVERRIDE",
-                    "FOWNER",
-                    "FSETID",
-                    "KILL",
-                    "SETUID",
-                    "SETGID",
-                    "SETPCAP",
-                ]
-                .iter()
-                .map(|s| (*s).to_owned())
-                .collect(),
-            ),
+            add: Some(WORKER_ADDED_CAPS.iter().map(|s| (*s).to_owned()).collect()),
         }),
         ..SecurityContext::default()
     });

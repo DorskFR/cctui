@@ -49,6 +49,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 pub mod envelope;
+pub mod validate;
 
 /// Container name the injection webhook sandboxes when a profile does not set
 /// [`WorkerProfileSpec::worker_container`].

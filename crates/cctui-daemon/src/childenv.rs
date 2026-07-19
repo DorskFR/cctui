@@ -79,7 +79,7 @@ impl ScrubChildEnv for tokio::process::Command {
 
 #[cfg(test)]
 mod tests {
-    use super::{child_env_removals, child_path, ScrubChildEnv, CHILD_ENV_REMOVALS};
+    use super::{CHILD_ENV_REMOVALS, ScrubChildEnv, child_env_removals, child_path};
 
     #[test]
     fn augments_with_common_dirs_and_dedups() {
