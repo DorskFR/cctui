@@ -15,7 +15,7 @@
 use crate::envelope::{
     GUARD_PROXY_CONTAINER, NET_INIT_CONTAINER, PROXY_UID, VOL_GPG_AGENT, VOL_GUARD_PROXY_CA,
     VOL_GUARD_PROXY_INJECT, VOL_GUARD_STATE, VOL_HOME, VOL_OVERLAY, VOL_PROXY_POLICY,
-    WORKER_ADDED_CAPS,
+    WORKER_ADDED_CAPS, WORKER_ENVELOPE_MOUNTS,
 };
 use crate::{
     ANNOTATION_ENVELOPE_INJECTED, ANNOTATION_WORKER_CONTAINER, DEFAULT_WORKER_CONTAINER,
@@ -235,7 +235,56 @@ fn check_conformance(
 
     check_name_sets(spec, worker_name, profile)?;
     check_volumes(spec, profile)?;
+    check_worker_env_from(worker, worker_name, profile)?;
+    check_worker_mounts(worker, worker_name, profile)?;
     check_worker_env(worker, worker_name, profile)
+}
+
+/// Worker `envFrom` must be exactly the profile's — the envelope never adds
+/// `envFrom` to the worker, so any extra source is a raw dispatch override.
+fn check_worker_env_from(
+    worker: &Container,
+    worker_name: &str,
+    profile: &WorkerProfileSpec,
+) -> Result<(), String> {
+    if worker.env_from != profile.env_from {
+        return Err(format!(
+            "worker container `{worker_name}` envFrom does not match the profile — the dispatch \
+             must not add env sources to the worker"
+        ));
+    }
+    Ok(())
+}
+
+/// Worker volumeMounts must be exactly the profile's mounts ∪ the envelope's
+/// worker mounts (plus the gpg-agent mount under `gpgSigning`). An extra mount
+/// is a raw override; a missing one means the envelope didn't land.
+fn check_worker_mounts(
+    worker: &Container,
+    worker_name: &str,
+    profile: &WorkerProfileSpec,
+) -> Result<(), String> {
+    let mut want: BTreeSet<&str> = WORKER_ENVELOPE_MOUNTS.into_iter().collect();
+    if profile.gpg_signing {
+        want.insert(VOL_GPG_AGENT);
+    }
+    for m in profile.volume_mounts.iter().flatten() {
+        want.insert(m.name.as_str());
+    }
+    let have: BTreeSet<&str> =
+        worker.volume_mounts.iter().flatten().map(|m| m.name.as_str()).collect();
+    if let Some(extra) = have.difference(&want).next() {
+        return Err(format!(
+            "worker container `{worker_name}` mounts `{extra}` — not part of the profile or the \
+             injected envelope (raw override rejected)"
+        ));
+    }
+    if let Some(missing) = want.difference(&have).next() {
+        return Err(format!(
+            "worker container `{worker_name}` is missing expected volumeMount `{missing}`"
+        ));
+    }
+    Ok(())
 }
 
 fn check_name_sets(
@@ -384,6 +433,12 @@ mod tests {
         env.push(serde_json::json!({ "name": "SESSION_ID", "value": "s1" }));
         env.push(serde_json::json!({ "name": "TASK_ID", "value": "s1" }));
         worker.insert("env".into(), serde_json::Value::Array(env));
+        if let Some(env_from) = &profile.env_from {
+            worker.insert("envFrom".into(), serde_json::to_value(env_from).unwrap());
+        }
+        if let Some(mounts) = &profile.volume_mounts {
+            worker.insert("volumeMounts".into(), serde_json::to_value(mounts).unwrap());
+        }
 
         let mut containers = vec![serde_json::Value::Object(worker)];
         for c in profile.containers.iter().flatten() {
@@ -410,6 +465,9 @@ mod tests {
         }
 
         let mut annotations = serde_json::Map::new();
+        for (k, v) in profile.pod_annotations.iter().flatten() {
+            annotations.insert(k.clone(), serde_json::json!(v));
+        }
         annotations.insert(ANNOTATION_WORKER_CONTAINER.into(), serde_json::json!(worker_name));
         if profile.gpg_signing {
             annotations.insert(crate::ANNOTATION_GPG_SIGNING.into(), serde_json::json!("true"));
@@ -475,7 +533,17 @@ mod tests {
                 "name": "REGISTRY_TOKEN",
                 "valueFrom": { "secretKeyRef": { "name": "reg", "key": "token" } }
             }],
-            "volumes": [{ "name": "db-data", "emptyDir": {} }],
+            "envFrom": [{ "configMapRef": { "name": "worker-config" } }],
+            "volumeMounts": [
+                { "name": "logs", "mountPath": "/var/log/worker" },
+                { "name": "shim", "mountPath": "/usr/local/bin/shim.sh", "subPath": "shim.sh" }
+            ],
+            "podAnnotations": { "example.dev/role": "worker" },
+            "volumes": [
+                { "name": "db-data", "emptyDir": {} },
+                { "name": "logs", "emptyDir": {} },
+                { "name": "shim", "configMap": { "name": "worker-shim" } }
+            ],
             "initContainers": [{ "name": "migrate", "image": "registry.example.com/m:1" }],
             "containers": [{ "name": "db", "image": "registry.example.com/postgres:16" }],
         }))
@@ -483,6 +551,34 @@ mod tests {
         let pod = dispatched_pod("full", &profile);
         let src = source("full", profile);
         assert!(matches!(decide(&pod, &src).await, Decision::Allow));
+    }
+
+    #[tokio::test]
+    async fn worker_env_from_not_in_profile_is_denied() {
+        use k8s_openapi::api::core::v1::{ConfigMapEnvSource, EnvFromSource};
+        let mut pod = dispatched_pod("lean", &lean_profile());
+        worker_mut(&mut pod).env_from.get_or_insert_with(Vec::new).push(EnvFromSource {
+            config_map_ref: Some(ConfigMapEnvSource {
+                name: "smuggled-config".to_owned(),
+                optional: None,
+            }),
+            ..EnvFromSource::default()
+        });
+        let src = source("lean", lean_profile());
+        assert!(deny_msg(decide(&pod, &src).await).contains("envFrom"));
+    }
+
+    #[tokio::test]
+    async fn extra_worker_mount_is_denied() {
+        use k8s_openapi::api::core::v1::VolumeMount;
+        let mut pod = dispatched_pod("lean", &lean_profile());
+        worker_mut(&mut pod).volume_mounts.get_or_insert_with(Vec::new).push(VolumeMount {
+            name: "smuggled".to_owned(),
+            mount_path: "/smuggled".to_owned(),
+            ..VolumeMount::default()
+        });
+        let src = source("lean", lean_profile());
+        assert!(deny_msg(decide(&pod, &src).await).contains("smuggled"));
     }
 
     #[tokio::test]

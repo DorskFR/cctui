@@ -32,8 +32,10 @@ and is left untouched.
 | Field | Owner | Notes |
 |---|---|---|
 | `image`, `command`, `args`, `resources`, `env` | operator | worker-container shape; `env` is non-secret |
+| `envFrom`, `volumeMounts` | operator | worker-container env sources / mounts; non-secret config, mounts name operator-owned `volumes` |
 | `workerContainer` | operator | overrides the sandboxed container name (default `worker`) |
 | `containers`, `initContainers`, `volumes`, `imagePullSecrets`, `nodeSelector`, `runtimeClassName` | operator | passthrough pod shape; webhook does not sandbox these |
+| `podAnnotations` | operator | stamped onto each instantiated pod's template metadata; the dispatcher's own `cctui.dev/*` session annotations win on key conflict |
 | `serviceAccountName` | operator | identity / secret scope mapping; the dispatch request never sets this |
 | `gpgSigning` | operator | opt-in; webhook wires a gpg-agent socket into the worker container (CCT-726) |
 | per-run env (session id, reply URL, task payload, ...) | dispatcher | layered onto the worker `env` at Job creation |
