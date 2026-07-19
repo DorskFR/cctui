@@ -1,32 +1,40 @@
 //! Kubernetes Job spawn mechanics for the standalone kube dispatcher.
 //!
-//! Lifted from the transitional in-process `cctui-server/src/dispatchers/kube.rs`
-//! (CCT-247/248): clones a suspended worker CronJob's `jobTemplate` into a
-//! one-shot `batch/v1` Job, injecting per-session env. Runs in-cluster using the
-//! pod's projected ServiceAccount token (in-cluster config); the dispatcher's
-//! own ServiceAccount carries `cronjobs: get` + `jobs: get,create,delete` in the
-//! worker namespace. The server keeps its in-process copy as a transitional
-//! shape until CCT-248 parts 2-4 land; this is the enrolled-executor home for
-//! the same mechanics.
+//! This dispatcher is a neutral profile-instantiator: a dispatch may only
+//! *select* an operator-authored [`WorkerProfile`] by name and carry runtime
+//! data (session token, payload, ephemeral machine key). It never accepts raw
+//! pod-spec fields — the agent inside the worker influences the request, so any
+//! override surface would let it reshape its own sandbox.
 //!
-//! Semantics preserved verbatim from the in-process dispatcher:
-//! - Job name = `cctui-worker-<sha1(session_id)[:12]>` so a repeat dispatch of
-//!   the same session maps to the same Job (CCT-168 collision fix).
+//! Instantiation is mechanical: the worker container is built from the profile
+//! (`image`/`command`/`args`/`resources`/`env`, named
+//! [`WorkerProfileSpec::worker_container_name`]); everything else on the profile
+//! (extra containers, init containers, volumes, pull secrets, node selector,
+//! runtime class, service account) is passed through untouched. The dispatcher
+//! adds **no** sidecars, security contexts, or credential plumbing — a mutating
+//! admission webhook injects the sandbox at pod admission, keyed off the
+//! stamped `cctui.dev/worker-*` labels/annotations. Secret refs are resolved by
+//! the guard-proxy sidecar, not here: a secret-ref-shaped env value in the
+//! payload is rejected outright.
+//!
+//! Orthogonal Job mechanics are unchanged:
+//! - Job name = `cctui-worker-<sha1(dedup_key||session_id)[:12]>` so a repeat
+//!   dispatch of the same logical key maps to the same Job.
 //! - 409 on create → read the existing Job: in-flight ⇒ `deduplicated`;
-//!   terminal (Complete/Failed) ⇒ delete + recreate ⇒ `redispatched` (CCT-207).
+//!   terminal (Complete/Failed) ⇒ delete + recreate ⇒ `redispatched`.
 //! - `cctui_machine_key` is lifted out of the payload into `CCTUI_MACHINE_KEY`
-//!   and kept OUT of `TASK_PAYLOAD_JSON` (CCT-191).
-//! - reply_url → `REPLY_URL` env so the terminal callback (CCT-120) fires.
+//!   (runtime identity, not a stored secret) and kept OUT of `TASK_PAYLOAD_JSON`.
+//! - reply_url → `REPLY_URL` env so the terminal callback fires.
 //!
 //! ⚠️ Repo is PUBLIC — no homelab namespaces/images/registries here; the
-//! namespace + source CronJob (and thus the worker pod-spec) come from the
-//! dispatcher's own config.
+//! namespace + profile come from the dispatcher's own config / the request.
 #![allow(clippy::doc_markdown)]
 
 use std::time::Duration;
 
+use cctui_orchestrator::{WorkerProfile, WorkerProfileSpec};
 use cctui_proto::ws::WireDispatchSpec;
-use k8s_openapi::api::batch::v1::{CronJob, Job};
+use k8s_openapi::api::batch::v1::Job;
 use k8s_openapi::api::core::v1::Pod;
 use kube::api::{Api, DeleteParams, ListParams, PostParams, PropagationPolicy};
 use kube::{Client, Error as KubeError};
@@ -41,12 +49,10 @@ const PENDING_FAILURE_SECS: i64 = 300;
 /// (CCT-518; was 86400 = 24h).
 const JOB_TTL_SECONDS: i64 = 3600;
 
-/// Default worker lifetime when the dispatch carries no `timeout_minutes`
-/// (CCT-513): 1h, instead of inheriting the source CronJob template's 24h
-/// `activeDeadlineSeconds` backstop — a dispatched session that finishes but
-/// never signals done should cost at most an hour, not a day. Overridable via
-/// `CCTUI_WORKER_DEFAULT_TIMEOUT_MINUTES`; a per-dispatch `timeout_minutes`
-/// always wins.
+/// Default worker lifetime when the dispatch carries no `timeout_minutes`: 1h.
+/// A dispatched session that finishes but never signals done should cost at most
+/// an hour. Overridable via `CCTUI_WORKER_DEFAULT_TIMEOUT_MINUTES`; a
+/// per-dispatch `timeout_minutes` always wins.
 const DEFAULT_TIMEOUT_MINUTES: u32 = 60;
 use serde_json::{Value, json};
 use sha1::{Digest, Sha1};
@@ -54,6 +60,17 @@ use sha1::{Digest, Sha1};
 const LABEL_ORIGIN: &str = "cctui.dev/origin";
 const LABEL_SESSION_ID: &str = "cctui.dev/session-id";
 const ANNOTATION_SESSION_ID: &str = "cctui.dev/session-id";
+/// Contract with the injection webhook — these exact strings are what it keys
+/// off to find the profile, the worker container, and the sandbox toggles.
+const LABEL_WORKER_PROFILE: &str = "cctui.dev/worker-profile";
+const ANNOTATION_WORKER_CONTAINER: &str = "cctui.dev/worker-container";
+const ANNOTATION_GUARD_IDENTITY: &str = "cctui.dev/guard-identity";
+const ANNOTATION_GPG_SIGNING: &str = "cctui.dev/gpg-signing";
+
+/// Env-value prefixes reserved for secret references. A dispatch carrying one in
+/// `payload.env` is rejected: secrets flow through the guard-proxy sidecar, and
+/// a ref reaching pod env could be resolved by cluster machinery into the worker.
+const SECRET_REF_PREFIXES: [&str; 3] = ["vault:", "bao:", "k8s:"];
 
 /// Lifecycle state of a spawned Job handle.
 #[derive(Debug, Clone, Copy)]
@@ -87,13 +104,12 @@ pub struct SpawnOutcome {
 
 pub struct Spawner {
     namespace: String,
-    source_cronjob: String,
+    default_profile: String,
     cctui_url: String,
     client: Client,
-    /// Ceiling on concurrently in-flight worker Jobs (CCT-522). `0` ⇒ unlimited.
+    /// Ceiling on concurrently in-flight worker Jobs. `0` ⇒ unlimited.
     max_inflight: usize,
-    /// `activeDeadlineSeconds` applied when a dispatch has no
-    /// `timeout_minutes` (CCT-513).
+    /// `activeDeadlineSeconds` applied when a dispatch has no `timeout_minutes`.
     default_deadline_secs: i64,
 }
 
@@ -103,15 +119,13 @@ impl Spawner {
     /// kube context fails loudly at startup rather than on first dispatch.
     pub async fn connect(
         namespace: String,
-        source_cronjob: String,
+        default_profile: String,
         cctui_url: String,
     ) -> anyhow::Result<Self> {
         let client = Client::try_default().await?;
-        // Optional concurrency ceiling (CCT-522): `CCTUI_WORKER_MAX_INFLIGHT`,
-        // `0`/unset ⇒ unlimited. An explicit cap rejects a dispatch once that
-        // many non-terminal dispatcher-owned Jobs already exist, so a webhook
-        // flood of DISTINCT keys can't exhaust the cluster — the throttle the
-        // old session-id collision used to provide implicitly.
+        // `CCTUI_WORKER_MAX_INFLIGHT`, `0`/unset ⇒ unlimited. An explicit cap
+        // rejects a dispatch once that many non-terminal dispatcher-owned Jobs
+        // exist, so a flood of DISTINCT keys can't exhaust the cluster.
         let max_inflight = std::env::var("CCTUI_WORKER_MAX_INFLIGHT")
             .ok()
             .and_then(|v| v.trim().parse::<usize>().ok())
@@ -121,7 +135,7 @@ impl Spawner {
         );
         Ok(Self {
             namespace,
-            source_cronjob,
+            default_profile,
             cctui_url,
             client,
             max_inflight,
@@ -169,41 +183,59 @@ impl Spawner {
         if trimmed.is_empty() { "session".to_owned() } else { trimmed.to_owned() }
     }
 
-    /// Build the Job JSON from the source CronJob's jobTemplate + per-session
-    /// overrides. Manipulates the pod template as serde_json so env merge stays
-    /// a simple by-name upsert.
+    /// Resolve the profile name a dispatch selects: the wire `profile` field,
+    /// else a `profile` string in the payload, else the configured default.
+    /// A dispatch may only ever SELECT a profile — never supply its shape.
+    fn resolve_profile_name(spec: &WireDispatchSpec, default_profile: &str) -> Option<String> {
+        if let Some(p) = spec.profile.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+            return Some(p.to_owned());
+        }
+        if let Some(p) = spec
+            .payload
+            .get("profile")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+        {
+            return Some(p.to_owned());
+        }
+        let d = default_profile.trim();
+        (!d.is_empty()).then(|| d.to_owned())
+    }
+
+    /// Instantiate a one-shot Job from a `WorkerProfile` + this dispatch's
+    /// runtime data. Mechanical: the worker container comes from the profile's
+    /// first-class fields; every other container/volume/scheduling field is
+    /// passed through. No sidecars/security contexts are added — the admission
+    /// webhook injects the sandbox, keyed off the stamped labels/annotations.
     fn build_job(
         cctui_url: &str,
-        cronjob: &CronJob,
+        profile_name: &str,
+        profile: &WorkerProfileSpec,
         spec: &WireDispatchSpec,
         name: &str,
         default_deadline_secs: i64,
     ) -> anyhow::Result<Job> {
-        let jt = cronjob
-            .spec
-            .as_ref()
-            .and_then(|s| s.job_template.spec.as_ref())
-            .ok_or_else(|| anyhow::anyhow!("source CronJob has no jobTemplate.spec"))?;
-
-        let mut pod_template: Value = serde_json::to_value(&jt.template)?;
-
-        // Lift the machine key out of the payload (CCT-191) so it never lands
-        // in TASK_PAYLOAD_JSON, then build the env overrides.
         let mut payload = spec.payload.clone();
-        let machine_key = payload
-            .as_object_mut()
-            .and_then(|o| o.remove("cctui_machine_key"))
-            .and_then(|v| v.as_str().map(ToOwned::to_owned));
-        // Lift `payload.env` so it becomes real POD env, not a blob buried in
-        // TASK_PAYLOAD_JSON. This is what lets the secret surface work: a
-        // `vault:…` value is emitted as a literal env var the in-cluster
-        // vault-env webhook resolves at exec (before the entrypoint), and a
-        // `k8s:[ns/]secret#key` value becomes a `secretKeyRef` the kubelet
-        // injects — neither the dispatcher nor the pod spec ever holds the
-        // resolved secret. Removing it from the payload also stops the daemon
-        // from re-applying the unresolved reference over the resolved env.
-        let env_map = payload.as_object_mut().and_then(|o| o.remove("env"));
-        let task_name = payload.get("name").and_then(|v| v.as_str()).map(ToOwned::to_owned);
+        let obj = payload.as_object_mut();
+        let machine_key = obj
+            .as_ref()
+            .and_then(|o| o.get("cctui_machine_key"))
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned);
+        let identity = obj
+            .as_ref()
+            .and_then(|o| o.get("identity"))
+            .and_then(Value::as_str)
+            .filter(|i| !i.is_empty())
+            .map(ToOwned::to_owned);
+        let task_name =
+            obj.as_ref().and_then(|o| o.get("name")).and_then(Value::as_str).map(ToOwned::to_owned);
+        let env_map = payload.as_object_mut().and_then(|o| {
+            o.remove("cctui_machine_key");
+            o.remove("profile");
+            o.remove("env")
+        });
         let payload_json = serde_json::to_string(&payload)?;
 
         let mut overrides: Vec<(String, String)> = vec![
@@ -222,76 +254,39 @@ impl Spawner {
             overrides.push(("REPLY_URL".into(), u.clone()));
         }
 
-        // Split the lifted env into literal vars (vault:/plain) and k8s
-        // secret-key references. Keys are upserted, so an explicit task env wins
-        // over a same-named template default.
-        let mut secret_refs: Vec<(String, String, String)> = Vec::new();
+        // Plain payload env → literal worker vars. A secret-ref-shaped value is
+        // rejected — secrets flow through the guard-proxy sidecar, never here.
         if let Some(Value::Object(m)) = env_map {
             for (k, v) in m {
                 let Some(val) = v.as_str() else { continue };
-                if let Some(rest) = val.strip_prefix("k8s:") {
-                    // k8s:[namespace/]secret#key — secretKeyRef is namespace-local
-                    // (the pod's own ns), so any namespace prefix is informational
-                    // and dropped here.
-                    if let Some((left, key)) = rest.split_once('#') {
-                        let secret = left.rsplit('/').next().unwrap_or(left);
-                        if !secret.is_empty() && !key.is_empty() {
-                            secret_refs.push((k, secret.to_owned(), key.to_owned()));
-                            continue;
-                        }
-                    }
-                    // Malformed k8s: ref — skip rather than leak the ref string.
-                    continue;
+                if let Some(prefix) = SECRET_REF_PREFIXES.iter().find(|p| val.starts_with(**p)) {
+                    anyhow::bail!(
+                        "payload env `{k}` uses secret-ref prefix `{prefix}` — secret refs are \
+                         resolved by the guard-proxy sidecar, not passed through worker env"
+                    );
                 }
-                // vault:… (resolved by the vault-env webhook) or a plain literal.
                 overrides.push((k, val.to_owned()));
             }
         }
 
-        let identity =
-            payload.get("identity").and_then(Value::as_str).map(ToOwned::to_owned);
+        let worker_name = profile.worker_container_name().to_owned();
+        let pod_spec = Self::pod_spec(profile, &worker_name, &overrides)?;
 
-        let worker = pod_template
-            .pointer_mut("/spec/containers/0")
-            .and_then(Value::as_object_mut)
-            .ok_or_else(|| anyhow::anyhow!("pod template has no containers[0]"))?;
+        let mut labels = serde_json::Map::new();
+        labels.insert(LABEL_ORIGIN.into(), json!("cctui-kube-dispatcher"));
+        labels.insert(LABEL_SESSION_ID.into(), json!(Self::label_safe(&spec.session_id)));
+        labels.insert(LABEL_WORKER_PROFILE.into(), json!(Self::label_safe(profile_name)));
 
-        // Drop the CronJob's `sleep infinity` debug override so the real
-        // ENTRYPOINT runs.
-        worker.remove("command");
-        worker.remove("args");
-        Self::merge_env(worker, &overrides);
-        Self::merge_env_secret_refs(worker, &secret_refs);
-
-        // Identity goes on the SIDECAR (it selects per-identity secret refs);
-        // the worker must never carry it as a credential surface (CCT-719).
-        if let Some(identity) = identity.filter(|i| !i.is_empty())
-            && let Some(sidecar) = pod_template
-                .pointer_mut("/spec/initContainers")
-                .and_then(Value::as_array_mut)
-                .and_then(|cs| {
-                    cs.iter_mut()
-                        .find(|c| c.get("name").and_then(Value::as_str) == Some("guard-proxy"))
-                })
-                .and_then(Value::as_object_mut)
-        {
-            Self::merge_env(sidecar, &[("GUARD_PROXY_IDENTITY".into(), identity)]);
+        let mut annotations = serde_json::Map::new();
+        annotations.insert(ANNOTATION_SESSION_ID.into(), json!(spec.session_id));
+        annotations.insert(ANNOTATION_WORKER_CONTAINER.into(), json!(worker_name));
+        if let Some(identity) = identity {
+            annotations.insert(ANNOTATION_GUARD_IDENTITY.into(), json!(identity));
+        }
+        if profile.gpg_signing {
+            annotations.insert(ANNOTATION_GPG_SIGNING.into(), json!("true"));
         }
 
-        // Stamp origin/session labels + the full-id annotation.
-        let meta =
-            pod_template.as_object_mut().unwrap().entry("metadata").or_insert_with(|| json!({}));
-        let meta = meta.as_object_mut().unwrap();
-        let labels = meta.entry("labels").or_insert_with(|| json!({}));
-        labels[LABEL_ORIGIN] = json!("cctui-kube-dispatcher");
-        labels[LABEL_SESSION_ID] = json!(Self::label_safe(&spec.session_id));
-        let annotations = meta.entry("annotations").or_insert_with(|| json!({}));
-        annotations[ANNOTATION_SESSION_ID] = json!(spec.session_id);
-
-        // Deliberately NOT falling back to the template's
-        // `activeDeadlineSeconds` (the infra CronJob's 24h outer backstop):
-        // a dispatch without an explicit timeout gets the dispatcher's 1h
-        // default instead (CCT-513).
         let deadline = spec.timeout_minutes.map_or(default_deadline_secs, |m| i64::from(m) * 60);
 
         let job_json = json!({
@@ -307,19 +302,74 @@ impl Spawner {
             },
             "spec": {
                 "backoffLimit": 0,
-                // Set on our built spec (not pulled from the source CronJob's
-                // jobTemplate), so this TTL always wins (CCT-518).
                 "ttlSecondsAfterFinished": JOB_TTL_SECONDS,
                 "activeDeadlineSeconds": deadline,
-                "template": pod_template,
+                "template": {
+                    "metadata": { "labels": labels, "annotations": annotations },
+                    "spec": pod_spec,
+                },
             },
         });
 
         Ok(serde_json::from_value(job_json)?)
     }
 
+    /// Assemble the pod `spec`: the worker container from the profile's
+    /// first-class fields (with per-run env upserted) followed by every
+    /// passthrough field verbatim. `restartPolicy` is always `Never`.
+    fn pod_spec(
+        profile: &WorkerProfileSpec,
+        worker_name: &str,
+        overrides: &[(String, String)],
+    ) -> anyhow::Result<serde_json::Map<String, Value>> {
+        let mut worker = serde_json::Map::new();
+        worker.insert("name".into(), json!(worker_name));
+        worker.insert("image".into(), json!(profile.image));
+        if let Some(command) = &profile.command {
+            worker.insert("command".into(), serde_json::to_value(command)?);
+        }
+        if let Some(args) = &profile.args {
+            worker.insert("args".into(), serde_json::to_value(args)?);
+        }
+        if let Some(resources) = &profile.resources {
+            worker.insert("resources".into(), serde_json::to_value(resources)?);
+        }
+        if let Some(env) = &profile.env {
+            worker.insert("env".into(), serde_json::to_value(env)?);
+        }
+        Self::merge_env(&mut worker, overrides);
+
+        let mut containers = vec![Value::Object(worker)];
+        for extra in profile.containers.iter().flatten() {
+            containers.push(serde_json::to_value(extra)?);
+        }
+
+        let mut pod_spec = serde_json::Map::new();
+        pod_spec.insert("restartPolicy".into(), json!("Never"));
+        pod_spec.insert("containers".into(), Value::Array(containers));
+        if let Some(init) = &profile.init_containers {
+            pod_spec.insert("initContainers".into(), serde_json::to_value(init)?);
+        }
+        if let Some(volumes) = &profile.volumes {
+            pod_spec.insert("volumes".into(), serde_json::to_value(volumes)?);
+        }
+        if let Some(ips) = &profile.image_pull_secrets {
+            pod_spec.insert("imagePullSecrets".into(), serde_json::to_value(ips)?);
+        }
+        if let Some(ns) = &profile.node_selector {
+            pod_spec.insert("nodeSelector".into(), serde_json::to_value(ns)?);
+        }
+        if let Some(rc) = &profile.runtime_class_name {
+            pod_spec.insert("runtimeClassName".into(), json!(rc));
+        }
+        if let Some(sa) = &profile.service_account_name {
+            pod_spec.insert("serviceAccountName".into(), json!(sa));
+        }
+        Ok(pod_spec)
+    }
+
     /// Upsert env vars by name into the container's `env` array, preserving the
-    /// template's existing entries (including `valueFrom`).
+    /// profile's existing entries (including `valueFrom`).
     fn merge_env(worker: &mut serde_json::Map<String, Value>, overrides: &[(String, String)]) {
         let env = worker.entry("env").or_insert_with(|| json!([]));
         let arr = env.as_array_mut().expect("env is an array");
@@ -332,32 +382,6 @@ impl Spawner {
                 obj.remove("valueFrom");
             } else {
                 arr.push(json!({ "name": k, "value": v }));
-            }
-        }
-    }
-
-    /// Upsert `valueFrom.secretKeyRef` env vars (from `k8s:` references) into the
-    /// container's `env`. Points at a secret that must already exist in the
-    /// pod's namespace — the kubelet injects the value, so it never enters the
-    /// Job spec or the dispatcher process.
-    fn merge_env_secret_refs(
-        worker: &mut serde_json::Map<String, Value>,
-        refs: &[(String, String, String)],
-    ) {
-        let env = worker.entry("env").or_insert_with(|| json!([]));
-        let arr = env.as_array_mut().expect("env is an array");
-        for (name, secret, key) in refs {
-            let entry = json!({
-                "name": name,
-                "valueFrom": { "secretKeyRef": { "name": secret, "key": key } },
-            });
-            if let Some(existing) = arr
-                .iter_mut()
-                .find(|e| e.get("name").and_then(Value::as_str) == Some(name.as_str()))
-            {
-                *existing = entry;
-            } else {
-                arr.push(entry);
             }
         }
     }
@@ -423,16 +447,26 @@ impl Spawner {
             anyhow::bail!("session_id is required");
         }
 
-        let cronjobs: Api<CronJob> = Api::namespaced(self.client.clone(), &self.namespace);
-        let cronjob = cronjobs
-            .get(&self.source_cronjob)
+        let profile_name =
+            Self::resolve_profile_name(spec, &self.default_profile).ok_or_else(|| {
+                anyhow::anyhow!("no worker profile selected and no default_profile set")
+            })?;
+        let profiles: Api<WorkerProfile> = Api::namespaced(self.client.clone(), &self.namespace);
+        let profile = profiles
+            .get(&profile_name)
             .await
-            .map_err(|e| anyhow::anyhow!("reading source CronJob: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("reading WorkerProfile `{profile_name}`: {e}"))?;
 
         let name = Self::job_name(Self::dedup_source(spec));
         self.enforce_inflight_cap(&name).await?;
-        let job =
-            Self::build_job(&self.cctui_url, &cronjob, spec, &name, self.default_deadline_secs)?;
+        let job = Self::build_job(
+            &self.cctui_url,
+            &profile_name,
+            &profile.spec,
+            spec,
+            &name,
+            self.default_deadline_secs,
+        )?;
 
         match self.create(&job, "dispatched", &name).await {
             Ok(h) => return Ok(h),
@@ -633,51 +667,77 @@ mod tests {
             timeout_minutes: Some(30),
             reply_url: Some("https://cb".to_owned()),
             dedup_key: None,
+            profile: None,
             payload,
         }
     }
 
-    fn sample_cronjob() -> CronJob {
+    fn lean_profile() -> WorkerProfileSpec {
         serde_json::from_value(json!({
-            "apiVersion": "batch/v1",
-            "kind": "CronJob",
-            "metadata": { "name": "worker-template" },
-            "spec": {
-                "schedule": "0 0 31 2 *",
-                "jobTemplate": {
-                    "spec": {
-                        "activeDeadlineSeconds": 86400,
-                        "template": {
-                            "metadata": { "labels": { "app.kubernetes.io/name": "claude-worker" } },
-                            "spec": {
-                                "restartPolicy": "Never",
-                                "initContainers": [
-                                    { "name": "net-init", "image": "example.com/worker:latest" },
-                                    {
-                                        "name": "guard-proxy",
-                                        "image": "example.com/worker:latest",
-                                        "restartPolicy": "Always",
-                                        "env": [
-                                            { "name": "GUARD_PROXY_IDENTITY", "value": "acme" }
-                                        ]
-                                    }
-                                ],
-                                "containers": [{
-                                    "name": "worker",
-                                    "image": "example.com/worker:latest",
-                                    "command": ["sleep", "infinity"],
-                                    "env": [
-                                        { "name": "TASK_ID", "value": "" },
-                                        { "name": "POD_NAME", "valueFrom": { "fieldRef": { "fieldPath": "metadata.name" } } }
-                                    ]
-                                }]
-                            }
-                        }
-                    }
-                }
-            }
+            "image": "example.com/worker:latest",
+            "serviceAccountName": "worker-lean",
+            "env": [
+                { "name": "TASK_ID", "value": "" },
+                { "name": "LOG_LEVEL", "value": "info" }
+            ]
         }))
         .unwrap()
+    }
+
+    fn full_profile() -> WorkerProfileSpec {
+        serde_json::from_value(json!({
+            "image": "example.com/worker:latest",
+            "command": ["/entrypoint"],
+            "args": ["--serve"],
+            "workerContainer": "agent",
+            "serviceAccountName": "worker-full",
+            "gpgSigning": true,
+            "runtimeClassName": "gvisor",
+            "resources": { "requests": { "cpu": "2", "memory": "4Gi" } },
+            "env": [{ "name": "LOG_LEVEL", "value": "info" }],
+            "nodeSelector": { "kubernetes.io/arch": "amd64" },
+            "imagePullSecrets": [{ "name": "registry-pull" }],
+            "volumes": [
+                { "name": "db-data", "emptyDir": {} },
+                { "name": "cache", "emptyDir": {} }
+            ],
+            "initContainers": [
+                { "name": "migrate", "image": "example.com/db-migrate:latest" },
+                { "name": "seed", "image": "example.com/db-seed:latest" }
+            ],
+            "containers": [
+                { "name": "db", "image": "example.com/postgres:16" },
+                { "name": "auth-idp", "image": "example.com/auth-idp:latest" }
+            ]
+        }))
+        .unwrap()
+    }
+
+    fn build(profile_name: &str, profile: &WorkerProfileSpec, spec: &WireDispatchSpec) -> Value {
+        let name = Spawner::job_name(&spec.session_id);
+        let job = Spawner::build_job(
+            "http://cctui.example.svc.cluster.local:8700",
+            profile_name,
+            profile,
+            spec,
+            &name,
+            3600,
+        )
+        .unwrap();
+        serde_json::to_value(&job).unwrap()
+    }
+
+    fn worker_env(v: &Value) -> Vec<Value> {
+        v.pointer("/spec/template/spec/containers/0/env").unwrap().as_array().unwrap().clone()
+    }
+
+    fn env_value(v: &Value, key: &str) -> Option<String> {
+        worker_env(v)
+            .iter()
+            .find(|e| e["name"] == key)
+            .and_then(|e| e.get("value"))
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
     }
 
     #[test]
@@ -693,9 +753,6 @@ mod tests {
 
     #[test]
     fn job_name_derives_from_dedup_key_so_session_id_can_be_fresh() {
-        // CCT-522: two dispatches of the same logical key carry DIFFERENT fresh
-        // session ids but the SAME dedup key, and must map to the same Job so a
-        // duplicate webhook coalesces.
         let mut s1 = spec("11111111-1111-4111-8111-111111111111", json!({}));
         s1.dedup_key = Some("triage-PROJ-202606231511".to_owned());
         let mut s2 = spec("22222222-2222-4222-8222-222222222222", json!({}));
@@ -703,15 +760,13 @@ mod tests {
         assert_eq!(
             Spawner::job_name(Spawner::dedup_source(&s1)),
             Spawner::job_name(Spawner::dedup_source(&s2)),
-            "same dedup key ⇒ same Job despite distinct session ids",
+            "same dedup key => same Job despite distinct session ids",
         );
-        // With no dedup key the Job name falls back to the (unique) session id.
         let s3 = spec("33333333-3333-4333-8333-333333333333", json!({}));
         assert_eq!(Spawner::dedup_source(&s3), "33333333-3333-4333-8333-333333333333");
         assert_ne!(
             Spawner::job_name(Spawner::dedup_source(&s1)),
             Spawner::job_name(Spawner::dedup_source(&s3)),
-            "different keys ⇒ different Jobs (own pod + own session)",
         );
     }
 
@@ -723,172 +778,205 @@ mod tests {
     }
 
     #[test]
-    fn build_job_injects_env_and_drops_machine_key_from_payload() {
-        let payload =
-            json!({ "flow": "review", "name": "Review #5697", "cctui_machine_key": "SECRET" });
-        let s = spec("sess-123", payload);
-        let name = Spawner::job_name("sess-123");
-        let job = Spawner::build_job(
-            "http://cctui.example.svc.cluster.local:8700",
-            &sample_cronjob(),
-            &s,
-            &name,
-            3600,
-        )
-        .unwrap();
-        let v = serde_json::to_value(&job).unwrap();
+    fn resolve_profile_name_prefers_wire_then_payload_then_default() {
+        let mut s = spec("sess", json!({ "profile": "from-payload" }));
+        s.profile = Some("from-wire".to_owned());
+        assert_eq!(Spawner::resolve_profile_name(&s, "def").as_deref(), Some("from-wire"));
 
-        let env = v.pointer("/spec/template/spec/containers/0/env").unwrap().as_array().unwrap();
-        let get = |k: &str| {
-            env.iter()
-                .find(|e| e["name"] == k)
-                .and_then(|e| e.get("value"))
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned)
-        };
-        assert_eq!(get("SESSION_ID").as_deref(), Some("sess-123"));
-        assert_eq!(get("TASK_ID").as_deref(), Some("sess-123"));
-        assert_eq!(get("TASK_NAME").as_deref(), Some("Review #5697"));
-        assert_eq!(get("CCTUI_MACHINE_KEY").as_deref(), Some("SECRET"));
-        assert_eq!(get("REPLY_URL").as_deref(), Some("https://cb"));
-        // Machine key must NOT appear inside TASK_PAYLOAD_JSON.
-        let tp = get("TASK_PAYLOAD_JSON").unwrap();
+        let s = spec("sess", json!({ "profile": "from-payload" }));
+        assert_eq!(Spawner::resolve_profile_name(&s, "def").as_deref(), Some("from-payload"));
+
+        let s = spec("sess", json!({}));
+        assert_eq!(Spawner::resolve_profile_name(&s, "def").as_deref(), Some("def"));
+
+        let s = spec("sess", json!({}));
+        assert_eq!(Spawner::resolve_profile_name(&s, "   "), None);
+    }
+
+    #[test]
+    fn lean_profile_instantiates_worker_env_and_stamps_contract() {
+        let payload = json!({
+            "flow": "review",
+            "name": "Review #5697",
+            "profile": "lean",
+            "cctui_machine_key": "SECRET"
+        });
+        let s = spec("sess-123", payload);
+        let v = build("lean", &lean_profile(), &s);
+
+        assert_eq!(env_value(&v, "SESSION_ID").as_deref(), Some("sess-123"));
+        assert_eq!(env_value(&v, "TASK_ID").as_deref(), Some("sess-123"));
+        assert_eq!(env_value(&v, "TASK_NAME").as_deref(), Some("Review #5697"));
+        assert_eq!(env_value(&v, "CCTUI_MACHINE_KEY").as_deref(), Some("SECRET"));
+        assert_eq!(env_value(&v, "REPLY_URL").as_deref(), Some("https://cb"));
+        assert_eq!(env_value(&v, "LOG_LEVEL").as_deref(), Some("info"));
+        assert_eq!(
+            env_value(&v, "CCTUI_URL").as_deref(),
+            Some("http://cctui.example.svc.cluster.local:8700")
+        );
+
+        let tp = env_value(&v, "TASK_PAYLOAD_JSON").unwrap();
         assert!(!tp.contains("SECRET"), "machine key leaked into payload: {tp}");
+        assert!(!tp.contains("\"profile\""), "profile key leaked into payload: {tp}");
         assert!(tp.contains("review"));
-        // POD_NAME's valueFrom is preserved (not clobbered into a value).
-        let pod_name = env.iter().find(|e| e["name"] == "POD_NAME").unwrap();
-        assert!(pod_name.get("valueFrom").is_some());
-        // sleep-infinity debug override dropped so the real entrypoint runs.
-        assert!(v.pointer("/spec/template/spec/containers/0/command").is_none());
-        // Deterministic deadline from timeout_minutes (30 * 60).
-        assert_eq!(v.pointer("/spec/activeDeadlineSeconds"), Some(&json!(1800)));
-        // Origin + session labels stamped on the Job.
+
+        assert_eq!(v.pointer("/spec/template/spec/restartPolicy"), Some(&json!("Never")));
+        assert_eq!(
+            v.pointer("/spec/template/spec/serviceAccountName"),
+            Some(&json!("worker-lean"))
+        );
+        let containers = v.pointer("/spec/template/spec/containers").unwrap().as_array().unwrap();
+        assert_eq!(containers.len(), 1, "lean profile => only the worker container");
+        assert_eq!(containers[0]["name"], json!("worker"));
+        assert_eq!(containers[0]["image"], json!("example.com/worker:latest"));
+
+        assert_eq!(
+            v.pointer("/spec/template/metadata/labels/cctui.dev~1worker-profile"),
+            Some(&json!("lean"))
+        );
+        assert_eq!(
+            v.pointer("/spec/template/metadata/annotations/cctui.dev~1worker-container"),
+            Some(&json!("worker"))
+        );
+        assert_eq!(
+            v.pointer("/spec/template/metadata/annotations/cctui.dev~1session-id"),
+            Some(&json!("sess-123"))
+        );
+        assert!(
+            v.pointer("/spec/template/metadata/annotations/cctui.dev~1gpg-signing").is_none(),
+            "gpg annotation only when profile opts in"
+        );
+        assert!(
+            v.pointer("/spec/template/metadata/annotations/cctui.dev~1guard-identity").is_none(),
+            "no identity => no guard-identity annotation"
+        );
+
         assert_eq!(
             v.pointer("/metadata/labels/cctui.dev~1origin"),
             Some(&json!("cctui-kube-dispatcher"))
         );
+        assert_eq!(v.pointer("/spec/backoffLimit"), Some(&json!(0)));
+        assert_eq!(v.pointer("/spec/ttlSecondsAfterFinished"), Some(&json!(3600)));
+        assert_eq!(v.pointer("/spec/activeDeadlineSeconds"), Some(&json!(1800)));
+    }
+
+    #[test]
+    fn full_profile_passes_through_stack_and_stamps_gpg_and_identity() {
+        let payload = json!({ "flow": "review", "identity": "zephyr" });
+        let s = spec("sess-full", payload);
+        let v = build("full-stack", &full_profile(), &s);
+
+        let containers = v.pointer("/spec/template/spec/containers").unwrap().as_array().unwrap();
+        assert_eq!(containers.len(), 3, "worker + two passthrough containers");
+        assert_eq!(containers[0]["name"], json!("agent"), "worker container name from profile");
+        assert_eq!(containers[0]["command"], json!(["/entrypoint"]));
+        assert_eq!(containers[0]["args"], json!(["--serve"]));
+        assert_eq!(containers[1]["name"], json!("db"));
+        assert_eq!(containers[2]["name"], json!("auth-idp"));
+
+        let inits = v.pointer("/spec/template/spec/initContainers").unwrap().as_array().unwrap();
+        assert_eq!(inits.len(), 2, "both init containers passed through");
+        assert_eq!(inits[0]["name"], json!("migrate"));
+        assert_eq!(inits[1]["name"], json!("seed"));
+
+        let volumes = v.pointer("/spec/template/spec/volumes").unwrap().as_array().unwrap();
+        assert_eq!(volumes.len(), 2);
+        assert_eq!(v.pointer("/spec/template/spec/runtimeClassName"), Some(&json!("gvisor")));
         assert_eq!(
-            v.pointer("/metadata/annotations/cctui.dev~1session-id"),
-            Some(&json!("sess-123"))
+            v.pointer("/spec/template/spec/serviceAccountName"),
+            Some(&json!("worker-full"))
+        );
+        assert_eq!(
+            v.pointer("/spec/template/spec/imagePullSecrets/0/name"),
+            Some(&json!("registry-pull"))
+        );
+        assert_eq!(
+            v.pointer("/spec/template/spec/nodeSelector/kubernetes.io~1arch"),
+            Some(&json!("amd64"))
+        );
+
+        assert_eq!(
+            v.pointer("/spec/template/metadata/labels/cctui.dev~1worker-profile"),
+            Some(&json!("full-stack"))
+        );
+        assert_eq!(
+            v.pointer("/spec/template/metadata/annotations/cctui.dev~1worker-container"),
+            Some(&json!("agent"))
+        );
+        assert_eq!(
+            v.pointer("/spec/template/metadata/annotations/cctui.dev~1gpg-signing"),
+            Some(&json!("true"))
+        );
+        assert_eq!(
+            v.pointer("/spec/template/metadata/annotations/cctui.dev~1guard-identity"),
+            Some(&json!("zephyr")),
+            "identity goes on the pod annotation, not container env"
+        );
+        assert!(
+            !worker_env(&v).iter().any(|e| e["name"] == "GUARD_PROXY_IDENTITY"),
+            "identity must never land on worker env"
         );
     }
 
     #[test]
-    fn no_timeout_uses_default_deadline_not_template_24h() {
-        // CCT-513: a dispatch without `timeout_minutes` must NOT inherit the
-        // CronJob template's 86400s backstop — it gets the dispatcher default.
+    fn plain_payload_env_becomes_worker_env() {
+        let payload = json!({
+            "flow": "pr-review",
+            "env": {
+                "CONTEXT_PACK_URL": "https://github.com/acme/pack",
+                "FEATURE_FLAG": "on"
+            }
+        });
+        let s = spec("sess-9", payload);
+        let v = build("lean", &lean_profile(), &s);
+        assert_eq!(
+            env_value(&v, "CONTEXT_PACK_URL").as_deref(),
+            Some("https://github.com/acme/pack")
+        );
+        assert_eq!(env_value(&v, "FEATURE_FLAG").as_deref(), Some("on"));
+        let tp = env_value(&v, "TASK_PAYLOAD_JSON").unwrap();
+        assert!(!tp.contains("CONTEXT_PACK_URL"), "env lifted out of payload: {tp}");
+        assert!(tp.contains("pr-review"));
+    }
+
+    #[test]
+    fn secret_ref_env_values_are_rejected() {
+        for reference in ["vault:secret/data/ci#gh", "bao:secret/data/ci#gh", "k8s:s#k"] {
+            let payload = json!({ "env": { "TOKEN": reference } });
+            let s = spec("sess-x", payload);
+            let name = Spawner::job_name("sess-x");
+            let err =
+                Spawner::build_job("http://cctui:8700", "lean", &lean_profile(), &s, &name, 3600)
+                    .expect_err("secret-ref env must be rejected");
+            let msg = err.to_string();
+            assert!(msg.contains("secret-ref"), "unexpected error: {msg}");
+        }
+    }
+
+    #[test]
+    fn no_timeout_uses_default_deadline() {
         let mut s = spec("sess-none", json!({}));
         s.timeout_minutes = None;
-        let name = Spawner::job_name("sess-none");
-        let job =
-            Spawner::build_job("http://cctui:8700", &sample_cronjob(), &s, &name, 3600).unwrap();
-        let v = serde_json::to_value(&job).unwrap();
+        let v = build("lean", &lean_profile(), &s);
         assert_eq!(v.pointer("/spec/activeDeadlineSeconds"), Some(&json!(3600)));
     }
 
     #[test]
     fn per_dispatch_timeout_overrides_default_deadline() {
-        // timeout_minutes=30 wins even when the configured default is larger.
         let s = spec("sess-30", json!({}));
         let name = Spawner::job_name("sess-30");
-        let job =
-            Spawner::build_job("http://cctui:8700", &sample_cronjob(), &s, &name, 7200).unwrap();
+        let job = Spawner::build_job("http://cctui:8700", "lean", &lean_profile(), &s, &name, 7200)
+            .unwrap();
         let v = serde_json::to_value(&job).unwrap();
         assert_eq!(v.pointer("/spec/activeDeadlineSeconds"), Some(&json!(1800)));
     }
 
     #[test]
     fn default_deadline_env_parsing() {
-        // Unset ⇒ 60 min; explicit minutes override; garbage/zero fall back.
         assert_eq!(Spawner::default_deadline_secs(None), 3600);
         assert_eq!(Spawner::default_deadline_secs(Some("30")), 1800);
         assert_eq!(Spawner::default_deadline_secs(Some(" 120 ")), 7200);
         assert_eq!(Spawner::default_deadline_secs(Some("nope")), 3600);
         assert_eq!(Spawner::default_deadline_secs(Some("0")), 3600);
-    }
-
-    #[test]
-    fn payload_identity_is_stamped_on_guard_proxy_sidecar_only() {
-        let s = spec("sess-id", json!({ "flow": "review", "identity": "zephyr" }));
-        let name = Spawner::job_name("sess-id");
-        let job =
-            Spawner::build_job("http://cctui:8700", &sample_cronjob(), &s, &name, 3600).unwrap();
-        let v = serde_json::to_value(&job).unwrap();
-
-        let sidecar_env =
-            v.pointer("/spec/template/spec/initContainers/1/env").unwrap().as_array().unwrap();
-        let identity = sidecar_env
-            .iter()
-            .find(|e| e["name"] == "GUARD_PROXY_IDENTITY")
-            .and_then(|e| e["value"].as_str());
-        assert_eq!(identity, Some("zephyr"), "template default must be overridden");
-
-        assert!(
-            v.pointer("/spec/template/spec/initContainers/0/env").is_none(),
-            "other init containers untouched"
-        );
-        let worker_env =
-            v.pointer("/spec/template/spec/containers/0/env").unwrap().as_array().unwrap();
-        assert!(
-            !worker_env.iter().any(|e| e["name"] == "GUARD_PROXY_IDENTITY"),
-            "identity must not land on the worker container"
-        );
-    }
-
-    #[test]
-    fn missing_identity_keeps_template_sidecar_default() {
-        let s = spec("sess-noid", json!({ "flow": "review" }));
-        let name = Spawner::job_name("sess-noid");
-        let job =
-            Spawner::build_job("http://cctui:8700", &sample_cronjob(), &s, &name, 3600).unwrap();
-        let v = serde_json::to_value(&job).unwrap();
-        let sidecar_env =
-            v.pointer("/spec/template/spec/initContainers/1/env").unwrap().as_array().unwrap();
-        let identity = sidecar_env
-            .iter()
-            .find(|e| e["name"] == "GUARD_PROXY_IDENTITY")
-            .and_then(|e| e["value"].as_str());
-        assert_eq!(identity, Some("acme"), "no payload identity ⇒ template default stays");
-    }
-
-    #[test]
-    fn build_job_promotes_payload_env_to_pod_env() {
-        let payload = json!({
-            "flow": "pr-review",
-            "env": {
-                "CONTEXT_PACK_URL": "https://github.com/acme/pack",
-                "GITHUB_TOKEN": "vault:secret/data/ci#github",
-                "SLACK_TOKEN": "k8s:dev/scli-secret#token",
-                "YOUTRACK_TOKEN": "k8s:yt-secret#token"
-            }
-        });
-        let s = spec("sess-9", payload);
-        let name = Spawner::job_name("sess-9");
-        let job =
-            Spawner::build_job("http://cctui:8700", &sample_cronjob(), &s, &name, 3600).unwrap();
-        let v = serde_json::to_value(&job).unwrap();
-        let env = v.pointer("/spec/template/spec/containers/0/env").unwrap().as_array().unwrap();
-        let entry = |k: &str| env.iter().find(|e| e["name"] == k).cloned();
-
-        // Plain + vault: values become literal env (vault-env resolves vault: at exec).
-        assert_eq!(
-            entry("CONTEXT_PACK_URL").unwrap()["value"],
-            json!("https://github.com/acme/pack")
-        );
-        assert_eq!(entry("GITHUB_TOKEN").unwrap()["value"], json!("vault:secret/data/ci#github"));
-        // k8s: values become secretKeyRef (no literal value), namespace prefix dropped.
-        let slack = entry("SLACK_TOKEN").unwrap();
-        assert!(slack.get("value").is_none());
-        assert_eq!(slack.pointer("/valueFrom/secretKeyRef/name"), Some(&json!("scli-secret")));
-        assert_eq!(slack.pointer("/valueFrom/secretKeyRef/key"), Some(&json!("token")));
-        assert_eq!(
-            entry("YOUTRACK_TOKEN").unwrap().pointer("/valueFrom/secretKeyRef/name"),
-            Some(&json!("yt-secret"))
-        );
-        // env is stripped from TASK_PAYLOAD_JSON so the daemon can't re-apply refs.
-        let tp = entry("TASK_PAYLOAD_JSON").unwrap()["value"].as_str().unwrap().to_owned();
-        assert!(!tp.contains("vault:"), "unresolved ref leaked into payload: {tp}");
-        assert!(!tp.contains("GITHUB_TOKEN"), "env leaked into payload: {tp}");
-        assert!(tp.contains("pr-review"));
     }
 }

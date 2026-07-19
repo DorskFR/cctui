@@ -17,12 +17,13 @@ pub struct Config {
     /// presented on `dispatcher/auth` + as the `dispatcher/ws` token.
     pub dispatcher_key: String,
     pub dispatcher_id: Option<uuid::Uuid>,
-    /// Namespace the worker Job + its source `CronJob` template live in.
+    /// Namespace the worker Job + its `WorkerProfile` resources live in.
     pub namespace: String,
-    /// Suspended `CronJob` whose `jobTemplate` is cloned per dispatch. Keeps the
-    /// worker pod-spec (image, resources, volumes, RBAC) declarative in the
-    /// cluster instead of baked into this binary.
-    pub source_cronjob: String,
+    /// `WorkerProfile` instantiated when a dispatch selects none by name.
+    /// Defaulted so pre-profile configs (which carry an ignored `source_cronjob`
+    /// instead) still parse; re-enroll to populate it.
+    #[serde(default)]
+    pub default_profile: String,
     /// `CCTUI_URL` injected into spawned workers so their daemon dials back.
     /// Defaults to `server_url` when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -44,7 +45,7 @@ impl Config {
                 anyhow::anyhow!(
                     "no config at {} — this dispatcher is not enrolled yet. \
                      Run `cctui-dispatcher-kube enroll --server-url <url> --token <token> \
-                     --name <name> --namespace <ns> --source-cronjob <name>` first.",
+                     --name <name> --namespace <ns> --default-profile <name>` first.",
                     path.display()
                 )
             } else {
