@@ -236,7 +236,6 @@ impl InjectionPolicy {
     pub fn rule_for(&self, host: &str) -> Option<&InjectionRule> {
         self.by_host.get(&host.to_ascii_lowercase()).map(|&i| &self.rules[i])
     }
-
 }
 
 /// A per-pod CA (minted once at boot). The private key stays in memory here and
@@ -882,8 +881,8 @@ mod tests {
     }
 
     fn rule_from(spec: HostSpec) -> InjectionRule {
-        let cookie_secret = matches!(spec.shape, AuthShape::BearerCookie { .. })
-            .then(|| test_ref("TEST_COOKIE"));
+        let cookie_secret =
+            matches!(spec.shape, AuthShape::BearerCookie { .. }).then(|| test_ref("TEST_COOKIE"));
         InjectionRule {
             host: spec.host,
             service: spec.service,
@@ -967,7 +966,10 @@ mod tests {
             matches!(&rules[2].shape, AuthShape::BearerCookie { cookie_name } if cookie_name == "sess")
         );
         assert_eq!(rules[2].service, "chat.example.com");
-        assert_eq!(rules[2].cookie_secret, Some(SecretRef::parse("k8s:chat-creds#cookie").unwrap()));
+        assert_eq!(
+            rules[2].cookie_secret,
+            Some(SecretRef::parse("k8s:chat-creds#cookie").unwrap())
+        );
 
         assert!(matches!(&rules[3].shape, AuthShape::Basic { username } if username == "svc"));
     }
@@ -977,9 +979,15 @@ mod tests {
         for (json, why) in [
             (r#"[{"host": "a.com", "secret": "bogus-ref"}]"#, "unknown ref scheme"),
             (r#"[{"host": "a.com", "shape": "sigv4", "secret": "env:X"}]"#, "unknown shape"),
-            (r#"[{"host": "a.com", "shape": "cookie", "secret": "env:X"}]"#, "missing cookie_secret"),
+            (
+                r#"[{"host": "a.com", "shape": "cookie", "secret": "env:X"}]"#,
+                "missing cookie_secret",
+            ),
             (r#"[{"host": "", "secret": "env:X"}]"#, "empty host"),
-            (r#"[{"host": "a.com", "secret": "env:CRED_${IDENTITY}"}]"#, "placeholder w/o identity"),
+            (
+                r#"[{"host": "a.com", "secret": "env:CRED_${IDENTITY}"}]"#,
+                "placeholder w/o identity",
+            ),
             (r#"[{"host": "a.com", "secret": "env:X", "typo_field": 1}]"#, "unknown field"),
         ] {
             let identity = if why.contains("identity") { "" } else { "acme" };
@@ -1141,10 +1149,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl crate::secrets::RefResolver for MockBackend {
-        async fn resolve(
-            &self,
-            r: &SecretRef,
-        ) -> Result<crate::secrets::Credential, SecretError> {
+        async fn resolve(&self, r: &SecretRef) -> Result<crate::secrets::Credential, SecretError> {
             match self.0 {
                 Ok(v) => Ok(crate::secrets::Credential::new(v.to_owned())),
                 Err(()) => Err(SecretError::NotFound { what: r.to_string() }),

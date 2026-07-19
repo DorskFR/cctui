@@ -159,10 +159,8 @@ impl GhAppMinter {
     /// normal `github` fetch), and any exchange/signing failure is `Backend`
     /// (the injector forwards the agent's original header — fail closed).
     pub async fn mint(&self) -> Result<Credential, SecretError> {
-        let key = CacheKey {
-            installation: self.config.installation_id.clone(),
-            scope: self.scope_key(),
-        };
+        let key =
+            CacheKey { installation: self.config.installation_id.clone(), scope: self.scope_key() };
         {
             let cache = self.cache.lock().await;
             if let Some(entry) = cache.get(&key)
@@ -180,7 +178,8 @@ impl GhAppMinter {
         let (token, cache_for) = self.exchange(&jwt).await?;
 
         let credential = Credential::new(token);
-        let entry = CacheEntry { valid_until: Instant::now() + cache_for, credential: credential.clone() };
+        let entry =
+            CacheEntry { valid_until: Instant::now() + cache_for, credential: credential.clone() };
         self.cache.lock().await.insert(key, entry);
         Ok(credential)
     }
@@ -350,15 +349,11 @@ mod tests {
                             return (StatusCode::UNAUTHORIZED, "no bearer").into_response();
                         }
                         if status != 201 {
-                            return (
-                                StatusCode::from_u16(status).unwrap(),
-                                "forced failure",
-                            )
+                            return (StatusCode::from_u16(status).unwrap(), "forced failure")
                                 .into_response();
                         }
-                        let expires = (chrono::Utc::now()
-                            + chrono::Duration::seconds(expiry_secs))
-                        .to_rfc3339();
+                        let expires = (chrono::Utc::now() + chrono::Duration::seconds(expiry_secs))
+                            .to_rfc3339();
                         (
                             StatusCode::CREATED,
                             Json(serde_json::json!({

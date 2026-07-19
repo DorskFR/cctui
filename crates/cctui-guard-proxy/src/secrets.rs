@@ -140,9 +140,8 @@ impl SecretRef {
             let (left, key) = rest
                 .split_once('#')
                 .ok_or_else(|| anyhow::anyhow!("k8s ref {s:?} needs #<key>"))?;
-            let (namespace, name) = left
-                .rsplit_once('/')
-                .map_or((None, left), |(ns, n)| (Some(ns.to_owned()), n));
+            let (namespace, name) =
+                left.rsplit_once('/').map_or((None, left), |(ns, n)| (Some(ns.to_owned()), n));
             anyhow::ensure!(
                 !name.is_empty() && !key.is_empty() && namespace.as_deref() != Some(""),
                 "k8s ref {s:?} has an empty secret/key/namespace"
@@ -454,8 +453,7 @@ impl K8sClient {
     pub fn in_cluster() -> anyhow::Result<Self> {
         let host = std::env::var("KUBERNETES_SERVICE_HOST")
             .map_err(|_| anyhow::anyhow!("KUBERNETES_SERVICE_HOST unset (not in-cluster)"))?;
-        let port =
-            std::env::var("KUBERNETES_SERVICE_PORT").unwrap_or_else(|_| "443".to_owned());
+        let port = std::env::var("KUBERNETES_SERVICE_PORT").unwrap_or_else(|_| "443".to_owned());
         let ca = std::fs::read(format!("{K8S_SA_DIR}/ca.crt"))?;
         let namespace = std::fs::read_to_string(format!("{K8S_SA_DIR}/namespace"))?;
         let http = reqwest::Client::builder()
@@ -650,8 +648,10 @@ mod tests {
     fn ref_parse_roundtrip() {
         for (input, display) in [
             ("env:GITHUB_TOKEN", "env:GITHUB_TOKEN"),
-            ("vault:kvmount/data/cctui/workers#GITHUB_TOKEN_ACME",
-             "vault:kvmount/data/cctui/workers#GITHUB_TOKEN_ACME"),
+            (
+                "vault:kvmount/data/cctui/workers#GITHUB_TOKEN_ACME",
+                "vault:kvmount/data/cctui/workers#GITHUB_TOKEN_ACME",
+            ),
             ("vault:kv/data/a/b/c#f", "vault:kv/data/a/b/c#f"),
             ("aws-sm:cctui/worker/acme/github", "aws-sm:cctui/worker/acme/github"),
             ("aws-sm:cctui/worker#token", "aws-sm:cctui/worker#token"),
@@ -736,10 +736,7 @@ mod tests {
             "CRED_ACME_EMPTY" => Some(String::new()),
             _ => None,
         }));
-        assert_eq!(
-            engines.resolve(&env_ref("CRED_ACME_GITHUB")).await.unwrap().expose(),
-            "tok"
-        );
+        assert_eq!(engines.resolve(&env_ref("CRED_ACME_GITHUB")).await.unwrap().expose(), "tok");
         assert!(matches!(
             engines.resolve(&env_ref("CRED_ACME_EMPTY")).await,
             Err(SecretError::NotFound { .. })
@@ -894,10 +891,7 @@ mod tests {
         let base = spawn_k8s_mock().await;
         let dir = tempfile::tempdir().unwrap();
         let token = write_token(&dir, "sa-token\n");
-        let engines = Engines::new(
-            None,
-            Some(K8sClient::with_base(base, token, "dev".to_owned())),
-        );
+        let engines = Engines::new(None, Some(K8sClient::with_base(base, token, "dev".to_owned())));
 
         let by_default_ns = SecretRef::parse("k8s:worker-creds#token").unwrap();
         assert_eq!(engines.resolve(&by_default_ns).await.unwrap().expose(), "k8s-tok");

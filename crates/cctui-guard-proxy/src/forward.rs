@@ -372,10 +372,9 @@ mod tests {
     async fn builtin_deny_overrides_allowlist_connect() {
         // Even with default=allow AND the metadata IP explicitly allowlisted,
         // the built-in deny refuses the credential endpoint (CCT-720).
-        let proxy = start_forward(
-            r#"{"allowed_hosts": ["169.254.169.254:443"], "default": "allow"}"#,
-        )
-        .await;
+        let proxy =
+            start_forward(r#"{"allowed_hosts": ["169.254.169.254:443"], "default": "allow"}"#)
+                .await;
 
         let mut conn = TcpStream::connect(proxy).await.unwrap();
         conn.write_all(b"CONNECT 169.254.169.254:443 HTTP/1.1\r\nHost: 169.254.169.254\r\n\r\n")

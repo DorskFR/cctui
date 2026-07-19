@@ -71,11 +71,7 @@ struct Args {
     /// secret ref). When the file exists it fully defines injection and the
     /// legacy `--secret-source`/`--inject-hosts` pair is ignored. MUST NOT live
     /// in a worker-writable location.
-    #[arg(
-        long,
-        default_value = "/etc/guard-proxy/inject.json",
-        env = "GUARD_PROXY_INJECT_CONFIG"
-    )]
+    #[arg(long, default_value = "/etc/guard-proxy/inject.json", env = "GUARD_PROXY_INJECT_CONFIG")]
     inject_config: PathBuf,
 
     /// Legacy credential backend for `--inject-hosts` (CCT-718). `none` keeps
@@ -199,11 +195,9 @@ enum SecretSourceKind {
 /// in-cluster environment; `env:`/`aws-sm:` are always available.
 fn build_engines(args: &Args) -> anyhow::Result<Engines> {
     let vault = match (&args.vault_addr, &args.vault_role) {
-        (Some(addr), Some(role)) => Some(VaultClient::new(
-            addr.clone(),
-            role.clone(),
-            args.vault_token_path.clone(),
-        )?),
+        (Some(addr), Some(role)) => {
+            Some(VaultClient::new(addr.clone(), role.clone(), args.vault_token_path.clone())?)
+        }
         (Some(_), None) => anyhow::bail!("--vault-role is required with --vault-addr"),
         (None, _) => None,
     };
@@ -277,7 +271,10 @@ fn build_rules(args: &Args) -> anyhow::Result<Vec<InjectionRule>> {
 /// Wires the injection layer: mints the per-pod CA, writes its public cert for
 /// the worker to install, and builds the TLS injector over the rule set.
 /// Returns `None` (passthrough) when no rules are configured.
-fn build_injection(args: &Args, rules: Vec<InjectionRule>) -> anyhow::Result<Option<Arc<Injector>>> {
+fn build_injection(
+    args: &Args,
+    rules: Vec<InjectionRule>,
+) -> anyhow::Result<Option<Arc<Injector>>> {
     if rules.is_empty() {
         tracing::info!("no injection rules configured — TLS passthrough only");
         return Ok(None);
@@ -521,8 +518,7 @@ mod tests {
 
     #[test]
     fn legacy_rules_require_identity_and_vault_config() {
-        let mut args =
-            parse(&["--secret-source", "env", "--inject-hosts", "api.github.com"]);
+        let mut args = parse(&["--secret-source", "env", "--inject-hosts", "api.github.com"]);
         args.inject_config = PathBuf::from("/nonexistent/inject.json");
         assert!(build_rules(&args).unwrap_err().to_string().contains("--identity"));
 
@@ -619,10 +615,7 @@ mod tests {
     }
 
     fn test_secrets() -> Arc<SecretSource> {
-        Arc::new(SecretSource::new(
-            Box::new(Engines::new(None, None)),
-            Duration::from_secs(120),
-        ))
+        Arc::new(SecretSource::new(Box::new(Engines::new(None, None)), Duration::from_secs(120)))
     }
 
     #[test]
@@ -659,8 +652,7 @@ mod tests {
         ]);
         assert!(build_ghapp(&legacy, &secrets).unwrap().is_some());
 
-        let missing =
-            parse(&["--github-app-id", "1", "--github-app-installation-id", "2"]);
+        let missing = parse(&["--github-app-id", "1", "--github-app-installation-id", "2"]);
         assert!(build_ghapp(&missing, &secrets).is_err());
     }
 }

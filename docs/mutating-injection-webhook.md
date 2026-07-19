@@ -82,4 +82,6 @@ Per-namespace, operator/Argo-managed resources the injected envelope references
 - ConfigMap **`guard-proxy-inject`** — mounted read-only at `/etc/guard-proxy`
   (the worker must not define inject rules).
 
-Routes: `POST /mutate` (AdmissionReview v1), `GET /healthz`, `GET /readyz`.
+Routes: `POST /mutate` (AdmissionReview v1), `POST /validate` (the validating
+guardrails — see [`validating-webhook.md`](./validating-webhook.md)),
+`GET /healthz`, `GET /readyz`.
