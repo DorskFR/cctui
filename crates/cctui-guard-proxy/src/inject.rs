@@ -701,13 +701,15 @@ impl HttpBuf {
         }
         let mut chunk = [0u8; 8192];
         while remaining > 0 {
-            let n = src.read(&mut chunk).await?;
+            // Never read past `remaining`: the excess belongs to the next
+            // message/chunk head and would be dropped.
+            let cap = remaining.min(chunk.len());
+            let n = src.read(&mut chunk[..cap]).await?;
             if n == 0 {
                 anyhow::bail!("closed with {remaining} body bytes outstanding");
             }
-            let take = n.min(remaining);
-            dst.write_all(&chunk[..take]).await?;
-            remaining -= take;
+            dst.write_all(&chunk[..n]).await?;
+            remaining -= n;
         }
         Ok(())
     }
@@ -1117,6 +1119,34 @@ mod tests {
         assert!(out.contains("Cookie: d=xoxd-real\r\n"), "real d cookie injected: {out}");
         assert!(!out.contains("agentcookie"));
         assert!(!out.contains("xoxc-agent"));
+    }
+
+    #[tokio::test]
+    async fn relay_counted_never_consumes_past_the_body() {
+        let (mut w, mut src) = tokio::io::duplex(4);
+        tokio::spawn(async move {
+            w.write_all(b"HELLOWORLD").await.unwrap();
+        });
+        let mut buf = HttpBuf::default();
+        let mut dst = Vec::new();
+        buf.relay_counted(&mut src, &mut dst, 5).await.unwrap();
+        assert_eq!(dst, b"HELLO");
+
+        let mut rest = vec![0u8; 5];
+        src.read_exact(&mut rest).await.unwrap();
+        assert_eq!(&rest, b"WORLD", "bytes after the body must stay unconsumed");
+    }
+
+    #[tokio::test]
+    async fn relay_chunked_survives_coalesced_segments() {
+        let (mut w, mut src) = tokio::io::duplex(7);
+        tokio::spawn(async move {
+            w.write_all(b"5\r\nHELLO\r\nA\r\nWORLDWORLD\r\n0\r\n\r\n").await.unwrap();
+        });
+        let mut buf = HttpBuf::default();
+        let mut dst = Vec::new();
+        buf.relay_chunked(&mut src, &mut dst).await.unwrap();
+        assert_eq!(dst, b"5\r\nHELLO\r\nA\r\nWORLDWORLD\r\n0\r\n\r\n");
     }
 
     #[test]
