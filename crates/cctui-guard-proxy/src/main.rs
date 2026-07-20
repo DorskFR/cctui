@@ -259,6 +259,7 @@ fn build_rules(args: &Args) -> anyhow::Result<Vec<InjectionRule>> {
                 .then(|| legacy_ref(&format!("{}-cookie", spec.service)));
             InjectionRule {
                 host: spec.host,
+                path_prefix: None,
                 service: spec.service,
                 shape: spec.shape,
                 secret,

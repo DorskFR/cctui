@@ -64,7 +64,7 @@ defines the guard rules; proceeding without it would weaken the sandbox).
 | `WARM_REPO_DIR` | — | Mounted warm-repo dir; becomes the overlayfs lowerdir for `/workspace` (rsync-copy fallback). |
 | `TASK_REPO_URL` | — | Repo to shallow-clone into `/workspace` when no warm repo. |
 | `TASK_REPO_REF` | — | Branch/tag to clone (`git clone --depth 1 --branch`). |
-| `CONTEXT_PACK_URL` | — | Git repo of the context pack. May carry `@<ref>` (path) and `#<subdir>` to pin in one value. Set ⇒ fetch is **fail-closed**. |
+| `CONTEXT_PACK_URL` | — | Git repo of the context pack. May carry `@<ref>` (path) and `#<subdir>` to pin in one value. Set ⇒ fetch is **fail-closed**. Its `host:port` is seeded into the boot guard-proxy policy (boot-only — not `--always-allow`'d, so the first per-step rewrite closes it), and the clone runs as `WORKER_UID` so it flows through the proxy: with no `CONTEXT_PACK_TOKEN`, a matching inject rule (optionally `path_prefix`-scoped to the pack repo) supplies the credential. |
 | `CONTEXT_PACK_REF` | default branch | Branch/tag/sha. Optional — absent ⇒ the remote's default branch. Pin it in prod. Overrides any `@<ref>` in the URL. |
 | `CONTEXT_PACK_TOKEN` | — | HTTPS basic token for a private pack (injected as `https://<token>@host`). Never logged. Falls back to `payload.env.GITHUB_TOKEN` when unset, so a tenant can ship one token for pack-clone + repo clone/push. |
 | `CONTEXT_PACK_SUBDIR` | — | Subdirectory within the pack repo to use as the pack root. |
