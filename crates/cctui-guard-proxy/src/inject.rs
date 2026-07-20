@@ -69,6 +69,8 @@ pub enum AuthShape {
 #[derive(Debug, Clone)]
 pub struct InjectionRule {
     pub host: String,
+    /// `None` matches every path; the longest matching prefix wins per request.
+    pub path_prefix: Option<String>,
     /// Label for logs and provider matching (the GitHub-App minter), not a
     /// lookup key.
     pub service: String,
@@ -156,6 +158,8 @@ pub fn parse_inject_host(token: &str) -> Option<HostSpec> {
 struct InjectEntry {
     host: String,
     #[serde(default)]
+    path_prefix: Option<String>,
+    #[serde(default)]
     service: Option<String>,
     /// `bearer` (default) | `basic`/`git` | `bearer+cookie`/`cookie`.
     #[serde(default)]
@@ -195,9 +199,21 @@ impl InjectEntry {
             !matches!(shape, AuthShape::BearerCookie { .. }) || cookie_secret.is_some(),
             "inject entry for {host}: bearer+cookie shape needs cookie_secret"
         );
+        let path_prefix = self
+            .path_prefix
+            .map(|p| {
+                let p = p.trim().to_owned();
+                anyhow::ensure!(
+                    p.starts_with('/'),
+                    "inject entry for {host}: path_prefix must start with '/'"
+                );
+                Ok(p)
+            })
+            .transpose()?;
         Ok(InjectionRule {
             service: self.service.unwrap_or_else(|| host.clone()),
             host,
+            path_prefix,
             shape,
             secret,
             cookie_secret,
@@ -219,23 +235,41 @@ pub fn load_inject_config(json: &str, identity: &str) -> anyhow::Result<Vec<Inje
 #[derive(Debug, Clone)]
 pub struct InjectionPolicy {
     rules: Vec<InjectionRule>,
-    by_host: HashMap<String, usize>,
+    by_host: HashMap<String, Vec<usize>>,
 }
 
 impl InjectionPolicy {
     #[must_use]
     pub fn new(rules: Vec<InjectionRule>) -> Self {
-        let by_host =
-            rules.iter().enumerate().map(|(i, r)| (r.host.to_ascii_lowercase(), i)).collect();
+        let mut by_host: HashMap<String, Vec<usize>> = HashMap::new();
+        for (i, r) in rules.iter().enumerate() {
+            by_host.entry(r.host.to_ascii_lowercase()).or_default().push(i);
+        }
         Self { rules, by_host }
     }
 
-    /// The injection rule for `host` (SNI/Host name, case-insensitive), if the
-    /// host is on the allow-list.
+    /// Rules for `host` (case-insensitive) in config order; empty ⇒ passthrough.
     #[must_use]
-    pub fn rule_for(&self, host: &str) -> Option<&InjectionRule> {
-        self.by_host.get(&host.to_ascii_lowercase()).map(|&i| &self.rules[i])
+    pub fn rules_for(&self, host: &str) -> Vec<&InjectionRule> {
+        self.by_host
+            .get(&host.to_ascii_lowercase())
+            .map(|idxs| idxs.iter().map(|&i| &self.rules[i]).collect())
+            .unwrap_or_default()
     }
+}
+
+/// Longest matching `path_prefix` wins; ties keep config order.
+fn select_rule<'a>(rules: &'a [InjectionRule], path: &str) -> Option<&'a InjectionRule> {
+    let mut best: Option<&InjectionRule> = None;
+    for r in rules {
+        if r.path_prefix.as_deref().is_none_or(|p| path.starts_with(p)) {
+            let len = r.path_prefix.as_deref().map_or(0, str::len);
+            if best.is_none_or(|b| len > b.path_prefix.as_deref().map_or(0, str::len)) {
+                best = Some(r);
+            }
+        }
+    }
+    best
 }
 
 /// A per-pod CA (minted once at boot). The private key stays in memory here and
@@ -376,7 +410,7 @@ impl Injector {
     /// True if `host` (no port) is on the injection allow-list.
     #[must_use]
     pub fn should_inject(&self, host: &str) -> bool {
-        self.policy.rule_for(host).is_some()
+        !self.policy.rules_for(host).is_empty()
     }
 
     /// Terminates TLS on `conn`, injects credentials per request, and forwards
@@ -390,11 +424,8 @@ impl Injector {
         port: u16,
     ) -> anyhow::Result<()> {
         let host = host.to_ascii_lowercase();
-        let rule = self
-            .policy
-            .rule_for(&host)
-            .ok_or_else(|| anyhow::anyhow!("no injection rule for {host}"))?
-            .clone();
+        let rules: Vec<InjectionRule> = self.policy.rules_for(&host).into_iter().cloned().collect();
+        anyhow::ensure!(!rules.is_empty(), "no injection rule for {host}");
 
         let mut client = self.acceptor.accept(PrefixedStream::new(conn, prefix)).await?;
         let server_name = ServerName::try_from(host.clone())?;
@@ -405,7 +436,7 @@ impl Injector {
         .await??;
         let mut upstream = self.connector.connect(server_name, upstream).await?;
 
-        self.pump(&mut client, &mut upstream, &host, &rule).await
+        self.pump(&mut client, &mut upstream, &host, &rules).await
     }
 
     async fn pump<C, U>(
@@ -413,7 +444,7 @@ impl Injector {
         client: &mut C,
         upstream: &mut U,
         host: &str,
-        rule: &InjectionRule,
+        rules: &[InjectionRule],
     ) -> anyhow::Result<()>
     where
         C: AsyncRead + AsyncWrite + Unpin,
@@ -426,7 +457,12 @@ impl Injector {
                 return Ok(()); // client closed
             };
             let method = request_method(&head);
-            let outbound = self.inject_head(host, rule, &head).await;
+            // Every rule path-scoped and none matching ⇒ forward the agent's
+            // head unchanged (same fail-closed stance as a credential miss).
+            let outbound = match select_rule(rules, &request_path(&head).unwrap_or_default()) {
+                Some(rule) => self.inject_head(host, rule, &head).await,
+                None => head.clone(),
+            };
             upstream.write_all(&outbound).await?;
             cbuf.relay_body(client, upstream, body_framing(&head, false)).await?;
             upstream.flush().await?;
@@ -734,6 +770,14 @@ fn request_method(head: &[u8]) -> Option<String> {
     Some(String::from_utf8_lossy(method).trim().to_ascii_uppercase())
 }
 
+/// The request path (query string stripped) from a request head.
+fn request_path(head: &[u8]) -> Option<String> {
+    let line = head.split(|&b| b == b'\n').next()?;
+    let target = line.split(|&b| b == b' ').nth(1)?;
+    let target = String::from_utf8_lossy(target);
+    Some(target.split('?').next().unwrap_or_default().to_owned())
+}
+
 /// Case-insensitive header value lookup within a message head.
 fn header_value<'a>(head: &'a [u8], name: &str) -> Option<&'a [u8]> {
     for line in head.split(|&b| b == b'\n').skip(1) {
@@ -885,6 +929,7 @@ mod tests {
             matches!(spec.shape, AuthShape::BearerCookie { .. }).then(|| test_ref("TEST_COOKIE"));
         InjectionRule {
             host: spec.host,
+            path_prefix: None,
             service: spec.service,
             shape: spec.shape,
             secret: test_ref("TEST_SECRET"),
@@ -930,9 +975,9 @@ mod tests {
             rule_from(parse_inject_host("api.github.com").unwrap()),
             rule_from(parse_inject_host("github.com").unwrap()),
         ]);
-        assert_eq!(policy.rule_for("API.GitHub.com").unwrap().service, "github");
-        assert!(matches!(policy.rule_for("github.com").unwrap().shape, AuthShape::Basic { .. }));
-        assert!(policy.rule_for("example.com").is_none());
+        assert_eq!(policy.rules_for("API.GitHub.com")[0].service, "github");
+        assert!(matches!(policy.rules_for("github.com")[0].shape, AuthShape::Basic { .. }));
+        assert!(policy.rules_for("example.com").is_empty());
     }
 
     #[test]
@@ -972,6 +1017,40 @@ mod tests {
         );
 
         assert!(matches!(&rules[3].shape, AuthShape::Basic { username } if username == "svc"));
+    }
+
+    #[test]
+    fn inject_config_parses_path_prefix_and_selects_by_longest_match() {
+        let json = r#"[
+            {"host": "github.com", "shape": "git", "path_prefix": "/Acme/context-packs",
+             "secret": "env:PACK_TOKEN"},
+            {"host": "github.com", "shape": "git",
+             "secret": "env:GITHUB_TOKEN_${IDENTITY}"}
+        ]"#;
+        let rules = load_inject_config(json, "zephyr").unwrap();
+        assert_eq!(rules[0].path_prefix.as_deref(), Some("/Acme/context-packs"));
+        assert_eq!(rules[1].path_prefix, None);
+
+        let pack = select_rule(&rules, "/Acme/context-packs/info/refs").unwrap();
+        assert_eq!(pack.secret, SecretRef::parse("env:PACK_TOKEN").unwrap());
+        let other = select_rule(&rules, "/Acme/work-repo/info/refs").unwrap();
+        assert_eq!(other.secret, SecretRef::parse("env:GITHUB_TOKEN_ZEPHYR").unwrap());
+        assert!(select_rule(&rules[..1], "/Other/repo").is_none());
+    }
+
+    #[test]
+    fn inject_config_rejects_relative_path_prefix() {
+        let json = r#"[{"host": "a.com", "path_prefix": "no-slash", "secret": "env:X"}]"#;
+        assert!(load_inject_config(json, "acme").is_err());
+    }
+
+    #[test]
+    fn request_path_strips_query() {
+        assert_eq!(
+            request_path(b"GET /a/b/info/refs?service=git-upload-pack HTTP/1.1\r\n\r\n").as_deref(),
+            Some("/a/b/info/refs")
+        );
+        assert_eq!(request_path(b"POST /x HTTP/1.1\r\n\r\n").as_deref(), Some("/x"));
     }
 
     #[test]
@@ -1157,6 +1236,15 @@ mod tests {
         }
     }
 
+    struct EchoRefBackend;
+
+    #[async_trait::async_trait]
+    impl crate::secrets::RefResolver for EchoRefBackend {
+        async fn resolve(&self, r: &SecretRef) -> Result<crate::secrets::Credential, SecretError> {
+            Ok(crate::secrets::Credential::new(r.to_string()))
+        }
+    }
+
     fn injector_for(
         up: &Upstream,
         backend: MockBackend,
@@ -1166,6 +1254,7 @@ mod tests {
         let secrets = Arc::new(SecretSource::new(Box::new(backend), Duration::from_secs(120)));
         let policy = InjectionPolicy::new(vec![InjectionRule {
             host: "localhost".to_owned(),
+            path_prefix: None,
             service: "svc".to_owned(),
             shape,
             secret: test_ref("TEST_SECRET"),
@@ -1185,6 +1274,16 @@ mod tests {
         upstream_port: u16,
         agent_auth: &str,
     ) -> String {
+        roundtrip_path(inj, client_ca, upstream_port, "/user", agent_auth).await
+    }
+
+    async fn roundtrip_path(
+        inj: Arc<Injector>,
+        client_ca: &Arc<PerPodCa>,
+        upstream_port: u16,
+        path: &str,
+        agent_auth: &str,
+    ) -> String {
         install_crypto();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1201,7 +1300,7 @@ mod tests {
         let name = ServerName::try_from("localhost").unwrap();
         let mut tls = connector.connect(name, sock).await.unwrap();
         let req = format!(
-            "GET /user HTTP/1.1\r\nHost: localhost\r\nAuthorization: {agent_auth}\r\nConnection: close\r\n\r\n"
+            "GET {path} HTTP/1.1\r\nHost: localhost\r\nAuthorization: {agent_auth}\r\nConnection: close\r\n\r\n"
         );
         tls.write_all(req.as_bytes()).await.unwrap();
 
@@ -1245,6 +1344,34 @@ mod tests {
         let (inj, ca) = injector_for(&up, MockBackend(Err(())), AuthShape::Bearer);
         let got = roundtrip(Arc::new(inj), &ca, up.addr.port(), "Bearer AGENT-ORIGINAL").await;
         assert_eq!(got, "Bearer AGENT-ORIGINAL", "NotFound must forward the original header");
+    }
+
+    #[tokio::test]
+    async fn path_scoped_rule_injects_its_own_secret_over_tls() {
+        let up = spawn_upstream().await;
+        let client_ca = Arc::new(PerPodCa::generate().unwrap());
+        let secrets =
+            Arc::new(SecretSource::new(Box::new(EchoRefBackend), Duration::from_secs(120)));
+        let mk = |path_prefix: Option<&str>, var: &str| InjectionRule {
+            host: "localhost".to_owned(),
+            path_prefix: path_prefix.map(str::to_owned),
+            service: "svc".to_owned(),
+            shape: AuthShape::Bearer,
+            secret: test_ref(var),
+            cookie_secret: None,
+        };
+        let policy =
+            InjectionPolicy::new(vec![mk(Some("/pack"), "PACK_TOKEN"), mk(None, "GENERIC_TOKEN")]);
+        let mut inj = Injector::new(client_ca.clone(), secrets, policy, None).unwrap();
+        inj.connector = Injector::build_connector(vec![up.ca.ca_der().clone()]);
+        let inj = Arc::new(inj);
+
+        let got =
+            roundtrip_path(inj.clone(), &client_ca, up.addr.port(), "/pack/info/refs", "Bearer X")
+                .await;
+        assert_eq!(got, "Bearer env:PACK_TOKEN");
+        let got = roundtrip_path(inj, &client_ca, up.addr.port(), "/other/repo", "Bearer X").await;
+        assert_eq!(got, "Bearer env:GENERIC_TOKEN");
     }
 
     #[tokio::test]

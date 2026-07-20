@@ -260,12 +260,15 @@ phase_network() {
     # RETURN on a single boot-resolved IP — only safe for IP-stable hosts.
     _cctui_hp=$(url_hostport "$CCTUI_BASE_URL")
     _reply_hp=$(url_hostport "${REPLY_URL:-}")
+    # Boot-only: the pack host is deliberately NOT --always-allow'ed in
+    # phase_guard, so the first per-step rewrite closes it again.
+    _pack_hp=$(url_hostport "${CONTEXT_PACK_URL:-}")
     _net_allow=$(printf '%s' "${WORKER_NET_ALLOW:-}" | tr ',' '\n' \
         | sed 's/^[[:space:]]*//;s/[[:space:]]*$//;/^$/d')
-    _allowed=$(printf '%s\n%s\n%s\n' "$_cctui_hp" "$_reply_hp" "$_net_allow" | sed '/^$/d' \
-        | jq -R . | jq -cs 'unique')
+    _allowed=$(printf '%s\n%s\n%s\n%s\n' "$_cctui_hp" "$_reply_hp" "$_pack_hp" "$_net_allow" \
+        | sed '/^$/d' | jq -R . | jq -cs 'unique')
     printf '{"allowed_hosts":%s,"default":"deny"}\n' "$_allowed" > "$POLICY_FILE"
-    log "seeded guard-proxy policy (allow: ${_cctui_hp}${_reply_hp:+, $_reply_hp}${WORKER_NET_ALLOW:+, $WORKER_NET_ALLOW}; default deny)"
+    log "seeded guard-proxy policy (allow: ${_cctui_hp}${_reply_hp:+, $_reply_hp}${_pack_hp:+, $_pack_hp}${WORKER_NET_ALLOW:+, $WORKER_NET_ALLOW}; default deny)"
 
     if [ "$NET_MODE" = transparent-external ]; then
         # Nothing to start and no iptables here. The sidecar proxy is deny-all
@@ -609,23 +612,38 @@ phase_context_pack() {
     fi
 
     _tmp=$(mktemp -d)
+    _giterr=$(mktemp)
+    # Root egress bypasses the uid-scoped redirect — only WORKER_UID traffic
+    # reaches the proxy's credential injection.
+    if [ "$(id -u)" = "0" ] && command -v setpriv >/dev/null 2>&1; then
+        chown "${WORKER_UID}:${WORKER_UID}" "$_tmp"
+        pack_git() {
+            setpriv --reuid="$WORKER_UID" --regid="$WORKER_UID" --clear-groups \
+                env HOME="$_tmp" GIT_TERMINAL_PROMPT=0 git "$@" 2>>"$_giterr"
+        }
+    else
+        pack_git() { GIT_TERMINAL_PROMPT=0 git "$@" 2>>"$_giterr"; }
+    fi
+    pack_fatal() {
+        echo "cctui-worker: FATAL $1" >&2
+        sed 's/^/cctui-worker: git: /' "$_giterr" | tail -5 >&2
+        exit 1
+    }
     if [ -z "${CONTEXT_PACK_REF:-}" ]; then
         # No ref ⇒ clone the remote's default branch.
-        if ! git clone --depth 1 "$_url" "$_tmp" 2>/dev/null; then
-            echo "cctui-worker: FATAL context-pack clone failed (default branch)" >&2
-            exit 1
-        fi
-    elif ! git clone --depth 1 --branch "$CONTEXT_PACK_REF" "$_url" "$_tmp" 2>/dev/null; then
+        pack_git clone --depth 1 "$_url" "$_tmp" \
+            || pack_fatal "context-pack clone failed (default branch)"
+    elif ! pack_git clone --depth 1 --branch "$CONTEXT_PACK_REF" "$_url" "$_tmp"; then
         # Some refs are SHAs (not clonable by --branch): fetch the ref directly.
         rm -rf "$_tmp"; _tmp=$(mktemp -d)
-        if ! (git -C "$_tmp" init -q \
-                && git -C "$_tmp" remote add origin "$_url" \
-                && git -C "$_tmp" fetch --depth 1 -q origin "$CONTEXT_PACK_REF" \
-                && git -C "$_tmp" checkout -q FETCH_HEAD) 2>/dev/null; then
-            echo "cctui-worker: FATAL context-pack fetch failed (CONTEXT_PACK_URL set, ref=$CONTEXT_PACK_REF)" >&2
-            exit 1
-        fi
+        [ "$(id -u)" = "0" ] && chown "${WORKER_UID}:${WORKER_UID}" "$_tmp"
+        { pack_git -C "$_tmp" init -q \
+            && pack_git -C "$_tmp" remote add origin "$_url" \
+            && pack_git -C "$_tmp" fetch --depth 1 -q origin "$CONTEXT_PACK_REF" \
+            && pack_git -C "$_tmp" checkout -q FETCH_HEAD; } \
+            || pack_fatal "context-pack fetch failed (CONTEXT_PACK_URL set, ref=$CONTEXT_PACK_REF)"
     fi
+    rm -f "$_giterr"
 
     _src="$_tmp"
     [ -n "${CONTEXT_PACK_SUBDIR:-}" ] && _src="$_tmp/${CONTEXT_PACK_SUBDIR#/}"
