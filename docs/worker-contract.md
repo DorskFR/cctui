@@ -41,6 +41,15 @@ hard-fails on missing input. The **one** exception: if `CONTEXT_PACK_URL` is
 set, the context-pack fetch must succeed or the boot fails closed (the pack
 defines the guard rules; proceeding without it would weaken the sandbox).
 
+All **three** platform vars are themselves a hard precondition, checked before
+any phase runs: a worker missing `CCTUI_URL`/`CCTUI_SERVER_URL`,
+`CCTUI_MACHINE_KEY`, or `SESSION_ID` exits non-zero rather than degrade. Absent
+`SESSION_ID` in particular is a broken dispatch — it would skip the
+dispatch/wait phase and leave a plain exec-forever daemon that never registers
+the session or runs the task, so it fails closed. The thin/degenerate worker
+above still carries `SESSION_ID`; the thin path is the *no-`TASK_PAYLOAD_JSON`*
+case, never a *no-`SESSION_ID`* case.
+
 ## Environment variables
 
 ### Platform plane
@@ -164,6 +173,24 @@ the resolved pod env.
 Egress is always gated by `cctui-guard-proxy` (uid 1337), deny-default. The
 policy is seeded at boot to always-allow the `CCTUI_URL` + `REPLY_URL` hosts;
 `cctui-guard` rewrites it per workflow step when a guarded prompt runs.
+
+### Built-in guard default (no `guard-rules.md`)
+
+A pack's `guard-rules.md` is optional. When none is present — a manual job with
+an inline prompt and no pack, or a pack that ships no rules file — the worker
+applies a **documented built-in default**, logged loudly at boot
+(`guard: DEFAULT engaged (no guard-rules.md …)`):
+
+- **Tools = all / no gating.** No `cctui-guard` tool-set is enforced; every tool
+  the agent can invoke is allowed. Per-tool gating exists only when a pack ships
+  `guard-rules.md` **and** the prompt carries `# Step N` + `[allowed]` blocks.
+- **Network = deny-default + seeded structural hosts.** Egress stays the boot
+  `policy.json`: deny-default with only `CCTUI_URL`, `REPLY_URL`, and any
+  `WORKER_NET_ALLOW`/`CONTEXT_PACK_URL` host allowed. The sandbox floor holds
+  even with no rules file — an unguarded run is never an *open* run.
+
+To gate tools per workflow step, ship a `guard-rules.md` in the pack and give the
+prompt step blocks; the default is the safe fallback, not a recommendation.
 
 | Mode | Capability at start | Mechanism |
 | --- | --- | --- |
@@ -598,14 +625,23 @@ agent its documentation environment. Anyone can define their own dispatch types
   AGENTS.md          # codex instructions (optional; falls back to CLAUDE.md)
   rules/             # always-on guidance (push) -> ~/.claude/rules/ (auto-loaded)
   docs/              # on-demand reference (pull) -> ~/.claude/docs/
+  schemas/           # per-flow JSON schemas       -> ~/.claude/schemas/
   prompts/           # dispatch prompts; TASK_PROMPT_FILE resolves here
   skills/            # skill dirs (SKILL.md …)   -> ~/.claude/skills/
   projects/          # per-repo CLAUDE.md overlays -> /home/worker/projects/
   style/             # output styles               -> /home/worker/style/
   mcp.json           # adapter-neutral MCP servers (mcpServers map)
   guard-rules.md     # tool-set + network-set definitions for cctui-guard
-  pack.toml          # optional manifest; may declare a shared base layer
+  pack.toml          # optional manifest; [dirs] table + optional base layer
 ```
+
+`rules/` is **always-on** (auto-loaded on every task) and `docs/` is **pull-only**
+(referenced on demand) — always-on conventions belong in `rules/`, not `docs/`. A
+`schemas/` dir carries per-flow JSON schemas (e.g. `result.json`) a prompt can
+validate the result envelope against before writing `RESULT_FILE`; it wires to
+`~/.claude/schemas/` via the generic unknown-key seam. The fixture pack at
+`deploy/examples/context-pack/` exercises **every** wired seam (`rules/`,
+`schemas/`, `projects/`, `style/`, `pack.toml`, plus `skills/`/`docs/`).
 
 A neutral fixture pack lives at `deploy/examples/context-pack/`.
 

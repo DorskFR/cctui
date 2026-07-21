@@ -205,6 +205,95 @@ pub fn whip_stop_phrases_of(data: &Value) -> Option<Value> {
     normalize_whip_stop_phrases(data.get("whipStopPhrases"))
 }
 
+const MAX_SCRUB_PATTERNS: usize = 100;
+const MAX_SCRUB_NAME_CHARS: usize = 60;
+const MAX_SCRUB_REGEX_CHARS: usize = 400;
+
+/// Normalize `secretScrubPatterns` (CCT-731) into a clamped array of
+/// `{ name, regex, enabled }`. Each entry is trimmed, length-capped, and its
+/// `regex` is **rejected unless it compiles** (returned in `Err` so `PUT` can
+/// 400). Duplicates by regex are dropped and the count is capped. Returns an
+/// empty vec when the key is absent or reduces to nothing.
+fn normalize_scrub_patterns(raw: Option<&Value>) -> Result<Vec<Value>, String> {
+    let Some(arr) = raw.and_then(Value::as_array) else { return Ok(Vec::new()) };
+    let mut out: Vec<Value> = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
+    for entry in arr {
+        let name: String = entry
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .chars()
+            .take(MAX_SCRUB_NAME_CHARS)
+            .collect();
+        let regex: String = entry
+            .get("regex")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .chars()
+            .take(MAX_SCRUB_REGEX_CHARS)
+            .collect();
+        if regex.is_empty() {
+            continue;
+        }
+        if let Err(e) = cctui_crypto::redact::validate_regex(&regex) {
+            return Err(format!("invalid scrub regex {regex:?}: {e}"));
+        }
+        if seen.iter().any(|r| r == &regex) {
+            continue;
+        }
+        let enabled = entry.get("enabled").and_then(Value::as_bool).unwrap_or(true);
+        seen.push(regex.clone());
+        let name = if name.is_empty() { "custom".to_owned() } else { name };
+        out.push(json!({ "name": name, "regex": regex, "enabled": enabled }));
+        if out.len() >= MAX_SCRUB_PATTERNS {
+            break;
+        }
+    }
+    Ok(out)
+}
+
+/// Clamp `data.secretScrubEnabled` / `data.secretScrubPatterns` in place on
+/// write (CCT-731), returning `Err(msg)` when a user regex does not compile so
+/// `put_settings` can reject the PUT with a 400.
+fn clamp_secret_scrub(data: &mut Value) -> Result<(), String> {
+    let Some(obj) = data.as_object_mut() else { return Ok(()) };
+    if obj.contains_key("secretScrubEnabled") {
+        let on = obj.get("secretScrubEnabled").and_then(Value::as_bool).unwrap_or(false);
+        obj.insert("secretScrubEnabled".to_owned(), Value::Bool(on));
+    }
+    if obj.contains_key("secretScrubPatterns") {
+        let patterns = normalize_scrub_patterns(obj.get("secretScrubPatterns"))?;
+        if patterns.is_empty() {
+            obj.remove("secretScrubPatterns");
+        } else {
+            obj.insert("secretScrubPatterns".to_owned(), Value::Array(patterns));
+        }
+    }
+    Ok(())
+}
+
+/// The effective [`SecretScrubConfig`] for the daemon Reconcile (CCT-731): the
+/// enable flag plus the enabled, validated user patterns from a settings blob.
+#[must_use]
+pub fn secret_scrub_of(data: &Value) -> cctui_proto::ws::SecretScrubConfig {
+    let enabled = data.get("secretScrubEnabled").and_then(Value::as_bool).unwrap_or(false);
+    let patterns = normalize_scrub_patterns(data.get("secretScrubPatterns"))
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|p| p.get("enabled").and_then(Value::as_bool).unwrap_or(true))
+        .filter_map(|p| {
+            Some(cctui_proto::ws::ScrubPattern {
+                name: p.get("name")?.as_str()?.to_owned(),
+                regex: p.get("regex")?.as_str()?.to_owned(),
+            })
+        })
+        .collect();
+    cctui_proto::ws::SecretScrubConfig { enabled, patterns }
+}
+
 pub async fn get_settings(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -244,8 +333,14 @@ pub async fn put_settings(
     // wedge a daemon's reconcile); unknown → bg (CCT-495).
     clamp_harness_mode(&mut data);
     clamp_whip_stop_phrases(&mut data);
+    // Reject the whole PUT if any user scrub regex fails to compile (CCT-731).
+    if let Err(msg) = clamp_secret_scrub(&mut data) {
+        tracing::info!("rejecting settings PUT: {msg}");
+        return Err(StatusCode::BAD_REQUEST);
+    }
     clamp_locale(&mut data);
     let new_mode = harness_mode_of(&data);
+    let new_scrub = serde_json::to_value(secret_scrub_of(&data)).unwrap_or(Value::Null);
 
     // Snapshot the stored harnessMode before the upsert so we only push a fresh
     // Reconcile when it actually changes — unrelated settings edits must not
@@ -260,6 +355,10 @@ pub async fn put_settings(
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
     let prev_mode = prev.as_ref().map_or(DEFAULT_HARNESS_MODE, |d| harness_mode_of(d));
+    let prev_scrub = prev
+        .as_ref()
+        .and_then(|d| serde_json::to_value(secret_scrub_of(d)).ok())
+        .unwrap_or(Value::Null);
 
     let (version, data) = sqlx::query_as::<_, (i32, Value)>(
         "INSERT INTO user_settings (user_id, version, data, updated_at) \
@@ -281,7 +380,7 @@ pub async fn put_settings(
     // Live-push a fresh Reconcile to every machine the user owns the instant the
     // harness mode changes, so connected daemons pick up the new mode without a
     // reconnect (CCT-495). Best-effort, only on change.
-    if new_mode != prev_mode {
+    if new_mode != prev_mode || new_scrub != prev_scrub {
         let machines: Vec<uuid::Uuid> =
             sqlx::query_scalar("SELECT id FROM machines WHERE user_id = $1 AND deleted_at IS NULL")
                 .bind(ctx.user_id)
@@ -301,13 +400,161 @@ pub async fn put_settings(
     Ok(Json(SettingsPayload { version, data }))
 }
 
+/// `POST /api/v1/settings/rescrub` (CCT-731): apply the caller's effective scrub
+/// list to their already-stored `stream_events`. `dry_run` reports counts and
+/// writes nothing; the real pass masks matching rows and is idempotent (a second
+/// run reports zero changes). Optional `session_ids` / `since` scope the sweep.
+#[derive(Deserialize, TS)]
+#[ts(export)]
+pub struct RescrubRequest {
+    #[serde(default)]
+    pub dry_run: bool,
+    #[serde(default)]
+    pub session_ids: Option<Vec<uuid::Uuid>>,
+    #[serde(default)]
+    pub since: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[derive(Serialize, TS)]
+#[ts(export)]
+pub struct RescrubReport {
+    pub dry_run: bool,
+    pub rows_scanned: u64,
+    pub rows_changed: u64,
+    pub substitutions: u64,
+    /// Substitution counts keyed by category (e.g. `github_token`).
+    pub by_category: std::collections::BTreeMap<String, u64>,
+}
+
+/// id-keyset batch size for the re-scrub sweep.
+const RESCRUB_BATCH: i64 = 500;
+
+pub async fn rescrub_settings(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Json(req): Json<RescrubRequest>,
+) -> Result<Json<RescrubReport>, StatusCode> {
+    let data: Value = sqlx::query_scalar("SELECT data FROM user_settings WHERE user_id = $1")
+        .bind(ctx.user_id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("db error: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .unwrap_or(Value::Null);
+    let scrub_cfg = secret_scrub_of(&data);
+    let user: Vec<(String, String)> =
+        scrub_cfg.patterns.into_iter().map(|p| (p.name, p.regex)).collect();
+    // The defaults always apply on an explicit re-scrub, regardless of the live
+    // `secretScrubEnabled` toggle.
+    let patterns = cctui_crypto::redact::compile(true, &user, &cctui_crypto::vault_key());
+
+    let mut report = RescrubReport {
+        dry_run: req.dry_run,
+        rows_scanned: 0,
+        rows_changed: 0,
+        substitutions: 0,
+        by_category: std::collections::BTreeMap::new(),
+    };
+    let mut cursor: i64 = 0;
+    loop {
+        let rows: Vec<(i64, Value)> = sqlx::query_as(
+            "SELECT se.id, se.payload FROM stream_events se \
+             JOIN sessions s ON s.id = se.session_id \
+             WHERE s.user_id = $1 AND se.id > $2 \
+               AND ($3::uuid[] IS NULL OR se.session_id = ANY($3)) \
+               AND ($4::timestamptz IS NULL OR se.created_at >= $4) \
+             ORDER BY se.id LIMIT $5",
+        )
+        .bind(ctx.user_id)
+        .bind(cursor)
+        .bind(req.session_ids.as_deref())
+        .bind(req.since)
+        .bind(RESCRUB_BATCH)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("db error: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+        if rows.is_empty() {
+            break;
+        }
+        for (id, mut payload) in rows {
+            cursor = id;
+            report.rows_scanned += 1;
+            let stats = cctui_crypto::redact::redact_json_stats(&mut payload, &patterns);
+            let n: usize = stats.values().sum();
+            if n == 0 {
+                continue;
+            }
+            report.rows_changed += 1;
+            report.substitutions += n as u64;
+            for (cat, c) in stats {
+                *report.by_category.entry(cat).or_insert(0) += c as u64;
+            }
+            if !req.dry_run {
+                // A redacted payload can collide with an existing redacted row on
+                // the (session, type, content_hash) dedup index — ignore that,
+                // the equivalent row already exists.
+                if let Err(e) =
+                    sqlx::query("UPDATE stream_events SET payload = $1 WHERE id = $2")
+                        .bind(&payload)
+                        .bind(id)
+                        .execute(&state.pool)
+                        .await
+                {
+                    tracing::warn!(id, "rescrub update skipped: {e}");
+                }
+            }
+        }
+    }
+    Ok(Json(report))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        clamp_harness_mode, clamp_locale, clamp_whip_stop_phrases, harness_mode_of,
-        harness_mode_to_adapter_token, whip_stop_phrases_of,
+        clamp_harness_mode, clamp_locale, clamp_secret_scrub, clamp_whip_stop_phrases,
+        harness_mode_of, harness_mode_to_adapter_token, secret_scrub_of, whip_stop_phrases_of,
     };
     use serde_json::json;
+
+    #[test]
+    fn clamp_secret_scrub_rejects_bad_regex_and_keeps_valid() {
+        let mut good = json!({
+            "secretScrubEnabled": true,
+            "secretScrubPatterns": [{ "name": "acme", "regex": "ACME-[0-9]+", "enabled": true }],
+        });
+        assert!(clamp_secret_scrub(&mut good).is_ok());
+        assert_eq!(good["secretScrubPatterns"][0]["regex"], "ACME-[0-9]+");
+
+        let mut bad = json!({ "secretScrubPatterns": [{ "name": "x", "regex": "([a-z" }] });
+        assert!(clamp_secret_scrub(&mut bad).is_err());
+    }
+
+    #[test]
+    fn secret_scrub_of_returns_only_enabled_patterns() {
+        let data = json!({
+            "secretScrubEnabled": true,
+            "secretScrubPatterns": [
+                { "name": "on", "regex": "AAA[0-9]+", "enabled": true },
+                { "name": "off", "regex": "BBB[0-9]+", "enabled": false },
+            ],
+        });
+        let cfg = secret_scrub_of(&data);
+        assert!(cfg.enabled);
+        assert_eq!(cfg.patterns.len(), 1);
+        assert_eq!(cfg.patterns[0].name, "on");
+    }
+
+    #[test]
+    fn clamp_secret_scrub_drops_empty_patterns_key() {
+        let mut data = json!({ "secretScrubPatterns": [{ "regex": "  " }] });
+        assert!(clamp_secret_scrub(&mut data).is_ok());
+        assert!(data.get("secretScrubPatterns").is_none());
+    }
 
     #[test]
     fn harness_mode_of_clamps_unknown_and_missing_to_bg() {

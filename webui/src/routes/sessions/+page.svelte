@@ -22,6 +22,7 @@
 	import { freeText, parse } from '@dorsk/tsumikit';
 	import {
 		buildSessionSearchSchema,
+		contextForField,
 		matchesClientFilters,
 		splitQuery
 	} from '$lib/searchSchema';
@@ -316,10 +317,10 @@
 	// Live-only with no query needs no pager — the bucketed list owns it.
 	// `rawQuery` is the live input (debounced into `query`); the FilterSearchBar
 	// organism binds to it and owns the field UI (chips, autocomplete, clear).
-	const searchSchema = buildSessionSearchSchema((field, q) =>
-		endpoints.searchFieldValues(field, q)
-	);
 	let rawQuery = $state('');
+	const searchSchema = buildSessionSearchSchema((field, q) =>
+		endpoints.searchFieldValues(field, q, contextForField(rawQuery, searchSchema, field))
+	);
 	let query = $state('');
 	$effect(() => {
 		const v = rawQuery.trim();

@@ -9,9 +9,10 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use cctui_crypto::redact::{self, CompiledPatterns};
 use cctui_proto::adapter::AdapterEvent;
 use cctui_proto::api::DaemonAdapterConfig;
-use cctui_proto::ws::{DaemonFrameDown, DaemonFrameUp};
+use cctui_proto::ws::{DaemonFrameDown, DaemonFrameUp, SecretScrubConfig};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
@@ -98,6 +99,8 @@ impl Supervisor {
         // be routed to the right adapter by `adapter_id`).
         let mut running: HashMap<String, AdapterRunning> = HashMap::new();
 
+        let mut scrub = CompiledPatterns::disabled();
+
         let mut ping = tokio::time::interval(PING_INTERVAL);
         ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         // Discard the immediate first tick — we just connected.
@@ -119,7 +122,7 @@ impl Supervisor {
                     let msg = msg?;
                     last_rx = tokio::time::Instant::now();
                     if let Some(frame) = parse_frame(msg)? {
-                        self.handle_frame(frame, &mut running, &event_tx, &frame_up_tx, &shutdown).await;
+                        self.handle_frame(frame, &mut running, &event_tx, &frame_up_tx, &mut scrub, &shutdown).await;
                     }
                 }
                 Some(frame) = frame_up_rx.recv() => {
@@ -133,6 +136,8 @@ impl Supervisor {
                         local_id = event_local_id(&event),
                         "sending event",
                     );
+                    // Redact secrets before the event reaches the wire / DB.
+                    let event = scrub_event(event, &scrub);
                     let up = DaemonFrameUp::Event { adapter_id, event };
                     let payload = serde_json::to_string(&up)?;
                     sink.send(Message::Text(payload.into())).await?;
@@ -171,10 +176,12 @@ impl Supervisor {
         running: &mut HashMap<String, AdapterRunning>,
         event_tx: &mpsc::Sender<(String, AdapterEvent)>,
         frame_up_tx: &mpsc::Sender<DaemonFrameUp>,
+        scrub: &mut CompiledPatterns,
         shutdown: &CancellationToken,
     ) {
         match frame {
-            DaemonFrameDown::Reconcile { adapters } => {
+            DaemonFrameDown::Reconcile { adapters, secret_scrub } => {
+                *scrub = compile_scrub(&secret_scrub);
                 self.reconcile(adapters, running, event_tx, shutdown);
             }
             DaemonFrameDown::Command { adapter_id, command } => {
@@ -372,6 +379,30 @@ fn stage_files_result(
     }
 }
 
+/// Compile the effective scrub set from a synced [`SecretScrubConfig`]. The
+/// correlation-suffix key is the daemon's `CCTUI_VAULT_KEY` if set (empty
+/// otherwise, dropping the suffix — the daemon needn't hold the server key).
+fn compile_scrub(cfg: &SecretScrubConfig) -> CompiledPatterns {
+    let user: Vec<(String, String)> =
+        cfg.patterns.iter().map(|p| (p.name.clone(), p.regex.clone())).collect();
+    redact::compile(cfg.enabled, &user, &cctui_crypto::vault_key())
+}
+
+/// Redact secrets out of an event by round-tripping it through JSON and running
+/// [`redact::redact_json`] over every string leaf. A no-op when scrubbing is
+/// disabled; on the (structurally impossible) round-trip failure the original
+/// event is passed through unchanged rather than dropped.
+fn scrub_event(event: AdapterEvent, scrub: &CompiledPatterns) -> AdapterEvent {
+    if scrub.is_empty() {
+        return event;
+    }
+    let Ok(mut value) = serde_json::to_value(&event) else { return event };
+    if redact::redact_json(&mut value, scrub) == 0 {
+        return event;
+    }
+    serde_json::from_value(value).unwrap_or(event)
+}
+
 fn event_local_id(event: &AdapterEvent) -> &str {
     match event {
         AdapterEvent::SessionStarted { local_id, .. }
@@ -421,9 +452,36 @@ mod tests {
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
 
-    use super::{AdapterRunning, LIVENESS_TIMEOUT, PING_INTERVAL, Supervisor};
+    use super::{AdapterRunning, LIVENESS_TIMEOUT, PING_INTERVAL, Supervisor, compile_scrub, scrub_event};
     use crate::adapter_runtime::{Adapter, AdapterCtx, AdapterFactory};
     use crate::client::ServerClient;
+
+    #[test]
+    fn scrub_event_masks_tool_use_secret_before_send() {
+        let cfg = cctui_proto::ws::SecretScrubConfig { enabled: true, patterns: vec![] };
+        let scrub = compile_scrub(&cfg);
+        let event = cctui_proto::adapter::AdapterEvent::ToolUse {
+            local_id: "sess-1".to_owned(),
+            payload: serde_json::json!({
+                "command": "export GH_TOKEN=ghp_ABCDEFGHIJKLMNOPQRSTUVWX0123",
+            }),
+        };
+        let out = scrub_event(event, &scrub);
+        let json = serde_json::to_string(&out).unwrap();
+        assert!(!json.contains("ghp_ABCDEFGHIJKLMNOPQRSTUVWX0123"), "secret leaked: {json}");
+        assert!(json.contains("[REDACTED:github_token"), "no placeholder: {json}");
+    }
+
+    #[test]
+    fn scrub_event_is_noop_when_disabled() {
+        let scrub = compile_scrub(&cctui_proto::ws::SecretScrubConfig::default());
+        let event = cctui_proto::adapter::AdapterEvent::Message {
+            local_id: "s".to_owned(),
+            payload: serde_json::json!({ "text": "ghp_ABCDEFGHIJKLMNOPQRSTUVWX0123" }),
+        };
+        let out = scrub_event(event, &scrub);
+        assert!(serde_json::to_string(&out).unwrap().contains("ghp_ABCDEFGHIJKLMNOPQRSTUVWX0123"));
+    }
 
     /// Records the config each `build` call was handed, so a test can assert
     /// whether (and with what config) an adapter was (re)built.

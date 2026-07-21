@@ -71,6 +71,10 @@ if [ -z "${CCTUI_URL:-}" ] && [ -z "${CCTUI_SERVER_URL:-}" ]; then
     echo "cctui-worker: CCTUI_URL (or CCTUI_SERVER_URL) is required (injected by the dispatcher)" >&2
     exit 1
 fi
+if [ -z "${SESSION_ID:-}" ]; then
+    echo "cctui-worker: SESSION_ID is required (injected by the dispatcher)" >&2
+    exit 1
+fi
 
 # Normalize the server URL we reason about (host extraction, policy seeding).
 CCTUI_BASE_URL="${CCTUI_URL:-${CCTUI_SERVER_URL:-}}"
@@ -998,6 +1002,10 @@ phase_callback() {
 # prompt or no step markers.
 GUARD_ON=off
 phase_guard() {
+    _rules="${GUARD_RULES_FILE:-$CONTEXT_DIR/guard-rules.md}"
+    if [ ! -f "$_rules" ]; then
+        log "guard: DEFAULT engaged (no guard-rules.md at $_rules) — tools=ALL (no gating); network=deny-default + seeded structural hosts only. Ship a pack guard-rules.md to gate tools per workflow step."
+    fi
     _prompt=$(resolve_prompt_path)
     [ -n "$_prompt" ] || { log "guard: no prompt, running without guard"; return 0; }
     if [ ! -f "$_prompt" ]; then
@@ -1011,7 +1019,6 @@ phase_guard() {
         return 0
     fi
 
-    _rules="${GUARD_RULES_FILE:-$CONTEXT_DIR/guard-rules.md}"
     mkdir -p "$(dirname "$GUARD_STATE")" "$(dirname "$POLICY_FILE")"
 
     set -- --prompt "$_prompt" \

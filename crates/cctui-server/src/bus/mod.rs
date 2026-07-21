@@ -767,7 +767,11 @@ pub async fn push_reconcile(state: &AppState, machine_id: Uuid) -> Result<(), Bu
     let adapters = crate::routes::daemon::load_reconcile(state, machine_id)
         .await
         .map_err(|e| BusError::Reconcile(e.to_string()))?;
-    state.bus.command_daemon(machine_id, DaemonFrameDown::Reconcile { adapters }).await
+    let secret_scrub = crate::routes::daemon::load_scrub_config(state, machine_id).await;
+    state
+        .bus
+        .command_daemon(machine_id, DaemonFrameDown::Reconcile { adapters, secret_scrub })
+        .await
 }
 
 /// Stage mid-chat attachment `files` for `session_id` (CCT-236) and return the
@@ -871,7 +875,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
         bus.register_daemon(machine, tx);
 
-        bus.command_daemon(machine, DaemonFrameDown::Reconcile { adapters: Vec::new() })
+        bus.command_daemon(machine, DaemonFrameDown::Reconcile { adapters: Vec::new(), secret_scrub: Default::default() })
             .await
             .unwrap();
         assert!(matches!(rx.recv().await, Some(DaemonFrameDown::Reconcile { .. })));
@@ -895,7 +899,7 @@ mod tests {
         let bus = bus();
         let machine = Uuid::new_v4();
         let err = bus
-            .command_daemon(machine, DaemonFrameDown::Reconcile { adapters: Vec::new() })
+            .command_daemon(machine, DaemonFrameDown::Reconcile { adapters: Vec::new(), secret_scrub: Default::default() })
             .await
             .unwrap_err();
         assert!(matches!(err, BusError::NoDaemon(m) if m == machine));
@@ -909,7 +913,7 @@ mod tests {
         bus.register_daemon(machine, tx);
         drop(rx);
         let err = bus
-            .command_daemon(machine, DaemonFrameDown::Reconcile { adapters: Vec::new() })
+            .command_daemon(machine, DaemonFrameDown::Reconcile { adapters: Vec::new(), secret_scrub: Default::default() })
             .await
             .unwrap_err();
         assert!(matches!(err, BusError::Closed));
@@ -932,7 +936,7 @@ mod tests {
         assert!(!bus.unregister_daemon(machine, &old_tx));
         assert!(bus.daemon_connected(machine));
 
-        bus.command_daemon(machine, DaemonFrameDown::Reconcile { adapters: Vec::new() })
+        bus.command_daemon(machine, DaemonFrameDown::Reconcile { adapters: Vec::new(), secret_scrub: Default::default() })
             .await
             .unwrap();
         assert!(new_rx.recv().await.is_some());

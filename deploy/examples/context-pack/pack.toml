@@ -1,0 +1,17 @@
+# Context pack manifest (example). The [dirs] table is authoritative when
+# present: each `key = "srcdir"` declares a pack dir wired into the worker home
+# (omit it to fall back to the v1 default set skills/rules/docs/style/projects).
+# This fixture lists every wired seam explicitly. Wiring targets (see
+# docs/worker-contract.md):
+#   skills -> ~/.claude/skills · rules -> ~/.claude/rules · docs -> ~/.claude/docs
+#   schemas -> ~/.claude/schemas · style -> ~/style · projects -> ~/projects
+# prompts/ and scripts/ stay under /opt/context and need no entry. A monorepo of
+# packs may add `base = "../_base"` (path relative to this pack) for a shared layer.
+
+[dirs]
+skills = "skills"
+rules = "rules"
+docs = "docs"
+schemas = "schemas"
+style = "style"
+projects = "projects"

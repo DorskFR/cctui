@@ -313,7 +313,8 @@ async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: U
     // Send Reconcile immediately.
     match load_reconcile(&state, machine_id).await {
         Ok(adapters) => {
-            if tx.send(DaemonFrameDown::Reconcile { adapters }).await.is_err() {
+            let secret_scrub = load_scrub_config(&state, machine_id).await;
+            if tx.send(DaemonFrameDown::Reconcile { adapters, secret_scrub }).await.is_err() {
                 tracing::warn!("daemon tx closed before reconcile");
             }
         }
@@ -1270,6 +1271,31 @@ pub async fn load_reconcile(
             DaemonAdapterConfig { adapter_id: AdapterId::new(id), config, enabled }
         })
         .collect())
+}
+
+/// The effective secret-scrub config for `machine_id`'s owner (CCT-731): the
+/// `secretScrubEnabled` flag plus the clamped `secretScrubPatterns` list from
+/// `user_settings.data`, carried in every Reconcile so a running daemon applies
+/// the current list without a restart. Best-effort — a DB error scrubs nothing.
+pub async fn load_scrub_config(
+    state: &AppState,
+    machine_id: Uuid,
+) -> cctui_proto::ws::SecretScrubConfig {
+    let data: Option<serde_json::Value> = sqlx::query_scalar(
+        "SELECT us.data FROM machines m JOIN user_settings us ON us.user_id = m.user_id \
+         WHERE m.id = $1",
+    )
+    .bind(machine_id)
+    .fetch_optional(&state.pool)
+    .await
+    .unwrap_or_else(|e| {
+        tracing::warn!("db error loading scrub config: {e}");
+        None
+    })
+    .flatten();
+    data.as_ref()
+        .map(crate::routes::settings::secret_scrub_of)
+        .unwrap_or_default()
 }
 
 // ---- /api/v1/users/{id}/tokens ----

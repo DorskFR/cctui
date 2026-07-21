@@ -9,6 +9,8 @@
 //! (dev/test, matching the historical scheme); any other length is stretched
 //! to 32 via SHA-256 so historical keys keep working.
 
+pub mod redact;
+
 use chacha20poly1305::aead::{Aead, AeadCore, KeyInit, OsRng};
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
 use sha2::{Digest, Sha256};

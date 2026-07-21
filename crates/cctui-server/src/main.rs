@@ -940,6 +940,14 @@ fn build_api_routes() -> Routes {
             Authenticated,
         )
         .add(
+            &[Method::POST],
+            "/settings/rescrub",
+            "Re-apply the secret-scrub list to your stored events (CCT-731).",
+            post(routes::settings::rescrub_settings),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
             &[GET],
             "/capabilities",
             "List server capabilities/feature flags.",
