@@ -649,6 +649,7 @@ async fn command_pump(
                             })
                             .await;
                     }
+                    AdapterCommand::ResumeMarks { .. } => {}
                     _ => tracing::warn!("codex: unhandled AdapterCommand variant"),
                 }
             }
