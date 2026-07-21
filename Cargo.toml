@@ -71,6 +71,8 @@ async-trait = "0.1"
 # =-pinned: newer AWS SDK releases require rustc 1.94.1, toolchain is pinned to 1.90.0
 aws-config = { version = "=1.8.13", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio"] }
 aws-sdk-secretsmanager = { version = "=1.99.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sigv4 = { version = "=1.3.8", default-features = false, features = ["sign-http"] }
+aws-credential-types = "=1.2.11"
 kube = { version = "0.96", default-features = false, features = ["client", "rustls-tls", "runtime", "derive", "admission"] }
 json-patch = "2"
 axum-server = { version = "0.7", features = ["tls-rustls-no-provider"] }

@@ -61,6 +61,11 @@ pub enum AuthShape {
     /// the rule's companion `cookie_secret` — e.g. Slack's browser (`xoxc`)
     /// session tokens need their `d` cookie.
     BearerCookie { cookie_name: String },
+    /// AWS `SigV4` request signing — Secrets Manager and other AWS APIs. The
+    /// rule's `secret` is the secret access key; the companion `key_id_secret`
+    /// is the access key id. The signature covers the body's SHA-256, so these
+    /// requests are buffered (bounded) instead of streamed.
+    SigV4 { region: String, service: String },
 }
 
 /// One allow-listed host and how to inject its credential. The secret is an
@@ -78,6 +83,8 @@ pub struct InjectionRule {
     pub secret: SecretRef,
     /// Companion cookie value; required by [`AuthShape::BearerCookie`].
     pub cookie_secret: Option<SecretRef>,
+    /// Companion access key id; required by [`AuthShape::SigV4`].
+    pub key_id_secret: Option<SecretRef>,
 }
 
 /// A `host → service/shape` mapping before a secret ref is attached (the legacy
@@ -170,9 +177,17 @@ struct InjectEntry {
     /// Cookie name for `bearer+cookie`; default `d`.
     #[serde(default)]
     cookie_name: Option<String>,
+    /// `SigV4` region/signing-name; default derived from a
+    /// `<service>.<region>.amazonaws.com` host.
+    #[serde(default)]
+    region: Option<String>,
+    #[serde(default)]
+    aws_service: Option<String>,
     secret: String,
     #[serde(default)]
     cookie_secret: Option<String>,
+    #[serde(default)]
+    key_id_secret: Option<String>,
 }
 
 impl InjectEntry {
@@ -188,6 +203,20 @@ impl InjectEntry {
                 "bearer+cookie" | "cookie" | "slack" => AuthShape::BearerCookie {
                     cookie_name: self.cookie_name.unwrap_or_else(|| "d".to_owned()),
                 },
+                "sigv4" => {
+                    let derived = derive_aws_host(&host);
+                    let region = self
+                        .region
+                        .or_else(|| derived.as_ref().map(|(_, r)| r.clone()))
+                        .ok_or_else(|| {
+                        anyhow::anyhow!("inject entry for {host}: sigv4 needs region")
+                    })?;
+                    let service =
+                        self.aws_service.or_else(|| derived.map(|(s, _)| s)).ok_or_else(|| {
+                            anyhow::anyhow!("inject entry for {host}: sigv4 needs aws_service")
+                        })?;
+                    AuthShape::SigV4 { region, service }
+                }
                 other => anyhow::bail!("inject entry for {host}: unknown shape {other:?}"),
             };
         let secret = SecretRef::parse(&render_identity(&self.secret, identity)?)?;
@@ -198,6 +227,14 @@ impl InjectEntry {
         anyhow::ensure!(
             !matches!(shape, AuthShape::BearerCookie { .. }) || cookie_secret.is_some(),
             "inject entry for {host}: bearer+cookie shape needs cookie_secret"
+        );
+        let key_id_secret = self
+            .key_id_secret
+            .map(|s| SecretRef::parse(&render_identity(&s, identity)?))
+            .transpose()?;
+        anyhow::ensure!(
+            !matches!(shape, AuthShape::SigV4 { .. }) || key_id_secret.is_some(),
+            "inject entry for {host}: sigv4 shape needs key_id_secret"
         );
         let path_prefix = self
             .path_prefix
@@ -217,8 +254,16 @@ impl InjectEntry {
             shape,
             secret,
             cookie_secret,
+            key_id_secret,
         })
     }
+}
+
+/// `<service>.<region>.amazonaws.com` → `(service, region)`.
+fn derive_aws_host(host: &str) -> Option<(String, String)> {
+    let rest = host.strip_suffix(".amazonaws.com")?;
+    let (service, region) = rest.rsplit_once('.')?;
+    (!service.is_empty() && !region.is_empty()).then(|| (service.to_owned(), region.to_owned()))
 }
 
 /// Parses the JSON inject config (an array of entries) into rules, applying
@@ -459,12 +504,19 @@ impl Injector {
             let method = request_method(&head);
             // Every rule path-scoped and none matching ⇒ forward the agent's
             // head unchanged (same fail-closed stance as a credential miss).
-            let outbound = match select_rule(rules, &request_path(&head).unwrap_or_default()) {
-                Some(rule) => self.inject_head(host, rule, &head).await,
-                None => head.clone(),
-            };
-            upstream.write_all(&outbound).await?;
-            cbuf.relay_body(client, upstream, body_framing(&head, false)).await?;
+            match select_rule(rules, &request_path(&head).unwrap_or_default()) {
+                Some(rule) if matches!(rule.shape, AuthShape::SigV4 { .. }) => {
+                    self.forward_sigv4(client, upstream, host, rule, &head, &mut cbuf).await?;
+                }
+                rule => {
+                    let outbound = match rule {
+                        Some(rule) => self.inject_head(host, rule, &head).await,
+                        None => head.clone(),
+                    };
+                    upstream.write_all(&outbound).await?;
+                    cbuf.relay_body(client, upstream, body_framing(&head, false)).await?;
+                }
+            }
             upstream.flush().await?;
 
             let Some(resp_head) = ubuf.read_head(upstream).await? else {
@@ -529,6 +581,166 @@ impl Injector {
         }
         self.secrets.fetch(&rule.secret).await
     }
+
+    /// `SigV4` signs the body hash, so the body is buffered (≤ [`MAX_SIGV4_BODY`])
+    /// before the head is rewritten; the buffered bytes are forwarded verbatim.
+    /// Chunked or oversized bodies can't be hashed — those forward unchanged,
+    /// like a credential miss.
+    async fn forward_sigv4<C, U>(
+        &self,
+        client: &mut C,
+        upstream: &mut U,
+        host: &str,
+        rule: &InjectionRule,
+        head: &[u8],
+        cbuf: &mut HttpBuf,
+    ) -> anyhow::Result<()>
+    where
+        C: AsyncRead + Unpin,
+        U: AsyncWrite + Unpin,
+    {
+        let body = match body_framing(head, false) {
+            Framing::None => Some(Vec::new()),
+            Framing::Length(n) if n <= MAX_SIGV4_BODY => {
+                let mut body = Vec::with_capacity(n);
+                cbuf.relay_counted(client, &mut body, n).await?;
+                Some(body)
+            }
+            framing => {
+                tracing::warn!(
+                    "sigv4 for {}/{host}: unbufferable body ({framing:?}); forwarding unchanged",
+                    rule.service
+                );
+                upstream.write_all(head).await?;
+                cbuf.relay_body(client, upstream, framing).await?;
+                None
+            }
+        };
+        if let Some(body) = body {
+            let outbound = self.sign_sigv4(host, rule, head, &body).await;
+            upstream.write_all(&outbound).await?;
+            upstream.write_all(&body).await?;
+        }
+        Ok(())
+    }
+
+    /// Fail-closed like [`Self::inject_head`]: any credential or signing
+    /// failure forwards the agent's original head unchanged.
+    async fn sign_sigv4(
+        &self,
+        host: &str,
+        rule: &InjectionRule,
+        head: &[u8],
+        body: &[u8],
+    ) -> Vec<u8> {
+        let (AuthShape::SigV4 { region, service }, Some(key_id_ref)) =
+            (&rule.shape, &rule.key_id_secret)
+        else {
+            return head.to_vec();
+        };
+        let (key_id, secret_key) =
+            match (self.secrets.fetch(key_id_ref).await, self.secrets.fetch(&rule.secret).await) {
+                (Ok(k), Ok(s)) => (k, s),
+                (Err(e), _) | (_, Err(e)) => {
+                    tracing::warn!(
+                        "sigv4 credentials for {}/{host} (forwarding agent header): {e}",
+                        rule.service
+                    );
+                    return head.to_vec();
+                }
+            };
+        match sigv4_head(head, host, region, service, key_id.expose(), secret_key.expose(), body) {
+            Ok(signed) => signed,
+            Err(e) => {
+                tracing::warn!(
+                    "sigv4 signing for {}/{host} (forwarding agent header): {e}",
+                    rule.service
+                );
+                head.to_vec()
+            }
+        }
+    }
+}
+
+const MAX_SIGV4_BODY: usize = 1024 * 1024;
+
+/// Rebuilds a request head with a fresh `SigV4` signature over `body`: the
+/// agent's `Authorization` and `x-amz-*` signing artifacts are stripped, every
+/// other header is forwarded, and only `host`, `content-type`, and the
+/// remaining `x-amz-*` headers are covered by the signature (AWS requires all
+/// `x-amz-*` headers present in the request to be signed).
+fn sigv4_head(
+    head: &[u8],
+    host: &str,
+    region: &str,
+    service: &str,
+    key_id: &str,
+    secret_key: &str,
+    body: &[u8],
+) -> anyhow::Result<Vec<u8>> {
+    let text = String::from_utf8_lossy(head);
+    let mut lines = text.split("\r\n");
+    let request_line = lines.next().unwrap_or_default().to_owned();
+    let mut parts = request_line.split(' ');
+    let method = parts.next().unwrap_or_default();
+    let target = parts.next().ok_or_else(|| anyhow::anyhow!("bad request line"))?;
+    anyhow::ensure!(!method.is_empty(), "bad request line");
+
+    let mut kept: Vec<(String, String)> = Vec::new();
+    for line in lines {
+        if line.is_empty() {
+            break;
+        }
+        let Some((name, value)) = line.split_once(':') else { continue };
+        let name = name.trim();
+        if name.eq_ignore_ascii_case("authorization")
+            || name.eq_ignore_ascii_case("x-amz-date")
+            || name.eq_ignore_ascii_case("x-amz-content-sha256")
+            || name.eq_ignore_ascii_case("x-amz-security-token")
+        {
+            continue;
+        }
+        kept.push((name.to_owned(), value.trim().to_owned()));
+    }
+
+    let signable_headers = kept.iter().filter(|(n, _)| {
+        n.eq_ignore_ascii_case("host")
+            || n.eq_ignore_ascii_case("content-type")
+            || n.len() >= 6 && n.as_bytes()[..6].eq_ignore_ascii_case(b"x-amz-")
+    });
+    let identity =
+        aws_credential_types::Credentials::new(key_id, secret_key, None, None, "guard-proxy")
+            .into();
+    let params = aws_sigv4::sign::v4::SigningParams::builder()
+        .identity(&identity)
+        .region(region)
+        .name(service)
+        .time(std::time::SystemTime::now())
+        .settings(aws_sigv4::http_request::SigningSettings::default())
+        .build()?
+        .into();
+    let signable = aws_sigv4::http_request::SignableRequest::new(
+        method,
+        format!("https://{host}{target}"),
+        signable_headers.map(|(n, v)| (n.as_str(), v.as_str())),
+        aws_sigv4::http_request::SignableBody::Bytes(body),
+    )?;
+    let (instructions, _signature) = aws_sigv4::http_request::sign(signable, &params)?.into_parts();
+    for (name, value) in instructions.headers() {
+        kept.push((name.to_owned(), value.to_owned()));
+    }
+
+    let mut out = String::with_capacity(head.len() + 256);
+    out.push_str(&request_line);
+    out.push_str("\r\n");
+    for (name, value) in kept {
+        out.push_str(&name);
+        out.push_str(": ");
+        out.push_str(&value);
+        out.push_str("\r\n");
+    }
+    out.push_str("\r\n");
+    Ok(out.into_bytes())
 }
 
 /// Rebuilds an HTTP/1.1 request head, removing every agent-supplied auth carrier
@@ -570,6 +782,7 @@ fn rewrite_head(head: &[u8], shape: &AuthShape, credential: &str, cookie: Option
                 .encode(format!("{username}:{credential}"));
             kept.push(format!("Authorization: Basic {encoded}"));
         }
+        AuthShape::SigV4 { .. } => unreachable!("sigv4 is routed through forward_sigv4"),
     }
     if let AuthShape::BearerCookie { cookie_name } = shape
         && let Some(c) = cookie
@@ -936,6 +1149,7 @@ mod tests {
             shape: spec.shape,
             secret: test_ref("TEST_SECRET"),
             cookie_secret,
+            key_id_secret: None,
         }
     }
 
@@ -1041,6 +1255,96 @@ mod tests {
     }
 
     #[test]
+    fn inject_config_parses_sigv4_with_derived_and_explicit_region() {
+        let json = r#"[
+            {"host": "secretsmanager.ap-northeast-1.amazonaws.com", "shape": "sigv4",
+             "secret": "env:AWS_SECRET_ACCESS_KEY", "key_id_secret": "env:AWS_ACCESS_KEY_ID"},
+            {"host": "aws.example.internal", "shape": "sigv4", "region": "us-east-1",
+             "aws_service": "sts", "secret": "env:SK", "key_id_secret": "env:AK"}
+        ]"#;
+        let rules = load_inject_config(json, "acme").unwrap();
+        assert!(matches!(
+            &rules[0].shape,
+            AuthShape::SigV4 { region, service }
+                if region == "ap-northeast-1" && service == "secretsmanager"
+        ));
+        assert_eq!(
+            rules[0].key_id_secret,
+            Some(SecretRef::parse("env:AWS_ACCESS_KEY_ID").unwrap())
+        );
+        assert!(matches!(
+            &rules[1].shape,
+            AuthShape::SigV4 { region, service } if region == "us-east-1" && service == "sts"
+        ));
+    }
+
+    #[test]
+    fn derive_aws_host_forms() {
+        assert_eq!(
+            derive_aws_host("secretsmanager.ap-northeast-1.amazonaws.com"),
+            Some(("secretsmanager".to_owned(), "ap-northeast-1".to_owned()))
+        );
+        assert_eq!(derive_aws_host("s3.amazonaws.com"), None);
+        assert_eq!(derive_aws_host("example.com"), None);
+    }
+
+    #[test]
+    fn sigv4_signs_body_and_strips_agent_artifacts() {
+        let h = head(
+            "POST / HTTP/1.1\nHost: secretsmanager.ap-northeast-1.amazonaws.com\nContent-Type: application/x-amz-json-1.1\nContent-Length: 27\nX-Amz-Target: secretsmanager.GetSecretValue\nAuthorization: AWS4-HMAC-SHA256 Credential=DUMMY/garbage\nX-Amz-Date: 19700101T000000Z\nX-Amz-Content-Sha256: garbage\nX-Amz-Security-Token: agentsessiontoken\nabcdeéf: multibyte-name\n\n",
+        );
+        let out = sigv4_head(
+            &h,
+            "secretsmanager.ap-northeast-1.amazonaws.com",
+            "ap-northeast-1",
+            "secretsmanager",
+            "AKIDEXAMPLE",
+            "verysecret",
+            br#"{"SecretId":"dev/example"}X"#,
+        )
+        .unwrap();
+        let out = as_text(&out);
+        assert!(out.starts_with("POST / HTTP/1.1\r\n"));
+        assert!(out.contains("authorization: AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/"), "{out}");
+        assert!(out.contains("/ap-northeast-1/secretsmanager/aws4_request"), "{out}");
+        assert!(out.contains("SignedHeaders="), "{out}");
+        let signed_headers = out.split("SignedHeaders=").nth(1).unwrap().split(',').next().unwrap();
+        assert!(signed_headers.contains("host"), "{signed_headers}");
+        assert!(signed_headers.contains("x-amz-target"), "{signed_headers}");
+        assert!(signed_headers.contains("x-amz-date"), "{signed_headers}");
+        assert!(!signed_headers.contains("content-length"), "{signed_headers}");
+        assert!(out.contains("X-Amz-Target: secretsmanager.GetSecretValue\r\n"), "{out}");
+        assert!(out.contains("Content-Length: 27\r\n"), "{out}");
+        assert!(!out.contains("DUMMY"), "agent auth must be gone: {out}");
+        assert!(!out.contains("19700101"), "agent x-amz-date must be gone: {out}");
+        assert!(!out.contains("garbage"), "{out}");
+        assert!(!out.contains("agentsessiontoken"), "agent session token must be gone: {out}");
+        assert!(out.contains("abcdeéf: multibyte-name\r\n"), "{out}");
+        assert!(out.ends_with("\r\n\r\n"));
+    }
+
+    #[test]
+    fn sigv4_signs_empty_body_and_query_target() {
+        let h = head(
+            "GET /?Action=GetCallerIdentity&Version=2011-06-15 HTTP/1.1\nHost: sts.us-east-1.amazonaws.com\n\n",
+        );
+        let out = sigv4_head(
+            &h,
+            "sts.us-east-1.amazonaws.com",
+            "us-east-1",
+            "sts",
+            "AKIDEXAMPLE",
+            "verysecret",
+            b"",
+        )
+        .unwrap();
+        let out = as_text(&out);
+        assert!(out.contains("authorization: AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/"), "{out}");
+        assert!(out.contains("/us-east-1/sts/aws4_request"), "{out}");
+        assert!(out.contains("x-amz-date: "), "{out}");
+    }
+
+    #[test]
     fn inject_config_rejects_relative_path_prefix() {
         let json = r#"[{"host": "a.com", "path_prefix": "no-slash", "secret": "env:X"}]"#;
         assert!(load_inject_config(json, "acme").is_err());
@@ -1059,7 +1363,17 @@ mod tests {
     fn inject_config_rejects_bad_entries() {
         for (json, why) in [
             (r#"[{"host": "a.com", "secret": "bogus-ref"}]"#, "unknown ref scheme"),
-            (r#"[{"host": "a.com", "shape": "sigv4", "secret": "env:X"}]"#, "unknown shape"),
+            (r#"[{"host": "a.com", "shape": "hmac", "secret": "env:X"}]"#, "unknown shape"),
+            (
+                r#"[{"host": "a.com", "shape": "sigv4", "secret": "env:X",
+                     "key_id_secret": "env:K"}]"#,
+                "sigv4 underivable region/service",
+            ),
+            (
+                r#"[{"host": "secretsmanager.ap-northeast-1.amazonaws.com", "shape": "sigv4",
+                     "secret": "env:X"}]"#,
+                "sigv4 missing key_id_secret",
+            ),
             (
                 r#"[{"host": "a.com", "shape": "cookie", "secret": "env:X"}]"#,
                 "missing cookie_secret",
@@ -1209,8 +1523,13 @@ mod tests {
     }
 
     /// Minimal HTTPS upstream: rustls-terminated with a per-pod-CA leaf, echoes
-    /// the received `Authorization` header value as the response body.
+    /// the received `Authorization` header value as the response body
+    /// (`<auth>|<body>` when `echo_body`).
     async fn spawn_upstream() -> Upstream {
+        spawn_upstream_with(false).await
+    }
+
+    async fn spawn_upstream_with(echo_body: bool) -> Upstream {
         install_crypto();
         let ca = Arc::new(PerPodCa::generate().unwrap());
         let mut cfg = ServerConfig::builder()
@@ -1232,14 +1551,18 @@ mod tests {
                     let mut buf = HttpBuf::default();
                     if let Ok(Some(reqhead)) = buf.read_head(&mut tls).await {
                         rc.fetch_add(1, Ordering::SeqCst);
-                        let mut sink = tokio::io::sink();
+                        let mut req_body = Vec::new();
                         let _ = buf
-                            .relay_body(&mut tls, &mut sink, body_framing(&reqhead, false))
+                            .relay_body(&mut tls, &mut req_body, body_framing(&reqhead, false))
                             .await;
                         let auth = header_value(&reqhead, "authorization")
                             .map(|v| String::from_utf8_lossy(v).into_owned())
                             .unwrap_or_default();
-                        let body = auth.into_bytes();
+                        let mut body = auth.into_bytes();
+                        if echo_body {
+                            body.push(b'|');
+                            body.extend_from_slice(&req_body);
+                        }
                         let resp = format!(
                             "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                             body.len()
@@ -1286,6 +1609,8 @@ mod tests {
             host: "localhost".to_owned(),
             path_prefix: None,
             service: "svc".to_owned(),
+            key_id_secret: matches!(shape, AuthShape::SigV4 { .. })
+                .then(|| test_ref("TEST_KEY_ID")),
             shape,
             secret: test_ref("TEST_SECRET"),
             cookie_secret: None,
@@ -1314,6 +1639,18 @@ mod tests {
         path: &str,
         agent_auth: &str,
     ) -> String {
+        let req = format!(
+            "GET {path} HTTP/1.1\r\nHost: localhost\r\nAuthorization: {agent_auth}\r\nConnection: close\r\n\r\n"
+        );
+        roundtrip_raw(inj, client_ca, upstream_port, &req).await
+    }
+
+    async fn roundtrip_raw(
+        inj: Arc<Injector>,
+        client_ca: &Arc<PerPodCa>,
+        upstream_port: u16,
+        request: &str,
+    ) -> String {
         install_crypto();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1329,15 +1666,13 @@ mod tests {
         let sock = TcpStream::connect(addr).await.unwrap();
         let name = ServerName::try_from("localhost").unwrap();
         let mut tls = connector.connect(name, sock).await.unwrap();
-        let req = format!(
-            "GET {path} HTTP/1.1\r\nHost: localhost\r\nAuthorization: {agent_auth}\r\nConnection: close\r\n\r\n"
-        );
-        tls.write_all(req.as_bytes()).await.unwrap();
+        tls.write_all(request.as_bytes()).await.unwrap();
 
+        let method = request.split(' ').next().unwrap_or("GET").to_owned();
         let mut buf = HttpBuf::default();
         let resp = buf.read_head(&mut tls).await.unwrap().unwrap();
         let mut body = Vec::new();
-        buf.relay_body(&mut tls, &mut body, response_framing(&resp, Some("GET"))).await.unwrap();
+        buf.relay_body(&mut tls, &mut body, response_framing(&resp, Some(&method))).await.unwrap();
         String::from_utf8(body).unwrap()
     }
 
@@ -1369,6 +1704,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sigv4_e2e_signs_and_preserves_body() {
+        let up = spawn_upstream_with(true).await;
+        let shape = AuthShape::SigV4 {
+            region: "ap-northeast-1".to_owned(),
+            service: "secretsmanager".to_owned(),
+        };
+        let (inj, ca) = injector_for(&up, MockBackend(Ok("AKID")), shape);
+        let payload = r#"{"SecretId":"dev/example"}"#;
+        let req = format!(
+            "POST / HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/x-amz-json-1.1\r\nContent-Length: {}\r\nX-Amz-Target: secretsmanager.GetSecretValue\r\nAuthorization: AWS4-HMAC-SHA256 Credential=DUMMY/garbage\r\nX-Amz-Date: 19700101T000000Z\r\nConnection: close\r\n\r\n{payload}",
+            payload.len()
+        );
+        let got = roundtrip_raw(Arc::new(inj), &ca, up.addr.port(), &req).await;
+        let (auth, body) = got.split_once('|').expect("upstream echoes auth|body");
+        assert!(auth.starts_with("AWS4-HMAC-SHA256 Credential=AKID/"), "{auth}");
+        assert!(auth.contains("/ap-northeast-1/secretsmanager/aws4_request"), "{auth}");
+        assert!(!auth.contains("DUMMY"), "agent auth must be gone: {auth}");
+        assert_eq!(body, payload, "body must arrive byte-identical");
+    }
+
+    #[tokio::test]
+    async fn sigv4_oversized_body_forwards_agent_request_unchanged() {
+        let up = spawn_upstream_with(true).await;
+        let shape = AuthShape::SigV4 {
+            region: "ap-northeast-1".to_owned(),
+            service: "secretsmanager".to_owned(),
+        };
+        let (inj, ca) = injector_for(&up, MockBackend(Ok("AKID")), shape);
+        let payload = "a".repeat(MAX_SIGV4_BODY + 1);
+        let req = format!(
+            "POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nAuthorization: Bearer AGENT-ORIGINAL\r\nConnection: close\r\n\r\n{payload}",
+            payload.len()
+        );
+        let got = roundtrip_raw(Arc::new(inj), &ca, up.addr.port(), &req).await;
+        let (auth, body) = got.split_once('|').expect("upstream echoes auth|body");
+        assert_eq!(auth, "Bearer AGENT-ORIGINAL");
+        assert_eq!(body.len(), payload.len());
+    }
+
+    #[tokio::test]
+    async fn sigv4_chunked_body_forwards_agent_request_unchanged() {
+        let up = spawn_upstream_with(true).await;
+        let shape = AuthShape::SigV4 {
+            region: "ap-northeast-1".to_owned(),
+            service: "secretsmanager".to_owned(),
+        };
+        let (inj, ca) = injector_for(&up, MockBackend(Ok("AKID")), shape);
+        let req = "POST / HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nAuthorization: Bearer AGENT-ORIGINAL\r\nConnection: close\r\n\r\n5\r\nHELLO\r\n0\r\n\r\n";
+        let got = roundtrip_raw(Arc::new(inj), &ca, up.addr.port(), req).await;
+        let (auth, body) = got.split_once('|').expect("upstream echoes auth|body");
+        assert_eq!(auth, "Bearer AGENT-ORIGINAL");
+        assert!(body.contains("HELLO"), "{body}");
+    }
+
+    #[tokio::test]
     async fn not_found_forwards_agent_header_unchanged() {
         let up = spawn_upstream().await;
         let (inj, ca) = injector_for(&up, MockBackend(Err(())), AuthShape::Bearer);
@@ -1389,6 +1779,7 @@ mod tests {
             shape: AuthShape::Bearer,
             secret: test_ref(var),
             cookie_secret: None,
+            key_id_secret: None,
         };
         let policy =
             InjectionPolicy::new(vec![mk(Some("/pack"), "PACK_TOKEN"), mk(None, "GENERIC_TOKEN")]);
