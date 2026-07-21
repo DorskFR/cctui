@@ -12,7 +12,6 @@
 //! `/clear` truncates), so seek-and-read-new is sufficient and avoids
 //! the rename / debounce complications a watcher would carry.
 
-use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
@@ -591,66 +590,7 @@ fn parse_user(local_id: &str, line: &Value, out: &mut Vec<AdapterEvent>) {
     out.extend(tool_results);
 }
 
-/// Persistent (`session_id` → byte offset) store.
-///
-/// Persisted at `~/.config/cctui/transcript-offsets.json` so daemon
-/// restarts don't replay already-forwarded events. Best-effort: a load
-/// failure is treated as an empty map (events get replayed once, which
-/// the server can dedupe by content hash if desired).
-#[derive(Debug, Default)]
-pub struct OffsetStore {
-    path: Option<PathBuf>,
-    map: HashMap<String, u64>,
-}
-
-impl OffsetStore {
-    /// Open the store at the default path
-    /// (`$XDG_CONFIG_HOME/cctui/transcript-offsets.json` or
-    /// `~/.config/cctui/...`).
-    #[must_use]
-    #[allow(dead_code)]
-    pub fn open_default() -> Self {
-        let dir = dirs::config_dir().map(|d| d.join("cctui"));
-        let path = dir.as_ref().map(|d| d.join("transcript-offsets.json"));
-        Self::open(path)
-    }
-
-    #[must_use]
-    pub fn open(path: Option<PathBuf>) -> Self {
-        let map = path
-            .as_ref()
-            .and_then(|p| std::fs::read(p).ok())
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default();
-        Self { path, map }
-    }
-
-    #[must_use]
-    pub fn get(&self, key: &str) -> u64 {
-        self.map.get(key).copied().unwrap_or(0)
-    }
-
-    pub fn set(&mut self, key: String, offset: u64) {
-        self.map.insert(key, offset);
-    }
-
-    /// Persist to disk. Failures logged + swallowed — a missed write
-    /// only costs a one-time replay on the next restart.
-    pub fn flush(&self) {
-        let Some(path) = &self.path else { return };
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        match serde_json::to_vec_pretty(&self.map) {
-            Ok(bytes) => {
-                if let Err(err) = std::fs::write(path, bytes) {
-                    tracing::warn!(%err, ?path, "failed to persist transcript offsets");
-                }
-            }
-            Err(err) => tracing::warn!(%err, "failed to serialise transcript offsets"),
-        }
-    }
-}
+pub use crate::offsets::OffsetStore;
 
 #[must_use]
 pub fn default_projects_root() -> PathBuf {

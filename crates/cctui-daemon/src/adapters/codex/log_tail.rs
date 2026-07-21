@@ -32,6 +32,7 @@ pub struct LogTailConfig {
     pub sessions_root: PathBuf,
     pub poll_interval: Duration,
     pub quiesce: Duration,
+    pub offsets_path: Option<PathBuf>,
 }
 
 impl Default for LogTailConfig {
@@ -40,6 +41,7 @@ impl Default for LogTailConfig {
             sessions_root: default_sessions_root(),
             poll_interval: Duration::from_secs(2),
             quiesce: Duration::from_secs(60),
+            offsets_path: dirs::config_dir().map(|d| d.join("cctui").join("codex-offsets.json")),
         }
     }
 }
@@ -81,6 +83,10 @@ pub struct LogTail {
     /// skipped here so we don't double-ingest. `local_id` is the rollout
     /// `UUIDv7`, which is a suffix of the rollout filename stem.
     owned: Option<super::app_server::SessionRegistry>,
+    /// Rollout-path → byte offset, persisted so restarts and quiesce
+    /// evictions never re-read (re-upload) historical rollouts.
+    offsets: crate::offsets::OffsetStore,
+    offsets_dirty: bool,
 }
 
 impl LogTail {
@@ -89,7 +95,16 @@ impl LogTail {
         events: mpsc::Sender<AdapterEvent>,
         shutdown: CancellationToken,
     ) -> Self {
-        Self { cfg, events, shutdown, sessions: HashMap::new(), owned: None }
+        let offsets = crate::offsets::OffsetStore::open(cfg.offsets_path.clone());
+        Self {
+            cfg,
+            events,
+            shutdown,
+            sessions: HashMap::new(),
+            owned: None,
+            offsets,
+            offsets_dirty: false,
+        }
     }
 
     /// Share the app-server session registry so app-server-owned rollout
@@ -160,16 +175,32 @@ impl LogTail {
                     .await;
             }
         }
+        if !alive.is_empty() {
+            let keep: HashSet<String> =
+                alive.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+            if self.offsets.retain(|k| keep.contains(k)) {
+                self.offsets_dirty = true;
+            }
+        }
+        if self.offsets_dirty {
+            self.offsets.flush();
+            self.offsets_dirty = false;
+        }
     }
 
     async fn tail_file(&mut self, path: PathBuf) {
-        let local_id =
-            self.sessions.get(&path).map_or_else(|| derive_local_id(&path), |s| s.local_id.clone());
-
-        let is_new = !self.sessions.contains_key(&path);
         let meta = std::fs::metadata(&path).ok();
         let len = meta.as_ref().map_or(0, std::fs::Metadata::len);
+        let key = path.to_string_lossy().into_owned();
+
+        let is_new = !self.sessions.contains_key(&path);
         if is_new {
+            // Quiet rollout with nothing beyond the persisted offset: leave it
+            // untracked so it stays invisible (no Started/Ended churn).
+            if len <= self.offsets.get(&key) {
+                return;
+            }
+            let local_id = derive_local_id(&path);
             let observed_at = meta
                 .as_ref()
                 .and_then(|m| m.modified().ok())
@@ -196,8 +227,8 @@ impl LogTail {
             self.sessions.insert(
                 path.clone(),
                 TrackedSession {
-                    local_id: local_id.clone(),
-                    offset: 0,
+                    local_id,
+                    offset: self.offsets.get(&key).min(len),
                     last_activity: Instant::now(),
                 },
             );
@@ -215,6 +246,8 @@ impl LogTail {
             }
         };
         session.offset = len;
+        self.offsets.set(key, len);
+        self.offsets_dirty = true;
         if !events.is_empty() {
             session.last_activity = Instant::now();
         }
@@ -453,6 +486,7 @@ mod tests {
                 sessions_root: sessions.clone(),
                 poll_interval: Duration::from_millis(10),
                 quiesce: Duration::from_secs(3600),
+                offsets_path: None,
             },
             tx,
             CancellationToken::new(),
@@ -477,6 +511,7 @@ mod tests {
                 sessions_root: sessions.clone(),
                 poll_interval: Duration::from_millis(10),
                 quiesce: Duration::from_millis(1),
+                offsets_path: None,
             },
             tx,
             CancellationToken::new(),
@@ -504,6 +539,7 @@ mod tests {
                 sessions_root: sessions.clone(),
                 poll_interval: Duration::from_millis(10),
                 quiesce: Duration::from_secs(3600),
+                offsets_path: None,
             },
             tx,
             CancellationToken::new(),
@@ -531,6 +567,7 @@ mod tests {
                 sessions_root: sessions.clone(),
                 poll_interval: Duration::from_millis(10),
                 quiesce: Duration::from_secs(3600),
+                offsets_path: None,
             },
             tx,
             CancellationToken::new(),
@@ -557,6 +594,7 @@ mod tests {
                 sessions_root: sessions.clone(),
                 poll_interval: Duration::from_millis(10),
                 quiesce: Duration::from_secs(3600),
+                offsets_path: None,
             },
             tx,
             CancellationToken::new(),
@@ -589,6 +627,7 @@ mod tests {
                 sessions_root: sessions.clone(),
                 poll_interval: Duration::from_millis(10),
                 quiesce: Duration::from_secs(3600),
+                offsets_path: None,
             },
             tx,
             CancellationToken::new(),
@@ -623,6 +662,7 @@ mod tests {
                 sessions_root: sessions.clone(),
                 poll_interval: Duration::from_millis(10),
                 quiesce: Duration::from_secs(3600),
+                offsets_path: None,
             },
             tx,
             CancellationToken::new(),
@@ -638,6 +678,76 @@ mod tests {
         .unwrap();
         tail.scan_once().await;
         assert!(rx.try_recv().is_err(), "orphan subagent rollout must be skipped");
+    }
+
+    #[tokio::test]
+    async fn quiesced_rollout_is_not_replayed_on_rediscovery() {
+        // CCT-746 regression: quiesce eviction used to drop the offset, so the
+        // next scan re-read the whole file and re-uploaded it every ~62s.
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions = tmp.path().join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let (tx, mut rx) = mpsc::channel(64);
+        let mut tail = LogTail::new(
+            LogTailConfig {
+                sessions_root: sessions.clone(),
+                poll_interval: Duration::from_millis(10),
+                quiesce: Duration::from_millis(1),
+                offsets_path: Some(tmp.path().join("offsets.json")),
+            },
+            tx,
+            CancellationToken::new(),
+        );
+        let path = sessions.join("s1.jsonl");
+        std::fs::write(&path, "{\"role\":\"assistant\",\"text\":\"hi\"}\n").unwrap();
+        tail.scan_once().await;
+        rx.recv().await.unwrap(); // Started
+        rx.recv().await.unwrap(); // Message
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        tail.scan_once().await;
+        assert!(matches!(rx.recv().await.unwrap(), AdapterEvent::SessionEnded { .. }));
+        tail.scan_once().await;
+        tail.scan_once().await;
+        assert!(rx.try_recv().is_err(), "quiesced rollout must stay silent");
+        // New bytes revive the session and only they are emitted.
+        let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(f, "{{\"role\":\"assistant\",\"text\":\"more\"}}").unwrap();
+        tail.scan_once().await;
+        assert!(matches!(rx.recv().await.unwrap(), AdapterEvent::SessionStarted { .. }));
+        match rx.recv().await.unwrap() {
+            AdapterEvent::Message { payload, .. } => {
+                assert_eq!(payload["text"], json!("more"));
+            }
+            other => panic!("expected only the appended line, got {other:?}"),
+        }
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn offsets_survive_restart() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions = tmp.path().join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let offsets_path = Some(tmp.path().join("offsets.json"));
+        let cfg = LogTailConfig {
+            sessions_root: sessions.clone(),
+            poll_interval: Duration::from_millis(10),
+            quiesce: Duration::from_secs(3600),
+            offsets_path,
+        };
+        let path = sessions.join("s1.jsonl");
+        std::fs::write(&path, "{\"role\":\"assistant\",\"text\":\"hi\"}\n").unwrap();
+        {
+            let (tx, mut rx) = mpsc::channel(64);
+            let mut tail = LogTail::new(cfg.clone(), tx, CancellationToken::new());
+            tail.scan_once().await;
+            rx.recv().await.unwrap();
+            rx.recv().await.unwrap();
+        }
+        let (tx, mut rx) = mpsc::channel(64);
+        let mut tail = LogTail::new(cfg, tx, CancellationToken::new());
+        tail.scan_once().await;
+        assert!(rx.try_recv().is_err(), "restart must not replay the rollout");
     }
 
     #[test]
@@ -722,6 +832,7 @@ mod tests {
                 sessions_root: sessions,
                 poll_interval: Duration::from_millis(10),
                 quiesce: Duration::from_secs(3600),
+                offsets_path: None,
             },
             tx,
             CancellationToken::new(),
