@@ -411,10 +411,11 @@ export const endpoints = {
       limit,
       offset,
     }),
-  searchFieldValues: (field: string, q: string) =>
+  searchFieldValues: (field: string, q: string, context?: string) =>
     api.get<string[]>("/sessions/search/values", {
       field,
       q: q || undefined,
+      context: context || undefined,
     }),
   session: (id: string) => api.get<SessionListItem>(`/sessions/${id}`),
   /** Mark this session's messages seen for the caller (CCT-580) — clears its

@@ -132,6 +132,23 @@ export function buildSessionSearchSchema(fetchValues: FetchValues): Schema {
 	};
 }
 
+/** The rest of the search bar as a server-parseable `context` for value
+ *  autocomplete: the raw query with `field`'s clause (the one being completed)
+ *  and all client-only clauses stripped by span, so suggestions co-occur with
+ *  what's already typed. */
+export function contextForField(raw: string, schema: Schema, field: string): string {
+	const ast = parse(raw, schema);
+	const drop = filters(ast).filter((f) => f.field === field || !SERVER_FIELDS.has(f.field));
+	let out = raw;
+	for (const f of [...drop].sort((a, b) => b.span[0] - a.span[0])) {
+		const [a, b] = f.span;
+		let end = b;
+		while (out[end] === ' ') end++;
+		out = out.slice(0, a) + out.slice(end);
+	}
+	return out.replace(/\s{2,}/g, ' ').trim();
+}
+
 export interface SplitQuery {
 	serverQuery: string;
 	clientFilters: FilterNode[];

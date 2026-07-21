@@ -140,6 +140,14 @@ acceptance condition. Refuse to finalize (report `status: "success"`) until
 every surface has its required evidence; otherwise report `status:
 "needs_human"` with what is blocked.
 
+Before writing `RESULT_FILE`, validate the result envelope against the pack's
+per-flow schema `~/.claude/schemas/result.json` (also at
+`/opt/context/schemas/result.json`) — e.g.
+`check-jsonschema --schemafile ~/.claude/schemas/result.json "$RESULT_FILE"`, or
+any JSON-schema validator. A result that does not conform (missing `status`, an
+unknown `status`, an empty `evidence[]` on a code-touching success) is a contract
+violation — fix the envelope, do not write it.
+
 Once `evidence[]` is populated and every acceptance condition is observably met,
 render the evidence on the PR body and open the PR. Then honor the plan's
 routing: if `autonomy: auto-merge` (every surface `pure-calc`, oracles green),

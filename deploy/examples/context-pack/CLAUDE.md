@@ -11,10 +11,13 @@ your own organization's instructions when you build a derived pack.
 ## What lives here
 
 - `prompts/` — dispatch prompt files; `TASK_PROMPT_FILE` resolves under here.
-- `docs/` — reference docs exposed to the agent.
+- `rules/` — always-on guidance, auto-loaded into `~/.claude/rules/` on every task.
+- `docs/` — on-demand reference docs, pulled by a prompt when needed.
+- `schemas/` — per-flow JSON schemas (e.g. `result.json`) prompts validate against.
 - `skills/` — skill directories (each with a `SKILL.md`).
 - `projects/` — per-repo `CLAUDE.md` overlays.
 - `style/` — output styles.
 - `guard-rules.md` — tool-set + network-set definitions for `cctui-guard`.
+- `pack.toml` — manifest; its `[dirs]` table declares which dirs wire into home.
 
 See `docs/worker-contract.md` in the cctui repo for the full contract.

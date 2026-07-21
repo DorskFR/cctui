@@ -1248,9 +1248,57 @@ pub struct FieldValuesParams {
     pub field: String,
     #[serde(default)]
     pub q: Option<String>,
+    #[serde(default)]
+    pub context: Option<String>,
 }
 
 const FIELD_VALUES_LIMIT: i64 = 50;
+
+/// DISTINCT-values query for a dynamic autocomplete field. Trailing binds are
+/// `$N+1` = owner uuid, `$N+2` = the `q` ILIKE pattern (after the `$1..$N` from
+/// `context`). Empty/whitespace `context` parses to `TRUE` (context-free).
+fn field_values_sql(field: &str, context: &str) -> Option<(String, Vec<SqlParam>)> {
+    let (joins, value_expr, guard): (&str, &str, &str) = match field {
+        "machine" => {
+            ("", "COALESCE(m.display_name, m.name)", "m.kind = 'persistent' AND m.deleted_at IS NULL")
+        }
+        "account" => (
+            "JOIN session_tokens st ON st.session_id = s.id AND st.revoked_at IS NULL \
+             JOIN account_providers ap ON ap.id = st.account_id \
+             JOIN accounts a ON a.id = ap.account_id",
+            "a.name",
+            "TRUE",
+        ),
+        "tag" => (
+            "JOIN session_labels sl ON sl.session_id = s.id \
+             JOIN labels l ON l.id = sl.label_id",
+            "l.name",
+            "TRUE",
+        ),
+        "model" => (
+            "",
+            "COALESCE(s.model, s.metadata->>'model')",
+            "COALESCE(s.model, s.metadata->>'model', '') <> ''",
+        ),
+        _ => return None,
+    };
+
+    let mut ctx_params: Vec<SqlParam> = Vec::new();
+    let context_sql = compile_node(&cctui_query::parse(context.trim()), &mut ctx_params);
+    let n = ctx_params.len();
+    let (ui, qi) = (n + 1, n + 2);
+    let sql = format!(
+        "SELECT DISTINCT {value_expr} AS v \
+         FROM sessions s \
+         LEFT JOIN machines m ON m.id = s.machine_uuid \
+         {joins} \
+         WHERE ({context_sql}) AND ({guard}) \
+         AND (${ui}::uuid IS NULL OR m.user_id = ${ui}) \
+         AND (${qi}::text IS NULL OR {value_expr} ILIKE ${qi}) \
+         ORDER BY v LIMIT {FIELD_VALUES_LIMIT}"
+    );
+    Some((sql, ctx_params))
+}
 
 /// `GET /sessions/search/values?field=…&q=…` (CCT-465): autocomplete suggestions
 /// for a search field. Static enums come from the query registry; dynamic
@@ -1278,50 +1326,22 @@ pub async fn search_field_values(
         ));
     }
     let like = params.q.as_deref().filter(|s| !s.is_empty()).map(ilike_contains);
-    let sql = match def.name {
-        "machine" => {
-            "SELECT DISTINCT COALESCE(m.display_name, m.name) AS v FROM machines m \
-             WHERE m.kind = 'persistent' AND m.deleted_at IS NULL \
-             AND ($1::uuid IS NULL OR m.user_id = $1) \
-             AND ($2::text IS NULL OR COALESCE(m.display_name, m.name) ILIKE $2) \
-             ORDER BY v LIMIT $3"
-        }
-        "account" => {
-            "SELECT DISTINCT a.name AS v FROM session_tokens st \
-             JOIN account_providers ap ON ap.id = st.account_id \
-             JOIN accounts a ON a.id = ap.account_id \
-             JOIN sessions s ON s.id = st.session_id \
-             LEFT JOIN machines m ON m.id = s.machine_uuid \
-             WHERE ($1::uuid IS NULL OR m.user_id = $1) \
-             AND ($2::text IS NULL OR a.name ILIKE $2) \
-             ORDER BY v LIMIT $3"
-        }
-        "tag" => {
-            "SELECT DISTINCT l.name AS v FROM labels l \
-             JOIN session_labels sl ON sl.label_id = l.id \
-             JOIN sessions s ON s.id = sl.session_id \
-             LEFT JOIN machines m ON m.id = s.machine_uuid \
-             WHERE ($1::uuid IS NULL OR m.user_id = $1) \
-             AND ($2::text IS NULL OR l.name ILIKE $2) \
-             ORDER BY v LIMIT $3"
-        }
-        "model" => {
-            "SELECT DISTINCT COALESCE(s.model, s.metadata->>'model') AS v FROM sessions s \
-             LEFT JOIN machines m ON m.id = s.machine_uuid \
-             WHERE COALESCE(s.model, s.metadata->>'model', '') <> '' \
-             AND ($1::uuid IS NULL OR m.user_id = $1) \
-             AND ($2::text IS NULL OR COALESCE(s.model, s.metadata->>'model') ILIKE $2) \
-             ORDER BY v LIMIT $3"
-        }
-        _ => return Ok(Json(vec![])),
+
+    let Some((sql, ctx_params)) =
+        field_values_sql(def.name, params.context.as_deref().unwrap_or(""))
+    else {
+        return Ok(Json(vec![]));
     };
-    let rows: Vec<(String,)> = sqlx::query_as(sql)
-        .bind(uid)
-        .bind(&like)
-        .bind(FIELD_VALUES_LIMIT)
-        .fetch_all(&state.pool)
-        .await
-        .map_err(|e| {
+
+    let mut query = sqlx::query_as::<_, (String,)>(&sql);
+    for p in &ctx_params {
+        query = match p {
+            SqlParam::Text(s) => query.bind(s.clone()),
+            SqlParam::Bool(b) => query.bind(*b),
+        };
+    }
+    let rows: Vec<(String,)> =
+        query.bind(uid).bind(&like).fetch_all(&state.pool).await.map_err(|e| {
             tracing::error!("db error (field values): {e}");
             (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
         })?;
@@ -2419,7 +2439,7 @@ fn normalize_last_message(s: &str) -> String {
 mod tests {
     use super::{
         Bucket, SessionChild, SqlParam, attention_from_bucket, bucket_from_signals, cap_unread,
-        compile_node, derive_liveness, normalize_last_message,
+        compile_node, derive_liveness, field_values_sql, normalize_last_message,
     };
     use cctui_proto::models::{Attention, Liveness};
     use chrono::{Duration, Utc};
@@ -2435,6 +2455,34 @@ mod tests {
             })
             .collect();
         (sql, texts)
+    }
+
+    #[test]
+    fn field_values_empty_context_is_context_free() {
+        let (sql, ctx) = field_values_sql("model", "").expect("model is dynamic");
+        assert!(ctx.is_empty());
+        assert!(sql.contains("WHERE (TRUE) AND"), "{sql}");
+        assert!(sql.contains("$1::uuid IS NULL"), "{sql}");
+        assert!(sql.contains("$2::text IS NULL"), "{sql}");
+    }
+
+    #[test]
+    fn field_values_context_ands_in_and_shifts_binds() {
+        let (sql, ctx) = field_values_sql("model", "account=acctbot").expect("model is dynamic");
+        assert_eq!(ctx.len(), 1);
+        match &ctx[0] {
+            SqlParam::Text(s) => assert_eq!(s, "acctbot"),
+            SqlParam::Bool(_) => panic!("expected text bind"),
+        }
+        assert!(sql.contains("account_providers"), "context predicate present:\n{sql}");
+        assert!(sql.contains("lower(${1}") || sql.contains("lower($1"), "{sql}");
+        assert!(sql.contains("$2::uuid IS NULL"), "{sql}");
+        assert!(sql.contains("$3::text IS NULL"), "{sql}");
+    }
+
+    #[test]
+    fn field_values_unknown_field_is_none() {
+        assert!(field_values_sql("nope", "").is_none());
     }
 
     #[test]

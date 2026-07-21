@@ -59,8 +59,14 @@ pub enum DaemonFrameUp {
 #[non_exhaustive]
 pub enum DaemonFrameDown {
     /// Initial declarative state — sent on connect and again whenever the
-    /// server mutates `adapters_enabled` for this machine.
-    Reconcile { adapters: Vec<DaemonAdapterConfig> },
+    /// server mutates `adapters_enabled` (or the owner's secret-scrub settings)
+    /// for this machine. `secret_scrub` is defaulted so older daemons/tests that
+    /// omit it keep parsing.
+    Reconcile {
+        adapters: Vec<DaemonAdapterConfig>,
+        #[serde(default)]
+        secret_scrub: SecretScrubConfig,
+    },
     /// A command for a specific adapter (and ultimately a specific session).
     /// `command` is boxed so this large variant (a `Spawn` carries a full
     /// `SessionSpec` with env + bootstrap) doesn't bloat every `DaemonFrameDown`.
@@ -85,6 +91,25 @@ pub enum DaemonFrameDown {
     /// leading `~`, reads one directory level, and replies with a
     /// [`DaemonFrameUp::ListDirsResult`] carrying the sorted entry names.
     ListDirs { request_id: uuid::Uuid, path: String },
+}
+
+/// Effective secret-scrub config synced to the daemon (CCT-731): the enable
+/// flag plus the owner's enabled user patterns. The compiled defaults live in
+/// `cctui-crypto` on both sides; the daemon combines them at compile time.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SecretScrubConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub patterns: Vec<ScrubPattern>,
+}
+
+/// A single user-supplied scrub pattern (name + regex source). Validated
+/// server-side before it ever reaches the wire.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScrubPattern {
+    pub name: String,
+    pub regex: String,
 }
 
 // --- Dispatcher ↔ Server (CCT-246/247/248) ---
@@ -741,7 +766,7 @@ mod tests {
 
     #[test]
     fn daemon_frame_down_reconcile_roundtrips() {
-        let f = DaemonFrameDown::Reconcile { adapters: vec![] };
+        let f = DaemonFrameDown::Reconcile { adapters: vec![], secret_scrub: Default::default() };
         let json = serde_json::to_string(&f).unwrap();
         assert!(json.contains(r#""type":"reconcile""#));
         let _back: DaemonFrameDown = serde_json::from_str(&json).unwrap();

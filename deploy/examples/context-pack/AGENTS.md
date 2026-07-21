@@ -15,7 +15,9 @@ instructions when you build a derived pack.
 - `prompts/` — dispatch prompts. For Codex they are also staged to
   `~/.codex/prompts/` as custom slash-prompts; `TASK_PROMPT_FILE` still resolves
   under `/opt/context/prompts/`.
-- `docs/`, `skills/`, `guard-rules.md` — shared with the Claude packaging.
+- `rules/`, `docs/`, `schemas/`, `skills/`, `guard-rules.md`, `pack.toml` —
+  shared with the Claude packaging. Always-on `rules/` are best folded into this
+  `AGENTS.md` for Codex (Codex has no `~/.claude/rules/` auto-load).
 - `mcp.json` — adapter-neutral MCP servers. For Codex they are translated into
   `~/.codex/config.toml` `[mcp_servers.<name>]` tables; for Claude they merge into
   `~/.mcp.json`.

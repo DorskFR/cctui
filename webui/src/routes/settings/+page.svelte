@@ -114,6 +114,37 @@
 		'happy to continue',
 		'happy to keep going'
 	];
+
+	// Daemon-side secret redaction (CCT-731). The switch toggles live scrubbing;
+	// the textarea holds one extra regex per line, layered on the daemon's
+	// compiled defaults. The server validates each regex on save.
+	const scrubEnabled = $derived(settings.secretScrubEnabled);
+	const scrubPatternsText = $derived(settings.secretScrubPatterns.map((p) => p.regex).join('\n'));
+	function setScrubPatternsText(text: string) {
+		const patterns = text
+			.split('\n')
+			.map((r) => r.trim())
+			.filter((r) => r.length > 0)
+			.map((regex) => ({ name: 'custom', regex, enabled: true }));
+		settings.setSecretScrubPatterns(patterns);
+	}
+	const BUILTIN_SCRUB_CATEGORIES = [
+		'github_token',
+		'github_pat',
+		'npm_token',
+		'anthropic_key',
+		'aws_access_key',
+		'vault_token',
+		'gitlab_token',
+		'slack_token',
+		'youtrack_token',
+		'bitwarden_token',
+		'cctui_token',
+		'ccipat',
+		'private_key',
+		'jwt',
+		'db_url_password'
+	];
 </script>
 
 <Stack gap="lg">
@@ -361,6 +392,57 @@
 				<ul>
 					{#each BUILTIN_STALL_PHRASES as p (p)}
 						<li><Text size="sm" tone="faint">{p}</Text></li>
+					{/each}
+				</ul>
+			</details>
+		</Stack>
+	</Card>
+
+	<!-- ── Secret redaction (CCT-731) ───────────────────────────────────── -->
+	<Card>
+		<Stack gap="md">
+			<Heading level={2}>Secret redaction</Heading>
+			<Text size="sm" tone="faint">
+				Redact secrets (API keys, tokens, private keys, DB passwords) out of session
+				events on the daemon before they are stored or broadcast. Matched spans become
+				typed placeholders like [REDACTED:github_token]. Applies to running sessions
+				within ~1s of saving.
+			</Text>
+			<dl class="props">
+				<div class="prop">
+					<dt>
+						<Text weight="semibold">Enable live redaction</Text>
+						<Text size="sm" tone="faint">
+							Scrub tool I/O and messages as events are produced.
+						</Text>
+					</dt>
+					<dd>
+						<Switch
+							checked={scrubEnabled}
+							label="Enable live redaction"
+							onclick={() => settings.setSecretScrubEnabled(!scrubEnabled)}
+						/>
+					</dd>
+				</div>
+			</dl>
+			<Field
+				label="Extra patterns"
+				hint="One regex per line, layered on the built-in detectors. Invalid patterns are rejected on save."
+			>
+				<Textarea
+					mono
+					autoresize
+					rows={3}
+					value={scrubPatternsText}
+					placeholder={'ACME-[0-9]{6}\\nMYCORP_[A-Za-z0-9]{20,}'}
+					onchange={(e) => setScrubPatternsText((e.currentTarget as HTMLTextAreaElement).value)}
+				/>
+			</Field>
+			<details class="defaults">
+				<summary><Text size="sm" tone="faint">Built-in detectors</Text></summary>
+				<ul>
+					{#each BUILTIN_SCRUB_CATEGORIES as c (c)}
+						<li><Text size="sm" tone="faint">{c}</Text></li>
 					{/each}
 				</ul>
 			</details>

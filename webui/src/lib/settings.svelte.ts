@@ -82,6 +82,17 @@ export function clampWhipMode(v: unknown): WhipMode {
 	return WHIP_MODES.includes(v as WhipMode) ? (v as WhipMode) : DEFAULT_WHIP_MODE;
 }
 
+// Daemon-side secret redaction (CCT-731). `secretScrubEnabled` toggles live
+// scrubbing; `secretScrubPatterns` are extra user regexes layered on the daemon's
+// compiled defaults. Stored top-level as `data.secretScrubEnabled` /
+// `data.secretScrubPatterns`, which the server clamps (validates each regex,
+// caps count/length) and syncs to the daemon via Reconcile.
+export interface SecretScrubPattern {
+	name: string;
+	regex: string;
+	enabled: boolean;
+}
+
 export interface SettingsState {
 	sessionList: SessionListSettings;
 	display: DisplaySettings;
@@ -91,6 +102,11 @@ export interface SettingsState {
 	// Whip-mode stall-phrase override (CCT-598). Top-level so it serializes as
 	// `data.whipStopPhrases`, which the server clamps and feeds to the whip hook.
 	whipStopPhrases: WhipStopPhrases;
+	// Daemon-side secret redaction (CCT-731). Top-level so they serialize as
+	// `data.secretScrubEnabled` / `data.secretScrubPatterns`, which the server
+	// clamps and syncs to the daemon via Reconcile.
+	secretScrubEnabled: boolean;
+	secretScrubPatterns: SecretScrubPattern[];
 	// Per-(machine, working-dir) spawn memory (CCT-561): the config last
 	// submitted from the spawn modal, keyed by machineMemoryKey/dispatchMemoryKey
 	// (spawnMemory.ts), LRU-capped. Replaces the localStorage per-machine prefs
@@ -124,6 +140,8 @@ const DEFAULTS: SettingsState = {
 	},
 	harnessMode: DEFAULT_HARNESS_MODE,
 	whipStopPhrases: { mode: DEFAULT_WHIP_MODE, phrases: [], guidance: '' },
+	secretScrubEnabled: false,
+	secretScrubPatterns: [],
 	spawnMemory: {},
 	shortcutsEnabled: false,
 	keymap: {},
@@ -144,6 +162,8 @@ function mergeDefaults(partial: Partial<SettingsState> | null | undefined): Sett
 		// the server's clamp on PUT).
 		harnessMode: clampHarnessMode(p.harnessMode),
 		whipStopPhrases: mergeWhipStopPhrases(p.whipStopPhrases),
+		secretScrubEnabled: p.secretScrubEnabled === true,
+		secretScrubPatterns: mergeSecretScrubPatterns(p.secretScrubPatterns),
 		spawnMemory: p.spawnMemory ?? {},
 		shortcutsEnabled: p.shortcutsEnabled ?? DEFAULTS.shortcutsEnabled,
 		keymap: p.keymap ?? DEFAULTS.keymap,
@@ -161,6 +181,20 @@ function mergeWhipStopPhrases(v: Partial<WhipStopPhrases> | undefined): WhipStop
 		phrases: Array.isArray(raw.phrases) ? raw.phrases.filter((p) => typeof p === 'string') : [],
 		guidance: typeof raw.guidance === 'string' ? raw.guidance : ''
 	};
+}
+
+// Coerce a stored secretScrubPatterns value into the UI shape (CCT-731): keep
+// only well-formed `{ name, regex, enabled }` entries with a non-empty regex.
+function mergeSecretScrubPatterns(v: unknown): SecretScrubPattern[] {
+	if (!Array.isArray(v)) return [];
+	return v
+		.filter((e): e is Record<string, unknown> => !!e && typeof e === 'object')
+		.map((e) => ({
+			name: typeof e.name === 'string' ? e.name : '',
+			regex: typeof e.regex === 'string' ? e.regex : '',
+			enabled: e.enabled !== false
+		}))
+		.filter((e) => e.regex.trim().length > 0);
 }
 
 // Client-side payload migration chain, mirroring the server's idea: walk an
@@ -274,6 +308,26 @@ class Settings {
 
 	get whipStopPhrases(): WhipStopPhrases {
 		return this.state.whipStopPhrases;
+	}
+
+	// Secret redaction (CCT-731). The server validates each regex on PUT and syncs
+	// the effective list to the daemon via Reconcile.
+	setSecretScrubEnabled(on: boolean) {
+		this.state.secretScrubEnabled = on;
+		this.persist();
+	}
+
+	setSecretScrubPatterns(patterns: SecretScrubPattern[]) {
+		this.state.secretScrubPatterns = patterns;
+		this.persist();
+	}
+
+	get secretScrubEnabled(): boolean {
+		return this.state.secretScrubEnabled;
+	}
+
+	get secretScrubPatterns(): SecretScrubPattern[] {
+		return this.state.secretScrubPatterns;
 	}
 
 	// Spawn memory (CCT-561): write on spawn submit, recall on machine/cwd (or

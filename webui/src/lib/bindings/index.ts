@@ -82,6 +82,8 @@ export type * from './PullUpsert';
 export type * from './RelabelTokenRequest';
 export type * from './RenameMachineRequest';
 export type * from './RenameRequest';
+export type * from './RescrubReport';
+export type * from './RescrubRequest';
 export type * from './ReviewCommentUpsert';
 export type * from './ReviewDraftInfo';
 export type * from './ReviewSummary';

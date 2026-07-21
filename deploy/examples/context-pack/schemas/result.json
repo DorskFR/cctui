@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cctui.dev/schemas/example-pack/result.json",
+  "title": "cctui result-callback envelope (context pack example)",
+  "description": "Per-flow schema the prompt validates the result JSON against before writing RESULT_FILE. Mirrors the common envelope in docs/worker-contract.md. A real pack tightens flow-specific fields.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["status"],
+  "properties": {
+    "task_id": { "type": "string", "description": "Echoed from the dispatch payload when present." },
+    "flow": { "type": "string", "description": "This flow's name." },
+    "status": {
+      "type": "string",
+      "enum": ["success", "failed", "needs_human"]
+    },
+    "dedup_key": { "type": "string" },
+    "error": {
+      "type": ["string", "null"],
+      "description": "One-line reason when status != success; null on success."
+    },
+    "evidence": {
+      "type": "array",
+      "description": "Required non-empty on a code-touching success finalize.",
+      "items": {
+        "type": "object",
+        "required": ["kind", "surface", "summary", "detail"],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": ["test-run", "diff", "screenshot", "video", "transcript", "coverage", "judge"]
+          },
+          "surface": { "type": "string" },
+          "summary": { "type": "string" },
+          "detail": { "type": "string" }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "success" } } },
+      "then": {
+        "properties": { "error": { "type": "null" } }
+      }
+    }
+  ]
+}

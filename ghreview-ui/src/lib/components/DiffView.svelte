@@ -4,9 +4,9 @@
   import { buildSplitModel } from "../diff/split";
   import { highlightLine, langForPath } from "../diff/highlight";
   import { computeWindow } from "../diff/virtual";
+  import { fontPxFor, readFsScale, rowHeightFor } from "../diff/fs-scale";
   import { Checkbox } from "@dorsk/tsumikit";
 
-  const ROW_HEIGHT = 20;
   import { type LineAddress, type ReviewController, rowToAddress } from "../review/anchors";
   import InlineCommentComposer from "./InlineCommentComposer.svelte";
   import InlineThread from "./InlineThread.svelte";
@@ -67,10 +67,22 @@
     toggleFileViewed(activeFilename);
   }
 
-  const ROW_H = ROW_HEIGHT;
+  let fsScale = $state(1);
+  const ROW_H = $derived(rowHeightFor(fsScale));
+  const fontPx = $derived(fontPxFor(fsScale));
   let scrollTop = $state(0);
   let viewportH = $state(600);
   let container = $state<HTMLDivElement | null>(null);
+
+  $effect(() => {
+    const el = container;
+    if (!el) return;
+    const read = () => (fsScale = readFsScale(el));
+    read();
+    const obs = new MutationObserver(read);
+    obs.observe(document.documentElement, { attributes: true, attributeFilter: ["style", "class"] });
+    return () => obs.disconnect();
+  });
 
   let pendingAddr = $state<{ addr: LineAddress; rowIndex: number } | null>(null);
   let openAnchor = $state<number | null>(null);
@@ -120,6 +132,7 @@
   class="scroller"
   bind:this={container}
   bind:clientHeight={viewportH}
+  style:font-size="{fontPx}px"
   onscroll={(e) => (scrollTop = e.currentTarget.scrollTop)}
 >
   <div class="spacer" style:height="{win.totalHeight}px">
@@ -130,7 +143,7 @@
             srow.kind === "pair"
               ? srow.left?.rowIndex === focusRow || srow.right?.rowIndex === focusRow
               : srow.rowIndex === focusRow}
-          <div class="row row-{srow.kind === "pair" ? "pair" : srow.row.kind}" class:focus={focused} style:height="{ROW_H}px" role="row" tabindex="-1">
+          <div class="row row-{srow.kind === "pair" ? "pair" : srow.row.kind}" class:focus={focused} style:height="{ROW_H}px" style:line-height="{ROW_H}px" role="row" tabindex="-1">
             {#if srow.kind === "file"}
               {@const fname = model.files[srow.row.fileIndex]?.filename ?? null}
               {#if onToggleViewed && fname}
@@ -205,6 +218,7 @@
             class="row row-{row.kind}"
             class:focus={idx === focusRow}
             style:height="{ROW_H}px"
+            style:line-height="{ROW_H}px"
             role="row"
             tabindex="-1"
             onclick={() => onFocusRow(idx)}
@@ -296,7 +310,6 @@
     height: 100%;
     overflow: auto;
     font-family: var(--gh-mono);
-    font-size: 12px;
     background: var(--gh-bg);
   }
   .spacer {
@@ -313,7 +326,6 @@
     align-items: center;
     white-space: pre;
     contain: layout paint;
-    line-height: 20px;
     position: relative;
   }
   .row.focus {

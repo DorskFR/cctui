@@ -129,6 +129,30 @@ fn parse_step_heading(line: &str) -> Option<(u32, String)> {
     Some((num, title))
 }
 
+struct Fence {
+    ch: char,
+    len: usize,
+    /// Info string (fence language) — surfaced so a future opt-in can special-case
+    /// a specific language (CCT-619) while every other fence stays inert prose.
+    info: String,
+}
+
+/// If `stripped` (whitespace-trimmed) is a code-fence delimiter, return its
+/// [`Fence`]: a run of at least three `` ` `` or `~`. For backtick fences the
+/// info string may not contain a backtick (`CommonMark`).
+fn fence_marker(stripped: &str) -> Option<Fence> {
+    let ch = stripped.chars().next().filter(|c| *c == '`' || *c == '~')?;
+    let len = stripped.chars().take_while(|c| *c == ch).count();
+    if len < 3 {
+        return None;
+    }
+    let info = stripped[len..].trim().to_string();
+    if ch == '`' && info.contains('`') {
+        return None;
+    }
+    Some(Fence { ch, len, info })
+}
+
 /// Parse one `[llmjudge]` list item (the text after the leading `-`) into a
 /// [`JudgeQuestion`]: `question` or `question :: violation example`. An empty
 /// question is a parse error.
@@ -143,6 +167,57 @@ fn parse_judge_question(item: &str, step: u32) -> Result<JudgeQuestion, ParseErr
         return Err(ParseError { step, message: "[llmjudge] question text is empty".to_string() });
     }
     Ok(JudgeQuestion { question: question.to_string(), violation: violation.to_string() })
+}
+
+/// A bare `[llmjudge]` block with no `- <question>` line is malformed.
+fn close_judge(cur: u32, steps: &BTreeMap<u32, Step>) -> Result<(), ParseError> {
+    if steps.get(&cur).is_some_and(|s| s.llmjudge.is_empty()) {
+        return Err(ParseError {
+            step: cur,
+            message: "[llmjudge] must be immediately followed by at least one `- <question>` line"
+                .to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// Advance code-fence state for one line, treating fenced content as prose body.
+/// Returns `true` if the line was consumed (the caller skips policy parsing).
+fn absorb_fence(
+    stripped: &str,
+    fence: &mut Option<Fence>,
+    current: Option<u32>,
+    bodies: &mut BTreeMap<u32, Vec<String>>,
+    judge_open: &mut bool,
+    steps: &BTreeMap<u32, Step>,
+) -> Result<bool, ParseError> {
+    let push = |bodies: &mut BTreeMap<u32, Vec<String>>| {
+        if let Some(cur) = current
+            && let Some(body) = bodies.get_mut(&cur)
+        {
+            body.push(stripped.to_string());
+        }
+    };
+    if let Some(open) = fence {
+        let closes = fence_marker(stripped)
+            .is_some_and(|f| f.ch == open.ch && f.len >= open.len && f.info.is_empty());
+        if closes {
+            *fence = None;
+        } else {
+            push(bodies);
+        }
+        return Ok(true);
+    }
+    if let Some(f) = fence_marker(stripped) {
+        if *judge_open && let Some(cur) = current {
+            close_judge(cur, steps)?;
+            *judge_open = false;
+        }
+        push(bodies);
+        *fence = Some(f);
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 /// Parse step definitions from prompt markdown.
@@ -166,21 +241,14 @@ pub fn parse_steps(markdown: &str) -> Result<BTreeMap<u32, Step>, ParseError> {
     let mut judged: HashSet<u32> = HashSet::new();
     // A `[llmjudge]` block is open and collecting `- question` lines.
     let mut judge_open = false;
-
-    let close_judge = |cur: u32, steps: &BTreeMap<u32, Step>| -> Result<(), ParseError> {
-        if steps.get(&cur).is_some_and(|s| s.llmjudge.is_empty()) {
-            return Err(ParseError {
-                step: cur,
-                message: "[llmjudge] must be immediately followed by at least one `- <question>` \
-                          line"
-                    .to_string(),
-            });
-        }
-        Ok(())
-    };
+    let mut fence: Option<Fence> = None;
 
     for line in markdown.split('\n') {
         let stripped = line.trim();
+
+        if absorb_fence(stripped, &mut fence, current, &mut bodies, &mut judge_open, &steps)? {
+            continue;
+        }
 
         if let Some((num, title)) = parse_step_heading(stripped) {
             if judge_open && let Some(cur) = current {
@@ -442,6 +510,123 @@ fn parse_set_definition(line: &str) -> Option<(String, Vec<String>, bool)> {
         .map(str::to_string)
         .collect();
     Some((name.to_string(), members, extend))
+}
+
+#[cfg(test)]
+mod fence_tests {
+    use super::*;
+
+    #[test]
+    fn fenced_directives_are_body_not_policy() {
+        let md = "\
+# Step 1: Do it
+[allowed]: Read
+
+Example of the format:
+```
+[allowed]: Bash
+[denied]: Write
+# Step 2: fake
+```
+Carry on.
+";
+        let steps = parse_steps(md).unwrap();
+        assert_eq!(steps.len(), 1);
+        let s = &steps[&1];
+        assert_eq!(s.allowed, "Read");
+        assert_eq!(s.disallowed, "");
+        assert!(s.body.contains("[allowed]: Bash"));
+        assert!(s.body.contains("# Step 2: fake"));
+    }
+
+    #[test]
+    fn unfenced_directives_still_parse() {
+        let md = "\
+# Step 1
+[allowed]: Read
+[disallowed]: Write
+";
+        let steps = parse_steps(md).unwrap();
+        assert_eq!(steps[&1].allowed, "Read");
+        assert_eq!(steps[&1].disallowed, "Write");
+    }
+
+    #[test]
+    fn tilde_and_info_string_fences() {
+        let md = "\
+# Step 1
+[allowed]: Read
+~~~text
+[disallowed]: Write
+~~~
+```yaml
+[transition]: 2
+```
+";
+        let steps = parse_steps(md).unwrap();
+        assert_eq!(steps[&1].allowed, "Read");
+        assert_eq!(steps[&1].disallowed, "");
+        assert_eq!(steps[&1].transition, "");
+    }
+
+    #[test]
+    fn indented_fence_is_recognized() {
+        let md = "\
+# Step 1
+[allowed]: Read
+   ```
+   [disallowed]: Write
+   ```
+";
+        let steps = parse_steps(md).unwrap();
+        assert_eq!(steps[&1].allowed, "Read");
+        assert_eq!(steps[&1].disallowed, "");
+    }
+
+    #[test]
+    fn backtick_fence_not_closed_by_tilde() {
+        let md = "\
+# Step 1
+```
+[disallowed]: Write
+~~~
+[transition]: 2
+```
+";
+        let steps = parse_steps(md).unwrap();
+        assert_eq!(steps[&1].disallowed, "");
+        assert_eq!(steps[&1].transition, "");
+    }
+
+    #[test]
+    fn unclosed_fence_at_eof_is_prose() {
+        let md = "\
+# Step 1
+[allowed]: Read
+```
+[disallowed]: Write
+[transition]: 2
+";
+        let steps = parse_steps(md).unwrap();
+        assert_eq!(steps[&1].allowed, "Read");
+        assert_eq!(steps[&1].disallowed, "");
+        assert_eq!(steps[&1].transition, "");
+        assert!(steps[&1].body.contains("[disallowed]: Write"));
+    }
+
+    #[test]
+    fn longer_close_fence_closes_shorter_open() {
+        let md = "\
+# Step 1
+```
+[disallowed]: Write
+````
+[transition]: 2
+";
+        let steps = parse_steps(md).unwrap();
+        assert_eq!(steps[&1].disallowed, "");
+        assert_eq!(steps[&1].transition, "2");
+    }
 }
 
 #[cfg(test)]
