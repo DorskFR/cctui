@@ -26,6 +26,7 @@
 		machineMemoryKey,
 		dispatchMemoryKey,
 		applyMemory,
+		dirPrefill,
 		memoryFieldsOf,
 		entryFromForm,
 		MACHINE_MEMORY_FIELDS,
@@ -175,20 +176,26 @@
 	let memApplied: MemoryPatch = {};
 
 	// Picking a machine pre-fills its most recent working dir (which then keys
-	// the full memory recall below).
-	let dirAppliedFor = $state<string | null>(null);
+	// the full memory recall below). Keyed on (machine, remembered dir) — not
+	// the machine alone — so the fill re-attempts when the settings blob
+	// hydrates after the machine was already picked. A draft/prefill only
+	// suppresses the fill when it actually carries a dir: a stale draft saved
+	// with an empty cwd must not pin the field empty forever.
+	let dirComboApplied: string | null = null;
 	let dirApplied: string | null = null;
 	$effect(() => {
 		const id = form.machine_id;
-		if (!id || id === dirAppliedFor) return;
-		const first = dirAppliedFor === null;
-		dirAppliedFor = id;
-		if (first && (prefill || loadedDraft)) return;
-		if (form.working_dir !== (dirApplied ?? initialDir)) return;
-		const dir = settings.lastDirFor(id);
-		if (!dir) return;
-		dirApplied = dir;
-		form.working_dir = dir;
+		if (!id) return;
+		const last = settings.lastDirFor(id);
+		const combo = machineMemoryKey(id, last ?? '');
+		if (combo === dirComboApplied) return;
+		const first = dirComboApplied === null;
+		dirComboApplied = combo;
+		if (first && (prefill?.working_dir || (loadedDraft && initialDir))) return;
+		const next = dirPrefill(form.working_dir, last, dirApplied ?? initialDir);
+		if (next === null) return;
+		dirApplied = next;
+		form.working_dir = next;
 	});
 
 	let memKeyApplied = $state<string | null>(null);

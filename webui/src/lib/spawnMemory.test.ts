@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
 	applyMemory,
+	dirPrefill,
 	dispatchMemoryKey,
 	DISPATCH_MEMORY_FIELDS,
 	entryFromForm,
@@ -224,5 +225,28 @@ describe('entryFromForm', () => {
 			name: 'run-1'
 		});
 		expect(e).not.toHaveProperty('at');
+	});
+});
+
+describe('dirPrefill', () => {
+	it('fills an empty field with the remembered dir', () => {
+		expect(dirPrefill('', '/repo/a', '')).toBe('/repo/a');
+		expect(dirPrefill('   ', '/repo/a', '')).toBe('/repo/a');
+	});
+
+	it('does nothing without a remembered dir', () => {
+		expect(dirPrefill('', null, '')).toBeNull();
+	});
+
+	it('never clobbers a user-typed value', () => {
+		expect(dirPrefill('/typed/by/user', '/repo/a', '')).toBeNull();
+	});
+
+	it('replaces its own earlier auto-fill (machine switch)', () => {
+		expect(dirPrefill('/repo/old', '/repo/new', '/repo/old')).toBe('/repo/new');
+	});
+
+	it('is idempotent once the field holds the remembered dir', () => {
+		expect(dirPrefill('/repo/a', '/repo/a', '')).toBeNull();
 	});
 });
