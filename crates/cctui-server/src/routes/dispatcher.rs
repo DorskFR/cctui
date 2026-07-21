@@ -28,10 +28,12 @@ use uuid::Uuid;
 use crate::auth::{AuthContext, Scope, machine_token, mint_secret, sha256_hex, token_preview};
 use crate::state::AppState;
 
-/// Evict a dispatcher whose WS produced no frame within this window. A healthy
-/// dispatcher heartbeats every ~20s, so 3× that distinguishes a half-open
-/// connection from idleness (mirrors the daemon path, CCT-140).
+/// Evict a dispatcher whose WS yields no frame of any kind — data, ping, or pong
+/// — within this window. Measured by frame arrival, not data-message completion,
+/// so a slow peer still answering pings mid-transfer is not evicted (CCT-737);
+/// mirrors the daemon path and its half-open guarantee (CCT-140).
 const DISPATCHER_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+const DISPATCHER_LIVENESS_CHECK: std::time::Duration = std::time::Duration::from_secs(10);
 
 // ---- /api/v1/dispatcher/enroll ----
 
@@ -293,6 +295,46 @@ async fn resolve_dispatcher_key(state: &AppState, key: &str) -> Option<(Uuid, Uu
     .flatten()
 }
 
+enum Inbound {
+    Data(String),
+    Skip,
+    Done,
+    Idle,
+}
+
+/// One poll of the inbound WS: the next frame, or a liveness-ticker tick. Any
+/// yielded frame — including a ping/pong tungstenite surfaces mid data-message —
+/// refreshes `last_frame`, so liveness tracks frame arrival rather than
+/// data-message completion (CCT-737). `stream.next()` is cancel-safe, so dropping
+/// it on a ticker tick loses nothing.
+async fn next_inbound<S>(
+    stream: &mut S,
+    last_frame: &mut tokio::time::Instant,
+    liveness: &mut tokio::time::Interval,
+    timeout: std::time::Duration,
+) -> Inbound
+where
+    S: futures_util::Stream<Item = Result<Message, axum::Error>> + Unpin,
+{
+    tokio::select! {
+        item = stream.next() => match item {
+            Some(Ok(msg)) => {
+                *last_frame = tokio::time::Instant::now();
+                match msg {
+                    Message::Text(t) => Inbound::Data(t.to_string()),
+                    Message::Binary(b) => Inbound::Data(String::from_utf8_lossy(&b).to_string()),
+                    Message::Close(_) => Inbound::Done,
+                    _ => Inbound::Skip,
+                }
+            }
+            Some(Err(_)) | None => Inbound::Done,
+        },
+        _ = liveness.tick() => {
+            if last_frame.elapsed() >= timeout { Inbound::Idle } else { Inbound::Skip }
+        }
+    }
+}
+
 #[allow(clippy::cognitive_complexity)]
 async fn handle(socket: WebSocket, state: AppState, dispatcher_id: Uuid) {
     let (mut sink, mut stream) = socket.split();
@@ -336,20 +378,26 @@ async fn handle(socket: WebSocket, state: AppState, dispatcher_id: Uuid) {
     });
 
     // Inbound loop.
+    let mut last_frame = tokio::time::Instant::now();
+    let mut liveness = tokio::time::interval(DISPATCHER_LIVENESS_CHECK);
+    liveness.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    liveness.tick().await;
     loop {
-        let msg = match tokio::time::timeout(DISPATCHER_READ_TIMEOUT, stream.next()).await {
-            Ok(Some(Ok(msg))) => msg,
-            Ok(Some(Err(_)) | None) => break,
-            Err(_) => {
+        let payload = match next_inbound(
+            &mut stream,
+            &mut last_frame,
+            &mut liveness,
+            DISPATCHER_READ_TIMEOUT,
+        )
+        .await
+        {
+            Inbound::Data(payload) => payload,
+            Inbound::Skip => continue,
+            Inbound::Done => break,
+            Inbound::Idle => {
                 tracing::warn!(%dispatcher_id, "dispatcher WS idle past read timeout — evicting");
                 break;
             }
-        };
-        let payload = match msg {
-            Message::Text(t) => t.to_string(),
-            Message::Binary(b) => String::from_utf8_lossy(&b).to_string(),
-            Message::Close(_) => break,
-            _ => continue,
         };
         let frame: DispatcherFrameUp = match serde_json::from_str(&payload) {
             Ok(f) => f,
@@ -412,5 +460,51 @@ async fn bump_last_seen(state: &AppState, dispatcher_id: Uuid) {
         .await
     {
         tracing::warn!(%err, %dispatcher_id, "dispatcher last_seen_at bump failed");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use axum::extract::ws::Message;
+    use futures_util::Stream;
+
+    use super::{Inbound, next_inbound};
+
+    async fn drive<S>(mut stream: S, timeout: Duration, check: Duration) -> Inbound
+    where
+        S: Stream<Item = Result<Message, axum::Error>> + Unpin,
+    {
+        let mut last = tokio::time::Instant::now();
+        let mut liveness = tokio::time::interval(check);
+        liveness.tick().await;
+        loop {
+            match next_inbound(&mut stream, &mut last, &mut liveness, timeout).await {
+                Inbound::Data(_) | Inbound::Skip => {}
+                term @ (Inbound::Done | Inbound::Idle) => return term,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn half_open_peer_is_evicted() {
+        let stream = futures_util::stream::pending::<Result<Message, axum::Error>>();
+        let out = drive(stream, Duration::from_millis(300), Duration::from_millis(25)).await;
+        assert!(matches!(out, Inbound::Idle));
+    }
+
+    #[tokio::test]
+    async fn slow_trickle_answering_pings_survives() {
+        let stream = futures_util::stream::unfold(0u32, |i| async move {
+            if i >= 12 {
+                return None;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            Some((Ok::<_, axum::Error>(Message::Pong(Vec::new().into())), i + 1))
+        });
+        let stream = Box::pin(stream);
+        let out = drive(stream, Duration::from_millis(300), Duration::from_millis(25)).await;
+        assert!(matches!(out, Inbound::Done));
     }
 }

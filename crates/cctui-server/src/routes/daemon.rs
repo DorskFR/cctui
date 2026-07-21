@@ -31,10 +31,12 @@ use uuid::Uuid;
 use crate::auth::{AuthContext, mint_secret, sha256_hex, user_token};
 use crate::state::AppState;
 
-/// Evict a daemon whose WS produced no frame within this window. A healthy
-/// daemon pings every ~20s (auto-ponged), so 3× that distinguishes a
-/// half-open connection from idleness (CCT-140).
+/// Evict a daemon whose WS yields no frame of any kind — data, ping, or pong —
+/// within this window. Measured by frame arrival, not data-message completion,
+/// so a slow peer still answering pings mid-transfer is not evicted (CCT-737); a
+/// truly half-open one leaves no dead entry in the bus registry (CCT-140).
 const DAEMON_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+const DAEMON_LIVENESS_CHECK: std::time::Duration = std::time::Duration::from_secs(10);
 
 // ---- /api/v1/daemon/auth ----
 
@@ -298,6 +300,46 @@ fn extract_token_from_uri(uri: &Uri) -> Option<String> {
     })
 }
 
+enum Inbound {
+    Data(String),
+    Skip,
+    Done,
+    Idle,
+}
+
+/// One poll of the inbound WS: the next frame, or a liveness-ticker tick. Any
+/// yielded frame — including a ping/pong tungstenite surfaces mid data-message —
+/// refreshes `last_frame`, so liveness tracks frame arrival rather than
+/// data-message completion (CCT-737). `stream.next()` is cancel-safe, so dropping
+/// it on a ticker tick loses nothing.
+async fn next_inbound<S>(
+    stream: &mut S,
+    last_frame: &mut tokio::time::Instant,
+    liveness: &mut tokio::time::Interval,
+    timeout: std::time::Duration,
+) -> Inbound
+where
+    S: futures_util::Stream<Item = Result<Message, axum::Error>> + Unpin,
+{
+    tokio::select! {
+        item = stream.next() => match item {
+            Some(Ok(msg)) => {
+                *last_frame = tokio::time::Instant::now();
+                match msg {
+                    Message::Text(t) => Inbound::Data(t.to_string()),
+                    Message::Binary(b) => Inbound::Data(String::from_utf8_lossy(&b).to_string()),
+                    Message::Close(_) => Inbound::Done,
+                    _ => Inbound::Skip,
+                }
+            }
+            Some(Err(_)) | None => Inbound::Done,
+        },
+        _ = liveness.tick() => {
+            if last_frame.elapsed() >= timeout { Inbound::Idle } else { Inbound::Skip }
+        }
+    }
+}
+
 #[allow(clippy::cognitive_complexity)]
 async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: Uuid) {
     let (mut sink, mut stream) = socket.split();
@@ -353,24 +395,23 @@ async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: U
         }
     });
 
-    // Inbound loop. A live daemon pings every ~20s, so a read timeout of 3×
-    // that evicts a half-open daemon promptly instead of leaving a dead entry
-    // in the bus's connection registry that swallows commands (CCT-140).
+    let mut last_frame = tokio::time::Instant::now();
+    let mut liveness = tokio::time::interval(DAEMON_LIVENESS_CHECK);
+    liveness.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    liveness.tick().await;
     loop {
-        let msg = match tokio::time::timeout(DAEMON_READ_TIMEOUT, stream.next()).await {
-            Ok(Some(Ok(msg))) => msg,
-            Ok(Some(Err(_)) | None) => break,
-            Err(_) => {
-                tracing::warn!(%machine_id, "daemon WS idle past read timeout — evicting");
-                break;
-            }
-        };
-        let payload = match msg {
-            Message::Text(t) => t.to_string(),
-            Message::Binary(b) => String::from_utf8_lossy(&b).to_string(),
-            Message::Close(_) => break,
-            _ => continue,
-        };
+        let payload =
+            match next_inbound(&mut stream, &mut last_frame, &mut liveness, DAEMON_READ_TIMEOUT)
+                .await
+            {
+                Inbound::Data(payload) => payload,
+                Inbound::Skip => continue,
+                Inbound::Done => break,
+                Inbound::Idle => {
+                    tracing::warn!(%machine_id, "daemon WS idle past read timeout — evicting");
+                    break;
+                }
+            };
         let frame: DaemonFrameUp = match serde_json::from_str(&payload) {
             Ok(f) => f,
             Err(err) => {
@@ -1375,8 +1416,49 @@ pub async fn mint_user_token(
 
 #[cfg(test)]
 mod tests {
-    use super::{should_auto_approve, strip_nul};
+    use std::time::Duration;
+
+    use axum::extract::ws::Message;
+    use futures_util::Stream;
     use serde_json::json;
+
+    use super::{Inbound, next_inbound, should_auto_approve, strip_nul};
+
+    async fn drive<S>(mut stream: S, timeout: Duration, check: Duration) -> Inbound
+    where
+        S: Stream<Item = Result<Message, axum::Error>> + Unpin,
+    {
+        let mut last = tokio::time::Instant::now();
+        let mut liveness = tokio::time::interval(check);
+        liveness.tick().await;
+        loop {
+            match next_inbound(&mut stream, &mut last, &mut liveness, timeout).await {
+                Inbound::Data(_) | Inbound::Skip => {}
+                term @ (Inbound::Done | Inbound::Idle) => return term,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn half_open_peer_is_evicted() {
+        let stream = futures_util::stream::pending::<Result<Message, axum::Error>>();
+        let out = drive(stream, Duration::from_millis(300), Duration::from_millis(25)).await;
+        assert!(matches!(out, Inbound::Idle));
+    }
+
+    #[tokio::test]
+    async fn slow_trickle_answering_pings_survives() {
+        let stream = futures_util::stream::unfold(0u32, |i| async move {
+            if i >= 12 {
+                return None;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            Some((Ok::<_, axum::Error>(Message::Pong(Vec::new().into())), i + 1))
+        });
+        let stream = Box::pin(stream);
+        let out = drive(stream, Duration::from_millis(300), Duration::from_millis(25)).await;
+        assert!(matches!(out, Inbound::Done));
+    }
 
     #[test]
     fn auto_approve_excludes_plan_and_ask_but_allows_tools() {

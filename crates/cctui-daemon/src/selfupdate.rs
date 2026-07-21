@@ -128,6 +128,34 @@ pub async fn fetch_manifest(
     Ok(res.json::<DaemonManifest>().await?)
 }
 
+/// Conditional manifest fetch: sends `If-None-Match` when `etag` is set,
+/// returns `Ok(None)` on `304` (etag untouched), else stores the response
+/// ETag in `etag` and returns the parsed manifest.
+pub async fn fetch_manifest_conditional(
+    client: &reqwest::Client,
+    server_url: &str,
+    bearer: &str,
+    etag: &mut Option<String>,
+) -> Result<Option<DaemonManifest>> {
+    let url = manifest_url(server_url);
+    let mut req = client.get(&url).bearer_auth(bearer).header("Accept", "application/json");
+    if let Some(tag) = etag.as_deref() {
+        req = req.header(reqwest::header::IF_NONE_MATCH, tag);
+    }
+    let res = req.send().await?;
+    if res.status() == reqwest::StatusCode::NOT_MODIFIED {
+        return Ok(None);
+    }
+    if !res.status().is_success() {
+        bail!("daemon manifest returned {}", res.status());
+    }
+    let new_etag =
+        res.headers().get(reqwest::header::ETAG).and_then(|v| v.to_str().ok()).map(str::to_owned);
+    let manifest = res.json::<DaemonManifest>().await?;
+    *etag = new_etag;
+    Ok(Some(manifest))
+}
+
 /// Download bytes from a server endpoint, authenticated with `bearer` (a
 /// machine key on the self-update path, a user token on remote enroll).
 pub async fn download(client: &reqwest::Client, url: &str, bearer: &str) -> Result<Vec<u8>> {
@@ -187,8 +215,19 @@ fn swap_in_place(target: &Path, bytes: &[u8]) -> Result<()> {
 /// replaced (and the caller should re-exec *that* path — see [`reexec`]);
 /// `Ok(None)` if already current or no matching asset; `Err` only on
 /// unexpected failures.
-#[allow(clippy::cognitive_complexity)]
 pub async fn check_and_apply(server_url: &str, machine_key: &str) -> Result<Option<PathBuf>> {
+    check_and_apply_with(&client()?, server_url, machine_key, &mut None).await
+}
+
+/// [`check_and_apply`] against a caller-owned client + ETag cache, so the
+/// auto-update loop can pool connections and skip unchanged manifests.
+#[allow(clippy::cognitive_complexity)]
+pub async fn check_and_apply_with(
+    client: &reqwest::Client,
+    server_url: &str,
+    machine_key: &str,
+    etag: &mut Option<String>,
+) -> Result<Option<PathBuf>> {
     let asset = asset_basename();
     let target = target_name();
     if asset.is_empty() || target.is_empty() {
@@ -196,8 +235,12 @@ pub async fn check_and_apply(server_url: &str, machine_key: &str) -> Result<Opti
         return Ok(None);
     }
 
-    let client = client()?;
-    let manifest = fetch_manifest(&client, server_url, machine_key).await?;
+    let Some(manifest) =
+        fetch_manifest_conditional(client, server_url, machine_key, etag).await?
+    else {
+        tracing::debug!("daemon manifest unchanged (304); skipping update");
+        return Ok(None);
+    };
     let running = env!("CARGO_PKG_VERSION");
     if manifest.version == running {
         tracing::debug!(running, "daemon already on latest release");
@@ -213,14 +256,14 @@ pub async fn check_and_apply(server_url: &str, machine_key: &str) -> Result<Opti
         .map(|a| a.url.clone())
         .ok_or_else(|| anyhow!("manifest {latest} has no asset for target {target}"))?;
 
-    let sums_bytes = download(&client, &sha256sums_url(server_url), machine_key)
+    let sums_bytes = download(client, &sha256sums_url(server_url), machine_key)
         .await
         .context("download SHA256SUMS")?;
     let sums_text = std::str::from_utf8(&sums_bytes).context("SHA256SUMS not UTF-8")?;
     let expected = parse_sha256sums(sums_text, asset)
         .ok_or_else(|| anyhow!("{asset} missing from SHA256SUMS"))?;
 
-    let bin_bytes = download(&client, &binary_url, machine_key).await.context("download binary")?;
+    let bin_bytes = download(client, &binary_url, machine_key).await.context("download binary")?;
     let actual = hex_sha256(&bin_bytes);
     if actual != expected {
         bail!("downloaded {asset} hash {actual} != expected {expected}");
@@ -262,6 +305,14 @@ pub fn spawn_loop(
     interval: Duration,
 ) {
     tokio::spawn(async move {
+        let client = match client() {
+            Ok(c) => c,
+            Err(err) => {
+                tracing::error!(%err, "auto-update disabled: could not build HTTP client");
+                return;
+            }
+        };
+        let mut etag: Option<String> = None;
         let mut tick = tokio::time::interval(interval);
         // Skip the immediate first tick — the daemon just started and we
         // do not want the very first action of a fresh process to be a
@@ -272,7 +323,7 @@ pub fn spawn_loop(
                 () = shutdown.cancelled() => return,
                 _ = tick.tick() => {}
             }
-            match check_and_apply(&server_url, &machine_key).await {
+            match check_and_apply_with(&client, &server_url, &machine_key, &mut etag).await {
                 Ok(Some(exe)) => {
                     // The binary was swapped in place; re-exec so this running
                     // process (incl. the systemd-supervised one — execve keeps
@@ -317,6 +368,65 @@ mod tests {
             sha256sums_url("https://cctui.example.com"),
             "https://cctui.example.com/api/v1/daemon/binary/SHA256SUMS"
         );
+    }
+
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use tokio::sync::Mutex;
+
+    /// Accept exactly one connection, capture the raw request, reply with
+    /// `response`. A second connect attempt fails (listener dropped) — which
+    /// is how the 304 test proves no follow-up download happened.
+    async fn serve_once(response: &'static str) -> (String, Arc<Mutex<String>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let captured = Arc::new(Mutex::new(String::new()));
+        let sink = captured.clone();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 2048];
+            let n = sock.read(&mut buf).await.unwrap();
+            *sink.lock().await = String::from_utf8_lossy(&buf[..n]).into_owned();
+            sock.write_all(response.as_bytes()).await.unwrap();
+            sock.flush().await.unwrap();
+        });
+        (format!("http://{addr}"), captured)
+    }
+
+    #[tokio::test]
+    async fn conditional_fetch_sends_if_none_match_and_treats_304_as_none() {
+        let (url, req) = serve_once("HTTP/1.1 304 Not Modified\r\nETag: \"v1\"\r\n\r\n").await;
+        let mut etag = Some("\"v1\"".to_string());
+        let got = fetch_manifest_conditional(&client().unwrap(), &url, "key", &mut etag).await;
+        assert!(matches!(got, Ok(None)));
+        assert_eq!(etag.as_deref(), Some("\"v1\""));
+        assert!(req.lock().await.to_lowercase().contains("if-none-match: \"v1\""));
+    }
+
+    #[tokio::test]
+    async fn conditional_fetch_parses_200_and_stores_etag() {
+        let response = concat!(
+            "HTTP/1.1 200 OK\r\nETag: \"v2\"\r\nContent-Type: application/json\r\n",
+            "Content-Length: 31\r\n\r\n{\"version\":\"9.9.9\",\"assets\":[]}",
+        );
+        let (url, _req) = serve_once(response).await;
+        let mut etag = None;
+        let m = fetch_manifest_conditional(&client().unwrap(), &url, "key", &mut etag)
+            .await
+            .unwrap()
+            .expect("200 yields a manifest");
+        assert_eq!(m.version, "9.9.9");
+        assert_eq!(etag.as_deref(), Some("\"v2\""));
+    }
+
+    #[tokio::test]
+    async fn check_and_apply_skips_everything_on_304() {
+        // The mock serves a single 304; a version compare or download would
+        // need a second request and thus fail. Ok(None) proves neither ran.
+        let (url, _req) = serve_once("HTTP/1.1 304 Not Modified\r\nETag: \"v1\"\r\n\r\n").await;
+        let mut etag = Some("\"v1\"".to_string());
+        let out = check_and_apply_with(&client().unwrap(), &url, "key", &mut etag).await;
+        assert!(matches!(out, Ok(None)));
     }
 
     #[test]
