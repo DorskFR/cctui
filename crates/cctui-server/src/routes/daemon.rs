@@ -797,12 +797,13 @@ async fn handle_event(
             local_id,
             tempo,
             state: agent_state,
+            detail: _,
             activity,
             name,
             intent,
             model,
             effort,
-            ..
+            children,
         } => {
             // Persist the classifier signals + display metadata so
             // `list_sessions` can derive the "needs input" attention flag and
@@ -819,9 +820,13 @@ async fn handle_event(
                     intent: intent.as_deref(),
                     model: model.as_deref(),
                     effort: effort.as_deref(),
+                    children: &children,
                 },
             )
             .await?;
+        }
+        AdapterEvent::PrLink { local_id, children } => {
+            persist_pr_link_children(state, &local_id, &children).await?;
         }
         AdapterEvent::SessionModel { local_id, model } => {
             // Overwrite with the transcript/init-frame ground truth — the model
@@ -889,6 +894,7 @@ struct StatusSignals<'a> {
     intent: Option<&'a str>,
     model: Option<&'a str>,
     effort: Option<&'a str>,
+    children: &'a [cctui_proto::adapter::SessionChild],
 }
 
 /// Persist the latest Status signals onto the session row. `COALESCE` keeps
@@ -903,6 +909,7 @@ async fn update_status_signals(
     local_id: &str,
     s: StatusSignals<'_>,
 ) -> anyhow::Result<()> {
+    let children = serde_json::to_value(s.children).unwrap_or_else(|_| serde_json::json!([]));
     sqlx::query(
         "UPDATE sessions SET \
             tempo = COALESCE($2, tempo), \
@@ -911,7 +918,8 @@ async fn update_status_signals(
             session_name = COALESCE($5, session_name), \
             intent = COALESCE($6, intent), \
             model = COALESCE(model, $7), \
-            effort = COALESCE($8, effort) \
+            effort = COALESCE($8, effort), \
+            children = CASE WHEN jsonb_array_length($9) > 0 THEN $9 ELSE children END \
          WHERE id = $1",
     )
     .bind(local_id)
@@ -922,6 +930,31 @@ async fn update_status_signals(
     .bind(s.intent)
     .bind(s.model)
     .bind(s.effort)
+    .bind(children)
+    .execute(&state.pool)
+    .await?;
+    Ok(())
+}
+
+/// Fill the session row's `children` from a transcript `pr-link` line, but only
+/// when it has none: an authoritative `Status` snapshot (from `state.json`) must
+/// always win, so the transcript source is a gap-filler for sessions whose
+/// `state.json` carries no children.
+async fn persist_pr_link_children(
+    state: &AppState,
+    local_id: &str,
+    children: &[cctui_proto::adapter::SessionChild],
+) -> anyhow::Result<()> {
+    if children.is_empty() {
+        return Ok(());
+    }
+    let children = serde_json::to_value(children).unwrap_or_else(|_| serde_json::json!([]));
+    sqlx::query(
+        "UPDATE sessions SET children = $2 \
+         WHERE id = $1 AND (children IS NULL OR children = '[]'::jsonb)",
+    )
+    .bind(local_id)
+    .bind(children)
     .execute(&state.pool)
     .await?;
     Ok(())

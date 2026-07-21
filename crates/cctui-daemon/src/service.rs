@@ -18,7 +18,7 @@ pub(crate) const UNIT_NAME: &str = "cctui-daemon.service";
 pub(crate) const UNIT_TEMPLATE: &str =
     include_str!("../../../packaging/systemd/cctui-daemon.service");
 const PLIST_LABEL: &str = "dev.cctui.daemon";
-const PLIST_TEMPLATE: &str = include_str!("../../../packaging/launchd/com.cctui.daemon.plist");
+const PLIST_TEMPLATE: &str = include_str!("../../../packaging/launchd/dev.cctui.daemon.plist");
 
 pub fn install() -> Result<()> {
     if cfg!(target_os = "macos") {

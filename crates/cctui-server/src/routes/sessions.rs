@@ -6,11 +6,12 @@ use axum::{Extension, Json};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
+use cctui_proto::adapter::SessionChild;
 use cctui_proto::api::{
     ApiError, Label, MessageRequest, RegisterRequest, RegisterResponse, RenameRequest,
     SessionListItem, SessionListResponse,
 };
-use cctui_proto::classifier::{Bucket, ClassifyInput, PrStatus, classify};
+use cctui_proto::classifier::{Bucket, ClassifyInput, PrStatus, PrStatusCache, classify};
 use cctui_proto::models::{Attention, Liveness, Session, SessionStatus};
 
 use crate::auth::AuthContext;
@@ -245,25 +246,27 @@ pub fn resolve_status_liveness(
     )
 }
 
-/// Classify a session into its bucket from the persisted signals. PR-children
-/// ("Ready for review") are not wired server-side yet, so `children` is empty
-/// and the PR cache unused — the `Review` bucket therefore cannot arise today.
+/// Classify a session into its bucket from the persisted signals. `children`
+/// are the session's linked-PR references (`sessions.children`); the `Review`
+/// bucket arises when one of them has an OPEN PR awaiting attention per the
+/// `pr_cache` the GitHub connector maintains (empty cache degrades to no Review).
 pub fn bucket_from_signals(
     tempo: Option<&str>,
     agent_state: Option<&str>,
     activity: Option<&str>,
     soft_limit_blocked: Option<&str>,
+    children: &[SessionChild],
+    pr_cache: &std::collections::HashMap<String, PrStatus<'_>>,
 ) -> Bucket {
     let input = ClassifyInput {
         tempo,
         state: agent_state,
         activity,
-        children: &[],
+        children,
         q: None,
         soft_limit_blocked,
     };
-    let empty: std::collections::HashMap<String, PrStatus<'_>> = std::collections::HashMap::new();
-    classify(&input, &empty)
+    classify(&input, pr_cache)
 }
 
 /// The attention glyph is just the `Blocked` bucket surfaced as ✋ needs input.
@@ -365,6 +368,7 @@ pub async fn list_sessions(
                         tool_use_count: 0,
                         has_token_credentials: false,
                         intent: None,
+                        pr_links: Vec::new(),
                     },
                 )
             })
@@ -462,6 +466,7 @@ pub async fn list_sessions(
                 tool_use_count: 0,
                 has_token_credentials: false,
                 intent: None,
+                pr_links: Vec::new(),
             },
         ));
     }
@@ -655,10 +660,12 @@ async fn enrich_and_sort(
             Option<String>,
             i32,
             Option<String>,
+            serde_json::Value,
         );
         let rows: Vec<SignalRow> = sqlx::query_as(
             "SELECT id, tempo, agent_state, activity, session_name, model, effort, pinned, \
-                    soft_limit_reason, last_tool_at, last_tool_name, tool_use_count, intent \
+                    soft_limit_reason, last_tool_at, last_tool_name, tool_use_count, intent, \
+                    children \
              FROM sessions WHERE id = ANY($1)",
         )
         .bind(&session_ids)
@@ -673,6 +680,8 @@ async fn enrich_and_sort(
         for row in rows {
             by_session.insert(row.0.clone(), row);
         }
+        let pr_snapshot = state.pr_status_cache.snapshot();
+        let pr_cache = PrStatusCache::borrow_map(&pr_snapshot);
         for (_, s) in &mut with_ts {
             if let Some((
                 _,
@@ -688,14 +697,21 @@ async fn enrich_and_sort(
                 last_tool_name,
                 tool_use_count,
                 intent,
+                children,
             )) = by_session.remove(&s.id)
             {
+                let children: Vec<SessionChild> =
+                    serde_json::from_value(children).unwrap_or_default();
                 let bucket = bucket_from_signals(
                     tempo.as_deref(),
                     agent_state.as_deref(),
                     activity.as_deref(),
                     soft_limit_reason.as_deref(),
+                    &children,
+                    &pr_cache,
                 );
+                s.pr_links =
+                    children.iter().filter(|c| c.kind == "pr").map(|c| c.href.clone()).collect();
                 s.bucket = bucket;
                 s.attention = attention_from_bucket(bucket);
                 // Worker exited but resumable on reply (CCT-228). The adapter
@@ -1180,6 +1196,7 @@ pub async fn search_sessions(
                     tool_use_count: 0,
                     has_token_credentials: false,
                     intent: None,
+                    pr_links: Vec::new(),
                 },
             )
         })
@@ -1363,6 +1380,7 @@ pub async fn get_session(
                 tool_use_count: 0,
                 has_token_credentials: false,
                 intent: None,
+                pr_links: Vec::new(),
             };
             return Ok(Json(item));
         }
@@ -1434,6 +1452,7 @@ pub async fn get_session(
         tool_use_count: 0,
         has_token_credentials: false,
         intent: None,
+        pr_links: Vec::new(),
     };
     Ok(Json(item))
 }
@@ -2399,8 +2418,8 @@ fn normalize_last_message(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        SqlParam, attention_from_bucket, bucket_from_signals, cap_unread, compile_node,
-        derive_liveness, normalize_last_message,
+        Bucket, SessionChild, SqlParam, attention_from_bucket, bucket_from_signals, cap_unread,
+        compile_node, derive_liveness, normalize_last_message,
     };
     use cctui_proto::models::{Attention, Liveness};
     use chrono::{Duration, Utc};
@@ -2552,7 +2571,14 @@ mod tests {
         agent_state: Option<&str>,
         activity: Option<&str>,
     ) -> Option<Attention> {
-        attention_from_bucket(bucket_from_signals(tempo, agent_state, activity, None))
+        attention_from_bucket(bucket_from_signals(
+            tempo,
+            agent_state,
+            activity,
+            None,
+            &[],
+            &std::collections::HashMap::new(),
+        ))
     }
 
     #[test]
@@ -2597,21 +2623,68 @@ mod tests {
         assert_eq!(attention_from_signals(None, None, None), None);
     }
 
+    fn bucket4(
+        tempo: Option<&str>,
+        agent_state: Option<&str>,
+        activity: Option<&str>,
+        soft_limit: Option<&str>,
+    ) -> Bucket {
+        bucket_from_signals(
+            tempo,
+            agent_state,
+            activity,
+            soft_limit,
+            &[],
+            &std::collections::HashMap::new(),
+        )
+    }
+
     #[test]
     fn bucket_reflects_signals() {
         use cctui_proto::classifier::Bucket;
-        assert_eq!(
-            bucket_from_signals(Some("blocked"), Some("working"), None, None),
-            Bucket::Blocked
-        );
-        assert_eq!(bucket_from_signals(Some("active"), None, None, None), Bucket::Working);
-        assert_eq!(bucket_from_signals(None, Some("stopped"), None, None), Bucket::Done);
-        assert_eq!(bucket_from_signals(None, None, Some("success"), None), Bucket::Done);
+        assert_eq!(bucket4(Some("blocked"), Some("working"), None, None), Bucket::Blocked);
+        assert_eq!(bucket4(Some("active"), None, None, None), Bucket::Working);
+        assert_eq!(bucket4(None, Some("stopped"), None, None), Bucket::Done);
+        assert_eq!(bucket4(None, None, Some("success"), None), Bucket::Done);
         // CCT-488: a durable soft-limit block forces Blocked even over an
         // otherwise-Done/active session.
         assert_eq!(
-            bucket_from_signals(Some("active"), None, Some("success"), Some("rate-limited")),
+            bucket4(Some("active"), None, Some("success"), Some("rate-limited")),
             Bucket::Blocked
+        );
+    }
+
+    #[test]
+    fn pr_children_open_review_lands_in_review_bucket() {
+        use cctui_proto::classifier::{OwnedPrStatus, PrStatusCache};
+        let children = [SessionChild {
+            id: "1".into(),
+            href: "https://github.com/o/r/pull/1".into(),
+            kind: "pr".into(),
+        }];
+        let cache = PrStatusCache::new();
+        cache.upsert(
+            "https://github.com/o/r/pull/1",
+            OwnedPrStatus {
+                state: "OPEN".into(),
+                checks_passed: 3,
+                checks_failed: 1,
+                checks_pending: 0,
+                review: "REVIEW_REQUIRED".into(),
+            },
+        );
+        let snap = cache.snapshot();
+        let map = PrStatusCache::borrow_map(&snap);
+        assert_eq!(
+            bucket_from_signals(None, Some("working"), None, None, &children, &map),
+            Bucket::Review
+        );
+        cache.remove("https://github.com/o/r/pull/1");
+        let snap2 = cache.snapshot();
+        let map2 = PrStatusCache::borrow_map(&snap2);
+        assert_eq!(
+            bucket_from_signals(None, Some("working"), None, None, &children, &map2),
+            Bucket::Working
         );
     }
 

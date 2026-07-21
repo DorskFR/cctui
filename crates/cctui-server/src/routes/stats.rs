@@ -167,6 +167,8 @@ pub async fn session_stats(
                 agent_state.as_deref(),
                 activity.as_deref(),
                 soft_limit_reason.as_deref(),
+                &[],
+                &std::collections::HashMap::new(),
             ))
             .is_some()
         })

@@ -357,13 +357,41 @@ pub(super) fn parse_line(local_id: &str, line: &Value, out: &mut Vec<AdapterEven
                 }),
             });
         }
+        "pr-link" => {
+            if let Some(child) = pr_link_child(line) {
+                out.push(AdapterEvent::PrLink {
+                    local_id: local_id.to_owned(),
+                    children: vec![child],
+                });
+            }
+        }
         _ => {
-            // attachment, permission-mode, worktree-state, pr-link,
-            // ai-title, agent-name, agent-setting, last-prompt — silently
-            // skipped for v1. Specific carriers may be added later as
-            // their semantics become useful to the UI.
+            // attachment, permission-mode, worktree-state, ai-title,
+            // agent-name, agent-setting, last-prompt — silently skipped for v1.
+            // Specific carriers may be added later as their semantics become
+            // useful to the UI.
         }
     }
+}
+
+/// Extract a linked-PR [`SessionChild`] from a transcript `pr-link` line. The
+/// carrier is tolerant of shape drift: the PR fields may sit at the top level
+/// or nested under `pr`/`child`. A line with no resolvable `href` is dropped.
+fn pr_link_child(line: &Value) -> Option<cctui_proto::adapter::SessionChild> {
+    let obj = line.get("pr").or_else(|| line.get("child")).unwrap_or(line);
+    let href = obj
+        .get("href")
+        .or_else(|| obj.get("url"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())?
+        .to_owned();
+    let id = obj
+        .get("id")
+        .and_then(|v| v.as_str().map(str::to_owned).or_else(|| v.as_i64().map(|n| n.to_string())))
+        .or_else(|| obj.get("number").and_then(|v| v.as_i64().map(|n| n.to_string())))
+        .unwrap_or_else(|| href.clone());
+    let kind = obj.get("kind").and_then(Value::as_str).unwrap_or("pr").to_owned();
+    Some(cctui_proto::adapter::SessionChild { id, href, kind })
 }
 
 fn parse_assistant(local_id: &str, line: &Value, out: &mut Vec<AdapterEvent>) {
@@ -772,6 +800,58 @@ mod tests {
             f.write_all(l.as_bytes()).unwrap();
             f.write_all(b"\n").unwrap();
         }
+    }
+
+    #[test]
+    fn pr_link_line_emits_pr_child() {
+        let mut out = Vec::new();
+        parse_line(
+            "sess1",
+            &json!({
+                "type": "pr-link",
+                "id": "1972",
+                "href": "https://github.com/o/r/pull/1972",
+                "kind": "pr"
+            }),
+            &mut out,
+        );
+        match out.as_slice() {
+            [AdapterEvent::PrLink { local_id, children }] => {
+                assert_eq!(local_id, "sess1");
+                assert_eq!(children.len(), 1);
+                assert_eq!(children[0].href, "https://github.com/o/r/pull/1972");
+                assert_eq!(children[0].kind, "pr");
+            }
+            other => panic!("expected one PrLink event, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pr_link_nested_url_and_number_shape() {
+        let mut out = Vec::new();
+        parse_line(
+            "sess1",
+            &json!({
+                "type": "pr-link",
+                "pr": { "number": 42, "url": "https://github.com/o/r/pull/42" }
+            }),
+            &mut out,
+        );
+        match out.as_slice() {
+            [AdapterEvent::PrLink { children, .. }] => {
+                assert_eq!(children[0].id, "42");
+                assert_eq!(children[0].href, "https://github.com/o/r/pull/42");
+                assert_eq!(children[0].kind, "pr");
+            }
+            other => panic!("expected one PrLink event, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pr_link_without_href_is_dropped() {
+        let mut out = Vec::new();
+        parse_line("sess1", &json!({ "type": "pr-link", "id": "x" }), &mut out);
+        assert!(out.is_empty());
     }
 
     #[test]

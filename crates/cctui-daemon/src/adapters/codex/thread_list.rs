@@ -204,14 +204,17 @@ pub fn is_orphan_subagent(entry: &ThreadEntry) -> bool {
 /// a first user `Message` separately; here we record cwd + source so the list
 /// row renders like a claude-observed session.
 fn started_meta(entry: &ThreadEntry) -> SessionMeta {
-    SessionMeta {
-        working_dir: entry.cwd.clone(),
-        parent_local_id: entry.parent_id.clone(),
-        extra: json!({
-            "source": format!("codex-thread-list:{}", entry.source.as_deref().unwrap_or("unknown")),
-            "observed_at": entry.updated_at,
-        }),
+    let parent_local_id = entry.parent_id.as_ref().map(|parent| {
+        crate::dispatch_codex::dispatch_session_for(parent).unwrap_or_else(|| parent.clone())
+    });
+    let mut extra = json!({
+        "source": format!("codex-thread-list:{}", entry.source.as_deref().unwrap_or("unknown")),
+        "observed_at": entry.updated_at,
+    });
+    if entry.source.as_deref().is_some_and(|s| s.starts_with("subAgent")) {
+        extra["subagent"] = json!(true);
     }
+    SessionMeta { working_dir: entry.cwd.clone(), parent_local_id, extra }
 }
 
 #[derive(Debug, Clone)]
@@ -846,6 +849,25 @@ mod tests {
         assert!(!is_orphan_subagent(&entry));
         entry.source = None;
         assert!(!is_orphan_subagent(&entry));
+    }
+
+    #[test]
+    fn started_meta_remaps_dispatched_parent_and_flags_subagent() {
+        let exec = "019f832c-6301-7053-8000-0000000000d1";
+        crate::dispatch_codex::register_dispatch_thread(exec, "DISPATCH-SESS-1");
+        let entry = ThreadEntry {
+            id: "child".into(),
+            parent_id: Some(exec.into()),
+            updated_at: None,
+            preview: None,
+            name: None,
+            cwd: Some("/repo".into()),
+            source: Some("subAgent".into()),
+            status: None,
+        };
+        let meta = started_meta(&entry);
+        assert_eq!(meta.parent_local_id.as_deref(), Some("DISPATCH-SESS-1"));
+        assert_eq!(meta.extra["subagent"], json!(true));
     }
 
     #[test]

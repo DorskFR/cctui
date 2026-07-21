@@ -188,4 +188,9 @@ has_token_credentials: boolean,
  * intent (`sessions.intent`), surfaced as a secondary line / tooltip on the
  * card. `None` when the session carries no intent.
  */
-intent: string | null, };
+intent: string | null, 
+/**
+ * Linked-PR hrefs from `sessions.children` (CCT-595). Drives the PR link
+ * shown on the session card / TUI line and the `Ready for review` bucket.
+ */
+pr_links: Array<string>, };

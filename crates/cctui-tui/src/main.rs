@@ -688,6 +688,7 @@ fn handle_server_event(app: &mut App, event: ServerEvent) {
                     labels: Vec::new(),
                     last_heartbeat: None,
                     intent: None,
+                    pr_links: Vec::new(),
                 });
                 app.update_aggregates();
             }

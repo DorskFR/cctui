@@ -19,21 +19,25 @@ afterEach(async () => {
 	vi.restoreAllMocks();
 });
 
+function options() {
+	return document.querySelectorAll<HTMLButtonElement>('[role="option"]');
+}
+
 async function renderSearchBar() {
 	component = mount(FilterSearchBar, {
 		target: document.body,
 		props: { schema, showChips: false }
 	});
 	await tick();
-	const input = document.querySelector<HTMLInputElement>('.fi__input');
+	const input = document.querySelector<HTMLInputElement>('input');
 	expect(input).not.toBeNull();
 	input!.focus();
-	await vi.waitFor(() => expect(document.querySelectorAll('.fi__opt')).toHaveLength(3));
+	await vi.waitFor(() => expect(options()).toHaveLength(3));
 	return input!;
 }
 
 function selectedOption() {
-	return document.querySelector<HTMLButtonElement>('.fi__opt[aria-selected="true"]');
+	return document.querySelector<HTMLButtonElement>('[role="option"][aria-selected="true"]');
 }
 
 describe('cctui FilterSearchBar interaction baseline', () => {
@@ -63,9 +67,9 @@ describe('cctui FilterSearchBar interaction baseline', () => {
 			value: scrollIntoView
 		});
 		await renderSearchBar();
-		const options = document.querySelectorAll<HTMLButtonElement>('.fi__opt');
+		const opts = options();
 
-		options[1].dispatchEvent(new MouseEvent('mouseenter'));
+		opts[1].dispatchEvent(new MouseEvent('mouseenter'));
 		await tick();
 
 		expect(selectedOption()?.textContent).toContain('Model');
