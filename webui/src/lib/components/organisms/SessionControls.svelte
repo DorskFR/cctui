@@ -217,22 +217,15 @@
 		align-self: center;
 		flex: none;
 	}
-	/* Search fills the gap between the title and the right-hand controls.
-	   display:contents promotes the FilterSearchBar's bar and chips to sibling
-	   flex items, so the chips wrap onto their own full-width row instead of
-	   growing the first row — opening/typing must never move the input or the
-	   surrounding controls (CCT-589 follow-up). */
-	.bar :global(.search-box) {
-		display: contents;
-	}
-	.bar :global(.search-box .fi) {
+	/* Search fills the gap between the title and the right-hand controls. Our
+	   own wrapper is the flex item and is sized directly, so the FilterSearchBar
+	   root fills it (block, width:100%) and its below-bar chips stack onto their
+	   own row within the wrapper — opening/typing never moves the input or the
+	   surrounding controls (CCT-589 follow-up). Sized here, not via any library
+	   internal class, so a tsumikit internal-class rename can't break it. */
+	.search-box {
 		flex: 1 1 0;
 		min-width: 0;
-	}
-	.bar :global(.search-box .fsb__chips) {
-		flex: 0 0 100%;
-		order: 5;
-		margin-top: 0;
 	}
 	.bar :global(.toolbar-new) {
 		flex: none;
@@ -275,17 +268,9 @@
 			height: 0;
 			margin-top: calc(-1 * var(--sp-2));
 		}
-		/* Row 2: search takes only the leftover space (basis:0 so it never demands
-		   its intrinsic input width) and shrinks freely; the tools follow on the
-		   right, all on one row. The `.bar > *` order reset above can't reach the
-		   display:contents children, so they're ordered here explicitly. */
-		.bar :global(.search-box .fi) {
-			order: 2;
-			flex: 1 1 0;
-			min-width: 0;
-		}
-		.bar :global(.search-box .fsb__chips) {
-			order: 5;
-		}
+		/* Row 2: search takes only the leftover space (flex:1 1 0 from the base
+		   rule, so it never demands its intrinsic input width) and shrinks freely;
+		   the tools follow on the right, all on one row. It picks up order:2 from
+		   the `.bar > *` reset above as a real (non-contents) flex item. */
 	}
 </style>

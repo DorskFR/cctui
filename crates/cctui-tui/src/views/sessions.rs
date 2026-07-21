@@ -140,11 +140,32 @@ fn session_line(s: &SessionListItem) -> ListItem<'static> {
         ));
     }
 
+    for href in &s.pr_links {
+        spans.push(Span::styled(format!("  ⇄ {}", pr_ref(href)), theme::BRANCH));
+    }
+
     ListItem::new(Line::from(spans))
 }
 
 fn basename(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
+}
+
+/// Compact PR reference for a session row: `owner/repo#123` from a GitHub PR
+/// URL, falling back to the raw href when the shape is unfamiliar.
+fn pr_ref(href: &str) -> String {
+    let tail = href.trim_end_matches('/');
+    let parts: Vec<&str> = tail.split('/').collect();
+    if let Some(pos) = parts.iter().position(|p| *p == "pull" || *p == "pulls") {
+        if let (Some(owner), Some(repo), Some(num)) = (
+            pos.checked_sub(2).and_then(|i| parts.get(i)),
+            pos.checked_sub(1).and_then(|i| parts.get(i)),
+            parts.get(pos + 1),
+        ) {
+            return format!("{owner}/{repo}#{num}");
+        }
+    }
+    tail.to_string()
 }
 
 fn format_uptime(secs: i64) -> String {

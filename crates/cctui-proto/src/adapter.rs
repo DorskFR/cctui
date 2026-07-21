@@ -175,6 +175,13 @@ pub enum AdapterEvent {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         children: Vec<SessionChild>,
     },
+    /// Linked-PR children from a transcript `pr-link` line: a fallback source
+    /// of [`SessionChild`]. The server fills the session row only when it has
+    /// no children, so an authoritative `Status` snapshot always wins.
+    PrLink {
+        local_id: String,
+        children: Vec<SessionChild>,
+    },
     /// Per-assistant-message token usage extracted from the transcript's
     /// `message.usage` block. Idempotent on the server side via
     /// `UNIQUE (session_id, message_id)`. Cache fields are `0` when the

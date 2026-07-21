@@ -195,10 +195,38 @@ fn consume_git_flag(s: &str) -> Option<&str> {
     None
 }
 
+/// Match a keyword phrase against a segment's argv tokens (case-insensitive):
+/// the keyword matches only as a contiguous run of *whole* shlex tokens, so
+/// `git commit` never matches `git commit-graph` nor `curl` match `curlx`.
+/// Falls back to substring when either side cannot be tokenized.
+fn phrase_matches(match_str: &str, keyword: &str) -> bool {
+    let hay_lower = match_str.to_ascii_lowercase();
+    let kw_lower = keyword.to_ascii_lowercase();
+    let (Some(hay), Some(needle)) = (shlex::split(&hay_lower), shlex::split(&kw_lower)) else {
+        return hay_lower.contains(&kw_lower);
+    };
+    if needle.is_empty() {
+        return false;
+    }
+    hay.windows(needle.len()).any(|w| w == needle.as_slice())
+}
+
 /// Check a single match string against allowed/disallowed keyword lists.
-/// Returns `(is_allowed, reason)`.
-fn check_single(match_str: &str, allowed: &[String], disallowed: &[String]) -> (bool, String) {
-    let contains = |kw: &str| match_str.to_ascii_lowercase().contains(&kw.to_ascii_lowercase());
+/// Returns `(is_allowed, reason)`. When `token_match` is set, keywords are
+/// matched as argv token phrases; otherwise plain substring (MCP payloads).
+fn check_single(
+    match_str: &str,
+    allowed: &[String],
+    disallowed: &[String],
+    token_match: bool,
+) -> (bool, String) {
+    let contains = |kw: &str| {
+        if token_match {
+            phrase_matches(match_str, kw)
+        } else {
+            match_str.to_ascii_lowercase().contains(&kw.to_ascii_lowercase())
+        }
+    };
     let has_wildcard = |v: &[String]| v.iter().any(|s| s == "*");
 
     if !disallowed.is_empty() {
@@ -280,7 +308,7 @@ pub fn check_rules(
         let cmd = tool_input.get("command").and_then(Value::as_str).unwrap_or("");
         for seg in split_bash_segments(cmd) {
             let match_str = format!("Bash {}", normalize_bash_segment(&seg));
-            let (ok, reason) = check_single(&match_str, &allowed, &disallowed);
+            let (ok, reason) = check_single(&match_str, &allowed, &disallowed, true);
             if !ok {
                 return (false, reason);
             }
@@ -289,5 +317,75 @@ pub fn check_rules(
     }
 
     let match_str = build_match_string(tool, tool_input);
-    check_single(&match_str, allowed, disallowed)
+    let token_match = !tool.starts_with("mcp__");
+    check_single(&match_str, allowed, disallowed, token_match)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn bash(cmd: &str, allowed: &[&str], disallowed: &[&str]) -> (bool, String) {
+        let allowed: Vec<String> = allowed.iter().map(ToString::to_string).collect();
+        let disallowed: Vec<String> = disallowed.iter().map(ToString::to_string).collect();
+        check_rules("Bash", &json!({ "command": cmd }), &allowed, &disallowed)
+    }
+
+    #[test]
+    fn allow_phrase_does_not_match_longer_token() {
+        assert!(bash("git commit -m x", &["git commit"], &[]).0);
+        assert!(!bash("git commit-graph write", &["git commit"], &[]).0);
+    }
+
+    #[test]
+    fn allow_word_does_not_match_longer_token() {
+        assert!(bash("curl -s http://x", &["curl"], &[]).0);
+        assert!(!bash("curlx --run", &["curl"], &[]).0);
+    }
+
+    #[test]
+    fn multi_word_phrase_prefix_matches() {
+        assert!(bash("npm run build --prod", &["npm run build"], &[]).0);
+        assert!(!bash("npm run build-storybook", &["npm run build"], &[]).0);
+    }
+
+    #[test]
+    fn phrase_matches_mid_segment_run() {
+        assert!(bash("bash git commit -m x", &["git commit"], &[]).0);
+    }
+
+    #[test]
+    fn case_insensitive_matching_preserved() {
+        assert!(bash("GIT COMMIT -m x", &["git commit"], &[]).0);
+        assert!(bash("git commit -m x", &["GIT COMMIT"], &[]).0);
+    }
+
+    #[test]
+    fn disallow_phrase_token_prefix() {
+        assert!(!bash("git push origin main", &[], &["git push"]).0);
+        assert!(bash("git push-changes", &[], &["git push"]).0);
+    }
+
+    #[test]
+    fn mcp_matching_stays_substring() {
+        let input = json!({ "path": "/tmp/curlx" });
+        let (ok, _) = check_rules(
+            "mcp__fs__read",
+            &input,
+            &["mcp__fs__read".to_string()],
+            &[],
+        );
+        assert!(ok);
+        let (denied, _) = check_rules("mcp__fs__read", &input, &[], &["curlx".to_string()]);
+        assert!(!denied);
+    }
+
+    #[test]
+    fn phrase_matches_helper() {
+        assert!(phrase_matches("Bash git commit -m x", "git commit"));
+        assert!(!phrase_matches("Bash git commit-graph", "git commit"));
+        assert!(!phrase_matches("Bash curlx", "curl"));
+        assert!(phrase_matches("Bash CURL -s", "curl"));
+    }
 }

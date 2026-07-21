@@ -6,7 +6,7 @@ use tokio_util::sync::CancellationToken;
 use cctui_daemon::client::ServerClient;
 use cctui_daemon::config::Config;
 use cctui_daemon::supervisor::Supervisor;
-use cctui_daemon::{adapters, runtime, selfupdate, service};
+use cctui_daemon::{adapters, runlock, runtime, selfupdate, service};
 
 #[derive(Parser)]
 #[command(name = "cctui-daemon", about = "Per-machine agent supervisor for cctui", version)]
@@ -154,6 +154,7 @@ fn auto_update_enabled(flag: bool) -> bool {
 /// loop, then run the supervisor until shutdown (`Cmd::Run`).
 async fn run_daemon(path: &std::path::Path, no_auto_update: bool) -> anyhow::Result<()> {
     let cfg = Config::load_or_env(&path.to_path_buf())?;
+    let _run_lock = runlock::acquire()?;
     // Record this process as the running service so `status` /
     // `service status` can report the version actually serving.
     runtime::record();

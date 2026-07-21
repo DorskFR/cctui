@@ -161,6 +161,15 @@
 	});
 	const stale = $derived(isStaleWorking(s, now));
 	const act = $derived(toolActivity(s, now));
+	const prLinks = $derived(
+		(s.pr_links ?? []).map((href) => {
+			const parts = href.replace(/\/+$/, '').split('/');
+			const i = parts.findIndex((p) => p === 'pull' || p === 'pulls');
+			const label =
+				i >= 2 && parts[i + 1] ? `${parts[i - 2]}/${parts[i - 1]}#${parts[i + 1]}` : href;
+			return { href, label };
+		})
+	);
 	const livenessClass = $derived(
 		s.hibernated
 			? 'dot-hibernated'
@@ -451,6 +460,16 @@
 					     as width shrinks (see WorkingDir). In detailed cards it keeps its
 					     natural width (no shrink) and the footer wraps; elsewhere it flexes. -->
 					<WorkingDir path={s.working_dir} full={detailed} style={detailed ? '' : 'max-width:22rem'} />
+					{#each prLinks as pr (pr.href)}
+						<a
+							class="pr-link"
+							href={pr.href}
+							target="_blank"
+							rel="noopener noreferrer"
+							title={pr.href}
+							onclick={(e) => e.stopPropagation()}>⇄ {pr.label}</a
+						>
+					{/each}
 					<Cluster wrap={false} gap="var(--sp-2)" style="margin-left:auto;flex:none">
 						{#if draft}
 							{#if s.model}<Text tone="muted" size="xs" style="flex:none;white-space:nowrap">{modelShort(s.model)}{s.effort ? ` · ${s.effort}` : ''}</Text>{/if}
@@ -803,5 +822,15 @@
 		color: var(--text);
 		border-left: 2px solid var(--accent, #88c0d0);
 		padding-left: var(--sp-2);
+	}
+	.pr-link {
+		flex: none;
+		font-size: var(--fs-xs);
+		color: var(--accent, #88c0d0);
+		text-decoration: none;
+		white-space: nowrap;
+	}
+	.pr-link:hover {
+		text-decoration: underline;
 	}
 </style>

@@ -1034,6 +1034,7 @@ function optimisticDispatchCard(
     labels: [],
     last_heartbeat: null,
     intent: null,
+    pr_links: [],
     account_name: body.account ?? null,
     unread_count: 0,
     activity_detail: null,

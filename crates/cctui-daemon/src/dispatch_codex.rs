@@ -20,8 +20,9 @@
 //! `RESULT_FILE` verdict the claude path's callback trap consumes, so the
 //! worker entrypoint's result-callback machinery is unchanged.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::process::Stdio;
+use std::sync::{LazyLock, Mutex};
 
 use anyhow::Context;
 use serde_json::{Value, json};
@@ -29,6 +30,46 @@ use serde_json::{Value, json};
 /// Default result-file path the worker entrypoint's callback trap reads
 /// (`RESULT_FILE`, matching `deploy/worker-entrypoint.sh`).
 const DEFAULT_RESULT_FILE: &str = "/tmp/cctui-result.json";
+
+/// Map `codex-exec rollout thread id → dispatch SESSION_ID`. The codex adapters
+/// consult it so a dispatched exec thread's subagents nest under the registered
+/// dispatch session rather than surfacing as top-level raw-UUID cards.
+static DISPATCH_THREADS: LazyLock<Mutex<HashMap<String, String>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn normalize_thread_id(raw: &str) -> String {
+    raw.trim().to_ascii_lowercase()
+}
+
+pub fn register_dispatch_thread(rollout_id: &str, session_id: &str) {
+    let key = normalize_thread_id(rollout_id);
+    if key.is_empty() || session_id.is_empty() {
+        return;
+    }
+    if let Ok(mut map) = DISPATCH_THREADS.lock() {
+        map.insert(key, session_id.to_owned());
+    }
+}
+
+#[must_use]
+pub fn dispatch_session_for(rollout_id: &str) -> Option<String> {
+    let key = normalize_thread_id(rollout_id);
+    DISPATCH_THREADS.lock().ok().and_then(|map| map.get(&key).cloned())
+}
+
+fn register_thread_started_line(session_id: Option<&str>, line: &str) {
+    let Some(session_id) = session_id else { return };
+    let line = line.trim();
+    if line.is_empty() {
+        return;
+    }
+    let Ok(ev) = serde_json::from_str::<Value>(line) else { return };
+    if ev.get("type").and_then(Value::as_str) == Some("thread.started")
+        && let Some(tid) = ev.get("thread_id").and_then(Value::as_str).filter(|s| !s.is_empty())
+    {
+        register_dispatch_thread(tid, session_id);
+    }
+}
 
 /// Adapter selectors that route a dispatch through this codex runner. Everything
 /// else (absent, `claude`, `claude-code`) stays on the claude-code path.
@@ -196,24 +237,45 @@ impl CodexDispatch {
     }
 
     async fn run_inner(&self, mut cmd: tokio::process::Command) -> anyhow::Result<CodexOutcome> {
-        let child = cmd.spawn().context("spawning codex exec")?;
-        let fut = child.wait_with_output();
-        let output = match tokio::time::timeout(
-            std::time::Duration::from_secs(self.timeout_secs),
-            fut,
-        )
-        .await
-        {
-            Ok(res) => res.context("awaiting codex exec")?,
-            Err(_) => {
-                return Ok(CodexOutcome::failed(format!(
-                    "codex exec exceeded {}s timeout",
-                    self.timeout_secs
-                )));
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+
+        let mut child = cmd.spawn().context("spawning codex exec")?;
+        let stdout = child.stdout.take().context("codex exec stdout missing")?;
+        let mut stderr_pipe = child.stderr.take();
+        let session_id = std::env::var("SESSION_ID").ok().filter(|s| !s.is_empty());
+
+        let work = async {
+            let mut lines = BufReader::new(stdout).lines();
+            let mut buf = String::new();
+            while let Some(line) = lines.next_line().await? {
+                register_thread_started_line(session_id.as_deref(), &line);
+                buf.push_str(&line);
+                buf.push('\n');
             }
+            let status = child.wait().await.context("awaiting codex exec")?;
+            let mut stderr = String::new();
+            if let Some(mut pipe) = stderr_pipe.take() {
+                let _ = pipe.read_to_string(&mut stderr).await;
+            }
+            anyhow::Ok((buf, status, stderr))
         };
-        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        let (stdout, status, stderr) =
+            match tokio::time::timeout(std::time::Duration::from_secs(self.timeout_secs), work)
+                .await
+            {
+                Ok(res) => res?,
+                Err(_) => {
+                    return Ok(CodexOutcome::failed(format!(
+                        "codex exec exceeded {}s timeout",
+                        self.timeout_secs
+                    )));
+                }
+            };
         let mut outcome = parse_events(&stdout);
+        if let (Some(sid), Some(tid)) = (session_id.as_deref(), outcome.thread_id.as_deref()) {
+            register_dispatch_thread(tid, sid);
+        }
         // Fall back to codex's own last-message file when the stream carried no
         // agent_message (e.g. output buffering): it is the authoritative final
         // answer codex `-o` writes.
@@ -223,11 +285,10 @@ impl CodexDispatch {
         {
             text.trim().clone_into(&mut outcome.message);
         }
-        if !output.status.success() && outcome.status == "success" {
-            let stderr = String::from_utf8_lossy(&output.stderr);
+        if !status.success() && outcome.status == "success" {
             outcome = CodexOutcome::failed(format!(
                 "codex exec exited with {}: {}",
-                output.status,
+                status,
                 stderr.trim()
             ));
         }
@@ -265,6 +326,9 @@ pub struct CodexOutcome {
     pub message: String,
     /// The `turn.completed` token usage object, if the stream carried one.
     pub usage: Option<Value>,
+    /// The rollout thread id from `thread.started`, linked to the dispatch
+    /// `SESSION_ID` so subagent threads nest under this run.
+    pub thread_id: Option<String>,
 }
 
 impl CodexOutcome {
@@ -274,6 +338,7 @@ impl CodexOutcome {
             error: Some(reason.into()),
             message: String::new(),
             usage: None,
+            thread_id: None,
         }
     }
 }
@@ -294,6 +359,7 @@ pub fn parse_events(stdout: &str) -> CodexOutcome {
     let mut message = String::new();
     let mut usage: Option<Value> = None;
     let mut error: Option<String> = None;
+    let mut thread_id: Option<String> = None;
     for line in stdout.lines() {
         let line = line.trim();
         if line.is_empty() {
@@ -303,6 +369,13 @@ pub fn parse_events(stdout: &str) -> CodexOutcome {
             continue;
         };
         match ev.get("type").and_then(Value::as_str) {
+            Some("thread.started") => {
+                if let Some(tid) =
+                    ev.get("thread_id").and_then(Value::as_str).filter(|s| !s.is_empty())
+                {
+                    thread_id = Some(tid.to_owned());
+                }
+            }
             Some("item.completed") => {
                 let item = ev.get("item");
                 let is_msg = item
@@ -342,10 +415,16 @@ pub fn parse_events(stdout: &str) -> CodexOutcome {
         }
     }
     match error {
-        Some(reason) => {
-            CodexOutcome { status: "failed".to_owned(), error: Some(reason), message, usage }
+        Some(reason) => CodexOutcome {
+            status: "failed".to_owned(),
+            error: Some(reason),
+            message,
+            usage,
+            thread_id,
+        },
+        None => {
+            CodexOutcome { status: "success".to_owned(), error: None, message, usage, thread_id }
         }
-        None => CodexOutcome { status: "success".to_owned(), error: None, message, usage },
     }
 }
 
@@ -495,7 +574,44 @@ mod tests {
         assert_eq!(outcome.status, "success");
         assert_eq!(outcome.message, "All done.");
         assert!(outcome.error.is_none());
+        assert_eq!(outcome.thread_id.as_deref(), Some("019f52d5"));
         assert_eq!(outcome.usage.unwrap()["output_tokens"], json!(5));
+    }
+
+    #[test]
+    fn parse_events_thread_started_captures_thread_id() {
+        let stream = concat!(
+            "{\"type\":\"thread.started\",\"thread_id\":\"019F832C-6301-7053-8000-000000000001\"}\n",
+            "{\"type\":\"turn.completed\",\"usage\":{}}\n",
+        );
+        assert_eq!(
+            parse_events(stream).thread_id.as_deref(),
+            Some("019F832C-6301-7053-8000-000000000001")
+        );
+    }
+
+    #[test]
+    fn dispatch_registry_maps_rollout_to_session_case_insensitively() {
+        register_dispatch_thread("019F832C-6301-7053-8000-000000000ABC", "SESSION-REG-1");
+        assert_eq!(
+            dispatch_session_for("019f832c-6301-7053-8000-000000000abc").as_deref(),
+            Some("SESSION-REG-1")
+        );
+        assert_eq!(dispatch_session_for("no-such-thread"), None);
+    }
+
+    #[test]
+    fn register_thread_started_line_records_live_mapping() {
+        register_thread_started_line(
+            Some("SESSION-LIVE-1"),
+            "{\"type\":\"thread.started\",\"thread_id\":\"019f832c-6301-7053-8000-00000000000f\"}",
+        );
+        assert_eq!(
+            dispatch_session_for("019f832c-6301-7053-8000-00000000000f").as_deref(),
+            Some("SESSION-LIVE-1")
+        );
+        register_thread_started_line(None, "{\"type\":\"thread.started\",\"thread_id\":\"x\"}");
+        assert_eq!(dispatch_session_for("x"), None);
     }
 
     #[test]
@@ -534,6 +650,7 @@ mod tests {
             error: None,
             message: "done".to_owned(),
             usage: Some(json!({"input_tokens": 1})),
+            thread_id: None,
         };
         let r = d.result_json(&outcome);
         assert_eq!(r["task_id"], json!("T-1"));

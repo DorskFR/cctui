@@ -297,6 +297,10 @@ pub struct SessionListItem {
     /// card. `None` when the session carries no intent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intent: Option<String>,
+    /// Linked-PR hrefs from `sessions.children` (CCT-595). Drives the PR link
+    /// shown on the session card / TUI line and the `Ready for review` bucket.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pr_links: Vec<String>,
 }
 
 /// A reusable, user-defined colored label (CCT-360).

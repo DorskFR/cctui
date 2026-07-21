@@ -175,18 +175,22 @@ impl LogTail {
                 .and_then(|m| m.modified().ok())
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
-            // Emit SessionStarted with no cwd yet; we'll update once we
-            // see a line that carries one. Working dir refinement can
-            // happen in a follow-up.
+            let (source, parent_raw) = rollout_subagent_link(&path);
+            let mut extra = json!({"source": "codex-log-tail", "observed_at": observed_at});
+            let mut parent_local_id = None;
+            if source.as_deref().is_some_and(|s| s.starts_with("subAgent")) {
+                // A subagent rollout that can't resolve a parent can never nest;
+                // skip it so this path matches the inventory's orphan skip.
+                let Some(parent) = parent_raw else { return };
+                parent_local_id =
+                    Some(crate::dispatch_codex::dispatch_session_for(&parent).unwrap_or(parent));
+                extra["subagent"] = json!(true);
+            }
             let _ = self
                 .events
                 .send(AdapterEvent::SessionStarted {
                     local_id: local_id.clone(),
-                    meta: SessionMeta {
-                        working_dir: None,
-                        extra: json!({"source": "codex-log-tail", "observed_at": observed_at}),
-                        ..SessionMeta::default()
-                    },
+                    meta: SessionMeta { working_dir: None, parent_local_id, extra },
                 })
                 .await;
             self.sessions.insert(
@@ -256,6 +260,15 @@ fn derive_local_id(path: &Path) -> String {
 /// its lowercased payload `id`. Scans a bounded prefix in case the meta isn't
 /// strictly first; returns `None` for files that carry no `session_meta`.
 fn session_meta_id(path: &Path) -> Option<String> {
+    session_meta_payload(path)
+        .as_ref()
+        .and_then(|p| p.get("id").and_then(Value::as_str).map(str::to_ascii_lowercase))
+}
+
+/// The `session_meta` line's `payload` object, or `None` for a rollout that
+/// carries no `session_meta`. Scans a bounded prefix in case the meta isn't
+/// strictly first.
+fn session_meta_payload(path: &Path) -> Option<Value> {
     use std::io::{BufRead, BufReader};
     let file = std::fs::File::open(path).ok()?;
     let reader = BufReader::new(file);
@@ -265,13 +278,27 @@ fn session_meta_id(path: &Path) -> Option<String> {
             continue;
         }
         let Ok(value) = serde_json::from_str::<Value>(trimmed) else { continue };
-        if value.get("type").and_then(Value::as_str) == Some("session_meta")
-            && let Some(id) = value.pointer("/payload/id").and_then(Value::as_str)
-        {
-            return Some(id.to_ascii_lowercase());
+        if value.get("type").and_then(Value::as_str) == Some("session_meta") {
+            return value.get("payload").cloned();
         }
     }
     None
+}
+
+/// Reduce a rollout's `session_meta` to `(source label, canonical parent id)`.
+/// Mirrors the `thread/list` inventory extraction so both discovery paths agree
+/// on which rollouts are subagents and who their parent is.
+fn rollout_subagent_link(path: &Path) -> (Option<String>, Option<String>) {
+    let Some(payload) = session_meta_payload(path) else { return (None, None) };
+    let source = payload.get("source").and_then(super::thread_list::parse_source);
+    let parent = payload
+        .pointer("/source/subAgent/thread_spawn/parent_thread_id")
+        .or_else(|| payload.get("parent_thread_id"))
+        .or_else(|| payload.get("parentThreadId"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(super::thread_list::canonical_id);
+    (source, parent)
 }
 
 /// Extract a canonical 8-4-4-4-12 hex UUID from a rollout filename stem such as
@@ -550,6 +577,67 @@ mod tests {
         std::fs::write(&path, r#"{"role":"assistant","text":"x"}"#).unwrap();
         tail.scan_once().await;
         assert!(rx.try_recv().is_err(), "owned rollout file must not be tailed");
+    }
+
+    #[tokio::test]
+    async fn subagent_rollout_nests_under_dispatched_parent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions = tmp.path().to_path_buf();
+        let (tx, mut rx) = mpsc::channel(64);
+        let mut tail = LogTail::new(
+            LogTailConfig {
+                sessions_root: sessions.clone(),
+                poll_interval: Duration::from_millis(10),
+                quiesce: Duration::from_secs(3600),
+            },
+            tx,
+            CancellationToken::new(),
+        );
+        let exec = "019f832c-6301-7053-8000-0000000000e1";
+        crate::dispatch_codex::register_dispatch_thread(exec, "DISPATCH-LT-1");
+        let child = "019f832c-6301-7053-8000-0000000000e2";
+        let path = sessions.join(format!("rollout-{child}.jsonl"));
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{"type":"session_meta","payload":{{"id":"{child}","cwd":"/workspace","source":{{"subAgent":{{"thread_spawn":{{"parent_thread_id":"{exec}"}}}}}}}}}}"#
+            ),
+        )
+        .unwrap();
+        tail.scan_once().await;
+        let AdapterEvent::SessionStarted { local_id, meta } = rx.recv().await.unwrap() else {
+            panic!("expected SessionStarted")
+        };
+        assert_eq!(local_id, child);
+        assert_eq!(meta.parent_local_id.as_deref(), Some("DISPATCH-LT-1"));
+        assert_eq!(meta.extra["subagent"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn orphan_subagent_rollout_is_skipped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions = tmp.path().to_path_buf();
+        let (tx, mut rx) = mpsc::channel(64);
+        let mut tail = LogTail::new(
+            LogTailConfig {
+                sessions_root: sessions.clone(),
+                poll_interval: Duration::from_millis(10),
+                quiesce: Duration::from_secs(3600),
+            },
+            tx,
+            CancellationToken::new(),
+        );
+        let child = "019f832c-6301-7053-8000-0000000000e3";
+        let path = sessions.join(format!("rollout-{child}.jsonl"));
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{"type":"session_meta","payload":{{"id":"{child}","source":{{"subAgent":"review"}}}}}}"#
+            ),
+        )
+        .unwrap();
+        tail.scan_once().await;
+        assert!(rx.try_recv().is_err(), "orphan subagent rollout must be skipped");
     }
 
     #[test]
