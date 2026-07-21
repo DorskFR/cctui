@@ -264,6 +264,7 @@ fn build_rules(args: &Args) -> anyhow::Result<Vec<InjectionRule>> {
                 shape: spec.shape,
                 secret,
                 cookie_secret,
+                key_id_secret: None,
             }
         })
         .collect())
