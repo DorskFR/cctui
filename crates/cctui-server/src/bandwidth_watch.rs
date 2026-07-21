@@ -16,9 +16,10 @@ use uuid::Uuid;
 pub const EVICTION_THRESHOLD: usize = 5;
 pub const EVICTION_WINDOW: Duration = Duration::from_secs(15 * 60);
 
-/// Unexplained event-byte growth below this is noise (heartbeat cadence,
-/// in-flight batches), not the incident signature.
-pub const DIVERGENCE_MIN_BYTES: u64 = 256 * 1024;
+/// A single chunked transfer inserts nothing until it completes, and the
+/// daemon's `SendGuard` caps any transfer at 32 MiB — so more unexplained
+/// growth than one maximal in-flight transfer cannot be legitimate.
+pub const DIVERGENCE_MIN_BYTES: u64 = 33 * 1024 * 1024;
 
 /// Rolling per-machine eviction timestamps within [`EVICTION_WINDOW`].
 #[derive(Default)]
