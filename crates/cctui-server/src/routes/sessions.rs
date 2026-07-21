@@ -1690,29 +1690,27 @@ pub async fn interrupt_session(
     ))
 }
 
-/// Body of `POST /sessions/{id}/switch-account` (CCT-444). `account` names the
-/// target by either its `accounts.name` or a provider-row UUID.
+/// Body of `POST /sessions/{id}/switch-account`. `account` is an
+/// `accounts.name`, an identity UUID, or a credential UUID — a credential UUID
+/// also names which per-family binding is rebound; the other forms use
+/// `family` (`anthropic` | `openai`), defaulting to the harness's family.
 #[derive(Deserialize)]
 pub struct SwitchAccountRequest {
     pub account: String,
+    #[serde(default)]
+    pub family: Option<String>,
 }
 
-/// `POST /api/v1/sessions/{id}/switch-account` — rebind a session to another
-/// account when it hit a soft limit (CCT-444).
+/// `POST /api/v1/sessions/{id}/switch-account` — rebind one of a session's
+/// per-family credential bindings to another account of the same owner.
 ///
-/// The worker's upstream bearer (`ANTHROPIC_AUTH_TOKEN=cctui_s_…`) is an opaque
-/// gateway token; the gateway resolves it to an account per request via a DB
-/// lookup (`session_tokens.token_hash → account_providers`). So switching accounts
-/// is a **pure server-side rebind**: point the session's active token row at the
-/// target account. The worker keeps running with the same env token and its very
-/// next upstream request resolves to the new account — no restart, no re-exec,
-/// no context loss.
-///
-/// Constraints (v1): the target must belong to the same owner and be the **same
-/// provider family** as the current account (the worker's harness already
-/// negotiated the auth scheme; cross-provider switching is out of scope → 409).
-/// On success the soft-limit block is cleared and a `SoftLimitCleared` event
-/// fires so the per-chat banner dismisses.
+/// A worker carries one opaque gateway token per provider family
+/// (`ANTHROPIC_AUTH_TOKEN` / `OPENAI_API_KEY`); the gateway resolves each per
+/// request via `session_tokens`. Switching is a pure server-side rebind of the
+/// token row in the target's family — same env tokens, no restart, and the
+/// other family's binding survives (Codex spawns keep their account when the
+/// Claude side moves). 409 when the session has no binding in the target's
+/// family. Success clears the soft-limit block (`SoftLimitCleared`).
 pub async fn switch_account(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
@@ -1726,33 +1724,39 @@ pub async fn switch_account(
         err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
     };
 
-    // The session's currently-bound (active, most-recent) account.
-    let current: Option<(uuid::Uuid, String, uuid::Uuid)> = sqlx::query_as(
-        "SELECT a.id, a.provider, a.user_id \
-         FROM session_tokens t JOIN account_providers a ON a.id = t.account_id \
+    let meta: Option<(uuid::Uuid, Option<String>)> = sqlx::query_as(
+        "SELECT a.user_id, s.adapter_id \
+         FROM session_tokens t \
+         JOIN account_providers a ON a.id = t.account_id \
+         LEFT JOIN sessions s ON s.id = t.session_id \
          WHERE t.session_id = $1 AND t.revoked_at IS NULL \
-         ORDER BY t.created_at DESC LIMIT 1",
+         LIMIT 1",
     )
     .bind(&session_id)
     .fetch_optional(&state.pool)
     .await
     .map_err(db)?;
-    let Some((current_account_id, current_provider, owner_id)) = current else {
+    let Some((owner_id, adapter_id)) = meta else {
         return Err(err(
             StatusCode::NOT_FOUND,
             "session has no active gateway account binding to switch",
         ));
     };
+    let default_family = match req.family.as_deref().map(str::trim) {
+        None | Some("") => Family::from_adapter(adapter_id.as_deref().unwrap_or("claude-code")),
+        Some("anthropic") => Family::Anthropic,
+        Some("openai") => Family::Openai,
+        Some(_) => {
+            return Err(err(StatusCode::BAD_REQUEST, "family must be `anthropic` or `openai`"));
+        }
+    };
 
-    // Resolve the target, scoped to the same owner. Accept a UUID or a name.
-    // A UUID may be either level (CCT-565): a credential (`account_providers`)
-    // id, or an IDENTITY (`accounts`) id — clients hold identity ids, and only
-    // backfilled rows share the two by uuid reuse. An identity id resolves to
-    // its child in the CURRENT binding's family, same as the name path.
+    // A UUID may be either level (CCT-565): a credential id — which names its
+    // own family — or an identity id, resolved in `default_family` like a name.
     let target: Option<(uuid::Uuid, String)> =
         if let Ok(tid) = uuid::Uuid::parse_str(req.account.trim()) {
             let direct: Option<(uuid::Uuid, String)> = sqlx::query_as(
-                "SELECT id, provider FROM account_providers WHERE id = $1 AND user_id = $2",
+                "SELECT id, family FROM account_providers WHERE id = $1 AND user_id = $2",
             )
             .bind(tid)
             .bind(owner_id)
@@ -1763,62 +1767,66 @@ pub async fn switch_account(
                 direct
             } else {
                 sqlx::query_as(
-                    "SELECT ap.id, ap.provider \
+                    "SELECT ap.id, ap.family \
                  FROM account_providers ap JOIN accounts a ON a.id = ap.account_id \
-                 WHERE a.id = $1 AND ap.user_id = $2 \
-                   AND (ap.provider ILIKE '%openai%') = $3 \
+                 WHERE a.id = $1 AND ap.user_id = $2 AND ap.family = $3 \
                  LIMIT 1",
                 )
                 .bind(tid)
                 .bind(owner_id)
-                .bind(current_provider.contains("openai"))
+                .bind(default_family.label())
                 .fetch_optional(&state.pool)
                 .await
                 .map_err(db)?
             }
         } else {
-            // Name lives on the identity parent (CCT-558); pick the provider row in
-            // the CURRENT binding's family so the same-family constraint below holds
-            // for multi-provider identities (single-provider accounts behave as
-            // before).
             sqlx::query_as(
-                "SELECT ap.id, ap.provider \
+                "SELECT ap.id, ap.family \
              FROM account_providers ap JOIN accounts a ON a.id = ap.account_id \
-             WHERE a.name = $1 AND ap.user_id = $2 \
-               AND (ap.provider ILIKE '%openai%') = $3 \
+             WHERE a.name = $1 AND ap.user_id = $2 AND ap.family = $3 \
              LIMIT 1",
             )
             .bind(req.account.trim())
             .bind(owner_id)
-            .bind(current_provider.contains("openai"))
+            .bind(default_family.label())
             .fetch_optional(&state.pool)
             .await
             .map_err(db)?
         };
-    let Some((target_id, target_provider)) = target else {
+    let Some((target_id, target_family)) = target else {
         return Err(err(StatusCode::NOT_FOUND, "no such account for this session's owner"));
+    };
+
+    let current: Option<(uuid::Uuid,)> = sqlx::query_as(
+        "SELECT ap.id \
+         FROM session_tokens t JOIN account_providers ap ON ap.id = t.account_id \
+         WHERE t.session_id = $1 AND t.revoked_at IS NULL AND ap.family = $2 \
+         ORDER BY t.created_at DESC LIMIT 1",
+    )
+    .bind(&session_id)
+    .bind(&target_family)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(db)?;
+    let Some((current_account_id,)) = current else {
+        return Err(err(
+            StatusCode::CONFLICT,
+            "session has no binding in the target's provider family; cross-provider switching is not supported",
+        ));
     };
 
     if target_id == current_account_id {
         return Err(err(StatusCode::CONFLICT, "session is already on that account"));
     }
 
-    // Same provider family only (CCT-444 v1): the worker's harness already
-    // negotiated the auth scheme, so a cross-family rebind would break it.
-    if Family::from_provider(&current_provider) != Family::from_provider(&target_provider) {
-        return Err(err(
-            StatusCode::CONFLICT,
-            "target account is a different provider; cross-provider switching is not supported",
-        ));
-    }
-
-    // The rebind itself: point the active token row(s) at the target account.
-    // Single statement; the worker's next upstream request resolves to it.
+    // Repoint only this family's row: touching the other family's would hand
+    // e.g. the worker's OPENAI_API_KEY an anthropic credential (CCT-514).
     let updated = sqlx::query(
-        "UPDATE session_tokens SET account_id = $2 \
-         WHERE session_id = $1 AND revoked_at IS NULL",
+        "UPDATE session_tokens SET account_id = $3 \
+         WHERE session_id = $1 AND revoked_at IS NULL AND account_id = $2",
     )
     .bind(&session_id)
+    .bind(current_account_id)
     .bind(target_id)
     .execute(&state.pool)
     .await
@@ -1838,9 +1846,52 @@ pub async fn switch_account(
         session_id = %session_id,
         from = %current_account_id,
         to = %target_id,
+        family = %target_family,
         "switched session account (soft-limit rebind)"
     );
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// One of a session's active per-family gateway credential bindings.
+#[derive(serde::Serialize)]
+pub struct SessionBinding {
+    pub family: String,
+    pub credential_id: uuid::Uuid,
+    pub account_id: uuid::Uuid,
+    pub account_name: String,
+}
+
+/// `GET /api/v1/sessions/{id}/bindings` — the session's active per-family
+/// credential bindings, one entry per family it carries.
+pub async fn session_bindings(
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+) -> Result<Json<Vec<SessionBinding>>, (StatusCode, Json<ApiError>)> {
+    let rows: Vec<(String, uuid::Uuid, uuid::Uuid, String)> = sqlx::query_as(
+        "SELECT DISTINCT ON (ap.family) ap.family, ap.id, acc.id, acc.name \
+         FROM session_tokens t \
+         JOIN account_providers ap ON ap.id = t.account_id \
+         JOIN accounts acc ON acc.id = ap.account_id \
+         WHERE t.session_id = $1 AND t.revoked_at IS NULL \
+         ORDER BY ap.family, t.created_at DESC",
+    )
+    .bind(&session_id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("db error (session-bindings): {e}");
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+    })?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|(family, credential_id, account_id, account_name)| SessionBinding {
+                family,
+                credential_id,
+                account_id,
+                account_name,
+            })
+            .collect(),
+    ))
 }
 
 /// `POST /api/v1/sessions/{id}/resume` — explicitly revive an exited durable

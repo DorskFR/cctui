@@ -157,9 +157,17 @@ export interface OAuthAccount {
 
 /** Single-provider back-compat: the spawn/dispatch pickers derive the
  *  credential from the account's provider-family union (CCT-562); the
- *  remaining first-row readers are DispatchersPanel + AccountSwitchModal
- *  until they grow a provider dimension. */
+ *  remaining first-row reader is DispatchersPanel until it grows a provider
+ *  dimension. */
 export const primaryProvider = (a: OAuthAccount): AccountProvider | undefined => a.providers[0];
+
+/** One of a session's active per-family gateway credential bindings. */
+export interface SessionBinding {
+  family: "anthropic" | "openai";
+  credential_id: string;
+  account_id: string;
+  account_name: string;
+}
 
 /** One window's soft-limit config (CCT-688). Absent field ⇒ unset for that
  *  window: no `cap_pct` ⇒ no cap; no `bypass_minutes` ⇒ no bypass. */
@@ -471,12 +479,15 @@ export const endpoints = {
     api.post<ForkResponse>(`/sessions/${sessionId}/fork`, body),
   resume: (sessionId: string) =>
     api.post<void>(`/sessions/${sessionId}/resume`, {}),
-  /** Rebind a session to another account after a soft-limit block (CCT-444).
-   *  Pure server-side rebind of the session's active gateway token; the worker
-   *  keeps running and its next upstream call lands on `account` (a name or id).
-   *  Rejects a cross-provider target (409). */
+  /** Rebind one of a session's per-family gateway bindings.
+   *  Pure server-side rebind: the worker keeps running and its next upstream
+   *  call in the target credential's family lands on `account` (a name or id);
+   *  the other family's binding is untouched. 409 when the session carries no
+   *  binding in that family. */
   switchAccount: (sessionId: string, account: string) =>
     api.post<void>(`/sessions/${sessionId}/switch-account`, { account }),
+  sessionBindings: (sessionId: string) =>
+    api.get<SessionBinding[]>(`/sessions/${sessionId}/bindings`),
   /** Launch a draft session (CCT-394): env is entered fresh here (never stored
    *  in the draft), account gateway tokens minted server-side at dispatch. The
    *  draft row is removed and a live session is born from the daemon. */
@@ -814,6 +825,15 @@ export const useAccounts = (enabled: () => boolean = () => true) =>
     toStore(() => ({
       queryKey: ["accounts"],
       queryFn: endpoints.accounts,
+      enabled: enabled(),
+    })),
+  );
+
+export const useSessionBindings = (sessionId: () => string, enabled: () => boolean = () => true) =>
+  createQuery(
+    toStore(() => ({
+      queryKey: ["session-bindings", sessionId()],
+      queryFn: () => endpoints.sessionBindings(sessionId()),
       enabled: enabled(),
     })),
   );
