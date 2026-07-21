@@ -19,7 +19,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.7.210"
+version = "0.7.211"
 edition = "2024"
 license = "MIT"
 authors = ["DorskFR"]
@@ -57,6 +57,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 sha2 = "0.10"
 hex = "0.4"
 base64 = "0.22"
+zstd = "0.13"
 tar = "0.4"
 flate2 = "1"
 clap = { version = "4", features = ["derive", "env"] }

@@ -38,6 +38,23 @@ const PING_INTERVAL: Duration = Duration::from_secs(20);
 /// "daemon offline" until a manual restart (CCT-140).
 const LIVENESS_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Micro-batch window (CCT-740): adapter events queued within this window are
+/// coalesced into one frame before compress+chunk, so cross-event redundancy
+/// compresses far better. Heartbeats and control frames bypass it.
+const BATCH_WINDOW: Duration = Duration::from_millis(250);
+
+/// Flush the batch early once the buffered (uncompressed) bytes reach this, so a
+/// burst doesn't grow the pre-compression buffer unbounded.
+const BATCH_MAX_BYTES: usize = 1024 * 1024;
+
+/// Sleep until `deadline`, or never when there's nothing buffered to flush.
+async fn wait_deadline(deadline: Option<tokio::time::Instant>) {
+    match deadline {
+        Some(d) => tokio::time::sleep_until(d).await,
+        None => std::future::pending().await,
+    }
+}
+
 pub struct Supervisor {
     client: ServerClient,
     machine_key: String,
@@ -83,7 +100,7 @@ impl Supervisor {
         }
     }
 
-    #[allow(clippy::cognitive_complexity)]
+    #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
     async fn run_once(&self, shutdown: CancellationToken) -> anyhow::Result<()> {
         let url = self.client.daemon_ws_url(&self.machine_key);
         tracing::info!(%url, "connecting to daemon WS");
@@ -119,6 +136,12 @@ impl Supervisor {
         if let Some(t) = active.as_mut() {
             t.rewind_to_ack();
         }
+
+        // Micro-batch buffer (CCT-740): adapter events accumulate here for up to
+        // BATCH_WINDOW, then flush as one compress+chunk frame.
+        let mut batch: Vec<DaemonFrameUp> = Vec::new();
+        let mut batch_bytes = 0usize;
+        let mut batch_deadline: Option<tokio::time::Instant> = None;
 
         let outcome: anyhow::Result<()> = async {
             loop {
@@ -163,16 +186,32 @@ impl Supervisor {
                             %adapter_id,
                             kind = event_kind(&event),
                             local_id = event_local_id(&event),
-                            "sending event",
+                            "queued event",
                         );
                         // Redact secrets before the event reaches the wire / DB.
                         let event = scrub_event(event, &scrub);
                         let up = DaemonFrameUp::Event { adapter_id, event };
-                        let payload = serde_json::to_string(&up)?;
-                        if payload.len() > cctui_proto::chunk::CHUNK_THRESHOLD {
-                            active = PendingTransfer::new(payload.into_bytes());
-                        } else {
-                            sink.send(Message::Text(payload.into())).await?;
+                        batch_bytes = batch_bytes.saturating_add(frame_size(&up));
+                        batch.push(up);
+                        batch_deadline.get_or_insert_with(|| {
+                            tokio::time::Instant::now() + BATCH_WINDOW
+                        });
+                        if batch_bytes >= BATCH_MAX_BYTES {
+                            batch_deadline = Some(tokio::time::Instant::now());
+                        }
+                    }
+                    // Flush the coalesced batch once its window elapses.
+                    () = wait_deadline(batch_deadline), if active.is_none() => {
+                        batch_deadline = None;
+                        batch_bytes = 0;
+                        let frames = std::mem::take(&mut batch);
+                        if !frames.is_empty() {
+                            match prepare_send(&coalesce(frames))? {
+                                Prepared::Chunked(t) => active = Some(t),
+                                Prepared::Frame(text) => {
+                                    sink.send(Message::Text(text.into())).await?;
+                                }
+                            }
                         }
                     }
                     _ = ping.tick() => {
@@ -387,18 +426,21 @@ struct PendingTransfer {
     total: u32,
     highest_acked: Option<u32>,
     cursor: u32,
+    /// Codec the chunk bytes are compressed with, so the server decompresses the
+    /// reassembled payload before parsing it (CCT-740). `None` = raw JSON.
+    codec: Option<String>,
 }
 
 impl PendingTransfer {
-    /// Build a transfer for `payload`, or `None` when it fits the single-message
-    /// fast path.
-    fn new(payload: Vec<u8>) -> Option<Self> {
+    /// Build a transfer for `payload` (already codec-compressed when `codec` is
+    /// set), or `None` when it fits the single-message fast path.
+    fn new(payload: Vec<u8>, codec: Option<String>) -> Option<Self> {
         if payload.len() <= cctui_proto::chunk::CHUNK_THRESHOLD {
             return None;
         }
         let id = cctui_proto::chunk::transfer_id(&payload);
         let total = cctui_proto::chunk::chunk_count(payload.len());
-        Some(Self { id, payload, total, highest_acked: None, cursor: 0 })
+        Some(Self { id, payload, total, highest_acked: None, cursor: 0, codec })
     }
 
     fn resume_index(&self) -> u32 {
@@ -414,8 +456,13 @@ impl PendingTransfer {
     }
 
     fn next_frame(&mut self) -> DaemonFrameUp {
-        let frame =
-            cctui_proto::chunk::chunk_frame(&self.id, &self.payload, self.cursor, self.total);
+        let frame = cctui_proto::chunk::chunk_frame(
+            &self.id,
+            &self.payload,
+            self.cursor,
+            self.total,
+            self.codec.as_deref(),
+        );
         self.cursor = self.cursor.saturating_add(1);
         frame
     }
@@ -529,6 +576,47 @@ const fn event_kind(event: &AdapterEvent) -> &'static str {
         AdapterEvent::PlanRequest { .. } => "plan_request",
         AdapterEvent::PlanResolved { .. } => "plan_resolved",
         _ => "other",
+    }
+}
+
+/// Collapse a non-empty batch into one wire frame: a lone event stays an
+/// `Event` (no envelope overhead); several become a `Batch` the server unwraps.
+fn coalesce(frames: Vec<DaemonFrameUp>) -> DaemonFrameUp {
+    if frames.len() == 1 {
+        frames.into_iter().next().expect("len checked")
+    } else {
+        DaemonFrameUp::Batch { frames }
+    }
+}
+
+/// Serialized byte size of a queued frame, for the pre-compression batch cap.
+/// Falls back to 0 on the structurally-impossible serialization failure.
+fn frame_size(frame: &DaemonFrameUp) -> usize {
+    serde_json::to_vec(frame).map(|v| v.len()).unwrap_or(0)
+}
+
+/// The wire form a prepared frame takes: a ready-to-send text message, or a
+/// chunked transfer to drive over the connection with ack/resume (CCT-740).
+enum Prepared {
+    Frame(String),
+    Chunked(PendingTransfer),
+}
+
+/// Compress `inner` when worthwhile, then chunk the compressed bytes if they
+/// still exceed the threshold (CCT-740). Composes compression with the CCT-738
+/// chunk transfer while preserving its ack/resume semantics.
+fn prepare_send(inner: &DaemonFrameUp) -> anyhow::Result<Prepared> {
+    let json = serde_json::to_vec(inner)?;
+    let (bytes, codec) = cctui_proto::compress::maybe_compress(&json);
+    if bytes.len() > cctui_proto::chunk::CHUNK_THRESHOLD {
+        let transfer = PendingTransfer::new(bytes, codec.map(str::to_owned))
+            .expect("bytes exceed the chunk threshold");
+        Ok(Prepared::Chunked(transfer))
+    } else if let Some(codec) = codec {
+        let up = cctui_proto::compress::compressed_frame(codec, &bytes);
+        Ok(Prepared::Frame(serde_json::to_string(&up)?))
+    } else {
+        Ok(Prepared::Frame(String::from_utf8(bytes).expect("serde_json output is valid utf8")))
     }
 }
 
@@ -666,7 +754,7 @@ mod tests {
 
     fn chunk_parts(frame: DaemonFrameUp) -> (String, u32, u32, String) {
         match frame {
-            DaemonFrameUp::Chunk { transfer_id, chunk_index, total_chunks, data } => {
+            DaemonFrameUp::Chunk { transfer_id, chunk_index, total_chunks, data, .. } => {
                 (transfer_id, chunk_index, total_chunks, data)
             }
             _ => panic!("expected a chunk frame"),
@@ -675,9 +763,14 @@ mod tests {
 
     #[test]
     fn small_frames_take_the_single_message_fast_path() {
-        assert!(PendingTransfer::new(vec![0u8; 1024]).is_none());
-        assert!(PendingTransfer::new(vec![0u8; cctui_proto::chunk::CHUNK_THRESHOLD]).is_none());
-        assert!(PendingTransfer::new(vec![0u8; cctui_proto::chunk::CHUNK_THRESHOLD + 1]).is_some());
+        assert!(PendingTransfer::new(vec![0u8; 1024], None).is_none());
+        assert!(
+            PendingTransfer::new(vec![0u8; cctui_proto::chunk::CHUNK_THRESHOLD], None).is_none()
+        );
+        assert!(
+            PendingTransfer::new(vec![0u8; cctui_proto::chunk::CHUNK_THRESHOLD + 1], None)
+                .is_some()
+        );
     }
 
     #[test]
@@ -686,7 +779,7 @@ mod tests {
         // few chunks must still complete by resuming from the last acked chunk.
         let payload: Vec<u8> =
             (0..20 * 1024 * 1024).map(|i| u8::try_from(i % 251).unwrap()).collect();
-        let mut sender = PendingTransfer::new(payload.clone()).expect("20MB must chunk");
+        let mut sender = PendingTransfer::new(payload.clone(), None).expect("20MB must chunk");
         let total = sender.total;
         let mut server = Reassembler::new(64 * 1024 * 1024);
         let mut completed: Option<Vec<u8>> = None;
@@ -723,10 +816,126 @@ mod tests {
         assert_eq!(sends, total, "resume must not re-upload already-acked chunks");
     }
 
+    fn synth_event(i: usize) -> DaemonFrameUp {
+        DaemonFrameUp::Event {
+            adapter_id: "claude-code".into(),
+            event: cctui_proto::adapter::AdapterEvent::Message {
+                local_id: format!("sess-{}", i % 4),
+                payload: serde_json::json!({ "text": format!("event number {i}"), "n": i }),
+            },
+        }
+    }
+
+    fn hi_entropy_event(rng: &mut u64, i: usize) -> DaemonFrameUp {
+        let bytes: Vec<u8> = (0..12_500)
+            .map(|_| {
+                *rng ^= *rng << 13;
+                *rng ^= *rng >> 7;
+                *rng ^= *rng << 17;
+                *rng as u8
+            })
+            .collect();
+        let blob = hex::encode(bytes);
+        DaemonFrameUp::Event {
+            adapter_id: "claude-code".into(),
+            event: cctui_proto::adapter::AdapterEvent::Message {
+                local_id: format!("s{i}"),
+                payload: serde_json::json!({ "n": i, "blob": blob }),
+            },
+        }
+    }
+
+    #[test]
+    fn coalesce_single_stays_event_many_becomes_batch() {
+        assert!(matches!(super::coalesce(vec![synth_event(0)]), DaemonFrameUp::Event { .. }));
+        let batch = super::coalesce((0..3).map(synth_event).collect());
+        match batch {
+            DaemonFrameUp::Batch { frames } => assert_eq!(frames.len(), 3),
+            _ => panic!("expected a batch"),
+        }
+    }
+
+    #[test]
+    fn small_batch_sends_plain_uncompressed_frame() {
+        // One small event flushes as a plain Event frame — never compressed and
+        // never chunked, so tiny frames aren't taxed with zstd overhead.
+        let prepared = super::prepare_send(&synth_event(1)).unwrap();
+        let super::Prepared::Frame(text) = prepared else { panic!("small frame must not chunk") };
+        let back: DaemonFrameUp = serde_json::from_str(&text).unwrap();
+        assert!(matches!(back, DaemonFrameUp::Event { .. }), "small frame stays a plain Event");
+    }
+
+    #[test]
+    fn heartbeat_prepares_as_immediate_plain_frame() {
+        // Heartbeats never enter the batch buffer (the ping arm sends them
+        // directly); prepared, one is a small plain frame, proving the control
+        // path is never delayed or wrapped by batching.
+        let hb = DaemonFrameUp::Heartbeat { sent_at: chrono::Utc::now() };
+        let super::Prepared::Frame(text) = super::prepare_send(&hb).unwrap() else {
+            panic!("heartbeat must not chunk")
+        };
+        assert!(text.contains(r#""type":"heartbeat""#));
+    }
+
+    #[test]
+    fn batched_compressed_chunked_20mb_resumes_across_disconnects() {
+        // The CCT-738 acceptance test, extended for CCT-740: a ~20MB batch of
+        // events is coalesced, compressed, and chunked; a link killed every few
+        // chunks must still complete by resuming, and the server-side reassemble
+        // → decompress → parse must recover the exact batch.
+        let mut rng = 0x9e37_79b9_7f4a_7c15_u64;
+        let events: Vec<DaemonFrameUp> = (0..800).map(|i| hi_entropy_event(&mut rng, i)).collect();
+        let want = events.len();
+        let inner = super::coalesce(events);
+        let super::Prepared::Chunked(mut sender) = super::prepare_send(&inner).unwrap() else {
+            panic!("a 20MB batch must chunk")
+        };
+        let codec = sender.codec.clone();
+        assert_eq!(codec.as_deref(), Some("zstd"), "large batch must be zstd-tagged");
+        let total = sender.total;
+
+        let mut server = Reassembler::new(128 * 1024 * 1024);
+        let mut compressed: Option<Vec<u8>> = None;
+        let mut sends = 0u32;
+        let mut connections = 0u32;
+        let mut guard = 0u32;
+        while compressed.is_none() {
+            guard += 1;
+            assert!(guard < 100_000, "resume loop failed to converge");
+            connections += 1;
+            sender.rewind_to_ack();
+            let mut sent_this_conn = 0u32;
+            while sender.has_unsent() {
+                let (id, idx, tot, data) = chunk_parts(sender.next_frame());
+                sends += 1;
+                match server.accept(&id, idx, tot, &data) {
+                    Accept::Pending(highest) => sender.record_ack(highest),
+                    Accept::Complete(bytes) => {
+                        compressed = Some(bytes);
+                        break;
+                    }
+                    Accept::Restart => sender.record_ack(None),
+                }
+                sent_this_conn += 1;
+                if sent_this_conn >= 4 {
+                    break;
+                }
+            }
+        }
+        assert!(connections > 1, "completing must span multiple connections");
+        assert_eq!(sends, total, "resume must not re-upload acked chunks");
+        let joined = cctui_proto::compress::decompress_codec("zstd", &compressed.unwrap()).unwrap();
+        let back: DaemonFrameUp = serde_json::from_slice(&joined).unwrap();
+        match back {
+            DaemonFrameUp::Batch { frames } => assert_eq!(frames.len(), want),
+            _ => panic!("reassembled payload must be the original batch"),
+        }
+    }
+
     #[test]
     fn record_ack_is_monotonic_and_marks_completion() {
         let mut t =
-            PendingTransfer::new(vec![7u8; cctui_proto::chunk::CHUNK_SIZE * 3 + 1]).unwrap();
+            PendingTransfer::new(vec![7u8; cctui_proto::chunk::CHUNK_SIZE * 3 + 1], None).unwrap();
         assert_eq!(t.total, 4);
         t.record_ack(Some(2));
         // A stale lower ack must not rewind progress.

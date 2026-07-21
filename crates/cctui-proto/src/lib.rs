@@ -1,8 +1,10 @@
 pub mod adapter;
 pub mod api;
+pub mod blob;
 pub mod chunk;
 pub mod classifier;
 pub mod codex_catalog;
+pub mod compress;
 pub mod diagnose;
 pub mod github;
 pub mod identity;

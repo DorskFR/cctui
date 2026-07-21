@@ -29,9 +29,16 @@ pub fn chunk_count(len: usize) -> u32 {
     len.div_ceil(CHUNK_SIZE).try_into().unwrap_or(u32::MAX)
 }
 
-/// Build the `index`-th chunk frame of `payload` under `id`.
+/// Build the `index`-th chunk frame of `payload` under `id`. `codec` tags the
+/// whole transfer so the server decompresses the reassembled bytes (CCT-740).
 #[must_use]
-pub fn chunk_frame(id: &str, payload: &[u8], index: u32, total: u32) -> DaemonFrameUp {
+pub fn chunk_frame(
+    id: &str,
+    payload: &[u8],
+    index: u32,
+    total: u32,
+    codec: Option<&str>,
+) -> DaemonFrameUp {
     let start = (index as usize).saturating_mul(CHUNK_SIZE).min(payload.len());
     let end = start.saturating_add(CHUNK_SIZE).min(payload.len());
     DaemonFrameUp::Chunk {
@@ -39,6 +46,7 @@ pub fn chunk_frame(id: &str, payload: &[u8], index: u32, total: u32) -> DaemonFr
         chunk_index: index,
         total_chunks: total,
         data: BASE64.encode(&payload[start..end]),
+        codec: codec.map(str::to_owned),
     }
 }
 
@@ -51,7 +59,7 @@ pub fn split(payload: &[u8]) -> Option<Vec<DaemonFrameUp>> {
     }
     let id = transfer_id(payload);
     let total = chunk_count(payload.len());
-    Some((0..total).map(|i| chunk_frame(&id, payload, i, total)).collect())
+    Some((0..total).map(|i| chunk_frame(&id, payload, i, total, None)).collect())
 }
 
 /// Outcome of feeding one chunk into a [`Reassembler`].
@@ -175,7 +183,7 @@ mod tests {
 
     fn parts(frame: &DaemonFrameUp) -> (String, u32, u32, String) {
         match frame {
-            DaemonFrameUp::Chunk { transfer_id, chunk_index, total_chunks, data } => {
+            DaemonFrameUp::Chunk { transfer_id, chunk_index, total_chunks, data, .. } => {
                 (transfer_id.clone(), *chunk_index, *total_chunks, data.clone())
             }
             _ => panic!("not a chunk frame"),

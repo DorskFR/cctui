@@ -56,7 +56,29 @@ pub enum DaemonFrameUp {
     /// retransmission); `data` is standard-base64 of the raw chunk bytes. The
     /// server reassembles by `transfer_id`, parses the joined payload as a
     /// `DaemonFrameUp`, and processes it as usual.
-    Chunk { transfer_id: String, chunk_index: u32, total_chunks: u32, data: String },
+    ///
+    /// `codec` (CCT-740) tags the reassembled bytes: `Some("zstd")` means the
+    /// server must [`crate::compress::decompress_codec`] the joined payload
+    /// before parsing it. Omitted (`None`) for legacy CCT-738 daemons that
+    /// chunk uncompressed JSON.
+    Chunk {
+        transfer_id: String,
+        chunk_index: u32,
+        total_chunks: u32,
+        data: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        codec: Option<String>,
+    },
+    /// A single up-frame whose serialized body was compressed (CCT-740) but is
+    /// small enough to skip chunking. `data` is standard-base64 of the codec
+    /// output; the server [`crate::compress::decode_compressed`]s it back to a
+    /// serialized inner `DaemonFrameUp` and processes that.
+    Compressed { codec: String, data: String },
+    /// Several up-frames coalesced over the daemon's micro-batch window
+    /// (CCT-740) so cross-event redundancy compresses far better than one frame
+    /// at a time. The server processes `frames` in order, preserving per-event
+    /// semantics. Rides inside a `Compressed`/`Chunk` envelope when large.
+    Batch { frames: Vec<DaemonFrameUp> },
 }
 
 /// Frames sent by the server to a daemon over `/api/v1/daemon/ws`.

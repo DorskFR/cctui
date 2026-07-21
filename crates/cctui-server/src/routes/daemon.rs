@@ -349,12 +349,14 @@ where
 
 /// Feed one chunk into the connection's reassembler and produce the ack to send
 /// back plus, on completion, the reassembled inner frame to process (CCT-738).
+/// `codec` (CCT-740) decompresses the joined payload before parsing when set.
 fn handle_chunk(
     reasm: &mut Reassembler,
     transfer_id: String,
     chunk_index: u32,
     total_chunks: u32,
     data: &str,
+    codec: Option<&str>,
 ) -> (DaemonFrameDown, Option<DaemonFrameUp>) {
     match reasm.accept(&transfer_id, chunk_index, total_chunks, data) {
         Accept::Pending(highest_contiguous_chunk) => {
@@ -365,7 +367,17 @@ fn handle_chunk(
                 transfer_id,
                 highest_contiguous_chunk: total_chunks.checked_sub(1),
             };
-            match serde_json::from_slice::<DaemonFrameUp>(&bytes) {
+            let joined = match codec {
+                Some(codec) => match cctui_proto::compress::decompress_codec(codec, &bytes) {
+                    Ok(b) => b,
+                    Err(err) => {
+                        tracing::warn!(%err, "reassembled chunk failed to decompress");
+                        return (ack, None);
+                    }
+                },
+                None => bytes,
+            };
+            match serde_json::from_slice::<DaemonFrameUp>(&joined) {
                 Ok(inner) => (ack, Some(inner)),
                 Err(err) => {
                     tracing::warn!(%err, "reassembled chunk payload did not parse");
@@ -379,7 +391,34 @@ fn handle_chunk(
     }
 }
 
-#[allow(clippy::cognitive_complexity)]
+/// Decode a `Compressed` envelope (CCT-740) to its inner frame, or `None` on a
+/// bad codec / base64 / payload — logged and dropped like any malformed frame.
+fn decode_compressed_frame(codec: &str, data: &str) -> Option<DaemonFrameUp> {
+    match cctui_proto::compress::decode_compressed(codec, data) {
+        Ok(bytes) => match serde_json::from_slice::<DaemonFrameUp>(&bytes) {
+            Ok(inner) => Some(inner),
+            Err(err) => {
+                tracing::warn!(%err, "decompressed frame did not parse");
+                None
+            }
+        },
+        Err(err) => {
+            tracing::warn!(%err, "compressed frame failed to decode");
+            None
+        }
+    }
+}
+
+/// Flatten a decoded inner frame into the leaf frames to process: a `Batch`
+/// (CCT-740) yields its events in order, anything else is a single leaf.
+fn expand_batch(frame: DaemonFrameUp) -> Vec<DaemonFrameUp> {
+    match frame {
+        DaemonFrameUp::Batch { frames } => frames,
+        other => vec![other],
+    }
+}
+
+#[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
 async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: Uuid) {
     let (mut sink, mut stream) = socket.split();
     let (tx, mut rx) = mpsc::channel::<DaemonFrameDown>(64);
@@ -460,23 +499,38 @@ async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: U
                 continue;
             }
         };
-        let frame = match frame {
-            DaemonFrameUp::Chunk { transfer_id, chunk_index, total_chunks, data } => {
-                let (ack, inner) =
-                    handle_chunk(&mut reasm, transfer_id, chunk_index, total_chunks, &data);
+        let leaves: Vec<DaemonFrameUp> = match frame {
+            DaemonFrameUp::Chunk { transfer_id, chunk_index, total_chunks, data, codec } => {
+                let (ack, inner) = handle_chunk(
+                    &mut reasm,
+                    transfer_id,
+                    chunk_index,
+                    total_chunks,
+                    &data,
+                    codec.as_deref(),
+                );
                 if tx.send(ack).await.is_err() {
                     break;
                 }
                 match inner {
-                    Some(inner) => inner,
+                    Some(inner) => expand_batch(inner),
                     None => continue,
                 }
             }
-            other => other,
+            DaemonFrameUp::Compressed { codec, data } => {
+                match decode_compressed_frame(&codec, &data) {
+                    Some(inner) => expand_batch(inner),
+                    None => continue,
+                }
+            }
+            DaemonFrameUp::Batch { frames } => frames,
+            other => vec![other],
         };
-        let trace = frame_trace(&frame);
-        if let Err(err) = process_frame(&state, machine_id, user_id, frame).await {
-            tracing::warn!(%err, %trace, "process_frame error");
+        for frame in leaves {
+            let trace = frame_trace(&frame);
+            if let Err(err) = process_frame(&state, machine_id, user_id, frame).await {
+                tracing::warn!(%err, %trace, "process_frame error");
+            }
         }
     }
 
@@ -1479,7 +1533,8 @@ mod tests {
     use cctui_proto::ws::{DaemonFrameDown, DaemonFrameUp};
 
     use super::{
-        Inbound, MAX_TRANSFER_BYTES, handle_chunk, next_inbound, should_auto_approve, strip_nul,
+        Inbound, MAX_TRANSFER_BYTES, decode_compressed_frame, expand_batch, handle_chunk,
+        next_inbound, should_auto_approve, strip_nul,
     };
 
     async fn drive<S>(mut stream: S, timeout: Duration, check: Duration) -> Inbound
@@ -1565,10 +1620,18 @@ mod tests {
         reasm: &mut Reassembler,
         frame: &DaemonFrameUp,
     ) -> (DaemonFrameDown, Option<DaemonFrameUp>) {
-        let DaemonFrameUp::Chunk { transfer_id, chunk_index, total_chunks, data } = frame else {
+        let DaemonFrameUp::Chunk { transfer_id, chunk_index, total_chunks, data, codec } = frame
+        else {
             panic!("not a chunk frame");
         };
-        handle_chunk(reasm, transfer_id.clone(), *chunk_index, *total_chunks, data)
+        handle_chunk(
+            reasm,
+            transfer_id.clone(),
+            *chunk_index,
+            *total_chunks,
+            data,
+            codec.as_deref(),
+        )
     }
 
     #[test]
@@ -1644,5 +1707,97 @@ mod tests {
         assert_eq!(reasm.len(), 1);
         reasm.evict_older_than(Duration::ZERO);
         assert!(reasm.is_empty(), "the server drops partial transfers past the stale age");
+    }
+
+    fn event(local_id: &str) -> DaemonFrameUp {
+        DaemonFrameUp::Event {
+            adapter_id: "claude-code".into(),
+            event: cctui_proto::adapter::AdapterEvent::Message {
+                local_id: local_id.into(),
+                payload: json!({ "text": "x".repeat(8 * 1024) }),
+            },
+        }
+    }
+
+    #[test]
+    fn decodes_legacy_plain_frame() {
+        // An old daemon's plain Event (no compression/batching) is a single leaf.
+        let leaves = expand_batch(event("s1"));
+        assert_eq!(leaves.len(), 1);
+        assert!(matches!(leaves[0], DaemonFrameUp::Event { .. }));
+    }
+
+    #[test]
+    fn decodes_compressed_frame() {
+        let inner = event("s1");
+        let json = serde_json::to_vec(&inner).unwrap();
+        let compressed = cctui_proto::compress::zstd_compress(&json);
+        let DaemonFrameUp::Compressed { codec, data } =
+            cctui_proto::compress::compressed_frame("zstd", &compressed)
+        else {
+            panic!("compressed_frame must build a Compressed");
+        };
+        let decoded = decode_compressed_frame(&codec, &data).expect("must decode");
+        assert_eq!(serde_json::to_value(&decoded).unwrap(), serde_json::to_value(&inner).unwrap());
+    }
+
+    #[test]
+    fn decodes_batch_frame_in_order() {
+        let batch =
+            DaemonFrameUp::Batch { frames: (0..4).map(|i| event(&format!("s{i}"))).collect() };
+        let leaves = expand_batch(batch);
+        assert_eq!(leaves.len(), 4);
+    }
+
+    #[test]
+    fn bad_compressed_frame_is_dropped() {
+        assert!(decode_compressed_frame("zstd", "!!not base64!!").is_none());
+        assert!(decode_compressed_frame("brotli", "AAAA").is_none());
+    }
+
+    #[test]
+    fn decodes_chunked_compressed_batch() {
+        // Full compose: a batch too big for one message, compressed then chunked.
+        // The server reassembles, decompresses via the chunk codec, parses the
+        // inner Batch, and expands it back to its events.
+        let mut rng = 0x1234_5678_9abc_def0_u64;
+        let mut blob = |n: usize| {
+            let bytes: Vec<u8> = (0..n)
+                .map(|_| {
+                    rng ^= rng << 13;
+                    rng ^= rng >> 7;
+                    rng ^= rng << 17;
+                    rng as u8
+                })
+                .collect();
+            hex::encode(bytes)
+        };
+        let frames: Vec<DaemonFrameUp> = (0..80)
+            .map(|i| DaemonFrameUp::Event {
+                adapter_id: "claude-code".into(),
+                event: cctui_proto::adapter::AdapterEvent::Message {
+                    local_id: format!("s{i}"),
+                    payload: json!({ "n": i, "blob": blob(4000) }),
+                },
+            })
+            .collect();
+        let want = frames.len();
+        let inner = DaemonFrameUp::Batch { frames };
+        let serialized = serde_json::to_vec(&inner).unwrap();
+        let compressed = cctui_proto::compress::zstd_compress(&serialized);
+        let id = cctui_proto::chunk::transfer_id(&compressed);
+        let total = cctui_proto::chunk::chunk_count(compressed.len());
+        assert!(total > 1, "compressed batch must span multiple chunks");
+
+        let mut reasm = Reassembler::new(MAX_TRANSFER_BYTES);
+        let mut recovered = None;
+        for i in 0..total {
+            let frame = cctui_proto::chunk::chunk_frame(&id, &compressed, i, total, Some("zstd"));
+            if let (_, Some(inner)) = feed(&mut reasm, &frame) {
+                recovered = Some(inner);
+            }
+        }
+        let leaves = expand_batch(recovered.expect("transfer completed"));
+        assert_eq!(leaves.len(), want, "chunked+compressed batch expands to its events");
     }
 }

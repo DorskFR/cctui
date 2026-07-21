@@ -197,6 +197,7 @@ pub async fn process_event(
     event: AdapterEvent,
     allowed_roots: &[PathBuf],
 ) -> AdapterEvent {
+    let event = crate::blobs::extract_blobs(client, machine_key, event).await;
     let AdapterEvent::Message { local_id, payload } = &event else { return event };
     if payload.get("role").and_then(|r| r.as_str()) != Some("assistant") {
         return event;

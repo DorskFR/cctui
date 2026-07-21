@@ -188,6 +188,30 @@ impl ServerClient {
         Ok(parsed.image_id)
     }
 
+    /// Upload a content-addressed blob (CCT-739): raw bytes keyed by their
+    /// sha256 hex. Idempotent — a re-PUT of an already-stored hash is a cheap
+    /// 200/204. `media_type` sets the `Content-Type` when known.
+    pub async fn put_blob(
+        &self,
+        machine_key: &str,
+        hash: &str,
+        bytes: Vec<u8>,
+        media_type: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let url = format!("{}/api/v1/daemon/blobs/{}", self.base_url.trim_end_matches('/'), hash);
+        let mut req = self.http.put(&url).bearer_auth(machine_key).body(bytes);
+        if let Some(mt) = media_type {
+            req = req.header(reqwest::header::CONTENT_TYPE, mt);
+        }
+        let resp = req.send().await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("put_blob failed ({status}): {text}");
+        }
+        Ok(())
+    }
+
     /// Build the daemon WS URL with the machine key as the `token` query
     /// parameter. Caller is responsible for opening the WS connection.
     #[must_use]

@@ -195,6 +195,16 @@ async fn main() -> anyhow::Result<()> {
             post(routes::images::upload_session_image)
                 .layer(DefaultBodyLimit::max(6 * 1024 * 1024)),
         )
+        // Content-addressed blob upload (CCT-739): the daemon PUTs oversized
+        // base64 attachments it extracted from transcript payloads, keyed by
+        // sha256. Machine-key Bearer self-auth, so it sits beside the other
+        // daemon endpoints outside the user-token `api_router`. Headroom over
+        // the per-blob cap so an over-cap upload 413s in-handler.
+        .route(
+            "/api/v1/daemon/blobs/{hash}",
+            put(routes::blobs::put_blob)
+                .layer(DefaultBodyLimit::max(routes::blobs::MAX_BLOB_BYTES + 1024 * 1024)),
+        )
         // Enrolled-dispatcher endpoints (CCT-285). Carry their own key auth
         // (dispatcher-key Bearer / `?token=`), so they live outside the
         // user-token `api_router` group, like the daemon endpoints.
@@ -518,6 +528,14 @@ fn build_api_routes() -> Routes {
             "/sessions/{id}/images/{image_id}",
             "Fetch an agent-posted image blob (CCT-566).",
             get(routes::images::get_session_image),
+            Authn::Bearer,
+            sess_read(),
+        )
+        .add(
+            &[GET],
+            "/sessions/{id}/blobs/{hash}",
+            "Resolve a content-addressed embedded-attachment blob (CCT-739).",
+            get(routes::blobs::get_blob),
             Authn::Bearer,
             sess_read(),
         )
