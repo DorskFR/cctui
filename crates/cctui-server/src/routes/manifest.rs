@@ -16,10 +16,9 @@
 //! Routing every version-check / selfupdate / download through these
 //! endpoints makes the server the single channel for daemon distribution.
 
-use axum::Json;
 use axum::body::Body;
 use axum::extract::{Path, State};
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Redirect, Response};
 use serde::Serialize;
 
@@ -52,7 +51,7 @@ fn github_asset_url(version: &str, asset: &str) -> String {
     format!("https://github.com/{}/releases/download/v{version}/{asset}", repo())
 }
 
-pub async fn daemon_manifest(State(state): State<AppState>) -> Json<DaemonManifest> {
+fn build_manifest(state: &AppState) -> DaemonManifest {
     let version = env!("CARGO_PKG_VERSION");
     // With a PAT, point clients at our proxy so the private-repo binary is
     // served by us; otherwise hand back the raw GitHub URLs.
@@ -69,7 +68,31 @@ pub async fn daemon_manifest(State(state): State<AppState>) -> Json<DaemonManife
             DaemonAsset { target, url }
         })
         .collect();
-    Json(DaemonManifest { version, assets })
+    DaemonManifest { version, assets }
+}
+
+fn manifest_etag(body: &[u8]) -> String {
+    format!("\"{}\"", cctui_proto::util::sha256_hex(body))
+}
+
+fn if_none_match_hit(header_val: &str, etag: &str) -> bool {
+    header_val.split(',').map(str::trim).any(|tag| tag == "*" || tag == etag)
+}
+
+fn manifest_response(body: Vec<u8>, if_none_match: Option<&str>) -> Response {
+    let etag = manifest_etag(&body);
+    if if_none_match.is_some_and(|v| if_none_match_hit(v, &etag)) {
+        return (StatusCode::NOT_MODIFIED, [(header::ETAG, etag.as_str())]).into_response();
+    }
+    ([(header::CONTENT_TYPE, "application/json"), (header::ETAG, etag.as_str())], body)
+        .into_response()
+}
+
+pub async fn daemon_manifest(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let body = serde_json::to_vec(&build_manifest(&state))
+        .expect("DaemonManifest always serializes to JSON");
+    let if_none_match = headers.get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok());
+    manifest_response(body, if_none_match)
 }
 
 /// Map a `{target}` path segment to its GitHub release asset name.
@@ -155,4 +178,44 @@ pub async fn download_daemon_binary(
         body,
     )
         .into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn etag_is_stable_and_body_sensitive() {
+        let body = br#"{"version":"0.3.31"}"#;
+        assert_eq!(manifest_etag(body), manifest_etag(body));
+        assert_ne!(manifest_etag(body), manifest_etag(br#"{"version":"0.3.32"}"#));
+        assert!(manifest_etag(body).starts_with('"') && manifest_etag(body).ends_with('"'));
+    }
+
+    #[test]
+    fn if_none_match_handles_lists_and_wildcard() {
+        let etag = manifest_etag(b"x");
+        assert!(if_none_match_hit(&etag, &etag));
+        assert!(if_none_match_hit(&format!("\"other\", {etag}"), &etag));
+        assert!(if_none_match_hit("*", &etag));
+        assert!(!if_none_match_hit("\"nope\"", &etag));
+    }
+
+    #[test]
+    fn matching_if_none_match_yields_304_without_body() {
+        let body = br#"{"version":"0.3.31"}"#.to_vec();
+        let etag = manifest_etag(&body);
+        let res = manifest_response(body, Some(&etag));
+        assert_eq!(res.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(res.headers().get(header::ETAG).unwrap().to_str().unwrap(), etag);
+    }
+
+    #[test]
+    fn mismatch_yields_200_with_body_and_etag() {
+        let body = br#"{"version":"0.3.31"}"#.to_vec();
+        let etag = manifest_etag(&body);
+        let res = manifest_response(body, Some("\"stale\""));
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(res.headers().get(header::ETAG).unwrap().to_str().unwrap(), etag);
+    }
 }
