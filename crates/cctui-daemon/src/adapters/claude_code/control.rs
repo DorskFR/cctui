@@ -10,7 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -303,16 +303,19 @@ pub struct Driver {
     /// only as the fallback for when no hook is registered (hook timed out, or
     /// a prompt that surfaced via the legacy `tempo:"blocked"` signal).
     pending_perm_hooks: super::PendingPermHooks,
-    /// When the last periodic reconciliation re-tail ran (CCT-253). The
-    /// reconciler re-reads each live session's transcript from a checkpoint
-    /// behind the persisted offset so a gap left by a dropped send or
-    /// roster-churn re-home self-heals within one cycle; the server's
-    /// content-hash dedup drops the re-emitted dups.
+    /// When the last periodic divergence check ran (CCT-253, CCT-741). At idle
+    /// it's a no-op; it re-sends a bounded window only when a session's offset
+    /// has run ahead of the server's mark (see [`Driver::reconcile_tail`]).
     last_reconcile: Instant,
     /// Set when the control socket vanished (roster flushed) so the next
     /// successful poll triggers an immediate reconciliation re-tail rather
     /// than waiting for the periodic cycle (CCT-253).
     churned: bool,
+    /// Best-known server transcript high-water mark per `offset_key` (CCT-741).
+    /// Seeded by the server's `ResumeMarks` on connect and advanced as the
+    /// forward tail emits, so the periodic pass only re-sends on real
+    /// divergence (local offset ahead of what the server holds).
+    server_marks: HashMap<String, u64>,
     /// Spawn-time `--model`/`--effort` remembered per worker `short` (CCT-299).
     /// Used as a fallback for the Status event when `state.json` isn't on disk
     /// yet (freshly spawned) or transiently absent (`/clear` rotation), so the
@@ -530,6 +533,7 @@ impl Driver {
             pending_perm_hooks: super::PendingPermHooks::default(),
             last_reconcile: Instant::now(),
             churned: false,
+            server_marks: HashMap::new(),
             spawn_model_effort: std::sync::Mutex::new(HashMap::new()),
             fork_parent_by_short: std::sync::Mutex::new(HashMap::new()),
             server: None,
@@ -610,10 +614,15 @@ impl Driver {
                     // off the poll tick (rather than a second timer) so it
                     // can't race apply_snapshot's tail/offset updates.
                     if self.last_reconcile.elapsed() >= Self::RECONCILE_INTERVAL {
-                        self.reconcile_tail().await;
+                        self.reconcile_tail(false).await;
                     }
                 }
                 Some(cmd) = self.commands.recv() => {
+                    if let AdapterCommand::ResumeMarks { marks } = cmd {
+                        // Clamping cursors needs &mut self, so it can't ride the
+                        // &self handle_command dispatch below (CCT-741).
+                        self.apply_resume_marks(marks).await;
+                    } else {
                     // Capture the correlation id before `cmd` is moved so we can
                     // report the outcome back to the originating client (CCT-131).
                     let command_id = match &cmd {
@@ -634,6 +643,7 @@ impl Driver {
                     }
                     if let Err(err) = res {
                         tracing::warn!(%err, "command dispatch failed");
+                    }
                     }
                 }
             }
@@ -2154,7 +2164,7 @@ impl Driver {
         self.apply_snapshot(resp.jobs).await;
         if self.churned {
             self.churned = false;
-            self.reconcile_tail().await;
+            self.reconcile_tail(true).await;
         }
         Ok(())
     }
@@ -2442,11 +2452,16 @@ impl Driver {
         let locations: Vec<TranscriptLocation> =
             self.transcript_locations.values().cloned().collect();
         for loc in locations {
-            let off = self.offsets.get(&loc.offset_key);
+            let prev = self.offsets.get(&loc.offset_key);
+            let off = self.resume_offset(&loc.offset_key, &loc.path);
+            if off != prev {
+                dirty_offsets = true;
+            }
             match transcript::tail_once(&loc.path, &loc.local_id, off) {
                 Ok((events, new_off)) => {
                     if new_off != off {
                         self.offsets.set(loc.offset_key.clone(), new_off);
+                        self.server_marks.insert(loc.offset_key.clone(), new_off);
                         dirty_offsets = true;
                     }
                     if let Some(last) = events.last() {
@@ -2461,6 +2476,13 @@ impl Driver {
                     }
                     for evt in events {
                         self.emit(evt).await;
+                    }
+                    if new_off != off {
+                        self.emit(AdapterEvent::TranscriptMark {
+                            local_id: loc.local_id.clone(),
+                            offset: new_off,
+                        })
+                        .await;
                     }
                 }
                 Err(err) => {
@@ -2639,10 +2661,18 @@ impl Driver {
                         let grew = new_off != off;
                         if grew {
                             self.offsets.set(agent_id.clone(), new_off);
+                            self.server_marks.insert(agent_id.clone(), new_off);
                             *dirty_offsets = true;
                         }
                         for evt in events {
                             self.emit(evt).await;
+                        }
+                        if grew {
+                            self.emit(AdapterEvent::TranscriptMark {
+                                local_id: agent_id.clone(),
+                                offset: new_off,
+                            })
+                            .await;
                         }
                         if let Some(st) = self.subagents.get_mut(&agent_id) {
                             st.idle_ticks = if grew { 0 } else { st.idle_ticks + 1 };
@@ -2695,46 +2725,101 @@ impl Driver {
         }
     }
 
-    /// Periodic + churn-triggered reconciliation re-tail (CCT-253, A1).
-    ///
-    /// Nothing re-reads a transcript once its persisted offset advances, so a
-    /// gap is otherwise permanent: an event emitted but never persisted
-    /// server-side (a dropped WS send while the offset still flushed), or a
-    /// roster-churn re-home that briefly tailed a file no longer being
-    /// appended. Here we re-read each live session's transcript from a
-    /// checkpoint a fixed window BEHIND its persisted offset and re-emit the
-    /// events. The server inserts `stream_events` with
-    /// `ON CONFLICT (session_id,event_type,content_hash) DO NOTHING` and
-    /// broadcasts only newly-inserted rows, so re-emitting already-seen lines
-    /// is idempotent and cheap — only real gaps surface, and they self-heal.
-    ///
-    /// Crucially this NEVER touches the persisted offset: it is a pure
-    /// catch-up replay layered on top of the forward-only tail in
-    /// `apply_snapshot`. The checkpoint is realigned to a JSONL line boundary
-    /// inside `transcript::reconcile_tail`, so backing up mid-line can't
-    /// corrupt parsing.
-    async fn reconcile_tail(&mut self) {
+    /// Cheap periodic (and churn-`force`d) divergence check (CCT-741, replacing
+    /// the CCT-253 unconditional re-tail). The forward tail keeps `server_marks`
+    /// level with the persisted offset as it emits, so at idle every session is
+    /// in sync and this emits nothing. Only a session whose persisted offset has
+    /// run AHEAD of the mark we believe the server holds (`force` = a roster
+    /// churn re-home) gets one bounded re-send window to heal the gap; the
+    /// per-connect `ResumeMarks` handles the reconnect case.
+    async fn reconcile_tail(&mut self, force: bool) {
         self.last_reconcile = Instant::now();
         let locations: Vec<TranscriptLocation> =
             self.transcript_locations.values().cloned().collect();
         for loc in locations {
-            let off = self.offsets.get(&loc.offset_key);
-            match transcript::reconcile_tail(&loc.path, &loc.local_id, off) {
-                Ok(events) => {
-                    if !events.is_empty() {
-                        tracing::debug!(
-                            count = events.len(),
-                            path = %loc.path.display(),
-                            "reconcile re-tail re-emitting (server dedups)"
-                        );
-                    }
-                    for evt in events {
-                        self.emit(evt).await;
-                    }
+            let local = self.offsets.get(&loc.offset_key);
+            let server = self.server_marks.get(&loc.offset_key).copied().unwrap_or(0);
+            if force || local > server {
+                self.resend_window(&loc).await;
+                self.server_marks.insert(loc.offset_key.clone(), local);
+            }
+        }
+    }
+
+    /// The offset to tail a session from, fast-forwarded to a server resume mark
+    /// that sits AHEAD of our persisted offset (CCT-741) — the cold-start /
+    /// restart case where in-memory offsets are empty but the server already
+    /// holds the transcript. Bounded by the file length so a stale mark past a
+    /// truncated/rotated file can't skip live bytes. Persists the clamp so a
+    /// later poll doesn't re-clamp.
+    fn resume_offset(&mut self, key: &str, path: &Path) -> u64 {
+        let local = self.offsets.get(key);
+        if let Some(&mark) = self.server_marks.get(key)
+            && mark > local
+        {
+            let bounded = clamp_to_file_len(path, mark);
+            if bounded > local {
+                self.offsets.set(key.to_owned(), bounded);
+                return bounded;
+            }
+        }
+        local
+    }
+
+    /// Apply server-pushed transcript resume marks (CCT-741): record each mark,
+    /// clamp the cursor of any session already ahead-clampable forward, and heal
+    /// a session we already tail whose offset has run ahead of (or has no) mark
+    /// with a single bounded re-send window — the one-time heal that replaces the
+    /// old periodic re-tail.
+    async fn apply_resume_marks(&mut self, marks: Vec<(String, u64)>) {
+        let mark_map: HashMap<String, u64> = marks.into_iter().collect();
+        for (key, mark) in &mark_map {
+            let entry = self.server_marks.entry(key.clone()).or_insert(0);
+            *entry = (*entry).max(*mark);
+        }
+        let locations: Vec<TranscriptLocation> =
+            self.transcript_locations.values().cloned().collect();
+        let mut dirty = false;
+        for loc in locations {
+            let prev = self.offsets.get(&loc.offset_key);
+            if self.resume_offset(&loc.offset_key, &loc.path) != prev {
+                // Clamped forward: the server already has this, no re-send.
+                dirty = true;
+                continue;
+            }
+            let behind_or_absent = match mark_map.get(&loc.offset_key) {
+                Some(&mark) => mark < prev,
+                None => true,
+            };
+            if behind_or_absent && prev > 0 {
+                self.resend_window(&loc).await;
+                self.server_marks.insert(loc.offset_key.clone(), prev);
+            }
+        }
+        if dirty {
+            self.offsets.flush();
+        }
+    }
+
+    /// Re-emit one bounded window BEHIND a session's persisted offset (the
+    /// CCT-253 64 KiB re-tail) to heal a gap, then surface our offset as a mark
+    /// so the server's high-water mark catches up. The persisted offset is left
+    /// untouched — this is a pure catch-up replay the server dedups.
+    async fn resend_window(&self, loc: &TranscriptLocation) {
+        let off = self.offsets.get(&loc.offset_key);
+        match transcript::reconcile_tail(&loc.path, &loc.local_id, off) {
+            Ok(events) => {
+                for evt in events {
+                    self.emit(evt).await;
                 }
-                Err(err) => {
-                    tracing::debug!(%err, path = %loc.path.display(), "reconcile re-tail failed");
-                }
+                self.emit(AdapterEvent::TranscriptMark {
+                    local_id: loc.local_id.clone(),
+                    offset: off,
+                })
+                .await;
+            }
+            Err(err) => {
+                tracing::debug!(%err, path = %loc.path.display(), "resume-mark re-send failed");
             }
         }
     }
@@ -2851,6 +2936,14 @@ impl Driver {
     async fn emit(&self, evt: AdapterEvent) {
         let _ = self.events.send(evt).await;
     }
+}
+
+/// A server resume mark bounded by the transcript's current length (CCT-741): a
+/// mark past EOF (stale after a `/clear` truncation or rotation) must never seek
+/// beyond live bytes. A missing/unreadable file yields 0 so the tail restarts
+/// from the top rather than trusting the mark.
+fn clamp_to_file_len(path: &Path, mark: u64) -> u64 {
+    std::fs::metadata(path).map(|m| mark.min(m.len())).unwrap_or(0)
 }
 
 /// Parse a permission `needs` string (`"approve <Tool>: <detail>"`) into a
@@ -4365,5 +4458,115 @@ mod tests {
         assert!(
             report.effective_state.missing_reason.as_deref().unwrap().contains("unknown session")
         );
+    }
+
+    /// Write `lines` to a live session's main transcript at the path
+    /// `apply_snapshot` resolves for `snap(short, …)`, returning its `local_id`.
+    fn write_main_transcript(d: &Driver, short: &str, lines: &[&str]) -> String {
+        use std::io::Write;
+        let sess = format!("{short}-uuid");
+        let path = transcript::transcript_path(&d.cfg.projects_root, "/tmp", &sess);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&path).unwrap();
+        for l in lines {
+            f.write_all(l.as_bytes()).unwrap();
+            f.write_all(b"\n").unwrap();
+        }
+        sess
+    }
+
+    fn text_line(t: &str) -> String {
+        format!(
+            r#"{{"type":"assistant","message":{{"content":[{{"type":"text","text":"{t}"}}]}}}}"#
+        )
+    }
+
+    fn drain_messages(rx: &mut mpsc::Receiver<AdapterEvent>) -> Vec<String> {
+        let mut out = Vec::new();
+        while let Ok(evt) = rx.try_recv() {
+            if let AdapterEvent::Message { payload, .. } = evt
+                && let Some(t) = payload.get("text").and_then(|v| v.as_str())
+            {
+                out.push(t.to_owned());
+            }
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn resume_mark_clamps_cursor_forward_and_skips_replay() {
+        // CCT-741: a server mark ahead of the (cold-start empty) local offset
+        // fast-forwards the tail cursor, so the bytes the server already has are
+        // never re-emitted.
+        let (mut d, mut rx) = driver();
+        let l0 = text_line("first");
+        let sess = write_main_transcript(&d, "abcd1234", &[&l0]);
+        // First poll establishes the location and tails "first".
+        d.apply_snapshot(vec![snap("abcd1234", "working", None)]).await;
+        let seen = drain_messages(&mut rx);
+        assert!(seen.contains(&"first".to_owned()));
+        let mark = d.offsets.get(&sess);
+        assert!(mark > 0);
+
+        // Append two more lines, then wipe the local offset to simulate a
+        // daemon restart (in prod offsets are in-memory only).
+        let l1 = text_line("second");
+        let l2 = text_line("third");
+        write_main_transcript(&d, "abcd1234", &[&l1, &l2]);
+        d.offsets.set(sess.clone(), 0);
+
+        // The server hands back its stored mark (end of "first").
+        d.apply_resume_marks(vec![(sess.clone(), mark)]).await;
+        assert_eq!(d.offsets.get(&sess), mark, "cursor clamps forward to the mark");
+
+        // Next poll resumes from the mark: only the two new lines, never "first".
+        d.apply_snapshot(vec![snap("abcd1234", "working", None)]).await;
+        let seen = drain_messages(&mut rx);
+        assert!(seen.contains(&"second".to_owned()) && seen.contains(&"third".to_owned()));
+        assert!(!seen.contains(&"first".to_owned()), "clamped bytes must not replay");
+    }
+
+    #[tokio::test]
+    async fn absent_mark_triggers_one_bounded_resend_then_idle_is_silent() {
+        // CCT-741 acceptance: a session we already tail with NO server mark gets
+        // exactly one bounded re-send window; once the offsets agree, repeated
+        // periodic passes at idle emit nothing.
+        let (mut d, mut rx) = driver();
+        let l0 = text_line("alpha");
+        let l1 = text_line("beta");
+        write_main_transcript(&d, "abcd1234", &[&l0, &l1]);
+        d.apply_snapshot(vec![snap("abcd1234", "working", None)]).await;
+        let _ = drain_messages(&mut rx);
+
+        // No mark for this session → one bounded window re-send (server dedups).
+        d.apply_resume_marks(vec![]).await;
+        let resent = drain_messages(&mut rx);
+        assert!(resent.contains(&"alpha".to_owned()) && resent.contains(&"beta".to_owned()));
+
+        // Now offsets and the recorded server mark agree: several periodic
+        // reconcile passes must emit ZERO frames (the whole point of the ticket).
+        for _ in 0..5 {
+            d.reconcile_tail(false).await;
+        }
+        assert!(rx.try_recv().is_err(), "idle periodic reconcile must emit nothing");
+    }
+
+    #[tokio::test]
+    async fn divergent_mark_behind_local_triggers_resend() {
+        // CCT-741: the server's mark is BEHIND our persisted offset (a send
+        // dropped before reconnect) — heal the gap with one bounded window.
+        let (mut d, mut rx) = driver();
+        let l0 = text_line("one");
+        let l1 = text_line("two");
+        let sess = write_main_transcript(&d, "abcd1234", &[&l0, &l1]);
+        d.apply_snapshot(vec![snap("abcd1234", "working", None)]).await;
+        let _ = drain_messages(&mut rx);
+        let local = d.offsets.get(&sess);
+        assert!(local > 1);
+
+        d.apply_resume_marks(vec![(sess.clone(), 1)]).await;
+        let resent = drain_messages(&mut rx);
+        assert!(!resent.is_empty(), "a mark behind the local offset must re-send the window");
+        assert_eq!(d.offsets.get(&sess), local, "the persisted offset is never rewound");
     }
 }
