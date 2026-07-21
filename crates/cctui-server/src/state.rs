@@ -104,6 +104,15 @@ pub struct AppState {
     /// restart is simply absent until the next daemon poll, and the webui falls
     /// back to its static offline model list meanwhile.
     pub codex_catalogs: Arc<DashMap<Uuid, cctui_proto::codex_catalog::CodexModelCatalog>>,
+    /// Rolling per-machine daemon-WS eviction counts (CCT-744); an escalation to
+    /// ERROR when a machine flaps past the threshold is the eviction-loop alert.
+    pub eviction_tracker: Arc<crate::bandwidth_watch::EvictionTracker>,
+    /// Last-seen upload total vs persisted insert count per machine (CCT-744), so
+    /// a heartbeat can flag uploads that grow without matching `stream_events`.
+    pub divergence_tracker: Arc<crate::bandwidth_watch::DivergenceTracker>,
+    /// Persisted `stream_events` inserts observed per machine since server start,
+    /// the cheap in-memory signal the divergence detector reads.
+    pub machine_event_inserts: Arc<DashMap<Uuid, u64>>,
 }
 
 /// Sliding-window spam state for one orphan token fingerprint. See

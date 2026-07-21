@@ -24,9 +24,15 @@ pub enum DaemonFrameUp {
     /// Optional explicit registration hint when the adapter cannot supply a
     /// full `SessionStarted` yet (e.g. resumed session). Mostly redundant.
     SessionRegistered { adapter_id: String, local_id: String },
-    /// Liveness ping. Includes coarse per-daemon stats (counts of adapters
-    /// running, queued events) for the future supervisor view.
-    Heartbeat { sent_at: chrono::DateTime<chrono::Utc> },
+    /// Liveness ping. `bandwidth` (CCT-744) carries the daemon's per-subsystem
+    /// byte counters so the server can persist per-machine bandwidth and detect
+    /// an upload/insert divergence. Optional so older daemons still parse and the
+    /// server tolerates its absence.
+    Heartbeat {
+        sent_at: chrono::DateTime<chrono::Utc>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bandwidth: Option<crate::bandwidth::BandwidthSummary>,
+    },
     /// Reply to a [`DaemonFrameDown::StageFiles`] request (CCT-236, mid-chat
     /// attachments). `request_id` correlates with the originating
     /// `POST /api/v1/sessions/{id}/files` so the server can return the staged
@@ -807,6 +813,28 @@ mod tests {
         assert!(json.contains(r#""type":"event""#));
         assert!(json.contains(r#""adapter_id":"claude-code""#));
         let _back: DaemonFrameUp = serde_json::from_str(&json).unwrap();
+    }
+
+    #[test]
+    fn heartbeat_carries_bandwidth_and_accepts_legacy_payload() {
+        let hb = DaemonFrameUp::Heartbeat {
+            sent_at: chrono::Utc::now(),
+            bandwidth: Some(crate::bandwidth::BandwidthSummary {
+                forward: 900,
+                blob_put: 42,
+                ..Default::default()
+            }),
+        };
+        let json = serde_json::to_string(&hb).unwrap();
+        assert!(json.contains(r#""forward":900"#), "{json}");
+        assert!(json.contains(r#""blob_put":42"#), "{json}");
+
+        let legacy = r#"{"type":"heartbeat","sent_at":"2026-07-21T00:00:00Z"}"#;
+        let back: DaemonFrameUp = serde_json::from_str(legacy).unwrap();
+        match back {
+            DaemonFrameUp::Heartbeat { bandwidth, .. } => assert!(bandwidth.is_none()),
+            _ => panic!("expected Heartbeat"),
+        }
     }
 
     #[test]

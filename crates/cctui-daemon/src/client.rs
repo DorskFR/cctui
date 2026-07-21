@@ -7,10 +7,13 @@ use cctui_proto::api::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::counters::{BandwidthCounters, Subsystem};
+
 #[derive(Debug, Clone)]
 pub struct ServerClient {
     base_url: String,
     http: reqwest::Client,
+    counters: BandwidthCounters,
 }
 
 #[derive(Debug, Serialize)]
@@ -43,7 +46,24 @@ pub struct MachineStatus {
 impl ServerClient {
     #[must_use]
     pub fn new(base_url: impl Into<String>) -> Self {
-        Self { base_url: base_url.into(), http: reqwest::Client::new() }
+        Self {
+            base_url: base_url.into(),
+            http: reqwest::Client::new(),
+            counters: BandwidthCounters::new(),
+        }
+    }
+
+    /// Attach shared bandwidth counters so blob/image PUT bodies are accounted
+    /// under [`Subsystem::BlobPut`] (CCT-744).
+    #[must_use]
+    pub fn with_counters(mut self, counters: BandwidthCounters) -> Self {
+        self.counters = counters;
+        self
+    }
+
+    #[must_use]
+    pub fn counters(&self) -> BandwidthCounters {
+        self.counters.clone()
     }
 
     pub async fn enroll(
@@ -171,6 +191,7 @@ impl ServerClient {
             self.base_url.trim_end_matches('/'),
             session_id,
         );
+        let len = bytes.len() as u64;
         let resp = self
             .http
             .post(&url)
@@ -184,6 +205,7 @@ impl ServerClient {
             let text = resp.text().await.unwrap_or_default();
             anyhow::bail!("upload_session_image failed ({status}): {text}");
         }
+        self.counters.add(Subsystem::BlobPut, len);
         let parsed: SessionImageUploadResponse = resp.json().await?;
         Ok(parsed.image_id)
     }
@@ -199,6 +221,7 @@ impl ServerClient {
         media_type: Option<&str>,
     ) -> anyhow::Result<()> {
         let url = format!("{}/api/v1/daemon/blobs/{}", self.base_url.trim_end_matches('/'), hash);
+        let len = bytes.len() as u64;
         let mut req = self.http.put(&url).bearer_auth(machine_key).body(bytes);
         if let Some(mt) = media_type {
             req = req.header(reqwest::header::CONTENT_TYPE, mt);
@@ -209,6 +232,7 @@ impl ServerClient {
             let text = resp.text().await.unwrap_or_default();
             anyhow::bail!("put_blob failed ({status}): {text}");
         }
+        self.counters.add(Subsystem::BlobPut, len);
         Ok(())
     }
 
@@ -219,5 +243,33 @@ impl ServerClient {
         let base = self.base_url.trim_end_matches('/');
         let ws_base = base.replacen("http://", "ws://", 1).replacen("https://", "wss://", 1);
         format!("{ws_base}/api/v1/daemon/ws?token={machine_key}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn serve_put(status: &'static str) -> String {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let _ = sock.read(&mut buf).await.unwrap();
+            sock.write_all(status.as_bytes()).await.unwrap();
+            sock.flush().await.unwrap();
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn put_blob_accounts_body_bytes_under_blob_put() {
+        let url = serve_put("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").await;
+        let counters = BandwidthCounters::new();
+        let client = ServerClient::new(url).with_counters(counters.clone());
+        client.put_blob("mkey", "abc123", vec![7u8; 512], Some("image/png")).await.unwrap();
+        assert_eq!(counters.summary().blob_put, 512);
     }
 }

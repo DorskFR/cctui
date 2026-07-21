@@ -26,22 +26,26 @@ pub struct Runtime {
 const FILE_NAME: &str = "daemon-runtime.json";
 
 /// Most preferred first. Worker containers can lack a runtime dir and have a
-/// root-owned `~/.config` where `mkdir` is EACCES (CCT-629); `read()` must
-/// probe this same list so `status` finds whatever `record()` could write.
-fn candidates() -> Vec<PathBuf> {
+/// root-owned `~/.config` where `mkdir` is EACCES (CCT-629); readers must probe
+/// this same list so `status` finds whatever the daemon could write.
+pub(crate) fn state_candidates(file_name: &str) -> Vec<PathBuf> {
     let mut out = Vec::new();
     if let Some(d) = dirs::runtime_dir() {
-        out.push(d.join("cctui").join(FILE_NAME));
+        out.push(d.join("cctui").join(file_name));
     }
     if let Some(d) = dirs::config_dir() {
-        out.push(d.join("cctui").join(FILE_NAME));
+        out.push(d.join("cctui").join(file_name));
     }
     let uid = rustix::process::getuid().as_raw();
-    out.push(std::env::temp_dir().join(format!("cctui-{uid}")).join(FILE_NAME));
+    out.push(std::env::temp_dir().join(format!("cctui-{uid}")).join(file_name));
     out
 }
 
-fn record_at(candidates: &[PathBuf], json: &str) -> Option<PathBuf> {
+fn candidates() -> Vec<PathBuf> {
+    state_candidates(FILE_NAME)
+}
+
+pub(crate) fn record_at(candidates: &[PathBuf], json: &str) -> Option<PathBuf> {
     for p in candidates {
         let Some(dir) = p.parent() else { continue };
         if let Err(err) = std::fs::create_dir_all(dir) {

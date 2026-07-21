@@ -501,6 +501,16 @@ async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: U
                 Inbound::Done => break,
                 Inbound::Idle => {
                     tracing::warn!(%machine_id, "daemon WS idle past read timeout — evicting");
+                    let count = state.eviction_tracker.record(machine_id);
+                    if count >= crate::bandwidth_watch::EVICTION_THRESHOLD {
+                        tracing::error!(
+                            %machine_id,
+                            evictions = count,
+                            window_mins = crate::bandwidth_watch::EVICTION_WINDOW.as_secs() / 60,
+                            "daemon WS eviction loop — machine evicted repeatedly; \
+                             suspected re-upload/re-connect loop (CCT-744)",
+                        );
+                    }
                     break;
                 }
             };
@@ -674,7 +684,7 @@ async fn process_frame(
             }
             Ok(())
         }
-        DaemonFrameUp::Heartbeat { .. } => {
+        DaemonFrameUp::Heartbeat { bandwidth, .. } => {
             // Machine liveness (CCT-255): advance `last_seen_at` on EVERY
             // heartbeat (not just connect, as auth.rs does), then derive the
             // online/stale/offline tier and broadcast it on transition. This is
@@ -692,10 +702,69 @@ async fn process_frame(
                 machine_id,
                 cctui_proto::models::MachineLiveness::Online,
             );
+            if let Some(bandwidth) = bandwidth {
+                persist_bandwidth(state, machine_id, &bandwidth).await;
+                detect_divergence(state, machine_id, bandwidth.total());
+            }
             Ok(())
         }
         // Any future #[non_exhaustive] variants are no-ops.
         _ => Ok(()),
+    }
+}
+
+/// Bump the per-machine persisted-insert counter feeding divergence detection
+/// (CCT-744), only when a `stream_events` row was actually written.
+fn note_insert(state: &AppState, machine_id: Uuid, newly_inserted: bool) {
+    if newly_inserted {
+        *state.machine_event_inserts.entry(machine_id).or_insert(0) += 1;
+    }
+}
+
+/// Upsert the daemon's last-known per-subsystem byte counters (CCT-744). Fire-
+/// and-forget: a failed write only loses one heartbeat's snapshot.
+async fn persist_bandwidth(
+    state: &AppState,
+    machine_id: Uuid,
+    bw: &cctui_proto::bandwidth::BandwidthSummary,
+) {
+    let res = sqlx::query(
+        "INSERT INTO machine_bandwidth \
+           (machine_id, forward, retransmit, backfill, self_update, blob_put, heartbeat, updated_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, now()) \
+         ON CONFLICT (machine_id) DO UPDATE SET \
+           forward = EXCLUDED.forward, retransmit = EXCLUDED.retransmit, \
+           backfill = EXCLUDED.backfill, self_update = EXCLUDED.self_update, \
+           blob_put = EXCLUDED.blob_put, heartbeat = EXCLUDED.heartbeat, updated_at = now()",
+    )
+    .bind(machine_id)
+    .bind(i64::try_from(bw.forward).unwrap_or(i64::MAX))
+    .bind(i64::try_from(bw.retransmit).unwrap_or(i64::MAX))
+    .bind(i64::try_from(bw.backfill).unwrap_or(i64::MAX))
+    .bind(i64::try_from(bw.self_update).unwrap_or(i64::MAX))
+    .bind(i64::try_from(bw.blob_put).unwrap_or(i64::MAX))
+    .bind(i64::try_from(bw.heartbeat).unwrap_or(i64::MAX))
+    .execute(&state.pool)
+    .await;
+    if let Err(err) = res {
+        tracing::warn!(%err, %machine_id, "machine_bandwidth upsert failed");
+    }
+}
+
+/// The 2026-07-21 failure signature (CCT-744): reported upload bytes climb while
+/// persisted `stream_events` inserts don't. In-memory, cheap, piggybacked on the
+/// heartbeat; an ERROR is the alert glitchtip forwards.
+fn detect_divergence(state: &AppState, machine_id: Uuid, upload_bytes: u64) {
+    let inserts = state.machine_event_inserts.get(&machine_id).map_or(0, |v| *v);
+    if let Some(d) = state.divergence_tracker.observe(machine_id, upload_bytes, inserts) {
+        tracing::error!(
+            %machine_id,
+            upload_bytes = d.upload_bytes,
+            prev_upload_bytes = d.prev_upload_bytes,
+            insert_count = d.insert_count,
+            "upload/insert divergence — daemon uploading bytes with no new persisted \
+             stream_events (CCT-744)",
+        );
     }
 }
 
@@ -769,10 +838,12 @@ async fn handle_event(
         AdapterEvent::Message { local_id, payload } => {
             inserted_seq = insert_event(state, &local_id, "message", payload).await?;
             newly_inserted = inserted_seq.is_some();
+            note_insert(state, machine_id, newly_inserted);
         }
         AdapterEvent::ToolUse { local_id, payload } => {
             inserted_seq = insert_event(state, &local_id, "tool_use", payload).await?;
             newly_inserted = inserted_seq.is_some();
+            note_insert(state, machine_id, newly_inserted);
         }
         AdapterEvent::SessionEnded { local_id, reason } => {
             mark_session_ended(state, &local_id, &reason).await?;
