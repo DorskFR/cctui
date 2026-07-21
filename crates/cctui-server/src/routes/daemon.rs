@@ -20,6 +20,7 @@ use axum::response::IntoResponse;
 use axum::{Extension, Json, response};
 use cctui_proto::adapter::{AdapterEvent, AdapterId, EndReason};
 use cctui_proto::api::{ApiError, DaemonAdapterConfig, DaemonAuthRequest, DaemonAuthResponse};
+use cctui_proto::chunk::{Accept, Reassembler};
 use cctui_proto::ws::{DaemonFrameDown, DaemonFrameUp};
 use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
@@ -37,6 +38,12 @@ use crate::state::AppState;
 /// truly half-open one leaves no dead entry in the bus registry (CCT-140).
 const DAEMON_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 const DAEMON_LIVENESS_CHECK: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Bound the memory a single in-flight chunked transfer may buffer (CCT-738).
+const MAX_TRANSFER_BYTES: usize = 64 * 1024 * 1024;
+
+/// Drop partial chunked transfers idle past this age.
+const STALE_TRANSFER: std::time::Duration = std::time::Duration::from_secs(600);
 
 // ---- /api/v1/daemon/auth ----
 
@@ -340,6 +347,38 @@ where
     }
 }
 
+/// Feed one chunk into the connection's reassembler and produce the ack to send
+/// back plus, on completion, the reassembled inner frame to process (CCT-738).
+fn handle_chunk(
+    reasm: &mut Reassembler,
+    transfer_id: String,
+    chunk_index: u32,
+    total_chunks: u32,
+    data: &str,
+) -> (DaemonFrameDown, Option<DaemonFrameUp>) {
+    match reasm.accept(&transfer_id, chunk_index, total_chunks, data) {
+        Accept::Pending(highest_contiguous_chunk) => {
+            (DaemonFrameDown::ChunkAck { transfer_id, highest_contiguous_chunk }, None)
+        }
+        Accept::Complete(bytes) => {
+            let ack = DaemonFrameDown::ChunkAck {
+                transfer_id,
+                highest_contiguous_chunk: total_chunks.checked_sub(1),
+            };
+            match serde_json::from_slice::<DaemonFrameUp>(&bytes) {
+                Ok(inner) => (ack, Some(inner)),
+                Err(err) => {
+                    tracing::warn!(%err, "reassembled chunk payload did not parse");
+                    (ack, None)
+                }
+            }
+        }
+        Accept::Restart => {
+            (DaemonFrameDown::ChunkAck { transfer_id, highest_contiguous_chunk: None }, None)
+        }
+    }
+}
+
 #[allow(clippy::cognitive_complexity)]
 async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: Uuid) {
     let (mut sink, mut stream) = socket.split();
@@ -399,7 +438,9 @@ async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: U
     let mut liveness = tokio::time::interval(DAEMON_LIVENESS_CHECK);
     liveness.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     liveness.tick().await;
+    let mut reasm = Reassembler::new(MAX_TRANSFER_BYTES);
     loop {
+        reasm.evict_older_than(STALE_TRANSFER);
         let payload =
             match next_inbound(&mut stream, &mut last_frame, &mut liveness, DAEMON_READ_TIMEOUT)
                 .await
@@ -418,6 +459,20 @@ async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: U
                 tracing::warn!(%err, "bad daemon frame");
                 continue;
             }
+        };
+        let frame = match frame {
+            DaemonFrameUp::Chunk { transfer_id, chunk_index, total_chunks, data } => {
+                let (ack, inner) =
+                    handle_chunk(&mut reasm, transfer_id, chunk_index, total_chunks, &data);
+                if tx.send(ack).await.is_err() {
+                    break;
+                }
+                match inner {
+                    Some(inner) => inner,
+                    None => continue,
+                }
+            }
+            other => other,
         };
         let trace = frame_trace(&frame);
         if let Err(err) = process_frame(&state, machine_id, user_id, frame).await {
@@ -1334,9 +1389,7 @@ pub async fn load_scrub_config(
         None
     })
     .flatten();
-    data.as_ref()
-        .map(crate::routes::settings::secret_scrub_of)
-        .unwrap_or_default()
+    data.as_ref().map(crate::routes::settings::secret_scrub_of).unwrap_or_default()
 }
 
 // ---- /api/v1/users/{id}/tokens ----
@@ -1422,7 +1475,12 @@ mod tests {
     use futures_util::Stream;
     use serde_json::json;
 
-    use super::{Inbound, next_inbound, should_auto_approve, strip_nul};
+    use cctui_proto::chunk::{Reassembler, split};
+    use cctui_proto::ws::{DaemonFrameDown, DaemonFrameUp};
+
+    use super::{
+        Inbound, MAX_TRANSFER_BYTES, handle_chunk, next_inbound, should_auto_approve, strip_nul,
+    };
 
     async fn drive<S>(mut stream: S, timeout: Duration, check: Duration) -> Inbound
     where
@@ -1488,5 +1546,103 @@ mod tests {
         assert_eq!(v["command"], "echo hi");
         // Non-strings untouched.
         assert_eq!(v["nested"]["arr"][1], 1);
+    }
+
+    fn big_event(local_id: &str, filler: char) -> (DaemonFrameUp, Vec<DaemonFrameUp>) {
+        let event = DaemonFrameUp::Event {
+            adapter_id: "claude-code".into(),
+            event: cctui_proto::adapter::AdapterEvent::Message {
+                local_id: local_id.into(),
+                payload: json!({ "text": filler.to_string().repeat(600 * 1024) }),
+            },
+        };
+        let bytes = serde_json::to_vec(&event).unwrap();
+        let chunks = split(&bytes).expect("payload must exceed the chunk threshold");
+        (event, chunks)
+    }
+
+    fn feed(
+        reasm: &mut Reassembler,
+        frame: &DaemonFrameUp,
+    ) -> (DaemonFrameDown, Option<DaemonFrameUp>) {
+        let DaemonFrameUp::Chunk { transfer_id, chunk_index, total_chunks, data } = frame else {
+            panic!("not a chunk frame");
+        };
+        handle_chunk(reasm, transfer_id.clone(), *chunk_index, *total_chunks, data)
+    }
+
+    #[test]
+    fn chunk_ack_reports_highest_contiguous_prefix() {
+        let (_event, chunks) = big_event("s1", 'a');
+        assert!(chunks.len() >= 3);
+        let mut reasm = Reassembler::new(MAX_TRANSFER_BYTES);
+
+        let (ack, inner) = feed(&mut reasm, &chunks[0]);
+        assert!(inner.is_none());
+        assert!(matches!(ack, DaemonFrameDown::ChunkAck { highest_contiguous_chunk: Some(0), .. }));
+
+        // A gap at chunk 1 keeps the acked prefix at 0 even after chunk 2 lands.
+        let (ack, _) = feed(&mut reasm, &chunks[2]);
+        assert!(matches!(ack, DaemonFrameDown::ChunkAck { highest_contiguous_chunk: Some(0), .. }));
+    }
+
+    #[test]
+    fn completed_transfer_yields_the_original_inner_frame() {
+        let (event, chunks) = big_event("s1", 'b');
+        let mut reasm = Reassembler::new(MAX_TRANSFER_BYTES);
+        let mut recovered = None;
+        for c in &chunks {
+            if let (_, Some(inner)) = feed(&mut reasm, c) {
+                recovered = Some(inner);
+            }
+        }
+        let recovered = recovered.expect("transfer never completed");
+        assert_eq!(
+            serde_json::to_value(&recovered).unwrap(),
+            serde_json::to_value(&event).unwrap(),
+        );
+        assert!(reasm.is_empty(), "completed transfer is dropped from the buffer");
+    }
+
+    #[test]
+    fn interleaved_transfers_reassemble_independently() {
+        let (ev_a, ca) = big_event("s-a", 'a');
+        let (ev_b, cb) = big_event("s-b", 'b');
+        assert_eq!(ca.len(), cb.len());
+        let mut reasm = Reassembler::new(MAX_TRANSFER_BYTES);
+        let mut done = vec![];
+        for i in 0..ca.len() {
+            if let (_, Some(inner)) = feed(&mut reasm, &ca[i]) {
+                done.push(serde_json::to_value(&inner).unwrap());
+            }
+            if let (_, Some(inner)) = feed(&mut reasm, &cb[i]) {
+                done.push(serde_json::to_value(&inner).unwrap());
+            }
+        }
+        assert_eq!(
+            done,
+            vec![serde_json::to_value(&ev_a).unwrap(), serde_json::to_value(&ev_b).unwrap()],
+        );
+        assert!(reasm.is_empty());
+    }
+
+    #[test]
+    fn no_usable_prefix_nacks_restart() {
+        let (_event, chunks) = big_event("s1", 'c');
+        let mut reasm = Reassembler::new(MAX_TRANSFER_BYTES);
+        // Chunk 1 before chunk 0: nothing contiguous yet, so the daemon restarts.
+        let (ack, inner) = feed(&mut reasm, &chunks[1]);
+        assert!(inner.is_none());
+        assert!(matches!(ack, DaemonFrameDown::ChunkAck { highest_contiguous_chunk: None, .. }));
+    }
+
+    #[test]
+    fn stale_buffers_are_evicted() {
+        let (_event, chunks) = big_event("s1", 'd');
+        let mut reasm = Reassembler::new(MAX_TRANSFER_BYTES);
+        let _ = feed(&mut reasm, &chunks[0]);
+        assert_eq!(reasm.len(), 1);
+        reasm.evict_older_than(Duration::ZERO);
+        assert!(reasm.is_empty(), "the server drops partial transfers past the stale age");
     }
 }

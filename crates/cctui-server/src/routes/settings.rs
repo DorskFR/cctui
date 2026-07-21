@@ -484,26 +484,25 @@ pub async fn rescrub_settings(
         for (id, mut payload) in rows {
             cursor = id;
             report.rows_scanned += 1;
-            let stats = cctui_crypto::redact::redact_json_stats(&mut payload, &patterns);
-            let n: usize = stats.values().sum();
+            let hit_counts = cctui_crypto::redact::redact_json_stats(&mut payload, &patterns);
+            let n: usize = hit_counts.values().sum();
             if n == 0 {
                 continue;
             }
             report.rows_changed += 1;
             report.substitutions += n as u64;
-            for (cat, c) in stats {
+            for (cat, c) in hit_counts {
                 *report.by_category.entry(cat).or_insert(0) += c as u64;
             }
             if !req.dry_run {
                 // A redacted payload can collide with an existing redacted row on
                 // the (session, type, content_hash) dedup index — ignore that,
                 // the equivalent row already exists.
-                if let Err(e) =
-                    sqlx::query("UPDATE stream_events SET payload = $1 WHERE id = $2")
-                        .bind(&payload)
-                        .bind(id)
-                        .execute(&state.pool)
-                        .await
+                if let Err(e) = sqlx::query("UPDATE stream_events SET payload = $1 WHERE id = $2")
+                    .bind(&payload)
+                    .bind(id)
+                    .execute(&state.pool)
+                    .await
                 {
                     tracing::warn!(id, "rescrub update skipped: {e}");
                 }

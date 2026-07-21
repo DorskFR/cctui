@@ -130,7 +130,7 @@ pub async fn fetch_manifest(
 
 /// Conditional manifest fetch: sends `If-None-Match` when `etag` is set,
 /// returns `Ok(None)` on `304` (etag untouched), else stores the response
-/// ETag in `etag` and returns the parsed manifest.
+/// `ETag` in `etag` and returns the parsed manifest.
 pub async fn fetch_manifest_conditional(
     client: &reqwest::Client,
     server_url: &str,
@@ -142,16 +142,19 @@ pub async fn fetch_manifest_conditional(
     if let Some(tag) = etag.as_deref() {
         req = req.header(reqwest::header::IF_NONE_MATCH, tag);
     }
-    let res = req.send().await?;
-    if res.status() == reqwest::StatusCode::NOT_MODIFIED {
+    let response = req.send().await?;
+    if response.status() == reqwest::StatusCode::NOT_MODIFIED {
         return Ok(None);
     }
-    if !res.status().is_success() {
-        bail!("daemon manifest returned {}", res.status());
+    if !response.status().is_success() {
+        bail!("daemon manifest returned {}", response.status());
     }
-    let new_etag =
-        res.headers().get(reqwest::header::ETAG).and_then(|v| v.to_str().ok()).map(str::to_owned);
-    let manifest = res.json::<DaemonManifest>().await?;
+    let new_etag = response
+        .headers()
+        .get(reqwest::header::ETAG)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    let manifest = response.json::<DaemonManifest>().await?;
     *etag = new_etag;
     Ok(Some(manifest))
 }
@@ -219,7 +222,7 @@ pub async fn check_and_apply(server_url: &str, machine_key: &str) -> Result<Opti
     check_and_apply_with(&client()?, server_url, machine_key, &mut None).await
 }
 
-/// [`check_and_apply`] against a caller-owned client + ETag cache, so the
+/// [`check_and_apply`] against a caller-owned client + `ETag` cache, so the
 /// auto-update loop can pool connections and skip unchanged manifests.
 #[allow(clippy::cognitive_complexity)]
 pub async fn check_and_apply_with(
@@ -235,8 +238,7 @@ pub async fn check_and_apply_with(
         return Ok(None);
     }
 
-    let Some(manifest) =
-        fetch_manifest_conditional(client, server_url, machine_key, etag).await?
+    let Some(manifest) = fetch_manifest_conditional(client, server_url, machine_key, etag).await?
     else {
         tracing::debug!("daemon manifest unchanged (304); skipping update");
         return Ok(None);

@@ -156,14 +156,14 @@ fn basename(path: &str) -> &str {
 fn pr_ref(href: &str) -> String {
     let tail = href.trim_end_matches('/');
     let parts: Vec<&str> = tail.split('/').collect();
-    if let Some(pos) = parts.iter().position(|p| *p == "pull" || *p == "pulls") {
-        if let (Some(owner), Some(repo), Some(num)) = (
+    if let Some(pos) = parts.iter().position(|p| *p == "pull" || *p == "pulls")
+        && let (Some(owner), Some(repo), Some(num)) = (
             pos.checked_sub(2).and_then(|i| parts.get(i)),
             pos.checked_sub(1).and_then(|i| parts.get(i)),
             parts.get(pos + 1),
-        ) {
-            return format!("{owner}/{repo}#{num}");
-        }
+        )
+    {
+        return format!("{owner}/{repo}#{num}");
     }
     tail.to_string()
 }

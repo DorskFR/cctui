@@ -1,4 +1,6 @@
-//! Shared secret-redaction engine (CCT-731). [`redact_json`] rewrites string
+//! Shared secret-redaction engine (CCT-731).
+//!
+//! [`redact_json`] rewrites string
 //! leaves only (JSON structure is preserved), masking the matched span with
 //! `[REDACTED:<category>]`; high-entropy prefixed categories add a keyed-HMAC
 //! correlation suffix `[REDACTED:<category>:9f2a]`. Non-reversible, and
@@ -11,7 +13,9 @@ use regex::Regex;
 use serde_json::Value;
 use sha2::Sha256;
 
-/// Per-field scan cap. String leaves longer than this are left untouched — a
+/// Per-field scan cap.
+///
+/// String leaves longer than this are left untouched — a
 /// guard against a pathological multi-MB blob monopolising the hot path. Real
 /// secrets are short and sit well within this window; a legitimate huge tool
 /// output that happens to embed a token past the cap is the rare miss the
@@ -37,12 +41,12 @@ pub struct CompiledPatterns {
 impl CompiledPatterns {
     /// An empty set — redaction is disabled, [`redact_json`] is a no-op.
     #[must_use]
-    pub fn disabled() -> Self {
+    pub const fn disabled() -> Self {
         Self { patterns: Vec::new(), key: Vec::new() }
     }
 
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.patterns.is_empty()
     }
 }
@@ -61,17 +65,67 @@ struct Builtin {
 /// gitlab / slack / youtrack / bitwarden / cctui / ccipat / private-key / jwt /
 /// db-url). Anchored to real prefixes so `[REDACTED:...]` never re-matches.
 const BUILTINS: &[Builtin] = &[
-    Builtin { category: "github_token", regex: r"gh[pousr]_[A-Za-z0-9]{20,}", group: 0, high_entropy: true },
-    Builtin { category: "github_pat", regex: r"github_pat_[A-Za-z0-9_]{20,}", group: 0, high_entropy: true },
+    Builtin {
+        category: "github_token",
+        regex: r"gh[pousr]_[A-Za-z0-9]{20,}",
+        group: 0,
+        high_entropy: true,
+    },
+    Builtin {
+        category: "github_pat",
+        regex: r"github_pat_[A-Za-z0-9_]{20,}",
+        group: 0,
+        high_entropy: true,
+    },
     Builtin { category: "npm_token", regex: r"npm_[A-Za-z0-9]{30,}", group: 0, high_entropy: true },
-    Builtin { category: "anthropic_key", regex: r"sk-ant-[A-Za-z0-9_-]{20,}", group: 0, high_entropy: true },
-    Builtin { category: "aws_access_key", regex: r"(?:AKIA|ABIA|ACCA)[0-9A-Z]{16}", group: 0, high_entropy: true },
-    Builtin { category: "vault_token", regex: r"hvs\.[A-Za-z0-9_-]{20,}", group: 0, high_entropy: true },
-    Builtin { category: "gitlab_token", regex: r"glpat-[A-Za-z0-9_-]{20,}", group: 0, high_entropy: true },
-    Builtin { category: "slack_token", regex: r"xox[baprs]-[A-Za-z0-9-]{10,}", group: 0, high_entropy: true },
-    Builtin { category: "youtrack_token", regex: r"perm[-:][A-Za-z0-9=._-]{20,}", group: 0, high_entropy: true },
-    Builtin { category: "bitwarden_token", regex: r"btr-[A-Za-z0-9._-]{20,}", group: 0, high_entropy: true },
-    Builtin { category: "cctui_token", regex: r"cctui_[mu]_[A-Za-z0-9]{20,}", group: 0, high_entropy: true },
+    Builtin {
+        category: "anthropic_key",
+        regex: r"sk-ant-[A-Za-z0-9_-]{20,}",
+        group: 0,
+        high_entropy: true,
+    },
+    Builtin {
+        category: "aws_access_key",
+        regex: r"(?:AKIA|ABIA|ACCA)[0-9A-Z]{16}",
+        group: 0,
+        high_entropy: true,
+    },
+    Builtin {
+        category: "vault_token",
+        regex: r"hvs\.[A-Za-z0-9_-]{20,}",
+        group: 0,
+        high_entropy: true,
+    },
+    Builtin {
+        category: "gitlab_token",
+        regex: r"glpat-[A-Za-z0-9_-]{20,}",
+        group: 0,
+        high_entropy: true,
+    },
+    Builtin {
+        category: "slack_token",
+        regex: r"xox[baprs]-[A-Za-z0-9-]{10,}",
+        group: 0,
+        high_entropy: true,
+    },
+    Builtin {
+        category: "youtrack_token",
+        regex: r"perm[-:][A-Za-z0-9=._-]{20,}",
+        group: 0,
+        high_entropy: true,
+    },
+    Builtin {
+        category: "bitwarden_token",
+        regex: r"btr-[A-Za-z0-9._-]{20,}",
+        group: 0,
+        high_entropy: true,
+    },
+    Builtin {
+        category: "cctui_token",
+        regex: r"cctui_[mu]_[A-Za-z0-9]{20,}",
+        group: 0,
+        high_entropy: true,
+    },
     Builtin { category: "ccipat", regex: r"CCIPAT_[A-Za-z0-9]{20,}", group: 0, high_entropy: true },
     Builtin {
         category: "private_key",
@@ -95,7 +149,9 @@ const BUILTINS: &[Builtin] = &[
     },
 ];
 
-/// Compile the effective detector set: built-in defaults plus each `enabled`
+/// Compile the effective detector set.
+///
+/// Built-in defaults plus each `enabled`
 /// user pattern (already validated server-side; an uncompilable one is skipped
 /// defensively). `key` is the vault key used for the correlation suffix — an
 /// empty key drops the suffix (dev/test). Returns [`CompiledPatterns::disabled`]
@@ -122,7 +178,9 @@ pub fn compile(enabled: bool, user: &[(String, String)], key: &[u8]) -> Compiled
                 group: 0,
                 high_entropy: false,
             }),
-            Err(e) => tracing::warn!(pattern = %name, error = %e, "skipping uncompilable user scrub pattern"),
+            Err(e) => {
+                tracing::warn!(pattern = %name, error = %e, "skipping uncompilable user scrub pattern");
+            }
         }
     }
     CompiledPatterns { patterns, key: key.to_vec() }
@@ -240,7 +298,10 @@ pub fn redact_json(value: &mut Value, patterns: &CompiledPatterns) -> usize {
 
 /// Like [`redact_json`] but returns per-category substitution counts (for the
 /// re-scrub dry-run report). The `value` is still mutated in place.
-pub fn redact_json_stats(value: &mut Value, patterns: &CompiledPatterns) -> BTreeMap<String, usize> {
+pub fn redact_json_stats(
+    value: &mut Value,
+    patterns: &CompiledPatterns,
+) -> BTreeMap<String, usize> {
     let mut stats = BTreeMap::new();
     if !patterns.is_empty() {
         walk(value, patterns, &mut stats);
@@ -295,7 +356,10 @@ mod tests {
     #[test]
     fn db_url_masks_only_the_password() {
         let out = redact_str("postgres://admin:s3cr3tPass@db.example.com:5432/app");
-        assert!(out.starts_with("postgres://admin:[REDACTED:db_url_password]@db.example.com"), "{out}");
+        assert!(
+            out.starts_with("postgres://admin:[REDACTED:db_url_password]@db.example.com"),
+            "{out}"
+        );
         assert!(!out.contains("s3cr3tPass"));
     }
 
@@ -333,7 +397,8 @@ mod tests {
 
     #[test]
     fn idempotent_rescrub_is_a_noop() {
-        let once = redact_str("ghp_ABCDEFGHIJKLMNOPQRSTUVWX0123 and hvs.CAESIJ0123456789abcdefghij");
+        let once =
+            redact_str("ghp_ABCDEFGHIJKLMNOPQRSTUVWX0123 and hvs.CAESIJ0123456789abcdefghij");
         let twice = redact_str(&once);
         assert_eq!(once, twice);
         let mut v = json!(once);

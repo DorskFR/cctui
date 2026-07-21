@@ -51,6 +51,12 @@ pub enum DaemonFrameUp {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
+    /// One chunk of a serialized up-frame split by [`crate::chunk`] (CCT-738).
+    /// `transfer_id` is the content hash of the full payload (idempotent
+    /// retransmission); `data` is standard-base64 of the raw chunk bytes. The
+    /// server reassembles by `transfer_id`, parses the joined payload as a
+    /// `DaemonFrameUp`, and processes it as usual.
+    Chunk { transfer_id: String, chunk_index: u32, total_chunks: u32, data: String },
 }
 
 /// Frames sent by the server to a daemon over `/api/v1/daemon/ws`.
@@ -91,9 +97,21 @@ pub enum DaemonFrameDown {
     /// leading `~`, reads one directory level, and replies with a
     /// [`DaemonFrameUp::ListDirsResult`] carrying the sorted entry names.
     ListDirs { request_id: uuid::Uuid, path: String },
+    /// Acknowledge chunked-transfer progress (CCT-738): the highest contiguous
+    /// chunk index the server has reassembled for `transfer_id`, or `None` when
+    /// it holds no usable prefix (unknown/evicted transfer) so the daemon
+    /// restarts from chunk 0. The daemon resumes from the chunk after the
+    /// acked one on the next connection.
+    ChunkAck {
+        transfer_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        highest_contiguous_chunk: Option<u32>,
+    },
 }
 
-/// Effective secret-scrub config synced to the daemon (CCT-731): the enable
+/// Effective secret-scrub config synced to the daemon (CCT-731).
+///
+/// The enable
 /// flag plus the owner's enabled user patterns. The compiled defaults live in
 /// `cctui-crypto` on both sides; the daemon combines them at compile time.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -309,32 +327,32 @@ impl AgentEvent {
     /// stamped one. `None` for freshly-normalized events before persistence and
     /// for legacy payloads persisted before the field existed.
     #[must_use]
-    pub fn seq(&self) -> Option<i64> {
+    pub const fn seq(&self) -> Option<i64> {
         match self {
-            AgentEvent::Text { seq, .. }
-            | AgentEvent::ToolCall { seq, .. }
-            | AgentEvent::ToolResult { seq, .. }
-            | AgentEvent::Heartbeat { seq, .. }
-            | AgentEvent::Reply { seq, .. }
-            | AgentEvent::ContextReset { seq, .. }
-            | AgentEvent::CompactSummary { seq, .. }
-            | AgentEvent::TurnEnd { seq, .. } => *seq,
+            Self::Text { seq, .. }
+            | Self::ToolCall { seq, .. }
+            | Self::ToolResult { seq, .. }
+            | Self::Heartbeat { seq, .. }
+            | Self::Reply { seq, .. }
+            | Self::ContextReset { seq, .. }
+            | Self::CompactSummary { seq, .. }
+            | Self::TurnEnd { seq, .. } => *seq,
         }
     }
 
     /// Stamp the causal insert sequence (CCT-481). Called by the server right
     /// after a successful `stream_events` insert so the live broadcast carries
     /// the same ordering key the reload path derives from `stream_events.id`.
-    pub fn set_seq(&mut self, value: i64) {
+    pub const fn set_seq(&mut self, value: i64) {
         let slot = match self {
-            AgentEvent::Text { seq, .. }
-            | AgentEvent::ToolCall { seq, .. }
-            | AgentEvent::ToolResult { seq, .. }
-            | AgentEvent::Heartbeat { seq, .. }
-            | AgentEvent::Reply { seq, .. }
-            | AgentEvent::ContextReset { seq, .. }
-            | AgentEvent::CompactSummary { seq, .. }
-            | AgentEvent::TurnEnd { seq, .. } => seq,
+            Self::Text { seq, .. }
+            | Self::ToolCall { seq, .. }
+            | Self::ToolResult { seq, .. }
+            | Self::Heartbeat { seq, .. }
+            | Self::Reply { seq, .. }
+            | Self::ContextReset { seq, .. }
+            | Self::CompactSummary { seq, .. }
+            | Self::TurnEnd { seq, .. } => seq,
         };
         *slot = Some(value);
     }
@@ -629,7 +647,7 @@ mod tests {
         // Deliberately shuffled so a stable ts-only sort would leave the answer
         // ahead of its own question.
         let mut events = vec![answer, preamble, card];
-        events.sort_by_key(|e| e.seq());
+        events.sort_by_key(super::AgentEvent::seq);
         let seqs: Vec<Option<i64>> = events.iter().map(AgentEvent::seq).collect();
         assert_eq!(seqs, vec![Some(1), Some(2), Some(3)]);
         // The user answer now renders last, after its preamble + card.
@@ -766,7 +784,10 @@ mod tests {
 
     #[test]
     fn daemon_frame_down_reconcile_roundtrips() {
-        let f = DaemonFrameDown::Reconcile { adapters: vec![], secret_scrub: Default::default() };
+        let f = DaemonFrameDown::Reconcile {
+            adapters: vec![],
+            secret_scrub: SecretScrubConfig::default(),
+        };
         let json = serde_json::to_string(&f).unwrap();
         assert!(json.contains(r#""type":"reconcile""#));
         let _back: DaemonFrameDown = serde_json::from_str(&json).unwrap();

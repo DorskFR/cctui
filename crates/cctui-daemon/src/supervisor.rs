@@ -42,6 +42,10 @@ pub struct Supervisor {
     client: ServerClient,
     machine_key: String,
     factories: Vec<Box<dyn AdapterFactory>>,
+    /// A chunked transfer interrupted by a disconnect, kept across reconnects so
+    /// the next connection resumes from the last acked chunk rather than byte
+    /// zero (CCT-738).
+    pending_transfer: std::sync::Mutex<Option<PendingTransfer>>,
 }
 
 impl Supervisor {
@@ -51,7 +55,7 @@ impl Supervisor {
         machine_key: String,
         factories: Vec<Box<dyn AdapterFactory>>,
     ) -> Self {
-        Self { client, machine_key, factories }
+        Self { client, machine_key, factories, pending_transfer: std::sync::Mutex::new(None) }
     }
 
     /// Run the connect/reconnect loop until `shutdown` fires.
@@ -110,60 +114,99 @@ impl Supervisor {
         // auto-Pong to our Ping). Drives half-open detection on ping ticks.
         let mut last_rx = tokio::time::Instant::now();
 
-        loop {
-            tokio::select! {
-                biased;
-                () = shutdown.cancelled() => {
-                    let _ = sink.send(Message::Close(None)).await;
-                    return Ok(());
-                }
-                msg = stream.next() => {
-                    let Some(msg) = msg else { return Ok(()); };
-                    let msg = msg?;
-                    last_rx = tokio::time::Instant::now();
-                    if let Some(frame) = parse_frame(msg)? {
-                        self.handle_frame(frame, &mut running, &event_tx, &frame_up_tx, &mut scrub, &shutdown).await;
+        // Resume an interrupted transfer from its last acked chunk (CCT-738).
+        let mut active: Option<PendingTransfer> = self.pending_transfer.lock().unwrap().take();
+        if let Some(t) = active.as_mut() {
+            t.rewind_to_ack();
+        }
+
+        let outcome: anyhow::Result<()> = async {
+            loop {
+                tokio::select! {
+                    biased;
+                    () = shutdown.cancelled() => {
+                        let _ = sink.send(Message::Close(None)).await;
+                        return Ok(());
                     }
-                }
-                Some(frame) = frame_up_rx.recv() => {
-                    let payload = serde_json::to_string(&frame)?;
-                    sink.send(Message::Text(payload.into())).await?;
-                }
-                Some((adapter_id, event)) = event_rx.recv() => {
-                    tracing::debug!(
-                        %adapter_id,
-                        kind = event_kind(&event),
-                        local_id = event_local_id(&event),
-                        "sending event",
-                    );
-                    // Redact secrets before the event reaches the wire / DB.
-                    let event = scrub_event(event, &scrub);
-                    let up = DaemonFrameUp::Event { adapter_id, event };
-                    let payload = serde_json::to_string(&up)?;
-                    sink.send(Message::Text(payload.into())).await?;
-                }
-                _ = ping.tick() => {
-                    // Detect a half-open connection: if the server hasn't sent
-                    // anything (not even a Pong) within LIVENESS_TIMEOUT, tear
-                    // down so the reconnect loop takes over (CCT-140).
-                    if last_rx.elapsed() > LIVENESS_TIMEOUT {
-                        anyhow::bail!(
-                            "no server traffic for {}s — WS half-open, reconnecting",
-                            last_rx.elapsed().as_secs()
+                    msg = stream.next() => {
+                        let Some(msg) = msg else { return Ok(()); };
+                        let msg = msg?;
+                        last_rx = tokio::time::Instant::now();
+                        if let Some(frame) = parse_frame(msg)? {
+                            if let DaemonFrameDown::ChunkAck { transfer_id, highest_contiguous_chunk } = &frame {
+                                if let Some(t) = active.as_mut()
+                                    && t.id == *transfer_id {
+                                        t.record_ack(*highest_contiguous_chunk);
+                                        if t.is_complete() {
+                                            active = None;
+                                        }
+                                    }
+                            } else {
+                                self.handle_frame(frame, &mut running, &event_tx, &frame_up_tx, &mut scrub, &shutdown).await;
+                            }
+                        }
+                    }
+                    () = std::future::ready(()), if active.as_ref().is_some_and(PendingTransfer::has_unsent) => {
+                        if let Some(t) = active.as_mut() {
+                            let payload = serde_json::to_string(&t.next_frame())?;
+                            sink.send(Message::Text(payload.into())).await?;
+                        }
+                    }
+                    Some(frame) = frame_up_rx.recv() => {
+                        let payload = serde_json::to_string(&frame)?;
+                        sink.send(Message::Text(payload.into())).await?;
+                    }
+                    // Pause new events while a chunked transfer is in flight so a
+                    // single WS carries one large transfer at a time.
+                    Some((adapter_id, event)) = event_rx.recv(), if active.is_none() => {
+                        tracing::debug!(
+                            %adapter_id,
+                            kind = event_kind(&event),
+                            local_id = event_local_id(&event),
+                            "sending event",
                         );
+                        // Redact secrets before the event reaches the wire / DB.
+                        let event = scrub_event(event, &scrub);
+                        let up = DaemonFrameUp::Event { adapter_id, event };
+                        let payload = serde_json::to_string(&up)?;
+                        if payload.len() > cctui_proto::chunk::CHUNK_THRESHOLD {
+                            active = PendingTransfer::new(payload.into_bytes());
+                        } else {
+                            sink.send(Message::Text(payload.into())).await?;
+                        }
                     }
-                    sink.send(Message::Ping(Vec::new().into())).await?;
-                    // App-level liveness heartbeat (CCT-255). The WS Ping above
-                    // keeps the socket warm, but the server only advances
-                    // `machines.last_seen_at` on an application frame; this
-                    // Heartbeat gives it a per-cadence signal to derive the
-                    // machine online/stale/offline tier from.
-                    let hb = DaemonFrameUp::Heartbeat { sent_at: chrono::Utc::now() };
-                    let payload = serde_json::to_string(&hb)?;
-                    sink.send(Message::Text(payload.into())).await?;
+                    _ = ping.tick() => {
+                        // Detect a half-open connection: if the server hasn't sent
+                        // anything (not even a Pong) within LIVENESS_TIMEOUT, tear
+                        // down so the reconnect loop takes over (CCT-140).
+                        if last_rx.elapsed() > LIVENESS_TIMEOUT {
+                            anyhow::bail!(
+                                "no server traffic for {}s — WS half-open, reconnecting",
+                                last_rx.elapsed().as_secs()
+                            );
+                        }
+                        sink.send(Message::Ping(Vec::new().into())).await?;
+                        // App-level liveness heartbeat (CCT-255). The WS Ping above
+                        // keeps the socket warm, but the server only advances
+                        // `machines.last_seen_at` on an application frame; this
+                        // Heartbeat gives it a per-cadence signal to derive the
+                        // machine online/stale/offline tier from.
+                        let hb = DaemonFrameUp::Heartbeat { sent_at: chrono::Utc::now() };
+                        let payload = serde_json::to_string(&hb)?;
+                        sink.send(Message::Text(payload.into())).await?;
+                    }
                 }
             }
         }
+        .await;
+
+        // Keep an unfinished transfer for the next connection to resume.
+        if let Some(t) = active
+            && !t.is_complete()
+        {
+            *self.pending_transfer.lock().unwrap() = Some(t);
+        }
+        outcome
     }
 
     // Dispatch over every `DaemonFrameDown` variant (reconcile / spawn / command /
@@ -335,6 +378,61 @@ impl Supervisor {
     }
 }
 
+/// A large serialized up-frame being sent as ordered chunks (CCT-738), with
+/// enough state to resume after a disconnect: the content-hash id, the highest
+/// chunk the server has acked, and the next chunk to hand this connection.
+struct PendingTransfer {
+    id: String,
+    payload: Vec<u8>,
+    total: u32,
+    highest_acked: Option<u32>,
+    cursor: u32,
+}
+
+impl PendingTransfer {
+    /// Build a transfer for `payload`, or `None` when it fits the single-message
+    /// fast path.
+    fn new(payload: Vec<u8>) -> Option<Self> {
+        if payload.len() <= cctui_proto::chunk::CHUNK_THRESHOLD {
+            return None;
+        }
+        let id = cctui_proto::chunk::transfer_id(&payload);
+        let total = cctui_proto::chunk::chunk_count(payload.len());
+        Some(Self { id, payload, total, highest_acked: None, cursor: 0 })
+    }
+
+    fn resume_index(&self) -> u32 {
+        self.highest_acked.map_or(0, |h| h.saturating_add(1))
+    }
+
+    fn rewind_to_ack(&mut self) {
+        self.cursor = self.resume_index();
+    }
+
+    const fn has_unsent(&self) -> bool {
+        self.cursor < self.total
+    }
+
+    fn next_frame(&mut self) -> DaemonFrameUp {
+        let frame =
+            cctui_proto::chunk::chunk_frame(&self.id, &self.payload, self.cursor, self.total);
+        self.cursor = self.cursor.saturating_add(1);
+        frame
+    }
+
+    fn record_ack(&mut self, highest_contiguous: Option<u32>) {
+        if let Some(h) = highest_contiguous
+            && self.highest_acked.is_none_or(|cur| h > cur)
+        {
+            self.highest_acked = Some(h);
+        }
+    }
+
+    fn is_complete(&self) -> bool {
+        self.highest_acked == self.total.checked_sub(1)
+    }
+}
+
 struct AdapterRunning {
     shutdown: CancellationToken,
     /// The adapter config this instance was built from. A reconcile compares
@@ -452,7 +550,13 @@ mod tests {
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
 
-    use super::{AdapterRunning, LIVENESS_TIMEOUT, PING_INTERVAL, Supervisor, compile_scrub, scrub_event};
+    use cctui_proto::chunk::{Accept, Reassembler};
+    use cctui_proto::ws::DaemonFrameUp;
+
+    use super::{
+        AdapterRunning, LIVENESS_TIMEOUT, PING_INTERVAL, PendingTransfer, Supervisor,
+        compile_scrub, scrub_event,
+    };
     use crate::adapter_runtime::{Adapter, AdapterCtx, AdapterFactory};
     use crate::client::ServerClient;
 
@@ -558,6 +662,79 @@ mod tests {
         assert!(first_token.is_cancelled(), "old adapter instance must be cancelled on rebuild");
         let new_token = &running.get("stub").expect("adapter still running").shutdown;
         assert!(!new_token.is_cancelled(), "rebuilt adapter must be live");
+    }
+
+    fn chunk_parts(frame: DaemonFrameUp) -> (String, u32, u32, String) {
+        match frame {
+            DaemonFrameUp::Chunk { transfer_id, chunk_index, total_chunks, data } => {
+                (transfer_id, chunk_index, total_chunks, data)
+            }
+            _ => panic!("expected a chunk frame"),
+        }
+    }
+
+    #[test]
+    fn small_frames_take_the_single_message_fast_path() {
+        assert!(PendingTransfer::new(vec![0u8; 1024]).is_none());
+        assert!(PendingTransfer::new(vec![0u8; cctui_proto::chunk::CHUNK_THRESHOLD]).is_none());
+        assert!(PendingTransfer::new(vec![0u8; cctui_proto::chunk::CHUNK_THRESHOLD + 1]).is_some());
+    }
+
+    #[test]
+    fn resume_completes_20mb_transfer_across_repeated_disconnects() {
+        // The ticket's acceptance test: a 20MB event over a link killed every
+        // few chunks must still complete by resuming from the last acked chunk.
+        let payload: Vec<u8> =
+            (0..20 * 1024 * 1024).map(|i| u8::try_from(i % 251).unwrap()).collect();
+        let mut sender = PendingTransfer::new(payload.clone()).expect("20MB must chunk");
+        let total = sender.total;
+        let mut server = Reassembler::new(64 * 1024 * 1024);
+        let mut completed: Option<Vec<u8>> = None;
+        let mut connections = 0u32;
+        let mut sends = 0u32;
+        let kill_after = 5u32;
+        let mut guard = 0u32;
+        while completed.is_none() {
+            guard += 1;
+            assert!(guard < 100_000, "resume loop failed to converge");
+            connections += 1;
+            sender.rewind_to_ack();
+            let mut sent_this_conn = 0u32;
+            while sender.has_unsent() {
+                let (id, idx, tot, data) = chunk_parts(sender.next_frame());
+                sends += 1;
+                match server.accept(&id, idx, tot, &data) {
+                    Accept::Pending(highest) => sender.record_ack(highest),
+                    Accept::Complete(bytes) => {
+                        completed = Some(bytes);
+                        break;
+                    }
+                    Accept::Restart => sender.record_ack(None),
+                }
+                sent_this_conn += 1;
+                if sent_this_conn >= kill_after {
+                    break;
+                }
+            }
+        }
+        assert_eq!(completed.unwrap(), payload, "resumed transfer must be byte-exact");
+        assert!(connections > 1, "completing must have spanned multiple connections");
+        // Resuming past the acked prefix means no chunk is ever re-sent.
+        assert_eq!(sends, total, "resume must not re-upload already-acked chunks");
+    }
+
+    #[test]
+    fn record_ack_is_monotonic_and_marks_completion() {
+        let mut t =
+            PendingTransfer::new(vec![7u8; cctui_proto::chunk::CHUNK_SIZE * 3 + 1]).unwrap();
+        assert_eq!(t.total, 4);
+        t.record_ack(Some(2));
+        // A stale lower ack must not rewind progress.
+        t.record_ack(Some(1));
+        assert_eq!(t.resume_index(), 3);
+        assert!(!t.is_complete());
+        t.record_ack(Some(3));
+        assert!(t.is_complete());
     }
 
     #[test]

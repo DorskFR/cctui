@@ -1259,9 +1259,11 @@ const FIELD_VALUES_LIMIT: i64 = 50;
 /// `context`). Empty/whitespace `context` parses to `TRUE` (context-free).
 fn field_values_sql(field: &str, context: &str) -> Option<(String, Vec<SqlParam>)> {
     let (joins, value_expr, guard): (&str, &str, &str) = match field {
-        "machine" => {
-            ("", "COALESCE(m.display_name, m.name)", "m.kind = 'persistent' AND m.deleted_at IS NULL")
-        }
+        "machine" => (
+            "",
+            "COALESCE(m.display_name, m.name)",
+            "m.kind = 'persistent' AND m.deleted_at IS NULL",
+        ),
         "account" => (
             "JOIN session_tokens st ON st.session_id = s.id AND st.revoked_at IS NULL \
              JOIN account_providers ap ON ap.id = st.account_id \
@@ -1750,6 +1752,7 @@ pub struct SwitchAccountRequest {
 /// other family's binding survives (Codex spawns keep their account when the
 /// Claude side moves). 409 when the session has no binding in the target's
 /// family. Success clears the soft-limit block (`SoftLimitCleared`).
+#[allow(clippy::too_many_lines)]
 pub async fn switch_account(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
