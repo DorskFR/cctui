@@ -370,12 +370,7 @@ mod tests {
     #[test]
     fn mcp_matching_stays_substring() {
         let input = json!({ "path": "/tmp/curlx" });
-        let (ok, _) = check_rules(
-            "mcp__fs__read",
-            &input,
-            &["mcp__fs__read".to_string()],
-            &[],
-        );
+        let (ok, _) = check_rules("mcp__fs__read", &input, &["mcp__fs__read".to_string()], &[]);
         assert!(ok);
         let (denied, _) = check_rules("mcp__fs__read", &input, &[], &["curlx".to_string()]);
         assert!(!denied);

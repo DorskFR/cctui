@@ -1,5 +1,6 @@
 pub mod adapter;
 pub mod api;
+pub mod chunk;
 pub mod classifier;
 pub mod codex_catalog;
 pub mod diagnose;

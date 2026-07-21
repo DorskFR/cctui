@@ -875,9 +875,15 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
         bus.register_daemon(machine, tx);
 
-        bus.command_daemon(machine, DaemonFrameDown::Reconcile { adapters: Vec::new(), secret_scrub: Default::default() })
-            .await
-            .unwrap();
+        bus.command_daemon(
+            machine,
+            DaemonFrameDown::Reconcile {
+                adapters: Vec::new(),
+                secret_scrub: cctui_proto::ws::SecretScrubConfig::default(),
+            },
+        )
+        .await
+        .unwrap();
         assert!(matches!(rx.recv().await, Some(DaemonFrameDown::Reconcile { .. })));
     }
 
@@ -899,7 +905,13 @@ mod tests {
         let bus = bus();
         let machine = Uuid::new_v4();
         let err = bus
-            .command_daemon(machine, DaemonFrameDown::Reconcile { adapters: Vec::new(), secret_scrub: Default::default() })
+            .command_daemon(
+                machine,
+                DaemonFrameDown::Reconcile {
+                    adapters: Vec::new(),
+                    secret_scrub: cctui_proto::ws::SecretScrubConfig::default(),
+                },
+            )
             .await
             .unwrap_err();
         assert!(matches!(err, BusError::NoDaemon(m) if m == machine));
@@ -913,7 +925,13 @@ mod tests {
         bus.register_daemon(machine, tx);
         drop(rx);
         let err = bus
-            .command_daemon(machine, DaemonFrameDown::Reconcile { adapters: Vec::new(), secret_scrub: Default::default() })
+            .command_daemon(
+                machine,
+                DaemonFrameDown::Reconcile {
+                    adapters: Vec::new(),
+                    secret_scrub: cctui_proto::ws::SecretScrubConfig::default(),
+                },
+            )
             .await
             .unwrap_err();
         assert!(matches!(err, BusError::Closed));
@@ -936,9 +954,15 @@ mod tests {
         assert!(!bus.unregister_daemon(machine, &old_tx));
         assert!(bus.daemon_connected(machine));
 
-        bus.command_daemon(machine, DaemonFrameDown::Reconcile { adapters: Vec::new(), secret_scrub: Default::default() })
-            .await
-            .unwrap();
+        bus.command_daemon(
+            machine,
+            DaemonFrameDown::Reconcile {
+                adapters: Vec::new(),
+                secret_scrub: cctui_proto::ws::SecretScrubConfig::default(),
+            },
+        )
+        .await
+        .unwrap();
         assert!(new_rx.recv().await.is_some());
     }
 

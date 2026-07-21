@@ -175,7 +175,7 @@ mod tests {
             profile_source: Arc::new(EmptyProfiles),
         })
     }
-
+    #[allow(clippy::needless_pass_by_value)]
     fn review_json(labels: serde_json::Value) -> serde_json::Value {
         serde_json::json!({
             "apiVersion": "admission.k8s.io/v1",

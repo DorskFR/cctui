@@ -137,6 +137,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::used_underscore_binding)]
     fn lock_fd_is_not_cloexec() {
         let (_tmp, cands) = lock_path();
         let lock = acquire_at(&cands).expect("acquire succeeds");
