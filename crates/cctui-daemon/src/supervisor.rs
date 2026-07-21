@@ -21,6 +21,7 @@ use tokio_util::sync::CancellationToken;
 use crate::adapter_runtime::AdapterFactory;
 use crate::bus::build_ctx;
 use crate::client::ServerClient;
+use crate::counters::{BandwidthCounters, Subsystem};
 use crate::sendguard::{MAX_ATTEMPTS, MAX_PAYLOAD_BYTES, SendGuard};
 
 /// Backoff schedule. Capped at the last entry on subsequent failures.
@@ -67,6 +68,8 @@ pub struct Supervisor {
     /// Per-content-hash give-up tracker: size/attempts caps + tombstones so a
     /// poison transfer can't wedge the pipeline (CCT-742).
     guard: std::sync::Mutex<SendGuard>,
+    /// Per-subsystem byte counters, shared with the HTTP client (CCT-744).
+    counters: BandwidthCounters,
 }
 
 impl Supervisor {
@@ -76,12 +79,14 @@ impl Supervisor {
         machine_key: String,
         factories: Vec<Box<dyn AdapterFactory>>,
     ) -> Self {
+        let counters = client.counters();
         Self {
             client,
             machine_key,
             factories,
             pending_transfer: std::sync::Mutex::new(None),
             guard: std::sync::Mutex::new(SendGuard::open_default()),
+            counters,
         }
     }
 
@@ -186,7 +191,11 @@ impl Supervisor {
                     }
                     () = std::future::ready(()), if active.as_ref().is_some_and(PendingTransfer::has_unsent) => {
                         if let Some(t) = active.as_mut() {
-                            let payload = serde_json::to_string(&t.next_frame())?;
+                            let (frame, retransmit) = t.next_frame();
+                            let payload = serde_json::to_string(&frame)?;
+                            let subsystem =
+                                if retransmit { Subsystem::Retransmit } else { Subsystem::Forward };
+                            self.counters.add(subsystem, payload.len() as u64);
                             sink.send(Message::Text(payload.into())).await?;
                         }
                     }
@@ -234,6 +243,7 @@ impl Supervisor {
                                     }
                                 }
                                 Prepared::Frame(text) => {
+                                    self.counters.add(Subsystem::Forward, text.len() as u64);
                                     sink.send(Message::Text(text.into())).await?;
                                 }
                                 Prepared::Oversized(len) => {
@@ -262,9 +272,14 @@ impl Supervisor {
                         // `machines.last_seen_at` on an application frame; this
                         // Heartbeat gives it a per-cadence signal to derive the
                         // machine online/stale/offline tier from.
-                        let hb = DaemonFrameUp::Heartbeat { sent_at: chrono::Utc::now() };
+                        let hb = DaemonFrameUp::Heartbeat {
+                            sent_at: chrono::Utc::now(),
+                            bandwidth: Some(self.counters.summary()),
+                        };
                         let payload = serde_json::to_string(&hb)?;
+                        self.counters.add(Subsystem::Heartbeat, payload.len() as u64);
                         sink.send(Message::Text(payload.into())).await?;
+                        self.counters.persist();
                     }
                 }
             }
@@ -486,6 +501,9 @@ struct PendingTransfer {
     /// Codec the chunk bytes are compressed with, so the server decompresses the
     /// reassembled payload before parsing it (CCT-740). `None` = raw JSON.
     codec: Option<String>,
+    /// Highest chunk index ever emitted, so a re-sent chunk after a resume is
+    /// billed as a retransmit rather than forward (CCT-744).
+    sent_high_water: Option<u32>,
 }
 
 impl PendingTransfer {
@@ -497,7 +515,15 @@ impl PendingTransfer {
         }
         let id = cctui_proto::chunk::transfer_id(&payload);
         let total = cctui_proto::chunk::chunk_count(payload.len());
-        Some(Self { id, payload, total, highest_acked: None, cursor: 0, codec })
+        Some(Self {
+            id,
+            payload,
+            total,
+            highest_acked: None,
+            cursor: 0,
+            codec,
+            sent_high_water: None,
+        })
     }
 
     fn resume_index(&self) -> u32 {
@@ -512,16 +538,23 @@ impl PendingTransfer {
         self.cursor < self.total
     }
 
-    fn next_frame(&mut self) -> DaemonFrameUp {
+    /// The next chunk frame, paired with whether it re-sends an already-emitted
+    /// index (a retransmit) versus advancing new ground (forward) — CCT-744.
+    fn next_frame(&mut self) -> (DaemonFrameUp, bool) {
+        let idx = self.cursor;
+        let retransmit = self.sent_high_water.is_some_and(|hw| idx <= hw);
         let frame = cctui_proto::chunk::chunk_frame(
             &self.id,
             &self.payload,
-            self.cursor,
+            idx,
             self.total,
             self.codec.as_deref(),
         );
         self.cursor = self.cursor.saturating_add(1);
-        frame
+        if self.sent_high_water.is_none_or(|hw| idx > hw) {
+            self.sent_high_water = Some(idx);
+        }
+        (frame, retransmit)
     }
 
     fn record_ack(&mut self, highest_contiguous: Option<u32>) {
@@ -892,7 +925,7 @@ mod tests {
             sender.rewind_to_ack();
             let mut sent_this_conn = 0u32;
             while sender.has_unsent() {
-                let (id, idx, tot, data) = chunk_parts(sender.next_frame());
+                let (id, idx, tot, data) = chunk_parts(sender.next_frame().0);
                 sends += 1;
                 match server.accept(&id, idx, tot, &data) {
                     Accept::Pending(highest) => sender.record_ack(highest),
@@ -989,7 +1022,7 @@ mod tests {
         // Heartbeats never enter the batch buffer (the ping arm sends them
         // directly); prepared, one is a small plain frame, proving the control
         // path is never delayed or wrapped by batching.
-        let hb = DaemonFrameUp::Heartbeat { sent_at: chrono::Utc::now() };
+        let hb = DaemonFrameUp::Heartbeat { sent_at: chrono::Utc::now(), bandwidth: None };
         let super::Prepared::Frame(text) = super::prepare_send(&hb).unwrap() else {
             panic!("heartbeat must not chunk")
         };
@@ -1025,7 +1058,7 @@ mod tests {
             sender.rewind_to_ack();
             let mut sent_this_conn = 0u32;
             while sender.has_unsent() {
-                let (id, idx, tot, data) = chunk_parts(sender.next_frame());
+                let (id, idx, tot, data) = chunk_parts(sender.next_frame().0);
                 sends += 1;
                 match server.accept(&id, idx, tot, &data) {
                     Accept::Pending(highest) => sender.record_ack(highest),
@@ -1049,6 +1082,41 @@ mod tests {
             DaemonFrameUp::Batch { frames } => assert_eq!(frames.len(), want),
             _ => panic!("reassembled payload must be the original batch"),
         }
+    }
+
+    #[test]
+    fn next_frame_flags_resent_chunks_as_retransmit() {
+        // First pass: every chunk is forward (never emitted before).
+        let mut t =
+            PendingTransfer::new(vec![9u8; cctui_proto::chunk::CHUNK_SIZE * 3 + 1], None).unwrap();
+        assert_eq!(t.total, 4);
+        for _ in 0..4 {
+            assert!(!t.next_frame().1, "first emission of a chunk is forward");
+        }
+        // A disconnect acked chunk 0 only; resume rewinds to chunk 1. Chunks 1..3
+        // were already emitted, so re-sending them is a retransmit.
+        t.record_ack(Some(0));
+        t.rewind_to_ack();
+        for expected_idx in 1..4 {
+            let (frame, retransmit) = t.next_frame();
+            assert!(retransmit, "re-sending an already-emitted chunk is a retransmit");
+            let (_, idx, _, _) = chunk_parts(frame);
+            assert_eq!(idx, expected_idx);
+        }
+    }
+
+    #[test]
+    fn forward_event_frame_bytes_are_counted() {
+        use crate::counters::{BandwidthCounters, Subsystem};
+        // The batch-flush arm accounts a plain (non-chunked) event frame as
+        // forward-path bytes; assert the accounting the arm performs.
+        let counters = BandwidthCounters::new();
+        let super::Prepared::Frame(text) = super::prepare_send(&synth_event(1)).unwrap() else {
+            panic!("small event must be a plain frame")
+        };
+        counters.add(Subsystem::Forward, text.len() as u64);
+        assert_eq!(counters.summary().forward, text.len() as u64);
+        assert!(counters.summary().forward > 0);
     }
 
     #[test]

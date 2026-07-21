@@ -140,6 +140,10 @@ fn print_status(path: &PathBuf) -> anyhow::Result<()> {
         ),
         None => println!("running version: unknown (daemon has not run on this machine)"),
     }
+    match cctui_daemon::counters::read_snapshot() {
+        Some(snap) => println!("{}", snap.render()),
+        None => println!("bandwidth: unavailable (daemon has not reported yet)"),
+    }
     Ok(())
 }
 
@@ -158,7 +162,9 @@ async fn run_daemon(path: &std::path::Path, no_auto_update: bool) -> anyhow::Res
     // Record this process as the running service so `status` /
     // `service status` can report the version actually serving.
     runtime::record();
-    let client = ServerClient::new(&cfg.server_url);
+    let counters = cctui_daemon::counters::BandwidthCounters::new();
+    counters.persist();
+    let client = ServerClient::new(&cfg.server_url).with_counters(counters.clone());
     // Confirm identity once up-front so misconfigurations fail loudly.
     let auth = client.daemon_auth(&cfg.machine_key).await?;
     tracing::info!(machine_id = %auth.machine_id, user_id = %auth.user_id, "authenticated");
@@ -177,7 +183,13 @@ async fn run_daemon(path: &std::path::Path, no_auto_update: bool) -> anyhow::Res
     if auto_update_enabled(no_auto_update) {
         let interval = selfupdate::poll_interval();
         tracing::info!(interval_secs = interval.as_secs(), "auto-update enabled");
-        selfupdate::spawn_loop(shutdown.clone(), update_server_url, update_machine_key, interval);
+        selfupdate::spawn_loop(
+            shutdown.clone(),
+            update_server_url,
+            update_machine_key,
+            interval,
+            counters.clone(),
+        );
     } else {
         tracing::info!("auto-update disabled");
     }

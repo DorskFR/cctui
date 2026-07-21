@@ -1,5 +1,6 @@
 pub mod adapter;
 pub mod api;
+pub mod bandwidth;
 pub mod blob;
 pub mod chunk;
 pub mod classifier;

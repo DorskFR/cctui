@@ -32,6 +32,8 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
 
+use crate::counters::{BandwidthCounters, Subsystem};
+
 /// Default auto-update poll cadence. Kept short so a pushed release reaches
 /// daemons within minutes; override with `CCTUI_DAEMON_AUTOUPDATE_INTERVAL_SECS`.
 pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(5 * 60);
@@ -219,7 +221,8 @@ fn swap_in_place(target: &Path, bytes: &[u8]) -> Result<()> {
 /// `Ok(None)` if already current or no matching asset; `Err` only on
 /// unexpected failures.
 pub async fn check_and_apply(server_url: &str, machine_key: &str) -> Result<Option<PathBuf>> {
-    check_and_apply_with(&client()?, server_url, machine_key, &mut None).await
+    check_and_apply_with(&client()?, server_url, machine_key, &mut None, &BandwidthCounters::new())
+        .await
 }
 
 /// [`check_and_apply`] against a caller-owned client + `ETag` cache, so the
@@ -230,6 +233,7 @@ pub async fn check_and_apply_with(
     server_url: &str,
     machine_key: &str,
     etag: &mut Option<String>,
+    counters: &BandwidthCounters,
 ) -> Result<Option<PathBuf>> {
     let asset = asset_basename();
     let target = target_name();
@@ -261,11 +265,13 @@ pub async fn check_and_apply_with(
     let sums_bytes = download(client, &sha256sums_url(server_url), machine_key)
         .await
         .context("download SHA256SUMS")?;
+    counters.add(Subsystem::SelfUpdate, sums_bytes.len() as u64);
     let sums_text = std::str::from_utf8(&sums_bytes).context("SHA256SUMS not UTF-8")?;
     let expected = parse_sha256sums(sums_text, asset)
         .ok_or_else(|| anyhow!("{asset} missing from SHA256SUMS"))?;
 
     let bin_bytes = download(client, &binary_url, machine_key).await.context("download binary")?;
+    counters.add(Subsystem::SelfUpdate, bin_bytes.len() as u64);
     let actual = hex_sha256(&bin_bytes);
     if actual != expected {
         bail!("downloaded {asset} hash {actual} != expected {expected}");
@@ -305,6 +311,7 @@ pub fn spawn_loop(
     server_url: String,
     machine_key: String,
     interval: Duration,
+    counters: BandwidthCounters,
 ) {
     tokio::spawn(async move {
         let client = match client() {
@@ -325,7 +332,9 @@ pub fn spawn_loop(
                 () = shutdown.cancelled() => return,
                 _ = tick.tick() => {}
             }
-            match check_and_apply_with(&client, &server_url, &machine_key, &mut etag).await {
+            match check_and_apply_with(&client, &server_url, &machine_key, &mut etag, &counters)
+                .await
+            {
                 Ok(Some(exe)) => {
                     // The binary was swapped in place; re-exec so this running
                     // process (incl. the systemd-supervised one — execve keeps
@@ -427,7 +436,14 @@ mod tests {
         // need a second request and thus fail. Ok(None) proves neither ran.
         let (url, _req) = serve_once("HTTP/1.1 304 Not Modified\r\nETag: \"v1\"\r\n\r\n").await;
         let mut etag = Some("\"v1\"".to_string());
-        let out = check_and_apply_with(&client().unwrap(), &url, "key", &mut etag).await;
+        let out = check_and_apply_with(
+            &client().unwrap(),
+            &url,
+            "key",
+            &mut etag,
+            &BandwidthCounters::new(),
+        )
+        .await;
         assert!(matches!(out, Ok(None)));
     }
 

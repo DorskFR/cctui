@@ -184,6 +184,22 @@ pub struct MachineStatusResponse {
     pub liveness: cctui_proto::models::MachineLiveness,
     pub last_seen_at: DateTime<Utc>,
     pub revoked: bool,
+    /// Last-known per-subsystem daemon bandwidth (CCT-744). `None` until the
+    /// machine's daemon has sent a heartbeat carrying counters.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bandwidth: Option<MachineBandwidth>,
+}
+
+/// Persisted per-subsystem byte totals for one machine (CCT-744).
+#[derive(Serialize, sqlx::FromRow)]
+pub struct MachineBandwidth {
+    pub forward: i64,
+    pub retransmit: i64,
+    pub backfill: i64,
+    pub self_update: i64,
+    pub blob_put: i64,
+    pub heartbeat: i64,
+    pub updated_at: DateTime<Utc>,
 }
 
 pub async fn machine_status(
@@ -217,6 +233,14 @@ pub async fn machine_status(
         .fetch_one(&state.pool)
         .await
         .unwrap_or(false);
+    let bandwidth: Option<MachineBandwidth> = sqlx::query_as(
+        "SELECT forward, retransmit, backfill, self_update, blob_put, heartbeat, updated_at \
+         FROM machine_bandwidth WHERE machine_id = $1",
+    )
+    .bind(machine_id)
+    .fetch_optional(&state.pool)
+    .await
+    .unwrap_or(None);
     Ok(Json(MachineStatusResponse {
         machine_id,
         name,
@@ -224,5 +248,6 @@ pub async fn machine_status(
         liveness: crate::machine_liveness::derive(last_seen_at),
         last_seen_at,
         revoked: revoked_at.is_some(),
+        bandwidth,
     }))
 }

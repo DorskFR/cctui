@@ -1,5 +1,6 @@
 mod auth;
 mod authz;
+mod bandwidth_watch;
 mod bus;
 mod config;
 mod crypto;
@@ -110,6 +111,9 @@ async fn main() -> anyhow::Result<()> {
         gateway_orphan_spam: Arc::new(dashmap::DashMap::new()),
         account_reauth: Arc::new(dashmap::DashMap::new()),
         codex_catalogs: Arc::new(dashmap::DashMap::new()),
+        eviction_tracker: Arc::new(bandwidth_watch::EvictionTracker::default()),
+        divergence_tracker: Arc::new(bandwidth_watch::DivergenceTracker::default()),
+        machine_event_inserts: Arc::new(dashmap::DashMap::new()),
     };
 
     // Warm the reauth gate from the persisted flag (CCT-512) so a restart doesn't
