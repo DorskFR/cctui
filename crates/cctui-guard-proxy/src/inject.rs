@@ -706,7 +706,7 @@ fn sigv4_head(
     let signable_headers = kept.iter().filter(|(n, _)| {
         n.eq_ignore_ascii_case("host")
             || n.eq_ignore_ascii_case("content-type")
-            || n.len() >= 6 && n[..6].eq_ignore_ascii_case("x-amz-")
+            || n.len() >= 6 && n.as_bytes()[..6].eq_ignore_ascii_case(b"x-amz-")
     });
     let identity =
         aws_credential_types::Credentials::new(key_id, secret_key, None, None, "guard-proxy")
@@ -1291,7 +1291,7 @@ mod tests {
     #[test]
     fn sigv4_signs_body_and_strips_agent_artifacts() {
         let h = head(
-            "POST / HTTP/1.1\nHost: secretsmanager.ap-northeast-1.amazonaws.com\nContent-Type: application/x-amz-json-1.1\nContent-Length: 27\nX-Amz-Target: secretsmanager.GetSecretValue\nAuthorization: AWS4-HMAC-SHA256 Credential=DUMMY/garbage\nX-Amz-Date: 19700101T000000Z\nX-Amz-Content-Sha256: garbage\n\n",
+            "POST / HTTP/1.1\nHost: secretsmanager.ap-northeast-1.amazonaws.com\nContent-Type: application/x-amz-json-1.1\nContent-Length: 27\nX-Amz-Target: secretsmanager.GetSecretValue\nAuthorization: AWS4-HMAC-SHA256 Credential=DUMMY/garbage\nX-Amz-Date: 19700101T000000Z\nX-Amz-Content-Sha256: garbage\nX-Amz-Security-Token: agentsessiontoken\nabcdeéf: multibyte-name\n\n",
         );
         let out = sigv4_head(
             &h,
@@ -1318,7 +1318,30 @@ mod tests {
         assert!(!out.contains("DUMMY"), "agent auth must be gone: {out}");
         assert!(!out.contains("19700101"), "agent x-amz-date must be gone: {out}");
         assert!(!out.contains("garbage"), "{out}");
+        assert!(!out.contains("agentsessiontoken"), "agent session token must be gone: {out}");
+        assert!(out.contains("abcdeéf: multibyte-name\r\n"), "{out}");
         assert!(out.ends_with("\r\n\r\n"));
+    }
+
+    #[test]
+    fn sigv4_signs_empty_body_and_query_target() {
+        let h = head(
+            "GET /?Action=GetCallerIdentity&Version=2011-06-15 HTTP/1.1\nHost: sts.us-east-1.amazonaws.com\n\n",
+        );
+        let out = sigv4_head(
+            &h,
+            "sts.us-east-1.amazonaws.com",
+            "us-east-1",
+            "sts",
+            "AKIDEXAMPLE",
+            "verysecret",
+            b"",
+        )
+        .unwrap();
+        let out = as_text(&out);
+        assert!(out.contains("authorization: AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/"), "{out}");
+        assert!(out.contains("/us-east-1/sts/aws4_request"), "{out}");
+        assert!(out.contains("x-amz-date: "), "{out}");
     }
 
     #[test]
@@ -1699,6 +1722,25 @@ mod tests {
         assert!(auth.contains("/ap-northeast-1/secretsmanager/aws4_request"), "{auth}");
         assert!(!auth.contains("DUMMY"), "agent auth must be gone: {auth}");
         assert_eq!(body, payload, "body must arrive byte-identical");
+    }
+
+    #[tokio::test]
+    async fn sigv4_oversized_body_forwards_agent_request_unchanged() {
+        let up = spawn_upstream_with(true).await;
+        let shape = AuthShape::SigV4 {
+            region: "ap-northeast-1".to_owned(),
+            service: "secretsmanager".to_owned(),
+        };
+        let (inj, ca) = injector_for(&up, MockBackend(Ok("AKID")), shape);
+        let payload = "a".repeat(MAX_SIGV4_BODY + 1);
+        let req = format!(
+            "POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nAuthorization: Bearer AGENT-ORIGINAL\r\nConnection: close\r\n\r\n{payload}",
+            payload.len()
+        );
+        let got = roundtrip_raw(Arc::new(inj), &ca, up.addr.port(), &req).await;
+        let (auth, body) = got.split_once('|').expect("upstream echoes auth|body");
+        assert_eq!(auth, "Bearer AGENT-ORIGINAL");
+        assert_eq!(body.len(), payload.len());
     }
 
     #[tokio::test]
