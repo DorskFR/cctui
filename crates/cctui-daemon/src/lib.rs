@@ -9,6 +9,7 @@
 pub mod adapter_runtime;
 pub mod adapters;
 pub mod askhook;
+pub mod blobs;
 pub mod bus;
 pub mod childenv;
 pub mod client;

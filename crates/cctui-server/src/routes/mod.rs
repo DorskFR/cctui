@@ -1,6 +1,7 @@
 pub mod accounts;
 pub mod admin_auth;
 pub mod auth;
+pub mod blobs;
 pub mod capabilities;
 pub mod codex_models;
 pub mod credentials;
