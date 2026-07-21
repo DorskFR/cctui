@@ -704,7 +704,7 @@ async fn process_frame(
             );
             if let Some(bandwidth) = bandwidth {
                 persist_bandwidth(state, machine_id, &bandwidth).await;
-                detect_divergence(state, machine_id, bandwidth.total());
+                detect_divergence(state, machine_id, bandwidth.event_bytes());
             }
             Ok(())
         }

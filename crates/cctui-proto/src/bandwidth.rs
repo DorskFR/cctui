@@ -40,6 +40,14 @@ impl BandwidthSummary {
             .saturating_add(self.blob_put)
             .saturating_add(self.heartbeat)
     }
+
+    /// Bytes that are expected to produce persisted `stream_events` rows —
+    /// the divergence-detection signal. Heartbeat/self-update/blob traffic
+    /// legitimately uploads without inserts and must not count.
+    #[must_use]
+    pub const fn event_bytes(&self) -> u64 {
+        self.forward.saturating_add(self.retransmit).saturating_add(self.backfill)
+    }
 }
 
 #[cfg(test)]
