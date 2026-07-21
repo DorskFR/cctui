@@ -67,6 +67,18 @@ export function latestDirFor(map: SpawnMemoryMap, machineId: string): string | n
 	return best?.dir ?? null;
 }
 
+/** Whether the cwd field should be filled with `last` (the machine's
+ *  remembered dir), given what it currently holds and what the modal itself
+ *  auto-applied so far (`autoApplied`). Returns the dir to write, or null to
+ *  leave the field alone. A user-typed value — anything non-empty the modal
+ *  didn't write — always wins; an empty field is fair game, since an empty cwd
+ *  can't be spawned anyway. */
+export function dirPrefill(current: string, last: string | null, autoApplied: string): string | null {
+	if (!last || current === last) return null;
+	if (current.trim() !== '' && current !== autoApplied) return null;
+	return last;
+}
+
 // The form fields a remembered entry drives, per target. `account_provider` is
 // deliberately absent: the form recomputes it from the selected account.
 export const MACHINE_MEMORY_FIELDS = [
