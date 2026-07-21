@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use cctui_crypto::redact::{self, CompiledPatterns};
-use cctui_proto::adapter::AdapterEvent;
+use cctui_proto::adapter::{AdapterCommand, AdapterEvent};
 use cctui_proto::api::DaemonAdapterConfig;
 use cctui_proto::ws::{DaemonFrameDown, DaemonFrameUp, SecretScrubConfig};
 use futures_util::{SinkExt, StreamExt};
@@ -271,6 +271,16 @@ impl Supervisor {
                     let _ = running.commands_tx.send(*command).await;
                 } else {
                     tracing::warn!(%adapter_id, "command for unknown adapter; dropping");
+                }
+            }
+            DaemonFrameDown::ResumeMarks { session_marks } => {
+                // Fan the marks to every running adapter; each clamps the
+                // sessions it owns and ignores ids it doesn't know (CCT-741).
+                for running in running.values() {
+                    let _ = running
+                        .commands_tx
+                        .send(AdapterCommand::ResumeMarks { marks: session_marks.clone() })
+                        .await;
                 }
             }
             DaemonFrameDown::StageFiles { request_id, adapter_id, local_id, uploads } => {

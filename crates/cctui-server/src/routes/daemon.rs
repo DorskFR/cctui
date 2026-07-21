@@ -443,6 +443,18 @@ async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: U
         }
     }
 
+    // Resume marks must follow Reconcile: the daemon needs its adapters live to
+    // route the marks to before it can clamp their tail cursors (CCT-741).
+    match load_resume_marks(&state, machine_id).await {
+        Ok(session_marks) if !session_marks.is_empty() => {
+            if tx.send(DaemonFrameDown::ResumeMarks { session_marks }).await.is_err() {
+                tracing::warn!("daemon tx closed before resume marks");
+            }
+        }
+        Ok(_) => {}
+        Err(err) => tracing::error!(%err, "load_resume_marks failed"),
+    }
+
     // Outbound pump. Besides forwarding `DaemonFrameDown` frames, it sends a
     // periodic WS Ping so the daemon always hears from us within its liveness
     // window. Without this, an idle connection (no commands queued) sends the
@@ -575,7 +587,8 @@ fn event_local_id(event: &AdapterEvent) -> &str {
         | AdapterEvent::Status { local_id, .. }
         | AdapterEvent::PermissionRequest { local_id, .. }
         | AdapterEvent::PermissionResolved { local_id, .. }
-        | AdapterEvent::TokenUsage { local_id, .. } => local_id,
+        | AdapterEvent::TokenUsage { local_id, .. }
+        | AdapterEvent::TranscriptMark { local_id, .. } => local_id,
         _ => "",
     }
 }
@@ -590,6 +603,7 @@ const fn event_kind(event: &AdapterEvent) -> &'static str {
         AdapterEvent::TokenUsage { .. } => "token_usage",
         AdapterEvent::PermissionRequest { .. } => "permission_request",
         AdapterEvent::PermissionResolved { .. } => "permission_resolved",
+        AdapterEvent::TranscriptMark { .. } => "transcript_mark",
         _ => "other",
     }
 }
@@ -762,6 +776,9 @@ async fn handle_event(
         }
         AdapterEvent::SessionEnded { local_id, reason } => {
             mark_session_ended(state, &local_id, &reason).await?;
+        }
+        AdapterEvent::TranscriptMark { local_id, offset } => {
+            update_transcript_mark(state, &local_id, offset).await?;
         }
         AdapterEvent::TokenUsage {
             local_id,
@@ -1372,6 +1389,43 @@ async fn mark_session_ended(
     Ok(())
 }
 
+/// Advance a session's stored transcript high-water mark to `offset`, keeping
+/// the max so a replayed / out-of-order mark can't rewind it (CCT-741). Handed
+/// back to the daemon as a resume point on its next connect.
+async fn update_transcript_mark(
+    state: &AppState,
+    local_id: &str,
+    offset: u64,
+) -> anyhow::Result<()> {
+    let offset = i64::try_from(offset).unwrap_or(i64::MAX);
+    sqlx::query(
+        "UPDATE sessions SET transcript_offset = GREATEST(transcript_offset, $2) WHERE id = $1",
+    )
+    .bind(local_id)
+    .bind(offset)
+    .execute(&state.pool)
+    .await?;
+    Ok(())
+}
+
+/// The per-session transcript high-water marks for `machine_id` (CCT-741),
+/// handed to the daemon right after Reconcile so it resumes its tail from the
+/// server's stored offset instead of replaying from zero. Only sessions with a
+/// non-zero mark are returned.
+pub async fn load_resume_marks(
+    state: &AppState,
+    machine_id: Uuid,
+) -> anyhow::Result<Vec<(String, u64)>> {
+    let rows: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT id, transcript_offset FROM sessions \
+         WHERE machine_uuid = $1 AND transcript_offset > 0",
+    )
+    .bind(machine_id)
+    .fetch_all(&state.pool)
+    .await?;
+    Ok(rows.into_iter().map(|(id, off)| (id, u64::try_from(off).unwrap_or(0))).collect())
+}
+
 pub async fn load_reconcile(
     state: &AppState,
     machine_id: Uuid,
@@ -1533,8 +1587,8 @@ mod tests {
     use cctui_proto::ws::{DaemonFrameDown, DaemonFrameUp};
 
     use super::{
-        Inbound, MAX_TRANSFER_BYTES, decode_compressed_frame, expand_batch, handle_chunk,
-        next_inbound, should_auto_approve, strip_nul,
+        Inbound, MAX_TRANSFER_BYTES, decode_compressed_frame, event_kind, event_local_id,
+        expand_batch, handle_chunk, next_inbound, should_auto_approve, strip_nul,
     };
 
     async fn drive<S>(mut stream: S, timeout: Duration, check: Duration) -> Inbound
@@ -1601,6 +1655,28 @@ mod tests {
         assert_eq!(v["command"], "echo hi");
         // Non-strings untouched.
         assert_eq!(v["nested"]["arr"][1], 1);
+    }
+
+    #[test]
+    fn transcript_mark_event_is_recognized_and_routed() {
+        let ev = cctui_proto::adapter::AdapterEvent::TranscriptMark {
+            local_id: "sess-9".into(),
+            offset: 4096,
+        };
+        assert_eq!(event_kind(&ev), "transcript_mark");
+        assert_eq!(event_local_id(&ev), "sess-9");
+    }
+
+    #[test]
+    fn resume_marks_frame_carries_stored_offsets() {
+        let rows: Vec<(String, u64)> = vec![("sess-a".into(), 4096), ("sess-b".into(), 12)];
+        let frame = DaemonFrameDown::ResumeMarks { session_marks: rows.clone() };
+        let json = serde_json::to_string(&frame).unwrap();
+        assert!(json.contains(r#""type":"resume_marks""#));
+        match serde_json::from_str::<DaemonFrameDown>(&json).unwrap() {
+            DaemonFrameDown::ResumeMarks { session_marks } => assert_eq!(session_marks, rows),
+            _ => panic!("expected ResumeMarks"),
+        }
     }
 
     fn big_event(local_id: &str, filler: char) -> (DaemonFrameUp, Vec<DaemonFrameUp>) {

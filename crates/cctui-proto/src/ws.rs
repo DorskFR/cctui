@@ -129,6 +129,11 @@ pub enum DaemonFrameDown {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         highest_contiguous_chunk: Option<u32>,
     },
+    /// Per-session transcript high-water marks (CCT-741), sent right after
+    /// Reconcile on connect. `session_marks` maps each session's `local_id` to
+    /// the server's stored transcript byte offset, so the daemon clamps its tail
+    /// cursor forward and resumes instead of replaying the transcript from zero.
+    ResumeMarks { session_marks: Vec<(String, u64)> },
 }
 
 /// Effective secret-scrub config synced to the daemon (CCT-731).
@@ -824,6 +829,22 @@ mod tests {
         let json = serde_json::to_string(&f).unwrap();
         assert!(json.contains(r#""type":"command""#));
         let _back: DaemonFrameDown = serde_json::from_str(&json).unwrap();
+    }
+
+    #[test]
+    fn daemon_frame_down_resume_marks_roundtrips() {
+        let f = DaemonFrameDown::ResumeMarks {
+            session_marks: vec![("sess-1".into(), 4096), ("sess-2".into(), 0)],
+        };
+        let json = serde_json::to_string(&f).unwrap();
+        assert!(json.contains(r#""type":"resume_marks""#));
+        let back: DaemonFrameDown = serde_json::from_str(&json).unwrap();
+        match back {
+            DaemonFrameDown::ResumeMarks { session_marks } => {
+                assert_eq!(session_marks, vec![("sess-1".into(), 4096), ("sess-2".into(), 0)]);
+            }
+            _ => panic!("expected ResumeMarks"),
+        }
     }
 
     #[test]

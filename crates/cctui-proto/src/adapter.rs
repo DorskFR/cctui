@@ -324,6 +324,14 @@ pub enum AdapterEvent {
         local_id: String,
         data: String,
     },
+    /// The daemon's transcript byte-offset high-water mark for a session. The
+    /// server keeps `max(offset)` per session and returns it as a resume mark on
+    /// the daemon's next connect, so the tail cursor clamps forward rather than
+    /// replaying the transcript from zero (CCT-741).
+    TranscriptMark {
+        local_id: String,
+        offset: u64,
+    },
 }
 
 /// Child reference attached to a session — typically a linked PR. Drives the
@@ -342,6 +350,13 @@ pub struct SessionChild {
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum AdapterCommand {
+    /// Per-session transcript resume marks the server pushes on connect
+    /// (CCT-741). `marks` maps `local_id` → the server's stored transcript byte
+    /// offset; the adapter clamps each known session's tail cursor forward and
+    /// heals any divergence with one bounded re-send.
+    ResumeMarks {
+        marks: Vec<(String, u64)>,
+    },
     SendMessage {
         local_id: String,
         text: String,
