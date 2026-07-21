@@ -620,7 +620,7 @@
 
 	{#if acctModalOpen}
 		<AccountSwitchModal
-			currentName={session.account_name}
+			sessionId={id}
 			accounts={$accounts.data ?? []}
 			softLimit={stream.softLimit}
 			onswitch={(acct) => stream.switchAccount(acct)}

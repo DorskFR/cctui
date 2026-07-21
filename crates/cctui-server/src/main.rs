@@ -612,6 +612,14 @@ fn build_api_routes() -> Routes {
             sess_write(),
         )
         .add(
+            &[GET],
+            "/sessions/{id}/bindings",
+            "List a session's per-family account bindings.",
+            get(routes::sessions::session_bindings),
+            Authn::Bearer,
+            sess_read(),
+        )
+        .add(
             &[Method::POST],
             "/sessions/{id}/fork",
             "Fork a session into a new one.",
