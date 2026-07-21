@@ -16,6 +16,10 @@ use uuid::Uuid;
 pub const EVICTION_THRESHOLD: usize = 5;
 pub const EVICTION_WINDOW: Duration = Duration::from_secs(15 * 60);
 
+/// Unexplained event-byte growth below this is noise (heartbeat cadence,
+/// in-flight batches), not the incident signature.
+pub const DIVERGENCE_MIN_BYTES: u64 = 256 * 1024;
+
 /// Rolling per-machine eviction timestamps within [`EVICTION_WINDOW`].
 #[derive(Default)]
 pub struct EvictionTracker {
@@ -63,10 +67,11 @@ pub struct DivergenceTracker {
 }
 
 impl DivergenceTracker {
-    /// Record this heartbeat's cumulative `upload_bytes` and the machine's
-    /// current persisted `insert_count`. Returns `Some` when uploads grew since
-    /// the last observation while inserts did not — a daemon restart (uploads
-    /// reset lower) never fires.
+    /// Record this heartbeat's cumulative event-carrying `upload_bytes` and the
+    /// machine's persisted `insert_count`. The baseline only advances when
+    /// inserts advance (or uploads reset lower, i.e. daemon restart), so slow
+    /// leaks accumulate against it; `Some` requires `DIVERGENCE_MIN_BYTES` of
+    /// growth with zero new inserts.
     pub fn observe(
         &self,
         machine_id: Uuid,
@@ -74,10 +79,25 @@ impl DivergenceTracker {
         insert_count: u64,
     ) -> Option<Divergence> {
         let mut map = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let prev = map.insert(machine_id, Observation { upload_bytes, insert_count });
+        let out = match map.get_mut(&machine_id) {
+            None => {
+                map.insert(machine_id, Observation { upload_bytes, insert_count });
+                None
+            }
+            Some(p) if insert_count > p.insert_count || upload_bytes < p.upload_bytes => {
+                *p = Observation { upload_bytes, insert_count };
+                None
+            }
+            Some(p) if upload_bytes.saturating_sub(p.upload_bytes) < DIVERGENCE_MIN_BYTES => None,
+            Some(p) => {
+                let d =
+                    Divergence { prev_upload_bytes: p.upload_bytes, upload_bytes, insert_count };
+                *p = Observation { upload_bytes, insert_count };
+                Some(d)
+            }
+        };
         drop(map);
-        prev.filter(|p| upload_bytes > p.upload_bytes && insert_count <= p.insert_count)
-            .map(|p| Divergence { prev_upload_bytes: p.upload_bytes, upload_bytes, insert_count })
+        out
     }
 }
 
@@ -116,9 +136,22 @@ mod tests {
         let t = DivergenceTracker::default();
         let m = Uuid::new_v4();
         assert!(t.observe(m, 1_000, 10).is_none(), "first observation cannot diverge");
-        let d = t.observe(m, 2_000, 10).expect("uploads grew, inserts flat → divergence");
+        let grown = 1_000 + DIVERGENCE_MIN_BYTES;
+        let d = t.observe(m, grown, 10).expect("uploads grew past floor, inserts flat");
         assert_eq!(d.prev_upload_bytes, 1_000);
-        assert_eq!(d.upload_bytes, 2_000);
+        assert_eq!(d.upload_bytes, grown);
+    }
+
+    #[test]
+    fn divergence_quiet_below_floor_but_accumulates_against_baseline() {
+        let t = DivergenceTracker::default();
+        let m = Uuid::new_v4();
+        assert!(t.observe(m, 1_000, 10).is_none());
+        for i in 1..=10 {
+            assert!(t.observe(m, 1_000 + i * 200, 10).is_none(), "heartbeat-sized growth is quiet");
+        }
+        let d = t.observe(m, 1_000 + DIVERGENCE_MIN_BYTES, 10).expect("slow leak accumulates");
+        assert_eq!(d.prev_upload_bytes, 1_000, "baseline held until the floor was crossed");
     }
 
     #[test]
