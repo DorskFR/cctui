@@ -21,6 +21,7 @@ use tokio_util::sync::CancellationToken;
 use crate::adapter_runtime::AdapterFactory;
 use crate::bus::build_ctx;
 use crate::client::ServerClient;
+use crate::sendguard::{MAX_ATTEMPTS, MAX_PAYLOAD_BYTES, SendGuard};
 
 /// Backoff schedule. Capped at the last entry on subsequent failures.
 const BACKOFF_SECS: &[u64] = &[5, 10, 20, 60];
@@ -63,6 +64,9 @@ pub struct Supervisor {
     /// the next connection resumes from the last acked chunk rather than byte
     /// zero (CCT-738).
     pending_transfer: std::sync::Mutex<Option<PendingTransfer>>,
+    /// Per-content-hash give-up tracker: size/attempts caps + tombstones so a
+    /// poison transfer can't wedge the pipeline (CCT-742).
+    guard: std::sync::Mutex<SendGuard>,
 }
 
 impl Supervisor {
@@ -72,7 +76,13 @@ impl Supervisor {
         machine_key: String,
         factories: Vec<Box<dyn AdapterFactory>>,
     ) -> Self {
-        Self { client, machine_key, factories, pending_transfer: std::sync::Mutex::new(None) }
+        Self {
+            client,
+            machine_key,
+            factories,
+            pending_transfer: std::sync::Mutex::new(None),
+            guard: std::sync::Mutex::new(SendGuard::open_default()),
+        }
     }
 
     /// Run the connect/reconnect loop until `shutdown` fires.
@@ -161,6 +171,11 @@ impl Supervisor {
                                     && t.id == *transfer_id {
                                         t.record_ack(*highest_contiguous_chunk);
                                         if t.is_complete() {
+                                            {
+                                                let mut guard = self.guard.lock().unwrap();
+                                                guard.complete(&t.id);
+                                                guard.flush();
+                                            }
                                             active = None;
                                         }
                                     }
@@ -207,9 +222,26 @@ impl Supervisor {
                         let frames = std::mem::take(&mut batch);
                         if !frames.is_empty() {
                             match prepare_send(&coalesce(frames))? {
-                                Prepared::Chunked(t) => active = Some(t),
+                                Prepared::Chunked(t) => {
+                                    if self.guard.lock().unwrap().is_tombstoned(&t.id) {
+                                        tracing::warn!(
+                                            transfer_id = %t.id,
+                                            sessions = ?t.session_ids(),
+                                            "give-up: skipping tombstoned poison transfer",
+                                        );
+                                    } else {
+                                        active = Some(t);
+                                    }
+                                }
                                 Prepared::Frame(text) => {
                                     sink.send(Message::Text(text.into())).await?;
+                                }
+                                Prepared::Oversized(len) => {
+                                    tracing::warn!(
+                                        bytes = len,
+                                        cap = MAX_PAYLOAD_BYTES,
+                                        "give-up: dropping payload over the size cap unsent",
+                                    );
                                 }
                             }
                         }
@@ -239,11 +271,26 @@ impl Supervisor {
         }
         .await;
 
-        // Keep an unfinished transfer for the next connection to resume.
+        // An unfinished transfer resumes next connection, unless it has burned
+        // MAX_ATTEMPTS without progress: then tombstone + drop it (CCT-742).
         if let Some(t) = active
             && !t.is_complete()
         {
-            *self.pending_transfer.lock().unwrap() = Some(t);
+            let progress = u64::from(t.resume_index());
+            let mut guard = self.guard.lock().unwrap();
+            let give_up = guard.note_failed_attempt(&t.id, progress);
+            guard.flush();
+            drop(guard);
+            if give_up {
+                tracing::warn!(
+                    transfer_id = %t.id,
+                    attempts = MAX_ATTEMPTS,
+                    sessions = ?t.session_ids(),
+                    "give-up: transfer never acked; tombstoned and dropped, pipeline advances",
+                );
+            } else {
+                *self.pending_transfer.lock().unwrap() = Some(t);
+            }
         }
         outcome
     }
@@ -488,6 +535,36 @@ impl PendingTransfer {
     fn is_complete(&self) -> bool {
         self.highest_acked == self.total.checked_sub(1)
     }
+
+    /// Best-effort list of the session ids carried by this transfer, for the
+    /// give-up diagnostic when it is tombstoned (CCT-742).
+    fn session_ids(&self) -> Vec<String> {
+        let raw = self.codec.as_deref().map_or_else(
+            || Some(self.payload.clone()),
+            |codec| cctui_proto::compress::decompress_codec(codec, &self.payload).ok(),
+        );
+        raw.and_then(|r| serde_json::from_slice::<DaemonFrameUp>(&r).ok())
+            .map(|frame| frame_session_ids(&frame))
+            .unwrap_or_default()
+    }
+}
+
+/// Collect the distinct session local ids referenced by a wire frame, unwrapping
+/// a `Batch` into its members.
+fn frame_session_ids(frame: &DaemonFrameUp) -> Vec<String> {
+    match frame {
+        DaemonFrameUp::Event { event, .. } => {
+            let id = event_local_id(event);
+            if id.is_empty() { vec![] } else { vec![id.to_owned()] }
+        }
+        DaemonFrameUp::Batch { frames } => {
+            let mut ids: Vec<String> = frames.iter().flat_map(frame_session_ids).collect();
+            ids.sort_unstable();
+            ids.dedup();
+            ids
+        }
+        _ => vec![],
+    }
 }
 
 struct AdapterRunning {
@@ -610,6 +687,8 @@ fn frame_size(frame: &DaemonFrameUp) -> usize {
 enum Prepared {
     Frame(String),
     Chunked(PendingTransfer),
+    /// Post-compression bytes over [`MAX_PAYLOAD_BYTES`]; dropped unsent (CCT-742).
+    Oversized(usize),
 }
 
 /// Compress `inner` when worthwhile, then chunk the compressed bytes if they
@@ -618,12 +697,21 @@ enum Prepared {
 fn prepare_send(inner: &DaemonFrameUp) -> anyhow::Result<Prepared> {
     let json = serde_json::to_vec(inner)?;
     let (bytes, codec) = cctui_proto::compress::maybe_compress(&json);
+    classify(bytes, codec.map(str::to_owned))
+}
+
+/// Turn the final post-compression wire `bytes` into a send decision: over the
+/// size cap → drop; over the chunk threshold → chunked transfer; else one frame.
+fn classify(bytes: Vec<u8>, codec: Option<String>) -> anyhow::Result<Prepared> {
+    if bytes.len() > MAX_PAYLOAD_BYTES {
+        return Ok(Prepared::Oversized(bytes.len()));
+    }
     if bytes.len() > cctui_proto::chunk::CHUNK_THRESHOLD {
-        let transfer = PendingTransfer::new(bytes, codec.map(str::to_owned))
-            .expect("bytes exceed the chunk threshold");
+        let transfer =
+            PendingTransfer::new(bytes, codec).expect("bytes exceed the chunk threshold");
         Ok(Prepared::Chunked(transfer))
     } else if let Some(codec) = codec {
-        let up = cctui_proto::compress::compressed_frame(codec, &bytes);
+        let up = cctui_proto::compress::compressed_frame(&codec, &bytes);
         Ok(Prepared::Frame(serde_json::to_string(&up)?))
     } else {
         Ok(Prepared::Frame(String::from_utf8(bytes).expect("serde_json output is valid utf8")))
@@ -873,6 +961,27 @@ mod tests {
         let super::Prepared::Frame(text) = prepared else { panic!("small frame must not chunk") };
         let back: DaemonFrameUp = serde_json::from_str(&text).unwrap();
         assert!(matches!(back, DaemonFrameUp::Event { .. }), "small frame stays a plain Event");
+    }
+
+    #[test]
+    fn oversized_payload_is_dropped_without_chunking() {
+        // Over the 32 MiB cap → Oversized (dropped); at the cap → normal chunk.
+        let over = vec![0u8; super::MAX_PAYLOAD_BYTES + 1];
+        assert!(matches!(super::classify(over, None).unwrap(), super::Prepared::Oversized(_)));
+        let at_cap = vec![0u8; super::MAX_PAYLOAD_BYTES];
+        assert!(matches!(super::classify(at_cap, None).unwrap(), super::Prepared::Chunked(_)));
+    }
+
+    #[test]
+    fn session_ids_lists_batch_members_for_the_give_up_log() {
+        let mut rng = 0x1234_5678_9abc_def0_u64;
+        let batch = super::coalesce((0..800).map(|i| hi_entropy_event(&mut rng, i)).collect());
+        let super::Prepared::Chunked(t) = super::prepare_send(&batch).unwrap() else {
+            panic!("a large batch must chunk");
+        };
+        let ids = t.session_ids();
+        assert!(!ids.is_empty(), "the give-up log must name the affected sessions");
+        assert!(ids.iter().all(|s| s.starts_with('s')), "ids are the batch's local ids");
     }
 
     #[test]
