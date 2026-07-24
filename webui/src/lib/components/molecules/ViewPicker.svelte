@@ -11,8 +11,15 @@
 	let {
 		cardView = $bindable(),
 		dense = $bindable(),
-		kanban = $bindable()
-	}: { cardView: boolean; dense: boolean; kanban: boolean } = $props();
+		kanban = $bindable(),
+		menu = false
+	}: {
+		cardView: boolean;
+		dense: boolean;
+		kanban: boolean;
+		/** Render as a full-width labeled row for the overflow ⋯ menu. */
+		menu?: boolean;
+	} = $props();
 
 	const mode = $derived(
 		kanban ? 'kanban' : `${cardView ? 'card' : 'list'}-${dense ? 'compact' : 'detailed'}`
@@ -28,7 +35,11 @@
 	}
 </script>
 
-<div class="view-picker btn-control btn-control-square" title={m.sessions_view_title({ view: label })} aria-label={m.sessions_view_title({ view: label })}>
+<div
+	class="view-picker {menu ? 'menu-row' : 'btn-control btn-control-square'}"
+	title={m.sessions_view_title({ view: label })}
+	aria-label={m.sessions_view_title({ view: label })}
+>
 	<!-- Icons at size 18 to match the sibling IconButton controls (the old
 	     unicode glyphs rendered at the inherited font size, so they read smaller).
 	     `menu` for list; a raw layout-grid svg (no grid glyph in the registry) for
@@ -64,5 +75,24 @@
 		flex: none;
 		white-space: nowrap;
 		cursor: pointer;
+	}
+	/* Overflow-menu row: full-width, left-aligned icon + label (the aria-label,
+	   e.g. "View: List · compact"). The ghost <Select> fills the row (inset:0), so
+	   clicking anywhere opens the native picker. */
+	.view-picker.menu-row {
+		width: 100%;
+		justify-content: flex-start;
+		gap: var(--sp-2);
+		min-height: 2.25rem;
+		padding: var(--sp-1) var(--sp-2);
+		border-radius: var(--r-sm);
+		font-size: var(--fs-sm);
+	}
+	.view-picker.menu-row:hover {
+		background: var(--bg-elevated-3, var(--bg-elevated-2));
+	}
+	.view-picker.menu-row::after {
+		content: attr(aria-label);
+		font-weight: var(--fw-medium);
 	}
 </style>

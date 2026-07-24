@@ -81,26 +81,39 @@
 <!-- Controls that stay inline on desktop but fold into the ⋯ flyout on narrow
      widths (CCT-650): label filter, view picker, multi-select toggle. Rendered
      via a snippet so the inline copy and the flyout copy share one source. -->
-{#snippet foldControls()}
-	<LabelFilter {labels} bind:selected={labelFilter} onUpdate={onUpdateLabel} onDelete={onDeleteLabel} />
-	<ViewPicker bind:cardView bind:dense bind:kanban />
+{#snippet listChecks()}
+	<Icon label={m.sessions_select_multiple()} size={18}>
+		<path d="m3 17 2 2 4-4" />
+		<path d="m3 7 2 2 4-4" />
+		<path d="M13 6h8" />
+		<path d="M13 12h8" />
+		<path d="M13 18h8" />
+	</Icon>
+{/snippet}
+{#snippet foldControls(menu: boolean)}
+	<LabelFilter {menu} {labels} bind:selected={labelFilter} onUpdate={onUpdateLabel} onDelete={onDeleteLabel} />
+	<ViewPicker {menu} bind:cardView bind:dense bind:kanban />
 	{#if !searching}
 		{#if selecting}
 			<!-- Cancel selection. -->
-			<Button class="ctl btn-control-square" icon title={m.sessions_cancel_selection()} aria-label={m.sessions_cancel_selection()} onclick={onCancelSelect}>
-				<Icon name="x" size={18} />
-			</Button>
+			{#if menu}
+				<button type="button" class="menu-trigger" onclick={onCancelSelect}>
+					<Icon name="x" size={18} /><span>{m.sessions_cancel_selection()}</span>
+				</button>
+			{:else}
+				<Button class="ctl btn-control-square" icon title={m.sessions_cancel_selection()} aria-label={m.sessions_cancel_selection()} onclick={onCancelSelect}>
+					<Icon name="x" size={18} />
+				</Button>
+			{/if}
+		{:else if menu}
+			<button type="button" class="menu-trigger" onclick={onStartSelect}>
+				{@render listChecks()}<span>{m.sessions_select_multiple()}</span>
+			</button>
 		{:else}
 			<!-- "Select multiple" wants a checklist/multi-select glyph the registry
 			     doesn't ship; feed Icon a raw list-checks svg via its children. -->
 			<Button class="ctl btn-control-square" icon title={m.sessions_select_multiple()} aria-label={m.sessions_select_multiple()} onclick={onStartSelect}>
-				<Icon label={m.sessions_select_multiple()} size={18}>
-					<path d="m3 17 2 2 4-4" />
-					<path d="m3 7 2 2 4-4" />
-					<path d="M13 6h8" />
-					<path d="M13 12h8" />
-					<path d="M13 18h8" />
-				</Icon>
+				{@render listChecks()}
 			</Button>
 		{/if}
 	{/if}
@@ -119,7 +132,7 @@
 	<!-- Inline copy of the foldable controls: visible on desktop, hidden by the
 	     container query below (where the flyout copy takes over). display:contents
 	     so each control stays a direct flex item of the bar. -->
-	<div class="inline-fold">{@render foldControls()}</div>
+	<div class="inline-fold">{@render foldControls(false)}</div>
 	<!-- ⋯ overflow flyout, anchored to its own trigger. The wrapper is the
 	     positioning context (not the wrapping/container-scoped bar), so the menu
 	     drops directly under the ⋯ button at every width instead of detaching to
@@ -136,9 +149,9 @@
 		<!-- The two DimensionPickers live here at all widths; narrow widths also
 		     receive the foldable controls (menu-only copy). -->
 		<div class="secondary" class:open={moreOpen}>
-			<div class="menu-fold">{@render foldControls()}</div>
-			<DimensionPicker kind="group" value={groupBy} onchange={onGroupBy} />
-			<DimensionPicker kind="color" value={colorBy} onchange={onColorBy} />
+			<div class="menu-fold">{@render foldControls(true)}</div>
+			<DimensionPicker menu kind="group" value={groupBy} onchange={onGroupBy} />
+			<DimensionPicker menu kind="color" value={colorBy} onchange={onColorBy} />
 		</div>
 	</div>
 	<Button class="toolbar-new" control variant="primary" title={m.sessions_new_session()} aria-label={m.sessions_new_session()} onclick={onNew}>+<span class="new-label"> {m.sessions_new()}</span></Button>
@@ -189,12 +202,15 @@
 		position: absolute;
 		top: calc(100% + var(--sp-1));
 		right: 0;
-		min-width: max-content;
+		/* Fixed, content-comfortable width so the labeled rows read as a real menu
+		   (mirrors the drawer's ⋯ flyout), never exceeding the viewport. */
+		width: 15rem;
+		max-width: calc(100vw - 1.5rem);
 		z-index: 30;
 		flex-direction: column;
 		align-items: stretch;
-		gap: var(--sp-1);
-		padding: var(--sp-2);
+		gap: 2px;
+		padding: var(--sp-1);
 		background: var(--bg-elevated-2);
 		border: 1px solid var(--border-strong);
 		border-radius: var(--r-md);
@@ -208,12 +224,26 @@
 	.menu-fold {
 		display: none;
 	}
-	/* Make the flyout's controls fill the column width and read left-aligned. */
-	.secondary :global(.btn-control),
-	.secondary :global(.btn-control-square),
-	.secondary :global(.dim-picker) {
+	/* Local action rows (select-multiple / cancel) inside the flyout: plain icon +
+	   label, matching the picker rows' menu-row look. */
+	.menu-trigger {
+		display: flex;
+		align-items: center;
+		gap: var(--sp-2);
 		width: 100%;
-		justify-content: flex-start;
+		min-height: 2.25rem;
+		padding: var(--sp-1) var(--sp-2);
+		border: none;
+		background: none;
+		border-radius: var(--r-sm);
+		color: var(--text);
+		font-size: var(--fs-sm);
+		font-weight: var(--fw-medium);
+		text-align: left;
+		cursor: pointer;
+	}
+	.menu-trigger:hover {
+		background: var(--bg-elevated-3, var(--bg-elevated-2));
 	}
 	@container sess-bar (max-width: 640px) {
 		.inline-fold {
