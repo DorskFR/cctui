@@ -722,7 +722,7 @@
 			     icon. Grid blockifies the items so each fills its 1fr column. -->
 			<div class="addons">
 				<span class="addon-title">{m.spawn_optional_settings()}</span>
-				<AutoGrid min="8rem" gap="var(--sp-2)" maxCols={3}>
+				<AutoGrid min="8rem" gap="var(--sp-2)" maxCols={3} align="stretch">
 					<div
 						class="label-add"
 						bind:this={labelTriggerEl}
@@ -767,7 +767,7 @@
 					{#if target === 'machine'}
 						<FileButton label={m.spawn_add_files()} icon="file-text" multiple onfiles={addFiles} />
 					{/if}
-					<Button onclick={addEnvRow}><Icon name="plus" />{m.spawn_add_env_vars()}</Button>
+					<Button block onclick={addEnvRow}><Icon name="plus" />{m.spawn_add_env_vars()}</Button>
 				</AutoGrid>
 
 				<!-- Each add-on's content, rendered where due: labels, files, env. -->
@@ -826,8 +826,12 @@
 	/* "Add label" owns its own popover (a real Button trigger + a clickOutside
 	   menu, like LabelFilter) so it stays a plain Button — no Popover-trigger
 	   restyling. The wrapper is the grid item; the Button fills it (block). */
+	/* The grid stretches its cells (align="stretch"), so the wrapper — and the
+	   Button inside it — fill the row height, lining up with the FileButton and
+	   env-vars Button despite their differing min-height tokens. */
 	.label-add {
 		display: flex;
+		align-items: stretch;
 	}
 	/* Native popover: the browser renders it in the top layer (above the modal's
 	   <dialog>, outside its scrolling body). Reset the UA popover defaults

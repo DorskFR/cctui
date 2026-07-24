@@ -94,7 +94,7 @@
      available width. The badge inside hugs its content. -->
 <span
 	bind:this={rail}
-	style="display:flex;align-items:center;min-width:0;{full ? 'flex:none' : 'overflow:hidden;flex:1 1 0'};{style}"
+	style="display:flex;align-items:center;min-width:0;{full ? 'flex:none;max-width:100%;overflow:hidden' : 'overflow:hidden;flex:1 1 0'};{style}"
 >
 	<Badge
 		as="button"
@@ -108,7 +108,7 @@
 		}}
 	>
 		<span aria-hidden="true" style="flex:none">📁</span>
-		<span bind:this={txt} style="overflow:hidden;white-space:nowrap;text-overflow:clip">{shown}</span>
+		<span bind:this={txt} style="overflow:hidden;white-space:nowrap;text-overflow:ellipsis">{shown}</span>
 		<!-- Offscreen 10-char ruler: one mono char's px width for the fit math. -->
 		<span
 			bind:this={probe}
