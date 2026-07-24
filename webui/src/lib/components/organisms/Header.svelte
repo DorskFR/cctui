@@ -8,15 +8,9 @@
 	import { toasts } from '$lib/toast.svelte';
 	import { IconButton, SelectButton, Text } from '@dorsk/tsumikit';
 	import NavLink from '$lib/components/atoms/NavLink.svelte';
-	import { settings } from '$lib/settings.svelte';
 	import { m } from '$lib/paraglide/messages';
 
 	const version = useVersion();
-
-	// Active Claude harness mode (epic CCT-494) — surfaced so the chosen execution
-	// path isn't invisible. Per-user; Codex sessions ignore it (hence the tooltip
-	// spells out "Claude harness mode").
-	const harnessMode = $derived(settings.harnessMode);
 
 	// Global "needs input" watcher (CCT-170). Header is always mounted inside
 	// the query provider, so it's the natural home for the cross-route watcher.
@@ -64,9 +58,6 @@
 			title={m.nav_ws_status({ status: ws.status })}
 		></span>
 		<div class="spacer"></div>
-		<a class="mode-chip" href="/settings" title={m.nav_harness_mode_tooltip({ mode: harnessMode })}>
-			<Text size="xs" tone="faint" variant="code">⚙ {harnessMode}</Text>
-		</a>
 		{#if $version.data}
 			<NavLink href={$version.data.commit_url} target="_blank" rel="noopener">
 				<Text size="xs" tone="faint" variant="code">
@@ -202,18 +193,6 @@
 	}
 	.ver-part {
 		white-space: nowrap;
-	}
-	/* Active harness-mode chip — subtle, scale-immune, links to Settings. */
-	.mode-chip {
-		flex: none;
-		white-space: nowrap;
-		text-decoration: none;
-		padding: 2px var(--sp-2);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-sm, 6px);
-	}
-	.mode-chip:hover {
-		border-color: var(--accent);
 	}
 	.hd-inner {
 		height: var(--header-h);

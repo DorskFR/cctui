@@ -120,21 +120,27 @@
 	     container query below (where the flyout copy takes over). display:contents
 	     so each control stays a direct flex item of the bar. -->
 	<div class="inline-fold">{@render foldControls()}</div>
-	<!-- ⋯ overflow flyout: the two DimensionPickers live here at all widths;
-	     narrow widths also receive the foldable controls (menu-only copy). -->
-	<div class="secondary" class:open={moreOpen}>
-		<div class="menu-fold">{@render foldControls()}</div>
-		<DimensionPicker kind="group" value={groupBy} onchange={onGroupBy} />
-		<DimensionPicker kind="color" value={colorBy} onchange={onColorBy} />
+	<!-- ⋯ overflow flyout, anchored to its own trigger. The wrapper is the
+	     positioning context (not the wrapping/container-scoped bar), so the menu
+	     drops directly under the ⋯ button at every width instead of detaching to
+	     the bar's far edge. -->
+	<div class="more-wrap">
+		<IconButton
+			class="more btn-control-square"
+			icon="more"
+			label={m.drawer_more_actions()}
+			title={m.drawer_more_actions()}
+			aria-expanded={moreOpen}
+			onclick={() => (moreOpen = !moreOpen)}
+		/>
+		<!-- The two DimensionPickers live here at all widths; narrow widths also
+		     receive the foldable controls (menu-only copy). -->
+		<div class="secondary" class:open={moreOpen}>
+			<div class="menu-fold">{@render foldControls()}</div>
+			<DimensionPicker kind="group" value={groupBy} onchange={onGroupBy} />
+			<DimensionPicker kind="color" value={colorBy} onchange={onColorBy} />
+		</div>
 	</div>
-	<IconButton
-		class="more btn-control-square"
-		icon="more"
-		label={m.drawer_more_actions()}
-		title={m.drawer_more_actions()}
-		aria-expanded={moreOpen}
-		onclick={() => (moreOpen = !moreOpen)}
-	/>
 	<Button class="toolbar-new" control variant="primary" title={m.sessions_new_session()} aria-label={m.sessions_new_session()} onclick={onNew}>+<span class="new-label"> {m.sessions_new()}</span></Button>
 	<!-- Mobile-only flex row-break (CCT-369): basis:100% forces row 2 (search +
 	     tools) onto a fresh line below title+New. Hidden on desktop where everything
@@ -168,7 +174,14 @@
 	.inline-fold {
 		display: contents;
 	}
-	/* ⋯ flyout: an absolute dropdown anchored to the bar's right edge, holding the
+	/* The ⋯ trigger + its flyout share one positioning context so the menu drops
+	   under the button, not the wrapping bar's far edge. */
+	.more-wrap {
+		position: relative;
+		flex: none;
+		display: flex;
+	}
+	/* ⋯ flyout: an absolute dropdown anchored to the ⋯ button, holding the
 	   DimensionPickers at all widths (plus the foldable controls on narrow ones).
 	   Hidden until opened. */
 	.secondary {
@@ -176,7 +189,8 @@
 		position: absolute;
 		top: calc(100% + var(--sp-1));
 		right: 0;
-		z-index: 20;
+		min-width: max-content;
+		z-index: 30;
 		flex-direction: column;
 		align-items: stretch;
 		gap: var(--sp-1);
