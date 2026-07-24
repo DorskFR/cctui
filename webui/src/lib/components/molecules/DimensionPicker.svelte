@@ -8,8 +8,16 @@
 	let {
 		value,
 		onchange,
-		kind
-	}: { value: Dimension; onchange: (v: Dimension) => void; kind: 'color' | 'group' } = $props();
+		kind,
+		menu = false
+	}: {
+		value: Dimension;
+		onchange: (v: Dimension) => void;
+		kind: 'color' | 'group';
+		/** Render as a full-width labeled row for the overflow ⋯ menu (icon + text),
+		 * instead of the compact square toolbar trigger. */
+		menu?: boolean;
+	} = $props();
 
 	const noun = $derived(kind === 'color' ? m.misc_color_noun() : m.misc_group_noun());
 	const current = $derived(DIMENSIONS.find((d) => d.value === value)?.label ?? m.common_none());
@@ -19,7 +27,12 @@
 	);
 </script>
 
-<div class="dim-picker btn-control btn-control-square" class:active {title} aria-label={title}>
+<div
+	class="dim-picker {menu ? 'menu-row' : 'btn-control btn-control-square'}"
+	class:active
+	{title}
+	aria-label={title}
+>
 	{#if kind === 'color'}
 		<Icon size={18}>
 			<circle cx="13.5" cy="6.5" r=".5" fill="currentColor" />
@@ -60,5 +73,26 @@
 	   a glance without opening the popup. */
 	.dim-picker.active {
 		color: var(--accent);
+	}
+	/* Overflow-menu row: full-width, left-aligned icon + label (the aria-label,
+	   e.g. "Group sessions by: Machine"), matching the drawer's ⋯ flyout rows.
+	   The ghost <Select> still fills the row (inset:0), so the whole row opens the
+	   native picker. */
+	.dim-picker.menu-row {
+		width: 100%;
+		justify-content: flex-start;
+		gap: var(--sp-2);
+		min-height: 2.25rem;
+		padding: var(--sp-1) var(--sp-2);
+		border-radius: var(--r-sm);
+		font-size: var(--fs-sm);
+	}
+	.dim-picker.menu-row:hover {
+		background: var(--bg-elevated-3, var(--bg-elevated-2));
+	}
+	.dim-picker.menu-row::after {
+		content: attr(aria-label);
+		font-weight: var(--fw-medium);
+		white-space: nowrap;
 	}
 </style>

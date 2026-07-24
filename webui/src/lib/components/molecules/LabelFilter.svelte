@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { Label } from '@bindings/Label';
-	import { IconButton } from '@dorsk/tsumikit';
+	import { Icon, IconButton } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import { clickOutside } from '$lib/clickOutside';
 	import LabelMenu from './LabelMenu.svelte';
@@ -15,10 +15,13 @@
 		labels,
 		selected = $bindable(),
 		onUpdate,
-		onDelete
+		onDelete,
+		menu = false
 	}: {
 		labels: Label[];
 		selected: Set<string>;
+		/** Render as a full-width labeled row for the overflow ⋯ menu. */
+		menu?: boolean;
 		// Editing the labels themselves (rename/recolor/delete) from the filter
 		// menu — the same edit affordance the per-session picker has.
 		onUpdate?: (labelId: string, patch: { name?: string; color?: string }) => Promise<Label>;
@@ -36,19 +39,36 @@
 </script>
 
 {#if labels.length > 0}
-	<div class="label-filter" use:clickOutside={() => (open = false)}>
-		<IconButton
-			variant="default"
-			class="btn-control-square"
-			icon="tag"
-			label={m.sessions_filter_by_label()}
-			title={selected.size > 0 ? m.sessions_filtering_by_labels({ count: selected.size }) : m.sessions_filter_by_label()}
-			aria-haspopup="true"
-			aria-expanded={open}
-			aria-pressed={selected.size > 0}
-			onclick={() => (open = !open)}
-		/>
-		{#if selected.size > 0}<span class="count-badge" aria-hidden="true">{selected.size}</span>{/if}
+	<div class="label-filter" class:menu-row={menu} use:clickOutside={() => (open = false)}>
+		{#if menu}
+			<button
+				type="button"
+				class="menu-trigger"
+				class:active={selected.size > 0}
+				title={selected.size > 0 ? m.sessions_filtering_by_labels({ count: selected.size }) : m.sessions_filter_by_label()}
+				aria-haspopup="true"
+				aria-expanded={open}
+				aria-pressed={selected.size > 0}
+				onclick={() => (open = !open)}
+			>
+				<Icon name="tag" size={18} />
+				<span class="menu-label">{m.sessions_filter_by_label()}</span>
+				{#if selected.size > 0}<span class="menu-count" aria-hidden="true">{selected.size}</span>{/if}
+			</button>
+		{:else}
+			<IconButton
+				variant="default"
+				class="btn-control-square"
+				icon="tag"
+				label={m.sessions_filter_by_label()}
+				title={selected.size > 0 ? m.sessions_filtering_by_labels({ count: selected.size }) : m.sessions_filter_by_label()}
+				aria-haspopup="true"
+				aria-expanded={open}
+				aria-pressed={selected.size > 0}
+				onclick={() => (open = !open)}
+			/>
+			{#if selected.size > 0}<span class="count-badge" aria-hidden="true">{selected.size}</span>{/if}
+		{/if}
 		{#if open}
 			<!-- svelte-ignore a11y_no_static_element_interactions -->
 			<div
@@ -81,6 +101,47 @@
 		display: inline-flex;
 		align-items: center;
 		flex: none;
+	}
+	/* Overflow-menu row: full-width, left-aligned icon + label, matching the
+	   drawer's ⋯ flyout rows. */
+	.label-filter.menu-row {
+		display: flex;
+		width: 100%;
+	}
+	.menu-trigger {
+		display: flex;
+		align-items: center;
+		gap: var(--sp-2);
+		width: 100%;
+		min-height: 2.25rem;
+		padding: var(--sp-1) var(--sp-2);
+		border: none;
+		background: none;
+		border-radius: var(--r-sm);
+		color: var(--text);
+		font-size: var(--fs-sm);
+		font-weight: var(--fw-medium);
+		text-align: left;
+		cursor: pointer;
+	}
+	.menu-trigger:hover {
+		background: var(--bg-elevated-3, var(--bg-elevated-2));
+	}
+	.menu-trigger.active {
+		color: var(--accent);
+	}
+	.menu-count {
+		margin-left: auto;
+		min-width: 1.25rem;
+		height: 1.25rem;
+		padding: 0 0.35rem;
+		border-radius: 999px;
+		background: var(--accent);
+		color: var(--bg);
+		font-size: 0.7rem;
+		font-weight: var(--fw-semibold);
+		line-height: 1.25rem;
+		text-align: center;
 	}
 	.count-badge {
 		position: absolute;
