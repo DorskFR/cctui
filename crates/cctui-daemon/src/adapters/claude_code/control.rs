@@ -272,6 +272,9 @@ pub struct Driver {
     /// agents --json` so polling/dispatch stop failing with "no claude daemon
     /// socket present" (CCT-194).
     kickstarter: Kickstarter,
+    /// Cycles the claude daemon when a CLI auto-update left it on an older
+    /// version, but only while no worker is running.
+    version_gate: super::version_gate::VersionGate,
     /// Holds a persistent headless `attach` open per live session so the
     /// dispatched worker actually wakes (focus-in seed) and is kept off the
     /// 60s idle-retire path. Without this, dispatched/replied sessions sit in
@@ -505,6 +508,7 @@ impl Driver {
             .clone()
             .map_or_else(|| OffsetStore::open(None), |p| OffsetStore::open(Some(p)));
         let kickstarter = Kickstarter::new(cfg.claude_bin.clone());
+        let version_gate = super::version_gate::VersionGate::new(cfg.claude_bin.clone());
         let attach = super::attach::AttachManager::new(cfg.discovery.clone(), shutdown.clone());
         let pty_view = super::pty_view::PtyViewManager::new(
             events.clone(),
@@ -526,6 +530,7 @@ impl Driver {
             subagents: HashMap::new(),
             ended_subagents: HashSet::new(),
             kickstarter,
+            version_gate,
             attach,
             pending_perms: HashMap::new(),
             perm_seq: 0,
@@ -615,6 +620,7 @@ impl Driver {
                     // can't race apply_snapshot's tail/offset updates.
                     if self.last_reconcile.elapsed() >= Self::RECONCILE_INTERVAL {
                         self.reconcile_tail(false).await;
+                        self.maybe_cycle_stale_daemon().await;
                     }
                 }
                 Some(cmd) = self.commands.recv() => {
@@ -2140,6 +2146,45 @@ impl Driver {
             }
         }
         anyhow::bail!("no claude daemon socket present (kickstart did not bring it up in time)");
+    }
+
+    /// Pick up a `claude` CLI auto-update the running daemon missed. Cycles
+    /// only when both our roster and the daemon's own worker count agree
+    /// nothing is running; a mismatch over live work is logged and left alone.
+    async fn maybe_cycle_stale_daemon(&self) {
+        use super::version_gate::{CycleMethod, Decision};
+
+        // The direct-spawn fallback (containers) is excluded: those workers run
+        // `--no-auto-update`, so they never drift, and we keep no pid to stop.
+        if !super::claude_service::manager_available() {
+            return;
+        }
+        if let Some(Decision::Cycle { running, local }) =
+            self.version_gate.check(self.roster.len()).await
+        {
+            let method = if tokio::task::spawn_blocking(super::claude_service::service_active)
+                .await
+                .unwrap_or(false)
+            {
+                CycleMethod::ManagedService
+            } else {
+                CycleMethod::StopAny
+            };
+            self.cycle_daemon(method, &running, &local).await;
+        }
+    }
+
+    #[allow(clippy::cognitive_complexity)]
+    async fn cycle_daemon(&self, method: super::version_gate::CycleMethod, run: &str, new: &str) {
+        tracing::info!(%run, %new, ?method, "cycling idle claude daemon onto the new CLI");
+        if let Err(err) = self.version_gate.cycle(method).await {
+            tracing::warn!(%err, ?method, "failed to cycle the stale claude daemon");
+            return;
+        }
+        match self.ensure_socket().await {
+            Ok(sock) => tracing::info!(sock = %sock.display(), %new, "claude daemon back up"),
+            Err(err) => tracing::warn!(%err, "claude daemon did not come back after the cycle"),
+        }
     }
 
     async fn poll_once(&mut self) -> anyhow::Result<()> {
