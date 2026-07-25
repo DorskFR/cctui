@@ -31,6 +31,7 @@ mod socket;
 mod state;
 mod streamjson;
 mod transcript;
+mod version_gate;
 
 use mode::Mode;
 

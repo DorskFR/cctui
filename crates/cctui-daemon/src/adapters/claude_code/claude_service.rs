@@ -52,6 +52,38 @@ pub(super) fn ensure(claude_bin: &str) -> Result<()> {
     anyhow::bail!("claude daemon service: unsupported OS")
 }
 
+/// Whether the managed service is currently the thing running the daemon. A
+/// daemon started some other way (`origin: foreground`) survives a unit
+/// restart untouched, so the caller must pick a different remedy.
+#[cfg(target_os = "macos")]
+pub(super) fn service_active() -> bool {
+    macos::is_loaded()
+}
+#[cfg(target_os = "linux")]
+pub(super) fn service_active() -> bool {
+    linux::is_active()
+}
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+pub(super) const fn service_active() -> bool {
+    false
+}
+
+/// Restart the managed claude-daemon service. Callers must have established
+/// that no worker is running: this tears the supervisor down.
+#[cfg(target_os = "macos")]
+pub(super) fn restart(claude_bin: &str) -> Result<()> {
+    macos::restart(claude_bin)
+}
+#[cfg(target_os = "linux")]
+pub(super) fn restart(claude_bin: &str) -> Result<()> {
+    linux::restart(claude_bin)
+}
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+pub(super) fn restart(claude_bin: &str) -> Result<()> {
+    let _ = claude_bin;
+    anyhow::bail!("claude daemon service: unsupported OS")
+}
+
 /// Whether an OS user service manager is usable here. Worker containers have
 /// no systemd (`/run/systemd/system` absent, no user bus for `systemctl
 /// --user` — CCT-629): the kickstarter must then spawn `claude daemon run` as
@@ -121,7 +153,7 @@ mod linux {
         Ok(base.join("systemd").join("user"))
     }
 
-    fn is_active() -> bool {
+    pub(super) fn is_active() -> bool {
         Command::new("systemctl")
             .args(["--user", "is-active", "--quiet", UNIT_NAME])
             .status()
@@ -163,6 +195,13 @@ mod linux {
         tracing::info!(unit = UNIT_NAME, "installed and started managed claude daemon");
         Ok(())
     }
+
+    pub(super) fn restart(claude_bin: &str) -> Result<()> {
+        ensure(claude_bin)?;
+        systemctl(&["restart", UNIT_NAME])?;
+        tracing::info!(unit = UNIT_NAME, "restarted managed claude daemon");
+        Ok(())
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -193,7 +232,7 @@ mod macos {
         format!("gui/{}/{PLIST_LABEL}", uid())
     }
 
-    fn is_loaded() -> bool {
+    pub(super) fn is_loaded() -> bool {
         Command::new("launchctl")
             .args(["print", &service_target()])
             .output()
@@ -244,6 +283,13 @@ mod macos {
             return Err(e).context("launchctl bootstrap of the claude daemon agent failed");
         }
         tracing::info!(label = PLIST_LABEL, "installed and started managed claude daemon");
+        Ok(())
+    }
+
+    pub(super) fn restart(claude_bin: &str) -> Result<()> {
+        ensure(claude_bin)?;
+        run("launchctl", &["kickstart", "-k", &service_target()])?;
+        tracing::info!(label = PLIST_LABEL, "restarted managed claude daemon");
         Ok(())
     }
 }
