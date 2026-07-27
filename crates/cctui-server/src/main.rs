@@ -232,12 +232,10 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/internal/bus/publish", post(routes::internal::bus_publish))
         .nest("/api/v1", api_router)
-        // The web UI is served same-origin in prod, so the `HttpOnly` auth
-        // cookie flows without any cross-origin credential config.
-        // The permissive policy remains safe for the API/daemon Bearer callers
-        // (no credentialed cross-origin cookie reliance). WS upgrades read the
-        // cookie on the same-origin upgrade and are not subject to CORS preflight.
-        .layer(tower_http::cors::CorsLayer::permissive())
+        // Credentialed CORS bound to an explicit origin allowlist (same-origin
+        // webui + dev Vite, extendable via CCTUI_ALLOWED_ORIGINS). A wildcard
+        // origin is invalid once credentials are allowed.
+        .layer(cors_layer(&config.allowed_origins))
         .with_state(state.clone());
 
     // Merge the GitHub routes (their own state is already applied) under
@@ -1181,6 +1179,28 @@ async fn github_identity(
         request.extensions_mut().insert(identity);
     }
     next.run(request).await
+}
+
+/// Credentialed CORS layer restricted to `allowed_origins`. Credentials forbid
+/// a wildcard origin, so the origin is an explicit list; request headers are
+/// mirrored (not `*`) for the same reason.
+fn cors_layer(allowed_origins: &[String]) -> tower_http::cors::CorsLayer {
+    use axum::http::HeaderValue;
+    use tower_http::cors::{AllowHeaders, AllowOrigin, CorsLayer};
+    let origins: Vec<HeaderValue> =
+        allowed_origins.iter().filter_map(|o| o.parse::<HeaderValue>().ok()).collect();
+    CorsLayer::new()
+        .allow_origin(AllowOrigin::list(origins))
+        .allow_credentials(true)
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers(AllowHeaders::mirror_request())
 }
 
 async fn init_skill_store() -> Arc<skill_store::SkillStore> {

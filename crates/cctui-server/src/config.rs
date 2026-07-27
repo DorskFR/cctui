@@ -60,6 +60,12 @@ pub struct Config {
     pub port: u16,
     pub database_url: String,
     pub external_url: String,
+    /// Browser origins allowed to make credentialed (cookie) cross-origin
+    /// requests and to open the user WebSocket. Defaults to the server's own
+    /// `external_url` plus the local Vite dev origins; extend via
+    /// `CCTUI_ALLOWED_ORIGINS` (comma-separated). A credentialed CORS response
+    /// must never use `*`, so this is an explicit list.
+    pub allowed_origins: Vec<String>,
     /// How long a session may sit without activity before the reaper
     /// demotes it from `Active` to `Inactive`. The old
     /// `CCTUI_HEARTBEAT_TIMEOUT` env var is still accepted for
@@ -115,14 +121,48 @@ pub struct Config {
     pub claude_litellm_models: Vec<LiteLlmModel>,
 }
 
+fn add_origin(out: &mut Vec<String>, origin: &str) {
+    let origin = origin.trim().trim_end_matches('/');
+    if !origin.is_empty() && !out.iter().any(|e| e == origin) {
+        out.push(origin.to_owned());
+    }
+}
+
+/// Build the allowed-origin list: the server's own public URL and the local
+/// Vite dev origins are always present so existing deploys keep working, then
+/// any comma-separated `CCTUI_ALLOWED_ORIGINS` entries are added.
+fn parse_allowed_origins(raw: Option<&str>, external_url: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    add_origin(&mut out, external_url);
+    add_origin(&mut out, "http://localhost:5173");
+    add_origin(&mut out, "http://127.0.0.1:5173");
+    if let Some(raw) = raw {
+        for entry in raw.split(',') {
+            add_origin(&mut out, entry);
+        }
+    }
+    out
+}
+
 impl Config {
+    /// Whether `origin` (an `Origin` header value) is in the CORS/WS allowlist.
+    #[must_use]
+    pub fn origin_allowed(&self, origin: &str) -> bool {
+        let origin = origin.trim_end_matches('/');
+        self.allowed_origins.iter().any(|o| o == origin)
+    }
+
     pub fn from_env() -> Self {
+        let external_url =
+            env::var("CCTUI_EXTERNAL_URL").unwrap_or_else(|_| "http://localhost:8700".into());
+        let allowed_origins =
+            parse_allowed_origins(env::var("CCTUI_ALLOWED_ORIGINS").ok().as_deref(), &external_url);
         Self {
             host: env::var("CCTUI_HOST").unwrap_or_else(|_| "0.0.0.0".into()),
             port: env::var("CCTUI_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8700),
             database_url: env::var("DATABASE_URL").expect("DATABASE_URL must be set"),
-            external_url: env::var("CCTUI_EXTERNAL_URL")
-                .unwrap_or_else(|_| "http://localhost:8700".into()),
+            external_url,
+            allowed_origins,
             inactive_after_secs: env::var("CCTUI_INACTIVE_AFTER")
                 .or_else(|_| env::var("CCTUI_HEARTBEAT_TIMEOUT"))
                 .ok()
@@ -198,8 +238,72 @@ impl Config {
 }
 
 #[cfg(test)]
+impl Config {
+    /// Minimal `Config` for tests that only exercise the origin allowlist.
+    #[must_use]
+    pub fn for_test(allowed_origins: Vec<String>) -> Self {
+        Self {
+            host: "0.0.0.0".into(),
+            port: 8700,
+            database_url: String::new(),
+            external_url: String::new(),
+            allowed_origins,
+            inactive_after_secs: 0,
+            archive_after_secs: 0,
+            github_token: None,
+            http_dispatchers: vec![],
+            dispatchers: vec![],
+            ephemeral_machine_ttl_secs: 0,
+            ntfy_token: None,
+            ntfy_url: None,
+            claude_litellm_endpoint: None,
+            claude_litellm_token: None,
+            claude_litellm_models: vec![],
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn allowed_origins_default_to_same_origin_plus_dev() {
+        let origins = parse_allowed_origins(None, "https://cctui.example.com/");
+        assert_eq!(
+            origins,
+            vec![
+                "https://cctui.example.com".to_owned(),
+                "http://localhost:5173".to_owned(),
+                "http://127.0.0.1:5173".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn allowed_origins_appends_and_dedups_env_entries() {
+        let origins = parse_allowed_origins(
+            Some("https://extra.example.com/, http://localhost:5173 ,"),
+            "https://cctui.example.com",
+        );
+        assert_eq!(
+            origins,
+            vec![
+                "https://cctui.example.com".to_owned(),
+                "http://localhost:5173".to_owned(),
+                "http://127.0.0.1:5173".to_owned(),
+                "https://extra.example.com".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn origin_allowed_matches_ignoring_trailing_slash() {
+        let cfg = Config::for_test(vec!["https://cctui.example.com".to_owned()]);
+        assert!(cfg.origin_allowed("https://cctui.example.com"));
+        assert!(cfg.origin_allowed("https://cctui.example.com/"));
+        assert!(!cfg.origin_allowed("https://evil.example.com"));
+    }
 
     /// the in-process `kube`/`docker` dispatchers are gone, but prod
     /// still ships a stale `kind:"kube"` entry in `CCTUI_DISPATCHERS`. The parse
@@ -250,6 +354,7 @@ mod tests {
             port: 8700,
             database_url: String::new(),
             external_url: String::new(),
+            allowed_origins: vec![],
             inactive_after_secs: 0,
             archive_after_secs: 0,
             github_token: None,
