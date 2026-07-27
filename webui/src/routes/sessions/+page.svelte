@@ -43,6 +43,7 @@
 		kanbanColOf,
 		groupRows,
 		colorHueOf,
+		rangeIds,
 		type Section,
 		type SubGroup,
 		type Dimension
@@ -392,15 +393,36 @@
 	let selected = $state(new Set<string>());
 	let archiving = $state(false);
 
-	function toggleSelect(s: SessionListItem) {
+	let anchorId = $state<string | null>(null);
+
+	// Visual order of the list, read from the DOM: rows are rendered by a
+	// recursive snippet across several buckets, so document order is the only
+	// place the flattened order the user actually sees exists.
+	function renderedIds(): string[] {
+		return [...document.querySelectorAll<HTMLElement>('[data-session-id]')]
+			.map((el) => el.dataset.sessionId!)
+			.filter((id) => id);
+	}
+
+	function toggleSelect(s: SessionListItem, range = false) {
 		const next = new Set(selected);
+		if (range && anchorId && anchorId !== s.id) {
+			const ids = rangeIds(renderedIds(), anchorId, s.id, new Set(items.map((x) => x.id)));
+			if (ids.length) {
+				for (const id of ids) next.add(id);
+				selected = next;
+				return;
+			}
+		}
 		if (next.has(s.id)) next.delete(s.id);
 		else next.add(s.id);
+		anchorId = s.id;
 		selected = next;
 	}
 	function exitSelect() {
 		selecting = false;
 		selected = new Set();
+		anchorId = null;
 	}
 	function selectAll() {
 		selected = new Set(items.map((s) => s.id));
@@ -749,6 +771,7 @@
 		<div class="bulkbar row">
 			<Text class="count" size="sm" weight="semibold" tone="muted">{m.sessions_selected_count({ count: selected.size })}</Text>
 			<Button onclick={selectAll}>{m.sessions_select_all()}</Button>
+			<Text size="xs" tone="muted">{m.sessions_select_range_hint()}</Text>
 			<div class="spacer"></div>
 			<Button
 				variant="danger"

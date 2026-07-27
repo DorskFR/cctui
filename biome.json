@@ -9,7 +9,8 @@
       "!**/target/",
       "!**/.sqlx/",
       "!**/.superpowers/",
-      "!**/adapters/codex/schema/**"
+      "!**/adapters/codex/schema/**",
+      "!webui/messages/**"
     ]
   },
   "formatter": {
