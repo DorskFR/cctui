@@ -236,14 +236,27 @@ impl ServerClient {
         Ok(())
     }
 
-    /// Build the daemon WS URL with the machine key as the `token` query
-    /// parameter. Caller is responsible for opening the WS connection.
+    /// Daemon WS URL. The machine key rides an `Authorization: Bearer` header
+    /// ([`daemon_ws_request`]), not the query string, to keep it out of
+    /// proxy/ingress access logs.
     #[must_use]
-    pub fn daemon_ws_url(&self, machine_key: &str) -> String {
+    pub fn daemon_ws_url(&self) -> String {
         let base = self.base_url.trim_end_matches('/');
         let ws_base = base.replacen("http://", "ws://", 1).replacen("https://", "wss://", 1);
-        format!("{ws_base}/api/v1/daemon/ws?token={machine_key}")
+        format!("{ws_base}/api/v1/daemon/ws")
     }
+}
+
+/// WS client request carrying the machine key in the `Authorization` header.
+pub fn daemon_ws_request(
+    url: &str,
+    machine_key: &str,
+) -> anyhow::Result<tokio_tungstenite::tungstenite::handshake::client::Request> {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut request = url.into_client_request()?;
+    let bearer = format!("Bearer {machine_key}");
+    request.headers_mut().insert(reqwest::header::AUTHORIZATION, bearer.parse()?);
+    Ok(request)
 }
 
 #[cfg(test)]
@@ -262,6 +275,22 @@ mod tests {
             sock.flush().await.unwrap();
         });
         format!("http://{addr}")
+    }
+
+    #[test]
+    fn daemon_ws_url_has_no_token_query() {
+        let client = ServerClient::new("https://cctui.example.com/");
+        let url = client.daemon_ws_url();
+        assert_eq!(url, "wss://cctui.example.com/api/v1/daemon/ws");
+        assert!(!url.contains("token"));
+    }
+
+    #[test]
+    fn daemon_ws_request_carries_bearer_machine_key() {
+        let request =
+            daemon_ws_request("wss://cctui.example.com/api/v1/daemon/ws", "mkey-123").unwrap();
+        let auth = request.headers().get(reqwest::header::AUTHORIZATION).unwrap();
+        assert_eq!(auth, "Bearer mkey-123");
     }
 
     #[tokio::test]

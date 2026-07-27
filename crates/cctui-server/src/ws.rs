@@ -35,6 +35,11 @@ pub async fn tui_ws(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
 ) -> Result<impl IntoResponse, StatusCode> {
+    // CSWSH defense-in-depth: reject a cross-origin browser upgrade before auth.
+    if !origin_permitted(&state.config, &headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
     // Browser WS upgrades are same-origin GETs that carry the `HttpOnly` auth
     // cookie automatically, so the token no longer rides the query string where
     // it would leak into access logs. `bearer_or_cookie` also accepts
@@ -49,6 +54,14 @@ pub async fn tui_ws(
     }
 
     Ok(ws.on_upgrade(move |socket| handle_tui_ws(socket, state, auth_ctx)))
+}
+
+/// A present `Origin` must be in the allowlist; an absent one is a non-browser
+/// client (TUI/daemon) and is allowed. An unparseable `Origin` is rejected.
+fn origin_permitted(config: &crate::config::Config, headers: &axum::http::HeaderMap) -> bool {
+    headers
+        .get(axum::http::header::ORIGIN)
+        .is_none_or(|value| value.to_str().is_ok_and(|o| config.origin_allowed(o)))
 }
 
 fn spawn_send_task(
@@ -464,4 +477,35 @@ async fn handle_tui_ws(socket: WebSocket, state: AppState, ctx: AuthContext) {
     run_tui_socket(stream, state, ctx, tx).await;
 
     tracing::debug!("TUI WebSocket disconnected");
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::{HeaderMap, HeaderValue, header};
+
+    use super::origin_permitted;
+    use crate::config::Config;
+
+    fn cfg() -> Config {
+        Config::for_test(vec!["https://cctui.example.com".to_owned()])
+    }
+
+    #[test]
+    fn absent_origin_is_allowed() {
+        assert!(origin_permitted(&cfg(), &HeaderMap::new()));
+    }
+
+    #[test]
+    fn allowlisted_origin_is_allowed() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::ORIGIN, HeaderValue::from_static("https://cctui.example.com"));
+        assert!(origin_permitted(&cfg(), &headers));
+    }
+
+    #[test]
+    fn foreign_origin_is_rejected() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::ORIGIN, HeaderValue::from_static("https://evil.example.com"));
+        assert!(!origin_permitted(&cfg(), &headers));
+    }
 }

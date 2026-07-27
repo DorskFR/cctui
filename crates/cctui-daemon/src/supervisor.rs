@@ -126,9 +126,10 @@ impl Supervisor {
 
     #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
     async fn run_once(&self, shutdown: CancellationToken) -> anyhow::Result<()> {
-        let url = self.client.daemon_ws_url(&self.machine_key);
+        let url = self.client.daemon_ws_url();
         tracing::info!(%url, "connecting to daemon WS");
-        let (ws, _) = tokio_tungstenite::connect_async(&url).await?;
+        let request = crate::client::daemon_ws_request(&url, &self.machine_key)?;
+        let (ws, _) = tokio_tungstenite::connect_async(request).await?;
         let (mut sink, mut stream) = ws.split();
 
         // Events from all running adapters fan into this single channel
