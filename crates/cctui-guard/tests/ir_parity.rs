@@ -188,6 +188,28 @@ fn example_pack_prompt_parity() {
 }
 
 #[test]
+fn inline_sets_and_rules_imports_survive_the_json_frontend() {
+    let md = "\
+[rules]: ./net-common.md
+[net-yt]: yt.example.com:443
+[code-read]+: mcp__yt
+
+# Step 1: X
+[allowed]: code-read
+[network]: net-yt
+[transition]: Exit
+";
+    let wf = Workflow::compile(md).unwrap();
+    assert_eq!(wf.rules, vec!["./net-common.md".to_string()]);
+    assert_eq!(wf.sets.len(), 2);
+    assert_eq!(wf.sets[0].name, "net-yt");
+    assert!(wf.sets[1].extend, "code-read+ is an extend");
+
+    let json = serde_json::to_string_pretty(&wf).unwrap();
+    assert_eq!(Workflow::from_json(&json).unwrap(), wf);
+}
+
+#[test]
 fn json_frontend_roundtrips_through_the_ir() {
     let from_md = Workflow::compile(PROMPT).unwrap();
     let json = serde_json::to_string_pretty(&from_md).unwrap();

@@ -12,6 +12,7 @@ pub mod engine;
 pub mod ir;
 pub mod lint;
 pub mod parser;
+pub mod resolve;
 pub mod rules;
 pub mod server;
 
@@ -22,6 +23,8 @@ pub use lint::{Diagnostic, LintReport, ResolvedStep, Severity, lint};
 pub use parser::{
     JudgeQuestion, MAX_JUDGE_QUESTIONS, ParseError, Step, parse_guard_rules,
     parse_guard_rules_files, parse_guard_rules_into, parse_guard_rules_str, parse_keywords,
-    parse_steps, parse_transitions, step_heading_numbers,
+    parse_prompt_sets, parse_rules_imports, parse_steps, parse_transitions, rules_definitions,
+    step_heading_numbers,
 };
+pub use resolve::{ResolvedSets, resolve_sets};
 pub use rules::{check_rules, split_bash_segments};

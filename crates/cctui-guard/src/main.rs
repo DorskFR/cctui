@@ -3,7 +3,6 @@
 //! Parses a prompt markdown file into steps and serves a localhost HTTP API
 //! that Claude Code's `PreToolUse` hook calls before every tool invocation.
 
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -12,8 +11,9 @@ use clap::{Parser, Subcommand};
 
 use cctui_guard::engine::WorkflowEngine;
 use cctui_guard::ir::{NetworkDefault, Workflow};
-use cctui_guard::lint::{LintReport, Severity};
-use cctui_guard::parser::{parse_guard_rules_files, step_heading_numbers};
+use cctui_guard::lint::{Diagnostic, LintReport, Severity};
+use cctui_guard::parser::step_heading_numbers;
+use cctui_guard::resolve::{ResolvedSets, resolve_sets};
 use cctui_guard::server::router;
 
 #[derive(Parser, Debug)]
@@ -135,28 +135,28 @@ fn load_workflow(path: &Path) -> anyhow::Result<(Workflow, Vec<u32>)> {
     }
 }
 
-/// Layer the guard-rules files: operator base first (if present), then the
-/// pack's rules — `[name]:` overrides, `[name]+:` extends. Missing layers are
-/// skipped, so an absent base or rules file is not fatal.
-fn load_tool_sets(
-    rules_base: Option<&Path>,
-    rules: &Path,
-) -> anyhow::Result<(HashMap<String, Vec<String>>, usize)> {
-    let mut layers: Vec<PathBuf> = Vec::new();
-    if let Some(base) = rules_base {
-        if base.exists() {
-            layers.push(base.to_path_buf());
-        } else {
-            tracing::warn!("Guard rules base not found: {}", base.display());
-        }
+/// Push an [`Severity::Error`] diagnostic for each unreadable `[rules]` import so
+/// a broken prompt-declared dependency fails the lint like any policy error.
+fn add_import_errors(report: &mut LintReport, import_errors: &[String]) {
+    for message in import_errors {
+        report.diagnostics.push(Diagnostic {
+            severity: Severity::Error,
+            step: None,
+            message: message.clone(),
+        });
     }
-    if rules.exists() {
-        layers.push(rules.to_path_buf());
-    } else {
-        tracing::warn!("Guard rules file not found: {}", rules.display());
+}
+
+/// Print each resolved set's provenance — which layer (CLI file, `[rules]`
+/// import, or inline prompt) last defined it — under `--explain`.
+fn print_provenance(resolved: &ResolvedSets) {
+    if resolved.provenance.is_empty() {
+        return;
     }
-    let count = layers.len();
-    Ok((parse_guard_rules_files(&layers)?, count))
+    println!("\nSet provenance (effective source of each set):");
+    for (name, source) in &resolved.provenance {
+        println!("  {name}: {source}");
+    }
 }
 
 /// Print the report to stderr; with `explain`, also dump each step's resolved
@@ -219,9 +219,14 @@ fn fmt_list(items: &[String], empty: &str) -> String {
 
 fn run_lint(args: &LintArgs) -> anyhow::Result<bool> {
     let (workflow, ids) = load_workflow(&args.prompt)?;
-    let (tool_sets, _) = load_tool_sets(args.rules_base.as_deref(), &args.rules)?;
-    let report = cctui_guard::lint::lint(&workflow, &tool_sets, &ids);
-    Ok(print_lint(&report, args.explain))
+    let resolved = resolve_sets(args.rules_base.as_deref(), &args.rules, &args.prompt, &workflow);
+    let mut report = cctui_guard::lint::lint(&workflow, &resolved.sets, &ids);
+    add_import_errors(&mut report, &resolved.import_errors);
+    let ok = print_lint(&report, args.explain);
+    if args.explain {
+        print_provenance(&resolved);
+    }
+    Ok(ok)
 }
 
 #[tokio::main]
@@ -249,14 +254,21 @@ async fn main() -> anyhow::Result<()> {
         anyhow::bail!("--prompt is required (or pass --emit-schema / the `lint` subcommand)");
     };
     let (workflow, ids) = load_workflow(&prompt)?;
-    let (tool_sets, layer_count) = load_tool_sets(cli.rules_base.as_deref(), &cli.rules)?;
+    let resolved = resolve_sets(cli.rules_base.as_deref(), &cli.rules, &prompt, &workflow);
+    for message in &resolved.import_errors {
+        tracing::error!("{message}");
+    }
 
     if cli.check {
-        let report = cctui_guard::lint::lint(&workflow, &tool_sets, &ids);
+        let mut report = cctui_guard::lint::lint(&workflow, &resolved.sets, &ids);
+        add_import_errors(&mut report, &resolved.import_errors);
         if !print_lint(&report, false) {
             anyhow::bail!("--check found policy errors; refusing to start");
         }
+    } else if !resolved.import_errors.is_empty() {
+        anyhow::bail!("unreadable [rules] import(s); refusing to start (fail closed)");
     }
+    let tool_sets = resolved.sets;
 
     let guarded_default_allow = matches!(workflow.network_default, Some(NetworkDefault::Allow));
     if guarded_default_allow {
@@ -275,12 +287,7 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!("No steps found in {}", prompt.display());
     }
 
-    tracing::info!(
-        "Loaded {} steps, {} tool sets from {} rule layer(s)",
-        steps.len(),
-        tool_sets.len(),
-        layer_count
-    );
+    tracing::info!("Loaded {} steps, {} tool sets", steps.len(), tool_sets.len());
 
     let engine = Arc::new(WorkflowEngine::new_with_log(
         steps,

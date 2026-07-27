@@ -748,6 +748,45 @@ fn test_example_context_pack_prompt_parses_with_llmjudge() {
 }
 
 #[test]
+fn inline_prompt_set_drives_step_egress_policy() {
+    use cctui_guard::ir::Workflow;
+    use cctui_guard::resolve::resolve_sets;
+
+    let dir = tempfile::tempdir().unwrap();
+    let proxy_dir = dir.path().join("guard-proxy");
+    std::fs::create_dir_all(&proxy_dir).unwrap();
+    let prompt_path = dir.path().join("task.md");
+    let md = "\
+[net-yt]: yt.example.com:443
+
+# Step 1
+[allowed]: *
+[network]: net-yt
+[transition]: Exit
+";
+    std::fs::write(&prompt_path, md).unwrap();
+
+    let workflow = Workflow::compile(md).unwrap();
+    let resolved =
+        resolve_sets(None, std::path::Path::new("/nonexistent"), &prompt_path, &workflow);
+    let _engine = WorkflowEngine::new(
+        workflow.into_steps(),
+        resolved.sets,
+        dir.path().join("state"),
+        proxy_dir.join("policy.json"),
+        vec![],
+        dir.path().to_path_buf(),
+        None,
+        false,
+    );
+    let policy: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(proxy_dir.join("policy.json")).unwrap())
+            .unwrap();
+    assert_eq!(policy["default"], json!("deny"));
+    assert_eq!(policy["allowed_hosts"], json!(["yt.example.com:443"]));
+}
+
+#[test]
 fn per_transition_gate_runs_only_for_its_target() {
     let prompt = "\
 # Step 1
