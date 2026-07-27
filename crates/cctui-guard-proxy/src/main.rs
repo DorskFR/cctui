@@ -66,6 +66,12 @@ struct Args {
     #[arg(long, default_value = "/var/run/guard-proxy/policy.json", env = "GUARD_PROXY_POLICY")]
     policy: String,
 
+    /// Append every egress verdict as a JSON line here — the same file the guard
+    /// writes its `/check` + `/transition` decisions to, so the end-of-run report
+    /// can attribute a denied host to the active step. Unset ⇒ no log.
+    #[arg(long = "decision-log", env = "GUARD_DECISION_LOG")]
+    decision_log: Option<PathBuf>,
+
     /// Path to the JSON injection config (an array of `{host, shape, secret,
     /// …}` entries, each naming an explicit `env:`/`vault:`/`aws-sm:`/`k8s:`
     /// secret ref). When the file exists it fully defines injection and the
@@ -411,7 +417,8 @@ async fn main() -> anyhow::Result<()> {
     let rules = build_rules(&args)?;
     let injection = build_injection(&args, rules)?;
 
-    let policy = Arc::new(PolicyManager::new(&args.policy));
+    let decision_log = Arc::new(cctui_guard::decision_log::DecisionLog::new(args.decision_log));
+    let policy = Arc::new(PolicyManager::new(&args.policy).with_decision_log(Some(decision_log)));
     if let Err(e) = policy.load() {
         // Fail closed: an unreadable/invalid policy stays deny-all.
         tracing::warn!("failed to load initial policy (deny-all until fixed): {e}");

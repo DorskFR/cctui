@@ -124,6 +124,7 @@ async fn handle_connect(
 
     if host_is_denied(&split_host_port(&host_port, 443).0) {
         tracing::warn!("DENY (builtin) CONNECT {host_port}");
+        policy.record(&host_port, false, "builtin denylist");
         conn.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
             .await?;
         return Ok(());
@@ -131,11 +132,13 @@ async fn handle_connect(
 
     if !policy.is_allowed(&host_port) {
         tracing::info!("DENY CONNECT {host_port}");
+        policy.record(&host_port, false, "not in allow-list");
         conn.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
             .await?;
         return Ok(());
     }
     tracing::info!("ALLOW CONNECT {host_port}");
+    policy.record(&host_port, true, "");
 
     let (host, port) = split_host_port(&host_port, 443);
 
@@ -199,6 +202,7 @@ async fn handle_http(
 
     if host_is_denied(&split_host_port(&host_port, 80).0) {
         tracing::warn!("DENY (builtin) HTTP {} {}", req.method, req.target);
+        policy.record(&host_port, false, "builtin denylist");
         conn.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
             .await?;
         return Ok(());
@@ -206,11 +210,13 @@ async fn handle_http(
 
     if !policy.is_allowed(&host_port) {
         tracing::info!("DENY HTTP {} {}", req.method, req.target);
+        policy.record(&host_port, false, "not in allow-list");
         conn.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
             .await?;
         return Ok(());
     }
     tracing::info!("ALLOW HTTP {} {}", req.method, req.target);
+    policy.record(&host_port, true, "");
 
     let Ok(Ok(mut upstream)) =
         tokio::time::timeout(Duration::from_secs(10), TcpStream::connect(&host_port)).await
