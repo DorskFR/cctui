@@ -61,6 +61,8 @@ pub struct ResolvedStep {
     pub exit: bool,
     pub gate: bool,
     pub judge: usize,
+    pub max_visits: Option<u32>,
+    pub transition_gates: Vec<u32>,
 }
 
 /// The outcome of a lint pass: findings plus the resolved per-step policy.
@@ -181,6 +183,27 @@ pub fn lint(
             }
         }
 
+        for target in step.transition.gates.keys() {
+            if !step.transition.to.contains(target) {
+                diagnostics.push(Diagnostic {
+                    severity: Severity::Error,
+                    step: Some(sid),
+                    message: format!(
+                        "guard block declares a transition gate to Step {target}, which is not a \
+                         declared transition target"
+                    ),
+                });
+            }
+        }
+
+        if step.max_visits == Some(0) {
+            diagnostics.push(Diagnostic {
+                severity: Severity::Warning,
+                step: Some(sid),
+                message: "max-visits: 0 makes the step impossible to enter".to_string(),
+            });
+        }
+
         report_contradictions(step, tool_sets, &mut diagnostics);
 
         let network_open = step.network.iter().any(|t| t == "*");
@@ -204,6 +227,8 @@ pub fn lint(
             exit: step.transition.exit,
             gate: step.gate.is_some(),
             judge: step.judge.len(),
+            max_visits: step.max_visits,
+            transition_gates: step.transition.gates.keys().copied().collect(),
         });
     }
 
@@ -514,6 +539,50 @@ mod tests {
         let report = lint_md("Just prose, no steps.\n");
         assert!(!report.has_errors());
         assert!(report.diagnostics.iter().any(|d| d.message.contains("unguarded")));
+    }
+
+    #[test]
+    fn transition_gate_to_undeclared_target_is_error() {
+        let wf = Workflow::from_json(
+            r#"{"steps":[
+                {"id":1,"transition":{"to":[2],"gates":{"3":"make x"}}},
+                {"id":2,"transition":{"exit":true}}
+            ]}"#,
+        )
+        .unwrap();
+        let report = lint(&wf, &sets(), &[1, 2]);
+        assert!(
+            errors(&report).iter().any(|m| m.contains("transition gate to Step 3")),
+            "{:?}",
+            report.diagnostics
+        );
+    }
+
+    #[test]
+    fn transition_gate_to_declared_target_is_clean() {
+        let md = "\
+# Step 1
+[transition]: Exit
+```guard
+transitions: [{to: 2, gate: make test}]
+```
+
+# Step 2
+[transition]: Exit
+";
+        assert!(!lint_md(md).has_errors(), "{:?}", lint_md(md).diagnostics);
+    }
+
+    #[test]
+    fn max_visits_zero_warns() {
+        let md = "\
+# Step 1
+[transition]: Exit
+```guard
+max-visits: 0
+```
+";
+        assert!(lint_md(md).diagnostics.iter().any(|d| d.message.contains("max-visits: 0")));
     }
 
     #[test]

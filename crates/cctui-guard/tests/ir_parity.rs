@@ -262,7 +262,47 @@ fn rule_and_transition_lowering_is_semantically_stable() {
     assert_eq!(Rule::Wildcard.to_raw(), "*");
 
     let t = Transition::from_raw("Step 9, Step 11, Exit");
-    assert_eq!(t, Transition { to: vec![9, 11], exit: true });
+    assert_eq!(t, Transition { to: vec![9, 11], exit: true, ..Default::default() });
     assert_eq!(Transition::from_raw(&t.to_raw()), t, "transition lowering round-trips");
-    assert_eq!(Transition::from_raw("Exit"), Transition { to: vec![], exit: true });
+    assert_eq!(
+        Transition::from_raw("Exit"),
+        Transition { to: vec![], exit: true, ..Default::default() }
+    );
+}
+
+/// A `guard` fenced block's per-transition gates and `max-visits` bound survive
+/// the markdown → IR → JSON → IR → step round-trip intact.
+#[test]
+fn guard_block_fields_round_trip_through_the_ir() {
+    let md = "\
+# Step 1: Work
+[transition]: Exit
+```guard
+max-visits: 3
+transitions:
+  - to: 2
+    gate: make test
+  - to: 5
+```
+
+# Step 2: X
+[transition]: Exit
+
+# Step 5: Y
+[transition]: Exit
+";
+    let wf = Workflow::compile(md).unwrap();
+    let step1 = &wf.steps[0];
+    assert_eq!(step1.max_visits, Some(3));
+    assert_eq!(step1.transition.gates.get(&2).map(String::as_str), Some("make test"));
+    assert!(!step1.transition.gates.contains_key(&5));
+    assert!(step1.transition.to.contains(&2) && step1.transition.to.contains(&5));
+    assert!(step1.transition.exit, "the bracket-line Exit is preserved");
+
+    let json = serde_json::to_string_pretty(&wf).unwrap();
+    let from_json = Workflow::from_json(&json).unwrap();
+    assert_eq!(wf, from_json, "guard-block fields survive the JSON frontend");
+
+    let md_steps = cctui_guard::parser::parse_steps(md).unwrap();
+    assert_eq!(md_steps, wf.into_steps(), "IR lowers back to the same steps");
 }

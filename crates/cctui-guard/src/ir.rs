@@ -98,6 +98,10 @@ pub struct Transition {
     /// Whether `Exit` appears in the authored transition list.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub exit: bool,
+    /// Per-target deterministic gate commands, keyed by target step. Runs only
+    /// for that target, after the step-level `[gate]`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub gates: BTreeMap<u32, String>,
 }
 
 impl Transition {
@@ -105,7 +109,7 @@ impl Transition {
     #[must_use]
     pub fn from_raw(raw: &str) -> Self {
         let (to, exit) = parse_transitions(raw);
-        Self { to, exit }
+        Self { to, exit, gates: BTreeMap::new() }
     }
 
     /// Lower back into the raw `[transition]` string (`parse_transitions` reads
@@ -151,6 +155,10 @@ pub struct WorkflowStep {
     /// Optional `[llmjudge]` acceptance questions.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub judge: Vec<JudgeQuestion>,
+    /// Optional `max-visits` re-entry bound: the step may be entered at most
+    /// this many times before a transition into it is denied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_visits: Option<u32>,
 }
 
 const fn is_unrestricted(rule: &Rule) -> bool {
@@ -173,10 +181,14 @@ impl WorkflowStep {
                 .filter(|s| !s.is_empty())
                 .map(str::to_string)
                 .collect(),
-            transition: Transition::from_raw(&step.transition),
+            transition: Transition {
+                gates: step.transition_gates.clone(),
+                ..Transition::from_raw(&step.transition)
+            },
             gate: if gate.is_empty() { None } else { Some(gate.to_string()) },
             compact: step.compact,
             judge: step.llmjudge.clone(),
+            max_visits: step.max_visits,
         }
     }
 
@@ -191,6 +203,8 @@ impl WorkflowStep {
             gate: self.gate.unwrap_or_default(),
             compact: self.compact,
             llmjudge: self.judge,
+            max_visits: self.max_visits,
+            transition_gates: self.transition.gates,
         }
     }
 }

@@ -189,6 +189,15 @@ fn print_lint(report: &LintReport, explain: bool) -> bool {
             if step.gate {
                 println!("  gate:       yes");
             }
+            if !step.transition_gates.is_empty() {
+                let mut targets: Vec<u32> = step.transition_gates.clone();
+                targets.sort_unstable();
+                let targets: Vec<String> = targets.iter().map(u32::to_string).collect();
+                println!("  gate→step:  {}", targets.join(", "));
+            }
+            if let Some(max) = step.max_visits {
+                println!("  max-visits: {max}");
+            }
             if step.judge > 0 {
                 println!("  llmjudge:   {} question(s)", step.judge);
             }
