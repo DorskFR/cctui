@@ -13,6 +13,7 @@ name = "cctui-guard-proxy"
 path = "src/main.rs"
 
 [dependencies]
+cctui-guard = { path = "../cctui-guard" }
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

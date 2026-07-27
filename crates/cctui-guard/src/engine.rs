@@ -7,6 +7,7 @@ use std::sync::Mutex;
 
 use serde_json::{Value, json};
 
+use crate::decision_log::{DecisionLog, build_report};
 use crate::parser::{JudgeQuestion, Step, expand_set, parse_keywords, parse_transitions};
 use crate::rules::check_rules;
 
@@ -47,13 +48,17 @@ pub struct WorkflowEngine {
     /// default) denies, `true` reopens it via a document `[network-default]:
     /// allow`.
     guarded_default_allow: bool,
+    /// JSONL decision-log sink for every `/check` and `/transition`; disabled
+    /// (no-op) unless the entrypoint passed a log path.
+    decision_log: DecisionLog,
+    /// Where the aggregated end-of-run report is written on Exit. `None` skips
+    /// the report; the JSONL log is still the source of truth.
+    report_out: Option<PathBuf>,
 }
 
 impl WorkflowEngine {
-    /// Build an engine from already-parsed steps and tool sets, writing the
-    /// initial state + policy for the first step.
-    ///
-    /// The state directory is created if missing.
+    /// Build an engine with no decision log — the common path for tests and
+    /// unlogged runs. Delegates to [`WorkflowEngine::new_with_log`].
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -65,6 +70,39 @@ impl WorkflowEngine {
         gate_cwd: PathBuf,
         judge_cmd: Option<String>,
         guarded_default_allow: bool,
+    ) -> Self {
+        Self::new_with_log(
+            steps,
+            tool_sets,
+            state_file,
+            proxy_policy_file,
+            always_allowed_hosts,
+            gate_cwd,
+            judge_cmd,
+            guarded_default_allow,
+            DecisionLog::default(),
+            None,
+        )
+    }
+
+    /// Build an engine from already-parsed steps and tool sets, writing the
+    /// initial state + policy for the first step and recording it as the first
+    /// decision-log timeline anchor.
+    ///
+    /// The state directory is created if missing.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_log(
+        steps: BTreeMap<u32, Step>,
+        tool_sets: HashMap<String, Vec<String>>,
+        state_file: PathBuf,
+        proxy_policy_file: PathBuf,
+        always_allowed_hosts: Vec<String>,
+        gate_cwd: PathBuf,
+        judge_cmd: Option<String>,
+        guarded_default_allow: bool,
+        decision_log: DecisionLog,
+        report_out: Option<PathBuf>,
     ) -> Self {
         let step_numbers: Vec<u32> = steps.keys().copied().collect();
         let engine = Self {
@@ -78,6 +116,8 @@ impl WorkflowEngine {
             gate_cwd,
             judge_cmd,
             guarded_default_allow,
+            decision_log,
+            report_out,
         };
 
         if let Some(parent) = engine.state_file.parent() {
@@ -86,6 +126,7 @@ impl WorkflowEngine {
         let first = engine.step_numbers.first().copied().unwrap_or(0);
         engine.write_state(i64::from(first));
         engine.write_proxy_policy(first);
+        engine.decision_log.enter(i64::from(first));
         engine
     }
 
@@ -319,6 +360,13 @@ impl WorkflowEngine {
         let step_num = self.read_state();
 
         if step_num == STEP_EXITED {
+            self.decision_log.check(
+                step_num,
+                tool,
+                &check_target(tool, tool_input),
+                false,
+                "session complete",
+            );
             return deny("Session complete. No further actions allowed.");
         }
 
@@ -347,6 +395,7 @@ impl WorkflowEngine {
         let disallowed = parse_keywords(&step.disallowed, &self.tool_sets);
 
         let (ok, reason) = check_rules(tool, tool_input, &allowed, &disallowed);
+        self.decision_log.check(step_num, tool, &check_target(tool, tool_input), ok, &reason);
         if !ok {
             tracing::info!("DENY [Step {step_u}] tool={tool} reason={reason}");
             return deny(&format!("[Step {step_u}] {reason}"));
@@ -369,11 +418,26 @@ impl WorkflowEngine {
                 json!({ "allowed_hosts": hosts, "default": "deny" }).to_string(),
             );
         }
+        self.decision_log.transition(i64::from(current_u), "exit", "allow", "");
+        self.decision_log.enter(STEP_EXITED);
+        self.write_report();
         json!({
             "ok": true,
             "step": "exit",
             "message": "Session complete. You may now stop.",
         })
+    }
+
+    /// Aggregate the decision log into the end-of-run report and write it to
+    /// `report_out`. Both sinks are optional; a no-op when either is unset.
+    fn write_report(&self) {
+        let (Some(log_path), Some(out)) = (self.decision_log.path(), &self.report_out) else {
+            return;
+        };
+        let report = build_report(log_path);
+        if let Ok(text) = serde_json::to_string_pretty(&report) {
+            let _ = std::fs::write(out, text);
+        }
     }
 
     /// Apply a validated numeric advance `current_u` → `tn`: the deterministic
@@ -382,14 +446,17 @@ impl WorkflowEngine {
     /// CCT-516). The judge's per-question verdicts are surfaced as a
     /// `kind: "judge"` evidence entry on both outcomes.
     fn transition_advance(&self, current_u: u32, tn: u32) -> TransitionResponse {
+        let target = tn.to_string();
         if let Err(reason) = self.run_gate(current_u) {
             tracing::info!("DENY transition Step {current_u} → Step {tn}: {reason}");
+            self.decision_log.transition(i64::from(current_u), &target, "deny", &reason);
             return json!({ "ok": false, "step": current_u, "error": reason });
         }
         let judge = match self.run_judge(current_u) {
             Ok(entry) => entry,
             Err((reason, entry)) => {
                 tracing::info!("DENY transition Step {current_u} → Step {tn}: {reason}");
+                self.decision_log.transition(i64::from(current_u), &target, "deny", &reason);
                 let mut resp = json!({ "ok": false, "step": current_u, "error": reason });
                 if let (Some(obj), Some(entry)) = (resp.as_object_mut(), entry) {
                     obj.insert("evidence".to_string(), json!([entry]));
@@ -398,8 +465,10 @@ impl WorkflowEngine {
             }
         };
         tracing::info!("Transition: Step {current_u} → Step {tn}");
+        self.decision_log.transition(i64::from(current_u), &target, "allow", "");
         self.write_state(i64::from(tn));
         self.write_proxy_policy(tn);
+        self.decision_log.enter(i64::from(tn));
         let title = self.steps.get(&tn).map_or("", |s| s.title.as_str());
         // Re-inject the authoritative next-step prompt + compact directive.
         let mut resp = json!({
@@ -614,6 +683,19 @@ fn truncate(s: &str, n: usize) -> &str {
         end -= 1;
     }
     &s[..end]
+}
+
+/// The decision-log `target` for a tool call: the Bash command, the file path
+/// for a file tool, else the raw MCP payload — the normalized subject a report
+/// dedups tool denials by.
+fn check_target(tool: &str, tool_input: &Value) -> String {
+    if tool == "Bash" {
+        tool_input.get("command").and_then(Value::as_str).unwrap_or("").trim().to_string()
+    } else if let Some(path) = tool_input.get("file_path").and_then(Value::as_str) {
+        path.to_string()
+    } else {
+        serde_json::to_string(tool_input).unwrap_or_default()
+    }
 }
 
 /// Build an `allow` `PreToolUse` decision.

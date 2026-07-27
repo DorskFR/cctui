@@ -1,9 +1,10 @@
 //! Egress allow-list policy: JSON file, fail-closed, hot-reloaded by mtime poll.
 
 use std::path::PathBuf;
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime};
 
+use cctui_guard::decision_log::DecisionLog;
 use serde::Deserialize;
 
 /// The on-disk policy document:
@@ -23,12 +24,35 @@ pub struct PolicyManager {
     config: RwLock<Option<PolicyConfig>>,
     path: PathBuf,
     last_mtime: RwLock<Option<SystemTime>>,
+    decision_log: Option<Arc<DecisionLog>>,
 }
 
 impl PolicyManager {
     #[must_use]
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { config: RwLock::new(None), path: path.into(), last_mtime: RwLock::new(None) }
+        Self {
+            config: RwLock::new(None),
+            path: path.into(),
+            last_mtime: RwLock::new(None),
+            decision_log: None,
+        }
+    }
+
+    /// Attach a shared decision log so each egress verdict is appended as a
+    /// `network` JSON line (best-effort). The guard writes the workflow steps to
+    /// the same file, letting the end-of-run report attribute a denied host to
+    /// the step that was active.
+    #[must_use]
+    pub fn with_decision_log(mut self, log: Option<Arc<DecisionLog>>) -> Self {
+        self.decision_log = log.filter(|l| l.is_enabled());
+        self
+    }
+
+    /// Record an egress verdict on `host_port` to the decision log, if attached.
+    pub fn record(&self, host_port: &str, allowed: bool, rule: &str) {
+        if let Some(log) = &self.decision_log {
+            log.network(host_port, allowed, rule);
+        }
     }
 
     /// Loads (or reloads) the policy from disk. A missing file clears the policy
@@ -211,6 +235,41 @@ mod tests {
         assert!(pm.is_allowed("api.example.com:443"));
         assert!(!pm.is_allowed("evil.example.com:443"));
         assert!(!pm.is_allowed("203.0.113.4:443"));
+    }
+
+    #[test]
+    fn records_egress_verdicts_to_decision_log() {
+        let (_dir, path) =
+            write_policy(r#"{"allowed_hosts": ["ok.example.com:443"], "default": "deny"}"#);
+        let log_dir = tempfile::tempdir().unwrap();
+        let log_path = log_dir.path().join("decisions.jsonl");
+        let log = std::sync::Arc::new(DecisionLog::new(Some(log_path.clone())));
+        let pm = PolicyManager::new(&path).with_decision_log(Some(log));
+        pm.load().unwrap();
+
+        pm.record("ok.example.com:443", pm.is_allowed("ok.example.com:443"), "");
+        pm.record(
+            "blocked.example.com:443",
+            pm.is_allowed("blocked.example.com:443"),
+            "not in allow-list",
+        );
+
+        let records =
+            cctui_guard::decision_log::parse_log(&std::fs::read_to_string(&log_path).unwrap());
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].verdict, "allow");
+        assert_eq!(records[0].target, "ok.example.com:443");
+        assert_eq!(records[1].verdict, "deny");
+        assert_eq!(records[1].rule, "not in allow-list");
+    }
+
+    #[test]
+    fn decision_log_off_when_disabled() {
+        let (_dir, path) = write_policy(r#"{"allowed_hosts": [], "default": "deny"}"#);
+        let pm = PolicyManager::new(&path)
+            .with_decision_log(Some(std::sync::Arc::new(DecisionLog::new(None))));
+        // A disabled log is dropped, so record is a pure no-op.
+        pm.record("x.example.com:443", false, "not in allow-list");
     }
 
     #[test]

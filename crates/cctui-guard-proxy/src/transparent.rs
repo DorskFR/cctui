@@ -104,6 +104,7 @@ async fn handle_connection(
         tracing::warn!(
             "DENY (builtin) transparent {policy_target} (orig={host_port} sni={sni:?} host={http_host:?})"
         );
+        policy.record(&policy_target, false, "builtin denylist");
         return Ok(());
     }
 
@@ -111,12 +112,14 @@ async fn handle_connection(
         tracing::info!(
             "DENY transparent {policy_target} (orig={host_port} sni={sni:?} host={http_host:?})"
         );
+        policy.record(&policy_target, false, "not in allow-list");
         return Ok(());
     }
 
     tracing::info!(
         "ALLOW transparent {policy_target} (orig={host_port} sni={sni:?} host={http_host:?})"
     );
+    policy.record(&policy_target, true, "");
 
     // TLS-terminating credential injection for allowlisted hosts (CCT-718). Only
     // a real TLS ClientHello (SNI recovered) is intercepted; everything else

@@ -77,6 +77,17 @@ struct Cli {
     /// `[llmjudge]` ⇒ that step's transition is refused (fail closed).
     #[arg(long = "judge-cmd", env = "GUARD_JUDGE_CMD")]
     judge_cmd: Option<String>,
+
+    /// Append every `/check` and `/transition` decision as a JSON line here. The
+    /// guard-proxy points its own `--decision-log` at the same file so egress
+    /// verdicts land in one timeline. Unset ⇒ no log.
+    #[arg(long = "decision-log", env = "GUARD_DECISION_LOG")]
+    decision_log: Option<PathBuf>,
+
+    /// Where the end-of-run report (aggregated from the decision log) is written
+    /// on Exit. Requires `--decision-log`.
+    #[arg(long = "report-out", env = "GUARD_REPORT_OUT")]
+    report_out: Option<PathBuf>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -262,7 +273,7 @@ async fn main() -> anyhow::Result<()> {
         layer_count
     );
 
-    let engine = Arc::new(WorkflowEngine::new(
+    let engine = Arc::new(WorkflowEngine::new_with_log(
         steps,
         tool_sets,
         cli.state,
@@ -271,6 +282,8 @@ async fn main() -> anyhow::Result<()> {
         cli.gate_cwd,
         cli.judge_cmd,
         guarded_default_allow,
+        cctui_guard::decision_log::DecisionLog::new(cli.decision_log),
+        cli.report_out,
     ));
 
     let app = router(engine);
