@@ -603,12 +603,18 @@ input), then drops to uid 1000:
    order). The generic seam derived images use to inject boot phases (e.g.
    credential materialization) without forking the entrypoint. No-op on the
    public image (empty dir).
-5. **Callback** — install the `REPLY_URL` exit trap.
-6. **Guard** — start `cctui-guard` if the resolved prompt has step blocks
+5. **Codex config** — write the `cctui` model-provider region into
+   `~/.codex/config.toml` (see Codex-native dispatch, below).
+6. **Codex pack** — under the Codex adapter, stage `AGENTS.md` + `prompts/` from
+   the context pack (see `docs/context-packs.md`).
+7. **Callback** — install the `REPLY_URL` exit trap.
+8. **Guard** — start `cctui-guard` if the resolved prompt has step blocks
    (`# Step N` + `[allowed]`); always-allow the structural hosts.
-7. **Hardening** — assemble `WORKER_HARDENING_JSON`.
-8. **Drop + run** — `exec cctui-supervisor --ro … --rw … --user 1000
-   --report /tmp/hardening.json -- cctui-daemon run --no-auto-update`.
+9. **Permissions** — seed Claude's bypass-permissions + trust-dialog gates for
+   the dispatch workdir and register any context-pack `PreToolUse` hooks.
+10. **Hardening** — assemble `WORKER_HARDENING_JSON`.
+11. **Drop + run** — `exec cctui-supervisor --ro … --rw … --user 1000
+    --report /tmp/hardening.json -- cctui-daemon run --no-auto-update`.
 
 ## Context pack
 
