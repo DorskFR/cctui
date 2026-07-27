@@ -143,7 +143,7 @@ guarded("poller keeps tracked PRs warm", () => {
 
 guarded("read routes serve the store", () => {
   test("GET a synced pull returns the full envelope without network", async () => {
-    const app = createApp({ db });
+    const app = createApp({ db, authDisabled: true });
     const res = await app.request("/v1/repos/warm/repo/pulls/1");
     expect(res.status).toBe(200);
     const body = (await res.json()) as { kind: string; payload: { number: number } };
