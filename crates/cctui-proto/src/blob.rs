@@ -1,4 +1,4 @@
-//! Content-addressed blob references (CCT-739): oversized base64 attachments in
+//! Content-addressed blob references: oversized base64 attachments in
 //! transcript payloads are uploaded by sha256 and replaced with a [`BlobRef`].
 
 use serde::{Deserialize, Serialize};

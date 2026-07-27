@@ -1,4 +1,4 @@
-//! `PeerHttpTransport` (CCT-573, phase 2 of the message-bus architecture):
+//! `PeerHttpTransport` (phase 2 of the message-bus architecture):
 //! cross-replica routing + event fan-out over plain pod-to-pod HTTP.
 //!
 //! With multiple server replicas, a daemon/dispatcher WS is terminated by
@@ -78,7 +78,7 @@ pub enum RouteRequest {
         machine: Uuid,
         path: String,
     },
-    /// Session-diagnose round-trip (CCT-547): the receiving pod runs the full
+    /// Session-diagnose round-trip: the receiving pod runs the full
     /// command-down / event-up correlation locally and returns the report.
     DaemonDiagnose {
         machine: Uuid,
@@ -210,7 +210,7 @@ pub struct PeerHttpTransport {
     /// ourselves.
     pod: String,
     /// The port every replica's HTTP server listens on (identical across the
-    /// deployment, same assumption the CCT-567 forwarder made).
+    /// deployment, same assumption the forwarder made).
     port: u16,
     /// The cluster-internal shared secret (Bearer on every internal call).
     secret: String,

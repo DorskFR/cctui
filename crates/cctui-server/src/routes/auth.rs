@@ -1,4 +1,4 @@
-//! Browser auth-cookie endpoints (CCT-423).
+//! Browser auth-cookie endpoints.
 //!
 //! The webui used to keep the bearer token in `localStorage` and pass it on the
 //! WS upgrade as `?token=` — the latter leaks into proxy/access logs. These two

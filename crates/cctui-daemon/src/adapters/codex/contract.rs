@@ -1,4 +1,4 @@
-//! Versioned Codex `app-server` protocol contract (CCT-630).
+//! Versioned Codex `app-server` protocol contract.
 //!
 //! Single source of truth for the Codex version cctui is built and tested
 //! against. The pinned version is consumed by:

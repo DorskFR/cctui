@@ -1,4 +1,4 @@
-//! Codex `thread/list` inventory (CCT-263).
+//! Codex `thread/list` inventory.
 //!
 //! The legacy [`super::log_tail`] scrapes `~/.codex/sessions/**/*.jsonl`
 //! heuristically — it only learns a session's working dir if a line happens
@@ -18,7 +18,7 @@
 //! `initialize` → `thread/list`, read the one response, exit. That keeps the
 //! blast radius tiny (no long-lived singleton, no control socket) and sidesteps
 //! the experimental daemon/remote-control preconditions that are flagged as
-//! risky in CCT-263 — those (managed standalone install + multiplexed driver)
+//! risky in — those (managed standalone install + multiplexed driver)
 //! are deliberately left to a follow-up. The poll shares the app-server
 //! driver's [`SessionRegistry`] so cctui-owned threads (which the driver
 //! already streams live) are not re-emitted here, and the log-tail's `owned`
@@ -42,7 +42,7 @@ use uuid::Uuid;
 use super::app_server::{AppServerConfig, SessionRecord, SessionRegistry};
 
 /// Set of thread ids the inventory has surfaced (id → last seen
-/// `status.type`). This is the inventory's own dedup state; since CCT-276 it is
+/// `status.type`). This is the inventory's own dedup state; since it is
 /// no longer shared with the log-tail (which keeps tailing the real rollout
 /// JSONL so discovered CLI sessions get a populated conversation).
 pub type SeenIds = Arc<Mutex<HashMap<String, Option<String>>>>;
@@ -155,7 +155,7 @@ fn initialize_req() -> Value {
 /// Every codex `ThreadSourceKind`. Omitting `sourceKinds` makes the app-server
 /// default to interactive sources (`cli`/`vscode`), so cctui-owned `appServer`
 /// threads never come back and the rediscovery branch misses them after a
-/// daemon restart (CCT-632). Request all kinds explicitly.
+/// daemon restart. Request all kinds explicitly.
 const SOURCE_KINDS: &[&str] = &[
     "cli",
     "vscode",
@@ -341,7 +341,7 @@ impl ThreadListInventory {
             // the server's `normalize::for_client("codex","message",…)` (which
             // keys off the codex `type` discriminant and drops payloads without
             // one). A claude-style `{role,text}` payload would render on the
-            // list card but vanish in the conversation drawer (CCT-276).
+            // list card but vanish in the conversation drawer.
             let _ = self
                 .events
                 .send(AdapterEvent::Message {
@@ -366,7 +366,7 @@ impl ThreadListInventory {
 /// Spawn a short-lived stdio `codex app-server`, run initialize →
 /// `thread/list`, and return the parsed entries. The process is reaped before
 /// returning. Shared by the periodic inventory poll and the startup
-/// rediscovery (CCT-339).
+/// rediscovery.
 async fn poll_threads(app: &AppServerConfig, limit: u32) -> anyhow::Result<Vec<ThreadEntry>> {
     let mut cmd = Command::new(&app.bin);
     cmd.arg("app-server")
@@ -438,7 +438,7 @@ async fn read_response<R: AsyncBufRead + Unpin>(
 /// itself drove before the daemon restarted. Re-seed the durable
 /// [`SessionRegistry`] with a [`SessionRecord`] for each so a later command
 /// (send/rename/set-model) revives the thread via `thread/resume` instead of
-/// reporting `Missing` (CCT-339). Picks `cfg`/cwd from the resolved entry so the
+/// reporting `Missing`. Picks `cfg`/cwd from the resolved entry so the
 /// resume relaunches in the right directory under the daemon's current config.
 #[must_use]
 pub fn owned_records(
@@ -455,13 +455,13 @@ pub fn owned_records(
                     cfg: app.clone(),
                     cwd: e.cwd.clone().unwrap_or_default(),
                     name: e.name.clone(),
-                    // Gateway env (CCT-461) isn't persisted to codex's on-disk
+                    // Gateway env isn't persisted to codex's on-disk
                     // thread state, so a registry seeded from `thread/list`
                     // after a daemon restart starts env-less. The fresh spawn /
                     // fork launch chokepoint in `mod.rs` pulls + stores it; a
                     // resume reuses the stored value, so a rediscovered thread's
                     // first resume can still be env-less for the narrow
-                    // restart-then-resume window. See CCT-460/CCT-461.
+                    // restart-then-resume window. See.
                     env: std::collections::BTreeMap::new(),
                 },
             )
@@ -471,7 +471,7 @@ pub fn owned_records(
 
 /// On adapter startup, rediscover cctui-owned (`appServer`-source) codex threads
 /// from `thread/list` and seed the durable registry so in-flight sessions stay
-/// drivable across a daemon restart / self-update (CCT-339). Best-effort: a
+/// drivable across a daemon restart / self-update. Best-effort: a
 /// probe failure (codex missing, sandbox/userns, auth) just leaves the registry
 /// empty, exactly as before this change.
 pub async fn rediscover_owned(cfg: &ThreadListConfig, registry: &SessionRegistry) {
@@ -620,7 +620,7 @@ mod tests {
         let lr = thread_list_req(2, 42, None);
         assert_eq!(lr["method"], "thread/list");
         assert_eq!(lr["id"], 2);
-        // CCT-632: paginate with `limit`, never the removed `pageSize`.
+        // paginate with `limit`, never the removed `pageSize`.
         assert_eq!(lr["params"]["limit"], 42);
         assert!(lr["params"].get("pageSize").is_none());
         assert!(lr["params"].get("cursor").is_none());
@@ -629,7 +629,7 @@ mod tests {
     #[test]
     fn thread_list_req_asks_for_all_source_kinds() {
         // Omitting `sourceKinds` defaults to cli/vscode, hiding cctui's own
-        // appServer threads (CCT-632). Every ThreadSourceKind must be requested.
+        // appServer threads. Every ThreadSourceKind must be requested.
         let lr = thread_list_req(2, 100, None);
         let kinds: Vec<&str> = lr["params"]["sourceKinds"]
             .as_array()
@@ -926,7 +926,7 @@ mod tests {
         // SessionStarted, Status(name), Message(preview), Status(idle).
         assert!(matches!(rx.recv().await.unwrap(), AdapterEvent::SessionStarted { .. }));
         assert!(matches!(rx.recv().await.unwrap(), AdapterEvent::Status { name: Some(_), .. }));
-        // CCT-276: the preview is emitted as a codex-native `userMessage` so it
+        // the preview is emitted as a codex-native `userMessage` so it
         // survives `normalize::for_client("codex","message",…)` server-side.
         let AdapterEvent::Message { payload, .. } = rx.recv().await.unwrap() else {
             panic!("expected preview Message")
@@ -979,7 +979,7 @@ mod tests {
 
     #[test]
     fn owned_records_seeds_only_app_server_threads() {
-        // CCT-339: startup rediscovery re-seeds the durable registry from the
+        // startup rediscovery re-seeds the durable registry from the
         // `thread/list` snapshot, but only for cctui-driven (`appServer`-source)
         // threads — CLI/vscode/exec sessions are not ours to resume.
         let entries = vec![

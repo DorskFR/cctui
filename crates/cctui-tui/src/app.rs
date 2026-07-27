@@ -113,7 +113,7 @@ impl App {
         flat.get(self.selected_index).copied()
     }
 
-    /// Session list ordered for display, with Task-tool subagents (CCT-141)
+    /// Session list ordered for display, with Task-tool subagents
     /// placed immediately after their parent. Top-level sessions (those with
     /// no in-list parent) are ordered by uptime; each parent's children
     /// follow it, also uptime-ordered.
@@ -132,7 +132,7 @@ impl App {
             .filter(|s| s.parent_id.as_deref().is_none_or(|p| !ids.contains(p)))
             .collect();
         // Group by classifier bucket (Needs input → Ready for review →
-        // Working → Completed); within a bucket, oldest first (CCT-90).
+        // Working → Completed); within a bucket, oldest first.
         tops.sort_by_key(|s| (crate::bucket_rank(s.bucket), s.uptime_secs));
         let mut out: Vec<&SessionListItem> = Vec::new();
         for t in tops {

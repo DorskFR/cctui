@@ -1,10 +1,10 @@
 //! HTTP + WS client to a cctui-server, dispatcher flavour.
 //!
-//! Mirrors the daemon's `ServerClient` (CCT-248 transport spec): a thin enroll
+//! Mirrors the daemon's `ServerClient` (transport spec): a thin enroll
 //! wrapper, an auth handshake, and a dial-out WS URL builder. The dispatcher
 //! enroll/auth/ws routes (`/api/v1/dispatcher/{enroll,auth,ws}`) are the
-//! server-side surface specced on CCT-248 and land with the server-side rework
-//! (CCT-248 parts 2-4); this binary speaks the decided wire protocol and will
+//! server-side surface specced on and land with the server-side rework
+//! (parts 2-4); this binary speaks the decided wire protocol and will
 //! connect once that surface lands.
 
 use cctui_proto::api::{DaemonAuthRequest, DaemonAuthResponse};

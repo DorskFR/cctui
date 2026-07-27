@@ -1,4 +1,4 @@
-//! Read-only live PTY relay (CCT-545).
+//! Read-only live PTY relay.
 //!
 //! When a browser opens a session's terminal view, the server sends
 //! `AdapterCommand::WatchPty { watch: true }`. Rather than tapping the held
@@ -205,7 +205,7 @@ impl PtyViewTask {
 
     /// Base64-encode + emit one coalesced frame. Uses `try_send` so a slow
     /// browser can't stall the shared event channel (backpressure → drop, never
-    /// queue — CCT-545). Returns `false` only when the channel is permanently
+    /// queue). Returns `false` only when the channel is permanently
     /// closed (adapter shutting down) so the caller stops.
     fn emit(&self, frame: &[u8]) -> bool {
         let data = base64::engine::general_purpose::STANDARD.encode(frame);

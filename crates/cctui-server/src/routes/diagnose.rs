@@ -1,11 +1,11 @@
-//! Per-session diagnose endpoint (CCT-547).
+//! Per-session diagnose endpoint.
 //!
 //! `GET /api/v1/sessions/{id}/diagnose` — one call that snapshots everything
 //! the owning daemon knows about the session (each fact dated + sourced, plus
 //! the arbitration verdict) and merges the server-side facts the daemon can't
 //! see (DB row status, gateway/account binding, machine heartbeat freshness).
 //!
-//! Fail-soft: a daemon that is offline, slow, or pre-CCT-547 yields
+//! Fail-soft: a daemon that is offline, slow, or yields
 //! `daemon: null` + `daemon_error`, with the server facts still served —
 //! exactly the situation this endpoint exists to debug.
 
@@ -41,7 +41,7 @@ pub async fn diagnose_session(
 
     // Gateway/account binding: the live (non-revoked) session tokens and the
     // account identities they resolve to — the same join the session list
-    // uses for `account_name` (CCT-430), all bindings rather than the latest.
+    // uses for `account_name`, all bindings rather than the latest.
     let accounts: Vec<String> = sqlx::query_scalar(
         "SELECT DISTINCT a.name \
          FROM session_tokens st \
@@ -75,7 +75,7 @@ pub async fn diagnose_session(
     };
 
     // The daemon round-trip (server → daemon WS → adapter → back). Any
-    // failure — offline machine, timeout, pre-CCT-547 daemon that drops the
+    // failure — offline machine, timeout, daemon that drops the
     // unknown command — degrades to `daemon: null` + the error string.
     let (daemon, daemon_error) = match crate::bus::diagnose(&state, &session_id).await {
         Ok(report) => (Some(*report), None),

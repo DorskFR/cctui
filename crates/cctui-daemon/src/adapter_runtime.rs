@@ -21,7 +21,7 @@ pub struct AdapterCtx {
     pub shutdown: CancellationToken,
     /// Adapter-specific declarative config from `adapters_enabled.config`.
     pub config: serde_json::Value,
-    /// Authenticated client back to the cctui-server (CCT-460). Lets an adapter
+    /// Authenticated client back to the cctui-server. Lets an adapter
     /// pull launch-time data the server owns — currently the per-session gateway
     /// env resolved from `sessions.account_id`. `None` outside a real daemon run
     /// (tests construct ctx without a server).

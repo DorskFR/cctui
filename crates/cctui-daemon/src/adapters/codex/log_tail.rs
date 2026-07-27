@@ -1,4 +1,4 @@
-//! Codex log-tail adapter (CCT-89).
+//! Codex log-tail adapter.
 //!
 //! Watches `~/.codex/sessions/` for new log files. For each new file:
 //!
@@ -79,7 +79,7 @@ pub struct LogTail {
     events: mpsc::Sender<AdapterEvent>,
     shutdown: CancellationToken,
     sessions: HashMap<PathBuf, TrackedSession>,
-    /// Sessions driven by the app-server (CCT-98). Their rollout files are
+    /// Sessions driven by the app-server. Their rollout files are
     /// skipped here so we don't double-ingest. `local_id` is the rollout
     /// `UUIDv7`, which is a suffix of the rollout filename stem.
     owned: Option<super::app_server::SessionRegistry>,
@@ -134,14 +134,14 @@ impl LogTail {
             Some(reg) => reg.lock().await.keys().cloned().collect(),
             None => Vec::new(),
         };
-        // NOTE (CCT-276): we deliberately do NOT skip files for ids the
+        // NOTE: we deliberately do NOT skip files for ids the
         // `thread/list` inventory has surfaced. The inventory only seeds a
         // single preview message; the real transcript lives in the rollout
         // JSONL. Suppressing the tail left discovered CLI sessions with an
         // empty conversation ("No events yet"). The app-server `owned` set
         // above is still skipped — those threads are driven live by cctui.
         let mut alive: HashSet<PathBuf> = HashSet::new();
-        // CCT-633: real rollouts live under YYYY/MM/DD subdirectories, not
+        // real rollouts live under YYYY/MM/DD subdirectories, not
         // directly under the sessions root, so the scan recurses.
         let mut files = Vec::new();
         collect_rollout_files(&self.cfg.sessions_root, 0, &mut files);
@@ -283,7 +283,7 @@ fn collect_rollout_files(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Canonical thread id for a rollout file (CCT-633). The identity is the
+/// Canonical thread id for a rollout file. The identity is the
 /// `session_meta` payload `id` (a UUID), not the filename — the app-server
 /// registry and `thread/list` inventory key off the same UUID, so deriving it
 /// from the file avoids a second, filename-shaped local id for one thread.
@@ -326,7 +326,7 @@ fn session_meta_payload(path: &Path) -> Option<Value> {
 }
 
 /// Set by `deploy/codex-run.sh` through `CODEX_INTERNAL_ORIGINATOR_OVERRIDE`, which
-/// codex copies verbatim into `session_meta.originator` (CCT-749).
+/// codex copies verbatim into `session_meta.originator`.
 const LAUNCHER_ORIGINATOR_PREFIX: &str = "cctui-parent.";
 
 struct RolloutLink {
@@ -402,7 +402,7 @@ fn read_new_lines(path: &Path, offset: u64, local_id: &str) -> std::io::Result<V
 fn parse_line(local_id: &str, line: &str) -> AdapterEvent {
     if let Ok(value) = serde_json::from_str::<Value>(line) {
         // `turn_context` rollout lines carry the model + reasoning effort the
-        // session runs on (CCT-299). Surface them as a Status so discovered
+        // session runs on. Surface them as a Status so discovered
         // (log-tailed) codex sessions render model/effort in the list, instead
         // of letting the line fall through as a meaningless "message".
         if value.get("type").and_then(Value::as_str) == Some("turn_context")
@@ -429,7 +429,7 @@ fn parse_line(local_id: &str, line: &str) -> AdapterEvent {
 }
 
 /// Extract model + reasoning effort from a `turn_context` rollout line and build
-/// a `Status` event (CCT-299). The model lives at `payload.model`; effort at
+/// a `Status` event. The model lives at `payload.model`; effort at
 /// `payload.collaboration_mode.settings.reasoning_effort` (newer codex) or a
 /// top-level `payload.reasoning_effort` fallback — both may be null. Returns
 /// `None` when neither is present so we don't emit an empty Status.
@@ -458,8 +458,8 @@ fn turn_context_status(local_id: &str, value: &Value) -> Option<AdapterEvent> {
     })
 }
 
-/// Map a codex `event_msg`/`token_count` rollout line → [`AdapterEvent::TokenUsage`]
-/// (CCT-597). Codex writes one after every model response with
+/// Map a codex `event_msg`/`token_count` rollout line → [`AdapterEvent::TokenUsage`].
+/// Codex writes one after every model response with
 /// `info.last_token_usage` = that response's delta and `info.total_token_usage`
 /// = the running session total. We emit the `last` delta so the server's
 /// per-message SUM reconstructs the total, exactly like the app-server driver's
@@ -582,7 +582,7 @@ mod tests {
 
     #[tokio::test]
     async fn inventory_discovered_session_still_tails_transcript() {
-        // CCT-276 regression: a session whose rollout id was discovered by the
+        // regression: a session whose rollout id was discovered by the
         // thread/list inventory must still get its real JSONL transcript tailed
         // here. Before the fix the log-tail skipped files whose stem matched an
         // inventory id, leaving the conversation empty ("No events yet").
@@ -762,7 +762,7 @@ mod tests {
 
     #[tokio::test]
     async fn quiesced_rollout_is_not_replayed_on_rediscovery() {
-        // CCT-746 regression: quiesce eviction used to drop the offset, so the
+        // regression: quiesce eviction used to drop the offset, so the
         // next scan re-read the whole file and re-uploaded it every ~62s.
         let tmp = tempfile::tempdir().unwrap();
         let sessions = tmp.path().join("sessions");

@@ -1,4 +1,4 @@
-//! Per-subsystem daemon bandwidth accounting (CCT-744). Every field is
+//! Per-subsystem daemon bandwidth accounting. Every field is
 //! serde-defaulted so an older daemon (missing field) and an older server
 //! (unknown field) keep interoperating.
 

@@ -24,7 +24,7 @@ pub enum DaemonFrameUp {
     /// Optional explicit registration hint when the adapter cannot supply a
     /// full `SessionStarted` yet (e.g. resumed session). Mostly redundant.
     SessionRegistered { adapter_id: String, local_id: String },
-    /// Liveness ping. `bandwidth` (CCT-744) carries the daemon's per-subsystem
+    /// Liveness ping. `bandwidth` carries the daemon's per-subsystem
     /// byte counters so the server can persist per-machine bandwidth and detect
     /// an upload/insert divergence. Optional so older daemons still parse and the
     /// server tolerates its absence.
@@ -33,7 +33,7 @@ pub enum DaemonFrameUp {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         bandwidth: Option<crate::bandwidth::BandwidthSummary>,
     },
-    /// Reply to a [`DaemonFrameDown::StageFiles`] request (CCT-236, mid-chat
+    /// Reply to a [`DaemonFrameDown::StageFiles`] request (mid-chat
     /// attachments). `request_id` correlates with the originating
     /// `POST /api/v1/sessions/{id}/files` so the server can return the staged
     /// absolute paths (or the error) to the waiting HTTP client.
@@ -57,15 +57,15 @@ pub enum DaemonFrameUp {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
-    /// One chunk of a serialized up-frame split by [`crate::chunk`] (CCT-738).
+    /// One chunk of a serialized up-frame split by [`crate::chunk`].
     /// `transfer_id` is the content hash of the full payload (idempotent
     /// retransmission); `data` is standard-base64 of the raw chunk bytes. The
     /// server reassembles by `transfer_id`, parses the joined payload as a
     /// `DaemonFrameUp`, and processes it as usual.
     ///
-    /// `codec` (CCT-740) tags the reassembled bytes: `Some("zstd")` means the
+    /// `codec` tags the reassembled bytes: `Some("zstd")` means the
     /// server must [`crate::compress::decompress_codec`] the joined payload
-    /// before parsing it. Omitted (`None`) for legacy CCT-738 daemons that
+    /// before parsing it. Omitted (`None`) for legacy daemons that
     /// chunk uncompressed JSON.
     Chunk {
         transfer_id: String,
@@ -75,13 +75,13 @@ pub enum DaemonFrameUp {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         codec: Option<String>,
     },
-    /// A single up-frame whose serialized body was compressed (CCT-740) but is
+    /// A single up-frame whose serialized body was compressed but is
     /// small enough to skip chunking. `data` is standard-base64 of the codec
     /// output; the server [`crate::compress::decode_compressed`]s it back to a
     /// serialized inner `DaemonFrameUp` and processes that.
     Compressed { codec: String, data: String },
     /// Several up-frames coalesced over the daemon's micro-batch window
-    /// (CCT-740) so cross-event redundancy compresses far better than one frame
+    /// so cross-event redundancy compresses far better than one frame
     /// at a time. The server processes `frames` in order, preserving per-event
     /// semantics. Rides inside a `Compressed`/`Chunk` envelope when large.
     Batch { frames: Vec<DaemonFrameUp> },
@@ -108,7 +108,7 @@ pub enum DaemonFrameDown {
     /// Acknowledge that an event with the given monotonic `seq` has been
     /// durably stored. Lets the daemon trim its on-disk spool.
     Ack { seq: u64 },
-    /// Stage mid-chat file attachments for a running session (CCT-236). The
+    /// Stage mid-chat file attachments for a running session. The
     /// daemon decodes + writes the files into the same per-session staging dir
     /// used for spawn-time uploads, then replies with a
     /// [`DaemonFrameUp::StageFilesResult`] carrying the staged absolute paths.
@@ -125,7 +125,7 @@ pub enum DaemonFrameDown {
     /// leading `~`, reads one directory level, and replies with a
     /// [`DaemonFrameUp::ListDirsResult`] carrying the sorted entry names.
     ListDirs { request_id: uuid::Uuid, path: String },
-    /// Acknowledge chunked-transfer progress (CCT-738): the highest contiguous
+    /// Acknowledge chunked-transfer progress: the highest contiguous
     /// chunk index the server has reassembled for `transfer_id`, or `None` when
     /// it holds no usable prefix (unknown/evicted transfer) so the daemon
     /// restarts from chunk 0. The daemon resumes from the chunk after the
@@ -135,14 +135,14 @@ pub enum DaemonFrameDown {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         highest_contiguous_chunk: Option<u32>,
     },
-    /// Per-session transcript high-water marks (CCT-741), sent right after
+    /// Per-session transcript high-water marks, sent right after
     /// Reconcile on connect. `session_marks` maps each session's `local_id` to
     /// the server's stored transcript byte offset, so the daemon clamps its tail
     /// cursor forward and resumes instead of replaying the transcript from zero.
     ResumeMarks { session_marks: Vec<(String, u64)> },
 }
 
-/// Effective secret-scrub config synced to the daemon (CCT-731).
+/// Effective secret-scrub config synced to the daemon.
 ///
 /// The enable
 /// flag plus the owner's enabled user patterns. The compiled defaults live in
@@ -163,10 +163,10 @@ pub struct ScrubPattern {
     pub regex: String,
 }
 
-// --- Dispatcher ↔ Server (CCT-246/247/248) ---
+// --- Dispatcher ↔ Server (247/248) ---
 
 /// A dispatch intent relayed from the server to an enrolled dispatcher over the
-/// wire (CCT-248).
+/// wire.
 ///
 /// The dispatcher turns this into a worker container/pod on its
 /// host, injecting the dispatch info into the worker env. `payload` is opaque —
@@ -185,7 +185,7 @@ pub struct WireDispatchSpec {
     /// Caller resume URL — a bearer capability; do not log.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply_url: Option<String>,
-    /// Idempotency / dedup key (CCT-522): the caller's logical request id (e.g.
+    /// Idempotency / dedup key: the caller's logical request id (e.g.
     /// an automation dedup key like `triage-PROJ-…`). The dispatcher derives the worker
     /// Job name from THIS, not `session_id` — which is now a fresh UUID per
     /// dispatch so isolated short-lived pods never get their logs chained into
@@ -206,7 +206,7 @@ pub struct WireDispatchSpec {
 }
 
 /// Frames sent by the server to an enrolled dispatcher over
-/// `/api/v1/dispatcher/ws` (CCT-248). Peer of [`DaemonFrameDown`]; the verb is
+/// `/api/v1/dispatcher/ws`. Peer of [`DaemonFrameDown`]; the verb is
 /// Dispatch (spawn a container/pod) rather than a per-adapter command.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -225,7 +225,7 @@ pub enum DispatcherFrameDown {
 }
 
 /// Frames sent by an enrolled dispatcher to the server over
-/// `/api/v1/dispatcher/ws` (CCT-248). Peer of [`DaemonFrameUp`].
+/// `/api/v1/dispatcher/ws`. Peer of [`DaemonFrameUp`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
@@ -233,7 +233,7 @@ pub enum DispatcherFrameUp {
     /// Sent once on connect: identifies the dispatcher kind + running version.
     Hello { kind: String, version: String },
     /// Liveness ping; drives the server's last-seen/online-stale-offline tier
-    /// (mirrors the daemon heartbeat, CCT-255).
+    /// (mirrors the daemon heartbeat).
     Heartbeat { sent_at: chrono::DateTime<chrono::Utc> },
     /// Outcome of a [`DispatcherFrameDown::Dispatch`]. `status` is the
     /// idempotency outcome surfaced verbatim to the caller; `handle` is the
@@ -282,11 +282,11 @@ pub enum AgentEvent {
     /// can render it distinctly without re-sniffing strings. `#[serde(default)]`
     /// keeps older stored payloads (no field) decoding as non-meta.
     ///
-    /// `seq` (CCT-481) is a monotonic per-session insert sequence
+    /// `seq` is a monotonic per-session insert sequence
     /// (`stream_events.id`) so clients order events causally rather than by
     /// receive-time `ts`, which can tie or invert (a late-flushed
     /// `AskUserQuestion` carries a `ts` after the user's answer). Optional so
-    /// pre-CCT-481 payloads still decode.
+    /// payloads still decode.
     Text {
         content: String,
         #[serde(default)]
@@ -331,7 +331,7 @@ pub enum AgentEvent {
     /// in place under the same worker; rather than splitting into a second
     /// session (archive is worker-scoped, so one `claude rm` would wipe both),
     /// we keep one session and emit this marker so clients can render the cut
-    /// distinctly (CCT-158).
+    /// distinctly.
     ContextReset {
         ts: i64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -341,7 +341,7 @@ pub enum AgentEvent {
     /// session id — it appends an `isCompactSummary` line to the same
     /// transcript — so it surfaces as its own event carrying the summary text,
     /// rendered as a distinct "context compacted" block rather than a user
-    /// message (CCT-159).
+    /// message.
     CompactSummary {
         content: String,
         ts: i64,
@@ -356,7 +356,7 @@ pub enum AgentEvent {
 }
 
 impl AgentEvent {
-    /// The monotonic per-session insert sequence (CCT-481), when the server has
+    /// The monotonic per-session insert sequence, when the server has
     /// stamped one. `None` for freshly-normalized events before persistence and
     /// for legacy payloads persisted before the field existed.
     #[must_use]
@@ -373,7 +373,7 @@ impl AgentEvent {
         }
     }
 
-    /// Stamp the causal insert sequence (CCT-481). Called by the server right
+    /// Stamp the causal insert sequence. Called by the server right
     /// after a successful `stream_events` insert so the live broadcast carries
     /// the same ordering key the reload path derives from `stream_events.id`.
     pub const fn set_seq(&mut self, value: i64) {
@@ -404,7 +404,7 @@ pub enum TuiCommand {
         session_id: String,
     },
     /// Start (`watch: true`) or stop (`watch: false`) the read-only live
-    /// terminal view for a session (CCT-545). The server ref-counts watchers
+    /// terminal view for a session. The server ref-counts watchers
     /// per session and only tells the daemon to open/close its viewer PTY
     /// attach on the 0↔1 transition, so idle sessions carry no extra stream.
     WatchTerminal {
@@ -415,8 +415,8 @@ pub enum TuiCommand {
     /// server ack the send back to the originating socket via
     /// [`ServerEvent::MessageAck`], so the client can render a precise
     /// per-message delivery state (sending → delivered / failed) instead of
-    /// optimistically assuming a frame that left the socket was delivered
-    /// (CCT-212). `#[serde(default)]` keeps older clients (no field) working —
+    /// optimistically assuming a frame that left the socket was delivered.
+    /// `#[serde(default)]` keeps older clients (no field) working —
     /// they simply receive no ack.
     Message {
         session_id: String,
@@ -424,7 +424,7 @@ pub enum TuiCommand {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         client_msg_id: Option<String>,
         /// Structured `AskUserQuestion` answer: per-question 0-based option
-        /// indices, in question order (CCT-226). Present only when the client
+        /// indices, in question order. Present only when the client
         /// is answering a live ask with pure option picks (no free text) —
         /// lets the daemon drive the actual form via PTY keystrokes so claude
         /// records a genuine `tool_result` instead of "User declined to answer
@@ -475,9 +475,9 @@ pub enum ServerEvent {
     },
     /// The agent is blocked on an `AskUserQuestion`; carries the question text
     /// so clients render a live prompt before the transcript flushes the full
-    /// tool call (CCT-164). `questions` carries the raw `tool_input.questions`
+    /// tool call. `questions` carries the raw `tool_input.questions`
     /// array so clients render the interactive option-card form live rather
-    /// than just the flattened text (CCT-181).
+    /// than just the flattened text.
     AskQuestion {
         session_id: String,
         question: String,
@@ -485,19 +485,18 @@ pub enum ServerEvent {
         questions: Option<serde_json::Value>,
         /// Assistant prose preceding the question in the same turn, so clients
         /// render the reasoning above the live prompt instead of leaving the
-        /// user to answer blind (CCT-213). `None` when there was none.
+        /// user to answer blind. `None` when there was none.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         preamble: Option<String>,
     },
     /// A previously-broadcast `AskQuestion` is resolved; clients dismiss the
-    /// live prompt (CCT-164).
+    /// live prompt.
     AskResolved {
         session_id: String,
     },
     /// The agent is blocked on an `ExitPlanMode` plan-approval prompt; carries
     /// the plan markdown so clients render a live Plan card with the
-    /// continuation options before the transcript flushes the tool call
-    /// (CCT-347).
+    /// continuation options before the transcript flushes the tool call.
     PlanRequest {
         session_id: String,
         plan: String,
@@ -507,14 +506,14 @@ pub enum ServerEvent {
         preamble: Option<String>,
     },
     /// A previously-broadcast `PlanRequest` is resolved; clients dismiss the
-    /// live Plan card (CCT-347).
+    /// live Plan card.
     PlanResolved {
         session_id: String,
     },
     /// Outcome of a client-initiated command (currently `POST /sessions/spawn`).
     /// `command_id` matches the value returned by the spawn route so the
     /// originating client can surface success/failure instead of silently
-    /// polling (CCT-131).
+    /// polling.
     CommandResult {
         command_id: String,
         ok: bool,
@@ -526,8 +525,7 @@ pub enum ServerEvent {
     /// the server could not dispatch the reply to the session's daemon (e.g.
     /// the daemon was momentarily offline — `NoDaemon`/`Closed`), so the client
     /// should mark the message failed and offer a retry rather than leaving it
-    /// stuck "sending…" until it silently vanishes on the next resubscribe
-    /// (CCT-212).
+    /// stuck "sending…" until it silently vanishes on the next resubscribe.
     MessageAck {
         session_id: String,
         client_msg_id: String,
@@ -535,12 +533,12 @@ pub enum ServerEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
-    /// A machine has just reported a fresh expected-files manifest (CCT-68).
+    /// A machine has just reported a fresh expected-files manifest.
     ArchiveManifest {
         machine_id: uuid::Uuid,
         count: i64,
     },
-    /// A machine's liveness tier just changed (CCT-255). Derived from the age
+    /// A machine's liveness tier just changed. Derived from the age
     /// of `machines.last_seen_at`, which the server advances on every daemon
     /// `Heartbeat`. Broadcast on transition so webui/TUI can flip a machine to
     /// offline within one liveness window without waiting for a failed dispatch.
@@ -548,13 +546,13 @@ pub enum ServerEvent {
         machine_id: uuid::Uuid,
         liveness: crate::models::MachineLiveness,
     },
-    /// An enrolled dispatcher's liveness tier just changed (CCT-285). Peer of
+    /// An enrolled dispatcher's liveness tier just changed. Peer of
     /// [`Self::MachineLiveness`], derived from `dispatchers.last_seen_at`.
     DispatcherLiveness {
         dispatcher_id: uuid::Uuid,
         liveness: crate::models::MachineLiveness,
     },
-    /// A single archive file has just finished uploading (CCT-68).
+    /// A single archive file has just finished uploading.
     ArchiveUploaded {
         machine_id: uuid::Uuid,
         project_dir: String,
@@ -576,7 +574,7 @@ pub enum ServerEvent {
         payload: crate::github::GithubEventPayload,
     },
     /// A session's gateway request was just refused by the per-account soft
-    /// limit (CCT-444): cctui's own share of the account's usage window is at
+    /// limit: cctui's own share of the account's usage window is at
     /// cap, so the worker got a 429 and the conversation stalled. Broadcast on
     /// the clear→blocked transition so the webui can show a per-chat banner
     /// offering to continue on another same-provider account. `reason` is the
@@ -588,7 +586,7 @@ pub enum ServerEvent {
         reason: String,
         retry_after_secs: i64,
     },
-    /// A session's soft-limit block has cleared (CCT-444): either a later
+    /// A session's soft-limit block has cleared: either a later
     /// passthrough succeeded, or the user rebound the session to another
     /// account via `POST /sessions/{id}/switch-account`. Clients dismiss the
     /// per-chat soft-limit banner.
@@ -596,7 +594,7 @@ pub enum ServerEvent {
         session_id: String,
     },
     /// A coalesced slice of a session's live PTY byte stream, relayed to the
-    /// browsers watching its read-only terminal (CCT-545). `data` is
+    /// browsers watching its read-only terminal. `data` is
     /// standard-base64 of the raw terminal bytes; the client base64-decodes and
     /// writes it straight into xterm.js. Not persisted — dropped by any client
     /// not currently rendering the terminal.
@@ -651,7 +649,7 @@ mod tests {
 
     #[test]
     fn agent_event_seq_orders_ask_turn_when_ts_ties_or_inverts() {
-        // Reload scenario (CCT-481): a late-flushed AskUserQuestion card+preamble
+        // Reload scenario: a late-flushed AskUserQuestion card+preamble
         // carry a `ts` at/after the user's answer, but their insert `seq` is
         // lower. Ordering by `seq` restores causal order; ordering by `ts` does
         // not. `seq` is the DB insert sequence, always a strict total order.
@@ -896,7 +894,7 @@ mod tests {
     #[test]
     fn tui_command_message_omits_client_msg_id_when_none() {
         // Old clients send no `client_msg_id`; the field is skipped on the wire
-        // so the payload stays byte-compatible with pre-CCT-212 readers.
+        // so the payload stays byte-compatible with readers.
         let cmd = TuiCommand::Message {
             session_id: "s".into(),
             content: "hi".into(),

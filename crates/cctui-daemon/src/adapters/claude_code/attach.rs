@@ -1,4 +1,4 @@
-//! Persistent headless `attach` to `claude daemon` workers (CCT-209).
+//! Persistent headless `attach` to `claude daemon` workers.
 //!
 //! Dispatching a fleet session boots a worker PTY, but the interactive Claude
 //! worker uses DEC focus-tracking (mode 1004) and stays *parked/unfocused* —
@@ -49,7 +49,7 @@ const ATTACH_ROWS: u32 = 40;
 const BACKOFF_MIN: Duration = Duration::from_millis(500);
 const BACKOFF_MAX: Duration = Duration::from_secs(10);
 
-/// How often a held attach actively probes its worker's liveness (CCT-487).
+/// How often a held attach actively probes its worker's liveness.
 ///
 /// Holding the socket open is normally sufficient to keep the worker focused
 /// and the idle-retire timer reset, but that assumption is unverified: if the
@@ -61,46 +61,46 @@ const BACKOFF_MAX: Duration = Duration::from_secs(10);
 const LIVENESS_PROBE_INTERVAL: Duration = Duration::from_secs(20);
 
 /// Maximum quiet period on a held attach's read side before we treat the socket
-/// as half-open (CCT-487). A healthy idle worker still gets a liveness probe at
+/// as half-open. A healthy idle worker still gets a liveness probe at
 /// `LIVENESS_PROBE_INTERVAL`, so a read that stalls well past it (without the
 /// probe having reconnected us) means the peer wedged — map that to a `Retry`
 /// reconnect rather than blocking on `read` indefinitely.
 const READ_STALL_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// Window over which the drain loop's bytes/min rate is computed; older byte
-/// counts are dropped so the rate reflects recent output (CCT-546).
+/// counts are dropped so the rate reflects recent output.
 const BYTES_RATE_WINDOW: Duration = Duration::from_secs(60);
 
 /// Minimum PTY quiet before a probe tick counts as an idle confirmation — a
-/// worker that just emitted bytes is not idle (CCT-546).
+/// worker that just emitted bytes is not idle.
 const IDLE_OUTPUT_QUIET: Duration = Duration::from_secs(5);
 
-/// Count of held attaches found dead by the periodic liveness probe (CCT-487).
+/// Count of held attaches found dead by the periodic liveness probe.
 /// The daemon has no metrics exporter, so this process-local counter is surfaced
 /// in the `warn!` it accompanies, making the prod frequency of
 /// held-but-dead workers visible in journald without new infra.
 static HELD_ATTACH_FOUND_DEAD: AtomicU64 = AtomicU64::new(0);
 
 /// Observable keep-alive state for one held short, surfaced by the session
-/// diagnose report (CCT-547). Updated by the attach task as it cycles.
+/// diagnose report. Updated by the attach task as it cycles.
 #[derive(Debug, Clone, Default)]
 pub(super) struct AttachSnapshot {
     /// `connecting` (no cycle finished yet), `held`, or `reconnecting`.
     pub phase: String,
     /// Current reconnect backoff, when `phase == "reconnecting"`.
     pub backoff: Option<Duration>,
-    /// Outcome + time of the last liveness `has` probe (CCT-487).
+    /// Outcome + time of the last liveness `has` probe.
     pub last_probe_alive: Option<bool>,
     pub last_probe_at: Option<SystemTime>,
-    /// When the drain loop last read PTY bytes for this short (CCT-546). The
+    /// When the drain loop last read PTY bytes for this short. The
     /// activity signal state derivation weighs against hook freshness.
     pub last_output_at: Option<SystemTime>,
-    /// Start of the current bytes/min rate window (CCT-546).
+    /// Start of the current bytes/min rate window.
     pub window_start: Option<SystemTime>,
-    /// Bytes read since `window_start` (CCT-546).
+    /// Bytes read since `window_start`.
     pub window_bytes: u64,
     /// Consecutive probe ticks observed with the PTY quiet — hysteresis input
-    /// before state derivation flips the session to idle (CCT-546).
+    /// before state derivation flips the session to idle.
     pub idle_confirmations: u32,
     /// When the current/most recent state was recorded.
     pub updated_at: Option<SystemTime>,
@@ -108,7 +108,7 @@ pub(super) struct AttachSnapshot {
 
 impl AttachSnapshot {
     /// Recent PTY throughput in bytes/min over the rolling window, or `None`
-    /// when no output window is open (CCT-546).
+    /// when no output window is open.
     pub(super) fn bytes_per_min(&self, now: SystemTime) -> Option<f64> {
         let start = self.window_start?;
         let secs = now.duration_since(start).ok()?.as_secs_f64();
@@ -132,7 +132,7 @@ pub(super) struct AttachManager {
     shutdown: CancellationToken,
     /// `short` → child cancellation token for that session's attach task.
     tasks: HashMap<String, CancellationToken>,
-    /// Keep-alive observability for diagnose (CCT-547).
+    /// Keep-alive observability for diagnose.
     status: AttachStatusMap,
 }
 
@@ -216,7 +216,7 @@ struct AttachTask {
 }
 
 impl AttachTask {
-    /// Record an observability update for this short (CCT-547). Best-effort;
+    /// Record an observability update for this short. Best-effort;
     /// a poisoned lock just drops the update.
     fn note(&self, f: impl FnOnce(&mut AttachSnapshot)) {
         if let Ok(mut m) = self.status.lock() {
@@ -226,7 +226,7 @@ impl AttachTask {
         }
     }
 
-    /// Record `n` PTY bytes read by the drain loop (CCT-546): stamp
+    /// Record `n` PTY bytes read by the drain loop: stamp
     /// `last_output_at`, roll/extend the bytes/min window, and clear the idle
     /// hysteresis counter — output means the worker is not idle.
     fn note_output(&self, n: usize) {
@@ -250,7 +250,7 @@ impl AttachTask {
         }
     }
 
-    /// Count one idle confirmation for the hysteresis gate (CCT-546): a probe
+    /// Count one idle confirmation for the hysteresis gate: a probe
     /// tick that found the PTY quiet for at least `IDLE_OUTPUT_QUIET`. Output
     /// resets the counter; state derivation only flips to idle after several.
     fn note_idle_tick(&self) {
@@ -280,7 +280,7 @@ impl AttachTask {
                     backoff = BACKOFF_MIN;
                 }
                 AttachOutcome::HeldDead => {
-                    // Keep-alive FAILED (CCT-487): the liveness probe found the
+                    // Keep-alive FAILED: the liveness probe found the
                     // short we believe held no longer alive (idle-retired despite
                     // the held attacher), or the held socket stalled half-open.
                     // Reconnect promptly — a fresh `attach` re-seeds focus and
@@ -383,7 +383,7 @@ impl AttachTask {
         // closes the connection (detach/settle) or we're cancelled. We never
         // write to the socket — any bytes written would be injected as keys.
         //
-        // CCT-487: holding open is no longer trusted blind. A periodic `has`
+        // Holding open is not trusted blind. A periodic `has`
         // probe verifies the worker we believe held is actually alive, and a
         // read-stall timeout catches a half-open socket whose peer wedged
         // without a FIN — either maps to a `HeldDead` reconnect instead of
@@ -435,7 +435,7 @@ impl AttachTask {
         }
     }
 
-    /// Liveness probe for a held attach (CCT-487): ask the daemon `has` whether
+    /// Liveness probe for a held attach: ask the daemon `has` whether
     /// the short we believe held is still alive. Returns `Some(HeldDead)` when the
     /// worker reports not-alive — keep-alive has failed and the caller should
     /// reconnect/re-dispatch — or `None` when it is alive (or the probe couldn't
@@ -486,15 +486,15 @@ pub(super) fn attach_request(short: &str, attach_id: &str) -> Value {
         "attachId": attach_id,
         "caps": { "terminal": Value::Null, "mux": Value::Null, "ssh": false },
     });
-    // Claude Code ≥2.1.168 gates `attach` behind the daemon control key
-    // (CCT-264); echo it back when present, or the daemon rejects with EAUTH.
+    // Claude Code ≥2.1.168 gates `attach` behind the daemon control key;
+    // echo it back when present, or the daemon rejects with EAUTH.
     if let (Some(obj), Some(key)) = (req.as_object_mut(), super::socket::control_key()) {
         obj.insert("auth".to_owned(), Value::String(key));
     }
     req
 }
 
-/// Interpret a daemon `has` response (CCT-487): the worker is alive only when
+/// Interpret a daemon `has` response: the worker is alive only when
 /// the daemon explicitly says so. A missing/non-bool `alive` field, or a
 /// `{ok:false}` ack, is treated as NOT alive — the conservative reading for a
 /// keep-alive liveness check, so an ambiguous answer triggers a reconnect rather
@@ -508,8 +508,8 @@ fn has_reports_alive(resp: &Value) -> bool {
 
 /// Map an attach-reject `code` (the daemon's `{ok:false, code}` ack) to the
 /// reconnect outcome. EAUTH is auth-class (Claude Code ≥2.1.168 gates `attach`
-/// behind the control key, CCT-264): keep-alive is globally broken until the key
-/// is fixed, so it must NOT fall into the silent transient-retry bucket (CCT-486).
+/// behind the control key): keep-alive is globally broken until the key
+/// is fixed, so it must NOT fall into the silent transient-retry bucket.
 fn classify_reject(code: &str) -> AttachOutcome {
     match code {
         // Worker is dead / unverifiable under this short — stop dialing.
@@ -527,7 +527,7 @@ fn classify_reject(code: &str) -> AttachOutcome {
 enum AttachOutcome {
     /// Clean detach (server FIN / cancel) — reconnect promptly.
     Detached,
-    /// Keep-alive verification FAILED (CCT-487): the periodic liveness probe
+    /// Keep-alive verification FAILED: the periodic liveness probe
     /// found the held short not-alive (idle-retired despite the attacher), or the
     /// held socket stalled half-open. Reconnect promptly to re-seed focus / let
     /// the poll revive the session, rather than blocking on a dead hold.
@@ -565,7 +565,7 @@ mod tests {
 
     /// EAUTH (control key missing/rotated/wrong) must map to `Unauthorized`, not
     /// the silent `Retry` bucket — otherwise keep-alive loops forever at debug
-    /// level and every session crosses the 60s idle-retire (CCT-486).
+    /// level and every session crosses the 60s idle-retire.
     #[test]
     fn eauth_maps_to_unauthorized_not_retry() {
         assert_eq!(classify_reject("EAUTH"), AttachOutcome::Unauthorized);
@@ -578,7 +578,7 @@ mod tests {
         assert_eq!(classify_reject("?"), AttachOutcome::Retry);
     }
 
-    /// The liveness probe (CCT-487) treats only an explicit `alive:true` as
+    /// The liveness probe treats only an explicit `alive:true` as
     /// alive; anything ambiguous (missing field, ok:false, non-bool) is dead, so
     /// a held-but-dead worker is never masked into a quiet hold.
     #[test]
@@ -595,7 +595,7 @@ mod tests {
 
     /// A tracked short's drain loop records PTY output (last-seen + bytes/min
     /// window) and idle confirmations, and output resets the idle counter — the
-    /// raw activity signal CCT-546 feeds into state derivation.
+    /// raw activity signal feeds into state derivation.
     #[test]
     fn note_output_and_idle_track_activity() {
         let status = AttachStatusMap::default();
@@ -641,7 +641,7 @@ mod tests {
         mgr.reconcile(["aaaaaaaa", "bbbbbbbb"]);
         assert_eq!(mgr.tasks.len(), 2);
         let token_a = mgr.tasks["aaaaaaaa"].clone();
-        // Diagnose observability (CCT-547): a tracked short has a snapshot.
+        // Diagnose observability: a tracked short has a snapshot.
         assert!(mgr.snapshot("aaaaaaaa").is_some());
 
         // Drop one, keep one, add one.

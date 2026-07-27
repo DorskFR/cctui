@@ -10,7 +10,7 @@
 //!   `$XDG_RUNTIME_DIR/cctui-daemon.sock`) accepts line-delimited
 //!   [`AdapterEvent`] JSON from clients. Opt in via
 //!   `CCTUI_ADAPTER_CLAUDE_DAEMON=0` or `config.mode = "legacy"`. Kept
-//!   until CCT-87 retires it.
+//!   until the legacy path is retired.
 
 mod attach;
 mod backfill;
@@ -53,18 +53,18 @@ use crate::adapter_runtime::{Adapter, AdapterCtx, AdapterFactory};
 pub(crate) type SessionMap = Arc<Mutex<HashMap<String, String>>>;
 
 /// Shared map of `local_id`s with an `AskUserQuestion` form currently up in
-/// the worker's PTY (CCT-219), each carrying the raw `questions` array the
+/// the worker's PTY, each carrying the raw `questions` array the
 /// hook delivered (`None` for deliveries without it). Maintained by the
 /// ask-hook listener (insert on `kind:"ask"`, remove on `kind:"resolved"`)
 /// and consulted by the driver's reply path: a `reply` op injected while the
 /// form is up just confirms the highlighted option (the swallowed-text /
 /// phantom-"Proceed" bug). With the questions in hand the reply path can
 /// instead drive the real form via keystrokes — a native answer claude records
-/// as a genuine `tool_result` (CCT-226) — falling back to dismiss-then-reply.
+/// as a genuine `tool_result` — falling back to dismiss-then-reply.
 pub(crate) type PendingAsks = Arc<Mutex<HashMap<String, Option<serde_json::Value>>>>;
 
 /// A tool-permission hook currently parked in `handle_hook_connection`,
-/// long-polling for a human's decision (CCT-342). Keyed by the stable
+/// long-polling for a human's decision. Keyed by the stable
 /// `local_id` of the session the blocked `PreToolUse` hook belongs to (the
 /// listener resolves the hook's live `session_id` through [`SessionMap`]). The
 /// `oneshot::Sender<bool>` resolves the hook: `true` → the hook returns an
@@ -76,10 +76,10 @@ pub(crate) type PendingPermHooks = Arc<Mutex<HashMap<String, tokio::sync::onesho
 
 /// Last hook delivery per stable `local_id`: `(kind, when)`. Maintained by
 /// the ask-hook listener and read by the session-diagnose aggregation
-/// (CCT-547) so "last hook event: type + age" is answerable.
+/// so "last hook event: type + age" is answerable.
 pub(crate) type HookLog = Arc<Mutex<HashMap<String, (String, std::time::SystemTime)>>>;
 
-/// Record a hook delivery for diagnose (CCT-547). Best-effort.
+/// Record a hook delivery for diagnose. Best-effort.
 fn record_hook(log: &HookLog, local_id: &str, kind: &str) {
     if let Ok(mut m) = log.lock() {
         m.insert(local_id.to_owned(), (kind.to_owned(), std::time::SystemTime::now()));
@@ -97,13 +97,13 @@ impl Adapter for ClaudeCodeAdapter {
     async fn start(&self, ctx: AdapterCtx) -> anyhow::Result<()> {
         match Mode::from_config(&ctx.config) {
             Mode::Bg => start_bg(ctx).await,
-            // Oneshot driver (CCT-499): one transient `claude -p` per turn,
+            // Oneshot driver: one transient `claude -p` per turn,
             // mapped onto the AdapterCommand/AdapterEvent surface via the shared
             // stream-json codec. It binds the same `--settings` ask/permission
             // hook socket bg uses, so headless `-p` runs deliver hooks through
             // the same path.
             Mode::Oneshot => oneshot::OneshotDriver::new(ctx).run().await,
-            // SDK stub (CCT-497) — real run loop lands in CCT-500.
+            // SDK stub — real run loop lands in.
             Mode::Sdk => headless::SdkDriver::new(ctx).run().await,
             Mode::Legacy => run_legacy_uds(ctx).await,
         }
@@ -112,14 +112,14 @@ impl Adapter for ClaudeCodeAdapter {
 
 /// The default `claude daemon` control-socket path: build the control driver,
 /// spawn the shared ask/permission hook listener, and run. Behavior is
-/// byte-for-byte the pre-CCT-497 bg path.
+/// byte-for-byte the bg path.
 async fn start_bg(ctx: AdapterCtx) -> anyhow::Result<()> {
     tracing::info!("claude-code adapter starting in claude-daemon mode");
     let cfg = control::DriverConfig::from_value(&ctx.config);
     let driver = control::Driver::new(cfg, ctx.events.clone(), ctx.commands, ctx.shutdown.clone())
-        // Gateway-env launch chokepoint source (CCT-460).
+        // Gateway-env launch chokepoint source.
         .with_server(ctx.server.clone(), ctx.machine_key.clone());
-    // The `AskUserQuestion` PreToolUse hook (CCT-167) delivers the pending
+    // The `AskUserQuestion` PreToolUse hook delivers the pending
     // question here over the daemon's local socket. The hook reports claude's
     // live `session_id`; the driver's shared map translates it to the stable
     // `local_id` the rest of the pipeline (and the server) keys on.
@@ -207,8 +207,8 @@ async fn handle_legacy_connection(
     Ok(())
 }
 
-/// Listen on the daemon's local socket for `AskUserQuestion` hook deliveries
-/// (CCT-167). Each line is a `{kind, session_id, question?}` message from the
+/// Listen on the daemon's local socket for `AskUserQuestion` hook deliveries.
+/// Each line is a `{kind, session_id, question?}` message from the
 /// `cctui-daemon ask-hook` command; we translate `session_id → local_id` via
 /// the shared map and emit the existing `AskQuestion` / `AskResolved` events.
 async fn run_hook_listener(
@@ -266,7 +266,7 @@ async fn run_hook_listener(
 
 /// How long the daemon parks a blocking `PreToolUse` permission hook waiting
 /// for a human's allow/deny before giving up and letting it fall through to the
-/// keystroke path (CCT-342). Bounded well under the hook's own configured
+/// keystroke path. Bounded well under the hook's own configured
 /// `timeout` ceiling (which we set high — see `ensure_hook_settings`): a hook
 /// that exceeds *its* timeout is treated by Claude Code as a hard deny, so we
 /// must always resolve (with a `defer` decision) before that fires. A
@@ -291,7 +291,7 @@ async fn handle_hook_connection(
         if line.is_empty() {
             continue;
         }
-        // A bidirectional tool-permission hook (CCT-342): register a pending
+        // A bidirectional tool-permission hook: register a pending
         // decision keyed by the session's stable `local_id`, surface a
         // `PermissionRequest` to clients, then block this connection until the
         // human's decision arrives (resolved by the driver's
@@ -310,8 +310,7 @@ async fn handle_hook_connection(
         let Some(evt) = hook_line_to_event(line, &session_map) else {
             continue;
         };
-        // Remember the delivery for diagnose ("last hook event: type, age",
-        // CCT-547).
+        // Remember the delivery for diagnose ("last hook event: type, age").
         match &evt {
             AdapterEvent::AskQuestion { local_id, .. } => record_hook(&hook_log, local_id, "ask"),
             AdapterEvent::AskResolved { local_id } => record_hook(&hook_log, local_id, "resolved"),
@@ -321,15 +320,15 @@ async fn handle_hook_connection(
             }
             _ => {}
         }
-        // Track which sessions have the ask form up (CCT-219), keeping the
+        // Track which sessions have the ask form up, keeping the
         // questions payload so the driver's reply path can answer the form
-        // natively via keystrokes (CCT-226) or dismiss it before injecting text.
+        // natively via keystrokes or dismiss it before injecting text.
         if let Ok(mut map) = pending_asks.lock() {
             match &evt {
                 AdapterEvent::AskQuestion { local_id, questions, .. } => {
                     map.insert(local_id.clone(), questions.clone());
                 }
-                // A plan-approval prompt is a single-select form too (CCT-347):
+                // A plan-approval prompt is a single-select form too:
                 // store a synthetic single question whose options are the known
                 // ExitPlanMode continuations so the reply path answers picks
                 // 1-3 natively via `ask_keystrokes`. Option 4 ("Tell Claude what
@@ -354,7 +353,7 @@ async fn handle_hook_connection(
 }
 
 /// The synthetic single-select `questions` payload for an `ExitPlanMode`
-/// plan-approval prompt (CCT-347). The option set/order mirrors the CLI's PTY
+/// plan-approval prompt. The option set/order mirrors the CLI's PTY
 /// prompt (verified against the claude 2.x plan-mode form); it is hardcoded
 /// because the labels are rendered by the CLI, not carried in `tool_input`.
 /// Stored in `pending_asks` so the reply path can answer picks 1-3 natively via
@@ -388,13 +387,13 @@ fn hook_line_to_event(line: &str, session_map: &SessionMap) -> Option<AdapterEve
         Some("ask") => {
             let question =
                 v.get("question").and_then(|q| q.as_str()).unwrap_or_default().to_owned();
-            // Pass the structured `questions` array through (CCT-181) so the
+            // Pass the structured `questions` array through so the
             // webui renders interactive option cards live. `null`/absent →
             // `None`, leaving clients to fall back to the text form.
             let questions = v.get("questions").filter(|q| !q.is_null()).cloned();
             // The assistant prose preceding the question in the same turn, read
             // from the transcript by the `ask-hook` subcommand so the live card
-            // carries its context (CCT-213). Absent/empty → `None`.
+            // carries its context. Absent/empty → `None`.
             let preamble = v
                 .get("preamble")
                 .and_then(|p| p.as_str())
@@ -404,7 +403,7 @@ fn hook_line_to_event(line: &str, session_map: &SessionMap) -> Option<AdapterEve
         }
         Some("resolved") => Some(AdapterEvent::AskResolved { local_id }),
         Some("plan") => {
-            // ExitPlanMode plan-approval prompt (CCT-347). `plan` is the plan
+            // ExitPlanMode plan-approval prompt. `plan` is the plan
             // markdown; `preamble` the prose before the tool call, same shape
             // as the ask path.
             let plan = v.get("plan").and_then(|p| p.as_str()).unwrap_or_default().to_owned();
@@ -423,7 +422,7 @@ fn hook_line_to_event(line: &str, session_map: &SessionMap) -> Option<AdapterEve
     }
 }
 
-/// A tool-permission hook delivery awaiting a decision (CCT-342).
+/// A tool-permission hook delivery awaiting a decision.
 struct PermRequest {
     /// Stable session id the request belongs to (resolved through `SessionMap`).
     local_id: String,
@@ -465,8 +464,7 @@ fn parse_perm_request(line: &str, session_map: &SessionMap) -> Option<PermReques
 /// until the human answers (driver's `PermissionResponse`) or the bounded wait
 /// expires. Returns the JSON line the hook writes to stdout as Claude Code's
 /// `PreToolUse` decision: `allow`/`deny` on a human answer, or `defer` on
-/// timeout so the normal prompt renders and the keystroke fallback applies
-/// (CCT-342).
+/// timeout so the normal prompt renders and the keystroke fallback applies.
 async fn wait_for_perm_decision(
     req: PermRequest,
     events: &tokio::sync::mpsc::Sender<AdapterEvent>,
@@ -574,7 +572,7 @@ mod tests {
 
     #[test]
     fn hook_line_plan_maps_to_plan_request() {
-        // CCT-347: an ExitPlanMode plan hook line carries the plan markdown +
+        // an ExitPlanMode plan hook line carries the plan markdown +
         // optional preamble and maps to PlanRequest.
         let map: SessionMap = Arc::default();
         let line = r##"{"kind":"plan","session_id":"s1","plan":"# Plan\n- step one","preamble":"Here is my plan."}"##;
@@ -612,7 +610,7 @@ mod tests {
     fn plan_form_questions_is_single_select_with_four_options() {
         // The synthetic plan form must be a lone single-select question (no
         // multiSelect) so `ask_keystrokes` answers a digit pick natively
-        // without a review screen (CCT-347).
+        // without a review screen.
         let qs = plan_form_questions();
         let arr = qs.as_array().expect("array");
         assert_eq!(arr.len(), 1, "exactly one synthetic question");
@@ -622,7 +620,7 @@ mod tests {
 
     #[test]
     fn ask_hook_line_carries_structured_questions() {
-        // CCT-181: the hook forwards the raw `questions` array so the webui can
+        // the hook forwards the raw `questions` array so the webui can
         // render the interactive form live, not just the flattened text.
         let map: SessionMap = Arc::default();
         let line = r#"{"kind":"ask","session_id":"s1","question":"Color: pick","questions":[{"question":"Color?","options":[{"label":"Red"}]}]}"#;
@@ -640,7 +638,7 @@ mod tests {
 
     #[test]
     fn ask_hook_line_carries_preamble() {
-        // CCT-213: the hook forwards the assistant prose preceding the question
+        // the hook forwards the assistant prose preceding the question
         // (read from the transcript) so the live card isn't answered blind.
         let map: SessionMap = Arc::default();
         let line = r#"{"kind":"ask","session_id":"s1","question":"Pick","preamble":"Here is the analysis."}"#;
@@ -660,7 +658,7 @@ mod tests {
 
     #[test]
     fn parse_perm_request_resolves_local_id_and_fields() {
-        // CCT-342: a perm-request line is recognised, the live session_id is
+        // a perm-request line is recognised, the live session_id is
         // mapped to the stable local_id, and tool/input/hook_id flow through.
         let map: SessionMap = Arc::default();
         map.lock().unwrap().insert("sess-live".into(), "local-42".into());

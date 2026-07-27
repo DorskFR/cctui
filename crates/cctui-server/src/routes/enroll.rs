@@ -17,7 +17,7 @@ pub struct EnrollRequest {
     pub _os: Option<String>,
     #[serde(default, rename = "arch")]
     pub _arch: Option<String>,
-    /// Machine kind (CCT-183): `persistent` (a real dev-machine daemon, the
+    /// Machine kind: `persistent` (a real dev-machine daemon, the
     /// default) or `ephemeral` (a dispatch/worker pod — one machine per
     /// dispatched session). Ephemeral machines are hidden from the New-session
     /// picker and reaped once they go stale. Unknown values fall back to
@@ -38,7 +38,7 @@ pub async fn enroll(
     Extension(ctx): Extension<AuthContext>,
     Json(req): Json<EnrollRequest>,
 ) -> Result<Json<EnrollResponse>, (StatusCode, Json<ApiError>)> {
-    // Enrolling a machine requires the `enroll` scope (CCT-410). Admin holds it
+    // Enrolling a machine requires the `enroll` scope. Admin holds it
     // by ceiling, so admin can now enroll (previously a `require_user` 403 —
     // bug #3 in the ticket). The machine is owned by the caller's user.
     ctx.requires(Scope::Enroll)
@@ -81,7 +81,7 @@ pub async fn enroll(
         (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
     })?;
 
-    // Register the machine key in the unified api_keys table (CCT-410) with a
+    // Register the machine key in the unified api_keys table with a
     // grant = the owner's full ceiling, so it behaves exactly like the owner
     // (matching the legacy machine-key semantics). The legacy machines.key_hash
     // is still written above for the dual-read cutover window.
@@ -107,7 +107,7 @@ pub async fn enroll(
 
     // Default the new machine to the claude-code adapter so the daemon
     // gets a meaningful Reconcile out of the box and either harness can be
-    // spawned/observed without a manual table edit (CCT-89). The codex
+    // spawned/observed without a manual table edit. The codex
     // adapter only launches a `codex app-server` on an explicit Spawn and its
     // log-tail no-ops when `~/.codex/sessions` is absent, so enabling it is
     // safe even on machines without codex installed. Users can disable
@@ -169,7 +169,7 @@ pub async fn deenroll(
 }
 
 /// `GET /api/v1/machines/{machine_id}/status` — enrolment/connectivity
-/// snapshot for one machine (CCT-548). Backs `cctui-daemon enroll
+/// snapshot for one machine. Backs `cctui-daemon enroll
 /// <ssh-target>`'s verification step: the operator polls this until the
 /// freshly installed daemon shows `connected`. Owner-or-admin via the
 /// route's `Authz::Resource(Machine, Read)` guard.
@@ -184,13 +184,13 @@ pub struct MachineStatusResponse {
     pub liveness: cctui_proto::models::MachineLiveness,
     pub last_seen_at: DateTime<Utc>,
     pub revoked: bool,
-    /// Last-known per-subsystem daemon bandwidth (CCT-744). `None` until the
+    /// Last-known per-subsystem daemon bandwidth. `None` until the
     /// machine's daemon has sent a heartbeat carrying counters.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bandwidth: Option<MachineBandwidth>,
 }
 
-/// Persisted per-subsystem byte totals for one machine (CCT-744).
+/// Persisted per-subsystem byte totals for one machine.
 #[derive(Serialize, sqlx::FromRow)]
 pub struct MachineBandwidth {
     pub forward: i64,

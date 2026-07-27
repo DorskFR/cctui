@@ -1,9 +1,9 @@
-//! `POST /api/v1/sessions/dispatch` (CCT-107 / CCT-191).
+//! `POST /api/v1/sessions/dispatch`.
 //!
 //! Routes a [`DispatchRequest`] to the named [`Dispatcher`] and returns the
 //! handle. It does NOT create a session row — the worker pod's `cctui-daemon`
-//! registers the real session directly under the shared `dispatch` machine
-//! (CCT-191), so a pre-minted placeholder can't strand alongside it.
+//! registers the real session directly under the shared `dispatch` machine,
+//! so a pre-minted placeholder can't strand alongside it.
 //!
 //! Auth: any authenticated caller. A user-scoped token also gets the caller's
 //! stable `dispatch` machine key injected into the forwarded payload so the
@@ -59,7 +59,7 @@ fn summarize(payload: &serde_json::Value) -> String {
 
 /// Render the payload for a notification with secrets redacted — the injected
 /// machine key (a bearer secret) and any `env` map (user-supplied environment
-/// secrets, CCT-202) — and truncated so a huge payload doesn't blow up the push
+/// secrets) — and truncated so a huge payload doesn't blow up the push
 /// body.
 fn payload_for_notify(payload: &serde_json::Value) -> String {
     const MAX: usize = 1500;
@@ -88,7 +88,7 @@ fn payload_for_notify(payload: &serde_json::Value) -> String {
 }
 
 /// Lazily fetch (or create) the caller's single persistent "dispatch" machine
-/// and return its `(machine_id, machine_key)` (CCT-191).
+/// and return its `(machine_id, machine_key)`.
 ///
 /// Every dispatched worker pod runs a `cctui-daemon` that authenticates with
 /// THIS one key, so all dispatched sessions register under one stable machine
@@ -156,14 +156,14 @@ async fn ensure_dispatch_machine(
     Ok((machine_id, token))
 }
 
-/// Mint a per-session EPHEMERAL machine credential for a dispatched worker
-/// (CCT-296), bound to the pre-minted `session_id` and the user's shared
+/// Mint a per-session EPHEMERAL machine credential for a dispatched worker,
+/// bound to the pre-minted `session_id` and the user's shared
 /// `dispatch` machine (`machine_id`), expiring at the session deadline + grace.
 ///
-/// This replaces the shared per-user `dispatch_key` (CCT-191) as the credential
+/// This replaces the shared per-user `dispatch_key` as the credential
 /// handed to the worker pod: a leaked worker key now authenticates only its own
 /// session and dies with it, instead of impersonating every dispatched session
-/// of the user. It is an additive `auth_keys` row (CCT-410) — the auth path
+/// of the user. It is an additive `auth_keys` row — the auth path
 /// already enforces `expires_at` and carries `machine_id` transparently, so the
 /// daemon accepts it exactly like any other machine key — with `kind`
 /// `'ephemeral'` and `session_id` set so the reaper can revoke it on the
@@ -218,11 +218,11 @@ async fn mint_ephemeral_dispatch_key(
     Ok(token)
 }
 
-/// The account a dispatch should route through, after applying the CCT-427
+/// The account a dispatch should route through, after applying the
 /// fallback precedence: an explicit `req.account` always wins; otherwise the
 /// dispatcher's bound default account (if any) is used. The optional provider
 /// hint constrains the mint to that provider's family; without one the
-/// account's EVERY provider row is minted (CCT-559) — the dispatcher default is
+/// account's EVERY provider row is minted — the dispatcher default is
 /// an identity, so it always mints all providers.
 ///
 /// Pure so the precedence is unit-testable without a DB. `None` means "no
@@ -243,9 +243,9 @@ fn resolve_dispatch_account(
 }
 
 /// The first provider family that appears twice in the expanded mint set
-/// (CCT-559) — two same-family provider rows would mint the same env keys
+/// — two same-family provider rows would mint the same env keys
 /// (e.g. `ANTHROPIC_AUTH_TOKEN`) and the second mint would silently repoint the
-/// session's family token, so the dispatch is rejected instead (CCT-508). Pure
+/// session's family token, so the dispatch is rejected instead. Pure
 /// for unit-testability.
 fn colliding_family(
     families: impl IntoIterator<Item = crate::routes::gateway::Family>,
@@ -266,8 +266,7 @@ fn colliding_family(
     None
 }
 
-/// Resolve the `(session_id, display_name, dedup_key)` for a dispatch (CCT-474,
-/// CCT-522).
+/// Resolve the `(session_id, display_name, dedup_key)` for a dispatch.
 ///
 /// `session_id` is the per-dispatch correlation id the worker registers under
 /// and the gateway token binds to. It is now ALWAYS a fresh UUID so isolated
@@ -296,7 +295,7 @@ fn resolve_dispatch_session_id(logical: Option<&str>) -> (String, Option<String>
 }
 
 /// Rewrite `payload.model` to `mapped` iff it differs from `raw`, returning
-/// whether a rewrite happened (CCT-583). The dispatch model-alias decision,
+/// whether a rewrite happened. The dispatch model-alias decision,
 /// factored out of the async per-account resolution loop so it's unit-testable
 /// without a DB: an unchanged mapping (an alias miss, since `resolve_account_model`
 /// fails soft to its input) is a no-op that leaves `model` — and every other
@@ -312,7 +311,7 @@ fn rewrite_model_if_aliased(payload: &mut serde_json::Value, raw: &str, mapped: 
     false
 }
 
-/// The account identity a dispatcher is bound to (CCT-427 / CCT-559), resolved
+/// The account identity a dispatcher is bound to, resolved
 /// to the identity *name* `mint` resolution consumes — default injection mints
 /// ALL of that identity's providers, so no provider hint travels with it.
 /// Returns `None` when the dispatcher row carries no `default_account_id` or it
@@ -340,13 +339,13 @@ async fn dispatcher_default_account(
     .flatten()
 }
 
-/// Resolve a dispatcher *name* for the caller: an enrolled dispatcher (CCT-285)
+/// Resolve a dispatcher *name* for the caller: an enrolled dispatcher
 /// takes precedence, falling back to the global env-configured http registry.
 /// Returns `Ok(None)` to mean "no such name anywhere" so the caller can 404
 /// distinctly from a permission denial. An enrolled dispatcher resolves to an
 /// [`EnrolledDispatcher`] that sends Dispatch commands over the WS hub.
 ///
-/// Ownership scoping mirrors machines & connectors (CCT-407): a user token sees
+/// Ownership scoping mirrors machines & connectors: a user token sees
 /// only its own enrolled dispatchers (`user_id = caller`); the admin token
 /// (`user_id` is `None` — the only authenticated role without a user) gets the
 /// same god-view it has elsewhere and resolves by name across ALL owners. Names
@@ -386,12 +385,12 @@ pub async fn resolve_dispatcher(
 }
 
 /// `GET /api/v1/sessions/dispatchers` — the names of every dispatcher the
-/// caller can target: their enrolled dispatchers (CCT-235) merged with the
+/// caller can target: their enrolled dispatchers merged with the
 /// global env-configured registry. The web UI uses this to populate the
 /// dispatch picker. Any authenticated caller may read it (no role gate,
-/// matching dispatch itself — see CCT-185 for per-user gating).
+/// matching dispatch itself — for per-user gating).
 ///
-/// Ownership scoping matches [`resolve_dispatcher`] (CCT-407): a user sees its
+/// Ownership scoping matches [`resolve_dispatcher`]: a user sees its
 /// own enrolled dispatchers; the admin token (`user_id` is `None`) sees ALL of
 /// them, so the picker offers everything an admin can actually dispatch to.
 pub async fn list_dispatchers(
@@ -416,7 +415,7 @@ pub async fn list_dispatchers(
 
 // Linear dispatch pipeline (auth → resolve account/dispatcher → mint key → resolve
 // session id → forward); complexity is the breadth of validation/error branches,
-// not nesting. Splitting risks the CCT-521/522 session-id/dedup invariants.
+// not nesting. Splitting risks the 522 session-id/dedup invariants.
 #[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
 pub async fn dispatch(
     State(state): State<AppState>,
@@ -447,24 +446,24 @@ pub async fn dispatch(
         }
     };
 
-    // Cross-replica delivery (CCT-573): if a live PEER replica holds this
+    // Cross-replica delivery: if a live PEER replica holds this
     // dispatcher's WS, the bus's peer transport forwards the Dispatch frame to
     // it inside `EnrolledDispatcher::dispatch` — side effects (ntfy, ephemeral
     // key mint, webhook registration) run here exactly once either way.
 
     // Claude's daemon derives `short = session_id[..8]` and rejects a dispatch
     // unless `short` matches /^[a-f0-9]{8}$/ — so the worker's session id must be
-    // UUID-shaped (CCT-474). Callers may pass a human-readable logical id (e.g.
+    // UUID-shaped. Callers may pass a human-readable logical id (e.g.
     // an automation dedup key like `triage-PROJ-2026…`); we now mint a FRESH UUID
     // session for it and carry the original as both the display name and the
-    // `dedup_key` (CCT-522). The dispatcher hashes `dedup_key` into the Job name,
+    // `dedup_key`. The dispatcher hashes `dedup_key` into the Job name,
     // so a duplicate webhook still coalesces while each round keeps an isolated
     // session — the server no longer chains every round's logs onto one id.
     let (session_id, display_name, dedup_key) =
         resolve_dispatch_session_id(req.session_id.as_deref());
     let origin = dispatcher.id();
 
-    // Alert that a dispatch arrived (CCT-198). Built from the *original* payload
+    // Alert that a dispatch arrived. Built from the *original* payload
     // (before the machine key is injected) and no-ops unless ntfy is configured.
     let caller = caller_label(&state, ctx.owner_filter()).await;
     let summary = summarize(&req.payload);
@@ -482,24 +481,24 @@ pub async fn dispatch(
         },
     );
 
-    // We do NOT pre-create a session row (CCT-191): the worker's cctui-daemon
-    // self-dispatches the real session on boot (CCT-471) and registers it
+    // We do NOT pre-create a session row: the worker's cctui-daemon
+    // self-dispatches the real session on boot and registers it
     // directly under the shared `dispatch` machine — forcing this pre-minted
-    // (UUID-shaped) `session_id` (CCT-474) so the registered id matches the id
+    // (UUID-shaped) `session_id` so the registered id matches the id
     // the gateway token is bound to. A pre-minted row would just linger as an
     // empty `dispatch:<origin>` placeholder alongside it. Double dispatch is
     // still idempotent: the dispatcher derives the k8s Job name from
-    // `sha(dedup_key)` (the caller's logical key, CCT-522), so a repeat of the
+    // `sha(dedup_key)` (the caller's logical key), so a repeat of the
     // same key maps to the same Job (409 → same handle) even though each
     // dispatch now mints a fresh `session_id`.
 
     // Resolve the caller's stable dispatch machine and forward its key to the
-    // pod via a reserved payload key (CCT-191). The dispatcher lifts it into
+    // pod via a reserved payload key. The dispatcher lifts it into
     // `CCTUI_MACHINE_KEY` and keeps it OUT of TASK_PAYLOAD_JSON, so the worker's
     // daemon runs AS this one machine without a per-pod enroll. The web UI and
     // automation dispatch with a user token (user_id present); the admin token (no
     // owning user) dispatches without the shared identity.
-    // Dispatch permission is now the `dispatch` scope (CCT-410), enforced
+    // Dispatch permission is now the `dispatch` scope, enforced
     // uniformly for every caller. The migration backfilled `dispatch` into
     // user_acls only where the legacy `can_dispatch` flag was set, so this is
     // transparent: a user previously toggled off has no `dispatch` scope and is
@@ -511,7 +510,7 @@ pub async fn dispatch(
 
     let mut forwarded_payload = req.payload.clone();
     // Carry the caller's logical id as the session display name (the session id
-    // itself is now a derived UUID, CCT-474) so the UI still shows e.g.
+    // itself is now a derived UUID) so the UI still shows e.g.
     // `triage-PROJ-2026…`. Only when the caller didn't already name the session.
     if let Some(name) = &display_name
         && let Some(obj) = forwarded_payload.as_object_mut()
@@ -519,7 +518,7 @@ pub async fn dispatch(
         obj.entry("name").or_insert_with(|| serde_json::Value::String(name.clone()));
     }
     // The shared dispatch-machine identity + account routing key on the
-    // AUTHENTICATED USER — `ctx.user_id`, NOT `owner_filter()` (CCT-478).
+    // AUTHENTICATED USER — `ctx.user_id`, NOT `owner_filter()`.
     // `owner_filter()` is a query-result scoping switch (it returns `None` for
     // admins so list views see every row) and has nothing to do with who owns a
     // dispatched session. Keying on it meant an RBAC-admin user (a real user
@@ -529,9 +528,9 @@ pub async fn dispatch(
     // it still dispatches without the shared identity.
     if let Some(uid) = (ctx.user_id != uuid::Uuid::nil()).then_some(ctx.user_id) {
         // The shared `dispatch` machine still groups every dispatched session
-        // under one logical machine (UI grouping unchanged, CCT-191) — but the
-        // credential handed to the pod is now a PER-SESSION ephemeral key
-        // (CCT-296), so a leaked worker key only impersonates its own session
+        // under one logical machine (UI grouping unchanged) — but the
+        // credential handed to the pod is now a PER-SESSION ephemeral key,
+        // so a leaked worker key only impersonates its own session
         // and expires with it. `ensure_dispatch_machine` is kept for the row
         // (and `dispatch_key` rotation) it owns.
         let (machine_id, _shared_key) =
@@ -555,15 +554,14 @@ pub async fn dispatch(
             obj.insert("cctui_machine_key".into(), serde_json::Value::String(key));
         }
 
-        // Account-scoped routing on the dispatch path (CCT-399 / CCT-427 /
-        // CCT-559): mint session-scoped gateway tokens and merge the gateway
-        // base-url + token env into `payload.env` so the worker pod routes
-        // through the passthrough gateway. An explicit `req.accounts` list
-        // (CCT-508) wins — it's the cross-account mix form, each entry
-        // optionally family-constrained by its provider hint. Otherwise the
-        // singular `req.account` (or the dispatcher's bound default identity,
-        // CCT-427) is used. A bare account name mints EVERY provider the
-        // identity carries (CCT-559) — one worker gets claude + codex creds
+        // Account-scoped routing on the dispatch path: mint session-scoped
+        // gateway tokens and merge the gateway base-url + token env into
+        // `payload.env` so the worker pod routes through the passthrough
+        // gateway. An explicit `req.accounts` list wins — it's the
+        // cross-account mix form, each entry optionally family-constrained by
+        // its provider hint. Otherwise the singular `req.account` (or the
+        // dispatcher's bound default identity) is used. A bare account name mints EVERY provider the
+        // identity carries — one worker gets claude + codex creds
         // from `account: "acme"` alone, no accounts[] boilerplate. With no
         // account either way, no gateway env is injected (unchanged).
         let accounts: Vec<(String, Option<String>)> = if req.accounts.is_empty() {
@@ -584,8 +582,8 @@ pub async fn dispatch(
             req.accounts.iter().map(|a| (a.account.clone(), a.provider.clone())).collect()
         };
 
-        // Map `payload.model` through the resolved account(s) `model_aliases`
-        // (CCT-583), mirroring the spawn path. Try Anthropic then Openai per
+        // Map `payload.model` through the resolved account(s) `model_aliases`,
+        // mirroring the spawn path. Try Anthropic then Openai per
         // account; first rewrite wins. `resolve_account_model` fails soft
         // (returns input unchanged on any miss), so a non-alias model or an
         // unresolved account passes through untouched; `effort` is never touched.
@@ -665,7 +663,7 @@ pub async fn dispatch(
 
         // Two same-family provider rows would mint the same env keys (e.g.
         // ANTHROPIC_AUTH_TOKEN) and silently repoint the session's family
-        // token; reject rather than clobber (CCT-508).
+        // token; reject rather than clobber.
         if let Some(family) =
             colliding_family(mints.iter().map(crate::routes::gateway::ProviderRow::family))
         {
@@ -718,7 +716,7 @@ pub async fn dispatch(
         }
     }
 
-    // Register a server-emitted completion webhook (CCT-294) when the caller
+    // Register a server-emitted completion webhook when the caller
     // supplied `notify_url`. The server fires it once the dispatched session
     // reaches a terminal state — covering crash cases the worker's REPLY_URL
     // exit trap can miss. Scoped to a real owning user (admin-token dispatches
@@ -767,7 +765,7 @@ pub async fn dispatch(
             );
             // Persist the opaque handle so the completion-webhook sweep can ask
             // this dispatcher whether the workload later died without a
-            // conclusion (CCT-429). Owner-scoped re-resolution in the sweep uses
+            // conclusion. Owner-scoped re-resolution in the sweep uses
             // the dispatcher *name* + the session's owning user, so only the
             // name/handle/namespace are stored. Best-effort: a failure here must
             // never block an otherwise-valid dispatch.
@@ -820,7 +818,7 @@ pub async fn dispatch(
             namespace: handle.namespace,
             // Surface the dispatcher's outcome verbatim so a re-dispatch onto a
             // terminal Job reads as `redispatched` (a fresh run) rather than a
-            // misleading `dispatched` (CCT-207). Older dispatchers omit it →
+            // misleading `dispatched`. Older dispatchers omit it →
             // preserve the historical `dispatched`.
             status: handle.status.unwrap_or_else(|| "dispatched".into()),
         }),
@@ -837,7 +835,7 @@ mod tests {
 
     #[test]
     fn session_id_human_logical_mints_fresh_uuid_keeps_key_as_dedup_and_name() {
-        // CCT-522: each dispatch of the same logical key gets a DISTINCT session
+        // each dispatch of the same logical key gets a DISTINCT session
         // (no log chaining), while the logical key is preserved as both the
         // display name and the dedup key (idempotency now lives there).
         let (a, na, ka) = resolve_dispatch_session_id(Some("triage-PROJ-202606231511"));
@@ -878,7 +876,7 @@ mod tests {
 
     #[test]
     fn explicit_account_overrides_bound_default() {
-        // CCT-427: explicit account wins over the dispatcher's default, and uses
+        // explicit account wins over the dispatcher's default, and uses
         // the explicit provider hint.
         let got =
             resolve_dispatch_account(Some("work"), Some("anthropic"), Some("automation-account"));
@@ -887,7 +885,7 @@ mod tests {
 
     #[test]
     fn empty_account_falls_back_to_bound_default_identity_all_providers() {
-        // CCT-427 / CCT-559: an empty / whitespace `req.account` falls back to
+        // / an empty / whitespace `req.account` falls back to
         // the dispatcher's bound default account IDENTITY — no provider hint, so
         // every provider the identity carries gets minted.
         assert_eq!(
@@ -902,7 +900,7 @@ mod tests {
 
     #[test]
     fn bare_explicit_account_carries_no_provider_hint() {
-        // CCT-559: `account: "acme"` alone means "all of acme's providers" —
+        // `account: "acme"` alone means "all of acme's providers" —
         // the resolution must not invent a family constraint.
         assert_eq!(resolve_dispatch_account(Some("acme"), None, None), Some(("acme".into(), None)));
     }
@@ -917,7 +915,7 @@ mod tests {
 
     #[test]
     fn disjoint_families_do_not_collide() {
-        // CCT-559: one identity's claude + codex rows mint disjoint env keys.
+        // one identity's claude + codex rows mint disjoint env keys.
         assert!(colliding_family([Family::Anthropic, Family::Openai]).is_none());
         assert!(colliding_family([]).is_none());
         assert!(colliding_family([Family::Openai]).is_none());
@@ -925,7 +923,7 @@ mod tests {
 
     #[test]
     fn same_family_twice_collides() {
-        // CCT-508: two same-family rows would fight over ANTHROPIC_AUTH_TOKEN /
+        // two same-family rows would fight over ANTHROPIC_AUTH_TOKEN /
         // OPENAI_API_KEY — the guard names the colliding family.
         assert!(matches!(
             colliding_family([Family::Anthropic, Family::Anthropic]),
@@ -939,7 +937,7 @@ mod tests {
 
     #[test]
     fn alias_hit_rewrites_model_and_leaves_effort_untouched() {
-        // CCT-583: a resolved model differing from the request model rewrites
+        // a resolved model differing from the request model rewrites
         // `payload.model` in place; `effort` (and any other key) is untouched.
         let mut payload =
             serde_json::json!({ "model": "opus", "effort": "high", "flow": "triage" });
@@ -951,7 +949,7 @@ mod tests {
 
     #[test]
     fn alias_miss_passes_model_through_verbatim() {
-        // CCT-583: when resolution fails soft (mapped == raw), nothing changes —
+        // when resolution fails soft (mapped == raw), nothing changes —
         // no account / no alias leaves the forwarded model verbatim.
         let mut payload = serde_json::json!({ "model": "opus", "effort": "high" });
         assert!(!rewrite_model_if_aliased(&mut payload, "opus", "opus"));

@@ -37,10 +37,10 @@ const PING_INTERVAL: Duration = Duration::from_secs(20);
 /// reconnect loop re-establishes it. ~3 missed pings. Without this the
 /// daemon can sit forever on a dead TCP socket (`sink.send` buffers into the
 /// kernel without erroring, `stream.next` blocks) and the web UI reports
-/// "daemon offline" until a manual restart (CCT-140).
+/// "daemon offline" until a manual restart.
 const LIVENESS_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Micro-batch window (CCT-740): adapter events queued within this window are
+/// Micro-batch window: adapter events queued within this window are
 /// coalesced into one frame before compress+chunk, so cross-event redundancy
 /// compresses far better. Heartbeats and control frames bypass it.
 const BATCH_WINDOW: Duration = Duration::from_millis(250);
@@ -72,12 +72,12 @@ pub struct Supervisor {
     factories: Vec<Box<dyn AdapterFactory>>,
     /// A chunked transfer interrupted by a disconnect, kept across reconnects so
     /// the next connection resumes from the last acked chunk rather than byte
-    /// zero (CCT-738).
+    /// zero.
     pending_transfer: std::sync::Mutex<Option<PendingTransfer>>,
     /// Per-content-hash give-up tracker: size/attempts caps + tombstones so a
-    /// poison transfer can't wedge the pipeline (CCT-742).
+    /// poison transfer can't wedge the pipeline.
     guard: std::sync::Mutex<SendGuard>,
-    /// Per-subsystem byte counters, shared with the HTTP client (CCT-744).
+    /// Per-subsystem byte counters, shared with the HTTP client.
     counters: BandwidthCounters,
 }
 
@@ -136,7 +136,7 @@ impl Supervisor {
         let (event_tx, mut event_rx) = mpsc::channel::<(String, AdapterEvent)>(256);
 
         // Out-of-band frames the supervisor itself produces (currently the
-        // `StageFilesResult` reply to a mid-chat attachment request, CCT-236),
+        // `StageFilesResult` reply to a mid-chat attachment request),
         // fanned onto the same WS sink as adapter events.
         let (frame_up_tx, mut frame_up_rx) = mpsc::channel::<DaemonFrameUp>(64);
 
@@ -155,13 +155,13 @@ impl Supervisor {
         // auto-Pong to our Ping). Drives half-open detection on ping ticks.
         let mut last_rx = tokio::time::Instant::now();
 
-        // Resume an interrupted transfer from its last acked chunk (CCT-738).
+        // Resume an interrupted transfer from its last acked chunk.
         let mut active: Option<PendingTransfer> = self.pending_transfer.lock().unwrap().take();
         if let Some(t) = active.as_mut() {
             t.rewind_to_ack();
         }
 
-        // Micro-batch buffer (CCT-740): adapter events accumulate here for up to
+        // Micro-batch buffer: adapter events accumulate here for up to
         // BATCH_WINDOW, then flush as one compress+chunk frame.
         let mut batch: Vec<DaemonFrameUp> = Vec::new();
         let mut batch_bytes = 0usize;
@@ -280,7 +280,7 @@ impl Supervisor {
                     _ = ping.tick() => {
                         // Detect a half-open connection: if the server hasn't sent
                         // anything (not even a Pong) within LIVENESS_TIMEOUT, tear
-                        // down so the reconnect loop takes over (CCT-140).
+                        // down so the reconnect loop takes over.
                         if last_rx.elapsed() > LIVENESS_TIMEOUT {
                             anyhow::bail!(
                                 "no server traffic for {}s — WS half-open, reconnecting",
@@ -288,7 +288,7 @@ impl Supervisor {
                             );
                         }
                         sink.send(Message::Ping(Vec::new().into())).await?;
-                        // App-level liveness heartbeat (CCT-255). The WS Ping above
+                        // App-level liveness heartbeat. The WS Ping above
                         // keeps the socket warm, but the server only advances
                         // `machines.last_seen_at` on an application frame; this
                         // Heartbeat gives it a per-cadence signal to derive the
@@ -308,7 +308,7 @@ impl Supervisor {
         .await;
 
         // An unfinished transfer resumes next connection, unless it has burned
-        // MAX_ATTEMPTS without progress: then tombstone + drop it (CCT-742).
+        // MAX_ATTEMPTS without progress: then tombstone + drop it.
         if let Some(t) = active
             && !t.is_complete()
         {
@@ -358,7 +358,7 @@ impl Supervisor {
             }
             DaemonFrameDown::ResumeMarks { session_marks } => {
                 // Fan the marks to every running adapter; each clamps the
-                // sessions it owns and ignores ids it doesn't know (CCT-741).
+                // sessions it owns and ignores ids it doesn't know.
                 for running in running.values() {
                     let _ = running
                         .commands_tx
@@ -403,7 +403,7 @@ impl Supervisor {
         let mut want: HashMap<String, DaemonAdapterConfig> =
             adapters.into_iter().map(|a| (a.adapter_id.to_string(), a)).collect();
 
-        // Allow-list roots for agent-posted image markers (CCT-566), resolved
+        // Allow-list roots for agent-posted image markers, resolved
         // once per reconcile and shared by every adapter's event pump below.
         let image_roots = crate::imagepost::default_allowed_roots();
 
@@ -423,7 +423,7 @@ impl Supervisor {
         // Start adapters that should be running but aren't, and rebuild
         // adapters whose config changed since they were last (re)built —
         // without this a live mode switch (bg→sdk) is silently ignored until
-        // the adapter is stopped or the daemon restarts (CCT-496).
+        // the adapter is stopped or the daemon restarts.
         for (id, cfg) in want.drain() {
             if !cfg.enabled {
                 continue;
@@ -461,7 +461,7 @@ impl Supervisor {
             };
             let token = shutdown.child_token();
             // Hand the adapter an authenticated server client + machine key so
-            // its launch chokepoint can pull per-session gateway env (CCT-460).
+            // its launch chokepoint can pull per-session gateway env.
             let (ctx, channels) = build_ctx(
                 cfg.config.clone(),
                 token.clone(),
@@ -474,7 +474,7 @@ impl Supervisor {
             let mut events_rx = channels.events_rx;
             // Pump per-adapter events into the shared event_tx with the adapter
             // id attached. Assistant messages pass through the image-marker
-            // rewrite (CCT-566) here — per-adapter task, so an upload can't stall
+            // rewrite here — per-adapter task, so an upload can't stall
             // the WS loop; a non-marker message returns unchanged.
             let img_client = self.client.clone();
             let img_key = self.machine_key.clone();
@@ -500,7 +500,7 @@ impl Supervisor {
                 AdapterRunning {
                     shutdown: token,
                     // Remember the config this instance was built from so the
-                    // next reconcile can detect a change (CCT-496).
+                    // next reconcile can detect a change.
                     config: cfg.config,
                     commands_tx: channels.commands_tx,
                 },
@@ -510,7 +510,7 @@ impl Supervisor {
     }
 }
 
-/// A large serialized up-frame being sent as ordered chunks (CCT-738), with
+/// A large serialized up-frame being sent as ordered chunks, with
 /// enough state to resume after a disconnect: the content-hash id, the highest
 /// chunk the server has acked, and the next chunk to hand this connection.
 struct PendingTransfer {
@@ -520,10 +520,10 @@ struct PendingTransfer {
     highest_acked: Option<u32>,
     cursor: u32,
     /// Codec the chunk bytes are compressed with, so the server decompresses the
-    /// reassembled payload before parsing it (CCT-740). `None` = raw JSON.
+    /// reassembled payload before parsing it. `None` = raw JSON.
     codec: Option<String>,
     /// Highest chunk index ever emitted, so a re-sent chunk after a resume is
-    /// billed as a retransmit rather than forward (CCT-744).
+    /// billed as a retransmit rather than forward.
     sent_high_water: Option<u32>,
 }
 
@@ -560,7 +560,7 @@ impl PendingTransfer {
     }
 
     /// The next chunk frame, paired with whether it re-sends an already-emitted
-    /// index (a retransmit) versus advancing new ground (forward) — CCT-744.
+    /// index (a retransmit) versus advancing new ground (forward) —.
     fn next_frame(&mut self) -> (DaemonFrameUp, bool) {
         let idx = self.cursor;
         let retransmit = self.sent_high_water.is_some_and(|hw| idx <= hw);
@@ -591,7 +591,7 @@ impl PendingTransfer {
     }
 
     /// Best-effort list of the session ids carried by this transfer, for the
-    /// give-up diagnostic when it is tombstoned (CCT-742).
+    /// give-up diagnostic when it is tombstoned.
     fn session_ids(&self) -> Vec<String> {
         let raw = self.codec.as_deref().map_or_else(
             || Some(self.payload.clone()),
@@ -624,14 +624,13 @@ fn frame_session_ids(frame: &DaemonFrameUp) -> Vec<String> {
 struct AdapterRunning {
     shutdown: CancellationToken,
     /// The adapter config this instance was built from. A reconcile compares
-    /// the new manifest's config against this to decide rebuild-vs-leave-alone
-    /// (CCT-496).
+    /// the new manifest's config against this to decide rebuild-vs-leave-alone.
     config: serde_json::Value,
     /// Command sink the supervisor routes server `Command` frames into.
     commands_tx: mpsc::Sender<cctui_proto::adapter::AdapterCommand>,
 }
 
-/// Stage mid-chat attachments (CCT-236) and build the `StageFilesResult` reply.
+/// Stage mid-chat attachments and build the `StageFilesResult` reply.
 /// Filesystem-only and reuses the spawn-time staging dir, so it doesn't need the
 /// running adapter beyond confirming the adapter is supported.
 fn stage_files_result(
@@ -642,7 +641,7 @@ fn stage_files_result(
 ) -> DaemonFrameUp {
     // Staging is filesystem-only (writes to /tmp/cctui-uploads/<id>/ and returns
     // absolute paths the message text references), so it's adapter-agnostic —
-    // codex reads staged file paths just like claude does (CCT-300).
+    // codex reads staged file paths just like claude does.
     let result = if adapter_id == "claude-code" || adapter_id == "codex" {
         crate::adapters::claude_code::stage_mid_chat_files(local_id, uploads)
     } else {
@@ -767,16 +766,16 @@ async fn drain_for_shutdown(
 }
 
 /// The wire form a prepared frame takes: a ready-to-send text message, or a
-/// chunked transfer to drive over the connection with ack/resume (CCT-740).
+/// chunked transfer to drive over the connection with ack/resume.
 enum Prepared {
     Frame(String),
     Chunked(PendingTransfer),
-    /// Post-compression bytes over [`MAX_PAYLOAD_BYTES`]; dropped unsent (CCT-742).
+    /// Post-compression bytes over [`MAX_PAYLOAD_BYTES`]; dropped unsent.
     Oversized(usize),
 }
 
 /// Compress `inner` when worthwhile, then chunk the compressed bytes if they
-/// still exceed the threshold (CCT-740). Composes compression with the CCT-738
+/// still exceed the threshold. Composes compression with the
 /// chunk transfer while preserving its ack/resume semantics.
 fn prepare_send(inner: &DaemonFrameUp) -> anyhow::Result<Prepared> {
     let json = serde_json::to_vec(inner)?;
@@ -1082,7 +1081,7 @@ mod tests {
 
     #[test]
     fn batched_compressed_chunked_20mb_resumes_across_disconnects() {
-        // The CCT-738 acceptance test, extended for CCT-740: a ~20MB batch of
+        // The acceptance test, extended for a ~20MB batch of
         // events is coalesced, compressed, and chunked; a link killed every few
         // chunks must still complete by resuming, and the server-side reassemble
         // → decompress → parse must recover the exact batch.
@@ -1189,7 +1188,7 @@ mod tests {
         // The daemon pings every PING_INTERVAL and the server auto-pongs, so
         // last_rx refreshes each interval. The liveness window must span
         // several pings or a single dropped pong would trigger a needless
-        // reconnect (CCT-140).
+        // reconnect.
         assert!(
             LIVENESS_TIMEOUT >= PING_INTERVAL * 2,
             "LIVENESS_TIMEOUT must tolerate >=2 missed pings to avoid flapping"

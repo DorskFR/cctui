@@ -1,10 +1,10 @@
-//! Persistent stream-json SDK driver for the claude-code adapter (CCT-500).
+//! Persistent stream-json SDK driver for the claude-code adapter.
 //!
 //! Unlike the oneshot driver (a fresh `claude -p` child per turn), the SDK
 //! driver owns ONE long-lived `claude --print --input-format stream-json
 //! --output-format stream-json --verbose` child **per session**, driven over
 //! its stdio the way the Claude Agent SDK's streaming-input mode does. The
-//! CCT-498 spike proved this direct-wire shape works first-hand (against
+//! spike proved this direct-wire shape works first-hand (against
 //! claude 2.1.193) — no TS/Python SDK sidecar, no `--resume` chaining for
 //! replies:
 //!
@@ -18,9 +18,9 @@
 //! - **Reply / `SendMessage`** → write a `{"type":"user",…}` envelope to the
 //!   child's stdin. No respawn. If the child died (crash / daemon restart), it
 //!   is cold-resumed first with FRESH gateway env pulled from the server binding
-//!   (CCT-460, fail-closed) before the turn is written.
+//!   (fail-closed) before the turn is written.
 //! - **Interrupt** → send a `control_request{subtype:"interrupt"}` on stdin
-//!   (keeps the child alive); the run loop echoes the `CommandResult` (CCT-339).
+//!   (keeps the child alive); the run loop echoes the `CommandResult`.
 //! - **`PermissionResponse` / Ask / Plan** → through the reused `--settings`
 //!   parked-`PreToolUse` hook path (same shared [`super::run_hook_listener`] the
 //!   `bg`/`oneshot` drivers use). Headless runs fire the hooks; forms don't
@@ -34,7 +34,7 @@
 //!   `SessionEnded`); a later Reply/Resume cold-relaunches it. **Remove** →
 //!   terminate + clear all state + `SessionEnded{Killed}`.
 //! - **`SetModel`** → in-place via a `control_request{subtype:"set_model"}` on
-//!   stdin when a model is given (the SDK control lever captured in CCT-498);
+//!   stdin when a model is given (the SDK control lever);
 //!   effort-only changes have no control lever and fall back to "fork to change
 //!   model".
 //!
@@ -44,7 +44,7 @@
 //! recovery is **on-demand cold-resume**: a dead child is relaunched with fresh
 //! fail-closed gateway env on the next Reply/Resume rather than eagerly
 //! restarted by a background ticker (eager restart risks a 401 relaunch loop and
-//! is deferred — see the CCT-500 report).
+//! is deferred — see the report).
 
 use std::collections::{BTreeMap, HashMap};
 use std::process::Stdio;
@@ -102,7 +102,7 @@ impl LiveChild {
 
 /// Persistent stream-json driver over one long-lived `claude` child per session.
 ///
-/// NOTE on the permission channel: the CCT-498 spike documented the
+/// NOTE on the permission channel: the spike documented the
 /// `--permission-prompt-tool stdio` + `can_use_tool` control-request path but
 /// could not round-trip it live (the CLI auto-allowed via its own settings).
 /// This driver therefore routes permissions/Ask/Plan through the fully-proven
@@ -156,8 +156,8 @@ impl SdkDriver {
     #[allow(clippy::cognitive_complexity)]
     pub(super) async fn run(mut self) -> anyhow::Result<()> {
         tracing::info!("claude-code adapter starting in sdk mode");
-        // The same ask/permission hook listener bg/oneshot use (CCT-167 /
-        // CCT-342): headless runs fire PreToolUse/AskUserQuestion hooks, so bind
+        // The same ask/permission hook listener bg/oneshot use: headless runs
+        // fire PreToolUse/AskUserQuestion hooks, so bind
         // the local socket the injected `--settings` file targets and route
         // deliveries through the shared maps.
         self.spawn_hook_listener();
@@ -217,7 +217,7 @@ impl SdkDriver {
                 pending_asks,
                 pending_perm_hooks,
                 // These drivers don't serve the diagnose aggregation
-                // (CCT-547 is bg-only); a fresh log satisfies the listener.
+                // (is bg-only); a fresh log satisfies the listener.
                 super::HookLog::default(),
             )
             .await
@@ -311,7 +311,7 @@ impl SdkDriver {
             anyhow::bail!("spawn: working_dir does not exist or is not a directory: {cwd}");
         }
 
-        // Resolve gateway env + per-account settings (CCT-460/539/540) before
+        // Resolve gateway env + per-account settings (539/540) before
         // writing the hook-settings file so account settings deep-merge under the
         // managed hooks. Fail-closed inside `resolve_launch_env`.
         let launch_env = self.resolve_launch_env(&session_id, &spec.env).await?;
@@ -396,7 +396,7 @@ impl SdkDriver {
     }
 
     /// Interrupt the in-flight turn without tearing the child down: a
-    /// `control_request{subtype:"interrupt"}` on stdin (CCT-339). No-op-safe if
+    /// `control_request{subtype:"interrupt"}` on stdin. No-op-safe if
     /// the child already idled.
     async fn interrupt(&mut self, local_id: &str) -> anyhow::Result<()> {
         if !self.children.get_mut(local_id).is_some_and(LiveChild::alive) {
@@ -415,7 +415,7 @@ impl SdkDriver {
     }
 
     /// In-place model switch via `control_request{subtype:"set_model"}` (the SDK
-    /// lever captured in CCT-498). Effort-only changes have no control lever, so
+    /// lever captured in). Effort-only changes have no control lever, so
     /// they fall back to the "fork to change model" contract like bg/oneshot.
     async fn set_model(
         &mut self,
@@ -449,7 +449,7 @@ impl SdkDriver {
     }
 
     /// Ensure a live child exists for `local_id`; cold-resume with fresh
-    /// gateway env (fail-closed, CCT-460) if it is dead or absent.
+    /// gateway env (fail-closed) if it is dead or absent.
     async fn ensure_child(
         &mut self,
         local_id: &str,
@@ -558,7 +558,7 @@ impl SdkDriver {
         Ok(())
     }
 
-    /// Pull the session's gateway-routing env from the server (CCT-460),
+    /// Pull the session's gateway-routing env from the server,
     /// merging the carried `hint`. Fail-closed when account-bound but
     /// unmintable; best-effort hint when no server is configured. Mirrors
     /// `control::Driver::resolve_launch_env` / `oneshot`'s copy.
@@ -630,7 +630,7 @@ impl SdkDriver {
 /// Per-child stdout pump: parse each stream-json frame through the shared codec,
 /// forward the resulting [`AdapterEvent`]s, and on a `result` (turn boundary) or
 /// EOF (child exit) emit an idle [`AdapterEvent::Status`] so the session stays
-/// resumable — the persistent child is NOT torn down on `result` (CCT-498). On
+/// resumable — the persistent child is NOT torn down on `result`. On
 /// EOF the child has exited; the next Reply/Resume cold-relaunches it.
 #[allow(clippy::cognitive_complexity)]
 async fn pump_stdout(
@@ -720,7 +720,7 @@ mod tests {
 
     #[test]
     fn interrupt_frame_shape() {
-        // The interrupt envelope must match the CCT-498 captured protocol.
+        // The interrupt envelope must match the captured protocol.
         let frame = json!({
             "type": "control_request",
             "request_id": "req_1_abcd",

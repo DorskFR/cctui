@@ -1,12 +1,12 @@
-//! Per-account Claude Code settings catalog (CCT-537).
+//! Per-account Claude Code settings catalog.
 //!
 //! This module is the single source of truth for which Claude Code `settings.json`
 //! keys and environment variables cctui may expose as per-account defaults, and how
 //! dangerous each one is. It is consumed by:
 //!
-//! - the server's allowlist validation (CCT-538) — reject a pasted settings/env blob
+//! - the server's allowlist validation — reject a pasted settings/env blob
 //!   that touches managed-only or unknown keys before persisting it, and
-//! - the webui account settings editor (CCT-541) — render the toggle list, grouped by
+//! - the webui account settings editor — render the toggle list, grouped by
 //!   policy, with types/enums/defaults.
 //!
 //! ## Two sources, one catalog
@@ -101,7 +101,7 @@ pub struct SettingKey {
     pub default: Option<String>,
     /// Human-readable notes (from the schema description or the hand catalog).
     pub notes: Option<String>,
-    /// Editor grouping for the account-settings toggle list (CCT-571). Set in
+    /// Editor grouping for the account-settings toggle list. Set in
     /// catalog.toml on the curated boolean keys only; a key with a group gets a
     /// tri-state toggle in the webui, everything else is raw-JSON-only.
     pub group: Option<String>,
@@ -117,7 +117,7 @@ impl SettingKey {
     }
 }
 
-/// Control shape for a curated env var in the account-settings editor (CCT-591).
+/// Control shape for a curated env var in the account-settings editor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "lowercase")]
@@ -144,11 +144,11 @@ pub struct EnvVar {
     pub group: String,
     /// Exposure policy tag.
     pub tag: Policy,
-    /// Control shape rendered by the editor (CCT-591).
+    /// Control shape rendered by the editor.
     pub kind: EnvKind,
     /// Allowed values for an `enum`-kind var (e.g. effort levels).
     pub values: Option<Vec<String>>,
-    /// settings.json key this env var aliases (CCT-591), when one exists — the
+    /// settings.json key this env var aliases, when one exists — the
     /// editor merges the two into ONE row that reads/writes the settings key.
     pub settings_equiv: Option<String>,
     /// Another env var this is an exact alias of (`DO_NOT_TRACK` == `DISABLE_TELEMETRY`).
@@ -180,7 +180,7 @@ pub struct Preset {
 pub const QUIET_DEFAULTS_ID: &str = "quiet-defaults";
 
 /// Session-critical / gateway-managed env vars that must NEVER be set from a
-/// per-account env blob (CCT-591). Setting any of these would hijack gateway
+/// per-account env blob. Setting any of these would hijack gateway
 /// routing or the session's identity. The full denylist also includes every
 /// catalog env entry tagged `managed` (see [`Catalog::env_denylisted`]).
 pub const ENV_DENYLIST: &[&str] = &[
@@ -286,7 +286,7 @@ impl Catalog {
     ///
     /// Note: this checks TOP-LEVEL keys only. Nested footguns (e.g.
     /// `permissions.defaultMode: bypassPermissions`) are out of scope here and are the
-    /// injection layer's concern (CCT-538/CCT-539).
+    /// injection layer's concern.
     #[must_use]
     pub fn validate_settings(&self, value: &Value) -> ValidationReport {
         let mut violations = Vec::new();
@@ -312,7 +312,7 @@ impl Catalog {
                 }),
                 Some(_) => {}
             }
-            // The nested `env` block (CCT-591) applies env to the live process:
+            // The nested `env` block applies env to the live process:
             // it must be an object of string values, each a well-formed,
             // non-denylisted name — the same free-form rules as the account env.
             if name == "env" {
@@ -322,7 +322,7 @@ impl Catalog {
         ValidationReport { violations }
     }
 
-    /// Validate the nested `settings_json.env` block (CCT-591): a JSON object of
+    /// Validate the nested `settings_json.env` block: a JSON object of
     /// string values whose names are well-formed and not denylisted. Appends any
     /// violations (keyed `env.NAME`) to `out`.
     fn validate_settings_env(&self, value: &Value, out: &mut Vec<Violation>) {
@@ -356,7 +356,7 @@ impl Catalog {
         }
     }
 
-    /// Whether an env var name is denylisted for per-account use (CCT-591): the
+    /// Whether an env var name is denylisted for per-account use: the
     /// fixed [`ENV_DENYLIST`] plus every catalog env entry tagged `managed`.
     #[must_use]
     pub fn env_denylisted(&self, name: &str) -> bool {
@@ -364,7 +364,7 @@ impl Catalog {
             || self.env(name).is_some_and(|v| matches!(v.tag, Policy::Managed | Policy::System))
     }
 
-    /// Validate a FREE-FORM per-account env map (CCT-591): each name must be a
+    /// Validate a FREE-FORM per-account env map: each name must be a
     /// well-formed env var name and NOT denylisted. Values are arbitrary (they may
     /// be secrets). This replaces the old curated-allowlist gate for the
     /// account-level encrypted env blob.
@@ -605,7 +605,7 @@ mod tests {
         }
     }
 
-    /// Toggle metadata (CCT-571): every key with a `group` must be an exposable
+    /// Toggle metadata: every key with a `group` must be an exposable
     /// boolean — the webui renders a tri-state toggle for exactly these.
     #[test]
     fn grouped_keys_are_exposable_booleans() {

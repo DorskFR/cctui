@@ -16,8 +16,7 @@ use clap::Parser;
 /// outside it (e.g. Node/pnpm under `/opt/mise`, Rust under `/opt/rust`) does not
 /// need to fork the entrypoint: `deploy/worker-entrypoint.sh` reads the
 /// colon-separated `CCTUI_WORKER_EXTRA_RO` env var and appends a `--ro <path>`
-/// for each entry to the supervisor invocation, extending the RO set at boot
-/// (CCT-528).
+/// for each entry to the supervisor invocation, extending the RO set at boot.
 pub const DEFAULT_RO: &[&str] =
     &["/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc", "/proc", "/prompts", "/opt/context"];
 

@@ -1,4 +1,4 @@
-//! Server-side bandwidth anomaly detection (CCT-744).
+//! Server-side bandwidth anomaly detection.
 //!
 //! In-memory, alerting-not-audit: an eviction-rate tracker escalates a machine's
 //! repeated WS evictions to an ERROR log (glitchtip picks up ERROR level), and a

@@ -28,8 +28,7 @@ use serde_json::{Value, json};
 /// trailing slash (the UI sends `/home/you/proj/`) otherwise encodes to
 /// `-home-you-proj-` (an extra trailing dash) — a directory that never exists.
 /// `tail_once` then treats the missing file as silent success (`NotFound` →
-/// empty), so the session shows live status but "No events yet" forever
-/// (CCT-196).
+/// empty), so the session shows live status but "No events yet" forever.
 #[must_use]
 pub fn encode_cwd(cwd: &str) -> String {
     cwd.trim_end_matches('/')
@@ -73,15 +72,14 @@ pub fn newest_transcript_for_session(projects_root: &Path, session_id: &str) -> 
 /// Directory holding per-subagent (Task-tool) transcripts for a parent
 /// session: `<encoded-cwd>/<parent-session-id>/subagents/`. Derived from
 /// the parent's own transcript path `<encoded-cwd>/<parent-session-id>.jsonl`
-/// by stripping the `.jsonl` extension and descending into `subagents/`
-/// (CCT-141).
+/// by stripping the `.jsonl` extension and descending into `subagents/`.
 #[must_use]
 pub fn subagents_dir(parent_transcript: &Path) -> PathBuf {
     parent_transcript.with_extension("").join("subagents")
 }
 
 /// Workflow-tool context for a subagent transcript discovered under
-/// `subagents/workflows/<runId>/` (CCT-225). The Task tool's flat
+/// `subagents/workflows/<runId>/`. The Task tool's flat
 /// `subagents/agent-*.jsonl` layout has no workflow, so this is `None` there.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkflowContext {
@@ -106,9 +104,9 @@ pub struct SubagentEntry {
 /// Discover every subagent transcript reachable from a parent session's
 /// `subagents/` dir. Covers two layouts:
 ///
-/// 1. Task tool — flat `subagents/agent-<agentId>.jsonl` (CCT-141).
-/// 2. Workflow tool — nested `subagents/workflows/<runId>/agent-<agentId>.jsonl`
-///    (CCT-225), with per-agent `.meta.json` (`agentType`) and a run-state
+/// 1. Task tool — flat `subagents/agent-<agentId>.jsonl`.
+/// 2. Workflow tool — nested `subagents/workflows/<runId>/agent-<agentId>.jsonl`,
+///    with per-agent `.meta.json` (`agentType`) and a run-state
 ///    `workflows/<runId>.json` one level up under the session dir carrying the
 ///    workflow name. Nested `workflow()` calls reuse the same dir shape, so the
 ///    single-level glob below covers them too.
@@ -263,7 +261,7 @@ pub fn tail_once(
 }
 
 /// How far behind the persisted offset a reconciliation re-tail backs up
-/// before re-reading (CCT-253). Large enough to recover several missed
+/// before re-reading. Large enough to recover several missed
 /// turns' worth of transcript, small enough that the re-emitted volume
 /// stays cheap (the server's content-hash dedup drops every dup).
 pub const RECONCILE_BACKUP_BYTES: u64 = 64 * 1024;
@@ -271,7 +269,7 @@ pub const RECONCILE_BACKUP_BYTES: u64 = 64 * 1024;
 /// Re-tail `path` from a checkpoint a fixed window BEHIND `persisted_offset`
 /// to self-heal any gap left when an event was emitted but never persisted
 /// server-side (a send dropped while the offset advanced) or when roster
-/// churn re-homed the tail (CCT-253). Returns the parsed events; the caller
+/// churn re-homed the tail. Returns the parsed events; the caller
 /// MUST NOT advance/persist any offset from this — it deliberately re-reads
 /// already-seen lines, relying on the server's `ON CONFLICT … DO NOTHING`
 /// dedup to drop the dups and surface only real gaps.
@@ -347,15 +345,15 @@ pub fn reconcile_tail(
 }
 
 /// Map one transcript / stream-json JSON line (`type:"assistant"|"user"|…`)
-/// to zero or more [`AdapterEvent`]s. Shared with the stream-json drivers
-/// (CCT-497): the CLI's `--output-format stream-json` `assistant`/`user`
+/// to zero or more [`AdapterEvent`]s. Shared with the stream-json drivers:
+/// the CLI's `--output-format stream-json` `assistant`/`user`
 /// frames carry the same `message.content` shape as transcript lines, so the
 /// same normalization applies.
 pub(super) fn parse_line(local_id: &str, line: &Value, out: &mut Vec<AdapterEvent>) {
     let kind = line.get("type").and_then(Value::as_str).unwrap_or_default();
-    // CCT-159: `/compact` appends an `isCompactSummary` line (a `type:"user"`
+    // `/compact` appends an `isCompactSummary` line (a `type:"user"`
     // entry whose content is the auto-generated summary) into the SAME
-    // transcript — no session-id rotation, so the CCT-158 rotation marker never
+    // transcript — no session-id rotation, so the rotation marker never
     // fires. Surface it as a dedicated compact event instead of letting it
     // render as a giant user-typed bubble.
     if line.get("isCompactSummary").and_then(Value::as_bool).unwrap_or(false) {
@@ -504,7 +502,7 @@ fn parse_assistant(local_id: &str, line: &Value, out: &mut Vec<AdapterEvent>) {
 /// fixed strings Claude Code / the cctui harness emit, so the match is exact,
 /// not a fuzzy guess.
 ///
-/// We deliberately do NOT trust Claude's top-level `isMeta` flag (CCT-413):
+/// We deliberately do NOT trust Claude's top-level `isMeta` flag:
 /// cctui delivers a human's composer reply through Claude's control-socket
 /// `reply` op, and Claude records that non-interactively-injected turn with
 /// `isMeta:true` even though it is genuine human input. Trusting `isMeta`
@@ -573,7 +571,7 @@ fn parse_user(local_id: &str, line: &Value, out: &mut Vec<AdapterEvent>) {
     // into 3+ duplicate bubbles in the webui and drops the `image` blocks
     // entirely. Instead JOIN the text blocks into ONE `Message` for the turn
     // (preserving order) and note any attachments with a single indicator so
-    // an attachment-only turn isn't lost (CCT-506). `tool_result` blocks stay
+    // an attachment-only turn isn't lost. `tool_result` blocks stay
     // as their own events.
     let mut texts: Vec<&str> = Vec::new();
     let mut has_attachment = false;
@@ -634,7 +632,7 @@ mod tests {
 
     #[test]
     fn encode_cwd_drops_trailing_slash() {
-        // CCT-196: a dispatched session's working_dir often carries a trailing
+        // a dispatched session's working_dir often carries a trailing
         // slash (`/home/you/proj/`). Claude normalizes it away before deriving
         // the projects-dir segment, so we must too — otherwise the encoded dir
         // gets a spurious trailing dash and the transcript is never found.
@@ -715,7 +713,7 @@ mod tests {
 
     #[test]
     fn discover_subagents_finds_nested_workflow_agents() {
-        // CCT-225: Workflow-tool agents live under subagents/workflows/<runId>/.
+        // Workflow-tool agents live under subagents/workflows/<runId>/.
         let tmp = tempfile::tempdir().unwrap();
         // Lay out a realistic <session>/ tree.
         let session = tmp.path().join("-home-user").join("bea6c407");
@@ -907,7 +905,7 @@ mod tests {
 
     #[test]
     fn reconcile_tail_closes_a_gap_behind_the_offset() {
-        // Simulate the CCT-253 failure: the forward tail advanced (and
+        // Simulate the failure: the forward tail advanced (and
         // persisted) its offset past lines whose events never reached the
         // server. The reconcile re-tail backs up behind that offset and
         // re-emits them so the gap self-heals.
@@ -1015,7 +1013,7 @@ mod tests {
                 r#"{"type":"user","message":{"content":"<task-notification><status>completed</status></task-notification>"}}"#,
                 // injected reminder, no angle-bracket tag → meta via prose marker
                 r##"{"type":"user","isMeta":true,"message":{"content":[{"type":"text","text":"# Autonomous loop check"}]}}"##,
-                // CCT-413: a human composer reply that cctui delivered through
+                // a human composer reply that cctui delivered through
                 // Claude's control-socket `reply` op gets recorded `isMeta:true`,
                 // but it is genuine human input with no machine marker → not meta.
                 r#"{"type":"user","isMeta":true,"message":{"content":[{"type":"text","text":"resume coverart e2e verification"}]}}"#,
@@ -1073,7 +1071,7 @@ mod tests {
 
     #[test]
     fn compact_summary_emits_compact_role_not_user() {
-        // CCT-159: /compact appends an `isCompactSummary` user line in place
+        // /compact appends an `isCompactSummary` user line in place
         // (no rotation). It must surface as a `compact_summary` message, not a
         // plain user bubble.
         let tmp = tempfile::tempdir().unwrap();

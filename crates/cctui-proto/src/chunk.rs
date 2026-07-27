@@ -1,4 +1,4 @@
-//! Chunked WS transfer (CCT-738): split a large serialized up-frame into
+//! Chunked WS transfer: split a large serialized up-frame into
 //! ordered, acked, resumable chunks and reassemble them server-side.
 
 use std::collections::HashMap;
@@ -30,7 +30,7 @@ pub fn chunk_count(len: usize) -> u32 {
 }
 
 /// Build the `index`-th chunk frame of `payload` under `id`. `codec` tags the
-/// whole transfer so the server decompresses the reassembled bytes (CCT-740).
+/// whole transfer so the server decompresses the reassembled bytes.
 #[must_use]
 pub fn chunk_frame(
     id: &str,
@@ -107,7 +107,7 @@ impl Partial {
 }
 
 /// Per-connection chunk reassembly with a per-transfer byte bound and age-based
-/// eviction (CCT-738). Bounds memory against a stalled or malicious daemon.
+/// eviction. Bounds memory against a stalled or malicious daemon.
 pub struct Reassembler {
     max_bytes: usize,
     transfers: HashMap<String, Partial>,

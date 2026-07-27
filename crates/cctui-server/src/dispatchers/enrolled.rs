@@ -1,5 +1,5 @@
-//! [`Dispatcher`] backed by an enrolled dispatcher connected over the WS hub
-//! (CCT-285). Resolving a dispatch target to an enrolled dispatcher yields one
+//! [`Dispatcher`] backed by an enrolled dispatcher connected over the WS hub.
+//! Resolving a dispatch target to an enrolled dispatcher yields one
 //! of these; `dispatch`/`status`/`cancel` send the corresponding
 //! [`DispatcherFrameDown`] over the dispatcher's live channel and await the
 //! request-id-correlated [`DispatcherFrameUp`] reply with a timeout.
@@ -105,7 +105,7 @@ impl Dispatcher for EnrolledDispatcher {
         match reply {
             DispatcherFrameUp::StatusResult { state, error, .. } => {
                 // `error` alongside a `failed` state is the failure *reason*
-                // (CrashLoopBackOff / OOMKilled / non-zero exit, CCT-429), not a
+                // (CrashLoopBackOff / OOMKilled / non-zero exit), not a
                 // transport error — only treat it as a hard error when the
                 // dispatcher reported no state at all (couldn't introspect).
                 match state.as_deref() {

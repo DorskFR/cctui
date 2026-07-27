@@ -19,7 +19,7 @@ pub struct ServerClient {
 #[derive(Debug, Serialize)]
 struct EnrollBody<'a> {
     hostname: &'a str,
-    /// Machine kind (CCT-183). Omitted for `persistent` so older servers that
+    /// Machine kind. Omitted for `persistent` so older servers that
     /// don't know the field are unaffected; sent as `ephemeral` for worker pods.
     #[serde(skip_serializing_if = "Option::is_none")]
     kind: Option<&'a str>,
@@ -31,7 +31,7 @@ pub struct EnrollResponse {
     pub machine_key: String,
 }
 
-/// `GET /api/v1/machines/{id}/status` (CCT-548): connectivity snapshot used
+/// `GET /api/v1/machines/{id}/status`: connectivity snapshot used
 /// by remote enroll to verify the freshly installed daemon actually joined
 /// the fleet.
 #[derive(Debug, Deserialize)]
@@ -54,7 +54,7 @@ impl ServerClient {
     }
 
     /// Attach shared bandwidth counters so blob/image PUT bodies are accounted
-    /// under [`Subsystem::BlobPut`] (CCT-744).
+    /// under [`Subsystem::BlobPut`].
     #[must_use]
     pub fn with_counters(mut self, counters: BandwidthCounters) -> Self {
         self.counters = counters;
@@ -121,7 +121,7 @@ impl ServerClient {
     }
 
     /// Pull a session's gateway-routing env from the server's durable
-    /// `sessions.account_id` binding (CCT-460). Called by the claude adapter's
+    /// `sessions.account_id` binding. Called by the claude adapter's
     /// launch chokepoint on every worker (re)launch so the gateway credential is
     /// re-derived from the DB rather than relying on volatile process/in-memory
     /// state surviving a daemon / claude-daemon restart or a session-id rotation.
@@ -145,7 +145,7 @@ impl ServerClient {
     }
 
     /// Ask whether the session token a trusted worker was launched with still
-    /// resolves at the gateway (CCT-462). `token_hash` is the sha256 hex of the
+    /// resolves at the gateway. `token_hash` is the sha256 hex of the
     /// token — the token itself never travels on this call. `Err` covers both
     /// network failures and non-200 responses; the caller MUST treat `Err` as
     /// "unknown" (no heal), never as invalid — the heal kill is destructive.
@@ -175,7 +175,7 @@ impl ServerClient {
         Ok(resp.json().await?)
     }
 
-    /// Upload an agent-posted image blob (CCT-566) the daemon detected as a
+    /// Upload an agent-posted image blob the daemon detected as a
     /// marker in an assistant message. Raw bytes body; the server sniffs the
     /// media type from magic bytes and dedups by sha256. Returns the stored blob
     /// id the caller rewrites into a `cctui-img://<id>` marker.
@@ -210,7 +210,7 @@ impl ServerClient {
         Ok(parsed.image_id)
     }
 
-    /// Upload a content-addressed blob (CCT-739): raw bytes keyed by their
+    /// Upload a content-addressed blob: raw bytes keyed by their
     /// sha256 hex. Idempotent — a re-PUT of an already-stored hash is a cheap
     /// 200/204. `media_type` sets the `Content-Type` when known.
     pub async fn put_blob(

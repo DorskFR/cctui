@@ -1,4 +1,4 @@
-//! Self-heal the on-demand `claude daemon` (CCT-194, CCT-590, CCT-629).
+//! Self-heal the on-demand `claude daemon`.
 //!
 //! The claude supervisor runs *on demand*: after an idle period, laptop sleep,
 //! or a control-socket teardown there is frequently **no** `control.sock` at
@@ -7,14 +7,14 @@
 //!
 //! Rather than spawn `claude daemon run` as our own child (which coupled its
 //! lifetime to cctui-daemon and left `Z <defunct>` zombies when the in-runtime
-//! reaper missed the exit — CCT-590), we ensure the supervisor is installed
+//! reaper missed the exit), we ensure the supervisor is installed
 //! and running under the OS user service manager (see [`super::claude_service`]).
 //! The service manager parents and reaps it; we only ever poll for its socket.
 //!
 //! Environments with **no usable service manager** — dispatched worker
-//! containers foremost, which have no systemd and no user bus (CCT-629) —
-//! fall back to spawning `claude daemon run` as a direct detached child, the
-//! pre-CCT-590 behavior. The worker contract (ephemeral, supervised,
+//! containers foremost, which have no systemd and no user bus —
+//! fall back to spawning `claude daemon run` as a direct detached child. The
+//! worker contract (ephemeral, supervised,
 //! `--no-auto-update`) never wants a resident OS service anyway. The fallback
 //! also engages when [`super::claude_service::ensure`] itself fails (e.g.
 //! `systemctl` present but the user bus unreachable), so a missed heuristic
@@ -115,7 +115,7 @@ impl Kickstarter {
     }
 }
 
-// Augmented PATH: `claude` lives off minimal service PATHs (CCT-138).
+// Augmented PATH: `claude` lives off minimal service PATHs.
 fn direct_command(claude_bin: &str) -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new(claude_bin);
     cmd.args(["daemon", "run"])
@@ -131,7 +131,7 @@ fn direct_command(claude_bin: &str) -> tokio::process::Command {
 
 /// The child is not awaited: `claude daemon run` is the supervisor itself and
 /// stays up for its whole life. Own process group so our signals don't reach
-/// it; the detached reaper task prevents zombies (CCT-590). Must run within a
+/// it; the detached reaper task prevents zombies. Must run within a
 /// Tokio runtime.
 fn spawn_direct(claude_bin: &str) {
     tracing::info!("no usable service manager — booting `claude daemon run` as direct child");

@@ -1,4 +1,4 @@
-//! Application-layer zstd compression for daemon up-frames (CCT-740).
+//! Application-layer zstd compression for daemon up-frames.
 //!
 //! Compression runs before [`crate::chunk`], so the content hash and
 //! chunk/ack/resume all operate over the compressed bytes.
@@ -72,7 +72,7 @@ mod tests {
     use super::*;
     use crate::adapter::AdapterEvent;
 
-    /// A synthetic transcript event of a realistic shape/size (CCT-740 §5). The
+    /// A synthetic transcript event of a realistic shape/size (§5). The
     /// deliberately repetitive envelope (tool names, keys, boilerplate prose)
     /// mirrors the cross-event redundancy that makes batch compression win.
     fn synth_event(i: usize) -> DaemonFrameUp {
@@ -191,7 +191,7 @@ mod tests {
     #[test]
     fn batched_replay_hits_the_five_x_target() {
         // 500 realistic events, replayed one-per-frame vs coalesced into one
-        // batch and zstd-compressed. Batch compression must beat 5x (CCT-740 §5).
+        // batch and zstd-compressed. Batch compression must beat 5x (§5).
         let events: Vec<DaemonFrameUp> = (0..500).map(synth_event).collect();
         let per_frame_bytes: usize =
             events.iter().map(|e| serde_json::to_vec(e).unwrap().len()).sum();

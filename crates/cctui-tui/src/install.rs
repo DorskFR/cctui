@@ -121,7 +121,7 @@ pub fn apply_settings(server_url: &str, fallback_token: &str, _bin_path: &Path) 
     let new_hooks = build_hooks(server_url, fallback_token);
     if let (Some(existing), Some(new_map)) = (hooks_val.as_object_mut(), new_hooks.as_object()) {
         // Drop the stale `/api/v1/check` PreToolUse hook left by schema v1
-        // installs (CCT-238): the server route no longer exists, so re-applying
+        // installs: the server route no longer exists, so re-applying
         // must actively remove the key, not just overwrite the ones we still emit.
         existing.remove("PreToolUse");
         for (k, v) in new_map {

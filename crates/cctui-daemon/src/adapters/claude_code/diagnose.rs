@@ -1,4 +1,4 @@
-//! Pure pieces of the session-diagnose aggregation (CCT-547).
+//! Pure pieces of the session-diagnose aggregation.
 //!
 //! The glue that reads `Driver` state lives in `control.rs` (the fields are
 //! private to that module); everything decision-shaped is here so it can be
@@ -10,7 +10,7 @@ use cctui_proto::adapter::AdapterEvent;
 
 /// The posture label recorded at spawn/fork time and surfaced by diagnose:
 /// the coarse `default`/`auto`/`yolo` vocabulary, except whip keeps its own
-/// name (its enforcement hooks are diagnostic signal, CCT-352).
+/// name (its enforcement hooks are diagnostic signal).
 pub(super) const fn permission_label(mode: cctui_proto::adapter::PermissionMode) -> &'static str {
     if mode.is_whip() { "whip" } else { mode.normalized_label() }
 }
@@ -45,20 +45,18 @@ pub(super) fn now_unix_ms() -> i64 {
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Default)]
 pub(super) struct ArbitrationInput<'a> {
-    /// An ask/plan form is up in the worker PTY (hook signal, CCT-219).
+    /// An ask/plan form is up in the worker PTY (hook signal).
     pub pending_ask: bool,
-    /// A blocking `PreToolUse` permission hook is parked (hook signal,
-    /// CCT-342).
+    /// A blocking `PreToolUse` permission hook is parked (hook signal).
     pub parked_perm_hook: bool,
-    /// The control socket's `needs` string for a pending permission prompt
-    /// (CCT-211).
+    /// The control socket's `needs` string for a pending permission prompt.
     pub control_needs: Option<&'a str>,
-    /// claude reports the worker dead-but-still-listed (CCT-252).
+    /// claude reports the worker dead-but-still-listed.
     pub reported_dead: bool,
     /// The short is in the current live roster.
     pub in_roster: bool,
     /// On-disk job state survives (a non-listed worker is revivable —
-    /// hibernated, CCT-228).
+    /// hibernated).
     pub state_json_on_disk: bool,
     /// Last control-socket snapshot, when one was observed.
     pub tempo: Option<&'a str>,
@@ -88,7 +86,7 @@ impl VerdictSource {
 /// Arbitrate the session's effective state from the raw signals. Priority:
 ///   1. hook-delivered prompts (an up form / parked permission hook) — these
 ///      are invisible to the control socket, which reports `done` while a
-///      form is pending (see CCT-167), so they must win;
+///      form is pending, so they must win;
 ///   2. the control socket's own blocked/`needs` signal;
 ///   3. dead / off-roster lifecycle (dead → hibernated/ended);
 ///   4. the last status snapshot (`tempo`/`state`);
@@ -121,19 +119,18 @@ pub(super) fn arbitrate(input: &ArbitrationInput<'_>) -> (String, VerdictSource)
     }
 }
 
-/// Max hook-event age still considered authoritative (CCT-546). Past this a
+/// Max hook-event age still considered authoritative. Past this a
 /// live PTY byte stream is trusted to infer working / suspect the hooks dead.
 const HOOK_FRESH_MS: i64 = 10_000;
 
-/// Max age of the last PTY read for the byte stream to count as "flowing"
-/// (CCT-546).
+/// Max age of the last PTY read for the byte stream to count as "flowing".
 const PTY_FLOW_FRESH_MS: i64 = 5_000;
 
 /// Consecutive idle confirmations required before flipping a live-but-quiet
-/// session to idle — hysteresis against flicker (herdr uses ~3, CCT-546).
+/// session to idle — hysteresis against flicker (herdr uses ~3).
 const IDLE_HYSTERESIS: u32 = 3;
 
-/// The PTY-activity signals arbitrated against hook freshness (CCT-546). Ages
+/// The PTY-activity signals arbitrated against hook freshness. Ages
 /// are millis relative to report build time; `None` means never observed.
 #[derive(Debug, Default)]
 pub(super) struct ActivityInput {
@@ -144,7 +141,7 @@ pub(super) struct ActivityInput {
     pub idle_confirmations: u32,
 }
 
-/// Herdr-style verdict from the PTY-activity vs hook arbitration (CCT-546).
+/// Herdr-style verdict from the PTY-activity vs hook arbitration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ActivityVerdict {
     /// A fresh hook, or flowing PTY under a still-fresh hook, says working.
@@ -170,7 +167,7 @@ impl ActivityVerdict {
 }
 
 /// Arbitrate the second (PTY) activity signal against hook authority, herdr-
-/// style (CCT-546):
+/// style:
 ///   - a fresh hook is authoritative → working;
 ///   - else PTY bytes flowing → hooks are dead/wedged, infer working & flag;
 ///   - else (quiet) liveness-alive + enough idle confirmations → idle;
@@ -208,7 +205,7 @@ mod tests {
     #[test]
     fn hook_signals_win_over_activity() {
         // A pending ask form reports state:"done" on the control socket
-        // (CCT-167) — the hook signal must produce the verdict.
+        // — the hook signal must produce the verdict.
         let input = ArbitrationInput { pending_ask: true, ..live() };
         let (verdict, source) = arbitrate(&input);
         assert_eq!(source, VerdictSource::Hook);
@@ -234,7 +231,7 @@ mod tests {
 
     #[test]
     fn dead_and_off_roster_map_to_lifecycle_verdicts() {
-        // Dead-but-listed with job state on disk → hibernated (CCT-252/228).
+        // Dead-but-listed with job state on disk → hibernated (228).
         let input = ArbitrationInput { reported_dead: true, ..live() };
         assert!(arbitrate(&input).0.starts_with("hibernated"));
 

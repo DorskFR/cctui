@@ -47,13 +47,13 @@ async fn main() -> anyhow::Result<()> {
 
     let config = Config::from_env();
     let pool = db::connect(&config.database_url).await?;
-    // One-release back-compat shim (CCT-399): if the retired
+    // One-release back-compat shim: if the retired
     // CCTUI_CLAUDE_LITELLM_* env vars are set, synthesize a managed (read-only)
     // anthropic-compatible account per user so existing deployments keep working
     // until they migrate to first-class accounts.
     routes::accounts::sync_litellm_shim(&pool, &config).await;
     let auth_config = auth::AuthConfig::new(Config::admin_tokens(), pool.clone());
-    // CCT-410: resolve CCTUI_ADMIN_TOKENS to a seeded admin user + api_keys rows
+    // resolve CCTUI_ADMIN_TOKENS to a seeded admin user + api_keys rows
     // with {admin} ceiling/grant, so the break-glass token is a real identity
     // rather than a user_id=None ghost. Idempotent, best-effort.
     auth_config.seed_admin().await;
@@ -64,7 +64,7 @@ async fn main() -> anyhow::Result<()> {
     let presence = Arc::new(presence::PodIdentity::from_env());
     let http_client = reqwest::Client::new();
 
-    // Bus transport selection (CCT-573): with a routable pod IP this replica
+    // Bus transport selection: with a routable pod IP this replica
     // participates in the peer mesh — mint/load the internal shared secret and
     // route/relay through `PeerHttpTransport`. Without one (local dev, single
     // replica) the bus stays local-only (`NoopTransport`) and writes nothing.
@@ -88,8 +88,8 @@ async fn main() -> anyhow::Result<()> {
         config: config.clone(),
         registry: Registry::shared(),
         permission_store: routes::permissions::PermissionStore::shared(),
-        // The single routing seam for daemon/dispatcher WS traffic (CCT-572);
-        // the transport behind it is chosen above (CCT-573).
+        // The single routing seam for daemon/dispatcher WS traffic;
+        // the transport behind it is chosen above.
         bus: bus::Bus::new(transport),
         auth_config: auth_config.clone(),
         skills,
@@ -100,7 +100,7 @@ async fn main() -> anyhow::Result<()> {
         machine_liveness: Arc::new(dashmap::DashMap::new()),
         account_locks: Arc::new(dashmap::DashMap::new()),
         http_client,
-        // Optional Langfuse tracing sink (CCT-443). `None` (dark) unless the
+        // Optional Langfuse tracing sink. `None` (dark) unless the
         // CCTUI_LANGFUSE_* env is fully set — zero overhead on the gateway path.
         langfuse: langfuse::LangfuseConfig::from_env()
             .map(|c| Arc::new(langfuse::LangfuseClient::new(c, reqwest::Client::new()))),
@@ -116,7 +116,7 @@ async fn main() -> anyhow::Result<()> {
         machine_event_inserts: Arc::new(dashmap::DashMap::new()),
     };
 
-    // Warm the reauth gate from the persisted flag (CCT-512) so a restart doesn't
+    // Warm the reauth gate from the persisted flag so a restart doesn't
     // strand an account: without this the success path couldn't clear a flag set
     // before the restart (it only writes on the in-memory transition).
     if let Ok(ids) =
@@ -129,7 +129,7 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    // Replica-aware WS presence (CCT-567): registered only when the pod knows
+    // Replica-aware WS presence: registered only when the pod knows
     // its routable IP; the heartbeat task keeps this pod's rows trusted and
     // reaps rows crashed pods left behind.
     if state.presence.ip.is_some() {
@@ -153,7 +153,7 @@ async fn main() -> anyhow::Result<()> {
         .layer(middleware::from_fn(auth::auth_middleware))
         .layer(Extension(auth_config.clone()));
 
-    // Optional GitHub integration (CCT-373 / GH-PKG-1). Behind the `github`
+    // Optional GitHub integration. Behind the `github`
     // Cargo feature: run its embedded migrations and merge its routes. A build
     // without the feature contains zero GitHub code, routes, or schema.
     #[cfg(feature = "github")]
@@ -163,14 +163,14 @@ async fn main() -> anyhow::Result<()> {
     #[allow(clippy::literal_string_with_formatting_args)]
     let app = Router::new()
         .route("/health", get(|| async { "ok" }))
-        // Self-describing API surface (CCT-464). Both are unauthenticated meta
+        // Self-describing API surface. Both are unauthenticated meta
         // routes — like `/health` — because they expose ONLY the public shape of
         // the API (paths/methods/auth model/summaries), never any data. An agent
         // handed a base URL can discover the surface, then authenticate.
         .route("/llms.txt", get(openapi::llms_txt))
         .route("/api/v1/openapi.json", get(openapi::openapi_json))
         .route("/api/v1/ws", get(ws::tui_ws))
-        // Browser auth-cookie endpoints (CCT-423). Self-authenticating: `login`
+        // Browser auth-cookie endpoints. Self-authenticating: `login`
         // validates the presented token and sets the `HttpOnly` cookie, `logout`
         // clears it — both live outside the `auth_middleware` group.
         .route("/api/v1/auth/login", post(routes::auth::login))
@@ -180,16 +180,16 @@ async fn main() -> anyhow::Result<()> {
         // user-token-only `api_router` group.
         .route("/api/v1/daemon/auth", post(routes::daemon::auth))
         .route("/api/v1/daemon/ws", get(routes::daemon::ws))
-        // Launch-time gateway-env pull (CCT-460): the daemon resolves a
+        // Launch-time gateway-env pull: the daemon resolves a
         // session's account env here on every worker (re)launch. Self-auths via
         // the machine-key Bearer, so it sits beside the other daemon endpoints.
         .route("/api/v1/daemon/sessions/{id}/gateway-env", get(routes::daemon::session_gateway_env))
-        // Token-validity probe (CCT-462): the daemon's low-frequency sweep asks
+        // Token-validity probe: the daemon's low-frequency sweep asks
         // whether the session token it launched a trusted worker with still
         // resolves (by sha256 hash — no token material on the wire). Same
         // machine-key self-auth as gateway-env.
         .route("/api/v1/daemon/sessions/{id}/token-valid", get(routes::daemon::session_token_valid))
-        // Agent-posted image upload (CCT-566): the daemon POSTs raw image bytes
+        // Agent-posted image upload: the daemon POSTs raw image bytes
         // it detected as a marker in an assistant message. Self-auths via the
         // machine-key Bearer like the sibling daemon endpoints, so it sits here
         // outside the user-token `api_router`. Cap the body a little over the
@@ -199,7 +199,7 @@ async fn main() -> anyhow::Result<()> {
             post(routes::images::upload_session_image)
                 .layer(DefaultBodyLimit::max(6 * 1024 * 1024)),
         )
-        // Content-addressed blob upload (CCT-739): the daemon PUTs oversized
+        // Content-addressed blob upload: the daemon PUTs oversized
         // base64 attachments it extracted from transcript payloads, keyed by
         // sha256. Machine-key Bearer self-auth, so it sits beside the other
         // daemon endpoints outside the user-token `api_router`. Headroom over
@@ -209,19 +209,19 @@ async fn main() -> anyhow::Result<()> {
             put(routes::blobs::put_blob)
                 .layer(DefaultBodyLimit::max(routes::blobs::MAX_BLOB_BYTES + 1024 * 1024)),
         )
-        // Enrolled-dispatcher endpoints (CCT-285). Carry their own key auth
+        // Enrolled-dispatcher endpoints. Carry their own key auth
         // (dispatcher-key Bearer / `?token=`), so they live outside the
         // user-token `api_router` group, like the daemon endpoints.
         .route("/api/v1/dispatcher/auth", post(routes::dispatcher::auth))
         .route("/api/v1/dispatcher/ws", get(routes::dispatcher::ws))
         .route("/api/v1/triggers/{kind}", post(routes::triggers::ingest))
-        // OAuth passthrough gateway (CCT-232). Auths via the session-scoped
+        // OAuth passthrough gateway. Auths via the session-scoped
         // token in the request's own Authorization header — NOT the user-token
         // `api_router` middleware — so it lives on the outer app. Matches any
         // method + sub-path under each provider prefix.
         .route("/gateway/anthropic/{*path}", any(routes::gateway::anthropic))
         .route("/gateway/openai/{*path}", any(routes::gateway::openai))
-        // Pod-to-pod bus endpoints (CCT-573). Self-authenticating via the
+        // Pod-to-pod bus endpoints. Self-authenticating via the
         // cluster-internal shared secret (constant-time compare; user/machine
         // tokens never accepted), so they live outside the `api_router` auth
         // group. `route` may carry a forwarded stage-files upload — give it the
@@ -233,7 +233,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/internal/bus/publish", post(routes::internal::bus_publish))
         .nest("/api/v1", api_router)
         // The web UI is served same-origin in prod, so the `HttpOnly` auth
-        // cookie (CCT-423) flows without any cross-origin credential config.
+        // cookie flows without any cross-origin credential config.
         // The permissive policy remains safe for the API/daemon Bearer callers
         // (no credentialed cross-origin cookie reliance). WS upgrades read the
         // cookie on the same-origin upgrade and are not subject to CORS preflight.
@@ -259,7 +259,7 @@ async fn main() -> anyhow::Result<()> {
         .layer(Extension(auth_config.clone())),
     );
 
-    // GH-AGENT-2: the agent MCP review endpoint authenticates the bearer session
+    // the agent MCP review endpoint authenticates the bearer session
     // token on its own (it is not a user/machine token `auth_middleware` knows),
     // so it is merged WITHOUT the auth/identity layers above.
     #[cfg(feature = "github")]
@@ -272,7 +272,7 @@ async fn main() -> anyhow::Result<()> {
         ),
     );
 
-    // GH-CONN-4: the reconcile poll loop. A background task (mirroring
+    // the reconcile poll loop. A background task (mirroring
     // `reaper_task`) that heals missed webhooks and hydrates first install by
     // polling GitHub for "PRs involving me" per connector. Behind the `github`
     // feature; disabled when `CCTUI_GITHUB_RECONCILE_SECS=0`.
@@ -291,7 +291,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Build the `/api/v1` route table from the descriptor list (CCT-419). Every
+/// Build the `/api/v1` route table from the descriptor list. Every
 /// route declares both an [`Authn`] (recorded; the proven `auth_middleware`
 /// path still performs authentication) and an [`Authz`] (enforced by
 /// `authz::authz_layer`, default-deny for any un-policied route). Each route's
@@ -305,9 +305,9 @@ async fn main() -> anyhow::Result<()> {
 fn build_api_routes() -> Routes {
     use Authz::{Authenticated, Scope as ScopeAz};
     const GET: Method = Method::GET;
-    // Per-session ownership guard (CCT-420): `machine_uuid -> machines.user_id`,
+    // Per-session ownership guard: `machine_uuid -> machines.user_id`,
     // id sourced from the `{id}` path param. `read`/`write` differ only in the
-    // recorded `Action` (for CCT-422 RBAC); the owner rule is identical today.
+    // recorded `Action` (for RBAC); the owner rule is identical today.
     let sess_read = || Authz::Resource(ResourceKind::Session, Action::Read, IdFrom::Path("id"));
     let sess_write = || Authz::Resource(ResourceKind::Session, Action::Write, IdFrom::Path("id"));
     Routes::new()
@@ -341,7 +341,7 @@ fn build_api_routes() -> Routes {
             &[Method::POST],
             "/sessions/spawn",
             "Spawn a new session on a machine, with optional file uploads.",
-            // Multipart spawn with file uploads (CCT-203): the route enforces a
+            // Multipart spawn with file uploads: the route enforces a
             // 20 MB total cap itself; allow a little headroom over it for
             // multipart framing + base64 isn't applied until after parsing.
             post(routes::spawn::spawn_session).layer(DefaultBodyLimit::max(24 * 1024 * 1024)),
@@ -350,7 +350,7 @@ fn build_api_routes() -> Routes {
             Authenticated,
         )
         .add(
-            // Mid-chat file attachments (CCT-236) — same multipart shape + caps
+            // Mid-chat file attachments — same multipart shape + caps
             // as spawn, same body-limit headroom.
             &[Method::POST],
             "/sessions/{id}/files",
@@ -376,7 +376,7 @@ fn build_api_routes() -> Routes {
             // owner_filter() SQL filter in the handler.
             Authenticated,
         )
-        // Enrolled-dispatcher management (CCT-285): list with liveness, rename,
+        // Enrolled-dispatcher management: list with liveness, rename,
         // remove. Enrollment itself is `POST /dispatcher/enroll` below.
         .add(
             &[GET],
@@ -498,11 +498,11 @@ fn build_api_routes() -> Routes {
             Authenticated,
         )
         // Per-session routes — ownership enforced by the `Resource(Session)`
-        // guard (CCT-420). The `authz_layer` resolves `machine_uuid ->
+        // guard. The `authz_layer` resolves `machine_uuid ->
         // machines.user_id` and applies `admin || owner == caller` before the
         // handler (404 unknown / 403 cross-user). Reads → `Action::Read`,
         // mutations/control → `Action::Write` (the action is recorded for
-        // CCT-422 RBAC; the owner rule is identical for both today).
+        // RBAC; the owner rule is identical for both today).
         .add(
             &[GET],
             "/sessions/{id}",
@@ -583,7 +583,7 @@ fn build_api_routes() -> Routes {
             Authn::Bearer,
             sess_write(),
         )
-        // Draft sessions (CCT-394): launch promotes a draft to a live spawn
+        // Draft sessions: launch promotes a draft to a live spawn
         // (env entered fresh in the body), discard deletes the draft row.
         .add(
             &[Method::POST],
@@ -697,7 +697,7 @@ fn build_api_routes() -> Routes {
             Authn::Bearer,
             sess_write(),
         )
-        // Session labels (CCT-360): global label definitions (no owner) +
+        // Session labels: global label definitions (no owner) +
         // per-session attach/detach (authorize_session in the handler).
         .add(
             &[GET, Method::POST],
@@ -840,7 +840,7 @@ fn build_api_routes() -> Routes {
             Authn::Bearer,
             Authenticated,
         )
-        // Provider credentials under an account identity (CCT-558): owner-scoped
+        // Provider credentials under an account identity: owner-scoped
         // in the handlers like the other account routes.
         .add(
             &[Method::POST],
@@ -874,7 +874,7 @@ fn build_api_routes() -> Routes {
             Authn::Bearer,
             Authenticated,
         )
-        // Account sharing management (CCT-510): owner-scoped in the handler
+        // Account sharing management: owner-scoped in the handler
         // (require_account_owner) just like the other account routes.
         .add(
             &[GET, Method::POST],
@@ -892,7 +892,7 @@ fn build_api_routes() -> Routes {
             Authn::Bearer,
             Authenticated,
         )
-        // Generic resource-sharing CRUD (CCT-531): owner-scoped in the handler
+        // Generic resource-sharing CRUD: owner-scoped in the handler
         // (require_owner) for any shareable kind. The account routes above are
         // static-path back-compat aliases; these serve machine/dispatcher/etc.
         .add(
@@ -925,7 +925,7 @@ fn build_api_routes() -> Routes {
             "List directories on a machine (spawn dir picker).",
             get(routes::fs::list_dirs),
             Authn::Bearer,
-            // Machine-owner guard (CCT-420): `machines.user_id`, id from the
+            // Machine-owner guard: `machines.user_id`, id from the
             // `{machine_id}` path param.
             Authz::Resource(ResourceKind::Machine, Action::Read, IdFrom::Path("machine_id")),
         )
@@ -1002,7 +1002,7 @@ fn build_api_routes() -> Routes {
             // In-handler: requires a machine token (machine_id present).
             Authenticated,
         )
-        // Admin surface (CCT-410): every route is `forbid_or` (Scope::Admin).
+        // Admin surface: every route is `forbid_or` (Scope::Admin).
         .add(
             &[Method::POST, GET],
             "/admin/users",
@@ -1128,7 +1128,7 @@ fn build_api_routes() -> Routes {
             // In-handler: admin may mint for anyone; a user only for itself.
             Authenticated,
         )
-        // CCT-410: per-user scope (ceiling) + per-key (grant) management — all
+        // per-user scope (ceiling) + per-key (grant) management — all
         // admin-only (`forbid_or`).
         .add(
             &[GET, Method::PATCH],
@@ -1197,7 +1197,7 @@ async fn init_skill_store() -> Arc<skill_store::SkillStore> {
 /// dispatchers, merged from the legacy `CCTUI_HTTP_DISPATCHERS` and the
 /// `kind:"http"` entries of `CCTUI_DISPATCHERS`.
 ///
-/// CCT-292: the in-process `kube`/`docker` dispatchers are gone — production
+/// The in-process `kube`/`docker` dispatchers are gone — production
 /// dispatches exclusively through enrolled executor binaries
 /// (`/api/v1/dispatcher/ws`), and `resolve_dispatcher` checks enrolled first,
 /// falling back to this http-only registry.
@@ -1241,7 +1241,7 @@ async fn reaper_task(state: AppState) {
                     i64::try_from(state.config.archive_after_secs).unwrap_or(i64::MAX),
                 );
             match sqlx::query(
-                // Drafts (CCT-394) are staged-not-running — never auto-archive them.
+                // Drafts are staged-not-running — never auto-archive them.
                 "UPDATE sessions SET status = 'archived' \
                  WHERE status NOT IN ('archived', 'draft') AND pinned = false AND last_heartbeat < $1",
             )
@@ -1258,7 +1258,7 @@ async fn reaper_task(state: AppState) {
         }
 
         // Soft-delete ephemeral (dispatch/worker) machines that have gone
-        // quiet past the TTL — pods that died before self-deenroll (CCT-183).
+        // quiet past the TTL — pods that died before self-deenroll.
         // Mirrors the self-deenroll write (revoked_at + deleted_at) so the row
         // survives for historical session FKs but drops out of every listing.
         if state.config.ephemeral_machine_ttl_secs > 0 {
@@ -1282,7 +1282,7 @@ async fn reaper_task(state: AppState) {
             }
         }
 
-        // Ephemeral dispatch keys (CCT-296): per-session credentials handed to
+        // Ephemeral dispatch keys: per-session credentials handed to
         // worker pods. Revoke a key once its bound session reaches the terminal
         // `archived` state (blast radius dies with the session, ahead of TTL),
         // and hard-delete keys past their `expires_at` so the table stays clean.
@@ -1322,7 +1322,7 @@ async fn reaper_task(state: AppState) {
             Err(err) => tracing::warn!(%err, "expired ephemeral key delete sweep failed"),
         }
 
-        // Machine liveness (CCT-255): re-derive every machine's tier from its
+        // Machine liveness: re-derive every machine's tier from its
         // `last_seen_at` and broadcast any transitions. The 30s cadence means a
         // daemon that stops heartbeating ages online → stale → offline on its
         // own — the acceptance case "killing a daemon flips it offline within
@@ -1330,7 +1330,7 @@ async fn reaper_task(state: AppState) {
         machine_liveness::sweep(&state).await;
         machine_liveness::sweep_dispatchers(&state).await;
 
-        // Completion webhooks (CCT-294): fire a server-side callback for any
+        // Completion webhooks: fire a server-side callback for any
         // dispatched session that has reached a terminal state — the
         // crash-coverage path the worker's REPLY_URL exit trap can miss.
         webhook::sweep(&state).await;

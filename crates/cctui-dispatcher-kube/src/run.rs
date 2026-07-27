@@ -1,6 +1,6 @@
 //! Dial-out WS run loop.
 //!
-//! Mirrors the daemon supervisor (CCT-248 transport spec): connect out to
+//! Mirrors the daemon supervisor (transport spec): connect out to
 //! `/api/v1/dispatcher/ws`, send `Hello` + periodic `Heartbeat`, and handle
 //! `Dispatch`/`Status`/`Cancel` frames by driving the local kube `Spawner`.
 //! Reconnect backoff + half-open detection follow the daemon's pattern verbatim
@@ -147,7 +147,7 @@ impl Runner {
                         handle,
                         state: Some(state.as_str().to_owned()),
                         // For a Failed state this carries the human reason
-                        // (CrashLoopBackOff / OOMKilled / …, CCT-429); the
+                        // (CrashLoopBackOff / OOMKilled / …); the
                         // server lifts it into the completion webhook's `error`.
                         error: reason,
                     },

@@ -1,4 +1,4 @@
-//! Turn-complete marker for dispatch-originated sessions (CCT-513).
+//! Turn-complete marker for dispatch-originated sessions.
 //!
 //! A dispatched worker pod's entrypoint (deploy/worker-entrypoint.sh,
 //! `await_dispatch_done`) blocks on done/crash signals — but a session that
@@ -70,7 +70,7 @@ impl DispatchDoneTracker {
         self.seen_busy
     }
 
-    /// Whether the marker has already fired (diagnose observability, CCT-547).
+    /// Whether the marker has already fired (diagnose observability).
     pub const fn is_done(&self) -> bool {
         self.done
     }

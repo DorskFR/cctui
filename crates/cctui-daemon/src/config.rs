@@ -37,8 +37,8 @@ impl Config {
     }
 
     /// Build a config purely from environment variables, for dispatched
-    /// worker pods that are handed a shared machine key and never run `enroll`
-    /// (CCT-191). `CCTUI_MACHINE_KEY` + (`CCTUI_SERVER_URL` or `CCTUI_URL`) are
+    /// worker pods that are handed a shared machine key and never run `enroll`.
+    /// `CCTUI_MACHINE_KEY` + (`CCTUI_SERVER_URL` or `CCTUI_URL`) are
     /// required; `machine_id` is unknown here (the server returns it from
     /// `daemon_auth`). Returns `None` when the key isn't set so the caller can
     /// fall back to the on-disk config.

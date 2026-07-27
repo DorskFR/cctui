@@ -3,7 +3,7 @@
 //! `GET /machines/{machine_id}/fs/dirs?path=…` asks the machine's daemon for
 //! the sub-directories of `path` and returns their names. The daemon answers
 //! over its existing WS with the same `request_id` + oneshot pattern as
-//! mid-chat file staging (CCT-236). Ownership rule matches spawn: the machine
+//! mid-chat file staging. Ownership rule matches spawn: the machine
 //! must belong to the requesting user (admin tokens may browse any machine) —
 //! no path restriction beyond that, since machine owners can already spawn
 //! arbitrary commands.
@@ -29,7 +29,7 @@ pub struct ListDirsResponse {
 }
 
 // Machine ownership is enforced by the `Resource(Machine, Read, IdFrom::Path
-// ("machine_id"))` guard in `authz.rs` (CCT-420): the `authz_layer` middleware
+// ("machine_id"))` guard in `authz.rs`: the `authz_layer` middleware
 // resolves `machines.user_id` and applies `admin || owner == caller` BEFORE this
 // handler runs (404 unknown machine / 403 not-your-machine / admin bypass — the
 // exact semantics of the old in-handler check). The handler now only needs the

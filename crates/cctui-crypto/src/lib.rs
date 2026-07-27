@@ -85,7 +85,7 @@ fn try_decrypt_v1(body: &str, key: &[u8]) -> Result<String, String> {
 }
 
 /// Legacy XOR-with-repeating-key + hex writer. Kept only so tests can fabricate
-/// pre-CCT-723 rows; production code must use [`encrypt`].
+/// rows; production code must use [`encrypt`].
 #[must_use]
 pub fn legacy_xor_obfuscate(plaintext: &str, key: &[u8]) -> String {
     if key.is_empty() {

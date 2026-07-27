@@ -3,7 +3,7 @@
 //! Lives at `$XDG_CONFIG_HOME/cctui/dispatcher.toml` (or
 //! `~/.config/cctui/dispatcher.toml`). Written by
 //! `cctui-dispatcher-docker enroll`; read by `cctui-dispatcher-docker run`.
-//! Mirror of the daemon's `daemon.toml` (CCT-248 enrollment spec) — an enrolled
+//! Mirror of the daemon's `daemon.toml` (enrollment spec) — an enrolled
 //! dispatcher is a peer of a machine, so its identity persists the same way.
 
 use std::path::{Path, PathBuf};

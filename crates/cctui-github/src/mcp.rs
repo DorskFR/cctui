@@ -44,7 +44,7 @@ const PROTOCOL_VERSION: &str = "2025-06-18";
 
 /// Resolve a bearer session token to the session id it was minted for.
 ///
-/// Mirrors the gateway's `session_tokens` lookup (CCT-232): only a non-revoked
+/// Mirrors the gateway's `session_tokens` lookup: only a non-revoked
 /// token resolves. The token itself is never returned or logged — only the
 /// `session_id` it maps to. `None` ⇒ unknown/revoked ⇒ the caller maps it to an
 /// auth error.

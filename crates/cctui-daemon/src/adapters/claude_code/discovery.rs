@@ -10,8 +10,8 @@
 //! stays on disk while the listener is gone. `exists()` still returns `true`,
 //! so a naive picker selects a **dead** socket and every connect either gets
 //! ECONNREFUSED or hangs half-open — cctui then "stops receiving messages" and
-//! dispatch fails with "daemon offline" until the user wakes it by hand
-//! (CCT-205). [`Discovery::locate_live`] guards against this by connecting and
+//! dispatch fails with "daemon offline" until the user wakes it by hand.
+//! [`Discovery::locate_live`] guards against this by connecting and
 //! pinging each candidate, returning only a reachable one and reaping the
 //! corpse (a hard-refused socket file) so it stops shadowing discovery.
 //!
@@ -76,8 +76,8 @@ impl Discovery {
         dirs.into_iter().map(|d| d.join("control.sock")).filter(|c| c.exists()).collect()
     }
 
-    /// The candidate socket paths, for observability (session diagnose,
-    /// CCT-547). Same enumeration [`Self::locate_live`] walks; no probing.
+    /// The candidate socket paths, for observability (session diagnose).
+    /// Same enumeration [`Self::locate_live`] walks; no probing.
     pub(super) fn candidate_paths(&self) -> Vec<PathBuf> {
         self.candidates()
     }
@@ -85,7 +85,7 @@ impl Discovery {
     /// Returns the first `<base>/<hash>/control.sock` that exists by `exists()`
     /// alone, ignoring liveness. Cheap and synchronous; prefer
     /// [`Discovery::locate_live`] on the poll/dispatch paths where a dead
-    /// socket would silently wedge the adapter (CCT-205).
+    /// socket would silently wedge the adapter.
     // Used by the ignored live integration tests in `socket.rs`; the cheap
     // sync path is kept available, hence the allow on non-test builds.
     #[cfg_attr(not(test), allow(dead_code))]
@@ -97,7 +97,7 @@ impl Discovery {
     /// ping. A dead/stale socket is skipped (and, on hard `ECONNREFUSED`,
     /// best-effort unlinked so it stops shadowing future discovery). Returns
     /// `None` when no candidate is reachable — letting the caller's kickstart
-    /// self-heal fire to bring a fresh daemon up (CCT-205).
+    /// self-heal fire to bring a fresh daemon up.
     pub async fn locate_live(&self) -> Option<PathBuf> {
         for candidate in self.candidates() {
             match probe(&candidate).await {
@@ -149,7 +149,7 @@ async fn probe(socket: &Path) -> Probe {
 /// One connect + `{"proto":1,"op":"list"}` round-trip. The write half is held
 /// open until the response line is read: the daemon drops a request as stale
 /// the moment it sees EOF on the read side, so half-closing early can void the
-/// op (CCT-131). `list` is read-only, so probing it has no side effects.
+/// op. `list` is read-only, so probing it has no side effects.
 async fn probe_inner(socket: &Path) -> std::io::Result<()> {
     let stream = UnixStream::connect(socket).await?;
     let (read_half, mut write_half) = stream.into_split();

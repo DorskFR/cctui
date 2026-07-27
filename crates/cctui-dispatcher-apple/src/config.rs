@@ -3,7 +3,7 @@
 //! Lives at `$XDG_CONFIG_HOME/cctui/dispatcher.toml` (or
 //! `~/.config/cctui/dispatcher.toml`). Written by
 //! `cctui-dispatcher-apple enroll`; read by `cctui-dispatcher-apple run`.
-//! Mirror of the daemon's `daemon.toml` (CCT-248 enrollment spec) — an enrolled
+//! Mirror of the daemon's `daemon.toml` (enrollment spec) — an enrolled
 //! dispatcher is a peer of a machine, so its identity persists the same way.
 
 use std::path::{Path, PathBuf};
@@ -37,7 +37,7 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mounts: Vec<String>,
     /// Optional repo mount (`host:guest`). When set the guest sees the repo at
-    /// `guest` and is told to `git pull --depth 1` there at boot (CCT-280).
+    /// `guest` and is told to `git pull --depth 1` there at boot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo_mount: Option<String>,
     /// Guest path the machine-key file is mounted at (`CCTUI_MACHINE_KEY_FILE`).
@@ -49,7 +49,7 @@ pub struct Config {
     pub secret_dir: Option<PathBuf>,
     /// Deliver the machine key as a plain env var instead of a mounted file. The
     /// file is preferred (a token is visible in `container inspect` + the guest
-    /// process list, CCT-245); this exists only for hosts where a file mount is
+    /// process list); this exists only for hosts where a file mount is
     /// impractical.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub secret_via_env: bool,

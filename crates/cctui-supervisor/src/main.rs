@@ -39,7 +39,7 @@ fn run() -> anyhow::Result<()> {
     // flags is a no-op that normally succeeds for any user, so a resulting
     // EPERM is unambiguous proof the filter denied it. (setuid is no longer
     // suitable here: a no-op setuid to the current id is now deliberately
-    // allowed for CCT-549, so it would not prove the filter is active.) Prints
+    // allowed for, so it would not prove the filter is active.) Prints
     // the errno and exits with that code.
     if std::env::var_os("CCTUI_SUPERVISOR_SELFTEST_SECCOMP").is_some() {
         return selftest_seccomp();

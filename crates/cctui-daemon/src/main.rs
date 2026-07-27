@@ -21,7 +21,7 @@ struct Cli {
 enum Cmd {
     /// Enrol a machine with a cctui-server. Without a target this machine:
     /// mint a machine key and write it to the local config file. With an
-    /// `[user@]host` ssh target (CCT-548): one-shot remote install — push the
+    /// `[user@]host` ssh target: one-shot remote install — push the
     /// right daemon binary through the server's release proxy, enroll, write
     /// the remote config, install + start the systemd user service, and wait
     /// until the machine shows connected in the fleet. Idempotent: re-running
@@ -40,7 +40,7 @@ enum Cmd {
         name: Option<String>,
         /// Machine kind: `persistent` (default, a real dev machine) or
         /// `ephemeral` (a dispatch/worker pod — hidden from the New-session
-        /// picker and reaped once stale; CCT-183).
+        /// picker and reaped once stale;).
         #[arg(long, default_value = "persistent")]
         kind: String,
         /// Seconds to wait for the remote daemon to connect before failing
@@ -58,13 +58,13 @@ enum Cmd {
     /// Print the resolved configuration (`machine_key` redacted).
     Status,
     /// Internal: the Claude Code `AskUserQuestion` PreToolUse/PostToolUse hook
-    /// command (CCT-167). Reads the hook JSON on stdin and forwards the pending
+    /// command. Reads the hook JSON on stdin and forwards the pending
     /// question (or its resolution) to the running daemon over `--sock`.
     /// Observe-only: prints nothing and always exits 0.
     AskHook {
         /// Hook phase: `pre` (question appeared), `post` (answered), or `perm`
         /// (a tool-permission `PreToolUse` hook that blocks and long-polls the
-        /// daemon for an allow/deny decision — CCT-342).
+        /// daemon for an allow/deny decision).
         #[arg(long)]
         event: String,
         /// Daemon socket to deliver to.
@@ -72,15 +72,15 @@ enum Cmd {
         sock: PathBuf,
         /// Whip mode (🐎): after forwarding the question for UI visibility,
         /// emit a `PreToolUse` deny decision so the form never renders and the
-        /// model is told to decide and keep working (CCT-352).
+        /// model is told to decide and keep working.
         #[arg(long)]
         deny: bool,
     },
-    /// Internal: the Claude Code `Stop` hook for whip mode (🐎, CCT-352). Reads
+    /// Internal: the Claude Code `Stop` hook for whip mode (🐎). Reads
     /// the hook JSON on stdin; exits 2 with guidance on stderr when the final
     /// message reads as a graceful early exit / hand-back, else exits 0.
     WhipStopHook {
-        /// Per-session whip phrase override file (CCT-598) written by the daemon
+        /// Per-session whip phrase override file written by the daemon
         /// at spawn. Absent/unreadable → the compiled default phrase list.
         #[arg(long)]
         phrases: Option<PathBuf>,

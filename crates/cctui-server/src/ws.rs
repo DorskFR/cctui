@@ -19,8 +19,8 @@ async fn ws_owns_session(state: &AppState, ctx: &AuthContext, session_id: &str) 
         return true;
     }
     // Reuse the exact same ownership query as the HTTP `Resource(Session)` guard
-    // (`machine_uuid -> machines.user_id`) so the two transports never drift
-    // (CCT-416/CCT-420). A DB error or unknown session resolves to "not owned".
+    // (`machine_uuid -> machines.user_id`) so the two transports never drift.
+    // A DB error or unknown session resolves to "not owned".
     let owner = crate::authz::session_owner(session_id, &state.pool).await.unwrap_or_else(|e| {
         tracing::error!(%session_id, "db error (ws session authz): {e}");
         None
@@ -37,7 +37,7 @@ pub async fn tui_ws(
 ) -> Result<impl IntoResponse, StatusCode> {
     // Browser WS upgrades are same-origin GETs that carry the `HttpOnly` auth
     // cookie automatically, so the token no longer rides the query string where
-    // it would leak into access logs (CCT-423). `bearer_or_cookie` also accepts
+    // it would leak into access logs. `bearer_or_cookie` also accepts
     // an `Authorization` header for non-browser clients.
     let token = crate::auth::bearer_or_cookie(&headers).ok_or(StatusCode::UNAUTHORIZED)?;
     let auth_ctx = state.auth_config.validate(&token).await.ok_or(StatusCode::UNAUTHORIZED)?;
@@ -98,7 +98,7 @@ fn spawn_relay_task(
 /// Dispatch a client-typed reply to the session's daemon and, when the client
 /// opted in with a `client_msg_id`, ack the outcome back to this socket so the
 /// UI can show a precise delivery state (sending → delivered / failed) instead
-/// of optimistically assuming a sent frame was delivered (CCT-212).
+/// of optimistically assuming a sent frame was delivered.
 async fn handle_message(
     state: &AppState,
     event_tx: &mpsc::Sender<ServerEvent>,
@@ -111,7 +111,7 @@ async fn handle_message(
     // offline — that is exactly the case the ack lets the client recover from.
     // Carry re-minted gateway env on the reply so a reply-driven cold-resume of
     // a hibernated worker revives it with a fresh valid token rather than empty
-    // env (CCT-460). Ignored when the worker is already alive.
+    // env. Ignored when the worker is already alive.
     let env = crate::routes::gateway::resume_env_for_session(state, &session_id).await;
     let dispatch = crate::bus::dispatch(
         state,
@@ -154,11 +154,11 @@ async fn handle_subscribe(
 ) {
     let receiver = state.bus.subscribe_session(&session_id);
 
-    // Replay any prompt the session is currently blocked on (CCT-277). Asks and
+    // Replay any prompt the session is currently blocked on. Asks and
     // permission requests were originally fire-and-forget broadcasts: a client
     // that wasn't subscribed at the instant one went out never learned about it,
     // and the client re-subscribes on every tab focus/visibility change
-    // (CCT-182) — so a backgrounded tab routinely missed them. The store now
+    // — so a backgrounded tab routinely missed them. The store now
     // holds them authoritatively; re-send them to *this* socket so a (re)subscribe
     // always re-surfaces the live prompt. Deduped client-side by request_id /
     // overwrite, so a replay that races the live broadcast is harmless.
@@ -200,7 +200,7 @@ async fn handle_subscribe(
         let handle = spawn_relay_task(receiver, session_id.clone(), event_tx.clone());
         // Abort any prior relay task for this session on this socket before
         // replacing it. The client re-subscribes on every tab focus/visibility
-        // change (CCT-182); without this, each resubscribe leaked an extra
+        // change; without this, each resubscribe leaked an extra
         // relay task that re-delivered every event, duplicating chat messages.
         if let Some(old) = sub_handles.insert(session_id, handle) {
             old.abort();
@@ -219,10 +219,10 @@ async fn run_tui_socket(
     event_tx: mpsc::Sender<ServerEvent>,
 ) {
     // Relay tasks keyed by session id, so a resubscribe replaces (not stacks)
-    // the per-session relay and an unsubscribe can tear it down (CCT-182).
+    // the per-session relay and an unsubscribe can tear it down.
     let mut sub_handles: std::collections::HashMap<String, tokio::task::JoinHandle<()>> =
         std::collections::HashMap::new();
-    // Sessions whose live terminal THIS socket is watching (CCT-545). Tracked
+    // Sessions whose live terminal THIS socket is watching. Tracked
     // per-socket so a disconnect decrements the shared watcher refcount and the
     // daemon stops streaming to a browser that vanished without unwatching.
     let mut pty_watches: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -255,7 +255,7 @@ async fn run_tui_socket(
             }
             TuiCommand::Unsubscribe { session_id } => {
                 // Tear down this session's relay task so it stops delivering
-                // events to this socket (CCT-182).
+                // events to this socket.
                 if let Some(handle) = sub_handles.remove(&session_id) {
                     handle.abort();
                 }
@@ -347,7 +347,7 @@ async fn run_tui_socket(
         handle.abort();
     }
     // Decrement every terminal this socket still watched so a browser that
-    // closed the tab (or dropped) releases the daemon PTY stream (CCT-545).
+    // closed the tab (or dropped) releases the daemon PTY stream.
     for session_id in pty_watches {
         if state.bus.pty_watch_dec(&session_id) {
             set_daemon_pty_watch(&state, &session_id, false).await;
@@ -355,7 +355,7 @@ async fn run_tui_socket(
     }
 }
 
-/// Toggle this socket's live-terminal watch of `session_id` (CCT-545). Ref-count
+/// Toggle this socket's live-terminal watch of `session_id`. Ref-count
 /// per session is on the bus; only the 0↔1 edge tells the daemon to start/stop
 /// its viewer PTY attach. Idempotent per socket via `pty_watches`.
 async fn handle_watch_terminal(
@@ -397,7 +397,7 @@ async fn set_daemon_pty_watch(state: &AppState, session_id: &str, watch: bool) {
 }
 
 /// The `session_id` a server-initiated event pertains to, if any. Events with a
-/// session id are owner-scoped on the relay (CCT-417); the rest
+/// session id are owner-scoped on the relay; the rest
 /// (`CommandResult`, machine-level/manifest events) are not session-scoped and
 /// pass through. `MessageAck` is already point-to-point (sent only to the
 /// originating socket via `event_tx`, not broadcast), but we still scope it
@@ -457,7 +457,7 @@ async fn handle_tui_ws(socket: WebSocket, state: AppState, ctx: AuthContext) {
     let (tx, rx) = mpsc::channel::<ServerEvent>(256);
 
     // Relay server-initiated events (e.g. permission requests) to this TUI
-    // client, scoped to sessions the principal owns (admin sees all, CCT-417).
+    // client, scoped to sessions the principal owns (admin sees all).
     spawn_server_event_relay(state.bus.subscribe_server(), state.clone(), ctx.clone(), tx.clone());
 
     spawn_send_task(sink, rx);

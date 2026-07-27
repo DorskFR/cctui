@@ -29,7 +29,7 @@ struct DispatchReply {
     namespace: Option<String>,
     /// Dispatch outcome (`dispatched` / `deduplicated` / `redispatched`).
     /// Absent from older dispatchers, so default to `None` and let the route
-    /// fall back (CCT-207).
+    /// fall back.
     #[serde(default)]
     status: Option<String>,
 }

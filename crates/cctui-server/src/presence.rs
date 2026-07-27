@@ -1,4 +1,4 @@
-//! Replica-aware WS presence (CCT-567) + pod discovery (CCT-573).
+//! Replica-aware WS presence + pod discovery.
 //!
 //! The daemon/dispatcher connection registries in [`crate::state::AppState`]
 //! are per-pod in-memory maps, so with multiple server replicas an HTTP request
@@ -15,7 +15,7 @@
 //! Registration only happens when the pod knows its own routable IP
 //! (`CCTUI_POD_IP`, injected via the k8s downward API). Without it — local dev,
 //! single-replica deployments — nothing is written and behavior is exactly the
-//! pre-CCT-567 single-pod model; lookups still work so such a pod can forward
+//! single-pod model; lookups still work so such a pod can forward
 //! *to* registered peers.
 
 use sqlx::PgPool;
@@ -41,7 +41,7 @@ impl Kind {
 
 /// A row's heartbeat must be at most this old to be trusted. Heartbeats are
 /// written every [`HEARTBEAT_SECS`], so 3× distinguishes a crashed pod from a
-/// slow tick (mirrors the WS read-timeout discipline, CCT-140).
+/// slow tick (mirrors the WS read-timeout discipline).
 const LIVE_WITHIN_SECS: i32 = 45;
 /// Cadence of the per-pod heartbeat task.
 const HEARTBEAT_SECS: u64 = 15;
@@ -97,7 +97,7 @@ pub async fn register(state: &AppState, kind: Kind, entity_id: Uuid) {
 /// Drop this pod's presence row for `entity_id`. Guarded by `pod = self`: if
 /// the entity already reconnected to a peer (which upserted the row over to
 /// itself), our late disconnect cleanup must not delete the new owner's row —
-/// the cross-pod twin of the `remove_if(same_channel)` guard (CCT-159).
+/// the cross-pod twin of the `remove_if(same_channel)` guard.
 pub async fn unregister(state: &AppState, kind: Kind, entity_id: Uuid) {
     if state.presence.ip.is_none() {
         return;
@@ -142,8 +142,8 @@ pub async fn peer_owner_ip(
     .flatten()
 }
 
-/// IPs of every live PEER pod (excluding this one), for event fan-out
-/// (CCT-573). Best-effort: a lookup failure logs and returns empty — DB
+/// IPs of every live PEER pod (excluding this one), for event fan-out.
+/// Best-effort: a lookup failure logs and returns empty — DB
 /// persistence remains the source of truth for refetch, so a missed relay
 /// degrades to today's single-pod visibility rather than an error.
 pub async fn live_peer_pods(pool: &PgPool, self_pod: &str) -> Vec<String> {
@@ -161,7 +161,7 @@ pub async fn live_peer_pods(pool: &PgPool, self_pod: &str) -> Vec<String> {
 
 /// Boot cleanup + heartbeat loop. On start, drop any rows a previous
 /// incarnation of THIS pod name left behind (a crashed process can't
-/// unregister) and register this pod in `pods` (CCT-573); then refresh our
+/// unregister) and register this pod in `pods`; then refresh our
 /// rows' heartbeats every [`HEARTBEAT_SECS`] and opportunistically reap
 /// long-dead rows from crashed peers so the tables stay small. Spawned from
 /// `main` only when registration is enabled (pod IP known).
@@ -176,7 +176,7 @@ pub async fn heartbeat_task(state: AppState) {
 }
 
 /// Boot-time presence bookkeeping: drop stale `ws_presence` rows from a prior
-/// incarnation of this pod name and self-register in `pods` (CCT-573).
+/// incarnation of this pod name and self-register in `pods`.
 /// Upsert: a restarted pod with the same name simply takes its row over.
 async fn boot_register(state: &AppState) {
     if let Err(err) = sqlx::query("DELETE FROM ws_presence WHERE pod = $1")

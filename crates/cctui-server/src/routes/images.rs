@@ -1,4 +1,4 @@
-//! Agent-posted image blob store (CCT-566).
+//! Agent-posted image blob store.
 //!
 //! `POST /api/v1/daemon/sessions/{id}/images` — the daemon uploads an image it
 //! detected as an `![alt](/abs/path.png)` marker in an assistant message. Raw
@@ -10,7 +10,7 @@
 //!
 //! `GET /api/v1/sessions/{id}/images/{image_id}` — the webui fetches the blob to
 //! render inline. Session-read authz (enforced by the `api_router` authz layer)
-//! + the same-origin `HttpOnly` cookie (CCT-423), so a plain `<img src>` works.
+//! + the same-origin `HttpOnly` cookie, so a plain `<img src>` works.
 
 use axum::body::Bytes;
 use axum::extract::{Path, State};

@@ -1,4 +1,4 @@
-//! Server-emitted completion webhooks (CCT-294 / CCT-429).
+//! Server-emitted completion webhooks.
 //!
 //! A lifecycle-only **death-detector**, complementing — not replacing — the
 //! worker's `REPLY_URL` exit-trap. The worker owns the verdict: on any orderly
@@ -37,8 +37,8 @@ use crate::state::AppState;
 
 type HmacSha256 = Hmac<Sha256>;
 
-/// How long to wait before re-polling a dispatcher for a still-running workload
-/// (CCT-429). Separate from delivery backoff — a liveness poll that says
+/// How long to wait before re-polling a dispatcher for a still-running workload.
+/// Separate from delivery backoff — a liveness poll that says
 /// "running" must not consume the delivery retry budget.
 const POLL_INTERVAL_SECS: i64 = 30;
 
@@ -50,7 +50,7 @@ const MAX_ATTEMPTS: i32 = 8;
 /// last entry for any attempt beyond the table.
 const BACKOFF_SECS: &[i64] = &[10, 30, 120, 300, 900, 1800, 3600];
 
-/// Register a pending completion webhook for a dispatched session (CCT-294).
+/// Register a pending completion webhook for a dispatched session.
 /// No-op when `notify_url` is absent. Idempotent on the `session_id` unique
 /// constraint, so a re-dispatch with the same id refreshes the target rather
 /// than duplicating. `task_id` falls back to the session id when the dispatch
@@ -104,7 +104,7 @@ struct PendingRow {
     /// dispatched session whose worker never registered (pod crashlooped / never
     /// started) — exactly the case the dispatcher poll below resolves.
     session_status: Option<String>,
-    /// The owning dispatcher's name + opaque handle (CCT-429), if one was
+    /// The owning dispatcher's name + opaque handle, if one was
     /// persisted at dispatch. `None` for the http escape-hatch.
     dispatcher_name: Option<String>,
     handle: Option<String>,
@@ -112,7 +112,7 @@ struct PendingRow {
     payload: Option<serde_json::Value>,
 }
 
-/// Build the lifecycle-only death payload (CCT-429). The server webhook is now a
+/// Build the lifecycle-only death payload. The server webhook is now a
 /// *death-detector*: it only ever fires for a run that did NOT complete, so the
 /// status is always `failed`. The real verdict of a clean run is delivered by
 /// the worker's own `REPLY_URL` callback and never touches the server.
@@ -145,7 +145,7 @@ enum Outcome {
     Wait,
 }
 
-/// Decide a pending row's fate (CCT-429). The server is a death-detector: it
+/// Decide a pending row's fate. The server is a death-detector: it
 /// fires only for runs that did NOT complete. A clean `SessionEnded` (the
 /// worker reached its exit trap and `POSTed` `REPLY_URL`) is superseded; a session
 /// that never registered is resolved by asking the owning dispatcher whether its
@@ -173,7 +173,7 @@ async fn decide(state: &AppState, row: &PendingRow) -> Outcome {
     }
 
     let (Some(name), Some(handle)) = (row.dispatcher_name.as_deref(), row.handle.as_deref()) else {
-        // No persisted handle (http escape-hatch, or a pre-CCT-429 dispatch) —
+        // No persisted handle (http escape-hatch, or a dispatch) —
         // nothing to probe; the time-based archive path is the only backstop.
         return Outcome::Wait;
     };
@@ -197,7 +197,7 @@ async fn decide(state: &AppState, row: &PendingRow) -> Outcome {
     }
 }
 
-/// One reaper-cadence sweep of the completion-webhook outbox (CCT-294/CCT-429).
+/// One reaper-cadence sweep of the completion-webhook outbox.
 ///
 /// For each due `pending` row: a row with a frozen payload is a delivery retry
 /// (POST it). Otherwise [`decide`] resolves the run's fate — `Fire` freezes the
@@ -365,7 +365,7 @@ mod tests {
 
     #[test]
     fn death_payload_is_always_failed_with_reason() {
-        // The server webhook is a death-detector (CCT-429): it only fires for a
+        // The server webhook is a death-detector: it only fires for a
         // run that did not complete, so the status is always `failed` and the
         // dispatcher's reason rides in `error`. The verdict of a clean run is
         // delivered by the worker's own REPLY_URL callback and never here.

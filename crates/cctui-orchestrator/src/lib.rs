@@ -23,7 +23,7 @@
 //!   layered onto the worker container's [`WorkerProfileSpec::env`] when the Job
 //!   is created. The profile supplies the shape; the dispatcher supplies the
 //!   run-specific values.
-//! - **Webhook-injected** (at pod admission): the mutating webhook (CCT-726)
+//! - **Webhook-injected** (at pod admission): the mutating webhook
 //!   sandboxes **only** the worker container — the secretless credential
 //!   envelope, and, when [`WorkerProfileSpec::gpg_signing`] is set, the
 //!   gpg-agent socket. Every other container is passthrough.
@@ -173,7 +173,7 @@ pub struct WorkerProfileSpec {
     pub service_account_name: Option<String>,
 
     /// Requests that the webhook wire a gpg-agent socket into the worker
-    /// container for remote commit signing (CCT-726). Off by default.
+    /// container for remote commit signing. Off by default.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub gpg_signing: bool,
 }

@@ -26,7 +26,7 @@ pub struct Runtime {
 const FILE_NAME: &str = "daemon-runtime.json";
 
 /// Most preferred first. Worker containers can lack a runtime dir and have a
-/// root-owned `~/.config` where `mkdir` is EACCES (CCT-629); readers must probe
+/// root-owned `~/.config` where `mkdir` is EACCES; readers must probe
 /// this same list so `status` finds whatever the daemon could write.
 pub(crate) fn state_candidates(file_name: &str) -> Vec<PathBuf> {
     let mut out = Vec::new();

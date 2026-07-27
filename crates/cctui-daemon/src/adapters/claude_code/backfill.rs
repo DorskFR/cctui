@@ -1,4 +1,4 @@
-//! Historical-session backfill (CCT-86).
+//! Historical-session backfill.
 //!
 //! On daemon start, enumerates `~/.claude/jobs/<short>/state.json` and
 //! pushes any session the cursor file doesn't mark complete. For each
@@ -36,7 +36,7 @@ pub struct BackfillConfig {
 struct JobState {
     #[serde(default, alias = "sessionId")]
     session_id: Option<String>,
-    // CCT-160/165: `/clear` rotates the live session into a NEW transcript file
+    // 165: `/clear` rotates the live session into a NEW transcript file
     // and records the rotated id here, leaving the immutable spawn `sessionId`
     // untouched. Backfill must follow it or the post-`/clear` continuation of a
     // now-terminal session (recovered only via backfill on daemon restart) is
@@ -130,11 +130,11 @@ impl CursorFile {
 ///
 /// `live_shorts` is the set of job shorts the claude daemon currently lists as
 /// live. Those jobs are the LIVE path's to report — backfill must skip them
-/// entirely (CCT-565): a live bg worker's `state.json` reads `state: done`
+/// entirely: a live bg worker's `state.json` reads `state: done`
 /// after every completed *turn* while the session is very much alive, and
 /// backfilling it emitted a spurious `SessionEnded{completed}` on every
 /// adapter restart (= every server WS reconnect). The server then revoked the
-/// session's gateway tokens, and the CCT-462 stale-token sweep force-killed
+/// session's gateway tokens, and the stale-token sweep force-killed
 /// the healthy worker. Skipped jobs are NOT cursor-marked, so a later pass
 /// picks them up once they are genuinely gone from the live roster.
 pub async fn run_once(
@@ -221,7 +221,7 @@ async fn backfill_one(
             }
         }
 
-        // CCT-165: follow a `/clear` rotation into the new transcript, emitting
+        // follow a `/clear` rotation into the new transcript, emitting
         // the same `context_reset` boundary the live path uses (control.rs) so
         // the cut renders, then tail the post-clear continuation under the SAME
         // `local_id`. The boundary payload matches the live one (incl. the
@@ -316,8 +316,8 @@ mod tests {
     #[tokio::test]
     async fn backfill_skips_live_jobs_and_leaves_them_uncursored() {
         // A job the claude daemon lists as LIVE must be untouched even when its
-        // state.json looks terminal (`done` = completed TURN, session alive,
-        // CCT-565) — and must stay OUT of the cursor so a later pass picks it
+        // state.json looks terminal (`done` = completed TURN, session alive)
+        // — and must stay OUT of the cursor so a later pass picks it
         // up once it is genuinely gone from the live roster.
         let tmp = tempfile::tempdir().unwrap();
         let jobs = tmp.path().join("jobs");
@@ -358,7 +358,7 @@ mod tests {
         // A `/clear`d, now-terminal session: state.json keeps the immutable
         // `sessionId` and records the rotated id in `resumeSessionId`. Backfill
         // must tail BOTH transcripts under the immutable local_id, with a
-        // context_reset boundary between them (CCT-165).
+        // context_reset boundary between them.
         let tmp = tempfile::tempdir().unwrap();
         let jobs = tmp.path().join("jobs");
         let projects = tmp.path().join("projects");

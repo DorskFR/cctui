@@ -1,4 +1,4 @@
-//! Per-account soft limits on the subscription usage windows (CCT-411, CCT-688).
+//! Per-account soft limits on the subscription usage windows.
 //!
 //! A cctui account (Anthropic OAuth subscription) is often shared with the user's
 //! own interactive Claude Code and other workloads. Left unchecked, cctui's own
@@ -9,7 +9,7 @@
 //!
 //! Anthropic used to report a fixed set of windows (`five_hour`, `seven_day`, …).
 //! It now reports a self-describing `limits` array (session / weekly-all-models /
-//! per-model weekly caps, and whatever it adds next). CCT-688 therefore treats
+//! per-model weekly caps, and whatever it adds next). therefore treats
 //! usage as a *collection* of normalized windows keyed by a stable canonical
 //! identity, and lets each window carry its own independently editable cap +
 //! bypass. This module is the pure decision helper: it normalizes the raw usage

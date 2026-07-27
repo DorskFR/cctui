@@ -1,6 +1,6 @@
 //! `/api/v1/{resource_type}/{id}/shares` — the generic resource-sharing CRUD
-//! family (CCT-531), the polymorphic generalization of the bespoke account
-//! sharing (CCT-458/510). One `resource_shares` table backs every shareable
+//! family, the polymorphic generalization of the bespoke account
+//! sharing (510). One `resource_shares` table backs every shareable
 //! kind (account | machine | dispatcher | `context_pack`). A live grant row lets a
 //! NON-owner `use` the resource without transferring ownership; a grant confers
 //! `use` only, NEVER re-sharing — share management stays owner-or-admin.
@@ -19,7 +19,7 @@ use crate::auth::{AuthContext, Scope};
 use crate::state::AppState;
 
 /// The resource kinds that may be shared, keyed by the `resource_type` stored on
-/// a `resource_shares` row. `context_pack` lands with CCT-530; it is accepted
+/// a `resource_shares` row. `context_pack` lands with ; it is accepted
 /// here so the table/route are ready, but its owner lookup returns `None` until
 /// the table exists (so no route 500s on an unknown table).
 pub const SHAREABLE_TYPES: &[&str] = &["account", "machine", "dispatcher", "context_pack"];
@@ -32,7 +32,7 @@ pub fn is_shareable(resource_type: &str) -> bool {
 }
 
 /// The single grant-lookup primitive: does `grantee` hold a LIVE `use` grant on
-/// `(resource_type, resource_id)`? Called from `Resource::authorize` (the CCT-422
+/// `(resource_type, resource_id)`? Called from `Resource::authorize` (the
 /// sharing seam) and the gateway resolution SQL alike, so ownership and grants
 /// compose on one path. Only `action = 'use'` exists today.
 pub async fn granted(
@@ -84,7 +84,7 @@ pub async fn resource_owner(
             .fetch_optional(pool)
             .await
         }
-        // context_pack (CCT-530) has no table yet — treat as absent so the route
+        // context_pack has no table yet — treat as absent so the route
         // 404s cleanly rather than erroring on a missing relation.
         _ => Ok(None),
     }

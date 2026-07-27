@@ -1,11 +1,11 @@
 //! Docker spawn mechanics for the standalone docker dispatcher.
 //!
 //! Lifted from the transitional in-process `cctui-server/src/dispatchers/docker.rs`
-//! (CCT-246/248): bollard against the local socket, deterministic
+//! (248): bollard against the local socket, deterministic
 //! `cctui-worker-<sha1(session)[:12]>` naming for idempotency, env injection
-//! with `cctui_machine_key` lifted out of the payload (CCT-191), `AutoRemove`,
+//! with `cctui_machine_key` lifted out of the payload, `AutoRemove`,
 //! and discovery labels. The server keeps its in-process copy as a transitional
-//! shape until CCT-248 parts 2-4 land; this is the enrolled-executor home for
+//! shape until parts 2-4 land; this is the enrolled-executor home for
 //! the same mechanics.
 //!
 //! ⚠️ Repo is PUBLIC — no homelab-specific images/hosts/networks here; the
@@ -87,7 +87,7 @@ impl Spawner {
     }
 
     /// The string the container name derives from: the caller's `dedup_key` when
-    /// present, else the `session_id` (CCT-522). Mirrors the kube dispatcher so
+    /// present, else the `session_id`. Mirrors the kube dispatcher so
     /// `session_id` can be fresh per dispatch while a repeat of the same logical
     /// key still coalesces onto one container.
     fn dedup_source(spec: &WireDispatchSpec) -> &str {
@@ -194,7 +194,7 @@ impl Spawner {
     }
 
     /// Lifecycle of a container handle, plus a human reason when it FAILED — a
-    /// non-zero exit, or a wedged restart loop (CCT-429). The server lifts the
+    /// non-zero exit, or a wedged restart loop. The server lifts the
     /// reason into the completion webhook's `error`.
     pub async fn status(&self, handle: &str) -> anyhow::Result<(HandleState, Option<String>)> {
         let name = handle.strip_prefix("container/").unwrap_or(handle);

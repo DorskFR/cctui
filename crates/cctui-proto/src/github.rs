@@ -21,7 +21,7 @@ use uuid::Uuid;
 /// to the nested GitHub router, then inserts it as a request extension. The
 /// GitHub handlers extract it to scope connector rows to their owner — a user
 /// acts as itself; the admin token has no user identity and must name the owner
-/// explicitly, mirroring the OAuth-account vault (CCT-251).
+/// explicitly, mirroring the OAuth-account vault.
 #[derive(Debug, Clone)]
 pub struct CallerIdentity {
     /// The owning user, when the caller is a user/machine token. `None` for the
@@ -120,7 +120,7 @@ pub struct ConnectorInfo {
     /// ISO-8601 creation timestamp.
     pub created_at: String,
     /// ISO-8601 time of the last reconcile-poll attempt, or `None` if the
-    /// connector has not been polled yet (CCT-396).
+    /// connector has not been polled yet.
     pub last_polled_at: Option<String>,
     /// The last reconcile-poll error (e.g. a bad/insufficient-scope PAT), or
     /// `None` when the last poll succeeded. Surfaced in the connector list so a

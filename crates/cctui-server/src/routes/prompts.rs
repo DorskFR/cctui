@@ -1,4 +1,4 @@
-//! Prompt CRUD + repo-scoped resolution (CCT-390, GH-AGENT-1).
+//! Prompt CRUD + repo-scoped resolution.
 //!
 //! Prompts can be scoped to a GitHub repo so the "Review with agent" entry
 //! points can seed the *effective* review prompt for the PR's repo. Scoping is
@@ -140,7 +140,7 @@ pub async fn resolve_prompt(
     // Pull every candidate whose scope *could* apply to this repo: the exact
     // repo, the owner-wide, or the global one. The DB only narrows the search;
     // the precedence decision is made by the pure `most_specific` below so it is
-    // testable and the rule lives in one place. Owner-scoped (CCT-418): a
+    // testable and the rule lives in one place. Owner-scoped: a
     // non-admin only resolves their own prompts; an admin (or env token, NULL
     // god-view) resolves across all owners.
     let candidates: Vec<Prompt> = sqlx::query_as(&format!(

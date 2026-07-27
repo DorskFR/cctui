@@ -1,5 +1,5 @@
 //! `GET /api/v1/sessions/{id}/langfuse` — per-session cost/usage rollup proxied
-//! from Langfuse (CCT-564). Keys stay server-side; the browser never talks to
+//! from Langfuse. Keys stay server-side; the browser never talks to
 //! Langfuse. Ownership is enforced by the `sess_read` authz layer; the response
 //! is cached ~60s in the [`crate::langfuse::LangfuseClient`] to spare upstream.
 

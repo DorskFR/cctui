@@ -1,5 +1,4 @@
-//! `GET`/`PUT /api/v1/settings` — server-persisted per-user settings (CCT-425,
-//! epic CCT-357).
+//! `GET`/`PUT /api/v1/settings` — server-persisted per-user settings (//! epic).
 //!
 //! Each user owns a single row in `user_settings` holding a `version` and an
 //! open JSON `data` blob. The blob is deliberately schema-less on the wire (we
@@ -68,7 +67,7 @@ const fn upgrade_step(data: &mut Value, v: i32) {
     let _ = (data, v);
 }
 
-/// The recognized harness modes (CCT-495). Anything else (typo, missing) clamps
+/// The recognized harness modes. Anything else (typo, missing) clamps
 /// to `bg` so a bad value can't wedge a daemon.
 const HARNESS_MODES: [&str; 3] = ["bg", "sdk", "oneshot"];
 const DEFAULT_HARNESS_MODE: &str = "bg";
@@ -82,7 +81,7 @@ fn harness_mode_of(data: &Value) -> &'static str {
 }
 
 /// Clamp `data.harnessMode` to a known value in place (rejecting typos), so a
-/// stored row never carries an out-of-whitelist mode (CCT-495).
+/// stored row never carries an out-of-whitelist mode.
 fn clamp_harness_mode(data: &mut Value) {
     let clamped = harness_mode_of(data);
     if let Some(obj) = data.as_object_mut() {
@@ -95,7 +94,7 @@ fn clamp_harness_mode(data: &mut Value) {
 }
 
 /// Map a user-facing harness mode (`bg`/`sdk`/`oneshot`, or unknown) to the
-/// claude-code adapter's internal `config["mode"]` token (CCT-495). Today `bg`
+/// claude-code adapter's internal `config["mode"]` token. Today `bg`
 /// is served by the existing `claude-daemon` path; `sdk`/`oneshot` pass through
 /// as-is. Any unknown/missing value defaults to `bg`.
 #[must_use]
@@ -107,11 +106,11 @@ pub fn harness_mode_to_adapter_token(harness_mode: Option<&str>) -> String {
     }
 }
 
-/// Recognized UI locales (CCT-599). An unknown/missing value is left as the
+/// Recognized UI locales. An unknown/missing value is left as the
 /// implicit "auto" (no key), so the webui falls back to the browser language.
 const LOCALES: [&str; 2] = ["en", "fr"];
 
-/// Clamp `data.locale` in place on write (CCT-599): drop the key unless it is a
+/// Clamp `data.locale` in place on write: drop the key unless it is a
 /// recognized locale, so a stored row never carries an unknown language token
 /// (which the webui would ignore anyway). Absence means "auto".
 fn clamp_locale(data: &mut Value) {
@@ -131,7 +130,7 @@ const MAX_WHIP_PHRASES: usize = 200;
 const MAX_WHIP_PHRASE_CHARS: usize = 200;
 const MAX_WHIP_GUIDANCE_CHARS: usize = 2000;
 
-/// Normalize a raw `whipStopPhrases` value (CCT-598) into the clamped block
+/// Normalize a raw `whipStopPhrases` value into the clamped block
 /// `{ mode, phrases, guidance? }`, or `None` when it reduces to the default
 /// (`extend` + no phrases + no guidance) so an absent setting stays implicit.
 ///
@@ -181,7 +180,7 @@ fn normalize_whip_stop_phrases(raw: Option<&Value>) -> Option<Value> {
     Some(Value::Object(block))
 }
 
-/// Clamp `data.whipStopPhrases` in place on write (CCT-598), removing the key when
+/// Clamp `data.whipStopPhrases` in place on write, removing the key when
 /// it reduces to the default so a stored row never carries a no-op block.
 fn clamp_whip_stop_phrases(data: &mut Value) {
     let Some(obj) = data.as_object_mut() else { return };
@@ -198,7 +197,7 @@ fn clamp_whip_stop_phrases(data: &mut Value) {
     }
 }
 
-/// The clamped `whipStopPhrases` block for the daemon gateway-env pull (CCT-598),
+/// The clamped `whipStopPhrases` block for the daemon gateway-env pull,
 /// or `None` when unset / reduced to the default (hook uses compiled defaults).
 #[must_use]
 pub fn whip_stop_phrases_of(data: &Value) -> Option<Value> {
@@ -209,7 +208,7 @@ const MAX_SCRUB_PATTERNS: usize = 100;
 const MAX_SCRUB_NAME_CHARS: usize = 60;
 const MAX_SCRUB_REGEX_CHARS: usize = 400;
 
-/// Normalize `secretScrubPatterns` (CCT-731) into a clamped array of
+/// Normalize `secretScrubPatterns` into a clamped array of
 /// `{ name, regex, enabled }`. Each entry is trimmed, length-capped, and its
 /// `regex` is **rejected unless it compiles** (returned in `Err` so `PUT` can
 /// 400). Duplicates by regex are dropped and the count is capped. Returns an
@@ -256,7 +255,7 @@ fn normalize_scrub_patterns(raw: Option<&Value>) -> Result<Vec<Value>, String> {
 }
 
 /// Clamp `data.secretScrubEnabled` / `data.secretScrubPatterns` in place on
-/// write (CCT-731), returning `Err(msg)` when a user regex does not compile so
+/// write, returning `Err(msg)` when a user regex does not compile so
 /// `put_settings` can reject the PUT with a 400.
 fn clamp_secret_scrub(data: &mut Value) -> Result<(), String> {
     let Some(obj) = data.as_object_mut() else { return Ok(()) };
@@ -275,7 +274,7 @@ fn clamp_secret_scrub(data: &mut Value) -> Result<(), String> {
     Ok(())
 }
 
-/// The effective [`SecretScrubConfig`] for the daemon Reconcile (CCT-731): the
+/// The effective [`SecretScrubConfig`] for the daemon Reconcile: the
 /// enable flag plus the enabled, validated user patterns from a settings blob.
 #[must_use]
 pub fn secret_scrub_of(data: &Value) -> cctui_proto::ws::SecretScrubConfig {
@@ -330,10 +329,10 @@ pub async fn put_settings(
     // stored rows are always current-versioned.
     let mut data = migrate(body.data, body.version);
     // Whitelist harnessMode on write so a typo can't be stored (and later
-    // wedge a daemon's reconcile); unknown → bg (CCT-495).
+    // wedge a daemon's reconcile); unknown → bg.
     clamp_harness_mode(&mut data);
     clamp_whip_stop_phrases(&mut data);
-    // Reject the whole PUT if any user scrub regex fails to compile (CCT-731).
+    // Reject the whole PUT if any user scrub regex fails to compile.
     if let Err(msg) = clamp_secret_scrub(&mut data) {
         tracing::info!("rejecting settings PUT: {msg}");
         return Err(StatusCode::BAD_REQUEST);
@@ -379,7 +378,7 @@ pub async fn put_settings(
 
     // Live-push a fresh Reconcile to every machine the user owns the instant the
     // harness mode changes, so connected daemons pick up the new mode without a
-    // reconnect (CCT-495). Best-effort, only on change.
+    // reconnect. Best-effort, only on change.
     if new_mode != prev_mode || new_scrub != prev_scrub {
         let machines: Vec<uuid::Uuid> =
             sqlx::query_scalar("SELECT id FROM machines WHERE user_id = $1 AND deleted_at IS NULL")
@@ -400,7 +399,7 @@ pub async fn put_settings(
     Ok(Json(SettingsPayload { version, data }))
 }
 
-/// `POST /api/v1/settings/rescrub` (CCT-731): apply the caller's effective scrub
+/// `POST /api/v1/settings/rescrub`: apply the caller's effective scrub
 /// list to their already-stored `stream_events`. `dry_run` reports counts and
 /// writes nothing; the real pass masks matching rows and is idempotent (a second
 /// run reports zero changes). Optional `session_ids` / `since` scope the sweep.

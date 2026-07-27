@@ -29,20 +29,20 @@ pub struct StateJson {
     /// session into a NEW transcript file; the claude binary records the new
     /// id here while leaving `sessionId` pinned to the immutable spawn id.
     /// This is the only place the rotated id surfaces — the control socket's
-    /// `list` op keeps reporting the stale spawn `sessionId` (CCT-160).
+    /// `list` op keeps reporting the stale spawn `sessionId`.
     #[serde(default)]
     pub resume_session_id: Option<String>,
     /// The immutable spawn session id (`sessionId`). Together with
     /// `resume_session_id` and `cwd` this is everything a hibernated worker
-    /// needs to be revived via a resume `dispatch` (CCT-228).
+    /// needs to be revived via a resume `dispatch`.
     #[serde(default)]
     pub session_id: Option<String>,
     /// Working directory the worker ran in — required by the resume
-    /// `dispatch` payload (CCT-228).
+    /// `dispatch` payload.
     #[serde(default)]
     pub cwd: Option<String>,
     /// `createdAt` (ISO-8601): stable session origin; server `registered_at`
-    /// resets on re-discovery, so age lies after a daemon restart (CCT-596).
+    /// resets on re-discovery, so age lies after a daemon restart.
     #[serde(default)]
     pub created_at: Option<String>,
     #[serde(default)]
@@ -115,7 +115,7 @@ impl StateJson {
     /// for `short`, preserving every other field. The claude daemon has no
     /// rename op on its control socket, and our status poll reads the display
     /// name from this file — so a rename must land here or it is silently
-    /// reverted on the next tick (CCT-133).
+    /// reverted on the next tick.
     pub fn write_name(jobs_root: &Path, short: &str, name: &str) -> std::io::Result<()> {
         let path = jobs_root.join(short).join("state.json");
         let bytes = std::fs::read(&path)?;
@@ -181,7 +181,7 @@ mod tests {
         assert_eq!(s.created_at.as_deref(), Some("2026-07-15T19:25:30.428Z"));
         assert_eq!(s.children.len(), 1);
         assert_eq!(s.proto_children()[0].kind, "pr");
-        // No reset has happened, so the post-reset id is absent (CCT-160).
+        // No reset has happened, so the post-reset id is absent.
         assert_eq!(s.resume_session_id, None);
     }
 
@@ -189,8 +189,7 @@ mod tests {
     fn reads_resume_session_id_after_reset() {
         // After `/clear`, the claude binary leaves `sessionId` pinned to the
         // immutable spawn id and records the rotated id in `resumeSessionId`.
-        // The daemon must follow the latter to keep tailing the live transcript
-        // (CCT-160).
+        // The daemon must follow the latter to keep tailing the live transcript.
         let tmp = tempfile::tempdir().unwrap();
         let short = "deadbeef";
         let job_dir = tmp.path().join(short);

@@ -1,5 +1,5 @@
 //! `cctui-daemon whip-stop-hook` — the Claude Code `Stop` hook wired up by the
-//! whip-mode (🐎) settings file (CCT-352).
+//! whip-mode (🐎) settings file.
 //!
 //! Whip mode exists to keep a fleet worker running until the work is genuinely
 //! done. The model's strongest stalling lever is to *stop* — to end a turn with
@@ -85,7 +85,7 @@ const STALL_PHRASES: &[&str] = &[
 /// Run the `Stop` hook. Reads the hook JSON on stdin; returns the process exit
 /// code (`0` = allow stop, `2` = block stop and emit guidance on stderr).
 ///
-/// `phrases_path` is the per-session whip phrase override file (CCT-598) the
+/// `phrases_path` is the per-session whip phrase override file the
 /// daemon writes at spawn. Absent / unreadable / malformed → the compiled
 /// [`STALL_PHRASES`] defaults, so the zero-config path is unchanged.
 #[must_use]
@@ -139,14 +139,14 @@ pub fn run(phrases_path: Option<&std::path::Path>) -> i32 {
     0
 }
 
-/// Load the whip phrase override block from `path` (CCT-598), or `None` when the
+/// Load the whip phrase override block from `path`, or `None` when the
 /// path is absent / unreadable / not valid JSON — the caller then uses defaults.
 fn load_phrase_config(path: Option<&std::path::Path>) -> Option<Value> {
     let bytes = std::fs::read(path?).ok()?;
     serde_json::from_slice::<Value>(&bytes).ok()
 }
 
-/// The effective, ordered, lowercase phrase list (CCT-598): `extend` (default)
+/// The effective, ordered, lowercase phrase list: `extend` (default)
 /// appends the config's phrases to the compiled [`STALL_PHRASES`]; `replace`
 /// swaps them out. `None` config → the compiled defaults.
 fn effective_phrases(config: Option<&Value>) -> Vec<String> {
@@ -165,7 +165,7 @@ fn effective_phrases(config: Option<&Value>) -> Vec<String> {
     out
 }
 
-/// The user's custom stderr guidance from the config (CCT-598), if any.
+/// The user's custom stderr guidance from the config, if any.
 fn guidance_of(config: Option<&Value>) -> Option<String> {
     config
         .and_then(|c| c.get("guidance"))

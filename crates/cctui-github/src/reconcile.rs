@@ -1,6 +1,6 @@
-//! GH-CONN-4: the reconcile poll loop.
+//! the reconcile poll loop.
 //!
-//! Webhooks (GH-CONN-2) are push-first but lossy — a missed delivery, a
+//! Webhooks are push-first but lossy — a missed delivery, a
 //! connector added *after* PRs already existed, or a server restart all leave
 //! `github.pulls` stale. This loop heals that drift: every `interval` seconds
 //! (and once on start / first install) it asks GitHub for the PRs that **involve
@@ -12,7 +12,7 @@
 //! qualifiers `author:@me` and `review-requested:@me`, restricted to each
 //! connector's `repo:` slugs and to `is:pr is:open`. We do not use
 //! `team-review-requested:@me`: that qualifier takes a *team name*, not `@me`, so
-//! GitHub 422s the whole search (CCT-396 follow-up).
+//! GitHub 422s the whole search (follow-up).
 //!
 //! Rate-limit hygiene (docs §6.1 / §11 — "not optional"):
 //! - **Conditional requests (`ETag`).** Each query's last `ETag` is cached
@@ -76,7 +76,7 @@ pub trait SearchClient: Send + Sync {
 
     /// Resolve the credential's own GitHub login (`GET /user` → `login`), cached
     /// on the connector so the inbox can split authored vs. review-requested PRs
-    /// (GH-UI-1 / GH-CONN-6) without a per-request GitHub call.
+    /// without a per-request GitHub call.
     ///
     /// Best-effort: a `None` result (network error, token without user scope,
     /// or — for the test fake — no implementation) just leaves `viewer_login`
@@ -88,7 +88,7 @@ pub trait SearchClient: Send + Sync {
     /// List the open PRs in one `owner/name` repo that involve `viewer_login`
     /// (authored OR review-requested directly), via `GET /repos/{repo}/pulls`.
     ///
-    /// This is the **fine-grained-PAT-compatible** path (CCT-396): the issue
+    /// This is the **fine-grained-PAT-compatible** path: the issue
     /// search API rejects user qualifiers for fine-grained tokens with a 422,
     /// but listing a repo's pulls only needs `Pull requests: read`, so we fetch
     /// the repo's open PRs and filter to the viewer ourselves. Only usable when
@@ -132,7 +132,7 @@ pub fn pull_involves_viewer(pr: &serde_json::Value, login: &str) -> bool {
 /// `viewer` is the value used in the `author:`/`review-requested:` qualifiers.
 /// Prefer the connector's resolved GitHub **login**: a fine-grained PAT often
 /// can't resolve the `@me` alias in the legacy issue-search API and 422s with
-/// "the listed users cannot be searched" (CCT-396 follow-up), whereas the
+/// "the listed users cannot be searched" (follow-up), whereas the
 /// explicit login works. Falls back to `@me` only when the login isn't known
 /// yet (classic PATs accept `@me` fine).
 #[must_use]
@@ -250,7 +250,7 @@ async fn reconcile_once(
 }
 
 /// Record the outcome of one connector's poll attempt on the connector row so
-/// the webui can show poll health (CCT-396). `last_polled_at` is always stamped;
+/// the webui can show poll health. `last_polled_at` is always stamped;
 /// `last_error` holds the error text on failure and is cleared on success. The
 /// error string is GitHub/decrypt status text — it never contains the
 /// credential. Best-effort: a write failure is logged, not propagated.
@@ -268,7 +268,7 @@ async fn record_poll_result(pool: &PgPool, connector_id: Uuid, result: &anyhow::
     }
 }
 
-/// Run the reconcile poll for a single connector immediately (CCT-396's manual
+/// Run the reconcile poll for a single connector immediately (manual
 /// "Refresh now"), independent of the scheduled loop. Uses a throwaway `ETag`
 /// cache so it always performs a full fetch rather than short-circuiting on the
 /// loop's cached `304`. Records the attempt's status like the loop does.
@@ -307,7 +307,7 @@ async fn reconcile_connector(
     repos: &[String],
 ) -> anyhow::Result<usize> {
     // Cache the credential's own login once so the inbox can derive attention
-    // buckets (GH-CONN-6) without a per-request GitHub call. Skip if already
+    // buckets without a per-request GitHub call. Skip if already
     // known; best-effort, never fatal. We ALSO use it to build the search query
     // with the explicit login instead of `@me` (see [`build_query`]).
     let known: Option<String> =
@@ -330,7 +330,7 @@ async fn reconcile_connector(
         None
     };
 
-    // Fine-grained-PAT-compatible path (CCT-396): when every tracked repo is an
+    // Fine-grained-PAT-compatible path: when every tracked repo is an
     // explicit `owner/name` slug AND we know the viewer login, list each repo's
     // open PRs and filter client-side rather than using the issue search API,
     // which 422s user qualifiers for fine-grained tokens. A connector with no
@@ -691,7 +691,7 @@ mod tests {
     #[test]
     fn build_query_includes_involves_me_scope() {
         // With a resolved login, the qualifiers use it (not @me) so a
-        // fine-grained PAT can run the search (CCT-396 follow-up).
+        // fine-grained PAT can run the search (follow-up).
         let q = build_query(&["o/r".into()], "octocat");
         assert!(q.contains("is:pr is:open"));
         assert!(q.contains("repo:o/r"));

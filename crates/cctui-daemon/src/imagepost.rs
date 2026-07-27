@@ -1,4 +1,4 @@
-//! Marker-based image posting (CCT-566).
+//! Marker-based image posting.
 //!
 //! An agent shows a picture by writing a plain markdown image marker into its
 //! message text — `![alt](/abs/path.png)`, a local absolute path with an image

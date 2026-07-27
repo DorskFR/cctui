@@ -234,13 +234,13 @@ pub enum AdapterEvent {
     /// answered), and the control socket reports `state:"done"` while it's
     /// pending — so it would otherwise appear only retroactively. The daemon's
     /// `AskUserQuestion` `PreToolUse` hook delivers the question text the
-    /// instant the form renders (CCT-167). Answered via a normal
+    /// instant the form renders. Answered via a normal
     /// [`AdapterCommand::Reply`].
     ///
     /// `questions` carries the raw `tool_input.questions` array (header,
     /// question, options, multiSelect) the hook also has, so clients can render
     /// the interactive option-card form live instead of only the flattened
-    /// `question` text. `None` for pre-CCT-181 deliveries (CCT-181).
+    /// `question` text. `None` for deliveries.
     AskQuestion {
         local_id: String,
         question: String,
@@ -250,14 +250,14 @@ pub enum AdapterEvent {
         /// the same turn (the research summary / recommendation the question
         /// depends on). Read from the transcript by the `ask-hook` subcommand,
         /// which already gets `transcript_path` on stdin, so the live question
-        /// card can show its context instead of being answered blind (CCT-213).
+        /// card can show its context instead of being answered blind.
         /// `None` when the model called the tool with no preceding text.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         preamble: Option<String>,
     },
     /// A previously-emitted [`AdapterEvent::AskQuestion`] is no longer pending
     /// (the `AskUserQuestion` `PostToolUse` hook fired). Clients dismiss the
-    /// live prompt (CCT-167).
+    /// live prompt.
     AskResolved {
         local_id: String,
     },
@@ -268,7 +268,7 @@ pub enum AdapterEvent {
     /// this is invisible to the control socket (it reports `state:"done"`
     /// while pending) and the `tool_use` block only flushes to the transcript
     /// after the turn advances — so the daemon's `ExitPlanMode` `PreToolUse`
-    /// hook delivers the plan the instant the prompt renders (CCT-347).
+    /// hook delivers the plan the instant the prompt renders.
     ///
     /// Answered via a normal [`AdapterCommand::Reply`]: a digit pick (1-3)
     /// drives the form natively (mirrors `AskUserQuestion`), and option 4
@@ -286,20 +286,20 @@ pub enum AdapterEvent {
     },
     /// A previously-emitted [`AdapterEvent::PlanRequest`] is no longer pending
     /// (the `ExitPlanMode` `PostToolUse` hook fired, or the prompt was
-    /// answered / dismissed). Clients drop the live Plan card (CCT-347).
+    /// answered / dismissed). Clients drop the live Plan card.
     PlanResolved {
         local_id: String,
     },
     /// Outcome of a server-initiated command (currently `Spawn`). Not tied to
     /// a session — `command_id` correlates it with the HTTP spawn response so
-    /// the server can rebroadcast it to the originating client (CCT-131).
+    /// the server can rebroadcast it to the originating client.
     CommandResult {
         command_id: Uuid,
         ok: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
-    /// Reply to an [`AdapterCommand::Diagnose`] (CCT-547): everything the
+    /// Reply to an [`AdapterCommand::Diagnose`]: everything the
     /// adapter knows about the session, dated. `request_id` correlates with
     /// the round-trip the server parked for the originating
     /// `GET /sessions/{id}/diagnose`. Boxed: the report is by far the largest
@@ -309,13 +309,13 @@ pub enum AdapterEvent {
         request_id: Uuid,
         report: Box<crate::diagnose::SessionDiagnose>,
     },
-    /// Machine/account-scoped codex model catalog from `model/list` (CCT-641).
+    /// Machine/account-scoped codex model catalog from `model/list`.
     /// Keyed by `machine_id`, not a session — the server keeps the latest per
     /// machine so the picker offers the account's real models, static fallback.
     CodexModels {
         catalog: crate::codex_catalog::CodexModelCatalog,
     },
-    /// A coalesced slice of a watched session's live PTY byte stream (CCT-545).
+    /// A coalesced slice of a watched session's live PTY byte stream.
     /// Emitted only while a viewer is attached (server-gated via
     /// [`AdapterCommand::WatchPty`]); `data` is the standard-base64 of the raw
     /// terminal bytes. Never persisted — the server fans it straight out to the
@@ -327,7 +327,7 @@ pub enum AdapterEvent {
     /// The daemon's transcript byte-offset high-water mark for a session. The
     /// server keeps `max(offset)` per session and returns it as a resume mark on
     /// the daemon's next connect, so the tail cursor clamps forward rather than
-    /// replaying the transcript from zero (CCT-741).
+    /// replaying the transcript from zero.
     TranscriptMark {
         local_id: String,
         offset: u64,
@@ -350,8 +350,8 @@ pub struct SessionChild {
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum AdapterCommand {
-    /// Per-session transcript resume marks the server pushes on connect
-    /// (CCT-741). `marks` maps `local_id` → the server's stored transcript byte
+    /// Per-session transcript resume marks the server pushes on connect.
+    /// `marks` maps `local_id` → the server's stored transcript byte
     /// offset; the adapter clamps each known session's tail cursor forward and
     /// heals any divergence with one bounded re-send.
     ResumeMarks {
@@ -372,11 +372,11 @@ pub enum AdapterCommand {
         spec: SessionSpec,
         /// Correlation id minted by the server's spawn route. Echoed back in
         /// an [`AdapterEvent::CommandResult`] so the originating client can be
-        /// told whether the spawn actually succeeded (CCT-131). `None` for
+        /// told whether the spawn actually succeeded. `None` for
         /// commands not initiated via the HTTP spawn route.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         command_id: Option<Uuid>,
-        /// Session id pre-minted by the server (CCT-446), mirroring
+        /// Session id pre-minted by the server, mirroring
         /// [`AdapterCommand::Fork`]'s `session_id`. When `Some`, the claude
         /// adapter launches the worker with this as `--session-id` instead of
         /// minting its own, so the id the server bound the gateway session
@@ -387,16 +387,16 @@ pub enum AdapterCommand {
         session_id: Option<Uuid>,
     },
     /// Fork an existing conversation into a brand-new session, optionally
-    /// changing the model/effort at fork time (CCT-302). Each adapter maps it
+    /// changing the model/effort at fork time. Each adapter maps it
     /// to its native primitive: claude `--resume <parent-session-id>
     /// --fork-session [--model …] [--effort …]` (minting a fresh short /
     /// session id, forking from the parent's on-disk `resumeSessionId` when
-    /// present — CCT-160); codex app-server `thread/fork { threadId, … }`.
+    /// present); codex app-server `thread/fork { threadId, … }`.
     /// The new session links back to the parent via
     /// [`SessionMeta::parent_local_id`] on its `SessionStarted`, so the fork is
     /// discoverable; the parent is left intact (NOT archived/flipped). The
     /// supported substitute for claude's missing in-place model switch
-    /// (CCT-303) routes here. `spec.working_dir`/`model`/`effort`/`name` carry
+    /// routes here. `spec.working_dir`/`model`/`effort`/`name` carry
     /// the (optionally overridden) launch parameters; `spec.prompt` is an
     /// optional first turn on the forked branch.
     Fork {
@@ -406,18 +406,18 @@ pub enum AdapterCommand {
         parent_local_id: String,
         spec: SessionSpec,
         /// Correlation id minted by the server's fork route, echoed back in an
-        /// [`AdapterEvent::CommandResult`] (CCT-131). `None` for non-HTTP
+        /// [`AdapterEvent::CommandResult`]. `None` for non-HTTP
         /// callers.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         command_id: Option<Uuid>,
         /// Child session id pre-minted by the server so the fork route can
         /// return it and the webui can navigate to the new conversation
-        /// immediately (CCT-345). When `Some`, the claude adapter uses it as the
+        /// immediately. When `Some`, the claude adapter uses it as the
         /// new `--session-id` instead of minting its own.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
-        /// Conversation-extract selector (CCT-553). `None` → fork the parent's
-        /// full history via the native primitive (CCT-302). `Some` → fork only a
+        /// Conversation-extract selector. `None` → fork the parent's
+        /// full history via the native primitive. `Some` → fork only a
         /// subset: the claude adapter materializes a sliced copy of the parent's
         /// on-disk transcript as the child's own `<child>.jsonl` and resumes
         /// that standalone file (no `--fork-session`). Only supported by the
@@ -433,7 +433,7 @@ pub enum AdapterCommand {
     Reply {
         local_id: String,
         text: String,
-        /// Structured ask answer (CCT-226): per-question 0-based option picks
+        /// Structured ask answer: per-question 0-based option picks
         /// for a pending `AskUserQuestion`. When present and a form is up, the
         /// adapter answers natively (PTY keystrokes on the real form) so claude
         /// records a genuine `tool_result`; `text` remains the fallback carrier.
@@ -443,14 +443,14 @@ pub enum AdapterCommand {
         /// account, carried on every reply so that if the daemon has to
         /// cold-resume a hibernated worker to deliver it, the revived worker
         /// gets a fresh valid `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_BASE_URL` (or
-        /// `OpenAI` pair) instead of launching with empty env and 401ing
-        /// (CCT-460). Ignored when the worker is already alive; empty for
+        /// `OpenAI` pair) instead of launching with empty env and 401ing.
+        /// Ignored when the worker is already alive; empty for
         /// sessions with no account binding.
         #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
         env: std::collections::BTreeMap<String, String>,
     },
     /// Interrupt the in-flight turn WITHOUT tearing the session down — the
-    /// keep-alive equivalent of pressing Esc in the TUI (CCT-210). Distinct
+    /// keep-alive equivalent of pressing Esc in the TUI. Distinct
     /// from `Kill`: the worker, session, and transcript stay live and
     /// resumable. The claude-code adapter has no control-socket turn-interrupt
     /// op, so it attaches to the worker PTY and injects a bare ESC keystroke;
@@ -460,7 +460,7 @@ pub enum AdapterCommand {
         local_id: String,
         /// Correlation id minted by the server's interrupt route, echoed back
         /// in an [`AdapterEvent::CommandResult`] so the originating client can
-        /// see whether the agent actually accepted the interrupt (CCT-339).
+        /// see whether the agent actually accepted the interrupt.
         /// `None` for non-HTTP callers.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         command_id: Option<Uuid>,
@@ -473,7 +473,7 @@ pub enum AdapterCommand {
     /// `working_dir` lets the daemon resume even when the on-disk job
     /// `state.json` is gone (archiving runs `claude rm`, which deletes it while
     /// preserving the conversation transcript) — the daemon then falls back to
-    /// `local_id` as the conversation id and this cwd (CCT-345).
+    /// `local_id` as the conversation id and this cwd.
     Resume {
         local_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -482,7 +482,7 @@ pub enum AdapterCommand {
         /// `OpenAI` pair) re-minted by the server for the session's bound OAuth
         /// account, re-injected into the revived worker so it keeps routing
         /// through the gateway after a hibernation/restart instead of hitting
-        /// the default upstream with no credential and 401ing (CCT-460). Empty
+        /// the default upstream with no credential and 401ing. Empty
         /// for sessions with no account binding.
         #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
         env: std::collections::BTreeMap<String, String>,
@@ -496,7 +496,7 @@ pub enum AdapterCommand {
     /// Rename a session after creation. The adapter is expected to persist
     /// the name to its source of truth (claude-code: `state.json.name`) so it
     /// survives the next status poll, rather than being clobbered by the
-    /// on-disk value. Propagates from `PATCH /api/v1/sessions/{id}` (CCT-133).
+    /// on-disk value. Propagates from `PATCH /api/v1/sessions/{id}`.
     Rename {
         local_id: String,
         name: String,
@@ -506,7 +506,7 @@ pub enum AdapterCommand {
     /// delete its on-disk job metadata (and any Claude-created worktree) so it
     /// disappears from Claude Code's native `claude agents` view as well as
     /// cctui's discovery. The conversation transcript is preserved and stays
-    /// resumable. There is no control-socket op for this (CCT-132), so the
+    /// resumable. There is no control-socket op for this, so the
     /// claude-code adapter shells out to `claude rm`; adapters without an
     /// external agent view (codex) treat this as a plain kill. Propagates from
     /// the archive route.
@@ -514,13 +514,13 @@ pub enum AdapterCommand {
         local_id: String,
     },
     /// Change the model and/or reasoning effort of an already-running session
-    /// **in place**, without spawning a new conversation (CCT-303). Applies to
+    /// **in place**, without spawning a new conversation. Applies to
     /// subsequent turns on the same thread. Agent-asymmetric: the codex adapter
     /// carries the override on the next `turn/start` (a stable per-turn override
-    /// codex promotes to the later default, CCT-635) and echoes the resolved
+    /// codex promotes to the later default) and echoes the resolved
     /// values via [`AdapterEvent::Status`]; the claude-code adapter has no
     /// non-interactive set-model lever, so it errors "fork to change model"
-    /// (fork-with-`--model`, CCT-302). At least one of `model`/`effort` is
+    /// (fork-with-`--model`). At least one of `model`/`effort` is
     /// expected. `command_id` correlates the outcome as an
     /// [`AdapterEvent::CommandResult`] the webui awaits before confirming.
     SetModel {
@@ -532,7 +532,7 @@ pub enum AdapterCommand {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         command_id: Option<Uuid>,
     },
-    /// Snapshot everything the adapter knows about a session (CCT-547). The
+    /// Snapshot everything the adapter knows about a session. The
     /// adapter answers with an [`AdapterEvent::Diagnose`] echoing
     /// `request_id`, which the server correlates back to the waiting
     /// `GET /sessions/{id}/diagnose`. Read-only: never touches the worker.
@@ -541,8 +541,8 @@ pub enum AdapterCommand {
         request_id: Uuid,
     },
     /// Start (`watch: true`) or stop (`watch: false`) relaying the session's
-    /// live PTY byte stream to the server as [`AdapterEvent::PtyChunk`]
-    /// (CCT-545). The server sends `watch: true` when the first browser opens
+    /// live PTY byte stream to the server as [`AdapterEvent::PtyChunk`].
+    /// The server sends `watch: true` when the first browser opens
     /// the read-only terminal view and `watch: false` when the last one closes,
     /// so the daemon only opens the extra viewer attach while someone is
     /// actually watching. Read-only: the adapter opens a fresh attach purely to
@@ -555,7 +555,7 @@ pub enum AdapterCommand {
     },
 }
 
-/// Which slice of a parent conversation a subset fork keeps (CCT-553).
+/// Which slice of a parent conversation a subset fork keeps.
 ///
 /// All modes anchor on an assistant `message_id` (`msg_…`) — the only
 /// per-message identity present in both the webui line and the on-disk
@@ -572,7 +572,7 @@ pub enum ForkMode {
     Selected,
 }
 
-/// Conversation-extract selector for a subset fork (CCT-553).
+/// Conversation-extract selector for a subset fork.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct ForkExtract {
@@ -585,7 +585,7 @@ pub struct ForkExtract {
     pub selected_message_ids: Vec<String>,
 }
 
-/// Per-spawn permission posture (CCT-149, supersedes the CCT-139
+/// Per-spawn permission posture (supersedes the
 /// `full_access: bool`). Adapters map it to their own vocabulary; `None`
 /// on a [`SessionSpec`] defers to the daemon's per-host default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -603,7 +603,7 @@ pub enum PermissionMode {
     /// Prompt on every action. claude `--permission-mode default`; codex
     /// `sandbox_mode=workspace-write` + `approval_policy=untrusted`.
     Ask,
-    /// "Whip" (🐎) — yolo on steroids (CCT-352). Same permission posture as
+    /// "Whip" (🐎) — yolo on steroids. Same permission posture as
     /// [`Self::Yolo`] (no prompts, no sandbox), plus two enforcement hooks
     /// injected into the claude worker: `AskUserQuestion` is **banned** (a
     /// `PreToolUse` deny), and a `Stop` hook blocks stalling / hand-back
@@ -641,7 +641,7 @@ impl PermissionMode {
     }
 
     /// Coarse `default` / `auto` / `yolo` label surfaced to the agent in the
-    /// spawn-time `<session-context>` block (CCT-361). `Ask` (prompt on every
+    /// spawn-time `<session-context>` block. `Ask` (prompt on every
     /// action, claude `default`) reads as `default`; `Auto` (`acceptEdits`) as
     /// `auto`; `Yolo`/`Whip` (`bypassPermissions`) as `yolo`. The whip-specific
     /// enforcement hooks aren't part of this coarse posture label.
@@ -658,8 +658,8 @@ impl PermissionMode {
 /// Parameters for spawning a brand-new session. Used by `AdapterCommand::Spawn`
 /// (post-v0; the spawn route currently returns 501).
 ///
-/// `Debug` is implemented by hand to redact `env` (secret values, CCT-202) and
-/// `bootstrap` (base64 file bytes, CCT-203) so neither leaks into logs if a
+/// `Debug` is implemented by hand to redact `env` (secret values) and
+/// `bootstrap` (base64 file bytes) so neither leaks into logs if a
 /// `DaemonFrameDown` carrying this spec is ever debug-printed.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct SessionSpec {
@@ -669,7 +669,7 @@ pub struct SessionSpec {
     /// Optional display name to launch the session with (claude `--name`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// Per-spawn permission posture (CCT-149). `None` defers to the
+    /// Per-spawn permission posture. `None` defers to the
     /// daemon's per-host default. Adapters map it to their own vocabulary
     /// (codex `sandbox_mode` + `approval_policy`, claude `--permission-mode`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -678,17 +678,17 @@ pub struct SessionSpec {
     /// `model_reasoning_effort`). `None` defers to the adapter default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
-    /// Model family to launch under (CCT-274). claude `--model`, codex
+    /// Model family to launch under. claude `--model`, codex
     /// `-c model="…"`. `None` defers to the adapter default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// Environment secrets injected into the worker process env at spawn time
-    /// (CCT-202). Merged on top of the pre-forked spare's baseline env and
+    /// Environment secrets injected into the worker process env at spawn time.
+    /// Merged on top of the pre-forked spare's baseline env and
     /// mirrored into `reattachEnv` so they survive a respawn/reattach. NEVER
     /// persisted (DB / `state.json` / `seed`) and NEVER logged.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub env: std::collections::BTreeMap<String, String>,
-    /// Opaque bootstrap payload carried to the daemon at spawn (CCT-203). When
+    /// Opaque bootstrap payload carried to the daemon at spawn. When
     /// present it deserializes into [`BootstrapUploads`]: small files the
     /// daemon stages under `/tmp/cctui-uploads/<session-id>/` and references in
     /// the prompt so the worker can read them.
@@ -713,7 +713,7 @@ impl std::fmt::Debug for SessionSpec {
     }
 }
 
-/// Bootstrap payload shape for file uploads (CCT-203). Carried in
+/// Bootstrap payload shape for file uploads. Carried in
 /// [`SessionSpec::bootstrap`] as JSON; the server base64-encodes the bytes and
 /// the daemon decodes + stages them before dispatch.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -934,7 +934,7 @@ mod tests {
 
     #[test]
     fn adapter_diagnose_command_and_event_roundtrip() {
-        // CCT-547: the diagnose round-trip rides the generic Command/Event
+        // the diagnose round-trip rides the generic Command/Event
         // path, so its serde shape must stay wire-stable.
         let req_id = Uuid::new_v4();
         let cmd = AdapterCommand::Diagnose { local_id: "s1".into(), request_id: req_id };

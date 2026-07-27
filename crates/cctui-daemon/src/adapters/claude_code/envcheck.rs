@@ -1,5 +1,5 @@
 //! Read ground-truth per-worker signals from the live process environment via
-//! `/proc` (CCT-577).
+//! `/proc`.
 //!
 //! Each claude worker carries a `CLAUDE_CODE_SESSION_NAME=<short>` marker in its
 //! environment; scanning `/proc/<pid>/environ` for it lets us read the actual
@@ -9,8 +9,8 @@
 //! Linux-only (`/proc`); on other platforms the reads are a no-op (indeterminate).
 
 /// Ground-truth reasoning effort of the live workers, read from the
-/// `CLAUDE_EFFORT` env each claude worker carries in its process environment
-/// (CCT-577). This is the actual level a running session booted at — which a
+/// `CLAUDE_EFFORT` env each claude worker carries in its process environment.
+/// This is the actual level a running session booted at — which a
 /// spare-claim or a silent background clamp can make differ from the `--effort`
 /// cctui requested. Returns `short -> effort` for every worker in `wanted` that
 /// was found with a non-empty `CLAUDE_EFFORT`; missing entries are indeterminate

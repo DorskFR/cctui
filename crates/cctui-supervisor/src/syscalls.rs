@@ -49,8 +49,8 @@ pub fn blocked_syscalls() -> Option<Vec<Blocked>> {
 /// any attempt to switch to a different uid/gid still returns `EPERM`. This is
 /// required because GNU Make's recipe-spawn child resets its effective uid to
 /// the real uid (`setresuid(-1, <uid>, -1)`) before `execve`; a blanket block
-/// turned that no-op into `EPERM`, killing the recipe shell with exit 127
-/// (CCT-549). A no-op reset grants no privilege, so allowing it does not weaken
+/// turned that no-op into `EPERM`, killing the recipe shell with exit 127.
+/// A no-op reset grants no privilege, so allowing it does not weaken
 /// the sandbox — `setuid(0)` and friends stay denied.
 #[must_use]
 pub fn id_setter_argc(name: &str) -> Option<u8> {

@@ -1,4 +1,4 @@
-//! Declarative route authn/authz framework (CCT-419, epic CCT-416).
+//! Declarative route authn/authz framework.
 //!
 //! Every HTTP route is registered through [`Routes::add`], which demands BOTH
 //! an [`Authn`] (how identity is proven) and an [`Authz`] (what the principal
@@ -20,36 +20,31 @@
 //!     rejected `403` — **default deny**, the fail-closed backstop;
 //!   * otherwise the policy is evaluated (see [`Authz::enforce`]).
 //!
-//! ## Scope of this ticket
+//! ## Scope
 //!
-//! Correctness over purity: the existing, proven authentication paths
-//! (`auth_middleware` for `/api/v1`; the inline self-auth on the daemon /
-//! dispatcher / trigger / gateway endpoints) are LEFT UNTOUCHED. The [`Authn`]
-//! axis is recorded for the coverage test and to document each route's auth
-//! method; it does not re-implement authentication. The new runtime behavior is
-//! the [`Authz`] evaluation plus default-deny.
+//! The [`Authn`] axis only records how identity is proven for the coverage
+//! test; it does not re-implement authentication (`auth_middleware` for
+//! `/api/v1`, inline self-auth on the daemon/dispatcher/trigger/gateway
+//! endpoints are untouched). Per-OBJECT ownership is centralized in the
+//! [`Resource`] guard: single-object session routes and the machine-scoped fs
+//! route declare [`Authz::Resource`], with in-handler owner checks gone (the
+//! guard is authoritative). Routes whose authorization can't be a yes/no gate
+//! — self-scoped list/search/stats endpoints (the `owner_filter()` SQL filter)
+//! and batch endpoints (`filter_owned_ids`) — declare [`Authz::Authenticated`]
+//! and keep their filter in the handler; they are enumerated in the coverage
+//! test. A handful of single-object routes (accounts/dispatchers/prompts/keys)
+//! also stay `Authenticated`/`Scope` because they fold ownership into the
+//! mutating SQL's `WHERE` clause and return `404` (not `403`) for a cross-user
+//! id — moving them onto the guard would change that client-visible
+//! semantics, so they are intentionally left inline.
 //!
-//! CCT-420 centralizes per-OBJECT ownership into the [`Resource`] guard: the
-//! single-object session routes and the machine-scoped fs route declare
-//! [`Authz::Resource`], and the in-handler owner checks are gone (the guard is
-//! authoritative). Routes whose authorization cannot be expressed as a yes/no
-//! gate — self-scoped list/search/stats endpoints (the `owner_filter()` SQL
-//! filter) and batch endpoints (`filter_owned_ids`) — declare
-//! [`Authz::Authenticated`] and keep their filter in the handler; they are
-//! enumerated in the coverage test. A handful of single-object routes
-//! (accounts/dispatchers/prompts/keys) also stay `Authenticated`/`Scope`
-//! because they fold ownership into the mutating SQL's `WHERE` clause and return
-//! `404` (not `403`) for a cross-user id — moving them onto the guard would
-//! change that client-visible semantics, so they are intentionally left inline.
+//! ## The full authn × authz model
 //!
-//! ## The full authn × authz model (CCT-422)
-//!
-//! Two orthogonal, declarative axes are demanded per route (see CCT-416):
+//! Two orthogonal, declarative axes are demanded per route:
 //!
 //!   * **Authn** — how identity is proven: [`Authn`] `{None, Bearer, BodyToken}`.
 //!     `None` is `/health` only; everything else proves a principal. `Bearer`
-//!     resolves from the `Authorization` header or the `HttpOnly` auth cookie
-//!     (CCT-423).
+//!     resolves from the `Authorization` header or the `HttpOnly` auth cookie.
 //!   * **Authz** — what the principal may do: [`Authz`] `{Public, Authenticated,
 //!     Scope, Resource, Custom}`.
 //!
@@ -68,7 +63,7 @@
 //!   3. (Self-scoped list/search/stats endpoints can't be a yes/no gate; they
 //!      declare [`Authz::Authenticated`] and apply `owner_filter()` in SQL.)
 //!
-//! ### Resource sharing extension point (CCT-422 — design + seam)
+//! ### Resource sharing extension point (design + seam, not yet implemented)
 //!
 //! Ownership is just the FIRST rule in [`Resource::authorize`]. Grants are added
 //! in ONE place — that default method — and every [`Authz::Resource`] route
@@ -85,7 +80,7 @@
 //! async fn authorize(ctx, action, id, db) -> Decision {
 //!     if ctx.is_admin() { return Decision::Allowed; }
 //!     if Self::owner_of(id, db).await? == Some(ctx.user_id) { return Decision::Allowed; }
-//!     // CCT-future: grant lookup composes here, no guard/endpoint change:
+//!     // grant lookup composes here, no guard/endpoint change:
 //!     // if shares::granted(kind, id, ctx.user_id, action, db).await? { Decision::Allowed }
 //!     Decision::Denied
 //! }
@@ -93,7 +88,7 @@
 //!
 //! Self-scoped list queries would additionally `UNION` shared-in rows.
 //!
-//! ### `Principal::Share` deeplink tokens (CCT-422 — DESIGN ONLY, not built)
+//! ### `Principal::Share` deeplink tokens (design only, not built)
 //!
 //! Deeplink share tokens slot into the **Authn** axis without changing the real
 //! [`AuthContext`] or auth flow. The plan:
@@ -111,8 +106,8 @@
 //!   * For sensitive session data, DB-backed tokens (a `shares` row) are
 //!     preferred over self-contained JWTs so a share is revocable.
 //!
-//! This is documentation of the extension point; no `Principal::Share` is added
-//! to `AuthContext`/`auth.rs` in this ticket.
+//! This documents the extension point; `Principal::Share` is not added to
+//! `AuthContext`/`auth.rs`.
 
 use std::sync::Arc;
 
@@ -140,9 +135,9 @@ pub enum Authn {
     /// No identity required. Only `/health`.
     None,
     /// `Authorization: Bearer <token>` — the regular `auth_middleware` path,
-    /// and the gateway's provider-key bearer. Since CCT-423 this also resolves
-    /// from the `HttpOnly` auth cookie (browser + WS upgrade), so the former
-    /// `QueryToken` (`?token=` on the WS URI) variant is gone.
+    /// and the gateway's provider-key bearer. Also resolves from the
+    /// `HttpOnly` auth cookie (browser + WS upgrade); there is no
+    /// `?token=`-on-URI variant.
     Bearer,
     /// A token carried in the request body (daemon/dispatcher `auth`, triggers).
     /// The field name differs per endpoint, so these keep their inline
@@ -150,9 +145,8 @@ pub enum Authn {
     BodyToken,
 }
 
-/// The coarse capability a principal exercises on a resource. The full set is
-/// part of the framework's surface (CCT-420 wires more routes onto
-/// `Resource`); not every variant is used by the routes migrated this ticket.
+/// The coarse capability a principal exercises on a resource. Not every
+/// variant is used by every route.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum Action {
@@ -179,7 +173,7 @@ impl IdFrom {
 }
 
 /// The kinds of resource the per-object guard knows about. Each has a
-/// [`Resource`] owner-resolution impl (CCT-420). `Session` and `Machine` are
+/// [`Resource`] owner-resolution impl. `Session` and `Machine` are
 /// wired onto HTTP routes; the rest are implemented for completeness and are
 /// reachable via the guard once their routes adopt it (their single-object
 /// routes currently fold ownership into the SQL `WHERE` clause — see the module
@@ -202,8 +196,8 @@ pub enum ResourceKind {
 #[allow(dead_code)]
 pub type AuthzFn = fn(&AuthContext, Option<&str>) -> Result<(), StatusCode>;
 
-/// What a principal may do on a route. `Resource` is now used by the migrated
-/// per-object routes (sessions + the machine fs route, CCT-420). `Public` and
+/// What a principal may do on a route. `Resource` is used by per-object
+/// routes (sessions + the machine fs route). `Public` and
 /// `Custom` remain part of the framework's surface but are unused by any
 /// `/api/v1` route (`/health` is `Public` on the outer app; no `Custom` rule
 /// exists yet), so they are constructed only in tests.
@@ -274,7 +268,7 @@ impl Authz {
         }
     }
 
-    /// The coarse [`Scope`] this policy implies for documentation (CCT-464).
+    /// The coarse [`Scope`] this policy implies for documentation.
     ///
     /// A `Scope(s)` route requires exactly `s`. Every other policy
     /// (`Authenticated`, per-object `Resource`, `Custom`, `Public`) is reachable
@@ -292,7 +286,7 @@ impl Authz {
 }
 
 // `RawPathParams` is an extractor, not a request extension: it must be run via
-// `extract_parts`, never `extensions().get()` (that always returns None — CCT-569).
+// `extract_parts`, never `extensions().get()` (that always returns None).
 async fn resolve_id(req: &mut Request, id_from: IdFrom) -> Option<String> {
     use axum::RequestExt;
     let name = id_from.param();
@@ -300,7 +294,7 @@ async fn resolve_id(req: &mut Request, id_from: IdFrom) -> Option<String> {
     raw.iter().find(|(k, _)| *k == name).map(|(_, v)| v.to_string())
 }
 
-/// RBAC capability insertion point (CCT-422). The FIRST step of an
+/// RBAC capability insertion point. The FIRST step of an
 /// [`Authz::Resource`] evaluation: may the principal's role exercise
 /// `(ResourceKind, Action)` at all, independent of any specific object?
 ///
@@ -341,25 +335,24 @@ enum Decision {
 ///
 /// [`authorize`](Resource::authorize) is the composed rule, **default-implemented
 /// once** on top of `owner_of`: `admin || owner(id) == principal`. This is the
-/// SHARING SEAM (CCT-422): a future `shares` grant lookup goes inside this one
+/// SHARING SEAM: a future `shares` grant lookup goes inside this one
 /// default method and every [`Authz::Resource`] route inherits it automatically,
 /// touching neither the guard nor any endpoint. A resource type overrides
 /// `authorize` only when its access rule is more than ownership (e.g. shares).
 trait Resource {
     /// The `resource_shares.resource_type` for a shareable kind, or `None` when
-    /// the kind confers no grants (ownership-only). This is the CCT-531 sharing
-    /// seam made concrete: the default [`authorize`](Resource::authorize)
-    /// composes [`shares::granted`] onto ownership for any kind that sets this,
-    /// so a shareable kind needs ONLY this associated const — no per-kind
-    /// `authorize` override.
+    /// the kind confers no grants (ownership-only). The default
+    /// [`authorize`](Resource::authorize) composes [`shares::granted`] onto
+    /// ownership for any kind that sets this, so a shareable kind needs ONLY
+    /// this associated const — no per-kind `authorize` override.
     const SHARE_TYPE: Option<&'static str> = None;
 
     async fn owner_of(id: &str, pool: &PgPool) -> Result<Option<Uuid>, sqlx::Error>;
 
     /// Default: admin bypass, else owner match, else — for a shareable kind — a
-    /// live `use` grant, else denied. The single sharing-composition point
-    /// (CCT-422/531): every [`Authz::Resource`] route inherits grants via this
-    /// method, touching neither the guard nor any handler.
+    /// live `use` grant, else denied. The single sharing-composition point:
+    /// every [`Authz::Resource`] route inherits grants via this method,
+    /// touching neither the guard nor any handler.
     async fn authorize(
         ctx: &AuthContext,
         _action: Action,
@@ -384,8 +377,8 @@ trait Resource {
     }
 }
 
-/// Sessions are owned via `sessions.machine_uuid -> machines.user_id`
-/// (CCT-417). Mirrors `ws::ws_owns_session`.
+/// Sessions are owned via `sessions.machine_uuid -> machines.user_id`.
+/// Mirrors `ws::ws_owns_session`.
 struct SessionResource;
 impl Resource for SessionResource {
     async fn owner_of(id: &str, pool: &PgPool) -> Result<Option<Uuid>, sqlx::Error> {
@@ -440,12 +433,12 @@ impl Resource for UserResource {
     }
 }
 
-/// Accounts (identities, CCT-558) are owned directly (`accounts.user_id`) and
-/// may be SHARED to other users via `resource_shares` (CCT-531, née
-/// `account_shares` CCT-458). Sharing is expressed by the `SHARE_TYPE` const, so
-/// the default `authorize` composes the grant lookup: admin → owner → live share
-/// grant → denied. Mutation stays owner-only (the edit/delete handlers fold
-/// ownership into their SQL, CCT-420), so a grant only ever confers use/read.
+/// Accounts (identities) are owned directly (`accounts.user_id`) and may be
+/// SHARED to other users via `resource_shares`. Sharing is expressed by the
+/// `SHARE_TYPE` const, so the default `authorize` composes the grant lookup:
+/// admin → owner → live share grant → denied. Mutation stays owner-only (the
+/// edit/delete handlers fold ownership into their SQL), so a grant only ever
+/// confers use/read.
 struct AccountResource;
 impl Resource for AccountResource {
     const SHARE_TYPE: Option<&'static str> = Some("account");
@@ -458,7 +451,7 @@ impl Resource for AccountResource {
     }
 }
 
-/// Prompts are owned directly (`prompts.user_id`, CCT-418). A legacy NULL-owner
+/// Prompts are owned directly (`prompts.user_id`). A legacy NULL-owner
 /// row resolves to `None` → 404 for non-admins (admins short-circuit earlier).
 struct PromptResource;
 impl Resource for PromptResource {
@@ -473,7 +466,7 @@ impl Resource for PromptResource {
     }
 }
 
-/// Stored provider keys are owned directly (`api_keys.user_id`, CCT-418).
+/// Stored provider keys are owned directly (`api_keys.user_id`).
 struct ApiKeyResource;
 impl Resource for ApiKeyResource {
     async fn owner_of(id: &str, pool: &PgPool) -> Result<Option<Uuid>, sqlx::Error> {
@@ -504,7 +497,7 @@ async fn authorize_resource(
     id: Option<&str>,
     pool: &PgPool,
 ) -> Result<(), StatusCode> {
-    // Step 1 — RBAC capability gate (CCT-422). Today `true` for any principal;
+    // Step 1 — RBAC capability gate. Today `true` for any principal;
     // a role→(kind, action) table slots in here with no per-endpoint change.
     if !role_permits(ctx, kind, action) {
         return Err(StatusCode::FORBIDDEN);
@@ -541,8 +534,8 @@ async fn authorize_resource(
 }
 
 /// Public re-export of the session owner lookup so the WS path (`ws.rs`) can
-/// reuse the exact same ownership query as the HTTP guard (one authorizer, two
-/// transports — CCT-416). Returns the owning user, or `None` for an
+/// reuse the exact same ownership query as the HTTP guard (one authorizer,
+/// two transports). Returns the owning user, or `None` for an
 /// unknown/unresolvable session.
 pub async fn session_owner(id: &str, pool: &PgPool) -> Result<Option<Uuid>, sqlx::Error> {
     SessionResource::owner_of(id, pool).await
@@ -560,7 +553,7 @@ pub struct RouteDescriptor {
     pub authn: Authn,
     pub authz: Authz,
     /// A one-line, human-facing description of what the route does. Emitted into
-    /// the `OpenAPI` operation `summary` and the `llms.txt` endpoint list (CCT-464).
+    /// the `OpenAPI` operation `summary` and the `llms.txt` endpoint list.
     /// The `every_route_has_a_summary` guard test fails if any route ships this
     /// empty, so a new route cannot be undocumented.
     pub summary: &'static str,
@@ -702,7 +695,7 @@ mod tests {
         assert!(descs.iter().all(|d| d.path.starts_with('/')));
     }
 
-    /// CI guard (CCT-464): every registered route MUST carry a non-empty
+    /// CI guard: every registered route MUST carry a non-empty
     /// `summary`, so a new route cannot ship undocumented in the `OpenAPI` doc /
     /// `llms.txt` capability index generated from this table.
     #[test]
@@ -908,7 +901,7 @@ mod tests {
         );
     }
 
-    // ---- CCT-422 seam proofs -------------------------------------------------
+    // ---- sharing/RBAC seam proofs ---------------------------------------------
 
     /// RBAC SEAM proof. The production [`role_permits`] returns `true` (no
     /// behavior change). This test reimplements ONLY that hook to deny a
@@ -1017,7 +1010,7 @@ mod tests {
         );
     }
 
-    /// CCT-531 seam wiring. Every shareable kind declares its
+    /// Sharing seam wiring. Every shareable kind declares its
     /// `resource_shares.resource_type` via `SHARE_TYPE`, and ownership-only kinds
     /// declare `None`. Because the default `authorize` composes
     /// `shares::granted(SHARE_TYPE, ..)` onto ownership, this const IS the grant
@@ -1048,7 +1041,7 @@ mod tests {
         }
     }
 
-    // ---- request-level layer-ordering regression (CCT-423) -------------------
+    // ---- request-level layer-ordering regression -------------------
 
     /// Build a one-route `Router<()>` wired EXACTLY as [`Routes::add`] does — the
     /// route's policy enforced via `route_layer(from_fn_with_state(.., enforce_route))`
@@ -1114,7 +1107,7 @@ mod tests {
         assert_eq!(status_of(allowed, "/r").await, StatusCode::OK);
     }
 
-    /// CCT-569 regression. A `Resource`-guarded route with a `{id}` path param,
+    /// A `Resource`-guarded route with a `{id}` path param,
     /// hit by a NON-admin principal, must resolve that id from the matched route
     /// and authorize an OWNED object (200) while denying a non-owner (403). This
     /// exercises `resolve_id` through the real request stack, where the old

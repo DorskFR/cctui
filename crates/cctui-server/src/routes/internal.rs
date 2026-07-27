@@ -1,4 +1,4 @@
-//! Pod-to-pod internal bus endpoints (CCT-573).
+//! Pod-to-pod internal bus endpoints.
 //!
 //! `POST /internal/bus/route` delivers one forwarded frame/round-trip to a WS
 //! held by THIS pod; `POST /internal/bus/publish` ingests a batch of relayed
@@ -136,7 +136,7 @@ pub async fn bus_route(
 /// `POST /internal/bus/publish` — ingest a batch of relayed events into THIS
 /// pod's local subscribers. `ServerEvent`s that carry prompt lifecycle
 /// (permission/ask/plan raise + resolve) are also applied to the local stores
-/// first, so replay-on-subscribe works on any pod (CCT-573 §store sync).
+/// first, so replay-on-subscribe works on any pod (§store sync).
 pub async fn bus_publish(
     State(state): State<AppState>,
     headers: HeaderMap,

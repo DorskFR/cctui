@@ -91,7 +91,7 @@ pub async fn register(
         registry.register(session.clone());
     }
     // Create (or reuse, on re-registration) the session's live stream channel
-    // in the bus (CCT-572) — delivery moved out of the registry handle.
+    // in the bus — delivery moved out of the registry handle.
     state.bus.register_session_stream(&session_id);
 
     tracing::info!(session_id = %session_id, machine = %session.machine_id, "session registered");
@@ -122,7 +122,7 @@ pub async fn deregister(
 }
 
 // Per-session ownership is now enforced by the `Resource(Session, …)` guard in
-// `authz.rs` (CCT-420): the single-object session routes declare that policy and
+// `authz.rs`: the single-object session routes declare that policy and
 // the `authz_layer` middleware resolves owner via `machine_uuid ->
 // machines.user_id` BEFORE the handler runs (404 unknown / 403 cross-user /
 // admin bypass — the exact semantics the old in-handler `authorize_session`
@@ -211,7 +211,7 @@ pub fn derive_liveness(last_heartbeat: DateTime<Utc>) -> Liveness {
     }
 }
 
-/// Sticky terminal statuses (CCT-192): persisted states that must NOT be
+/// Sticky terminal statuses: persisted states that must NOT be
 /// re-derived from heartbeat age. `ended` (`SessionEnded` received) and `failed`
 /// (dispatch never launched) both mean "this session is over" — without this
 /// they showed Active/green for ~5 min until the heartbeat aged out, masking
@@ -220,7 +220,7 @@ fn sticky_status(row_status: &str) -> Option<SessionStatus> {
     match row_status {
         "archived" => Some(SessionStatus::Archived),
         "ended" | "failed" => Some(SessionStatus::Inactive),
-        // Draft (CCT-394): staged-not-running, never re-derived from heartbeat.
+        // Draft: staged-not-running, never re-derived from heartbeat.
         "draft" => Some(SessionStatus::Draft),
         _ => None,
     }
@@ -534,7 +534,7 @@ async fn enrich_and_sort(
         }
     }
 
-    // Aggregated token usage per session (CCT-94). Replaces the always-0
+    // Aggregated token usage per session. Replaces the always-0
     // historical values; live sessions also pick up DB-aggregated counts
     // since the daemon persists every assistant turn.
     let session_ids: Vec<String> = with_ts.iter().map(|(_, s)| s.id.clone()).collect();
@@ -610,8 +610,8 @@ async fn enrich_and_sort(
         }
     }
 
-    // Unread assistant `message` count per session for the calling user
-    // (CCT-580): messages newer than the viewer's `session_reads.last_seen_at`,
+    // Unread assistant `message` count per session for the calling user:
+    // messages newer than the viewer's `session_reads.last_seen_at`,
     // all of them when the user has never seen the session. One batched query
     // over the same `session_ids` fan-out; capped at 99 to keep the badge tidy.
     if let Some(uid) = viewer
@@ -714,7 +714,7 @@ async fn enrich_and_sort(
                     children.iter().filter(|c| c.kind == "pr").map(|c| c.href.clone()).collect();
                 s.bucket = bucket;
                 s.attention = attention_from_bucket(bucket);
-                // Worker exited but resumable on reply (CCT-228). The adapter
+                // Worker exited but resumable on reply. The adapter
                 // parks the marker in `tempo`; the next live snapshot after a
                 // resume overwrites it.
                 s.hibernated = tempo.as_deref() == Some("hibernated");
@@ -731,7 +731,7 @@ async fn enrich_and_sort(
         }
     }
 
-    // Session labels (CCT-360): one batched join over the junction table, then
+    // Session labels: one batched join over the junction table, then
     // bucket the rows per session so each item carries its colored labels.
     if !session_ids.is_empty() {
         type LabelRow = (String, uuid::Uuid, String, String);
@@ -760,7 +760,7 @@ async fn enrich_and_sort(
         }
     }
 
-    // Account each session runs under (CCT-430). `sessions.account_id` is
+    // Account each session runs under. `sessions.account_id` is
     // unused legacy; the real binding lives in `session_tokens` (minted at
     // dispatch/gateway). Resolve the most recent non-revoked token per session
     // to its identity's `accounts.name` (via `account_providers`) in one batched
@@ -790,7 +790,7 @@ async fn enrich_and_sort(
         }
     }
 
-    // Live token↔account credential binding (CCT-555). Independent of the
+    // Live token↔account credential binding. Independent of the
     // account-name join above: a token whose `accounts` row was deleted (or that
     // never resolved a name) still counts as holding credentials. `true` iff a
     // non-revoked `session_tokens` row with a present `encrypted_token` exists.
@@ -813,7 +813,7 @@ async fn enrich_and_sort(
         }
     }
 
-    // Reflect the in-memory auto-approve flag per session (CCT-151) so clients
+    // Reflect the in-memory auto-approve flag per session so clients
     // can render the toggle in its current state.
     {
         let store = state.permission_store.read().await;
@@ -822,7 +822,7 @@ async fn enrich_and_sort(
         }
     }
 
-    // Cold-cache surfacing (CCT-189). The per-message cache split lives in
+    // Cold-cache surfacing. The per-message cache split lives in
     // `session_token_usage`; the SUM() aggregate above flattens it, so here we
     // pull only the *most recent* row per session to derive:
     //   - `cache_cold`     — that turn re-billed the full context
@@ -868,7 +868,7 @@ async fn enrich_and_sort(
         }
     }
 
-    // Pinned sessions sort above everything (CCT-267). Within each group, sort
+    // Pinned sessions sort above everything. Within each group, sort
     // by most recent message so active sessions float to the top; fall back to
     // registration time when a session has no messages yet.
     with_ts.sort_by(|a, b| {
@@ -878,7 +878,7 @@ async fn enrich_and_sort(
     Ok(with_ts.into_iter().map(|(_, s)| s).collect())
 }
 
-/// Query params for `GET /sessions/search` (CCT-184). `q` is a substring
+/// Query params for `GET /sessions/search`. `q` is a substring
 /// matched (case-insensitively, trgm-accelerated) against a session's full
 /// transcript plus its id/name/working-dir. `include_archived` sets the scope:
 /// `false` searches live (non-archived) sessions only, `true` searches all.
@@ -1015,7 +1015,7 @@ fn compile_filter(filter: &cctui_query::Filter, params: &mut Vec<SqlParam>) -> S
     if filter.op == cctui_query::FilterOp::Ne { format!("(NOT {joined})") } else { joined }
 }
 
-/// Walk the query AST into a parameterised SQL `WHERE` fragment (CCT-465),
+/// Walk the query AST into a parameterised SQL `WHERE` fragment,
 /// pushing binds onto `params` in `$1…$N` order. Fielded leaves become column
 /// predicates / join-EXISTS, free text takes the `pg_trgm` path, and the
 /// boolean/negation structure maps straight to `AND`/`OR`/`NOT`.
@@ -1066,7 +1066,7 @@ fn make_snippet(text: &str, needles: &[String]) -> String {
     out
 }
 
-/// `GET /sessions/search?q=…&include_archived=…&limit=…&offset=…` (CCT-184).
+/// `GET /sessions/search?q=…&include_archived=…&limit=…&offset=…`.
 /// Full-transcript substring search, scoped to live or all sessions; with an
 /// empty `q` and `include_archived=true` it browses the archive. Returns the
 /// same `SessionListItem` shape as the list (so clients reuse `SessionCard`),
@@ -1078,7 +1078,7 @@ pub async fn search_sessions(
     Query(params): Query<SearchParams>,
 ) -> Result<Json<SessionListResponse>, (StatusCode, Json<ApiError>)> {
     let uid = ctx.owner_filter();
-    // Parse the raw `q` into the CCT-465 AST. A blank query → `Empty` → browse.
+    // Parse the raw `q` into the AST. A blank query → `Empty` → browse.
     // A plain keyword parses to a single free-text leaf, so back-compat holds.
     let root = cctui_query::parse(params.q.trim());
     let browse = root.is_empty();
@@ -1106,7 +1106,7 @@ pub async fn search_sessions(
         // currently live in the in-memory registry (e.g. a dispatched worker
         // auto-archived in the DB while still running) must stay searchable —
         // the bucketed live list surfaces those via the registry, so search
-        // would otherwise be the one place they vanish (CCT-298 item 2). OR in
+        // would otherwise be the one place they vanish (item 2). OR in
         // the live registry ids so they're never filtered by status. With
         // include_archived the scope is already open, so no extra bind is needed.
         let mut ast_params: Vec<SqlParam> = Vec::new();
@@ -1302,7 +1302,7 @@ fn field_values_sql(field: &str, context: &str) -> Option<(String, Vec<SqlParam>
     Some((sql, ctx_params))
 }
 
-/// `GET /sessions/search/values?field=…&q=…` (CCT-465): autocomplete suggestions
+/// `GET /sessions/search/values?field=…&q=…`: autocomplete suggestions
 /// for a search field. Static enums come from the query registry; dynamic
 /// fields (machine/account/tag/model) are distinct values from the caller's own
 /// sessions (admin sees all). Machine suggestions exclude ephemeral/dispatch
@@ -1410,7 +1410,7 @@ pub async fn get_session(
 
     // Not live — fall back to the DB so archived/ended sessions still open
     // (read-only). A true 404 now means the session was actually deleted, not
-    // just archived (CCT-250 item 6 — kills the spurious "not found or
+    // just archived (item 6 — kills the spurious "not found or
     // archived" toast on refresh).
     let row: Option<DbSession> = sqlx::query_as(
         "SELECT s.id, s.parent_id, s.machine_id, s.working_dir, s.status, \
@@ -1497,7 +1497,7 @@ pub async fn get_conversation(
             })?;
 
     // Order by `id` (the BIGSERIAL insert sequence), not `created_at`: `id` is
-    // the causal `seq` (CCT-481) and is a strict total order, so a late-flushed
+    // the causal `seq` and is a strict total order, so a late-flushed
     // AskUserQuestion card+preamble keep their insert position even when their
     // `created_at` ties or lands after the user's answer.
     let rows: Vec<(i64, String, serde_json::Value, DateTime<Utc>)> = sqlx::query_as(
@@ -1573,7 +1573,7 @@ pub async fn send_message(
     Json(req): Json<MessageRequest>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
     // Carry re-minted gateway env so a reply-driven cold-resume revives the
-    // worker with a fresh valid token rather than empty env (CCT-460).
+    // worker with a fresh valid token rather than empty env.
     let env = crate::routes::gateway::resume_env_for_session(&state, &session_id).await;
     let dispatch = crate::bus::dispatch(
         &state,
@@ -1635,7 +1635,7 @@ pub async fn rename_session(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `POST /sessions/{id}/seen` (CCT-580): mark this session's messages seen for
+/// `POST /sessions/{id}/seen`: mark this session's messages seen for
 /// the calling user by upserting the read high-water mark to `now()`. `GREATEST`
 /// keeps it monotonic so a stale/out-of-order call can never rewind the cursor.
 /// Owner-scoped by the `sess_write` route guard.
@@ -1694,7 +1694,7 @@ pub async fn kill_session(
 }
 
 /// `POST /api/v1/sessions/{id}/interrupt` — stop the in-flight turn without
-/// tearing the session down (CCT-151, CCT-210). Dispatches `Interrupt`, NOT a
+/// tearing the session down. Dispatches `Interrupt`, NOT a
 /// kill: the earlier `Kill { signal: 15 }` terminated the worker on both
 /// adapters (claude `kill`-op'd the PTY worker; codex sent `turn/interrupt`
 /// *and then* `terminate_child`). `Interrupt` keeps the session alive — the
@@ -1702,7 +1702,7 @@ pub async fn kill_session(
 /// the codex adapter sends `turn/interrupt` without terminating. The DB row
 /// stays active and in the registry so the session keeps going.
 ///
-/// Mints a `command_id` (CCT-339) so the adapter can echo back an
+/// Mints a `command_id` so the adapter can echo back an
 /// [`AdapterEvent::CommandResult`] → `ServerEvent::CommandResult`; the webui
 /// awaits it to surface whether the agent actually accepted the interrupt
 /// instead of firing-and-forgetting. Returns the id in the response body.
@@ -1793,7 +1793,7 @@ pub async fn switch_account(
         }
     };
 
-    // A UUID may be either level (CCT-565): a credential id — which names its
+    // A UUID may be either level: a credential id — which names its
     // own family — or an identity id, resolved in `default_family` like a name.
     let target: Option<(uuid::Uuid, String)> =
         if let Ok(tid) = uuid::Uuid::parse_str(req.account.trim()) {
@@ -1862,7 +1862,7 @@ pub async fn switch_account(
     }
 
     // Repoint only this family's row: touching the other family's would hand
-    // e.g. the worker's OPENAI_API_KEY an anthropic credential (CCT-514).
+    // e.g. the worker's OPENAI_API_KEY an anthropic credential.
     let updated = sqlx::query(
         "UPDATE session_tokens SET account_id = $3 \
          WHERE session_id = $1 AND revoked_at IS NULL AND account_id = $2",
@@ -1879,7 +1879,7 @@ pub async fn switch_account(
 
     // The rebind reuses the SAME token string — clear any orphan-spam block on
     // its fingerprint so the fixed binding resolves immediately instead of
-    // 401ing for the remainder of the (up to 300s) block window (CCT-462).
+    // 401ing for the remainder of the (up to 300s) block window.
     crate::routes::gateway::clear_orphan_block_for_session(&state, &session_id).await;
 
     // Dismiss the per-chat soft-limit banner.
@@ -1956,7 +1956,7 @@ pub async fn resume_session(
 
     // Re-mint the gateway env for the session's bound OAuth account so the
     // revived worker keeps routing through the gateway instead of hitting the
-    // default upstream with no credential and 401ing (CCT-460).
+    // default upstream with no credential and 401ing.
     let env = crate::routes::gateway::resume_env_for_session(&state, &session_id).await;
 
     crate::bus::dispatch(
@@ -1986,15 +1986,15 @@ pub async fn resume_session(
 }
 
 /// `POST /api/v1/sessions/{id}/set-model` — change the model and/or reasoning
-/// effort of a running session in place (CCT-303). Agent-asymmetric: the codex
+/// effort of a running session in place. Agent-asymmetric: the codex
 /// adapter records the override and carries it on the next `turn/start` (a
-/// stable per-turn override, CCT-635), then echoes the resolved model/effort
+/// stable per-turn override), then echoes the resolved model/effort
 /// back as an `AdapterEvent::Status` (which updates the DB row + chip); the
 /// claude-code adapter rejects it with a clear "fork to change model" error
 /// (the webui pre-empts that by offering the fork affordance for claude
 /// sessions).
 ///
-/// Mints a `command_id` (CCT-635) so the adapter echoes back an
+/// Mints a `command_id` so the adapter echoes back an
 /// `AdapterEvent::CommandResult` → `ServerEvent::CommandResult`; the webui
 /// awaits it before confirming the change, rather than the old fire-and-forget
 /// 204 that reported success even when the app-server rejected the change.
@@ -2037,7 +2037,7 @@ pub async fn set_model(
 }
 
 /// `POST /api/v1/sessions/{id}/fork` — fork an existing conversation into a
-/// brand-new session, optionally changing model/effort at fork time (CCT-302).
+/// brand-new session, optionally changing model/effort at fork time.
 ///
 /// Resolves the parent's `(adapter_id, machine_uuid, working_dir)` from the DB,
 /// builds a [`SessionSpec`] (`working_dir` inherited from the parent; model/effort
@@ -2046,7 +2046,7 @@ pub async fn set_model(
 /// child links back to the parent via `SessionMeta::parent_local_id` on its
 /// `SessionStarted` (resolved into `parent_id` server-side) — the parent row is
 /// left untouched, so reopening an archived session as a fork does not revive or
-/// re-flip it. Returns a `command_id` the webui can await like a spawn (CCT-131).
+/// re-flip it. Returns a `command_id` the webui can await like a spawn.
 pub async fn fork_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
@@ -2085,7 +2085,7 @@ pub async fn fork_session(
         ));
     };
 
-    // Subset forks (CCT-553) slice the parent's on-disk transcript — a claude
+    // Subset forks slice the parent's on-disk transcript — a claude
     // primitive only. Codex has no partial-fork mechanism, so reject it here
     // rather than let the daemon silently full-fork.
     if req.extract.is_some() && adapter_id != "claude-code" {
@@ -2100,7 +2100,7 @@ pub async fn fork_session(
     let command_id = uuid::Uuid::new_v4();
     // Pre-mint the child session id for claude (which accepts a caller-supplied
     // `--session-id`) so we can return it and the webui can open the new
-    // conversation right away (CCT-345). Codex mints its own thread id, so we
+    // conversation right away. Codex mints its own thread id, so we
     // don't claim one for it.
     let is_claude = adapter_id == "claude-code";
     let child_session_id = is_claude.then(|| uuid::Uuid::new_v4().to_string());
@@ -2146,8 +2146,8 @@ pub async fn fork_session(
     ))
 }
 
-/// `POST /api/v1/sessions/{id}/auto-approve` — toggle cctui-side auto-approve
-/// (CCT-151). When on, incoming permission requests for this session are
+/// `POST /api/v1/sessions/{id}/auto-approve` — toggle cctui-side auto-approve.
+/// When on, incoming permission requests for this session are
 /// answered `allow` immediately. In-memory; reset on server restart.
 pub async fn set_auto_approve(
     State(state): State<AppState>,
@@ -2162,7 +2162,7 @@ pub async fn set_auto_approve(
 /// Archive a session: dismiss it from the default list. Best-effort dispatches
 /// `Remove` to the owning daemon — for claude-code that stops the worker and
 /// then runs `claude rm` so the session also disappears from Claude Code's
-/// native `claude agents` view (CCT-132); for codex it is a plain kill. Then
+/// native `claude agents` view; for codex it is a plain kill. Then
 /// marks the row `archived` and drops it from the live registry. The
 /// conversation transcript is preserved. Reversible (cctui-side) via
 /// `unarchive_session`, though the underlying claude job is gone by then.
@@ -2187,8 +2187,8 @@ async fn archive_one(state: &AppState, session_id: &str) -> Result<(), sqlx::Err
         cctui_proto::adapter::AdapterCommand::Remove { local_id: session_id.to_string() },
     )
     .await;
-    // Archive the session AND any Task-tool subagents nested under it
-    // (CCT-141): a parent's children should never outlive it in the list.
+    // Archive the session AND any Task-tool subagents nested under it:
+    // a parent's children should never outlive it in the list.
     // Subagents are observe-only (no worker), so they need no `claude rm` —
     // only the parent does, handled by the dispatch above. Archiving a
     // *child* does not touch the parent (no `parent_id` cascade upward).
@@ -2246,7 +2246,7 @@ async fn unarchive_one(state: &AppState, session_id: &str) -> Result<(), sqlx::E
     Ok(())
 }
 
-/// Pin (star) a session (CCT-267): it sorts above everything in the live list
+/// Pin (star) a session: it sorts above everything in the live list
 /// and is exempt from the auto-archive reaper regardless of heartbeat age.
 /// Pinning an already-archived session also un-archives it so it reappears.
 pub async fn pin_session(
@@ -2358,7 +2358,7 @@ pub struct BatchIds {
 }
 
 /// `POST /api/v1/sessions/archive` — archive many sessions in one request
-/// (CCT-172, multi-select). Each id is processed via [`archive_one`]; a per-id
+/// (multi-select). Each id is processed via [`archive_one`]; a per-id
 /// failure is logged but does not abort the rest of the batch. Idempotent:
 /// re-archiving an already-archived id is a no-op.
 // Linear batch loop with per-id error handling; complexity is per-id, not nesting.
@@ -2424,7 +2424,7 @@ pub async fn set_session_policy(
     Ok(StatusCode::OK)
 }
 
-/// CCT-110: normalize a session's last-message text for the sessions
+/// normalize a session's last-message text for the sessions
 /// table. Collapses every run of ASCII/Unicode whitespace (newlines,
 /// tabs, NBSP) into a single space so multi-line snippets don't blow
 /// up row height when CSS doesn't fully suppress wrapping, and caps at
@@ -2697,7 +2697,7 @@ mod tests {
         assert_eq!(bucket4(Some("active"), None, None, None), Bucket::Working);
         assert_eq!(bucket4(None, Some("stopped"), None, None), Bucket::Done);
         assert_eq!(bucket4(None, None, Some("success"), None), Bucket::Done);
-        // CCT-488: a durable soft-limit block forces Blocked even over an
+        // a durable soft-limit block forces Blocked even over an
         // otherwise-Done/active session.
         assert_eq!(
             bucket4(Some("active"), None, Some("success"), Some("rate-limited")),
