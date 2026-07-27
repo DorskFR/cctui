@@ -1313,6 +1313,16 @@ result_ready() {
 _SESSIONS_URL="${CCTUI_BASE_URL%/}/api/v1/sessions"
 _PROBE_BODY=/tmp/cctui-liveness-probe.json
 WORKER_LIVENESS_POLL_SECS="${WORKER_LIVENESS_POLL_SECS:-10}"
+# The server folds TWO different things into `inactive` (routes/sessions.rs): a
+# real SessionEnded deregistration, and a heartbeat merely older than its 5m
+# STATUS_WINDOW. Only the first is death. The heartbeat is bumped by adapter
+# events alone, so one long blocking tool call — a `codex-run` over 5m — silences
+# it and reads identical to a crash. Tell the two apart by the heartbeat's own
+# age, and give a merely-quiet session this much slack before giving up on it.
+WORKER_LIVENESS_STALE_SECS="${WORKER_LIVENESS_STALE_SECS:-1800}"
+# Mirrors the server's STATUS_WINDOW_SECS; only used to attribute an `inactive`
+# to deregistration rather than to heartbeat staleness.
+WORKER_SERVER_STATUS_WINDOW_SECS="${WORKER_SERVER_STATUS_WINDOW_SECS:-300}"
 # Codex dispatch (CCT-643) runs headless `codex exec` inside the daemon and never
 # registers a server session, so the registration-sourced liveness probe and its
 # boot deadline can never fire for it. Its done-signal is RESULT_FILE and its
@@ -1324,12 +1334,16 @@ case "${TASK_ADAPTER:-}" in
     *)               _SEEN_ALIVE=0 ;;
 esac
 _PROBE_LOGGED_CODE=""
+_PROBE_LOGGED_NOHB=""
+_QUIET_LOGGED=""
 # Probe the daemon's server-side registration for OUR session id. Echoes:
 #   registered — our id present with status "active"/"new": the daemon holds
 #                this session live (registered, heartbeat within STATUS_WINDOW=5m).
-#   ended      — our id present but status != "active" (daemon deregistered it on
-#                SessionEnded -> row goes 'inactive', or heartbeat stale >5m).
+#   ended      — 'inactive' AND the heartbeat explains it as a real deregistration
+#                (still fresh) or as staleness past WORKER_LIVENESS_STALE_SECS.
 #                Only trusted as death after we have seen it registered once.
+#   quiet      — 'inactive' only because the heartbeat aged past the server's
+#                window: alive but mid-blocking-call. Keep waiting.
 #   unknown    — transient curl/non-200, or our id not (yet) in the roster;
 #                never read as death.
 # `-4` mirrors the callback curl (the worker forces IPv4 egress; CCT-468).
@@ -1347,13 +1361,40 @@ probe_session() {
         echo unknown
         return
     fi
-    _st=$(jq -r --arg id "$SESSION_ID" \
-        '.sessions[]? | select(.id == $id) | .status' "$_PROBE_BODY" 2>/dev/null | head -n1)
-    case "$_st" in
-        active|new) echo registered ;;
-        inactive)   echo ended ;;
-        *)          echo unknown ;;
+    _row=$(jq -r --arg id "$SESSION_ID" '
+        .sessions[]? | select(.id == $id)
+        | ((.last_heartbeat // "") | sub("\\.[0-9]+Z$"; "Z")
+           | (try fromdateiso8601 catch null)) as $hb
+        | "\(.status) \(if $hb == null then -1 else (now - $hb | floor) end)"
+    ' "$_PROBE_BODY" 2>/dev/null | head -n1)
+    _st=${_row%% *}
+    _hb_age=${_row##* }
+    case "$_hb_age" in
+        ''|*[!0-9-]*) _hb_age=-1 ;;
     esac
+    case "$_st" in
+        active|new) echo registered; return ;;
+        inactive)   ;;
+        *)          echo unknown; return ;;
+    esac
+    # An unreadable heartbeat can't clear the session, so keep the old
+    # fail-closed reading rather than blocking to activeDeadlineSeconds.
+    if [ "$_hb_age" -lt 0 ]; then
+        if [ "$_PROBE_LOGGED_NOHB" != 1 ]; then
+            log "wait: session ${SESSION_ID%%-*} inactive with unreadable last_heartbeat; treating as ended"
+            _PROBE_LOGGED_NOHB=1
+        fi
+        echo ended
+        return
+    fi
+    # Inside the server's window the row can only have gone inactive on an
+    # explicit SessionEnded — the heartbeat itself is still fresh.
+    if [ "$_hb_age" -lt "$WORKER_SERVER_STATUS_WINDOW_SECS" ] \
+        || [ "$_hb_age" -ge "$WORKER_LIVENESS_STALE_SECS" ]; then
+        echo ended
+        return
+    fi
+    echo quiet
 }
 
 await_dispatch_done() {
@@ -1401,6 +1442,13 @@ await_dispatch_done() {
                     if [ "$_SEEN_ALIVE" = 0 ]; then
                         _SEEN_ALIVE=1
                         log "wait: session ${SESSION_ID%%-*} registered with the daemon (seen alive)"
+                    fi
+                    _QUIET_LOGGED=""
+                    ;;
+                quiet)
+                    if [ "$_QUIET_LOGGED" != 1 ]; then
+                        log "wait: session ${SESSION_ID%%-*} quiet (heartbeat stale, no SessionEnded); holding up to ${WORKER_LIVENESS_STALE_SECS}s"
+                        _QUIET_LOGGED=1
                     fi
                     ;;
                 ended)

@@ -10,7 +10,8 @@
 #   * --skip-git-repo-check — CLI-only, no config.toml equivalent, and required
 #     because the workspace often isn't a git repo (codex exec exits 1 otherwise);
 #   * closes stdin (`codex exec` blocks on it otherwise);
-#   * bounds the run with `timeout` (default 500s, override CODEX_TIMEOUT).
+#   * bounds the run with `timeout` (default 500s, override CODEX_TIMEOUT);
+#   * stamps the launching session id into the rollout via the originator.
 #
 # It deliberately does NOT pass --sandbox: the pod is ALREADY a hardened sandbox
 # (Landlock + seccomp + guard-proxy egress), and codex's own inner sandbox is
@@ -45,6 +46,14 @@ case "${1:-}" in
         shift
         ;;
 esac
+
+# Name the launching cctui session in the rollout's `originator`, which the
+# daemon's log tailer reads to nest this run under it (CCT-749). Unnested, a
+# codex run outliving the server's 5m heartbeat window makes the launching
+# session look dead and the worker aborts mid-run.
+if [ -n "${SESSION_ID:-}" ]; then
+    export CODEX_INTERNAL_ORIGINATOR_OVERRIDE="cctui-parent.$SESSION_ID"
+fi
 
 exec timeout "${CODEX_TIMEOUT:-500}" codex exec \
     --skip-git-repo-check \
