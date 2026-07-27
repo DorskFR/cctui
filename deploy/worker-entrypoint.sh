@@ -1212,6 +1212,21 @@ run_supervised_daemon() {
         -- cctui-daemon run --no-auto-update "$@"
 }
 
+# SIGTERM the background daemon and wait up to WORKER_TEARDOWN_GRACE_SECS for it
+# to flush and exit; SIGKILL if it overstays. The graceful stop lets the daemon
+# push the transcript tail before the pod is reaped.
+stop_daemon_gracefully() {
+    kill -TERM "$DAEMON_PID" 2>/dev/null || return 0
+    _grace=0
+    while [ "$_grace" -lt "$WORKER_TEARDOWN_GRACE_SECS" ]; do
+        kill -0 "$DAEMON_PID" 2>/dev/null || { log "teardown: daemon flushed and exited"; return 0; }
+        sleep 1
+        _grace=$((_grace + 1))
+    done
+    log "teardown: daemon still up after ${WORKER_TEARDOWN_GRACE_SECS}s grace; SIGKILL"
+    kill -KILL "$DAEMON_PID" 2>/dev/null || true
+}
+
 # ── Phase 9: Dual-signal "work done" wait (CCT-483) ─────────────────────────
 # With `claude -p`, "work is done" (semantic) and "process is gone" (liveness)
 # were the same event, so `wait $PID` sufficed. `claude daemon` splits them:
@@ -1256,6 +1271,12 @@ WORKER_BOOT_DEADLINE_SECS="${WORKER_BOOT_DEADLINE_SECS:-120}"
 # the 24h activeDeadlineSeconds. Arm a countdown on a valid RESULT_FILE and exit
 # the wait even under guard once it elapses; guard-exit stays the fast path.
 WORKER_RESULT_GRACE_SECS="${WORKER_RESULT_GRACE_SECS:-60}"
+
+# Teardown flush grace: after the done-signal, SIGTERM the daemon and give it
+# this long to flush the transcript tail (final tool_use + error) to the server
+# before the pod is reaped, then SIGKILL. cctui-daemon handles SIGTERM as a
+# graceful shutdown; a hard kill here would drop the last events.
+WORKER_TEARDOWN_GRACE_SECS="${WORKER_TEARDOWN_GRACE_SECS:-10}"
 
 # Turn-complete marker (CCT-513): cctui-daemon writes
 # ~worker/.claude/jobs/<short>/dispatch_done once the session it dispatched at
@@ -1484,9 +1505,7 @@ if [ -n "${SESSION_ID:-}" ] && [ -n "${TASK_PAYLOAD_JSON:-}" ]; then
     run_supervised_daemon "$@" &
     DAEMON_PID=$!
     await_dispatch_done
-    # Best-effort: stop the daemon so the container winds down promptly. The
-    # EXIT trap (phase_callback) then POSTs the preserved RESULT_FILE verdict.
-    kill "$DAEMON_PID" 2>/dev/null || true
+    stop_daemon_gracefully
     exit 0
 fi
 

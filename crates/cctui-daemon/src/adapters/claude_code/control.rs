@@ -609,7 +609,10 @@ impl Driver {
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
-                () = self.shutdown.cancelled() => return Ok(()),
+                () = self.shutdown.cancelled() => {
+                    self.flush_before_teardown().await;
+                    return Ok(());
+                }
                 _ = tick.tick() => {
                     if let Err(err) = self.poll_once().await {
                         tracing::debug!(%err, "claude daemon poll failed (will retry)");
@@ -2789,6 +2792,18 @@ impl Driver {
                 self.server_marks.insert(loc.offset_key.clone(), local);
             }
         }
+    }
+
+    /// One last forward tail on shutdown so the tail of the conversation (a
+    /// final `tool_use` and its error) reaches the server before a dispatched
+    /// pod is reaped. Best-effort: the claude daemon usually outlives us at
+    /// teardown, but a failed poll must not stall the shutdown.
+    async fn flush_before_teardown(&mut self) {
+        if let Err(err) = self.poll_once().await {
+            tracing::debug!(%err, "final teardown tail failed");
+        }
+        self.reconcile_tail(true).await;
+        self.offsets.flush();
     }
 
     /// The offset to tail a session from, fast-forwarded to a server resume mark

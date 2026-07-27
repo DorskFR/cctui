@@ -49,6 +49,15 @@ const BATCH_WINDOW: Duration = Duration::from_millis(250);
 /// burst doesn't grow the pre-compression buffer unbounded.
 const BATCH_MAX_BYTES: usize = 1024 * 1024;
 
+/// On shutdown, keep draining adapter events this long past the last one so an
+/// in-flight final tail (the driver's teardown flush) still reaches the wire
+/// before the WS closes. Hard-capped by [`SHUTDOWN_DRAIN_MAX`].
+const SHUTDOWN_DRAIN_QUIET: Duration = Duration::from_millis(500);
+
+/// Absolute ceiling on the shutdown drain so a busy adapter can't hold teardown
+/// open indefinitely.
+const SHUTDOWN_DRAIN_MAX: Duration = Duration::from_secs(3);
+
 /// Sleep until `deadline`, or never when there's nothing buffered to flush.
 async fn wait_deadline(deadline: Option<tokio::time::Instant>) {
     match deadline {
@@ -163,6 +172,18 @@ impl Supervisor {
                 tokio::select! {
                     biased;
                     () = shutdown.cancelled() => {
+                        let frames = drain_for_shutdown(
+                            std::mem::take(&mut batch),
+                            &mut event_rx,
+                            &scrub,
+                        )
+                        .await;
+                        if !frames.is_empty()
+                            && let Ok(Prepared::Frame(text)) = prepare_send(&coalesce(frames))
+                        {
+                            self.counters.add(Subsystem::Forward, text.len() as u64);
+                            let _ = sink.send(Message::Text(text.into())).await;
+                        }
                         let _ = sink.send(Message::Close(None)).await;
                         return Ok(());
                     }
@@ -715,6 +736,36 @@ fn frame_size(frame: &DaemonFrameUp) -> usize {
     serde_json::to_vec(frame).map(|v| v.len()).unwrap_or(0)
 }
 
+/// Collect every event still owed to the wire at shutdown: the in-flight
+/// micro-batch, plus events the adapters emit during their teardown flush.
+/// Waits up to [`SHUTDOWN_DRAIN_QUIET`] for each next event and stops once the
+/// pipeline goes quiet or [`SHUTDOWN_DRAIN_MAX`] elapses, so a stuck adapter
+/// can't wedge teardown.
+async fn drain_for_shutdown(
+    batch: Vec<DaemonFrameUp>,
+    event_rx: &mut mpsc::Receiver<(String, AdapterEvent)>,
+    scrub: &CompiledPatterns,
+) -> Vec<DaemonFrameUp> {
+    let mut frames = batch;
+    let deadline = tokio::time::Instant::now() + SHUTDOWN_DRAIN_MAX;
+    loop {
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            break;
+        }
+        let step = SHUTDOWN_DRAIN_QUIET.min(deadline - now);
+        match tokio::time::timeout(step, event_rx.recv()).await {
+            Ok(Some((adapter_id, event))) => {
+                let event = scrub_event(event, scrub);
+                frames.push(DaemonFrameUp::Event { adapter_id, event });
+            }
+            // All senders dropped (adapters finished) or the pipeline went quiet.
+            Ok(None) | Err(_) => break,
+        }
+    }
+    frames
+}
+
 /// The wire form a prepared frame takes: a ready-to-send text message, or a
 /// chunked transfer to drive over the connection with ack/resume (CCT-740).
 enum Prepared {
@@ -1142,6 +1193,47 @@ mod tests {
         assert!(
             LIVENESS_TIMEOUT >= PING_INTERVAL * 2,
             "LIVENESS_TIMEOUT must tolerate >=2 missed pings to avoid flapping"
+        );
+    }
+
+    fn msg_event(local_id: &str) -> cctui_proto::adapter::AdapterEvent {
+        cctui_proto::adapter::AdapterEvent::Message {
+            local_id: local_id.to_owned(),
+            payload: serde_json::json!({ "text": "tail" }),
+        }
+    }
+
+    #[tokio::test]
+    async fn shutdown_drain_keeps_batch_and_flushes_late_tail() {
+        let scrub = compile_scrub(&cctui_proto::ws::SecretScrubConfig::default());
+        let (tx, mut rx) = mpsc::channel::<(String, cctui_proto::adapter::AdapterEvent)>(8);
+        // A late teardown-flush event lands after the drain begins.
+        tx.send(("claude-code".to_owned(), msg_event("late"))).await.unwrap();
+        drop(tx);
+        let batch = vec![synth_event(0)];
+        let frames = super::drain_for_shutdown(batch, &mut rx, &scrub).await;
+        assert_eq!(frames.len(), 2, "the in-flight batch plus the drained tail must survive");
+        let ids: Vec<String> = frames
+            .iter()
+            .map(|f| match f {
+                DaemonFrameUp::Event { event, .. } => super::event_local_id(event).to_owned(),
+                _ => panic!("drain must produce Event frames"),
+            })
+            .collect();
+        assert_eq!(ids, vec!["sess-0", "late"], "batch first, then the drained tail, in order");
+    }
+
+    #[tokio::test]
+    async fn shutdown_drain_stops_when_all_senders_drop() {
+        let scrub = compile_scrub(&cctui_proto::ws::SecretScrubConfig::default());
+        let (tx, mut rx) = mpsc::channel::<(String, cctui_proto::adapter::AdapterEvent)>(8);
+        drop(tx);
+        let started = tokio::time::Instant::now();
+        let frames = super::drain_for_shutdown(Vec::new(), &mut rx, &scrub).await;
+        assert!(frames.is_empty());
+        assert!(
+            started.elapsed() < super::SHUTDOWN_DRAIN_MAX,
+            "a closed channel must end the drain before the hard cap"
         );
     }
 }
