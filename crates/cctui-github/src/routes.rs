@@ -1,11 +1,11 @@
 //! GitHub HTTP handlers.
 //!
-//! GH-CONN-1 lands real connector CRUD on `/api/v1/github/connectors`: create
+//! lands real connector CRUD on `/api/v1/github/connectors`: create
 //! (encrypts the credential at rest with the vault key, same as the OAuth-account
 //! vault), list, update, delete, and an on-demand sync. The credential is
 //! **never** returned — list/get only surface a masked preview + whether a
 //! webhook secret is set. The webhook ingress (`triggers/github`) is implemented
-//! in [`crate::webhook`] (GH-CONN-2).
+//! in [`crate::webhook`].
 //!
 //! Auth: the nested GitHub router is wrapped (in `cctui-server::main`) with the
 //! same auth middleware as the rest of `/api/v1`, plus a thin layer that maps the
@@ -43,7 +43,7 @@ fn kind_from_str(s: &str) -> GithubCredentialKind {
 
 /// Resolve which user a connector operation targets. A user always acts as
 /// itself; the admin token has no user identity, so it must name the owner
-/// explicitly (mirrors the OAuth-account vault, CCT-251).
+/// explicitly (mirrors the OAuth-account vault).
 fn resolve_owner(ctx: &CallerIdentity, explicit: Option<Uuid>) -> Result<Uuid, ApiError> {
     if let Some(uid) = ctx.user_id {
         return Ok(uid);
@@ -294,8 +294,8 @@ pub async fn delete_connector(
 }
 
 /// `POST /api/v1/github/connectors/{id}/sync` — run the reconcile poll for one
-/// connector immediately, instead of waiting for the next scheduled tick
-/// (CCT-396). Scoped to the caller (admin may sync any). Returns the updated
+/// connector immediately, instead of waiting for the next scheduled tick.
+/// Scoped to the caller (admin may sync any). Returns the updated
 /// connector view, whose `last_polled_at`/`last_error` reflect this attempt — so
 /// a bad credential surfaces right away rather than only in the server log.
 pub async fn sync_connector(

@@ -1,9 +1,9 @@
-//! `POST /api/v1/sessions/spawn` (CCT-95).
+//! `POST /api/v1/sessions/spawn`.
 //!
 //! Pushes an `AdapterCommand::Spawn` to the targeted daemon over the
 //! existing WS command channel. The daemon's adapter resolves the spawn
 //! against its underlying agent (claude-code dispatches via the
-//! `claude daemon` control socket; codex parity follows in CCT-98).
+//! `claude daemon` control socket; codex parity follows in).
 //!
 //! Failure modes:
 //!   * Daemon offline → 503 with hint.
@@ -34,7 +34,7 @@ fn bad_request(msg: impl Into<String>) -> (StatusCode, Json<ApiError>) {
     (StatusCode::BAD_REQUEST, Json(ApiError { error: msg.into() }))
 }
 
-/// `POST /api/v1/sessions/spawn` — `multipart/form-data` (CCT-203).
+/// `POST /api/v1/sessions/spawn` — `multipart/form-data`.
 ///
 /// Parts:
 ///   * `request` — the JSON [`SpawnRequest`] (machine, cwd, prompt, env, …).
@@ -60,7 +60,7 @@ pub async fn spawn_session(
                 .map_err(|e| bad_request(format!("invalid SpawnRequest JSON: {e}")))
         })?;
 
-    // Draft (CCT-394): stage the spawn payload as a `draft` session row and stop
+    // Draft: stage the spawn payload as a `draft` session row and stop
     // — no env minted, no daemon dispatch, no model turn. Launched later via
     // `POST /sessions/{id}/launch`.
     if req.save_draft {
@@ -71,7 +71,7 @@ pub async fn spawn_session(
 }
 
 /// Dispatch a spawn to the targeted daemon. Shared by the immediate spawn path
-/// and the draft-launch path (CCT-394) so account env is minted + the command
+/// and the draft-launch path so account env is minted + the command
 /// dispatched identically. Validates env keys + machine ownership, mints any
 /// account gateway env, and pushes `AdapterCommand::Spawn` over the WS.
 #[allow(clippy::too_many_lines)]
@@ -81,7 +81,7 @@ async fn dispatch_spawn(
     req: SpawnRequest,
     uploads: Vec<cctui_proto::adapter::BootstrapFile>,
 ) -> Result<(StatusCode, Json<SpawnResponse>), (StatusCode, Json<ApiError>)> {
-    // Validate env keys (CCT-202): shell-style `^[A-Z_][A-Z0-9_]*$`.
+    // Validate env keys: shell-style `^[A-Z_][A-Z0-9_]*$`.
     for key in req.env.keys() {
         let ok = !key.is_empty()
             && key.bytes().next().is_some_and(|b| b == b'_' || b.is_ascii_uppercase())
@@ -110,17 +110,17 @@ async fn dispatch_spawn(
         return Err((StatusCode::FORBIDDEN, Json(ApiError { error: "not your machine".into() })));
     }
 
-    // Replica-aware forwarding (CCT-567): if a live peer replica holds this
+    // Replica-aware forwarding: if a live peer replica holds this
     // machine's daemon WS, hand the request over before any command/env
 
     let adapter_id = req.adapter_id.clone().unwrap_or_else(|| "claude-code".to_owned());
 
-    // OAuth account selection (CCT-232): if the caller picked a named account,
+    // OAuth account selection: if the caller picked a named account,
     // mint a session-scoped gateway token bound to it and inject the gateway
     // base-url + token into the worker env. Raw OAuth tokens never leave the
     // server.
     //
-    // CCT-446: for claude-code we pre-mint the session id here and hand it to
+    // For claude-code we pre-mint the session id here and hand it to
     // the worker as `--session-id` (mirroring the fork path), so the token can
     // be bound to the *real* session id the worker registers as — rather than
     // the command_id, which the worker never knows and so never reconciles
@@ -135,21 +135,21 @@ async fn dispatch_spawn(
     // id for claude, else the command_id (legacy behaviour).
     let token_session_id = pre_session_id.unwrap_or(command_id).to_string();
     let mut env = req.env.clone();
-    // The session's model before any per-account remapping (CCT-406). When a
+    // The session's model before any per-account remapping. When a
     // named account is selected below, its alias map can rewrite this to a
     // concrete model id (e.g. `opus` → `claude-opus-4-8[1m]`).
     let mut model = req.model.clone().filter(|m| !m.trim().is_empty());
-    // Session-provided effort/permission_mode pass through as-is. The CCT-539
-    // per-account launch defaults were dropped with the CCT-558 schema split
-    // (superseded by per-(machine, cwd) client memory, CCT-561); an unset field
+    // Session-provided effort/permission_mode pass through as-is. The
+    // per-account launch defaults were dropped with the schema split
+    // (superseded by per-(machine, cwd) client memory); an unset field
     // falls back to the adapter's/claude's own default.
     let effort = req.effort.clone().filter(|e| !e.trim().is_empty());
     let permission_mode = req.permission_mode;
     // Accounts are user-owned. The admin token has no user identity, so it
-    // resolves the account against the target machine's owner (CCT-251) —
+    // resolves the account against the target machine's owner —
     // the session runs on that user's machine with that user's account.
     let uid = ctx.owner_filter().unwrap_or(owner);
-    // Single source of truth for credentials (CCT-574): an unspecified account
+    // Single source of truth for credentials: an unspecified account
     // no longer silently means "run on whatever ambient login the machine
     // has" — that spawned sessions whose traffic bypassed the gateway (no
     // usage attribution, no soft limits, no langfuse capture) and, on a
@@ -170,13 +170,13 @@ async fn dispatch_spawn(
         } else {
             format!("account {account_name:?}")
         };
-        // Resolution is by (account identity, harness family) (CCT-559): the
+        // Resolution is by (account identity, harness family): the
         // adapter names the family, and the identity carries at most one
-        // provider row per family (CCT-558). The request's legacy `provider`
+        // provider row per family. The request's legacy `provider`
         // hint is no longer consulted.
         let family = crate::routes::gateway::Family::from_adapter(&adapter_id);
         // Resolve the model through this account's alias map
-        // (CCT-406) before it reaches the worker — a no-op when the account has no
+        // before it reaches the worker — a no-op when the account has no
         // matching alias.
         if let Some(m) = model.as_deref() {
             model = Some(
@@ -282,7 +282,7 @@ async fn dispatch_spawn(
 
 /// Resolve `req.machine_id` (a UUID) to the owning user, enforcing
 /// `admin || caller == owner`. Returns the machine UUID on success.
-/// Pick the account to bind when a spawn names none (CCT-574).
+/// Pick the account to bind when a spawn names none.
 ///
 /// Sessions used to launch UNBOUND in this case — their traffic skipped the
 /// gateway entirely (no usage attribution, no soft limits, no langfuse trace)
@@ -326,7 +326,7 @@ async fn default_account_name(
     resolve_default_account(&names, user_id, adapter_id)
 }
 
-/// The account path a spawn resolves to before any DB default lookup (CCT-582).
+/// The account path a spawn resolves to before any DB default lookup.
 #[derive(Debug, PartialEq, Eq)]
 enum AccountDecision {
     /// The caller named an account explicitly — always binds it.
@@ -335,12 +335,12 @@ enum AccountDecision {
     /// `default_account_name`, run on the machine's own ambient login.
     Unbound,
     /// No account named, no unbound request: fall back to the single
-    /// matching-family account, if any (CCT-574 auto-bind).
+    /// matching-family account, if any (auto-bind).
     ResolveDefault,
 }
 
 /// Pure so the "`no_account` bypasses default resolution" contract is testable
-/// without a DB (CCT-582). A named account wins even if `no_account` is set, so
+/// without a DB. A named account wins even if `no_account` is set, so
 /// a stale flag can never suppress an explicit pick.
 fn decide_account(account: Option<&str>, no_account: bool) -> AccountDecision {
     match account.map(str::trim).filter(|a| !a.is_empty()) {
@@ -350,7 +350,7 @@ fn decide_account(account: Option<&str>, no_account: bool) -> AccountDecision {
     }
 }
 
-/// The 0/1/N decision over the family-filtered candidate names (CCT-574), split
+/// The 0/1/N decision over the family-filtered candidate names, split
 /// from the DB query so it is unit-testable.
 fn resolve_default_account(
     names: &[String],
@@ -394,7 +394,7 @@ async fn resolve_owned_machine(
     Ok(machine_uuid)
 }
 
-/// Persist a spawn payload as a `draft` session row (CCT-394). No env is stored
+/// Persist a spawn payload as a `draft` session row. No env is stored
 /// (re-entered at launch), no daemon dispatch happens, and the row is excluded
 /// from liveness/reaping via its sticky `draft` status. Returns the new draft
 /// session id in `command_id` with `status = "draft"`.
@@ -453,7 +453,7 @@ async fn save_draft(
     ))
 }
 
-/// `POST /api/v1/sessions/{id}/launch` (CCT-394). Promote a draft to a live
+/// `POST /api/v1/sessions/{id}/launch`. Promote a draft to a live
 /// spawn: read the stored payload, merge the freshly-entered env, dispatch the
 /// real spawn (minting account gateway env), then delete the draft row. The
 /// live session appears via the daemon's normal registration.
@@ -508,7 +508,7 @@ pub async fn launch_draft(
     Ok(outcome)
 }
 
-/// `POST /api/v1/sessions/{id}/discard` (CCT-394). Delete a draft session row.
+/// `POST /api/v1/sessions/{id}/discard`. Delete a draft session row.
 /// Only acts on `draft` rows so it can never delete a real session.
 pub async fn discard_draft(
     State(state): State<AppState>,
@@ -529,7 +529,7 @@ pub async fn discard_draft(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `POST /api/v1/sessions/{id}/files` — `multipart/form-data` (CCT-236).
+/// `POST /api/v1/sessions/{id}/files` — `multipart/form-data`.
 ///
 /// Mid-chat file attachments. Same multipart shape + caps as `/sessions/spawn`
 /// (one shared helper, [`crate::uploads::parse_upload_multipart`]); files are

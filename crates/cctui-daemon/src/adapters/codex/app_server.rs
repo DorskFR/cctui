@@ -1,4 +1,4 @@
-//! Codex `app-server` driver (CCT-98).
+//! Codex `app-server` driver.
 //!
 //! Drives sessions that cctui *spawns*, as opposed to the log-tail
 //! ([`super::log_tail`]) which passively observes sessions started outside
@@ -12,7 +12,7 @@
 //! → `turn/start { threadId, input }`. The pinned/minimum supported Codex
 //! version and the retained JSON Schema live in [`super::contract`]. A stale
 //! cctui-owned thread is revived
-//! with `thread/resume { threadId }` before the next `turn/start` (CCT-229).
+//! with `thread/resume { threadId }` before the next `turn/start`.
 //! Streaming arrives as id-less
 //! notifications (`item/completed`, `turn/completed`, …); tool approvals
 //! arrive as server→client *requests* (they carry both `method` and `id`)
@@ -47,7 +47,7 @@ const ID_THREAD_START: i64 = 2;
 const RUN_BASE: i64 = 100;
 
 /// How many trailing `codex app-server` stderr lines to retain for crash
-/// diagnostics. The app-server logs to stderr (CCT-98); when it dies
+/// diagnostics. The app-server logs to stderr; when it dies
 /// unexpectedly these lines are the only clue why, so they are folded into
 /// the [`EndReason::Crashed`] detail instead of being discarded to
 /// `/dev/null`.
@@ -98,12 +98,12 @@ pub enum Incoming {
     /// verbatim in the reply; `request_id` is the stable id surfaced to the
     /// TUI via [`AdapterEvent::PermissionRequest`].
     Approval { rpc_id: Value, request_id: String, tool: String, kind: ApprovalKind, input: Value },
-    /// `item/tool/requestUserInput` (CCT-637): codex's `AskUserQuestion`.
+    /// `item/tool/requestUserInput`: codex's `AskUserQuestion`.
     /// `question_ids` are needed to key the [`ToolRequestUserInputResponse`].
     Question { rpc_id: Value, question: String, questions: Value, question_ids: Vec<String> },
     /// A server→client request cctui cannot fulfil. It carries an `id`, so
     /// leaving it unanswered blocks codex forever; `reply` is the decline/error
-    /// to write back immediately instead (CCT-637).
+    /// to write back immediately instead.
     Decline { reply: Value },
     /// A notification we mapped onto an adapter event.
     Event(AdapterEvent),
@@ -139,7 +139,7 @@ fn classify_server_request(method: &str, v: &Value) -> Incoming {
         "execCommandApproval" => (ApprovalKind::ApprovedDenied, "shell"),
         "item/tool/requestUserInput" => return classify_user_input(rpc_id, &params),
         // Known-but-unsupported requests get their schema-correct decline reply
-        // so codex isn't blocked forever (CCT-637); everything else (dynamic
+        // so codex isn't blocked forever; everything else (dynamic
         // tool call, token refresh, attestation, future methods) gets a generic
         // method-not-supported error.
         "mcpServer/elicitation/request" => {
@@ -157,8 +157,8 @@ fn classify_server_request(method: &str, v: &Value) -> Incoming {
     Incoming::Approval { rpc_id, request_id, tool: tool.to_string(), kind, input: params }
 }
 
-/// Classify an `item/tool/requestUserInput` request into a [`Incoming::Question`]
-/// (CCT-637). Flattens the per-question `header`/`question` into a single text
+/// Classify an `item/tool/requestUserInput` request into a [`Incoming::Question`].
+/// Flattens the per-question `header`/`question` into a single text
 /// (for the flattened claude field) while passing the raw `questions` array
 /// through for the interactive card, and collects the question ids the answer
 /// must be keyed on.
@@ -185,14 +185,14 @@ fn classify_user_input(rpc_id: Value, params: &Value) -> Incoming {
     Incoming::Question { rpc_id, question, questions, question_ids }
 }
 
-/// Decline an MCP `elicitation/create` request (CCT-637). cctui does not render
+/// Decline an MCP `elicitation/create` request. cctui does not render
 /// the typed form, so it answers `decline` — the schema's neutral "user did not
 /// provide input" action — rather than leaving the turn blocked.
 fn elicitation_decline(rpc_id: &Value) -> Value {
     json!({"jsonrpc": "2.0", "id": rpc_id, "result": {"action": "decline"}})
 }
 
-/// Decline a sandbox-permission elevation request (CCT-637). Granting nothing
+/// Decline a sandbox-permission elevation request. Granting nothing
 /// (an empty `GrantedPermissionProfile`) is the deny: codex continues the turn
 /// without the extra permissions instead of waiting on a reply that never comes.
 fn permissions_decline(rpc_id: &Value) -> Value {
@@ -209,7 +209,7 @@ fn request_not_supported(rpc_id: &Value, method: &str) -> Value {
     })
 }
 
-/// Reply to an `item/tool/requestUserInput` request (CCT-637). The single free
+/// Reply to an `item/tool/requestUserInput` request. The single free
 /// text answer is mapped onto every question id — requestUserInput forms are
 /// single-question in practice, and codex feeds the string straight to the tool.
 fn user_input_reply(rpc_id: &Value, question_ids: &[String], answer: &str) -> Value {
@@ -221,15 +221,15 @@ fn user_input_reply(rpc_id: &Value, question_ids: &[String], answer: &str) -> Va
 fn map_notification(local_id: &str, method: &str, v: &Value) -> Incoming {
     match method {
         // Emit on `item/completed` only; `item/started` and `item/<kind>/delta`
-        // are consumed by [`ItemAccumulator`] in the driver, not here (CCT-638).
+        // are consumed by [`ItemAccumulator`] in the driver, not here.
         "item/completed" => map_item_completed(local_id, v),
-        // Thread liveness/attention → Status (drives the dots + ✋, CCT-124).
+        // Thread liveness/attention → Status (drives the dots + ✋).
         "thread/status/changed" => map_status(local_id, v),
         // Per-turn token usage → TokenUsage.
         "thread/tokenUsage/updated" => map_token_usage(local_id, v),
-        // Thread rename → Status carrying just the name (display gated on CCT-113).
+        // Thread rename → Status carrying just the name (display gated on).
         "thread/name/updated" => map_name(local_id, v),
-        // Structured turn errors → failed Status (CCT-631).
+        // Structured turn errors → failed Status.
         "error" => map_error_notification(local_id, v),
         "turn/completed" => map_turn_completed(local_id, v),
         _ => Incoming::Ignored,
@@ -261,7 +261,7 @@ fn map_error_notification(local_id: &str, v: &Value) -> Incoming {
 }
 
 /// Map `turn/completed` whose `turn.status == "failed"` → failed
-/// [`AdapterEvent::Status`] carrying the turn error message (CCT-631).
+/// [`AdapterEvent::Status`] carrying the turn error message.
 /// Successful turns stay ignored: idle status arrives via
 /// `thread/status/changed`.
 fn map_turn_completed(local_id: &str, v: &Value) -> Incoming {
@@ -365,7 +365,7 @@ fn map_token_usage(local_id: &str, v: &Value) -> Incoming {
 
 /// Map `thread/name/updated` → [`AdapterEvent::Status`] carrying just the
 /// name. Adapter-level parity with claude; the web display of the name is
-/// tracked separately (CCT-113).
+/// tracked separately.
 fn map_name(local_id: &str, v: &Value) -> Incoming {
     let Some(name) = v.pointer("/params/name").and_then(Value::as_str) else {
         return Incoming::Ignored;
@@ -408,7 +408,7 @@ pub fn thread_info(result: &Value) -> Option<ThreadInfo> {
     })
 }
 
-/// Build the documented `initialize` request (CCT-630). Capabilities are
+/// Build the documented `initialize` request. Capabilities are
 /// declared explicitly rather than left to defaults so a protocol change that
 /// flips a default is visible here: cctui speaks the stable (non-experimental)
 /// API and does not participate in upstream attestation.
@@ -481,8 +481,8 @@ fn thread_resume_req(thread_id: &str, cwd: &str) -> Value {
     })
 }
 
-/// Fork an existing thread into a brand-new one seeded from its history
-/// (CCT-302). The app-server returns a fresh `thread` (its own id) just like
+/// Fork an existing thread into a brand-new one seeded from its history.
+/// The app-server returns a fresh `thread` (its own id) just like
 /// `thread/start`, so the response is parsed through the same `ID_THREAD_START`
 /// path. Model/effort overrides ride on the subprocess `-c` flags (set in the
 /// command pump), mirroring the spawn path, so they apply to the forked thread.
@@ -504,7 +504,7 @@ fn thread_name_set_req(id: i64, thread_id: &str, name: &str) -> Value {
     })
 }
 
-/// A native codex thread lifecycle operation (CCT-639). Each maps to a single
+/// A native codex thread lifecycle operation. Each maps to a single
 /// JSON-RPC method taking `{ threadId }`. Archive/unarchive are wired to the
 /// CCTUI archive/reopen actions; `Delete` implements the third native op for
 /// parity (no CCTUI destructive-delete action wires to it yet).
@@ -537,7 +537,7 @@ fn thread_lifecycle_req(id: i64, op: LifecycleOp, thread_id: &str) -> Value {
 }
 
 /// Whether a `thread/{archive,unarchive,delete}` JSON-RPC error can be treated
-/// as success for idempotency (CCT-639): the thread is already in the target
+/// as success for idempotency: the thread is already in the target
 /// state or no longer exists, so CCTUI and native lifecycle state can't wedge
 /// each other. Matched on the codex error text since the app-server exposes no
 /// stable machine codes for these.
@@ -561,7 +561,7 @@ pub fn is_idempotent_lifecycle_error(op: LifecycleOp, err: &str) -> bool {
 }
 
 /// Run a native codex thread lifecycle op via a short-lived stdio
-/// `codex app-server` (CCT-639), mirroring the one-shot pattern the
+/// `codex app-server`, mirroring the one-shot pattern the
 /// [`super::thread_list`] inventory poll uses. Spawns the app-server, sends
 /// `initialize` → `initialized` → the lifecycle RPC, correlates the response by
 /// id, and reaps the process. Idempotent: an "already in target state" /
@@ -633,7 +633,7 @@ pub async fn run_thread_lifecycle(
     }
 }
 
-/// Build the `input` array for a turn (CCT-636). Staged image attachments ride
+/// Build the `input` array for a turn. Staged image attachments ride
 /// as native `localImage` items so codex feeds the picture to the model; every
 /// other staged file keeps the path/text semantics — its absolute path is
 /// listed in the text item, matching the adapter-neutral mid-chat injection.
@@ -671,11 +671,11 @@ fn turn_input_items(text: &str, attachments: &[String]) -> Vec<Value> {
     items
 }
 
-/// Build a `turn/start`. An in-place model/effort change (CCT-635) rides here
+/// Build a `turn/start`. An in-place model/effort change rides here
 /// as a per-turn override that codex promotes to the later default — the stable
 /// alternative to the `experimentalApi`-gated `thread/settings/update`. Only
 /// set fields are sent so an unchanged setting keeps codex's own default.
-/// Staged attachments (CCT-636) become native image / path-in-text inputs.
+/// Staged attachments become native image / path-in-text inputs.
 fn turn_start_req(
     id: i64,
     thread_id: &str,
@@ -696,12 +696,12 @@ fn turn_start_req(
     json!({"jsonrpc": "2.0", "id": id, "method": "turn/start", "params": params})
 }
 
-/// Steer a user message into the currently active turn (CCT-634). Unlike
+/// Steer a user message into the currently active turn. Unlike
 /// `turn/start` — which codex rejects while a turn is in flight — `turn/steer`
 /// appends the input to the running turn. `expectedTurnId` is a precondition:
 /// the request fails if it no longer matches the active turn (it just ended),
 /// which the driver recovers from by falling back to `turn/start`. Attachments
-/// (CCT-636) build the same native image / path-in-text inputs as a start.
+/// build the same native image / path-in-text inputs as a start.
 fn turn_steer_req(
     id: i64,
     thread_id: &str,
@@ -726,7 +726,7 @@ fn turn_interrupt_req(id: i64, thread_id: &str) -> Value {
 }
 
 /// A turn lifecycle transition parsed from a `turn/started` or `turn/completed`
-/// notification (CCT-634). The driver tracks the active turn id from these so a
+/// notification. The driver tracks the active turn id from these so a
 /// follow-up message is routed via `turn/steer` into the running turn instead
 /// of a second `turn/start` codex would reject.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -748,7 +748,7 @@ pub fn turn_lifecycle(v: &Value) -> Option<TurnLifecycle> {
     }
 }
 
-/// Tracks the session's in-flight turn (CCT-634). `turn/started` sets the
+/// Tracks the session's in-flight turn. `turn/started` sets the
 /// active turn; a `turn/completed` for the SAME turn clears it. The active id
 /// selects `turn/steer` (with it as `expectedTurnId`) over `turn/start`.
 #[derive(Debug, Default)]
@@ -778,7 +778,7 @@ impl ActiveTurn {
     }
 }
 
-/// Accumulates streamed item deltas by item id (CCT-638). Codex ships an item
+/// Accumulates streamed item deltas by item id. Codex ships an item
 /// as `item/started` → `item/<kind>/delta`* → `item/completed`. The completed
 /// item is authoritative for rendering — mirroring the claude adapter, which
 /// drops partial SSE deltas in favour of the coalesced final frame — so deltas
@@ -903,7 +903,7 @@ impl ItemAccumulator {
     }
 }
 
-/// How a user message is delivered given the current active turn (CCT-634):
+/// How a user message is delivered given the current active turn:
 /// steer into a running turn, else start a fresh one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PromptDispatch {
@@ -918,7 +918,7 @@ pub fn prompt_dispatch(active: &ActiveTurn) -> PromptDispatch {
     })
 }
 
-/// How to recover from a `turn/steer` failure (CCT-634). A turn that just ended
+/// How to recover from a `turn/steer` failure. A turn that just ended
 /// (the common `expectedTurnId` race) frees the turn slot, so the message is
 /// retried as a fresh `turn/start`; a turn that is running but non-steerable
 /// (`/review` or manual `/compact`, `activeTurnNotSteerable`) would reject a
@@ -944,7 +944,7 @@ fn approval_reply(rpc_id: &Value, kind: ApprovalKind, allow: bool) -> Value {
     json!({"jsonrpc": "2.0", "id": rpc_id, "result": {"decision": kind.decision(allow)}})
 }
 
-/// One outstanding outbound JSON-RPC request (CCT-631).
+/// One outstanding outbound JSON-RPC request.
 #[derive(Debug)]
 pub struct PendingRpc {
     pub method: String,
@@ -966,8 +966,8 @@ impl PendingRpc {
     }
 }
 
-/// Correlation table for outbound JSON-RPC requests, keyed by request id
-/// (CCT-631). The driver inserts before each write, resolves on the matching
+/// Correlation table for outbound JSON-RPC requests, keyed by request id.
+/// The driver inserts before each write, resolves on the matching
 /// response (propagating `error` objects as failures), expires entries past
 /// their deadline, and drains everything when the app-server process exits.
 #[derive(Debug, Default)]
@@ -1002,7 +1002,7 @@ impl PendingRpcs {
         self.inner.drain().collect()
     }
 
-    /// Methods of every outstanding request (CCT-640 diagnostics).
+    /// Methods of every outstanding request (diagnostics).
     #[must_use]
     pub fn pending_methods(&self) -> Vec<String> {
         self.inner.values().map(|p| p.method.clone()).collect()
@@ -1040,7 +1040,7 @@ fn response_outcome(v: &Value) -> Result<Value, String> {
 /// Holds the spawn/fork `command_id` until the launch outcome is known: the
 /// success ack is deferred to `thread/start`/`thread/resume`/`thread/fork`
 /// succeeding, and every failure path (JSON-RPC error, timeout, process exit,
-/// spawn error) resolves it as a failure instead (CCT-631). One-shot: the
+/// spawn error) resolves it as a failure instead. One-shot: the
 /// first resolution wins, later calls are no-ops.
 struct SpawnAck {
     command_id: Option<Uuid>,
@@ -1086,21 +1086,21 @@ pub enum SessionCommand {
     /// that lets codex flush its rollout file; anything else (incl. `None`)
     /// falls back to an immediate SIGKILL.
     Kill { signal: Option<i32> },
-    /// Interrupt the in-flight turn but KEEP the session alive (CCT-210):
+    /// Interrupt the in-flight turn but KEEP the session alive:
     /// sends `turn/interrupt` WITHOUT terminating the app-server, so the
     /// thread stays resumable. Distinct from `Kill`, which interrupts *and*
     /// terminates the child. `command_id` correlates the `turn/interrupt`
-    /// JSON-RPC outcome back to an [`AdapterEvent::CommandResult`] (CCT-631).
+    /// JSON-RPC outcome back to an [`AdapterEvent::CommandResult`].
     Interrupt { command_id: Option<Uuid> },
-    /// Change the model and/or reasoning effort of the running thread in place
-    /// (CCT-303): records the override so the next `turn/start` carries it (a
-    /// stable per-turn override codex promotes to the later default, CCT-635),
+    /// Change the model and/or reasoning effort of the running thread in place:
+    /// records the override so the next `turn/start` carries it (a
+    /// stable per-turn override codex promotes to the later default),
     /// and echoes the resolved values back via [`AdapterEvent::Status`] so the
     /// webui chip updates live. `command_id` correlates the outcome back as an
     /// [`AdapterEvent::CommandResult`].
     SetModel { model: Option<String>, effort: Option<String>, command_id: Option<Uuid> },
     /// Gather a point-in-time snapshot of the live driver's internal state for
-    /// the adapter-neutral diagnose report (CCT-640) and return it on `reply`.
+    /// the adapter-neutral diagnose report and return it on `reply`.
     Diagnose { reply: mpsc::Sender<CodexLiveSnapshot> },
 }
 
@@ -1112,7 +1112,7 @@ impl SessionCommand {
 }
 
 /// Point-in-time snapshot of a live codex session's internal driver state,
-/// gathered on demand for the diagnose report (CCT-640).
+/// gathered on demand for the diagnose report.
 #[derive(Debug, Clone, Default)]
 pub struct CodexLiveSnapshot {
     pub codex_version: Option<String>,
@@ -1131,7 +1131,7 @@ pub type LiveSessionRegistry = Arc<Mutex<HashMap<String, mpsc::Sender<SessionCom
 
 /// Durable-in-daemon metadata for cctui-owned Codex threads. This is not a
 /// process handle; it is the minimum launch context needed to call
-/// `thread/resume` after a clean app-server exit (CCT-229). The log-tail also
+/// `thread/resume` after a clean app-server exit. The log-tail also
 /// uses this map as the ownership set so it does not double-ingest these
 /// rollout files while they are hibernated.
 #[derive(Debug, Clone)]
@@ -1139,18 +1139,18 @@ pub struct SessionRecord {
     pub cfg: AppServerConfig,
     pub cwd: String,
     pub name: Option<String>,
-    /// Resolved launch-time env (CCT-461) — chiefly the gateway-routing
+    /// Resolved launch-time env — chiefly the gateway-routing
     /// credential pulled from the server's durable `sessions.account_id`
     /// binding. Stored so a resume relaunches the codex app-server with the
     /// same gateway env instead of starting env-less and 401ing (the codex
-    /// analogue of the claude CCT-460 cold-launch bug).
+    /// analogue of the claude cold-launch bug).
     pub env: std::collections::BTreeMap<String, String>,
 }
 
 /// `local_id` → cctui-owned Codex thread metadata.
 pub type SessionRegistry = Arc<Mutex<HashMap<String, SessionRecord>>>;
 
-// `Resume` carries a full `SessionRecord` (now incl. the CCT-461 launch env);
+// `Resume` carries a full `SessionRecord` (now incl. the launch env);
 // the size gap to the unit `Delivered`/`Missing` variants is intrinsic and the
 // value is short-lived (built, matched, dropped per command), so boxing it
 // would add an allocation for no real benefit.
@@ -1196,7 +1196,7 @@ pub struct AppServerConfig {
     /// (the default) makes Codex ask for approval on commands so the relay
     /// has something to forward; `"never"` disables prompts.
     pub approval_policy: String,
-    /// Sandbox mode passed via `-c sandbox_mode=...` (CCT-139). `"read-only"`
+    /// Sandbox mode passed via `-c sandbox_mode=...`. `"read-only"`
     /// and `"workspace-write"` wrap commands in bubblewrap; on a host whose
     /// kernel forbids unprivileged user namespaces those fail to launch, so a
     /// per-host default of `"danger-full-access"` (no sandbox) is required
@@ -1206,10 +1206,10 @@ pub struct AppServerConfig {
     /// (codex: `minimal`/`low`/`medium`/`high`). `None` keeps the codex
     /// default. Set per-spawn from the spawn request.
     pub reasoning_effort: Option<String>,
-    /// Model passed via `-c model="…"` (CCT-274). `None` keeps the codex
+    /// Model passed via `-c model="…"`. `None` keeps the codex
     /// default. Set per-spawn from the spawn request.
     pub model: Option<String>,
-    /// Whether to refresh the codex model catalog on session start (CCT-702)
+    /// Whether to refresh the codex model catalog on session start
     /// by issuing `model/list` over this session's authenticated app-server
     /// connection. `false` (`model_catalog = false`) disables the refresh.
     pub model_catalog: bool,
@@ -1231,12 +1231,12 @@ impl Default for AppServerConfig {
 impl AppServerConfig {
     /// The `-c key="value"` overrides passed to `codex app-server` for a spawn.
     /// This is the COMPLETE set of config knobs cctui sets — kept as a single
-    /// function so the "Fast mode is never silently enabled" guarantee (CCT-339)
+    /// function so the "Fast mode is never silently enabled" guarantee
     /// is testable. Codex's "Fast mode" is a separate per-thread setting; cctui
     /// never sets it here (no `fast`/`model_fast`/`reasoning_fast` key), so a
     /// spawned session always uses the user's normal model/effort, never the
     /// degraded fast path. Reasoning effort and model are the only opt-in
-    /// quality knobs, both surfaced explicitly in the spawn picker (CCT-299/303).
+    /// quality knobs, both surfaced explicitly in the spawn picker (303).
     #[must_use]
     pub fn config_overrides(&self) -> Vec<(String, String)> {
         let mut args = vec![
@@ -1275,12 +1275,12 @@ impl AppServerConfig {
 }
 
 /// The `-c` overrides that route codex's model provider through the cctui
-/// gateway (CCT-706). Codex does NOT honor `OPENAI_BASE_URL`/`OPENAI_API_KEY`
+/// gateway. Codex does NOT honor `OPENAI_BASE_URL`/`OPENAI_API_KEY`
 /// from the environment alone: launched with only those env vars it POSTs to
 /// api.openai.com with no Authorization header and 401s. It reads them solely
 /// through a `model_providers` entry — `base_url` inlined here, the bearer via
 /// `env_key` from the launch env at request time. Mirrors the worker
-/// entrypoint's `phase_codex_config` (CCT-517), which fixed the same failure
+/// entrypoint's `phase_codex_config`, which fixed the same failure
 /// for k8s workers by writing this block into config.toml. Empty when either
 /// var is absent (an unbound session keeps codex's default provider).
 #[must_use]
@@ -1305,14 +1305,14 @@ enum SessionLaunch {
     Fresh {
         prompt: Option<String>,
         name: Option<String>,
-        /// Staged spawn-attachment paths (CCT-636), fed into the first turn.
+        /// Staged spawn-attachment paths, fed into the first turn.
         attachments: Vec<String>,
     },
     Resume {
         thread_id: String,
         initial_commands: Vec<SessionCommand>,
     },
-    /// Fork a parent thread into a new one seeded from its history (CCT-302).
+    /// Fork a parent thread into a new one seeded from its history.
     /// Post-fork it behaves like `Fresh` (optional name + first turn), but the
     /// start handshake sends `thread/fork { threadId }` and the resulting
     /// `SessionStarted` carries `parent_local_id` for discoverability.
@@ -1329,12 +1329,12 @@ enum SessionLaunch {
 pub struct CodexSession {
     cfg: AppServerConfig,
     cwd: String,
-    /// Launch-time env merged onto the `codex app-server` child process
-    /// (CCT-461). Holds the gateway-routing credential resolved at spawn /
+    /// Launch-time env merged onto the `codex app-server` child process.
+    /// Holds the gateway-routing credential resolved at spawn /
     /// fork / resume; see [`SessionRecord::env`].
     env: std::collections::BTreeMap<String, String>,
     launch: SessionLaunch,
-    /// Spawn/fork correlation id (CCT-631): resolved as an
+    /// Spawn/fork correlation id: resolved as an
     /// [`AdapterEvent::CommandResult`] only once the launch outcome is known.
     command_id: Option<Uuid>,
     events: mpsc::Sender<AdapterEvent>,
@@ -1453,14 +1453,14 @@ impl CodexSession {
         for (key, value) in gateway_provider_overrides(&self.env) {
             cmd.arg("-c").arg(format!("{key}=\"{value}\""));
         }
-        // Forward the resolved launch env (CCT-461) — chiefly the gateway
+        // Forward the resolved launch env — chiefly the gateway
         // credential pulled from the server's `sessions.account_id` binding —
         // onto the app-server child, so a session bound to a named gateway
         // account routes through it instead of hitting the default upstream and
         // 401ing. Applied before `PATH` below so the launchd PATH fix wins even
         // if the resolved env carried a `PATH` of its own. The fail-closed
         // contract (refuse an account-bound launch with empty gateway env) is
-        // enforced upstream in the adapter command pump; see CCT-460.
+        // enforced upstream in the adapter command pump;.
         for (key, value) in &self.env {
             cmd.env(key, value);
         }
@@ -1468,7 +1468,7 @@ impl CodexSession {
         let mut child = cmd
             .current_dir(cwd_path)
             // launchd strips `PATH` down to a minimal set that omits
-            // `/opt/homebrew/bin`, so a bare `codex` fails ENOENT (CCT-138).
+            // `/opt/homebrew/bin`, so a bare `codex` fails ENOENT.
             .env("PATH", crate::childenv::child_path())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -1514,7 +1514,7 @@ impl CodexSession {
         let mut next_id = RUN_BASE;
         // request_id (surfaced to TUI) → (rpc_id echoed to codex, decision kind).
         let mut pending_approvals: HashMap<String, (Value, ApprovalKind)> = HashMap::new();
-        // Parked `item/tool/requestUserInput` requests (CCT-637): the next user
+        // Parked `item/tool/requestUserInput` requests: the next user
         // reply answers the oldest one (codex blocks the turn on it) rather than
         // starting a fresh turn.
         let mut pending_questions: VecDeque<(Value, Vec<String>)> = VecDeque::new();
@@ -1527,14 +1527,14 @@ impl CodexSession {
         let mut retry_after_hibernate: Option<SessionCommand> = None;
         let mut active_turn = ActiveTurn::default();
         let mut items = ItemAccumulator::default();
-        // In-place model/effort override (CCT-635). A SetModel records it here;
+        // In-place model/effort override. A SetModel records it here;
         // every subsequent `turn/start` carries it so codex adopts it as the
         // later default. Left `None` at launch — the spawn-time `-c model=`/
         // `-c model_reasoning_effort=` flags already seed the initial turns.
         let mut override_model: Option<String> = None;
         let mut override_effort: Option<String> = None;
         let mut steer_texts: HashMap<i64, String> = HashMap::new();
-        // CCT-702: `model/list` pages accumulated over this session's
+        // `model/list` pages accumulated over this session's
         // authenticated connection; the counter bounds `nextCursor` following.
         let mut model_catalog: Vec<CodexModel> = Vec::new();
         let mut model_catalog_pages: usize = 0;
@@ -1654,7 +1654,7 @@ impl CodexSession {
                             break;
                         }
                         Some(SessionCommand::Interrupt { command_id }) => {
-                            // Keep-alive interrupt (CCT-210): abort the turn but
+                            // Keep-alive interrupt: abort the turn but
                             // leave the app-server running so the session keeps
                             // going — unlike Kill, we do NOT terminate the child.
                             let req = turn_interrupt_req(next_id, &local_id);
@@ -1733,7 +1733,7 @@ impl CodexSession {
                         ("initialize", Ok(_)) => {
                             codex_version = record_codex_version(&value);
                             // Complete the documented handshake before any
-                            // thread request (CCT-630): the server treats
+                            // thread request: the server treats
                             // `thread/*` sent before `initialized` as premature.
                             write_json(&mut stdin, &initialized_notification()).await?;
                             let (req, method) = match &self.launch {
@@ -1761,7 +1761,7 @@ impl CodexSession {
                             };
                             local_id.clone_from(&info.thread_id);
                             rollout_path.clone_from(&info.rollout_path);
-                            // Link a forked thread back to its parent (CCT-302)
+                            // Link a forked thread back to its parent
                             // so the server resolves `parent_id`.
                             let parent_local_id = match &self.launch {
                                 SessionLaunch::Fork { parent_thread_id, .. } => {
@@ -1806,7 +1806,7 @@ impl CodexSession {
                             self.live.lock().await.insert(local_id.clone(), cmd_tx.clone());
                             registered = true;
                             ack.ok().await;
-                            // CCT-702: refresh the account/machine model catalog
+                            // refresh the account/machine model catalog
                             // over THIS authenticated connection (the gateway
                             // credential is in env), so gateway-only machines get
                             // the current remote list instead of a stale
@@ -1831,7 +1831,7 @@ impl CodexSession {
                             // Surface the configured model + reasoning effort so
                             // the session list shows them (claude gets this for
                             // free via state.json; codex has no equivalent feed).
-                            // Emit when either is known (CCT-299).
+                            // Emit when either is known.
                             let model = self.cfg.model.clone();
                             let effort = self.cfg.reasoning_effort.clone();
                             if model.is_some() || effort.is_some() {
@@ -1875,7 +1875,7 @@ impl CodexSession {
                                         }
                                     }
                                     // Send the first turn when there is a prompt OR
-                                    // staged attachments (CCT-636) — an image-only
+                                    // staged attachments — an image-only
                                     // spawn carries no prompt text but must still
                                     // reach codex as a `localImage` turn input.
                                     if !end_after_initial
@@ -2269,7 +2269,7 @@ async fn set_thread_name<W: AsyncWriteExt + Unpin>(
     Ok(())
 }
 
-/// Record an in-place model/effort change (CCT-303, CCT-635). Stashes the
+/// Record an in-place model/effort change. Stashes the
 /// override in `override_model`/`override_effort` (carried on the next
 /// `turn/start`, which codex promotes to the later default — the stable path,
 /// vs the `experimentalApi`-gated `thread/settings/update` codex 0.144.1
@@ -2490,7 +2490,7 @@ mod tests {
     #[test]
     fn permissions_approval_is_declined_not_left_blocking() {
         // Sandbox-permission elevation has no simple allow/deny reply, so it is
-        // declined (empty grant) rather than left hanging (CCT-637).
+        // declined (empty grant) rather than left hanging.
         let v = json!({"method": "item/permissions/requestApproval", "id": 1, "params": {}});
         match classify("s", &v) {
             Incoming::Decline { reply } => {
@@ -2723,7 +2723,7 @@ mod tests {
         let plain = turn_start_req(100, "tid", "hi", &[], None, None);
         assert!(plain["params"].get("model").is_none());
         assert!(plain["params"].get("effort").is_none());
-        // Both overrides ride the turn (CCT-635 per-turn model change).
+        // Both overrides ride the turn (per-turn model change).
         let both = turn_start_req(101, "tid", "hi", &[], Some("gpt-5-codex"), Some("high"));
         assert_eq!(both["method"], "turn/start");
         assert_eq!(both["params"]["model"], "gpt-5-codex");
@@ -2956,7 +2956,7 @@ mod tests {
 
     #[test]
     fn config_overrides_never_enable_fast_mode() {
-        // CCT-339: assert the COMPLETE set of `-c` knobs cctui sets — Fast mode
+        // assert the COMPLETE set of `-c` knobs cctui sets — Fast mode
         // must never sneak in, on a default spawn or with model/effort set.
         for cfg in [
             AppServerConfig::default(),
@@ -3097,7 +3097,7 @@ mod tests {
         }
     }
 
-    // --- CCT-631: correlated JSON-RPC outcomes -----------------------------
+    // --- correlated JSON-RPC outcomes -----------------------------
 
     #[test]
     fn pending_rpcs_resolves_success_response() {
@@ -3276,7 +3276,7 @@ mod tests {
         assert!(matches!(classify("t", &v), Incoming::Ignored));
     }
 
-    // --- CCT-634: active-turn routing via turn/steer ------------------------
+    // --- active-turn routing via turn/steer ------------------------
 
     #[test]
     fn turn_lifecycle_parses_started_and_completed() {
@@ -3353,7 +3353,7 @@ mod tests {
         assert_eq!(req["params"]["input"][0]["text"], "keep going");
     }
 
-    // --- CCT-638: item/started + delta accumulation, new item types ---------
+    // --- item/started + delta accumulation, new item types ---------
 
     const ITEM_STREAM_FIXTURE: &str = include_str!("fixtures/item_stream.jsonl");
 

@@ -1,4 +1,4 @@
-//! Best-effort ntfy push notifications (CCT-198).
+//! Best-effort ntfy push notifications.
 //!
 //! Active only when `CCTUI_NTFY_TOKEN` is set in the env (provisioned from
 //! vault). When unset every call here is a no-op, so the feature stays off in

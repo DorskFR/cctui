@@ -1,5 +1,5 @@
 //! `/gateway/anthropic/*` (and `/gateway/openai/*`) — the OAuth passthrough
-//! gateway (CCT-232).
+//! gateway.
 //!
 //! This is a **pure passthrough** that owns only OAuth storage + refresh:
 //!
@@ -43,7 +43,7 @@ pub fn anthropic_client_id() -> String {
     std::env::var("CCTUI_ANTHROPIC_OAUTH_CLIENT_ID")
         .unwrap_or_else(|_| "9d1c250a-e61b-44d9-88ed-5944d1962f5e".into())
 }
-/// claude.ai authorize endpoint for the manual code-paste OAuth login (CCT-243).
+/// claude.ai authorize endpoint for the manual code-paste OAuth login.
 /// Overridable so we can track upstream without a redeploy.
 pub fn anthropic_authorize_url() -> String {
     std::env::var("CCTUI_ANTHROPIC_OAUTH_AUTHORIZE_URL")
@@ -66,20 +66,20 @@ pub fn openai_token_url() -> String {
         .unwrap_or_else(|_| "https://auth.openai.com/oauth/token".into())
 }
 /// Codex's public OAuth client id. Defaults to the well-known `codex` client
-/// (`app_EMoamEEZ73f0CkXaXp7hrann`); overridable via env (CCT-244).
+/// (`app_EMoamEEZ73f0CkXaXp7hrann`); overridable via env.
 pub fn openai_client_id() -> String {
     std::env::var("CCTUI_OPENAI_OAUTH_CLIENT_ID")
         .unwrap_or_else(|_| "app_EMoamEEZ73f0CkXaXp7hrann".into())
 }
-/// auth.openai.com authorize endpoint for the "Sign in with `ChatGPT`" login
-/// (CCT-244). Overridable so we can track upstream without a redeploy.
+/// auth.openai.com authorize endpoint for the "Sign in with `ChatGPT`" login.
+/// Overridable so we can track upstream without a redeploy.
 pub fn openai_authorize_url() -> String {
     std::env::var("CCTUI_OPENAI_OAUTH_AUTHORIZE_URL")
         .unwrap_or_else(|_| "https://auth.openai.com/oauth/authorize".into())
 }
 /// Fixed redirect URI baked into Codex's public client — we can't point it at
 /// our own host. The browser redirect to localhost:1455 fails to load; the
-/// user copies the full URL from the address bar and pastes it back (CCT-244).
+/// user copies the full URL from the address bar and pastes it back.
 pub fn openai_oauth_redirect_uri() -> String {
     std::env::var("CCTUI_OPENAI_OAUTH_REDIRECT_URI")
         .unwrap_or_else(|_| "http://localhost:1455/auth/callback".into())
@@ -94,7 +94,7 @@ fn openai_upstream() -> String {
 /// The provider *family* of an account: which harness/env vars it drives.
 /// Both native subscription accounts (`anthropic`/`openai`) and compatible
 /// endpoints (`anthropic-compatible`/`openai-compatible`) collapse to one of
-/// these two families (CCT-399).
+/// these two families.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Family {
     Anthropic,
@@ -108,9 +108,9 @@ impl Family {
         if provider.contains("openai") { Self::Openai } else { Self::Anthropic }
     }
     /// Derive the family from a spawn adapter id (`codex*` → openai, else
-    /// anthropic). Since CCT-559 this IS the spawn resolution key: the adapter
-    /// names the harness family, and the account identity carries at most one
-    /// provider row per family (CCT-558).
+    /// anthropic). This IS the spawn resolution key: the adapter names the
+    /// harness family, and the account identity carries at most one provider
+    /// row per family.
     pub fn from_adapter(adapter_id: &str) -> Self {
         if adapter_id.starts_with("codex") { Self::Openai } else { Self::Anthropic }
     }
@@ -124,7 +124,7 @@ impl Family {
 }
 
 /// Why [`mint_session_env`] could not mint, kept apart so callers can 404 with
-/// a message naming the actual gap (CCT-559): "no such account" and "account
+/// a message naming the actual gap: "no such account" and "account
 /// exists but carries no provider for this harness family" need different
 /// remedies (fix the name vs. connect a provider).
 pub enum MintSessionEnvError {
@@ -138,13 +138,13 @@ pub enum MintSessionEnvError {
     Db(sqlx::Error),
 }
 
-/// One provider row of a resolved account identity (CCT-558/559): the
-/// credential-level `account_providers` row the gateway binds session tokens
-/// to. At most one per family per account.
+/// One provider row of a resolved account identity: the credential-level
+/// `account_providers` row the gateway binds session tokens to. At most one
+/// per family per account.
 pub struct ProviderRow {
     pub id: Uuid,
     pub provider: String,
-    /// Per-provider logical→concrete model alias map (CCT-406).
+    /// Per-provider logical→concrete model alias map.
     pub model_aliases: Option<serde_json::Value>,
 }
 
@@ -155,8 +155,8 @@ impl ProviderRow {
 }
 
 /// Resolve an account identity by name for a user — either one they OWN or one
-/// SHARED to them (CCT-458, `account_shares`), preferring their own on a name
-/// clash — and return its provider rows (CCT-559). `Ok(None)` means no such
+/// SHARED to them (`account_shares`), preferring their own on a name
+/// clash — and return its provider rows. `Ok(None)` means no such
 /// account; `Ok(Some(rows))` may be empty for an identity with no connected
 /// providers.
 pub async fn account_provider_rows(
@@ -195,10 +195,10 @@ pub async fn account_provider_rows(
 /// Resolve a named account for a user and mint a session-scoped gateway token
 /// bound to `(session_id, provider row)`, returning the env vars to inject into
 /// the worker so its agent traffic flows through this gateway under that
-/// account (CCT-232 / CCT-399). The raw credentials never leave the server —
+/// account. The raw credentials never leave the server —
 /// only the opaque session token does. Resolution is by `(account identity,
-/// harness family)` (CCT-559): the account carries at most one provider per
-/// family (CCT-558), and `family` — derived from the adapter via
+/// harness family)`: the account carries at most one provider per
+/// family, and `family` — derived from the adapter via
 /// [`Family::from_adapter`] — picks that row.
 pub async fn mint_session_env(
     state: &AppState,
@@ -211,7 +211,7 @@ pub async fn mint_session_env(
         .await
         .map_err(MintSessionEnvError::Db)?;
     let Some(rows) = rows else {
-        // Fail-diagnosable, not silent (CCT-510): the account name resolved to
+        // Fail-diagnosable, not silent: the account name resolved to
         // nothing for this user — neither owned nor shared. This is the exact
         // shape of the "404 no account named X" dispatch failures, so name the
         // user + account here rather than leaving a caller to dig through the DB.
@@ -237,7 +237,7 @@ pub async fn mint_session_env(
 }
 
 /// Re-mint a gateway session token + env for an **already-resolved** provider
-/// row (CCT-460 / CCT-559). `provider_id` is the `account_providers.id` the
+/// row. `provider_id` is the `account_providers.id` the
 /// session token binds to — NOT the identity-level `accounts.id`. Used on the
 /// resume path, where the session already has a bound provider row (persisted
 /// via `session_tokens` / `sessions.account_id`) and we just need to re-issue a
@@ -260,7 +260,7 @@ pub async fn mint_session_env_for_account(
 /// Resolve a session's bound OAuth account and re-mint its gateway env, ready
 /// to hand to the daemon on any wake path (explicit resume *or* reply-driven
 /// cold-resume) so a revived worker routes through the gateway with a fresh
-/// valid token instead of launching with empty env and 401ing (CCT-460).
+/// valid token instead of launching with empty env and 401ing.
 ///
 /// The binding is durable on `sessions.account_id`; falls back to the
 /// most-recent non-revoked `session_tokens` row for sessions bound before that
@@ -272,7 +272,7 @@ pub async fn resume_env_for_session(
 ) -> std::collections::BTreeMap<String, String> {
     // Re-mint EVERY bound family and merge. The two families emit disjoint env
     // keys (`ANTHROPIC_*` vs `OPENAI_*`), so a worker carrying both claude +
-    // codex creds gets both restored — not just the last-minted family (CCT-514).
+    // codex creds gets both restored — not just the last-minted family.
     let mut env = std::collections::BTreeMap::new();
     for aid in resolve_session_accounts(state, session_id).await {
         match mint_session_env_for_account(state, aid, session_id).await {
@@ -286,8 +286,8 @@ pub async fn resume_env_for_session(
     env
 }
 
-/// Resolve a session's bound OAuth accounts — **one per provider family**
-/// (CCT-514). A session can carry a claude (Anthropic) account *and* a codex
+/// Resolve a session's bound OAuth accounts — **one per provider family**.
+/// A session can carry a claude (Anthropic) account *and* a codex
 /// (`OpenAI`) account at once; both must be re-minted on wake or the worker
 /// launches missing one family's creds and 401s (the multi-account dispatch
 /// regression). The durable binding lives on the session's live `session_tokens`
@@ -298,7 +298,7 @@ pub async fn resume_env_for_session(
 pub async fn resolve_session_accounts(state: &AppState, session_id: &str) -> Vec<Uuid> {
     // `(oa.provider ILIKE '%openai%')` is the family key (true → OpenAI/Codex,
     // false → Anthropic); DISTINCT ON it keeps the newest token per family,
-    // preferring live over revoked. Revoked rows COUNT as a binding (CCT-565):
+    // preferring live over revoked. Revoked rows COUNT as a binding:
     // session end revokes every token (`revoke_session_tokens`), so a resume
     // after a real — or spurious — end would otherwise find no binding and
     // relaunch the worker with EMPTY gateway env (silently off-gateway on a
@@ -333,7 +333,7 @@ pub async fn resolve_session_accounts(state: &AppState, session_id: &str) -> Vec
 
 /// Mint a fresh opaque session token bound to `(session_id, account_id)`,
 /// persist the account on the session row so the binding is durable across id
-/// rotation / restart (CCT-460), and return the gateway env for the account's
+/// rotation / restart, and return the gateway env for the account's
 /// provider family.
 async fn mint_env_for_account(
     state: &AppState,
@@ -345,14 +345,14 @@ async fn mint_env_for_account(
     let is_openai = family == Family::Openai;
 
     // A session gets ONE stable gateway token **per provider family** for its
-    // whole life (CCT-476 / CCT-514). Reuse the existing live token for THIS
+    // whole life. Reuse the existing live token for THIS
     // family if we have one persisted, rather than minting a fresh row on every
     // resume — re-minting bloated `session_tokens` for no reason and left live
     // workers holding a token the gateway might no longer resolve. The token
     // string is immutable; only its account binding moves (repointed below) on
-    // an account switch (CCT-444). Scoping reuse + repoint to the family is what
+    // an account switch. Scoping reuse + repoint to the family is what
     // lets a worker carry claude + codex at once: minting the OpenAI account
-    // must NOT repoint the Anthropic token to it (CCT-514).
+    // must NOT repoint the Anthropic token to it.
     let key = crate::crypto::vault_key();
     let token = if let Some(existing) =
         existing_session_token(state, session_id, is_openai, &key).await
@@ -376,7 +376,7 @@ async fn mint_env_for_account(
         .execute(&state.pool)
         .await;
         // The reused token's fingerprint may have been flagged as a
-        // spamming orphan while its binding was broken (CCT-462) — the
+        // spamming orphan while its binding was broken — the
         // rebind keeps the SAME token string, so clear the block now
         // instead of leaving the just-fixed binding 401ing for the
         // remainder of the (up to 300s) block window.
@@ -403,7 +403,7 @@ async fn mint_env_for_account(
     };
 
     // Persist the account on the session row so it survives id rotation and
-    // server restart — the resume path re-mints from here (CCT-460). Best
+    // server restart — the resume path re-mints from here. Best
     // effort: a session row may not exist yet at spawn-time mint (registration
     // races), so a no-op update is fine; the token row is the live binding.
     let _ = sqlx::query("UPDATE sessions SET account_id = $2 WHERE id = $1")
@@ -414,13 +414,13 @@ async fn mint_env_for_account(
 
     let base = state.config.external_url.trim_end_matches('/');
     let mut env = std::collections::BTreeMap::new();
-    // Per-account custom env (CCT-539): decrypt the account's `env_json` blob and
+    // Per-account custom env: decrypt the account's `env_json` blob and
     // merge it in FIRST, so the gateway routing keys inserted by the `match`
     // below always win over any account-supplied key of the same name. Because
     // every worker (re)launch path funnels through here — initial spawn,
     // `resume_env_for_session`, and the daemon's `gateway-env` pull — the account
     // env is re-served on respawn/resume and survives a daemon / claude-daemon
-    // restart, not just the initial spawn (the CCT-460 failure class).
+    // restart, not just the initial spawn.
     if let Some(account_env) = account_env_json(state, account_id, &key).await {
         env.extend(account_env);
     }
@@ -438,7 +438,7 @@ async fn mint_env_for_account(
     Ok(env)
 }
 
-/// Default-on Anthropic 1-hour prompt-cache flag (CCT-646): `or_insert_with`
+/// Default-on Anthropic 1-hour prompt-cache flag: `or_insert_with`
 /// (not a plain insert) so the account's already-merged resolved env can
 /// override it — `ENABLE_PROMPT_CACHING_1H=0` opts back out — while the default
 /// preserves the prior always-on behaviour. Curated in the settings catalog.
@@ -447,8 +447,8 @@ fn apply_anthropic_cache_defaults(env: &mut std::collections::BTreeMap<String, S
 }
 
 /// The session's existing stable gateway token for a given provider family
-/// (decrypted), if one was minted and persisted with its plaintext (CCT-476 /
-/// CCT-514). `is_openai` selects the family (true → OpenAI/Codex, false →
+/// (decrypted), if one was minted and persisted with its plaintext.
+/// `is_openai` selects the family (true → OpenAI/Codex, false →
 /// Anthropic) so the two families' tokens stay independent. `None` for a family
 /// with no live token, or pre-migration rows that only stored the one-way hash
 /// (those fall through to a one-time fresh mint). Picks the newest live token on
@@ -477,10 +477,10 @@ async fn existing_session_token(
     crate::crypto::decrypt(&enc, key)
 }
 
-/// Resolve a logical model name through a named account's alias map (CCT-406).
+/// Resolve a logical model name through a named account's alias map.
 ///
 /// Mirrors [`mint_session_env`]'s `(account identity, family)` resolution
-/// (CCT-559) so spawn maps the *same* provider row the gateway binds the
+/// so spawn maps the *same* provider row the gateway binds the
 /// session to, then looks `model` up in that row's `model_aliases` JSON object.
 /// Returns the mapped concrete model (e.g. `opus` → `claude-opus-4-8[1m]`) or
 /// the input unchanged when there's no account, no family match, no alias map,
@@ -505,7 +505,7 @@ pub async fn resolve_account_model(
         .map_or_else(|| model.to_owned(), str::to_owned)
 }
 
-/// Decrypt a named account's per-account custom env (`env_json`, CCT-539).
+/// Decrypt a named account's per-account custom env (`env_json`).
 ///
 /// `env_json` is stored as an encrypted JSON object of `{VAR: value}` (the
 /// values may be secrets — daemon-supplied env like a per-account API key — so
@@ -518,8 +518,8 @@ async fn account_env_json(
     account_id: Uuid,
     key: &[u8],
 ) -> Option<std::collections::BTreeMap<String, String>> {
-    // `env_json` lives on the identity parent (`accounts`) since CCT-558;
-    // `account_id` here is the provider-row id (session_tokens FK), so join up
+    // `env_json` lives on the identity parent (`accounts`); `account_id`
+    // here is the provider-row id (session_tokens FK), so join up
     // to the parent to read it.
     let enc: String = sqlx::query_scalar::<_, Option<String>>(
         "SELECT a.env_json FROM accounts a \
@@ -537,27 +537,26 @@ async fn account_env_json(
 }
 
 /// The merged per-account `settings_json` for a session's bound account(s)
-/// (CCT-539), served to the daemon via the gateway-env pull so it is re-derived
+/// served to the daemon via the gateway-env pull so it is re-derived
 /// on every worker (re)launch (spawn/resume/cold-resume/fork) — surviving a
-/// daemon / claude-daemon restart the same way gateway env does (CCT-460 class).
+/// daemon / claude-daemon restart the same way gateway env does.
 ///
-/// A session can bind one account per provider family (claude + codex, CCT-514);
-/// their `settings_json` blobs are deep-merged (later family wins on a key
-/// clash, which in practice never happens — the two harnesses don't share
-/// settings keys). Returns `None` when no bound account carries settings.
+/// A session can bind one account per provider family (claude + codex); their
+/// `settings_json` blobs are deep-merged (later family wins on a key clash,
+/// which in practice never happens — the two harnesses don't share settings
+/// keys). Returns `None` when no bound account carries settings.
 ///
-/// The daemon deep-merges this UNDER its own managed hook settings when it writes
-/// the worker's `--settings` file, so the managed hooks always win; that
-/// daemon-side merge is CCT-540. This function only makes the settings available
-/// on the server pull path.
+/// The daemon deep-merges this UNDER its own managed hook settings when it
+/// writes the worker's `--settings` file, so the managed hooks always win.
+/// This function only makes the settings available on the server pull path.
 ///
-/// OPEN QUESTION (CCT-539) — MANAGED-only keys (`strictKnownMarketplaces`,
+/// OPEN QUESTION — MANAGED-only keys (`strictKnownMarketplaces`,
 /// `strictPluginOnlyCustomization`, `disableSideloadFlags`,
 /// `blockedMarketplaces`): it is NOT verified at runtime whether claude honors
 /// these via a plain `--settings` file, or whether they must land in the
 /// managed-settings drop-in path (e.g. `/etc/claude-code/managed-settings.json`)
 /// to take effect. This is a follow-up to confirm when a real user needs one of
-/// these keys. It does NOT block CCT-539: those keys are tagged MANAGED in the
+/// these keys. It does NOT block this path: those keys are tagged MANAGED in the
 /// settings catalog and rejected by `Catalog::validate_settings`, so no
 /// per-account `settings_json` can carry them yet — whatever arrives here is
 /// safe/care keys that `--settings` honors.
@@ -584,7 +583,7 @@ pub async fn resolve_session_settings(
     merged
 }
 
-/// Recursively merge `overlay` into `base` (CCT-539). Objects merge key-by-key;
+/// Recursively merge `overlay` into `base`. Objects merge key-by-key;
 /// any non-object value in `overlay` replaces the value in `base`.
 fn deep_merge_json(base: &mut serde_json::Value, overlay: serde_json::Value) {
     match (base, overlay) {
@@ -602,7 +601,7 @@ fn deep_merge_json(base: &mut serde_json::Value, overlay: serde_json::Value) {
     }
 }
 
-/// Revoke every session token bound to a session (CCT-232) — called when a
+/// Revoke every session token bound to a session — called when a
 /// session ends so the gateway can no longer be used under that token.
 pub async fn revoke_session_tokens(state: &AppState, session_id: &str) {
     let _ = sqlx::query(
@@ -615,7 +614,7 @@ pub async fn revoke_session_tokens(state: &AppState, session_id: &str) {
 }
 
 /// Look up the `session_id` bound to a (live) gateway session token — used only
-/// to tag Langfuse traces (CCT-443). `None` for unknown/revoked tokens.
+/// to tag Langfuse traces. `None` for unknown/revoked tokens.
 async fn session_id_for_token(state: &AppState, session_token: &str) -> Option<String> {
     let hash = crate::auth::sha256_hex(session_token);
     sqlx::query_scalar::<_, String>(
@@ -629,7 +628,7 @@ async fn session_id_for_token(state: &AppState, session_token: &str) -> Option<S
 }
 
 /// Resolve a session token to its `(session_id, account_name)` — used by the
-/// soft-limit signalling path (CCT-444) to tag the per-session WS event with the
+/// soft-limit signalling path to tag the per-session WS event with the
 /// human account name (the `Account` struct carries no name). `None` for
 /// unknown/revoked tokens.
 async fn session_and_account_name_for_token(
@@ -651,7 +650,7 @@ async fn session_and_account_name_for_token(
     .flatten()
 }
 
-/// Record a soft-limit block against a session and broadcast it (CCT-444).
+/// Record a soft-limit block against a session and broadcast it.
 ///
 /// Idempotent per block episode: the first refused passthrough for a session
 /// flips `soft_limit_blocked` and emits [`ServerEvent::SoftLimitReached`]; the
@@ -671,7 +670,7 @@ async fn mark_soft_limit_block(
     }
     // Persist a durable block on the session row so the classifier drives the
     // session to `Bucket::Blocked` (✋ needs input) and the block survives a
-    // resubscribe (CCT-488). The stored reason is an actionable "continue on
+    // resubscribe. The stored reason is an actionable "continue on
     // another account" hint; `list_sessions` reads it. Idempotent (overwrite),
     // and never clobbers the churning daemon `tempo`/`agent_state` signals.
     let needs = format!("switch account: {account_name} rate-limited");
@@ -697,7 +696,7 @@ async fn mark_soft_limit_block(
     }
 }
 
-/// Clear a session's soft-limit block and broadcast the dismissal (CCT-444).
+/// Clear a session's soft-limit block and broadcast the dismissal.
 /// Only emits on the blocked→clear transition (no-op if it wasn't blocked).
 pub async fn clear_soft_limit_block(state: &AppState, session_id: &str) {
     if session_id.is_empty() {
@@ -705,7 +704,7 @@ pub async fn clear_soft_limit_block(state: &AppState, session_id: &str) {
     }
     // Drop the durable block on the session row so the classifier stops forcing
     // `Bucket::Blocked` and the session returns to its real signal-derived
-    // bucket (CCT-488). Best-effort; clear it whenever set, even if the
+    // bucket. Best-effort; clear it whenever set, even if the
     // in-memory dedup entry was already gone (e.g. after a server restart).
     if let Err(e) = sqlx::query(
         "UPDATE sessions SET soft_limit_reason = NULL \
@@ -724,7 +723,7 @@ pub async fn clear_soft_limit_block(state: &AppState, session_id: &str) {
     }
 }
 
-/// Flag an account as needing reauthentication (CCT-512): the upstream provider
+/// Flag an account as needing reauthentication: the upstream provider
 /// rejected its OAuth credentials. Persists `needs_reauth` + the error so the
 /// accounts UI can show a "credential rejected — reauthenticate" badge. Gated on
 /// the in-memory set so a flapping worker doesn't re-write the row on every 401 —
@@ -751,7 +750,7 @@ fn flag_account_reauth(state: &AppState, account_id: Uuid, reason: &str) {
     });
 }
 
-/// Clear an account's reauth flag (CCT-512) after a successful upstream call.
+/// Clear an account's reauth flag after a successful upstream call.
 /// Gated on the in-memory set so the common case (account healthy) costs nothing;
 /// the DB write fires only on the true→false transition.
 fn clear_account_reauth(state: &AppState, account_id: Uuid) {
@@ -806,22 +805,22 @@ struct Account {
     refresh_token: Option<String>,
     expires_at: Option<chrono::DateTime<Utc>>,
     /// For Codex/OpenAI accounts: the `chatgpt_account_id` claim, sent upstream
-    /// as the `Chatgpt-Account-Id` header (CCT-244). NULL for anthropic / manual
+    /// as the `Chatgpt-Account-Id` header. NULL for anthropic / manual
     /// refresh-token accounts.
     provider_account_id: Option<String>,
-    /// Compatible-endpoint upstream base URL (CCT-399). NULL → built-in upstream.
+    /// Compatible-endpoint upstream base URL. NULL → built-in upstream.
     base_url: Option<String>,
-    /// `oauth` (refreshing subscription) | `bearer` | `api_key` (static, CCT-399).
+    /// `oauth` (refreshing subscription) | `bearer` | `api_key` (static).
     auth_scheme: String,
-    /// Per-account soft limits on cctui's own share of the usage windows
-    /// (CCT-411). Enforced in `passthrough` against the cached usage. All NULL ⇒
+    /// Per-account soft limits on cctui's own share of the usage windows.
+    /// Enforced in `passthrough` against the cached usage. All NULL ⇒
     /// no soft limit (prior behaviour).
     soft_limits: crate::soft_limit::SoftLimits,
 }
 
 impl Account {
     /// A static-credential compatible account forwards its stored credential
-    /// verbatim and skips the OAuth refresh round-trip (CCT-399).
+    /// verbatim and skips the OAuth refresh round-trip.
     fn is_static(&self) -> bool {
         self.auth_scheme != "oauth"
     }
@@ -863,7 +862,7 @@ fn orphan_is_blocked_at(map: &OrphanSpamMap, token_fp: &str, now: std::time::Ins
     matches!(entry.blocked_until, Some(until) if until > now)
 }
 
-/// Drop a token fingerprint from the in-memory orphan-spam state (CCT-462).
+/// Drop a token fingerprint from the in-memory orphan-spam state.
 ///
 /// Called after a successful rebind/mint that reuses an existing token string:
 /// the fingerprint may have been blocked while the binding was broken (an
@@ -875,7 +874,7 @@ fn clear_orphan_fingerprint(map: &OrphanSpamMap, token_fp: &str) {
     map.remove(token_fp);
 }
 
-/// Clear the orphan-spam block for every live token of `session_id` (CCT-462).
+/// Clear the orphan-spam block for every live token of `session_id`.
 ///
 /// The explicit account-switch path (`sessions::switch_account`) rebinds token
 /// rows by session id without the token plaintext in hand;
@@ -968,7 +967,7 @@ fn bump_orphan_401(
 
 /// Resolve a session token to its bound account.
 ///
-/// Three-valued on purpose (CCT-460 follow-up): `Ok(Some)` = bound and live;
+/// Three-valued on purpose: `Ok(Some)` = bound and live;
 /// `Ok(None)` = the token is genuinely unknown/revoked/unbound (a real orphan);
 /// `Err` = the DB lookup itself failed (cold/starved pool on a server restart,
 /// transient network). The caller MUST NOT treat `Err` as an orphan — doing so
@@ -1037,7 +1036,7 @@ struct TokenResponse {
 #[allow(clippy::cognitive_complexity)]
 async fn refresh_account(state: &AppState, acct: &Account) -> Result<String, StatusCode> {
     // Static-credential compatible accounts never refresh — the stored access
-    // token (the bearer/api key) is forwarded verbatim (CCT-399).
+    // token (the bearer/api key) is forwarded verbatim.
     if acct.is_static() {
         return acct.access_token.clone().ok_or(StatusCode::BAD_GATEWAY);
     }
@@ -1045,7 +1044,7 @@ async fn refresh_account(state: &AppState, acct: &Account) -> Result<String, Sta
         return Err(StatusCode::BAD_GATEWAY);
     };
     // Anthropic refreshes with a JSON body; OpenAI/Codex with a form-encoded
-    // body (matches the codex CLI + CLIProxyAPI — CCT-244).
+    // body (matches the codex CLI + CLIProxyAPI).
     let request = match acct.provider.as_str() {
         "anthropic" => {
             let body = serde_json::json!({
@@ -1119,7 +1118,7 @@ async fn refresh_account(state: &AppState, acct: &Account) -> Result<String, Sta
 /// double-refresh a single-use refresh token.
 async fn current_access_token(state: &AppState, acct: &Account) -> Result<String, StatusCode> {
     // Static-credential compatible accounts: forward the stored credential
-    // verbatim, no expiry tracking, no refresh (CCT-399).
+    // verbatim, no expiry tracking, no refresh.
     if acct.is_static() {
         return acct.access_token.clone().filter(|t| !t.is_empty()).ok_or(StatusCode::UNAUTHORIZED);
     }
@@ -1129,7 +1128,7 @@ async fn current_access_token(state: &AppState, acct: &Account) -> Result<String
             // A NULL expires_at means we don't know when the token dies, so treat
             // it as stale and force a refresh — an OAuth access token left without
             // an expiry would otherwise be forwarded forever and die at ~1h,
-            // causing account-wide 401s (CCT-447). Static accounts are handled
+            // causing account-wide 401s. Static accounts are handled
             // above and never reach here.
             .is_some_and(|exp| exp > Utc::now() + chrono::Duration::seconds(REFRESH_SKEW_SECS));
     if let (true, Some(t)) = (fresh, &acct.access_token) {
@@ -1148,7 +1147,7 @@ async fn current_access_token(state: &AppState, acct: &Account) -> Result<String
         let still_fresh = matches!(&reloaded.access_token, Some(t) if !t.is_empty())
             && reloaded
                 .expires_at
-                // NULL expires_at => unknown lifetime => treat as stale and refresh (CCT-447).
+                // NULL expires_at => unknown lifetime => treat as stale and refresh.
                 .is_some_and(|exp| exp > Utc::now() + chrono::Duration::seconds(REFRESH_SKEW_SECS));
         if let (true, Some(t)) = (still_fresh, reloaded.access_token.clone()) {
             return Ok(t);
@@ -1189,7 +1188,7 @@ async fn reload_account(state: &AppState, id: Uuid) -> Option<Account> {
 }
 
 /// `/gateway/anthropic/*path` — passthrough to api.anthropic.com.
-/// Which side of the gateway rejected an authenticated request (CCT-460). The
+/// Which side of the gateway rejected an authenticated request. The
 /// two are easy to confuse from a worker's point of view — both surface as a
 /// 401 — but they need opposite remedies, so we label every gateway 401 with
 /// one of these in both the body message and the `x-cctui-auth-stage` header.
@@ -1205,7 +1204,7 @@ enum AuthStage {
     ProviderOauth,
 }
 
-/// Build a labeled 401 response (CCT-460). The body uses the provider's native
+/// Build a labeled 401 response. The body uses the provider's native
 /// error envelope so the CLI surfaces the message verbatim, and the
 /// `x-cctui-auth-stage` header makes the cause machine-readable in logs/clients.
 fn auth_error(stage: AuthStage, is_anthropic: bool) -> Response {
@@ -1269,8 +1268,7 @@ async fn passthrough(
 
     // The worker's bearer is the session token; map it to an account. A missing
     // bearer or one that doesn't resolve is a *cctui* rejection — distinguish it
-    // from a provider rejection so the worker/operator knows which to fix
-    // (CCT-460).
+    // from a provider rejection so the worker/operator knows which to fix.
     let Some(session_token) = req
         .headers()
         .get(http::header::AUTHORIZATION)
@@ -1303,7 +1301,7 @@ async fn passthrough(
         // restart, transient network). This is NOT an orphan — a valid bound
         // token can land here while the pool warms up. Returning a retryable
         // 503 (and crucially NOT feeding the orphan-spam block) keeps a server
-        // restart from poisoning live tokens for 300s (CCT-460 regression).
+        // restart from poisoning live tokens for 300s.
         Err(e) => {
             tracing::warn!(
                 stage = "session-token",
@@ -1314,7 +1312,7 @@ async fn passthrough(
         }
     };
 
-    // Soft limit (CCT-411): cap cctui's own share of the account's usage windows
+    // Soft limit: cap cctui's own share of the account's usage windows
     // so it leaves headroom for the human sharing the subscription. Only the
     // configured windows gate; bypass near reset.
     //
@@ -1334,7 +1332,7 @@ async fn passthrough(
         {
             tracing::info!(account = %acct.id, retry_after_secs, "soft limit hit: {reason}");
             // Surface the block as a per-session signal so the webui can offer
-            // "continue on another account" (CCT-444). Best-effort + dedup'd.
+            // "continue on another account". Best-effort + dedup'd.
             if let Some((session_id, account_name)) =
                 session_and_account_name_for_token(&state, &session_token).await
             {
@@ -1360,14 +1358,14 @@ async fn passthrough(
 
     // The session token is valid (resolved above); a failure to obtain an
     // upstream access token here is a provider-credential problem (no/expired
-    // refresh token, failed refresh) — label it as such (CCT-460).
+    // refresh token, failed refresh) — label it as such.
     let Ok(access_token) = current_access_token(&state, &acct).await else {
         tracing::warn!(account = %acct.id, stage = "provider-oauth", "gateway 401: no upstream access token for account");
         flag_account_reauth(&state, acct.id, "no upstream access token (refresh failed)");
         return Ok(auth_error(AuthStage::ProviderOauth, is_anthropic));
     };
 
-    // Per-account upstream (CCT-399): a compatible endpoint overrides the
+    // Per-account upstream: a compatible endpoint overrides the
     // built-in upstream with its stored `base_url`; native subscription accounts
     // fall back to the built-in `api.anthropic.com`/`chatgpt.com`.
     let upstream =
@@ -1402,14 +1400,14 @@ async fn passthrough(
         reqwest::header::HeaderValue::from_str(&format!("Bearer {access_token}"))
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
     );
-    // ChatGPT-backed Codex requests must carry the account id upstream (CCT-244).
+    // ChatGPT-backed Codex requests must carry the account id upstream.
     if let Some(account_id) = acct.provider_account_id.as_deref()
         && let Ok(hv) = reqwest::header::HeaderValue::from_str(account_id)
     {
         headers.insert("chatgpt-account-id", hv);
     }
 
-    // Langfuse tracing sink (CCT-443): only when configured AND this call is
+    // Langfuse tracing sink: only when configured AND this call is
     // sampled do we reconstruct the bodies — otherwise the gateway stays a pure
     // zero-copy passthrough (request streamed, response streamed). When tracing,
     // we buffer the request body (it is the prompt, already fully in flight) so it
@@ -1421,7 +1419,7 @@ async fn passthrough(
     // Traced calls must come back identity-encoded: the response tee buffers the
     // raw bytes for SSE reconstruction, and a gzip/zstd body defeats it — every
     // trace then lands in Langfuse without usage and gets mis-costed by the
-    // tokenizer fallback (CCT-578). reqwest is built without decompression
+    // tokenizer fallback. reqwest is built without decompression
     // features, so dropping the client's `accept-encoding` yields a plain body.
     if langfuse.is_some() {
         headers.remove(reqwest::header::ACCEPT_ENCODING);
@@ -1476,16 +1474,15 @@ async fn passthrough(
     // The session token was accepted by cctui (we got this far), so a 401 from
     // the upstream provider means the account's OAuth credentials are bad, not
     // the cctui token. Replace the opaque upstream 401 with a labeled one so the
-    // worker/operator re-authenticates the account rather than the session
-    // (CCT-460).
+    // worker/operator re-authenticates the account rather than the session.
     if status == StatusCode::UNAUTHORIZED {
         tracing::warn!(account = %acct.id, stage = "provider-oauth", "gateway 401: upstream provider rejected account credentials");
         flag_account_reauth(&state, acct.id, "upstream provider rejected account credentials");
         return Ok(auth_error(AuthStage::ProviderOauth, is_anthropic));
     }
 
-    // A successful upstream call clears any soft-limit block on this session
-    // (CCT-444): after the user switches accounts (or a window resets) the next
+    // A successful upstream call clears any soft-limit block on this session:
+    // after the user switches accounts (or a window resets) the next
     // 2xx dismisses the banner. Only touch the DB when something is actually
     // blocked, and reuse the trace lookup when Langfuse already resolved it.
     if status.is_success() && !state.soft_limit_blocked.is_empty() {
@@ -1498,7 +1495,7 @@ async fn passthrough(
         }
     }
     // A successful upstream call means the account's credentials are good again —
-    // clear any reauth flag (CCT-512). Gated in-memory, so this is free unless the
+    // clear any reauth flag. Gated in-memory, so this is free unless the
     // account was actually flagged.
     if status.is_success() {
         clear_account_reauth(&state, acct.id);
@@ -1574,7 +1571,7 @@ async fn passthrough(
     })
 }
 
-/// Anthropic's free OAuth usage endpoint (CCT-306). Returns subscription window
+/// Anthropic's free OAuth usage endpoint. Returns subscription window
 /// utilization (5h session + 7d weekly) WITHOUT consuming any tokens — it is not
 /// an inference call. Undocumented + caveat-accepted (same class as the OAuth
 /// token endpoints above); overridable via env to track upstream changes.
@@ -1591,7 +1588,7 @@ pub fn anthropic_usage_user_agent() -> String {
     std::env::var("CCTUI_ANTHROPIC_USAGE_USER_AGENT").unwrap_or_else(|_| "claude-code/2.1.0".into())
 }
 
-/// OpenAI/codex's real per-account usage endpoint (CCT-527). Returns the `ChatGPT`
+/// OpenAI/codex's real per-account usage endpoint. Returns the `ChatGPT`
 /// backend's actual 5h/7d rate-limit windows (`rate_limit.primary_window` /
 /// `secondary_window`) — the same numbers `codex /status` shows. Works cookieless
 /// with just the account's OAuth Bearer + `chatgpt-account-id` header, both of
@@ -1602,7 +1599,7 @@ pub fn openai_usage_url() -> String {
 }
 
 /// Map the `ChatGPT` `wham/usage` body to our provider-agnostic `{five_hour,
-/// seven_day}` usage shape (CCT-527). `primary_window` is the 5h window,
+/// seven_day}` usage shape. `primary_window` is the 5h window,
 /// `secondary_window` the 7d one; `used_percent` → `utilization`, `reset_at`
 /// (unix epoch seconds) → `resets_at` (rfc3339). Returns `None` if the body has
 /// no `rate_limit` or is missing either window, so the caller can fall back to the
@@ -1623,7 +1620,7 @@ fn map_wham_usage(body: &serde_json::Value) -> Option<serde_json::Value> {
     Some(serde_json::json!({ "five_hour": five_hour, "seven_day": seven_day }))
 }
 
-/// Fetch an OpenAI/codex account's real 5h/7d usage from `wham/usage` (CCT-527).
+/// Fetch an OpenAI/codex account's real 5h/7d usage from `wham/usage`.
 ///
 /// Uses only stored OAuth data: a fresh Bearer via [`current_access_token`] and the
 /// `chatgpt-account-id` from `acct.provider_account_id`. Returns `None` (so the
@@ -1657,9 +1654,9 @@ async fn fetch_openai_usage(state: &AppState, acct: &Account) -> Option<serde_js
 
 /// Whether the soft-limit check must refresh usage from upstream before deciding.
 ///
-/// CCT-411 regression guard: a cold (`None`) or stale cache must trigger a
-/// refresh. The original soft limit treated a cold cache as "no data → allow",
-/// which let a capped account run to 100% whenever no human was viewing it.
+/// A cold (`None`) or stale cache must trigger a refresh — treating a cold
+/// cache as "no data → allow" would let a capped account run to 100% whenever
+/// no human was viewing it.
 fn usage_cache_stale(entry_age: Option<std::time::Duration>, ttl: std::time::Duration) -> bool {
     entry_age.is_none_or(|age| age >= ttl)
 }
@@ -1693,13 +1690,13 @@ pub async fn usage_for_soft_limit(state: &AppState, account_id: Uuid) -> Option<
     )
 }
 
-/// Fetch the Anthropic OAuth usage windows for an account (CCT-306).
+/// Fetch the Anthropic OAuth usage windows for an account.
 ///
 /// Reloads + decrypts the account, ensures a fresh access token (refreshing under
 /// the per-account mutex if needed), and calls Anthropic's free usage endpoint.
 /// Returns:
 ///   * `Ok(Some(json))` — anthropic account (fetched upstream) or OpenAI/codex
-///     account (metered locally from `session_token_usage`, CCT-511)
+///     account (metered locally from `session_token_usage`)
 ///   * `Ok(None)` — no such account
 ///   * `Err(status)` — token refresh failed or upstream rejected (e.g. 429)
 ///
@@ -1712,9 +1709,9 @@ pub async fn fetch_account_usage(
     let Some(acct) = reload_account(state, account_id).await else { return Ok(None) };
     if acct.provider != "anthropic" {
         // OpenAI/codex accounts: read the ChatGPT backend's REAL 5h/7d rate-limit
-        // windows (CCT-527) — the same numbers `codex /status` shows, keyed on the
+        // windows — the same numbers `codex /status` shows, keyed on the
         // stored OAuth Bearer + chatgpt-account-id. Fall back to the local token
-        // tally (CCT-511) only when that call can't produce windows (no account-id,
+        // tally only when that call can't produce windows (no account-id,
         // token refresh fail, upstream error, or a body without rate limits), so
         // freshly-enrolled / API-key accounts still render something.
         if acct.provider == "openai"
@@ -1751,7 +1748,7 @@ pub async fn fetch_account_usage(
 }
 
 /// Per-window token budget an OpenAI/codex account's local utilization is measured
-/// against (CCT-511). Codex exposes no free usage endpoint, so we can't read a real
+/// against. Codex exposes no free usage endpoint, so we can't read a real
 /// quota — utilization is `tokens_used_in_window / budget`. The budgets are
 /// arbitrary-but-tunable so the soft-limit % stays meaningful per plan; override
 /// via env to match whatever ChatGPT/codex tier the account is on.
@@ -1772,7 +1769,7 @@ fn openai_7d_token_budget() -> i64 {
 }
 
 /// Compute provider-agnostic 5h/7d usage windows from cctui's own recorded token
-/// usage (CCT-511). Sums every token kind across the account's sessions inside each
+/// usage. Sums every token kind across the account's sessions inside each
 /// rolling window and divides by the configured budget for a utilization percent.
 /// `resets_at` is when the oldest contributing usage ages out of the window (i.e.
 /// when capacity frees up). Emits the same JSON shape as the Anthropic usage
@@ -1860,7 +1857,7 @@ mod tests {
 
     #[test]
     fn wham_usage_maps_to_five_and_seven_windows() {
-        // Real-shaped `wham/usage` body (CCT-527): primary=5h, secondary=7d.
+        // Real-shaped `wham/usage` body: primary=5h, secondary=7d.
         let body = serde_json::json!({
             "rate_limit": {
                 "primary_window":   { "used_percent": 1,  "limit_window_seconds": 18_000,  "reset_at": 1_782_955_425i64 },
@@ -1925,7 +1922,7 @@ mod tests {
 
     #[test]
     fn rebind_clears_a_blocked_fingerprint_immediately() {
-        // CCT-462 part 3: an account rebind reuses the SAME token string, so a
+        // An account rebind reuses the SAME token string, so a
         // fingerprint blocked while the binding was broken must be cleared on
         // rebind — otherwise the just-fixed binding keeps 401ing for the
         // remainder of the (up to 300s) block window.
@@ -1952,7 +1949,7 @@ mod tests {
 
     #[test]
     fn auth_error_distinguishes_session_token_from_provider_oauth() {
-        // CCT-460: the two 401s must be tellable apart — different stage header
+        // the two 401s must be tellable apart — different stage header
         // and a message naming which credential to fix.
         let session = auth_error(AuthStage::SessionToken, true);
         let provider = auth_error(AuthStage::ProviderOauth, true);
@@ -1980,7 +1977,7 @@ mod tests {
 
     #[test]
     fn cold_usage_cache_is_stale() {
-        // THE CCT-411 regression: no cached usage must force a refresh, not be
+        // No cached usage must force a refresh, not be
         // treated as "no data → allow". This is what let a capped account hit 100%
         // on the headless dispatch path where the accounts page never warms it.
         assert!(usage_cache_stale(None, Duration::from_secs(180)));
@@ -2000,7 +1997,7 @@ mod tests {
 
     #[test]
     fn family_from_provider_maps_native_and_compatible() {
-        // CCT-399: both native and `-compatible` providers collapse to a family.
+        // both native and `-compatible` providers collapse to a family.
         assert!(matches!(Family::from_provider("anthropic"), Family::Anthropic));
         assert!(matches!(Family::from_provider("anthropic-compatible"), Family::Anthropic));
         assert!(matches!(Family::from_provider("openai"), Family::Openai));
@@ -2009,7 +2006,7 @@ mod tests {
 
     #[test]
     fn family_from_adapter_is_the_spawn_resolution_key() {
-        // CCT-559: the adapter id names the harness family spawn resolves the
+        // the adapter id names the harness family spawn resolves the
         // account's provider row by.
         assert!(matches!(Family::from_adapter("codex"), Family::Openai));
         assert!(matches!(Family::from_adapter("codex-foo"), Family::Openai));
@@ -2018,7 +2015,7 @@ mod tests {
 
     #[test]
     fn provider_row_family_and_label_line_up() {
-        // CCT-559: (account, family) resolution picks rows via ProviderRow::family;
+        // (account, family) resolution picks rows via ProviderRow::family;
         // labels feed the "no <family> provider" 404s.
         let anthropic = super::ProviderRow {
             id: uuid::Uuid::new_v4(),

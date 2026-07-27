@@ -1,5 +1,5 @@
 //! `GET /api/v1/capabilities` — which optional integrations this server has,
-//! and whether each is operational (CCT-375 / GH-CAP-1).
+//! and whether each is operational.
 //!
 //! The endpoint lives in **core** and always exists, regardless of Cargo
 //! features, so the webui can fetch one stable shape and capability-gate its UI
@@ -23,7 +23,7 @@ pub struct GithubCapability {
     /// `true` when the crate is compiled in **and** the `github` schema exists —
     /// the integration is installed and reachable, even with zero connectors.
     /// The webui gates the nav item + `/github` route on this so the connector
-    /// setup UI is reachable to add the first connector (CCT-395). A feature-off
+    /// setup UI is reachable to add the first connector. A feature-off
     /// build always reports `false`.
     pub available: bool,
     /// `true` only when `available` **and** at least one connector is
@@ -40,7 +40,7 @@ pub struct GithubCapability {
 /// `github.available` to mount the lazy `/github` route + nav, and
 /// `github.enabled` to decide between the inbox and the first-run setup state.
 ///
-/// CCT-399: `claude_litellm_models` was dropped — self-hosted models are now a
+/// `claude_litellm_models` was dropped — self-hosted models are now a
 /// per-account property surfaced by `GET /accounts`, not a server-global list.
 #[derive(Serialize, TS)]
 #[ts(export)]
@@ -49,7 +49,7 @@ pub struct CapabilitiesResponse {
     pub langfuse: LangfuseCapability,
 }
 
-/// The Langfuse read integration's capability, as seen by the webui (CCT-564).
+/// The Langfuse read integration's capability, as seen by the webui.
 /// `available` gates every Langfuse UI element; `host` + `project_id` build the
 /// `<host>/project/<id>/sessions/<uuid>` deep link. All `None` when the sink is
 /// unconfigured; `project_id` alone `None` when the id could not be resolved.

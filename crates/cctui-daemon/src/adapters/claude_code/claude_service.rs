@@ -1,5 +1,5 @@
 //! Install & run the on-demand `claude daemon` under the OS user service
-//! manager, decoupling its lifetime from cctui-daemon (CCT-590).
+//! manager, decoupling its lifetime from cctui-daemon.
 //!
 //! The service manager parents the claude daemon: it supervises, restarts and
 //! always reaps it, so cctui-daemon never parents the process (nothing to
@@ -7,13 +7,13 @@
 //!
 //! The supervisor is kept ALWAYS RESIDENT (launchd `KeepAlive` / systemd
 //! `Restart=on-failure`) rather than idle-shutting-down: the socket is then
-//! always present, which removes the kickstart race (deliberate CCT-590
+//! always present, which removes the kickstart race (deliberate
 //! behavior change).
 //!
 //! CRITICAL (Linux): this must be its OWN systemd **user** unit, NOT part of
 //! `cctui-daemon.service` — that unit runs `KillMode=control-group`, so
 //! sharing its cgroup would make a cctui-daemon restart SIGTERM the claude
-//! supervisor too (the coupling CCT-590 removes). A separate unit isolates it.
+//! supervisor too (the coupling removes). A separate unit isolates it.
 
 use anyhow::Result;
 
@@ -86,7 +86,7 @@ pub(super) fn restart(claude_bin: &str) -> Result<()> {
 
 /// Whether an OS user service manager is usable here. Worker containers have
 /// no systemd (`/run/systemd/system` absent, no user bus for `systemctl
-/// --user` — CCT-629): the kickstarter must then spawn `claude daemon run` as
+/// --user`): the kickstarter must then spawn `claude daemon run` as
 /// a direct child instead of calling [`ensure`].
 #[cfg(target_os = "linux")]
 pub(super) fn manager_available() -> bool {
@@ -343,7 +343,7 @@ mod tests {
         // Always resident: RunAtLoad + KeepAlive.
         assert!(plist.contains("<key>RunAtLoad</key>"));
         assert!(plist.contains("<key>KeepAlive</key>"));
-        // Augmented PATH baked in (CCT-138 launchd minimal-PATH fix).
+        // Augmented PATH baked in (launchd minimal-PATH fix).
         assert!(!plist.contains(PATH_PLACEHOLDER), "PATH placeholder not substituted:\n{plist}");
         assert!(plist.contains("/opt/homebrew/bin"), "augmented PATH:\n{plist}");
         // Its own label — never the cctui daemon's.

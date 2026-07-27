@@ -289,7 +289,7 @@ mod macos {
     /// (augmented with the usual Homebrew/`~/.local/bin` locations). launchd
     /// gives an agent a minimal `PATH` (`/usr/local/bin:/usr/bin:/bin`) that
     /// omits `/opt/homebrew/bin` — so the daemon's `Command::new("codex")` /
-    /// `Command::new("claude")` exec'd children fail with ENOENT (CCT-138).
+    /// `Command::new("claude")` exec'd children fail with ENOENT.
     /// `service install` runs from the user's interactive shell, so its
     /// `$PATH` resolves the tools the daemon will need to spawn.
     pub fn rendered_plist() -> Result<String> {

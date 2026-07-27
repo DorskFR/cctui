@@ -1,10 +1,10 @@
 //! Apple `container` spawn mechanics for the standalone apple dispatcher.
 //!
 //! Image-based boot from an OCI image via `container run` (no clone/snapshot —
-//! Apple `container` has none, CCT-280). Deterministic
+//! Apple `container` has none). Deterministic
 //! `cctui-worker-<sha1(dedup)[:12]>` naming for idempotency, env injection with
-//! `cctui_machine_key` lifted out of the payload (CCT-191) and delivered as a
-//! **mounted file** by default (CCT-245), optional repo mount + shallow-pull
+//! `cctui_machine_key` lifted out of the payload and delivered as a
+//! **mounted file** by default, optional repo mount + shallow-pull
 //! signal, and lifecycle via `inspect`/`stop`/`delete`.
 //!
 //! All runtime calls go through [`ContainerCli`] so the mechanics are unit
@@ -104,7 +104,7 @@ impl<C: ContainerCli> Spawner<C> {
     }
 
     /// The string the container name derives from: the caller's `dedup_key` when
-    /// present, else the `session_id` (CCT-522). Mirrors the docker/kube
+    /// present, else the `session_id`. Mirrors the docker/kube
     /// dispatchers so `session_id` can be fresh per dispatch while a repeat of
     /// the same logical key still coalesces onto one container.
     fn dedup_source(spec: &WireDispatchSpec) -> &str {
@@ -197,7 +197,7 @@ impl<C: ContainerCli> Spawner<C> {
 
     /// Stage the machine key as a 0600 host file to be mounted read-only into the
     /// guest. Preferred over an env var (a token in `container inspect` / the
-    /// guest process list is visible, CCT-245).
+    /// guest process list is visible).
     fn stage_secret(&self, name: &str, key: &str) -> anyhow::Result<SecretMount> {
         std::fs::create_dir_all(&self.secret_dir)?;
         let host_file = self.secret_dir.join(format!("{name}.key"));
@@ -259,7 +259,7 @@ impl<C: ContainerCli> Spawner<C> {
 
     /// Lifecycle of a container handle, plus a human reason when it FAILED — a
     /// non-zero exit. The server lifts the reason into the completion webhook's
-    /// `error` (CCT-429).
+    /// `error`.
     pub async fn status(&self, handle: &str) -> anyhow::Result<(HandleState, Option<String>)> {
         let name = Self::name_of(handle);
         let out = self.cli.exec(vec!["inspect".to_owned(), name.to_owned()]).await?;

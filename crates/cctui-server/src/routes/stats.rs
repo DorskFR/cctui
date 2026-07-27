@@ -41,7 +41,7 @@ pub async fn recent_dirs(
     let rows: Vec<(String,)> = match params.machine_id.as_deref() {
         Some(machine_id) => {
             sqlx::query_as(
-                // CCT-491: normalize trailing slashes (keep root '/') so
+                // normalize trailing slashes (keep root '/') so
                 // `folder` and `folder/` collapse to one entry.
                 "SELECT CASE WHEN s.working_dir ~ '^/+$' THEN '/' \
                     ELSE rtrim(s.working_dir, '/') END AS dir FROM sessions s \
@@ -58,7 +58,7 @@ pub async fn recent_dirs(
         }
         None => {
             sqlx::query_as(
-                // CCT-491: normalize trailing slashes (keep root '/') so
+                // normalize trailing slashes (keep root '/') so
                 // `folder` and `folder/` collapse to one entry.
                 "SELECT CASE WHEN s.working_dir ~ '^/+$' THEN '/' \
                     ELSE rtrim(s.working_dir, '/') END AS dir FROM sessions s \
@@ -366,7 +366,7 @@ const USAGE_HEATMAP_SQL: &str = "SELECT \
      WHERE stu.created_at >= $2 AND ($3::uuid IS NULL OR m.user_id = $3) \
      GROUP BY 1, 2";
 
-/// `GET /sessions/stats/usage?days=30` — Overview usage analytics (CCT-707):
+/// `GET /sessions/stats/usage?days=30` — Overview usage analytics:
 /// tokens-over-time buckets, per-model breakdown, and an hour-of-week activity
 /// heatmap. One round-trip set (three aggregate scans of `session_token_usage`,
 /// no per-bucket queries). Scoped to the caller like `session_token_stats`.
@@ -464,7 +464,7 @@ mod tests {
         assert_eq!(granularity_for_days(30), "day");
     }
 
-    // SQL aggregation test (CCT-707): needs a migrated Postgres. Point
+    // SQL aggregation test: needs a migrated Postgres. Point
     // DATABASE_URL/TEST_DATABASE_URL at one and it runs; otherwise it skips.
     // Exercises the exact handler query strings (the USAGE_*_SQL consts) for
     // day bucketing, per-model grouping (incl. NULL model → 'unknown'), and

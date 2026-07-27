@@ -1,4 +1,4 @@
-//! `GET /machines/{machine_id}/codex-models` (CCT-641).
+//! `GET /machines/{machine_id}/codex-models`.
 //!
 //! Returns the machine/account-scoped codex model catalog the daemon last
 //! reported via `model/list`. Empty `models` when none is cached yet (daemon

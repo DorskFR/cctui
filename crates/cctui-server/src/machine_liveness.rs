@@ -1,4 +1,4 @@
-//! Server-side machine liveness (CCT-255).
+//! Server-side machine liveness.
 //!
 //! A machine's liveness tier is derived purely from the age of
 //! `machines.last_seen_at`, which the daemon-WS handler now advances on every
@@ -53,7 +53,7 @@ pub fn record_and_broadcast(state: &AppState, machine_id: Uuid, tier: MachineLiv
 /// Re-derive every non-deleted machine's tier from its persisted
 /// `last_seen_at` and broadcast any transitions. Run periodically by the reaper
 /// so a machine whose daemon died (no more heartbeats) ages from online → stale
-/// → offline on its own, without needing any client traffic (CCT-255).
+/// → offline on its own, without needing any client traffic.
 pub async fn sweep(state: &AppState) {
     let rows: Vec<(Uuid, DateTime<Utc>)> = match sqlx::query_as(
         "SELECT id, last_seen_at FROM machines WHERE deleted_at IS NULL AND revoked_at IS NULL",
@@ -73,7 +73,7 @@ pub async fn sweep(state: &AppState) {
 }
 
 /// Record `tier` for an enrolled `dispatcher_id` and broadcast a
-/// [`ServerEvent::DispatcherLiveness`] iff it changed (CCT-285). Peer of
+/// [`ServerEvent::DispatcherLiveness`] iff it changed. Peer of
 /// [`record_and_broadcast`].
 pub fn record_and_broadcast_dispatcher(
     state: &AppState,
@@ -92,7 +92,7 @@ pub fn record_and_broadcast_dispatcher(
 }
 
 /// Re-derive every live dispatcher's tier from its persisted `last_seen_at` and
-/// broadcast any transitions (CCT-285). Peer of [`sweep`].
+/// broadcast any transitions. Peer of [`sweep`].
 pub async fn sweep_dispatchers(state: &AppState) {
     let rows: Vec<(Uuid, DateTime<Utc>)> = match sqlx::query_as(
         "SELECT id, last_seen_at FROM dispatchers WHERE deleted_at IS NULL AND revoked_at IS NULL",

@@ -1,4 +1,4 @@
-//! Codex-native dispatch runner (CCT-643).
+//! Codex-native dispatch runner.
 //!
 //! A dispatched worker whose payload selects `adapter = "codex"` runs its task
 //! headlessly through `codex exec --json` instead of the claude-code control

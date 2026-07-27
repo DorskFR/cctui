@@ -2,7 +2,7 @@
 //!
 //! Two modes, picked at start by config or env:
 //!
-//! - **Log-tail (default, CCT-89)** — watches `~/.codex/sessions/` for
+//! - **Log-tail (default)** — watches `~/.codex/sessions/` for
 //!   new log files, emits `SessionStarted`/`Message`/`ToolUse`/
 //!   `SessionEnded` based on file activity and a configurable quiesce
 //!   window. Sessions root and timing knobs are tunable via the
@@ -50,12 +50,12 @@ use cctui_proto::diagnose::{
     CodexDiagnose, DiagnoseFact, EffectiveState, GatewayStatus, SessionDiagnose,
 };
 
-/// Decide the codex launch env from a server `GatewayEnvResponse` (CCT-461),
+/// Decide the codex launch env from a server `GatewayEnvResponse`,
 /// mirroring the claude chokepoint's `launch_env_decision`
 /// (`adapters/claude_code/control.rs`). Split out as a pure function so the
 /// fail-closed contract is unit-testable without a live server.
 ///
-/// FAIL-CLOSED INVARIANT (CCT-461 / CCT-460): when the session IS account-bound
+/// FAIL-CLOSED INVARIANT: when the session IS account-bound
 /// but the resolved gateway env is empty, refuse the launch — a codex
 /// app-server started without the gateway credential silently routes to the
 /// default upstream and 401s, the exact bug this ticket fixes.
@@ -159,7 +159,7 @@ impl Adapter for CodexAdapter {
     }
 }
 
-/// Default mode (CCT-89 + CCT-98): the passive log-tail observes sessions
+/// Default mode (+): the passive log-tail observes sessions
 /// started outside cctui, while the app-server command pump drives sessions
 /// that cctui spawns. They share a [`SessionRegistry`] so the log-tail skips
 /// rollout files an app-server session already owns (no double-ingest).
@@ -175,14 +175,14 @@ async fn run_default(ctx: AdapterCtx) -> anyhow::Result<()> {
     );
     log.set_owned(registry.clone());
 
-    // CCT-263: poll `codex app-server`'s state-DB-backed `thread/list` for a
+    // poll `codex app-server`'s state-DB-backed `thread/list` for a
     // first-class inventory of EVERY machine session (cli/vscode/exec/
     // appServer) with real preview/name/cwd/status — the parity-with-claude
     // upgrade over the log-tail's heuristic JSONL scrape. Shares the
     // app-server `registry` so cctui-driven threads aren't double-emitted.
     // Falls back silently to log-tail-only when the poll can't run (codex
     // missing, sandbox/userns, auth). Disable with `inventory = false`.
-    // CCT-339: before driving any commands, rediscover the codex threads cctui
+    // before driving any commands, rediscover the codex threads cctui
     // itself owned before this daemon (re)started — a self-update / release
     // rollout restarts the daemon and drops the in-memory registry, leaving
     // in-flight `appServer`-source threads unrevivable. Seeding the durable
@@ -194,7 +194,7 @@ async fn run_default(ctx: AdapterCtx) -> anyhow::Result<()> {
     }
 
     let inventory_handle = if thread_list::ThreadListConfig::enabled(&ctx.config) {
-        // CCT-276: the inventory's `seen` set is its own dedup state only — it
+        // the inventory's `seen` set is its own dedup state only — it
         // is no longer shared with the log-tail to suppress rollout files, so a
         // discovered CLI session still gets its real transcript backfilled.
         let seen = thread_list::SeenIds::default();
@@ -246,418 +246,418 @@ async fn command_pump(
 ) {
     loop {
         tokio::select! {
-            () = shutdown.cancelled() => return,
-            cmd = commands.recv() => {
-                let Some(cmd) = cmd else { return };
-                match cmd {
-                    // codex mints its own thread id, so the server-pre-minted
-                    // `session_id` (CCT-446) is ignored here.
-                    AdapterCommand::Spawn { spec, command_id, session_id } => {
-                        let Some(working_dir) = spec.working_dir.clone() else {
-                            tracing::error!("codex spawn: working_dir required");
-                            if let Some(command_id) = command_id {
-                                let _ = events
-                                    .send(AdapterEvent::CommandResult {
-                                        command_id,
-                                        ok: false,
-                                        error: Some("working_dir required".to_owned()),
-                                    })
-                                    .await;
-                            }
-                            continue;
-                        };
-                        // CCT-461/CCT-581: pull the launch-time gateway env from
-                        // the server's durable binding, keyed by the id the
-                        // server bound the gateway token to — the pre-minted
-                        // session id when present, else `command_id` (codex mints
-                        // its own thread id, so the server keys its token on
-                        // command_id, spawn.rs). Never pull with an empty id (it
-                        // would hit `/sessions//gateway-env` and never match).
-                        // Merge over the carried `spec.env`. Fail-closed: an
-                        // account-bound
-                        // session with empty gateway env refuses to launch
-                        // rather than starting env-less and 401ing (CCT-460).
-                        let env = match resolve_launch_env(
-                            server.as_ref(),
-                            machine_key.as_ref(),
-                            &session_id
-                                .or(command_id)
-                                .map_or_else(String::new, |id| id.to_string()),
-                            &spec.env,
-                        )
-                        .await
-                        {
-                            Ok(env) => env,
-                            Err(err) => {
-                                tracing::error!(%err, "codex spawn: refusing env-less launch");
-                                if let Some(command_id) = command_id {
-                                    let _ = events
-                                        .send(AdapterEvent::CommandResult {
-                                            command_id,
-                                            ok: false,
-                                            error: Some(err.to_string()),
-                                        })
-                                        .await;
-                                }
-                                continue;
-                            }
-                        };
-                        // The CommandResult for `command_id` is deferred to the
-                        // session driver: it reports ok only after
-                        // `thread/start` succeeds (CCT-631).
-                        // Per-spawn permission posture (CCT-149): override the
-                        // host default sandbox_mode + approval_policy. None →
-                        // keep the daemon.toml defaults (which a no-userns host
-                        // sets to full-access). `auto` keeps the workspace
-                        // sandbox but disables approval prompts (approval=never).
-                        let mut cfg = app_cfg.clone();
-                        if let Some(mode) = spec.permission_mode {
-                            let (sandbox, approval) = mode.codex_sandbox_approval();
-                            sandbox.clone_into(&mut cfg.sandbox_mode);
-                            approval.clone_into(&mut cfg.approval_policy);
-                        }
-                        // Per-spawn reasoning effort (codex: low/medium/high/xhigh).
-                        if let Some(effort) =
-                            spec.effort.as_deref().map(str::trim).filter(|e| !e.is_empty())
-                        {
-                            cfg.reasoning_effort = Some(effort.to_owned());
-                        }
-                        // Per-spawn model family (CCT-274).
-                        if let Some(model) =
-                            spec.model.as_deref().map(str::trim).filter(|m| !m.is_empty())
-                        {
-                            cfg.model = Some(model.to_owned());
-                        }
-                        // Stage spawn attachments (CCT-636). A staging failure is
-                        // fatal to the spawn — silently dropping a file the user
-                        // expects the session to read is the P0 bug this fixes.
-                        // Keyed by the same id the gateway env used so the staging
-                        // dir is stable across the session lifetime.
-                        let stage_id = session_id
-                            .or(command_id)
-                            .map_or_else(String::new, |id| id.to_string());
-                        let attachments = match crate::adapters::uploads::stage_bootstrap(
-                            &stage_id,
-                            &spec.bootstrap,
-                        ) {
-                            Ok(paths) => paths,
-                            Err(err) => {
-                                tracing::error!(%err, "codex spawn: attachment staging failed");
-                                if let Some(command_id) = command_id {
-                                    let _ = events
-                                        .send(AdapterEvent::CommandResult {
-                                            command_id,
-                                            ok: false,
-                                            error: Some(format!("attachment staging failed: {err}")),
-                                        })
-                                        .await;
-                                }
-                                continue;
-                            }
-                        };
-                        let session = CodexSession::new_fresh(
-                            cfg,
-                            working_dir,
-                            env,
-                            spec.prompt.clone(),
-                            spec.name.clone(),
-                            attachments,
-                            command_id,
-                            events.clone(),
-                            live.clone(),
-                            registry.clone(),
-                            shutdown.clone(),
-                        );
-                        tokio::spawn(async move {
-                            if let Err(err) = session.run().await {
-                                tracing::error!(%err, "codex app-server session ended in error");
-                            }
-                        });
-                    }
-                    AdapterCommand::Fork { parent_local_id, spec, command_id, session_id, extract: _ } => {
-                        // Fork an existing thread into a new one seeded from its
-                        // history (CCT-302). Mirrors Spawn for cfg overrides
-                        // (permission/effort/model) but launches via thread/fork.
-                        let working_dir = spec
-                            .working_dir
-                            .clone()
-                            .unwrap_or_else(|| parent_local_id.clone());
-                        // CCT-461: resolve gateway env keyed by the child
-                        // session id the server pre-minted + bound the gateway
-                        // token to (falling back to the parent thread id when
-                        // absent), and fail closed on an account-bound fork with
-                        // empty env — same contract as Spawn.
-                        let env = match resolve_launch_env(
-                            server.as_ref(),
-                            machine_key.as_ref(),
-                            &session_id.clone().unwrap_or_else(|| parent_local_id.clone()),
-                            &spec.env,
-                        )
-                        .await
-                        {
-                            Ok(env) => env,
-                            Err(err) => {
-                                tracing::error!(%err, "codex fork: refusing env-less launch");
-                                if let Some(command_id) = command_id {
-                                    let _ = events
-                                        .send(AdapterEvent::CommandResult {
-                                            command_id,
-                                            ok: false,
-                                            error: Some(err.to_string()),
-                                        })
-                                        .await;
-                                }
-                                continue;
-                            }
-                        };
-                        let mut cfg = app_cfg.clone();
-                        if let Some(mode) = spec.permission_mode {
-                            let (sandbox, approval) = mode.codex_sandbox_approval();
-                            sandbox.clone_into(&mut cfg.sandbox_mode);
-                            approval.clone_into(&mut cfg.approval_policy);
-                        }
-                        if let Some(effort) =
-                            spec.effort.as_deref().map(str::trim).filter(|e| !e.is_empty())
-                        {
-                            cfg.reasoning_effort = Some(effort.to_owned());
-                        }
-                        if let Some(model) =
-                            spec.model.as_deref().map(str::trim).filter(|m| !m.is_empty())
-                        {
-                            cfg.model = Some(model.to_owned());
-                        }
-                        // Stage fork attachments (CCT-636), fatal on failure — same
-                        // contract as spawn.
-                        let stage_id = session_id
-                            .clone()
-                            .unwrap_or_else(|| parent_local_id.clone());
-                        let attachments = match crate::adapters::uploads::stage_bootstrap(
-                            &stage_id,
-                            &spec.bootstrap,
-                        ) {
-                            Ok(paths) => paths,
-                            Err(err) => {
-                                tracing::error!(%err, "codex fork: attachment staging failed");
-                                if let Some(command_id) = command_id {
-                                    let _ = events
-                                        .send(AdapterEvent::CommandResult {
-                                            command_id,
-                                            ok: false,
-                                            error: Some(format!("attachment staging failed: {err}")),
-                                        })
-                                        .await;
-                                }
-                                continue;
-                            }
-                        };
-                        let session = CodexSession::new_fork(
-                            cfg,
-                            working_dir,
-                            env,
-                            parent_local_id,
-                            spec.prompt.clone(),
-                            spec.name.clone(),
-                            attachments,
-                            command_id,
-                            events.clone(),
-                            live.clone(),
-                            registry.clone(),
-                            shutdown.clone(),
-                        );
-                        tokio::spawn(async move {
-                            if let Err(err) = session.run().await {
-                                tracing::error!(%err, "codex app-server fork ended in error");
-                            }
-                        });
-                    }
-                    AdapterCommand::PermissionResponse { local_id, request_id, allow } => {
-                        forward(
-                            &live,
-                            &registry,
-                            &events,
-                            &shutdown,
-                            server.as_ref(),
-                            machine_key.as_ref(),
-                            &local_id,
-                            SessionCommand::Permission { request_id, allow },
-                        )
-                            .await;
-                    }
-                    AdapterCommand::SendMessage { local_id, text }
-                    | AdapterCommand::Reply { local_id, text, .. } => {
-                        forward(
-                            &live,
-                            &registry,
-                            &events,
-                            &shutdown,
-                            server.as_ref(),
-                            machine_key.as_ref(),
-                            &local_id,
-                            SessionCommand::Send { text },
-                        )
-                        .await;
-                    }
-                    AdapterCommand::Kill { local_id, signal } => {
-                        forward(
-                            &live,
-                            &registry,
-                            &events,
-                            &shutdown,
-                            server.as_ref(),
-                            machine_key.as_ref(),
-                            &local_id,
-                            SessionCommand::Kill { signal },
-                        )
-                        .await;
-                    }
-                    AdapterCommand::Interrupt { local_id, command_id } => {
-                        // `turn/interrupt` only makes sense for a LIVE session
-                        // (a hibernated thread has no in-flight turn to abort).
-                        // When delivered, the session driver answers
-                        // `command_id` from the correlated `turn/interrupt`
-                        // JSON-RPC outcome (CCT-631); a non-delivery is
-                        // reported as a failure here so the webui can say so.
-                        let delivered = matches!(
-                            route_or_prepare_resume(
-                                &live,
-                                &registry,
-                                &local_id,
-                                SessionCommand::Interrupt { command_id },
-                            )
-                            .await,
-                            RouteAction::Delivered
-                        );
-                        if !delivered {
-                            if let Some(command_id) = command_id {
-                                let _ = events
-                                    .send(AdapterEvent::CommandResult {
-                                        command_id,
-                                        ok: false,
-                                        error: Some(
-                                            "no live codex session to interrupt".to_owned(),
-                                        ),
-                                    })
-                                    .await;
-                            }
-                            tracing::warn!(%local_id, "codex: interrupt for non-live session");
-                        }
-                    }
-                    AdapterCommand::Rename { local_id, name } => {
-                        forward(
-                            &live,
-                            &registry,
-                            &events,
-                            &shutdown,
-                            server.as_ref(),
-                            machine_key.as_ref(),
-                            &local_id,
-                            SessionCommand::Rename { name },
-                        )
-                        .await;
-                    }
-                    AdapterCommand::Remove { local_id } => {
-                        // Stop the live worker, drop the durable record, then
-                        // archive the thread natively (CCT-639) so it disappears
-                        // from codex's own views too — the analogue of claude's
-                        // `claude rm`, keeping the transcript recoverable.
-                        // Idempotent: archiving an already-archived / missing
-                        // thread succeeds. Runs off the pump so a 30s app-server
-                        // spawn can't stall other commands.
-                        forward(
-                            &live,
-                            &registry,
-                            &events,
-                            &shutdown,
-                            server.as_ref(),
-                            machine_key.as_ref(),
-                            &local_id,
-                            SessionCommand::Kill { signal: None },
-                        )
-                        .await;
-                        registry.lock().await.remove(&local_id);
-                        let cfg = app_cfg.clone();
-                        tokio::spawn(async move {
-                            if let Err(err) = app_server::run_thread_lifecycle(
-                                &cfg,
-                                &local_id,
-                                app_server::LifecycleOp::Archive,
-                            )
-                            .await
-                            {
-                                tracing::warn!(%local_id, %err, "codex: native thread/archive failed");
-                            }
-                        });
-                    }
-                    AdapterCommand::Resume { local_id, .. } => {
-                        // Reopen the thread natively (CCT-639): un-archive it so
-                        // it reappears in codex's own views. Idempotent —
-                        // unarchiving a non-archived / missing thread succeeds.
-                        // cctui-side revival stays lazy: the next message resumes
-                        // the hibernated app-server via the registry.
-                        let cfg = app_cfg.clone();
-                        tokio::spawn(async move {
-                            if let Err(err) = app_server::run_thread_lifecycle(
-                                &cfg,
-                                &local_id,
-                                app_server::LifecycleOp::Unarchive,
-                            )
-                            .await
-                            {
-                                tracing::warn!(%local_id, %err, "codex: native thread/unarchive failed");
-                            }
-                        });
-                    }
-                    AdapterCommand::SetModel { local_id, model, effort, command_id } => {
-                        let handled = forward(
-                            &live,
-                            &registry,
-                            &events,
-                            &shutdown,
-                            server.as_ref(),
-                            machine_key.as_ref(),
-                            &local_id,
-                            SessionCommand::SetModel { model, effort, command_id },
-                        )
-                        .await;
-                        // Delivered/resumed paths resolve `command_id` in the
-                        // driver; an untracked session resolves it as failure
-                        // here so the webui doesn't wait out the ack (CCT-635).
-                        if !handled && let Some(command_id) = command_id {
-                            let _ = events
-                                .send(AdapterEvent::CommandResult {
-                                    command_id,
-                                    ok: false,
-                                    error: Some("no codex session to change model on".to_owned()),
-                                })
-                                .await;
-                        }
-                    }
-                    AdapterCommand::Diagnose { local_id, request_id } => {
-                        let report = build_diagnose(
-                            &live,
-                            &registry,
-                            server.as_ref(),
-                            machine_key.as_ref(),
-                            &local_id,
-                        )
-                        .await;
-                        let _ = events
-                            .send(AdapterEvent::Diagnose {
-                                local_id,
-                                request_id,
-                                report: Box::new(report),
-                            })
-                            .await;
-                    }
-                    AdapterCommand::ResumeMarks { .. } => {}
-                    _ => tracing::warn!("codex: unhandled AdapterCommand variant"),
-                }
-            }
-        }
+                   () = shutdown.cancelled() => return,
+                   cmd = commands.recv() => {
+                       let Some(cmd) = cmd else { return };
+                       match cmd {
+                           // codex mints its own thread id, so the server-pre-minted
+                           // `session_id` is ignored here.
+                           AdapterCommand::Spawn { spec, command_id, session_id } => {
+                               let Some(working_dir) = spec.working_dir.clone() else {
+                                   tracing::error!("codex spawn: working_dir required");
+                                   if let Some(command_id) = command_id {
+                                       let _ = events
+                                           .send(AdapterEvent::CommandResult {
+                                               command_id,
+                                               ok: false,
+                                               error: Some("working_dir required".to_owned()),
+                                           })
+                                           .await;
+                                   }
+                                   continue;
+                               };
+        // pull the launch-time gateway env from
+                               // the server's durable binding, keyed by the id the
+                               // server bound the gateway token to — the pre-minted
+                               // session id when present, else `command_id` (codex mints
+                               // its own thread id, so the server keys its token on
+                               // command_id, spawn.rs). Never pull with an empty id (it
+                               // would hit `/sessions//gateway-env` and never match).
+                               // Merge over the carried `spec.env`. Fail-closed: an
+                               // account-bound
+                               // session with empty gateway env refuses to launch
+                               // rather than starting env-less and 401ing.
+                               let env = match resolve_launch_env(
+                                   server.as_ref(),
+                                   machine_key.as_ref(),
+                                   &session_id
+                                       .or(command_id)
+                                       .map_or_else(String::new, |id| id.to_string()),
+                                   &spec.env,
+                               )
+                               .await
+                               {
+                                   Ok(env) => env,
+                                   Err(err) => {
+                                       tracing::error!(%err, "codex spawn: refusing env-less launch");
+                                       if let Some(command_id) = command_id {
+                                           let _ = events
+                                               .send(AdapterEvent::CommandResult {
+                                                   command_id,
+                                                   ok: false,
+                                                   error: Some(err.to_string()),
+                                               })
+                                               .await;
+                                       }
+                                       continue;
+                                   }
+                               };
+                               // The CommandResult for `command_id` is deferred to the
+                               // session driver: it reports ok only after
+                               // `thread/start` succeeds.
+                               // Per-spawn permission posture: override the
+                               // host default sandbox_mode + approval_policy. None →
+                               // keep the daemon.toml defaults (which a no-userns host
+                               // sets to full-access). `auto` keeps the workspace
+                               // sandbox but disables approval prompts (approval=never).
+                               let mut cfg = app_cfg.clone();
+                               if let Some(mode) = spec.permission_mode {
+                                   let (sandbox, approval) = mode.codex_sandbox_approval();
+                                   sandbox.clone_into(&mut cfg.sandbox_mode);
+                                   approval.clone_into(&mut cfg.approval_policy);
+                               }
+                               // Per-spawn reasoning effort (codex: low/medium/high/xhigh).
+                               if let Some(effort) =
+                                   spec.effort.as_deref().map(str::trim).filter(|e| !e.is_empty())
+                               {
+                                   cfg.reasoning_effort = Some(effort.to_owned());
+                               }
+                               // Per-spawn model family.
+                               if let Some(model) =
+                                   spec.model.as_deref().map(str::trim).filter(|m| !m.is_empty())
+                               {
+                                   cfg.model = Some(model.to_owned());
+                               }
+                               // Stage spawn attachments. A staging failure is
+                               // fatal to the spawn — silently dropping a file the user
+                               // expects the session to read is the P0 bug this fixes.
+                               // Keyed by the same id the gateway env used so the staging
+                               // dir is stable across the session lifetime.
+                               let stage_id = session_id
+                                   .or(command_id)
+                                   .map_or_else(String::new, |id| id.to_string());
+                               let attachments = match crate::adapters::uploads::stage_bootstrap(
+                                   &stage_id,
+                                   &spec.bootstrap,
+                               ) {
+                                   Ok(paths) => paths,
+                                   Err(err) => {
+                                       tracing::error!(%err, "codex spawn: attachment staging failed");
+                                       if let Some(command_id) = command_id {
+                                           let _ = events
+                                               .send(AdapterEvent::CommandResult {
+                                                   command_id,
+                                                   ok: false,
+                                                   error: Some(format!("attachment staging failed: {err}")),
+                                               })
+                                               .await;
+                                       }
+                                       continue;
+                                   }
+                               };
+                               let session = CodexSession::new_fresh(
+                                   cfg,
+                                   working_dir,
+                                   env,
+                                   spec.prompt.clone(),
+                                   spec.name.clone(),
+                                   attachments,
+                                   command_id,
+                                   events.clone(),
+                                   live.clone(),
+                                   registry.clone(),
+                                   shutdown.clone(),
+                               );
+                               tokio::spawn(async move {
+                                   if let Err(err) = session.run().await {
+                                       tracing::error!(%err, "codex app-server session ended in error");
+                                   }
+                               });
+                           }
+                           AdapterCommand::Fork { parent_local_id, spec, command_id, session_id, extract: _ } => {
+                               // Fork an existing thread into a new one seeded from its
+                               // history. Mirrors Spawn for cfg overrides
+                               // (permission/effort/model) but launches via thread/fork.
+                               let working_dir = spec
+                                   .working_dir
+                                   .clone()
+                                   .unwrap_or_else(|| parent_local_id.clone());
+                               // resolve gateway env keyed by the child
+                               // session id the server pre-minted + bound the gateway
+                               // token to (falling back to the parent thread id when
+                               // absent), and fail closed on an account-bound fork with
+                               // empty env — same contract as Spawn.
+                               let env = match resolve_launch_env(
+                                   server.as_ref(),
+                                   machine_key.as_ref(),
+                                   &session_id.clone().unwrap_or_else(|| parent_local_id.clone()),
+                                   &spec.env,
+                               )
+                               .await
+                               {
+                                   Ok(env) => env,
+                                   Err(err) => {
+                                       tracing::error!(%err, "codex fork: refusing env-less launch");
+                                       if let Some(command_id) = command_id {
+                                           let _ = events
+                                               .send(AdapterEvent::CommandResult {
+                                                   command_id,
+                                                   ok: false,
+                                                   error: Some(err.to_string()),
+                                               })
+                                               .await;
+                                       }
+                                       continue;
+                                   }
+                               };
+                               let mut cfg = app_cfg.clone();
+                               if let Some(mode) = spec.permission_mode {
+                                   let (sandbox, approval) = mode.codex_sandbox_approval();
+                                   sandbox.clone_into(&mut cfg.sandbox_mode);
+                                   approval.clone_into(&mut cfg.approval_policy);
+                               }
+                               if let Some(effort) =
+                                   spec.effort.as_deref().map(str::trim).filter(|e| !e.is_empty())
+                               {
+                                   cfg.reasoning_effort = Some(effort.to_owned());
+                               }
+                               if let Some(model) =
+                                   spec.model.as_deref().map(str::trim).filter(|m| !m.is_empty())
+                               {
+                                   cfg.model = Some(model.to_owned());
+                               }
+                               // Stage fork attachments, fatal on failure — same
+                               // contract as spawn.
+                               let stage_id = session_id
+                                   .clone()
+                                   .unwrap_or_else(|| parent_local_id.clone());
+                               let attachments = match crate::adapters::uploads::stage_bootstrap(
+                                   &stage_id,
+                                   &spec.bootstrap,
+                               ) {
+                                   Ok(paths) => paths,
+                                   Err(err) => {
+                                       tracing::error!(%err, "codex fork: attachment staging failed");
+                                       if let Some(command_id) = command_id {
+                                           let _ = events
+                                               .send(AdapterEvent::CommandResult {
+                                                   command_id,
+                                                   ok: false,
+                                                   error: Some(format!("attachment staging failed: {err}")),
+                                               })
+                                               .await;
+                                       }
+                                       continue;
+                                   }
+                               };
+                               let session = CodexSession::new_fork(
+                                   cfg,
+                                   working_dir,
+                                   env,
+                                   parent_local_id,
+                                   spec.prompt.clone(),
+                                   spec.name.clone(),
+                                   attachments,
+                                   command_id,
+                                   events.clone(),
+                                   live.clone(),
+                                   registry.clone(),
+                                   shutdown.clone(),
+                               );
+                               tokio::spawn(async move {
+                                   if let Err(err) = session.run().await {
+                                       tracing::error!(%err, "codex app-server fork ended in error");
+                                   }
+                               });
+                           }
+                           AdapterCommand::PermissionResponse { local_id, request_id, allow } => {
+                               forward(
+                                   &live,
+                                   &registry,
+                                   &events,
+                                   &shutdown,
+                                   server.as_ref(),
+                                   machine_key.as_ref(),
+                                   &local_id,
+                                   SessionCommand::Permission { request_id, allow },
+                               )
+                                   .await;
+                           }
+                           AdapterCommand::SendMessage { local_id, text }
+                           | AdapterCommand::Reply { local_id, text, .. } => {
+                               forward(
+                                   &live,
+                                   &registry,
+                                   &events,
+                                   &shutdown,
+                                   server.as_ref(),
+                                   machine_key.as_ref(),
+                                   &local_id,
+                                   SessionCommand::Send { text },
+                               )
+                               .await;
+                           }
+                           AdapterCommand::Kill { local_id, signal } => {
+                               forward(
+                                   &live,
+                                   &registry,
+                                   &events,
+                                   &shutdown,
+                                   server.as_ref(),
+                                   machine_key.as_ref(),
+                                   &local_id,
+                                   SessionCommand::Kill { signal },
+                               )
+                               .await;
+                           }
+                           AdapterCommand::Interrupt { local_id, command_id } => {
+                               // `turn/interrupt` only makes sense for a LIVE session
+                               // (a hibernated thread has no in-flight turn to abort).
+                               // When delivered, the session driver answers
+                               // `command_id` from the correlated `turn/interrupt`
+                               // JSON-RPC outcome; a non-delivery is
+                               // reported as a failure here so the webui can say so.
+                               let delivered = matches!(
+                                   route_or_prepare_resume(
+                                       &live,
+                                       &registry,
+                                       &local_id,
+                                       SessionCommand::Interrupt { command_id },
+                                   )
+                                   .await,
+                                   RouteAction::Delivered
+                               );
+                               if !delivered {
+                                   if let Some(command_id) = command_id {
+                                       let _ = events
+                                           .send(AdapterEvent::CommandResult {
+                                               command_id,
+                                               ok: false,
+                                               error: Some(
+                                                   "no live codex session to interrupt".to_owned(),
+                                               ),
+                                           })
+                                           .await;
+                                   }
+                                   tracing::warn!(%local_id, "codex: interrupt for non-live session");
+                               }
+                           }
+                           AdapterCommand::Rename { local_id, name } => {
+                               forward(
+                                   &live,
+                                   &registry,
+                                   &events,
+                                   &shutdown,
+                                   server.as_ref(),
+                                   machine_key.as_ref(),
+                                   &local_id,
+                                   SessionCommand::Rename { name },
+                               )
+                               .await;
+                           }
+                           AdapterCommand::Remove { local_id } => {
+                               // Stop the live worker, drop the durable record, then
+                               // archive the thread natively so it disappears
+                               // from codex's own views too — the analogue of claude's
+                               // `claude rm`, keeping the transcript recoverable.
+                               // Idempotent: archiving an already-archived / missing
+                               // thread succeeds. Runs off the pump so a 30s app-server
+                               // spawn can't stall other commands.
+                               forward(
+                                   &live,
+                                   &registry,
+                                   &events,
+                                   &shutdown,
+                                   server.as_ref(),
+                                   machine_key.as_ref(),
+                                   &local_id,
+                                   SessionCommand::Kill { signal: None },
+                               )
+                               .await;
+                               registry.lock().await.remove(&local_id);
+                               let cfg = app_cfg.clone();
+                               tokio::spawn(async move {
+                                   if let Err(err) = app_server::run_thread_lifecycle(
+                                       &cfg,
+                                       &local_id,
+                                       app_server::LifecycleOp::Archive,
+                                   )
+                                   .await
+                                   {
+                                       tracing::warn!(%local_id, %err, "codex: native thread/archive failed");
+                                   }
+                               });
+                           }
+                           AdapterCommand::Resume { local_id, .. } => {
+                               // Reopen the thread natively: un-archive it so
+                               // it reappears in codex's own views. Idempotent —
+                               // unarchiving a non-archived / missing thread succeeds.
+                               // cctui-side revival stays lazy: the next message resumes
+                               // the hibernated app-server via the registry.
+                               let cfg = app_cfg.clone();
+                               tokio::spawn(async move {
+                                   if let Err(err) = app_server::run_thread_lifecycle(
+                                       &cfg,
+                                       &local_id,
+                                       app_server::LifecycleOp::Unarchive,
+                                   )
+                                   .await
+                                   {
+                                       tracing::warn!(%local_id, %err, "codex: native thread/unarchive failed");
+                                   }
+                               });
+                           }
+                           AdapterCommand::SetModel { local_id, model, effort, command_id } => {
+                               let handled = forward(
+                                   &live,
+                                   &registry,
+                                   &events,
+                                   &shutdown,
+                                   server.as_ref(),
+                                   machine_key.as_ref(),
+                                   &local_id,
+                                   SessionCommand::SetModel { model, effort, command_id },
+                               )
+                               .await;
+                               // Delivered/resumed paths resolve `command_id` in the
+                               // driver; an untracked session resolves it as failure
+                               // here so the webui doesn't wait out the ack.
+                               if !handled && let Some(command_id) = command_id {
+                                   let _ = events
+                                       .send(AdapterEvent::CommandResult {
+                                           command_id,
+                                           ok: false,
+                                           error: Some("no codex session to change model on".to_owned()),
+                                       })
+                                       .await;
+                               }
+                           }
+                           AdapterCommand::Diagnose { local_id, request_id } => {
+                               let report = build_diagnose(
+                                   &live,
+                                   &registry,
+                                   server.as_ref(),
+                                   machine_key.as_ref(),
+                                   &local_id,
+                               )
+                               .await;
+                               let _ = events
+                                   .send(AdapterEvent::Diagnose {
+                                       local_id,
+                                       request_id,
+                                       report: Box::new(report),
+                                   })
+                                   .await;
+                           }
+                           AdapterCommand::ResumeMarks { .. } => {}
+                           _ => tracing::warn!("codex: unhandled AdapterCommand variant"),
+                       }
+                   }
+               }
     }
 }
 
-/// Assemble the adapter-neutral diagnose report for a codex session (CCT-640):
+/// Assemble the adapter-neutral diagnose report for a codex session:
 /// the claude-only facts come back `missing`, and the codex section carries the
 /// app-server / thread / rpc / rollout state. Gathered from the live driver
 /// (via a `SessionCommand::Diagnose` round-trip) when one is running, else from
@@ -807,7 +807,7 @@ async fn forward(
         RouteAction::Delivered => true,
         RouteAction::Resume { mut record, command } if command.is_resumable() => {
             tracing::info!(%local_id, ?command, "codex: resuming hibernated app-server session");
-            // CCT-482: a thread REDISCOVERED from `thread/list` after a daemon
+            // a thread REDISCOVERED from `thread/list` after a daemon
             // restart was seeded with an empty env (it was not spawned/forked in
             // this daemon lifetime), so its first resume would launch env-less
             // and 401 for an account-bound session. Re-pull the gateway env from
@@ -948,7 +948,7 @@ mod gateway_env_tests {
         assert_eq!(launch_env_decision("s1", &resp, &hint).unwrap(), hint);
     }
 
-    // CCT-482: a thread rediscovered from `thread/list` after a daemon restart
+    // a thread rediscovered from `thread/list` after a daemon restart
     // has an EMPTY stored env, so the resume path re-pulls with that empty env as
     // the hint. The decision must then seed the gateway env from the server
     // (account-bound) so the relaunch routes through the gateway instead of
@@ -966,7 +966,7 @@ mod gateway_env_tests {
         assert_eq!(got.get("OPENAI_API_KEY").map(String::as_str), Some("tok"));
     }
 
-    // CCT-482: the resume re-pull is fail-closed too — a rediscovered
+    // the resume re-pull is fail-closed too — a rediscovered
     // account-bound thread whose binding yields no env must refuse to relaunch
     // rather than cold-launch env-less.
     #[test]

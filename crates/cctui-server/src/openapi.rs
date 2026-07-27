@@ -1,4 +1,4 @@
-//! Self-describing API surface for agents (CCT-464).
+//! Self-describing API surface for agents.
 //!
 //! Two artifacts are generated AT RUNTIME from the single source of truth — the
 //! [`authz::RouteDescriptor`] table that [`crate::build_api_routes`] already
@@ -245,7 +245,7 @@ mod tests {
         assert_eq!(dispatch["x-required-scope"], "dispatch");
         // The list route is present.
         assert!(paths["/api/v1/sessions"]["get"].is_object());
-        // The Langfuse read proxy (CCT-564) is session-read scoped.
+        // The Langfuse read proxy is session-read scoped.
         assert_eq!(paths["/api/v1/sessions/{id}/langfuse"]["get"]["x-required-scope"], "read");
     }
 
@@ -262,7 +262,7 @@ mod tests {
     }
 
     /// Sanity: every emitted operation carries a non-empty summary (the document
-    /// half of the CCT-464 guard).
+    /// half of the guard).
     #[test]
     fn every_emitted_operation_has_a_summary() {
         let doc = build_openapi();

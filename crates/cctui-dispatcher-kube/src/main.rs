@@ -41,7 +41,7 @@ enum Cmd {
         /// `CCTUI_URL` injected into spawned workers (defaults to `server_url`).
         #[arg(long)]
         worker_cctui_url: Option<String>,
-        /// OAuth account name to bind as this dispatcher's default (CCT-427).
+        /// OAuth account name to bind as this dispatcher's default.
         /// A dispatch with no explicit account routes its model traffic through
         /// the cctui gateway under this account.
         #[arg(long)]

@@ -1,7 +1,7 @@
-//! Shared multipart→`BootstrapFile` parsing for file uploads (CCT-236).
+//! Shared multipart→`BootstrapFile` parsing for file uploads.
 //!
-//! Both `POST /sessions/spawn` (spawn-time bootstrap uploads, CCT-203) and
-//! `POST /sessions/{id}/files` (mid-chat attachments, CCT-236) accept the same
+//! Both `POST /sessions/spawn` (spawn-time bootstrap uploads) and
+//! `POST /sessions/{id}/files` (mid-chat attachments) accept the same
 //! `multipart/form-data` shape and enforce the same caps. Keeping the parsing,
 //! base64 encoding, and cap validation here means there is a **single encoding
 //! point**: a future move off base64 (binary frames / presigned upload) changes

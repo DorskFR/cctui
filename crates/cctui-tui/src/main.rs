@@ -29,7 +29,7 @@ use ratatui::{Frame, Terminal};
 use tokio::sync::mpsc;
 use tokio::time;
 
-/// Display ordering for the classifier buckets in the session list (CCT-90):
+/// Display ordering for the classifier buckets in the session list:
 /// sessions that want the user's eyes float to the top.
 pub(crate) const fn bucket_rank(bucket: cctui_proto::classifier::Bucket) -> u8 {
     use cctui_proto::classifier::Bucket;
@@ -73,7 +73,7 @@ struct Cli {
 enum Command {
     /// Force re-download of the latest cctui release and re-apply settings.
     Update,
-    /// One-call session diagnose (CCT-547): print everything the daemon knows
+    /// One-call session diagnose: print everything the daemon knows
     /// about a session — each fact dated + sourced — plus the server-side
     /// gateway/account binding facts.
     Diagnose {
@@ -99,7 +99,7 @@ async fn main() -> Result<()> {
     }
 }
 
-/// `cctui diagnose <session-id>` (CCT-547): fetch the one-call diagnose blob
+/// `cctui diagnose <session-id>`: fetch the one-call diagnose blob
 /// and render it as one dated, sourced line per fact.
 async fn run_diagnose(session_id: &str) -> Result<()> {
     let (base_url, token) = resolve_identity();
@@ -416,7 +416,7 @@ const fn snap_scroll_if_following(app: &mut App) {
     }
 }
 
-/// Ctrl-modified conversation actions (CCT-151): Ctrl-C interrupts the
+/// Ctrl-modified conversation actions: Ctrl-C interrupts the
 /// in-flight turn, Ctrl-A toggles cctui-side auto-approve. Returns `true` if
 /// the key was consumed.
 async fn handle_conversation_action_keys(
@@ -656,7 +656,7 @@ fn handle_server_event(app: &mut App, event: ServerEvent) {
                     liveness: cctui_proto::models::Liveness::Active,
                     attention: None,
                     // Newly-registered: classifier signals arrive on the next
-                    // REST refresh; until then it's plain Working (CCT-90).
+                    // REST refresh; until then it's plain Working.
                     bucket: cctui_proto::classifier::Bucket::Working,
                     uptime_secs: 0,
                     token_usage: cctui_proto::models::TokenUsage::default(),
@@ -716,16 +716,16 @@ fn handle_server_event(app: &mut App, event: ServerEvent) {
         | ServerEvent::SoftLimitReached { .. }
         | ServerEvent::PtyChunk { .. }
         | ServerEvent::SoftLimitCleared { .. } => {
-            // Archive coverage is web-only (CCT-68); spawn feedback
-            // (CommandResult, CCT-131) is surfaced in the web client and the
+            // Archive coverage is web-only; spawn feedback
+            // (CommandResult) is surfaced in the web client and the
             // TUI doesn't drive the spawn flow. Live AskUserQuestion prompts
-            // (CCT-164) render in the web client; the TUI shows the question
+            // render in the web client; the TUI shows the question
             // from the transcript, so nothing to render here. MessageAck
-            // (CCT-212) is opt-in via `client_msg_id`, which the TUI never
+            // is opt-in via `client_msg_id`, which the TUI never
             // sends, so the server won't emit one to it. MachineLiveness
-            // (CCT-255) drives a web-only per-machine badge; the TUI doesn't
+            // drives a web-only per-machine badge; the TUI doesn't
             // render machine liveness, so nothing to do here. SoftLimit
-            // Reached/Cleared (CCT-444) drive the web-only per-chat
+            // Reached/Cleared drive the web-only per-chat
             // account-switch banner; the TUI doesn't render it.
         }
         ServerEvent::PermissionResolved { session_id, request_id } => {
@@ -902,7 +902,7 @@ fn agent_event_to_line(event: &AgentEvent) -> ConversationLine {
             tool: None,
             tool_input: None,
         },
-        // CCT-158: /clear boundary within one session.
+        // /clear boundary within one session.
         AgentEvent::ContextReset { ts, .. } => ConversationLine {
             timestamp: *ts,
             kind: LineKind::System,
@@ -910,7 +910,7 @@ fn agent_event_to_line(event: &AgentEvent) -> ConversationLine {
             tool: None,
             tool_input: None,
         },
-        // CCT-159: /compact summary (no rotation; carries the summary text).
+        // /compact summary (no rotation; carries the summary text).
         AgentEvent::CompactSummary { content, ts, .. } => ConversationLine {
             timestamp: *ts,
             kind: LineKind::System,

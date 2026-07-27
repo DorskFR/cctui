@@ -129,7 +129,7 @@ fn agent_event_from_canonical(v: &Value, ts: i64) -> Option<AgentEvent> {
 }
 
 /// Map a codex app-server / log-tail event payload onto the canonical client
-/// shape. Codex stores the raw `item/completed` item (CCT-137); its `type`
+/// shape. Codex stores the raw `item/completed` item; its `type`
 /// field is a codex-native `ThreadItem` discriminant (verified against
 /// `codex app-server generate-json-schema`, codex-cli 0.135). The `event_type`
 /// column (`message` / `tool_use`) is advisory only — we key off the item
@@ -164,7 +164,7 @@ fn codex(_event_type: &str, payload: &Value) -> Option<Value> {
             }
             Some(json!({ "type": "text", "content": text, "role": "Reasoning" }))
         }
-        // Review mode boundaries (CCT-638) → assistant-side note.
+        // Review mode boundaries → assistant-side note.
         "enteredReviewMode" => {
             let r = payload.get("review").and_then(Value::as_str).unwrap_or_default();
             let content = if r.is_empty() {
@@ -183,7 +183,7 @@ fn codex(_event_type: &str, payload: &Value) -> Option<Value> {
             };
             Some(json!({ "type": "text", "content": content, "role": "Review" }))
         }
-        // A context compaction boundary renders like a /clear cut (CCT-638).
+        // A context compaction boundary renders like a /clear cut.
         "contextCompaction" => Some(json!({ "type": "context_reset" })),
         // Sub-agent hand-off activity → a compact status line.
         "subAgentActivity" => {
@@ -237,7 +237,7 @@ fn codex(_event_type: &str, payload: &Value) -> Option<Value> {
             "tool": "WebSearch",
             "input": { "query": payload.get("query").and_then(Value::as_str).unwrap_or_default() },
         })),
-        // A dynamic (namespaced) tool call (CCT-638) → tool_call, keeping the
+        // A dynamic (namespaced) tool call → tool_call, keeping the
         // `namespace__tool` name so the renderer groups it like an MCP call.
         "dynamicToolCall" => {
             let tool = payload.get("tool").and_then(Value::as_str).unwrap_or_default();
@@ -251,7 +251,7 @@ fn codex(_event_type: &str, payload: &Value) -> Option<Value> {
                 "input": payload.get("arguments").cloned().unwrap_or(Value::Null),
             }))
         }
-        // Collaboration hand-off to another agent (CCT-638) → tool_call carrying
+        // Collaboration hand-off to another agent → tool_call carrying
         // the delegated prompt/model.
         "collabAgentToolCall" => {
             let tool = payload.get("tool").and_then(Value::as_str).unwrap_or("collab");
@@ -264,7 +264,7 @@ fn codex(_event_type: &str, payload: &Value) -> Option<Value> {
             }
             Some(json!({ "type": "tool_call", "tool": tool, "input": input }))
         }
-        // Image items (CCT-638): a viewed local image or a generated one.
+        // Image items: a viewed local image or a generated one.
         "imageView" => Some(json!({
             "type": "tool_call",
             "tool": "view_image",
@@ -545,7 +545,7 @@ mod tests {
         assert_eq!(for_client("claude-code", "message", p), None);
     }
 
-    // --- codex normalizer (CCT-137); shapes captured from codex-cli 0.135 ---
+    // --- codex normalizer; shapes captured from codex-cli 0.135 ---
 
     #[test]
     fn codex_agent_message_maps_to_text() {
@@ -567,7 +567,7 @@ mod tests {
 
     #[test]
     fn codex_legacy_role_text_preview_is_dropped() {
-        // CCT-276: the old inventory preview payload `{role,text}` has no codex
+        // the old inventory preview payload `{role,text}` has no codex
         // `type` discriminant, so the codex normalizer drops it → the
         // conversation drawer rendered "No events yet". Documents that bug.
         let p = json!({ "role": "user", "text": "Implement CCT-276 please." });
@@ -576,7 +576,7 @@ mod tests {
 
     #[test]
     fn codex_native_preview_survives_normalize() {
-        // CCT-276 fix: the inventory now emits the preview as a codex-native
+        // fix: the inventory now emits the preview as a codex-native
         // `userMessage`, which normalizes to a renderable user line.
         let p = json!({ "type": "userMessage", "content": [
             { "type": "text", "text": "Implement CCT-276 please." }
@@ -628,7 +628,7 @@ mod tests {
         assert_eq!(for_client("codex", "message", p), None);
     }
 
-    // --- CCT-638: expanded item fidelity ------------------------------------
+    // --- expanded item fidelity ------------------------------------
 
     #[test]
     fn codex_reasoning_app_server_string_content() {
@@ -711,7 +711,7 @@ mod tests {
         assert_eq!(n["content"], "· sub-agent started: reviewer");
     }
 
-    // --- codex rollout envelopes (CCT-633); shapes captured from codex 0.144.1 ---
+    // --- codex rollout envelopes; shapes captured from codex 0.144.1 ---
 
     #[test]
     fn codex_event_msg_user_message_maps_to_user_text() {
@@ -821,7 +821,7 @@ mod tests {
 
     #[test]
     fn context_reset_maps_on_both_paths() {
-        // CCT-158: a /clear or /compact boundary surfaces as a dedicated event
+        // a /clear or /compact boundary surfaces as a dedicated event
         // on both the live broadcast and the historical read paths.
         let p = json!({ "role": "context_reset", "text": "x", "session_id": "sess-2" });
         match to_agent_event("claude-code", "message", &p) {
@@ -834,7 +834,7 @@ mod tests {
 
     #[test]
     fn compact_summary_maps_on_both_paths() {
-        // CCT-159: a /compact summary carries text and surfaces as a dedicated
+        // a /compact summary carries text and surfaces as a dedicated
         // compact event on both the live and historical read paths.
         let p = json!({ "role": "compact_summary", "text": "the summary" });
         match to_agent_event("claude-code", "message", &p) {

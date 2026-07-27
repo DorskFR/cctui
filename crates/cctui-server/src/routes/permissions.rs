@@ -22,7 +22,7 @@ pub struct PendingPermission {
     pub received_at: DateTime<Utc>,
 }
 
-/// A live `AskUserQuestion` the agent is currently blocked on (CCT-277).
+/// A live `AskUserQuestion` the agent is currently blocked on.
 /// Held authoritatively per session so it can be replayed to any client that
 /// (re)subscribes — unlike the original fire-and-forget broadcast, which was
 /// lost forever if no client happened to be listening when it went out.
@@ -35,8 +35,8 @@ pub struct PendingAsk {
     pub received_at: DateTime<Utc>,
 }
 
-/// A live `ExitPlanMode` plan-approval prompt the agent is blocked on
-/// (CCT-347). Held authoritatively per session so it can be replayed to a
+/// A live `ExitPlanMode` plan-approval prompt the agent is blocked on.
+/// Held authoritatively per session so it can be replayed to a
 /// (re)subscribing client, exactly like [`PendingAsk`].
 #[derive(Debug, Clone)]
 pub struct PendingPlan {
@@ -55,9 +55,9 @@ pub struct PermissionStore {
     /// Live `AskUserQuestion` prompts, keyed by `session_id` (a session has at
     /// most one open ask form). Populated on `AskQuestion`, dropped on
     /// `AskResolved`; replayed to (re)subscribing clients so a prompt is never
-    /// lost to a momentary unsubscribe (CCT-277).
+    /// lost to a momentary unsubscribe.
     asks: HashMap<String, PendingAsk>,
-    /// Live `ExitPlanMode` plan prompts, keyed by `session_id` (CCT-347).
+    /// Live `ExitPlanMode` plan prompts, keyed by `session_id`.
     /// Populated on `PlanRequest`, dropped on `PlanResolved`; replayed to
     /// (re)subscribing clients like `asks`.
     plans: HashMap<String, PendingPlan>,
@@ -65,7 +65,7 @@ pub struct PermissionStore {
     /// behavior, `decided_at`). Currently used only for the audit window
     /// covered by `reap_stale`.
     decisions: HashMap<String, (String, String, DateTime<Utc>)>,
-    /// Sessions with auto-approve enabled (CCT-151). A cctui-layer
+    /// Sessions with auto-approve enabled. A cctui-layer
     /// convenience: incoming `PermissionRequest`s for these sessions are
     /// answered `allow` immediately instead of prompting the user. Distinct
     /// from the agent's own `auto` permission mode — this works even when the
@@ -107,7 +107,7 @@ impl PermissionStore {
         self.pending.values().cloned().collect()
     }
 
-    /// Record the live `AskUserQuestion` for a session (CCT-277). A newer ask
+    /// Record the live `AskUserQuestion` for a session. A newer ask
     /// for the same session replaces the prior one.
     pub fn insert_ask(&mut self, ask: PendingAsk) {
         self.asks.insert(ask.session_id.clone(), ask);
@@ -126,7 +126,7 @@ impl PermissionStore {
         self.asks.get(session_id).cloned()
     }
 
-    /// Record the live plan prompt for a session (CCT-347). A newer plan for
+    /// Record the live plan prompt for a session. A newer plan for
     /// the same session replaces the prior one.
     pub fn insert_plan(&mut self, plan: PendingPlan) {
         self.plans.insert(plan.session_id.clone(), plan);
@@ -144,7 +144,7 @@ impl PermissionStore {
         self.plans.get(session_id).cloned()
     }
 
-    /// Enable/disable auto-approve for a session (CCT-151).
+    /// Enable/disable auto-approve for a session.
     pub fn set_auto_approve(&mut self, session_id: &str, enabled: bool) {
         if enabled {
             self.auto_approve.insert(session_id.to_string());
@@ -198,7 +198,7 @@ pub async fn list_pending(
     };
 
     // Scope pending prompts to sessions the caller owns (admin sees all),
-    // resolving ownership via each item's session_id (CCT-417). One batched
+    // resolving ownership via each item's session_id. One batched
     // `machine_uuid -> machines.user_id` lookup over the distinct session ids.
     let pending: Vec<PendingPermission> = if ctx.is_admin() {
         pending

@@ -1,4 +1,4 @@
-//! CCT-739: extract oversized embedded base64 attachments from transcript event
+//! extract oversized embedded base64 attachments from transcript event
 //! payloads onto the HTTP blob store before the event rides the WS.
 
 use std::collections::HashSet;

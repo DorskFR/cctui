@@ -1,6 +1,6 @@
 //! Dial-out WS run loop.
 //!
-//! Mirrors the daemon supervisor (CCT-248 transport spec): connect out to
+//! Mirrors the daemon supervisor (transport spec): connect out to
 //! `/api/v1/dispatcher/ws`, send `Hello` + periodic `Heartbeat`, and handle
 //! `Dispatch`/`Status`/`Cancel` frames by driving the local docker `Spawner`.
 //! Reconnect backoff + half-open detection follow the daemon's pattern verbatim
@@ -148,7 +148,7 @@ impl Runner {
                         request_id,
                         handle,
                         state: Some(state.as_str().to_owned()),
-                        // Carries the failure reason for a Failed state (CCT-429).
+                        // Carries the failure reason for a Failed state.
                         error: reason,
                     },
                     Err(err) => DispatcherFrameUp::StatusResult {

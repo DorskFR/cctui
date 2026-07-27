@@ -83,7 +83,7 @@ fn id_setter_rules(argc: u8, worker_id: u64) -> Result<Vec<SeccompRule>> {
 /// Each blocked syscall returns `EPERM`; every other syscall is allowed (the
 /// mismatch action). The uid/gid-setting syscalls are guarded conditionally so
 /// a no-op reset to `worker_id` (or `-1`) is permitted while real identity
-/// changes stay denied (CCT-549). Returns the program and the ordered list of
+/// changes stay denied. Returns the program and the ordered list of
 /// blocked syscall names (for logging / the report).
 pub fn build(worker_id: u32) -> Result<(BpfProgram, Vec<&'static str>)> {
     let arch = target_arch()?;

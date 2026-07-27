@@ -1,4 +1,4 @@
-//! Shared secret-redaction engine (CCT-731).
+//! Shared secret-redaction engine.
 //!
 //! [`redact_json`] rewrites string
 //! leaves only (JSON structure is preserved), masking the matched span with

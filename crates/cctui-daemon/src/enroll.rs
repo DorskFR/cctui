@@ -1,4 +1,4 @@
-//! One-shot remote install + enrolment over ssh (CCT-548).
+//! One-shot remote install + enrolment over ssh.
 //!
 //! `cctui-daemon enroll <user@host> --server-url … --token …` takes a machine
 //! from zero to a connected fleet member:

@@ -1,6 +1,6 @@
 //! Dial-out WS run loop.
 //!
-//! Mirrors the daemon supervisor (CCT-248 transport spec): connect out to
+//! Mirrors the daemon supervisor (transport spec): connect out to
 //! `/api/v1/dispatcher/ws`, send `Hello` + periodic `Heartbeat`, and handle
 //! `Dispatch`/`Status`/`Cancel` frames by driving the local `Spawner`. Reconnect
 //! backoff + half-open detection follow the daemon's pattern verbatim so a NAT'd

@@ -12,8 +12,8 @@ use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
-/// Control-socket ops that the claude daemon gates behind the control key
-/// (CCT-264). Read ops (`ping`/`list`/`has`/`kill`) are ungated; only the
+/// Control-socket ops that the claude daemon gates behind the control key.
+/// Read ops (`ping`/`list`/`has`/`kill`) are ungated; only the
 /// mutating `dispatch`/`reply`/`attach` ops are rejected with `EAUTH` when no
 /// `auth` is presented. The daemon's request schema is a strict discriminated
 /// union, so `auth` must ONLY ride on these ops — adding it to `ping`/`list`
@@ -72,8 +72,8 @@ pub async fn one_shot(socket: &Path, request: &Value) -> Result<Value> {
     // Deliberately keep the write half open until the response is read. The
     // `dispatch` op drops the request as stale the moment it observes EOF on
     // the read side (`tengu_bg_dispatch_stale_drop`), so half-closing here —
-    // as an earlier `drop(write_half)` did — silently killed every spawn
-    // (CCT-131). Other ops don't care, so holding it open is universally safe.
+    // as an earlier `drop(write_half)` did — silently killed every spawn.
+    // Other ops don't care, so holding it open is universally safe.
 
     let mut reader = BufReader::new(read_half);
     let mut buf = String::new();
@@ -98,8 +98,8 @@ pub async fn call<T: DeserializeOwned>(socket: &Path, request: &Value) -> Result
     Ok(serde_json::from_value(resp)?)
 }
 
-/// Interrupt the in-flight turn of a claude worker WITHOUT killing it
-/// (CCT-210). The control socket has no turn-interrupt op, but the `attach`
+/// Interrupt the in-flight turn of a claude worker WITHOUT killing it.
+/// The control socket has no turn-interrupt op, but the `attach`
 /// op opens a live PTY mirror: after the attach ack the supervisor pipes any
 /// raw bytes written on this connection straight into the worker's PTY as
 /// keystrokes (`Y.on("data", o => L.write(i.write(o)))`). So we do exactly
@@ -114,7 +114,7 @@ pub async fn attach_interrupt(socket: &Path, short: &str) -> Result<()> {
     attach_send_keys(socket, short, b"\x1b").await
 }
 
-/// Answer a pending tool-permission prompt over the PTY (CCT-211). The control
+/// Answer a pending tool-permission prompt over the PTY. The control
 /// socket's `permission-response` op is a no-op stub in current claude (it acks
 /// `ok:true` but never resolves the prompt), so — exactly as the interrupt path
 /// does for ESC — we attach and inject the keystroke a human would press:
@@ -132,7 +132,7 @@ pub async fn attach_permission_response(socket: &Path, short: &str, allow: bool)
 /// Submit the current draft in a worker PTY. Used after multiline `reply`
 /// payloads: current Claude builds can accept the text into the composer but
 /// leave it as an unsent draft, which is most visible for attachment messages
-/// because the web UI appends staged file paths on separate lines (CCT-442).
+/// because the web UI appends staged file paths on separate lines.
 ///
 /// The submit `\r` is sent as the SECOND chunk of an attach sequence so it
 /// inherits the 350ms inter-chunk pacing in `attach_send_chunks`: a bare `\r`
@@ -144,7 +144,7 @@ pub async fn attach_submit(socket: &Path, short: &str) -> Result<()> {
     attach_send_chunks(socket, short, &[Vec::new(), b"\r".to_vec()]).await
 }
 
-/// Answer a pending `AskUserQuestion` form natively (CCT-226): inject the
+/// Answer a pending `AskUserQuestion` form natively: inject the
 /// keystroke sequence a human would press, one chunk per UI step, paced so the
 /// form's renderer keeps up between steps. The grammar (verified live against
 /// claude 2.1.162):
@@ -273,7 +273,7 @@ mod tests {
         .await;
     }
 
-    /// Proves CCT-135: seeding `name`/`nameSource` makes the daemon write the
+    /// Proves seeding `name`/`nameSource` makes the daemon write the
     /// display name into `~/.claude/jobs/<short>/state.json`. Run with a live
     /// daemon: `cargo test -p cctui-daemon live_dispatch_seeds_name -- --ignored`.
     #[tokio::test]

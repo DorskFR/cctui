@@ -1,4 +1,4 @@
-//! Shared stream-json plumbing for the headless claude-code drivers (CCT-497).
+//! Shared stream-json plumbing for the headless claude-code drivers.
 //!
 //! Both the oneshot driver (a single `claude --print --output-format
 //! stream-json --verbose` invocation) and the SDK driver speak the CLI's
@@ -34,7 +34,7 @@
 
 // The stream-json plumbing is exercised by this module's unit tests but not
 // yet wired into a live driver — the oneshot/sdk run loops that consume it
-// land in follow-up tickets (CCT-497 ships only the shared codec + stubs).
+// land in follow-up tickets (ships only the shared codec + stubs).
 #![allow(dead_code)]
 
 use cctui_proto::adapter::{AdapterEvent, EndReason, SessionMeta};
@@ -75,7 +75,7 @@ pub(super) fn parse_stream_line(
     match kind {
         "system" => parse_system(local_id, &v, out),
         // `assistant`/`user` frames carry the same `message.content` shape as
-        // transcript lines, so reuse the canonical normalization (CCT-497).
+        // transcript lines, so reuse the canonical normalization.
         "assistant" | "user" => {
             transcript::parse_line(local_id, &v, out);
             StreamOutcome::default()
@@ -173,7 +173,7 @@ pub(super) fn session_started(local_id: &str) -> AdapterEvent {
 }
 
 /// The launch-arg pieces shared between the control driver's dispatch and the
-/// headless stream-json drivers (CCT-497). Built from a [`SessionSpec`] plus
+/// headless stream-json drivers. Built from a [`SessionSpec`] plus
 /// the resolved hook-settings path; the driver appends transport-specific
 /// flags (`--output-format`/`--input-format`/`--print`) around it.
 #[derive(Debug, Default, Clone)]
@@ -202,7 +202,7 @@ pub(super) struct LaunchArgs {
 #[allow(dead_code)]
 impl LaunchArgs {
     /// Derive the shared args from a spec + resolved hook-settings path,
-    /// mirroring `control::Driver::spawn`'s argv (CCT-497). `settings_path`
+    /// mirroring `control::Driver::spawn`'s argv. `settings_path`
     /// is the output of `ensure_hook_settings`, threaded in by the driver so
     /// this module stays free of the hook-file I/O.
     pub fn from_spec(

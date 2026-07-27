@@ -1,4 +1,4 @@
-//! The single routing seam for all WS-bound traffic (CCT-572, phase 1 of the
+//! The single routing seam for all WS-bound traffic (phase 1 of the
 //! message-bus architecture).
 //!
 //! Before this module, "which pod holds the WS / who is subscribed" was smeared
@@ -16,9 +16,9 @@
 //! Behind it sits a [`Transport`]. [`NoopTransport`] (local dev / single
 //! replica) keeps single-pod semantics: routing is a local registry lookup and
 //! publish is a local broadcast. With `CCTUI_POD_IP` set, main swaps in
-//! [`peer::PeerHttpTransport`] (CCT-573): local misses are forwarded to the
+//! [`peer::PeerHttpTransport`]: local misses are forwarded to the
 //! peer pod owning the WS, and publishes fan out to every live replica —
-//! replacing the retired CCT-567 HTTP request-replay forwarder. CCT-568 (NATS)
+//! replacing the retired HTTP request-replay forwarder. (NATS)
 //! plugs in here the same way without touching callers.
 //!
 //! Persistence is NOT the bus's job: event DB writes and the permission/ask/
@@ -38,7 +38,7 @@ use uuid::Uuid;
 
 use crate::state::AppState;
 
-/// Outcome of a mid-chat file-stage request (CCT-236): the staged absolute
+/// Outcome of a mid-chat file-stage request: the staged absolute
 /// paths on success, or an error string on failure.
 type StageFilesOutcome = Result<Vec<String>, String>;
 
@@ -61,8 +61,8 @@ const LIST_DIRS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3)
 /// bound covers all three round-trips.
 const DISPATCHER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// How long [`Bus::request_daemon`] waits for the adapter's diagnose report
-/// (CCT-547). Aggregation over in-memory state plus one bounded socket probe —
+/// How long [`Bus::request_daemon`] waits for the adapter's diagnose report.
+/// Aggregation over in-memory state plus one bounded socket probe —
 /// fast, but the reply rides the adapter's command loop, so leave headroom.
 const DIAGNOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
@@ -100,7 +100,7 @@ pub enum BusError {
     #[error("reconcile build error: {0}")]
     Reconcile(String),
     /// A cross-replica transport failure that doesn't map onto one of the
-    /// meaning-bearing variants above (CCT-573): the peer replied with an
+    /// meaning-bearing variants above: the peer replied with an
     /// unclassified error or an unreadable body. The frame was NOT delivered.
     #[error("bus transport error: {0}")]
     Transport(String),
@@ -111,11 +111,11 @@ pub enum BusError {
 /// it when the WS read loop reports the matching result frame.
 #[derive(Debug)]
 pub enum DaemonRequest {
-    /// Stage mid-chat attachment files (CCT-236) → `StageFilesResult`.
+    /// Stage mid-chat attachment files → `StageFilesResult`.
     StageFiles { adapter_id: String, local_id: String, uploads: Vec<BootstrapFile> },
     /// Working-directory autocomplete listing → `ListDirsResult`.
     ListDirs { path: String },
-    /// Session diagnose snapshot (CCT-547). Unlike the two above this rides
+    /// Session diagnose snapshot. Unlike the two above this rides
     /// the generic `Command` frame into the adapter (the facts live in the
     /// adapter's driver, not the supervisor) and the reply comes back as an
     /// `AdapterEvent::Diagnose` on the event stream, correlated by the bus's
@@ -139,7 +139,7 @@ pub enum BusEvent {
     /// subscribers of `session_id`. No in-process producer publishes these yet
     /// (the daemon ingest path streams via `ServerEvent::Stream`, exactly as
     /// before — the pre-bus `stream_tx` had no producer either); the variant
-    /// is the seam CCT-573/CCT-568 route through.
+    /// is the seam route through.
     #[allow(dead_code)]
     Session { session_id: String, event: AgentEvent },
     /// Cluster-wide server event (permission prompts, asks, plans, acks,
@@ -152,7 +152,7 @@ pub enum BusEvent {
 /// delivery first (this pod's connection registries / broadcast channels);
 /// the transport is its escape hatch to the rest of the cluster.
 ///
-/// Contract for future transports (CCT-573 peer-HTTP, CCT-568 NATS):
+/// Contract for future transports (peer-HTTP, NATS):
 ///   * `forward_daemon` / `forward_dispatcher` / `request_*` are invoked ONLY
 ///     when the local lookup missed. A cross-replica transport forwards the
 ///     frame/request to the peer pod owning the WS and returns its outcome;
@@ -198,7 +198,7 @@ pub trait Transport: Send + Sync {
 /// exactly the pre-bus `NoDaemon`/"dispatcher offline" behavior — and publish
 /// reaches only this pod's subscribers. Used when `CCTUI_POD_IP` is unset
 /// (local dev / single replica); multi-replica deployments swap in
-/// [`peer::PeerHttpTransport`] (CCT-573).
+/// [`peer::PeerHttpTransport`].
 pub struct NoopTransport;
 
 #[async_trait::async_trait]
@@ -240,18 +240,18 @@ struct Inner {
     /// Absent entry = daemon not terminated by this pod.
     daemons: DashMap<Uuid, mpsc::Sender<DaemonFrameDown>>,
     /// Per-dispatcher outbound channel into the connected enrolled
-    /// dispatcher's WS task (CCT-285). Peer of `daemons`.
+    /// dispatcher's WS task. Peer of `daemons`.
     dispatchers: DashMap<Uuid, mpsc::Sender<DispatcherFrameDown>>,
-    /// In-flight stage-files round-trips awaiting a daemon `StageFilesResult`
-    /// (CCT-236), keyed by the request id the bus minted.
+    /// In-flight stage-files round-trips awaiting a daemon `StageFilesResult`,
+    /// keyed by the request id the bus minted.
     pending_stage: DashMap<Uuid, oneshot::Sender<StageFilesOutcome>>,
     /// In-flight autocomplete listings awaiting a daemon `ListDirsResult`.
     pending_listdirs: DashMap<Uuid, oneshot::Sender<ListDirsOutcome>>,
     /// In-flight session-diagnose round-trips awaiting the adapter's
-    /// `AdapterEvent::Diagnose` reply (CCT-547).
+    /// `AdapterEvent::Diagnose` reply.
     pending_diagnose: DashMap<Uuid, oneshot::Sender<Box<cctui_proto::diagnose::SessionDiagnose>>>,
     /// In-flight Dispatch/Status/Cancel round-trips awaiting a
-    /// [`DispatcherFrameUp`] reply (CCT-285).
+    /// [`DispatcherFrameUp`] reply.
     pending_dispatcher: DashMap<Uuid, oneshot::Sender<DispatcherFrameUp>>,
     /// Cluster-wide server event fan-out (the former `state.tui_tx`).
     server_tx: broadcast::Sender<ServerEvent>,
@@ -259,8 +259,8 @@ struct Inner {
     /// `SessionHandle::stream_tx`). Entries live exactly as long as the
     /// session's registry handle: created on register, removed on deregister.
     session_streams: DashMap<String, broadcast::Sender<AgentEvent>>,
-    /// Live count of browsers watching each session's read-only terminal
-    /// (CCT-545). Gates the daemon PTY stream: on the 0↔1 transition the ws
+    /// Live count of browsers watching each session's read-only terminal.
+    /// Gates the daemon PTY stream: on the 0↔1 transition the ws
     /// handler tells the daemon to start/stop the viewer attach, so an unwatched
     /// session carries no extra stream. Process-local — a multi-pod deploy would
     /// need this on the transport, but the fan-out already assumes single-pod.
@@ -303,8 +303,8 @@ impl Bus {
     /// Drop `machine`'s connection entry, but only if it is STILL `tx` —
     /// during a reconnect race the daemon's new connection may already have
     /// overwritten the map with its own channel, and an unconditional remove
-    /// would delete that live channel (CCT-159). Returns whether an entry was
-    /// removed, so the caller can mirror it into presence (CCT-567).
+    /// would delete that live channel. Returns whether an entry was
+    /// removed, so the caller can mirror it into presence.
     pub fn unregister_daemon(&self, machine: Uuid, tx: &mpsc::Sender<DaemonFrameDown>) -> bool {
         self.inner.daemons.remove_if(&machine, |_, current| current.same_channel(tx)).is_some()
     }
@@ -321,8 +321,8 @@ impl Bus {
         self.inner.dispatchers.insert(dispatcher, tx);
     }
 
-    /// [`Self::unregister_daemon`] for dispatchers: same-channel guard
-    /// (CCT-159), returns whether an entry was removed.
+    /// [`Self::unregister_daemon`] for dispatchers: same-channel guard,
+    /// returns whether an entry was removed.
     pub fn unregister_dispatcher(
         &self,
         dispatcher: Uuid,
@@ -346,7 +346,7 @@ impl Bus {
         self.inner.dispatchers.contains_key(&dispatcher)
     }
 
-    // ---- live-view PTY watcher refcount (CCT-545) ----
+    // ---- live-view PTY watcher refcount ----
 
     /// Register a browser as watching `session`'s live terminal. Returns `true`
     /// only on the 0→1 transition — the caller then tells the daemon to start
@@ -395,7 +395,7 @@ impl Bus {
 
     /// [`Self::command_daemon`] restricted to THIS pod's registry — a miss is a
     /// hard [`BusError::NoDaemon`], never the transport. Used by the internal
-    /// peer-ingest endpoints (CCT-573), whose loop guard is exactly "deliver
+    /// peer-ingest endpoints, whose loop guard is exactly "deliver
     /// locally or fail; never re-forward".
     pub async fn command_daemon_local(
         &self,
@@ -423,7 +423,7 @@ impl Bus {
     }
 
     /// [`Self::command_dispatcher`] restricted to THIS pod's registry
-    /// (peer-ingest loop guard, CCT-573).
+    /// (peer-ingest loop guard).
     pub async fn command_dispatcher_local(
         &self,
         dispatcher: Uuid,
@@ -451,7 +451,7 @@ impl Bus {
     }
 
     /// [`Self::request_daemon`] restricted to THIS pod's registry (peer-ingest
-    /// loop guard, CCT-573) — a miss is a hard [`BusError::NoDaemon`].
+    /// loop guard) — a miss is a hard [`BusError::NoDaemon`].
     pub async fn request_daemon_local(
         &self,
         machine: Uuid,
@@ -547,7 +547,7 @@ impl Bus {
         }
     }
 
-    /// Correlated dispatcher round-trip (Dispatch/Status/Cancel, CCT-285).
+    /// Correlated dispatcher round-trip (Dispatch/Status/Cancel).
     /// The caller mints `request_id` and embeds it in `frame`; the bus parks
     /// the reply oneshot under it and awaits the matching
     /// [`DispatcherFrameUp`] (fired by the dispatcher WS read loop via
@@ -565,7 +565,7 @@ impl Bus {
     }
 
     /// [`Self::request_dispatcher`] restricted to THIS pod's registry
-    /// (peer-ingest loop guard, CCT-573) — a miss is a hard
+    /// (peer-ingest loop guard) — a miss is a hard
     /// [`BusError::NoDispatcher`].
     pub async fn request_dispatcher_local(
         &self,
@@ -630,7 +630,7 @@ impl Bus {
             .is_some()
     }
 
-    /// Fire the oneshot a session-diagnose round-trip is awaiting (CCT-547).
+    /// Fire the oneshot a session-diagnose round-trip is awaiting.
     /// Returns `false` for an unknown request id (the route already timed
     /// out, or a spooled reply was replayed after a daemon reconnect).
     pub fn resolve_diagnose(
@@ -671,8 +671,8 @@ impl Bus {
     }
 
     /// Deliver an event to THIS pod's subscribers only, without handing it to
-    /// the transport. This is the peer-ingest half of [`Self::publish`]
-    /// (CCT-573): events relayed from another pod land here, so they can never
+    /// the transport. This is the peer-ingest half of [`Self::publish`]:
+    /// events relayed from another pod land here, so they can never
     /// be re-relayed and loop around the mesh.
     pub fn deliver_local(&self, event: BusEvent) {
         match event {
@@ -759,7 +759,7 @@ pub async fn dispatch(
 }
 
 /// Rebuild and live-push a fresh [`DaemonFrameDown::Reconcile`] to `machine_id`'s
-/// connected daemon (CCT-495). Used when a per-user setting the reconcile derives
+/// connected daemon. Used when a per-user setting the reconcile derives
 /// from (e.g. `harnessMode`) changes, so a daemon picks up the new config without
 /// waiting for a reconnect. Best-effort: same `NoDaemon`/`Closed` handling as
 /// [`dispatch`] — a machine with no live WS is a no-op error the caller ignores.
@@ -774,7 +774,7 @@ pub async fn push_reconcile(state: &AppState, machine_id: Uuid) -> Result<(), Bu
         .await
 }
 
-/// Stage mid-chat attachment `files` for `session_id` (CCT-236) and return the
+/// Stage mid-chat attachment `files` for `session_id` and return the
 /// staged absolute paths reported by the owning daemon. Same session
 /// resolution as [`dispatch`]; the correlated round-trip (request id, parked
 /// oneshot, timeout) lives inside [`Bus::request_daemon`].
@@ -801,8 +801,8 @@ pub async fn stage_files(
     }
 }
 
-/// Ask the daemon owning `session_id` for its session-diagnose report
-/// (CCT-547). Same session resolution as [`dispatch`]; the correlated
+/// Ask the daemon owning `session_id` for its session-diagnose report.
+/// Same session resolution as [`dispatch`]; the correlated
 /// round-trip (request id, parked oneshot, timeout) lives inside
 /// [`Bus::request_daemon`].
 pub async fn diagnose(
@@ -937,7 +937,7 @@ mod tests {
         assert!(matches!(err, BusError::Closed));
     }
 
-    /// CCT-159: disconnect cleanup only removes the entry when it is still the
+    /// disconnect cleanup only removes the entry when it is still the
     /// same channel — a reconnect's newer channel must survive the old WS
     /// task's cleanup.
     #[tokio::test]
@@ -1049,7 +1049,7 @@ mod tests {
         }
     }
 
-    /// The diagnose round-trip (CCT-547): the request goes down as a generic
+    /// The diagnose round-trip: the request goes down as a generic
     /// `Command` frame carrying `AdapterCommand::Diagnose` with the bus-minted
     /// request id, and `resolve_diagnose` (fired by the WS read loop on the
     /// echoed `AdapterEvent::Diagnose`) completes it.

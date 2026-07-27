@@ -1,4 +1,4 @@
-//! Daemon-binary manifest + download-proxy endpoints (CCT-88, CCT-117).
+//! Daemon-binary manifest + download-proxy endpoints.
 //!
 //! `GET /api/v1/manifest/daemon` returns the server-known daemon version +
 //! per-arch download URLs. The daemon ships in the same release as the

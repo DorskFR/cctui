@@ -65,7 +65,7 @@ impl ServerClient {
         Ok(())
     }
 
-    /// Interrupt the in-flight turn without tearing the session down (CCT-151).
+    /// Interrupt the in-flight turn without tearing the session down.
     pub async fn interrupt_session(&self, session_id: &str) -> Result<()> {
         let url = format!("{}/api/v1/sessions/{}/interrupt", self.base_url, session_id);
         self.http
@@ -79,7 +79,7 @@ impl ServerClient {
         Ok(())
     }
 
-    /// One-call session diagnose (CCT-547): everything the daemon knows about
+    /// One-call session diagnose: everything the daemon knows about
     /// the session, dated, plus the server-side binding facts.
     pub async fn diagnose_session(
         &self,
@@ -101,7 +101,7 @@ impl ServerClient {
         Ok(resp)
     }
 
-    /// Toggle cctui-side auto-approve for a session (CCT-151).
+    /// Toggle cctui-side auto-approve for a session.
     pub async fn set_auto_approve(&self, session_id: &str, enabled: bool) -> Result<()> {
         let url = format!("{}/api/v1/sessions/{}/auto-approve", self.base_url, session_id);
         self.http
@@ -120,8 +120,8 @@ impl ServerClient {
         &self,
     ) -> Result<(mpsc::Sender<TuiCommand>, mpsc::Receiver<ServerEvent>)> {
         // Authenticate the WS upgrade via the `Authorization` header rather than a
-        // `?token=` query param so the token never lands in server access logs
-        // (CCT-423). `bearer_or_cookie` on the server accepts either the header
+        // `?token=` query param so the token never lands in server access logs.
+        // `bearer_or_cookie` on the server accepts either the header
         // (native clients like this TUI) or the `HttpOnly` cookie (browsers).
         use tokio_tungstenite::tungstenite::client::IntoClientRequest;
         use tokio_tungstenite::tungstenite::http::header::AUTHORIZATION;

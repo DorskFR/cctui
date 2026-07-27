@@ -1,5 +1,4 @@
-//! Optional, config-gated Langfuse tracing sink for the `/gateway` proxy
-//! (CCT-443).
+//! Optional, config-gated Langfuse tracing sink for the `/gateway` proxy.
 //!
 //! Langfuse is **not** a forward proxy — it is an ingestion API beside the path.
 //! The gateway already terminates + re-signs every worker call (worker ->
@@ -175,7 +174,7 @@ impl LangfuseClient {
     }
 
     /// Aggregate one cctui session's Langfuse traces into a cost/usage rollup,
-    /// serving a fresh-enough cached value without touching upstream (CCT-564).
+    /// serving a fresh-enough cached value without touching upstream.
     pub async fn session_usage(&self, session_id: &str) -> Result<LangfuseSessionUsage, String> {
         if let Some(hit) = self.usage_cache.get(session_id)
             && hit.fetched_at.elapsed() < USAGE_TTL
@@ -414,7 +413,7 @@ fn reconstruct_sse(text: &str) -> (Option<String>, Option<Value>) {
 /// usage from the terminal `response.completed`/`response.incomplete` event's
 /// `response.usage` object. Usage maps into the same Langfuse keys the Anthropic
 /// path uses: `input` = `input_tokens - cached_tokens`, `cache_read_input_tokens`
-/// = `cached_tokens`, `output` = `output_tokens` (CCT-710).
+/// = `cached_tokens`, `output` = `output_tokens`.
 pub fn reconstruct_openai(body: &[u8]) -> (Option<String>, Option<Value>) {
     let text = String::from_utf8_lossy(body);
     // Non-SSE: a single Responses object with a top-level `usage` and `output`.
@@ -725,7 +724,7 @@ mod tests {
         assert!(!z.should_sample());
     }
 
-    // CCT-688 regression: generalizing the soft-limit evaluator to a per-window
+    // regression: generalizing the soft-limit evaluator to a per-window
     // collection must stay OUT of the Langfuse tracing path. The gateway
     // evaluates the soft limit BEFORE it ever constructs a tracer, and a blocked
     // request returns its 429 before any tracing/upstream work. Evaluating the

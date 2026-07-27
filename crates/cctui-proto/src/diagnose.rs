@@ -1,4 +1,4 @@
-//! Session diagnose report (CCT-547).
+//! Session diagnose report.
 //!
 //! One structured blob answering "everything the daemon knows about this
 //! session, dated": every input to the session's derived state, each carried
@@ -123,7 +123,7 @@ pub struct HookEvent {
     pub kind: String,
 }
 
-/// Persistent-attach keep-alive status (CCT-209/487) for the session's worker.
+/// Persistent-attach keep-alive status (487) for the session's worker.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct AttachStatus {
@@ -142,8 +142,8 @@ pub struct AttachStatus {
     pub last_probe_at_ms: Option<i64>,
 }
 
-/// PTY output freshness/throughput sensed by the held-attach drain loop
-/// (CCT-546): the second, hook-independent activity signal. `missing` until
+/// PTY output freshness/throughput sensed by the held-attach drain loop:
+/// the second, hook-independent activity signal. `missing` until
 /// the drain loop has read bytes for the session.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -190,13 +190,12 @@ pub struct TranscriptStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct PendingPrompts {
-    /// An `AskUserQuestion`/plan form is up in the worker PTY (CCT-219).
+    /// An `AskUserQuestion`/plan form is up in the worker PTY.
     pub pending_ask: bool,
-    /// A blocking `PreToolUse` permission hook is parked awaiting a decision
-    /// (CCT-342).
+    /// A blocking `PreToolUse` permission hook is parked awaiting a decision.
     pub parked_perm_hook: bool,
     /// The control socket's `needs` string for a pending tool-permission
-    /// prompt (CCT-211), when one is up.
+    /// prompt, when one is up.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub control_needs: Option<String>,
     /// The synthesized `request_id` of the pending permission prompt.
@@ -204,7 +203,7 @@ pub struct PendingPrompts {
     pub perm_request_id: Option<String>,
 }
 
-/// Dispatched-pod turn-complete watcher state (CCT-513).
+/// Dispatched-pod turn-complete watcher state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct DispatchStatus {
@@ -220,11 +219,11 @@ pub struct DispatchStatus {
 #[ts(export)]
 pub struct GatewayStatus {
     /// Whether the daemon has an authenticated server client + machine key
-    /// for the launch-time gateway-env pull (CCT-460).
+    /// for the launch-time gateway-env pull.
     pub server_configured: bool,
 }
 
-/// Codex-adapter-specific diagnostics (CCT-640).
+/// Codex-adapter-specific diagnostics.
 ///
 /// Present only when the session is driven by the codex adapter; `None` for
 /// claude-code, whose facts are the neutral top-level fields instead. Kept as
@@ -284,13 +283,13 @@ pub struct CodexDiagnose {
     pub registry_live_mismatch: Option<String>,
 }
 
-/// Everything the daemon knows about one session, dated (CCT-547). Assembled
+/// Everything the daemon knows about one session, dated. Assembled
 /// by the adapter from state it already tracks — aggregation, not new sensing.
 ///
 /// The named facts below are the adapter-neutral / claude-code set. Adapters
 /// with their own diagnostics attach an optional tagged section (currently
 /// [`SessionDiagnose::codex`]); this keeps the claude wire shape stable while
-/// letting each adapter carry its own payload (CCT-640).
+/// letting each adapter carry its own payload.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct SessionDiagnose {
@@ -308,7 +307,7 @@ pub struct SessionDiagnose {
     pub effective_state: DiagnoseFact<EffectiveState>,
     pub last_hook_event: DiagnoseFact<HookEvent>,
     pub attach: DiagnoseFact<AttachStatus>,
-    /// Held-attach PTY output age/throughput (CCT-546); the second activity
+    /// Held-attach PTY output age/throughput; the second activity
     /// signal, hook-independent.
     pub pty_output: DiagnoseFact<PtyOutputStats>,
     pub claude_socket: DiagnoseFact<SocketStatus>,
@@ -319,7 +318,7 @@ pub struct SessionDiagnose {
     pub permission_mode: DiagnoseFact<String>,
     pub dispatch: DiagnoseFact<DispatchStatus>,
     pub gateway: DiagnoseFact<GatewayStatus>,
-    /// Codex-adapter-specific section (CCT-640); `None` for claude-code.
+    /// Codex-adapter-specific section; `None` for claude-code.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codex: Option<CodexDiagnose>,
 }

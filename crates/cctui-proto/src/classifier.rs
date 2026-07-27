@@ -15,7 +15,7 @@ use ts_rs::TS;
 
 /// The four session buckets clients group on. Serialized `snake_case`
 /// (`working` / `blocked` / `review` / `done`) and shared verbatim by the
-/// TUI and web UI as the on-wire grouping signal (CCT-90).
+/// TUI and web UI as the on-wire grouping signal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "snake_case")]
@@ -52,7 +52,7 @@ pub struct ClassifyInput<'a> {
     /// works fine — we just lose the priority-1 short-circuit.
     pub q: Option<&'a str>,
     /// Set to `Some(reason)` when the session is currently refused by the
-    /// per-account gateway soft limit (CCT-444/CCT-488). This is a durable,
+    /// per-account gateway soft limit. This is a durable,
     /// server-owned block (persisted on the session row), independent of the
     /// churning daemon `tempo`/`state` signals — so it must win over a
     /// `busy`/`active` reading from a worker still retrying behind the 429.
@@ -192,7 +192,7 @@ pub fn classify(
     input: &ClassifyInput<'_>,
     pr_cache: &HashMap<String, PrStatus<'_>, impl std::hash::BuildHasher>,
 ) -> Bucket {
-    // A gateway soft-limit block (CCT-488) is a hard, durable "needs input"
+    // A gateway soft-limit block is a hard, durable "needs input"
     // signal: the worker is locked out of the account until a human switches
     // it. It must win over every transient liveness reading (a worker still
     // hammering Retry-After looks `busy`/`active`), so it is checked first.
@@ -285,7 +285,7 @@ mod tests {
 
     #[test]
     fn soft_limit_block_trumps_busy_and_active() {
-        // CCT-488: a gateway soft-limit 429 must surface as Blocked even while
+        // a gateway soft-limit 429 must surface as Blocked even while
         // the worker still looks busy/active retrying behind the Retry-After.
         let mut s = snap();
         s.q = Some("busy");

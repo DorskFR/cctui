@@ -1,4 +1,4 @@
-//! Enrolled-dispatcher ↔ Server contract surface (CCT-285, finishing CCT-248).
+//! Enrolled-dispatcher ↔ Server contract surface (finishing).
 //!
 //! Peer of [`crate::routes::daemon`]. A standalone executor service
 //! (cctui-dispatcher-kube / -docker) enrolls once, then dials out:
@@ -30,8 +30,8 @@ use crate::state::AppState;
 
 /// Evict a dispatcher whose WS yields no frame of any kind — data, ping, or pong
 /// — within this window. Measured by frame arrival, not data-message completion,
-/// so a slow peer still answering pings mid-transfer is not evicted (CCT-737);
-/// mirrors the daemon path and its half-open guarantee (CCT-140).
+/// so a slow peer still answering pings mid-transfer is not evicted;
+/// mirrors the daemon path and its half-open guarantee.
 const DISPATCHER_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 const DISPATCHER_LIVENESS_CHECK: std::time::Duration = std::time::Duration::from_secs(10);
 
@@ -45,8 +45,8 @@ pub struct EnrollRequest {
     /// it (the executor owns runtime semantics).
     #[serde(default)]
     pub kind: Option<String>,
-    /// Optional OAuth account name to bind as the dispatcher's default
-    /// (CCT-427). Resolved to `accounts.id` for the enrolling user; a
+    /// Optional OAuth account name to bind as the dispatcher's default.
+    /// Resolved to `accounts.id` for the enrolling user; a
     /// dispatch with no explicit account routes through it.
     #[serde(default)]
     pub account: Option<String>,
@@ -73,7 +73,7 @@ pub async fn enroll(
     Extension(ctx): Extension<AuthContext>,
     Json(req): Json<EnrollRequest>,
 ) -> Result<Json<EnrollResponse>, (StatusCode, Json<ApiError>)> {
-    // Enrolling a dispatcher requires the `enroll` scope (CCT-410); admin holds
+    // Enrolling a dispatcher requires the `enroll` scope; admin holds
     // it by ceiling. The dispatcher is owned by the caller's user.
     ctx.requires(Scope::Enroll)
         .map_err(|s| (s, Json(ApiError { error: "the enroll scope is required".into() })))?;
@@ -84,7 +84,7 @@ pub async fn enroll(
         return Err((StatusCode::BAD_REQUEST, Json(ApiError { error: "name required".into() })));
     }
 
-    // CCT-451: dispatcher names are globally unique among live (non-deleted)
+    // dispatcher names are globally unique among live (non-deleted)
     // dispatchers. Reject a name already in use up-front with a clear message,
     // rather than letting a re-enrollment under a DIFFERENT principal create a
     // shadow row — owner-scoped resolution then routes the caller to one row
@@ -118,7 +118,7 @@ pub async fn enroll(
     let key_hash = sha256_hex(&token);
     let kind = req.kind.as_deref().filter(|k| !k.trim().is_empty()).unwrap_or("http");
 
-    // CCT-427: resolve an optional default-account binding to an account id the
+    // resolve an optional default-account binding to an account id the
     // caller owns. The provider hint (when given) disambiguates a name shared
     // across providers; absent it, we take the single matching row and 409 on
     // ambiguity so the binding is never silently wrong. A named account that
@@ -126,7 +126,7 @@ pub async fn enroll(
     let account = req.account.as_deref().map(str::trim).filter(|a| !a.is_empty());
     let provider = req.provider.as_deref().map(str::trim).filter(|p| !p.is_empty());
     let default_account_id: Option<Uuid> = if let Some(name) = account {
-        // The binding points at the identity (`accounts.id`, CCT-558); the
+        // The binding points at the identity (`accounts.id`); the
         // provider hint filters via the identity's provider rows. DISTINCT
         // because a multi-provider identity is still ONE binding target.
         let rows: Vec<(Uuid,)> = sqlx::query_as(
@@ -196,7 +196,7 @@ pub async fn enroll(
         (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
     })?;
 
-    // Mirror the enrollment key into the unified api_keys table (CCT-410). The
+    // Mirror the enrollment key into the unified api_keys table. The
     // dispatcher WS still authenticates via the dispatchers.key_hash path, so
     // this is for inventory/management parity; grant {dispatch} ∩ ceiling.
     let mut grant = crate::auth::ceiling_of(&state.pool, user_id).await;
@@ -305,7 +305,7 @@ enum Inbound {
 /// One poll of the inbound WS: the next frame, or a liveness-ticker tick. Any
 /// yielded frame — including a ping/pong tungstenite surfaces mid data-message —
 /// refreshes `last_frame`, so liveness tracks frame arrival rather than
-/// data-message completion (CCT-737). `stream.next()` is cancel-safe, so dropping
+/// data-message completion. `stream.next()` is cancel-safe, so dropping
 /// it on a ticker tick loses nothing.
 async fn next_inbound<S>(
     stream: &mut S,
@@ -341,9 +341,9 @@ async fn handle(socket: WebSocket, state: AppState, dispatcher_id: Uuid) {
     let (tx, mut rx) = mpsc::channel::<DispatcherFrameDown>(64);
 
     // Newest connection wins (mirrors the daemon hub); registered with the
-    // bus (CCT-572).
+    // bus.
     state.bus.register_dispatcher(dispatcher_id, tx.clone());
-    // Replica-aware presence (CCT-567): record this pod as the WS owner so a
+    // Replica-aware presence: record this pod as the WS owner so a
     // peer replica can forward dispatches here instead of reporting offline.
     crate::presence::register(&state, crate::presence::Kind::Dispatcher, dispatcher_id).await;
     bump_last_seen(&state, dispatcher_id).await;
@@ -354,7 +354,7 @@ async fn handle(socket: WebSocket, state: AppState, dispatcher_id: Uuid) {
     );
 
     // Outbound pump: forward DispatcherFrameDown frames + a periodic Ping so the
-    // dispatcher always hears from us within its liveness window (CCT-144).
+    // dispatcher always hears from us within its liveness window.
     let outbound = tokio::spawn(async move {
         let mut keepalive = tokio::time::interval(std::time::Duration::from_secs(20));
         keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -409,10 +409,10 @@ async fn handle(socket: WebSocket, state: AppState, dispatcher_id: Uuid) {
         process_frame(&state, dispatcher_id, frame).await;
     }
 
-    // Cleanup: only drop the entry if it is STILL OURS (reconnect race,
-    // CCT-159) — the bus's `unregister_dispatcher` applies the same-channel
+    // Cleanup: only drop the entry if it is STILL OURS (reconnect race) —
+    // the bus's `unregister_dispatcher` applies the same-channel
     // guard. The presence row mirrors it, with its own pod guard for the
-    // cross-pod twin of the same race (CCT-567).
+    // cross-pod twin of the same race.
     if state.bus.unregister_dispatcher(dispatcher_id, &tx) {
         crate::presence::unregister(&state, crate::presence::Kind::Dispatcher, dispatcher_id).await;
     }

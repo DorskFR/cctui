@@ -9,9 +9,9 @@
 //!   * [`http::HttpDispatcher`] — the escape hatch: forward a dispatch to a
 //!     fully external HTTP endpoint (env-configured global registry only).
 //!
-//! CCT-292: the transitional in-process `kube`/`docker` dispatchers (CCT-234,
-//! restored in CCT-360) are removed now that prod dispatches exclusively
-//! through the enrolled executor binaries. Dispatch resolution is enrolled-first
+//! The transitional in-process `kube`/`docker` dispatchers are removed now
+//! that prod dispatches exclusively through the enrolled executor binaries.
+//! Dispatch resolution is enrolled-first
 //! with the `http` escape hatch as the only in-process fallback.
 
 use async_trait::async_trait;
@@ -23,8 +23,8 @@ pub mod http;
 pub struct DispatchHandle {
     pub handle: String,
     pub namespace: Option<String>,
-    /// Outcome reported by the dispatcher, surfaced to the caller verbatim
-    /// (CCT-207). `None` when the dispatcher predates the field; the route then
+    /// Outcome reported by the dispatcher, surfaced to the caller verbatim.
+    /// `None` when the dispatcher predates the field; the route then
     /// falls back to `"dispatched"`. Known values: `dispatched` (fresh run),
     /// `deduplicated` (in-flight Job — the original run still calls back),
     /// `redispatched` (a terminal Job was deleted + recreated so a fresh run
@@ -42,7 +42,7 @@ pub struct DispatchSpec<'a> {
     pub timeout_minutes: Option<u32>,
     /// Caller resume URL — a bearer capability; do not log.
     pub reply_url: Option<&'a str>,
-    /// Idempotency / dedup key (CCT-522): the caller's logical request id, hashed
+    /// Idempotency / dedup key: the caller's logical request id, hashed
     /// by the dispatcher into the worker Job name so a fresh-per-dispatch
     /// `session_id` no longer chains conversations. `None` ⇒ derive from
     /// `session_id` (each dispatch unique).
@@ -67,8 +67,8 @@ pub enum DispatchError {
 
 /// Lifecycle state of a dispatched handle, reported by [`Dispatcher::status`].
 ///
-/// Part of the trait surface added in CCT-234 (`status`/`cancel`). With the
-/// in-process kube/docker dispatchers gone (CCT-292) no impl reports a live
+/// Part of the trait surface added in (`status`/`cancel`). With the
+/// in-process kube/docker dispatchers gone no impl reports a live
 /// status today — the enrolled/http dispatchers return `Unsupported` and the
 /// completion webhook treats that as `Wait` — so the variants are reserved for
 /// a future observe/cancel route and allowed to be unused for now.
@@ -82,7 +82,7 @@ pub enum HandleStatus {
     /// The Job/container failed (backoff exhausted, deadline, non-zero exit,
     /// `CrashLoopBackOff`, `OOMKilled`, unschedulable). Carries the dispatcher's
     /// human reason when it has one, surfaced in the completion webhook's
-    /// `error` field (CCT-429).
+    /// `error` field.
     Failed(Option<String>),
     /// No Job/container with this handle exists (already GC'd or never created).
     Gone,
@@ -117,7 +117,7 @@ pub trait Dispatcher: Send + Sync {
 /// Resolves dispatcher id strings to concrete impls. Built once at
 /// startup and shared through `AppState`.
 ///
-/// CCT-285: dispatch resolution targets an *enrolled* dispatcher (a per-account
+/// Dispatch resolution targets an *enrolled* dispatcher (a per-account
 /// peer of a machine) and dispatches by sending a key-checked command over that
 /// dispatcher's live WS connection ([`enrolled::EnrolledDispatcher`]). This
 /// in-process registry now holds only the env-configured plain-`http` escape

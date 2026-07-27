@@ -1,4 +1,4 @@
-//! Daemon give-up policy (CCT-742): size + attempts caps so one poison event
+//! Daemon give-up policy: size + attempts caps so one poison event
 //! can't wedge the send pipeline. Counters + tombstones persist so a restart
 //! mid-transfer doesn't reset the count.
 
@@ -15,7 +15,7 @@ pub const MAX_ATTEMPTS: u32 = 3;
 
 /// Per-hash send state: the count of no-progress attempts and the highest
 /// forward-progress watermark seen, so an attempt that advances it resets the
-/// count instead of counting as a failure (CCT-742 §4).
+/// count instead of counting as a failure (§4).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct Entry {
     attempts: u32,

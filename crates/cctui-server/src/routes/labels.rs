@@ -8,14 +8,14 @@ use cctui_proto::api::{
 
 use crate::state::AppState;
 
-// --- Session labels (CCT-360) ---
+// --- Session labels ---
 //
 // Label *definitions* (list/create/update/delete below) are a global, shared
 // vocabulary: they carry no per-user data (just name + color) and are not owned
 // by any user, so requiring authentication (the `auth_middleware` all these
 // routes sit behind) is sufficient — there is no cross-user data to leak here.
 // The per-session attach/detach routes, by contrast, ARE ownership-gated via
-// `authorize_session` since they mutate a specific session (CCT-417).
+// `authorize_session` since they mutate a specific session.
 
 fn db_err(e: &sqlx::Error) -> (StatusCode, Json<ApiError>) {
     tracing::error!("db error: {e}");

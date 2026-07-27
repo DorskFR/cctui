@@ -1,4 +1,4 @@
-//! Operating mode for the claude-code adapter (CCT-497).
+//! Operating mode for the claude-code adapter.
 //!
 //! Generalizes the old binary `use_claude_daemon_path` switch into a real
 //! enum so the adapter can dispatch to one of several drivers:
@@ -11,7 +11,7 @@
 //!   --print --output-format stream-json` invocation (stub until a later
 //!   ticket).
 //! - [`Mode::Legacy`] — the line-delimited [`AdapterEvent`](cctui_proto::adapter::AdapterEvent)
-//!   UDS listener kept until CCT-87 retires it.
+//!   UDS listener kept until it is retired.
 //!
 //! Back-compat with the pre-enum config: the historical `mode` values
 //! `"claude-daemon"` and `"legacy"` still resolve, and the

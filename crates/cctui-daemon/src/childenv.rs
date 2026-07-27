@@ -3,7 +3,7 @@
 //! Under launchd, a user agent inherits a minimal `PATH`
 //! (`/usr/local/bin:/usr/bin:/bin`) that omits `/opt/homebrew/bin` and
 //! `~/.local/bin` — so `Command::new("codex")` / `Command::new("claude")`
-//! fail with ENOENT (CCT-138). The plist install path now bakes the
+//! fail with ENOENT. The plist install path now bakes the
 //! install-time `$PATH` in, but a daemon that *self-updated* keeps the old
 //! plist until the next `service install`. To make spawning robust regardless
 //! of how the daemon was launched, every exec'd child is given an explicit

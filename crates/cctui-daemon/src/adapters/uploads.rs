@@ -1,4 +1,4 @@
-//! Shared attachment staging for adapters (CCT-636).
+//! Shared attachment staging for adapters.
 //!
 //! Both the claude-code and codex adapters stage user-uploaded files under a
 //! per-session dir (`/tmp/cctui-uploads/<session-id>/`) and reference the
@@ -26,7 +26,7 @@ pub fn stage_bootstrap(session_id: &str, bootstrap: &serde_json::Value) -> Resul
 /// (`/tmp/cctui-uploads/<session_id>/`), returning the staged absolute paths.
 ///
 /// Shared by spawn-time bootstrap uploads ([`stage_bootstrap`]) and mid-chat
-/// attachments (CCT-236). Files are written 0600 (Unix). Name collisions —
+/// attachments. Files are written 0600 (Unix). Name collisions —
 /// against an existing staged file from an earlier upload in the same session —
 /// are resolved by inserting a numeric suffix before the extension
 /// (`report.pdf` → `report-1.pdf`) rather than overwriting, so a later
@@ -88,7 +88,7 @@ fn unique_staging_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf 
     unreachable!("exhausted u32 collision suffixes")
 }
 
-/// Whether a staged path is an image, by file extension (CCT-636).
+/// Whether a staged path is an image, by file extension.
 ///
 /// Images are sent to codex as native `localImage` turn inputs so the model
 /// sees the picture; every other file type keeps its path/text semantics.

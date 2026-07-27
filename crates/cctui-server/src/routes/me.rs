@@ -1,4 +1,4 @@
-//! `GET /api/v1/me` — who the presented token resolves to (CCT-251).
+//! `GET /api/v1/me` — who the presented token resolves to.
 //!
 //! The webui stores a single opaque bearer and previously had no way to tell
 //! whether it was the admin token, a user token, or something else — which made
@@ -20,9 +20,9 @@ use crate::state::AppState;
 #[ts(export)]
 pub struct MeResponse {
     /// Coarse role hint for the UI: `admin` | `user` | `machine`. Derived from
-    /// scopes + machine id (CCT-410); authority itself lives in `scopes`.
+    /// scopes + machine id; authority itself lives in `scopes`.
     pub role: String,
-    /// Always present now — everyone is a real user (CCT-410). Kept `Option`
+    /// Always present now — everyone is a real user. Kept `Option`
     /// for webui wire-compat; never `null` in practice.
     pub user_id: Option<Uuid>,
     /// Resolved from `users.name`.

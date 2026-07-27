@@ -50,10 +50,10 @@ pub struct UserRow {
     pub name: String,
     pub created_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,
-    /// Temporary off switch (CCT-251) — auth fails while set, nothing is
+    /// Temporary off switch — auth fails while set, nothing is
     /// invalidated, clearing restores. Distinct from the permanent revoke.
     pub disabled_at: Option<DateTime<Utc>>,
-    /// Per-user dispatch permission (CCT-185). Enforced on `POST
+    /// Per-user dispatch permission. Enforced on `POST
     /// /sessions/dispatch`; defaults TRUE.
     pub can_dispatch: bool,
 }
@@ -69,14 +69,14 @@ pub struct MachineRow {
     pub last_seen_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,
     /// `persistent` (a real daemon) or `ephemeral` (a dispatch/worker pod).
-    /// The New-session picker hides `ephemeral` machines (CCT-183).
+    /// The New-session picker hides `ephemeral` machines.
     pub kind: String,
-    /// Operator-set badge hue (0-359, CCT-222). `None` = hash of the name.
+    /// Operator-set badge hue (0-359). `None` = hash of the name.
     pub hue: Option<i16>,
-    /// Non-secret machine-key fragment, e.g. `cctui_m_ab1234…ef34` (CCT-251).
+    /// Non-secret machine-key fragment, e.g. `cctui_m_ab1234…ef34`.
     /// `None` for machines enrolled before the preview column existed.
     pub key_preview: Option<String>,
-    /// Derived online/stale/offline tier from `last_seen_at` age (CCT-255).
+    /// Derived online/stale/offline tier from `last_seen_at` age.
     /// Not a DB column — `#[sqlx(skip)]` makes `query_as` ignore it (filled via
     /// `Default`); the handler fills it in from `last_seen_at` after the fetch.
     #[sqlx(skip)]
@@ -88,13 +88,13 @@ pub struct MachineRow {
 pub struct RenameMachineRequest {
     /// `None` clears the override so the UI falls back to `name`.
     pub display_name: Option<String>,
-    /// Badge hue override (0-359, CCT-222). `None` clears it (hash fallback).
+    /// Badge hue override (0-359). `None` clears it (hash fallback).
     /// The PATCH replaces both fields, so callers send the full pair.
     #[serde(default)]
     pub hue: Option<i16>,
 }
 
-/// Partial update of a user (CCT-185). Any field left `None` is unchanged, so
+/// Partial update of a user. Any field left `None` is unchanged, so
 /// the same endpoint serves both rename and the dispatch-permission toggle.
 #[derive(Deserialize, TS)]
 #[ts(export)]
@@ -102,7 +102,7 @@ pub struct UpdateUserRequest {
     /// Blank/whitespace is rejected (name is `NOT NULL`); `None` leaves it.
     pub name: Option<String>,
     pub can_dispatch: Option<bool>,
-    /// `true` sets `disabled_at = now()`, `false` clears it (CCT-251).
+    /// `true` sets `disabled_at = now()`, `false` clears it.
     pub disabled: Option<bool>,
 }
 
@@ -121,7 +121,7 @@ pub struct UserTokenRow {
     pub created_at: DateTime<Utc>,
     pub expires_at: Option<DateTime<Utc>>,
     pub revoked_at: Option<DateTime<Utc>>,
-    /// Non-secret fragment for display (CCT-185), e.g. `cctui_u_ab12…ef34`.
+    /// Non-secret fragment for display, e.g. `cctui_u_ab12…ef34`.
     /// `None` for tokens minted before the preview column existed.
     pub token_preview: Option<String>,
 }
@@ -153,7 +153,7 @@ pub async fn create_user(
         .execute(&state.pool)
         .await
         .map_err(|e| db_err(&e))?;
-    // Seed the new user's ceiling (CCT-410): the default capability set a fresh
+    // Seed the new user's ceiling: the default capability set a fresh
     // user gets — read + enroll + dispatch (NOT admin). Matches the legacy
     // default where can_dispatch=TRUE and any user token could enroll/dispatch.
     let default_ceiling = [Scope::Read, Scope::Enroll, Scope::Dispatch];
@@ -268,7 +268,7 @@ pub async fn list_user_machines(
     .fetch_all(&state.pool)
     .await
     .map_err(|e| db_err(&e))?;
-    // Derive the online/stale/offline tier from `last_seen_at` age (CCT-255) so
+    // Derive the online/stale/offline tier from `last_seen_at` age so
     // the UI can render a machine health dot without re-implementing the
     // thresholds client-side.
     for row in &mut rows {
@@ -359,7 +359,7 @@ pub async fn rename_machine(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Update a user's mutable fields (CCT-150 rename + CCT-185 dispatch toggle).
+/// Update a user's mutable fields (rename + dispatch toggle).
 /// `name` is `NOT NULL`, so a blank name is rejected rather than cleared;
 /// `can_dispatch` flips the per-user dispatch permission. Fields left `None`
 /// are untouched, so the UI can PATCH just the field it changed.
@@ -416,7 +416,7 @@ pub async fn update_user(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Permanently delete a revoked user and everything owned by it (CCT-185).
+/// Permanently delete a revoked user and everything owned by it.
 /// Mirrors `delete_machine`'s "must be revoked first" guard so a live user is
 /// never destroyed by a mis-click. `machines`, `user_tokens`, `triggers` and
 /// uploaded skills cascade on the FK; `sessions` reference the user/machine
@@ -476,7 +476,7 @@ pub async fn purge_user(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// List a user's tokens (CCT-150). Token secrets are never recoverable —
+/// List a user's tokens. Token secrets are never recoverable —
 /// this returns only metadata so the UI can relabel/revoke them.
 pub async fn list_user_tokens(
     State(state): State<AppState>,
@@ -495,7 +495,7 @@ pub async fn list_user_tokens(
     Ok(Json(rows))
 }
 
-/// Relabel a token (CCT-150). `None`/blank clears the label.
+/// Relabel a token. `None`/blank clears the label.
 pub async fn relabel_user_token(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -518,7 +518,7 @@ pub async fn relabel_user_token(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Revoke a single token (CCT-150). Mirrors `revoke_user`; purges the
+/// Revoke a single token. Mirrors `revoke_user`; purges the
 /// auth cache so the token stops working immediately.
 pub async fn revoke_user_token(
     State(state): State<AppState>,
@@ -543,7 +543,7 @@ pub async fn revoke_user_token(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Hard-delete a token row — "revoke + purge" in one go (CCT-185). Unlike
+/// Hard-delete a token row — "revoke + purge" in one go. Unlike
 /// `revoke_user_token` (which keeps the row around showing `revoked`), this
 /// removes it entirely. A token is pure auth surface with no historical FK, so
 /// deleting the row is safe and equivalent to revoking from a security view.
@@ -621,7 +621,7 @@ async fn purge_user_cache(auth: &AuthConfig, user_id: Uuid, pool: &sqlx::PgPool)
 }
 
 // ===========================================================================
-// CCT-410: per-user scope (ceiling) + per-key (grant) management for the
+// per-user scope (ceiling) + per-key (grant) management for the
 // Users page. Cross-user actions require the `admin` scope; a user may always
 // manage its OWN ceiling (read-only) and its OWN keys (mint/revoke/edit scopes).
 // Edits are plain INSERT/DELETE on the acl tables, constrained key ⊆ user, and
@@ -708,7 +708,7 @@ pub async fn set_user_acls(
             .await
             .map_err(|e| db_err(&e))?;
     }
-    // Keep the legacy can_dispatch flag in sync (CCT-410): the dispatch scope
+    // Keep the legacy can_dispatch flag in sync: the dispatch scope
     // supersedes it, but other code paths / older clients may still read it.
     let can_dispatch = scopes.contains(&Scope::Dispatch);
     sqlx::query("UPDATE users SET can_dispatch = $1 WHERE id = $2")

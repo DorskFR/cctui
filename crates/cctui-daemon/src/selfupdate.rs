@@ -1,6 +1,6 @@
-//! Self-update routed through the cctui-server (CCT-127).
+//! Self-update routed through the cctui-server.
 //!
-//! Historically the daemon hit the GitHub API directly (CCT-91). It now
+//! Historically the daemon hit the GitHub API directly. It now
 //! goes entirely through the cctui-server, which is the single channel for
 //! daemon distribution (the server proxies private-repo release assets when
 //! it holds a GitHub PAT — see `cctui-server`'s `routes::manifest`).
@@ -84,7 +84,7 @@ const fn target_name() -> &'static str {
 
 /// Server response from `GET /api/v1/manifest/daemon`.
 ///
-/// Shared with the remote-enroll flow (CCT-548), which fetches the manifest
+/// Shared with the remote-enroll flow, which fetches the manifest
 /// with the operator's user token instead of a machine key.
 #[derive(Debug, Deserialize)]
 pub struct DaemonManifest {
@@ -291,7 +291,7 @@ pub async fn check_and_apply_with(
 /// process's `/proc/self/exe` symlink points at the now-unlinked old inode,
 /// so `current_exe()` can return `".../cctui-daemon (deleted)"`, and
 /// `execve`-ing that path fails with `ENOENT` (os error 2) on non-systemd
-/// hosts (CCT-152). Re-execing the concrete install path avoids that.
+/// hosts. Re-execing the concrete install path avoids that.
 ///
 /// Caller is responsible for shutting down any stateful work first; we
 /// still re-exec on failure to surface the error in the new process if
@@ -340,7 +340,7 @@ pub fn spawn_loop(
                     // process (incl. the systemd-supervised one — execve keeps
                     // the same PID/cgroup) picks up the new image immediately.
                     // Re-exec the resolved install path, not current_exe() —
-                    // see reexec() for why (CCT-152).
+                    // see reexec() for why.
                     tracing::info!(exe = %exe.display(), "auto-update applied; re-execing into the new binary");
                     reexec(&exe);
                 }

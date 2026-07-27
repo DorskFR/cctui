@@ -138,7 +138,7 @@ fn landlock_ro_blocks_write_rw_allows_write() {
 
 #[test]
 fn make_runs_a_recipe_under_full_sandbox() {
-    // Regression for CCT-549: GNU Make's recipe-spawn child resets its
+    // Regression for GNU Make's recipe-spawn child resets its
     // effective uid (`setresuid(-1, <uid>, -1)`) before exec. The seccomp
     // denylist used to turn that no-op into EPERM, so `make` aborted every
     // recipe with `/bin/sh: Operation not permitted` (exit 127). With the

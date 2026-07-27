@@ -1,4 +1,4 @@
-//! CCT-739: content-addressed blob store for oversized embedded attachments.
+//! content-addressed blob store for oversized embedded attachments.
 //!
 //! `PUT /api/v1/daemon/blobs/{hash}` — the daemon uploads raw bytes it extracted
 //! from a transcript payload, keyed by their sha256. Machine-key Bearer
@@ -8,7 +8,7 @@
 //!
 //! `GET /api/v1/sessions/{id}/blobs/{hash}` — a consumer resolves a
 //! `{type:"cctui-blob", blob_id}` reference. Session-read authz (enforced by the
-//! `api_router` layer via `{id}`) + the same-origin cookie, like the CCT-566
+//! `api_router` layer via `{id}`) + the same-origin cookie, like the
 //! image GET. The 256-bit content hash is itself an unguessable capability.
 
 use axum::body::Bytes;
@@ -20,7 +20,7 @@ use sha2::{Digest, Sha256};
 use crate::state::AppState;
 
 /// A single blob may be several MB (full-resolution screenshots); cap it well
-/// above the CCT-566 per-image limit.
+/// above the per-image limit.
 pub const MAX_BLOB_BYTES: usize = 32 * 1024 * 1024;
 
 fn is_sha256_hex(s: &str) -> bool {

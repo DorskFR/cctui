@@ -13,7 +13,7 @@ use uuid::Uuid;
 /// Cache TTL for positive auth lookups. Bounds revocation latency.
 const CACHE_TTL: Duration = Duration::from_secs(30);
 
-/// The deliberately small scope set (CCT-410). Split later if needed; can't
+/// The deliberately small scope set. Split later if needed; can't
 /// easily un-split. `admin` implies the cross-user god-view; the rest are
 /// capability flags intersected per request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -59,8 +59,8 @@ impl fmt::Display for Scope {
     }
 }
 
-/// Resolved identity for one authenticated request. Everyone is a real user
-/// (CCT-410): `user_id` is always present, admin is just a user holding the
+/// Resolved identity for one authenticated request. Everyone is a real user:
+/// `user_id` is always present, admin is just a user holding the
 /// `admin` scope. `scopes` is the effective set = `key_acls` ∩ `user_acls`.
 #[derive(Debug, Clone)]
 pub struct AuthContext {
@@ -102,7 +102,7 @@ impl AuthContext {
     /// predicate: a `NULL` bind (admin) makes the predicate always true; a
     /// `Some` bind narrows to the caller's rows. This expresses row filtering,
     /// which the per-object `Resource` guard (a yes/no gate) cannot — so
-    /// list/batch endpoints keep using this rather than the guard (CCT-420).
+    /// list/batch endpoints keep using this rather than the guard.
     #[must_use]
     pub fn owner_filter(&self) -> Option<Uuid> {
         if self.is_admin() { None } else { Some(self.user_id) }
@@ -129,8 +129,8 @@ impl AuthConfig {
 
     /// Resolve `CCTUI_ADMIN_TOKENS` to a seeded admin **user** with `{admin}`
     /// ceiling, and an `auth_keys` row (with `{admin}` grant) per env token, so
-    /// the break-glass token is a real identity — never a `user_id=None` ghost
-    /// (CCT-410). Idempotent: re-run safe on every startup. Best-effort — a
+    /// the break-glass token is a real identity — never a `user_id=None` ghost.
+    /// Idempotent: re-run safe on every startup. Best-effort — a
     /// transient DB error is logged, never fatal, because env-token validation
     /// also still works through the cheap env short-circuit in `validate()`.
     pub async fn seed_admin(&self) {
@@ -248,7 +248,7 @@ impl AuthConfig {
             return Some(ctx);
         }
 
-        // --- New unified path: auth_keys + ACLs (CCT-410). Tried first. ---
+        // --- New unified path: auth_keys + ACLs. Tried first. ---
         if let Some(ctx) = self.validate_api_key(&hash).await {
             self.cache_put(hash, ctx.clone());
             return Some(ctx);
@@ -369,7 +369,7 @@ impl AuthConfig {
     }
 
     /// A legacy token's effective scopes = the owner's full ceiling (a legacy
-    /// key carries no narrowing grant of its own, matching pre-CCT-410 behavior
+    /// key carries no narrowing grant of its own, matching behavior
     /// where any of a user's tokens did everything the user could do).
     async fn ceiling_scopes(&self, user_id: Uuid) -> BTreeSet<Scope> {
         let rows: Vec<(String,)> = sqlx::query_as("SELECT scope FROM user_acls WHERE user_id = $1")
@@ -392,7 +392,7 @@ impl AuthConfig {
 }
 
 /// Register a freshly-minted key into the unified `auth_keys` table with a
-/// `key_acls` grant (CCT-410). Returns the new key id. Used by the enroll /
+/// `key_acls` grant. Returns the new key id. Used by the enroll /
 /// mint flows so new credentials live in the new model from day one (the
 /// legacy tables are still written by those flows during the cutover window).
 /// `key ⊆ user` is the caller's responsibility — pass scopes already
@@ -458,7 +458,7 @@ pub async fn auth_middleware(request: Request, next: Next) -> Result<Response, S
 
     // Resolve the credential from the `Authorization: Bearer` header (API /
     // daemon / TUI clients) or, failing that, the `HttpOnly` auth cookie set by
-    // `/api/v1/auth/login` for browser clients (CCT-423). Both prove the same
+    // `/api/v1/auth/login` for browser clients. Both prove the same
     // token; the cookie keeps it out of URLs and JS-readable storage.
     let token = bearer_or_cookie(request.headers()).ok_or(StatusCode::UNAUTHORIZED)?;
 
@@ -470,7 +470,7 @@ pub async fn auth_middleware(request: Request, next: Next) -> Result<Response, S
 }
 
 /// Name of the `HttpOnly` cookie that carries the user/admin token for browser
-/// clients (CCT-423). Browsers send it automatically on same-origin requests
+/// clients. Browsers send it automatically on same-origin requests
 /// and WS upgrades, so the token never appears in a URL or in `localStorage`.
 pub const AUTH_COOKIE: &str = "cctui_auth";
 
@@ -546,8 +546,8 @@ pub fn sha256_hex(input: &str) -> String {
     cctui_proto::util::sha256_hex(input.as_bytes())
 }
 
-/// A non-secret, recognisable fragment of a token for display in the admin UI
-/// (CCT-185). Keeps the typed prefix (`cctui_u_`) plus a few leading and
+/// A non-secret, recognisable fragment of a token for display in the admin UI.
+/// Keeps the typed prefix (`cctui_u_`) plus a few leading and
 /// trailing chars so an operator can tell tokens apart, while the bulk of the
 /// 256-bit secret stays hidden — `cctui_u_ab1234…ef34`.
 #[must_use]

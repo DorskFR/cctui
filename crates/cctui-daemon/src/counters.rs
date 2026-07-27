@@ -1,4 +1,4 @@
-//! Shared per-subsystem bandwidth counters (CCT-744).
+//! Shared per-subsystem bandwidth counters.
 //!
 //! Cheap atomics threaded to the send paths so a runaway upload loop becomes
 //! attributable. A [`BandwidthCounters`] handle is cloned (Arc) into the WS

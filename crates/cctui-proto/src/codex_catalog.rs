@@ -1,4 +1,4 @@
-//! Machine/account-scoped Codex model catalog from `model/list` (CCT-641),
+//! Machine/account-scoped Codex model catalog from `model/list`,
 //! keyed by `machine_id` on the server and consumed by the webui model picker.
 
 use serde::{Deserialize, Serialize};

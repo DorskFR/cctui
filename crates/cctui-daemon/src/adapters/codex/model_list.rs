@@ -1,4 +1,4 @@
-//! Codex `model/list` catalog protocol (CCT-641, CCT-702).
+//! Codex `model/list` catalog protocol.
 //!
 //! The account/machine-scoped model catalog is resolved by codex from a
 //! remote, auth-gated, `client_version`-tagged endpoint
@@ -8,8 +8,8 @@
 //!
 //! cctui routes codex through a gateway and injects the credential per session
 //! (see [`super::app_server`]). A standalone `codex app-server` spawned with only
-//! `PATH` (the CCT-641 poll) has no gateway credential and 401s on gateway-only
-//! machines — the exact bug CCT-702 fixes. So there is no standalone poll here
+//! `PATH` (the poll) has no gateway credential and 401s on gateway-only
+//! machines — the exact bug fixes. So there is no standalone poll here
 //! anymore: this module is the pure protocol layer (request builder + response
 //! parsing), reused by the session driver to issue `model/list` on the session's
 //! EXISTING authenticated app-server connection at session start. The parsed

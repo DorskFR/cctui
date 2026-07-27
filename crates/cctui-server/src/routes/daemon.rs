@@ -34,12 +34,12 @@ use crate::state::AppState;
 
 /// Evict a daemon whose WS yields no frame of any kind — data, ping, or pong —
 /// within this window. Measured by frame arrival, not data-message completion,
-/// so a slow peer still answering pings mid-transfer is not evicted (CCT-737); a
-/// truly half-open one leaves no dead entry in the bus registry (CCT-140).
+/// so a slow peer still answering pings mid-transfer is not evicted; a
+/// truly half-open one leaves no dead entry in the bus registry.
 const DAEMON_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 const DAEMON_LIVENESS_CHECK: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// Bound the memory a single in-flight chunked transfer may buffer (CCT-738).
+/// Bound the memory a single in-flight chunked transfer may buffer.
 const MAX_TRANSFER_BYTES: usize = 64 * 1024 * 1024;
 
 /// Drop partial chunked transfers idle past this age.
@@ -74,8 +74,8 @@ pub async fn auth(
 
 // ---- /api/v1/daemon/sessions/{id}/gateway-env ----
 
-/// Resolve a session's gateway-routing env for the daemon's launch chokepoint
-/// (CCT-460). The daemon calls this at every worker (re)launch — spawn, resume,
+/// Resolve a session's gateway-routing env for the daemon's launch chokepoint.
+/// The daemon calls this at every worker (re)launch — spawn, resume,
 /// cold-resume, fork — so the gateway credential comes from the server's durable
 /// `sessions.account_id` binding rather than from whatever env the triggering
 /// command happened to carry. This is what makes routing survive a daemon /
@@ -126,14 +126,14 @@ pub async fn session_gateway_env(
         }));
     }
 
-    // The machine user's whip stall-phrase override (CCT-598) rides this pull to
+    // The machine user's whip stall-phrase override rides this pull to
     // reach the connectionless `whip-stop-hook`; per-user, so it applies whether
     // or not the session is account-bound.
     let whip_phrases = resolve_whip_phrases(&state, ctx.user_id).await;
 
     // Resolve EVERY bound family (one account per family) and re-mint each, so a
     // worker carrying both claude + codex creds gets both restored on launch,
-    // not just the last-minted family (CCT-514). The families emit disjoint env
+    // not just the last-minted family. The families emit disjoint env
     // keys, so the merge never collides.
     let accounts = crate::routes::gateway::resolve_session_accounts(&state, &session_id).await;
     if accounts.is_empty() {
@@ -162,14 +162,14 @@ pub async fn session_gateway_env(
             }
         }
     }
-    // Merge the bound account(s)' per-account `settings_json` (CCT-539) so it
+    // Merge the bound account(s)' per-account `settings_json` so it
     // rides alongside the gateway env on this same pull. Re-served on every
     // (re)launch, it survives a daemon / claude-daemon restart; the daemon
     // deep-merges it UNDER its managed hook settings when writing the worker's
-    // `--settings` file (that daemon-side merge is CCT-540).
+    // `--settings` file (that daemon-side merge is).
     let settings = crate::routes::gateway::resolve_session_settings(&state, &session_id).await;
     // This pull only happens when the daemon is actually (re)launching the
-    // worker — a session marked `ended` (possibly by a spurious end, CCT-565)
+    // worker — a session marked `ended` (possibly by a spurious end)
     // is provably coming back to life, so un-stick the terminal status here.
     // `archived` stays parked: un-archiving is an explicit user action.
     let _ = sqlx::query("UPDATE sessions SET status = 'active' WHERE id = $1 AND status = 'ended'")
@@ -184,7 +184,7 @@ pub async fn session_gateway_env(
     }))
 }
 
-/// The machine user's clamped `whipStopPhrases` block (CCT-598) from
+/// The machine user's clamped `whipStopPhrases` block from
 /// `user_settings.data`, or `None` when unset / reduced to the default. Read from
 /// the DB on the same gateway-env pull that carries the account settings.
 async fn resolve_whip_phrases(state: &AppState, user_id: Uuid) -> Option<serde_json::Value> {
@@ -202,13 +202,13 @@ async fn resolve_whip_phrases(state: &AppState, user_id: Uuid) -> Option<serde_j
 
 /// Query for [`session_token_valid`]: the sha256 hex of the session token the
 /// daemon launched the worker with. Hash-only on purpose — no token material
-/// on the wire (CCT-503 invariant).
+/// on the wire (invariant).
 #[derive(Deserialize)]
 pub struct TokenValidQuery {
     pub hash: String,
 }
 
-/// Does this session's minted token still resolve at the gateway? (CCT-462)
+/// Does this session's minted token still resolve at the gateway?
 ///
 /// The daemon's validity sweep calls this for TRUSTED workers (ones it
 /// launched with gateway env) so a worker whose `session_tokens` row got
@@ -317,7 +317,7 @@ enum Inbound {
 /// One poll of the inbound WS: the next frame, or a liveness-ticker tick. Any
 /// yielded frame — including a ping/pong tungstenite surfaces mid data-message —
 /// refreshes `last_frame`, so liveness tracks frame arrival rather than
-/// data-message completion (CCT-737). `stream.next()` is cancel-safe, so dropping
+/// data-message completion. `stream.next()` is cancel-safe, so dropping
 /// it on a ticker tick loses nothing.
 async fn next_inbound<S>(
     stream: &mut S,
@@ -348,8 +348,8 @@ where
 }
 
 /// Feed one chunk into the connection's reassembler and produce the ack to send
-/// back plus, on completion, the reassembled inner frame to process (CCT-738).
-/// `codec` (CCT-740) decompresses the joined payload before parsing when set.
+/// back plus, on completion, the reassembled inner frame to process.
+/// `codec` decompresses the joined payload before parsing when set.
 fn handle_chunk(
     reasm: &mut Reassembler,
     transfer_id: String,
@@ -391,7 +391,7 @@ fn handle_chunk(
     }
 }
 
-/// Decode a `Compressed` envelope (CCT-740) to its inner frame, or `None` on a
+/// Decode a `Compressed` envelope to its inner frame, or `None` on a
 /// bad codec / base64 / payload — logged and dropped like any malformed frame.
 fn decode_compressed_frame(codec: &str, data: &str) -> Option<DaemonFrameUp> {
     match cctui_proto::compress::decode_compressed(codec, data) {
@@ -410,7 +410,7 @@ fn decode_compressed_frame(codec: &str, data: &str) -> Option<DaemonFrameUp> {
 }
 
 /// Flatten a decoded inner frame into the leaf frames to process: a `Batch`
-/// (CCT-740) yields its events in order, anything else is a single leaf.
+/// yields its events in order, anything else is a single leaf.
 fn expand_batch(frame: DaemonFrameUp) -> Vec<DaemonFrameUp> {
     match frame {
         DaemonFrameUp::Batch { frames } => frames,
@@ -423,10 +423,10 @@ async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: U
     let (mut sink, mut stream) = socket.split();
     let (tx, mut rx) = mpsc::channel::<DaemonFrameDown>(64);
 
-    // Register the daemon for command fan-out with the bus (CCT-572). If a
+    // Register the daemon for command fan-out with the bus. If a
     // stale entry exists, overwrite it (newest connection wins).
     state.bus.register_daemon(machine_id, tx.clone());
-    // Replica-aware presence (CCT-567): record this pod as the WS owner so a
+    // Replica-aware presence: record this pod as the WS owner so a
     // peer replica can forward daemon-targeted requests here.
     crate::presence::register(&state, crate::presence::Kind::Daemon, machine_id).await;
 
@@ -444,7 +444,7 @@ async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: U
     }
 
     // Resume marks must follow Reconcile: the daemon needs its adapters live to
-    // route the marks to before it can clamp their tail cursors (CCT-741).
+    // route the marks to before it can clamp their tail cursors.
     match load_resume_marks(&state, machine_id).await {
         Ok(session_marks) if !session_marks.is_empty() => {
             if tx.send(DaemonFrameDown::ResumeMarks { session_marks }).await.is_err() {
@@ -460,8 +460,8 @@ async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: U
     // window. Without this, an idle connection (no commands queued) sends the
     // daemon nothing after the initial Reconcile — axum does not auto-flush a
     // Pong on the split sink while it's otherwise idle — so the daemon's
-    // half-open detector tears the WS down every 60s and flaps forever
-    // (CCT-144). The interval mirrors the daemon's 20s ping cadence and stays
+    // half-open detector tears the WS down every 60s and flaps forever.
+    // The interval mirrors the daemon's 20s ping cadence and stays
     // well under both sides' 60s timeouts.
     let outbound = tokio::spawn(async move {
         let mut keepalive = tokio::time::interval(std::time::Duration::from_secs(20));
@@ -562,9 +562,9 @@ async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: U
     // remove would delete that live channel, so every command would silently
     // fail `NoDaemon` while events kept flowing (they go through
     // `process_frame`, which never touches the connection registry). The
-    // bus's `unregister_daemon` applies the same-channel guard (CCT-159). The
+    // bus's `unregister_daemon` applies the same-channel guard. The
     // presence row mirrors it, with its own pod guard for the cross-pod twin
-    // of the same race (CCT-567).
+    // of the same race.
     if state.bus.unregister_daemon(machine_id, &tx) {
         crate::presence::unregister(&state, crate::presence::Kind::Daemon, machine_id).await;
     }
@@ -643,7 +643,7 @@ async fn process_frame(
             .await
         }
         DaemonFrameUp::Event { adapter_id, event } => {
-            // Machine-scoped codex model catalog (CCT-641): cache it by
+            // Machine-scoped codex model catalog: cache it by
             // machine_id — it is not a session event and never reaches the
             // per-session handler below.
             if let AdapterEvent::CodexModels { catalog } = event {
@@ -659,7 +659,7 @@ async fn process_frame(
             handle_event(state, machine_id, user_id, &adapter_id, event).await
         }
         DaemonFrameUp::StageFilesResult { request_id, ok, paths, error } => {
-            // Mid-chat attachment reply (CCT-236): fire the oneshot the
+            // Mid-chat attachment reply: fire the oneshot the
             // `POST /sessions/{id}/files` round-trip parked in the bus.
             let outcome = if ok {
                 Ok(paths)
@@ -685,7 +685,7 @@ async fn process_frame(
             Ok(())
         }
         DaemonFrameUp::Heartbeat { bandwidth, .. } => {
-            // Machine liveness (CCT-255): advance `last_seen_at` on EVERY
+            // Machine liveness: advance `last_seen_at` on EVERY
             // heartbeat (not just connect, as auth.rs does), then derive the
             // online/stale/offline tier and broadcast it on transition. This is
             // the proactive signal the server previously lacked — a daemon that
@@ -713,15 +713,15 @@ async fn process_frame(
     }
 }
 
-/// Bump the per-machine persisted-insert counter feeding divergence detection
-/// (CCT-744), only when a `stream_events` row was actually written.
+/// Bump the per-machine persisted-insert counter feeding divergence detection,
+/// only when a `stream_events` row was actually written.
 fn note_insert(state: &AppState, machine_id: Uuid, newly_inserted: bool) {
     if newly_inserted {
         *state.machine_event_inserts.entry(machine_id).or_insert(0) += 1;
     }
 }
 
-/// Upsert the daemon's last-known per-subsystem byte counters (CCT-744). Fire-
+/// Upsert the daemon's last-known per-subsystem byte counters. Fire-
 /// and-forget: a failed write only loses one heartbeat's snapshot.
 async fn persist_bandwidth(
     state: &AppState,
@@ -751,7 +751,7 @@ async fn persist_bandwidth(
     }
 }
 
-/// The 2026-07-21 failure signature (CCT-744): reported upload bytes climb while
+/// The 2026-07-21 failure signature: reported upload bytes climb while
 /// persisted `stream_events` inserts don't. In-memory, cheap, piggybacked on the
 /// heartbeat; an ERROR is the alert glitchtip forwards.
 fn detect_divergence(state: &AppState, machine_id: Uuid, upload_bytes: u64) {
@@ -768,7 +768,7 @@ fn detect_divergence(state: &AppState, machine_id: Uuid, upload_bytes: u64) {
     }
 }
 
-/// CCT-586: auto-approve is scoped to tool-use permissions. `ExitPlanMode` and
+/// auto-approve is scoped to tool-use permissions. `ExitPlanMode` and
 /// `AskUserQuestion` are user decision points that must always be answered by
 /// the user, so they are excluded from the auto-approve short-circuit even when
 /// the session flag is set.
@@ -810,11 +810,11 @@ async fn handle_event(
     // only stream to the webui if the event was *newly* inserted — a daemon
     // that replays a session's full history on reconnect (e.g. after a
     // self-update) would otherwise re-stream every message, forcing clients to
-    // replay the whole conversation with a long visible lag (CCT-171). The
+    // replay the whole conversation with a long visible lag. The
     // `ON CONFLICT DO NOTHING` dedup already drops the duplicate rows; gating
     // the broadcast on a real insert extends that dedup to the live stream.
     let mut newly_inserted = true;
-    // Causal ordering key (CCT-481): stamped onto the live broadcast so it
+    // Causal ordering key: stamped onto the live broadcast so it
     // matches the reload path's `seq` (both are `stream_events.id`).
     let mut inserted_seq: Option<i64> = None;
     match event {
@@ -871,7 +871,7 @@ async fn handle_event(
             .await?;
         }
         AdapterEvent::Diagnose { request_id, report, .. } => {
-            // Session-diagnose reply (CCT-547): fire the oneshot the
+            // Session-diagnose reply: fire the oneshot the
             // `GET /sessions/{id}/diagnose` round-trip parked in the bus. A
             // late reply (route timed out, or a spooled event replayed after
             // reconnect) resolves nothing and is dropped.
@@ -880,7 +880,7 @@ async fn handle_event(
             }
         }
         AdapterEvent::PtyChunk { local_id, data } => {
-            // Live terminal relay (CCT-545): never persisted — fan the base64
+            // Live terminal relay: never persisted — fan the base64
             // chunk straight out to the browsers watching this session.
             state.bus.publish_server(cctui_proto::ws::ServerEvent::PtyChunk {
                 session_id: local_id,
@@ -889,7 +889,7 @@ async fn handle_event(
         }
         AdapterEvent::CommandResult { command_id, ok, error } => {
             // Not a session event — rebroadcast straight to clients so the
-            // originating spawn request gets a definitive answer (CCT-131).
+            // originating spawn request gets a definitive answer.
             if !ok {
                 tracing::warn!(%command_id, ?error, "command failed on daemon");
             }
@@ -907,7 +907,7 @@ async fn handle_event(
                 let s = if input.is_null() { String::new() } else { input.to_string() };
                 s.chars().take(500).collect::<String>()
             };
-            // Auto-approve (CCT-151): if the session is in auto-approve mode,
+            // Auto-approve: if the session is in auto-approve mode,
             // answer `allow` immediately without prompting any client.
             let auto_approve_enabled =
                 state.permission_store.read().await.is_auto_approve(&local_id);
@@ -972,15 +972,15 @@ async fn handle_event(
             bump_heartbeat(state, &local_id).await;
         }
         AdapterEvent::AskQuestion { local_id, question, questions, preamble } => {
-            // Live AskUserQuestion (CCT-164): broadcast the pending question so
+            // Live AskUserQuestion: broadcast the pending question so
             // clients render an inline prompt immediately. Ephemeral — not
             // persisted as a stream_event; the full structured tool call still
             // lands in history via the transcript once the turn advances.
             // `questions` carries the structured options so the client renders
-            // the interactive form live, not just the flattened text (CCT-181).
+            // the interactive form live, not just the flattened text.
             // Park it authoritatively so a client that (re)subscribes after the
             // broadcast still learns the open prompt — the broadcast alone was
-            // lost forever if nobody was listening at that instant (CCT-277).
+            // lost forever if nobody was listening at that instant.
             state.permission_store.write().await.insert_ask(
                 crate::routes::permissions::PendingAsk {
                     session_id: local_id.clone(),
@@ -1006,7 +1006,7 @@ async fn handle_event(
             bump_heartbeat(state, &local_id).await;
         }
         AdapterEvent::PlanRequest { local_id, plan, preamble } => {
-            // Live ExitPlanMode plan-approval prompt (CCT-347): park it
+            // Live ExitPlanMode plan-approval prompt: park it
             // authoritatively (so a (re)subscribing client still learns it) and
             // broadcast so clients render the live Plan card. Mirrors the
             // AskQuestion path; ephemeral, not persisted as a stream_event.
@@ -1069,7 +1069,7 @@ async fn handle_event(
         }
         AdapterEvent::SessionModel { local_id, model } => {
             // Overwrite with the transcript/init-frame ground truth — the model
-            // the session is ACTUALLY running (CCT-577). Previously this only
+            // the session is ACTUALLY running. Previously this only
             // filled when unset, so the requested `--model` (delivered first via
             // a Status event) permanently masked a spare-claim/clamp drift. The
             // Status path now fills model only when NULL, so this ground-truth
@@ -1086,7 +1086,7 @@ async fn handle_event(
         }
         _ => {}
     }
-    // CCT-594: fold the tool-activity counters into the same heartbeat write for
+    // fold the tool-activity counters into the same heartbeat write for
     // a real `ToolCall` (a tool_result normalizes to `ToolResult` → plain bump).
     let tool_name = match &broadcast_pair {
         Some((_, cctui_proto::ws::AgentEvent::ToolCall { tool, .. })) => Some(tool.as_str()),
@@ -1115,7 +1115,7 @@ async fn handle_event(
 
 /// A `Message` that normalized to a non-meta user turn (`▷ User:` prefix, shared
 /// by every adapter's user text) starts a new turn, so the per-turn tool count
-/// resets (CCT-594).
+/// resets.
 fn is_user_turn(event: Option<&cctui_proto::ws::AgentEvent>) -> bool {
     matches!(
         event,
@@ -1140,7 +1140,7 @@ struct StatusSignals<'a> {
 /// a previously-known value when a given Status event omits a field, so a
 /// sparse update never clears signal. `model` is special-cased to
 /// `COALESCE(model, $6)` (fill only when NULL): the requested model must not
-/// overwrite the init-frame ground truth that `SessionModel` writes (CCT-577).
+/// overwrite the init-frame ground truth that `SessionModel` writes.
 /// `effort` is safe to overwrite because the daemon now reports the observed
 /// (`/proc CLAUDE_EFFORT`) value in Status, not the requested one.
 async fn update_status_signals(
@@ -1200,8 +1200,8 @@ async fn persist_pr_link_children(
 }
 
 /// Bump `last_heartbeat` for a session and, when it is a subagent, the whole
-/// `parent_id` chain up to the root (CCT-366). A subagent's work should keep
-/// its parent(s) "alive" so the parent card doesn't read idle/stale (CCT-365)
+/// `parent_id` chain up to the root. A subagent's work should keep
+/// its parent(s) "alive" so the parent card doesn't read idle/stale
 /// while a child churns. Done as a single recursive CTE UPDATE — one round-trip
 /// regardless of nesting depth, since subagents are chatty. Heartbeat only: no
 /// token/usage aggregates touched, so there's no double-counting.
@@ -1223,7 +1223,7 @@ async fn bump_heartbeat(state: &AppState, local_id: &str) {
     }
 }
 
-/// Heartbeat bump plus the live tool-activity projection (CCT-594): sets
+/// Heartbeat bump plus the live tool-activity projection: sets
 /// `last_tool_at`/`last_tool_name` for the whole `parent_id` chain (rolled up so
 /// a grinding subagent freshens the parent row), and increments `tool_use_count`
 /// on the leaf only (each session tracks its own per-turn count). One recursive
@@ -1252,7 +1252,7 @@ async fn bump_tool_activity(state: &AppState, local_id: &str, tool: &str) {
     }
 }
 
-/// Reset the leaf session's per-turn tool count on a new user prompt (CCT-594).
+/// Reset the leaf session's per-turn tool count on a new user prompt.
 /// Leaf only: ancestors keep their own per-turn counts.
 async fn reset_tool_count(state: &AppState, local_id: &str) {
     if let Err(err) = sqlx::query("UPDATE sessions SET tool_use_count = 0 WHERE id = $1")
@@ -1276,15 +1276,15 @@ async fn upsert_session(
     observed_at: Option<i64>,
     extra: Option<serde_json::Value>,
 ) -> anyhow::Result<()> {
-    // `parent_id` (CCT-141): resolve via a subquery rather than binding the
+    // `parent_id`: resolve via a subquery rather than binding the
     // raw value so a not-yet-known parent yields NULL instead of an FK
     // violation that would drop the whole insert. In the normal case the
     // parent is upserted earlier in the same poll, so it resolves. On
     // conflict, COALESCE keeps an already-set parent and otherwise fills it
     // in from a later poll.
     //
-    // `status` on conflict (CCT-275): the codex thread/list inventory poll
-    // (CCT-263) re-emits SessionStarted for every machine-wide thread every
+    // `status` on conflict: the codex thread/list inventory poll
+    // re-emits SessionStarted for every machine-wide thread every
     // ~15s, including ones the user archived. Preserve terminal/parked states
     // (`inactive`, `archived`, `ended`) so a re-discovery refreshes the
     // heartbeat without resurrecting the session into the Working list;
@@ -1316,10 +1316,10 @@ async fn upsert_session(
     .bind(extra)
     .execute(&state.pool)
     .await?;
-    // Repair the durable account binding (CCT-565): the dispatch path mints the
+    // Repair the durable account binding: the dispatch path mints the
     // gateway token BEFORE the daemon registers the session, so mint-time's
     // best-effort `UPDATE sessions SET account_id` hit no row and the binding
-    // (CCT-460) silently stayed NULL — leaving resume-after-revocation with
+    // silently stayed NULL — leaving resume-after-revocation with
     // nothing to re-mint from. Backfill it here from the newest token row
     // (live preferred). No-op for already-bound or never-bound sessions.
     sqlx::query(
@@ -1336,11 +1336,11 @@ async fn upsert_session(
 }
 
 /// Insert a stream event, returning `Some(id)` (the `stream_events.id`
-/// BIGSERIAL, used as the causal ordering `seq` — CCT-481) if a new row was
+/// BIGSERIAL, used as the causal ordering `seq`) if a new row was
 /// written and `None` if it was a duplicate suppressed by the dedup constraint
 /// (or the session row was absent). Callers use the presence to decide whether
 /// to broadcast the event live, so a replayed session history doesn't re-stream
-/// to clients (CCT-171).
+/// to clients.
 async fn insert_event(
     state: &AppState,
     local_id: &str,
@@ -1349,7 +1349,7 @@ async fn insert_event(
 ) -> anyhow::Result<Option<i64>> {
     // Postgres jsonb/text cannot store the NUL code point (`\0`); a
     // payload carrying one (e.g. binary-ish tool output) fails the INSERT and
-    // the event is silently lost (CCT-136). Strip NULs from every string so
+    // the event is silently lost. Strip NULs from every string so
     // the rest of the payload survives.
     strip_nul(&mut payload);
     // Guard the insert on the session row existing. A daemon can emit an event
@@ -1358,7 +1358,7 @@ async fn insert_event(
     // session): a bare INSERT then trips `stream_events_session_id_fkey`,
     // spamming WARN logs and burning a failed DB round-trip per event. The
     // `WHERE EXISTS` makes that case a clean no-op (0 rows) instead — when the
-    // session is present this is identical to the old insert (CCT-493).
+    // session is present this is identical to the old insert.
     let id: Option<i64> = sqlx::query_scalar(
         "INSERT INTO stream_events (session_id, event_type, payload) \
          SELECT $1, $2, $3 WHERE EXISTS (SELECT 1 FROM sessions WHERE id = $1) \
@@ -1375,7 +1375,7 @@ async fn insert_event(
 
 /// Recursively strip NUL (`\0`) from every string in a JSON value.
 /// Postgres rejects NUL in `jsonb`/`text`, so an event carrying one would be
-/// dropped on insert (CCT-136). Stripping keeps the event; the NUL has no
+/// dropped on insert. Stripping keeps the event; the NUL has no
 /// display value anyway.
 fn strip_nul(v: &mut serde_json::Value) {
     match v {
@@ -1432,7 +1432,7 @@ async fn mark_session_ended(
     // `WHERE EXISTS` guard: a session_ended can arrive for a session the server
     // never registered (its SessionStarted was dropped, or an ephemeral subagent
     // session) — a bare INSERT trips `stream_events_session_id_fkey`. No-op
-    // cleanly instead of erroring; the UPDATE below is already missing-safe (CCT-493).
+    // cleanly instead of erroring; the UPDATE below is already missing-safe.
     sqlx::query(
         "INSERT INTO stream_events (session_id, event_type, payload) \
          SELECT $1, 'session_ended', $2 WHERE EXISTS (SELECT 1 FROM sessions WHERE id = $1) \
@@ -1447,13 +1447,13 @@ async fn mark_session_ended(
     // Active for ~5 min from the still-recent heartbeat (admin::derive_status
     // is time-based) — masking the end of unattended/dispatched jobs. `ended`
     // is honoured as terminal by the list/search read paths regardless of
-    // heartbeat age (CCT-192). We do not delete the row — archival remains the
+    // heartbeat age. We do not delete the row — archival remains the
     // persistence story; un-archive/resume can revive it.
     sqlx::query("UPDATE sessions SET status = 'ended' WHERE id = $1 AND status <> 'archived'")
         .bind(local_id)
         .execute(&state.pool)
         .await?;
-    // Revoke any per-session gateway tokens (CCT-237): the session-scoped
+    // Revoke any per-session gateway tokens: the session-scoped
     // cctui tokens minted at spawn map to `(session_id, account_id)` and must
     // die with the session so the gateway can no longer be driven under them.
     crate::routes::gateway::revoke_session_tokens(state, local_id).await;
@@ -1461,7 +1461,7 @@ async fn mark_session_ended(
 }
 
 /// Advance a session's stored transcript high-water mark to `offset`, keeping
-/// the max so a replayed / out-of-order mark can't rewind it (CCT-741). Handed
+/// the max so a replayed / out-of-order mark can't rewind it. Handed
 /// back to the daemon as a resume point on its next connect.
 async fn update_transcript_mark(
     state: &AppState,
@@ -1479,7 +1479,7 @@ async fn update_transcript_mark(
     Ok(())
 }
 
-/// The per-session transcript high-water marks for `machine_id` (CCT-741),
+/// The per-session transcript high-water marks for `machine_id`,
 /// handed to the daemon right after Reconcile so it resumes its tail from the
 /// server's stored offset instead of replaying from zero. Only sessions with a
 /// non-zero mark are returned.
@@ -1509,7 +1509,7 @@ pub async fn load_reconcile(
     .await?;
 
     // Bridge the owning user's `user_settings.data.harnessMode` into each
-    // claude-code adapter's `config["mode"]` (CCT-495). The settings blob is
+    // claude-code adapter's `config["mode"]`. The settings blob is
     // otherwise webui-only; this is the one place the server reads it. A
     // machine-level `adapters_enabled.config.mode` (if ever set) wins, so an
     // operator can still pin a machine. Codex rows are untouched.
@@ -1548,7 +1548,7 @@ pub async fn load_reconcile(
         .collect())
 }
 
-/// The effective secret-scrub config for `machine_id`'s owner (CCT-731): the
+/// The effective secret-scrub config for `machine_id`'s owner: the
 /// `secretScrubEnabled` flag plus the clamped `secretScrubPatterns` list from
 /// `user_settings.data`, carried in every Reconcile so a running daemon applies
 /// the current list without a restart. Best-effort — a DB error scrubs nothing.
@@ -1594,7 +1594,7 @@ pub async fn mint_user_token(
     Path(user_id): Path<Uuid>,
     Json(req): Json<MintTokenRequest>,
 ) -> Result<Json<MintTokenResponse>, (StatusCode, Json<ApiError>)> {
-    // Admin may mint for anyone; a user only for itself (CCT-410).
+    // Admin may mint for anyone; a user only for itself.
     let allowed = ctx.is_admin() || ctx.user_id == user_id;
     if !allowed {
         return Err((
@@ -1622,7 +1622,7 @@ pub async fn mint_user_token(
         (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
     })?;
 
-    // Mirror into the unified api_keys table (CCT-410) with grant = owner's
+    // Mirror into the unified api_keys table with grant = owner's
     // ceiling, so the token behaves identically through the new auth path.
     let grant = crate::auth::ceiling_of(&state.pool, user_id).await;
     if let Err(e) = crate::auth::register_key(

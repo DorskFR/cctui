@@ -10,12 +10,12 @@ pub struct HttpDispatcherConfig {
     pub token: Option<String>,
 }
 
-/// Parse `CCTUI_DISPATCHERS` (a JSON array of `{ "kind": ..., ... }`, CCT-234)
+/// Parse `CCTUI_DISPATCHERS` (a JSON array of `{ "kind":..,.. }`)
 /// into the http registrations the server still honors. Only `kind:"http"`
 /// entries are kept; any other kind (the retired in-process `kube`/`docker`
-/// dispatchers, CCT-292) is skipped with a warning rather than failing the
+/// dispatchers) is skipped with a warning rather than failing the
 /// parse — prod still ships a stale `kind:"kube"` entry, and a hard error here
-/// is exactly the crash-loop CCT-360 fixed. Returns `[]` on malformed input.
+/// would crash-loop it. Returns `[]` on malformed input.
 fn parse_dispatchers(raw: &str) -> Vec<HttpDispatcherConfig> {
     let entries: Vec<serde_json::Value> = match serde_json::from_str(raw) {
         Ok(v) => v,
@@ -80,19 +80,19 @@ pub struct Config {
     pub github_token: Option<String>,
     /// External dispatcher registrations, parsed from `CCTUI_HTTP_DISPATCHERS`.
     pub http_dispatchers: Vec<HttpDispatcherConfig>,
-    /// Http dispatcher registrations parsed from `CCTUI_DISPATCHERS` (CCT-234),
-    /// filtered to `kind:"http"` only (CCT-292 retired the in-process variants).
+    /// Http dispatcher registrations parsed from `CCTUI_DISPATCHERS`,
+    /// filtered to `kind:"http"` only (retired the in-process variants).
     /// Merged with `http_dispatchers` at startup.
     pub dispatchers: Vec<HttpDispatcherConfig>,
     /// How long an `ephemeral` (dispatch/worker) machine may go without being
     /// seen before the reaper soft-deletes it — covers pods that die before
-    /// self-deenroll (CCT-183). Configured in hours via
+    /// self-deenroll. Configured in hours via
     /// `CCTUI_EPHEMERAL_MACHINE_TTL_HOURS`; stored as seconds. `0` disables the
     /// sweep. Persistent machines are never reaped.
     pub ephemeral_machine_ttl_secs: u64,
     /// ntfy access token (`CCTUI_NTFY_TOKEN`, provisioned from vault). Its
     /// presence is the on/off switch for dispatch push notifications: when
-    /// unset, `ntfy::notify` is a no-op (CCT-198).
+    /// unset, `ntfy::notify` is a no-op.
     pub ntfy_token: Option<String>,
     /// ntfy topic URL to POST notifications to (`CCTUI_NTFY_URL`, a full topic
     /// URL, e.g. `https://ntfy.example.com/cctui-dispatch`). No default: when
@@ -201,9 +201,9 @@ impl Config {
 mod tests {
     use super::*;
 
-    /// CCT-292: the in-process `kube`/`docker` dispatchers are gone, but prod
+    /// the in-process `kube`/`docker` dispatchers are gone, but prod
     /// still ships a stale `kind:"kube"` entry in `CCTUI_DISPATCHERS`. The parse
-    /// must skip non-http kinds (not panic — that was the CCT-360 crash-loop)
+    /// must skip non-http kinds (not panic — that was the crash-loop)
     /// and keep the `http` escape-hatch entries.
     #[test]
     fn cctui_dispatchers_skips_kube_docker_keeps_http() {
@@ -240,7 +240,7 @@ mod tests {
         assert_eq!(parsed[0].label, "Qwen3-Coder (local)");
     }
 
-    /// The shim is gated on BOTH the endpoint and the model list (CCT-399): with
+    /// The shim is gated on BOTH the endpoint and the model list: with
     /// only one set, nothing is surfaced (`claude_litellm_visible_models` empty),
     /// so the back-compat shim is a no-op.
     #[test]

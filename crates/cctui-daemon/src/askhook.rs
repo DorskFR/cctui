@@ -1,6 +1,5 @@
 //! `cctui-daemon ask-hook` — the Claude Code hook command wired up by the
-//! managed settings file the daemon injects into every fleet-spawned session
-//! (CCT-167).
+//! managed settings file the daemon injects into every fleet-spawned session.
 //!
 //! `AskUserQuestion` is the one interactive prompt the agents control socket
 //! cannot surface live: the socket only reports coarse status (`state`/
@@ -27,7 +26,7 @@ use serde_json::{Value, json};
 /// Always returns `Ok(())` — a delivery failure must not break the user's
 /// prompt — but logs to stderr so failures are still diagnosable.
 ///
-/// `deny` (whip mode, CCT-352): after forwarding the question to the daemon
+/// `deny` (whip mode): after forwarding the question to the daemon
 /// for visibility, emit a `PreToolUse` `deny` decision on stdout so the form
 /// never renders and the model is told to decide and keep working instead of
 /// asking. Only meaningful for the `pre` event.
@@ -50,7 +49,7 @@ pub fn run(event: &str, sock: &Path, deny: bool) -> anyhow::Result<()> {
         return Ok(());
     };
 
-    // Bidirectional tool-permission hook (CCT-342). For the `perm` event the
+    // Bidirectional tool-permission hook. For the `perm` event the
     // hook BLOCKS: it forwards the pending tool call to the daemon and waits on
     // the same connection for the human's decision, then prints the resulting
     // `PreToolUse` `permissionDecision` so Claude Code allows/denies the tool
@@ -80,7 +79,7 @@ pub fn run(event: &str, sock: &Path, deny: bool) -> anyhow::Result<()> {
             json!({ "kind": "resolved", "session_id": session_id })
         }
     } else if tool_name == "ExitPlanMode" {
-        // Plan-approval prompt (CCT-347). `tool_input.plan` carries the plan
+        // Plan-approval prompt. `tool_input.plan` carries the plan
         // markdown; fall back to the most recent on-disk plan file if it's
         // absent/truncated. Reuse `read_preamble` for the prose that preceded
         // the `ExitPlanMode` call in the same turn.
@@ -105,14 +104,14 @@ pub fn run(event: &str, sock: &Path, deny: bool) -> anyhow::Result<()> {
         let question = format_questions(tool_input);
         // Forward the raw `questions` array too (header/options/multiSelect) so
         // the webui can render the interactive form live, not just the
-        // flattened `question` text (CCT-181). Falls back to text alone if the
+        // flattened `question` text. Falls back to text alone if the
         // payload shape is unexpected.
         let questions = tool_input.and_then(|t| t.get("questions")).cloned();
         // The assistant prose preceding the question lives in the transcript as
         // its own earlier `type:"assistant"` text line (Claude writes one line
         // per content block); `transcript_path` is handed to us on stdin. Read
         // it so the live question card shows its context instead of being
-        // answered blind (CCT-213). Without it the preamble would arrive up to
+        // answered blind. Without it the preamble would arrive up to
         // ~2s later over the daemon's transcript poll as a detached bubble.
         let preamble =
             payload.get("transcript_path").and_then(Value::as_str).and_then(read_preamble);
@@ -150,7 +149,7 @@ pub fn run(event: &str, sock: &Path, deny: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Handle the `perm` (`PreToolUse` permission) hook event (CCT-342).
+/// Handle the `perm` (`PreToolUse` permission) hook event.
 ///
 /// `AskUserQuestion` is skipped here — it has its own `pre`/`post` hook and is
 /// not a tool-permission prompt. For every other tool we mint a correlation id,
@@ -171,7 +170,7 @@ pub fn run(event: &str, sock: &Path, deny: bool) -> anyhow::Result<()> {
 ///   opted out of every prompt. Claude Code still fires `PreToolUse` hooks in this
 ///   mode, so without this guard the hook would park every tool for a human
 ///   decision and resurrect a permission prompt for every action, defeating
-///   bypass mode (CCT-356 regression of CCT-342). Only `default`/`acceptEdits`/
+///   bypass mode. Only `default`/`acceptEdits`/
 ///   `plan` modes — where a prompt would otherwise render — use the hook.
 fn perm_hook_defers(payload: &Value, tool: &str) -> bool {
     if tool == "AskUserQuestion" {
@@ -180,7 +179,7 @@ fn perm_hook_defers(payload: &Value, tool: &str) -> bool {
     payload.get("permission_mode").and_then(Value::as_str) == Some("bypassPermissions")
 }
 
-/// `EnterPlanMode` deny decision (CCT-544). Approving a plan switches the
+/// `EnterPlanMode` deny decision. Approving a plan switches the
 /// session to whichever mode the approval selects and never restores
 /// `bypassPermissions`; the default Bg control socket has no in-place
 /// set-permission-mode op, so a yolo/whip worker that enters plan mode silently
@@ -243,7 +242,7 @@ fn run_perm(sock: &Path, session_id: &str, payload: &Value) {
 }
 
 /// Send `line` to the daemon and block reading a single newline-delimited JSON
-/// decision back on the same connection (CCT-342). Returns `Ok(None)` if the
+/// decision back on the same connection. Returns `Ok(None)` if the
 /// daemon closes without a decision or the reply isn't JSON. The read has no
 /// explicit timeout: the daemon bounds its own wait and always writes a
 /// decision (`defer` on its timeout) before the hook's configured `timeout`
@@ -263,7 +262,7 @@ fn request_decision(sock: &Path, line: &str) -> std::io::Result<Option<Value>> {
     Ok(serde_json::from_str(buf).ok())
 }
 
-/// Fallback for a missing/truncated `tool_input.plan` (CCT-347): read the most
+/// Fallback for a missing/truncated `tool_input.plan`: read the most
 /// recently modified plan markdown Claude Code wrote under `~/.claude/plans`.
 /// The plan-file naming is slug-based and not exposed in the hook payload, so
 /// rather than guessing a slug we take the newest `*.md` — in practice the plan
@@ -286,7 +285,7 @@ fn read_latest_plan_file() -> Option<String> {
 }
 
 /// Read the assistant prose preceding the pending question from the transcript
-/// at `path` (CCT-213).
+/// at `path`.
 ///
 /// Claude Code's transcript writer drains to disk on a 100ms timer
 /// (`FLUSH_INTERVAL_MS`) independent of the turn loop, and writes one line per
@@ -440,7 +439,7 @@ mod tests {
 
     #[test]
     fn scan_preamble_finds_text_before_tool_use() {
-        // CCT-213: the AskUserQuestion tool_use lands on its own line, preceded
+        // the AskUserQuestion tool_use lands on its own line, preceded
         // by the assistant's text line in the same turn. Scanning backward must
         // skip the tool_use line and return the preceding prose.
         let body = concat!(
@@ -490,7 +489,7 @@ mod tests {
 
     #[test]
     fn perm_hook_defers_in_bypass_mode() {
-        // CCT-356: yolo (bypassPermissions) must never park a tool for a human
+        // yolo (bypassPermissions) must never park a tool for a human
         // decision — Claude still fires PreToolUse hooks but the user opted out
         // of every prompt.
         let bypass = json!({"permission_mode": "bypassPermissions"});

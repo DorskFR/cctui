@@ -1,10 +1,10 @@
-//! `/api/v1/accounts` — account identities + provider credentials (CCT-558).
+//! `/api/v1/accounts` — account identities + provider credentials.
 //!
 //! An **account** is an identity (e.g. `personal`, `enterprise`): a name, an
 //! owner, optional extra environment, and sharing grants. Each account holds
-//! zero or more **providers** (`account_providers`, née `oauth_accounts`,
-//! CCT-232): one credential per provider family (anthropic | openai) — a native
-//! OAuth subscription or a compatible endpoint (CCT-399). OAuth refresh tokens
+//! zero or more **providers** (`account_providers`, née `oauth_accounts`):
+//! one credential per provider family (anthropic | openai) — a native
+//! OAuth subscription or a compatible endpoint. OAuth refresh tokens
 //! are encrypted at rest with the vault key (`crate::crypto`, same as
 //! `api_keys`/`dispatchers`) and are **never** returned over the API —
 //! list/get only ever surface provider/expiry/last-used + lightweight stats.
@@ -27,16 +27,16 @@ use crate::auth::{AuthContext, Scope};
 use crate::routes::gateway;
 use crate::state::AppState;
 
-/// How long a pending "Sign in with Claude" login stays valid (CCT-243).
+/// How long a pending "Sign in with Claude" login stays valid.
 const PENDING_OAUTH_TTL: Duration = Duration::minutes(10);
 
-/// In-memory store of pending OAuth logins, keyed by nonce (CCT-243).
+/// In-memory store of pending OAuth logins, keyed by nonce.
 pub type PendingOAuthLogins = Arc<DashMap<String, PendingOAuthLogin>>;
 
 /// A pending "Sign in with Claude" login: the PKCE verifier we generated and the
 /// user it belongs to, with a creation timestamp for TTL expiry. Held only in
 /// memory and deleted on finish (single-use). `account_id` carries an optional
-/// attach target (CCT-558): when set, the finished credential lands as a
+/// attach target: when set, the finished credential lands as a
 /// provider under that existing account instead of creating a new identity.
 #[derive(Clone)]
 pub struct PendingOAuthLogin {
@@ -47,7 +47,7 @@ pub struct PendingOAuthLogin {
     pub account_id: Option<Uuid>,
 }
 
-/// Resolve which user an account operation targets (CCT-251). A user token
+/// Resolve which user an account operation targets. A user token
 /// always acts as itself; the env admin token has no user identity, so it must
 /// name the owner explicitly (`user_id` in the request). This is what lets an
 /// admin-authed webui run the "Sign in with Claude/ChatGPT" flows instead of
@@ -56,7 +56,7 @@ fn resolve_owner(
     ctx: &AuthContext,
     explicit: Option<Uuid>,
 ) -> Result<Uuid, (StatusCode, Json<serde_json::Value>)> {
-    // A machine key has no business creating accounts (CCT-410): require a
+    // A machine key has no business creating accounts: require a
     // human identity (read scope, no machine id). An admin acts cross-user by
     // naming the owner explicitly; a user acts as itself.
     if ctx.machine_id.is_some() || !ctx.has(Scope::Read) {
@@ -72,8 +72,8 @@ fn resolve_owner(
 }
 
 /// Gate the account read/mutation routes to a human identity (a user or admin
-/// token, never a machine key), matching the pre-CCT-410 `require_user`/admin
-/// behavior. Admin then sees/acts across all owners via `owner_filter`.
+/// token, never a machine key). Admin then sees/acts across all owners via
+/// `owner_filter`.
 fn require_human(ctx: &AuthContext) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
     if ctx.machine_id.is_some() || !ctx.has(Scope::Read) {
         return Err(err(StatusCode::FORBIDDEN, "user or admin token required"));
@@ -81,7 +81,7 @@ fn require_human(ctx: &AuthContext) -> Result<(), (StatusCode, Json<serde_json::
     Ok(())
 }
 
-/// One-release back-compat shim (CCT-399): if `CCTUI_CLAUDE_LITELLM_*` is set,
+/// One-release back-compat shim: if `CCTUI_CLAUDE_LITELLM_*` is set,
 /// synthesize a server-owned **managed** anthropic-compatible provider per user
 /// (under a dedicated `litellm (legacy)` account identity) so existing
 /// deployments keep working after the env-var path is retired. Managed
@@ -116,8 +116,8 @@ pub async fn sync_litellm_shim(pool: &sqlx::PgPool, config: &crate::config::Conf
         .unwrap_or_default();
     for uid in users {
         // Resolve the parent identity via the user's existing MANAGED provider
-        // first — never adopt a same-named account the user made themselves
-        // (CCT-565): the `ON CONFLICT (user_id, name) DO UPDATE … RETURNING id`
+        // first — never adopt a same-named account the user made themselves:
+        // the `ON CONFLICT (user_id, name) DO UPDATE … RETURNING id`
         // find-or-create hijacked any user account literally named
         // `litellm (legacy)`, making it read-only/undeletable (managed guard)
         // or failing the (account_id, family) unique index outright.
@@ -181,7 +181,7 @@ pub async fn sync_litellm_shim(pool: &sqlx::PgPool, config: &crate::config::Conf
     tracing::info!("CCTUI_CLAUDE_LITELLM_* shim: synced managed compatible providers (CCT-399)");
 }
 
-/// One selectable model on a compatible-endpoint provider (CCT-399): `model` is
+/// One selectable model on a compatible-endpoint provider: `model` is
 /// the `--model` code, `label` the display name. Safe to return over the API —
 /// model names are not secret (unlike the credential).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -190,7 +190,7 @@ pub struct AccountModel {
     pub label: String,
 }
 
-/// API view of one provider credential under an account (CCT-558). Secrets (the
+/// API view of one provider credential under an account. Secrets (the
 /// OAuth/static tokens) are deliberately absent; `base_url`/`auth_scheme` are
 /// surfaced so the accounts UI can render/edit a compatible endpoint in place.
 #[derive(Debug, serde::Serialize, sqlx::FromRow)]
@@ -200,22 +200,22 @@ pub struct ProviderInfo {
     /// `anthropic` | `openai` | `anthropic-compatible` | `openai-compatible`.
     pub provider: String,
     /// Provider family (generated column): `anthropic` | `openai`. At most one
-    /// provider per family per account (CCT-508 guard by construction).
+    /// provider per family per account, guaranteed by construction.
     pub family: String,
-    /// Selectable models for a compatible endpoint (CCT-399). `None`/empty for
+    /// Selectable models for a compatible endpoint. `None`/empty for
     /// native subscription providers (they use the harness's native families).
     pub models: Option<serde_json::Value>,
-    /// Per-provider logical→concrete model alias map (CCT-406), e.g.
+    /// Per-provider logical→concrete model alias map, e.g.
     /// `{"opus": "claude-opus-4-8[1m]"}`. Resolved server-side at spawn.
     pub model_aliases: Option<serde_json::Value>,
     /// `true` for a server-synthesized (managed) provider — read-only over the
-    /// API (the back-compat shim for `CCTUI_CLAUDE_LITELLM_*`, CCT-399).
+    /// API (the back-compat shim for `CCTUI_CLAUDE_LITELLM_*`).
     pub managed: bool,
-    /// Compatible-endpoint base URL (CCT-399); NULL for native providers.
+    /// Compatible-endpoint base URL; NULL for native providers.
     pub base_url: Option<String>,
-    /// `oauth` (native) | `bearer` | `api_key` (compatible, CCT-399).
+    /// `oauth` (native) | `bearer` | `api_key` (compatible).
     pub auth_scheme: String,
-    /// Upstream account id (Codex `chatgpt_account_id`, CCT-244).
+    /// Upstream account id (Codex `chatgpt_account_id`).
     pub provider_account_id: Option<String>,
     pub expires_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
@@ -223,42 +223,42 @@ pub struct ProviderInfo {
     pub request_count: i64,
     pub bytes_transferred: i64,
     /// Total tokens (input + output + cache) attributed to this provider across
-    /// all its sessions (CCT-273). Joined from `session_tokens` →
+    /// all its sessions. Joined from `session_tokens` →
     /// `session_token_usage` at read time.
     pub total_tokens: i64,
     /// Rough USD cost estimate derived from `total_tokens` using a per-provider
-    /// blended rate (CCT-273). An estimate only — OAuth/subscription accounts
+    /// blended rate. An estimate only — OAuth/subscription accounts
     /// aren't metered per token; this is a usage-weight signal, not a bill.
     pub est_cost_usd: f64,
-    /// Per-provider soft limits (CCT-411, CCT-688): a validated JSONB map keyed by
+    /// Per-provider soft limits: a validated JSONB map keyed by
     /// canonical window identity (`session` | `weekly_all` | `weekly_model:<id>`),
     /// each value `{cap_pct?, bypass_minutes?}`. NULL ⇒ no soft limits configured.
     pub soft_limits: Option<serde_json::Value>,
-    /// Credential health (CCT-512): `true` once the gateway saw the upstream
+    /// Credential health: `true` once the gateway saw the upstream
     /// provider reject this credential, cleared on the next successful upstream
     /// call. The accounts UI shows a "reauthenticate" badge.
     pub needs_reauth: bool,
     pub last_auth_error: Option<String>,
     pub last_auth_error_at: Option<DateTime<Utc>>,
     /// Validated, allowlisted subset of harness settings applied to sessions run
-    /// under this provider (CCT-538). Config, not secret → returned normally.
+    /// under this provider. Config, not secret → returned normally.
     pub settings_json: Option<serde_json::Value>,
 }
 
-/// API view of an account identity (CCT-558): name, owner, timestamps, and its
+/// API view of an account identity: name, owner, timestamps, and its
 /// provider credentials.
 #[derive(Debug, serde::Serialize)]
 pub struct AccountInfo {
     pub id: Uuid,
     pub name: String,
-    /// Owning user (CCT-251) — admins see all accounts, so the owner matters.
+    /// Owning user — admins see all accounts, so the owner matters.
     pub user_id: Uuid,
     /// Owner's name for display, joined from `users`.
     pub user_name: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub providers: Vec<ProviderInfo>,
-    /// Names (only) of the account's free-form extra env vars (CCT-591), sorted.
+    /// Names (only) of the account's free-form extra env vars, sorted.
     /// Values stay WRITE-ONLY (encrypted, never returned) — the names let the UI
     /// show what is currently set with a replace-on-save affordance.
     pub env_names: Vec<String>,
@@ -277,7 +277,7 @@ struct AccountRow {
     user_name: Option<String>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
-    /// Encrypted extra-env blob; decrypted to NAMES only for the API (CCT-591).
+    /// Encrypted extra-env blob; decrypted to NAMES only for the API.
     env_json: Option<String>,
 }
 
@@ -298,7 +298,7 @@ impl AccountRow {
 }
 
 /// Shared SELECT for [`ProviderInfo`]: per-provider token totals + a rough USD
-/// cost estimate (CCT-273). Tokens are recorded per session
+/// cost estimate. Tokens are recorded per session
 /// (`session_token_usage`); `session_tokens` bridges a session to the provider
 /// row it ran under. `SUM()` over bigint returns NUMERIC, so cast back to bigint
 /// for the i64 columns. Cost uses a per-provider blended per-million rate
@@ -373,14 +373,14 @@ async fn fetch_provider_info(
         .await
 }
 
-/// Provider-credential payload (CCT-558): the create/attach fields for one
+/// Provider-credential payload: the create/attach fields for one
 /// provider row. Used standalone by `POST /accounts/{id}/providers` and
-/// flattened into [`CreateAccount`] so the pre-CCT-558 one-shot
-/// account+credential create keeps working.
+/// flattened into [`CreateAccount`] so the legacy one-shot account+credential
+/// create keeps working.
 #[derive(Debug, Default, serde::Deserialize)]
 pub struct ProviderSpec {
     /// `anthropic` | `openai` (native subscription) | `anthropic-compatible` |
-    /// `openai-compatible` (CCT-399). Optional only when flattened into
+    /// `openai-compatible`. Optional only when flattened into
     /// [`CreateAccount`] (identity-only create); required on the provider route.
     #[serde(default)]
     pub provider: Option<String>,
@@ -390,34 +390,34 @@ pub struct ProviderSpec {
     #[serde(default)]
     pub refresh_token: Option<String>,
     /// Initial access token (subscription) OR the static credential (a compatible
-    /// endpoint's bearer/api key, CCT-399). Stored encrypted; never read back.
+    /// endpoint's bearer/api key). Stored encrypted; never read back.
     #[serde(default)]
     pub access_token: Option<String>,
     /// Optional access-token expiry (unix seconds). When absent the gateway
     /// refreshes on first use (subscription) / never refreshes (compatible).
     #[serde(default)]
     pub expires_at: Option<i64>,
-    /// Compatible-endpoint base URL (CCT-399), e.g. a LiteLLM/vLLM/Ollama-proxy.
+    /// Compatible-endpoint base URL, e.g. a LiteLLM/vLLM/Ollama-proxy.
     /// Required for `*-compatible` providers; ignored for native ones.
     #[serde(default)]
     pub base_url: Option<String>,
-    /// Selectable models for a compatible endpoint (CCT-399).
+    /// Selectable models for a compatible endpoint.
     #[serde(default)]
     pub models: Option<Vec<AccountModel>>,
-    /// Logical→concrete model alias map (CCT-406), e.g.
+    /// Logical→concrete model alias map, e.g.
     /// `{"opus": "claude-opus-4-8[1m]"}`. Honoured for every provider.
     #[serde(default)]
     pub model_aliases: Option<std::collections::HashMap<String, String>>,
-    /// Credential scheme for a compatible endpoint: `bearer` | `api_key`
-    /// (CCT-399). Defaults to `bearer`. Native providers are always `oauth`.
+    /// Credential scheme for a compatible endpoint: `bearer` | `api_key`.
+    /// Defaults to `bearer`. Native providers are always `oauth`.
     #[serde(default)]
     pub auth_scheme: Option<String>,
-    /// Per-provider soft limits (CCT-688): a canonical-key map
+    /// Per-provider soft limits: a canonical-key map
     /// `{ "session": {cap_pct?, bypass_minutes?}, "weekly_all": {…}, … }`.
     /// Absent ⇒ NULL (no caps). Validated before persist.
     #[serde(default)]
     pub soft_limits: Option<serde_json::Value>,
-    /// Legacy pre-CCT-688 scalar soft-limit fields, still accepted on create and
+    /// Legacy scalar soft-limit fields, still accepted on create and
     /// folded into the `session` / `weekly_all` keys when `soft_limits` is absent.
     #[serde(default)]
     pub soft_limit_5h_pct: Option<i32>,
@@ -429,23 +429,23 @@ pub struct ProviderSpec {
     pub soft_limit_bypass_7d_minutes: Option<i32>,
     #[serde(default)]
     pub soft_limit_bypass_minutes: Option<i32>,
-    /// Validated, allowlisted harness settings for this provider (CCT-538).
+    /// Validated, allowlisted harness settings for this provider.
     /// Server rejects MANAGED/SYSTEM keys before persist. Returned normally.
     #[serde(default)]
     pub settings_json: Option<serde_json::Value>,
 }
 
-/// `POST /api/v1/accounts` payload (CCT-558): the identity fields, plus an
+/// `POST /api/v1/accounts` payload: the identity fields, plus an
 /// optionally flattened [`ProviderSpec`] — supplying `provider` creates the
-/// account and its first credential in one call (the pre-CCT-558 shape).
+/// account and its first credential in one call (the legacy shape).
 #[derive(Debug, serde::Deserialize)]
 pub struct CreateAccount {
     pub name: String,
     /// Owning user — required (and only honoured) when authenticated with the
-    /// admin token, which has no user identity of its own (CCT-251).
+    /// admin token, which has no user identity of its own.
     #[serde(default)]
     pub user_id: Option<Uuid>,
-    /// Extra environment variables for sessions run under this account (CCT-538).
+    /// Extra environment variables for sessions run under this account.
     /// Stored ENCRYPTED at rest and never returned over the API (write-only,
     /// like the OAuth tokens). An empty map ⇒ no override.
     #[serde(default)]
@@ -454,7 +454,7 @@ pub struct CreateAccount {
     pub provider: ProviderSpec,
 }
 
-/// `PATCH /api/v1/accounts/{id}` payload (CCT-558): identity-level fields only.
+/// `PATCH /api/v1/accounts/{id}` payload: identity-level fields only.
 /// `name` renames; `env_json` provided → re-encrypts and replaces (an empty map
 /// clears it); absent → unchanged (write-only, never returned). The legacy
 /// provider-ish fields are accepted syntactically but rejected with a pointer
@@ -466,12 +466,12 @@ pub struct UpdateAccount {
     pub name: Option<String>,
     #[serde(default)]
     pub env_json: Option<std::collections::HashMap<String, String>>,
-    /// Names to remove from the stored env without re-sending the other values
-    /// (CCT-591): decrypt → drop names → re-encrypt, all server-side. Ignored
+    /// Names to remove from the stored env without re-sending the other
+    /// values: decrypt → drop names → re-encrypt, all server-side. Ignored
     /// when `env_json` is provided (replace-all wins).
     #[serde(default)]
     pub env_remove: Option<Vec<String>>,
-    // Legacy pre-CCT-558 provider fields (any shape): presence ⇒ 400 pointing at
+    // Legacy provider fields (any shape): presence ⇒ 400 pointing at
     // PATCH /accounts/{id}/providers/{provider_id}.
     #[serde(default)]
     pub base_url: Option<serde_json::Value>,
@@ -491,8 +491,7 @@ pub struct UpdateAccount {
     pub defaults: Option<serde_json::Value>,
 }
 
-/// `PATCH /api/v1/accounts/{id}/providers/{provider_id}` payload (CCT-558,
-/// formerly the provider half of the account PATCH, CCT-402). A partial update:
+/// `PATCH /api/v1/accounts/{id}/providers/{provider_id}` payload. A partial update:
 /// for a non-managed compatible endpoint the operator may edit `models`,
 /// `base_url`, `auth_scheme`, and rotate the static credential (`access_token`).
 /// `model_aliases` / `soft_limits` / `settings_json` are editable for every
@@ -508,7 +507,7 @@ pub struct UpdateProvider {
     pub auth_scheme: Option<String>,
     #[serde(default)]
     pub models: Option<Vec<AccountModel>>,
-    /// Replacement model alias map (CCT-406). Provided → replaces the stored map
+    /// Replacement model alias map. Provided → replaces the stored map
     /// wholesale (an empty object clears it); absent → unchanged.
     #[serde(default)]
     pub model_aliases: Option<std::collections::HashMap<String, String>>,
@@ -516,20 +515,20 @@ pub struct UpdateProvider {
     /// stored one.
     #[serde(default)]
     pub access_token: Option<String>,
-    /// Replacement soft-limit config (CCT-688): a canonical-key map
+    /// Replacement soft-limit config: a canonical-key map
     /// `{ key: {cap_pct?, bypass_minutes?} }`. Provided → replaces the whole
     /// stored map (an empty object clears it, an omitted key drops that window);
     /// absent → unchanged. Validated before persist.
     #[serde(default)]
     pub soft_limits: Option<serde_json::Value>,
-    /// Replacement validated settings blob (CCT-538). Provided → replaces the
+    /// Replacement validated settings blob. Provided → replaces the
     /// stored settings wholesale (an empty object clears it); absent → unchanged.
     /// Validated against the allowlist before persist.
     #[serde(default)]
     pub settings_json: Option<serde_json::Value>,
 }
 
-/// `POST /api/v1/accounts/{id}/providers/{provider_id}/move` payload (CCT-558):
+/// `POST /api/v1/accounts/{id}/providers/{provider_id}/move` payload:
 /// re-parent a provider credential onto another account owned by the same user
 /// (the manual merge path for the migration's one-account-per-old-row backfill).
 #[derive(Debug, serde::Deserialize)]
@@ -537,7 +536,7 @@ pub struct MoveProvider {
     pub target_account_id: Uuid,
 }
 
-/// Validate a canonical-key soft-limit map (CCT-688) into the JSONB blob to
+/// Validate a canonical-key soft-limit map into the JSONB blob to
 /// store, folding in any legacy scalar fields. Returns `Ok(None)` when the
 /// result is empty (clears the column). Rejects out-of-range caps/bypasses and
 /// non-canonical keys (which could otherwise inject markup or collide).
@@ -606,8 +605,8 @@ fn db_err(e: &sqlx::Error) -> (StatusCode, Json<serde_json::Value>) {
     err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
 }
 
-/// The settings catalog as served to the webui account-settings editor
-/// (CCT-571). Everything here comes from the embedded catalog — the webui
+/// The settings catalog as served to the webui account-settings editor.
+/// Everything here comes from the embedded catalog — the webui
 /// carries NO mirror of the key list, so it cannot drift from the server that
 /// validates the writes. `managed`/`system` keys are omitted entirely.
 #[derive(serde::Serialize, ts_rs::TS)]
@@ -624,8 +623,8 @@ pub struct SettingsCatalogResponse {
     pub preset: crate::settings_catalog::Preset,
 }
 
-/// `GET /accounts/settings-catalog` — serve the per-account settings catalog
-/// (CCT-571). Read-only, embedded data; no tenant scoping needed (the catalog
+/// `GET /accounts/settings-catalog` — serve the per-account settings catalog.
+/// Read-only, embedded data; no tenant scoping needed (the catalog
 /// is the same for everyone and contains no secrets).
 pub async fn settings_catalog() -> Json<SettingsCatalogResponse> {
     let c = crate::settings_catalog::catalog();
@@ -640,8 +639,8 @@ pub async fn settings_catalog() -> Json<SettingsCatalogResponse> {
     })
 }
 
-/// Validate a pasted `settings_json` blob before persisting it (CCT-538) via the
-/// settings catalog (CCT-537): only keys tagged `safe`/`care` may be set
+/// Validate a pasted `settings_json` blob before persisting it via the
+/// settings catalog: only keys tagged `safe`/`care` may be set
 /// per-provider; unknown, MANAGED, and SYSTEM keys are rejected. Fail-closed —
 /// any violation aborts the whole write.
 fn validate_settings_json(
@@ -658,7 +657,7 @@ fn validate_settings_json(
     ))
 }
 
-/// Validate the account-level free-form extra-env map (CCT-591) before it is
+/// Validate the account-level free-form extra-env map before it is
 /// encrypted and stored: any well-formed env var name is accepted EXCEPT a
 /// denylist of session-critical / gateway-managed vars (values are arbitrary and
 /// may be secrets). Fail-closed with a per-name reason.
@@ -681,7 +680,7 @@ fn validate_env_json(
 }
 
 /// Decrypt a stored `env_json` blob to its var NAMES only (sorted), never the
-/// values (CCT-591). A missing/undecryptable/malformed blob yields an empty list
+/// values. A missing/undecryptable/malformed blob yields an empty list
 /// — the names are a display convenience, never a hard dependency.
 fn env_names_from_enc(enc: Option<&str>, key: &[u8]) -> Vec<String> {
     env_map_from_enc(enc, key).into_keys().collect()
@@ -697,7 +696,7 @@ fn env_map_from_enc(enc: Option<&str>, key: &[u8]) -> std::collections::BTreeMap
     serde_json::from_str(&json).unwrap_or_default()
 }
 
-/// Validate + encrypt an extra-env map (CCT-538). Empty ⇒ `None` (clears).
+/// Validate + encrypt an extra-env map. Empty ⇒ `None` (clears).
 fn encrypt_env(
     env: Option<&std::collections::HashMap<String, String>>,
 ) -> Result<Option<String>, (StatusCode, Json<serde_json::Value>)> {
@@ -724,7 +723,7 @@ struct ProviderWrite {
 /// Validate a [`ProviderSpec`] into a [`ProviderWrite`] (shared by the one-shot
 /// account create and `POST /accounts/{id}/providers`). Native subscription
 /// providers require an OAuth refresh token (`auth_scheme` = oauth); compatible
-/// endpoints (CCT-399) a base URL + a static credential stored in
+/// endpoints a base URL + a static credential stored in
 /// `encrypted_access_token`, no refresh token, `auth_scheme` = `bearer|api_key`.
 fn prepare_provider_write(
     spec: &ProviderSpec,
@@ -755,7 +754,7 @@ fn prepare_provider_write(
             ));
         };
         // SSRF is explicitly out of scope for this single-operator, self-hosted
-        // deployment (CCT-399 decision); a light scheme check only. Prefer https.
+        // deployment; a light scheme check only. Prefer https.
         if !(base.starts_with("http://") || base.starts_with("https://")) {
             return Err(err(StatusCode::BAD_REQUEST, "base_url must be an http(s) URL"));
         }
@@ -794,7 +793,7 @@ fn prepare_provider_write(
         .as_ref()
         .filter(|m| !m.is_empty())
         .map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null));
-    // Alias map (CCT-406): an empty map stores NULL (no remapping).
+    // Alias map: an empty map stores NULL (no remapping).
     let model_aliases = spec
         .model_aliases
         .as_ref()
@@ -859,7 +858,7 @@ async fn insert_provider(
 
 /// `GET /api/v1/accounts` — the caller's own accounts with their providers
 /// (tokens never returned). Admin sees every account, with the owner's name
-/// joined in (CCT-251).
+/// joined in.
 pub async fn list_accounts(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -919,8 +918,8 @@ pub async fn get_account(
 }
 
 /// `POST /api/v1/accounts` — register an account identity, optionally with its
-/// first provider credential in the same call (the pre-CCT-558 one-shot shape:
-/// a body carrying `provider` + credential fields).
+/// first provider credential in the same call (the legacy one-shot shape: a
+/// body carrying `provider` + credential fields).
 pub async fn create_account(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -972,7 +971,7 @@ pub async fn create_account(
 }
 
 /// `PATCH /api/v1/accounts/{id}` — rename the identity and/or replace its extra
-/// env (CCT-558). Provider fields moved to the provider routes; sending them
+/// env. Provider fields moved to the provider routes; sending them
 /// here 400s with a pointer. Accounts holding a managed provider (the litellm
 /// shim) are read-only.
 pub async fn update_account(
@@ -1086,7 +1085,7 @@ pub async fn delete_account(
 }
 
 // ----------------------------------------------------------------------------
-// Provider routes (CCT-558): add / edit / remove / move one credential under an
+// Provider routes: add / edit / remove / move one credential under an
 // account identity.
 // ----------------------------------------------------------------------------
 
@@ -1124,7 +1123,7 @@ pub async fn add_provider(
 }
 
 /// `PATCH /api/v1/accounts/{id}/providers/{provider_id}` — edit a provider
-/// (CCT-402 semantics, re-homed by CCT-558): compatible endpoints may change
+/// — compatible endpoints may change
 /// models / base URL / auth scheme / credential; aliases, soft limits, and
 /// settings are editable for every provider. Managed providers are read-only.
 // Linear handler: per-field optional updates built into one dynamic UPDATE.
@@ -1192,7 +1191,7 @@ pub async fn update_provider(
     };
     let models =
         req.models.as_ref().map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null));
-    // Aliases (CCT-406): COALESCE can't distinguish "clear" from "unchanged"
+    // Aliases: COALESCE can't distinguish "clear" from "unchanged"
     // (both would bind NULL), so carry an explicit provided-flag — provided +
     // empty clears the column, provided + non-empty replaces it.
     let aliases_provided = req.model_aliases.is_some();
@@ -1207,13 +1206,13 @@ pub async fn update_provider(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(|c| crate::crypto::encrypt(c, &key));
-    // Soft limits (CCT-688): a provided map replaces the whole JSONB column (an
+    // Soft limits: a provided map replaces the whole JSONB column (an
     // empty object clears it); absent leaves it untouched. Validated before
     // persist. Carry a provided-flag so CASE-WHEN distinguishes clear/unchanged.
     let soft_provided = req.soft_limits.is_some();
     let soft_limits_json =
         build_soft_limits_json(req.soft_limits.as_ref(), None, None, None, None)?;
-    // Settings (CCT-538): provided replaces (empty clears), absent untouched;
+    // Settings: provided replaces (empty clears), absent untouched;
     // validated against the catalog allowlist before persist.
     let settings_provided = req.settings_json.is_some();
     if let Some(s) = req.settings_json.as_ref().filter(|v| !v.is_null()) {
@@ -1268,7 +1267,7 @@ pub async fn update_provider(
 }
 
 /// Blocked sessions among `candidates` that now evaluate to `Allow` under `caps`.
-/// Clear-only (no re-block) per CCT-584; pure so it is unit-testable.
+/// Clear-only (no re-block); pure so it is unit-testable.
 fn soft_limit_blocks_to_clear(
     candidates: &[String],
     blocked: &DashMap<String, ()>,
@@ -1290,7 +1289,7 @@ fn soft_limit_blocks_to_clear(
 }
 
 /// After a provider's soft-limit config is raised, lift the blocks it holds that
-/// are now under cap (CCT-584). Best-effort: any DB/usage error is swallowed so
+/// are now under cap. Best-effort: any DB/usage error is swallowed so
 /// the surrounding PATCH still succeeds.
 async fn reevaluate_soft_limit_block(
     state: &AppState,
@@ -1355,10 +1354,9 @@ pub async fn delete_provider(
 }
 
 /// `POST /api/v1/accounts/{id}/providers/{provider_id}/move` — re-parent a
-/// provider onto another account of the SAME owner (CCT-558's manual merge for
-/// the migration's one-account-per-old-row backfill, e.g. "alice (anthropic)" +
-/// "alice (openai)" → one "alice"). 409 if the target already has a provider of
-/// that family.
+/// provider onto another account of the SAME owner — manual merge for e.g.
+/// "alice (anthropic)" + "alice (openai)" → one "alice". 409 if the target
+/// already has a provider of that family.
 pub async fn move_provider(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -1408,7 +1406,6 @@ pub async fn move_provider(
 
 // ----------------------------------------------------------------------------
 // "Sign in with Claude" / "Sign in with ChatGPT" OAuth authorize flow
-// (CCT-243 anthropic, CCT-244 openai/Codex)
 //
 // OAuth 2.1 authorization-code + PKCE in manual paste mode: we generate a PKCE
 // verifier/challenge and a nonce, the user authorizes upstream, and pastes the
@@ -1420,7 +1417,7 @@ pub async fn move_provider(
 // openai form-encoded) and Codex's id_token carries the chatgpt_account_id we
 // persist for the gateway's upstream header. Pending logins live in memory
 // only, keyed by nonce + scoped to the authenticated user, single-use,
-// TTL-bounded. CCT-558: `start` may carry an `account_id` attach target so the
+// TTL-bounded. `start` may carry an `account_id` attach target so the
 // finished credential lands as a provider under an existing account.
 // ----------------------------------------------------------------------------
 
@@ -1429,11 +1426,11 @@ pub struct OAuthStart {
     /// `anthropic` ("Sign in with Claude") or `openai` ("Sign in with `ChatGPT`").
     pub provider: String,
     /// Owning user — required (and only honoured) when authenticated with the
-    /// admin token (CCT-251). Ignored when `account_id` names the attach target
+    /// admin token. Ignored when `account_id` names the attach target
     /// (the target's owner wins).
     #[serde(default)]
     pub user_id: Option<Uuid>,
-    /// Optional attach target (CCT-558): finish the flow as a provider under
+    /// Optional attach target: finish the flow as a provider under
     /// this existing account instead of creating a new identity.
     #[serde(default)]
     pub account_id: Option<Uuid>,
@@ -1458,7 +1455,7 @@ pub struct OAuthFinish {
     pub code: Option<String>,
     /// openai/Codex: the full `http://localhost:1455/auth/callback?code=…&state=…`
     /// URL the user copies from the browser address bar after the redirect fails
-    /// to load (the fixed redirect can't reach cctui — CCT-244).
+    /// to load (the fixed redirect can't reach cctui).
     #[serde(default)]
     pub callback_url: Option<String>,
 }
@@ -1470,14 +1467,14 @@ struct OAuthTokenResponse {
     #[serde(default)]
     expires_in: Option<i64>,
     /// OpenAI/Codex returns an OIDC `id_token` whose claims carry the
-    /// `chatgpt_account_id` we need for the upstream header (CCT-244).
+    /// `chatgpt_account_id` we need for the upstream header.
     #[serde(default)]
     id_token: Option<String>,
 }
 
 /// Extract `chatgpt_account_id` from an `OpenAI` `id_token` JWT without verifying
 /// the signature (the token came straight from the trusted token endpoint over
-/// TLS). The claim is nested under `https://api.openai.com/auth` (CCT-244).
+/// TLS). The claim is nested under `https://api.openai.com/auth`.
 fn chatgpt_account_id_from_id_token(id_token: &str) -> Option<String> {
     let payload = id_token.split('.').nth(1)?;
     let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload).ok()?;
@@ -1491,7 +1488,7 @@ fn chatgpt_account_id_from_id_token(id_token: &str) -> Option<String> {
 
 /// Parse the `code` out of an `OpenAI` callback URL (or a bare `code`/`code#state`
 /// string). Accepts the full `http://localhost:1455/auth/callback?code=…&state=…`
-/// the user pastes, or just the code itself (CCT-244).
+/// the user pastes, or just the code itself.
 fn code_from_callback(input: &str) -> Option<String> {
     let input = input.trim();
     if input.is_empty() {
@@ -1566,13 +1563,13 @@ fn sweep_expired(store: &PendingOAuthLogins) {
 /// `POST /api/v1/accounts/oauth/start` — begin a "Sign in with Claude" login.
 /// Generates PKCE + a nonce, stashes a pending record, and returns the
 /// authorize URL for the webui to open in a new tab. With `account_id`
-/// (CCT-558) the finish attaches to that existing account.
+/// the finish attaches to that existing account.
 pub async fn oauth_start(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Json(req): Json<OAuthStart>,
 ) -> Result<Json<OAuthStartResponse>, (StatusCode, Json<serde_json::Value>)> {
-    // The attach target names its owner; otherwise the caller does (CCT-251).
+    // The attach target names its owner; otherwise the caller does.
     let uid = if let Some(account_id) = req.account_id {
         require_human(&ctx)?;
         let owner: Option<Uuid> = sqlx::query_scalar(
@@ -1604,7 +1601,7 @@ pub async fn oauth_start(
         // "Sign in with ChatGPT": auth.openai.com authorize with the codex
         // public client. The redirect is fixed to localhost:1455 (can't be
         // changed), so the browser redirect fails to load and the user pastes
-        // the full callback URL back to us (CCT-244).
+        // the full callback URL back to us.
         format!(
             "{}?response_type=code&client_id={}&redirect_uri={}\
              &scope=openid%20profile%20email%20offline_access\
@@ -1648,7 +1645,7 @@ pub async fn oauth_start(
 /// regardless of exchange outcome. Lands as a provider under the `start`
 /// attach target when one was given; otherwise finds-or-creates an account
 /// identity by `name` (re-running the flow for an existing name refreshes the
-/// same-family credential in place — the Reauthenticate button, CCT-512).
+/// same-family credential in place — the Reauthenticate button).
 // Linear handler: consume pending record, exchange code, store per provider.
 #[allow(clippy::too_many_lines)]
 pub async fn oauth_finish(
@@ -1663,7 +1660,7 @@ pub async fn oauth_finish(
     // Consume the pending record (single-use), but only if it belongs to the
     // caller — never let one user finish another user's login. Admin started
     // the flow on behalf of the owner stored in the record, so it may finish
-    // any pending login (CCT-251). The account lands on the stored owner.
+    // any pending login. The account lands on the stored owner.
     let pending = match state.pending_oauth_logins.get(&req.nonce) {
         Some(p) if ctx.is_admin() || ctx.user_id == p.user_id => p.clone(),
         _ => return Err(err(StatusCode::BAD_REQUEST, "unknown or expired login")),
@@ -1695,7 +1692,7 @@ pub async fn oauth_finish(
 
     // The token exchange differs per provider: anthropic posts JSON with the
     // pasted `code#state`; openai/Codex posts a form-encoded body with the code
-    // extracted from the pasted callback URL (CCT-244).
+    // extracted from the pasted callback URL.
     let resp = if pending.provider == "openai" {
         let raw = req
             .callback_url
@@ -1784,7 +1781,7 @@ pub async fn oauth_finish(
     };
 
     // Upsert on (account_id, family): a first login inserts; re-running the flow
-    // against the same account (the Reauthenticate button, CCT-512) refreshes the
+    // against the same account (the Reauthenticate button) refreshes the
     // same-family credential in place and clears any `needs_reauth` flag, instead
     // of 409ing on the unique index.
     let pid: Result<Uuid, sqlx::Error> = sqlx::query_scalar(
@@ -1813,7 +1810,7 @@ pub async fn oauth_finish(
 
     match pid {
         Ok(pid) => {
-            // Fresh credentials → drop the in-memory reauth gate too (CCT-512), so
+            // Fresh credentials → drop the in-memory reauth gate too, so
             // the gateway's success path doesn't think it still needs clearing.
             state.account_reauth.remove(&pid);
             let info = fetch_account_info(&state.pool, account_id, None)
@@ -1846,17 +1843,17 @@ fn urlencoding(s: &str) -> String {
     out
 }
 
-/// How long a cached usage fetch is served before we re-hit upstream (CCT-306).
+/// How long a cached usage fetch is served before we re-hit upstream.
 /// Anthropic's usage endpoint rate-limits per access token (safe at ~180s); we
 /// cache for a few minutes so a viewed accounts page + slow background poll never
 /// spams it, and many clients share one entry per account.
 pub const USAGE_CACHE_TTL: Duration = Duration::minutes(3);
 
-/// Usage windows surfaced per provider credential (CCT-306). `usage` mirrors
+/// Usage windows surfaced per provider credential. `usage` mirrors
 /// Anthropic's free OAuth usage payload (`five_hour`/`seven_day` utilization +
 /// reset timestamps); `None` means the provider has no usage API (Codex) or the
 /// credential has no active windows — the webui hides the indicator in that
-/// case. `account_id` is the provider-row id (the pre-CCT-558 field name is the
+/// case. `account_id` is the provider-row id (the legacy field name is the
 /// API contract).
 #[derive(Debug, serde::Serialize)]
 pub struct AccountUsage {
@@ -1864,7 +1861,7 @@ pub struct AccountUsage {
     pub provider: String,
     /// Raw upstream usage JSON (passed through verbatim) or `null`.
     pub usage: Option<serde_json::Value>,
-    /// Normalized, provider-agnostic usage windows (CCT-688): the collection the
+    /// Normalized, provider-agnostic usage windows: the collection the
     /// UI renders and the soft-limit evaluator gates on. Empty ⇒ no supported
     /// windows in the latest response (distinct from a fetch error).
     pub windows: Vec<crate::soft_limit::UsageWindow>,
@@ -1887,13 +1884,13 @@ impl AccountUsage {
 }
 
 /// `GET /api/v1/accounts/{id}/usage` — current subscription usage for a
-/// provider credential (CCT-306). `{id}` is the provider-row id (the pre-CCT-558
+/// provider credential. `{id}` is the provider-row id (the pre-
 /// account id — migrated rows share the uuid, so old callers keep working).
 /// Free + tokenless: for anthropic providers this hits Anthropic's OAuth usage
 /// endpoint (5h/7d window utilization), served from a slow-refresh per-provider
 /// cache so we never spam the rate-limited upstream. OpenAI/codex providers
 /// have no such API, so the 5h/7d windows are metered locally from recorded
-/// token usage (CCT-511) — same shape, same cache, same UI chip.
+/// token usage — same shape, same cache, same UI chip.
 /// Ownership: a user may only read their own providers; admin may read any.
 pub async fn account_usage(
     State(state): State<AppState>,
@@ -1945,17 +1942,17 @@ pub async fn account_usage(
 }
 
 // ----------------------------------------------------------------------------
-// Account sharing management (CCT-510)
+// Account sharing management
 //
-// `account_shares` (CCT-458) is the CCT-422 sharing seam: a live grant row lets
+// `account_shares` is the sharing seam: a live grant row lets
 // a NON-owner resolve/use an account on the gateway + dispatch path, without
-// transferring ownership. Grants key on the account IDENTITY (CCT-558): sharing
+// transferring ownership. Grants key on the account IDENTITY: sharing
 // an account shares all its provider credentials. Owner-scoped: only the
 // account's owner (or an admin) may manage its shares — a grant confers `use`,
 // never share management.
 // ----------------------------------------------------------------------------
 
-/// API view of one live share grant on an account (CCT-510). Safe to return —
+/// API view of one live share grant on an account. Safe to return —
 /// no secrets; just who the account is shared with and since when.
 #[derive(Debug, serde::Serialize, sqlx::FromRow)]
 pub struct ShareInfo {
@@ -1967,7 +1964,7 @@ pub struct ShareInfo {
     pub granted_at: DateTime<Utc>,
 }
 
-/// `POST /api/v1/accounts/{id}/shares` payload (CCT-510). `user` is the grantee,
+/// `POST /api/v1/accounts/{id}/shares` payload. `user` is the grantee,
 /// accepted as either a UUID or a login (`users.name`) so an operator can grant
 /// by whichever they have. `action` defaults to `use` (the only action today).
 #[derive(Debug, serde::Deserialize)]
@@ -2265,7 +2262,7 @@ mod tests {
 
     #[test]
     fn create_account_body_flattens_provider_spec() {
-        // Pre-CCT-558 one-shot shape still deserializes: provider fields flat.
+        // Legacy one-shot shape still deserializes: provider fields flat.
         let body: CreateAccount =
             serde_json::from_str(r#"{"name":"work","provider":"anthropic","refresh_token":"rt"}"#)
                 .unwrap();
@@ -2278,7 +2275,7 @@ mod tests {
 
     #[test]
     fn free_form_env_json_denylist_and_acceptance() {
-        // Free-form names accepted (CCT-591).
+        // Free-form names accepted.
         let mut ok = std::collections::HashMap::new();
         ok.insert("MY_TOKEN".to_string(), "secret".to_string());
         ok.insert("HTTP_PROXY".to_string(), "http://p".to_string());

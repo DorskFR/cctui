@@ -1,4 +1,4 @@
-//! Per-user enrolled-dispatcher management (CCT-285): `GET /api/v1/dispatchers`
+//! Per-user enrolled-dispatcher management: `GET /api/v1/dispatchers`
 //! (list with liveness), `PATCH /api/v1/dispatchers/{id}` (rename), and
 //! `DELETE /api/v1/dispatchers/{id}` (remove). Peer of the machines management
 //! surface.
@@ -90,7 +90,7 @@ pub async fn list_dispatchers(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
 ) -> Result<Json<Vec<DispatcherInfo>>, (StatusCode, Json<serde_json::Value>)> {
-    // Uniform god-view (CCT-410): admin (`owner_filter` = NULL) sees all
+    // Uniform god-view: admin (`owner_filter` = NULL) sees all
     // dispatchers; a user sees only their own.
     let rows: Vec<DispatcherRow> = sqlx::query_as(&format!(
         "SELECT {SELECT_COLS} \

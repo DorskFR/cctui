@@ -42,13 +42,13 @@ use kube::api::{Api, DeleteParams, ListParams, PostParams, PropagationPolicy};
 use kube::{Client, Error as KubeError};
 
 /// A pod wedged `Pending` longer than this (no schedulable node / image still
-/// failing to pull) is reported `Failed` rather than `Running` (CCT-429).
+/// failing to pull) is reported `Failed` rather than `Running`.
 const PENDING_FAILURE_SECS: i64 = 300;
 
 /// Auto-reap a finished worker Job (`Complete`/`Failed`) this many seconds after
 /// it stops, via `spec.ttlSecondsAfterFinished`. Long enough to inspect a
 /// just-finished run, short enough to keep the namespace free of corpses
-/// (CCT-518; was 86400 = 24h).
+/// (; was 86400 = 24h).
 const JOB_TTL_SECONDS: i64 = 3600;
 
 /// Default worker lifetime when the dispatch carries no `timeout_minutes`: 1h.
@@ -161,9 +161,9 @@ impl Spawner {
     }
 
     /// `cctui-worker-<sha1(session_id)[:12]>` — deterministic so a repeat
-    /// dispatch maps to the same Job (idempotency key, CCT-168/207). The prefix
+    /// dispatch maps to the same Job (idempotency key, 207). The prefix
     /// is `cctui-worker-` (the legacy `claude-worker-` name was renamed under the
-    /// cctui unification, CCT-452); derived solely here, so dedup/status/delete
+    /// cctui unification); derived solely here, so dedup/status/delete
     /// all stay consistent.
     fn job_name(session_id: &str) -> String {
         let digest = Sha1::digest(session_id.as_bytes());
@@ -441,7 +441,7 @@ impl Spawner {
     }
 
     /// The string the Job name derives from: the caller's `dedup_key` (the
-    /// logical request id) when present, else the `session_id` (CCT-522). Keeping
+    /// logical request id) when present, else the `session_id`. Keeping
     /// idempotency on the dedup key lets `session_id` be fresh per dispatch (no
     /// conversation chaining) while a repeat of the same logical key still
     /// coalesces onto one Job.
@@ -486,7 +486,7 @@ impl Spawner {
         }
 
         // 409: a prior dispatch of this session already made the Job. Dedup vs.
-        // redispatch depends on whether that Job is terminal (CCT-207).
+        // redispatch depends on whether that Job is terminal.
         let existing = match self.jobs().get(&name).await {
             Ok(j) => j,
             // Raced its own teardown — name is free again, create afresh.
@@ -523,7 +523,7 @@ impl Spawner {
     }
 
     /// Reject a dispatch when `max_inflight` non-terminal dispatcher-owned Jobs
-    /// already exist (CCT-522). `0` ⇒ unlimited (the default; no behavior
+    /// already exist. `0` ⇒ unlimited (the default; no behavior
     /// change). The Job we're about to create (`this_name`) is excluded from the
     /// count so a dedup/redispatch of an already-running Job is never blocked by
     /// its own presence. Only consulted when a cap is explicitly configured.
@@ -553,7 +553,7 @@ impl Spawner {
         Ok(())
     }
 
-    /// Lifecycle of a Job handle, plus a human reason when it FAILED (CCT-429).
+    /// Lifecycle of a Job handle, plus a human reason when it FAILED.
     ///
     /// The Job's `conditions` only carry a terminal `Failed` once `backoffLimit`
     /// / `activeDeadlineSeconds` trips — which can be slow or never (an
@@ -600,8 +600,8 @@ impl Spawner {
         })
     }
 
-    /// Inspect the Job's pods for a terminal-but-not-yet-Job-Failed condition
-    /// (CCT-429): a crash-looping / OOMKilled / un-pullable container, or a pod
+    /// Inspect the Job's pods for a terminal-but-not-yet-Job-Failed condition:
+    /// a crash-looping / OOMKilled / un-pullable container, or a pod
     /// wedged `Pending` past [`PENDING_FAILURE_SECS`]. Returns a reason string
     /// when one is found, else `None` (still legitimately running/starting). A
     /// listing error degrades to `None` so a transient API hiccup never

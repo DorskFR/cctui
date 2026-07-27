@@ -140,7 +140,7 @@ pub struct GithubCapability {
     /// (the migrator ran) — i.e. the integration is *installed and reachable*,
     /// regardless of whether any connector is configured yet. The webui gates
     /// the **nav item + `/github` route** on this, so the connector setup UI is
-    /// reachable to add the *first* connector (CCT-395). Without this split,
+    /// reachable to add the *first* connector. Without this split,
     /// `enabled` (which needs a connector) gated the only UI that can create a
     /// connector — an unreachable first run.
     pub available: bool,

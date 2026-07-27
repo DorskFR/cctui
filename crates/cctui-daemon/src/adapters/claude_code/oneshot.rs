@@ -1,4 +1,4 @@
-//! Oneshot stream-json driver for the claude-code adapter (CCT-499).
+//! Oneshot stream-json driver for the claude-code adapter.
 //!
 //! Runs claude as a one-shot `claude -p <prompt> --output-format stream-json
 //! --verbose` invocation per turn, mapped onto the
@@ -9,18 +9,18 @@
 //! listener ([`super::run_hook_listener`]) the `bg` driver uses — headless runs
 //! fire `PreToolUse`/`AskUserQuestion` hooks just like an interactive worker.
 //!
-//! Lifecycle, per the CCT-499 design (`sub4-oneshot-driver.md`):
+//! Lifecycle, per the design (`sub4-oneshot-driver.md`):
 //!
 //! - **Spawn** → `claude -p <prompt> --output-format stream-json --verbose
 //!   --session-id <pre-minted uuid> [--model][--effort] [--permission-mode]
 //!   [--settings <hook>]`, run in `spec.working_dir`. The pre-minted session id
 //!   flows from `Spawn.session_id` exactly as `bg` uses it so the gateway-token
-//!   binding stays intact (CCT-446/CCT-460). On the terminal `result` frame the
+//!   binding stays intact. On the terminal `result` frame the
 //!   driver emits an idle [`AdapterEvent::Status`] (NOT `SessionEnded`) so the
 //!   conversation stays resumable, mirroring how `--bg` idles awaiting input.
 //! - **Reply** → re-invoke `claude -p <text> --resume <session_id>`, a fresh
 //!   child against the same id. Gateway env carried on the command is injected
-//!   (CCT-460 cold-launch parity).
+//!   (cold-launch parity).
 //! - **Fork** → `claude -p --resume <parent> --fork-session --session-id
 //!   <child>` (optional first-turn prompt).
 //! - **Resume** → revive without a reply: a no-op turn against `--resume`.
@@ -108,8 +108,8 @@ impl OneshotDriver {
     #[allow(clippy::cognitive_complexity)]
     pub(super) async fn run(mut self) -> anyhow::Result<()> {
         tracing::info!("claude-code adapter starting in oneshot mode");
-        // The same ask/permission hook listener the bg driver uses (CCT-167 /
-        // CCT-342): headless `-p` runs fire PreToolUse/AskUserQuestion hooks, so
+        // The same ask/permission hook listener the bg driver uses: headless
+        // `-p` runs fire PreToolUse/AskUserQuestion hooks, so
         // bind the local socket the injected `--settings` file targets and route
         // deliveries through the shared maps. Spawned as a sibling task; it
         // exits on the shared shutdown token.
@@ -153,7 +153,7 @@ impl OneshotDriver {
     }
 
     /// Bind the shared ask/permission hook socket and route deliveries through
-    /// the same handler the bg driver uses (CCT-167 / CCT-342).
+    /// the same handler the bg driver uses.
     fn spawn_hook_listener(&self) {
         let sock = self.cfg.hook_socket_path.clone();
         let events = self.events.clone();
@@ -170,7 +170,7 @@ impl OneshotDriver {
                 pending_asks,
                 pending_perm_hooks,
                 // These drivers don't serve the diagnose aggregation
-                // (CCT-547 is bg-only); a fresh log satisfies the listener.
+                // (is bg-only); a fresh log satisfies the listener.
                 super::HookLog::default(),
             )
             .await
@@ -265,7 +265,7 @@ impl OneshotDriver {
             anyhow::bail!("spawn: working_dir does not exist or is not a directory: {cwd}");
         }
 
-        // Resolve gateway env + per-account settings (CCT-460/539/540) BEFORE
+        // Resolve gateway env + per-account settings (539/540) BEFORE
         // writing the hook-settings file, so the account settings can be
         // deep-merged under the managed hooks. Fail-closed inside
         // `resolve_launch_env`.
@@ -455,7 +455,7 @@ impl OneshotDriver {
         Ok(())
     }
 
-    /// Pull the session's gateway-routing env from the server (CCT-460),
+    /// Pull the session's gateway-routing env from the server,
     /// merging the carried `hint`. Fail-closed when account-bound but
     /// unmintable; best-effort hint when no server is configured.
     async fn resolve_launch_env(
@@ -549,7 +549,7 @@ mod tests {
     #[test]
     fn idle_status_is_resumable_not_ended() {
         // A successful oneshot turn must keep the session resumable: an idle
-        // Status, never a SessionEnded (CCT-499).
+        // Status, never a SessionEnded.
         match idle_status("sid-1") {
             AdapterEvent::Status { local_id, tempo, state, .. } => {
                 assert_eq!(local_id, "sid-1");

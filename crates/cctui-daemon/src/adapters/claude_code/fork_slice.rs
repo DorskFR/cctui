@@ -1,5 +1,5 @@
 //! Slice a Claude transcript JSONL into a standalone child transcript for a
-//! subset fork (CCT-553). The parent's real history lives at
+//! subset fork. The parent's real history lives at
 //! `~/.claude/projects/<encoded-cwd>/<parent>.jsonl`; to fork a slice we
 //! materialize the kept lines as the child's own `<child>.jsonl` and resume
 //! that file directly (no `--fork-session`).

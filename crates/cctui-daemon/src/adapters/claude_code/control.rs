@@ -1,11 +1,11 @@
-//! Driver for the `claude daemon` control-socket adapter path (CCT-83).
+//! Driver for the `claude daemon` control-socket adapter path.
 //!
 //! Polls `list` every `poll_interval`, diffs against the previous roster
 //! to emit `SessionStarted` / `SessionEnded`, and merges identity fields
 //! from `~/.claude/jobs/<short>/state.json` to produce `Status` events.
 //!
 //! Per-session `subscribe` streams and the transcript tail land in
-//! Phase 3 (CCT-84) — `list` already gives us state/tempo/detail at the
+//! Phase 3 — `list` already gives us state/tempo/detail at the
 //! 2s poll cadence.
 
 use std::collections::{HashMap, HashSet};
@@ -65,7 +65,7 @@ pub struct DriverConfig {
     /// Binary used for the `claude rm <short>` removal invoked by
     /// [`AdapterCommand::Remove`]. Defaults to `claude` (resolved on `PATH`).
     pub claude_bin: String,
-    /// Local socket the `AskUserQuestion` hook (CCT-167) delivers to. Shared
+    /// Local socket the `AskUserQuestion` hook delivers to. Shared
     /// with the listener spawned in [`super::ClaudeCodeAdapter::start`] so the
     /// injected `--settings` hook command targets the same path the daemon
     /// binds.
@@ -143,8 +143,8 @@ pub(super) struct LiveSnapshot {
     #[serde(default)]
     pub detail: Option<String>,
     /// Set by the claude daemon when the worker is awaiting a decision; for a
-    /// tool-permission prompt it reads e.g. `"approve Bash: touch /tmp/x"`
-    /// (CCT-211). Empty/absent when nothing is pending.
+    /// tool-permission prompt it reads e.g. `"approve Bash: touch /tmp/x"`.
+    /// Empty/absent when nothing is pending.
     #[serde(default)]
     pub needs: Option<String>,
     #[serde(default)]
@@ -155,7 +155,7 @@ pub(super) struct LiveSnapshot {
     pub source: Option<String>,
     #[serde(default)]
     pub dying: bool,
-    /// Claude's per-session "process gone" flag (CCT-252). When the worker
+    /// Claude's per-session "process gone" flag. When the worker
     /// process exits while still listed (e.g. it died while the supervisor was
     /// down — "process gone while supervisor down"), claude keeps the entry in
     /// `daemon list` but marks it dead. We have no live known-dead sample of
@@ -188,14 +188,14 @@ impl LiveSnapshot {
     }
 
     /// Whether claude reports this still-listed session as dead / "process
-    /// gone" (CCT-252). Parsed DEFENSIVELY across the plausible wire shapes:
+    /// gone". Parsed DEFENSIVELY across the plausible wire shapes:
     ///   - boolean `gone` / `dead` flags,
     ///   - `alive: false`,
     ///   - a terminal `status`/`state`/`tempo` string
     ///     (`gone`/`exited`/`dead`/`process gone`),
     ///   - a `detail` that CONTAINS `process gone` — the live wire shape we
     ///     actually observed is `state:"failed"`, `tempo:"idle"`,
-    ///     `detail:"process gone while supervisor was down"` (CCT-355). None of
+    ///     `detail:"process gone while supervisor was down"`. None of
     ///     those fields exact-match a terminal token, so the session would
     ///     otherwise linger showing that detail with a non-terminal status.
     ///
@@ -224,7 +224,7 @@ impl LiveSnapshot {
     }
 }
 
-/// Spawn-time `(model, effort)` pair remembered per worker `short` (CCT-299).
+/// Spawn-time `(model, effort)` pair remembered per worker `short`.
 type SpawnModelEffort = (Option<String>, Option<String>);
 
 pub struct Driver {
@@ -235,18 +235,18 @@ pub struct Driver {
     shutdown: CancellationToken,
     roster: HashSet<String>,
     last_status: HashMap<String, StatusSnapshot>,
-    /// Shorts claude reports dead-but-still-listed (CCT-252). Once we emit the
+    /// Shorts claude reports dead-but-still-listed. Once we emit the
     /// dead transition (hibernated or `SessionEnded`) we record the short here
     /// and suppress further live-status emits for it, so the still-present
     /// roster entry can't re-emit a non-terminal Status and re-green the dot
-    /// (daemon-side sticky, mirroring the server's CCT-192 sticky terminal
-    /// status). Cleared when the worker revives (reports alive again) or drops
+    /// (daemon-side sticky, mirroring the server's sticky terminal status).
+    /// Cleared when the worker revives (reports alive again) or drops
     /// off the roster.
     dead_shorts: HashSet<String>,
     /// Shared `session_id → stable local_id` map. Populated as transcripts are
     /// pinned (incl. across `/clear` rotations) and read by the ask-hook
     /// listener so a hook's live `session_id` resolves to the `local_id` the
-    /// server keys on (CCT-167).
+    /// server keys on.
     session_to_local: SessionMap,
     /// Reverse lookup: `local_id` (`session_id`) → worker `short`. Built
     /// from list snapshots so command dispatch can target the right
@@ -259,7 +259,7 @@ pub struct Driver {
     /// Cache: short → (cwd, `session_id`) so we can locate the transcript
     /// without re-reading `state.json` on every tick.
     transcript_locations: HashMap<String, TranscriptLocation>,
-    /// Task-tool subagents currently tracked, keyed by `agentId` (CCT-141).
+    /// Task-tool subagents currently tracked, keyed by `agentId`.
     /// Observe-only nested sessions discovered by scanning each parent's
     /// `subagents/` transcript directory.
     subagents: HashMap<String, SubagentState>,
@@ -270,7 +270,7 @@ pub struct Driver {
     /// Self-heals the on-demand `claude daemon`: when the control socket is
     /// missing (idle shutdown, sleep, teardown) this boots it via `claude
     /// agents --json` so polling/dispatch stop failing with "no claude daemon
-    /// socket present" (CCT-194).
+    /// socket present".
     kickstarter: Kickstarter,
     /// Cycles the claude daemon when a CLI auto-update left it on an older
     /// version, but only while no worker is running.
@@ -278,10 +278,10 @@ pub struct Driver {
     /// Holds a persistent headless `attach` open per live session so the
     /// dispatched worker actually wakes (focus-in seed) and is kept off the
     /// 60s idle-retire path. Without this, dispatched/replied sessions sit in
-    /// limbo until a human opens them in `claude agents` (CCT-209).
+    /// limbo until a human opens them in `claude agents`.
     attach: super::attach::AttachManager,
-    /// Tool-permission prompts currently pending, keyed by worker `short`
-    /// (CCT-211). Derived from the snapshot's `tempo:"blocked"`/`needs` signal:
+    /// Tool-permission prompts currently pending, keyed by worker `short`.
+    /// Derived from the snapshot's `tempo:"blocked"`/`needs` signal:
     /// a fresh/changed `needs` emits a `PermissionRequest`, and clearing it
     /// emits `PermissionResolved`. Dedups so a still-pending prompt isn't
     /// re-emitted on every poll.
@@ -292,13 +292,13 @@ pub struct Driver {
     /// the server/clients echo back; the answer is keyed on the worker `short`.
     perm_seq: u64,
     /// Sessions with an `AskUserQuestion` form currently up in the PTY,
-    /// maintained by the ask-hook listener (CCT-219). A `reply` injected while
+    /// maintained by the ask-hook listener. A `reply` injected while
     /// the form is up would just confirm the highlighted option — the reply
     /// path dismisses the form (attach+ESC) first so the user's actual text is
     /// what claude receives.
     pending_asks: super::PendingAsks,
     /// Tool-permission `PreToolUse` hooks currently parked in the ask-hook
-    /// listener, long-polling for a human's decision (CCT-342). Keyed by the
+    /// listener, long-polling for a human's decision. Keyed by the
     /// session's stable `local_id`. The `PermissionResponse` handler resolves
     /// the matching entry — handing the decision straight back to the blocked
     /// hook (which returns an `allow`/`deny` decision to Claude Code) — instead
@@ -306,26 +306,26 @@ pub struct Driver {
     /// only as the fallback for when no hook is registered (hook timed out, or
     /// a prompt that surfaced via the legacy `tempo:"blocked"` signal).
     pending_perm_hooks: super::PendingPermHooks,
-    /// When the last periodic divergence check ran (CCT-253, CCT-741). At idle
+    /// When the last periodic divergence check ran. At idle
     /// it's a no-op; it re-sends a bounded window only when a session's offset
     /// has run ahead of the server's mark (see [`Driver::reconcile_tail`]).
     last_reconcile: Instant,
     /// Set when the control socket vanished (roster flushed) so the next
     /// successful poll triggers an immediate reconciliation re-tail rather
-    /// than waiting for the periodic cycle (CCT-253).
+    /// than waiting for the periodic cycle.
     churned: bool,
-    /// Best-known server transcript high-water mark per `offset_key` (CCT-741).
+    /// Best-known server transcript high-water mark per `offset_key`.
     /// Seeded by the server's `ResumeMarks` on connect and advanced as the
     /// forward tail emits, so the periodic pass only re-sends on real
     /// divergence (local offset ahead of what the server holds).
     server_marks: HashMap<String, u64>,
-    /// Spawn-time `--model`/`--effort` remembered per worker `short` (CCT-299).
+    /// Spawn-time `--model`/`--effort` remembered per worker `short`.
     /// Used as a fallback for the Status event when `state.json` isn't on disk
     /// yet (freshly spawned) or transiently absent (`/clear` rotation), so the
     /// session list still shows the model/effort we launched the worker with.
     /// `Mutex` because `spawn` takes `&self` while the poll loop holds `&mut self`.
     spawn_model_effort: std::sync::Mutex<HashMap<String, SpawnModelEffort>>,
-    /// Parent session id remembered per freshly-forked child `short` (CCT-302).
+    /// Parent session id remembered per freshly-forked child `short`.
     /// `fork` dispatches a new worker but the `SessionStarted` for it is emitted
     /// later by the poll loop when the short first appears in the roster — that
     /// path has no idea it was a fork, so we stash the parent here and the
@@ -334,7 +334,7 @@ pub struct Driver {
     /// `spawn_model_effort`.
     fork_parent_by_short: std::sync::Mutex<HashMap<String, String>>,
     /// Authenticated server client + machine key for the launch-time gateway-env
-    /// pull (CCT-460). Every worker (re)launch resolves the session's account
+    /// pull. Every worker (re)launch resolves the session's account
     /// env here from the server's durable `sessions.account_id` binding, so
     /// routing survives a daemon / claude-daemon restart and session-id rotation
     /// instead of depending on env carried by the triggering command. `None` in
@@ -343,7 +343,7 @@ pub struct Driver {
     server: Option<crate::client::ServerClient>,
     machine_key: Option<String>,
     /// Turn-complete watcher for the one session `maybe_dispatch_on_start`
-    /// launched (CCT-513): writes `<jobs_root>/<short>/dispatch_done` once
+    /// launched: writes `<jobs_root>/<short>/dispatch_done` once
     /// that session has been busy and then settles idle, so the worker
     /// entrypoint can wind the pod down instead of idling to the Job
     /// deadline. `None` on normal (non-dispatched) daemons — interactive
@@ -351,19 +351,19 @@ pub struct Driver {
     /// `maybe_dispatch_on_start` (`&self`).
     dispatch_done: std::sync::Mutex<Option<DispatchDoneTracker>>,
     /// Last ask/permission/plan hook delivery per `local_id`, maintained by
-    /// the ask-hook listener. Read by the diagnose aggregation (CCT-547).
+    /// the ask-hook listener. Read by the diagnose aggregation.
     hook_log: super::HookLog,
     /// When each short was last seen in a `list` snapshot — the observation
-    /// timestamp behind the diagnose report's effective-state fact (CCT-547).
+    /// timestamp behind the diagnose report's effective-state fact.
     last_status_at: HashMap<String, std::time::SystemTime>,
     /// Kind + time of the last event parsed out of each transcript tail,
-    /// keyed by `offset_key` (CCT-547).
+    /// keyed by `offset_key`.
     last_parsed: HashMap<String, (String, std::time::SystemTime)>,
     /// Permission posture (`default`/`auto`/`yolo`/`whip`) recorded per
-    /// worker `short` at spawn/fork time (CCT-547). `Mutex` for the same
+    /// worker `short` at spawn/fork time. `Mutex` for the same
     /// reason as `spawn_model_effort`.
     spawn_permission_mode: std::sync::Mutex<HashMap<String, String>>,
-    /// Read-only live-view PTY relay (CCT-545). Opens a fresh viewer attach per
+    /// Read-only live-view PTY relay. Opens a fresh viewer attach per
     /// watched session while a browser has its terminal open, forwarding
     /// coalesced PTY bytes as `PtyChunk` events. Interior-mutable so the `&self`
     /// command path can start/stop viewers.
@@ -420,9 +420,9 @@ struct StatusSnapshot {
 }
 
 /// Everything the launch chokepoint pulls from the server's durable binding for
-/// a (re)launch: the gateway-routing `env` (CCT-460), the per-account
-/// `settings_json` (CCT-539/540) the daemon merges under its managed hook
-/// settings, and the user's `whipStopPhrases` override (CCT-598).
+/// a (re)launch: the gateway-routing `env`, the per-account `settings_json`
+/// the daemon merges under its managed hook settings, and the user's
+/// `whipStopPhrases` override.
 #[derive(Debug, Default)]
 pub(super) struct LaunchEnv {
     pub env: std::collections::BTreeMap<String, String>,
@@ -430,7 +430,7 @@ pub(super) struct LaunchEnv {
     pub whip_phrases: Option<serde_json::Value>,
 }
 
-/// Decide the launch env from a server `GatewayEnvResponse` (CCT-460), split out
+/// Decide the launch env from a server `GatewayEnvResponse`, split out
 /// as a pure function so the fail-closed contract is unit-testable without a
 /// live server. See [`Driver::resolve_launch_env`] for the surrounding flow.
 pub(super) fn launch_env_decision(
@@ -460,8 +460,8 @@ pub(super) fn launch_env_decision(
         // merge it OVER the pushed hint rather than replacing it, so user-supplied
         // non-gateway env (spec.env keys the gateway mint doesn't emit) survives a
         // resume / cold-resume / clear / compact / fork relaunch instead of being
-        // dropped (CCT-460 follow-up). Gateway keys still override any hint of the
-        // same name, so routing credentials remain authoritative.
+        // dropped. Gateway keys still override any hint of the same name, so
+        // routing credentials remain authoritative.
         r if r.account_bound => {
             let mut merged = hint.clone();
             merged.extend(r.env.iter().map(|(k, v)| (k.clone(), v.clone())));
@@ -496,7 +496,7 @@ impl Driver {
         commands: mpsc::Receiver<AdapterCommand>,
         shutdown: CancellationToken,
     ) -> Self {
-        // Offsets are kept in-memory only in production (CCT-92): the
+        // Offsets are kept in-memory only in production: the
         // transcript-tail offset could otherwise advance + persist past
         // events that hadn't yet shipped over the WS, losing them on a
         // disconnect. With server-side idempotency on `stream_events`
@@ -553,7 +553,7 @@ impl Driver {
     }
 
     /// Attach the authenticated server client + machine key used by the
-    /// launch-time gateway-env pull (CCT-460). Builder-style so the test
+    /// launch-time gateway-env pull. Builder-style so the test
     /// constructor and any future caller can omit it.
     #[must_use]
     pub fn with_server(
@@ -566,32 +566,32 @@ impl Driver {
         self
     }
 
-    /// How often the periodic reconciliation re-tail runs (CCT-253). Chosen
+    /// How often the periodic reconciliation re-tail runs. Chosen
     /// in the 30–60s band: frequent enough that a dropped-send gap self-heals
     /// quickly, infrequent enough that the re-emitted (then deduped) volume is
     /// negligible next to the regular poll tail.
     const RECONCILE_INTERVAL: Duration = Duration::from_secs(45);
 
     /// Clone handle to the shared `session_id → local_id` map, for the
-    /// ask-hook listener to translate live `session_id`s (CCT-167).
+    /// ask-hook listener to translate live `session_id`s.
     pub fn session_map(&self) -> SessionMap {
         self.session_to_local.clone()
     }
 
     /// Clone handle to the shared pending-ask set, for the ask-hook listener
-    /// to maintain (CCT-219).
+    /// to maintain.
     pub fn pending_asks(&self) -> super::PendingAsks {
         self.pending_asks.clone()
     }
 
     /// Clone handle to the shared pending tool-permission hook map, for the
-    /// ask-hook listener to register blocked `PreToolUse` hooks into (CCT-342).
+    /// ask-hook listener to register blocked `PreToolUse` hooks into.
     pub fn pending_perm_hooks(&self) -> super::PendingPermHooks {
         self.pending_perm_hooks.clone()
     }
 
     /// Clone handle to the shared hook-delivery log, for the ask-hook
-    /// listener to maintain (CCT-547).
+    /// listener to maintain.
     pub fn hook_log(&self) -> super::HookLog {
         self.hook_log.clone()
     }
@@ -601,7 +601,7 @@ impl Driver {
         if !self.cfg.skip_backfill {
             self.run_backfill().await;
         }
-        // Dispatched-worker bring-up (CCT-471): if this daemon was launched as a
+        // Dispatched-worker bring-up: if this daemon was launched as a
         // dispatched kube/docker worker, self-start its session before entering
         // the poll loop. Best-effort — never aborts `run`.
         self.maybe_dispatch_on_start().await;
@@ -617,7 +617,7 @@ impl Driver {
                     if let Err(err) = self.poll_once().await {
                         tracing::debug!(%err, "claude daemon poll failed (will retry)");
                     }
-                    // Periodic reconciliation re-tail (CCT-253): catch up any
+                    // Periodic reconciliation re-tail: catch up any
                     // transcript gap the forward-only tail left behind. Driven
                     // off the poll tick (rather than a second timer) so it
                     // can't race apply_snapshot's tail/offset updates.
@@ -629,11 +629,11 @@ impl Driver {
                 Some(cmd) = self.commands.recv() => {
                     if let AdapterCommand::ResumeMarks { marks } = cmd {
                         // Clamping cursors needs &mut self, so it can't ride the
-                        // &self handle_command dispatch below (CCT-741).
+                        // &self handle_command dispatch below.
                         self.apply_resume_marks(marks).await;
                     } else {
                     // Capture the correlation id before `cmd` is moved so we can
-                    // report the outcome back to the originating client (CCT-131).
+                    // report the outcome back to the originating client.
                     let command_id = match &cmd {
                         AdapterCommand::Spawn { command_id, .. }
                         | AdapterCommand::Interrupt { command_id, .. } => *command_id,
@@ -660,7 +660,7 @@ impl Driver {
     }
 
     /// Shorts the claude daemon currently lists as live — the jobs backfill
-    /// must NOT touch (CCT-565, see `backfill::run_once`). No live socket
+    /// must NOT touch (see `backfill::run_once`). No live socket
     /// (true cold start, claude daemon down) means nothing is live and the
     /// pass may sweep everything, as before.
     async fn live_shorts(&self) -> std::collections::HashSet<String> {
@@ -705,11 +705,11 @@ impl Driver {
     /// Deliver a user message to a worker, handling a pending `AskUserQuestion`
     /// form. With structured `ask_picks` and the hook-captured questions we
     /// answer the form *natively* — keystrokes on the real form, so claude
-    /// records a genuine `tool_result` with the selected labels (CCT-226).
+    /// records a genuine `tool_result` with the selected labels.
     /// Otherwise (free-text answer, missing questions, keystroke failure) fall
     /// back to dismiss-then-reply: attach+ESC the form away, then `reply` the
-    /// text (CCT-219; claude records the ask as declined and reads the text as
-    /// a new user turn).
+    /// text (claude records the ask as declined and reads the text as a new
+    /// user turn).
     // Sequential reply-delivery pipeline (resolve short → resume-on-reply →
     // ask-form vs text → submit) whose complexity is linear `?`-propagating I/O
     // steps plus hibernation/ENOJOB recovery branches, not nesting. Splitting risks
@@ -728,7 +728,7 @@ impl Driver {
         // short from the session id — same as the removal path.
         let short =
             self.resolve_short(local_id).or_else(|_| self.resolve_short_for_removal(local_id))?;
-        // Resume-on-reply (CCT-228): a reply to an exited worker is
+        // Resume-on-reply: a reply to an exited worker is
         // ENOJOB'd by the claude daemon and silently lost. Revive it
         // first via a resume `dispatch`, then deliver as normal. Live
         // workers take the existing path with zero extra ops.
@@ -736,10 +736,10 @@ impl Driver {
         // If an AskUserQuestion form is up in the worker's PTY, a bare
         // `reply` just presses Enter on the highlighted option — claude
         // records option 1 ("Proceed"-style) and the user's text is
-        // swallowed (CCT-219).
+        // swallowed.
         let pending_ask = self.pending_asks.lock().ok().and_then(|mut m| m.remove(local_id));
         if let Some(questions) = pending_ask {
-            // Native answer first (CCT-226): drive the real form via keystrokes.
+            // Native answer first: drive the real form via keystrokes.
             let native_picks = ask_picks
                 .as_ref()
                 .and_then(|picks| questions.as_ref().and_then(|q| ask_keystrokes(q, picks)));
@@ -756,7 +756,7 @@ impl Driver {
                             .await;
                         // A plan prompt is stored in the same pending map; emit
                         // PlanResolved too so a live Plan card drops. Idempotent
-                        // (clients only clear their own kind) (CCT-347).
+                        // (clients only clear their own kind).
                         let _ = self
                             .events
                             .send(AdapterEvent::PlanResolved { local_id: local_id.to_owned() })
@@ -764,7 +764,7 @@ impl Driver {
                         return Ok(());
                     }
                     Err(err) => {
-                        // CCT-278: do NOT fall through to attach+ESC here. The
+                        // do NOT fall through to attach+ESC here. The
                         // pending-ask record can be stale (the form already
                         // resolved in the native TUI or timed out, and the
                         // `resolved` hook hasn't reached us yet), in which case
@@ -778,7 +778,7 @@ impl Driver {
             } else if ask_picks.is_none() {
                 // Genuine free-text answer: the user typed prose rather than
                 // picking options, so the form must be dismissed before the text
-                // lands or claude records option 1 + swallows the text (CCT-219).
+                // lands or claude records option 1 + swallows the text.
                 // This is the only path that intentionally dismisses the form.
                 if let Err(err) = socket::attach_interrupt(sock, &short).await {
                     tracing::warn!(%err, %short, "failed to dismiss pending ask form");
@@ -803,7 +803,7 @@ impl Driver {
             // unanswerable shape) deliver the text reply without dismissing the
             // form. The user has still answered, so tell clients to drop the live
             // card; idempotent if a real `resolved` hook follows, and a harmless
-            // repeat of the free-text branch's own emit above (CCT-278).
+            // repeat of the free-text branch's own emit above.
             let _ =
                 self.events.send(AdapterEvent::AskResolved { local_id: local_id.to_owned() }).await;
             let _ = self
@@ -825,13 +825,13 @@ impl Driver {
 
     #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
     async fn handle_command(&self, cmd: AdapterCommand) -> anyhow::Result<()> {
-        // Diagnose (CCT-547) is read-only aggregation and must answer even
+        // Diagnose is read-only aggregation and must answer even
         // when the claude daemon is down (the report *says* the socket is
         // gone), so it is handled before the socket requirement below.
         if let AdapterCommand::Diagnose { local_id, request_id } = cmd {
             return self.handle_diagnose(&local_id, request_id).await;
         }
-        // Live-view watch toggle (CCT-545) only needs the in-memory short map, and
+        // Live-view watch toggle only needs the in-memory short map, and
         // stopping a viewer must work even when the claude daemon has gone away —
         // so it is handled before the socket requirement below.
         if let AdapterCommand::WatchPty { local_id, watch } = cmd {
@@ -844,7 +844,7 @@ impl Driver {
         }
         // A command (spawn/reply/kill/…) needs a live control socket. If the
         // on-demand claude daemon has shut down, boot it and wait briefly for
-        // the socket rather than failing the command outright (CCT-194).
+        // the socket rather than failing the command outright.
         let sock = self.ensure_socket().await?;
         match cmd {
             AdapterCommand::SendMessage { local_id, text } => {
@@ -869,7 +869,7 @@ impl Driver {
                     // numeric signal (e.g. the interrupt route's `15`) fails
                     // that validation and the whole op is rejected, so the
                     // request silently no-op'd — this was why "interrupt" never
-                    // actually interrupted a claude session (CCT-169). The
+                    // actually interrupted a claude session. The
                     // control socket exposes no in-place turn-interrupt op, so
                     // the best we can do for a headless worker is terminate it;
                     // map to the enum name the daemon accepts.
@@ -879,7 +879,7 @@ impl Driver {
                 tracing::debug!(?resp, %short, "kill ack");
             }
             AdapterCommand::Interrupt { local_id, .. } => {
-                // Keep-alive turn interrupt (CCT-210): the control socket has
+                // Keep-alive turn interrupt: the control socket has
                 // no turn-interrupt op, so attach to the worker PTY and inject
                 // an ESC keystroke — the same key that aborts a turn in the
                 // TUI. Unlike `Kill`, the worker stays live and resumable.
@@ -894,7 +894,7 @@ impl Driver {
                 // Fall back to (local_id, working_dir) when the on-disk job state
                 // is gone — archiving runs `claude rm`, which deletes state.json
                 // but keeps the conversation transcript, so an explicit Resume of
-                // an archived session must not depend on it (CCT-345).
+                // an archived session must not depend on it.
                 self.resume_worker(
                     &sock,
                     &short,
@@ -907,11 +907,11 @@ impl Driver {
                 tracing::info!(%short, %local_id, "resumed session via explicit command");
             }
             AdapterCommand::PermissionResponse { local_id, request_id, allow } => {
-                // Preferred path (CCT-342): a bidirectional `PreToolUse` hook is
+                // Preferred path: a bidirectional `PreToolUse` hook is
                 // blocked in the listener long-polling for this decision. Hand
                 // it the human's allow/deny straight back — the hook returns the
                 // decision to Claude Code, so the tool runs/skips with no attach
-                // + keystroke at all. `take`n so a duplicate response can't
+                // and no keystroke at all. `take`n so a duplicate response can't
                 // double-fire on an already-resolved (and dropped) channel.
                 let hook =
                     self.pending_perm_hooks.lock().ok().and_then(|mut map| map.remove(&local_id));
@@ -925,7 +925,7 @@ impl Driver {
                     // which handles the now-rendered native prompt.
                     tracing::debug!(%local_id, %request_id, "perm hook receiver gone; falling back to keystroke");
                 }
-                // Fallback (CCT-211): no hook registered (timed out, or the
+                // Fallback: no hook registered (timed out, or the
                 // prompt surfaced only via the legacy `tempo:"blocked"`/`needs`
                 // signal). The control socket's `permission-response` op is a
                 // no-op stub, so answer the way a human does — attach to the PTY
@@ -936,7 +936,7 @@ impl Driver {
             }
             AdapterCommand::Remove { local_id } => {
                 let short = self.resolve_short_for_removal(&local_id)?;
-                // Imitate the agent-view Ctrl+X (CCT-132): there is no
+                // Imitate the agent-view Ctrl+X: there is no
                 // control-socket removal op, so (1) stop the worker if it is
                 // still live, (2) wait for it to actually exit, then (3) let
                 // `claude rm` delete the on-disk job metadata + worktree. This
@@ -966,10 +966,10 @@ impl Driver {
             }
             AdapterCommand::SetModel { local_id, .. } => {
                 // In-place model/effort switch is not supported on claude via
-                // cctui's path (CCT-303): the `claude daemon` control socket has
+                // cctui's path: the `claude daemon` control socket has
                 // no set-model op, and the Agent SDK's `setModel()` is only
                 // reachable in streaming-input mode, not through this socket.
-                // The supported substitute is fork-with-`--model` (CCT-302), so
+                // The supported substitute is fork-with-`--model`, so
                 // surface a clear error the webui can route to the fork flow.
                 tracing::warn!(%local_id, "claude: in-place model/effort switch not supported; fork to change model");
                 anyhow::bail!(
@@ -993,7 +993,7 @@ impl Driver {
     }
 
     /// Resolve a short for removal, tolerating sessions that have already left
-    /// the live roster. Removal (CCT-132) most often targets *completed*
+    /// the live roster. Removal most often targets *completed*
     /// sessions, but `short_by_session` only holds live ones — it's cleared
     /// when a session exits. Claude-code's short is the first group of the
     /// session UUID (state.json `daemonShort`), so fall back to deriving it.
@@ -1009,7 +1009,7 @@ impl Driver {
             .ok_or_else(|| anyhow::anyhow!("cannot resolve short for {local_id}"))
     }
 
-    /// Assemble the session-diagnose report (CCT-547): everything this driver
+    /// Assemble the session-diagnose report: everything this driver
     /// already knows about `local_id`, each fact dated + sourced, and emit it
     /// back as an [`AdapterEvent::Diagnose`] echoing `request_id`.
     ///
@@ -1029,15 +1029,15 @@ impl Driver {
         let pending_ask = self.pending_asks.lock().is_ok_and(|m| m.contains_key(local_id));
         let parked_perm_hook =
             self.pending_perm_hooks.lock().is_ok_and(|m| m.contains_key(local_id));
-        // Control-socket permission prompt (CCT-211), keyed by short.
+        // Control-socket permission prompt, keyed by short.
         let pending_perm = short.as_deref().and_then(|s| self.pending_perms.get(s)).cloned();
 
-        // Held-attach keep-alive + PTY-activity snapshot (CCT-209/487/546),
-        // reused by the effective-state activity signal, the attach fact, and
+        // Held-attach keep-alive + PTY-activity snapshot, reused by the
+        // effective-state activity signal, the attach fact, and
         // the PTY-output fact below.
         let attach_snap = short.as_deref().and_then(|s| self.attach.snapshot(s));
 
-        // Hook-event freshness feeds the PTY-vs-hook arbitration (CCT-546).
+        // Hook-event freshness feeds the PTY-vs-hook arbitration.
         let hook_age_ms = self
             .hook_log
             .lock()
@@ -1059,7 +1059,7 @@ impl Driver {
                 state: snap.and_then(|s| s.state.as_deref()),
             });
             // Second (PTY) signal: herdr-style arbitration of held-attach byte
-            // flow against hook freshness (CCT-546). Surfaced on `activity`
+            // flow against hook freshness. Surfaced on `activity`
             // when it carries a real verdict, never clobbering a status one.
             let pty_activity = {
                 let av = arbitrate_activity(&ActivityInput {
@@ -1124,7 +1124,7 @@ impl Driver {
             },
         );
 
-        // PTY output age/throughput from the held-attach drain loop (CCT-546):
+        // PTY output age/throughput from the held-attach drain loop:
         // the raw activity signal state derivation weighs against hook freshness.
         let pty_output: DiagnoseFact<PtyOutputStats> = match attach_snap
             .as_ref()
@@ -1295,7 +1295,7 @@ impl Driver {
         tracing::warn!(%short, "worker still live 2s after kill; proceeding to `claude rm`");
     }
 
-    /// Resume-on-reply (CCT-228): if `short` has no live worker, revive it
+    /// Resume-on-reply: if `short` has no live worker, revive it
     /// before a reply is delivered. The claude control socket cannot wake an
     /// exited job itself — `attach`/`reply` both return ENOJOB; the picker's
     /// "enter to resume" is client-side. What does work (probed against
@@ -1315,8 +1315,8 @@ impl Driver {
         self.resume_worker(sock, short, local_id, None, None, env).await
     }
 
-    /// The single source of gateway-routing env for every worker (re)launch
-    /// (CCT-460): pull it from the server's durable `sessions.account_id` binding
+    /// The single source of gateway-routing env for every worker (re)launch:
+    /// pull it from the server's durable `sessions.account_id` binding
     /// so routing survives a daemon / claude-daemon restart and session-id
     /// rotation, instead of trusting whatever env the triggering command carried.
     ///
@@ -1341,7 +1341,7 @@ impl Driver {
         };
         match server.gateway_env(mk, local_id).await {
             // The env decision can fail closed (account-bound but unmintable);
-            // the per-account settings (CCT-540) ride the same response.
+            // the per-account settings ride the same response.
             Ok(resp) => Ok(LaunchEnv {
                 env: launch_env_decision(local_id, &resp, hint)?,
                 settings: resp.settings,
@@ -1358,10 +1358,10 @@ impl Driver {
 
     /// Revive an exited worker bound to its saved conversation. Prefers the
     /// on-disk `state.json` (so `/clear`/`/compact`'s rotated `resumeSessionId`
-    /// is honored, CCT-160); when it's gone — e.g. an archived session whose
+    /// is honored); when it's gone — e.g. an archived session whose
     /// `claude rm` deleted the job metadata but left the transcript — falls back
-    /// to the caller-supplied `(session_id, cwd)` from the server's DB row
-    /// (CCT-345). No-op (one cheap `has` round-trip) when the worker is alive.
+    /// to the caller-supplied `(session_id, cwd)` from the server's DB row.
+    /// No-op (one cheap `has` round-trip) when the worker is alive.
     async fn resume_worker(
         &self,
         sock: &std::path::Path,
@@ -1380,16 +1380,15 @@ impl Driver {
         }
 
         // Re-derive the gateway env + per-account settings from the server's
-        // durable binding (CCT-460/540), falling back to the pushed `env` hint if
-        // the pull is unavailable. This is the path that broke before: a
-        // cold-resume relaunched the worker with empty env and the worker 401ed.
-        // Fail-closed inside `resolve_launch_env`.
+        // durable binding, falling back to the pushed `env` hint if the pull is
+        // unavailable — a cold-resume must never relaunch the worker with empty
+        // env (it would 401). Fail-closed inside `resolve_launch_env`.
         let launch = self.resolve_launch_env(local_id, env).await?;
         let env = launch.env;
 
         // Re-apply the managed hook settings on cold resume so the revived worker
         // keeps its ask/permission/Stop hooks AND picks up the (possibly
-        // refreshed) per-account settings the env pull re-served (CCT-539/540).
+        // refreshed) per-account settings the env pull re-served.
         // `whip` is recovered from the settings file the original spawn wrote for
         // this `short` (its `hooks.Stop` block is whip-only) — cold resume has no
         // `spec` to read it from directly, and defaulting false would silently
@@ -1397,7 +1396,7 @@ impl Driver {
         let whip = detect_whip_from_settings(short);
         let st = StateJson::read(&self.cfg.jobs_root, short);
         // Carry the gateway env + the session's model/effort (from `state.json`)
-        // into the managed `--settings` file (CCT-577) so a spare-claimed resume
+        // into the managed `--settings` file so a spare-claimed resume
         // keeps its routing env and model/effort — the settings file survives the
         // spare-claim, the dispatch `env` and a `--model` CLI arg do not.
         let settings_arg = ensure_hook_settings(
@@ -1414,7 +1413,7 @@ impl Driver {
 
         // `/clear`/`/compact` rotate the live conversation into the id recorded
         // in `resumeSessionId`; resuming the stale spawn id would fork the
-        // conversation back at the pre-reset state (CCT-160). When state.json is
+        // conversation back at the pre-reset state. When state.json is
         // gone, fall back to the id/cwd the server passed from its DB row.
         let session_id = st
             .as_ref()
@@ -1439,12 +1438,12 @@ impl Driver {
         )
         .unwrap_or(0);
         // Launch argv + respawn flags, appending the managed `--settings` file so
-        // the revived worker keeps its hooks + account settings (CCT-540).
+        // the revived worker keeps its hooks + account settings.
         let mut args =
             vec!["--resume".to_owned(), session_id.clone(), "--agent".to_owned(), agent.to_owned()];
         let mut respawn_flags = vec!["--agent".to_owned(), agent.to_owned()];
-        // NB: resume deliberately does NOT pass `--model`/`--effort` (CCT-577
-        // regression fix). Asserting `--model` on a `--resume` forces the claude
+        // NB: resume deliberately does NOT pass `--model`/`--effort`.
+        // Asserting `--model` on a `--resume` forces the claude
         // daemon down its spare-claim/cold relaunch, which does NOT reapply
         // cctui's dispatch gateway env (background workers don't inherit gateway
         // vars) — so the revived worker came up with no `ANTHROPIC_BASE_URL`/
@@ -1472,7 +1471,7 @@ impl Driver {
                 // Re-inject the gateway env resolved for this session's bound
                 // OAuth account so the revived worker keeps routing through the
                 // gateway rather than hitting the default upstream with no
-                // credential and 401ing (CCT-460). Mirror into `reattachEnv` so
+                // credential and 401ing. Mirror into `reattachEnv` so
                 // claude's own daemon reapplies it on any internal respawn
                 // (`/clear`, `/compact`) while it's alive. Empty for sessions with
                 // no account binding.
@@ -1519,7 +1518,7 @@ impl Driver {
         cmd.arg("rm")
             .arg(short)
             // `claude` lives in `~/.local/bin`, off launchd's minimal PATH
-            // (CCT-138) — give the child an augmented PATH so exec succeeds.
+            // — give the child an augmented PATH so exec succeeds.
             .env("PATH", crate::childenv::child_path());
         crate::childenv::ScrubChildEnv::scrub_child_env(&mut cmd);
         let out = cmd
@@ -1539,7 +1538,7 @@ impl Driver {
         Ok(())
     }
 
-    /// Dispatched-worker bring-up (CCT-471).
+    /// Dispatched-worker bring-up.
     ///
     /// A kube/docker worker pod is a peer machine whose daemon must *start* the
     /// dispatched session itself. The server pre-mints the session id + gateway
@@ -1549,7 +1548,7 @@ impl Driver {
     /// and can't be addressed individually. So when the dispatcher-injected env
     /// (`SESSION_ID` + `TASK_PAYLOAD_JSON`) is present, we self-issue the exact
     /// control-socket `dispatch` a server-driven spawn would, reusing
-    /// [`Self::spawn`] and forcing the pre-minted `session_id` (CCT-446) so the
+    /// [`Self::spawn`] and forcing the pre-minted `session_id` so the
     /// gateway token resolves and the registered id matches the dispatch.
     ///
     /// Best-effort: any failure logs and lets the daemon keep observing — it
@@ -1575,7 +1574,7 @@ impl Driver {
                 return;
             }
         };
-        // Codex-native dispatch (CCT-643): a `adapter = "codex"` payload runs
+        // Codex-native dispatch: a `adapter = "codex"` payload runs
         // headlessly via `codex exec`, NOT the claude control socket. This path
         // is separate from the interactive codex app-server adapter.
         let adapter = crate::dispatch_codex::payload_adapter(&payload);
@@ -1614,7 +1613,7 @@ impl Driver {
             tracing::error!(%err, session_id = %session_id, "dispatch-on-start: spawn failed");
         } else {
             tracing::info!(session_id = %session_id, "dispatch-on-start: session dispatched");
-            // Arm the turn-complete watcher (CCT-513) for this — and only
+            // Arm the turn-complete watcher for this — and only
             // this — session, so the pod entrypoint gets a done-signal when
             // the session settles idle after its work.
             let settle = dispatch_done::settle_from_env(
@@ -1684,7 +1683,7 @@ impl Driver {
     /// The payload shape is the daemon's private, proto-gated dispatch
     /// record. It is NOT `{op,cwd,prompt}` — that older guess was rejected
     /// outright (`malformed request`) and the rejection was swallowed,
-    /// producing a silent no-op (CCT-131). We mint the session id / short /
+    /// producing a silent no-op. We mint the session id / short /
     /// nonce client-side exactly as claude does and hand the worker its
     /// launch argv.
     #[allow(clippy::too_many_lines)]
@@ -1704,7 +1703,7 @@ impl Driver {
         }
 
         let agent = "claude";
-        // Use the server-pre-minted session id when supplied (CCT-446) so the
+        // Use the server-pre-minted session id when supplied so the
         // id the server bound the gateway session token to matches the id the
         // worker registers as (otherwise `account_name` never resolves). Falls
         // back to a fresh uuid for non-account / non-HTTP spawns.
@@ -1733,24 +1732,24 @@ impl Driver {
             args.push("--name".to_owned());
             args.push(name.clone());
         }
-        // Per-spawn permission posture (CCT-149). `None` inherits whatever
+        // Per-spawn permission posture. `None` inherits whatever
         // the claude daemon was launched with (the user's global default).
         if let Some(mode) = spec.permission_mode {
             args.push("--permission-mode".to_owned());
             args.push(mode.claude_flag().to_owned());
         }
-        // Inject the managed `AskUserQuestion` hook settings (CCT-167), scoped
+        // Inject the managed `AskUserQuestion` hook settings, scoped
         // to this fleet-spawned worker only — the user's hand-run `claude` is
         // untouched. `--settings` merges over the resolved hierarchy, so it
         // only ADDS the hook. Goes into `respawnFlags` too so it survives the
         // `/clear`/`/compact` relaunch the claude daemon drives off them.
         let mut respawn_flags = vec!["--agent".to_owned(), agent.to_owned()];
-        // NB: model/effort are NOT passed as `--model`/`--effort` CLI args
-        // (CCT-577). They ride the managed `--settings` file below (`model` /
+        // NB: model/effort are NOT passed as `--model`/`--effort` CLI args.
+        // They ride the managed `--settings` file below (`model` /
         // `effortLevel` / `CLAUDE_CODE_EFFORT_LEVEL`), which the claude daemon
         // applies to a spare-claimed worker — whereas a `--model` CLI arg forces
         // the spare-claim/cold relaunch that drops the dispatch gateway env.
-        // Remember the spawn-time model/effort keyed by `short` (CCT-299) so the
+        // Remember the spawn-time model/effort keyed by `short` so the
         // Status emit can fall back to it while `state.json` is still being
         // written (or transiently gone across a `/clear`).
         {
@@ -1762,7 +1761,7 @@ impl Driver {
                 map.insert(short.to_owned(), (model.map(str::to_owned), effort.map(str::to_owned)));
             }
         }
-        // Remember the launch posture for the diagnose report (CCT-547).
+        // Remember the launch posture for the diagnose report.
         if let Some(mode) = spec.permission_mode
             && let Ok(mut map) = self.spawn_permission_mode.lock()
         {
@@ -1771,9 +1770,9 @@ impl Driver {
         let whip = spec.permission_mode.is_some_and(cctui_proto::adapter::PermissionMode::is_whip);
         // Resolve the gateway env + per-account settings from the server's
         // durable binding BEFORE writing the managed hook-settings file, so the
-        // account settings (CCT-539/540) can be deep-merged under the managed
-        // hooks. Fail-closed inside `resolve_launch_env` (account-bound but
-        // unmintable → abort rather than launch a worker that will 401, CCT-460).
+        // account settings can be deep-merged under the managed hooks.
+        // Fail-closed inside `resolve_launch_env` (account-bound but
+        // unmintable → abort rather than launch a worker that will 401).
         let launch = self.resolve_launch_env(&session_id, &spec.env).await?;
         if let Some(settings) = ensure_hook_settings(
             &self.cfg.hook_socket_path,
@@ -1792,12 +1791,12 @@ impl Driver {
             respawn_flags.push(settings);
         }
         // Stage any uploaded files under /tmp/cctui-uploads/<session-id>/ and
-        // prepend their absolute paths to the prompt so the worker reads them
-        // (CCT-203). A staging failure is fatal to the spawn — silently dropping
+        // prepend their absolute paths to the prompt so the worker reads them.
+        // A staging failure is fatal to the spawn — silently dropping
         // an attachment the user expects the worker to read would be worse.
         let staged = stage_uploads(&session_id, &spec.bootstrap)?;
-        // Prepend a delimited `<session-context>` block to the SPAWN prompt only
-        // (CCT-361): give the agent the same at-a-glance context a human sees in
+        // Prepend a delimited `<session-context>` block to the SPAWN prompt only:
+        // give the agent the same at-a-glance context a human sees in
         // the UI — name, model·effort, permission posture, env var NAMES (never
         // values — those live only in `env_json` below), cwd, and the staged
         // file list (folded in here from the old client-side `Attached files:`
@@ -1819,7 +1818,7 @@ impl Driver {
         // its state.json writer reads `name`/`intent` off the seeded roster
         // entry. Seeding only `intent` (as we did before) left dispatched
         // sessions with no display name. Seed `name` + `nameSource:"user"`
-        // when the caller provided one (CCT-135).
+        // when the caller provided one.
         let mut seed = serde_json::Map::new();
         seed.insert("intent".to_owned(), json!(intent));
         if let Some(name) = &spec.name {
@@ -1827,13 +1826,13 @@ impl Driver {
             seed.insert("nameSource".to_owned(), json!("user"));
         }
 
-        // Environment secrets (CCT-202): merged on top of the spare's baseline
+        // Environment secrets: merged on top of the spare's baseline
         // env in the worker process. Mirror into `reattachEnv` so they survive
         // the respawn/reattach the claude daemon drives after a CLI upgrade.
         // These values are NOT placed in `seed`/`intent`/`launch.args`, so they
         // never reach the transcript, timeline, or `state.json`.
         //
-        // Gateway env resolved above (CCT-460): a spawn whose server-side mint
+        // Gateway env resolved above: a spawn whose server-side mint
         // silently produced nothing already failed closed there rather than
         // launching a worker that will 401.
         let env = launch.env;
@@ -1872,19 +1871,19 @@ impl Driver {
         Ok(())
     }
 
-    /// Fork an existing conversation into a brand-new claude session (CCT-302).
+    /// Fork an existing conversation into a brand-new claude session.
     ///
     /// Mirrors [`spawn`] — mints a fresh `short`/`sessionId`/`nonce` and
     /// dispatches a new worker via the control socket — but prepends `--resume
     /// <parent-session-id> --fork-session` to the launch argv so claude copies
     /// the parent's history into the new session id, leaving the parent intact.
     /// `--model`/`--effort` from `spec` ride on top (this is the supported
-    /// "switch model mid-conversation" path, CCT-303).
+    /// "switch model mid-conversation" path).
     ///
     /// The parent session id is resolved to the id claude should resume from:
     /// the parent's on-disk `resumeSessionId` when present (so a `/clear`ed or
     /// `/compact`ed parent forks from the live conversation, not the stale spawn
-    /// id — CCT-160), else the parent's `sessionId`, else the `parent_local_id`
+    /// id), else the parent's `sessionId`, else the `parent_local_id`
     /// itself (covers reopening an archived parent whose `state.json` was removed
     /// by `claude rm` but whose transcript still resumes).
     ///
@@ -1892,7 +1891,7 @@ impl Driver {
     /// path, which has no fork context, so we stash `parent_local_id` keyed by
     /// the new `short` in `fork_parent_by_short` for it to read.
     /// Write a sliced copy of the parent transcript as the child's own
-    /// `<child>.jsonl` for a subset fork (CCT-553). Reads the parent JSONL,
+    /// `<child>.jsonl` for a subset fork. Reads the parent JSONL,
     /// keeps only the lines the `extract` selects, and writes the repaired
     /// slice to the child's path under the SAME encoded cwd. Writes are strictly
     /// to the new child file — the parent transcript is never touched.
@@ -1954,8 +1953,8 @@ impl Driver {
         }
 
         // Resolve the id to resume+fork from. Prefer the parent's on-disk
-        // `resumeSessionId` (the live conversation head after `/clear`/`/compact`
-        // — CCT-160), then its `sessionId`, then the raw parent id (archived
+        // `resumeSessionId` (the live conversation head after `/clear`/`/compact`),
+        // then its `sessionId`, then the raw parent id (archived
         // parent whose job state was removed by `claude rm`, but whose transcript
         // still resumes — the native "reopen archived as a new conversation").
         let resume_id = self
@@ -1966,7 +1965,7 @@ impl Driver {
             .unwrap_or_else(|| parent_local_id.to_owned());
 
         let agent = "claude";
-        // Use the server-pre-minted child id when supplied (CCT-345) so the id
+        // Use the server-pre-minted child id when supplied so the id
         // the webui navigated to matches the worker the daemon launches.
         let session_id =
             forced_session_id.map_or_else(|| uuid::Uuid::new_v4().to_string(), str::to_owned);
@@ -1980,7 +1979,7 @@ impl Driver {
         )
         .unwrap_or(0);
 
-        // Subset fork (CCT-553): the child `<child>.jsonl` is a standalone
+        // Subset fork: the child `<child>.jsonl` is a standalone
         // sliced transcript, so it is resumed WITHOUT `--fork-session` (that
         // flag branches off the parent's live history, which we don't want).
         let sliced = if let Some(extract) = extract {
@@ -2039,21 +2038,21 @@ impl Driver {
                 map.insert(short.clone(), (model.map(str::to_owned), effort.map(str::to_owned)));
             }
         }
-        // Remember the launch posture for the diagnose report (CCT-547).
+        // Remember the launch posture for the diagnose report.
         if let Some(mode) = spec.permission_mode
             && let Ok(mut map) = self.spawn_permission_mode.lock()
         {
             map.insert(short.clone(), super::diagnose::permission_label(mode).to_owned());
         }
         let whip = spec.permission_mode.is_some_and(cctui_proto::adapter::PermissionMode::is_whip);
-        // Gateway env + per-account settings for the fork child (CCT-460): the
+        // Gateway env + per-account settings for the fork child: the
         // fork dispatch used to hardcode empty env, so a fork of an account-bound
         // conversation 401ed. Resolve for the child id first; if the server
         // hasn't bound it yet, inherit the parent's account env (and settings) so
         // the child routes through the gateway from its first turn. Empty when
         // neither is account-bound. Resolved BEFORE the hook-settings file is
-        // written so the account settings can be merged under the managed hooks
-        // (CCT-539/540).
+        // written so the account settings can be merged under the managed
+        // hooks.
         let mut launch =
             self.resolve_launch_env(&session_id, &std::collections::BTreeMap::default()).await?;
         if launch.env.is_empty() {
@@ -2096,7 +2095,7 @@ impl Driver {
             map.insert(short.clone(), parent_local_id.to_owned());
         }
 
-        // Gateway env resolved above (CCT-460).
+        // Gateway env resolved above.
         let env = launch.env;
         let env_json: serde_json::Map<String, serde_json::Value> =
             env.iter().map(|(k, v)| (k.clone(), json!(v))).collect();
@@ -2134,7 +2133,7 @@ impl Driver {
     /// Locate the control socket, booting the on-demand claude daemon if it's
     /// missing and waiting (up to ~12s) for the socket to appear. Used on the
     /// command path, where failing to find a socket means a dropped spawn/
-    /// reply rather than just a skipped poll (CCT-194). `claude daemon run`
+    /// reply rather than just a skipped poll. `claude daemon run`
     /// needs a few seconds to start the supervisor and bind the socket, so the
     /// window is generous.
     async fn ensure_socket(&self) -> anyhow::Result<PathBuf> {
@@ -2193,11 +2192,11 @@ impl Driver {
     async fn poll_once(&mut self) -> anyhow::Result<()> {
         let Some(sock) = self.cfg.discovery.locate_live().await else {
             // Daemon isn't running. Boot it (rate-limited) so it self-heals
-            // before the next dispatch (CCT-194), and treat any sessions we
+            // before the next dispatch, and treat any sessions we
             // previously knew about as ended.
             self.kickstarter.kick(false);
             self.flush_roster(EndReason::Other { detail: "daemon gone".into() }).await;
-            // Roster churn (CCT-253): the socket vanished and sessions were
+            // Roster churn: the socket vanished and sessions were
             // flushed. When it comes back the workers are re-pinned and the
             // tail resumes from the persisted offset — but a re-home can leave
             // a gap (briefly tailing a file no longer appended, or a send
@@ -2223,7 +2222,7 @@ impl Driver {
             jobs.into_iter().filter(LiveSnapshot::is_user_visible).collect();
         let now_shorts: HashSet<String> = visible.iter().map(|j| j.short.clone()).collect();
 
-        // Ground-truth effort for every live worker in one `/proc` pass (CCT-577),
+        // Ground-truth effort for every live worker in one `/proc` pass,
         // reused across the per-job Status build below so a busy roster doesn't
         // rescan `/proc` per session.
         let observed_efforts = super::envcheck::worker_efforts(&now_shorts);
@@ -2233,7 +2232,7 @@ impl Driver {
             if !self.roster.contains(&job.short) {
                 let session_id = job.session_id().map_or_else(|| job.short.clone(), str::to_owned);
                 self.short_by_session.insert(session_id.clone(), job.short.clone());
-                // If this short was just forked (CCT-302), carry the parent link
+                // If this short was just forked, carry the parent link
                 // so the server resolves it into `parent_id`. Consumed once.
                 let parent_local_id =
                     self.fork_parent_by_short.lock().ok().and_then(|mut m| m.remove(&job.short));
@@ -2273,11 +2272,11 @@ impl Driver {
                 .unwrap_or_else(|| job.short.clone());
             let on_disk = StateJson::read(&self.cfg.jobs_root, &job.short);
 
-            // Observation timestamp for the diagnose report (CCT-547): when
+            // Observation timestamp for the diagnose report: when
             // this short was last seen on the control socket.
             self.last_status_at.insert(job.short.clone(), std::time::SystemTime::now());
 
-            // Dead-but-still-listed (CCT-252). claude can keep a session in
+            // Dead-but-still-listed. claude can keep a session in
             // `daemon list` while its worker process is gone (e.g. it died
             // while the supervisor was down — "process gone while supervisor
             // down"). Previously cctui only transitioned a session to
@@ -2290,9 +2289,9 @@ impl Driver {
                 // Emit the terminal transition exactly once, then mark the
                 // short sticky so the still-present roster entry can't re-emit
                 // a non-terminal Status and re-green it (daemon-side mirror of
-                // the server's CCT-192 sticky terminal status). Mirrors the
+                // the server's sticky terminal status). Mirrors the
                 // roster-disappearance path: hibernated if job state survives
-                // on disk (revivable red dot, CCT-228), else SessionEnded.
+                // on disk (revivable red dot), else SessionEnded.
                 if self.dead_shorts.insert(job.short.clone()) {
                     self.clear_permission(&job.short).await;
                     if on_disk.is_some() {
@@ -2315,7 +2314,7 @@ impl Driver {
                             reason: EndReason::Completed,
                         })
                         .await;
-                        // Truly gone — drop the remembered spawn flags (CCT-299).
+                        // Truly gone — drop the remembered spawn flags.
                         if let Ok(mut m) = self.spawn_model_effort.lock() {
                             m.remove(&job.short);
                         }
@@ -2339,15 +2338,15 @@ impl Driver {
             // `--settings` file + `reattachEnv`, both of which the claude daemon
             // re-applies on its own autonomous respawns (`/clear`, `/compact`,
             // spare-claim), so a revived worker keeps its routing without cctui
-            // killing it. The former proactive kill+cold-resume heal (CCT-462)
-            // and the `/proc`-env delivery probe (CCT-574) were removed: post
-            // CCT-577 they mis-fired on healthy spare-claimed workers (env
+            // killing it. The former proactive kill+cold-resume heal
+            // and the `/proc`-env delivery probe were removed: post
+            // they mis-fired on healthy spare-claimed workers (env
             // delivered via `--settings`, not process env) and were a no-op on
             // macOS (no `/proc`). A genuinely env-less launch now fails LOUD in
             // `launch_env_decision` instead of being silently healed.
 
             // Surface (or clear) a tool-permission prompt from the live
-            // `tempo`/`needs` signal (CCT-211), before the Status emit below.
+            // `tempo`/`needs` signal, before the Status emit below.
             self.reconcile_permission(
                 &job.short,
                 &local_id,
@@ -2360,11 +2359,11 @@ impl Driver {
             // reset (`/clear`, `/compact`) changes the session's `sessionId` and
             // starts a NEW transcript file (`<newId>.jsonl`); if we kept tailing
             // the original file the message stream would silently stop while
-            // `list`/Status polls kept the heartbeat fresh (CCT-128). So re-pin
+            // `list`/Status polls kept the heartbeat fresh. So re-pin
             // whenever the live `session_id` differs from the one we cached,
             // following the transcript to the new file.
             //
-            // CCT-158: a reset keeps the same worker `short`, so the "Newly
+            // A reset keeps the same worker `short`, so the "Newly
             // started" branch never fires for the new id. We deliberately keep
             // emitting under the ORIGINAL `local_id` (set on the first pin, kept
             // in `loc.local_id`) and only move `path`/`offset_key` to the new
@@ -2373,7 +2372,7 @@ impl Driver {
             // worse: archive is worker-scoped (`claude rm <short>`), so a single
             // archive would wipe both conversations at once. Instead we inject a
             // `context_reset` boundary marker so the cut is visible in the UI.
-            // CCT-160: `/clear` rotates the live session into a new transcript
+            // `/clear` rotates the live session into a new transcript
             // file but the control socket's `list` keeps reporting the stale
             // spawn `sessionId` (it's the immutable `--session-id` launch arg in
             // `roster.json`). The rotated id only surfaces in `state.json`'s
@@ -2430,7 +2429,7 @@ impl Driver {
                     // dispatch keeps working if a snapshot ever reports the new
                     // id directly. The rotated id maps to the unchanged stable
                     // `local_id` so a hook firing post-`/clear` still resolves
-                    // to the session the server knows (CCT-167).
+                    // to the session the server knows.
                     self.short_by_session.insert(sess.to_owned(), job.short.clone());
                     self.map_session(sess, &local_id);
                     if let Some(loc) = self.transcript_locations.get_mut(&job.short) {
@@ -2458,7 +2457,7 @@ impl Driver {
                 on_disk.as_ref().and_then(|s| s.intent.clone()).or_else(|| job.intent.clone());
             let activity = on_disk.as_ref().and_then(|s| s.activity.clone());
             // Prefer the on-disk state.json; fall back to the spawn-time flags
-            // we remembered while state.json is absent/transient (CCT-299).
+            // we remembered while state.json is absent/transient.
             let spawned =
                 self.spawn_model_effort.lock().ok().and_then(|m| m.get(&job.short).cloned());
             let model = on_disk
@@ -2468,7 +2467,7 @@ impl Driver {
             // Prefer the GROUND-TRUTH effort the live worker actually booted at
             // (read from its `CLAUDE_EFFORT` env), so the UI shows what the
             // session is running rather than what we requested — a spare-claim or
-            // a silent background clamp can make them differ (CCT-577). Fall back
+            // a silent background clamp can make them differ. Fall back
             // to the requested value (state.json flags, then the spawn cache)
             // while the worker is mid-exec / not yet found in `/proc`.
             let effort = observed_efforts
@@ -2479,12 +2478,12 @@ impl Driver {
             let children = on_disk.as_ref().map(StateJson::proto_children).unwrap_or_default();
 
             // NB: live `AskUserQuestion` surfacing is NOT derived from status
-            // here. The earlier `blocked`+`detail` heuristic (CCT-164) was wrong
+            // here. The earlier `blocked`+`detail` heuristic was wrong
             // in both directions — it missed real questions (which report
             // `state:"done"`, not `blocked`) and fired on any other `blocked`
             // state (e.g. a background "needs input" status, whose `detail` is a
             // headline, not a question). The `AskUserQuestion` PreToolUse hook
-            // delivers the real prompt over the daemon socket instead (CCT-167).
+            // delivers the real prompt over the daemon socket instead.
 
             let snap = StatusSnapshot {
                 tempo: job.tempo.clone(),
@@ -2534,7 +2533,7 @@ impl Driver {
                         dirty_offsets = true;
                     }
                     if let Some(last) = events.last() {
-                        // "Last parsed event" for diagnose (CCT-547).
+                        // "Last parsed event" for diagnose.
                         self.last_parsed.insert(
                             loc.offset_key.clone(),
                             (
@@ -2559,8 +2558,8 @@ impl Driver {
                 }
             }
         }
-        // Discover + tail Task-tool subagents nested under each live parent
-        // (CCT-141). Runs after the parent tail so a subagent's parent row
+        // Discover + tail Task-tool subagents nested under each live parent.
+        // Runs after the parent tail so a subagent's parent row
         // exists before its own SessionStarted references it.
         self.scan_subagents(&mut dirty_offsets).await;
 
@@ -2575,7 +2574,7 @@ impl Driver {
             let was_dead = self.dead_shorts.remove(short);
             self.clear_permission(short).await;
             if let Some(loc) = self.transcript_locations.remove(short) {
-                // Hibernated, not gone (CCT-228): the worker process exited but
+                // Hibernated, not gone: the worker process exited but
                 // its job state survives on disk, so a reply will revive it
                 // (resume-on-reply above). Mark the session so the UI can show
                 // the claude-style "exited, will resume on reply" red dot
@@ -2585,7 +2584,7 @@ impl Driver {
                 // snapshot overwrites it.
                 //
                 // Skip if we already emitted this short's dead transition while
-                // it was still listed (CCT-252 `dead_shorts`) — the hibernated
+                // it was still listed (`dead_shorts`) — the hibernated
                 // Status already went out; re-emitting it here is redundant.
                 if !was_dead && StateJson::read(&self.cfg.jobs_root, short).is_some() {
                     self.emit(AdapterEvent::Status {
@@ -2622,7 +2621,7 @@ impl Driver {
         }
 
         // Keep a headless `attach` open for every live session so the worker
-        // stays focused/awake and `reply` actually drives its PTY (CCT-209).
+        // stays focused/awake and `reply` actually drives its PTY.
         self.attach.reconcile(now_shorts.iter().map(String::as_str));
 
         self.tick_dispatch_done(&visible);
@@ -2630,7 +2629,7 @@ impl Driver {
         self.roster = now_shorts;
     }
 
-    /// Feed the dispatch turn-complete watcher (CCT-513) one roster snapshot
+    /// Feed the dispatch turn-complete watcher one roster snapshot
     /// and write the `dispatch_done` marker when it fires. No-op on normal
     /// daemons (`dispatch_done` is only armed by `maybe_dispatch_on_start`).
     fn tick_dispatch_done(&self, jobs: &[LiveSnapshot]) {
@@ -2680,8 +2679,8 @@ impl Driver {
         }
     }
 
-    /// Discover and tail Task-tool subagents for every live parent session
-    /// (CCT-141). Each subagent transcript lives at
+    /// Discover and tail Task-tool subagents for every live parent session.
+    /// Each subagent transcript lives at
     /// `<encoded-cwd>/<parent-session-id>/subagents/agent-<agentId>.jsonl`
     /// and reuses the standard transcript parser. Subagents are observe-only
     /// (no worker `short` → no command dispatch); lifecycle end is inferred
@@ -2707,7 +2706,7 @@ impl Driver {
                         agent_id.clone(),
                         SubagentState { parent_local_id: parent_id.clone(), idle_ticks: 0 },
                     );
-                    // Base subagent meta; Workflow-tool agents (CCT-225) add
+                    // Base subagent meta; Workflow-tool agents add
                     // workflow run context so the UI can group them under a
                     // named "Workflow: <name> (<runId>)" node.
                     let mut extra = json!({ "subagent": true, "agent_id": agent_id });
@@ -2803,8 +2802,8 @@ impl Driver {
         }
     }
 
-    /// Cheap periodic (and churn-`force`d) divergence check (CCT-741, replacing
-    /// the CCT-253 unconditional re-tail). The forward tail keeps `server_marks`
+    /// Cheap periodic (and churn-`force`d) divergence check (replacing
+    /// the unconditional re-tail). The forward tail keeps `server_marks`
     /// level with the persisted offset as it emits, so at idle every session is
     /// in sync and this emits nothing. Only a session whose persisted offset has
     /// run AHEAD of the mark we believe the server holds (`force` = a roster
@@ -2849,7 +2848,7 @@ impl Driver {
     }
 
     /// The offset to tail a session from, fast-forwarded to a server resume mark
-    /// that sits AHEAD of our persisted offset (CCT-741) — the cold-start /
+    /// that sits AHEAD of our persisted offset — the cold-start /
     /// restart case where in-memory offsets are empty but the server already
     /// holds the transcript. Bounded by the file length so a stale mark past a
     /// truncated/rotated file can't skip live bytes. Persists the clamp so a
@@ -2868,7 +2867,7 @@ impl Driver {
         local
     }
 
-    /// Apply server-pushed transcript resume marks (CCT-741): record each mark,
+    /// Apply server-pushed transcript resume marks: record each mark,
     /// clamp the cursor of any session already ahead-clampable forward, and heal
     /// a session we already tail whose offset has run ahead of (or has no) mark
     /// with a single bounded re-send window — the one-time heal that replaces the
@@ -2904,7 +2903,7 @@ impl Driver {
     }
 
     /// Re-emit one bounded window BEHIND a session's persisted offset (the
-    /// CCT-253 64 KiB re-tail) to heal a gap, then surface our offset as a mark
+    /// 64 KiB re-tail) to heal a gap, then surface our offset as a mark
     /// so the server's high-water mark catches up. The persisted offset is left
     /// untouched — this is a pure catch-up replay the server dedups.
     async fn resend_window(&self, loc: &TranscriptLocation) {
@@ -2931,7 +2930,7 @@ impl Driver {
         self.attach.cancel_all();
         let shorts: Vec<String> = self.roster.drain().collect();
         self.last_status.clear();
-        // CCT-509: do NOT clear heal bookkeeping here. A flush fires when the
+        // do NOT clear heal bookkeeping here. A flush fires when the
         // control socket is momentarily unreachable (on-demand daemon
         // idle-shutdown / kickstart race) — that is NOT evidence the workers
         // died; they stay alive and reappear on the next successful poll.
@@ -2949,7 +2948,7 @@ impl Driver {
 
     /// Record `session_id → local_id` in the shared map the ask-hook listener
     /// reads. Lock poisoning is non-fatal here (the map is best-effort routing
-    /// metadata), so we recover the guard rather than panic (CCT-167).
+    /// metadata), so we recover the guard rather than panic.
     fn map_session(&self, session_id: &str, local_id: &str) {
         let mut guard =
             self.session_to_local.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -2957,7 +2956,7 @@ impl Driver {
     }
 
     /// Reconcile the pending tool-permission prompt for one worker against the
-    /// live snapshot (CCT-211). A `needs` of `"approve <Tool>: <detail>"` (set
+    /// live snapshot. A `needs` of `"approve <Tool>: <detail>"` (set
     /// while the worker is `tempo:"blocked"`) is a permission prompt; a fresh or
     /// changed one emits `PermissionRequest`, and clearing it emits
     /// `PermissionResolved`. Deduped so an unchanged prompt isn't re-emitted on
@@ -3040,7 +3039,7 @@ impl Driver {
     }
 }
 
-/// A server resume mark bounded by the transcript's current length (CCT-741): a
+/// A server resume mark bounded by the transcript's current length: a
 /// mark past EOF (stale after a `/clear` truncation or rotation) must never seek
 /// beyond live bytes. A missing/unreadable file yields 0 so the tail restarts
 /// from the top rather than trusting the mark.
@@ -3063,20 +3062,20 @@ fn parse_permission_needs(needs: &str) -> (String, String) {
 /// ask-hook-settings.json` (falling back to `~/.config`).
 /// Map a numeric kill signal to the string name Claude's control-socket `kill`
 /// op accepts. The op validates `signal` against the zod enum
-/// `["SIGTERM","SIGKILL"]`, so a numeric value is rejected outright (CCT-169).
+/// `["SIGTERM","SIGKILL"]`, so a numeric value is rejected outright.
 /// Only `SIGKILL` (9) maps to a hard kill; everything else (notably the
 /// interrupt route's `15`) maps to the graceful `SIGTERM`.
 const fn kill_signal_name(signal: i32) -> &'static str {
     if signal == 9 { "SIGKILL" } else { "SIGTERM" }
 }
 
-/// Decode + stage `bootstrap` file uploads (CCT-203) under
+/// Decode + stage `bootstrap` file uploads under
 /// `/tmp/cctui-uploads/<session-id>/`, returning their absolute paths in upload
 /// order. Files are written 0600 with sanitized bare names; an empty/null
 /// bootstrap yields an empty vec. Errors (bad base64, unwritable dir) abort the
 /// spawn so the user learns the attachment didn't land rather than the worker
 /// silently starting without it.
-/// Build the spawn-time `<session-context>` block (CCT-361) prepended to the
+/// Build the spawn-time `<session-context>` block prepended to the
 /// initial prompt. Mirrors what a human sees on the session card — name,
 /// model·effort, permission posture, env var NAMES, cwd, and staged files.
 /// Env var VALUES are never included (only `spec.env` keys, sorted by the
@@ -3122,7 +3121,7 @@ fn stage_uploads(session_id: &str, bootstrap: &serde_json::Value) -> anyhow::Res
     crate::adapters::uploads::stage_bootstrap(session_id, bootstrap)
 }
 
-/// Public entry point for mid-chat attachment staging (CCT-236). Thin wrapper
+/// Public entry point for mid-chat attachment staging. Thin wrapper
 /// over [`crate::adapters::uploads::stage_files`] so the supervisor can stage
 /// without reaching into control internals.
 pub fn stage_mid_chat_files(
@@ -3133,7 +3132,7 @@ pub fn stage_mid_chat_files(
 }
 
 /// Recover a session's whip posture from the per-session settings file the
-/// original spawn wrote for `short` (CCT-540). The whip profile is the only one
+/// original spawn wrote for `short`. The whip profile is the only one
 /// that emits a top-level `hooks.Stop` block (the `whip-stop-hook`), so its
 /// presence is a reliable discriminator. Used by cold resume, which has no
 /// `spec` to read `permission_mode` from. Absent/unreadable file → not whip.
@@ -3155,7 +3154,7 @@ fn hook_settings_path(file: &str) -> Option<PathBuf> {
     Some(base.join("cctui").join(file))
 }
 
-/// Write the per-session whip phrase override file (CCT-598) the `whip-stop-hook`
+/// Write the per-session whip phrase override file the `whip-stop-hook`
 /// reads via `--phrases`, returning its path. `None` (unwritable) → the caller
 /// launches the hook without the arg, so it uses its compiled defaults.
 fn write_whip_phrases(short: &str, block: &serde_json::Value) -> Option<PathBuf> {
@@ -3174,7 +3173,7 @@ fn write_whip_phrases(short: &str, block: &serde_json::Value) -> Option<PathBuf>
 }
 
 /// Delete a stale whip phrase file for `short` so a spawn after the user cleared
-/// the override falls back to the compiled defaults (CCT-598). Best-effort.
+/// the override falls back to the compiled defaults. Best-effort.
 fn remove_whip_phrases(short: &str) {
     if let Some(path) = hook_settings_path(&format!("whip-phrases-{short}.json")) {
         let _ = std::fs::remove_file(path);
@@ -3182,7 +3181,7 @@ fn remove_whip_phrases(short: &str) {
 }
 
 /// Recursively deep-merge `overlay` into `base`, with `overlay` winning at every
-/// level (CCT-540). Object nodes are merged key-by-key (recursing on shared
+/// level. Object nodes are merged key-by-key (recursing on shared
 /// keys); every other node kind (scalars, arrays) is replaced wholesale by the
 /// overlay value. Keys present only in `base` are preserved.
 ///
@@ -3207,7 +3206,7 @@ pub(super) fn deep_merge(base: &mut serde_json::Value, overlay: &serde_json::Val
 }
 
 /// Produce the final `--settings` document by deep-merging the server-provided
-/// per-account `settings` UNDERNEATH the daemon's `managed` settings (CCT-540).
+/// per-account `settings` UNDERNEATH the daemon's `managed` settings.
 ///
 /// Managed values win at every level: we start from a clone of the account
 /// settings (an object; anything non-object is discarded as malformed) and
@@ -3221,7 +3220,7 @@ pub(super) fn merge_account_under_managed(
     let mut merged = match account {
         Some(a @ serde_json::Value::Object(_)) => a.clone(),
         // No account settings, or a non-object blob we can't safely merge under:
-        // fall back to managed-only, exactly as before CCT-540.
+        // fall back to managed-only, exactly as before.
         _ => return managed,
     };
     deep_merge(&mut merged, &managed);
@@ -3231,11 +3230,11 @@ pub(super) fn merge_account_under_managed(
 /// Write (idempotently, on every spawn so it tracks binary upgrades) the
 /// managed Claude Code settings file that registers the `AskUserQuestion`
 /// PreToolUse/PostToolUse hooks, pointing at this daemon binary and the given
-/// delivery socket (CCT-167). Returns the file path to inject via `--settings`,
+/// delivery socket. Returns the file path to inject via `--settings`,
 /// or `None` if we can't locate the binary / config dir (in which case spawning
 /// proceeds without the hook rather than failing).
 ///
-/// `whip` (CCT-352) toggles the 🐎 enforcement profile: the `AskUserQuestion`
+/// `whip` toggles the 🐎 enforcement profile: the `AskUserQuestion`
 /// `PreToolUse` hook gains `--deny` (it still notifies the UI, but returns a
 /// `deny` decision so the form never renders), and a `Stop` hook
 /// (`whip-stop-hook`) blocks stalling / hand-back language so the worker runs to
@@ -3245,7 +3244,7 @@ pub(super) fn merge_account_under_managed(
 /// sessions — potentially bound to different accounts with different
 /// `account_settings` — never clobber each other's `--settings` file.
 ///
-/// `account_settings` (CCT-540) is the server-provided, per-account
+/// `account_settings` is the server-provided, per-account
 /// `settings_json` that rode the gateway-env pull. It is deep-merged UNDERNEATH
 /// the managed settings: account keys are layered in, but the managed `hooks`
 /// block (and any other key the daemon sets) ALWAYS WINS — a malicious or
@@ -3273,8 +3272,8 @@ pub(super) fn ensure_hook_settings(
         let extra = if event == "pre" { deny } else { "" };
         json!({
             // AskUserQuestion + ExitPlanMode both fire this hook: the former
-            // surfaces a live question card, the latter a live Plan card
-            // (CCT-347). Both are single-select PTY prompts answered the same
+            // surfaces a live question card, the latter a live Plan card.
+            // Both are single-select PTY prompts answered the same
             // way (digit keystroke / dismiss-then-reply).
             "matcher": "AskUserQuestion|ExitPlanMode",
             "hooks": [{
@@ -3284,7 +3283,7 @@ pub(super) fn ensure_hook_settings(
             }],
         })
     };
-    // Bidirectional tool-permission hook (CCT-342). Scoped to the mutating /
+    // Bidirectional tool-permission hook. Scoped to the mutating /
     // executing tools that actually trigger an interactive approval (read-only
     // tools auto-allow, so blocking on them would needlessly stall the turn).
     // Distinct from the `AskUserQuestion` matcher above so both PreToolUse hooks
@@ -3303,7 +3302,7 @@ pub(super) fn ensure_hook_settings(
             "timeout": 600,
         }],
     });
-    // EnterPlanMode guard (CCT-544). Registered UNCONDITIONALLY of the whip
+    // EnterPlanMode guard. Registered UNCONDITIONALLY of the whip
     // flag: the deny is decided at runtime from the payload's live
     // `permission_mode` (see `enter_plan_mode_decision`), so it must ride the
     // pre event for both Yolo and Whip; `deny` here only sets the posture label.
@@ -3316,7 +3315,7 @@ pub(super) fn ensure_hook_settings(
         }],
     });
     let pre_hooks = json!([hook("pre"), perm_hook, plan_guard]);
-    // The whip Stop hook gets the user's phrase override (CCT-598) via a
+    // The whip Stop hook gets the user's phrase override via a
     // per-session file it reads with `--phrases`; absent/cleared → the hook falls
     // back to its compiled defaults, so a stale file from a prior spawn is removed.
     let whip_stop_command = if whip {
@@ -3352,7 +3351,7 @@ pub(super) fn ensure_hook_settings(
     };
     let managed = managed_settings(hooks, gateway_env, model, effort);
     // Layer the server-provided per-account settings UNDERNEATH the managed
-    // settings (CCT-540): account keys are merged in, but the managed keys
+    // settings: account keys are merged in, but the managed keys
     // (hooks, gateway env, model/effort) always win so they can never be
     // clobbered.
     let settings = merge_account_under_managed(managed, account_settings);
@@ -3364,7 +3363,7 @@ pub(super) fn ensure_hook_settings(
         tracing::warn!(%err, path = %path.display(), "ask-hook: cannot write settings");
         return None;
     }
-    // The file now carries the gateway bearer token (CCT-577) — restrict it to
+    // The file now carries the gateway bearer token — restrict it to
     // owner-only so the secret isn't world-readable on disk.
     #[cfg(unix)]
     {
@@ -3376,7 +3375,7 @@ pub(super) fn ensure_hook_settings(
     Some(path)
 }
 
-/// Build the managed `--settings` document (CCT-577): the ask/permission/Stop
+/// Build the managed `--settings` document: the ask/permission/Stop
 /// `hooks`, the gateway routing `env`, and the session `model`/`effortLevel`,
 /// all in one file. The claude daemon applies a session's `--settings` to a
 /// spare-claimed worker but deliberately does NOT reapply the dispatch `env`, so
@@ -3414,7 +3413,7 @@ fn managed_settings(
 }
 
 /// Translate a structured ask answer into the keystroke chunks that drive the
-/// real `AskUserQuestion` form (CCT-226). `questions` is the raw
+/// real `AskUserQuestion` form. `questions` is the raw
 /// `tool_input.questions` array captured by the ask-hook; `picks` is one list
 /// of 0-based option indices per question, in question order.
 ///
@@ -3480,7 +3479,7 @@ mod tests {
 
     #[test]
     fn dispatch_spec_built_from_payload_with_inline_prompt() {
-        // CCT-471: the dispatcher injects prompt/model/effort/env inside
+        // the dispatcher injects prompt/model/effort/env inside
         // TASK_PAYLOAD_JSON; the daemon turns it into a headless SessionSpec.
         let payload = serde_json::json!({
             "prompt": "do the thing",
@@ -3519,7 +3518,7 @@ mod tests {
 
     #[test]
     fn managed_settings_carries_gateway_env_model_and_effort() {
-        // CCT-577: gateway env + model + effort ride the `--settings` file so
+        // gateway env + model + effort ride the `--settings` file so
         // they survive the claude-daemon spare-claim (which drops the dispatch
         // env). Enum efforts use the `effortLevel` key; `max` falls back to the
         // CLAUDE_CODE_EFFORT_LEVEL env var (the settings key rejects it).
@@ -3568,7 +3567,7 @@ mod tests {
 
     #[test]
     fn deep_merge_overlay_wins_and_recurses() {
-        // CCT-540: overlay wins at every level; base-only keys are preserved;
+        // overlay wins at every level; base-only keys are preserved;
         // nested objects merge key-by-key rather than replacing wholesale.
         let mut base = json!({
             "a": 1,
@@ -3631,7 +3630,7 @@ mod tests {
 
     #[test]
     fn account_env_block_reaches_settings_but_managed_env_wins() {
-        // CCT-591: curated env vars persist in the account `settings_json.env`
+        // curated env vars persist in the account `settings_json.env`
         // block. That block must survive the merge under managed settings so it
         // reaches the worker's process env — but a managed gateway env key of the
         // same name always wins (routing can never be clobbered).
@@ -3661,7 +3660,7 @@ mod tests {
 
     #[test]
     fn launch_env_merges_server_env_over_hint_when_account_bound() {
-        // CCT-460 follow-up: a bound session launches with the server-resolved
+        // follow-up: a bound session launches with the server-resolved
         // gateway env merged OVER the pushed hint. Gateway keys win for routing,
         // but user-supplied non-gateway env (e.g. FOO) survives the relaunch
         // instead of being dropped.
@@ -3680,7 +3679,7 @@ mod tests {
 
     #[test]
     fn launch_env_fails_closed_when_bound_but_empty() {
-        // CCT-460: account-bound + empty env must REFUSE the launch rather than
+        // account-bound + empty env must REFUSE the launch rather than
         // start a worker that silently routes to the default upstream and 401s.
         let resp = GatewayEnvResponse {
             account_bound: true,
@@ -3757,7 +3756,7 @@ mod tests {
     fn kill_signal_name_maps_to_claude_enum() {
         // The interrupt route sends 15; kill_session sends None (handled at the
         // call site). Anything that is not SIGKILL must map to SIGTERM so it
-        // satisfies claude's `["SIGTERM","SIGKILL"]` enum (CCT-169 regression:
+        // satisfies claude's `["SIGTERM","SIGKILL"]` enum (regression:
         // a numeric signal was rejected, making interrupt a silent no-op).
         assert_eq!(kill_signal_name(15), "SIGTERM");
         assert_eq!(kill_signal_name(9), "SIGKILL");
@@ -3949,7 +3948,7 @@ mod tests {
 
     #[test]
     fn is_dead_parses_defensive_shapes() {
-        // CCT-252: no live known-dead sample, so several plausible shapes.
+        // no live known-dead sample, so several plausible shapes.
         let mut s = snap("abcd1234", "working", None);
         assert!(!s.is_dead(), "live working session is not dead");
 
@@ -3985,7 +3984,7 @@ mod tests {
         assert!(s.is_dead(), "tempo:dead → dead");
         s.tempo = None;
 
-        // CCT-355: the observed live shape — state:"failed", tempo:"idle",
+        // the observed live shape — state:"failed", tempo:"idle",
         // detail:"process gone while supervisor was down". The phrase is
         // embedded in a sentence in `detail`, so it must match as a substring.
         s.state = Some("failed".into());
@@ -3998,7 +3997,7 @@ mod tests {
 
     #[tokio::test]
     async fn dead_in_roster_emits_hibernated_with_state_json() {
-        // CCT-252 B2: a still-listed session that claude reports dead emits a
+        // B2: a still-listed session that claude reports dead emits a
         // hibernated Status (state.json survives → revivable red dot) within
         // one poll, without waiting for roster disappearance.
         let (mut d, mut rx) = driver();
@@ -4038,8 +4037,8 @@ mod tests {
 
     #[tokio::test]
     async fn dead_in_roster_emits_ended_without_state_json() {
-        // CCT-252 B2: dead-but-listed with no surviving job state → SessionEnded
-        // (the server marks the row `ended`, which is sticky per CCT-192).
+        // B2: dead-but-listed with no surviving job state → SessionEnded
+        // (the server marks the row `ended`, which is sticky).
         let (mut d, mut rx) = driver();
         d.apply_snapshot(vec![snap("bbbb0002", "working", None)]).await;
         assert!(matches!(rx.recv().await.unwrap(), AdapterEvent::SessionStarted { .. }));
@@ -4054,7 +4053,7 @@ mod tests {
 
     #[tokio::test]
     async fn revive_clears_dead_sticky_and_resumes_status() {
-        // CCT-252: if claude reports the short alive again after we marked it
+        // if claude reports the short alive again after we marked it
         // dead, the sticky flag clears and live Status flows once more.
         let (mut d, mut rx) = driver();
         d.apply_snapshot(vec![snap("cccc0003", "working", None)]).await;
@@ -4074,7 +4073,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_short_for_removal_uses_live_map_then_derives() {
-        // CCT-132: removal targets completed sessions, which have already
+        // removal targets completed sessions, which have already
         // dropped out of the live roster. Prefer the live reverse map, but
         // fall back to the session UUID's first group (== the short).
         let (mut d, _rx) = driver();
@@ -4097,7 +4096,7 @@ mod tests {
 
     #[tokio::test]
     async fn transcript_repins_when_session_id_changes_on_reset() {
-        // CCT-128 + CCT-158: an in-process reset (`/clear`, `/compact`) or a
+        // An in-process reset (`/clear`, `/compact`) or a
         // resume keeps the same `short` but gets a new `sessionId` (and a new
         // transcript file). We must follow the file to the new id, but keep
         // emitting under the ORIGINAL `local_id` so the post-reset transcript
@@ -4127,7 +4126,7 @@ mod tests {
 
     #[tokio::test]
     async fn reset_emits_boundary_marker_under_original_session() {
-        // CCT-158: a reset must not start/end a session — it injects a single
+        // a reset must not start/end a session — it injects a single
         // `context_reset` marker under the original `local_id` so the cut is
         // visible while the stream stays in one session.
         let (mut d, mut rx) = driver();
@@ -4221,7 +4220,7 @@ mod tests {
 
     #[tokio::test]
     async fn workflow_subagent_carries_workflow_meta() {
-        // CCT-225: a Workflow-tool agent under subagents/workflows/<runId>/ is
+        // a Workflow-tool agent under subagents/workflows/<runId>/ is
         // discovered and its SessionStarted meta.extra carries workflow context.
         use std::io::Write;
         let (mut d, mut rx) = driver();
@@ -4324,7 +4323,7 @@ mod tests {
 
     #[tokio::test]
     async fn blocked_state_does_not_emit_phantom_ask_question() {
-        // CCT-167: the old `blocked`+`detail` heuristic (CCT-164) broadcast any
+        // the old `blocked`+`detail` heuristic broadcast any
         // blocked session's status `detail` as an AskQuestion — firing phantom
         // prompts for non-question states (e.g. a background "needs input"
         // status). Status no longer drives AskQuestion at all; the real prompt
@@ -4373,7 +4372,7 @@ mod tests {
 
     #[tokio::test]
     async fn blocked_approve_emits_permission_request_then_resolves() {
-        // CCT-211: a `tempo:"blocked"` snapshot whose `needs` reads
+        // a `tempo:"blocked"` snapshot whose `needs` reads
         // "approve <Tool>: <detail>" surfaces a PermissionRequest; clearing the
         // block (next poll) emits PermissionResolved exactly once.
         let (mut d, mut rx) = driver();
@@ -4437,7 +4436,7 @@ mod tests {
 
     #[tokio::test]
     async fn pinning_records_session_to_local_map() {
-        // CCT-167: the ask-hook listener resolves a hook's live `session_id`
+        // the ask-hook listener resolves a hook's live `session_id`
         // through this map. First pin maps the id to itself; a `/clear`
         // rotation maps the NEW id to the stable original `local_id`.
         let (mut d, _rx) = driver();
@@ -4484,7 +4483,7 @@ mod tests {
         }
     }
 
-    /// CCT-547: the diagnose assembly aggregates the driver's live state —
+    /// the diagnose assembly aggregates the driver's live state —
     /// resolved short, activity-sourced verdict with an observation timestamp,
     /// pinned transcript, and honest `missing` facts for signals not present.
     #[tokio::test]
@@ -4535,7 +4534,7 @@ mod tests {
         assert!(!report.gateway.value.as_ref().unwrap().server_configured);
     }
 
-    /// CCT-547: a pending ask (hook signal) wins the arbitration and surfaces
+    /// a pending ask (hook signal) wins the arbitration and surfaces
     /// in both the verdict and the prompts fact; an unknown session still
     /// produces a fail-soft report rather than an error.
     #[tokio::test]
@@ -4597,7 +4596,7 @@ mod tests {
 
     #[tokio::test]
     async fn resume_mark_clamps_cursor_forward_and_skips_replay() {
-        // CCT-741: a server mark ahead of the (cold-start empty) local offset
+        // a server mark ahead of the (cold-start empty) local offset
         // fast-forwards the tail cursor, so the bytes the server already has are
         // never re-emitted.
         let (mut d, mut rx) = driver();
@@ -4630,7 +4629,7 @@ mod tests {
 
     #[tokio::test]
     async fn absent_mark_triggers_one_bounded_resend_then_idle_is_silent() {
-        // CCT-741 acceptance: a session we already tail with NO server mark gets
+        // acceptance: a session we already tail with NO server mark gets
         // exactly one bounded re-send window; once the offsets agree, repeated
         // periodic passes at idle emit nothing.
         let (mut d, mut rx) = driver();
@@ -4655,7 +4654,7 @@ mod tests {
 
     #[tokio::test]
     async fn divergent_mark_behind_local_triggers_resend() {
-        // CCT-741: the server's mark is BEHIND our persisted offset (a send
+        // the server's mark is BEHIND our persisted offset (a send
         // dropped before reconnect) — heal the gap with one bounded window.
         let (mut d, mut rx) = driver();
         let l0 = text_line("one");

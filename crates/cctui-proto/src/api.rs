@@ -24,7 +24,7 @@ pub struct DaemonAuthResponse {
     pub user_id: Uuid,
 }
 
-/// Response for `GET /api/v1/daemon/sessions/{id}/gateway-env` (CCT-460).
+/// Response for `GET /api/v1/daemon/sessions/{id}/gateway-env`.
 ///
 /// The daemon pulls this at every worker (re)launch — spawn, resume,
 /// cold-resume, fork — to obtain the gateway-routing env for the session's
@@ -40,16 +40,16 @@ pub struct GatewayEnvResponse {
     #[serde(default)]
     pub env: std::collections::BTreeMap<String, String>,
     /// Deep-merged per-account `settings_json` for the session's bound
-    /// account(s) (CCT-539). Travels alongside `env` on every daemon
+    /// account(s). Travels alongside `env` on every daemon
     /// gateway-env pull so it is re-served on spawn/resume/cold-resume/fork and
-    /// survives a daemon / claude-daemon restart (the CCT-460 failure class).
+    /// survives a daemon / claude-daemon restart (the failure class).
     /// The daemon deep-merges this UNDER its managed hook settings when writing
     /// the worker's `--settings` file — the managed hooks always win (the
-    /// daemon-side merge is CCT-540). `None` / absent → no per-account settings;
+    /// daemon-side merge is). `None` / absent → no per-account settings;
     /// older daemons that don't read this field simply ignore it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settings: Option<serde_json::Value>,
-    /// The user's clamped `whipStopPhrases` block (CCT-598): `{ mode, phrases,
+    /// The user's clamped `whipStopPhrases` block: `{ mode, phrases,
     /// guidance? }`. Per-user, delivered on this pull because the bare
     /// `whip-stop-hook` subprocess has no server connection; `None` → the hook
     /// uses its compiled defaults.
@@ -57,8 +57,7 @@ pub struct GatewayEnvResponse {
     pub whip_phrases: Option<serde_json::Value>,
 }
 
-/// Response for `GET /api/v1/daemon/sessions/{id}/token-valid?hash=<sha256hex>`
-/// (CCT-462).
+/// Response for `GET /api/v1/daemon/sessions/{id}/token-valid?hash=<sha256hex>`.
 ///
 /// The daemon's low-frequency validity sweep asks whether the session token it
 /// launched a TRUSTED worker with still resolves — i.e. a `session_tokens` row
@@ -154,7 +153,7 @@ pub struct SessionListItem {
     pub attention: Option<Attention>,
     /// Classifier bucket this session falls in (Working / Needs input /
     /// Ready for review / Completed). Drives the grouped session list in
-    /// both clients (CCT-90). Defaults to `Working` for back-compat.
+    /// both clients. Defaults to `Working` for back-compat.
     #[serde(default = "default_bucket")]
     pub bucket: Bucket,
     pub uptime_secs: i64,
@@ -168,11 +167,11 @@ pub struct SessionListItem {
     /// has been deleted but historical sessions still reference it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub machine_name: Option<String>,
-    /// Operator-set badge hue for the machine (0-359, CCT-222). `None` =
+    /// Operator-set badge hue for the machine (0-359). `None` =
     /// client derives the hue from the machine name hash.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub machine_hue: Option<i16>,
-    /// Machine kind (resolved from `machine_id`, CCT-231): `"persistent"`
+    /// Machine kind (resolved from `machine_id`): `"persistent"`
     /// for enrolled daemons, `"dispatch"`/`"ephemeral"` for server-managed
     /// dispatch workers. Lets clients group dispatched sessions separately.
     /// `None` when the machine row is gone.
@@ -184,7 +183,7 @@ pub struct SessionListItem {
     /// Timestamp of the last message event for this session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_message_at: Option<chrono::DateTime<chrono::Utc>>,
-    /// Timestamp the conversation was first registered (CCT-270). Surfaced so
+    /// Timestamp the conversation was first registered. Surfaced so
     /// clients can show the ISO start datetime in the relative-time tooltip.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub registered_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -197,51 +196,51 @@ pub struct SessionListItem {
     /// Reasoning/effort level (e.g. `"low"`, `"high"`), when set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
-    /// Whether cctui-side auto-approve is on for this session (CCT-151).
+    /// Whether cctui-side auto-approve is on for this session.
     /// In-memory server state, reflected so clients can show the toggle.
     #[serde(default)]
     pub auto_approve: bool,
-    /// Transcript snippet around a keyword match (CCT-184). Only populated by
+    /// Transcript snippet around a keyword match. Only populated by
     /// the search endpoint to show *why* a session matched; `None` otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub match_snippet: Option<String>,
-    /// Cold-cache surfacing (CCT-189). Timestamp of the most recent
+    /// Cold-cache surfacing. Timestamp of the most recent
     /// assistant turn (the last `session_token_usage` row). Lets the client
     /// predict prompt-cache expiry — Anthropic's cache is a ~5-minute sliding
     /// window — before the next send, independent of `cache_cold` (which is
     /// only known *after* a turn). `None` when no usage has been recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_activity_at: Option<chrono::DateTime<chrono::Utc>>,
-    /// *Confirmed* cold cache (CCT-189): the most recent assistant turn
+    /// *Confirmed* cold cache: the most recent assistant turn
     /// re-billed the full context (`cache_creation_tokens > 0` and
     /// `cache_read_tokens == 0`), i.e. the prompt cache had gone cold and that
     /// turn paid to rewrite it. Drives the ❄️ glyph on the session list.
     #[serde(default)]
     pub cache_cold: bool,
     /// Approximate number of tokens that get re-written to cache on the next
-    /// send when the cache is cold (CCT-189) — the cached-context size from
+    /// send when the cache is cold — the cached-context size from
     /// the last turn (`cache_read_tokens + cache_creation_tokens`). A rough
     /// estimate, shown on the composer's burst-cost indicator. `None` when no
     /// usage has been recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub estimated_burst_tokens: Option<u64>,
-    /// Hibernated (CCT-228): the worker process has exited but its job state
+    /// Hibernated: the worker process has exited but its job state
     /// survives on disk, so a reply revives it (daemon resume-on-reply).
     /// Derived from the adapter's final `tempo:"hibernated"` Status. Drives
     /// the claude-style red "exited, will resume on reply" dot.
     #[serde(default)]
     pub hibernated: bool,
-    /// Pinned/starred (CCT-267): the operator pinned this session so it sorts
+    /// Pinned/starred: the operator pinned this session so it sorts
     /// above everything in the live list and is exempt from the auto-archive
     /// reaper regardless of heartbeat age. DB-backed (`sessions.pinned`).
     #[serde(default)]
     pub pinned: bool,
-    /// User-defined colored labels attached to this session (CCT-360).
+    /// User-defined colored labels attached to this session.
     /// Many-to-many (`labels` / `session_labels` tables); empty when unlabeled.
     #[serde(default)]
     pub labels: Vec<Label>,
-    /// Last activity timestamp from `sessions.last_heartbeat` (CCT-365). Bumped
-    /// per real work event, and — since CCT-366 — also by subagent activity up
+    /// Last activity timestamp from `sessions.last_heartbeat`. Bumped
+    /// per real work event, and — since — also by subagent activity up
     /// the `parent_id` chain. Surfaced so clients can derive a long-horizon
     /// "stale" display signal (Working session with no activity for >30min)
     /// purely from the clock, the same way liveness tiers are time-derived.
@@ -250,20 +249,20 @@ pub struct SessionListItem {
     /// rows that never carry liveness.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_heartbeat: Option<chrono::DateTime<chrono::Utc>>,
-    /// OAuth account this session runs under (CCT-430), resolved from the most
+    /// OAuth account this session runs under, resolved from the most
     /// recent non-revoked `session_tokens` row joined to `account_providers` (name from its `accounts` parent).
     /// Surfaced so clients can show which account is driving the session (key
     /// icon + name tooltip). `None` for sessions with no minted gateway token
     /// (e.g. local sessions that never routed through the cctui gateway).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_name: Option<String>,
-    /// Unread assistant `message` events for the calling user (CCT-580):
+    /// Unread assistant `message` events for the calling user:
     /// messages newer than that user's `session_reads.last_seen_at` (all when
     /// never seen), capped at 99. Only the live list populates it; search and
     /// get-one default it to `0`.
     #[serde(default)]
     pub unread_count: u32,
-    /// Live activity headline (CCT-594): the daemon's spinner text from the
+    /// Live activity headline: the daemon's spinner text from the
     /// claude-daemon control-socket `list` snapshot (`sessions.activity`), e.g.
     /// "Central verify + cascade cleanup…". Already persisted per Status event;
     /// now surfaced on the list so a working row shows *what* it's doing without
@@ -271,39 +270,39 @@ pub struct SessionListItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activity_detail: Option<String>,
     /// When the session (or any subagent, rolled up the `parent_id` chain like
-    /// the heartbeat) last emitted a `ToolUse` (CCT-594). Lets clients tell a
+    /// the heartbeat) last emitted a `ToolUse`. Lets clients tell a
     /// *grinding* session (fresh tool calls) from one that's *asleep* — a bare
     /// heartbeat with no tool activity for minutes — far tighter than the 30-min
     /// `last_heartbeat` staleness. `None` when no tool call has been observed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_tool_at: Option<chrono::DateTime<chrono::Utc>>,
-    /// Name of the most recent tool call feeding `last_tool_at` (CCT-594), e.g.
+    /// Name of the most recent tool call feeding `last_tool_at`, e.g.
     /// `"Read"`, `"Edit"`. `None` when no tool call has been observed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_tool_name: Option<String>,
-    /// Running count of this session's `ToolUse` events for the current turn
-    /// (CCT-594), reset on a new user prompt. This session's own count only —
+    /// Running count of this session's `ToolUse` events for the current turn,
+    /// reset on a new user prompt. This session's own count only —
     /// a parent's rolled-up child activity shows via `last_tool_at`, not this.
     #[serde(default)]
     pub tool_use_count: u32,
-    /// Live token↔account credential binding (CCT-555): a non-revoked
+    /// Live token↔account credential binding: a non-revoked
     /// `session_tokens` row with a present `encrypted_token`. Distinct from
     /// `account_name`, which is `None` when the token's `accounts` row was
     /// deleted even though the binding still exists.
     #[serde(default)]
     pub has_token_credentials: bool,
-    /// What the session was launched to do (CCT-596): the adapter's `Status`
+    /// What the session was launched to do: the adapter's `Status`
     /// intent (`sessions.intent`), surfaced as a secondary line / tooltip on the
     /// card. `None` when the session carries no intent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intent: Option<String>,
-    /// Linked-PR hrefs from `sessions.children` (CCT-595). Drives the PR link
+    /// Linked-PR hrefs from `sessions.children`. Drives the PR link
     /// shown on the session card / TUI line and the `Ready for review` bucket.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pr_links: Vec<String>,
 }
 
-/// A reusable, user-defined colored label (CCT-360).
+/// A reusable, user-defined colored label.
 ///
 /// Labels are global (shared
 /// across sessions) and attached many-to-many; `color` is a CSS hex string
@@ -409,7 +408,7 @@ pub struct TokenUsageWindows {
 
 /// One time bucket of aggregate token usage for the Overview usage chart.
 ///
-/// (CCT-707.) `bucket` is the `date_trunc`'d instant (RFC3339, in the fixed
+/// (.) `bucket` is the `date_trunc`'d instant (RFC3339, in the fixed
 /// reporting timezone anchored by the caller's `tz_offset`, mapped back to a
 /// UTC instant like `today` in [`TokenUsageWindows`]). Missing buckets are
 /// zero-filled client-side, not in SQL.
@@ -428,7 +427,7 @@ pub struct UsageBucket {
     pub cache_creation: u64,
 }
 
-/// Per-model token + message totals over the reporting range (CCT-707).
+/// Per-model token + message totals over the reporting range.
 ///
 /// Model attribution is session-level (`sessions.model`); per-turn model
 /// accuracy is out of scope. Sessions with no recorded model bucket under
@@ -448,7 +447,7 @@ pub struct ModelUsage {
     pub messages: u64,
 }
 
-/// One hour-of-week cell of the Overview activity heatmap (CCT-707). Extracted
+/// One hour-of-week cell of the Overview activity heatmap. Extracted
 /// in the reporting timezone; cells with no activity are absent (the grid is
 /// filled client-side).
 #[derive(Debug, Serialize, Deserialize, TS)]
@@ -464,7 +463,7 @@ pub struct HeatmapCell {
     pub output: u64,
 }
 
-/// Overview usage analytics (CCT-707): tokens-over-time buckets, per-model
+/// Overview usage analytics: tokens-over-time buckets, per-model
 /// breakdown, and an activity heatmap — one endpoint, one round-trip set for
 /// the whole Overview usage section.
 #[derive(Debug, Serialize, Deserialize, TS)]
@@ -494,14 +493,14 @@ pub struct RenameRequest {
 }
 
 /// Body for `POST /api/v1/sessions/{id}/auto-approve` — toggle the cctui-side
-/// auto-approve convenience (CCT-151).
+/// auto-approve convenience.
 #[derive(Debug, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct AutoApproveRequest {
     pub enabled: bool,
 }
 
-/// Body for `POST /api/v1/sessions/{id}/set-model` (CCT-303).
+/// Body for `POST /api/v1/sessions/{id}/set-model`.
 ///
 /// Changes the model and/or reasoning effort of a running session in place. At
 /// least one of `model`/`effort` should be set; an empty string clears nothing
@@ -515,7 +514,7 @@ pub struct SetModelRequest {
     pub effort: Option<String>,
 }
 
-/// Body for `POST /api/v1/sessions/{id}/fork` (CCT-302).
+/// Body for `POST /api/v1/sessions/{id}/fork`.
 ///
 /// Fork an existing conversation into a brand-new session. All fields are
 /// optional overrides; omitted fields inherit from the parent (the working
@@ -523,7 +522,7 @@ pub struct SetModelRequest {
 /// adapter/account follow the parent too). `model`/`effort` default to the
 /// parent's current values (the webui pre-fills them), so a plain fork
 /// preserves the model; setting them is how "fork to change model" works for
-/// claude (which has no in-place switch — CCT-303). `prompt` is an optional
+/// claude (which has no in-place switch). `prompt` is an optional
 /// first turn to send on the forked branch.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -536,8 +535,8 @@ pub struct ForkRequest {
     pub prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// Conversation-extract selector (CCT-553): fork only a slice of the
-    /// parent's history. `None` → full-history fork (CCT-302). Claude-only; the
+    /// Conversation-extract selector: fork only a slice of the
+    /// parent's history. `None` → full-history fork. Claude-only; the
     /// server rejects it for codex sessions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extract: Option<crate::adapter::ForkExtract>,
@@ -562,7 +561,7 @@ pub struct SpawnRequest {
     /// Adapter to spawn under. Defaults to `"claude-code"` when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adapter_id: Option<String>,
-    /// Per-spawn permission posture (CCT-149): `yolo` skips all prompts +
+    /// Per-spawn permission posture: `yolo` skips all prompts +
     /// sandbox, `auto` auto-applies without prompts but keeps the sandbox,
     /// `ask` prompts on every action. `None` → the daemon's per-host
     /// default. See [`cctui_proto::adapter::PermissionMode`].
@@ -574,41 +573,41 @@ pub struct SpawnRequest {
     /// `minimal`/`low`/`medium`/`high`). `None` → the adapter's default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
-    /// Model family to launch under (CCT-274). Passed to claude as `--model`
+    /// Model family to launch under. Passed to claude as `--model`
     /// and to codex as `-c model="…"`. Free-form (the adapter resolves family
     /// aliases like `opus`/`sonnet`/`haiku`/`fable`); `None` → the adapter's
     /// own default model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// Environment secrets to inject into the worker process env at spawn time
-    /// (CCT-202). Keys must match `^[A-Z_][A-Z0-9_]*$`. Carried to the runtime
+    /// Environment secrets to inject into the worker process env at spawn time.
+    /// Keys must match `^[A-Z_][A-Z0-9_]*$`. Carried to the runtime
     /// like a bearer capability: NEVER persisted, NEVER logged, NEVER written to
     /// the transcript/timeline. `Debug` redacts the values.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub env: std::collections::BTreeMap<String, String>,
-    /// Named OAuth account to run the session under (CCT-232). Resolved against
+    /// Named OAuth account to run the session under. Resolved against
     /// the caller's own vault; the server mints a session-scoped gateway token
     /// and injects `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` (or the codex
     /// equivalents) into `env` so the worker's traffic flows through the
     /// passthrough gateway under that account. `None` → no gateway injection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<String>,
-    /// Provider of the selected `account` (CCT-399): `anthropic` |
+    /// Provider of the selected `account`: `anthropic` |
     /// `anthropic-compatible` | `openai` | `openai-compatible`. Disambiguates a
     /// name shared across providers so the account drives the base URL + family
     /// unambiguously (instead of inferring the family from `adapter_id`). `None`
     /// → fall back to the adapter-derived family.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
-    /// Explicit unbound spawn (CCT-582): when true the server does NOT resolve a
+    /// Explicit unbound spawn: when true the server does NOT resolve a
     /// default account for an empty `account` — the worker runs on the machine's
     /// own ambient login (no gateway env, no session token). This is distinct
     /// from an unset `account`, which auto-binds the caller's single
-    /// matching-family account (CCT-574). Ignored when `account` names an
+    /// matching-family account. Ignored when `account` names an
     /// account (a named account always binds).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub no_account: bool,
-    /// Stage this spawn as a draft instead of dispatching it (CCT-394). When
+    /// Stage this spawn as a draft instead of dispatching it. When
     /// true the server validates + persists a `draft` session row carrying the
     /// spawn payload in `metadata.draft` and does NOT mint account env or
     /// dispatch to the daemon. A later `POST /sessions/{id}/launch` mints env
@@ -644,14 +643,14 @@ impl std::fmt::Debug for SpawnRequest {
 pub struct SpawnResponse {
     pub command_id: Uuid,
     pub status: String,
-    /// Account the spawn bound (CCT-582), surfaced so the client can show which
+    /// Account the spawn bound, surfaced so the client can show which
     /// credential is in play — chiefly for an auto-bound default the user never
     /// named. `None` for an unbound spawn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<String>,
 }
 
-/// Body for `POST /api/v1/sessions/{id}/launch` (CCT-394) — promote a draft
+/// Body for `POST /api/v1/sessions/{id}/launch` — promote a draft
 /// session to a live spawn.
 ///
 /// The stored draft holds prompt + config only; env
@@ -665,7 +664,7 @@ pub struct LaunchRequest {
     pub env: std::collections::BTreeMap<String, String>,
 }
 
-/// Response to `POST /api/v1/sessions/{id}/fork` (CCT-345).
+/// Response to `POST /api/v1/sessions/{id}/fork`.
 ///
 /// Like
 /// [`SpawnResponse`] but also returns the child `session_id` the server
@@ -681,7 +680,7 @@ pub struct ForkResponse {
     pub session_id: Option<String>,
 }
 
-/// Response to `POST /api/v1/sessions/{id}/files` (CCT-236, mid-chat
+/// Response to `POST /api/v1/sessions/{id}/files` (mid-chat
 /// attachments).
 ///
 /// The staged absolute paths on the session's machine, in the same order the
@@ -693,7 +692,7 @@ pub struct StageFilesResponse {
     pub paths: Vec<String>,
 }
 
-/// CCT-107: dispatcher-routed session start.
+/// dispatcher-routed session start.
 ///
 /// `dispatcher` selects which [`Dispatcher`] impl on the server materializes
 /// the request (e.g. `"k8s_job"`). Everything else is deliberately
@@ -719,10 +718,10 @@ pub struct DispatchRequest {
     pub timeout: Option<u32>,
     /// Caller resume URL (e.g. an automation `$execution.resumeUrl`). A **bearer
     /// capability** — carried to the runtime, never logged or persisted.
-    /// The worker POSTs its deterministic result here (CCT-119).
+    /// The worker POSTs its deterministic result here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply_url: Option<String>,
-    /// Server-side completion-webhook target (CCT-294): the eventual
+    /// Server-side completion-webhook target: the eventual
     /// replacement for `reply_url`. When set, the SERVER (not the worker) POSTs
     /// the completion payload here once the dispatched session reaches a
     /// terminal state — INCLUDING crash cases the worker's exit trap can miss
@@ -732,7 +731,7 @@ pub struct DispatchRequest {
     /// additive: `reply_url` keeps working during migration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notify_url: Option<String>,
-    /// Optional per-target HMAC secret (CCT-294). When set, the server signs the
+    /// Optional per-target HMAC secret. When set, the server signs the
     /// completion-webhook body with HMAC-SHA256 and sends the hex digest in an
     /// `X-CCTUI-Signature: sha256=<hex>` header so the receiver can verify the
     /// POST originated from cctui. Never logged.
@@ -741,19 +740,19 @@ pub struct DispatchRequest {
     /// Free-form, opaque to cctui. Forwarded to the runtime as-is.
     #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
     pub payload: serde_json::Value,
-    /// Named account to run the dispatched session under (CCT-399). When set the
+    /// Named account to run the dispatched session under. When set the
     /// server mints a session-scoped gateway token bound to `(session_id,
     /// account)` and merges the gateway base-url + token into `payload.env`, so a
     /// dispatched worker routes through the passthrough gateway exactly like a
     /// machine spawn. `None` → no gateway injection (the worker's own auth).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<String>,
-    /// Provider of the selected `account` (CCT-399), disambiguating a shared
+    /// Provider of the selected `account`, disambiguating a shared
     /// name across providers. `None` → assume the claude-code (anthropic) family,
     /// matching the k8s claude-worker the dispatch path runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
-    /// Multiple accounts to route the dispatched session through (CCT-508).
+    /// Multiple accounts to route the dispatched session through.
     /// When non-empty the server mints a session-scoped gateway token for EACH
     /// account and merges every family's env into `payload.env`, so one worker
     /// can carry `ANTHROPIC_*` and `OPENAI_*` at once (e.g. claude + codex both
@@ -766,7 +765,7 @@ pub struct DispatchRequest {
     pub accounts: Vec<DispatchAccount>,
 }
 
-/// One `(account, provider)` entry in [`DispatchRequest::accounts`] (CCT-508).
+/// One `(account, provider)` entry in [`DispatchRequest::accounts`].
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct DispatchAccount {
@@ -787,7 +786,7 @@ pub struct DispatchResponse {
     pub handle: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub namespace: Option<String>,
-    /// Dispatch outcome (CCT-207): `dispatched` (a fresh run was launched),
+    /// Dispatch outcome: `dispatched` (a fresh run was launched),
     /// `deduplicated` (an in-flight Job already owns the one callback the caller
     /// is waiting on), or `redispatched` (a *terminal* Job was deleted and a
     /// fresh run launched — so the caller's wait resolves on the new callback
@@ -795,7 +794,7 @@ pub struct DispatchResponse {
     pub status: String,
 }
 
-/// Reply to `POST /api/v1/daemon/sessions/{id}/images` (CCT-566): the stored
+/// Reply to `POST /api/v1/daemon/sessions/{id}/images`: the stored
 /// blob id the daemon rewrites into a `cctui-img://<image_id>` message marker.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
