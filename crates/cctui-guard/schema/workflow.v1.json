@@ -12,11 +12,13 @@
           "type": "string"
         }
       },
-      "required": [
-        "question",
-        "violation"
-      ],
+      "required": ["question", "violation"],
       "type": "object"
+    },
+    "NetworkDefault": {
+      "description": "Document-level egress default for guarded steps that omit `[network]`.\n\nAuthored as a `[network-default]: allow|deny` header above the first step.\nAbsent ⇒ `deny`: a step-guarded prompt locks egress closed unless a step\ngrants hosts (or `[network]: *`). `allow` restores the legacy open behavior.",
+      "enum": ["allow", "deny"],
+      "type": "string"
     },
     "Rule": {
       "description": "A capability rule (`[allowed]` / `[disallowed]`).\n\nA wildcard, an explicit keyword/tool-set list, or unrestricted. Matches the\nmarkdown semantics exactly — empty is unrestricted, `*` is the wildcard,\neverything else is a comma-separated list of keywords and tool-set names\nexpanded at check time.",
@@ -42,9 +44,7 @@
               "type": "array"
             }
           },
-          "required": [
-            "list"
-          ],
+          "required": ["list"],
           "type": "object"
         }
       ]
@@ -70,9 +70,7 @@
     },
     "Version": {
       "description": "The IR schema version. Authored as a `[guard]: v1` header line (or the\n`version` field of a `workflow.json`); missing ⇒ [`Version::V1`].",
-      "enum": [
-        "v1"
-      ],
+      "enum": ["v1"],
       "type": "string"
     },
     "WorkflowStep": {
@@ -96,10 +94,7 @@
         },
         "gate": {
           "description": "Optional deterministic completion `[gate]` shell command.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         },
         "id": {
           "description": "The step number (`# Step N`).",
@@ -130,16 +125,24 @@
           "description": "The valid transitions out of the step."
         }
       },
-      "required": [
-        "id",
-        "transition"
-      ],
+      "required": ["id", "transition"],
       "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "The canonical compiled workflow: a version tag plus the ordered steps.",
   "properties": {
+    "network_default": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/NetworkDefault"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Document-level egress default for guarded steps without `[network]`.\nAbsent ⇒ deny."
+    },
     "steps": {
       "description": "The workflow steps, ordered by step number.",
       "items": {
@@ -153,9 +156,7 @@
       "description": "The IR schema version."
     }
   },
-  "required": [
-    "steps"
-  ],
+  "required": ["steps"],
   "title": "Workflow",
   "type": "object"
 }

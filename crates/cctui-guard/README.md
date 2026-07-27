@@ -101,8 +101,11 @@ Explore; do not modify anything.
   always work), regardless of whether it appears in `[transition]`.
 - **`[network]`** — comma-separated network-set names; on entry to the step the
   proxy policy is rewritten to allow exactly those hosts (plus the always-allow
-  hosts), default-deny. Omitting `[network]` writes a default-**allow** policy
-  (backwards compatible).
+  hosts), default-deny. `[network]: *` opens egress fully (default-**allow**).
+  Omitting `[network]` on a guarded step is default-**deny** (only the always-allow
+  hosts reachable); a document-level `[network-default]: allow` header above the
+  first step restores the legacy open behavior for every step that omits
+  `[network]`. A prompt with no steps is unguarded and stays default-allow.
 - **`[gate]`** — an optional deterministic completion check: a shell command run
   (in `--gate-cwd`, default `/workspace`) before any numeric transition *out* of
   the step is allowed. A non-zero exit refuses the transition and returns the
@@ -244,7 +247,10 @@ On startup and on every transition, the engine writes `--policy-out`:
 { "allowed_hosts": ["api.example.com:443", "github.example.com:443"], "default": "deny" }
 ```
 
-A step with no `[network]` writes `{"allowed_hosts": [], "default": "allow"}`.
+A guarded step with no `[network]` writes `{"allowed_hosts": [<always-allow>],
+"default": "deny"}` unless a document `[network-default]: allow` header opts back
+into `{"allowed_hosts": [], "default": "allow"}`. `[network]: *` writes
+`default: "allow"`; a prompt with no steps stays `default: "allow"`.
 On `Exit`, the policy is narrowed to the `net-claude` set plus the always-allow
 hosts (so Claude can finish its response and the result callback can fire),
 default-deny. If the proxy policy directory does not exist, policy writes are

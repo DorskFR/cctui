@@ -69,6 +69,7 @@ fn engine_from(
         vec!["callback.example.com:443".to_string()],
         dir.to_path_buf(),
         None,
+        false,
     ))
 }
 
@@ -211,6 +212,30 @@ fn version_header_defaults_and_rejects() {
     // Unknown version ⇒ compile error (fail loud, don't silently accept).
     let err = Workflow::compile("[guard]: v2\n# Step 1: X\n[allowed]: *\n[transition]: Exit");
     assert!(err.is_err(), "unsupported version must be rejected");
+}
+
+#[test]
+fn network_default_header_parses_and_rejects() {
+    use cctui_guard::ir::NetworkDefault;
+
+    let none = Workflow::compile("# Step 1: X\n[allowed]: *\n[transition]: Exit").unwrap();
+    assert_eq!(none.network_default, None);
+
+    let allow = Workflow::compile(
+        "[network-default]: allow\n# Step 1: X\n[allowed]: *\n[transition]: Exit",
+    )
+    .unwrap();
+    assert_eq!(allow.network_default, Some(NetworkDefault::Allow));
+
+    let deny =
+        Workflow::compile("[network-default]: DENY\n# Step 1: X\n[allowed]: *\n[transition]: Exit")
+            .unwrap();
+    assert_eq!(deny.network_default, Some(NetworkDefault::Deny));
+
+    let bad = Workflow::compile(
+        "[network-default]: maybe\n# Step 1: X\n[allowed]: *\n[transition]: Exit",
+    );
+    assert!(bad.is_err(), "an unknown value must be rejected");
 }
 
 /// The published JSON Schema artifact is the versioned contract for the IR.

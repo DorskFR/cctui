@@ -10,7 +10,7 @@ use std::sync::Arc;
 use clap::Parser;
 
 use cctui_guard::engine::WorkflowEngine;
-use cctui_guard::ir::Workflow;
+use cctui_guard::ir::{NetworkDefault, Workflow};
 use cctui_guard::parser::parse_guard_rules_files;
 use cctui_guard::server::router;
 
@@ -103,6 +103,18 @@ async fn main() -> anyhow::Result<()> {
 
     let prompt = cli.prompt.expect("clap requires --prompt unless --emit-schema");
     let workflow = load_workflow(&prompt)?;
+    let guarded_default_allow = matches!(workflow.network_default, Some(NetworkDefault::Allow));
+    if guarded_default_allow {
+        for step in &workflow.steps {
+            if step.network.is_empty() {
+                tracing::warn!(
+                    "Step {} has no [network] under [network-default]: allow — egress is \
+                     silently open; add [network] or drop the document override",
+                    step.id
+                );
+            }
+        }
+    }
     let steps = workflow.into_steps();
     if steps.is_empty() {
         tracing::warn!("No steps found in {}", prompt.display());
@@ -141,6 +153,7 @@ async fn main() -> anyhow::Result<()> {
         cli.always_allow,
         cli.gate_cwd,
         cli.judge_cmd,
+        guarded_default_allow,
     ));
 
     let app = router(engine);

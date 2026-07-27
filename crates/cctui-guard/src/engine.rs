@@ -43,6 +43,10 @@ pub struct WorkflowEngine {
     /// print a JSON verdict array on stdout. `None` while a step declares
     /// `[llmjudge]` refuses the transition — fail closed.
     judge_cmd: Option<String>,
+    /// Egress default for a guarded step that omits `[network]`: `false` (the
+    /// default) denies, `true` reopens it via a document `[network-default]:
+    /// allow`.
+    guarded_default_allow: bool,
 }
 
 impl WorkflowEngine {
@@ -51,6 +55,7 @@ impl WorkflowEngine {
     ///
     /// The state directory is created if missing.
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         steps: BTreeMap<u32, Step>,
         tool_sets: HashMap<String, Vec<String>>,
@@ -59,6 +64,7 @@ impl WorkflowEngine {
         always_allowed_hosts: Vec<String>,
         gate_cwd: PathBuf,
         judge_cmd: Option<String>,
+        guarded_default_allow: bool,
     ) -> Self {
         let step_numbers: Vec<u32> = steps.keys().copied().collect();
         let engine = Self {
@@ -71,6 +77,7 @@ impl WorkflowEngine {
             always_allowed_hosts,
             gate_cwd,
             judge_cmd,
+            guarded_default_allow,
         };
 
         if let Some(parent) = engine.state_file.parent() {
@@ -124,7 +131,10 @@ impl WorkflowEngine {
 
     /// Write the guard-proxy `policy.json` for `step_num`'s `[network]` rules.
     ///
-    /// No `[network]` annotation = `default: allow` (backwards compatible).
+    /// Unguarded (no such step / step 0) = `default: allow`. A guarded step
+    /// grants its `[network]` hosts (default deny), opens fully with
+    /// `[network]: *`, and — when it omits `[network]` — falls back to deny
+    /// unless the document set `[network-default]: allow`.
     fn write_proxy_policy(&self, step_num: u32) {
         if !self.proxy_dir_present() {
             tracing::debug!(
@@ -134,14 +144,24 @@ impl WorkflowEngine {
             return;
         }
 
-        let network = self.steps.get(&step_num).map_or("", |s| s.network.as_str());
-
-        let policy = if network.is_empty() {
-            json!({ "allowed_hosts": [], "default": "allow" })
-        } else {
-            let mut hosts = self.expand_network_rules(network);
-            hosts.extend(self.always_allowed_hosts.iter().cloned());
-            json!({ "allowed_hosts": hosts, "default": "deny" })
+        let policy = match self.steps.get(&step_num) {
+            None => json!({ "allowed_hosts": [], "default": "allow" }),
+            Some(step) if step.network.trim() == "*" => {
+                json!({ "allowed_hosts": [], "default": "allow" })
+            }
+            Some(step) if step.network.trim().is_empty() => {
+                if self.guarded_default_allow {
+                    json!({ "allowed_hosts": [], "default": "allow" })
+                } else {
+                    let hosts: Vec<String> = self.always_allowed_hosts.clone();
+                    json!({ "allowed_hosts": hosts, "default": "deny" })
+                }
+            }
+            Some(step) => {
+                let mut hosts = self.expand_network_rules(&step.network);
+                hosts.extend(self.always_allowed_hosts.iter().cloned());
+                json!({ "allowed_hosts": hosts, "default": "deny" })
+            }
         };
 
         let _ = std::fs::write(
