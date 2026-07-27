@@ -28,6 +28,154 @@ jobs:
       - name: cargo test (workspace)
         run: cargo test --workspace --locked
 
+  test-db:
+    name: cargo test (DB-gated)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo test -p cctui-github (--ignored, requires TEST_DATABASE_URL)
+        run: cargo test -p cctui-github --locked -- --ignored
+
+  webui:
+    name: webui
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install ghreview-ui dependencies (webui's source dependency)
+        working-directory: ghreview-ui
+        run: npm install --no-audit --no-fund
+
+      - name: Install dependencies
+        working-directory: webui
+        run: npm ci
+
+      - name: Test
+        working-directory: webui
+        run: npm test
+
+      - name: Build
+        working-directory: webui
+        run: npm run build
+
+  ghreview:
+    name: ghreview
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3"
+
+      - name: Install dependencies
+        working-directory: ghreview
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        working-directory: ghreview
+        run: bun run typecheck
+
+      - name: Test
+        working-directory: ghreview
+        run: bun test
+
+  ghreview-ui:
+    name: ghreview-ui
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3"
+
+      - name: Install dependencies
+        working-directory: ghreview-ui
+        run: bun install --frozen-lockfile
+
+      - name: Test
+        working-directory: ghreview-ui
+        run: bun run test
+
+      - name: Build
+        working-directory: ghreview-ui
+        run: bun run build
+
+  audit:
+    name: audit (non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: cargo audit
+        run: cargo audit
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3"
+
+      - name: Install ghreview dependencies
+        working-directory: ghreview
+        run: bun install --frozen-lockfile
+
+      - name: bun audit (ghreview)
+        working-directory: ghreview
+        run: bun audit
+
   no-css-global:
     name: no-css-global
     runs-on: ubuntu-latest
