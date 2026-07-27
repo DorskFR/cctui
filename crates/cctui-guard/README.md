@@ -147,6 +147,37 @@ Explore; do not modify anything.
   an empty question, a duplicate block, more than 12 questions) is a **parse
   error** at startup. `Exit` bypasses the judge like it bypasses the gate.
 
+### `guard` fenced block (per-transition gates, max-visits)
+
+Structure that does not fit a single bracket line lives in an opt-in
+```` ```guard ```` fenced block (info string `guard` or `guard yaml`) inside the
+step. Its content is a restricted YAML subset; anything else in the step stays
+prose. It compiles into the same IR as the bracket lines.
+
+````markdown
+# Step 3: Implement
+[gate]: make build
+[transition]: 4, 6, Exit
+```guard
+max-visits: 3
+transitions: [{to: 4, gate: "make test"}, {to: 6}]
+```
+````
+
+- **`transitions:`** — a per-target list, either flow style
+  (`[{to: 4, gate: "make test"}, {to: 6}]`) or a block list of `- to: N` items
+  with an optional `gate:` continuation. Each `to` **unions** into the step's
+  `[transition]` targets (author them in either place). A `gate:` is a
+  **per-transition** deterministic gate: it runs **only** when advancing to that
+  specific target, **after** the step-level `[gate]` — both must pass (step gate
+  first, then the transition gate). Quote a gate command that contains a comma.
+- **`max-visits: N`** — the step may be *entered* at most `N` times; a transition
+  that would exceed it is denied with a message telling the agent to exit and
+  report rather than retry, breaking a two-step ping-pong loop. The initial entry
+  counts as visit 1. `Exit` is never blocked by the bound. Visit counts persist
+  in the state file (`{"step": N, "visits": {…}}`); a legacy `{"step": N}` file
+  reads as zero visits.
+
 Every numeric transition (and the `SessionStart`/compact hook) re-injects the
 target step's **prose body verbatim**, so a long or compacted session re-anchors
 on the trusted next-step instructions rather than its own drifting summary. The
@@ -169,12 +200,13 @@ typed model, the IR, defined by the serde structs in `src/ir.rs`:
 ```
 Workflow { version, steps: [WorkflowStep] }
 WorkflowStep { id, title, body, allowed, disallowed, network,
-               transition, gate?, compact, judge[] }
+               transition, gate?, compact, judge[], max_visits? }
 ```
 
 The enums are the spec: `allowed`/`disallowed` are a `Rule`
 (`unrestricted` | `wildcard` | `{ list: [..] }`), `transition` is
-`{ to: [N..], exit: bool }`. This replaces spec-by-implementation — the
+`{ to: [N..], exit: bool, gates: {N: "cmd"} }` (per-target gates). This replaces
+spec-by-implementation — the
 **published JSON Schema** (`schema/workflow.v1.json`, regenerate with
 `cargo run -p cctui-guard -- --emit-schema`) is the versioned contract, and a
 lint (separate ticket) validates the IR, covering both frontends for free.

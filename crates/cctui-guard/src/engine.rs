@@ -124,25 +124,48 @@ impl WorkflowEngine {
             let _ = std::fs::create_dir_all(parent);
         }
         let first = engine.step_numbers.first().copied().unwrap_or(0);
-        engine.write_state(i64::from(first));
+        let mut visits = BTreeMap::new();
+        if first != 0 {
+            visits.insert(first, 1);
+        }
+        engine.write_state(i64::from(first), &visits);
         engine.write_proxy_policy(first);
         engine.decision_log.enter(i64::from(first));
         engine
     }
 
-    fn write_state(&self, step: i64) {
-        let _ = std::fs::write(&self.state_file, json!({ "step": step }).to_string());
+    fn write_state(&self, step: i64, visits: &BTreeMap<u32, u32>) {
+        let visits: serde_json::Map<String, Value> =
+            visits.iter().map(|(k, v)| (k.to_string(), json!(v))).collect();
+        let _ =
+            std::fs::write(&self.state_file, json!({ "step": step, "visits": visits }).to_string());
     }
 
     fn read_state(&self) -> i64 {
+        self.read_full_state().0
+    }
+
+    /// Read the persisted `(step, visit-counts)`. Backward compatible with the
+    /// legacy `{"step": N}` files: a missing `visits` object reads as empty.
+    fn read_full_state(&self) -> (i64, BTreeMap<u32, u32>) {
         let default = i64::from(self.step_numbers.first().copied().unwrap_or(0));
         let Ok(text) = std::fs::read_to_string(&self.state_file) else {
-            return default;
+            return (default, BTreeMap::new());
         };
-        serde_json::from_str::<Value>(&text)
-            .ok()
-            .and_then(|v| v.get("step").and_then(Value::as_i64))
-            .unwrap_or(default)
+        let Ok(value) = serde_json::from_str::<Value>(&text) else {
+            return (default, BTreeMap::new());
+        };
+        let step = value.get("step").and_then(Value::as_i64).unwrap_or(default);
+        let visits = value
+            .get("visits")
+            .and_then(Value::as_object)
+            .map(|m| {
+                m.iter()
+                    .filter_map(|(k, v)| Some((k.parse().ok()?, u32::try_from(v.as_u64()?).ok()?)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        (step, visits)
     }
 
     /// Expand a `[network]` rule string into a list of `host:port` entries.
@@ -263,10 +286,26 @@ impl WorkflowEngine {
     /// machine-checkable proof, not the agent's assertion.
     fn run_gate(&self, step_num: u32) -> Result<(), String> {
         let gate = self.steps.get(&step_num).map_or("", |s| s.gate.as_str()).trim();
+        self.run_gate_cmd(gate)
+    }
+
+    /// Run a per-target gate for the `current_u` → `tn` transition, declared in
+    /// `current_u`'s `guard` block. Runs after the step-level `[gate]`; only when
+    /// advancing to that specific target.
+    fn run_transition_gate(&self, current_u: u32, tn: u32) -> Result<(), String> {
+        let gate =
+            self.steps.get(&current_u).and_then(|s| s.transition_gates.get(&tn)).map_or("", |g| g);
+        self.run_gate_cmd(gate.trim())
+    }
+
+    /// Run a gate shell command in `gate_cwd`. `Ok(())` when empty or exit 0;
+    /// otherwise `Err(detail)` carrying the command's combined output so the
+    /// agent sees why the transition was refused.
+    fn run_gate_cmd(&self, gate: &str) -> Result<(), String> {
         if gate.is_empty() {
             return Ok(());
         }
-        tracing::info!("Running transition gate for Step {step_num}: {gate}");
+        tracing::info!("Running transition gate: {gate}");
         let output = std::process::Command::new("sh")
             .arg("-c")
             .arg(gate)
@@ -409,7 +448,8 @@ impl WorkflowEngine {
     /// host set so the agent can still report its outcome.
     fn transition_exit(&self, current_u: u32) -> TransitionResponse {
         tracing::info!("Transition: Step {current_u} → Exit");
-        self.write_state(STEP_EXITED);
+        let (_, visits) = self.read_full_state();
+        self.write_state(STEP_EXITED, &visits);
         if self.proxy_dir_present() {
             let mut hosts = self.expand_network_rules("net-claude");
             hosts.extend(self.always_allowed_hosts.iter().cloned());
@@ -445,12 +485,49 @@ impl WorkflowEngine {
     /// perfect — the agent's claim of completion is not trusted (CCT-440 /
     /// CCT-516). The judge's per-question verdicts are surfaced as a
     /// `kind: "judge"` evidence entry on both outcomes.
+    /// Deny a re-entry into `tn` that would exceed its `max-visits` bound. Some
+    /// with the deny response when the bound is hit, None when entry is allowed.
+    fn visit_bound_denial(
+        &self,
+        current_u: u32,
+        tn: u32,
+        visits: &BTreeMap<u32, u32>,
+    ) -> Option<TransitionResponse> {
+        let max = self.steps.get(&tn).and_then(|s| s.max_visits)?;
+        if visits.get(&tn).copied().unwrap_or(0) < max {
+            return None;
+        }
+        let reason = format!(
+            "Step {tn} has been entered its maximum {max} time(s); re-entry is denied to break a \
+             loop. Exit and report the blocked outcome instead of retrying."
+        );
+        tracing::info!("DENY transition Step {current_u} → Step {tn}: {reason}");
+        self.decision_log.transition(i64::from(current_u), &tn.to_string(), "deny", &reason);
+        Some(json!({ "ok": false, "step": current_u, "error": reason }))
+    }
+
+    /// Deny the advance when the step-level `[gate]` or the per-target gate
+    /// fails. Some with the deny response on failure, None when both pass.
+    fn gate_denial(&self, current_u: u32, tn: u32) -> Option<TransitionResponse> {
+        let Err(reason) =
+            self.run_gate(current_u).and_then(|()| self.run_transition_gate(current_u, tn))
+        else {
+            return None;
+        };
+        tracing::info!("DENY transition Step {current_u} → Step {tn}: {reason}");
+        self.decision_log.transition(i64::from(current_u), &tn.to_string(), "deny", &reason);
+        Some(json!({ "ok": false, "step": current_u, "error": reason }))
+    }
+
     fn transition_advance(&self, current_u: u32, tn: u32) -> TransitionResponse {
         let target = tn.to_string();
-        if let Err(reason) = self.run_gate(current_u) {
-            tracing::info!("DENY transition Step {current_u} → Step {tn}: {reason}");
-            self.decision_log.transition(i64::from(current_u), &target, "deny", &reason);
-            return json!({ "ok": false, "step": current_u, "error": reason });
+        let (_, mut visits) = self.read_full_state();
+
+        if let Some(denial) = self.visit_bound_denial(current_u, tn, &visits) {
+            return denial;
+        }
+        if let Some(denial) = self.gate_denial(current_u, tn) {
+            return denial;
         }
         let judge = match self.run_judge(current_u) {
             Ok(entry) => entry,
@@ -466,7 +543,8 @@ impl WorkflowEngine {
         };
         tracing::info!("Transition: Step {current_u} → Step {tn}");
         self.decision_log.transition(i64::from(current_u), &target, "allow", "");
-        self.write_state(i64::from(tn));
+        *visits.entry(tn).or_insert(0) += 1;
+        self.write_state(i64::from(tn), &visits);
         self.write_proxy_policy(tn);
         self.decision_log.enter(i64::from(tn));
         let title = self.steps.get(&tn).map_or("", |s| s.title.as_str());

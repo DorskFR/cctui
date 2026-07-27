@@ -76,6 +76,12 @@ pub struct Step {
     /// score, a malformed verdict, or a missing judge command all refuse the
     /// transition. Empty ⇒ no judge.
     pub llmjudge: Vec<JudgeQuestion>,
+    /// `max-visits:` from the `guard` fenced block: max times the step may be
+    /// entered before a transition into it is denied. `None` ⇒ unbounded.
+    pub max_visits: Option<u32>,
+    /// Per-target gates from the `guard` block's `transitions:` list, keyed by
+    /// target step; each runs only for that target, after the step-level `[gate]`.
+    pub transition_gates: BTreeMap<u32, String>,
 }
 
 /// Strip a leading run of `#` characters, then the rest of an ASCII-whitespace
@@ -181,30 +187,39 @@ fn close_judge(cur: u32, steps: &BTreeMap<u32, Step>) -> Result<(), ParseError> 
     Ok(())
 }
 
-/// Advance code-fence state for one line, treating fenced content as prose body.
+/// Is `info` a `guard`-language fence (opting the block into policy parsing,
+/// not prose)? Matches `guard` optionally followed by more words (`guard yaml`).
+fn is_guard_fence(info: &str) -> bool {
+    info.split_whitespace().next() == Some("guard")
+}
+
+/// Advance code-fence state for one line. Ordinary fenced content is prose body;
+/// a `guard`-language fence buffers its raw lines into `guard_raw` (keyed by the
+/// current step) for later [`parse_guard_block`], and is kept out of the body.
 /// Returns `true` if the line was consumed (the caller skips policy parsing).
 fn absorb_fence(
-    stripped: &str,
+    raw: &str,
     fence: &mut Option<Fence>,
     current: Option<u32>,
     bodies: &mut BTreeMap<u32, Vec<String>>,
+    guard_raw: &mut BTreeMap<u32, Vec<String>>,
     judge_open: &mut bool,
     steps: &BTreeMap<u32, Step>,
 ) -> Result<bool, ParseError> {
-    let push = |bodies: &mut BTreeMap<u32, Vec<String>>| {
-        if let Some(cur) = current
-            && let Some(body) = bodies.get_mut(&cur)
-        {
-            body.push(stripped.to_string());
-        }
-    };
+    let stripped = raw.trim();
     if let Some(open) = fence {
         let closes = fence_marker(stripped)
             .is_some_and(|f| f.ch == open.ch && f.len >= open.len && f.info.is_empty());
         if closes {
             *fence = None;
-        } else {
-            push(bodies);
+        } else if is_guard_fence(&open.info) {
+            if let Some(cur) = current {
+                guard_raw.entry(cur).or_default().push(raw.to_string());
+            }
+        } else if let Some(cur) = current
+            && let Some(body) = bodies.get_mut(&cur)
+        {
+            body.push(stripped.to_string());
         }
         return Ok(true);
     }
@@ -213,11 +228,277 @@ fn absorb_fence(
             close_judge(cur, steps)?;
             *judge_open = false;
         }
-        push(bodies);
+        if !is_guard_fence(&f.info)
+            && let Some(cur) = current
+            && let Some(body) = bodies.get_mut(&cur)
+        {
+            body.push(stripped.to_string());
+        }
         *fence = Some(f);
         return Ok(true);
     }
     Ok(false)
+}
+
+/// One `{to: N, gate: <cmd>}` entry of a `guard` block's `transitions:` list.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GuardTransition {
+    pub to: u32,
+    pub gate: Option<String>,
+}
+
+/// The typed payload of a `guard` fenced block.
+///
+/// Structure that does not fit the bracket-line syntax — per-target transition
+/// gates and the `max-visits` re-entry bound. Compiled into the same IR as the
+/// bracket lines.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GuardBlock {
+    pub max_visits: Option<u32>,
+    pub transitions: Vec<GuardTransition>,
+    pub exit: bool,
+}
+
+/// Split `s` on `delim`, ignoring delimiters inside quotes or `[]`/`{}` nesting.
+fn split_top_level(s: &str, delim: char) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut buf = String::new();
+    let mut depth = 0i32;
+    let mut quote: Option<char> = None;
+    for c in s.chars() {
+        if let Some(q) = quote {
+            buf.push(c);
+            if c == q {
+                quote = None;
+            }
+            continue;
+        }
+        match c {
+            '"' | '\'' => {
+                quote = Some(c);
+                buf.push(c);
+            }
+            '[' | '{' => {
+                depth += 1;
+                buf.push(c);
+            }
+            ']' | '}' => {
+                depth -= 1;
+                buf.push(c);
+            }
+            _ if c == delim && depth == 0 => {
+                out.push(buf.trim().to_string());
+                buf.clear();
+            }
+            _ => buf.push(c),
+        }
+    }
+    if !buf.trim().is_empty() {
+        out.push(buf.trim().to_string());
+    }
+    out
+}
+
+/// Strip one layer of matching single/double quotes from a scalar, else return
+/// it trimmed.
+fn unquote(s: &str) -> String {
+    let s = s.trim();
+    for q in ['"', '\''] {
+        if s.len() >= 2 && s.starts_with(q) && s.ends_with(q) {
+            return s[1..s.len() - 1].to_string();
+        }
+    }
+    s.to_string()
+}
+
+/// Set a `to`/`gate` field on the transition item under construction from a
+/// `key: value` pair; `{}` wrappers and multiple comma-separated pairs are
+/// accepted so both flow (`{to: 3, gate: x}`) and block items resolve here.
+fn guard_item_fields(
+    raw: &str,
+    to: &mut Option<u32>,
+    gate: &mut Option<String>,
+    step: u32,
+) -> Result<(), ParseError> {
+    let inner = raw.trim().trim_start_matches('{').trim_end_matches('}');
+    for pair in split_top_level(inner, ',') {
+        let (key, value) = pair.split_once(':').ok_or_else(|| ParseError {
+            step,
+            message: format!("guard block: transition field `{pair}` is not `key: value`"),
+        })?;
+        match key.trim() {
+            "to" => {
+                *to = Some(value.trim().parse().map_err(|_| ParseError {
+                    step,
+                    message: format!("guard block: `to` is not a step number: {}", value.trim()),
+                })?);
+            }
+            "gate" => {
+                let g = unquote(value);
+                *gate = if g.trim().is_empty() { None } else { Some(g) };
+            }
+            other => {
+                return Err(ParseError {
+                    step,
+                    message: format!("guard block: unknown transition field `{other}`"),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Parse a flow-style `transitions:` value: `[{to: 3, gate: "make test"}, {to: 5}]`.
+fn parse_flow_transitions(raw: &str, step: u32) -> Result<Vec<GuardTransition>, ParseError> {
+    let s = raw.trim();
+    let inner =
+        s.strip_prefix('[').and_then(|r| r.strip_suffix(']')).ok_or_else(|| ParseError {
+            step,
+            message: "guard block: flow `transitions` must be a `[ ... ]` list".to_string(),
+        })?;
+    let mut out = Vec::new();
+    for group in split_top_level(inner, ',') {
+        let (mut to, mut gate) = (None, None);
+        guard_item_fields(&group, &mut to, &mut gate, step)?;
+        let to = to.ok_or_else(|| ParseError {
+            step,
+            message: "guard block: a transition item is missing `to`".to_string(),
+        })?;
+        out.push(GuardTransition { to, gate });
+    }
+    Ok(out)
+}
+
+/// Parse a `guard` fenced block into a [`GuardBlock`].
+///
+/// A restricted YAML subset: top-level `max-visits: N`, `exit: true`, and
+/// `transitions:` as either a flow `[{to, gate}, ...]` list or a block list of
+/// `- to: N` items with optional `gate:` continuation lines. Unknown keys and
+/// malformed values fail loudly.
+pub fn parse_guard_block(content: &str, step: u32) -> Result<GuardBlock, ParseError> {
+    let lines: Vec<&str> = content.lines().collect();
+    let base = lines
+        .iter()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.len() - l.trim_start().len())
+        .min()
+        .unwrap_or(0);
+
+    let mut block = GuardBlock::default();
+    let mut in_block_list = false;
+    let (mut cur_to, mut cur_gate, mut building) = (None, None, false);
+
+    let flush = |block: &mut GuardBlock,
+                 to: &mut Option<u32>,
+                 gate: &mut Option<String>,
+                 building: &mut bool|
+     -> Result<(), ParseError> {
+        if *building {
+            let n = to.ok_or_else(|| ParseError {
+                step,
+                message: "guard block: a transition item is missing `to`".to_string(),
+            })?;
+            block.transitions.push(GuardTransition { to: n, gate: gate.take() });
+            *to = None;
+            *building = false;
+        }
+        Ok(())
+    };
+
+    for raw in lines {
+        if raw.trim().is_empty() || raw.trim_start().starts_with('#') {
+            continue;
+        }
+        let dedented = if raw.len() >= base { &raw[base..] } else { raw.trim_start() };
+        let indent = dedented.len() - dedented.trim_start().len();
+        let stripped = dedented.trim();
+
+        if indent == 0 {
+            flush(&mut block, &mut cur_to, &mut cur_gate, &mut building)?;
+            in_block_list = false;
+            let (key, value) = stripped.split_once(':').ok_or_else(|| ParseError {
+                step,
+                message: format!("guard block: `{stripped}` is not `key: value`"),
+            })?;
+            let value = value.trim();
+            match key.trim() {
+                "max-visits" | "max_visits" => {
+                    block.max_visits = Some(value.parse().map_err(|_| ParseError {
+                        step,
+                        message: format!("guard block: max-visits is not a number: {value}"),
+                    })?);
+                }
+                "exit" => {
+                    block.exit =
+                        matches!(value.to_ascii_lowercase().as_str(), "true" | "yes" | "1");
+                }
+                "transitions" => {
+                    if value.is_empty() {
+                        in_block_list = true;
+                    } else if value.starts_with('[') {
+                        block.transitions = parse_flow_transitions(value, step)?;
+                    } else {
+                        return Err(ParseError {
+                            step,
+                            message: "guard block: `transitions` must be a `[...]` flow list or a \
+                                      block list of `- to:` items"
+                                .to_string(),
+                        });
+                    }
+                }
+                other => {
+                    return Err(ParseError {
+                        step,
+                        message: format!("guard block: unknown key `{other}`"),
+                    });
+                }
+            }
+        } else if in_block_list {
+            if let Some(rest) = stripped.strip_prefix('-') {
+                flush(&mut block, &mut cur_to, &mut cur_gate, &mut building)?;
+                building = true;
+                guard_item_fields(rest, &mut cur_to, &mut cur_gate, step)?;
+            } else if building {
+                guard_item_fields(stripped, &mut cur_to, &mut cur_gate, step)?;
+            } else {
+                return Err(ParseError {
+                    step,
+                    message: format!("guard block: stray line in `transitions`: {stripped}"),
+                });
+            }
+        } else {
+            return Err(ParseError {
+                step,
+                message: format!("guard block: unexpected indented line: {stripped}"),
+            });
+        }
+    }
+    flush(&mut block, &mut cur_to, &mut cur_gate, &mut building)?;
+    Ok(block)
+}
+
+/// Merge a parsed [`GuardBlock`] onto a step: its `to` targets union into the
+/// `[transition]` string, its per-target gates and `max-visits` bound are
+/// recorded on the step.
+fn apply_guard_block(step: &mut Step, block: GuardBlock) {
+    if let Some(mv) = block.max_visits {
+        step.max_visits = Some(mv);
+    }
+    let (mut nums, mut exit) = parse_transitions(&step.transition);
+    for t in block.transitions {
+        if !nums.contains(&t.to) {
+            nums.push(t.to);
+        }
+        if let Some(g) = t.gate {
+            step.transition_gates.insert(t.to, g);
+        }
+    }
+    exit |= block.exit;
+    let mut parts: Vec<String> = nums.iter().map(u32::to_string).collect();
+    if exit {
+        parts.push("Exit".to_string());
+    }
+    step.transition = parts.join(", ");
 }
 
 /// Parse step definitions from prompt markdown.
@@ -242,11 +523,20 @@ pub fn parse_steps(markdown: &str) -> Result<BTreeMap<u32, Step>, ParseError> {
     // A `[llmjudge]` block is open and collecting `- question` lines.
     let mut judge_open = false;
     let mut fence: Option<Fence> = None;
+    let mut guard_raw: BTreeMap<u32, Vec<String>> = BTreeMap::new();
 
     for line in markdown.split('\n') {
         let stripped = line.trim();
 
-        if absorb_fence(stripped, &mut fence, current, &mut bodies, &mut judge_open, &steps)? {
+        if absorb_fence(
+            line,
+            &mut fence,
+            current,
+            &mut bodies,
+            &mut guard_raw,
+            &mut judge_open,
+            &steps,
+        )? {
             continue;
         }
 
@@ -334,13 +624,33 @@ pub fn parse_steps(markdown: &str) -> Result<BTreeMap<u32, Step>, ParseError> {
         close_judge(cur, &steps)?;
     }
 
+    finalize_bodies(&mut steps, bodies);
+    apply_guard_blocks(&mut steps, guard_raw)?;
+
+    Ok(steps)
+}
+
+/// Join each step's accumulated prose lines into its trimmed `body`.
+fn finalize_bodies(steps: &mut BTreeMap<u32, Step>, bodies: BTreeMap<u32, Vec<String>>) {
     for (num, lines) in bodies {
         if let Some(step) = steps.get_mut(&num) {
             step.body = lines.join("\n").trim().to_string();
         }
     }
+}
 
-    Ok(steps)
+/// Parse each step's buffered `guard` fenced block and merge it onto the step.
+fn apply_guard_blocks(
+    steps: &mut BTreeMap<u32, Step>,
+    guard_raw: BTreeMap<u32, Vec<String>>,
+) -> Result<(), ParseError> {
+    for (num, lines) in guard_raw {
+        let block = parse_guard_block(&lines.join("\n"), num)?;
+        if let Some(step) = steps.get_mut(&num) {
+            apply_guard_block(step, block);
+        }
+    }
+    Ok(())
 }
 
 /// Every `# Step N` heading number in document order, duplicates preserved.
@@ -540,6 +850,149 @@ fn parse_set_definition(line: &str) -> Option<(String, Vec<String>, bool)> {
         .map(str::to_string)
         .collect();
     Some((name.to_string(), members, extend))
+}
+
+#[cfg(test)]
+mod guard_block_tests {
+    use super::*;
+
+    #[test]
+    fn flow_transitions_and_max_visits() {
+        let md = "\
+# Step 1
+[transition]: Exit
+```guard
+max-visits: 2
+transitions: [{to: 3, gate: \"make test\"}, {to: 5}]
+```
+
+# Step 3
+[transition]: Exit
+
+# Step 5
+[transition]: Exit
+";
+        let steps = parse_steps(md).unwrap();
+        let s = &steps[&1];
+        assert_eq!(s.max_visits, Some(2));
+        assert_eq!(s.transition_gates.get(&3).map(String::as_str), Some("make test"));
+        assert!(!s.transition_gates.contains_key(&5));
+        let (nums, exit) = parse_transitions(&s.transition);
+        assert_eq!(nums, vec![3, 5]);
+        assert!(exit, "the bracket-line Exit survives the merge");
+    }
+
+    #[test]
+    fn block_style_transitions() {
+        let md = "\
+# Step 1
+```guard
+transitions:
+  - to: 2
+    gate: make check
+  - to: 4
+max-visits: 5
+```
+
+# Step 2
+[transition]: Exit
+
+# Step 4
+[transition]: Exit
+";
+        let steps = parse_steps(md).unwrap();
+        let s = &steps[&1];
+        assert_eq!(s.max_visits, Some(5));
+        assert_eq!(s.transition_gates.get(&2).map(String::as_str), Some("make check"));
+        assert_eq!(parse_transitions(&s.transition).0, vec![2, 4]);
+    }
+
+    #[test]
+    fn guard_fence_is_not_prose_body() {
+        let md = "\
+# Step 1
+Do the thing.
+```guard
+max-visits: 1
+```
+";
+        let steps = parse_steps(md).unwrap();
+        assert_eq!(steps[&1].body, "Do the thing.");
+        assert!(!steps[&1].body.contains("max-visits"));
+    }
+
+    #[test]
+    fn guard_yaml_info_string_is_recognized() {
+        let md = "\
+# Step 1
+```guard yaml
+max-visits: 4
+```
+";
+        assert_eq!(parse_steps(md).unwrap()[&1].max_visits, Some(4));
+    }
+
+    #[test]
+    fn plain_fence_stays_prose() {
+        let md = "\
+# Step 1
+```yaml
+max-visits: 9
+```
+";
+        let steps = parse_steps(md).unwrap();
+        assert_eq!(steps[&1].max_visits, None);
+        assert!(steps[&1].body.contains("max-visits: 9"));
+    }
+
+    #[test]
+    fn quoted_gate_may_contain_commas() {
+        let md = "\
+# Step 1
+[transition]: Exit
+```guard
+transitions: [{to: 2, gate: \"make a, make b\"}]
+```
+
+# Step 2
+[transition]: Exit
+";
+        let steps = parse_steps(md).unwrap();
+        assert_eq!(steps[&1].transition_gates.get(&2).map(String::as_str), Some("make a, make b"));
+    }
+
+    #[test]
+    fn bad_max_visits_is_parse_error() {
+        let md = "\
+# Step 1
+```guard
+max-visits: soon
+```
+";
+        assert!(parse_steps(md).is_err());
+    }
+
+    #[test]
+    fn unknown_guard_key_is_parse_error() {
+        let md = "\
+# Step 1
+```guard
+max-vists: 3
+```
+";
+        assert!(parse_steps(md).is_err());
+    }
+
+    #[test]
+    fn transition_item_without_to_is_error() {
+        let md = "\
+# Step 1
+```guard
+transitions: [{gate: make test}]
+```
+";
+        assert!(parse_steps(md).is_err());
+    }
 }
 
 #[cfg(test)]

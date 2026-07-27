@@ -746,3 +746,114 @@ fn test_example_context_pack_prompt_parses_with_llmjudge() {
     assert!(steps[&1].llmjudge.is_empty() && steps[&5].llmjudge.is_empty());
     assert_eq!(steps[&4].transition, "5, Exit", "annotations after the block still parse");
 }
+
+#[test]
+fn per_transition_gate_runs_only_for_its_target() {
+    let prompt = "\
+# Step 1
+[transition]: 2, 3
+```guard
+transitions: [{to: 2, gate: \"false\"}, {to: 3, gate: \"true\"}]
+```
+
+# Step 2
+[transition]: Exit
+
+# Step 3
+[transition]: Exit
+";
+    let t = make_engine("", prompt);
+    let denied = t.engine.transition(&json!(2));
+    assert_eq!(denied["ok"], json!(false), "→2 gate `false` refuses, stays on Step 1");
+    assert_eq!(t.engine.get_state()["step"], json!(1));
+    let ok = t.engine.transition(&json!(3));
+    assert_eq!(ok["ok"], json!(true));
+    assert_eq!(t.engine.get_state()["step"], json!(3));
+}
+
+#[test]
+fn step_gate_and_transition_gate_both_run() {
+    let prompt = "\
+# Step 1
+[gate]: true
+[transition]: 2
+```guard
+transitions: [{to: 2, gate: \"false\"}]
+```
+
+# Step 2
+[transition]: Exit
+";
+    let t = make_engine("", prompt);
+    let resp = t.engine.transition(&json!(2));
+    assert_eq!(resp["ok"], json!(false), "step gate passes but the per-target gate fails");
+    assert_eq!(t.engine.get_state()["step"], json!(1));
+}
+
+#[test]
+fn max_visits_breaks_a_ping_pong_loop() {
+    let prompt = "\
+# Step 1
+[transition]: 2
+
+# Step 2
+[transition]: 1
+```guard
+max-visits: 2
+```
+";
+    let t = make_engine("", prompt);
+    assert_eq!(t.engine.transition(&json!(2))["ok"], json!(true)); // visit 1
+    assert_eq!(t.engine.transition(&json!(1))["ok"], json!(true));
+    assert_eq!(t.engine.transition(&json!(2))["ok"], json!(true)); // visit 2
+    assert_eq!(t.engine.transition(&json!(1))["ok"], json!(true));
+    let denied = t.engine.transition(&json!(2)); // would be visit 3
+    assert_eq!(denied["ok"], json!(false));
+    assert!(denied["error"].as_str().unwrap().contains("maximum"));
+    assert_eq!(t.engine.get_state()["step"], json!(1), "stays put on the denied re-entry");
+    // Exit is never blocked by the visit bound.
+    assert_eq!(t.engine.transition(&json!("exit"))["ok"], json!(true));
+}
+
+#[test]
+fn max_visits_counts_the_initial_entry() {
+    let prompt = "\
+# Step 1
+[transition]: 2
+```guard
+max-visits: 1
+```
+
+# Step 2
+[transition]: 1
+";
+    let t = make_engine("", prompt);
+    assert_eq!(t.engine.transition(&json!(2))["ok"], json!(true));
+    let denied = t.engine.transition(&json!(1));
+    assert_eq!(denied["ok"], json!(false), "re-entering the max-visits:1 entry step is denied");
+}
+
+#[test]
+fn legacy_state_file_without_visits_is_read() {
+    let prompt = "\
+# Step 1
+[transition]: 2
+
+# Step 2
+[transition]: Exit
+";
+    let dir = tempfile::tempdir().unwrap();
+    let state_file = dir.path().join("state");
+    let engine = WorkflowEngine::new(
+        parse_steps(prompt).unwrap(),
+        no_sets(),
+        state_file.clone(),
+        dir.path().join("guard-proxy").join("policy.json"),
+        vec![],
+        dir.path().to_path_buf(),
+        None,
+        false,
+    );
+    std::fs::write(&state_file, "{\"step\": 1}").unwrap();
+    assert_eq!(engine.transition(&json!(2))["ok"], json!(true));
+}

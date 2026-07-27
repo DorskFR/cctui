@@ -56,6 +56,16 @@
           "description": "Whether `Exit` appears in the authored transition list.",
           "type": "boolean"
         },
+        "gates": {
+          "additionalProperties": false,
+          "description": "Per-target deterministic gate commands, keyed by target step. Runs only\nfor that target, after the step-level `[gate]`.",
+          "patternProperties": {
+            "^\\d+$": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
         "to": {
           "description": "Numeric next steps, in authored order.",
           "items": {
@@ -108,6 +118,12 @@
             "$ref": "#/$defs/JudgeQuestion"
           },
           "type": "array"
+        },
+        "max_visits": {
+          "description": "Optional `max-visits` re-entry bound: the step may be entered at most\nthis many times before a transition into it is denied.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": ["integer", "null"]
         },
         "network": {
           "description": "Network-set names granted for the step's egress policy.",
