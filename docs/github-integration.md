@@ -1,7 +1,14 @@
 # GitHub integration — architecture & breakdown (design spec)
 
-> Status: **proposal / not built**. This document specs a GitHub integration for
-> cctui and breaks it into actionable pieces. It does **not** change behaviour.
+> Status: **partially built, partially superseded.** This was the original design
+> spec for a GitHub integration living inside `cctui-github`. Epic 0 (plugin
+> skeleton) and Epic 1 (connector, webhook, reconcile, classifier feed) shipped
+> as specified. The fast diff viewer and the review-draft/publish UI (Epic 2, and
+> the UI half of Epic 3) were superseded by a standalone service, **ghreview**
+> (`ghreview/` + `ghreview-ui/`, epic CCT-600) — see `ghreview/README.md`. Those
+> sections below are kept for the parts still current: the connector/webhook/
+> capability design (§6.1, §7) and the agent MCP review-draft tool (§6.3, still
+> in `cctui-github`), and are historical for the removed diff-viewer plan (§6.2).
 
 ## 1. Goals
 
@@ -153,42 +160,14 @@ the PR status cache the classifier already reads, so an agent session that opene
 PR #N flips to *Ready for review* / *CI red* in the **Sessions** view with no
 extra UI.
 
-### 6.2 Component B — fast diff viewer ("review efficiently")
+### 6.2 Component B — fast diff viewer ("review efficiently") — superseded
 
-**Data source: GitHub only, server-proxied + cached per head SHA.** Server fetches
-`GET /repos/{o}/{r}/pulls/{n}/files` (paginated) and/or the `.diff`/`.patch` media
-types, with a **blob fallback** for files GitHub truncates, and exposes
-`GET /api/v1/github/pulls/{ref}/diff`. No daemon, no checkout.
-
-**Rendering (the DiffsHub bar):**
-- **Single virtualized surface** (`@tanstack/virtual`, pairs with the existing
-  TanStack Query) rendering only on-screen lines across the whole change set —
-  scales to thousands of files / hundreds of thousands of lines.
-- **File-by-file**, importance-ordered (source-before-support / by reference
-  count, not alphabetical); collapse unchanged regions, lazy-expand.
-- **Blob-keyed "reviewed" marks** (the one slop-review idea we keep): mark a file
-  reviewed keyed to its blob SHA; a later push only re-flags changed files.
-  Persisted per user+PR in `github.viewed_marks`.
-- **Keyboard-driven** (pierre): next/prev file·hunk, comment, toggle reviewed,
-  toggle lens.
-- **Lenses:** cumulative diff + per-commit diff (both from GitHub). *No
-  working-copy lens* — that needed a checkout, which we've ruled out.
-- **Large-diff handling:** stream/paginate; show a "huge diff" affordance for the
-  >100k-line case GitHub serves unreliably.
-
-**Review-draft model (native, draft → refine → publish):** tables in schema
-`github`:
-- `review_drafts` — `{ id, pull_ref, author (user | agent+session_id), verdict
-  (comment|approve|request_changes), status: draft|published, created_at }`.
-- `review_draft_comments` — `{ draft_id, path, side, line, start_line?, body,
-  github_comment_id?, in_reply_to? }`.
-
-Anchoring on `(path, side, line[, start_line])` against the head SHA is the
-load-bearing correctness detail (its own ticket). Flow: add inline drafts
-instantly (no GitHub round-trip) → **Publish** = one
-`POST /repos/{o}/{r}/pulls/{n}/reviews` with batched comments + verdict (no
-comment spam). Pull existing open GitHub threads into `github.review_threads` so
-the viewer shows them inline alongside drafts.
+This component (server diff proxy, virtualized viewer, review-draft/publish HTTP
+routes and their `github.*` tables) was originally planned to live in
+`cctui-github`, and an early version shipped there. It was later removed
+(CCT-611) in favour of a standalone service, **ghreview** (`ghreview/` backend +
+`ghreview-ui` frontend, epic CCT-600) — see `ghreview/README.md` for the current
+diff-viewer and review-publish design.
 
 ### 6.3 Component C — agent review sessions ("review *with* an agent")
 
@@ -233,9 +212,11 @@ teardown**, fully encapsulated in its own crate.
 ### 7.1 Code: one crate, `cctui-github`
 
 Everything GitHub lives in `crates/cctui-github`: connector + GitHub client,
-webhook handler, diff proxy, review store, all HTTP routes (`/api/v1/github/*` +
-`/api/v1/triggers/github`), the MCP review tool, proto additions (re-exported),
-and **its own embedded migrations**. The server's `main.rs` mounts it behind a
+webhook handler, the agent review-draft store, connector HTTP routes
+(`/api/v1/github/connectors*` + `/api/v1/triggers/github`), the MCP review
+tool, proto additions (re-exported), and **its own embedded migrations**. The
+diff proxy and viewer live outside this crate now, in `ghreview` (§6.2). The
+server's `main.rs` mounts `cctui-github` behind a
 `github` **Cargo feature**:
 
 ```rust
@@ -314,11 +295,12 @@ capability-gated UI, drop-schema uninstall.)*
 
 - **`ServerEvent`** (client WS): `GithubPullUpdated` / `GithubCheckUpdated` /
   `GithubReviewActivity` (or one `GithubEvent { kind, payload }` envelope).
-- **HTTP** `/api/v1/github/*`: connectors CRUD; pulls list/detail;
-  `pulls/{ref}/diff`; review-draft CRUD; `pulls/{ref}/publish-review`;
-  `pulls/{ref}/mark-viewed`. Plus `triggers/github` (webhook) and
-  `GET /api/v1/capabilities`.
-- **MCP tool** (agent side): `review_comment`, `review_summary`.
+- **HTTP** `/api/v1/github/connectors*` (CRUD) plus `triggers/github` (webhook)
+  and `GET /api/v1/capabilities`. The pulls/diff/publish/mark-viewed routes
+  originally planned here shipped, then moved to the standalone `ghreview`
+  service's own `/v1` contract (§6.2) — they are not part of `cctui-github`.
+- **MCP tool** (agent side): `review_comment`, `review_summary` — writes agent
+  drafts into `cctui-github`'s own draft store (kept; not part of the ghreview move).
 - **No new daemon frames.** The daemon is untouched (session messaging only).
 - All new proto types get ts-rs bindings → webui automatically.
 
@@ -347,40 +329,30 @@ Sized rough (S ≈ <1d, M ≈ 1–3d, L ≈ 1wk+). Deps in parentheses.
   SessionCard-style rows + filters. *(GH-CONN-5, GH-CAP-1)*
 - **GH-CLS-1 (S):** feed connector state into the classifier PR cache. *(GH-CONN-3)*
 
-### Epic 2 — Fast diff viewer ("review efficiently")
-- **GH-VIEW-1 (M):** server diff proxy (`pulls/{ref}/diff`) + per-SHA cache +
-  pagination + truncated-file blob fallback. *(GH-CONN-3)*
-- **GH-VIEW-2 (M):** comment **anchoring** `(path, side, line[, start])` vs head
-  SHA — the load-bearing correctness ticket.
-- **GH-VIEW-3 (L):** virtualized single-surface diff component
-  (`@tanstack/virtual`), file-by-file, collapse-unchanged, keyboard nav,
-  importance ordering, large-diff affordance. *(GH-VIEW-1)*
-- **GH-VIEW-4 (M):** `review_drafts`/`review_draft_comments` + inline draft
-  commenting UI. *(GH-VIEW-2)*
-- **GH-VIEW-5 (M):** **Publish review** (batched submission) + pull-down sync of
-  existing GitHub threads. *(GH-VIEW-4)*
-- **GH-VIEW-6 (S):** blob-keyed "reviewed" marks per user+PR. *(GH-VIEW-3)*
+### Epic 2 — Fast diff viewer ("review efficiently") — superseded (CCT-611)
+
+Shipped as GH-VIEW-1..6 inside `cctui-github`, then removed in favour of the
+standalone `ghreview` service (§6.2). See `ghreview/README.md` and its own
+ticket history (epic CCT-600) for the current design.
 
 ### Epic 3 — Agent review sessions ("review with an agent")
 - **GH-AGENT-1 (M):** repo-scoped review-prompt selection (extend `prompts`) +
   "Review with agent" entry points wired to the spawn modal with PR context
   prefilled. *(spawn/dispatch — exists)*
 - **GH-AGENT-2 (M):** MCP review tool (`review_comment`/`review_summary`) writing
-  to the draft store with the session token. *(GH-VIEW-4)*
+  to the draft store with the session token.
 - **GH-AGENT-3 (M):** block↔conversation bridge — "ask agent about this block"
-  (inject `path`+lines+snippet) + "promote answer to draft comment". *(GH-VIEW-3,
-  GH-VIEW-4, conversation drawer — exists)*
+  (inject `path`+lines+snippet) + "promote answer to draft comment". Needs a
+  diff surface to select a block from — now `ghreview-ui`, not GH-VIEW-3.
 
-**Order:** Epic 0 → Epic 1 (triage value, no machine) → Epic 2 (review UX) →
-Epic 3 (agent loop). Epic 1 alone is independently shippable.
+**Order:** Epic 0 → Epic 1 (triage value, no machine) → Epic 3 (agent loop). Epic
+2 is superseded by `ghreview`. Epic 1 alone is independently shippable.
 
 ## 11. Risks
 
-- **Comment line-mapping** to GitHub's `line`/`side`/`commit_id` semantics — the
-  classic "comment on the wrong line" bug. Isolated in GH-VIEW-2; test multi-hunk,
-  renamed-file, and force-pushed PRs.
 - **Large diffs (>100k lines).** GitHub serves them unreliably (delayed first
-  byte) — needs streaming/pagination + blob fallback + a UI affordance.
+  byte) — now `ghreview`'s concern (needs streaming/pagination + blob fallback +
+  a UI affordance).
 - **Rate limits / missed webhooks.** Reconcile loop + conditional requests are not
   optional; webhooks alone drift.
 - **Uninstall correctness.** The `github`-schema + one-directional-FK invariant is
