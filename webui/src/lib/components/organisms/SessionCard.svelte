@@ -76,7 +76,9 @@
 		// instead of opening the drawer, and a checkbox is shown.
 		selectable?: boolean;
 		selected?: boolean;
-		onToggleSelect?: (s: SessionListItem) => void;
+		// `range` is true when Shift was held: the caller extends the selection
+		// from its anchor to this row instead of toggling a single one.
+		onToggleSelect?: (s: SessionListItem, range?: boolean) => void;
 		// Swipe-to-archive (CCT-172): on touch, a left-swipe of the row past a
 		// threshold fires `onSwipe` (archive, or unarchive in the archived view) —
 		// the same gesture as archiving an email. Disabled in multi-select mode so
@@ -263,7 +265,7 @@
 			.join('; ')
 	);
 
-	function handleClick(e?: MouseEvent) {
+	function handleClick(e?: MouseEvent | KeyboardEvent) {
 		// Clicks on a nested overlay control (e.g. the Timestamp details popover)
 		// bubble up to the card; they shouldn't also open the session.
 		if (e?.target instanceof Element && e.target.closest('[popovertarget],[popover]')) return;
@@ -274,8 +276,12 @@
 			didSwipe = false;
 			return;
 		}
-		if (selectable) onToggleSelect?.(s);
-		else onopen(s);
+		if (selectable) {
+			// Shift-clicking a row would otherwise leave a text selection smeared
+			// across the range the user just picked.
+			if (e?.shiftKey) window.getSelection()?.removeAllRanges();
+			onToggleSelect?.(s, e?.shiftKey === true);
+		} else onopen(s);
 	}
 
 	function swipeStart(e: PointerEvent) {
@@ -371,11 +377,12 @@
 		role="button"
 		tabindex={0}
 		style={cardStyle}
+		data-session-id={s.id}
 		onclick={handleClick}
 		onkeydown={(e: KeyboardEvent) => {
 			if (e.key === 'Enter' || e.key === ' ') {
 				e.preventDefault();
-				handleClick();
+				handleClick(e);
 			}
 		}}
 	>

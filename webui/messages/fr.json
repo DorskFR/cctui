@@ -726,6 +726,7 @@
 	"sessions_section_starred": "Favoris",
 	"sessions_section_unread": "Non lues",
 	"sessions_sections_aria": "Sections",
+	"sessions_select_range_hint": "Maj+clic pour sélectionner une plage",
 	"sessions_select_all": "Tout sélectionner",
 	"sessions_select_multiple": "Sélectionner plusieurs à archiver",
 	"sessions_selected_count": "{count} sélectionnée(s)",

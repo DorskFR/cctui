@@ -12,6 +12,7 @@ import {
 	kanbanColOf,
 	matchesUnreadFilter,
 	parseSections,
+	rangeIds,
 	sessionDebugRows,
 	toolActivity,
 	TOOL_ASLEEP_AFTER_MS,
@@ -347,5 +348,31 @@ describe('formatAgo', () => {
 		expect(formatAgo(90_000)).toBe('1m');
 		expect(formatAgo(3 * 3600_000)).toBe('3h');
 		expect(formatAgo(-100)).toBe('0s');
+	});
+});
+
+describe('rangeIds', () => {
+	const order = ['a', 'b', 'c', 'd', 'e'];
+	const all = new Set(order);
+
+	it('returns the inclusive span downwards', () => {
+		expect(rangeIds(order, 'b', 'd', all)).toEqual(['b', 'c', 'd']);
+	});
+
+	it('returns the same span when clicked upwards', () => {
+		expect(rangeIds(order, 'd', 'b', all)).toEqual(['b', 'c', 'd']);
+	});
+
+	it('drops ids that are not selectable', () => {
+		expect(rangeIds(order, 'a', 'e', new Set(['a', 'c', 'e']))).toEqual(['a', 'c', 'e']);
+	});
+
+	it('is empty when an endpoint is not on screen', () => {
+		expect(rangeIds(order, 'z', 'c', all)).toEqual([]);
+		expect(rangeIds(order, 'c', 'z', all)).toEqual([]);
+	});
+
+	it('handles a single-row range', () => {
+		expect(rangeIds(order, 'c', 'c', all)).toEqual(['c']);
 	});
 });

@@ -436,3 +436,21 @@ export function groupRows(rows: SessionListItem[], dim: Dimension): RowGroup[] {
 		return a.label.localeCompare(b.label);
 	});
 }
+
+// Shift-click range selection: the ids between the anchor and the clicked row in
+// visual order, restricted to the rows that are actually selectable. Returns an
+// empty array when either end isn't on screen, which the caller reads as "fall
+// back to a plain toggle".
+export function rangeIds(
+	order: string[],
+	anchorId: string,
+	targetId: string,
+	selectable: Set<string>
+): string[] {
+	const a = order.indexOf(anchorId);
+	const b = order.indexOf(targetId);
+	if (a < 0 || b < 0) return [];
+	return order
+		.slice(Math.min(a, b), Math.max(a, b) + 1)
+		.filter((id) => selectable.has(id));
+}

@@ -726,6 +726,7 @@
 	"sessions_section_starred": "Starred",
 	"sessions_section_unread": "Unread",
 	"sessions_sections_aria": "Sections",
+	"sessions_select_range_hint": "Shift-click to select a range",
 	"sessions_select_all": "Select all",
 	"sessions_select_multiple": "Select multiple to archive",
 	"sessions_selected_count": "{count} selected",
