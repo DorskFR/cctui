@@ -1005,28 +1005,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cctui-github"
-version = "0.7.223"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "cctui-crypto",
- "cctui-proto",
- "chrono",
- "hex",
- "hmac",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "sqlx",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
 name = "cctui-guard"
 version = "0.7.223"
 dependencies = [
@@ -1134,7 +1112,6 @@ dependencies = [
  "base64",
  "bollard",
  "cctui-crypto",
- "cctui-github",
  "cctui-proto",
  "cctui-query",
  "chrono",

@@ -63,48 +63,10 @@ export function clearGhreviewToken(): void {
 	}
 }
 
-// ConnectorInfo never exposes the credential's login; gh-review keys accounts by
-// login, so the connector→login mapping must be cached to resolve deletes.
-const LOGIN_MAP_KEY = 'cctui:ghreview-connector-logins';
-
-interface GhreviewAccount {
+export interface GhreviewAccount {
 	id: string;
 	login: string;
-}
-
-function readLoginMap(): Record<string, string> {
-	try {
-		const raw = localStorage.getItem(LOGIN_MAP_KEY);
-		if (!raw) return {};
-		const map = JSON.parse(raw) as unknown;
-		return map && typeof map === 'object' ? (map as Record<string, string>) : {};
-	} catch {
-		return {};
-	}
-}
-
-function writeLoginMap(map: Record<string, string>): void {
-	try {
-		localStorage.setItem(LOGIN_MAP_KEY, JSON.stringify(map));
-	} catch {
-		void 0;
-	}
-}
-
-function rememberConnectorLogin(connectorId: string, login: string): void {
-	const map = readLoginMap();
-	map[connectorId] = login;
-	writeLoginMap(map);
-}
-
-function forgetConnectorLogin(connectorId: string): string | null {
-	const map = readLoginMap();
-	const login = map[connectorId] ?? null;
-	if (login !== null) {
-		delete map[connectorId];
-		writeLoginMap(map);
-	}
-	return login;
+	created_at: string | null;
 }
 
 async function ghreviewError(res: Response): Promise<string> {
@@ -117,39 +79,38 @@ async function ghreviewError(res: Response): Promise<string> {
 	return `gh-review responded ${res.status}`;
 }
 
-export async function provisionGhreviewAccount(
-	connectorId: string,
-	pat: string
-): Promise<string | null> {
+export async function listGhreviewAccounts(): Promise<GhreviewAccount[]> {
 	const base = ghreviewUrl();
-	if (!base) return null;
+	if (!base) return [];
+	const token = await ensureGhreviewToken();
+	const res = await fetch(`${base}/v1/accounts`, {
+		headers: { authorization: `Bearer ${token}` }
+	});
+	if (!res.ok) throw new Error(await ghreviewError(res));
+	const body = (await res.json()) as { items?: GhreviewAccount[] };
+	return body.items ?? [];
+}
+
+export async function addGhreviewAccount(pat: string, login?: string): Promise<GhreviewAccount> {
+	const base = ghreviewUrl();
+	if (!base) throw new Error('review backend not configured');
 	const token = await ensureGhreviewToken();
 	const res = await fetch(`${base}/v1/accounts`, {
 		method: 'POST',
 		headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-		body: JSON.stringify({ token: pat })
+		body: JSON.stringify(login ? { token: pat, login } : { token: pat })
 	});
 	if (!res.ok) throw new Error(await ghreviewError(res));
-	const account = (await res.json()) as GhreviewAccount;
-	rememberConnectorLogin(connectorId, account.login);
-	return account.login;
+	return (await res.json()) as GhreviewAccount;
 }
 
-export async function deprovisionGhreviewAccount(connectorId: string): Promise<void> {
+export async function removeGhreviewAccount(id: string): Promise<void> {
 	const base = ghreviewUrl();
-	const login = forgetConnectorLogin(connectorId);
-	if (!base || !login) return;
+	if (!base) return;
 	const token = await ensureGhreviewToken();
-	const listRes = await fetch(`${base}/v1/accounts`, {
-		headers: { authorization: `Bearer ${token}` }
-	});
-	if (!listRes.ok) throw new Error(await ghreviewError(listRes));
-	const body = (await listRes.json()) as { items?: GhreviewAccount[] };
-	const match = (body.items ?? []).find((a) => a.login === login);
-	if (!match) return;
-	const delRes = await fetch(`${base}/v1/accounts/${match.id}`, {
+	const res = await fetch(`${base}/v1/accounts/${id}`, {
 		method: 'DELETE',
 		headers: { authorization: `Bearer ${token}` }
 	});
-	if (!delRes.ok && delRes.status !== 404) throw new Error(await ghreviewError(delRes));
+	if (!res.ok && res.status !== 404) throw new Error(await ghreviewError(res));
 }

@@ -28,37 +28,6 @@ jobs:
       - name: cargo test (workspace)
         run: cargo test --workspace --locked
 
-  test-db:
-    name: cargo test (DB-gated)
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:18
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: postgres
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-    env:
-      TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: cargo test -p cctui-github (--ignored, requires TEST_DATABASE_URL)
-        # --test-threads=1: tests share one DB schema, racing under parallel threads.
-        run: cargo test -p cctui-github --locked -- --ignored --test-threads=1
-
   webui:
     name: webui
     runs-on: ubuntu-latest

@@ -7,9 +7,10 @@ const { ghreviewUrl } = vi.hoisted(() => ({ ghreviewUrl: vi.fn() }));
 vi.mock('./config', () => ({ ghreviewUrl }));
 
 import {
-	deprovisionGhreviewAccount,
+	addGhreviewAccount,
 	ensureGhreviewToken,
-	provisionGhreviewAccount
+	listGhreviewAccounts,
+	removeGhreviewAccount
 } from './ghreview';
 
 beforeEach(() => {
@@ -79,30 +80,61 @@ function mockToken() {
 	post.mockResolvedValue({ id: 'k1', key: 'tok', scopes: [] });
 }
 
-describe('provisionGhreviewAccount', () => {
-	it('is a no-op returning null when gh-review is unconfigured', async () => {
+describe('listGhreviewAccounts', () => {
+	it('returns an empty list without fetching when gh-review is unconfigured', async () => {
 		ghreviewUrl.mockReturnValue(null);
 		const fetchSpy = vi.spyOn(globalThis, 'fetch');
-		expect(await provisionGhreviewAccount('c1', 'pat')).toBeNull();
+		expect(await listGhreviewAccounts()).toEqual([]);
 		expect(fetchSpy).not.toHaveBeenCalled();
 	});
 
-	it('posts the PAT, returns the derived login, and remembers the mapping', async () => {
+	it('fetches the caller accounts with the minted bearer', async () => {
 		ghreviewUrl.mockReturnValue('https://gh.example');
 		mockToken();
 		const fetchSpy = vi
 			.spyOn(globalThis, 'fetch')
-			.mockResolvedValue(jsonResponse(201, { id: '7', login: 'octocat' }));
+			.mockResolvedValue(jsonResponse(200, { items: [{ id: '7', login: 'octocat' }] }));
 
-		const login = await provisionGhreviewAccount('c1', 'pat-xyz');
+		const items = await listGhreviewAccounts();
 
-		expect(login).toBe('octocat');
+		expect(items).toEqual([{ id: '7', login: 'octocat' }]);
+		const [url, init] = fetchSpy.mock.calls[0];
+		expect(url).toBe('https://gh.example/v1/accounts');
+		expect((init?.headers as Record<string, string>).authorization).toBe('Bearer tok');
+	});
+});
+
+describe('addGhreviewAccount', () => {
+	it('posts the PAT and returns the created account', async () => {
+		ghreviewUrl.mockReturnValue('https://gh.example');
+		mockToken();
+		const fetchSpy = vi
+			.spyOn(globalThis, 'fetch')
+			.mockResolvedValue(jsonResponse(201, { id: '7', login: 'octocat', created_at: null }));
+
+		const account = await addGhreviewAccount('pat-xyz');
+
+		expect(account.login).toBe('octocat');
 		const [url, init] = fetchSpy.mock.calls[0];
 		expect(url).toBe('https://gh.example/v1/accounts');
 		expect(init?.method).toBe('POST');
 		expect(JSON.parse(init?.body as string)).toEqual({ token: 'pat-xyz' });
 		expect((init?.headers as Record<string, string>).authorization).toBe('Bearer tok');
-		expect(localStorage.getItem('cctui:ghreview-connector-logins')).toContain('octocat');
+	});
+
+	it('includes the expected login when provided', async () => {
+		ghreviewUrl.mockReturnValue('https://gh.example');
+		mockToken();
+		const fetchSpy = vi
+			.spyOn(globalThis, 'fetch')
+			.mockResolvedValue(jsonResponse(201, { id: '7', login: 'octocat', created_at: null }));
+
+		await addGhreviewAccount('pat-xyz', 'octocat');
+
+		expect(JSON.parse(fetchSpy.mock.calls[0][1]?.body as string)).toEqual({
+			token: 'pat-xyz',
+			login: 'octocat'
+		});
 	});
 
 	it('surfaces a gh-review error message on failure (e.g. 409 conflict)', async () => {
@@ -111,39 +143,36 @@ describe('provisionGhreviewAccount', () => {
 		vi.spyOn(globalThis, 'fetch').mockResolvedValue(
 			jsonResponse(409, { error: { code: 'conflict', message: 'login owned by another user' } })
 		);
-		await expect(provisionGhreviewAccount('c1', 'pat')).rejects.toThrow(
-			'login owned by another user'
-		);
+		await expect(addGhreviewAccount('pat')).rejects.toThrow('login owned by another user');
 	});
 });
 
-describe('deprovisionGhreviewAccount', () => {
-	it('deletes the account matching the cached login', async () => {
+describe('removeGhreviewAccount', () => {
+	it('deletes the account by id', async () => {
 		ghreviewUrl.mockReturnValue('https://gh.example');
 		mockToken();
 		const fetchSpy = vi
 			.spyOn(globalThis, 'fetch')
-			.mockResolvedValueOnce(jsonResponse(201, { id: '7', login: 'octocat' }));
-		await provisionGhreviewAccount('c1', 'pat');
+			.mockResolvedValue(new Response(null, { status: 204 }));
 
-		fetchSpy.mockResolvedValueOnce(
-			jsonResponse(200, { items: [{ id: '7', login: 'octocat' }] })
-		);
-		fetchSpy.mockResolvedValueOnce(new Response(null, { status: 204 }));
+		await removeGhreviewAccount('7');
 
-		await deprovisionGhreviewAccount('c1');
-
-		const del = fetchSpy.mock.calls[2];
-		expect(del[0]).toBe('https://gh.example/v1/accounts/7');
-		expect(del[1]?.method).toBe('DELETE');
-		expect(localStorage.getItem('cctui:ghreview-connector-logins')).not.toContain('octocat');
+		const [url, init] = fetchSpy.mock.calls[0];
+		expect(url).toBe('https://gh.example/v1/accounts/7');
+		expect(init?.method).toBe('DELETE');
 	});
 
-	it('is a no-op when no login was cached for the connector', async () => {
+	it('is a no-op without fetching when gh-review is unconfigured', async () => {
+		ghreviewUrl.mockReturnValue(null);
+		const fetchSpy = vi.spyOn(globalThis, 'fetch');
+		await removeGhreviewAccount('7');
+		expect(fetchSpy).not.toHaveBeenCalled();
+	});
+
+	it('tolerates a 404 (already gone)', async () => {
 		ghreviewUrl.mockReturnValue('https://gh.example');
 		mockToken();
-		const fetchSpy = vi.spyOn(globalThis, 'fetch');
-		await deprovisionGhreviewAccount('unknown');
-		expect(fetchSpy).not.toHaveBeenCalled();
+		vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 404 }));
+		await expect(removeGhreviewAccount('7')).resolves.toBeUndefined();
 	});
 });

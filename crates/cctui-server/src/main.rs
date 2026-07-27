@@ -153,12 +153,6 @@ async fn main() -> anyhow::Result<()> {
         .layer(middleware::from_fn(auth::auth_middleware))
         .layer(Extension(auth_config.clone()));
 
-    // Optional GitHub integration. Behind the `github`
-    // Cargo feature: run its embedded migrations and merge its routes. A build
-    // without the feature contains zero GitHub code, routes, or schema.
-    #[cfg(feature = "github")]
-    cctui_github::migrate(&state.pool).await?;
-
     // `{id}` etc. in route paths are axum path-param syntax, not format args.
     #[allow(clippy::literal_string_with_formatting_args)]
     let app = Router::new()
@@ -237,49 +231,6 @@ async fn main() -> anyhow::Result<()> {
         // origin is invalid once credentials are allowed.
         .layer(cors_layer(&config.allowed_origins))
         .with_state(state.clone());
-
-    // Merge the GitHub routes (their own state is already applied) under
-    // `/api/v1`. Done after `with_state` because they carry `GithubState`, not
-    // the server's `AppState`. The GitHub router lives outside `api_router`'s
-    // layers, so we re-apply the same auth middleware here, plus a thin layer
-    // that maps the server-private `AuthContext` into the proto `CallerIdentity`
-    // the GitHub crate extracts (it cannot depend on `cctui-server`).
-    #[cfg(feature = "github")]
-    let app = app.nest(
-        "/api/v1",
-        cctui_github::routes(
-            state.pool.clone(),
-            state.bus.server_sender(),
-            state.pr_status_cache.clone(),
-        )
-        .layer(middleware::from_fn(github_identity))
-        .layer(middleware::from_fn(auth::auth_middleware))
-        .layer(Extension(auth_config.clone())),
-    );
-
-    // the agent MCP review endpoint authenticates the bearer session
-    // token on its own (it is not a user/machine token `auth_middleware` knows),
-    // so it is merged WITHOUT the auth/identity layers above.
-    #[cfg(feature = "github")]
-    let app = app.nest(
-        "/api/v1",
-        cctui_github::mcp_routes(
-            state.pool.clone(),
-            state.bus.server_sender(),
-            state.pr_status_cache.clone(),
-        ),
-    );
-
-    // the reconcile poll loop. A background task (mirroring
-    // `reaper_task`) that heals missed webhooks and hydrates first install by
-    // polling GitHub for "PRs involving me" per connector. Behind the `github`
-    // feature; disabled when `CCTUI_GITHUB_RECONCILE_SECS=0`.
-    #[cfg(feature = "github")]
-    cctui_github::spawn_reconcile(
-        state.pool.clone(),
-        state.bus.server_sender(),
-        state.pr_status_cache.clone(),
-    );
 
     tokio::spawn(reaper_task(state));
 
@@ -1160,25 +1111,6 @@ fn build_api_routes() -> Routes {
             Authn::Bearer,
             ScopeAz(auth::Scope::Admin),
         )
-}
-
-/// Map the server-private [`auth::AuthContext`] (inserted by `auth_middleware`)
-/// into the proto [`cctui_proto::github::CallerIdentity`] the GitHub crate
-/// extracts. The GitHub crate must not depend on `cctui-server`, so it cannot
-/// see `AuthContext`; this thin layer bridges the two without a dependency cycle.
-#[cfg(feature = "github")]
-async fn github_identity(
-    mut request: axum::extract::Request,
-    next: middleware::Next,
-) -> axum::response::Response {
-    if let Some(ctx) = request.extensions().get::<auth::AuthContext>() {
-        let identity = cctui_proto::github::CallerIdentity {
-            user_id: Some(ctx.user_id),
-            is_admin: ctx.is_admin(),
-        };
-        request.extensions_mut().insert(identity);
-    }
-    next.run(request).await
 }
 
 /// Credentialed CORS layer restricted to `allowed_origins`. Credentials forbid

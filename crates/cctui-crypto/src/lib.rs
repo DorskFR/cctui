@@ -1,4 +1,4 @@
-//! At-rest vault encryption shared by `cctui-server` and `cctui-github`.
+//! At-rest vault encryption for `cctui-server`.
 //!
 //! Stored format: `v1:<hex(nonce ‖ ciphertext‖tag)>` (ChaCha20-Poly1305,
 //! random 12-byte nonce per value). Values without the `v1:` marker are

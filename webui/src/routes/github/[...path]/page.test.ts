@@ -1,10 +1,7 @@
 import { QueryClient } from '@tanstack/svelte-query';
 import { mount, unmount } from 'svelte';
-import { readable } from 'svelte/store';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { useCapabilities } = vi.hoisted(() => ({ useCapabilities: vi.fn() }));
-vi.mock('$lib/queries', () => ({ useCapabilities }));
 vi.mock('$lib/ghreview', () => ({ ensureGhreviewToken: vi.fn().mockResolvedValue('tok') }));
 vi.mock('$ghreview/Review.svelte', () => ({ default: function Review() {} }));
 
@@ -15,14 +12,10 @@ let component: ReturnType<typeof mount> | undefined;
 const QUERY_CLIENT_CONTEXT_KEY = '$$_queryClient';
 const context = new Map<string, unknown>([[QUERY_CLIENT_CONTEXT_KEY, new QueryClient()]]);
 
-function capsStore(value: unknown) {
-	return readable(value);
-}
-
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
 beforeEach(() => {
-	useCapabilities.mockReturnValue(capsStore({ isSuccess: false, data: undefined }));
+	delete window.CCTUI_CONFIG;
 });
 
 afterEach(async () => {
@@ -39,9 +32,8 @@ describe('/github page (graceful degradation)', () => {
 		expect(document.body.textContent).toContain('Review center not configured');
 	});
 
-	it('renders the linked-account empty state when enabled but no accounts exist', async () => {
+	it('renders the linked-account empty state when configured but no accounts exist', async () => {
 		window.CCTUI_CONFIG = { ghreviewUrl: 'https://gh.example' };
-		useCapabilities.mockReturnValue(capsStore({ isSuccess: true, data: { github: { enabled: true } } }));
 		vi.spyOn(globalThis, 'fetch').mockResolvedValue(
 			new Response(JSON.stringify({ items: [] }), {
 				status: 200,
