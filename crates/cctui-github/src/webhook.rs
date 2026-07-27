@@ -483,8 +483,11 @@ mod tests {
             .get(0);
         let connector_id: Uuid = pool
             .fetch_one(
-                sqlx::query("INSERT INTO github.connectors (user_id) VALUES ($1) RETURNING id")
-                    .bind(user_id),
+                sqlx::query(
+                    "INSERT INTO github.connectors (user_id, name, credential_kind, encrypted_credential) \
+                     VALUES ($1, 'test', 'pat', 'x') RETURNING id",
+                )
+                .bind(user_id),
             )
             .await
             .unwrap()

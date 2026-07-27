@@ -114,9 +114,15 @@ async fn uninstall_drops_github_leaving_core_intact() {
         .await
         .unwrap()
         .get(0);
-    pool.execute(sqlx::query("INSERT INTO github.connectors (user_id) VALUES ($1)").bind(user_id))
-        .await
-        .unwrap();
+    pool.execute(
+        sqlx::query(
+            "INSERT INTO github.connectors (user_id, name, credential_kind, encrypted_credential) \
+             VALUES ($1, 'test', 'pat', 'x')",
+        )
+        .bind(user_id),
+    )
+    .await
+    .unwrap();
 
     cctui_github::uninstall(&pool).await.expect("uninstall");
 
