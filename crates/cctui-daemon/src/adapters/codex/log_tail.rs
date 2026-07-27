@@ -206,15 +206,22 @@ impl LogTail {
                 .and_then(|m| m.modified().ok())
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
-            let (source, parent_raw) = rollout_subagent_link(&path);
+            let link = rollout_link(&path);
             let mut extra = json!({"source": "codex-log-tail", "observed_at": observed_at});
             let mut parent_local_id = None;
-            if source.as_deref().is_some_and(|s| s.starts_with("subAgent")) {
+            if link.source.as_deref().is_some_and(|s| s.starts_with("subAgent")) {
                 // A subagent rollout that can't resolve a parent can never nest;
                 // skip it so this path matches the inventory's orphan skip.
-                let Some(parent) = parent_raw else { return };
+                let Some(parent) = link.subagent_parent else { return };
                 parent_local_id =
                     Some(crate::dispatch_codex::dispatch_session_for(&parent).unwrap_or(parent));
+                extra["subagent"] = json!(true);
+            } else if let Some(parent) = link.launcher_parent
+                // A self-parent would make the server's recursive heartbeat CTE
+                // walk a cycle, so refuse it.
+                && parent != local_id
+            {
+                parent_local_id = Some(parent);
                 extra["subagent"] = json!(true);
             }
             let _ = self
@@ -318,20 +325,40 @@ fn session_meta_payload(path: &Path) -> Option<Value> {
     None
 }
 
-/// Reduce a rollout's `session_meta` to `(source label, canonical parent id)`.
-/// Mirrors the `thread/list` inventory extraction so both discovery paths agree
-/// on which rollouts are subagents and who their parent is.
-fn rollout_subagent_link(path: &Path) -> (Option<String>, Option<String>) {
-    let Some(payload) = session_meta_payload(path) else { return (None, None) };
+/// Set by `deploy/codex-run.sh` through `CODEX_INTERNAL_ORIGINATOR_OVERRIDE`, which
+/// codex copies verbatim into `session_meta.originator` (CCT-749).
+const LAUNCHER_ORIGINATOR_PREFIX: &str = "cctui-parent.";
+
+struct RolloutLink {
+    source: Option<String>,
+    subagent_parent: Option<String>,
+    launcher_parent: Option<String>,
+}
+
+/// Reduce a rollout's `session_meta` to how it links to a parent. Mirrors the
+/// `thread/list` inventory extraction so both discovery paths agree on which
+/// rollouts are subagents and who their parent is. Codex calls a plain `codex
+/// exec` a root thread, so the stamped originator is the only thing tying one
+/// back to the cctui session that launched it.
+fn rollout_link(path: &Path) -> RolloutLink {
+    let Some(payload) = session_meta_payload(path) else {
+        return RolloutLink { source: None, subagent_parent: None, launcher_parent: None };
+    };
     let source = payload.get("source").and_then(super::thread_list::parse_source);
-    let parent = payload
+    let subagent_parent = payload
         .pointer("/source/subAgent/thread_spawn/parent_thread_id")
         .or_else(|| payload.get("parent_thread_id"))
         .or_else(|| payload.get("parentThreadId"))
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
         .map(super::thread_list::canonical_id);
-    (source, parent)
+    let launcher_parent = payload
+        .get("originator")
+        .and_then(Value::as_str)
+        .and_then(|s| s.strip_prefix(LAUNCHER_ORIGINATOR_PREFIX))
+        .filter(|s| !s.is_empty())
+        .map(super::thread_list::canonical_id);
+    RolloutLink { source, subagent_parent, launcher_parent }
 }
 
 /// Extract a canonical 8-4-4-4-12 hex UUID from a rollout filename stem such as
@@ -678,6 +705,59 @@ mod tests {
         .unwrap();
         tail.scan_once().await;
         assert!(rx.try_recv().is_err(), "orphan subagent rollout must be skipped");
+    }
+
+    async fn started_meta_for_exec(originator: &str, id: &str) -> SessionMeta {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions = tmp.path().to_path_buf();
+        let (tx, mut rx) = mpsc::channel(64);
+        let mut tail = LogTail::new(
+            LogTailConfig {
+                sessions_root: sessions.clone(),
+                poll_interval: Duration::from_millis(10),
+                quiesce: Duration::from_secs(3600),
+                offsets_path: None,
+            },
+            tx,
+            CancellationToken::new(),
+        );
+        let path = sessions.join(format!("rollout-{id}.jsonl"));
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{"type":"session_meta","payload":{{"id":"{id}","cwd":"/workspace","source":"exec","originator":"{originator}"}}}}"#
+            ),
+        )
+        .unwrap();
+        tail.scan_once().await;
+        let AdapterEvent::SessionStarted { meta, .. } = rx.recv().await.unwrap() else {
+            panic!("expected SessionStarted")
+        };
+        meta
+    }
+
+    #[tokio::test]
+    async fn exec_rollout_nests_under_stamped_launcher() {
+        let id = "019f832c-6301-7053-8000-0000000000f1";
+        let launcher = "356d4dde-659c-47c7-8a3c-aa4e5c44b50a";
+        let meta = started_meta_for_exec(&format!("cctui-parent.{launcher}"), id).await;
+        assert_eq!(meta.parent_local_id.as_deref(), Some(launcher));
+        assert_eq!(meta.extra["subagent"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn unstamped_exec_rollout_stays_parentless() {
+        let id = "019f832c-6301-7053-8000-0000000000f2";
+        let meta = started_meta_for_exec("codex_exec", id).await;
+        assert_eq!(meta.parent_local_id, None);
+        assert_eq!(meta.extra.get("subagent"), None);
+    }
+
+    #[tokio::test]
+    async fn self_referential_stamp_is_refused() {
+        let id = "019f832c-6301-7053-8000-0000000000f3";
+        let meta = started_meta_for_exec(&format!("cctui-parent.{id}"), id).await;
+        assert_eq!(meta.parent_local_id, None, "a self-parent would cycle the heartbeat CTE");
     }
 
     #[tokio::test]
