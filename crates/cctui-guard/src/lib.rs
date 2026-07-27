@@ -9,15 +9,17 @@
 
 pub mod engine;
 pub mod ir;
+pub mod lint;
 pub mod parser;
 pub mod rules;
 pub mod server;
 
 pub use engine::WorkflowEngine;
 pub use ir::{Rule, Transition, Version, Workflow, WorkflowStep, json_schema};
+pub use lint::{Diagnostic, LintReport, ResolvedStep, Severity, lint};
 pub use parser::{
     JudgeQuestion, MAX_JUDGE_QUESTIONS, ParseError, Step, parse_guard_rules,
     parse_guard_rules_files, parse_guard_rules_into, parse_guard_rules_str, parse_keywords,
-    parse_steps, parse_transitions,
+    parse_steps, parse_transitions, step_heading_numbers,
 };
 pub use rules::{check_rules, split_bash_segments};
