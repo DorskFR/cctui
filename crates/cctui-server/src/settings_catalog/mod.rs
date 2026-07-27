@@ -598,11 +598,9 @@ mod tests {
 
     #[test]
     fn docs_only_keys_present() {
-        for name in ["disableSideloadFlags", "enableArtifact", "forceLoginGatewayUrl", "ultracode"]
-        {
-            let k = catalog().key(name).unwrap_or_else(|| panic!("{name} missing"));
-            assert_eq!(k.source, Source::Docs, "{name} should be a docs-delta key");
-        }
+        let name = "ultracode";
+        let k = catalog().key(name).unwrap_or_else(|| panic!("{name} missing"));
+        assert_eq!(k.source, Source::Docs, "{name} should be a docs-delta key");
     }
 
     /// Toggle metadata: every key with a `group` must be an exposable

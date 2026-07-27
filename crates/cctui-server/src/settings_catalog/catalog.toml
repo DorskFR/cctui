@@ -18,7 +18,7 @@
 
 schema_url = "https://json.schemastore.org/claude-code-settings.json"
 schema_file = "claude-code-settings.schema.json"
-captured = "2026-07-02"
+captured = "2026-07-28"
 
 [[keys]]
 name = "$schema"
@@ -676,8 +676,7 @@ notes = "disable Remote Control (v2.1.128+)"
 [[keys]]
 name = "disableSideloadFlags"
 tag = "managed"
-source = "docs"
-type = "bool"
+source = "schema"
 notes = "managed — reject --plugin-dir/--plugin-url/--agents/--mcp-config (v2.1.193+)"
 
 [[keys]]
@@ -704,7 +703,7 @@ name = "enableArtifact"
 group = "Skills & workflows"
 label = "Enable Artifact tool"
 tag = "safe"
-source = "docs"
+source = "schema"
 type = "bool"
 default = "availability"
 notes = "enable Artifact tool per user (v2.1.196+)"
@@ -746,7 +745,7 @@ notes = "footer badges from regex; read from user/--settings/managed only (v2.1.
 [[keys]]
 name = "forceLoginGatewayUrl"
 tag = "managed"
-source = "docs"
+source = "schema"
 type = "string"
 enum = "URL"
 notes = "managed — lock gateway URL"
@@ -916,6 +915,102 @@ label = "Ultracode keyword trigger"
 tag = "safe"
 source = "schema"
 notes = "whether \"ultracode\" in a prompt triggers a dynamic workflow (v2.1.157+)"
+
+[[keys]]
+name = "askUserQuestionTimeout"
+tag = "safe"
+source = "schema"
+notes = "idle timeout before an unanswered AskUserQuestion auto-continues (v2.1.200+)"
+
+[[keys]]
+name = "autoConnectIde"
+tag = "safe"
+source = "schema"
+notes = "auto-connect to a running IDE from an external terminal"
+
+[[keys]]
+name = "autoInstallIdeExtension"
+tag = "safe"
+source = "schema"
+notes = "auto-install the IDE extension from a VS Code/JetBrains terminal"
+
+[[keys]]
+name = "browserExternalPageTools"
+tag = "managed"
+source = "schema"
+notes = "managed only — disable Claude's desktop-app external-browsing tools"
+
+[[keys]]
+name = "diffTool"
+tag = "safe"
+source = "schema"
+notes = "where diffs render when an IDE is connected (auto/terminal)"
+
+[[keys]]
+name = "disableBrowserExternalNavigation"
+tag = "managed"
+source = "schema"
+notes = "managed only — block external browsing in the desktop app's Browser pane"
+
+[[keys]]
+name = "disableMobileSimulatorTools"
+tag = "managed"
+source = "schema"
+notes = "managed only — block Claude's iOS Simulator pane tools"
+
+[[keys]]
+name = "emojiCompletionEnabled"
+tag = "safe"
+source = "schema"
+notes = "emoji shortcode suggestions in the prompt input (v2.1.217+)"
+
+[[keys]]
+name = "externalEditorContext"
+tag = "safe"
+source = "schema"
+notes = "prepend last response as context when opening the external editor (Ctrl+G)"
+
+[[keys]]
+name = "permissionExplainerEnabled"
+tag = "safe"
+source = "schema"
+notes = "model-generated command explanation on Ctrl+E at a permission prompt"
+
+[[keys]]
+name = "processWrapper"
+tag = "care"
+source = "schema"
+notes = "corporate launcher command prefixed to background processes (v2.1.210+)"
+
+[[keys]]
+name = "requireCoworkFullVmSandbox"
+tag = "managed"
+source = "schema"
+notes = "managed only — run tools in an isolated VM instead of on the Mac"
+
+[[keys]]
+name = "skillListingMaxDescChars"
+tag = "safe"
+source = "schema"
+notes = "per-skill char cap on description + when_to_use text in the skill listing"
+
+[[keys]]
+name = "teammateDefaultModel"
+tag = "safe"
+source = "schema"
+notes = "default model for agent-team teammates when the spawn prompt omits one"
+
+[[keys]]
+name = "vimInsertModeRemaps"
+tag = "care"
+source = "schema"
+notes = "vim-mode INSERT two-key remaps to Escape; user/--settings/managed only (v2.1.208+)"
+
+[[keys]]
+name = "workflowSizeGuideline"
+tag = "safe"
+source = "schema"
+notes = "agent-count guideline sent to Claude for dynamic workflows it writes (v2.1.202+)"
 
 [[env]]
 name = "ANTHROPIC_MODEL"
