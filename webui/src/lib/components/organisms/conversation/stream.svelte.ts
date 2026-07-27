@@ -41,33 +41,33 @@ export class ConversationStream {
 
 	live = $state<AgentEvent[]>([]);
 	perms = $state<PermReq[]>([]);
-	// Live AskUserQuestion (CCT-164/179): delivered by the daemon's PreToolUse
-	// hook the instant the form renders. Null when none pending.
+	// Live AskUserQuestion: delivered by the daemon's PreToolUse hook the
+	// instant the form renders. Null when none pending.
 	ask = $state<LiveAsk | null>(null);
-	// Live ExitPlanMode plan prompt (CCT-347): delivered by the daemon's
+	// Live ExitPlanMode plan prompt: delivered by the daemon's
 	// PreToolUse hook the instant the plan-approval prompt renders. Null when
 	// none pending. Answered like an ask (digit picks 1-3 / free-text refine).
 	plan = $state<LivePlan | null>(null);
-	// Per-account soft-limit block (CCT-444): the gateway refused this session's
+	// Per-account soft-limit block: the gateway refused this session's
 	// request because cctui's share of the account window is at cap. Drives the
 	// per-chat "soft limit reached → continue on another account" banner. Null
 	// when no block is active.
 	softLimit = $state<SoftLimit | null>(null);
-	// Per-message delivery state (CCT-212 → CCT-214), mirrored from the ws
-	// singleton so a failed/in-flight send survives the drawer being reopened.
+	// Per-message delivery state, mirrored from the ws singleton so a
+	// failed/in-flight send survives the drawer being reopened.
 	pendingReplies = $state<Set<number>>(new Set());
 	failedReplies = $state<Map<number, string>>(new Map());
 	retryingReplies = $state<Map<number, { attempt: number; max: number }>>(new Map());
-	// Activity indicator (CCT-208): true while claude is processing this turn.
+	// Activity indicator: true while claude is processing this turn.
 	working = $state(false);
-	// Optimistic answer lock (CCT-190): locks both ask render sites to their
+	// Optimistic answer lock: locks both ask render sites to their
 	// answered state while a reply is in flight.
 	answering = $state(false);
 	// Bumped to force a full re-subscribe + history refetch (e.g. on tab focus
 	// after the ws may have gone half-open while backgrounded).
 	resubTick = $state(0);
 	// Question texts answered (by us) or resolved (by the daemon) this visit,
-	// keyed per session so switching sessions can't cross-suppress (CCT-230).
+	// keyed per session so switching sessions can't cross-suppress.
 	resolvedAsks = $state<Set<string>>(new Set());
 
 	constructor(opts: StreamOpts) {
@@ -90,14 +90,14 @@ export class ConversationStream {
 			if (key !== null && this.live.some((e) => userMsgKey(e) === key)) return;
 			this.live = [...this.live, ev];
 			// A pending live ask/plan is superseded the instant the agent streams a
-			// fresh substantive (non-user, non-heartbeat) event past it (CCT-414):
+			// fresh substantive (non-user, non-heartbeat) event past it:
 			// the question was skipped/answered out-of-band and the turn moved on, so
 			// the daemon's AskResolved/onAsk(null) — which a half-open ws can miss —
 			// is no longer the only thing that clears the form. While a prompt is
 			// genuinely pending claude is blocked and emits nothing, so this can't
 			// race a still-open question. Remember it resolved so its late transcript
-			// line stays suppressed (CCT-230). User echoes (key !== null) never clear
-			// a prompt — a free-typed send doesn't dismiss an ask (CCT-208).
+			// line stays suppressed. User echoes (key !== null) never clear
+			// a prompt — a free-typed send doesn't dismiss an ask.
 			if (ev.type !== 'heartbeat' && key === null) {
 				if (this.ask) {
 					this.markAsksResolved(this.liveAskQuestions, this.ask.question);
@@ -109,7 +109,7 @@ export class ConversationStream {
 					ws.clearPlan(this.#opts.id());
 				}
 			}
-			// Drive the activity indicator (CCT-208): a turn ends on `turn_end`; any
+			// Drive the activity indicator: a turn ends on `turn_end`; any
 			// substantive agent/tool/user event means work is in progress.
 			if (ev.type === 'turn_end') this.working = false;
 			else if (ev.type !== 'heartbeat') this.working = true;
@@ -121,7 +121,7 @@ export class ConversationStream {
 		});
 		const offAsk = ws.onAsk(sid, (q) => {
 			// A pending ask resolving (answered here, from the TUI, or timed out)
-			// means its late transcript line must stay suppressed (CCT-230).
+			// means its late transcript line must stay suppressed.
 			if (!q && this.ask) this.markAsksResolved(this.liveAskQuestions, this.ask.question);
 			this.ask = q;
 			// A fresh ask (or a resolution) supersedes any in-flight answer lock.
@@ -139,14 +139,14 @@ export class ConversationStream {
 		const offSoftLimit = ws.onSoftLimit(sid, (sl) => {
 			this.softLimit = sl;
 		});
-		// Mirror the singleton's per-session delivery state (CCT-214). Fires
+		// Mirror the singleton's per-session delivery state. Fires
 		// immediately with the current snapshot and on every ack / auto-retry.
 		const offDelivery = ws.onDelivery(sid, (snap) => {
 			this.pendingReplies = snap.pending;
 			this.failedReplies = snap.failed;
 			this.retryingReplies = snap.retrying;
 			// A failed answer must not leave the ask sites locked "Answering…"
-			// forever (CCT-278).
+			// forever.
 			if (snap.failed.size) this.answering = false;
 		});
 		return () => {
@@ -195,12 +195,12 @@ export class ConversationStream {
 		this.resolvedAsks = next;
 	}
 
-	// Dedupe the two ask render sites (CCT-218): suppress a transcript ask line
+	// Dedupe the two ask render sites: suppress a transcript ask line
 	// that carries the same question as a pending/resolved live ask.
 	isDupeOfLiveAsk = (a: AskQuestion[]): boolean => {
 		const q = a[0]?.question;
 		if (!q) return false;
-		// Already answered/resolved this session (CCT-230).
+		// Already answered/resolved this session.
 		if (this.resolvedAsks.has(this.#askKey(q))) return true;
 		if (!this.ask) return false;
 		const liveQ = this.liveAskQuestions?.[0]?.question;
@@ -212,13 +212,13 @@ export class ConversationStream {
 	// Optimistic echo of a user-typed message. Kept in the ws singleton (not just
 	// local `live`) so a resubscribe/reconnect that rebuilds `live` doesn't drop a
 	// message claude already received. Stamps the echo just past the newest known
-	// event rather than with the browser clock (CCT-186) so it sorts last.
+	// event rather than with the browser clock so it sorts last.
 	#pushOptimisticReply(text: string): number {
 		const id = this.#opts.id();
 		const known = [...(this.#opts.historyData() ?? []), ...this.live];
 		const maxTs = known.reduce((m, e) => Math.max(m, e.ts), 0);
 		const ts = Math.max(Date.now(), maxTs + 1);
-		// Stamp a causal `seq` (CCT-481) just past the newest known event so the
+		// Stamp a causal `seq` just past the newest known event so the
 		// echo sorts last under `orderEvents`, matching the `ts` bump above.
 		const maxSeq = known.reduce((m, e) => Math.max(m, e.seq ?? 0), 0);
 		const ev: AgentEvent = { type: 'reply', content: text, ts, seq: maxSeq + 1 };
@@ -236,7 +236,7 @@ export class ConversationStream {
 	}
 
 	// Send a final message body (text + any appended staged-attachment paths).
-	// NB: a free-typed send does NOT dismiss a pending AskUserQuestion (CCT-208).
+	// NB: a free-typed send does NOT dismiss a pending AskUserQuestion.
 	sendBody(text: string) {
 		if (!text || this.#opts.archived()) return;
 		// Sending always jumps to the latest message (classic chat UX).
@@ -255,29 +255,29 @@ export class ConversationStream {
 		ws.retryNow(this.#opts.id(), ts);
 	}
 
-	// Answer an AskUserQuestion (CCT-146). With pure option picks the daemon drives
-	// the real form via PTY keystrokes (CCT-226); the flattened text rides along as
+	// Answer an AskUserQuestion. With pure option picks the daemon drives
+	// the real form via PTY keystrokes; the flattened text rides along as
 	// the carrier for the free-text/fallback path.
 	answerQuestion(text: string, picks: number[][] | null, qs?: AskQuestion[] | null) {
 		if (this.#opts.archived()) return;
 		const ts = this.#pushOptimisticReply(text);
 		const ok = ws.trackedSend(this.#opts.id(), text, ts, picks ?? undefined);
 		if (!ok) return;
-		// Lock both ask render sites to their answered state immediately (CCT-190),
+		// Lock both ask render sites to their answered state immediately,
 		// and remember the answered questions so the late transcript line never
-		// resurfaces as a fresh form (CCT-230).
+		// resurfaces as a fresh form.
 		this.markAsksResolved(qs ?? this.liveAskQuestions, this.ask?.question);
 		this.answering = true;
 		// Answering hands control back to claude — show the working indicator.
 		this.working = true;
 		// Dismiss the live prompt immediately — the daemon's AskResolved arrives a
-		// poll later (CCT-164).
+		// poll later.
 		this.ask = null;
 		ws.clearAsk(this.#opts.id());
 		this.#opts.invalidateSessions();
 	}
 
-	// Answer an ExitPlanMode plan prompt (CCT-347). A pure pick (1-3) drives the
+	// Answer an ExitPlanMode plan prompt. A pure pick (1-3) drives the
 	// real PTY form natively via keystrokes (the daemon stores a synthetic
 	// single-select form in its pending-ask map); a free-text refinement (the
 	// "Tell Claude what to change" option) takes the dismiss-then-reply path with
@@ -294,7 +294,7 @@ export class ConversationStream {
 		this.#opts.invalidateSessions();
 	}
 
-	// Switch this session's account after a soft-limit block (CCT-444). The
+	// Switch this session's account after a soft-limit block. The
 	// gateway resolves the worker's opaque token to an account per request, so a
 	// switch is a pure server-side rebind — the worker keeps running and its next
 	// upstream call lands on the target. Dismiss the banner optimistically; the
@@ -308,10 +308,10 @@ export class ConversationStream {
 		this.#opts.invalidateSessions();
 	}
 
-	// Discard a still-pending optimistic echo (CCT-208 edit/recover). Stops
-	// tracking/retrying the send and drops the echo from both the local buffer and
-	// the ws optimistic store. The caller pulls the recovered text into the
-	// composer.
+	// Discard a still-pending optimistic echo (edit/recover). Stops
+	// tracking/retrying the send and drops the echo from both the local
+	// buffer and the ws optimistic store. The caller pulls the recovered
+	// text into the composer.
 	discardOptimistic(ts: number) {
 		const id = this.#opts.id();
 		ws.cancelSend(id, ts);

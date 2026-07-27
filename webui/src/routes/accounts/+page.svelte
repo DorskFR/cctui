@@ -44,7 +44,7 @@
 	import { m } from '$lib/paraglide/messages';
 
 	const caps = useCapabilities();
-	// Accounts is the single home for everything external (CCT-403): AI provider
+	// Accounts is the single home for everything external: AI provider
 	// accounts, GitHub connectors, and dispatchers. The Connectors tab only
 	// appears when the integration is compiled in (`available`).
 	let tab = $state('ai');
@@ -57,7 +57,7 @@
 	const accounts = useAccounts();
 	const actions = useAccountActions();
 	// Accounts are user-owned; the admin token has no user identity, so an
-	// admin operator picks the owning user explicitly (CCT-251).
+	// admin operator picks the owning user explicitly.
 	const me = useMe();
 	const isAdmin = $derived($me.data?.role === 'admin');
 	const users = useUsers(() => isAdmin);
@@ -70,7 +70,7 @@
 	const guard = (p: Promise<unknown>) => p.catch((e: Error) => toasts.err(e.message));
 
 	// ------------------------------------------------------------------------
-	// Editor state (CCT-560). One modal, four modes:
+	// Editor state. One modal, four modes:
 	//   create        — new identity + its first provider credential
 	//   add-provider  — attach a credential to an existing identity
 	//   edit-account  — identity fields: name + write-only extra env
@@ -92,25 +92,25 @@
 	let name = $state('');
 	let provider = $state<ProviderKind>('anthropic');
 	let refreshToken = $state('');
-	// Compatible-endpoint fields (CCT-399): base URL, a static credential, the
+	// Compatible-endpoint fields: base URL, a static credential, the
 	// auth scheme, and a tiny model-list editor (model code + display label).
 	let baseUrl = $state('');
 	let credential = $state('');
-	// `keep` is an edit-only sentinel: leave the stored scheme untouched (it is
-	// never read back, CCT-402). Create always picks bearer/api_key.
+	// `keep` is an edit-only sentinel: leave the stored scheme untouched (it
+	// is never read back). Create always picks bearer/api_key.
 	let authScheme = $state<'bearer' | 'api_key' | 'keep'>('bearer');
 	let modelRows = $state<{ model: string; label: string }[]>([{ model: '', label: '' }]);
-	// Per-provider model alias map (CCT-406): logical name → concrete model code,
+	// Per-provider model alias map: logical name → concrete model code,
 	// e.g. opus → claude-opus-4-8[1m]. Resolved server-side at spawn.
 	let aliasRows = $state<{ alias: string; model: string }[]>([]);
-	// Per-provider soft limits (CCT-688): cap cctui's own share of each usage
+	// Per-provider soft limits: cap cctui's own share of each usage
 	// window, keyed by canonical window id. Edited per window via the reusable
 	// SoftLimit component; empty inputs = no cap/bypass on that window.
 	let softEdits = $state<Record<string, { cap: number | null; bypass: number | null }>>({});
 	const isCompatible = $derived(provider.endsWith('-compatible'));
 
 	// Live windows for the provider under edit, so newly discovered (e.g.
-	// model-scoped) windows appear in the editor automatically (CCT-688).
+	// model-scoped) windows appear in the editor automatically.
 	const editorUsage = useAccountUsage(
 		() => editingProvider?.id ?? '',
 		() =>
@@ -118,7 +118,7 @@
 			(editingProvider.provider === 'anthropic' || editingProvider.provider === 'openai')
 	);
 	const editorWindows = $derived($editorUsage.data?.windows ?? []);
-	// Window keys to offer: baseline + observed + already-configured (CCT-688).
+	// Window keys to offer: baseline + observed + already-configured.
 	const editorRows = $derived(
 		editor?.mode === 'create' || editor?.mode === 'add-provider' || editor?.mode === 'edit-provider'
 			? editorWindowKeys(editorWindows, editingProvider?.soft_limits ?? null)
@@ -131,7 +131,7 @@
 		}
 	});
 
-	// Per-provider settings (CCT-541) + per-account env (CCT-538). `settings`
+	// Per-provider settings + per-account env. `settings`
 	// mirrors the provider's settings_json; `envRows` feed the identity's
 	// write-only env_json (never read back, so they start empty on edit);
 	// `replaceEnv` gates whether env_json is sent at all.
@@ -139,7 +139,7 @@
 	let acctEnvRows = $state<{ name: string; value: string }[]>([]);
 	let acctReplaceEnv = $state(false);
 	let acctEnvRemove = $state<string[]>([]);
-	// Move-provider target (CCT-558 merge path): another account of the same owner.
+	// Move-provider target (merge path): another account of the same owner.
 	let moveTarget = $state('');
 
 	/** Normalise a soft-limit input: empty ⇒ null, else a clamped non-negative
@@ -150,7 +150,7 @@
 		return Number.isFinite(n) ? Math.max(0, n) : null;
 	}
 
-	/** The soft-limit map to send on save (CCT-688). Always sent as the whole
+	/** The soft-limit map to send on save. Always sent as the whole
 	 *  replacement map so clearing a window's cap/bypass sticks; windows with
 	 *  neither cap nor bypass are dropped from the map. */
 	function softLimits(): Record<string, SoftLimitConfig> {
@@ -193,15 +193,15 @@
 			.filter((r) => r.model);
 	}
 
-	// "Sign in with Claude" OAuth flow state (CCT-243).
+	// "Sign in with Claude" OAuth flow state.
 	let oauthNonce = $state<string | null>(null);
 	let oauthCode = $state('');
 	let oauthBusy = $state(false);
 	let showAdvanced = $state(false);
-	// Reauth mode (CCT-512): editing an existing native provider to refresh its
+	// Reauth mode: editing an existing native provider to refresh its
 	// rejected credentials, which reveals the sign-in block inside the edit modal.
 	let reauthing = $state(false);
-	// OAuth attach target (CCT-558): when adding/reauthenticating, finish the flow
+	// OAuth attach target: when adding/reauthenticating, finish the flow
 	// as a provider under this existing account instead of creating a new identity.
 	let oauthAttachAccountId = $state<string | null>(null);
 
@@ -230,7 +230,7 @@
 
 	// Start the authorize leg: ask the server for an authorize URL, open it in a
 	// new tab, and reveal the paste field. Works for both Claude (anthropic) and
-	// "Sign in with ChatGPT" for Codex (openai) — CCT-243/CCT-244.
+	// "Sign in with ChatGPT" for Codex (openai).
 	async function startOAuthLogin() {
 		if (isAdmin && !ownerId && !oauthAttachAccountId) {
 			toasts.err(m.accounts_err_pick_owner());
@@ -260,7 +260,7 @@
 	// Finish: exchange the pasted code/callback URL for tokens and create the
 	// account/provider. Claude sends `code` (the code#state pair); Codex sends
 	// `callback_url` (the full localhost:1455 URL from the address bar). With an
-	// attach target (CCT-558) the credential lands under that account and the
+	// attach target the credential lands under that account and the
 	// name is ignored server-side.
 	async function finishOAuthLogin() {
 		if (!oauthAttachAccountId && !name.trim()) {
@@ -298,7 +298,7 @@
 	}
 
 	/** Provider kinds this account can still add: at most one per family
-	 *  (anthropic/openai), mirroring the server's unique index (CCT-558). */
+	 *  (anthropic/openai), mirroring the server's unique index. */
 	function availableKinds(a: OAuthAccount): ProviderKind[] {
 		const taken = new Set(a.providers.map((p) => p.family));
 		return PROVIDER_KINDS.map((k) => k.value).filter((v) => !taken.has(providerFamily(v)));
@@ -309,7 +309,7 @@
 		editor = { mode: 'add-provider', accountId: a.id };
 		provider = availableKinds(a)[0] ?? 'anthropic';
 		ownerId = a.user_id;
-		// The native OAuth flows attach via oauth/start's account_id (CCT-558).
+		// The native OAuth flows attach via oauth/start's account_id.
 		oauthAttachAccountId = a.id;
 	}
 
@@ -324,7 +324,7 @@
 		resetForm();
 		editor = { mode: 'edit-provider', accountId: a.id, providerId: p.id };
 		provider = p.provider as ProviderKind;
-		// Compatible endpoints can edit their model list in place (CCT-402). The
+		// Compatible endpoints can edit their model list in place. The
 		// base URL, credential, and scheme are never read back, so they start
 		// blank/"keep" — supplying one overwrites, leaving it keeps the stored value.
 		if (p.provider.endsWith('-compatible')) {
@@ -334,18 +334,18 @@
 				: [{ model: '', label: '' }];
 			authScheme = 'keep';
 		}
-		// Aliases are editable for every provider (CCT-406).
+		// Aliases are editable for every provider.
 		aliasRows = Object.entries(p.model_aliases ?? {}).map(([alias, model]) => ({ alias, model }));
-		// Soft limits are editable per window for every provider (CCT-688).
+		// Soft limits are editable per window for every provider.
 		softEdits = {};
 		for (const [key, v] of Object.entries(p.soft_limits ?? {})) {
 			softEdits[key] = { cap: v.cap_pct ?? null, bypass: v.bypass_minutes ?? null };
 		}
-		// Settings are editable per provider (CCT-541/CCT-560).
+		// Settings are editable per provider.
 		acctSettings = { ...(p.settings_json ?? {}) };
 	}
 
-	// Reauthenticate a flagged provider (CCT-512): open its edit modal, flip into
+	// Reauthenticate a flagged provider: open its edit modal, flip into
 	// reauth mode (reveals the sign-in block), and kick the authorize leg. The
 	// pasted code is exchanged by finishOAuthLogin, which refreshes the
 	// same-family credential in place and clears `needs_reauth` server-side.
@@ -353,7 +353,7 @@
 		openEditProvider(a, p);
 		ownerId = a.user_id;
 		reauthing = true;
-		// Attach the refreshed credential to THIS account (CCT-558) rather than
+		// Attach the refreshed credential to THIS account rather than
 		// creating a new identity from the name.
 		oauthAttachAccountId = a.id;
 		startOAuthLogin();
@@ -396,7 +396,7 @@
 				toasts.ok(m.accounts_provider_updated());
 			} else if (mode === 'add-provider' && editor?.accountId) {
 				// Native OAuth adds go through finishOAuthLogin instead; this path is
-				// the compatible-endpoint / pasted-refresh-token attach (CCT-558).
+				// the compatible-endpoint / pasted-refresh-token attach.
 				const spec: CreateProvider = {
 					provider,
 					...(Object.keys(model_aliases).length ? { model_aliases } : {}),
@@ -559,7 +559,7 @@
 							<Stack gap="var(--sp-3)" class="card-body">
 								<Heading level={2} size="lg" class="account-name">{a.name}</Heading>
 
-								<!-- One panel per provider credential (CCT-560). -->
+								<!-- One panel per provider credential. -->
 								{#each a.providers as p (p.id)}
 									<ProviderPanel
 										provider={p}
@@ -586,7 +586,7 @@
 									<div><dt>{m.accounts_stat_created()}</dt><dd><Timestamp value={a.created_at} mode="date" tone="inherit" /></dd></div>
 								</dl>
 								{#if !isManaged(a) && (isAdmin || a.user_id === $me.data?.user_id)}
-									<!-- Sharing management (CCT-510): owner-only surface to view/grant/
+									<!-- Sharing management: owner-only surface to view/grant/
 									     revoke who may USE this account. The list endpoint is
 									     owner-scoped, so only render (and fetch) it for the owner/admin. -->
 									<ResourceShares
@@ -652,7 +652,7 @@
 				{/if}
 
 				{#if editor?.mode === 'edit-account'}
-					<!-- Identity half (CCT-560/591): free-form write-only extra env lives
+					<!-- Identity half: free-form write-only extra env lives
 					     on the account; curated provider settings are edited per provider. -->
 					<FreeFormEnvEditor
 						bind:envRows={acctEnvRows}
@@ -662,9 +662,9 @@
 					/>
 				{:else}
 					{#if isCompatible}
-						<!-- Compatible endpoint (CCT-399): base URL + a static credential +
+						<!-- Compatible endpoint: base URL + a static credential +
 						     a model list. No OAuth; the gateway forwards the credential and
-						     skips refresh. On edit (CCT-402) the model list is editable in
+						     skips refresh. On edit the model list is editable in
 						     place; base URL / credential / scheme are write-only — blank or
 						     "keep" leaves the stored value untouched. -->
 						{@const isEdit = editor?.mode === 'edit-provider'}
@@ -712,7 +712,7 @@
 						</div>
 					{:else if editor?.mode === 'create' || editor?.mode === 'add-provider' || reauthing}
 						<!-- Sign in with Claude / ChatGPT: authorize upstream, paste back.
-						     Also shown when reauthenticating an existing provider (CCT-512). -->
+						     Also shown when reauthenticating an existing provider. -->
 						{#if !oauthNonce}
 							<Button
 								variant="primary"
@@ -761,7 +761,7 @@
 						{/if}
 					{/if}
 
-					<!-- Model aliases (CCT-406): logical name -> concrete model code,
+					<!-- Model aliases: logical name -> concrete model code,
 					     resolved server-side at spawn; works for every provider. -->
 					{#if editor?.mode === 'edit-provider' || isCompatible}
 						<div class="models">
@@ -785,10 +785,10 @@
 						</div>
 					{/if}
 
-					<!-- Soft limits (CCT-688): one reusable SoftLimit row per usage window
+					<!-- Soft limits: one reusable SoftLimit row per usage window
 					     (baseline + observed + configured), so model-scoped windows appear
 					     automatically. Works for anthropic (upstream usage API) and openai
-					     (locally metered, CCT-511). -->
+					     (locally metered). -->
 					{#if provider === 'anthropic' || provider === 'anthropic-compatible' || provider === 'openai'}
 						<div class="models">
 							<Text as="div" tone="muted" size="sm">{m.accounts_soft_limits_label()}</Text>
@@ -809,7 +809,7 @@
 						</div>
 					{/if}
 
-					<!-- Per-provider settings (CCT-541/CCT-560). Only the claude-code
+					<!-- Per-provider settings. Only the claude-code
 					     harness has an injectable settings.json today, so only
 					     anthropic-family providers get the toggle list. -->
 					{#if editor?.mode === 'edit-provider' && editingProvider}
@@ -821,7 +821,7 @@
 							</Text>
 						{/if}
 
-						<!-- Move (CCT-558): re-parent this credential onto another account of
+						<!-- Move: re-parent this credential onto another account of
 						     the same owner — the merge path for migrated split rows. -->
 						{#if !reauthing && moveTargets.length}
 							<div class="models">
@@ -889,7 +889,7 @@
 		padding-top: var(--sp-3);
 		border-top: 1px solid var(--border);
 	}
-	/* Account-level stat list — label over value, no input-like chrome (CCT-345). */
+	/* Account-level stat list — label over value, no input-like chrome. */
 	.stats {
 		display: grid;
 		grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));

@@ -1,8 +1,7 @@
-// Sticky-bottom scroll controller for the conversation drawer (CCT-161 item 7,
-// hardened by CCT-329 / CCT-345), extracted from ConversationDrawer with no
-// behavior change. It owns the scroll viewport + composer textarea refs and the
-// pin/unstick logic; the viewport and composer components share one instance so
-// the textarea's growth can re-pin the viewport.
+// Sticky-bottom scroll controller for the conversation drawer. It owns the
+// scroll viewport + composer textarea refs and the pin/unstick logic; the
+// viewport and composer components share one instance so the textarea's
+// growth can re-pin the viewport.
 //
 // If the user is at the bottom, new content auto-scrolls (sticky). If scrolled
 // up, we don't yank them down — the viewport shows a "jump to bottom" pill.
@@ -24,7 +23,7 @@ export class ScrollController {
 	// Timestamp of the last genuine user scroll gesture (wheel / touchmove /
 	// keyboard). Only such a gesture may UNSTICK the view; every other scroll
 	// event is layout-induced (composer growth, new content, on-screen keyboard,
-	// visualViewport resize) and must never clear the pin (CCT-329 / CCT-345).
+	// visualViewport resize) and must never clear the pin.
 	#lastUserScroll = 0;
 
 	markUserScroll = () => {
@@ -118,7 +117,7 @@ export class ScrollController {
 			});
 	};
 
-	// Keep pinned to the bottom while the composer grows (CCT-161). Observe BOTH
+	// Keep pinned to the bottom while the composer grows. Observe BOTH
 	// the textarea (it grows) and the scroll viewport (its height shrinks as a
 	// result) — re-pinning on the viewport's own resize is what actually keeps the
 	// latest line visible. Returns a cleanup; re-run from an $effect that reads

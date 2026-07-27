@@ -45,7 +45,7 @@
 		drafts.set(composerKey(session.id), input);
 	});
 
-	// ── Mid-chat file attachments (CCT-236) ────────────────────────────────
+	// ── Mid-chat file attachments ────────────────────────────────
 	// Held client-side next to the draft (File handles can't be persisted to
 	// localStorage). On send we upload first, then append the staged paths under
 	// the message text so the agent reads them.
@@ -62,7 +62,7 @@
 	}
 	const removeAttachment = (name: string) => (attachments = removeFileByName(attachments, name));
 
-	// Mask a large pasted block (CCT-297 #13): instead of dumping thousands of
+	// Mask a large pasted block: instead of dumping thousands of
 	// characters into the composer, collapse it into a `paste-N.txt` attachment
 	// (the Claude Code trick), keeping the textarea readable.
 	const PASTE_MASK_CHARS = 2000;
@@ -138,19 +138,19 @@
 		toasts.ok(m.composer_large_paste({ name, lines }));
 	}
 
-	// ── Cold-cache Send button (CCT-189) ───────────────────────────────────
+	// ── Cold-cache Send button ───────────────────────────────────
 	// Once the prompt cache lapses the next send re-writes the whole context to
 	// cache (an expensive "burst"). The button's "cold now" is purely time-based.
-	// The TTL window is provider/family- and model-dependent (CCT-646): Anthropic
+	// The TTL window is provider/family- and model-dependent: Anthropic
 	// 60m, OpenAI GPT-5.6+ 30m, else the 5-min legacy sliding window.
 	const CACHE_TTL_MS = $derived(cacheTtlMs(session.adapter_id, session.model));
-	// Final-minute countdown window (CCT-261).
+	// Final-minute countdown window.
 	const COLD_WARN_MS = 60 * 1000;
 	let now = $state(Date.now());
 	const lastActivityMs = $derived(
 		session.last_activity_at ? new Date(session.last_activity_at).getTime() : null
 	);
-	// The cache window is anchored to the last FINISHED turn (CCT-279 item 2).
+	// The cache window is anchored to the last FINISHED turn.
 	// While a turn is in flight (`working`) suppress the cold/countdown UI so it
 	// can't flip "cold" mid-turn; it re-anchors off the new reply once the turn ends.
 	const cacheCold = $derived(
@@ -189,7 +189,7 @@
 		draftStash = '';
 	});
 
-	// Pull a still-pending message back into the composer to edit + resend (CCT-208).
+	// Pull a still-pending message back into the composer to edit + resend.
 	export function loadDraft(text: string) {
 		input = text;
 		resetHistoryNav();
@@ -206,7 +206,7 @@
 			return;
 		}
 		// Stage any pending attachments first; append the staged absolute paths under
-		// the message so the agent reads them (CCT-236). On failure keep the draft +
+		// the message so the agent reads them. On failure keep the draft +
 		// attachments intact and surface the error rather than sending a half-message.
 		let body = text;
 		if (attachments.length) {
@@ -315,8 +315,8 @@
 			</span>
 		</div>
 	{:else}
-		<!-- Failed sends surface inline on the message bubble itself (red + Retry,
-		     CCT-212), so there's no separate composer banner. -->
+		<!-- Failed sends surface inline on the message bubble itself (red +
+		     Retry), so there's no separate composer banner. -->
 		{#if supportsAttachments && attachments.length}
 			<div class="attachments">
 				<AttachmentList files={attachments} onremove={removeAttachment} compact />
@@ -324,7 +324,7 @@
 		{/if}
 		<div class="composer-row">
 			{#if supportsAttachments}
-				<!-- File picker (CCT-236). Drag-and-drop onto the conversation pane also
+				<!-- File picker. Drag-and-drop onto the conversation pane also
 				     adds attachments. Icon-only: the label is hidden (a11y-only) so the
 				     control stays a compact square matching the textarea/Send height. -->
 				<FileButton label={m.composer_attach_files()} multiple iconOnly onfiles={addFiles} />
@@ -352,8 +352,8 @@
 			</div>
 			<!-- Stays a plain primary button across all cost states: layering a `tone`
 			     (info/warn) on `primary` recolored the LABEL to the tone hue over the
-			     accent fill (e.g. light-blue text on the green accent → unreadable,
-			     CCT-349). The cold/imminent state is signalled by the label itself
+			     accent fill (e.g. light-blue text on the green accent → unreadable).
+			     The cold/imminent state is signalled by the label itself
 			     (countdown · ❄️ · burst estimate) + the title tooltip, so the button
 			     keeps its expected high-contrast primary colors. -->
 			<Button
@@ -391,7 +391,7 @@
 		background: var(--bg-elevated);
 	}
 	/* Highlight the composer while a file drag hovers the conversation pane
-	   (CCT-236). */
+	  . */
 	.composer.dropping {
 		outline: 2px dashed var(--c-blue);
 		outline-offset: -2px;
@@ -402,15 +402,14 @@
 		flex-wrap: nowrap;
 		gap: var(--sp-2);
 		/* Align the attach/send controls to the BOTTOM edge of the (growable)
-		   textarea so all three share a baseline at every font scale (CCT-279
-		   item 8). */
+		   textarea so all three share a baseline at every font scale. */
 		align-items: flex-end;
 		/* Never let the row exceed the composer width — nowrap + min-width:0 on the
 		   textarea keeps it contained. */
 		min-width: 0;
 		/* Single-row control height, tracking the Textarea's font-scaled single line
 		   so Send + the attach FileButton stay the same height as a rows=1 input at
-		   every font scale (CCT-353). The buttons' own floors are a fixed 2.5rem, but
+		   every font scale. The buttons' own floors are a fixed 2.5rem, but
 		   the textarea grows with --fs-base (form-control font is max(16px,--fs-base))
 		   while a 0.8125rem-label button does not — leaving Send shorter at the largest
 		   scale. Mirror the Textarea's metrics: line-box (max(16px,--fs-base) ×
@@ -428,7 +427,7 @@
 	}
 	/* Cap the autoresizing textarea's growth so a long message can't push the
 	   composer controls (textarea bottom + Send) off the bottom of the viewport
-	   with no way to reach Send (CCT-473). The autoresize action grows the
+	   with no way to reach Send. The autoresize action grows the
 	   element's inline `height`; `max-height` clamps it and the textarea scrolls
 	   internally past the cap. 40vh keeps the conversation + composer visible at
 	   any message length; the composer itself stays pinned as the last flex child
@@ -446,7 +445,7 @@
 		flex-wrap: wrap;
 		gap: var(--sp-2);
 	}
-	/* Right-aligned action cluster: New from same script · Fork · Resume (CCT-345). */
+	/* Right-aligned action cluster: New from same script · Fork · Resume. */
 	.archived-actions-btns {
 		display: flex;
 		align-items: center;
@@ -457,12 +456,12 @@
 	   height comes from the Button atom's md size (2.5rem), matching the attach
 	   FileButton and the collapsed Textarea. The cold + final-minute cost states
 	   are conveyed by the button LABEL (countdown/❄️/burst) — not a `tone` recolor,
-	   which clashed with the primary fill (CCT-189/CCT-261/CCT-349). */
+	   which clashed with the primary fill. */
 	.composer-row :global(.send),
 	.composer-row :global(.file-btn) {
 		flex: none;
 		/* Track the font-scaled single-row height so all three composer controls
-		   (attach · textarea · Send) stay level at every scale (CCT-353). */
+		   (attach · textarea · Send) stay level at every scale. */
 		min-height: var(--composer-ctl-h);
 	}
 	/* Fixed-width, tabular digits so "59s"→"0s" doesn't jitter the button. The

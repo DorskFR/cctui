@@ -4,7 +4,7 @@
 	import { Button, Input, Text, Timestamp } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 
-	// "Shared with" section for any shareable resource (CCT-531): lists live
+	// "Shared with" section for any shareable resource: lists live
 	// grants, a user-picker (login or UUID) to grant `use`, and a per-row revoke.
 	// Only rendered for the resource owner/admin — the list endpoint is
 	// owner-scoped server-side, so `enabled` gates the fetch to avoid 404 churn.

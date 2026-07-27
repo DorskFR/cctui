@@ -1,4 +1,4 @@
-# cctui kubernetes dispatcher image (CCT-291). The standalone, enrolled
+# cctui kubernetes dispatcher image. The standalone, enrolled
 # dispatcher that connects out to a cctui-server, serves dispatch commands, and
 # spawns worker Jobs in-cluster (cloning a suspended source CronJob's template).
 #
@@ -11,7 +11,7 @@
 
 # Builder base must match the runtime's glibc: bookworm-slim runtime ships
 # glibc 2.36, so build on the bookworm-based rust image (not the default
-# trixie one, whose binaries require GLIBC_2.39). See CCT-112.
+# trixie one, whose binaries require GLIBC_2.39).
 FROM rust:1.90-slim-bookworm AS builder
 
 WORKDIR /app

@@ -33,7 +33,7 @@
   --c-gold: #f0b454;
   --c-teal: #4fd6cf;
 
-  /* ---- Role colors (CCT-161) — uniform message theming, all derived from
+  /* ---- Role colors — uniform message theming, all derived from
 	   palette tokens so each theme adapts. Used for role badges + bubble tints. */
   --role-user: var(--c-green);
   --role-assistant: var(--c-blue);
@@ -43,7 +43,7 @@
   /* compact/clear boundary — neutral "paper white" so it reads as structure */
   --role-boundary: var(--c-text-muted);
 
-  /* ---- Markdown / syntax-highlight tokens (CCT-161) — themeable ---- */
+  /* ---- Markdown / syntax-highlight tokens — themeable ---- */
   --md-text: var(--c-text-muted); /* base prose: grayish */
   --md-strong: var(--c-text); /* bold: bright white-ish */
   --md-code: var(--c-blue); /* inline code: bold blue */
@@ -88,12 +88,12 @@
   --attention-bg: color-mix(in srgb, var(--c-amber) 12%, transparent);
   /* Opaque variant for surfaces that must fully hide what's behind them — e.g. a
      `stacked` Card whose back layers (z-index:-1/-2 pseudo-elements) would
-     otherwise bleed THROUGH a translucent attention fill (CCT-349). Same hue,
+     otherwise bleed THROUGH a translucent attention fill. Same hue,
      mixed over the elevated surface instead of transparent. */
   --attention-bg-solid: color-mix(in srgb, var(--c-amber) 12%, var(--bg-elevated));
   --attention-bar: var(--c-amber);
 
-  /* machine-badge tinting (CCT-271, fixed CCT-272) — the hue is per-machine
+  /* machine-badge tinting — the hue is per-machine
 	   (name hash or operator override, --mh, set on the badge element), but the
 	   saturation/lightness come from the theme as `<sat%> <light%>` PAIRS. The
 	   badge composes `hsl(var(--mh) var(--mach-*-sl))` itself, so both vars
@@ -113,7 +113,7 @@
     ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code", Menlo, Consolas,
     monospace;
 
-  /* Text-scale factor (CCT-305). The UI font control multiplies ONLY the
+  /* Text-scale factor. The UI font control multiplies ONLY the
 	   font-size tokens by this — not the root font-size — so bumping the size up
 	   enlarges text (chat, session text, badges, labels) meaningfully while the
 	   chrome (button heights, padding, spacing, the px-pinned header) stays put.
@@ -161,13 +161,13 @@
   --shadow-md: 0 6px 20px rgba(0, 0, 0, 0.45);
   --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.55);
 
-  /* ---- Controls (CCT-250 item 1) — shared height for icon buttons + inputs
+  /* ---- Controls — shared height for icon buttons + inputs
 	   so toolbars/composers line up. `.btn-control` (app.css) consumes it. */
   --control-height: 2.75rem;
 
   /* ---- Layout ---- */
   /* Fixed (px, not rem): the header is chrome that must NOT scale with the
-	   UI font slider it hosts (CCT-264) — a rem header-h would grow under the
+	   UI font slider it hosts — a rem header-h would grow under the
 	   slider and reflow it mid-drag. Pinning here keeps the bar height, the
 	   content clearance, and the sticky offsets that key off it all consistent
 	   with the fixed toolbar. */
@@ -219,7 +219,7 @@
   --mach-border-sl: 45% 72%;
 }
 
-/* ---- Sepia / "Claude paper" theme (CCT-161 item 3) — warm cream paper,
+/* ---- Sepia / "Claude paper" theme — warm cream paper,
    brown ink, solarized-ish accents. Same variable contract as light/dark. */
 [data-theme="sepia"] {
   --c-bg: #f4ecd8;
@@ -544,7 +544,7 @@
   --mach-border-sl: 55% 38%;
 }
 
-/* ---- AMOLED (CCT-309) — pure-black background, high-contrast white text for
+/* ---- AMOLED — pure-black background, high-contrast white text for
    maximum contrast / OLED power saving. Elevated surfaces step up in tiny
    increments off true black (so cards/popovers/composer/code blocks stay
    distinguishable without diluting the black page), borders are bright enough
@@ -579,7 +579,7 @@
   --mach-border-sl: 60% 42%;
 }
 
-/* ---- High Contrast Light (CCT-309) — pure-white background, near-black text.
+/* ---- High Contrast Light — pure-white background, near-black text.
    The light-mode counterpart to AMOLED: maximum contrast for bright
    environments. Strong borders and dark, saturated accents keep every surface
    legible on white. */
@@ -613,7 +613,7 @@
   --mach-border-sl: 50% 64%;
 }
 
-/* ── Additional themes ported from tsumikit (TSU-1 / CCT-401) ──
+/* ── Additional themes ported from tsumikit ──
    Medium-light tiers + a color-blind-safe dark. Each block redefines the
    --c-* palette (plus --md-code-bg, --shadow-*, --mach-*-sl) exactly like the
    blocks above; the semantic tokens in :root resolve from these. ── */

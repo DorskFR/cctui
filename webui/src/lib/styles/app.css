@@ -14,11 +14,11 @@
 html {
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
-  /* The UI font scaler drives --fs-scale (CCT-305), so only --fs-* text tokens
+  /* The UI font scaler drives --fs-scale, so only --fs-* text tokens
 	   grow — chrome rem dimensions stay fixed. A scaled-up text token can still
 	   push a fixed/min-width child past the viewport on small screens; clip
 	   sideways here too (not just on body) so the whole page never gains a
-	   horizontal scrollbar (CCT-279 item 8). */
+	   horizontal scrollbar. */
   overflow-x: hidden;
   max-width: 100%;
   scrollbar-gutter: stable;
@@ -181,7 +181,7 @@ svg[aria-hidden="true"] {
 .btn-icon-inline.hover-danger:hover:not(:disabled) {
   color: var(--c-red);
 }
-/* Uniform-height control (CCT-250 item 1). Use on icon buttons, inputs, and
+/* Uniform-height control. Use on icon buttons, inputs, and
    action buttons that share a toolbar/composer row so they line up exactly.
    Square icon variant: add `.btn-control-square`. */
 .btn-control {
@@ -216,7 +216,7 @@ svg[aria-hidden="true"] {
 /* A control-sized button can still be the primary action (e.g. the toolbar
    "New" button). .btn-control follows .btn-primary in source order and would
    otherwise paint it with the neutral --surface, so restore the accent fill
-   when both classes are present (CCT-345). */
+   when both classes are present. */
 .btn-control.btn-primary {
   background: var(--accent);
   border-color: var(--accent);
@@ -278,7 +278,7 @@ svg[aria-hidden="true"] {
 .dot-dead {
   background: var(--dot-dead);
 }
-/* Worker exited but resumable on reply (CCT-228) — claude-style red dot. */
+/* Worker exited but resumable on reply — claude-style red dot. */
 .dot-hibernated {
   background: var(--dot-hibernated);
 }
@@ -382,7 +382,7 @@ svg[aria-hidden="true"] {
   }
 }
 
-/* Search-term highlight (CCT-187). Used inside {@html} content (chat window +
+/* Search-term highlight. Used inside {@html} content (chat window +
    snippets), so it must be global — Svelte scoped styles don't reach {@html}. */
 .search-hit {
   background: var(--warn, #d08770);
@@ -391,7 +391,7 @@ svg[aria-hidden="true"] {
   padding: 0 1px;
 }
 
-/* Per-code-block copy button (CCT-297 #20). The block is wrapped in a positioned
+/* Per-code-block copy button. The block is wrapped in a positioned
    figure; the button hovers in the top-right and reveals on hover (always visible
    on touch, where there's no hover). Rendered inside {@html}, so global. */
 .md-pre-wrap {
@@ -433,7 +433,7 @@ svg[aria-hidden="true"] {
   }
 }
 
-/* Agent-posted inline images (CCT-566). Constrained max-height so a screenshot
+/* Agent-posted inline images. Constrained max-height so a screenshot
    sits in the bubble; click opens the full-size lightbox overlay. Rendered
    inside {@html}, so global. */
 .md-img {

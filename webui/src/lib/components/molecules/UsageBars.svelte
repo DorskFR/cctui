@@ -6,7 +6,7 @@
 	import SoftLimit from '$lib/components/molecules/SoftLimit.svelte';
 	import { mergeUsageWindows } from '$lib/components/molecules/usage-windows';
 
-	// Per-account subscription usage shown as horizontal bars (CCT-345/CCT-688):
+	// Per-account subscription usage shown as horizontal bars:
 	// one SoftLimit row per normalized usage window, plus a separate section for
 	// caps configured on windows the latest response didn't report. Reuses the
 	// lazy/slow-refresh fetch; renders nothing for providers without a usage API.
@@ -19,7 +19,7 @@
 		id: string;
 		provider: string;
 		enabled?: boolean;
-		/** Configured caps (CCT-688), merged onto the matching window by key. */
+		/** Configured caps, merged onto the matching window by key. */
 		softLimits?: Record<string, SoftLimitConfig> | null;
 	} = $props();
 

@@ -1,5 +1,5 @@
 <script lang="ts">
-	// Free-form account env editor (CCT-591). The account-level `env_json` blob is
+	// Free-form account env editor. The account-level `env_json` blob is
 	// encrypted and WRITE-ONLY: the server returns the var NAMES (not values), so
 	// this shows what is currently stored and lets the operator type arbitrary
 	// NAME=VALUE pairs. Any well-formed name is accepted except a denylist of

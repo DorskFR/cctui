@@ -8,8 +8,8 @@ const KEY_SOUND = "cctui_notify_sound";
 const TITLE = "cctui";
 
 /**
- * Browser-notification + sound for sessions that need the user's input
- * (CCT-170). List-driven: `reconcile()` is fed the set of sessions with
+ * Browser-notification + sound for sessions that need the user's input.
+ * List-driven: `reconcile()` is fed the set of sessions with
  * `attention === 'needs_input'` and fires one notification per session per
  * episode (dedupe by id; re-arms once the session stops needing input).
  *

@@ -2,11 +2,11 @@ import { describe, it, expect } from 'vitest';
 import type { AgentEvent } from '@bindings/AgentEvent';
 import { orderEvents } from './format';
 
-// CCT-481: the merged history+live event list is ordered by the server's
+// The merged history+live event list is ordered by the server's
 // monotonic per-session insert `seq` (`stream_events.id`), not receive-time
 // `ts`. `seq` reflects true causal order, so a late-flushed AskUserQuestion —
 // whose card + preamble carry a `ts` at/after the user's answer — still renders
-// above its answer, which a `ts`-only sort inverted (CCT-475).
+// above its answer, which a `ts`-only sort inverted.
 
 const preamble = (ts: number, seq: number | null): AgentEvent => ({
 	type: 'text',
@@ -42,7 +42,7 @@ const contents = (es: AgentEvent[]) =>
 		return e.type;
 	});
 
-describe('orderEvents (CCT-481)', () => {
+describe('orderEvents', () => {
 	it('orders by seq when ts ties', () => {
 		// All three share ts=100; only seq distinguishes causal order. A shuffled
 		// input (answer first) must still come out preamble → card → answer.

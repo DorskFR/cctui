@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CCT-630: fail if the pinned Codex version drifts across its sources of truth.
+# Fail if the pinned Codex version drifts across its sources of truth.
 #
 # The single source of truth is contract::CODEX_PINNED_VERSION in the daemon.
 # The worker image ARG CODEX_VERSION must match it exactly, otherwise the image

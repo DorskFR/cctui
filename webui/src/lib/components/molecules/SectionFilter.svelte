@@ -6,7 +6,7 @@
 
 	// One square toolbar button that opens a popover of four INDEPENDENT on/off
 	// section toggles (Starred / Live / Dispatched / Archived) — any combination
-	// can be shown at once (CCT-322 / CCT-345). `sections` is bindable so the
+	// can be shown at once. `sections` is bindable so the
 	// parent owns persistence; toggling mutates it here (never to empty).
 	let { sections = $bindable() }: { sections: Set<Section> } = $props();
 

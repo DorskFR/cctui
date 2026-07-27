@@ -1,5 +1,5 @@
 <script lang="ts">
-	// Shared pending-attachment chip list (CCT-236) used by the spawn modal and
+	// Shared pending-attachment chip list used by the spawn modal and
 	// the mid-chat composer. Renders one chip per file with a remove button and,
 	// when present, the cap error.
 	import { fmtSize, fileCapError } from '$lib/attachments';

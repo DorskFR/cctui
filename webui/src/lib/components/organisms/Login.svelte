@@ -14,8 +14,8 @@
 		err = '';
 		try {
 			// `auth.login` validates the token server-side and, on success, sets the
-			// `HttpOnly` auth cookie (CCT-423). A bad token resolves to 401 → false.
-			// Any authenticated principal (admin, user, machine) is accepted (CCT-407).
+			// `HttpOnly` auth cookie. A bad token resolves to 401 → false.
+			// Any authenticated principal (admin, user, machine) is accepted.
 			const ok = await auth.login(token.trim());
 			if (!ok) err = m.login_invalid_token();
 		} catch {

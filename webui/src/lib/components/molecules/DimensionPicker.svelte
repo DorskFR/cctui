@@ -3,8 +3,8 @@
 	import { m } from '$lib/paraglide/messages';
 	import { DIMENSIONS, type Dimension } from '../../../routes/sessions/sessions.logic';
 
-	// Toolbar picker for a session-list dimension (CCT-466 color · CCT-467 group),
-	// mirroring ViewPicker: a native <select> overlaid on a styled square trigger.
+	// Toolbar picker for a session-list dimension (color · group), mirroring
+	// ViewPicker: a native <select> overlaid on a styled square trigger.
 	let {
 		value,
 		onchange,

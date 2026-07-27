@@ -41,8 +41,8 @@
 	const actions = useGithubConnectorActions();
 
 	// Connectors are user-owned; the admin token has no user identity, so an
-	// admin operator picks the owning user explicitly (mirrors the OAuth-account
-	// vault, CCT-251).
+	// admin operator picks the owning user explicitly (mirrors the
+	// OAuth-account vault).
 	const me = useMe();
 	const isAdmin = $derived($me.data?.role === 'admin');
 	const users = useUsers(() => isAdmin);

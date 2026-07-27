@@ -1,5 +1,5 @@
-// Pure, reactive-free helpers for the Overview usage-analytics charts
-// (CCT-707). Kept outside the components so the zero-fill / grid math is
+// Pure, reactive-free helpers for the Overview usage-analytics charts.
+// Kept outside the components so the zero-fill / grid math is
 // unit-testable on its own. The server buckets/extracts in the caller's
 // reporting timezone (buckets arrive as UTC instants of local bucket starts),
 // so all local-time derivation here mirrors that: we truncate in local time.

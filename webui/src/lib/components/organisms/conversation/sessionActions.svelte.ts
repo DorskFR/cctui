@@ -56,8 +56,8 @@ export class SessionActions {
 		const s = this.#opts.session();
 		try {
 			await this.#opts.actions.archive(this.#opts.id());
-			// Wipe this session's local composer state (gone once archived, CCT-162)
-			// and stop tracking any in-flight/failed sends so auto-retry doesn't run.
+			// Wipe this session's local composer state (gone once archived) and
+			// stop tracking any in-flight/failed sends so auto-retry doesn't run.
 			clearSessionStorage(s.id);
 			ws.clearDelivery(s.id);
 			toasts.ok(m.conversation_archived_toast());
@@ -71,7 +71,7 @@ export class SessionActions {
 		try {
 			const res = await this.#opts.actions.interrupt(this.#opts.id());
 			// Wait for the adapter to echo back whether the agent actually
-			// accepted the interrupt (CCT-339), rather than fire-and-forget.
+			// accepted the interrupt, rather than fire-and-forget.
 			// A timeout is not a hard failure — the interrupt may still have
 			// landed — so phrase it as unconfirmed. Interrupts settle fast, so
 			// a short wait suffices.
@@ -88,7 +88,7 @@ export class SessionActions {
 		}
 	};
 
-	// Keyboard "archive" chord (⌘/Ctrl+E, CCT-???): interrupt any in-flight turn
+	// Keyboard "archive" chord (⌘/Ctrl+E): interrupt any in-flight turn
 	// first, then archive. The interrupt is best-effort and fire-and-forget here
 	// — archiving dismisses the drawer regardless, so we don't block it on the 8s
 	// ack the manual Stop button waits for. Only fires the interrupt when the
@@ -116,9 +116,9 @@ export class SessionActions {
 		}
 	};
 
-	// In-place model/effort switch (CCT-303), codex only — the editor UI lives in
+	// In-place model/effort switch, codex only — the editor UI lives in
 	// DrawerHeader, this just dispatches the change. Awaits the adapter's ack
-	// (CCT-635) so a rejected change surfaces as an error instead of a false
+	// so a rejected change surfaces as an error instead of a false
 	// "Model updated"; the chip itself flips off the daemon's Status echo.
 	setModel = async (model: string, effort: string) => {
 		try {
@@ -145,7 +145,7 @@ export class SessionActions {
 		}
 	};
 
-	// Export the transcript as a self-contained HTML file (CCT-227), gated by the
+	// Export the transcript as a self-contained HTML file, gated by the
 	// current view toggles and themed with the active palette.
 	export = () => {
 		try {
@@ -156,7 +156,7 @@ export class SessionActions {
 		}
 	};
 
-	// Copy the whole conversation as Markdown (CCT-279 item 9), honoring the
+	// Copy the whole conversation as Markdown, honoring the
 	// current view filters.
 	copyMarkdown = async () => {
 		try {
@@ -168,7 +168,7 @@ export class SessionActions {
 		}
 	};
 
-	// Copy the session's stable, shareable URL (CCT-206).
+	// Copy the session's stable, shareable URL.
 	copyLink = async () => {
 		const url = `${location.origin}/sessions?session=${this.#opts.id()}`;
 		try {

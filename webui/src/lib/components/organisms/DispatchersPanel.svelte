@@ -1,5 +1,5 @@
 <!--
-  Dispatcher management, extracted from the /dispatchers route (CCT-403) so it
+  Dispatcher management, extracted from the /dispatchers route so it
   can be hosted under the Accounts page (the single home for everything that
   connects to something external) as well as its own route.
 -->
@@ -27,11 +27,11 @@
 	// enrolling fresh, undefined when the editor is closed. Declared before
 	// `useAccounts` below: its `enabled` getter reads `editing` synchronously
 	// at query creation, so the binding must already be initialized (a
-	// later `let` would hit a temporal-dead-zone ReferenceError — CCT-428).
+	// later `let` would hit a temporal-dead-zone ReferenceError).
 	let editing = $state<string | null | undefined>(undefined);
 
-	// CCT-427: optional default OAuth account to bind at enroll. The picker is
-	// only shown while enrolling (not renaming).
+	// Optional default OAuth account to bind at enroll; the picker is only
+	// shown while enrolling (not renaming).
 	const accounts = useAccounts(() => editing === null);
 	const guard = (p: Promise<unknown>) => p.catch((e: Error) => toasts.err(e.message));
 

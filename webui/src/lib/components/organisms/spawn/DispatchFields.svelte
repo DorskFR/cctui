@@ -2,7 +2,7 @@
 	// The "Dispatch (k8s)" branch of the spawn form, extracted from SpawnModal:
 	// dispatcher + adapter selection and the fields forwarded to the dispatcher as
 	// `payload` (name, identity, repo, ticket, prompt, prompt file, model, timeout,
-	// effort). The adapter picker (CCT-643) chooses the claude or codex worker; the
+	// effort). The adapter picker chooses the claude or codex worker; the
 	// model/effort sets follow it.
 	import EffortSlider from './EffortSlider.svelte';
 	import { Field, Input, Select, Text, Textarea } from '@dorsk/tsumikit';
@@ -32,7 +32,7 @@
 	}: {
 		form: Form;
 		dispatcherIds: string[];
-		// The caller's accounts (CCT-399). Filtered per selected adapter below.
+		// The caller's accounts. Filtered per selected adapter below.
 		accounts: OAuthAccount[];
 		// Submit the spawn form from the prompt textarea (Ctrl/⌘+Enter).
 		onsubmit?: () => void;
@@ -42,7 +42,7 @@
 	const isCodex = $derived(adapter === 'codex');
 
 	// Only accounts whose provider family backs the selected harness apply
-	// (provider-family union, CCT-562): a claude worker needs an anthropic-family
+	// (provider-family union): a claude worker needs an anthropic-family
 	// provider, a codex worker an openai-family one.
 	const dispatchAccounts = $derived(accounts.filter((a) => accountAdapters(a).includes(adapter as Adapter)));
 	const selectedAccount = $derived(

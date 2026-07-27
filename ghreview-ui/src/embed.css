@@ -1,5 +1,5 @@
 /*
- * Embedded stylesheet (CCT-610). Imported by Review.svelte when gh-review is
+ * Embedded stylesheet. Imported by Review.svelte when gh-review is
  * mounted inside cctui-ui. It reuses the shared design tokens but scopes the
  * base element rules under `.ghreview-embed` so they never leak onto the host
  * app's <body>/<a>/<button>. The `[data-theme]` token blocks match the embed

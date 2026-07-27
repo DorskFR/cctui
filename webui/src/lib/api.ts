@@ -34,7 +34,7 @@ async function request<T>({ method = 'GET', path, body, query }: RequestOpts): P
 	const headers = new Headers();
 	if (body !== undefined) headers.set('Content-Type', 'application/json');
 
-	// Auth rides the `HttpOnly` cookie (CCT-423); `credentials: 'include'` makes
+	// Auth rides the `HttpOnly` cookie; `credentials: 'include'` makes
 	// the browser attach it (works same-origin without CORS credential config).
 	const res = await fetch(buildUrl(path, query), {
 		method,
@@ -64,7 +64,7 @@ async function request<T>({ method = 'GET', path, body, query }: RequestOpts): P
 	return JSON.parse(text) as T;
 }
 
-/** POST a `multipart/form-data` body (CCT-203 file uploads). The browser sets
+/** POST a `multipart/form-data` body (file uploads). The browser sets
  *  the `Content-Type` boundary itself, so we must NOT set it here. Shares the
  *  auth + error handling of {@link request}. */
 async function postForm<T>(path: string, form: FormData): Promise<T> {

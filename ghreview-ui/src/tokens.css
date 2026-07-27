@@ -1,5 +1,5 @@
 /*
- * Design tokens (CCT-672). gh-review no longer ships its own palette: the
+ * Design tokens. gh-review no longer ships its own palette: the
  * `--gh-*` names are now a thin alias layer over @dorsk/tsumikit's semantic
  * tokens (`--bg`, `--text`, `--accent`, `--ok`, `--danger`, …), which webui
  * already applies via `[data-theme]` on <html> across its 24 themes.

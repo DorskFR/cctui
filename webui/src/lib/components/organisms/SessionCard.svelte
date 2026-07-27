@@ -36,7 +36,7 @@
 		subagentCost = null,
 		subagentToggles = [],
 		stacked = false,
-		// Label editing (CCT-360): when `onAttachLabel` is supplied the card shows
+		// Label editing: when `onAttachLabel` is supplied the card shows
 		// the inline add/remove picker; otherwise the chips render read-only.
 		allLabels = [],
 		onCreateLabel,
@@ -44,7 +44,7 @@
 		onDetachLabel,
 		onUpdateLabel,
 		onDeleteLabel,
-		// Draft sessions (CCT-394): staged spawns not yet launched. When `draft`,
+		// Draft sessions: staged spawns not yet launched. When `draft`,
 		// the card body click is inert (no drawer) and a Launch/Edit/Discard action
 		// group renders in place of the live-session affordances, so drafts share
 		// the exact same compact-list / card layout as every other section.
@@ -59,41 +59,41 @@
 		session: SessionListItem;
 		child?: boolean;
 		compact?: boolean;
-		// Grid (card-view) layout (CCT-305): keeps cards uniform — single-line cwd
+		// Grid (card-view) layout: keeps cards uniform — single-line cwd
 		// path (ellipsis, no wrap) and full-height fill — so a row of cards is the
 		// same height with no ragged wrapping. List view leaves this false so the
 		// detailed card keeps wrapping the full path (seeing it whole is the point).
 		grid?: boolean;
 		pendingCount?: number;
-		// Unread assistant messages (CCT-580): a red count pill, distinct from the
+		// Unread assistant messages: a red count pill, distinct from the
 		// amber pending-permission badge. Suppressed at 0 or for the open session
 		// (the caller passes 0 there).
 		unreadCount?: number;
 		onopen: (s: SessionListItem) => void;
-		// Search terms to highlight in the match snippet (CCT-187).
+		// Search terms to highlight in the match snippet.
 		highlight?: string[];
-		// Multi-select mode (CCT-172): when `selectable`, a tap toggles selection
+		// Multi-select mode: when `selectable`, a tap toggles selection
 		// instead of opening the drawer, and a checkbox is shown.
 		selectable?: boolean;
 		selected?: boolean;
 		// `range` is true when Shift was held: the caller extends the selection
 		// from its anchor to this row instead of toggling a single one.
 		onToggleSelect?: (s: SessionListItem, range?: boolean) => void;
-		// Swipe-to-archive (CCT-172): on touch, a left-swipe of the row past a
+		// Swipe-to-archive: on touch, a left-swipe of the row past a
 		// threshold fires `onSwipe` (archive, or unarchive in the archived view) —
 		// the same gesture as archiving an email. Disabled in multi-select mode so
 		// it never fights checkbox tapping.
 		swipeable?: boolean;
 		swipeLabel?: string;
 		onSwipe?: (s: SessionListItem) => void;
-		// Pin/star toggle (CCT-267): when provided, a star button appears in the
+		// Pin/star toggle: when provided, a star button appears in the
 		// header. Pinned sessions sort to the top and skip auto-archive.
 		onTogglePin?: (s: SessionListItem) => void;
-		// Rolled-up subagent usage (CCT-297 #19): on a parent that spawned
+		// Rolled-up subagent usage: on a parent that spawned
 		// subagents, the parent's own tokens plus the aggregated tokens of all its
-		// subagents, with the subagent count. Reported in tokens (CCT-301 #2).
+		// subagents, with the subagent count. Reported in tokens.
 		subagentCost?: { tokens: number; count: number } | null;
-		// Subagent group toggles (CCT-297 #?): collapsible (>=3 agent) groups this
+		// Subagent group toggles: collapsible (>=3 agent) groups this
 		// session parents, rendered as count badges in the leading gutter slot so
 		// they share the title's left edge instead of hanging in an external rail.
 		subagentToggles?: {
@@ -104,18 +104,18 @@
 			label: string;
 			ontoggle: () => void;
 		}[];
-		// Stacked surface (CCT-297): in card view, a conversation that parents
+		// Stacked surface: in card view, a conversation that parents
 		// subagents is drawn as a stacked card (a pile peeking out bottom-right) so
 		// it reads as "has more behind it" at a glance.
 		stacked?: boolean;
-		// Label editing (CCT-360).
+		// Label editing.
 		allLabels?: Label[];
 		onCreateLabel?: (name: string, color: string) => Promise<Label>;
 		onAttachLabel?: (id: string, labelId: string) => void | Promise<void>;
 		onDetachLabel?: (id: string, labelId: string) => void | Promise<void>;
 		onUpdateLabel?: (labelId: string, patch: { name?: string; color?: string }) => Promise<Label>;
 		onDeleteLabel?: (labelId: string) => void | Promise<void>;
-		// Draft affordances (CCT-394).
+		// Draft affordances.
 		draft?: boolean;
 		draftLaunching?: boolean;
 		// Optional message-preview override (drafts show their staged prompt here,
@@ -124,7 +124,7 @@
 		onLaunch?: (s: SessionListItem) => void;
 		onEdit?: (s: SessionListItem) => void;
 		onDiscard?: (s: SessionListItem) => void;
-		// Color-by accent hue (CCT-466): a left-border strip tinting the card by its
+		// Color-by accent hue: a left-border strip tinting the card by its
 		// label / working dir / machine. null = no accent.
 		accentHue?: number | null;
 	} = $props();
@@ -148,13 +148,13 @@
 	// siblings are distinguishable without a redundant "subagent ·" prefix.
 	const title = $derived(s.name || (child ? s.id.slice(0, 6) : dirName || s.id));
 	const needsInput = $derived(s.attention === 'needs_input' && s.status !== 'archived');
-	// Hibernated (CCT-228): worker exited but resumable — a reply revives it
+	// Hibernated: worker exited but resumable — a reply revives it
 	// (daemon resume-on-reply). Red dot, mirroring claude's own agents view.
-	// Stale Working sessions (CCT-365): a derived, time-based display signal that
+	// Stale Working sessions: a derived, time-based display signal that
 	// re-evaluates on a clock tick (60s — the 30-min horizon doesn't need finer)
-	// and clears the instant fresh activity (a newer `last_heartbeat`, bumped by
-	// subagent work too per CCT-366) arrives. Not a persisted state.
-	// 5s tick (CCT-594): the tool-cadence age needs second-ish freshness to read
+	// and clears the instant fresh activity (a newer `last_heartbeat`, bumped
+	// by subagent work too) arrives. Not a persisted state.
+	// 5s tick: the tool-cadence age needs second-ish freshness to read
 	// "grinding" vs "asleep"; the coarse 30-min stale signal rides the same clock.
 	let now = $state(Date.now());
 	onMount(() => {
@@ -184,7 +184,7 @@
 						: 'dot-dead'
 	);
 	const u = $derived(s.token_usage);
-	// Subagent cost rollup (CCT-297 #19): only meaningful when there are agents.
+	// Subagent cost rollup: only meaningful when there are agents.
 	const rollup = $derived(subagentCost && subagentCost.count > 0 ? subagentCost : null);
 	// Liveness is conveyed by the colored dot, so the badge only carries the
 	// meaningful lifecycle states ("new", "archived"), not active/inactive.
@@ -211,7 +211,7 @@
 	// Label picker is only interactive on top-level rows with an attach handler.
 	const labelEditable = $derived(!!onAttachLabel && !child);
 
-	// ── Swipe-to-archive (CCT-172, touch only) ──────────────────────────────
+	// ── Swipe-to-archive (touch only) ────────────────────────────────────────
 	// Track a dominantly-horizontal left-swipe of the row; commit (archive) once
 	// it passes ~40% of the row width, otherwise spring back. Vertical scrolling
 	// is preserved by only "arming" once the gesture is clearly horizontal, and
@@ -236,19 +236,19 @@
 			// Only apply the transform while actually swiped: a `transform` creates a
 			// stacking context, which would trap the stacked-card pseudo-elements
 			// (z-index:-1/-2) inside the card and paint them OVER its background
-			// instead of behind it (CCT-297). At rest (swipeX 0) we omit it so the
+			// instead of behind it. At rest (swipeX 0) we omit it so the
 			// stack peeks out behind as intended.
 			swipeX !== 0 ? `transform: translateX(${swipeX}px)` : '',
 			`transition: ${swiping ? 'none' : 'transform 0.2s var(--ease)'}`,
 			// Opaque attention fill (not the translucent --attention-bg): a parent with
 			// subagents renders as a `stacked` Card, and a see-through front surface lets
 			// the back-stack pseudo-elements (z-index:-1/-2) bleed through the card body
-			// instead of only peeking at the edges (CCT-349).
+			// instead of only peeking at the edges.
 			needsInput ? 'background: var(--attention-bg-solid); border-left: 3px solid var(--attention-bar)' : '',
 			// Subagent (child) cards carry an info-tinted border so they read as part
 			// of the parent's stacked group (matches the "subagent" info badge).
 			child && !needsInput ? 'border-color: color-mix(in srgb, var(--info) 45%, var(--border))' : '',
-			// Color-by accent (CCT-466, CCT-651): the dimension's hue tints the whole
+			// Color-by accent: the dimension's hue tints the whole
 			// card so types read at a distance. The left strip resolves against the
 			// theme's --mach-border-sl pair (same infra as MachineBadge); the body tint
 			// mixes a sliver of the pure hue into --bg-elevated so lightness/contrast
@@ -347,7 +347,7 @@
 	onpointerup={swipeEnd}
 	onpointercancel={swipeEnd}
 >
-	<!-- Swipe-to-archive reveal (CCT-172): a colored layer behind the row that
+	<!-- Swipe-to-archive reveal: a colored layer behind the row that
 	     shows as the card slides left under a touch swipe. -->
 	{#if swipeable && swipeX < 0}
 		<div class="swipe-reveal" style="opacity: {0.25 + 0.75 * swipeProgress}" aria-hidden="true">
@@ -593,7 +593,7 @@
 		>{/if}
 {/snippet}
 
-<!-- Live tool cadence (CCT-594): a dense "⚙N · Xs" chip that distinguishes a
+<!-- Live tool cadence: a dense "⚙N · Xs" chip that distinguishes a
      grinding session (fresh tool calls, incl. subagent roll-ups) from one that
      looks alive but is asleep (no tool call for minutes → amber). The detail
      headline rides alongside in the roomier detailed/grid bands only. -->
@@ -613,7 +613,7 @@
 	{/if}
 {/snippet}
 
-<!-- Draft action group (CCT-394): Launch / Edit / Discard. Each stops propagation
+<!-- Draft action group: Launch / Edit / Discard. Each stops propagation
      so a button tap never bubbles to the card surface. Rendered in the trailing
      slot of both the compact row and the detailed/grid footer. -->
 {#snippet draftActions()}
@@ -633,7 +633,7 @@
 {/snippet}
 
 <style>
-	/* Swipe wrapper (CCT-172): positioning context for the reveal layer behind
+	/* Swipe wrapper: positioning context for the reveal layer behind
 	   the row, and the owner of the subagent indent (moved off the card so the
 	   reveal aligns with the card edge). pan-y keeps vertical scrolling native
 	   while we handle the horizontal swipe ourselves. */
@@ -646,13 +646,13 @@
 		width: auto;
 		margin-left: var(--sp-4);
 	}
-	/* Stale Working session (CCT-365): dim the whole card so a long-idle session
+	/* Stale Working session: dim the whole card so a long-idle session
 	   reads as "needs attention, not live" at a glance. Paired with the amber
 	   dot + "stale" badge. Re-evaluated on the clock tick; clears on activity. */
 	.sc-wrap.stale {
 		opacity: 0.6;
 	}
-	/* Grid cards (CCT-305): the wrapper and the card fill the grid cell's full
+	/* Grid cards: the wrapper and the card fill the grid cell's full
 	   height so every card in a row matches (the grid stretches the cells), and
 	   the footer pins to the bottom for a uniform silhouette regardless of how
 	   much middle content each card has. */
@@ -696,7 +696,7 @@
 		line-clamp: 3;
 		-webkit-box-orient: vertical;
 	}
-	/* Detailed card view is the spacious one (CCT-345): give the message preview
+	/* Detailed card view is the spacious one: give the message preview
 	   far more verticality so the card reads tall, not wide. */
 	.sc-wrap.grid:not(.dense) .preview {
 		min-height: 0;
@@ -750,7 +750,7 @@
 		border-color: var(--accent);
 		color: var(--bg);
 	}
-	/* Draft action group (CCT-394): keeps Launch/Edit/Discard on one line, sharing
+	/* Draft action group: keeps Launch/Edit/Discard on one line, sharing
 	   the trailing slot of both the compact row and the detailed footer. */
 	.draft-actions {
 		display: inline-flex;
@@ -792,7 +792,7 @@
 	.star:hover {
 		color: var(--warn, #e0a800);
 	}
-	/* Live tool-cadence chip (CCT-594). Dense, muted, single line; the cadence
+	/* Live tool-cadence chip. Dense, muted, single line; the cadence
 	   count/age stays whole while the optional detail headline ellipsises. Amber
 	   when asleep — the evidence-based "looks alive but wedged" tell. */
 	.activity {
@@ -823,7 +823,7 @@
 	.activity.asleep .act-detail {
 		color: var(--warn);
 	}
-	/* Search match snippet (CCT-184): accent rule + clamp, sharing the .preview
+	/* Search match snippet: accent rule + clamp, sharing the .preview
 	   sizing above so the snippet sits in the same slot as the message preview. */
 	.match {
 		color: var(--text);

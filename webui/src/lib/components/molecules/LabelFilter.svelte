@@ -6,7 +6,7 @@
 	import LabelMenu from './LabelMenu.svelte';
 
 	// One square toolbar button that opens a popover of label toggles; a session
-	// shows when it carries ANY selected label (OR semantics, CCT-360). The menu
+	// shows when it carries ANY selected label (OR semantics). The menu
 	// body is the shared LabelMenu molecule; this wrapper owns the IconButton
 	// trigger, the count badge and the open/close (clickOutside). `selected` is
 	// bindable so the parent owns persistence. Renders nothing until at least one

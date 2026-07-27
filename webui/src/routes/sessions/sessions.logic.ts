@@ -8,27 +8,27 @@ import { hashHue } from '$lib/format';
 import { labelHue } from '$lib/labels';
 import { m } from '$lib/paraglide/messages';
 
-// ── View picker (CCT-307) ───────────────────────────────────────────────────
+// ── View picker ───────────────────────────────────────────────────
 // The 4 explicit layout × density combinations offered by the view picker.
 export const VIEW_OPTIONS = [
 	{ value: 'list-compact', get label() { return m.sessions_view_list_compact(); }, card: false, dense: true },
 	{ value: 'list-detailed', get label() { return m.sessions_view_list_detailed(); }, card: false, dense: false },
 	{ value: 'card-compact', get label() { return m.sessions_view_card_compact(); }, card: true, dense: true },
 	{ value: 'card-detailed', get label() { return m.sessions_view_card_detailed(); }, card: true, dense: false },
-	// Kanban (CCT-579) needs a flag of its own: its card×dense pair collides with card-compact.
+	// Kanban needs a flag of its own: its card×dense pair collides with card-compact.
 	{ value: 'kanban', get label() { return m.sessions_view_kanban(); }, card: true, dense: true }
 ] as const;
 
-// ── Section filter (CCT-322 / CCT-345) ──────────────────────────────────────
+// ── Section filter ──────────────────────────────────────
 export type Section = 'starred' | 'live' | 'dispatched' | 'drafts' | 'archived' | 'unread';
 export const SECTIONS: { value: Section; label: string; icon: 'star' | 'live' | 'send' | 'file-text' | 'archive' | 'bell' }[] = [
 	{ value: 'starred', get label() { return m.sessions_section_starred(); }, icon: 'star' },
 	{ value: 'live', get label() { return m.sessions_section_live(); }, icon: 'live' },
 	{ value: 'dispatched', get label() { return m.sessions_dispatched(); }, icon: 'send' },
-	// Draft/staged sessions (CCT-394) — buffered spawns not yet launched.
+	// Draft/staged sessions — buffered spawns not yet launched.
 	{ value: 'drafts', get label() { return m.sessions_section_drafts(); }, icon: 'file-text' },
 	{ value: 'archived', get label() { return m.sessions_section_archived(); }, icon: 'archive' },
-	// Unread (CCT-580): a cross-cutting AND-filter (unread_count > 0), not an
+	// Unread: a cross-cutting AND-filter (unread_count > 0), not an
 	// ownership bucket — it narrows whatever buckets are shown.
 	{ value: 'unread', get label() { return m.sessions_section_unread(); }, icon: 'bell' }
 ];
@@ -40,7 +40,7 @@ export const isSection = (v: string): v is Section =>
 	v === 'archived' ||
 	v === 'unread';
 
-// Unread section (CCT-580) is a predicate over rendered rows, not a bucket: a
+// Unread section is a predicate over rendered rows, not a bucket: a
 // row survives when the filter is off, or when it has unread messages.
 export const matchesUnreadFilter = (s: SessionListItem, sections: Set<Section>): boolean =>
 	!sections.has('unread') || (s.unread_count ?? 0) > 0;
@@ -50,15 +50,15 @@ export const parseSections = (raw: string | null): Set<Section> => {
 	return set.size ? set : new Set<Section>(['starred', 'live', 'dispatched']);
 };
 
-// Search/archive pager page size (CCT-184).
+// Search/archive pager page size.
 export const PAGE = 50;
 
-// ── Subagent grouping (CCT-225 / CCT-269) ───────────────────────────────────
-// A subagent group folded under a parent. Workflow-tool subagents (CCT-225)
+// ── Subagent grouping ───────────────────────────────────
+// A subagent group folded under a parent. Workflow-tool subagents
 // carry a `workflow_run_id`; plain (Task-tool) children share the synthetic
 // "plain" group. Each group renders inline (always expanded) when it has
 // fewer than 3 agents; larger groups collapse behind a count badge on the
-// parent row that toggles expand/collapse (CCT-269).
+// parent row that toggles expand/collapse.
 export type SubGroup = {
 	// Stable key, unique within a parent: "plain" or "wf:<runId>".
 	key: string;
@@ -123,8 +123,8 @@ export function groupChildren(kids: SessionListItem[]): SubGroup[] {
 }
 
 // Build the parent→subagent-group nesting for an arbitrary row set. Used for
-// the live buckets AND, since CCT-298 item 1, for the archive + search views
-// so they keep the same nesting + count badges instead of a flat list. A
+// the live buckets AND the archive + search views so they keep the same
+// nesting + count badges instead of a flat list. A
 // child whose parent is absent from `rows` falls back to top-level so nothing
 // is dropped.
 export type Nest = {
@@ -154,7 +154,7 @@ export function nest(rows: SessionListItem[]): Nest {
 // Collect the transitive archived descendants of a set of (pinned) parent ids
 // from the full session list. A starred parent should keep its whole subagent
 // group visible in the Pinned section even after the children were archived
-// (CCT-297): the live list excludes archived rows, so we splice these back into
+//: the live list excludes archived rows, so we splice these back into
 // the nest under their parent. BFS so archived sub-subagents come along too.
 export function archivedDescendantsOf(
 	parentIds: Set<string>,
@@ -181,8 +181,8 @@ export function archivedDescendantsOf(
 	return out;
 }
 
-// Aggregated subagent usage for a parent (CCT-297 #19, tokens per CCT-301 #2):
-// the parent's own total tokens plus every subagent's, with the agent count.
+// Aggregated subagent usage for a parent: the parent's own total tokens plus
+// every subagent's, with the agent count.
 // Reported in tokens (not dollars). Null when there are no agents.
 export const totalTokens = (u: SessionListItem['token_usage']) =>
 	Number(u.tokens_in) +
@@ -203,16 +203,16 @@ export function costRollup(
 // Stable key for a collapsible subagent group's expand/collapse state.
 export const groupId = (parentId: string, key: string) => `${parentId}/${key}`;
 
-// ── Classifier buckets (CCT-90) ─────────────────────────────────────────────
+// ── Classifier buckets ─────────────────────────────────────────────
 // In attention-first display order. Sessions that want the user's eyes float to
 // the top; empty buckets are dropped. Sessions on server-managed machines
 // (dispatch / ephemeral workers) get their own "Dispatched" group at the bottom
-// (CCT-231) — they're unattended noise next to interactive sessions — EXCEPT
+// — they're unattended noise next to interactive sessions — EXCEPT
 // blocked ones, which still surface under Needs input so attention never gets
 // buried.
 export type GroupKey = SessionListItem['bucket'] | 'dispatched' | 'pinned';
 export const BUCKETS: { key: GroupKey; label: string }[] = [
-	// Pinned/starred sessions (CCT-267) float above every bucket.
+	// Pinned/starred sessions float above every bucket.
 	{ key: 'pinned', get label() { return m.sessions_bucket_pinned(); } },
 	{ key: 'blocked', get label() { return m.sessions_bucket_blocked(); } },
 	{ key: 'review', get label() { return m.sessions_bucket_review(); } },
@@ -223,19 +223,17 @@ export const BUCKETS: { key: GroupKey; label: string }[] = [
 export const isDispatched = (s: SessionListItem) =>
 	s.machine_kind != null && SYSTEM_MACHINE_KINDS.has(s.machine_kind);
 
-// ── Stale Working sessions (CCT-365) ────────────────────────────────────────
+// ── Stale Working sessions ────────────────────────────────────────
 // A session in the Working bucket whose latest activity (`last_heartbeat`, also
-// bumped by subagent work up the parent chain — CCT-366) is older than this
-// threshold is *not* actively working: it's blocked-undetected, waiting on us,
-// or the connection dropped. We signal it as stale (dimmed card + dot) rather
-// than presenting it as live. This is a DERIVED, time-based display signal
-// (like the liveness tiers) computed client-side from `last_heartbeat`, NOT a
-// persisted state — it re-evaluates on the UI clock tick and clears the instant
-// fresh activity arrives. It is a separate, longer-horizon signal from the 90s
-// `inactive_after_secs` tempo window on the server (which drives `liveness`).
-//
-// Single named constant for now; CCT-357 (Settings/Preferences) will promote it
-// to a per-user/per-account setting.
+// bumped by subagent work up the parent chain) is older than this threshold is
+// *not* actively working: it's blocked-undetected, waiting on us, or the
+// connection dropped. We signal it as stale (dimmed card + dot) rather than
+// presenting it as live. This is a DERIVED, time-based display signal (like
+// the liveness tiers) computed client-side from `last_heartbeat`, NOT a
+// persisted state — it re-evaluates on the UI clock tick and clears the
+// instant fresh activity arrives. It is a separate, longer-horizon signal
+// from the 90s `inactive_after_secs` tempo window on the server (which
+// drives `liveness`).
 export const STALE_WORKING_AFTER_MS = 30 * 60 * 1000; // 30 minutes
 
 // Whether a session should be signalled stale: a Working-bucket session whose
@@ -249,7 +247,7 @@ export function isStaleWorking(s: SessionListItem, now: number): boolean {
 	return now - new Date(s.last_heartbeat).getTime() > STALE_WORKING_AFTER_MS;
 }
 
-// ── Live tool activity: asleep vs. grinding (CCT-594) ────────────────────────
+// ── Live tool activity: asleep vs. grinding ────────────────────────
 // A Working session with a fresh `last_tool_at` (bumped by its own tool calls
 // AND, rolled up the parent chain like the heartbeat, by any subagent's) is
 // visibly grinding; one whose newest tool call is older than this — while still
@@ -289,7 +287,7 @@ export function formatAgo(ms: number): string {
 	if (m < 60) return `${m}m`;
 	return `${Math.floor(m / 60)}h`;
 }
-// ── Debug tooltip on the activity dot (CCT-555) ──────────────────────────────
+// ── Debug tooltip on the activity dot ──────────────────────────────
 // Key/value rows for the dot's hover panel. Pure + testable; the session id is
 // rendered separately (copyable) by the component. Nulls render as "—", never
 // "null". Timestamps carry both a relative age and the raw ISO.
@@ -338,7 +336,7 @@ export const groupOf = (s: SessionListItem): GroupKey => {
 // Map a session to the single view section that owns it, mirroring the live
 // bucket→section mapping (pinned→starred, dispatched→dispatched, else→live)
 // plus the archive split. Used so search results respect the active section
-// toggles (CCT-354): a match is hidden when its owning section is disabled.
+// toggles: a match is hidden when its owning section is disabled.
 export const sectionOf = (s: SessionListItem): Section => {
 	if (s.status === 'draft') return 'drafts';
 	if (s.status === 'archived') return 'archived';
@@ -348,7 +346,7 @@ export const sectionOf = (s: SessionListItem): Section => {
 export const inEnabledSections = (s: SessionListItem, sections: Set<Section>): boolean =>
 	sections.has(sectionOf(s));
 
-// ── Kanban board (CCT-579) ──────────────────────────────────────────────────
+// ── Kanban board ──────────────────────────────────────────────────
 export type KanbanCol = 'drafts' | 'blocked' | 'working' | 'done';
 export const KANBAN_COLS: { key: KanbanCol; label: string }[] = [
 	{ key: 'drafts', get label() { return m.sessions_section_drafts(); } },
@@ -368,7 +366,7 @@ export function kanbanColOf(s: SessionListItem): KanbanCol | null {
 	return 'working';
 }
 
-// ── Color / group dimension (CCT-466 color · CCT-467 group) ──────────────────
+// ── Color / group dimension ───────────────────────────────────────────────
 export type Dimension = 'none' | 'label' | 'working_dir' | 'machine';
 export const DIMENSIONS: { value: Dimension; label: string }[] = [
 	{ value: 'none', get label() { return m.common_none(); } },
@@ -401,7 +399,7 @@ export function dimGroupsOf(s: SessionListItem, dim: Dimension): DimGroup[] {
 	if (dim === 'machine') {
 		const name = s.machine_name;
 		if (!name) return [{ key: DIM_NONE_KEY, label: DIM_NONE_LABEL, hue: null }];
-		// Operator-set machine hue (CCT-222) wins over the name hash so a machine
+		// Operator-set machine hue wins over the name hash so a machine
 		// reads the same color as its badge everywhere.
 		return [{ key: `machine:${name}`, label: name, hue: s.machine_hue ?? hashHue(name) }];
 	}

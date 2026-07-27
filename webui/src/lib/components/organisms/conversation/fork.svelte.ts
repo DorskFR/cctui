@@ -1,9 +1,8 @@
-// Fork-conversation hook (CCT-302), extracted from ConversationDrawer with no
-// behavior change. Forks the open conversation into a brand-new session,
-// optionally changing the model/effort. For claude this doubles as the supported
-// "switch model" substitute (no in-place switch — CCT-303); for archived sessions
-// it is the "reopen as a new conversation" path. Defaults inherit the parent's
-// model/effort so a plain fork preserves them.
+// Fork-conversation hook: forks the open conversation into a brand-new
+// session, optionally changing the model/effort. For claude this doubles as
+// the supported "switch model" substitute (no in-place switch); for archived
+// sessions it is the "reopen as a new conversation" path. Defaults inherit
+// the parent's model/effort so a plain fork preserves them.
 import type { SessionListItem } from '@bindings/SessionListItem';
 import type { ForkExtract } from '@bindings/ForkExtract';
 import type { ForkRequest } from '@bindings/ForkRequest';
@@ -43,7 +42,7 @@ export class ForkController {
 	open = $state(false);
 	model = $state('');
 	effort = $state('');
-	// Conversation-extract selector (CCT-553). Null → full-history fork.
+	// Conversation-extract selector. Null → full-history fork.
 	extract = $state<ForkExtract | null>(null);
 
 	constructor(opts: ForkOpts) {
@@ -57,7 +56,7 @@ export class ForkController {
 		return this.#opts.isCodex() ? CODEX_EFFORTS : CLAUDE_EFFORTS;
 	}
 	// Parent's total tokens — shown in the fork notice so the user knows the
-	// opening turn re-bills this much context (CCT-345).
+	// opening turn re-bills this much context.
 	get parentTokens(): number {
 		const u = this.#opts.session().token_usage;
 		return (
@@ -76,8 +75,8 @@ export class ForkController {
 		this.open = true;
 	};
 
-	// Open the dialog for a subset fork from an extract of the conversation
-	// (CCT-553). Claude-only; the caller gates these actions off for codex.
+	// Open the dialog for a subset fork from an extract of the conversation.
+	// Claude-only; the caller gates these actions off for codex.
 	openExtract = (extract: ForkExtract) => {
 		const s = this.#opts.session();
 		this.model = s.model ?? '';

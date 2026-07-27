@@ -19,7 +19,7 @@ export interface PermReq {
 export const USER_PREFIX = '▷ User:';
 
 /** Canonicalize a user-turn body so its optimistic-echo and persisted/server
- * shapes reduce to the same string (CCT-489). The composer appends staged
+ * shapes reduce to the same string. The composer appends staged
  * *absolute* upload paths under an `Attached file(s):` header, and the
  * persisted form can diverge on whitespace, trailing newlines, and path
  * rewrites — so content-based dedup fails for attachment messages. Normalize
@@ -69,20 +69,20 @@ type GithubCb = (ev: GithubEvent) => void;
 /**
  * A live AskUserQuestion. `question` is the flattened text (always present);
  * `questions` is the raw `tool_input.questions` array (header/options/
- * multiSelect) when the daemon's hook forwarded it (CCT-181), letting the
+ * multiSelect) when the daemon's hook forwarded it, letting the
  * client render the interactive option-card form live instead of plain text.
  */
 export interface LiveAsk {
 	question: string;
 	questions: unknown | null;
 	/** Assistant prose preceding the question in the same turn, rendered above
-	 * the card so the user has context instead of answering blind (CCT-213). */
+	 * the card so the user has context instead of answering blind. */
 	preamble?: string | null;
 }
 /** Live AskUserQuestion for a session, or null when none is pending. */
 type AskCb = (ask: LiveAsk | null) => void;
 /**
- * A live ExitPlanMode plan-approval prompt (CCT-347). `plan` is the plan
+ * A live ExitPlanMode plan-approval prompt. `plan` is the plan
  * markdown the agent presented; `preamble` is the prose preceding the
  * `ExitPlanMode` call, rendered above the Plan card for context.
  */
@@ -93,7 +93,7 @@ export interface LivePlan {
 /** Live plan prompt for a session, or null when none is pending. */
 type PlanCb = (plan: LivePlan | null) => void;
 /**
- * A session's per-account soft-limit block (CCT-444). The gateway refused a
+ * A session's per-account soft-limit block. The gateway refused a
  * request because cctui's own share of `account_name`'s usage window is at cap;
  * the conversation stalled with a 429. The webui surfaces a per-chat banner
  * offering to continue on another same-provider account.
@@ -106,7 +106,7 @@ export interface SoftLimit {
 }
 /** Live soft-limit block for a session, or null when none is active. */
 type SoftLimitCb = (sl: SoftLimit | null) => void;
-/** Server ack for a client-sent message (CCT-212). `ok=false` means the server
+/** Server ack for a client-sent message. `ok=false` means the server
  * could not dispatch the reply to the session's daemon, so the client should
  * mark the message failed and offer a retry. */
 export interface MessageAck {
@@ -115,13 +115,12 @@ export interface MessageAck {
 	error?: string;
 }
 /**
- * Per-session delivery state (CCT-214). A snapshot the drawer mirrors into
+ * Per-session delivery state. A snapshot the drawer mirrors into
  * component-local `$state` (via `onDelivery`) so the red/Retry affordance and
  * the in-flight "sending…/retrying" tint render correctly — and, crucially,
  * SURVIVE the drawer being closed and reopened. The source of truth lives on
- * the singleton (not component `$state`), so a full unmount/remount no longer
- * drops a failed send's status the way it did before (the bubble used to come
- * back as a plain message with no Retry).
+ * the singleton (not component `$state`), so a full unmount/remount does not
+ * drop a failed send's status.
  * - `pending`: ts of sends in flight (awaiting ack) or waiting on a backoff.
  * - `retrying`: ts → auto-retry progress, for a "retrying (n/m)" hint.
  * - `failed`: ts → reason, for sends that exhausted auto-retry (red + Retry).
@@ -133,14 +132,14 @@ export interface DeliverySnapshot {
 }
 type DeliveryCb = (snap: DeliverySnapshot) => void;
 
-/** One tracked outbound message and its auto-retry lifecycle (CCT-214). */
+/** One tracked outbound message and its auto-retry lifecycle. */
 interface TrackedSend {
 	sid: string;
 	/** the optimistic echo's `ts` — stable identity of the bubble in a session */
 	ts: number;
 	text: string;
-	/** structured AskUserQuestion answer — per-question 0-based option picks
-	 * (CCT-226). Carried on every retry so the daemon can drive the real form
+	/** structured AskUserQuestion answer — per-question 0-based option picks.
+	 * Carried on every retry so the daemon can drive the real form
 	 * natively instead of dismissing it (which claude records as declined). */
 	askPicks?: number[][];
 	/** correlation id of the CURRENT attempt (rotates each retry) */
@@ -153,12 +152,12 @@ interface TrackedSend {
 	timer?: ReturnType<typeof setTimeout>;
 }
 
-// Auto-retry tuning (CCT-214). A dropped/failed send re-attempts with
+// Auto-retry tuning. A dropped/failed send re-attempts with
 // exponential backoff + jitter before giving up and going red; the user can
 // always retry manually (which resets the counter).
 const ACK_TIMEOUT_MS = 8000;
 const MAX_ATTEMPTS = 5;
-/** Decode a standard-base64 string to raw bytes (CCT-545 PTY chunks). */
+/** Decode a standard-base64 string to raw bytes (PTY chunks). */
 export function decodeBase64(b64: string): Uint8Array {
 	const bin = atob(b64);
 	const out = new Uint8Array(bin.length);
@@ -208,17 +207,17 @@ class WsClient {
 	private optimistic = new Map<string, AgentEvent[]>();
 	/** pending permission prompts, keyed by session id; not reactive */
 	private perms = new Map<string, PermReq[]>();
-	/** pending AskUserQuestion, keyed by session id; not reactive (CCT-164) */
+	/** pending AskUserQuestion, keyed by session id; not reactive */
 	private asks = new Map<string, LiveAsk>();
 	private plans = new Map<string, LivePlan>();
 	private softLimits = new Map<string, SoftLimit>();
 	private streamCbs = new Map<string, Set<StreamCb>>();
-	/** Live PTY-view listeners keyed by session id (CCT-545); not reactive. The
+	/** Live PTY-view listeners keyed by session id; not reactive. The
 	 * bytes are never buffered — a terminal that mounts late relies on the fresh
 	 * attach's full-screen repaint, not replay. */
 	private ptyCbs = new Map<string, Set<PtyCb>>();
 	/** Sessions this client is watching the live terminal of, re-sent on
-	 * reconnect so the daemon stream resumes after a drop (CCT-545). */
+	 * reconnect so the daemon stream resumes after a drop. */
 	private ptyWatched = new Set<string>();
 	private permCbs = new Map<string, Set<PermCb>>();
 	private askCbs = new Map<string, Set<AskCb>>();
@@ -228,13 +227,13 @@ class WsClient {
 	 * broadcast channel the mounted inbox subscribes to. Not reactive. */
 	private githubCbs = new Set<GithubCb>();
 	/**
-	 * Tracked outbound sends with their auto-retry state (CCT-214), keyed
+	 * Tracked outbound sends with their auto-retry state, keyed
 	 * sid → ts. Lives here (not in the drawer) so a failed/in-flight send and
 	 * its retry loop survive the drawer being closed and reopened. Not reactive
 	 * — changes are pushed to subscribers via `deliveryCbs`.
 	 */
 	private sends = new Map<string, Map<number, TrackedSend>>();
-	/** clientMsgId → the send it belongs to, for ack correlation (CCT-214). */
+	/** clientMsgId → the send it belongs to, for ack correlation. */
 	private ackIndex = new Map<string, { sid: string; ts: number }>();
 	private deliveryCbs = new Map<string, Set<DeliveryCb>>();
 
@@ -258,7 +257,7 @@ class WsClient {
 		if (this.socket && this.socket.readyState <= WebSocket.OPEN) return;
 		this.status = 'connecting';
 		// Same-origin WS upgrade: the browser attaches the `HttpOnly` auth cookie
-		// automatically, so the token no longer rides the query string (CCT-423).
+		// automatically, so the token no longer rides the query string.
 		const url = `${wsBase()}/ws`;
 		const sock = new WebSocket(url);
 		this.socket = sock;
@@ -267,12 +266,12 @@ class WsClient {
 			this.status = 'open';
 			// re-subscribe everything after a reconnect
 			for (const id of this.subscribed) this.send({ type: 'subscribe', session_id: id });
-			// re-arm live-terminal watches so the daemon PTY stream resumes (CCT-545)
+			// re-arm live-terminal watches so the daemon PTY stream resumes
 			for (const id of this.ptyWatched)
 				this.send({ type: 'watch_terminal', session_id: id, watch: true });
 			// A send that failed because the socket was down is parked in `backoff`;
 			// now that we're connected again, retry it immediately rather than
-			// waiting out the timer (CCT-214).
+			// waiting out the timer.
 			for (const m of this.sends.values()) {
 				for (const s of m.values()) {
 					if (s.phase === 'backoff') {
@@ -409,7 +408,7 @@ class WsClient {
 					ok: msg.ok as boolean,
 					error: msg.error as string | undefined
 				};
-				// Resolve the tracked send (delivered / failed → auto-retry) (CCT-214).
+				// Resolve the tracked send (delivered / failed → auto-retry).
 				this.resolveAck(ack);
 				break;
 			}
@@ -459,7 +458,7 @@ class WsClient {
 				if (next.length !== opt.length) this.optimistic.set(id, next);
 			}
 		}
-		// Defense-in-depth against duplicate live delivery (CCT-182): drop an
+		// Defense-in-depth against duplicate live delivery: drop an
 		// event whose full identity — including the daemon `ts` — already sits
 		// in the buffer. A leaked/replayed duplicate carries the SAME daemon ts,
 		// whereas a legitimately-repeated identical tool call within a turn gets
@@ -478,7 +477,7 @@ class WsClient {
 		this.optimistic.set(id, [...(this.optimistic.get(id) ?? []), ev]);
 	}
 
-	/** Drop a still-pending optimistic reply by its `ts` (CCT-208): used when
+	/** Drop a still-pending optimistic reply by its `ts`: used when
 	 * the user edits a message that hasn't been acknowledged yet — the echo is
 	 * pulled back into the composer, so it must stop being re-seeded on resub. */
 	dropOptimistic(id: string, ts: number) {
@@ -548,7 +547,7 @@ class WsClient {
 		return this.perms.get(id)?.length ?? 0;
 	}
 
-	/** Start relaying a session's live terminal (CCT-545). Idempotent — the
+	/** Start relaying a session's live terminal. Idempotent — the
 	 * server ref-counts watchers and only spins up the daemon PTY stream on the
 	 * first watcher. */
 	watchPty(id: string) {
@@ -558,14 +557,14 @@ class WsClient {
 		}
 	}
 
-	/** Stop relaying a session's live terminal (CCT-545). */
+	/** Stop relaying a session's live terminal. */
 	unwatchPty(id: string) {
 		if (this.ptyWatched.delete(id)) {
 			this.send({ type: 'watch_terminal', session_id: id, watch: false });
 		}
 	}
 
-	/** Register a live PTY-byte listener for a session (CCT-545). Returns an
+	/** Register a live PTY-byte listener for a session. Returns an
 	 * unsubscribe fn. Bytes are raw terminal output to feed straight into xterm. */
 	onPty(id: string, cb: PtyCb): () => void {
 		let set = this.ptyCbs.get(id);
@@ -613,7 +612,7 @@ class WsClient {
 
 	/** Register a live AskUserQuestion listener for a session. Fires with the
 	 * current pending question (or null) immediately and on every change.
-	 * Returns an unsubscribe fn (CCT-164). */
+	 * Returns an unsubscribe fn. */
 	onAsk(id: string, cb: AskCb): () => void {
 		let set = this.askCbs.get(id);
 		if (!set) {
@@ -626,12 +625,12 @@ class WsClient {
 	}
 
 	/** Clear any live pending question for a session (e.g. after the user
-	 * answers, before the daemon's resolution event arrives) (CCT-164). */
+	 * answers, before the daemon's resolution event arrives). */
 	clearAsk(id: string) {
 		if (this.asks.has(id)) this.setAsk(id, null);
 	}
 
-	/** Register a live plan-prompt listener for a session (CCT-347). Fires with
+	/** Register a live plan-prompt listener for a session. Fires with
 	 * the current pending plan (or null) immediately and on every change.
 	 * Returns an unsubscribe fn. */
 	onPlan(id: string, cb: PlanCb): () => void {
@@ -646,12 +645,12 @@ class WsClient {
 	}
 
 	/** Clear any live pending plan for a session (e.g. after the user answers,
-	 * before the daemon's resolution event arrives) (CCT-347). */
+	 * before the daemon's resolution event arrives). */
 	clearPlan(id: string) {
 		if (this.plans.has(id)) this.setPlan(id, null);
 	}
 
-	/** Register a live soft-limit listener for a session (CCT-444). Fires with
+	/** Register a live soft-limit listener for a session. Fires with
 	 * the current block (or null) immediately and on every change. Returns an
 	 * unsubscribe fn. Mirrors `onAsk`/`onPlan` so the banner keeps its state in
 	 * component-local `$state`, never reading a keyed `$state` off this singleton
@@ -675,7 +674,7 @@ class WsClient {
 
 	/** Send a typed message. Returns true if the frame went out, false if the
 	 * socket wasn't OPEN (caller should keep the draft + surface a notice).
-	 * `clientMsgId` (CCT-212) opts into a server `message_ack` so the caller can
+	 * `clientMsgId` opts into a server `message_ack` so the caller can
 	 * track delivery (sending → delivered / failed). */
 	sendMessage(id: string, content: string, clientMsgId?: string, askPicks?: number[][]): boolean {
 		return this.send({
@@ -687,7 +686,7 @@ class WsClient {
 		});
 	}
 
-	// ── Tracked send + auto-retry (CCT-214) ────────────────────────────────
+	// ── Tracked send + auto-retry ────────────────────────────────
 	// The drawer creates the optimistic echo (it owns the `live` list + the
 	// `ts` ordering) and hands us (sid, text, ts); we own the dispatch + ack
 	// timeout + backoff retry loop, so the delivery state outlives the drawer.
@@ -705,7 +704,7 @@ class WsClient {
 		return this.dispatch(send);
 	}
 
-	/** Manually retry a failed send — resets the attempt counter (CCT-214). */
+	/** Manually retry a failed send — resets the attempt counter. */
 	retryNow(sid: string, ts: number) {
 		const send = this.sends.get(sid)?.get(ts);
 		if (!send) return;
@@ -716,12 +715,12 @@ class WsClient {
 	}
 
 	/** Stop tracking a send (delivered, or pulled back into the composer to
-	 * edit). Drops its timer + ack correlation (CCT-214). */
+	 * edit). Drops its timer + ack correlation. */
 	cancelSend(sid: string, ts: number) {
 		this.clearSend(sid, ts);
 	}
 
-	/** Forget all tracked sends for a session (e.g. on archive) (CCT-214). */
+	/** Forget all tracked sends for a session (e.g. on archive). */
 	clearDelivery(sid: string) {
 		const m = this.sends.get(sid);
 		if (m) {
@@ -732,7 +731,7 @@ class WsClient {
 	}
 
 	/** Current delivery snapshot for a session — seed for a freshly-(re)opened
-	 * drawer; also pushed on every change via `onDelivery` (CCT-214). */
+	 * drawer; also pushed on every change via `onDelivery`. */
 	deliverySnapshot(sid: string): DeliverySnapshot {
 		const pending = new Set<number>();
 		const retrying = new Map<number, { attempt: number; max: number }>();
@@ -752,7 +751,7 @@ class WsClient {
 	}
 
 	/** Subscribe to a session's delivery state. Fires immediately with the
-	 * current snapshot and on every change. Returns an unsubscribe fn (CCT-214). */
+	 * current snapshot and on every change. Returns an unsubscribe fn. */
 	onDelivery(sid: string, cb: DeliveryCb): () => void {
 		let set = this.deliveryCbs.get(sid);
 		if (!set) {
@@ -859,7 +858,7 @@ class WsClient {
 
 	/** Resolve when the server reports a result for `commandId` (spawn).
 	 *
-	 * A timeout is NOT a failure (CCT-242): a cold spawn (kickstarting the
+	 * A timeout is NOT a failure: a cold spawn (kickstarting the
 	 * agent daemon, staging uploads) can easily outlive any client-side wait,
 	 * and the session still lands. `timedOut` lets the caller phrase it as
 	 * "unconfirmed, check the list" instead of an error inviting a retry —

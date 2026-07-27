@@ -1,8 +1,8 @@
 const TOKEN_KEY = "ghreview:token";
 const ACCOUNT_KEY = "ghreview:account";
 
-// Runtime config injected by an embedder (cctui-ui, CCT-610); when set it wins
-// over the standalone localStorage / VITE_* sources. null = standalone default.
+// Runtime config injected by an embedder (cctui-ui); when set it wins over
+// the standalone localStorage / VITE_* sources. null = standalone default.
 export interface GhreviewRuntimeConfig {
   baseUrl?: string;
   token?: string | null;

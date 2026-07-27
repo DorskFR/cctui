@@ -1,5 +1,5 @@
 <script lang="ts">
-	// Compact unified per-provider settings list (CCT-591). Every curated knob —
+	// Compact unified per-provider settings list. Every curated knob —
 	// settings.json boolean keys AND curated env vars — renders as a single row
 	// (label + muted key/env name + care chip on the left; a compact control on
 	// the right). Env vars that alias a settings key merge into one row that

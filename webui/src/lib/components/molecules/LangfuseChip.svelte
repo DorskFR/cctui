@@ -4,7 +4,7 @@
 	import { Text } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 
-	// Per-session Langfuse cost/usage chip (CCT-564). Shows `$cost · N calls`
+	// Per-session Langfuse cost/usage chip. Shows `$cost · N calls`
 	// with a deep link into Langfuse, gated on the server capability so it stays
 	// hidden unless the sink is configured. Keys live only on the server: the
 	// figures are proxied through `/sessions/{id}/langfuse`, the browser never

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { renderMarkdown } from './markdown';
 
-describe('renderMarkdown cctui-img rendering (CCT-566)', () => {
+describe('renderMarkdown cctui-img rendering', () => {
 	const sid = 'sess-abc';
 
 	it('renders a cctui-img marker as a session-scoped <img> when a sessionId is given', () => {

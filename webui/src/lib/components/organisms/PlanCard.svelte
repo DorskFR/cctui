@@ -11,7 +11,7 @@
 		// The plan markdown the agent presented via ExitPlanMode.
 		plan: string;
 		interactive: boolean;
-		/** Mirrors AskQuestionCard.onsubmit (CCT-347): `picks` is the structured
+		/** Mirrors AskQuestionCard.onsubmit: `picks` is the structured
 		 * single-select choice (a lone `[[index]]`) for the digit-answerable
 		 * continuations (1-3), or `null` for the free-text "Tell Claude what to
 		 * change" refinement — the daemon answers the real PTY form natively from
@@ -27,8 +27,8 @@
 		{ label: m.plan_opt_keep_planning(), pick: 2 }
 	];
 
-	// Optimistic local lock (mirrors AskQuestionCard, CCT-190): flip the card to
-	// its in-flight state on click rather than waiting for the server round-trip.
+	// Optimistic local lock (mirrors AskQuestionCard): flip the card to its
+	// in-flight state on click rather than waiting for the server round-trip.
 	let submitted = $state(false);
 	const live = $derived(interactive && !submitted);
 	// Release the lock if the parent re-enables the card after a failed answer.

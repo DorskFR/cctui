@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Fails if <range> ADDS a `:global(` line in a webui Svelte file (webui/DESIGN.md
 # rule 4). Runs in CI because the lefthook mirror is bypassable via a local
-# core.hooksPath override (CCT-670). Forward-only: only added lines are flagged.
+# core.hooksPath override. Forward-only: only added lines are flagged.
 set -euo pipefail
 
 range="${1:?usage: no-css-global.sh <git-diff-range>}"

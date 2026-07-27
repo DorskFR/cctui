@@ -53,7 +53,7 @@ export {
 	claudeEfforts
 } from '$lib/harnessModels';
 
-// Annotate native-family options with the per-account alias target (CCT-406)
+// Annotate native-family options with the per-account alias target
 // so the picker reads e.g. "Opus (claude-opus-4-8[1m])" instead of a bare
 // "Opus" — making it obvious which concrete model the family resolves to (and
 // that the alias is in effect) for the selected account. A no-op when the
@@ -67,17 +67,17 @@ export const withAliasTargets = (
 		return target ? { v: m.v, label: `${m.label} (${target})` } : m;
 	});
 
-// The harness/adapter a provider credential runs (CCT-399): anything in the
+// The harness/adapter a provider credential runs: anything in the
 // openai family runs Codex; everything else (anthropic / anthropic-compatible)
 // runs Claude Code. Mirrors the server's `Family::from_provider`.
 export const adapterForProvider = (provider: string): Adapter =>
 	provider.includes('openai') ? 'codex' : 'claude-code';
 
 export type Adapter = 'claude-code' | 'codex';
-// Stable field order (CCT-404): the harness cards never reorder.
+// Stable field order: the harness cards never reorder.
 export const allAdapters: Adapter[] = ['claude-code', 'codex'];
 
-// Provider-family union of an account identity (CCT-562): the harnesses its
+// Provider-family union of an account identity: the harnesses its
 // credentials can run, in stable order. An account holding anthropic+openai
 // providers offers both; a single-provider account offers one.
 export const accountAdapters = (a: OAuthAccount): Adapter[] => {
@@ -99,15 +99,14 @@ export const effectiveAdapterFor = (a: OAuthAccount | undefined, adapterId: stri
 	return allowed.includes(adapterId as Adapter) ? adapterId : (allowed[0] ?? adapterId);
 };
 
-// Whether the account can back this harness (has a provider in its family).
-// Drives the CCT-581 validation that replaced the silent adapter swap: a named
-// account that can't back the picked harness blocks the spawn with an explicit
-// error instead of quietly submitting the account's own family. No account =
-// always valid (Default/no-account runs any harness).
+// Whether the account can back this harness (has a provider in its family): a
+// named account that can't back the picked harness blocks the spawn with an
+// explicit error instead of quietly submitting the account's own family. No
+// account = always valid (Default/no-account runs any harness).
 export const accountBacksAdapter = (a: OAuthAccount | undefined, adapter: string): boolean =>
 	!a || accountAdapters(a).includes(adapter as Adapter);
 
-// Sentinel account value for an explicit unbound "no account" spawn (CCT-582):
+// Sentinel account value for an explicit unbound "no account" spawn:
 // distinct from '' (Auto — let the server bind the single matching account) and
 // from a named account. Kept out of the account-name space so it can never
 // collide with a real account name.

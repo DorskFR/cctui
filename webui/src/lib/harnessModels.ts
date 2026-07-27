@@ -1,4 +1,4 @@
-// Single source of truth for harness model + effort option lists (CCT-626).
+// Single source of truth for harness model + effort option lists.
 // The server has no model allowlist; these strings pass through verbatim.
 import type { CodexModelCatalog } from '@bindings/CodexModelCatalog';
 
@@ -7,7 +7,7 @@ export interface ModelOption {
 	label: string;
 }
 
-// Static offline fallback for codex (CCT-641). Used when the machine has no
+// Static offline fallback for codex. Used when the machine has no
 // live `model/list` catalog cached (daemon offline, older daemon, codex
 // missing). A machine-scoped catalog supersedes it via codexModelsFor/…Efforts.
 export const codexModels: ModelOption[] = [
@@ -36,7 +36,7 @@ export function codexModelsFor(catalog: CodexModelCatalog | undefined): ModelOpt
 	return options;
 }
 
-// Effort levels a given model supports (CCT-641), `''` (default) first so the
+// Effort levels a given model supports, `''` (default) first so the
 // picker can leave codex its own default. An unknown model or empty catalog
 // falls back to the full static effort list.
 export function codexEffortsFor(

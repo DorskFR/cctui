@@ -70,7 +70,7 @@
 	}: {
 		onclose: () => void;
 		onspawned: () => void;
-		// "New session from same script" (CCT-250 item 8): seed the form from an
+		// "New session from same script": seed the form from an
 		// existing session's config (machine, dir, adapter, model). Overrides the
 		// persisted draft so the dialog opens ready to re-dispatch.
 		prefill?: Partial<Form> | null;
@@ -82,23 +82,22 @@
 	const canDispatch = $derived(dispatcherIds.length > 0);
 
 	// Spawn target + form shape live in ./spawn/types. Machine / Dispatch render
-	// as tabs (CCT-562); a prefill (re-dispatch) is always a machine spawn.
+	// as tabs; a prefill (re-dispatch) is always a machine spawn.
 	let target = $state<Target>('machine');
 	const targetTabs: TabItem[] = [
 		{ id: 'machine', label: m.spawn_tab_machine() },
 		{ id: 'dispatch', label: m.spawn_tab_dispatch() }
 	];
 
-	// The blank form is all-unset; the per-(machine, cwd) spawn memory (CCT-561)
-	// fills it in once a machine/cwd (or dispatcher/repo) is known. The /settings
-	// launch defaults it used to seed from were removed in CCT-563.
+	// The blank form is all-unset; the per-(machine, cwd) spawn memory
+	// fills it in once a machine/cwd (or dispatcher/repo) is known.
 	const blank: Form = {
 		machine_id: '',
 		adapter_id: 'claude-code',
 		working_dir: '',
 		name: '',
 		prompt: '',
-		// No hardcoded fallback (CCT-542): empty = "Default", so the account
+		// No hardcoded fallback: empty = "Default", so the account
 		// default permission mode (else claude's own) applies unless overridden.
 		permission_mode: '' as Form['permission_mode'],
 		dispatcher: '',
@@ -144,7 +143,7 @@
 			if (!raw && !prefill) {
 				const lastName = drafts.get(LAST_SPAWN_NAME);
 				if (lastName) seeded.name = nextSessionName(lastName);
-				// Default the label picker to the last-used set (CCT-360) unless a
+				// Default the label picker to the last-used set unless a
 				// draft/prefill already carries labels.
 				if (!savedForm.labels) {
 					seeded.labels = (drafts.get(LAST_SPAWN_LABELS) ?? '').split(',').filter(Boolean);
@@ -164,7 +163,7 @@
 		form.machine_id = last && list.some((m) => m.id === last) ? last : list[0].id;
 	});
 
-	// Spawn memory (CCT-561): the config last submitted for a (machine, cwd) —
+	// Spawn memory: the config last submitted for a (machine, cwd) —
 	// account/harness/model/effort/permission mode/label — recalled from the
 	// server-persisted settings blob whenever the machine or cwd changes, so a
 	// new session on a known machine+cwd needs zero config clicks. Precedence:
@@ -250,18 +249,18 @@
 
 	// recent working dirs on the selected machine, from the server (last 5).
 	const dirsQuery = useRecentDirs(() => form.machine_id);
-	// Collapse `folder` and `folder/` into one canonical `folder` entry (CCT-491).
+	// Collapse `folder` and `folder/` into one canonical `folder` entry.
 	const recentDirs = $derived([...new Set(($dirsQuery.data ?? []).map(normalizeDir))]);
 
 	// Working-directory autocomplete lives in the MachineFields FilterInput
 	// (spawn/cwdSchema.ts), fed the recent dirs below.
 
-	// OAuth accounts (CCT-237). The picker offers only accounts whose provider
+	// OAuth accounts. The picker offers only accounts whose provider
 	// matches the selected adapter (codex → openai, else anthropic). Switching
 	// adapter to one with no matching account clears the stale selection.
 	const accounts = useAccounts(() => true);
 
-	// Labels (CCT-360): the picker selects label ids into `form.labels`; on spawn
+	// Labels: the picker selects label ids into `form.labels`; on spawn
 	// they're attached to the new session and remembered for next time. New
 	// labels are created server-side immediately (get-or-create) so we always
 	// track real ids. Display resolves ids against the live label set, dropping
@@ -374,18 +373,18 @@
 		}
 	}
 
-	// Account is the primary axis (CCT-399): MachineFields offers every account
+	// Account is the primary axis: MachineFields offers every account
 	// and derives the allowed harnesses + model list from the chosen one.
 	// Stale-selection cleanup lives in MachineFields. Accounts are identities
-	// (CCT-558): matched by name; the credential in play is the provider whose
-	// family backs the effective harness (CCT-562).
+	//: matched by name; the credential in play is the provider whose
+	// family backs the effective harness.
 	const allAccounts = $derived($accounts.data ?? []);
 	const selectedAccount = $derived(
 		form.account && form.account !== NO_ACCOUNT
 			? allAccounts.find((a) => a.name === form.account)
 			: undefined
 	);
-	// The submitted harness is always the user's pick (CCT-581): never the
+	// The submitted harness is always the user's pick: never the
 	// silently-swapped effective adapter, which regressed codex to claude-code.
 	const effectiveAdapter = $derived(form.adapter_id);
 	const spawnProvider = $derived(providerForAdapter(selectedAccount, effectiveAdapter)?.provider);
@@ -393,7 +392,7 @@
 	// visible error (MachineFields) instead of submitting the wrong harness.
 	const harnessValid = $derived(accountBacksAdapter(selectedAccount, form.adapter_id));
 	// Dispatch gateway routing uses the account's provider for the selected
-	// dispatch harness (CCT-643): claude worker → anthropic family, codex worker
+	// dispatch harness: claude worker → anthropic family, codex worker
 	// → openai family.
 	const dispatchProvider = $derived(
 		providerForAdapter(selectedAccount, form.dispatch_adapter || 'claude-code')?.provider
@@ -402,7 +401,7 @@
 	const actions = useSessionActions();
 	let busy = $state(false);
 
-	// --- Environment secrets (CCT-202) & file uploads (CCT-203) ---
+	// --- Environment secrets & file uploads ---
 	// Deliberately kept OUT of `form` (which is persisted to localStorage drafts)
 	// so secret values and file handles are never written to disk — they live for
 	// the modal's lifetime only and are fixed for the session once spawned.
@@ -449,12 +448,12 @@
 	const valid = $derived((target === 'machine' ? spawnValid : dispatchValid) && secretsValid);
 
 	// Build the SpawnRequest from the current machine-target form. Shared by the
-	// immediate spawn and the "Save as draft" path (CCT-394); `save_draft` and
+	// immediate spawn and the "Save as draft" path; `save_draft` and
 	// `env` are overridden by the caller as needed.
 	function buildSpawnBody(): SpawnRequest {
-		// The harness is always the user's pick (CCT-581).
+		// The harness is always the user's pick.
 		const adapter = form.adapter_id;
-		// Explicit unbound spawn (CCT-582): the machine's own login, no gateway.
+		// Explicit unbound spawn: the machine's own login, no gateway.
 		const noAccount = form.account === NO_ACCOUNT;
 		const compatible = !!spawnProvider && isCompatibleProvider(spawnProvider);
 		const model = compatible
@@ -467,14 +466,14 @@
 			name: form.name.trim() || null,
 			prompt: form.prompt.trim() || null,
 			prompt_name: null,
-			// Omit when unset (CCT-542): null lets the server resolve the account
+			// Omit when unset: null lets the server resolve the account
 			// default permission mode, else claude's own — never force a mode.
 			permission_mode: form.permission_mode || null,
 			effort: (adapter === 'codex' ? form.effort_codex : form.effort_claude) || null,
 			model,
 			env: envMap(),
 			account: noAccount ? null : form.account.trim() || null,
-			// The provider credential backing the chosen harness (CCT-562), so the
+			// The provider credential backing the chosen harness, so the
 			// server resolves the exact credential under the account identity.
 			provider: noAccount ? null : spawnProvider || null,
 			no_account: noAccount,
@@ -482,7 +481,7 @@
 		};
 	}
 
-	// Save the current form as a draft (CCT-394) instead of dispatching. No env
+	// Save the current form as a draft instead of dispatching. No env
 	// is sent (re-entered at launch); the draft appears in the Drafts section.
 	async function saveDraft() {
 		const body: SpawnRequest = { ...buildSpawnBody(), env: {}, save_draft: true };
@@ -500,13 +499,13 @@
 
 	async function spawnOnMachine() {
 		const body: SpawnRequest = buildSpawnBody();
-		// Capture label intent before the form is reset on success (CCT-360).
+		// Capture label intent before the form is reset on success.
 		const labelIds = [...form.labels];
 		const labelCwd = normalizeDir(form.working_dir.trim());
 		const labelMachine = form.machine_id;
 		const requestedAt = Date.now();
 		const res = await actions.spawn(body, files);
-		// Surface which credential the server bound (CCT-582) — chiefly an
+		// Surface which credential the server bound — chiefly an
 		// auto-bound default the user never named.
 		if (res.account) toasts.push(m.spawn_toast_bound_account({ account: res.account }), 'info');
 		drafts.set(LAST_MACHINE, form.machine_id);
@@ -514,7 +513,7 @@
 		drafts.set(LAST_SPAWN_NAME, form.name.trim());
 		// Remember the label set for the next New Session (empty clears it).
 		drafts.set(LAST_SPAWN_LABELS, labelIds.join(','));
-		// Remember this config for (machine, cwd) (CCT-561) so the next spawn
+		// Remember this config for (machine, cwd) so the next spawn
 		// here pre-selects it. Saved on submit (not just on confirmed success)
 		// so a slow/unconfirmed spawn still records the operator's intent.
 		settings.rememberSpawn(machineMemoryKey(labelMachine, labelCwd), entryFromForm(form));
@@ -533,7 +532,7 @@
 		} else if (result.timedOut) {
 			// Still try to label it — the session usually lands shortly after.
 			void attachLabelsToSpawned(labelMachine, labelCwd, requestedAt, labelIds);
-			// No confirmation ≠ failed (CCT-242): slow/cold spawns routinely land
+			// No confirmation ≠ failed: slow/cold spawns routinely land
 			// after the wait. Close + refresh so the new session shows up; keep the
 			// draft so a *real* miss is one re-open away. Re-submitting blindly
 			// would dispatch a second spawn → duplicate agent.
@@ -562,11 +561,11 @@
 		if (form.ticket.trim()) payload.context = { issue_id: form.ticket.trim() };
 		if (form.prompt.trim()) payload.prompt = form.prompt.trim();
 		if (form.prompt_file.trim()) payload.prompt_file = form.prompt_file.trim();
-		// Adapter choice (CCT-643): omit for the claude-code default so an older
+		// Adapter choice: omit for the claude-code default so an older
 		// server/worker stays backward compatible; set it for a codex worker.
 		const dispatchAdapter = form.dispatch_adapter || 'claude-code';
 		if (dispatchAdapter === 'codex') payload.adapter = 'codex';
-		// The model is account-driven for a compatible account (CCT-399), else the
+		// The model is account-driven for a compatible account, else the
 		// per-adapter family field.
 		const dispatchCompatible = !!dispatchProvider && isCompatibleProvider(dispatchProvider);
 		const dispatchModel = dispatchCompatible
@@ -578,30 +577,30 @@
 		const dispatchEffort =
 			dispatchAdapter === 'codex' ? form.effort_codex.trim() : form.effort_claude.trim();
 		if (dispatchEffort) payload.effort = dispatchEffort;
-		// Environment secrets (CCT-202): the external dispatcher turns `env` into
+		// Environment secrets: the external dispatcher turns `env` into
 		// pod env / an ephemeral Secret. The server redacts these from its dispatch
 		// notifications and never persists them.
 		const env = envMap();
 		if (Object.keys(env).length) payload.env = env;
 		const timeout = form.timeout.trim() ? Number(form.timeout.trim()) : null;
-		// Client-minted id doubles as the idempotency key (CCT-107); held stable
-		// across retries (CCT-193) so a re-submit dedups to the same session.
+		// Client-minted id doubles as the idempotency key; held stable
+		// across retries so a re-submit dedups to the same session.
 		pendingDispatchId ??= crypto.randomUUID();
 		const body: DispatchRequest = {
 			dispatcher: form.dispatcher,
 			session_id: pendingDispatchId,
 			timeout: Number.isFinite(timeout) ? timeout : null,
 			reply_url: null,
-			// Server-side completion webhook (CCT-294) is not driven from the
+			// Server-side completion webhook is not driven from the
 			// spawn modal; leave unset so the dispatch contract is satisfied.
 			notify_url: null,
 			notify_secret: null,
-			// Account routing on the dispatch path (CCT-399): the server mints the
+			// Account routing on the dispatch path: the server mints the
 			// gateway token + merges its base-url/token into payload.env. The
-			// no-account sentinel (CCT-582) is a machine-tab concept → treat as null.
+			// no-account sentinel is a machine-tab concept → treat as null.
 			account: form.account === NO_ACCOUNT ? null : form.account.trim() || null,
 			provider: dispatchProvider || null,
-			// Multi-account routing (CCT-508) isn't driven from the modal; the
+			// Multi-account routing isn't driven from the modal; the
 			// singular account/provider pair above is the modal's contract.
 			accounts: [],
 			// `payload` is opaque (JsonValue) server-side; our local shape carries a
@@ -612,10 +611,10 @@
 		const dispatchedId = pendingDispatchId;
 		const res = await actions.dispatch(body);
 		drafts.set(LAST_SPAWN_NAME, form.name.trim());
-		// Remember the dispatch flavor for (dispatcher, repo) (CCT-561).
+		// Remember the dispatch flavor for (dispatcher, repo).
 		settings.rememberSpawn(dispatchMemoryKey(form.dispatcher, form.repo), entryFromForm(form));
-		// Remember the label set + attach to the dispatched session (its id is the
-		// client-minted dispatch id, CCT-360).
+		// Remember the label set + attach to the dispatched session (its id is
+		// the client-minted dispatch id).
 		drafts.set(LAST_SPAWN_LABELS, labelIds.join(','));
 		void attachLabelsTo(dispatchedId, labelIds);
 		toasts.ok(m.spawn_toast_dispatched({ dispatcher: res.dispatcher, handle: res.handle }));
@@ -646,7 +645,7 @@
 		}
 	}
 
-	// Drafts (CCT-394) are a machine-spawn concept; a draft only needs a target +
+	// Drafts are a machine-spawn concept; a draft only needs a target +
 	// prompt, not the full dispatch contract, so it's valid whenever the spawn
 	// form is. Buffer-only, so secrets needn't be valid yet (entered at launch).
 	const draftValid = $derived(target === 'machine' && spawnValid);
@@ -672,7 +671,7 @@
 
 <Modal title={m.spawn_modal_title()} {onclose} resizeKey="cctui_spawn_modal_width">
 	{#snippet body()}
-		<!-- The whole dialog is a file drop area (CCT-236): dragging files over it
+		<!-- The whole dialog is a file drop area: dragging files over it
 		     shows the tsumikit Dropzone overlay; on drop they're staged as
 		     attachments. overlay mode wraps the content without hijacking clicks,
 		     and is disabled on the dispatch target (no attachments there). -->
@@ -702,7 +701,7 @@
 					{/if}
 				</div>
 			{/snippet}
-			<!-- Machine / Dispatch are tabs (CCT-562) when a dispatcher exists. -->
+			<!-- Machine / Dispatch are tabs when a dispatcher exists. -->
 			{#if canDispatch}
 				<Tabs
 					label={m.spawn_run_on_label()}
@@ -715,8 +714,8 @@
 			{/if}
 
 			<!-- Shared add-ons: one row of equal-width buttons — Add label
-			     (CCT-360) · Add files (CCT-203, machine only) · Add env vars
-			     (CCT-202). Each control's content renders below in the same order
+			     · Add files (machine only) · Add env vars. Each control's
+			     content renders below in the same order
 			     (labels, files, env vars). All three are the canonical Button look
 			     (a FileButton matches the Button atom by design); two carry an
 			     icon. Grid blockifies the items so each fills its 1fr column. -->

@@ -12,9 +12,9 @@
 	border: 1px solid var(--border);
 	overflow-wrap: anywhere;
 	word-break: break-word;
-	/* CCT-161 item 4 — slider-driven, falls back to --fs-sm. */
+	/* Slider-driven, falls back to --fs-sm. */
 	font-size: var(--fs-sm);
-	/* Base prose: grayish (Claude-Code terminal feel, CCT-161 item 5). */
+	/* Base prose: grayish (Claude-Code terminal feel). */
 	color: var(--md-text);
 }
 .bubble strong {
@@ -60,7 +60,7 @@
 	padding: 1px 4px;
 	border-radius: 4px;
 }
-/* GFM tables (CCT-233): themed borders + header row, horizontally scrollable
+/* GFM tables: themed borders + header row, horizontally scrollable
    so wide tables don't blow out the bubble width. */
 .bubble .md-table {
 	display: block;
@@ -85,8 +85,7 @@
 .bubble .md-table tbody tr:nth-child(even) {
 	background: color-mix(in srgb, var(--bg-elevated) 45%, transparent);
 }
-/* Syntax-highlight token colors. highlight.js emits hljs-* classes (CCT-279
-   item 5); we map them onto the existing themeable --syn-* tokens so dark/
+/* Syntax-highlight token colors. highlight.js emits hljs-* classes; we map them onto the existing themeable --syn-* tokens so dark/
    light/sepia keep driving the palette. The legacy --syn-* classes from the
    old regex highlighter are kept as aliases for any cached content. */
 .syn-keyword,

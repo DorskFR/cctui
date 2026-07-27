@@ -3,7 +3,7 @@
  * then scroll *inside* the textarea. Pass the bound value so it re-measures on
  * programmatic changes (drafts loading, clearing, etc.).
  *
- * Two things keep it well-behaved in a scrollable modal (CCT-405):
+ * Two things keep it well-behaved in a scrollable modal:
  *  - the explicit height is clamped to the element's computed `max-height`, so
  *    the field never grows past its cap and pushes the surrounding controls out
  *    of view;

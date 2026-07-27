@@ -59,7 +59,7 @@
 		drafts.set(LIST_DENSITY, dense ? 'compact' : 'normal');
 	});
 
-	// Main-list layout × density semantics (CCT-305). Two independent toggles:
+	// Main-list layout × density semantics. Two independent toggles:
 	//   list ⇄ grid (cardView) and compact ⇄ detailed (dense). The 2×2 matrix:
 	//     list  + compact  → one row per session
 	//     list  + detailed → multi-row per session
@@ -77,32 +77,32 @@
 		drafts.set(LIST_VIEW, cardView ? 'card' : 'list');
 	});
 
-	// Kanban board view (CCT-579): a distinct layout persisted alongside the
+	// Kanban board view: a distinct layout persisted alongside the
 	// list/card × density picker; when set it overrides the other two.
 	let kanban = $state(drafts.get(LIST_KANBAN) === '1');
 	$effect(() => {
 		drafts.set(LIST_KANBAN, kanban ? '1' : '');
 	});
 
-	// Color-by (CCT-466) and group-by (CCT-467) dimensions, read live from the
+	// Color-by and group-by dimensions, read live from the
 	// server-persisted settings blob (so an async settings.load() reflows the UI)
 	// and written back through settings.setSessionList (localStorage + debounced PUT).
 	const colorBy = $derived(settings.state.sessionList.colorBy as Dimension);
 	const groupBy = $derived(settings.state.sessionList.groupBy as Dimension);
 	const accentOf = (s: SessionListItem) => colorHueOf(s, colorBy);
 
-	// View picker (CCT-307): `cardView` (list ⇄ card) and `dense` (compact ⇄
+	// View picker: `cardView` (list ⇄ card) and `dense` (compact ⇄
 	// detailed) round-trip through drafts above; the ViewPicker molecule owns the
 	// picker UI and writes back to them via bindable props.
 
-// Section filter (CCT-322 / CCT-345): the sessions list is partitioned into
+// Section filter: the sessions list is partitioned into
 	// four sections, each an INDEPENDENT on/off toggle (not a forced single
 	// choice) — one toolbar button opens a popover of four checkboxes so any
 	// combination can be shown at once. Semantics over the loaded list:
-	//   • starred    → pinned sessions (CCT-267)
+	//   • starred    → pinned sessions
 	//   • live       → interactive, non-dispatched, non-pinned sessions
-	//   • dispatched → server-managed / ephemeral-worker sessions (CCT-231)
-	//   • archived   → also append the paginated archive browse (CCT-184)
+	//   • dispatched → server-managed / ephemeral-worker sessions
+	//   • archived   → also append the paginated archive browse
 	// The chosen set is persisted (comma-joined) so it sticks across reloads.
 	// The SectionFilter molecule owns the popover + toggle UI and writes back the
 	// chosen set via its bindable prop; the page keeps the state (and persists it).
@@ -115,12 +115,12 @@
 	const showArchived = $derived(sections.has('archived'));
 	let openSession = $state<SessionListItem | null>(null);
 	let showSpawn = $state(false);
-	// Prefill for "new session from same script" (CCT-250 item 8). Seeded from an
+	// Prefill for "new session from same script". Seeded from an
 	// archived session's config, then handed to the SpawnModal.
 	let spawnPrefill = $state<Record<string, string> | null>(null);
 	function newFromScript(s: SessionListItem) {
 		const adapter = s.adapter_id ?? 'claude-code';
-		// Model is per-adapter in the spawn form (CCT-274); seed the field that
+		// Model is per-adapter in the spawn form; seed the field that
 		// matches this session's adapter.
 		const modelField = adapter === 'codex' ? 'model_codex' : 'model_claude';
 		spawnPrefill = {
@@ -134,7 +134,7 @@
 		showSpawn = true;
 	}
 
-	// ── Deep-linkable session (CCT-206) ─────────────────────────────────────
+	// ── Deep-linkable session ─────────────────────────────────────
 	// A session's stable, shareable URL is /sessions?session=<id>. The whole SPA
 	// already sits behind the login wall (layout renders <Login/> when unauthed
 	// and keeps the URL intact), so following a shared link while logged out shows
@@ -151,7 +151,7 @@
 	// Seed lastUrlId from the URL on mount so a deep-link load doesn't double-push,
 	// while opening a session from the list DOES push a history entry — so the
 	// browser Back button (and the drawer's < button) returns to /sessions instead
-	// of skipping the list (CCT-345 / CCT-326). `mounted` is reactive so the
+	// of skipping the list. `mounted` is reactive so the
 	// drawer→URL effect re-runs once the initial sync is in place.
 	let mounted = $state(false);
 	// Derive the session id from the URL pathname rather than `page.params`.
@@ -159,9 +159,9 @@
 	// which updates `page.url` but does NOT re-resolve the matched route — so
 	// `page.params.session` stays pinned to whatever the [session] route bound on
 	// the last full navigation. After closing the drawer pushes `/sessions`, the
-	// stale param would still read `<uuid>`, reopen the session, and re-push the
-	// URL (CCT-350: back chevron never clears /sessions/<uuid>). Parsing the live
-	// pathname keeps the URL→drawer effect honest under shallow routing.
+	// stale param would still read `<uuid>`, reopen the session, and re-push
+	// the URL (the back chevron never clearing /sessions/<uuid>). Parsing the
+	// live pathname keeps the URL→drawer effect honest under shallow routing.
 	function sessionIdFromUrl(): string | null {
 		const m = page.url.pathname.match(/^\/sessions\/([^/]+)/);
 		if (m) return decodeURIComponent(m[1]);
@@ -179,8 +179,8 @@
 		// even though the address bar already shows `/sessions/<uuid>`. Guarding on
 		// the stale `page.url` made the close path's target (`/sessions`) compare
 		// equal to it and short-circuit, so neither the back chevron nor the
-		// backdrop scrim ever cleared `/sessions/<uuid>` (CCT-351, follow-up to
-		// CCT-350). `location.href` is always the real current URL.
+		// backdrop scrim ever cleared `/sessions/<uuid>`. `location.href` is
+		// always the real current URL.
 		const url = new URL(location.href);
 		url.searchParams.delete('session');
 		url.pathname = id ? `/sessions/${encodeURIComponent(id)}` : '/sessions';
@@ -201,7 +201,7 @@
 		} catch (e) {
 			// Archived/ended sessions now resolve from the DB (read-only), so a
 			// 404 means the session was actually DELETED — only then toast +
-			// drop the id (CCT-250 item 6). Transient errors (network, 5xx) leave
+			// drop the id. Transient errors (network, 5xx) leave
 			// the URL intact so a retry/refresh can recover instead of nagging.
 			if (e instanceof ApiError && e.status === 404) {
 				toasts.err(m.sessions_toast_not_found());
@@ -215,7 +215,7 @@
 		}
 	}
 
-	// Open a freshly forked session (CCT-345): the server pre-minted its id but
+	// Open a freshly forked session: the server pre-minted its id but
 	// the DB row only appears once the daemon launches the worker and the next
 	// roster poll lands (~2-3s). Poll a few times so we open it in place without
 	// a manual refresh, and don't false-toast "not found" during the gap.
@@ -240,7 +240,7 @@
 
 	// URL → drawer: react to the `session` param (initial load, back/forward,
 	// pasted link). Only act when it differs from what's already open. The
-	// `openSession` read is untracked (CCT-240): if this effect depended on it,
+	// `openSession` read is untracked: if this effect depended on it,
 	// any `openSession = …` (card click, notification) would re-run it *before*
 	// the drawer→URL effect below pushes `?session=<id>` — the still-empty URL
 	// param then hit the `openSession = null` branch and closed the drawer in
@@ -268,13 +268,13 @@
 	});
 
 	// Live buckets always show non-archived sessions; the archive is a separate
-	// paginated section below (CCT-184).
+	// paginated section below.
 	const sessions = useSessions(() => false);
 
 	const qc = useQueryClient();
 	const actions = useSessionActions();
 
-	// Labels (CCT-360): the global label set feeds both the per-card picker and
+	// Labels: the global label set feeds both the per-card picker and
 	// the toolbar filter. `labelFilter` holds the selected label ids; when
 	// non-empty the live list and archive browse are narrowed to sessions
 	// carrying at least one of them (OR semantics). Persisted across reloads.
@@ -310,7 +310,7 @@
 		actions.updateLabel(labelId, patch);
 	const deleteLabel = (labelId: string) => actions.deleteLabel(labelId);
 
-	// ── Search + archive browse (CCT-184) ──────────────────────────────────
+	// ── Search + archive browse ──────────────────────────────────
 	// One paginated "pager" feeds two views, never both at once:
 	//   • searching (q non-empty) → search results, scoped by `showArchived`
 	//     (unticked = live only, ticked = all). Split into Live / Archived.
@@ -387,7 +387,7 @@
 		if (pagerActive) loadPage(true);
 	});
 
-	// ── Multi-select / batch archive (CCT-172) ─────────────────────────────
+	// ── Multi-select / batch archive ─────────────────────────────
 	// Applies to the live buckets only (always non-archived → always archives).
 	let selecting = $state(false);
 	let selected = $state(new Set<string>());
@@ -444,7 +444,7 @@
 		}
 	}
 
-	// Bulk-archive every Dispatched conversation at once (CCT-279 item 7). Uses
+	// Bulk-archive every Dispatched conversation at once. Uses
 	// the existing batch endpoint (POST /sessions/archive) over all dispatched
 	// (server-managed machine) sessions in the live list, children included.
 	async function archiveAllDispatched() {
@@ -465,7 +465,7 @@
 		}
 	}
 
-	// Swipe-to-archive a single row (CCT-172). Status-aware so it works for both
+	// Swipe-to-archive a single row. Status-aware so it works for both
 	// live (archive) and archived (unarchive) rows.
 	async function swipeArchive(s: SessionListItem) {
 		const isArchived = s.status === 'archived';
@@ -479,7 +479,7 @@
 		}
 	}
 
-	// Pin/unpin a session (CCT-267). Pinning floats it to the top group and
+	// Pin/unpin a session. Pinning floats it to the top group and
 	// exempts it from auto-archive; the list refetches so the move is immediate.
 	async function togglePin(s: SessionListItem) {
 		try {
@@ -506,7 +506,7 @@
 		};
 	});
 
-	// Unread tracking (CCT-580): mark the open session's messages seen server-side,
+	// Unread tracking: mark the open session's messages seen server-side,
 	// then refetch so its badge drops to zero. `changeTick` re-runs it as new
 	// messages stream in while the drawer stays open, keeping the open session at
 	// zero instead of re-accumulating unread.
@@ -537,7 +537,7 @@
 
 	const items = $derived($sessions.data?.sessions ?? []);
 
-	// Draft/staged sessions (CCT-394): buffered spawns not yet launched. They
+	// Draft/staged sessions: buffered spawns not yet launched. They
 	// live in the same list payload (status='draft') but are pulled OUT of the
 	// classifier buckets below and rendered in their own Drafts section with
 	// Launch/Edit/Discard. Excluded from the live nest so they never show as
@@ -610,7 +610,7 @@
 	}
 
 	// A starred parent should keep its full subagent group visible under Pinned
-	// even once the children are archived (CCT-297): the live list above excludes
+	// even once the children are archived: the live list above excludes
 	// archived rows, so when anything is pinned we additionally pull the full
 	// (incl. archived) list and splice each pinned parent's archived descendants
 	// back into the nest. Gated on `pinnedIds.size` so the heavier full-list
@@ -628,8 +628,8 @@
 	// top-level rows — they already show nested under their pinned parent.
 	const pinnedArchivedKidIds = $derived(new Set(pinnedArchivedKids.map((s) => s.id)));
 
-	// Subagent grouping (CCT-225 / CCT-269), nesting (CCT-298 item 1), and the
-	// cost rollup (CCT-297 #19) are all pure data transforms — see
+	// Subagent grouping, nesting, and the
+	// cost rollup are all pure data transforms — see
 	// sessions.logic.ts. The component keeps only the reactive derivations + the
 	// expand/collapse state below.
 	const liveNest = $derived(
@@ -649,11 +649,11 @@
 		expanded = next;
 	}
 
-	// Classifier buckets (CCT-90) + the dispatch/pinned mapping are pure — see
+	// Classifier buckets + the dispatch/pinned mapping are pure — see
 	// BUCKETS / isDispatched / groupOf in sessions.logic.ts.
 	type GroupKey = ReturnType<typeof groupOf>;
 	// Each live bucket maps to exactly ONE section toggle, so the four toggles
-	// select disjoint slices that compose cleanly (CCT-345):
+	// select disjoint slices that compose cleanly:
 	//   • Pinned bucket      ← starred
 	//   • Dispatched bucket  ← dispatched
 	//   • every other bucket ← live
@@ -663,9 +663,10 @@
 		if (key === 'dispatched') return sections.has('dispatched');
 		return sections.has('live');
 	};
-	// Client-side sort of each bucket's top-level rows by the user's preference
-	// (CCT-426). 'activity' keeps the server order (last_message_at desc); the
-	// pinned bucket stays its own group above the rest, so pinned-first is intact.
+	// Client-side sort of each bucket's top-level rows by the user's
+	// preference. 'activity' keeps the server order (last_message_at desc);
+	// the pinned bucket stays its own group above the rest, so pinned-first
+	// is intact.
 	const sortRows = (rows: SessionListItem[]): SessionListItem[] => {
 		const sort = settings.state.sessionList.sort;
 		if (sort === 'activity') return rows;
@@ -695,7 +696,7 @@
 		})).filter((g) => g.sessions.length > 0)
 	);
 
-	// Group-by (CCT-467): when active, the attention buckets collapse and the
+	// Group-by: when active, the attention buckets collapse and the
 	// section-enabled top-level rows are re-partitioned by the chosen dimension —
 	// the dimension becomes the outer shell. Within-group sort + subagent nesting
 	// (childGroupsOf) are preserved. Grouping covers the live region only; the
@@ -714,7 +715,7 @@
 	);
 	const hasLiveRows = $derived(groupBy === 'none' ? groups.length > 0 : groupedSections.length > 0);
 
-	// Kanban board columns (CCT-579): nest over every non-archived row (drafts
+	// Kanban board columns: nest over every non-archived row (drafts
 	// included — the board has its own Drafts column) and map top-level rows to
 	// their stage column. Ignores the section toggles by design; still honors the
 	// label/search/unread filters so the toolbar stays meaningful.
@@ -786,9 +787,9 @@
 
 <!-- Nested list of top-level rows with subagent count badges + inline children,
      shared by the live buckets, search results, and the archive browse so they
-     all render the same nesting (CCT-298 item 1). `allowSelect` gates the
+     all render the same nesting. `allowSelect` gates the
      multi-select checkboxes (live buckets only); `hl` carries search terms. -->
-<!-- Card (grid) view of the main list (CCT-297 item 16): top-level sessions laid
+<!-- Card (grid) view of the main list: top-level sessions laid
      out as detailed cards in a responsive grid. Subagents are omitted here (the
      list view + the drawer still show them); the point is at-a-glance status. -->
 {#snippet cardItems(
@@ -832,7 +833,7 @@
 			onDeleteLabel={deleteLabel}
 		/>
 		<!-- Clicking a count badge expands that subagent group as cards inserted
-		     right after the parent card in the grid flow (CCT-297). -->
+		     right after the parent card in the grid flow. -->
 		{#if depth < 5}
 			{#each subGroups as g (g.key)}
 				{#if expanded.has(groupId(s.id, g.key))}
@@ -844,7 +845,7 @@
 {/snippet}
 
 {#snippet cardGrid(rows: SessionListItem[], childGroups: Map<string, SubGroup[]>)}
-	<!-- Card track widths scale with the UI font (CCT-353): the chrome stays rem-pinned
+	<!-- Card track widths scale with the UI font: the chrome stays rem-pinned
 	     but card TEXT (working-dir chip, token readout, model) grows with --fs-scale, so
 	     at the largest scale fixed-rem cards overflowed. Multiplying min/max by the same
 	     factor widens cards as the text grows — and raising `min` naturally collapses to
@@ -1003,7 +1004,7 @@
 	{:else}
 		<!-- Nest over the whole result set so a parent and its subagents stay
 		     grouped even if they land in different status sections; then split
-		     the top-level rows into Live / Archived (CCT-298 item 1). -->
+		     the top-level rows into Live / Archived. -->
 		{@const ns = nest(pageRows)}
 		{@const scoped = ns.topLevel.filter(
 			(s) =>
@@ -1043,7 +1044,7 @@
 	{/if}
 {:else}
 	<!-- Live buckets first, then the paginated archive — all sections share one
-	     flex container so the inter-section gap is uniform (CCT-298). -->
+	     flex container so the inter-section gap is uniform. -->
 	{#if cardView && !dense}
 		<Container fullWidth as="div">
 			<div class="sections">{@render liveSections()}</div>
@@ -1084,7 +1085,7 @@
 				<div class="section">
 					{#if g.key === 'dispatched'}
 						<!-- Dispatched is a plain section header like Pinned/Completed, with a
-						     bulk "Archive all" action on the right (CCT-279 item 7). -->
+						     bulk "Archive all" action on the right. -->
 						<div class="group-header" data-bucket={g.key}>
 							{g.label} <Text class="count">{g.sessions.length}</Text>
 							<!-- In card mode the action sits right next to the title; in
@@ -1116,7 +1117,7 @@
 
 		{#if sections.has('drafts') && draftRows.length > 0}
 			<!-- Drafts render through the SAME SessionCard path as every other
-			     section (CCT-394), so they honor the card-view / compact toggles
+			     section, so they honor the card-view / compact toggles
 			     identically; the card surfaces Launch/Edit/Discard in place of the
 			     live-session affordances. -->
 			<div class="section">
@@ -1147,7 +1148,7 @@
 				{#if pageRows.length === 0 && !pageLoading}
 					<div class="empty"><Text tone="muted">{m.sessions_no_archived()}</Text></div>
 				{:else if cardView}
-					<!-- Card mode applies to archived sessions too (CCT-321 parity). -->
+					<!-- Card mode applies to archived sessions too. -->
 					{@render cardGrid(archTop, ns.childGroups)}
 					{@render loadMore()}
 				{:else}
@@ -1180,7 +1181,7 @@
 {/if}
 
 <style>
-	/* Sticky bulk-action bar (CCT-172) shown while in select mode. */
+	/* Sticky bulk-action bar shown while in select mode. */
 	.bulkbar {
 		position: sticky;
 		top: calc(var(--header-h) + var(--safe-top) + var(--sp-2));
@@ -1194,7 +1195,7 @@
 		background: var(--bg-elevated);
 		box-shadow: var(--shadow-md);
 	}
-	/* Two-axis spacing (CCT-298): the outer container owns the inter-section gap;
+	/* Two-axis spacing: the outer container owns the inter-section gap;
 	   each .section owns its row gap. Every section break — Pinned, Working,
 	   Dispatched, Archived — is the same sp-6, with no header margins or
 	   sibling-combinator patches that broke whenever Archived was its own block. */
@@ -1211,7 +1212,7 @@
 	.sections.tight .section {
 		gap: var(--sp-1);
 	}
-	/* Parent row (CCT-269): a normal full-width row. The collapse toggle badge(s)
+	/* Parent row: a normal full-width row. The collapse toggle badge(s)
 	   now live inside the card's leading gutter slot (SessionCard), so there's no
 	   external rail and no reserved left gutter to keep aligned across sections. */
 	.parent-row {
@@ -1248,7 +1249,7 @@
 		font-weight: 400;
 		opacity: 0.7;
 	}
-	/* Group-by header (CCT-467): a hue swatch keyed to the color-by palette, in the
+	/* Group-by header: a hue swatch keyed to the color-by palette, in the
 	   dimension's own casing (label/dir/machine names aren't uppercased chrome). */
 	.dim-header {
 		text-transform: none;
@@ -1261,7 +1262,7 @@
 		border-radius: var(--r-sm);
 		background: hsl(var(--mh) var(--mach-border-sl));
 	}
-	/* Dispatched group collapse toggle (CCT-279 item 6). */
+	/* Dispatched group collapse toggle. */
 	.group-header[data-bucket='blocked'] {
 		color: var(--warn, #d08770);
 	}

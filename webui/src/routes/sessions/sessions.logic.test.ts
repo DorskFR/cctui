@@ -26,7 +26,7 @@ function session(over: Partial<SessionListItem>): SessionListItem {
 
 const label = (id: string, name: string, color = ''): Label => ({ id, name, color });
 
-describe('unread section (CCT-580)', () => {
+describe('unread section', () => {
 	it('recognises "unread" as a section', () => {
 		expect(isSection('unread')).toBe(true);
 	});
@@ -60,7 +60,7 @@ describe('unread section (CCT-580)', () => {
 	});
 });
 
-describe('tool activity — asleep vs. grinding (CCT-594)', () => {
+describe('tool activity — asleep vs. grinding', () => {
 	const NOW = 1_000_000_000_000;
 	const working = (over: Partial<SessionListItem>) =>
 		session({ bucket: 'working', status: 'active', ...over });
@@ -111,7 +111,7 @@ describe('tool activity — asleep vs. grinding (CCT-594)', () => {
 	});
 });
 
-describe('debug tooltip rows (CCT-555)', () => {
+describe('debug tooltip rows', () => {
 	const NOW = 1_000_000_000_000;
 
 	it('renders nulls as "—", never "null"', () => {
@@ -164,7 +164,7 @@ describe('debug tooltip rows (CCT-555)', () => {
 	});
 });
 
-describe('kanbanColOf (CCT-579)', () => {
+describe('kanbanColOf', () => {
 	it('routes a draft to the Drafts column', () => {
 		expect(kanbanColOf(session({ status: 'draft' }))).toBe('drafts');
 	});
@@ -206,7 +206,7 @@ describe('kanbanColOf (CCT-579)', () => {
 	});
 });
 
-describe('dimension color / group (CCT-466 / CCT-467)', () => {
+describe('dimension color / group', () => {
 	it('recognises the dimension enum values', () => {
 		expect(isDimension('none')).toBe(true);
 		expect(isDimension('label')).toBe(true);

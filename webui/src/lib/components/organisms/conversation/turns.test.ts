@@ -12,7 +12,7 @@ const compact = (ts: number): Line => ({ role: 'compact', ts, text: 'compact' })
 
 const turns = (lines: Line[]) => lines.filter((l) => l.role === 'assistant').map((l) => l.turn);
 
-describe('stampTurns (CCT-552)', () => {
+describe('stampTurns', () => {
 	it('numbers each user→assistant cycle from 1', () => {
 		const lines = [user(1), assistant(2), user(3), assistant(4), user(5), assistant(6)];
 		stampTurns(lines);

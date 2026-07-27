@@ -1,5 +1,5 @@
 <script lang="ts">
-	// Session diagnose panel (CCT-547): one call that renders everything the
+	// Session diagnose panel: one call that renders everything the
 	// daemon knows about this session — each fact dated + sourced, plus the
 	// arbitration verdict — and the server-side gateway/account binding facts.
 	// Read-only observability; the only action is an explicit refresh (the

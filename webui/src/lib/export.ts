@@ -1,5 +1,5 @@
 /**
- * Export a conversation as a single self-contained HTML document (CCT-227).
+ * Export a conversation as a single self-contained HTML document.
  *
  * Built entirely client-side from the merged event list the drawer already
  * holds — no server round-trip. The file embeds all CSS so the browser's
@@ -27,7 +27,7 @@ import { USER_PREFIX } from "$lib/ws.svelte";
 import { getLocale } from "$lib/paraglide/runtime";
 
 /** The subset of the drawer's ViewOpts the export honors. */
-// Mirrors the drawer's ViewOpts filter model (CCT-250 item 2). Each message
+// Mirrors the drawer's ViewOpts filter model. Each message
 // type is off/include/exclude; if any is 'include', only included types export.
 type MsgType = "assistant" | "user" | "tool" | "mcp" | "system" | "result";
 type TagState = "off" | "include" | "exclude";
@@ -389,7 +389,7 @@ ${body}
 `;
 }
 
-// ── Copy-as-Markdown (CCT-279 item 9) ────────────────────────────────────────
+// ── Copy-as-Markdown ────────────────────────────────────────
 // Serialize the conversation to a plain-Markdown string for the clipboard, so a
 // whole chat can be pasted into a PR/issue/notes. Honors the same view filters
 // as the HTML export. Tool inputs / results go in fenced code blocks; the

@@ -1,19 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import type { AskQuestion, Line } from './types';
 
-// CCT-475 regression coverage.
-//
 // The Conversation Drawer must render the combined message list in strict
 // ascending timestamp order, regardless of role. `events` is sorted ascending
 // by `ts` in ConversationDrawer.svelte (`.sort((a, b) => a.ts - b.ts)`) and the
 // lines are built from it in order with no role grouping and no re-anchoring.
-//
-// This replaces the former CCT-338 `orderAskTurns` re-anchor, which was REMOVED
-// in CCT-475: with ts-only event data it could not distinguish a late-flushed
-// AskUserQuestion inversion from a normal prior-turn user line, so it pushed
-// later-ts assistant messages above earlier-ts user messages — exactly the
-// regression this guards against (Assistant 15:30 rendered above User 15:12).
-// The proper causal-ordering fix is tracked in CCT-481.
 
 const askQ: AskQuestion[] = [{ question: 'Which database?', options: [{ label: 'Postgres' }, { label: 'SQLite' }] }];
 
@@ -27,7 +18,7 @@ const continuation = (ts: number): Line => ({ role: 'assistant', ts, text: 'Grea
 const renderOrder = (lines: Line[]) => lines.slice().sort((a, b) => a.ts - b.ts);
 const tsOf = (ls: Line[]) => ls.map((l) => l.ts);
 
-describe('conversation render ordering (CCT-475)', () => {
+describe('conversation render ordering', () => {
 	it('renders the combined list in strict ascending timestamp order', () => {
 		// The reported regression: an assistant message (15:30) ahead of an earlier
 		// user message (15:12). Source order is intentionally scrambled by role.

@@ -1,5 +1,5 @@
 <script lang="ts">
-	// CCT-410: per-user scope (ceiling) editing + per-key (grant) management.
+	// Per-user scope (ceiling) editing + per-key (grant) management.
 	// Admin can edit any user's ceiling and manage any user's keys; a user can
 	// view their own ceiling (read-only) and manage their own keys. Key scopes
 	// are editable in place — the secret is never re-minted to re-scope.

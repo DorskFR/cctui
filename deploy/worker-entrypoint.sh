@@ -11,8 +11,8 @@
 # unprivileged `worker` user (uid 1000) via cctui-supervisor before exec'ing the
 # daemon. The phases below run root-side; each is INDIVIDUALLY SKIPPABLE on its
 # own env, so a worker booted with ONLY CCTUI_URL + CCTUI_MACHINE_KEY +
-# SESSION_ID behaves exactly like the thin CCT-245 entrypoint: it falls straight
-# through to `exec cctui-supervisor -- cctui-daemon run --no-auto-update`.
+# SESSION_ID falls straight through to
+# `exec cctui-supervisor -- cctui-daemon run --no-auto-update`.
 #
 # No phase may hard-fail when its inputs are absent. The ONE exception is the
 # context-pack fetch: if CONTEXT_PACK_URL is set it MUST succeed (the pack
@@ -26,7 +26,7 @@ set -eu
 
 log() { echo "cctui-worker: $*"; }
 
-# Extra read-only paths for DERIVED images (CCT-528). The base entrypoint's RO
+# Extra read-only paths for DERIVED images. The base entrypoint's RO
 # allow-list is fixed, but a fat derived image installs its own toolchain outside
 # it (e.g. Node/pnpm under /opt/mise, Rust under /opt/rust). Such an image can set
 # CCTUI_WORKER_EXTRA_RO (colon-separated, e.g. `/opt/mise:/opt/rust`) to have each
@@ -45,7 +45,7 @@ extra_ro_flags() {
     IFS=$_OLDIFS
 }
 
-# RW analogue of extra_ro_flags (CCT-535). Derived images — and phase_dockerd
+# RW analogue of extra_ro_flags. Derived images — and phase_dockerd
 # below — add writable paths to the supervisor's Landlock RW set via
 # CCTUI_WORKER_EXTRA_RW (colon-separated). Emits a `--rw <path>` token per
 # non-empty entry; a no-op when unset/empty.
@@ -119,7 +119,7 @@ url_host() {
     printf '%s' "$(url_hostport "$1")" | sed 's,:.*$,,'
 }
 
-# CCT-718: the guard-proxy sidecar TLS-terminates injection hosts with leaf certs
+# The guard-proxy sidecar TLS-terminates injection hosts with leaf certs
 # signed by a per-pod CA it mints at boot, writing the PUBLIC cert (only) to the
 # shared emptyDir below. Trust that CA so the worker's toolchains accept the
 # intercepted TLS — IN ADDITION to the public roots, never replacing them
@@ -170,7 +170,7 @@ install_guard_ca() {
     log "guard-proxy CA trusted by worker toolchains (bundle=$_bundle)"
 }
 
-# CCT-721: remote GPG signing. The private key never enters this container; the
+# Remote GPG signing. The private key never enters this container; the
 # guard-proxy sidecar runs gpg-agent and forwards ONLY its restricted
 # `--extra-socket` (cannot export secret keys) into the shared gpg-agent
 # emptyDir. Here we point the worker's gpg at that forwarded socket: import the
@@ -232,7 +232,7 @@ wire_gpg_forwarding() {
 #   the proxy; exempt the proxy uid, root, loopback, the CCTUI_URL host, DNS,
 #   and any WORKER_NET_EXEMPT entries; deny IPv6 egress.
 # forward (or no NET_ADMIN): no iptables; export HTTP(S)_PROXY for the worker.
-# transparent-external (CCT-716, explicit only): the proxy runs as a separate
+# transparent-external (explicit only): the proxy runs as a separate
 #   sidecar container and the iptables REDIRECT was installed by a NET_ADMIN
 #   init container (cctui-worker-net-init) — this container needs neither
 #   privileged nor NET_ADMIN. Only seed the policy and wait for the sidecar.
@@ -475,7 +475,7 @@ phase_workspace() {
     # Never recursively chown an overlayfs /workspace: it recurses the read-only
     # lowerdir (the whole WARM_REPO_DIR warm cache) and forces a copy-up of every
     # file into the upperdir, wedging boot in NFS I/O over a multi-repo cache
-    # (CCT-456). The lowerdir is already worker-readable and writes copy-up into
+    #. The lowerdir is already worker-readable and writes copy-up into
     # /overlay/upper (chowned below), so the overlay needs no recursive chown —
     # only the root-created fallbacks (rsync/clone/empty) do.
     if [ "$_ws_overlay" = 0 ]; then
@@ -517,7 +517,7 @@ pack_dir_src() {
 }
 
 # Home-relative wiring target for a [dirs] key. rules/ = always-on guidance
-# (Claude Code auto-loads each *.md — the CCT-490 push seam); docs/ = on-demand
+# (Claude Code auto-loads each *.md); docs/ = on-demand
 # reference pulled by path (@~/.claude/docs/<x>.md), not auto-loaded; hooks/ =
 # PreToolUse scripts (chmod +x here, registered in phase_permissions). prompts/
 # and scripts/ stay in /opt/context (TASK_PROMPT_FILE / absolute paths resolve
@@ -694,7 +694,7 @@ phase_context_pack() {
     # so landlock RO on /opt/context covers them.
     _home="/home/${WORKER_USER}"
 
-    # The pack manifest's [dirs] table is authoritative when present (CCT-576):
+    # The pack manifest's [dirs] table is authoritative when present:
     # `key = "srcdir"` lines declare which pack dirs get wired into the home, so
     # a pack can add a new dir (e.g. hooks/) without an entrypoint change. Absent
     # a manifest/table we fall back to the v1 hardcoded set below.
@@ -732,7 +732,7 @@ projects projects"
 
     [ -f "$CONTEXT_DIR/CLAUDE.md" ] && cp -f "$CONTEXT_DIR/CLAUDE.md" "${_home}/CLAUDE.md"
     # chown ONLY the paths we copy in — NOT the whole (NFS-backed) home, which
-    # would hang in NFS RPC like the credentials chown (CCT-457).
+    # would hang in NFS RPC like the credentials chown.
     [ -e "${_home}/CLAUDE.md" ] \
         && chown "${WORKER_UID}:${WORKER_UID}" "${_home}/CLAUDE.md" 2>/dev/null || true
     printf '%s\n' "$_dirs" | while read -r _key _srcd; do
@@ -811,12 +811,12 @@ phase_extensions() {
 
 # ── Phase 4b: Codex model provider ──────────────────────────────────────────
 # The platform injects OPENAI_API_KEY + OPENAI_BASE_URL (the cctui openai
-# gateway, CCT-508/514) into the agent env, but the `codex` CLI IGNORES those
+# gateway) into the agent env, but the `codex` CLI IGNORES those
 # vars — it reads its model provider only from ~/.codex/config.toml. The pod's
 # config.toml has just `trust_level = "trusted"` (codex writes that itself), so
 # codex's default provider connects straight to api.openai.com with no bearer →
 # `401 Unauthorized (Missing bearer)`, and the dual-reviewer review-pr flow
-# silently degrades to Claude-only (CCT-517).
+# silently degrades to Claude-only.
 #
 # When OPENAI_API_KEY is set, MERGE a `[model_providers.cctui]` block + a
 # `model_provider = "cctui"` selector into config.toml, pointing codex's
@@ -836,8 +836,8 @@ phase_extensions() {
 # the merge is plain shell: drop any prior cctui-managed region + a stray
 # top-level `model_provider`, then append a fresh region. Skipped silently when
 # OPENAI_API_KEY is unset.
-CODEX_MARKER_BEGIN="# >>> cctui codex model_provider (CCT-517) >>>"
-CODEX_MARKER_END="# <<< cctui codex model_provider (CCT-517) <<<"
+CODEX_MARKER_BEGIN="# >>> cctui codex model_provider >>>"
+CODEX_MARKER_END="# <<< cctui codex model_provider <<<"
 
 # Server names must be TOML-bare-key safe (emitted unquoted in the table header).
 codex_mcp_toml() {
@@ -870,7 +870,7 @@ phase_codex_config() {
     # names are BARE (no `-codex` suffix); default is the gpt-5.6-sol frontier.
     # Overridden only by TASK_CODEX_MODEL — NEVER by TASK_MODEL, which is the
     # primary (Claude) agent's model (e.g. `opus`); feeding that to codex writes
-    # an OpenAI-invalid model the gateway rejects (CCT-526 regression).
+    # an OpenAI-invalid model the gateway rejects.
     _model="${TASK_CODEX_MODEL:-gpt-5.6-sol}"
     case "${TASK_EFFORT:-medium}" in
         low)          _effort=low ;;
@@ -1027,7 +1027,7 @@ phase_guard() {
            --state "$GUARD_STATE" \
            --policy-out "$POLICY_FILE"
     # When a pack supplies guard-rules, GUARD_RULES_BASE holds the operator base
-    # parsed first; the pack's --rules then overrides/extends it (CCT-490 #6).
+    # parsed first; the pack's --rules then overrides/extends it.
     [ -n "${GUARD_RULES_BASE:-}" ] && [ -f "${GUARD_RULES_BASE}" ] \
         && set -- "$@" --rules-base "$GUARD_RULES_BASE"
     # Always-allow the structural hosts so the agent keeps the model gateway and
@@ -1087,7 +1087,7 @@ phase_hardening() {
 # emptyDir every pod, so we seed both. Belt-and-suspenders in settings.json:
 # `skipDangerousModePermissionPrompt` (the disclaimer) + `permissions.defaultMode
 # = bypassPermissions` (unattended, no prompts). Merged into any existing files
-# so the daemon's --settings hooks and managed-settings are untouched. (CCT-475)
+# so the daemon's --settings hooks and managed-settings are untouched.
 phase_permissions() {
     _cfgdir="${CLAUDE_CONFIG_DIR:-/home/${WORKER_USER}/.claude}"
     _cwd="${CCTUI_DISPATCH_WORKDIR:-/workspace}"
@@ -1115,7 +1115,7 @@ phase_permissions() {
             '{skipDangerousModePermissionPrompt: true, permissions: {defaultMode: "bypassPermissions", additionalDirectories: [$cwd]}}' \
             > "$_settings"
     fi
-    # Register context-pack PreToolUse hooks (CCT-576): every *.sh the pack
+    # Register context-pack PreToolUse hooks: every *.sh the pack
     # staged into ~/.claude/hooks becomes a PreToolUse entry. Claude Code unions
     # hooks across settings sources, so these run ALONGSIDE the daemon-managed
     # hooks (all matching hooks get the same stdin; any deny blocks). Matcher
@@ -1134,8 +1134,8 @@ phase_permissions() {
             log "permissions: registered PreToolUse hook $(basename "$_hk")"
         done
     fi
-    # .claude is a per-pod emptyDir (not the NFS home), so a recursive chown is
-    # safe here (unlike the home — CCT-457).
+    # .claude is a per-pod emptyDir (not the NFS home), so a recursive chown
+    # is safe here (unlike the home).
     chown -R "${WORKER_UID}:${WORKER_UID}" "$_cfgdir" 2>/dev/null || true
     log "permissions: seeded bypass + trust gates (cwd=$_cwd)"
 }
@@ -1167,7 +1167,7 @@ if [ -n "${TASK_PAYLOAD_JSON:-}" ]; then
 fi
 phase_network
 phase_workspace
-# CCT-691: the CLI grants edit-in-place only when the session cwd IS a git repo,
+# The CLI grants edit-in-place only when the session cwd IS a git repo,
 # so default the workdir to the repo (must run after phase_workspace clones it).
 if [ -z "${CCTUI_DISPATCH_WORKDIR:-}" ] && [ -n "${TASK_REPO:-}" ] \
         && [ -d "/workspace/${TASK_REPO}" ]; then
@@ -1227,7 +1227,7 @@ stop_daemon_gracefully() {
     kill -KILL "$DAEMON_PID" 2>/dev/null || true
 }
 
-# ── Phase 9: Dual-signal "work done" wait (CCT-483) ─────────────────────────
+# ── Phase 9: Dual-signal "work done" wait ─────────────────────────
 # With `claude -p`, "work is done" (semantic) and "process is gone" (liveness)
 # were the same event, so `wait $PID` sufficed. `claude daemon` splits them:
 # the dispatch op acks instantly and the daemon stays up — there is no blocking
@@ -1241,13 +1241,13 @@ stop_daemon_gracefully() {
 #                        proxy so the result callback can leave. Guard-less
 #                        workers (no step markers) fall back to watching the
 #                        RESULT_FILE appear with valid JSON, or the daemon's
-#                        dispatch_done turn-complete marker (CCT-513).
+#                        dispatch_done turn-complete marker.
 #   BACKSTOP (crashed) — the dispatched session dies WITHOUT signalling done.
 #                        Sourced from the daemon's authoritative registration:
 #                        the server row for $SESSION_ID leaves "active" (the
 #                        daemon deregistered it on SessionEnded, or its heartbeat
 #                        went stale). Gated on "seen registered once" so a slow
-#                        cold start is not mistaken for a crash (CCT-521).
+#                        cold start is not mistaken for a crash.
 #
 # Either signal ends the wait; the EXIT trap (phase_callback) then POSTs the
 # preserved clean/failed verdict from RESULT_FILE. A non-dispatched (thin)
@@ -1256,7 +1256,7 @@ stop_daemon_gracefully() {
 # /var/run/workflow-guard/state) that cctui-guard's engine writes {"step":N} to.
 GUARD_STATE_FILE="$GUARD_STATE"
 WAIT_POLL_SECS="${WORKER_DONE_POLL_SECS:-2}"
-# Fail-closed boot bound (CCT-520). A `claude daemon run` that crash-loops
+# Fail-closed boot bound. A `claude daemon run` that crash-loops
 # `exited code=1` (often behind a network deny) keeps cctui-daemon up but never
 # dispatches a session, so it never registers and the backstop (gated on "seen
 # registered once") never fires — the wait would block to the 24h
@@ -1266,7 +1266,7 @@ WAIT_POLL_SECS="${WORKER_DONE_POLL_SECS:-2}"
 # POSTs the callback promptly.
 WORKER_BOOT_DEADLINE_SECS="${WORKER_BOOT_DEADLINE_SECS:-120}"
 
-# Belt-and-suspenders result grace (CCT-525): under GUARD_ON a finished session
+# Belt-and-suspenders result grace: under GUARD_ON a finished session
 # that wrote a valid RESULT_FILE but never POSTed /transition exit would block to
 # the 24h activeDeadlineSeconds. Arm a countdown on a valid RESULT_FILE and exit
 # the wait even under guard once it elapses; guard-exit stays the fast path.
@@ -1278,7 +1278,7 @@ WORKER_RESULT_GRACE_SECS="${WORKER_RESULT_GRACE_SECS:-60}"
 # graceful shutdown; a hard kill here would drop the last events.
 WORKER_TEARDOWN_GRACE_SECS="${WORKER_TEARDOWN_GRACE_SECS:-10}"
 
-# Turn-complete marker (CCT-513): cctui-daemon writes
+# Turn-complete marker: cctui-daemon writes
 # ~worker/.claude/jobs/<short>/dispatch_done once the session it dispatched at
 # boot has been busy at least once and then settled idle (default 60s,
 # CCTUI_DISPATCH_DONE_SETTLE_SECS). Catches the "finished its turn but stays
@@ -1302,7 +1302,7 @@ guard_exited() {
     [ "$_step" = "-1" ]
 }
 
-# The session wrote a valid result JSON, ignoring the guard gate (CCT-525).
+# The session wrote a valid result JSON, ignoring the guard gate.
 result_valid() {
     [ -s "$RESULT_FILE" ] && jq -e . "$RESULT_FILE" >/dev/null 2>&1
 }
@@ -1314,21 +1314,16 @@ result_ready() {
 }
 
 # Per-session liveness backstop — sourced from the cctui-daemon's own
-# registration, NOT a grep of claude's private jobs dir (CCT-521). The old
-# backstop keyed on ~/.claude/jobs/<short>/state.json, i.e. claude's INTERNAL
-# job id. Claude rotates that id on resume/clear (CCT-160) and never writes it
-# at the guessed path for cold-dispatched worker sessions, so _SEEN_ALIVE stayed
-# 0 and the 120s boot bound below guillotined fully-alive reviews mid-work (live
-# incident: PR #5679/#5776 — killed at exactly 120s while streaming to the API
-# and mid guard Step 2). The daemon is the source of truth: it launches claude
-# with `--session-id $SESSION_ID` (control.rs, CCT-446) and registers THAT stable
+# registration, NOT a grep of claude's private jobs dir: claude's internal job
+# id rotates on resume/clear and isn't reliably discoverable for
+# cold-dispatched worker sessions. The daemon is the source of truth: it
+# launches claude with `--session-id $SESSION_ID` and registers THAT stable
 # id with the server, immune to claude's id rotation. Ask the server for it.
 #
 # Use the LIST endpoint, not GET /sessions/{id}: the per-object route's
 # Resource(Session) guard is `admin || owner==principal`, and a machine-key
-# principal is NOT the session's resolved owner (machine_uuid -> user_id), so it
-# 403s even for the pod's OWN session (that 403 -> "unknown" is exactly what let
-# the 120s kill survive the first fix). GET /sessions is self-scoped via
+# principal is NOT the session's resolved owner (machine_uuid -> user_id), so
+# it 403s even for the pod's OWN session. GET /sessions is self-scoped via
 # owner_filter(): a machine key sees its OWN machine's sessions — a short list
 # (dispatch pods are single-session) that includes our dispatched id.
 _SESSIONS_URL="${CCTUI_BASE_URL%/}/api/v1/sessions"
@@ -1344,7 +1339,7 @@ WORKER_LIVENESS_STALE_SECS="${WORKER_LIVENESS_STALE_SECS:-1800}"
 # Mirrors the server's STATUS_WINDOW_SECS; only used to attribute an `inactive`
 # to deregistration rather than to heartbeat staleness.
 WORKER_SERVER_STATUS_WINDOW_SECS="${WORKER_SERVER_STATUS_WINDOW_SECS:-300}"
-# Codex dispatch (CCT-643) runs headless `codex exec` inside the daemon and never
+# Codex dispatch runs headless `codex exec` inside the daemon and never
 # registers a server session, so the registration-sourced liveness probe and its
 # boot deadline can never fire for it. Its done-signal is RESULT_FILE and its
 # backstop is daemon death (`kill -0 $DAEMON_PID`); pre-seed seen-alive so the
@@ -1367,7 +1362,7 @@ _QUIET_LOGGED=""
 #                window: alive but mid-blocking-call. Keep waiting.
 #   unknown    — transient curl/non-200, or our id not (yet) in the roster;
 #                never read as death.
-# `-4` mirrors the callback curl (the worker forces IPv4 egress; CCT-468).
+# `-4` mirrors the callback curl (the worker forces IPv4 egress).
 probe_session() {
     _code=$(curl -4 -sS -o "$_PROBE_BODY" -w '%{http_code}' --max-time 5 \
         -H "Authorization: Bearer $CCTUI_MACHINE_KEY" "$_SESSIONS_URL" 2>/dev/null) \
@@ -1440,10 +1435,10 @@ await_dispatch_done() {
             return 0
         fi
         if dispatch_done_marker; then
-            log "wait: daemon wrote dispatch_done marker (turn complete, CCT-513)"
+            log "wait: daemon wrote dispatch_done marker (turn complete)"
             return 0
         fi
-        # CCT-525 fallback: intentionally uses result_valid (no guard gate), so it
+        # Fallback: intentionally uses result_valid (no guard gate), so it
         # also fires under GUARD_ON where result_ready cannot; guard_exited above
         # stays the immediate fast path.
         if result_valid; then
@@ -1482,7 +1477,7 @@ await_dispatch_done() {
                     ;;
             esac
         fi
-        # Fail-closed boot bound (CCT-520/521): the daemon is still up but never
+        # Fail-closed boot bound: the daemon is still up but never
         # registered the dispatched session within the boot window — a wedged
         # `claude daemon run` (crash-loop / network deny). Surface a fast failure
         # instead of blocking to the 24h deadline. Once the session has been seen
@@ -1501,7 +1496,7 @@ await_dispatch_done() {
 }
 
 if [ -n "${SESSION_ID:-}" ] && [ -n "${TASK_PAYLOAD_JSON:-}" ]; then
-    log "dispatched worker -> background cctui-daemon + dual-signal wait (CCT-483)"
+    log "dispatched worker -> background cctui-daemon + dual-signal wait"
     run_supervised_daemon "$@" &
     DAEMON_PID=$!
     await_dispatch_done

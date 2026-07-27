@@ -16,7 +16,7 @@ import type { AskQuestion, Line } from './types';
 // We deliberately ignore the stored `meta` bit (Claude's `isMeta`): cctui
 // delivers a human's composer reply through Claude's control-socket `reply` op,
 // which Claude records `isMeta:true`, so trusting it reclassified genuine human
-// turns to `system` and made them appear to vanish on reload (CCT-413). Keep
+// turns to `system` and made them appear to vanish on reload. Keep
 // this list in sync with `META_MARKERS` in the daemon's transcript parser.
 export const META_TAGS = [
 	'<task-notification',
@@ -55,7 +55,7 @@ export function parseAsk(input: unknown): AskQuestion[] | null {
 	return out.length ? out : null;
 }
 
-// Pull the plan markdown out of an ExitPlanMode tool input (CCT-347). The
+// Pull the plan markdown out of an ExitPlanMode tool input. The
 // peer of `parseAsk` — used to render a historic plan tool_call as a Plan card.
 export function parsePlan(input: unknown): string | null {
 	const plan = (input as { plan?: unknown })?.plan;
@@ -85,15 +85,14 @@ export function eventSig(e: AgentEvent): string {
 	}
 }
 
-// Order the merged history+live event list causally (CCT-481). `seq` is the
-// server's monotonic per-session insert sequence (`stream_events.id`), stamped
-// on both the reload payload and the live broadcast, so it reflects true causal
-// order even when receive-time `ts` ties or inverts — a late-flushed
-// AskUserQuestion card+preamble carry a `ts` at/after the user's answer but a
-// LOWER `seq`, so ordering by `seq` renders the ask before its answer without
-// the CCT-338 structural re-anchor. Falls back to `ts` when either event lacks
-// a `seq` (payloads persisted before CCT-481). Uses a stable sort so equal keys
-// keep history-before-live order (CCT-186).
+// Order the merged history+live event list causally. `seq` is the server's
+// monotonic per-session insert sequence (`stream_events.id`), stamped on both
+// the reload payload and the live broadcast, so it reflects true causal order
+// even when receive-time `ts` ties or inverts — a late-flushed AskUserQuestion
+// card+preamble carry a `ts` at/after the user's answer but a LOWER `seq`, so
+// ordering by `seq` renders the ask before its answer. Falls back to `ts`
+// when either event lacks a `seq`. Uses a stable sort so equal keys keep
+// history-before-live order.
 export function orderEvents(events: AgentEvent[]): AgentEvent[] {
 	return [...events].sort((a, b) => {
 		const as = a.seq;
@@ -105,27 +104,11 @@ export function orderEvents(events: AgentEvent[]): AgentEvent[] {
 	});
 }
 
-// NOTE: `orderAskTurns` (the CCT-338 causal re-anchor) was REMOVED in CCT-475.
-//
-// It lifted an assistant preamble + AskUserQuestion card above the user line
-// directly preceding it, purely structurally, to undo Claude's late flush of the
-// ask block (the tool_use + preamble flush only AFTER the turn advances, so on
-// refetch/reload they sort by receive-time `ts` BELOW the user's answer).
-//
-// The drawer now renders strictly in `ts` order. AgentEvent carries only `ts`
-// (no causal/sequence field), so the lift could not distinguish a genuine
-// late-flushed ask inversion from a normal prior-turn user line — and pushed
-// later-ts assistant messages above earlier-ts user messages, breaking
-// chronological order for every conversation containing an ask (CCT-475). The
-// proper fix (a causal/sequence field on AgentEvent, then order by
-// causal-group+seq so reloaded historical asks keep their narrative order
-// WITHOUT corrupting global chronology) is tracked in CCT-481.
-
-// Stamp each assistant line with its 1-based conversation turn (CCT-552). A
+// Stamp each assistant line with its 1-based conversation turn. A
 // turn opens on each user/system prompt to the agent; every assistant line up
 // to the next prompt shares it. A `/clear` reset (role 'reset') restarts the
 // counter; a `/compact` summary does not. Derived from role transitions, not
-// raw index, so out-of-`ts` reloads (CCT-475) stay correct. Mutates in place.
+// raw index, so out-of-`ts` reloads stay correct. Mutates in place.
 export function stampTurns(lines: Line[]): Line[] {
 	let turn = 0;
 	for (const ln of lines) {
@@ -173,10 +156,9 @@ export function formatToolInput(
 			.join('\n');
 		return { text: `${obj.file_path ?? ''}\n${minus}\n${plus}`.trim(), lang: '' };
 	}
-	// Shell-ish tools (Bash, BashOutput, …): render the command itself as a shell
-	// block with the description as a leading comment, instead of a one-line JSON
-	// blob full of literal "\n" escapes — those escapes were the "weird artifacts"
-	// / un-prettified commands (CCT-161 cleanup).
+	// Shell-ish tools (Bash, BashOutput, …): render the command itself as a
+	// shell block with the description as a leading comment, instead of a
+	// one-line JSON blob full of literal "\n" escapes.
 	if (opts.prettyJson && obj && typeof obj === 'object' && typeof obj.command === 'string') {
 		const desc =
 			typeof obj.description === 'string' && obj.description.trim()
@@ -191,7 +173,7 @@ export function formatToolInput(
 	return { text: expandJsonEscapes(prettyJson(input)), lang: 'json' };
 }
 
-// Render a single message line as Markdown (CCT-297 #17). Assistant/user/system
+// Render a single message line as Markdown. Assistant/user/system
 // content is already a Markdown source string, so it copies verbatim; tool/result
 // code is wrapped in a fenced block (with the tool's language when known).
 export function lineMarkdown(ln: Line): string {

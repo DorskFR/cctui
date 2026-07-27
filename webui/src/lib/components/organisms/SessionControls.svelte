@@ -10,7 +10,7 @@
 	import DimensionPicker from '../molecules/DimensionPicker.svelte';
 	import type { Dimension } from '../../../routes/sessions/sessions.logic';
 
-	// The sessions list toolbar (CCT-369): title + search + section/label filters +
+	// The sessions list toolbar: title + search + section/label filters +
 	// view picker + multi-select toggle + New. A uniform, self-contained block —
 	// each control is its own molecule so this layer only owns composition and the
 	// responsive bar layout. Two-way state stays owned by the page (persisted to
@@ -57,7 +57,7 @@
 		onDeleteLabel?: (labelId: string) => void | Promise<void>;
 	} = $props();
 
-	// Overflow menu (CCT-650): the toolbar grew too many buttons and squeezed the
+	// Overflow menu: the toolbar grew too many buttons and squeezed the
 	// search bar. A ⋯ flyout collapses the secondary controls. On desktop it holds
 	// the two DimensionPickers (color-by · group-by) so the search bar reclaims
 	// width; on narrow widths a container query also folds the label/view/select
@@ -79,7 +79,7 @@
 <svelte:window onkeydown={onWinKey} onpointerdown={closeMoreFromOutside} />
 
 <!-- Controls that stay inline on desktop but fold into the ⋯ flyout on narrow
-     widths (CCT-650): label filter, view picker, multi-select toggle. Rendered
+     widths: label filter, view picker, multi-select toggle. Rendered
      via a snippet so the inline copy and the flyout copy share one source. -->
 {#snippet listChecks()}
 	<Icon label={m.sessions_select_multiple()} size={18}>
@@ -155,7 +155,7 @@
 		</div>
 	</div>
 	<Button class="toolbar-new" control variant="primary" title={m.sessions_new_session()} aria-label={m.sessions_new_session()} onclick={onNew}>+<span class="new-label"> {m.sessions_new()}</span></Button>
-	<!-- Mobile-only flex row-break (CCT-369): basis:100% forces row 2 (search +
+	<!-- Mobile-only flex row-break: basis:100% forces row 2 (search +
 	     tools) onto a fresh line below title+New. Hidden on desktop where everything
 	     sits on one row. -->
 	<span class="row-break break-tools" aria-hidden="true"></span>
@@ -164,7 +164,7 @@
 <style>
 	.bar {
 		/* Sticky under the fixed app header so the controls stay reachable on long
-		   lists without scrolling back up (CCT-241). */
+		   lists without scrolling back up. */
 		position: sticky;
 		top: calc(var(--header-h) + var(--safe-top));
 		z-index: 6;
@@ -179,7 +179,7 @@
 		flex-wrap: wrap;
 		background: var(--bg);
 		/* Fold the secondary controls based on the bar's own width, not the viewport
-		   (CCT-650), mirroring DrawerHeader. The bar is already position:sticky, so
+		  , mirroring DrawerHeader. The bar is already position:sticky, so
 		   it also serves as the positioning context for the absolute flyout. */
 		container: sess-bar / inline-size;
 	}
@@ -265,7 +265,7 @@
 	   own wrapper is the flex item and is sized directly, so the FilterSearchBar
 	   root fills it (block, width:100%) and its below-bar chips stack onto their
 	   own row within the wrapper — opening/typing never moves the input or the
-	   surrounding controls (CCT-589 follow-up). Sized here, not via any library
+	   surrounding controls. Sized here, not via any library
 	   internal class, so a tsumikit internal-class rename can't break it. */
 	.search-box {
 		flex: 1 1 0;
@@ -282,7 +282,7 @@
 	.row-break {
 		display: none;
 	}
-	/* Narrow bar (CCT-369 / CCT-650): two rows — row 1 title + full "+ New", row 2
+	/* Narrow bar: two rows — row 1 title + full "+ New", row 2
 	   the search bar (which shrinks to fill) followed by the tool controls on the
 	   right. `order` sequences the items; the row-break forces the single wrap.
 	   Driven by the SAME container query as the fold above (not a viewport media

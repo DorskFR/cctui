@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# codex-run — one-shot `codex exec` inside a hardened cctui worker pod (CCT-526).
+# codex-run — one-shot `codex exec` inside a hardened cctui worker pod.
 #
 # Model, reasoning effort, approval policy and sandbox mode all come from
 # ~/.codex/config.toml, which the worker entrypoint (phase_codex_config) pins
@@ -48,7 +48,7 @@ case "${1:-}" in
 esac
 
 # Name the launching cctui session in the rollout's `originator`, which the
-# daemon's log tailer reads to nest this run under it (CCT-749). Unnested, a
+# daemon's log tailer reads to nest this run under it. Unnested, a
 # codex run outliving the server's 5m heartbeat window makes the launching
 # session look dead and the worker aborts mid-run.
 if [ -n "${SESSION_ID:-}" ]; then

@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Boot wrapper for the guard-proxy sidecar (CCT-721 — remote GPG signing).
+# Boot wrapper for the guard-proxy sidecar (remote GPG signing).
 #
 # The container command is normally just `cctui-guard-proxy <flags>`. This
 # wrapper runs FIRST, optionally stands up a gpg-agent that holds the signing
