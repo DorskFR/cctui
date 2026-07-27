@@ -11,11 +11,6 @@
   Account plumb-through (CCT-674): we fetch the caller's ghreview accounts and
   pass one into <Review account=…/> so getAccount() is non-null and the repo
   picker (`GET /v1/github/repos?account=…`) works.
-
-  TODO(CCT-*): the old GithubView hosted the "Review with agent" SpawnModal entry
-  (reviewWithAgent → resolveReviewPrompt → SpawnModal). SpawnModal itself is kept
-  (used by /sessions); a later ticket re-integrates the PR review-with-agent entry
-  point into this review UI.
 -->
 <script lang="ts">
 	import { ghreviewUrl } from '$lib/config';

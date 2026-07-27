@@ -1,6 +1,6 @@
 import { createQuery, useQueryClient } from "@tanstack/svelte-query";
 import { toStore } from "svelte/store";
-import { api, ApiError } from "./api";
+import { api } from "./api";
 import type { SessionListResponse } from "@bindings/SessionListResponse";
 import type { SessionStats } from "@bindings/SessionStats";
 import type { TokenUsageWindows } from "@bindings/TokenUsageWindows";
@@ -31,7 +31,6 @@ import type { CodexModelCatalog } from "@bindings/CodexModelCatalog";
 import type { ConnectorInfo } from "@bindings/ConnectorInfo";
 import type { CreateConnector } from "@bindings/CreateConnector";
 import type { UpdateConnector } from "@bindings/UpdateConnector";
-import type { Prompt } from "@bindings/Prompt";
 import type { Label } from "@bindings/Label";
 import type { LabelListResponse } from "@bindings/LabelListResponse";
 import type { SettingsCatalogResponse } from "@bindings/SettingsCatalogResponse";
@@ -579,23 +578,6 @@ export const endpoints = {
    *  `last_polled_at`/`last_error` reflect this attempt. */
   syncGithubConnector: (id: string) =>
     api.post<ConnectorInfo>(`/github/connectors/${id}/sync`, {}),
-  /** Resolve the effective repo-scoped prompt of `kind` (default `review`) for
-   *  `owner/repo`, richelieu-style most-specific-wins (CCT-390): a prompt scoped
-   *  to `owner/repo` beats one scoped to the whole owner, which beats a global
-   *  one. Returns `null` when no candidate matches (404) so the caller can seed
-   *  an empty prompt rather than treating it as an error. */
-  resolveReviewPrompt: async (
-    owner: string,
-    repo: string,
-    kind = "review",
-  ): Promise<Prompt | null> => {
-    try {
-      return await api.get<Prompt>("/prompts/resolve", { owner, repo, kind });
-    } catch (e) {
-      if (e instanceof ApiError && e.status === 404) return null;
-      throw e;
-    }
-  },
   /** Every spawnable machine across all active users — for the spawn picker.
    * Excludes server-managed machines (`ephemeral` worker pods and the per-user
    * `dispatch` machine): those aren't somewhere you'd start an interactive
