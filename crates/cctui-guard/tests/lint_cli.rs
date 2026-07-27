@@ -100,6 +100,55 @@ fn explain_dumps_resolved_policy_to_stdout() {
 }
 
 #[test]
+fn unreadable_rules_import_is_error() {
+    let run = lint(
+        "\
+[rules]: ./definitely-missing-pack.md
+
+# Step 1
+[transition]: Exit
+",
+        &[],
+    );
+    assert_eq!(run.code, 1, "stdout: {} stderr: {}", run.stdout, run.stderr);
+    assert!(run.stderr.contains("definitely-missing-pack.md"), "stderr: {}", run.stderr);
+    assert!(run.stderr.contains("unreadable"), "stderr: {}", run.stderr);
+}
+
+#[test]
+fn inline_and_imported_sets_report_provenance_in_explain() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("net-common.md"), "[net-shared]: shared.example:443\n").unwrap();
+    let prompt_path = dir.path().join("task.md");
+    std::fs::write(
+        &prompt_path,
+        "\
+[rules]: ./net-common.md
+[net-yt]: yt.example.com:443
+
+# Step 1
+[allowed]: *
+[network]: net-yt, net-shared
+[transition]: Exit
+",
+    )
+    .unwrap();
+    let rules = write(RULES);
+    let out = Command::new(env!("CARGO_BIN_EXE_cctui-guard"))
+        .arg("lint")
+        .arg(&prompt_path)
+        .arg("--rules")
+        .arg(rules.path())
+        .arg("--explain")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code().unwrap(), 0, "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("net-yt: inline"), "stdout: {stdout}");
+    assert!(stdout.contains("net-shared: [rules] ./net-common.md"), "stdout: {stdout}");
+}
+
+#[test]
 fn check_flag_refuses_to_start_on_errors() {
     let rules = write(RULES);
     let prompt = write(

@@ -14,7 +14,10 @@ use std::collections::BTreeMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::parser::{JudgeQuestion, ParseError, Step, parse_steps, parse_transitions};
+use crate::parser::{
+    JudgeQuestion, ParseError, Step, parse_prompt_sets, parse_rules_imports, parse_steps,
+    parse_transitions,
+};
 
 /// The IR schema version. Authored as a `[guard]: v1` header line (or the
 /// `version` field of a `workflow.json`); missing ⇒ [`Version::V1`].
@@ -209,6 +212,17 @@ impl WorkflowStep {
     }
 }
 
+/// A tool-set / network-set definition authored inline in the prompt.
+/// `extend` distinguishes `[name]+:` (append) from `[name]:` (replace).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+pub struct SetDefinition {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub members: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub extend: bool,
+}
+
 /// The canonical compiled workflow: a version tag plus the ordered steps.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Workflow {
@@ -219,6 +233,13 @@ pub struct Workflow {
     /// Absent ⇒ deny.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network_default: Option<NetworkDefault>,
+    /// `[rules]: <path>` imports of shared guard-rules files, in authored order,
+    /// resolved relative to the prompt file.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<String>,
+    /// Tool/network sets defined inline in the prompt (highest precedence).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sets: Vec<SetDefinition>,
     /// The workflow steps, ordered by step number.
     pub steps: Vec<WorkflowStep>,
 }
@@ -233,8 +254,13 @@ impl Workflow {
         let steps = parse_steps(markdown)?;
         let version = parse_version_header(markdown)?;
         let network_default = parse_network_default_header(markdown)?;
+        let rules = parse_rules_imports(markdown);
+        let sets = parse_prompt_sets(markdown)
+            .into_iter()
+            .map(|(name, members, extend)| SetDefinition { name, members, extend })
+            .collect();
         let steps = steps.iter().map(|(id, step)| WorkflowStep::from_step(*id, step)).collect();
-        Ok(Self { version, network_default, steps })
+        Ok(Self { version, network_default, rules, sets, steps })
     }
 
     /// Load the IR from a machine-authored `workflow.json` document.

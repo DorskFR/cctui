@@ -852,6 +852,132 @@ fn parse_set_definition(line: &str) -> Option<(String, Vec<String>, bool)> {
     Some((name.to_string(), members, extend))
 }
 
+/// Document-level header names that are directives, not tool-set definitions,
+/// and so are excluded when reading inline sets from a prompt.
+const RESERVED_HEADERS: &[&str] = &["guard", "network-default", "rules"];
+
+/// Every set definition in a guard-rules document, in authored order, as
+/// `(name, members, extend)`. The ordered form the layered set resolver applies
+/// (last writer wins) while tracking provenance.
+#[must_use]
+pub fn rules_definitions(text: &str) -> Vec<(String, Vec<String>, bool)> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let stripped = line.trim();
+        if stripped.is_empty() || stripped.starts_with('#') {
+            continue;
+        }
+        if let Some(def) = parse_set_definition(stripped) {
+            out.push(def);
+        }
+    }
+    out
+}
+
+/// Inline tool-set / network-set definitions authored in the prompt itself.
+///
+/// Read from the document prelude (above the first heading, alongside `[guard]`
+/// / `[network-default]`); reserved directive headers are skipped.
+#[must_use]
+pub fn parse_prompt_sets(markdown: &str) -> Vec<(String, Vec<String>, bool)> {
+    let mut out = Vec::new();
+    for line in markdown.lines() {
+        let stripped = line.trim();
+        if stripped.starts_with('#') {
+            break;
+        }
+        if let Some((name, members, extend)) = parse_set_definition(stripped)
+            && !RESERVED_HEADERS.contains(&name.as_str())
+        {
+            out.push((name, members, extend));
+        }
+    }
+    out
+}
+
+/// The `[rules]: <path>` import directives in the prompt prelude, in order.
+/// Each path is resolved relative to the prompt file by the set resolver.
+#[must_use]
+pub fn parse_rules_imports(markdown: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in markdown.lines() {
+        let stripped = line.trim();
+        if stripped.starts_with('#') {
+            break;
+        }
+        if stripped.to_ascii_lowercase().starts_with("[rules]")
+            && let Some((_, value)) = stripped.split_once(':')
+        {
+            let path = value.trim();
+            if !path.is_empty() {
+                out.push(path.to_string());
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod prompt_sets_tests {
+    use super::*;
+
+    #[test]
+    fn inline_sets_parse_and_skip_reserved_headers() {
+        let md = "\
+[guard]: v1
+[network-default]: deny
+[rules]: ./net-common.md
+[net-yt]: yt.example.com:443
+[code-read]+: Read, Grep
+
+# Step 1
+[allowed]: code-read
+[transition]: Exit
+";
+        let sets = parse_prompt_sets(md);
+        assert_eq!(
+            sets,
+            vec![
+                ("net-yt".to_string(), vec!["yt.example.com:443".to_string()], false),
+                ("code-read".to_string(), vec!["Read".to_string(), "Grep".to_string()], true),
+            ]
+        );
+    }
+
+    #[test]
+    fn only_prelude_sets_are_read_not_step_bodies() {
+        let md = "\
+[net-a]: a.example:443
+
+# Step 1
+[net-b]: b.example:443
+[transition]: Exit
+";
+        let sets = parse_prompt_sets(md);
+        assert_eq!(sets.len(), 1);
+        assert_eq!(sets[0].0, "net-a");
+    }
+
+    #[test]
+    fn rules_imports_collected_in_order() {
+        let md = "\
+[rules]: ./base.md
+[rules]: ./team.md
+
+# Step 1
+[transition]: Exit
+";
+        assert_eq!(parse_rules_imports(md), vec!["./base.md".to_string(), "./team.md".to_string()]);
+    }
+
+    #[test]
+    fn no_prelude_directives_when_first_line_is_a_heading() {
+        let md = "# Step 1\n[net-a]: a.example:443\n[transition]: Exit\n";
+        assert!(parse_prompt_sets(md).is_empty());
+        assert!(parse_rules_imports(md).is_empty());
+    }
+}
+
 #[cfg(test)]
 mod guard_block_tests {
     use super::*;

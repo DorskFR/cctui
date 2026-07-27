@@ -198,7 +198,9 @@ Markdown is the authoring frontend; both frontends **compile** into one canonica
 typed model, the IR, defined by the serde structs in `src/ir.rs`:
 
 ```
-Workflow { version, steps: [WorkflowStep] }
+Workflow { version, network_default?, rules: [path], sets: [SetDefinition],
+           steps: [WorkflowStep] }
+SetDefinition { name, members: [..], extend }
 WorkflowStep { id, title, body, allowed, disallowed, network,
                transition, gate?, compact, judge[], max_visits? }
 ```
@@ -270,6 +272,35 @@ sets and are expanded recursively (circular references are broken safely).
 > keywords match Bash commands by substring, so read-only steps that omit `Bash`
 > only permit Bash commands that match a specific keyword. Add `Bash` explicitly
 > to `[allowed]` when a step needs arbitrary shell (e.g. `npm test`, `tsc`).
+
+### Inline sets + `[rules]` imports (prompt owns its control surface)
+
+A set need not live in a shared `--rules` file: it can be **defined in the prompt
+itself**, in the document prelude (above the first heading, alongside `[guard]` /
+`[network-default]`), using the same `[name]: a, b` / `[name]+: a, b` syntax. A
+prompt can also **import** shared rules files explicitly with a `[rules]: <path>`
+directive (repeatable), resolved relative to the prompt file — the dependency is
+visible in the file instead of injected out-of-band by `--rules`.
+
+```markdown
+[rules]: ./net-common.md
+[net-yt]: yt.example.com:443
+[code-read]+: mcp__yt
+
+# Step 1: Triage
+[allowed]: code-read
+[network]: net-yt, net-callback
+[transition]: Exit
+```
+
+Sets are layered lowest-to-highest precedence: `--rules-base` < `--rules` <
+each `[rules]` import in authored order < inline prompt definitions. A later
+layer's `[name]:` replaces a set and `[name]+:` extends it, so the prompt author's
+inline definitions always win — the prompt is a self-contained artifact to
+review, hash, and edit. `--rules` is retained for backward compatibility. An
+unreadable `[rules]` import is a lint error and refuses startup (fail closed);
+`lint --explain` prints each set's effective source (`inline`, `[rules] <path>`,
+`--rules`, `--rules-base`).
 
 ## Proxy policy output
 

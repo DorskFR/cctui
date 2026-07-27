@@ -49,6 +49,25 @@
         }
       ]
     },
+    "SetDefinition": {
+      "description": "A tool-set / network-set definition authored inline in the prompt.\n`extend` distinguishes `[name]+:` (append) from `[name]:` (replace).",
+      "properties": {
+        "extend": {
+          "type": "boolean"
+        },
+        "members": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": ["name"],
+      "type": "object"
+    },
     "Transition": {
       "description": "A typed `[transition]`: the valid next step numbers and whether `Exit` is an\nauthored target (Exit is always allowed regardless, per the engine).",
       "properties": {
@@ -158,6 +177,20 @@
         }
       ],
       "description": "Document-level egress default for guarded steps without `[network]`.\nAbsent ⇒ deny."
+    },
+    "rules": {
+      "description": "`[rules]: <path>` imports of shared guard-rules files, in authored order,\nresolved relative to the prompt file.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "sets": {
+      "description": "Tool/network sets defined inline in the prompt (highest precedence).",
+      "items": {
+        "$ref": "#/$defs/SetDefinition"
+      },
+      "type": "array"
     },
     "steps": {
       "description": "The workflow steps, ordered by step number.",
