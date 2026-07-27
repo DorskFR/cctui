@@ -56,7 +56,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: cargo test -p cctui-github (--ignored, requires TEST_DATABASE_URL)
-        run: cargo test -p cctui-github --locked -- --ignored
+        # --test-threads=1: tests share one DB schema, racing under parallel threads.
+        run: cargo test -p cctui-github --locked -- --ignored --test-threads=1
 
   webui:
     name: webui
