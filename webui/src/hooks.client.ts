@@ -1,9 +1,8 @@
 // App-wide error surfacing. Any uncaught error — a synchronous throw, an
 // unhandled promise rejection, or an error SvelteKit catches while
 // navigating/rendering — becomes an error toast, so a failure never blanks a
-// view silently (the diff viewer used to do exactly that). The browser console
-// still gets the full error + stack for debugging; the toast stays terse and
-// carries no internals.
+// view silently. The browser console still gets the full error + stack for
+// debugging; the toast stays terse and carries no internals.
 import type { HandleClientError } from '@sveltejs/kit';
 import { toasts } from '$lib/toast.svelte';
 import { m } from '$lib/paraglide/messages';

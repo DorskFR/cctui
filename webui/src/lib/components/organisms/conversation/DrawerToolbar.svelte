@@ -1,8 +1,8 @@
 <script lang="ts">
-	// Conversation toolbar (CCT-250 item 2 / CCT-311), extracted from
-	// ConversationDrawer. Three visually-separated control groups — message-type
-	// tag filter, formatting toggles, behavior (auto-approve) toggle — that on
-	// mobile collapse behind three text-button tabs opening popovers.
+	// Conversation toolbar: three visually-separated control groups —
+	// message-type tag filter, formatting toggles, behavior (auto-approve)
+	// toggle — that on mobile collapse behind three text-button tabs opening
+	// popovers.
 	import { MSG_TYPES, type MsgType, type ViewOpts } from './types';
 	import { Toggle } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
@@ -33,9 +33,9 @@
 		autoApprove: boolean;
 		mobilePanel: 'filters' | 'format' | 'auto' | null;
 		ontoggleAuto: () => void;
-		/** Opens the session diagnose panel (CCT-547); omit to hide the button. */
+		/** Opens the session diagnose panel; omit to hide the button. */
 		ondiagnose?: () => void;
-		/** Toggles the read-only live terminal (CCT-545); omit to hide (codex). */
+		/** Toggles the read-only live terminal; omit to hide (codex). */
 		onterminal?: () => void;
 		terminalOpen?: boolean;
 	} = $props();
@@ -63,7 +63,7 @@
 </script>
 
 <div class="toolbar" class:panel-active={mobilePanel !== null}>
-	<!-- Mobile (CCT-311): collapse the three control groups into a single row
+	<!-- Mobile: collapse the three control groups into a single row
 	     of text buttons that each open a popover. Hidden on desktop, where the
 	     groups render inline below. -->
 	<div class="mobile-tabs" role="group" aria-label={m.conversation_chat_controls_aria()}>
@@ -89,7 +89,7 @@
 	</div>
 	<!-- Message-type filters: click a tag to cycle off → include → exclude.
 	     Active (include) tags wear their message-badge color; excluded tags
-	     show a strike. (CCT-250 item 2) -->
+	     show a strike. -->
 	<div class="tagbar row row-wrap" class:panel-open={mobilePanel === 'filters'} role="group" aria-label={m.conversation_msg_filter_aria()}>
 		{#each MSG_TYPES as t (t.id)}
 			<Toggle
@@ -137,7 +137,7 @@
 </div>
 
 <style>
-	/* Toolbar (CCT-250 item 2): three visually-separated groups — message-type
+	/* Toolbar: three visually-separated groups — message-type
 	   tag filter, formatting toggles, behavior toggle — divided by thin rules. */
 	.toolbar {
 		display: flex;
@@ -148,7 +148,7 @@
 		border-bottom: 1px solid var(--border);
 		overflow-x: auto;
 		font-size: var(--fs-xs);
-		/* This bar hosts a UI-scale slider (CCT-265), and the app scales by
+		/* This bar hosts a UI-scale slider, and the app scales by
 		   changing the ROOT font-size — so every rem here (button font-size +
 		   horizontal padding) grew while dragging, widening the buttons left of
 		   the slider and shoving the slider out from under the cursor → the same
@@ -176,7 +176,7 @@
 	   <Toggle> chips now; their base/on-state styling lives in Toggle.svelte.
 	   Per-use tint (role color / warm auto-approve) is set via --toggle-accent
 	   inline. Only the mobile tabs need a layout override (full-width, larger). */
-	/* Mobile-tab triggers (CCT-311): hidden on desktop where the groups inline. */
+	/* Mobile-tab triggers: hidden on desktop where the groups inline. */
 	.mobile-tabs {
 		display: none;
 	}

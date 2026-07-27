@@ -10,7 +10,7 @@ export async function copyLineMarkdown(ln: Line) {
 	await copyText(lineMarkdown(ln), m.conversation_copied_markdown());
 }
 
-// Save a single message as a PNG (CCT-297 #18), rendered with the current theme.
+// Save a single message as a PNG, rendered with the current theme.
 // We snapshot the live `.line` node (so theme colors come for free), filtering
 // out the hover action buttons, and bake the page background in so transparent
 // bubbles read correctly. html-to-image is loaded on demand to keep it out of
@@ -42,7 +42,7 @@ export async function saveLineImage(e: MouseEvent, ln: Line) {
 			const rect = node.getBoundingClientRect();
 			// The capture adds a uniform PADDING with box-sizing:border-box, which
 			// shrinks the content box by 2×pad — so the content (laid out at its full
-			// width) was clipped on the right by ~pad (CCT-345). Add the padding to the
+			// width) was clipped on the right by ~pad. Add the padding to the
 			// requested dimensions so the content keeps its full width and the padding
 			// sits OUTSIDE it.
 			const pad = 16;

@@ -2,7 +2,7 @@
 // extracted from ConversationDrawer.svelte (no behavior change).
 import type { TokenUsage as TokenUsageT } from '@bindings/TokenUsage';
 
-// ── Message-type tag filter (CCT-250 item 2) ──────────────────────────────
+// ── Message-type tag filter ──────────────────────────────
 // Each message type is a clickable badge with include/exclude semantics:
 //   'off'      → neutral (shown unless something else is set to 'include')
 //   'include'  → if ANY tag is 'include', only included types render
@@ -19,7 +19,7 @@ export const MSG_TYPES: { id: MsgType; label: string; role: string }[] = [
 ];
 
 export interface ViewOpts {
-	// Per-type tag filter state (CCT-250 item 2).
+	// Per-type tag filter state.
 	typeFilter: Record<MsgType, TagState>;
 	// Formatting toggles (kept as toggles, visually grouped).
 	prettyJson: boolean;
@@ -45,25 +45,25 @@ export interface Line {
 	htmlCode?: string;
 	text?: string;
 	// Code language for tool input (sh/json/diff/…), used to fence the
-	// copy-as-Markdown output (CCT-297 #17).
+	// copy-as-Markdown output.
 	lang?: string;
 	tool?: string;
 	// Tool calls under the mcp__ prefix get the distinct MCP role hue.
 	mcp?: boolean;
 	pending?: boolean;
 	// Set on a pending user line that auto-retry is currently re-attempting
-	// (CCT-214): shows a "retrying (n/m)" hint instead of plain "sending…".
+	//: shows a "retrying (n/m)" hint instead of plain "sending…".
 	retrying?: { attempt: number; max: number };
-	// Set on a user line whose send failed (CCT-212): the error reason, shown
+	// Set on a user line whose send failed: the error reason, shown
 	// red with a Retry control.
 	failed?: string;
-	// Parsed AskUserQuestion payload (CCT-146) — rendered as interactive cards.
+	// Parsed AskUserQuestion payload — rendered as interactive cards.
 	ask?: AskQuestion[];
-	// Parsed ExitPlanMode plan markdown (CCT-347) — rendered as a Plan card.
+	// Parsed ExitPlanMode plan markdown — rendered as a Plan card.
 	plan?: string;
 	durationMs?: number;
 	key?: string;
-	// 1-based conversation turn (CCT-552); stamped only on assistant lines.
+	// 1-based conversation turn; stamped only on assistant lines.
 	turn?: number;
 	messageId?: string;
 	usage?: TokenUsageT;

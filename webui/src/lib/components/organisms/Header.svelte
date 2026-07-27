@@ -12,7 +12,7 @@
 
 	const version = useVersion();
 
-	// Global "needs input" watcher (CCT-170). Header is always mounted inside
+	// Global "needs input" watcher. Header is always mounted inside
 	// the query provider, so it's the natural home for the cross-route watcher.
 	const qc = useQueryClient();
 	const sessions = useSessions(() => false);
@@ -70,7 +70,7 @@
 		{/if}
 		<!-- Plain ghost button: the on-state accent tint comes from `pressed`
 		     (aria-pressed → accent glyph), NOT a `tone` border — a tinted border
-		     read blurry/strange against the header's backdrop blur (CCT-349). -->
+		     read blurry/strange against the header's backdrop blur. -->
 		<IconButton
 			emoji={notify.enabled ? '🔔' : '🔕'}
 			size={12}
@@ -83,7 +83,7 @@
 				toasts.push(notify.sound ? m.nav_sound_on() : m.nav_sound_off(), 'info');
 			}}
 		/>
-		<!-- UI font size as 5 discrete levels (CCT-297 #11): a native <select>
+		<!-- UI font size as 5 discrete levels: a native <select>
 		     overlaid on an "A" glyph. Discrete steps avoid the live-reflow
 		     "seizure" the continuous slider caused. -->
 		<SelectButton
@@ -94,8 +94,8 @@
 			options={SCALE_LEVELS.map((l) => ({ value: l.id, label: l.label }))}
 			onchange={(v) => fontScale.set(v)}
 		/>
-		<!-- Theme picker (CCT-250 item 5): pick any palette directly. Grouped into
-		     light/dark sections (TSU-1 / CCT-401) so the long list stays scannable. -->
+		<!-- Theme picker: pick any palette directly. Grouped into
+		     light/dark sections so the long list stays scannable. -->
 		<SelectButton
 			glyph={theme.icon}
 			label={m.nav_theme()}
@@ -134,7 +134,7 @@
 		border-bottom: 1px solid var(--border);
 		padding-top: var(--safe-top);
 
-		/* Detach the toolbar from the global UI scale (CCT-264). The app scales
+		/* Detach the toolbar from the global UI scale. The app scales
 		   by changing the ROOT font-size, so every rem — including the header's
 		   sizing tokens — tracks the slider this header hosts. Dragging it then
 		   reflowed the whole header and slid the slider out from under the

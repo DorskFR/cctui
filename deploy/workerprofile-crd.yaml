@@ -991,7 +991,7 @@ spec:
                 nullable: true
                 type: array
               gpgSigning:
-                description: Requests that the webhook wire a gpg-agent socket into the worker container for remote commit signing (CCT-726). Off by default.
+                description: Requests that the webhook wire a gpg-agent socket into the worker container for remote commit signing. Off by default.
                 type: boolean
               image:
                 description: Image for the worker container.

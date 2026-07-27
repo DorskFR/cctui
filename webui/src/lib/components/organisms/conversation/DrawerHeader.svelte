@@ -1,6 +1,5 @@
 <script lang="ts">
-	// Conversation drawer header (CCT-301 #6/#7 / CCT-303), extracted from
-	// ConversationDrawer. Owns the title + rename, the secondary-action group
+	// Conversation drawer header. Owns the title + rename, the secondary-action group
 	// (font size · rename · copy link · copy markdown · export · fork) which
 	// collapses into a ⋯ flyout on mobile, the interrupt/archive controls, and the
 	// meta row (status badge, in-place codex model editor or the claude "fork to
@@ -44,10 +43,10 @@
 		onarchive,
 		onstoparchive,
 		onTogglePin,
-		// Opens the at-will account switcher from the key glyph (CCT-444 follow-up);
-		// when omitted the badge stays a read-only indicator.
+		// Opens the at-will account switcher from the key glyph; when omitted
+		// the badge stays a read-only indicator.
 		onAccountClick,
-		// Label editing (CCT-360): same picker as the session card — when
+		// Label editing: same picker as the session card — when
 		// `onAttachLabel` is supplied the strip is interactive, else read-only.
 		allLabels = [],
 		onCreateLabel,
@@ -68,7 +67,7 @@
 		oncopymarkdown: () => void;
 		onexport: () => void;
 		onfork: () => void;
-		// Toggle multi-select-to-fork mode (CCT-553); omitted → button hidden
+		// Toggle multi-select-to-fork mode; omitted → button hidden
 		// (codex sessions have no partial-fork primitive).
 		onforkselect?: () => void;
 		forkSelectActive?: boolean;
@@ -94,16 +93,16 @@
 	let renaming = $state(false);
 	// svelte-ignore state_referenced_locally
 	let newName = $state(session.name ?? '');
-	// Mobile header overflow menu (CCT-301 #7): on narrow screens only Stop +
+	// Mobile header overflow menu: on narrow screens only Stop +
 	// Archive stay inline; the rest collapse into a "⋯" flyout. Kept open while
 	// renaming so the ✓ save button is reachable.
 	let moreOpen = $state(false);
-	// In-place model/effort editor (CCT-303), codex only.
+	// In-place model/effort editor, codex only.
 	let modelEditing = $state(false);
 	let pendingModel = $state('');
 	let pendingEffort = $state('');
 
-	// Machine-scoped codex catalog (CCT-641): fetched only while the editor is
+	// Machine-scoped codex catalog: fetched only while the editor is
 	// open, offers the account's real models + supported efforts, static fallback.
 	const codexCatalog = useCodexModels(() =>
 		isCodexSession && modelEditing ? session.machine_id : ''
@@ -202,10 +201,10 @@
 				{/if}
 			{/if}
 		</div>
-		<!-- UI font size (CCT-301 #6 / CCT-445): the SAME discrete "A" control as
-		     the main window header (CCT-297 #11). It stays a standalone icon button
+		<!-- UI font size: the SAME discrete "A" control as
+		     the main window header. It stays a standalone icon button
 		     at all widths — it does NOT fold into the ⋯ flyout on mobile, sitting
-		     just left of it instead (CCT-445). Both write the single global
+		     just left of it instead. Both write the single global
 		     fontScale. -->
 		<SelectButton
 			class="font-pick"
@@ -216,9 +215,9 @@
 			options={SCALE_LEVELS.map((l) => ({ value: l.id, label: l.label }))}
 			onchange={(v) => fontScale.set(v)}
 		/>
-		<!-- Secondary actions (CCT-301 #7): inline on desktop, collapsed into the
+		<!-- Secondary actions: inline on desktop, collapsed into the
 		     ⋯ flyout on mobile so a long title + many buttons no longer overflow.
-		     A single fork lives at the end of the group (CCT-345). -->
+		     A single fork lives at the end of the group. -->
 		<div class="secondary" class:open={moreOpen || renaming}>
 		{#if renaming}
 			<IconButton class="tapbtn" icon="check"  label={m.common_save()} onclick={doRename} />
@@ -268,7 +267,7 @@
 			onclick={onforkselect ?? onfork}
 		/>
 		</div>
-		<!-- Mobile-only overflow toggle (CCT-301 #7); hidden on desktop. -->
+		<!-- Mobile-only overflow toggle; hidden on desktop. -->
 		<IconButton
 			class="tapbtn more"
 			icon="more"
@@ -358,7 +357,7 @@
 		border-bottom: 1px solid var(--border);
 		background: var(--bg-elevated);
 		/* Collapse the secondary actions based on the DRAWER's own width, not the
-		   viewport (CCT-301 #7): a narrow-but-on-desktop drawer should fold its
+		   viewport: a narrow-but-on-desktop drawer should fold its
 		   buttons into the ⋯ flyout so the title stays visible. The header is the
 		   size container the rules below query against. */
 		container: drawer-head / inline-size;
@@ -374,7 +373,7 @@
 		display: flex;
 		min-width: 0;
 	}
-	/* Secondary actions: inline on desktop, ⋯ flyout on mobile (CCT-301 #7). */
+	/* Secondary actions: inline on desktop, ⋯ flyout on mobile. */
 	.secondary {
 		display: contents;
 	}
@@ -445,7 +444,7 @@
 			font-size: var(--fs-sm);
 			font-weight: var(--fw-medium);
 			/* Let a long label wrap inside the panel instead of clipping at the
-			   viewport edge (CCT-345). */
+			   viewport edge. */
 			white-space: normal;
 			text-align: left;
 			line-height: 1.2;

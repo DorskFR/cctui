@@ -4,7 +4,7 @@
 	import { m } from '$lib/paraglide/messages';
 	import { sessionDebugRows } from '../../../routes/sessions/sessions.logic';
 
-	// Activity dot (CCT-555): the liveness dot carries a rich debug tooltip —
+	// Activity dot: the liveness dot carries a rich debug tooltip —
 	// session id (surfaced nowhere else, click-to-copy) plus account, created,
 	// machine, keepalive, credentials and status. `livenessClass` and `now` are
 	// derived by the caller (SessionCard / DrawerHeader) so the dot color and the

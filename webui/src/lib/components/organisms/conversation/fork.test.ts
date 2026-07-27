@@ -30,7 +30,7 @@ function makeController(overrides: Partial<{ isCodex: boolean; archived: boolean
 	return { ctl, calls, forked };
 }
 
-describe('ForkController extract (CCT-553)', () => {
+describe('ForkController extract', () => {
 	it('openDialog forks the whole history (extract null)', async () => {
 		const { ctl, calls } = makeController();
 		ctl.openDialog();

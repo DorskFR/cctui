@@ -2,10 +2,9 @@ import { browser } from '$app/environment';
 
 const KEY = 'cctui_theme';
 
-// Theme registry — the single list the picker and the store both read. Adding a
-// theme = one entry here + one [data-theme="id"] block in variables.css. The
-// `mode` field groups the theme into the picker's light/dark sections (TSU-1 /
-// CCT-401).
+// Theme registry — the single list the picker and the store both read. Adding
+// a theme = one entry here + one [data-theme="id"] block in variables.css.
+// The `mode` field groups the theme into the picker's light/dark sections.
 export const THEMES = [
 	// ── Light ── bright, paper-white surfaces
 	{ id: 'light', label: 'Light', icon: '☀', themeColor: '#f6f7f9', mode: 'light' },

@@ -2,7 +2,7 @@
 	import { Input, Progress, Text, Timestamp } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 
-	// One usage window (CCT-688): its label + utilization bar + percent + reset +
+	// One usage window: its label + utilization bar + percent + reset +
 	// configured-cap marker, optionally with controls to set/clear the window's
 	// cap% and bypass minutes. The SAME component renders every window both in the
 	// read-only usage view and in the account editor — behaviour keyed off props,
@@ -95,7 +95,7 @@
 		position: relative;
 		margin-top: 0.15rem;
 	}
-	/* Soft-limit cap marker (CCT-411/CCT-688): a thin vertical line at the
+	/* Soft-limit cap marker: a thin vertical line at the
 	   configured % so the ceiling reads against the live fill. */
 	.cap-marker {
 		position: absolute;

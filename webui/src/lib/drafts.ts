@@ -56,7 +56,7 @@ export function clearSessionStorage(sessionId: string) {
 	localStorage.removeItem(historyKey(sessionId));
 }
 
-/** Canonicalize a working-directory path for storage/dedup (CCT-491): strip
+/** Canonicalize a working-directory path for storage/dedup: strip
  * trailing slashes so `folder` and `folder/` collapse to one `folder`, but
  * keep the filesystem root `/` (a bare run of slashes) intact. Leaves the
  * empty string as-is. */
@@ -73,7 +73,7 @@ export const LAST_MACHINE = 'cctui_last_machine';
  * A fresh dialog open proposes it with a bumped numeric suffix. */
 export const LAST_SPAWN_NAME = 'cctui_last_spawn_name';
 
-/** Label ids (comma-joined) last attached from the spawn dialog (CCT-360). A
+/** Label ids (comma-joined) last attached from the spawn dialog. A
  * fresh dialog open defaults its label picker to this set; an empty submit
  * clears it. */
 export const LAST_SPAWN_LABELS = 'cctui_last_spawn_labels';
@@ -89,13 +89,13 @@ export function nextSessionName(last: string): string {
 }
 export const VIEW_OPTS = 'cctui_view_opts';
 export const LIST_DENSITY = 'cctui_list_density';
-// Main session list layout: 'list' (rows, default) or 'card' (responsive grid
-// of detailed cards) — CCT-297 item 16.
+// Main session list layout: 'list' (rows, default) or 'card' (responsive
+// grid of detailed cards).
 export const LIST_VIEW = 'cctui_list_view';
-// Kanban board (CCT-579): '1' when active, overriding the list/card × density picker.
+// Kanban board: '1' when active, overriding the list/card × density picker.
 export const LIST_KANBAN = 'cctui_list_kanban';
-// Which session section is in view (CCT-322): 'starred' | 'live' | 'dispatched'
+// Which session section is in view: 'starred' | 'live' | 'dispatched'
 // | 'archived'. Replaces the old archived on/off checkbox with a 4-way picker.
 export const LIST_SECTION = 'cctui_list_section';
-// Selected label-filter ids (CCT-360), comma-joined. Empty = show all.
+// Selected label-filter ids, comma-joined. Empty = show all.
 export const LIST_LABELS = 'cctui_list_labels';

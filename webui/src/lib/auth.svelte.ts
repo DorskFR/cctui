@@ -2,7 +2,7 @@ import { browser } from '$app/environment';
 import { apiBase } from './config';
 
 /**
- * Auth state backed by an `HttpOnly` cookie (CCT-423). The token is set
+ * Auth state backed by an `HttpOnly` cookie. The token is set
  * server-side by `POST /api/v1/auth/login` and sent automatically by the browser
  * on same-origin requests and the WS upgrade — it is never readable from JS and
  * never stored in `localStorage` or a URL. We therefore can't inspect the token

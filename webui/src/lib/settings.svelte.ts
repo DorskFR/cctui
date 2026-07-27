@@ -10,8 +10,8 @@ import {
 	type SpawnMemoryMap
 } from './spawnMemory';
 
-// Server-persisted, user-scoped app settings (CCT-426, epic CCT-357). The whole
-// preference catalogue lives in a single JSON blob behind GET/PUT
+// Server-persisted, user-scoped app settings. The whole preference catalogue
+// lives in a single JSON blob behind GET/PUT
 // /api/v1/settings, mirrored into localStorage for instant paint + offline
 // fallback. The `settings` singleton is the single source of truth for the
 // webui; the legacy theme/fontScale/notify singletons remain the runtime
@@ -32,7 +32,7 @@ export interface SessionListSettings {
 	density: 'compact' | 'normal';
 	section: string;
 	labelFilter: string[];
-	// Card accent color (CCT-466) and section grouping (CCT-467), sharing one
+	// Card accent color and section grouping, sharing one
 	// dimension enum (`Dimension` in sessions.logic.ts); both default 'none'.
 	colorBy: 'none' | 'label' | 'working_dir' | 'machine';
 	groupBy: 'none' | 'label' | 'working_dir' | 'machine';
@@ -43,14 +43,14 @@ export interface DisplaySettings {
 	fontScale: number;
 	// Cmd/Ctrl+E in an open conversation interrupts any in-flight turn and then
 	// archives the session (Beeper/Slack-style archive chord). Preserved from the
-	// previous localStorage-only Settings (CCT-426).
+	// previous localStorage-only Settings.
 	archiveShortcut: boolean;
 	notifyEnabled: boolean;
 	notifySound: boolean;
 }
 
-// The claude-code execution harness modes (epic CCT-494). Stored top-level in the
-// settings blob as `data.harnessMode` because the server reads it from there
+// The claude-code execution harness modes. Stored top-level in the settings
+// blob as `data.harnessMode` because the server reads it from there
 // (see settings.rs::harness_mode_of) to drive per-machine Reconcile. Codex
 // sessions ignore this. An unknown stored value is clamped to `bg` server-side.
 export type HarnessMode = 'bg' | 'sdk' | 'oneshot';
@@ -63,7 +63,7 @@ export function clampHarnessMode(v: unknown): HarnessMode {
 	return HARNESS_MODES.includes(v as HarnessMode) ? (v as HarnessMode) : DEFAULT_HARNESS_MODE;
 }
 
-// Whip-mode stall-phrase override (CCT-598). Stored top-level as
+// Whip-mode stall-phrase override. Stored top-level as
 // `data.whipStopPhrases` because the server clamps it there and serves it to the
 // whip Stop hook. `extend` appends to the daemon's compiled defaults; `replace`
 // swaps them out. Empty phrases + extend + no guidance is a no-op the server drops.
@@ -82,7 +82,7 @@ export function clampWhipMode(v: unknown): WhipMode {
 	return WHIP_MODES.includes(v as WhipMode) ? (v as WhipMode) : DEFAULT_WHIP_MODE;
 }
 
-// Daemon-side secret redaction (CCT-731). `secretScrubEnabled` toggles live
+// Daemon-side secret redaction. `secretScrubEnabled` toggles live
 // scrubbing; `secretScrubPatterns` are extra user regexes layered on the daemon's
 // compiled defaults. Stored top-level as `data.secretScrubEnabled` /
 // `data.secretScrubPatterns`, which the server clamps (validates each regex,
@@ -96,26 +96,26 @@ export interface SecretScrubPattern {
 export interface SettingsState {
 	sessionList: SessionListSettings;
 	display: DisplaySettings;
-	// Claude harness mode (epic CCT-494). Top-level so it serializes as
-	// `data.harnessMode`, which the server reads to drive each daemon's Reconcile.
+	// Claude harness mode. Top-level so it serializes as `data.harnessMode`,
+	// which the server reads to drive each daemon's Reconcile.
 	harnessMode: HarnessMode;
-	// Whip-mode stall-phrase override (CCT-598). Top-level so it serializes as
+	// Whip-mode stall-phrase override. Top-level so it serializes as
 	// `data.whipStopPhrases`, which the server clamps and feeds to the whip hook.
 	whipStopPhrases: WhipStopPhrases;
-	// Daemon-side secret redaction (CCT-731). Top-level so they serialize as
+	// Daemon-side secret redaction. Top-level so they serialize as
 	// `data.secretScrubEnabled` / `data.secretScrubPatterns`, which the server
 	// clamps and syncs to the daemon via Reconcile.
 	secretScrubEnabled: boolean;
 	secretScrubPatterns: SecretScrubPattern[];
-	// Per-(machine, working-dir) spawn memory (CCT-561): the config last
+	// Per-(machine, working-dir) spawn memory: the config last
 	// submitted from the spawn modal, keyed by machineMemoryKey/dispatchMemoryKey
 	// (spawnMemory.ts), LRU-capped. Replaces the localStorage per-machine prefs
-	// (CCT-274) so the memory follows the user across browsers.
+	// so the memory follows the user across browsers.
 	spawnMemory: SpawnMemoryMap;
-	// Reserved for a future keyboard-shortcuts surface (no UI yet, CCT-426).
+	// Reserved for a future keyboard-shortcuts surface (no UI yet).
 	shortcutsEnabled: boolean;
 	keymap: Record<string, string>;
-	// UI language (CCT-599). Top-level so it serializes as `data.locale`, which
+	// UI language. Top-level so it serializes as `data.locale`, which
 	// the server clamps to en|fr|null. `null` means "auto" — fall back to the
 	// browser's language / the base locale (Paraglide resolves it at runtime).
 	locale: Locale | null;
@@ -151,8 +151,8 @@ const DEFAULTS: SettingsState = {
 // Deep-merge a partial saved blob over DEFAULTS so a value missing from an older
 // payload (a field added in a later release) falls back to its default rather
 // than becoming undefined. One level of nesting covers the catalogue shape.
-// Stale keys in an older blob (e.g. the retired `newSession` launch defaults,
-// CCT-563) are simply not copied over, and get pruned on the next save.
+// Stale keys in an older blob (e.g. a retired setting) are simply not copied
+// over, and get pruned on the next save.
 function mergeDefaults(partial: Partial<SettingsState> | null | undefined): SettingsState {
 	const p = partial ?? {};
 	return {
@@ -171,7 +171,7 @@ function mergeDefaults(partial: Partial<SettingsState> | null | undefined): Sett
 	};
 }
 
-// Coerce a stored whipStopPhrases value into the UI shape (CCT-598): clamp mode,
+// Coerce a stored whipStopPhrases value into the UI shape: clamp mode,
 // keep only string phrases, coerce guidance to a string. The server drops a
 // default block, so an absent value renders as the default.
 function mergeWhipStopPhrases(v: Partial<WhipStopPhrases> | undefined): WhipStopPhrases {
@@ -183,7 +183,7 @@ function mergeWhipStopPhrases(v: Partial<WhipStopPhrases> | undefined): WhipStop
 	};
 }
 
-// Coerce a stored secretScrubPatterns value into the UI shape (CCT-731): keep
+// Coerce a stored secretScrubPatterns value into the UI shape: keep
 // only well-formed `{ name, regex, enabled }` entries with a non-empty regex.
 function mergeSecretScrubPatterns(v: unknown): SecretScrubPattern[] {
 	if (!Array.isArray(v)) return [];
@@ -287,7 +287,7 @@ class Settings {
 		this.persist();
 	}
 
-	// Claude harness mode (epic CCT-494). Persisted top-level so it serializes as
+	// Claude harness mode. Persisted top-level so it serializes as
 	// `data.harnessMode`; the server clamps unknown values on PUT and pushes a
 	// fresh Reconcile to the user's connected daemons within ~1s.
 	setHarnessMode(mode: HarnessMode) {
@@ -299,7 +299,7 @@ class Settings {
 		return clampHarnessMode(this.state.harnessMode);
 	}
 
-	// Whip stall-phrase override (CCT-598). Persisted top-level; the server clamps
+	// Whip stall-phrase override. Persisted top-level; the server clamps
 	// (trim/lowercase/dedupe/cap) and serves it to the whip Stop hook on next spawn.
 	setWhipStopPhrases(patch: Partial<WhipStopPhrases>) {
 		this.state.whipStopPhrases = { ...this.state.whipStopPhrases, ...patch };
@@ -310,7 +310,7 @@ class Settings {
 		return this.state.whipStopPhrases;
 	}
 
-	// Secret redaction (CCT-731). The server validates each regex on PUT and syncs
+	// Secret redaction. The server validates each regex on PUT and syncs
 	// the effective list to the daemon via Reconcile.
 	setSecretScrubEnabled(on: boolean) {
 		this.state.secretScrubEnabled = on;
@@ -330,7 +330,7 @@ class Settings {
 		return this.state.secretScrubPatterns;
 	}
 
-	// Spawn memory (CCT-561): write on spawn submit, recall on machine/cwd (or
+	// Spawn memory: write on spawn submit, recall on machine/cwd (or
 	// dispatcher/repo) change in the spawn modal. Keys come from spawnMemory.ts.
 	rememberSpawn(key: string, entry: Omit<SpawnMemoryEntry, 'at'>) {
 		this.state.spawnMemory = putSpawnMemory(this.state.spawnMemory, key, {
@@ -350,7 +350,7 @@ class Settings {
 		return latestDirFor(this.state.spawnMemory, machineId);
 	}
 
-	// UI language (CCT-599). Drives the Paraglide runtime immediately and persists
+	// UI language. Drives the Paraglide runtime immediately and persists
 	// top-level as `data.locale` (server clamps to en|fr|null). `null` = auto.
 	setLocale(next: Locale | null) {
 		this.state.locale = clampLocale(next);

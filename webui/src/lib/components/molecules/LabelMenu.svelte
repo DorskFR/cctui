@@ -5,7 +5,7 @@
 	import Swatch from '$lib/components/atoms/Swatch.svelte';
 	import { LABEL_HUES, labelTint, storedHue, hueToColor } from '$lib/labels';
 
-	// The shared label MENU PANEL (CCT-360 convergence) — the contents, not a
+	// The shared label MENU PANEL — the contents, not a
 	// trigger or popover shell. Both the per-session picker (LabelBadge) and the
 	// list-wide filter (LabelFilter) kept hand-rolling the same panel: a
 	// filter/search Input on top and a column of label rows beneath. This molecule

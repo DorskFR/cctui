@@ -1,4 +1,4 @@
-// Per-(machine, working-dir) spawn memory (CCT-561): the config last submitted
+// Per-(machine, working-dir) spawn memory: the config last submitted
 // from the spawn modal, keyed by where it ran, so a new session on a known
 // machine+cwd needs zero config clicks. Dispatch spawns get the same treatment
 // keyed by (dispatcher, repo). Pure helpers here; the map itself lives in the

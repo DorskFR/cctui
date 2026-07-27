@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Pod-netns iptables for sidecar egress mode (CCT-716): must run with
+# Pod-netns iptables for sidecar egress mode: must run with
 # CAP_NET_ADMIN in the shared pod network namespace before the worker starts.
 # PROXY_UID must match the uid the guard-proxy sidecar container runs as, or
 # the proxy's own upstream connects would loop back into itself.
@@ -53,7 +53,7 @@ if [ -n "${WORKER_NET_EXEMPT:-}" ]; then
     IFS=$_OLDIFS
 fi
 
-# CCT-720: hard-REJECT the worker uid's egress to the link-local metadata /
+# Hard-REJECT the worker uid's egress to the link-local metadata /
 # credential range (169.254.0.0/16 — cloud IMDS 169.254.169.254, EKS Pod
 # Identity Agent 169.254.170.23), independent of the guard-proxy. RETURN it from
 # nat first (else the REDIRECT below rewrites the dst and filter can't match),

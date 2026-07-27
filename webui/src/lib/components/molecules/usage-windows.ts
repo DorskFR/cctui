@@ -26,7 +26,7 @@ export function windowLabelFromKey(key: string): string {
 
 /** Merge the observed usage windows with the configured soft-limit map. Observed
  *  windows keep server order and come first; configured keys with no matching
- *  window follow as `unobserved` so they stay visible/editable (CCT-688). */
+ *  window follow as `unobserved` so they stay visible/editable. */
 export function mergeUsageWindows(
 	windows: UsageWindow[],
 	softLimits: Record<string, SoftLimitConfig> | null | undefined

@@ -1,8 +1,8 @@
-// Provider-id helpers shared by the accounts surfaces (CCT-560). Pure, no
+// Provider-id helpers shared by the accounts surfaces. Pure, no
 // Svelte state.
 
 /** Display name for an account provider id (anthropic → Claude, openai → Codex,
- *  plus the compatible-endpoint variants — CCT-399). */
+ *  plus the compatible-endpoint variants). */
 export const providerLabel = (p: string) =>
   p === "anthropic"
     ? "Claude"
@@ -14,8 +14,8 @@ export const providerLabel = (p: string) =>
           ? "OpenAI-compatible"
           : p;
 
-/** Provider family (mirrors the server's generated `family` column, CCT-558):
- *  an account may hold at most one provider per family. */
+/** Provider family (mirrors the server's generated `family` column): an
+ *  account may hold at most one provider per family. */
 export const providerFamily = (p: string): "anthropic" | "openai" =>
   p.startsWith("openai") ? "openai" : "anthropic";
 

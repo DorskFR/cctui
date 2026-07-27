@@ -60,7 +60,7 @@ class FontScale {
 	}
 	private apply() {
 		if (!browser) return;
-		// Drive the font-token scale only (CCT-305) — the root font-size stays at
+		// Drive the font-token scale only — the root font-size stays at
 		// its nominal 16px so rem-based chrome (spacing, control heights, header)
 		// is untouched while every --fs-* token grows with the level.
 		document.documentElement.style.setProperty('--fs-scale', String(levelById(this.levelId).value));

@@ -56,7 +56,7 @@
 		onretry: (ts: number) => void;
 		onedit: (text: string, ts: number) => void;
 		onrespondperm: (requestId: string, allow: boolean) => void;
-		// Subset-fork affordances (CCT-553); off for codex/archived sessions.
+		// Subset-fork affordances; off for codex/archived sessions.
 		forkable?: boolean;
 		selectMode?: boolean;
 		selected?: Set<string>;
@@ -65,7 +65,7 @@
 		ontoggleselect?: (messageId: string) => void;
 	} = $props();
 
-	// ── Lazy render of large transcripts (CCT-279 item 1) ───────────────────
+	// ── Lazy render of large transcripts ───────────────────
 	// Mounting an entire long conversation (hundreds of tool calls + results, each
 	// running the markdown/highlight pipeline) blocks the open for seconds. Render
 	// only the most recent `renderLimit` lines initially and expose a "load older"
@@ -85,12 +85,12 @@
 	}
 
 	// Suppress the live preamble block when the same assistant prose has already
-	// streamed into the transcript (CCT-218).
+	// streamed into the transcript.
 	const preambleInLines = $derived(
 		!!ask?.preamble &&
 			lines.some((l) => l.role === 'assistant' && (l.text ?? '').trim() === ask!.preamble!.trim())
 	);
-	// Same suppression for the live plan's preamble (CCT-347).
+	// Same suppression for the live plan's preamble.
 	const planPreambleInLines = $derived(
 		!!plan?.preamble &&
 			lines.some((l) => l.role === 'assistant' && (l.text ?? '').trim() === plan!.preamble!.trim())
@@ -115,7 +115,7 @@
 		{/if}
 
 		{#if hiddenOlder > 0}
-			<!-- Lazy render (CCT-279 item 1): older lines are mounted on demand so a
+			<!-- Lazy render: older lines are mounted on demand so a
 			     long transcript opens fast. -->
 			<Button class="load-older" onclick={loadOlder}>
 				{m.conversation_load_older({ count: Math.min(RENDER_CHUNK, hiddenOlder) })}
@@ -124,7 +124,7 @@
 		{/if}
 		{#each visibleLines as ln, i (ln.key)}
 			{#if ln.ask && isDupeOfLiveAsk(ln.ask)}
-				<!-- Suppressed: same question is rendered live below (CCT-218). -->
+				<!-- Suppressed: same question is rendered live below. -->
 			{:else if ln.ask}
 				<AskQuestionCard
 					questions={ln.ask}
@@ -132,7 +132,7 @@
 					onsubmit={(t, p) => onanswer(t, p, ln.ask)}
 				/>
 			{:else if ln.plan && plan}
-				<!-- Suppressed: a live plan prompt is rendered below (CCT-347). -->
+				<!-- Suppressed: a live plan prompt is rendered below. -->
 			{:else if ln.plan}
 				<PlanCard
 					plan={ln.plan}
@@ -167,12 +167,12 @@
 		{/each}
 
 		{#if ask}
-			<!-- Live AskUserQuestion (CCT-181): the daemon's hook forwards the
+			<!-- Live AskUserQuestion: the daemon's hook forwards the
 			     structured options, so render the interactive option-card form live.
 			     Older deliveries (no structured payload) fall back to the question
 			     text with a free-text answer. Answering sends a reply. -->
 			{#if askPreambleHtml && !preambleInLines}
-				<!-- The assistant prose preceding the question (CCT-213): the reasoning
+				<!-- The assistant prose preceding the question: the reasoning
 				     the choice depends on, so the user isn't blind. -->
 				<div class="line assistant ask-preamble">
 					<div class="bubble">{@html askPreambleHtml}</div>
@@ -182,7 +182,7 @@
 			     instance instead of reusing one whose per-question selection state
 			     (chosen/other/focused) was seeded from the PREVIOUS ask's prop and
 			     never re-seeded — which left the new answer un-submittable / stuck
-			     (CCT-350 item 1). -->
+			    . -->
 			{#key ask.question}
 				<AskQuestionCard
 					questions={liveAskQuestions ?? [{ question: ask.question, options: [] }]}
@@ -193,7 +193,7 @@
 		{/if}
 
 		{#if plan}
-			<!-- Live ExitPlanMode plan-approval prompt (CCT-347): the daemon's hook
+			<!-- Live ExitPlanMode plan-approval prompt: the daemon's hook
 			     forwards the plan markdown the instant the prompt renders, so render
 			     the interactive Plan card live. Answering sends a reply (digit pick
 			     1-3 natively, or free-text refine). -->
@@ -212,7 +212,7 @@
 		{/each}
 
 		{#if working && !archived && !ask && !plan && perms.length === 0}
-			<!-- Activity indicator (CCT-208): proves the request is being processed,
+			<!-- Activity indicator: proves the request is being processed,
 			     the equivalent of the TUI's "Running…" spinner. -->
 			<div class="working" role="status" aria-live="polite">
 				<span class="working-dots" aria-hidden="true"><span></span><span></span><span></span></span>
@@ -230,20 +230,20 @@
 
 <style>
 	/* Positioning context for the jump-pill so it anchors to the bottom of the
-	   chat display area, never overlapping the (growable) composer (CCT-161). */
+	   chat display area, never overlapping the (growable) composer. */
 	.conv-wrap {
 		position: relative;
 		flex: 1;
 		display: flex;
 		flex-direction: column;
 		min-height: 0;
-		/* CCT-172: keep vertical scroll native; we handle horizontal swipes. */
+		/* Keep vertical scroll native; we handle horizontal swipes. */
 		touch-action: pan-y;
 	}
 	.conv {
 		flex: 1;
 		overflow-y: auto;
-		/* Keep the chat's scroll inside the pane (CCT-241): without this, hitting
+		/* Keep the chat's scroll inside the pane: without this, hitting
 		   the top/bottom of a long log chains the swipe to the page behind. */
 		overscroll-behavior: contain;
 		-webkit-overflow-scrolling: touch;
@@ -252,7 +252,7 @@
 		flex-direction: column;
 		gap: var(--sp-3);
 	}
-	/* The ask-preamble (CCT-213) reuses the `.line.assistant` bubble look; the full
+	/* The ask-preamble reuses the `.line.assistant` bubble look; the full
 	   per-message line styling lives in ConversationLine.svelte and the bubble
 	   base/markdown in bubble.css. */
 	.line {
@@ -264,7 +264,7 @@
 	.line.assistant .bubble {
 		border-left: 2px solid color-mix(in srgb, var(--role-assistant) 55%, transparent);
 	}
-	/* Working indicator (CCT-208) — animated dots + label proving claude is
+	/* Working indicator — animated dots + label proving claude is
 	   processing the turn, styled like a muted assistant-side status line. */
 	.working {
 		display: inline-flex;
@@ -313,7 +313,7 @@
 			opacity: 0.6;
 		}
 	}
-	/* Context-reset boundary (/clear or /compact, CCT-158) — a full-width rule with
+	/* Context-reset boundary (/clear or /compact) — a full-width rule with
 	   a centered chip in its own blue hue. */
 	.reset-divider {
 		display: flex;
@@ -340,7 +340,7 @@
 		letter-spacing: 0.04em;
 		white-space: nowrap;
 	}
-	/* Compact-summary block (/compact, CCT-159) — its own blue hue, a filled
+	/* Compact-summary block (/compact) — its own blue hue, a filled
 	   left-bordered block (not the thin reset divider) so the two boundary kinds
 	   read differently. */
 	.compact-block {
@@ -362,7 +362,7 @@
 		font-size: var(--fs-sm);
 		opacity: 0.9;
 	}
-	/* Lazy-render "load older" control (CCT-279 item 1). */
+	/* Lazy-render "load older" control. */
 	.conv :global(.load-older) {
 		align-self: center;
 		padding: var(--sp-1) var(--sp-3);
@@ -379,7 +379,7 @@
 		border-color: var(--accent);
 		color: var(--accent);
 	}
-	/* Jump-to-bottom pill (CCT-161 item 7) — anchored to the bottom of the chat
+	/* Jump-to-bottom pill — anchored to the bottom of the chat
 	   display area (inside .conv-wrap), so it never collides with the composer as
 	   the textarea grows when typing a long message. */
 	.conv-wrap :global(.jump-pill) {

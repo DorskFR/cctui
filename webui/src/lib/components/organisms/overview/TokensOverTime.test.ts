@@ -3,7 +3,7 @@ import { mount, unmount } from 'svelte';
 import type { UsageBucket } from '@bindings/UsageBucket';
 import TokensOverTime from './TokensOverTime.svelte';
 
-// Component render test (CCT-707): mount the stacked-bar chart with fixture
+// Component render test: mount the stacked-bar chart with fixture
 // data and assert the DOM reflects the zero-filled series (30 daily bars, with
 // stacked segments on the days that carry usage). Uses Svelte 5's `mount` in
 // happy-dom — no extra test-library dependency.

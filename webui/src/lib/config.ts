@@ -18,7 +18,7 @@ export function wsBase(): string {
 	return `${apiOrigin().replace(/^http/, 'ws')}/api/v1`;
 }
 
-// gh-review backend origin (CCT-610), or null when unconfigured — the connector
+// gh-review backend origin, or null when unconfigured — the connector
 // is optional, so an unset value hides the Review center instead of erroring.
 export function ghreviewUrl(): string | null {
 	if (browser && window.CCTUI_CONFIG?.ghreviewUrl) {

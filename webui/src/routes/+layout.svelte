@@ -16,16 +16,16 @@
 
 	let { children } = $props();
 
-	// The embedded review center (CCT-610) manages its own full-height layout, so
+	// The embedded review center manages its own full-height layout, so
 	// it renders outside the width-capped Container and without content padding.
 	const isReview = $derived(page.url.pathname.startsWith('/github'));
 
-	// One delegated listener for every code-block copy button (CCT-297 #20).
+	// One delegated listener for every code-block copy button.
 	$effect(() => {
 		installCodeCopy();
 	});
 
-	// One delegated listener for every inline agent-posted image (CCT-566).
+	// One delegated listener for every inline agent-posted image.
 	$effect(() => {
 		installImageLightbox();
 	});
@@ -37,7 +37,7 @@
 	});
 
 	// Probe the `HttpOnly` auth cookie once on load to learn whether we're already
-	// signed in (CCT-423) — the token isn't readable from JS.
+	// signed in — the token isn't readable from JS.
 	$effect(() => {
 		void auth.init();
 	});
@@ -48,7 +48,7 @@
 		else ws.disconnect();
 	});
 
-	// Pull server-persisted user settings once a token is established (CCT-426).
+	// Pull server-persisted user settings once a token is established.
 	// `load()` is idempotent (runs once) and tolerates 401/offline by keeping the
 	// localStorage-cached / default state, so it's safe to call on every auth flip.
 	$effect(() => {
@@ -58,7 +58,7 @@
 
 <QueryClientProvider client={queryClient}>
 	<!-- Remount the tree on a language flip so labels captured in component-init
-	     `const`s (not just reactive template reads) re-localize live (CCT-599). -->
+	     `const`s (not just reactive template reads) re-localize live. -->
 	{#key locale.current}
 		{#if auth.isAuthed}
 			<div class="app">

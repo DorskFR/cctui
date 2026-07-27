@@ -20,7 +20,7 @@
 	import { toasts } from '$lib/toast.svelte';
 	import { m } from '$lib/paraglide/messages';
 
-	// The selected user's machines and API tokens (CCT-301), each in its own
+	// The selected user's machines and API tokens, each in its own
 	// labelled card with a DataTable — no nested master/detail tables.
 	let {
 		user,
@@ -44,14 +44,14 @@
 	const guard = (p: Promise<unknown>) => p.catch((e: Error) => toasts.err(e.message));
 
 	// Real enrolled daemons plus the server-managed per-user `dispatch` machine
-	// (shown read-only so its badge color stays editable — CCT-251). One-shot
+	// (shown read-only so its badge color stays editable). One-shot
 	// `ephemeral` worker pods stay hidden.
 	const shownMachines = $derived(($machines.data ?? []).filter((m) => m.kind !== 'ephemeral'));
 	const hiddenCount = $derived(($machines.data ?? []).length - shownMachines.length);
 	const tokenRows = $derived($tokens.data ?? []);
 
-	// Preset hue swatches for the per-machine color override (CCT-222). Shown
-	// in a popover anchored to the machine badge (CCT-251), not inline.
+	// Preset hue swatches for the per-machine color override. Shown
+	// in a popover anchored to the machine badge, not inline.
 	const HUES = [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330];
 
 	const machineCols: Column<MachineRow>[] = [
@@ -67,7 +67,7 @@
 		{ key: 'actions', label: '', width: '17rem', align: 'right' }
 	];
 
-	// Edit/create flows go through EditEntityModal (CCT-301) — no native prompt().
+	// Edit/create flows go through EditEntityModal — no native prompt().
 	let mintOpen = $state(false);
 	let editMachine = $state<MachineRow | null>(null);
 	let editToken = $state<UserTokenRow | null>(null);

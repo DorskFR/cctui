@@ -29,7 +29,7 @@
 
 	let secret = $state<{ title: string; value: string } | null>(null);
 	// Pick a user from the dropdown; their detail renders full-width below.
-	// No table-inside-a-table (CCT-301). Create/rename go through a modal, not
+	// No table-inside-a-table. Create/rename go through a modal, not
 	// native prompt() dialogs.
 	let selectedId = $state('');
 	let createOpen = $state(false);
@@ -59,7 +59,7 @@
 			return;
 		guard(actions.revoke(id).then(() => toasts.ok(m.users_revoked())));
 	}
-	// Non-destructive on/off (CCT-251): auth fails while disabled, nothing is
+	// Non-destructive on/off: auth fails while disabled, nothing is
 	// invalidated, flipping back restores everything.
 	function toggleDisabled(id: string, name: string, disabled: boolean) {
 		guard(
@@ -92,7 +92,7 @@
 	{/if}
 </div>
 
-<!-- Who am I (CCT-251): role + identity + a non-secret preview of the stored
+<!-- Who am I: role + identity + a non-secret preview of the stored
      bearer, so "user token required" errors stop being a mystery. -->
 {#if $me.data}
 	{@const meData = $me.data}
@@ -112,7 +112,7 @@
 {/if}
 
 {#if $me.data && $me.data.role !== 'admin'}
-	<!-- Self-service (CCT-410): a non-admin user manages its own keys here (mint
+	<!-- Self-service: a non-admin user manages its own keys here (mint
 	     a dispatch-only key for automation, etc.) without an admin token. The ceiling is
 	     read-only for them; only an admin can grant new capabilities. -->
 	{#if $me.data.user_id}

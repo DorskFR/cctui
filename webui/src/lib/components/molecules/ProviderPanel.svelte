@@ -7,7 +7,7 @@
 	import { m } from '$lib/paraglide/messages';
 	import { providerLabel } from '$lib/providers';
 
-	// One provider credential inside an account card (CCT-560): an account
+	// One provider credential inside an account card: an account
 	// identity owns an array of these (at most one per anthropic/openai family).
 	// Renders the provider's own health/usage/stats and its row of actions;
 	// account-level concerns (name, sharing, env, delete) stay on the card.
@@ -58,7 +58,7 @@
 	</Cluster>
 
 	{#if p.needs_reauth}
-		<!-- Credential rejected (CCT-512): the gateway saw the upstream provider
+		<!-- Credential rejected: the gateway saw the upstream provider
 		     reject this credential's OAuth grant. -->
 		<div class="reauth-banner" title={p.last_auth_error ?? undefined}>
 			<Text as="span" size="xs">{m.providers_credential_rejected()}</Text>
@@ -106,7 +106,7 @@
 		min-width: 0;
 		overflow-wrap: anywhere;
 	}
-	/* Credential-rejected banner (CCT-512), same treatment as the old card. */
+	/* Credential-rejected banner, same treatment as the old card. */
 	.reauth-banner {
 		padding: var(--sp-1) var(--sp-2);
 		border: 1px solid var(--danger, #d9534f);
@@ -114,7 +114,7 @@
 		background: color-mix(in srgb, var(--danger, #d9534f) 12%, transparent);
 		color: var(--danger, #d9534f);
 	}
-	/* Lightweight stat list — label over value, no input-like chrome (CCT-345). */
+	/* Lightweight stat list — label over value, no input-like chrome. */
 	.stats {
 		display: grid;
 		grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));

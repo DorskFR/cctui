@@ -1,5 +1,5 @@
 <script lang="ts">
-	// Environment-secrets rows, extracted from SpawnModal (CCT-202). Rows are
+	// Environment-secrets rows, extracted from SpawnModal. Rows are
 	// injected as env vars in the worker process — never shown in the conversation,
 	// logs, or transcript, and fixed for the session's lifetime. Values live on the
 	// parent's modal-scoped state (kept out of the persisted draft); this component

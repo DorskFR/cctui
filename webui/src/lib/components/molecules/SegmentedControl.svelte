@@ -1,5 +1,5 @@
 <script lang="ts">
-	// Compact segmented control (CCT-591): a horizontal row of OptionButtons that
+	// Compact segmented control: a horizontal row of OptionButtons that
 	// act as a single-choice picker. Replaces <Select> dropdowns for tri-state /
 	// enum knobs in the account settings editor so controls stay inline and never
 	// overlap their row labels.

@@ -1,5 +1,5 @@
 /**
- * Safe-ish markdown -> HTML for chat text bubbles (CCT-161). Everything is
+ * Safe-ish markdown -> HTML for chat text bubbles. Everything is
  * escaped first, so no raw HTML from the model survives; we then re-introduce a
  * small, fixed set of tags. All colors are CSS-variable driven (see
  * `--md-*` / `--syn-*` in variables.css) so themes adapt.
@@ -171,8 +171,8 @@ function highlightDiff(s: string): string {
     .join("\n");
 }
 
-// Wrap a highlighted code body in a positioned figure carrying a copy button
-// (CCT-297 #20). The button is plain markup; a single delegated listener
+// Wrap a highlighted code body in a positioned figure carrying a copy button.
+// The button is plain markup; a single delegated listener
 // (installCodeCopy, src/lib/codecopy.ts) handles the click for every block,
 // including those rendered through {@html} in messages and tool-call panes.
 function codeBlockHtml(body: string, langAttr: string): string {
@@ -277,7 +277,7 @@ function splitRow(row: string): string[] {
   return cells;
 }
 
-// Agent-posted image markers (CCT-566). The daemon rewrites a message's
+// Agent-posted image markers. The daemon rewrites a message's
 // `![alt](/abs/path.png)` into `![alt](cctui-img://<id>)`; only THIS scheme is
 // turned into an <img>, served from the session-scoped, cookie-authed blob
 // endpoint. Remote/model-authored URLs stay escaped (the XSS/track guard). The
@@ -299,7 +299,7 @@ export function renderMarkdown(
   opts: { tables?: boolean; sessionId?: string } = {},
 ): string {
   // Render GFM tables as real <table>s by default; when `tables` is false
-  // (formatting toggle, CCT-250 item 2) leave the pipe rows as plain text.
+  // leave the pipe rows as plain text.
   const tables = opts.tables !== false;
   // Strip terminal control sequences before any structural parsing.
   src = stripAnsi(src);
@@ -332,7 +332,7 @@ export function renderMarkdown(
 
   s = escapeHtml(s);
 
-  // GFM tables (CCT-233): a header row, a delimiter row (---|:--:|--- with
+  // GFM tables: a header row, a delimiter row (---|:--:|--- with
   // optional alignment colons), then ≥1 body rows. Detected on the escaped text
   // (so cell content stays safe) and rendered to a real <table>. Cells are run
   // through the inline passes below via a placeholder so bold/code/links inside

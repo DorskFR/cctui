@@ -1,5 +1,5 @@
 <!--
-  `/github` (+ sub-paths) — the unified GitHub review center (CCT-674). Replaces
+  `/github` (+ sub-paths) — the unified GitHub review center. Replaces
   the old Rust-backed GithubView; the review UI now lives here, backed by the
   ghreview TS backend and mounted lazily so its chunk loads only on this route.
 
@@ -8,7 +8,7 @@
     • configured but no connector  → unlock screen pointing at Accounts.
     • configured + connector       → the embedded Review app (basePath `/github`).
 
-  Account plumb-through (CCT-674): we fetch the caller's ghreview accounts and
+  Account plumb-through: we fetch the caller's ghreview accounts and
   pass one into <Review account=…/> so getAccount() is non-null and the repo
   picker (`GET /v1/github/repos?account=…`) works.
 -->

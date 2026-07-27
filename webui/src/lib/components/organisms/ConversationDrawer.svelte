@@ -44,20 +44,20 @@
 		session: SessionListItem;
 		onclose: () => void;
 		highlight?: string[];
-		// "New session from same script" for archived sessions (CCT-250 item 8).
+		// "New session from same script" for archived sessions.
 		onNewFromScript?: (s: SessionListItem) => void;
-		// Open another session in place by id (CCT-345) — used to jump straight to a
+		// Open another session in place by id — used to jump straight to a
 		// freshly forked conversation without a manual refresh.
 		onNavigate?: (sessionId: string) => void;
 	} = $props();
 
-	// Search terms to highlight inline (CCT-187), set when opened from a search.
+	// Search terms to highlight inline, set when opened from a search.
 	const hl = (html: string) => (highlight.length ? highlightTerms(html, highlight) : html);
 
 	const id = $derived(session.id);
 	const archived = $derived(session.status === 'archived');
 	const needsInput = $derived(session.attention === 'needs_input' && !archived);
-	// Liveness dot next to the title (CCT-311), mirroring SessionCard.
+	// Liveness dot next to the title, mirroring SessionCard.
 	const livenessClass = $derived(
 		session.hibernated
 			? 'dot-hibernated'
@@ -70,9 +70,9 @@
 	const showStatusBadge = $derived(session.status === 'new' || session.status === 'archived');
 	const qc = useQueryClient();
 
-	// Session diagnose panel (CCT-547), opened from the toolbar.
+	// Session diagnose panel, opened from the toolbar.
 	let diagnoseOpen = $state(false);
-	// Read-only live terminal pane (CCT-545), toggled from the toolbar.
+	// Read-only live terminal pane, toggled from the toolbar.
 	let terminalOpen = $state(false);
 	// A navigation to another session must not leave a stale panel open.
 	$effect(() => {
@@ -81,7 +81,7 @@
 		terminalOpen = false;
 	});
 
-	// Message-type tag filter (CCT-250 item 2), shared types in ./conversation/types.
+	// Message-type tag filter, shared types in ./conversation/types.
 	const defaults: ViewOpts = {
 		typeFilter: {
 			assistant: 'off',
@@ -130,7 +130,7 @@
 	);
 	const actions = useSessionActions();
 
-	// Labels (CCT-360) + pin (CCT-267) in the drawer header — the same global
+	// Labels + pin in the drawer header — the same global
 	// label set and mutations the session list uses, so editing a session's
 	// labels/star from the open conversation stays in sync with the list.
 	const labelsQuery = useLabels();
@@ -143,7 +143,7 @@
 	const deleteLabel = (labelId: string) => actions.deleteLabel(labelId);
 	const togglePin = (s: SessionListItem) => (s.pinned ? actions.unpin(s.id) : actions.pin(s.id));
 
-	// ── Sticky-bottom scroll controller (CCT-161) ──────────────────────────
+	// ── Sticky-bottom scroll controller ──────────────────────────
 	// Shared by the viewport (binds the scroller) and the composer (binds the
 	// textarea, whose growth must re-pin the viewport).
 	const scroll = new ScrollController();
@@ -169,8 +169,8 @@
 	// Catch up after the tab regains focus (the ws may have gone half-open).
 	$effect(() => stream.installVisibilityRefresh());
 
-	// At-will account switcher (CCT-444 follow-up): opened from the header key
-	// glyph, or auto-opened when a soft limit blocks the chat. Accounts are
+	// At-will account switcher: opened from the header key glyph, or
+	// auto-opened when a soft limit blocks the chat. Accounts are
 	// fetched lazily — only while the modal is open or a block is active, so the
 	// common case pays nothing.
 	let acctModalOpen = $state(false);
@@ -190,12 +190,12 @@
 	});
 
 	// History (fetched) + live (ws) events, merged and ordered by causal `seq`
-	// (CCT-481, falling back to `ts`) via `orderEvents`. Live events already
-	// present in history are dropped so a reconnect/focus refetch and the
-	// persisted form of an optimistic reply don't render twice. Ordering by the
-	// server's insert `seq` keeps a reloaded AskUserQuestion above its answer
-	// (which a `ts`-only sort inverted, CCT-475) while an optimistic reply that
-	// survives a refetch still lands in its correct place (CCT-186).
+	// (falling back to `ts`) via `orderEvents`. Live events already present in
+	// history are dropped so a reconnect/focus refetch and the persisted form
+	// of an optimistic reply don't render twice. Ordering by the server's
+	// insert `seq` keeps a reloaded AskUserQuestion above its answer (which a
+	// `ts`-only sort inverted) while an optimistic reply that survives a
+	// refetch still lands in its correct place.
 	const events = $derived.by(() => {
 		const hist = $history.data ?? [];
 		const seen = new Set(hist.map(eventSig));
@@ -204,7 +204,7 @@
 	});
 
 	// ── Line building (parse + filter + dedup + delivery tinting) ───────────
-	// Render markdown honoring the table formatting toggle (CCT-250 item 2).
+	// Render markdown honoring the table formatting toggle.
 	const mdRender = (s: string) =>
 		hl(renderMarkdown(s, { tables: view.prettyTables, sessionId: id }));
 	// History stores user turns as a `text` event prefixed with USER_PREFIX; some
@@ -226,7 +226,7 @@
 					const content = e.content.slice(USER_PREFIX.length).trimStart();
 					// Classify structurally from content, not the stored `meta` bit —
 					// cctui-injected human replies carry a spurious `isMeta:true` and
-					// must stay `user` on reload (CCT-413).
+					// must stay `user` on reload.
 					return userOrSystem(content, Number(e.ts), looksMeta(content));
 				}
 				if (!typeVisible('assistant')) return null;
@@ -244,12 +244,12 @@
 				if (!e.content.trim()) return null;
 				return userOrSystem(e.content, Number(e.ts), false);
 			case 'tool_call': {
-				// AskUserQuestion (CCT-146): render as interactive cards, not raw JSON.
+				// AskUserQuestion: render as interactive cards, not raw JSON.
 				if (e.tool === 'AskUserQuestion') {
 					const ask = parseAsk(e.input);
 					if (ask) return { role: 'tool', ts: Number(e.ts), tool: e.tool, ask };
 				}
-				// ExitPlanMode (CCT-347): render the plan + continuations as a Plan card.
+				// ExitPlanMode: render the plan + continuations as a Plan card.
 				if (e.tool === 'ExitPlanMode') {
 					const plan = parsePlan(e.input);
 					if (plan) return { role: 'tool', ts: Number(e.ts), tool: e.tool, plan };
@@ -281,11 +281,11 @@
 					htmlCode: hl(highlightBlock(e.output_summary, ''))
 				};
 			case 'context_reset':
-				// /clear: the session id rotated under the same worker (CCT-158).
+				// /clear: the session id rotated under the same worker.
 				return { role: 'reset', ts: Number(e.ts), text: m.conversation_context_reset() };
 			case 'compact_summary':
 				// /compact appends a summary in place (no session-id rotation), so it
-				// arrives with its text (CCT-159).
+				// arrives with its text.
 				if (!e.content.trim()) return null;
 				return { role: 'compact', ts: Number(e.ts), html: mdRender(e.content), text: e.content };
 			default:
@@ -293,8 +293,8 @@
 		}
 	}
 
-	// Build lines with consecutive-duplicate dedup, tinting user lines with their
-	// per-message delivery state (pending/retrying/failed, CCT-212 → CCT-214).
+	// Build lines with consecutive-duplicate dedup, tinting user lines with
+	// their per-message delivery state (pending/retrying/failed).
 	const lines = $derived.by(() => {
 		const pendingTs = stream.pendingReplies;
 		const failedTs = stream.failedReplies;
@@ -322,20 +322,9 @@
 			out.push(ln);
 		}
 		// `events` is already ordered causally by `orderEvents` (server insert
-		// `seq`, CCT-481), so `out` is built in causal order and rendered as-is —
-		// no role grouping, no structural re-anchoring. Ordering by `seq` is what
-		// keeps a reloaded AskUserQuestion in [preamble, card, answer] order.
-		//
-		// We deliberately REMOVED the CCT-338 `orderAskTurns` re-anchor here: it
-		// lifted an assistant preamble + AskUserQuestion card above the user line
-		// directly preceding it, purely structurally. AgentEvent carries only `ts`
-		// (no causal/sequence field), so that lift could not tell a genuine
-		// late-flushed ask inversion (answer stamped before the late preamble+card)
-		// from a normal prior-turn user line — and so pushed later-ts assistant
-		// messages above earlier-ts user messages, breaking chronological order for
-		// EVERY conversation containing an ask (CCT-475). CCT-481 replaced that
-		// structural lift with the server insert `seq` above, which restores the
-		// reloaded-ask order WITHOUT corrupting global chronology.
+		// `seq`), so `out` is built in causal order and rendered as-is — no role
+		// grouping, no structural re-anchoring. Ordering by `seq` is what keeps
+		// a reloaded AskUserQuestion in [preamble, card, answer] order.
 		const ordered = out;
 		for (let i = 0; i < ordered.length; i++) {
 			if (ordered[i].role !== 'assistant') continue;
@@ -346,12 +335,12 @@
 		}
 		return assignLineKeys(stampTurns(ordered));
 	});
-	// The assistant prose preceding the live question (CCT-213), rendered as
+	// The assistant prose preceding the live question, rendered as
 	// markdown above the card so the user answers with context, not blind.
 	const askPreambleHtml = $derived(
 		stream.ask?.preamble ? hl(renderMarkdown(stream.ask.preamble)) : null
 	);
-	// The assistant prose preceding the live plan (CCT-347), same treatment.
+	// The assistant prose preceding the live plan, same treatment.
 	const planPreambleHtml = $derived(
 		stream.plan?.preamble ? hl(renderMarkdown(stream.plan.preamble)) : null
 	);
@@ -369,7 +358,7 @@
 		void id;
 		scroll.resetForSession();
 	});
-	// Keep pinned to the bottom while the composer grows (CCT-161). Re-runs when
+	// Keep pinned to the bottom while the composer grows. Re-runs when
 	// the scroller / textarea attach (the controller reads both reactively).
 	$effect(() => scroll.observeResize());
 
@@ -389,9 +378,9 @@
 		onclose: () => onclose()
 	});
 
-	// ── Fork conversation (CCT-302) ───────────────────────────────────────────
+	// ── Fork conversation ───────────────────────────────────────────
 	// Self-contained hook (conversation/fork.svelte.ts): also the supported
-	// "switch model" substitute for claude (CCT-303) and the "reopen" path for
+	// "switch model" substitute for claude and the "reopen" path for
 	// archived sessions.
 	const fork = new ForkController({
 		id: () => id,
@@ -407,7 +396,7 @@
 		}
 	});
 
-	// Subset fork from a conversation extract (CCT-553). Claude-only; codex has
+	// Subset fork from a conversation extract. Claude-only; codex has
 	// no partial-fork primitive, so the per-message actions are gated off for it.
 	const forkable = $derived(!isCodexSession && !archived);
 	let selectMode = $state(false);
@@ -422,7 +411,7 @@
 		selectMode = false;
 		selected = new Set();
 	}
-	// Forkable assistant anchors in render order (CCT-652): drives the from/to
+	// Forkable assistant anchors in render order: drives the from/to
 	// range picker — the fork spans the checked endpoints inclusively.
 	const forkableIds = $derived(
 		lines
@@ -448,14 +437,14 @@
 	}
 
 	// Mid-chat file attachments are supported on filesystem-backed adapters
-	// (CCT-236); the composer owns the attachment state, the viewport's dropzone
+	//; the composer owns the attachment state, the viewport's dropzone
 	// feeds it via the component ref.
 	const supportsAttachments = $derived(
 		session.adapter_id === 'claude-code' || session.adapter_id === 'codex'
 	);
 	let composer = $state<ConversationComposer>();
 
-	// Edit a still-pending message (CCT-208): drop the in-flight echo and pull its
+	// Edit a still-pending message: drop the in-flight echo and pull its
 	// text back into the composer to fix and resend.
 	function editPending(text: string, ts: number) {
 		if (archived) return;
@@ -464,7 +453,7 @@
 	}
 
 	// Mobile chat controls collapse behind text buttons that open popovers
-	// (CCT-311); null = no panel open. Desktop shows the controls inline.
+	//; null = no panel open. Desktop shows the controls inline.
 	let mobilePanel = $state<'filters' | 'format' | 'auto' | null>(null);
 	// The agent-side worker is gone once archived, so re-dispatch a fresh session
 	// seeded with this one's config rather than trying to revive it.
@@ -513,7 +502,7 @@
 		view.paneWidth ? `min(${view.paneWidth}px, 100vw)` : 'min(900px, 100vw)'
 	);
 
-	// Re-clamp the dragged width when the OS window itself shrinks (CCT-463). The
+	// Re-clamp the dragged width when the OS window itself shrinks. The
 	// drag path clamps `paneWidth` to the window width at DRAG time, but a stored
 	// width wider than a now-smaller viewport leaves the drawer (and its left
 	// resize border) off-screen and unreachable. Re-apply the same clamp on every
@@ -533,7 +522,7 @@
 <BackdropScrim {onclose} />
 
 <div class="drawer" class:resizing style="--drawer-width: {drawerWidth}">
-	<!-- Drag the left border to resize the desktop side-pane (CCT-161). -->
+	<!-- Drag the left border to resize the desktop side-pane. -->
 	<div
 		class="resize-handle"
 		role="separator"
@@ -544,7 +533,7 @@
 		onpointerup={endResize}
 		onpointercancel={endResize}
 	></div>
-	<!-- The whole drawer is a file drop area (CCT-236): dragging files over it
+	<!-- The whole drawer is a file drop area: dragging files over it
 	     shows the tsumikit Dropzone overlay; on drop they're staged as composer
 	     attachments. overlay mode wraps the content without hijacking clicks. -->
 	<Dropzone
@@ -609,7 +598,7 @@
 
 	{#if stream.softLimit}
 		<!-- Slim notice once the auto-opened modal is dismissed, so the stalled chat
-		     keeps an obvious way back to the switcher (CCT-444). -->
+		     keeps an obvious way back to the switcher. -->
 		<div class="attn-banner soft-limit-notice">
 			<span>{m.conversation_soft_limit_reached({ account: stream.softLimit.account_name })}</span>
 			<button type="button" class="soft-limit-switch" onclick={() => (acctModalOpen = true)}>

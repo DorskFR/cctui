@@ -1,5 +1,5 @@
 <script lang="ts">
-	// Read-only live terminal (CCT-545). Mounts xterm.js, tells the server to
+	// Read-only live terminal. Mounts xterm.js, tells the server to
 	// watch the session's PTY while open, and writes relayed bytes straight into
 	// the terminal. Nothing is stored: a fresh daemon attach repaints the current
 	// screen on open, so a late viewer still sees the live frame. Never sends

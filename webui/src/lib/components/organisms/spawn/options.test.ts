@@ -61,8 +61,8 @@ describe('effectiveAdapterFor', () => {
 });
 
 describe('accountBacksAdapter', () => {
-	// CCT-581: the submitted harness is the user's pick, gated by this predicate,
-	// NOT rewritten by effectiveAdapterFor. A named anthropic-only account that
+	// The submitted harness is the user's pick, gated by this predicate, NOT
+	// rewritten by effectiveAdapterFor. A named anthropic-only account that
 	// can't back codex blocks the spawn instead of silently submitting claude.
 	it('is true with no account (Auto / No account runs any harness)', () => {
 		expect(accountBacksAdapter(undefined, 'codex')).toBe(true);
@@ -83,7 +83,7 @@ describe('accountBacksAdapter', () => {
 });
 
 describe('withAliasTargets', () => {
-	it('annotates aliased families and leaves the rest untouched (CCT-415)', () => {
+	it('annotates aliased families and leaves the rest untouched', () => {
 		const models = [
 			{ v: '', label: 'Default' },
 			{ v: 'opus', label: 'Opus' },

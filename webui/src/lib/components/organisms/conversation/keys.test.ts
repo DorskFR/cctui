@@ -4,7 +4,7 @@ import type { Line } from './types';
 
 const toolCall = (ts: number, text: string): Line => ({ role: 'tool', ts, tool: 'exec_command', text });
 
-describe('assignLineKeys (CCT-648)', () => {
+describe('assignLineKeys', () => {
 	it('gives distinct keys to colliding tool calls (same ts/role/24-char prefix)', () => {
 		const prefix = '{\n  "cmd": "git grep -n -I ';
 		const lines = [toolCall(1783793006401, prefix + 'foo'), toolCall(1783793006401, prefix + 'bar')];

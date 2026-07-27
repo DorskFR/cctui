@@ -27,7 +27,7 @@
 		onedit: (text: string, ts: number) => void;
 		onsaveimage: (e: MouseEvent, ln: Line) => void;
 		oncopymarkdown: (ln: Line) => void;
-		// Subset-fork affordances (CCT-553): only assistant lines carry the
+		// Subset-fork affordances: only assistant lines carry the
 		// `messageId` anchor shared by the line and the on-disk transcript.
 		forkable?: boolean;
 		selectMode?: boolean;
@@ -118,8 +118,8 @@
 		{/if}
 		<span class="line-actions">
 			<!-- Copy-as-Markdown uses the same markdown glyph as the
-			     conversation-level copy (CCT-301 #5); save-as-image uses a
-			     plain image icon and sits right next to it (CCT-301 #1). -->
+			     conversation-level copy; save-as-image uses a
+			     plain image icon and sits right next to it. -->
 			<IconButton
 				class="copy"
 				icon="image"
@@ -183,7 +183,7 @@
 		white-space: nowrap;
 		max-width: 60%;
 	}
-	/* Role badge pill (CCT-161 item 2) — rides on the tsumikit Badge atom (pill
+	/* Role badge pill — rides on the tsumikit Badge atom (pill
 	   shape, sizing); these overrides add the per-role tint via --role-* tokens
 	   and the uppercase treatment Badge doesn't carry. */
 	.line :global(.badge-role) {
@@ -215,8 +215,8 @@
 	.line :global(.badge-role.mcp) {
 		--bc: var(--role-mcp);
 	}
-	/* Per-message action buttons (copy-as-Markdown + save-image, CCT-297 #17/#18),
-	   pushed to the right of the meta row. Excluded from the saved image. */
+	/* Per-message action buttons (copy-as-Markdown + save-image), pushed to
+	   the right of the meta row. Excluded from the saved image. */
 	.line-actions {
 		margin-left: auto;
 		display: inline-flex;
@@ -246,7 +246,7 @@
 		align-self: flex-end;
 		padding-inline: var(--sp-1);
 	}
-	/* Uniform role tints (CCT-161 item 1) — all via --role-* tokens. */
+	/* Uniform role tints — all via --role-* tokens. */
 	.line.user .bubble {
 		background: color-mix(in srgb, var(--role-user) 14%, var(--bg-elevated));
 		border-color: color-mix(in srgb, var(--role-user) 45%, transparent);
@@ -273,7 +273,7 @@
 		color: var(--warn);
 		margin-left: auto;
 	}
-	/* Edit-pending button (CCT-208): sits next to "sending…" on a pending line. */
+	/* Edit-pending button: sits next to "sending…" on a pending line. */
 	.lmeta :global(.edit-pending) {
 		padding: 0 var(--sp-1);
 		min-width: auto;
@@ -285,7 +285,7 @@
 	.lmeta :global(.edit-pending:hover) {
 		color: var(--accent);
 	}
-	/* Failed send (CCT-212): the bubble goes red and a Retry control appears. */
+	/* Failed send: the bubble goes red and a Retry control appears. */
 	.line.user.failed .bubble {
 		background: color-mix(in srgb, var(--danger) 12%, var(--bg-elevated));
 		border-color: color-mix(in srgb, var(--danger) 50%, transparent);

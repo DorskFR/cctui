@@ -1,6 +1,6 @@
 /*
  * Standalone global stylesheet (main.ts). The design tokens live in tokens.css
- * so the embedded build (CCT-610) can reuse them without these document-level
+ * so the embedded build can reuse them without these document-level
  * base rules, which would otherwise clobber the host app's <body>/<a> styling.
  */
 @import "@dorsk/tsumikit/styles/variables.css";

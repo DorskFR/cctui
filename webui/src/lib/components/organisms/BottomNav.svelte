@@ -7,7 +7,7 @@
 
 	const caps = useCapabilities();
 
-	// Aggregate unread count (CCT-580) across the live list, surfaced as a red
+	// Aggregate unread count across the live list, surfaced as a red
 	// pill on the Sessions item. The list is already fetched app-wide (Header),
 	// so this shares the query cache — no extra request.
 	const sessions = useSessions(() => false);
@@ -15,7 +15,7 @@
 		($sessions.data?.sessions ?? []).reduce((n, s) => n + (s.unread_count ?? 0), 0)
 	);
 
-	// The unified GitHub review center (CCT-674) is gated on BOTH a client-side
+	// The unified GitHub review center is gated on BOTH a client-side
 	// deploy value (`ghreviewUrl`, the ghreview backend origin) AND a configured
 	// connector (`caps.github.enabled`). With ghreviewUrl set but no connector,
 	// /github still routes but shows an unlock screen pointing to Accounts.
@@ -79,7 +79,7 @@
 		color: var(--text-faint);
 		/* Footer is fixed chrome (like the px-pinned header) — it deliberately does
 		   NOT respond to the font-scale picker, so use fixed sizes for both the
-		   label and the glyph so they scale together / not at all (CCT-345). */
+		   label and the glyph so they scale together / not at all. */
 		font-size: 0.6875rem;
 		font-weight: var(--fw-medium);
 	}

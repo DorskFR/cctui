@@ -1,5 +1,5 @@
 /**
- * Search-term parsing + highlighting (CCT-187).
+ * Search-term parsing + highlighting.
  *
  * `tokenizeQuery` mirrors the server's tokenizer (admin.rs `tokenize_query`):
  * whitespace-split into terms, but a `"…"`-quoted span stays a single exact

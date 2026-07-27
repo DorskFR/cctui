@@ -2,14 +2,14 @@
 	import { Tooltip } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 
-	// Which OAuth account a session runs under (CCT-430). A compact key glyph
+	// Which OAuth account a session runs under. A compact key glyph
 	// shown next to the machine/session name; the full account name is revealed
 	// on hover/tap via the tsumikit Tooltip. Renders nothing when the session
 	// has no resolved account (e.g. a local session that never routed through
 	// the cctui gateway), so it never disrupts the existing layout.
 	//
 	// When `onclick` is supplied the glyph becomes a button that opens the
-	// at-will account switcher (CCT-444 follow-up); otherwise it stays a plain
+	// at-will account switcher; otherwise it stays a plain
 	// read-only indicator.
 	let { name, onclick }: { name?: string | null; onclick?: () => void } = $props();
 </script>
@@ -73,7 +73,7 @@
 		outline: none;
 	}
 	.acct svg {
-		/* em-relative so the glyph scales with the font-scale picker (CCT-408). */
+		/* em-relative so the glyph scales with the font-scale picker. */
 		width: 1em;
 		height: 1em;
 	}

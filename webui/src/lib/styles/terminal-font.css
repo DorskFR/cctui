@@ -1,4 +1,4 @@
-/* Bundled monospace webfont for the embedded xterm terminal (CCT-704).
+/* Bundled monospace webfont for the embedded xterm terminal.
    Deterministic advance width across client OSes regardless of installed
    system fonts. Vite fingerprints and copies the woff2 from the URL below. */
 @font-face {

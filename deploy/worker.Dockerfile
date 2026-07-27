@@ -30,7 +30,7 @@
 
 # ── Builder: compile the worker binaries ────────────────────────────────────
 # Match the runtime's glibc (bookworm-slim ships glibc 2.36) by building on the
-# bookworm-based rust image, same as deploy/Dockerfile (see CCT-112).
+# bookworm-based rust image, same as deploy/Dockerfile.
 FROM rust:1.90-slim-bookworm AS builder
 
 WORKDIR /app
@@ -57,7 +57,7 @@ FROM node:22-bookworm-slim
 #   ripgrep                 — what claude code shells out to for search.
 #   gnupg                   — sidecar gpg-agent (holds the signing key) + the
 #                             worker-side gpg client that signs over the
-#                             forwarded extra socket (CCT-721).
+#                             forwarded extra socket.
 #   jq                      — payload unpack + result-callback synthesis.
 #   curl                    — context-pack token auth, result callback, health.
 #   rsync                   — warm-repo workspace fallback when overlayfs is off.
@@ -103,7 +103,7 @@ RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
 # its provider only from ~/.codex/config.toml. Do NOT bake a static config here —
 # it would clobber codex's own runtime writes (trust_level) and pin a stale
 # base_url. The entrypoint's phase_codex_config MERGES the cctui gateway provider
-# in at runtime from the injected OPENAI_* env (CCT-517).
+# in at runtime from the injected OPENAI_* env.
 # Keep CODEX_VERSION in lockstep with contract::CODEX_PINNED_VERSION
 # (crates/cctui-daemon/src/adapters/codex/contract.rs) — CI enforces it via
 # scripts/check-codex-version-drift.sh.
@@ -185,13 +185,13 @@ COPY --from=builder /app/target/release/cctui-guard-proxy  /usr/local/bin/cctui-
 COPY --from=builder /app/target/release/cctui-supervisor   /usr/local/bin/cctui-supervisor
 COPY --from=builder /app/target/release/cctui-guard        /usr/local/bin/cctui-guard
 COPY deploy/worker-entrypoint.sh   /usr/local/bin/cctui-worker-entrypoint
-# worker-net-init — pod-netns iptables for the k8s sidecar mode (CCT-716): run
+# worker-net-init — pod-netns iptables for the k8s sidecar mode: run
 # from a NET_ADMIN init container so the worker container needs no privileged.
 COPY deploy/worker-net-init.sh     /usr/local/bin/cctui-worker-net-init
 # codex-run — safe one-shot `codex exec` wrapper (model/effort/approvals from
 # config.toml; wrapper adds only --skip-git-repo-check + stdin-close + timeout).
 COPY deploy/codex-run.sh           /usr/local/bin/codex-run
-# guard-proxy-entrypoint — sidecar boot wrapper (CCT-721): stands up a gpg-agent
+# guard-proxy-entrypoint — sidecar boot wrapper: stands up a gpg-agent
 # holding the signing key and forwards only its restricted --extra-socket, then
 # exec's cctui-guard-proxy. Passthrough when no GPG_PRIVATE_KEY is present.
 COPY deploy/guard-proxy-entrypoint.sh /usr/local/bin/cctui-guard-proxy-entrypoint

@@ -2,7 +2,7 @@ import { basePath } from "../api/config";
 import { parseRoute, type Route } from "./route";
 
 // parseRoute only understands GitHub-mirrored app-relative paths; strip/add the
-// embed base path (CCT-610) at the history boundary so it stays that way.
+// embed base path at the history boundary so it stays that way.
 function toAppPath(fullPath: string): string {
   const bp = basePath();
   if (!bp) return fullPath;

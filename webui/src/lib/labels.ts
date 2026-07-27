@@ -28,7 +28,7 @@ export function hueToColor(hue: number | null): string {
 	return hue == null ? '' : String(hue);
 }
 
-/** Inline tint for a label Badge, mirroring MachineBadge (CCT-272): the theme
+/** Inline tint for a label Badge, mirroring MachineBadge: the theme
  *  supplies `<sat%> <light%>` pairs in the --mach-* tokens, and the per-label
  *  hue resolves against them in a real custom property. Applied inline so it
  *  crosses the Badge component boundary regardless of scope. */

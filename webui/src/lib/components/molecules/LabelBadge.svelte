@@ -5,7 +5,7 @@
 	import LabelMenu from './LabelMenu.svelte';
 	import { labelTint, hueToColor } from '$lib/labels';
 
-	// Session-label strip + picker (CCT-360). Attached labels render as hue-tinted,
+	// Session-label strip + picker. Attached labels render as hue-tinted,
 	// removable Badges. When `editable`, a shared LabelMenu (the same molecule the
 	// list-wide LabelFilter uses) provides the popover body: typing filters the
 	// existing labels and, when nothing matches, offers a "Create" affordance; each

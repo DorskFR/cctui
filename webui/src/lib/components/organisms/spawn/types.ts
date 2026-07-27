@@ -13,11 +13,11 @@ export interface Form {
 	prompt: string;
 	// Empty = "Default" (unset): the server then applies the account default
 	// permission mode, falling back to claude's own default when the account has
-	// none (CCT-542). A concrete value is a per-spawn override.
+	// none. A concrete value is a per-spawn override.
 	permission_mode: PermissionMode | '';
 	// dispatch-only fields (forwarded to the dispatcher as `payload`).
 	dispatcher: string;
-	// The harness the dispatched worker runs (CCT-643): 'claude-code' (default,
+	// The harness the dispatched worker runs: 'claude-code' (default,
 	// backward compatible) drives a claude worker via the control socket; 'codex'
 	// runs headless `codex exec` in the worker. Selects which model/effort field
 	// applies, mirroring the machine-tab adapter.
@@ -26,18 +26,18 @@ export interface Form {
 	repo: string;
 	ticket: string;
 	prompt_file: string;
-	// Model family is per-adapter (claude families vs codex models), like effort
-	// below, so each gets its own field and they survive an adapter switch
-	// (CCT-274). Dispatch (k8s) runs a claude worker → model_claude.
+	// Model family is per-adapter (claude families vs codex models), like
+	// effort below, so each gets its own field and they survive an adapter
+	// switch. Dispatch (k8s) runs a claude worker → model_claude.
 	model_claude: string;
 	model_codex: string;
-	// Named account to run under (CCT-237/CCT-399). Empty = "Default (no
+	// Named account to run under. Empty = "Default (no
 	// account)" → the worker's own auth, adapter-first flow. When set, the
 	// account drives the model list + locks the harness, and `account_provider`
 	// disambiguates a name shared across providers at spawn.
 	account: string;
 	account_provider: string;
-	// Free-form model for a compatible-endpoint account (CCT-399): the picker is
+	// Free-form model for a compatible-endpoint account: the picker is
 	// driven by the account's declared models rather than the per-adapter family
 	// lists, so it gets its own field (preserved across account switches).
 	model_account: string;
@@ -47,7 +47,7 @@ export interface Form {
 	effort_claude: string;
 	effort_codex: string;
 	timeout: string;
-	// Label ids to attach to the spawned session (CCT-360). Remembered between
+	// Label ids to attach to the spawned session. Remembered between
 	// New Session opens via LAST_SPAWN_LABELS so the next spawn defaults to the
 	// last-used set. Resolved against the live label list for display.
 	labels: string[];

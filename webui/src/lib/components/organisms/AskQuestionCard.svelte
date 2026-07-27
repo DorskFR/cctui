@@ -25,13 +25,13 @@
 		/** `picks` is the structured per-question option selection (0-based
 		 * indices) when every answer is a pure option pick, or `null` when any
 		 * question used the free-text "Other…" field — the daemon answers the
-		 * real form natively from picks (CCT-226) and only falls back to
+		 * real form natively from picks and only falls back to
 		 * dismiss-then-reply for free text. */
 		onsubmit: (text: string, picks: number[][] | null) => void;
 	} = $props();
 
 	// Per-question chosen option indices + free-text "Other". Seeded from
-	// `questions` and RE-seeded whenever the prop's shape changes (CCT-350 item 1):
+	// `questions` and RE-seeded whenever the prop's shape changes:
 	// the live card instance is reused across successive asks, so without this the
 	// arrays kept the previous ask's length/values — indexing into a stale slot
 	// left `answeredAll` wrong and the answer un-submittable ("stuck pending").
@@ -55,14 +55,14 @@
 		other = questions.map(() => '');
 		focused = questions.map(() => 0);
 	});
-	// Optimistic local lock (CCT-190): the card is fully prop-driven, so without
+	// Optimistic local lock: the card is fully prop-driven, so without
 	// this it stays editable/"Send answer" until the server round-trip flips
 	// `interactive` to false — a multi-second lag. Setting `submitted` on click
 	// flips the card to its in-flight state instantly, independent of the server.
 	let submitted = $state(false);
 	// Editable only while interactive AND not yet submitted.
 	const live = $derived(interactive && !submitted);
-	// Release the optimistic lock if the parent re-enables the card (CCT-278):
+	// Release the optimistic lock if the parent re-enables the card:
 	// `interactive` goes false while an answer is in flight and flips back to
 	// true only if that answer failed to deliver (the parent clears its
 	// `answering` lock). Detecting the false→true edge lets a failed answer be
@@ -104,7 +104,7 @@
 			.join('\n\n');
 	}
 
-	/** Structured selection for the native answer path (CCT-226): one sorted
+	/** Structured selection for the native answer path: one sorted
 	 * list of 0-based option indices per question, or `null` if any question
 	 * was answered (even partially) via the free-text "Other…" field. */
 	function buildPicks(): number[][] | null {

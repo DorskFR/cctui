@@ -1,6 +1,6 @@
 import { browser } from '$app/environment';
 
-// Delegated click-to-open-full for agent-posted images (CCT-566). Inline images
+// Delegated click-to-open-full for agent-posted images. Inline images
 // are injected as raw HTML via {@html} in markdown bodies, so — like the
 // code-copy buttons — one document-level listener covers every `.md-img`
 // anywhere. Clicking an inline image opens a full-size overlay; clicking the

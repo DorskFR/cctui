@@ -3,8 +3,8 @@
 	import { m } from '$lib/paraglide/messages';
 	import { VIEW_OPTIONS } from '../../../routes/sessions/sessions.logic';
 
-	// One square control offering the 4 explicit layout × density combinations
-	// (CCT-307). A native <select> overlaid transparently on a styled trigger
+	// One square control offering the 4 explicit layout × density combinations.
+	// A native <select> overlaid transparently on a styled trigger
 	// (the Select atom's `ghost` variant) gives the platform popup with zero
 	// outside-click bookkeeping. `cardView` (list ⇄ card) and `dense` (compact ⇄
 	// detailed) are bindable so the parent keeps owning persistence.

@@ -1,5 +1,5 @@
 <script lang="ts">
-	// A compact count badge that sits before a parent session row (CCT-269) and
+	// A compact count badge that sits before a parent session row and
 	// toggles its subagent group expanded/collapsed. Only rendered for groups with
 	// >= 3 agents; smaller groups render inline, always expanded. Composes the
 	// base Badge as an interactive (info-toned) button.
@@ -60,7 +60,7 @@
 		justify-content: center;
 		min-width: 1.5rem;
 		height: 1.5rem;
-		/* Resolve the digit size through a --fs-* token (CCT-408) so the global
+		/* Resolve the digit size through a --fs-* token so the global
 		   font-scale picker grows the counter in step with surrounding session
 		   text. min-width/height stay rem-pinned chrome, so the chip keeps its
 		   compact footprint while only the glyph scales; tsumikit's size="sm"

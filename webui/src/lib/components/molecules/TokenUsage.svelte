@@ -11,7 +11,7 @@
 	//   • `sum` overrides Σ: the card passes the parent+subagents aggregate so Σ
 	//     reflects the true cost-including-subagents; everywhere else Σ defaults to
 	//     this block's OWN total (in + out + cache read + cache creation).
-	//   • `cold` (CCT-189): the last turn re-billed the full context (prompt cache
+	//   • `cold`: the last turn re-billed the full context (prompt cache
 	//     went cold) → a ❄️ next to the counts.
 	//   • `showSum`: per-message conversation lines want only the reply's own
 	//     breakdown (↑↓⚡), no leading Σ — they pass showSum={false}.
@@ -20,7 +20,7 @@
 	//     `size` can fold inside a narrow card instead of spilling.
 	// `size` rides through to each Text segment — defaults to the compact `xs`.
 	//
-	// The clarity hints (CCT-356) render via the tsumikit Tooltip (CCT-400) — no
+	// The clarity hints render via the tsumikit Tooltip — no
 	// native `title=`, so the bubble escapes overflow/transform clipping and reads
 	// the same everywhere.
 	let {
@@ -53,7 +53,7 @@
 
 <!-- Cluster owns the layout (row, single gap, optional wrap); each segment is its
      own Text atom, carrying tone/weight/size as props rather than CSS overrides.
-     Each hint is a tsumikit Tooltip wrapping its Text trigger (CCT-400). -->
+     Each hint is a tsumikit Tooltip wrapping its Text trigger. -->
 <Cluster gap="0.4rem" align="baseline" {wrap}>
 	{#if showSum && total > 0}<Tooltip text={sumHint}>
 			{#snippet trigger()}<Text

@@ -1,4 +1,4 @@
-// Shared file-attachment helpers (CCT-236) for the spawn modal and the mid-chat
+// Shared file-attachment helpers for the spawn modal and the mid-chat
 // composer: one source of truth for caps, dedupe-by-name merging, error
 // derivation, and size formatting. Mirrors the server caps in
 // `cctui-server/src/uploads.rs` so we reject before uploading.

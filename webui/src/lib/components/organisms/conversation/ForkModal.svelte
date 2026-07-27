@@ -1,8 +1,8 @@
 <script lang="ts">
-	// Fork-conversation dialog (CCT-302), extracted from ConversationDrawer. Forks
-	// the current conversation into a new session, optionally changing model/effort
-	// — also the "reopen as a new conversation" path for archived sessions and the
-	// supported "switch model" substitute for claude (no in-place switch, CCT-303).
+	// Fork-conversation dialog. Forks the current conversation into a new
+	// session, optionally changing model/effort — also the "reopen as a new
+	// conversation" path for archived sessions and the supported "switch
+	// model" substitute for claude (no in-place switch).
 	import { compact } from '$lib/format';
 	import { Button, Heading, Select, Text } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
@@ -23,12 +23,12 @@
 		archived: boolean;
 		isCodexSession: boolean;
 		// Parent's total tokens — shown so the user knows the opening turn re-bills
-		// this much context (CCT-345).
+		// this much context.
 		parentTokens: number;
 		models: { v: string; label: string }[];
 		efforts: string[];
 		forking: boolean;
-		// Non-null → subset fork (CCT-553): the slice of the conversation to keep.
+		// Non-null → subset fork: the slice of the conversation to keep.
 		extractLabel?: string | null;
 		model: string;
 		effort: string;

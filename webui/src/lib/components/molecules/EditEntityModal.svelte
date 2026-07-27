@@ -1,6 +1,6 @@
 <script lang="ts">
 	// Shared edit/create modal for the "name (+ optional badge colour)" flows on
-	// the users page (CCT-301): user rename, machine rename+recolour, token
+	// the users page: user rename, machine rename+recolour, token
 	// (re)label. Replaces the native prompt()/confirm() dialogs. One molecule,
 	// adapted per call-site via props — set `color` to surface the hue palette
 	// (machines), leave it off for plain name/label edits.

@@ -1,9 +1,8 @@
 <script lang="ts">
-	// User settings (CCT-426, epic CCT-357). Server-persisted via the `settings`
-	// singleton (GET/PUT /api/v1/settings, localStorage-mirrored). Grouped into
-	// sections — Session list · Display · Harness · Notifications · Keyboard —
-	// matching the settings catalogue. New-session launch defaults were removed
-	// in CCT-563: the per-(machine, cwd) spawn memory (CCT-561) supersedes them.
+	// User settings. Server-persisted via the `settings` singleton (GET/PUT
+	// /api/v1/settings, localStorage-mirrored). Grouped into sections —
+	// Session list · Display · Harness · Notifications · Keyboard — matching
+	// the settings catalogue.
 	import { settings } from '$lib/settings.svelte';
 	import { LOCALE_LABELS, LOCALES, type Locale } from '$lib/locale.svelte';
 	import { theme, THEMES } from '$lib/theme.svelte';
@@ -41,8 +40,8 @@
 		return ids.join(', ');
 	}
 
-	// Claude harness mode (epic CCT-494). Per-user; applies to all the user's
-	// machines and a connected daemon switches within ~1s. Codex sessions ignore it.
+	// Claude harness mode. Per-user; applies to all the user's machines and a
+	// connected daemon switches within ~1s. Codex sessions ignore it.
 	const harnessMode = $derived(settings.harnessMode);
 	const harnessOpts: { v: HarnessMode; label: string; help: string }[] = [
 		{
@@ -63,7 +62,7 @@
 	];
 	const harnessHelp = $derived(harnessOpts.find((o) => o.v === harnessMode)?.help ?? '');
 
-	// Whip-mode stall-phrase override (CCT-598). `extend` appends to the daemon's
+	// Whip-mode stall-phrase override. `extend` appends to the daemon's
 	// compiled defaults; `replace` swaps them. The phrase textarea is one phrase
 	// per line; the server trims/lowercases/dedupes/caps on save.
 	const whip = $derived(settings.whipStopPhrases);
@@ -115,7 +114,7 @@
 		'happy to keep going'
 	];
 
-	// Daemon-side secret redaction (CCT-731). The switch toggles live scrubbing;
+	// Daemon-side secret redaction. The switch toggles live scrubbing;
 	// the textarea holds one extra regex per line, layered on the daemon's
 	// compiled defaults. The server validates each regex on save.
 	const scrubEnabled = $derived(settings.secretScrubEnabled);
@@ -272,7 +271,7 @@
 		</Stack>
 	</Card>
 
-	<!-- ── Language (CCT-599) ────────────────────────────────────────────── -->
+	<!-- ── Language ────────────────────────────────────────────── -->
 	<Card>
 		<Stack gap="md">
 			<Heading level={2}>{m.settings_language_title()}</Heading>
@@ -303,7 +302,7 @@
 		</Stack>
 	</Card>
 
-	<!-- ── Claude harness mode (epic CCT-494) ───────────────────────────── -->
+	<!-- ── Claude harness mode ─────────────────────────────────────────── -->
 	<Card>
 		<Stack gap="md">
 			<Heading level={2}>{m.settings_harness_title()}</Heading>
@@ -332,7 +331,7 @@
 		</Stack>
 	</Card>
 
-	<!-- ── Whip mode stall phrases (CCT-598) ────────────────────────────── -->
+	<!-- ── Whip mode stall phrases ────────────────────────────── -->
 	<Card>
 		<Stack gap="md">
 			<Heading level={2}>{m.settings_whip_title()}</Heading>
@@ -398,7 +397,7 @@
 		</Stack>
 	</Card>
 
-	<!-- ── Secret redaction (CCT-731) ───────────────────────────────────── -->
+	<!-- ── Secret redaction ───────────────────────────────────── -->
 	<Card>
 		<Stack gap="md">
 			<Heading level={2}>Secret redaction</Heading>

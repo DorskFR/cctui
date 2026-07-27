@@ -1,12 +1,12 @@
 <script lang="ts">
-	// The "Machine" branch of the spawn form (CCT-562): a machine · working-dir ·
+	// The "Machine" branch of the spawn form: a machine · working-dir ·
 	// label row, the prompt, then a collapsed configuration line (account ·
 	// harness · model · effort · permission mode) that a gear expands into the
 	// full editors for this session only.
 	//
-	// Account is the primary axis (CCT-399), but no longer a hard lock: the
+	// Account is the primary axis, but no longer a hard lock: the
 	// harness cards are enabled per the selected account's provider-family union
-	// (CCT-562) — an account with anthropic+openai providers offers both, a
+	// — an account with anthropic+openai providers offers both, a
 	// single-provider account disables the missing card. The provider credential
 	// backing the effective harness drives the model list + aliases.
 	import type { MachineRow } from '@bindings/MachineRow';
@@ -55,14 +55,14 @@
 		form: Form;
 		machines: MachineRow[];
 		recentDirs: string[];
-		// Every account the caller owns (CCT-399). The picker offers them all and
+		// Every account the caller owns. The picker offers them all and
 		// derives the allowed harnesses + model list from the chosen one.
 		accounts: OAuthAccount[];
 		// Submit the whole spawn form from the prompt textarea (Ctrl/⌘+Enter).
 		onsubmit?: () => void;
 	} = $props();
 
-	// The machine badge + working-dir share one FilterInput (CCT-653): machine is
+	// The machine badge + working-dir share one FilterInput: machine is
 	// picked via the inline badge; the dir is a single `cwd:` field whose async
 	// provider serves recent dirs + live typeahead. `form.working_dir` is the
 	// source of truth — the raw query mirrors it both ways, `lastDir` tracking
@@ -89,7 +89,7 @@
 		}
 	});
 
-	// Accounts are identities (CCT-558): matched by name. '' = Auto, the
+	// Accounts are identities: matched by name. '' = Auto, the
 	// NO_ACCOUNT sentinel = explicit unbound — both resolve to no selected
 	// account here (Auto lets the server bind, unbound skips binding).
 	const selectedAccount = $derived(
@@ -98,9 +98,9 @@
 			: undefined
 	);
 
-	// Harnesses the selected account can run (provider-family union, CCT-562);
-	// no account = both. The harness in effect is always the user's pick
-	// (CCT-581) — never silently swapped; clicking a card the account can't back
+	// Harnesses the selected account can run (provider-family union); no
+	// account = both. The harness in effect is always the user's pick
+	// — never silently swapped; clicking a card the account can't back
 	// drops to Auto instead.
 	const allowedAdapters = $derived(selectedAccount ? accountAdapters(selectedAccount) : allAdapters);
 	const effectiveAdapter = $derived(form.adapter_id);
@@ -108,14 +108,14 @@
 	const selectedProvider = $derived(providerForAdapter(selectedAccount, effectiveAdapter));
 
 	// Auto (empty account) binds the single account whose provider family can run
-	// the picked harness (CCT-574/CCT-582): resolve it client-side so the picker
+	// the picked harness: resolve it client-side so the picker
 	// can name the credential Auto would use, mirroring the server.
 	const autoAccount = $derived.by(() => {
 		const family = accounts.filter((a) => accountAdapters(a).includes(effectiveAdapter as Adapter));
 		return family.length === 1 ? family[0].name : undefined;
 	});
 
-	// Model options for the chosen axis (CCT-399):
+	// Model options for the chosen axis:
 	//  * compatible account → its own declared models;
 	//  * native account / Default → the harness's native families.
 	const accountModelOptions = $derived(
@@ -129,7 +129,7 @@
 		withAliasTargets(claudeModels, selectedProvider?.model_aliases)
 	);
 
-	// Machine-scoped codex catalog (CCT-641): the picker offers the account's
+	// Machine-scoped codex catalog: the picker offers the account's
 	// real models + supported efforts, falling back to the static offline list.
 	const codexCatalog = useCodexModels(() => (effectiveAdapter === 'codex' ? form.machine_id : ''));
 	const codexModelOptions = $derived(codexModelsFor($codexCatalog.data));
@@ -151,9 +151,9 @@
 		form.account_provider = selectedProvider?.provider ?? '';
 	});
 
-	// Collapsed configuration line (CCT-562): one summary of the five knobs;
+	// Collapsed configuration line: one summary of the five knobs;
 	// expansion is per-open only (not persisted). The knobs prefill from the
-	// (machine, cwd) spawn memory (CCT-561, SpawnModal's memory effects).
+	// (machine, cwd) spawn memory (SpawnModal's memory effects).
 	let configOpen = $state(false);
 	const summaryModel = $derived(
 		usesAccountModels
@@ -188,9 +188,9 @@
 	};
 </script>
 
-<!-- Machine badge + working dir live in one structured field (CCT-653); the
+<!-- Machine badge + working dir live in one structured field; the
      name sits below. The label auto-fills from the (machine, cwd) memory
-     (CCT-561, in SpawnModal). -->
+     (in SpawnModal). -->
 <div class="top-stack">
 	<Field label={m.spawn_cwd_label()}>
 		<FilterInput
@@ -243,8 +243,8 @@
 </Field>
 
 <!-- Account · harness · model · effort · permission mode, collapsed into one
-     line (CCT-562); the gear expands the full editors. Field ORDER inside the
-     expansion is stable regardless of selection (CCT-404). -->
+     line; the gear expands the full editors. Field ORDER inside the
+     expansion is stable regardless of selection. -->
 <div class="config">
 	<div class="config-line">
 		<Text size="sm" tone="faint" truncate title={configSummary}>{configSummary}</Text>
@@ -281,7 +281,7 @@
 			</Field>
 
 			<!-- Harness: same two cards always; a card is disabled when the selected
-			     account has no provider of that family (CCT-562), so the layout
+			     account has no provider of that family, so the layout
 			     never shifts. -->
 			<Field label={m.spawn_field_harness()}>
 				<div class="adapters">
@@ -352,7 +352,7 @@
 			<Field label={m.spawn_permission_mode_label()}>
 				<div class="modes">
 					<!-- "Default" (unset) leaves the mode to claude's own default — no mode
-					     is forced into the spawn (CCT-542/CCT-558). -->
+					     is forced into the spawn. -->
 					<OptionButton
 						selected={form.permission_mode === ''}
 						onclick={() => (form.permission_mode = '')}

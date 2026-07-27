@@ -23,7 +23,7 @@ export function clampLocale(v: unknown): Locale | null {
 	return typeof v === 'string' && isLocale(v) ? (v as Locale) : null;
 }
 
-// Runtime driver for the active UI language (CCT-599), mirroring theme.svelte.ts.
+// Runtime driver for the active UI language, mirroring theme.svelte.ts.
 // getLocale() is overwritten to read the reactive `current` field so every
 // `m.xxx()` call inside a Svelte template re-runs when the language flips — a
 // live switch with no page reload. Paraglide still owns persistence via its
