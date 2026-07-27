@@ -47,6 +47,29 @@ pub fn transcript_path(projects_root: &Path, cwd: &str, session_id: &str) -> Pat
     projects_root.join(encode_cwd(cwd)).join(format!("{session_id}.jsonl"))
 }
 
+/// Newest `<session_id>.jsonl` across every project dir under `projects_root`.
+/// `EnterWorktree` moves cwd, so claude relocates the session's transcript to a
+/// new project-slug dir and the launch-cwd path stops existing; resolve the live
+/// file by session id across dirs and pick the most recently modified so the
+/// daemon can follow the move instead of tailing a dead path.
+#[must_use]
+pub fn newest_transcript_for_session(projects_root: &Path, session_id: &str) -> Option<PathBuf> {
+    let file_name = format!("{session_id}.jsonl");
+    let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
+    for entry in std::fs::read_dir(projects_root).ok()?.flatten() {
+        if !entry.file_type().is_ok_and(|t| t.is_dir()) {
+            continue;
+        }
+        let candidate = entry.path().join(&file_name);
+        let Ok(meta) = std::fs::metadata(&candidate) else { continue };
+        let mtime = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+        if best.as_ref().is_none_or(|(best_mtime, _)| mtime > *best_mtime) {
+            best = Some((mtime, candidate));
+        }
+    }
+    best.map(|(_, path)| path)
+}
+
 /// Directory holding per-subagent (Task-tool) transcripts for a parent
 /// session: `<encoded-cwd>/<parent-session-id>/subagents/`. Derived from
 /// the parent's own transcript path `<encoded-cwd>/<parent-session-id>.jsonl`
@@ -625,6 +648,35 @@ mod tests {
     fn transcript_path_is_built_correctly() {
         let p = transcript_path(Path::new("/projects"), "/Users/me", "abc-123");
         assert_eq!(p, PathBuf::from("/projects/-Users-me/abc-123.jsonl"));
+    }
+
+    #[test]
+    fn newest_transcript_follows_a_worktree_move() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let sess = "sess-1";
+        let repo = root.join(encode_cwd("/workspace/repo"));
+        let worktree = root.join(encode_cwd("/workspace/repo/.claude/worktrees/wt"));
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::create_dir_all(&worktree).unwrap();
+
+        // No transcript yet anywhere.
+        assert_eq!(newest_transcript_for_session(root, sess), None);
+
+        // Session starts in the repo cwd.
+        let repo_file = repo.join(format!("{sess}.jsonl"));
+        std::fs::write(&repo_file, b"{}\n").unwrap();
+        assert_eq!(newest_transcript_for_session(root, sess), Some(repo_file));
+
+        // EnterWorktree relocates the file; the newest wins even if the stale
+        // one lingers on disk.
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let worktree_file = worktree.join(format!("{sess}.jsonl"));
+        std::fs::write(&worktree_file, b"{}\n{}\n").unwrap();
+        assert_eq!(newest_transcript_for_session(root, sess), Some(worktree_file));
+
+        // A different session id is never matched.
+        assert_eq!(newest_transcript_for_session(root, "other"), None);
     }
 
     #[test]

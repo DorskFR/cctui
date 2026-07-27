@@ -2390,7 +2390,28 @@ impl Driver {
                     .get(&job.short)
                     .is_some_and(|loc| loc.offset_key != sess);
                 let first_pin = !self.transcript_locations.contains_key(&job.short);
-                let path = transcript::transcript_path(&self.cfg.projects_root, cwd, sess);
+                let path = self.resolve_live_transcript(cwd, sess);
+                let moved = !first_pin
+                    && !rotated
+                    && self
+                        .transcript_locations
+                        .get(&job.short)
+                        .is_some_and(|loc| loc.path != path);
+                if moved {
+                    // Same session id, new file: the session entered/left a git
+                    // worktree so claude relocated the transcript. The move is
+                    // content-continuous, so keep offset_key + offset and the
+                    // stable local_id — only follow the path.
+                    if let Some(loc) = self.transcript_locations.get_mut(&job.short) {
+                        tracing::info!(
+                            short = %job.short,
+                            from = %loc.path.display(),
+                            to = %path.display(),
+                            "transcript moved (worktree enter/exit); following"
+                        );
+                        loc.path.clone_from(&path);
+                    }
+                }
                 if first_pin {
                     self.short_by_session.insert(sess.to_owned(), job.short.clone());
                     self.map_session(sess, &local_id);
@@ -2623,9 +2644,18 @@ impl Driver {
         if job.is_none() && !tracker.seen_busy() {
             return;
         }
-        let busy = job.is_some_and(|j| {
-            !j.is_dead() && DispatchDoneTracker::is_busy(j.tempo.as_deref(), j.state.as_deref())
-        });
+        // A growing transcript is authoritative liveness: the control-socket
+        // snapshot can read idle while a worktree-entered session is still
+        // working, so never let the settle clock run purely on that signal.
+        let transcript_offset = self
+            .transcript_locations
+            .get(tracker.short())
+            .map_or(0, |loc| self.offsets.get(&loc.offset_key));
+        let grew = tracker.transcript_grew(transcript_offset);
+        let busy = grew
+            || job.is_some_and(|j| {
+                !j.is_dead() && DispatchDoneTracker::is_busy(j.tempo.as_deref(), j.state.as_deref())
+            });
         if tracker.observe(busy, Instant::now()) {
             let path = tracker.marker_path();
             if let Some(parent) = path.parent() {
@@ -2792,6 +2822,18 @@ impl Driver {
                 self.server_marks.insert(loc.offset_key.clone(), local);
             }
         }
+    }
+
+    /// Path of a session's live transcript, following a worktree move. The
+    /// launch-cwd path is authoritative while it exists (cheap, no scan); once
+    /// `EnterWorktree` relocates the file the launch path vanishes, so fall back
+    /// to the newest `<sess>.jsonl` found across project dirs.
+    fn resolve_live_transcript(&self, cwd: &str, sess: &str) -> PathBuf {
+        let launch = transcript::transcript_path(&self.cfg.projects_root, cwd, sess);
+        if launch.exists() {
+            return launch;
+        }
+        transcript::newest_transcript_for_session(&self.cfg.projects_root, sess).unwrap_or(launch)
     }
 
     /// One last forward tail on shutdown so the tail of the conversation (a

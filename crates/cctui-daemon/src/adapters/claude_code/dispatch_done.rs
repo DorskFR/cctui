@@ -38,6 +38,7 @@ pub(super) struct DispatchDoneTracker {
     seen_busy: bool,
     idle_since: Option<Instant>,
     done: bool,
+    last_transcript_offset: Option<u64>,
 }
 
 impl DispatchDoneTracker {
@@ -46,7 +47,15 @@ impl DispatchDoneTracker {
         // (`chars` so a malformed short id can't panic on a byte boundary).
         let short: String = session_id.chars().take(8).collect();
         let marker_path = jobs_root.join(&short).join("dispatch_done");
-        Self { short, marker_path, settle, seen_busy: false, idle_since: None, done: false }
+        Self {
+            short,
+            marker_path,
+            settle,
+            seen_busy: false,
+            idle_since: None,
+            done: false,
+            last_transcript_offset: None,
+        }
     }
 
     pub fn short(&self) -> &str {
@@ -71,6 +80,16 @@ impl DispatchDoneTracker {
     /// crash backstops still bound a wedged prompt.
     pub fn is_busy(tempo: Option<&str>, state: Option<&str>) -> bool {
         matches!(tempo, Some("active" | "blocked")) || matches!(state, Some("working" | "running"))
+    }
+
+    /// Whether the tracked session's transcript grew since the last poll. A
+    /// growing transcript means the session is actively working even if the
+    /// control-socket snapshot flickered idle — the exact blind spot that let a
+    /// worktree-entered session be reaped mid-work. Callers OR this into `busy`.
+    pub fn transcript_grew(&mut self, offset: u64) -> bool {
+        let grew = self.last_transcript_offset.is_some_and(|prev| offset > prev);
+        self.last_transcript_offset = Some(offset);
+        grew
     }
 
     /// Feed one poll observation. Returns `true` exactly once: when the
@@ -153,6 +172,40 @@ mod tests {
             "clock restarted at the second idle"
         );
         assert!(t.observe(false, start + Duration::from_secs(131)));
+    }
+
+    #[test]
+    fn transcript_growth_reports_only_on_increase() {
+        let mut t = tracker(60);
+        assert!(!t.transcript_grew(0), "first observation sets the baseline, no growth");
+        assert!(!t.transcript_grew(0), "unchanged offset is not growth");
+        assert!(t.transcript_grew(128), "offset advanced");
+        assert!(!t.transcript_grew(128), "held after advancing");
+        assert!(t.transcript_grew(256), "advanced again");
+    }
+
+    #[test]
+    fn transcript_growth_keeps_a_snapshot_idle_session_alive() {
+        // The blind-watcher reap: the control snapshot reads idle for the whole
+        // window, but the transcript keeps growing (the session works in a
+        // worktree). ORing growth into busy must hold the marker off.
+        let mut t = tracker(60);
+        let start = Instant::now();
+        let mut off = 0u64;
+        for i in 0..20 {
+            off += 64;
+            let grew = t.transcript_grew(off);
+            let busy = grew || DispatchDoneTracker::is_busy(Some("idle"), Some("done"));
+            assert!(
+                !t.observe(busy, start + Duration::from_secs(i * 10)),
+                "a growing transcript must never fire the marker"
+            );
+        }
+        // Once the transcript stops growing and the snapshot stays idle, the
+        // settle clock runs and the marker eventually fires.
+        assert!(!t.transcript_grew(off));
+        assert!(!t.observe(false, start + Duration::from_secs(210)));
+        assert!(t.observe(false, start + Duration::from_secs(271)));
     }
 
     #[test]
