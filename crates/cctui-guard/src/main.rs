@@ -3,30 +3,39 @@
 //! Parses a prompt markdown file into steps and serves a localhost HTTP API
 //! that Claude Code's `PreToolUse` hook calls before every tool invocation.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 
 use cctui_guard::engine::WorkflowEngine;
 use cctui_guard::ir::{NetworkDefault, Workflow};
-use cctui_guard::parser::parse_guard_rules_files;
+use cctui_guard::lint::{LintReport, Severity};
+use cctui_guard::parser::{parse_guard_rules_files, step_heading_numbers};
 use cctui_guard::server::router;
 
 #[derive(Parser, Debug)]
 #[command(name = "cctui-guard", about = "Markdown-driven workflow guard daemon")]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+
     /// Prompt file containing the workflow: markdown with `# Step N`
     /// definitions, or — for machine writers — a `workflow.json` matching the
     /// published IR schema (detected by a `.json` extension). Not required when
-    /// `--emit-schema` is set.
-    #[arg(long, env = "PROMPT_FILE", required_unless_present = "emit_schema")]
+    /// `--emit-schema` is set or a subcommand is given.
+    #[arg(long, env = "PROMPT_FILE")]
     prompt: Option<PathBuf>,
 
     /// Print the published JSON Schema for the workflow IR to stdout and exit.
     #[arg(long = "emit-schema")]
     emit_schema: bool,
+
+    /// Lint the prompt + rules before serving; refuse to start on any error.
+    #[arg(long)]
+    check: bool,
 
     /// Operator base guard-rules file, parsed **before** `--rules` so a context
     /// pack can reuse/extend/override its sets (common definitions like
@@ -70,18 +79,129 @@ struct Cli {
     judge_cmd: Option<String>,
 }
 
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Validate a prompt + rules and dump the resolved policy, without serving.
+    Lint(LintArgs),
+}
+
+#[derive(Parser, Debug)]
+struct LintArgs {
+    /// Prompt markdown (or `workflow.json`) to validate.
+    prompt: PathBuf,
+
+    /// Operator base guard-rules layer, parsed before `--rules`.
+    #[arg(long = "rules-base", env = "GUARD_RULES_BASE")]
+    rules_base: Option<PathBuf>,
+
+    /// Shared guard-rules file defining tool sets and network sets.
+    #[arg(long, env = "GUARD_RULES_FILE", default_value = "/etc/claude-worker/guard-rules.md")]
+    rules: PathBuf,
+
+    /// Print each step's resolved policy — sets expanded to concrete hosts and
+    /// command phrases.
+    #[arg(long)]
+    explain: bool,
+}
+
 /// Load a workflow from either frontend: a `.json` file deserializes straight
 /// into the IR (machine writers), anything else is compiled from prompt
-/// markdown. Both produce the same [`Workflow`].
-fn load_workflow(path: &std::path::Path) -> anyhow::Result<Workflow> {
+/// markdown. Both produce the same [`Workflow`]. The second element is every
+/// step id in authoring order (duplicates preserved) so the linter can flag a
+/// repeated step number the step map would collapse.
+fn load_workflow(path: &Path) -> anyhow::Result<(Workflow, Vec<u32>)> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| anyhow::anyhow!("prompt file {}: {e}", path.display()))?;
     if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("json")) {
-        Workflow::from_json(&text)
-            .map_err(|e| anyhow::anyhow!("workflow json {}: {e}", path.display()))
+        let workflow = Workflow::from_json(&text)
+            .map_err(|e| anyhow::anyhow!("workflow json {}: {e}", path.display()))?;
+        let ids = workflow.steps.iter().map(|s| s.id).collect();
+        Ok((workflow, ids))
     } else {
-        Workflow::compile(&text).map_err(|e| anyhow::anyhow!("prompt file {}: {e}", path.display()))
+        let workflow = Workflow::compile(&text)
+            .map_err(|e| anyhow::anyhow!("prompt file {}: {e}", path.display()))?;
+        Ok((workflow, step_heading_numbers(&text)))
     }
+}
+
+/// Layer the guard-rules files: operator base first (if present), then the
+/// pack's rules — `[name]:` overrides, `[name]+:` extends. Missing layers are
+/// skipped, so an absent base or rules file is not fatal.
+fn load_tool_sets(
+    rules_base: Option<&Path>,
+    rules: &Path,
+) -> anyhow::Result<(HashMap<String, Vec<String>>, usize)> {
+    let mut layers: Vec<PathBuf> = Vec::new();
+    if let Some(base) = rules_base {
+        if base.exists() {
+            layers.push(base.to_path_buf());
+        } else {
+            tracing::warn!("Guard rules base not found: {}", base.display());
+        }
+    }
+    if rules.exists() {
+        layers.push(rules.to_path_buf());
+    } else {
+        tracing::warn!("Guard rules file not found: {}", rules.display());
+    }
+    let count = layers.len();
+    Ok((parse_guard_rules_files(&layers)?, count))
+}
+
+/// Print the report to stderr; with `explain`, also dump each step's resolved
+/// policy to stdout. Returns whether the lint passed (no errors).
+fn print_lint(report: &LintReport, explain: bool) -> bool {
+    for diag in &report.diagnostics {
+        eprintln!("{diag}");
+    }
+    let (errors, warnings) = report.diagnostics.iter().fold((0, 0), |(e, w), d| match d.severity {
+        Severity::Error => (e + 1, w),
+        Severity::Warning => (e, w + 1),
+    });
+
+    if explain {
+        for step in &report.resolved {
+            println!("\nStep {}: {}", step.id, step.title);
+            println!("  allowed:    {}", fmt_list(&step.allowed, "(unrestricted)"));
+            println!("  disallowed: {}", fmt_list(&step.disallowed, "(none)"));
+            let net = if step.network_open {
+                "* (open)".to_string()
+            } else {
+                fmt_list(&step.network, "(deny — no egress)")
+            };
+            println!("  network:    {net}");
+            let mut targets: Vec<String> = step.transitions.iter().map(u32::to_string).collect();
+            if step.exit {
+                targets.push("Exit".to_string());
+            }
+            println!("  transition: {}", fmt_list(&targets, "(dead end)"));
+            if step.gate {
+                println!("  gate:       yes");
+            }
+            if step.judge > 0 {
+                println!("  llmjudge:   {} question(s)", step.judge);
+            }
+        }
+    }
+
+    if report.has_errors() {
+        eprintln!("lint failed: {errors} error(s), {warnings} warning(s)");
+        false
+    } else {
+        eprintln!("lint passed: {warnings} warning(s)");
+        true
+    }
+}
+
+fn fmt_list(items: &[String], empty: &str) -> String {
+    if items.is_empty() { empty.to_string() } else { items.join(", ") }
+}
+
+fn run_lint(args: &LintArgs) -> anyhow::Result<bool> {
+    let (workflow, ids) = load_workflow(&args.prompt)?;
+    let (tool_sets, _) = load_tool_sets(args.rules_base.as_deref(), &args.rules)?;
+    let report = cctui_guard::lint::lint(&workflow, &tool_sets, &ids);
+    Ok(print_lint(&report, args.explain))
 }
 
 #[tokio::main]
@@ -96,13 +216,28 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
+    if let Some(Command::Lint(args)) = &cli.command {
+        return if run_lint(args)? { Ok(()) } else { std::process::exit(1) };
+    }
+
     if cli.emit_schema {
         println!("{}", serde_json::to_string_pretty(&cctui_guard::ir::json_schema())?);
         return Ok(());
     }
 
-    let prompt = cli.prompt.expect("clap requires --prompt unless --emit-schema");
-    let workflow = load_workflow(&prompt)?;
+    let Some(prompt) = cli.prompt.clone() else {
+        anyhow::bail!("--prompt is required (or pass --emit-schema / the `lint` subcommand)");
+    };
+    let (workflow, ids) = load_workflow(&prompt)?;
+    let (tool_sets, layer_count) = load_tool_sets(cli.rules_base.as_deref(), &cli.rules)?;
+
+    if cli.check {
+        let report = cctui_guard::lint::lint(&workflow, &tool_sets, &ids);
+        if !print_lint(&report, false) {
+            anyhow::bail!("--check found policy errors; refusing to start");
+        }
+    }
+
     let guarded_default_allow = matches!(workflow.network_default, Some(NetworkDefault::Allow));
     if guarded_default_allow {
         for step in &workflow.steps {
@@ -120,29 +255,11 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!("No steps found in {}", prompt.display());
     }
 
-    // Layer the rules: operator base first (if any), then the (pack's) rules
-    // file — `[name]:` overrides, `[name]+:` extends. parse_guard_rules_files
-    // skips missing layers, so an absent base or rules file is not fatal.
-    let mut layers: Vec<PathBuf> = Vec::new();
-    if let Some(base) = &cli.rules_base {
-        if base.exists() {
-            layers.push(base.clone());
-        } else {
-            tracing::warn!("Guard rules base not found: {}", base.display());
-        }
-    }
-    if cli.rules.exists() {
-        layers.push(cli.rules.clone());
-    } else {
-        tracing::warn!("Guard rules file not found: {}", cli.rules.display());
-    }
-    let tool_sets = parse_guard_rules_files(&layers)?;
-
     tracing::info!(
         "Loaded {} steps, {} tool sets from {} rule layer(s)",
         steps.len(),
         tool_sets.len(),
-        layers.len()
+        layer_count
     );
 
     let engine = Arc::new(WorkflowEngine::new(

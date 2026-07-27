@@ -343,6 +343,36 @@ pub fn parse_steps(markdown: &str) -> Result<BTreeMap<u32, Step>, ParseError> {
     Ok(steps)
 }
 
+/// Every `# Step N` heading number in document order, duplicates preserved.
+///
+/// Code fences are skipped. [`parse_steps`] keys steps by number and silently
+/// collapses a repeated `# Step N`; the linter needs the raw sequence to flag
+/// that overwrite.
+#[must_use]
+pub fn step_heading_numbers(markdown: &str) -> Vec<u32> {
+    let mut out = Vec::new();
+    let mut fence: Option<Fence> = None;
+    for line in markdown.split('\n') {
+        let stripped = line.trim();
+        if let Some(open) = &fence {
+            let closes = fence_marker(stripped)
+                .is_some_and(|f| f.ch == open.ch && f.len >= open.len && f.info.is_empty());
+            if closes {
+                fence = None;
+            }
+            continue;
+        }
+        if let Some(f) = fence_marker(stripped) {
+            fence = Some(f);
+            continue;
+        }
+        if let Some((num, _)) = parse_step_heading(stripped) {
+            out.push(num);
+        }
+    }
+    out
+}
+
 /// Parse a transition string into `(step_numbers, allows_exit)`.
 ///
 /// `"2, Exit"` → `([2], true)`, `"Step 9, Step 11"` → `([9, 11], false)`,
