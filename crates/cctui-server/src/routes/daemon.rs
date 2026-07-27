@@ -15,7 +15,7 @@
 
 use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{Path, State, WebSocketUpgrade};
-use axum::http::{StatusCode, Uri};
+use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::{Extension, Json, response};
 use cctui_proto::adapter::{AdapterEvent, AdapterId, EndReason};
@@ -283,14 +283,8 @@ pub async fn ws(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
-    uri: Uri,
 ) -> Result<response::Response, StatusCode> {
-    // Machine key preferred in the `Authorization` header (keeps it out of
-    // proxy/ingress access logs); the legacy `?token=` query is still accepted
-    // for daemons that predate the header and self-update on a lag.
-    let token = bearer_token(&headers)
-        .or_else(|| extract_token_from_uri(&uri))
-        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let token = bearer_token(&headers).ok_or(StatusCode::UNAUTHORIZED)?;
     let ctx = state.auth_config.validate(&token).await.ok_or(StatusCode::UNAUTHORIZED)?;
     let Some(machine_id) = ctx.machine_id else {
         return Err(StatusCode::FORBIDDEN);
@@ -305,18 +299,6 @@ fn bearer_token(headers: &axum::http::HeaderMap) -> Option<String> {
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .map(str::to_string)
-}
-
-fn extract_token_from_uri(uri: &Uri) -> Option<String> {
-    uri.query().and_then(|q| {
-        q.split('&').find_map(|param| {
-            let mut parts = param.split('=');
-            match (parts.next(), parts.next()) {
-                (Some("token"), Some(token)) => Some(token.to_string()),
-                _ => None,
-            }
-        })
-    })
 }
 
 enum Inbound {
@@ -1671,8 +1653,7 @@ mod tests {
 
     use super::{
         Inbound, MAX_TRANSFER_BYTES, bearer_token, decode_compressed_frame, event_kind,
-        event_local_id, expand_batch, extract_token_from_uri, handle_chunk, next_inbound,
-        should_auto_approve, strip_nul,
+        event_local_id, expand_batch, handle_chunk, next_inbound, should_auto_approve, strip_nul,
     };
 
     async fn drive<S>(mut stream: S, timeout: Duration, check: Duration) -> Inbound
@@ -1723,19 +1704,14 @@ mod tests {
     }
 
     #[test]
-    fn ws_auth_prefers_header_then_falls_back_to_legacy_query() {
+    fn ws_auth_is_header_only() {
         let mut headers = axum::http::HeaderMap::new();
         headers.insert(
             axum::http::header::AUTHORIZATION,
             axum::http::HeaderValue::from_static("Bearer header-key"),
         );
-        let uri: axum::http::Uri = "/api/v1/daemon/ws?token=query-key".parse().unwrap();
-        let token = bearer_token(&headers).or_else(|| extract_token_from_uri(&uri));
-        assert_eq!(token.as_deref(), Some("header-key"));
-
-        let token =
-            bearer_token(&axum::http::HeaderMap::new()).or_else(|| extract_token_from_uri(&uri));
-        assert_eq!(token.as_deref(), Some("query-key"));
+        assert_eq!(bearer_token(&headers).as_deref(), Some("header-key"));
+        assert!(bearer_token(&axum::http::HeaderMap::new()).is_none());
     }
 
     #[test]
