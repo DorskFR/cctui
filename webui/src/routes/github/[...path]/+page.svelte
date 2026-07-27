@@ -15,13 +15,10 @@
 <script lang="ts">
 	import { ghreviewUrl } from '$lib/config';
 	import { ensureGhreviewToken } from '$lib/ghreview';
-	import { useCapabilities } from '$lib/queries';
 	import { Card, Field, Heading, Link, Select, Stack, Text } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 
 	const url = ghreviewUrl();
-	const caps = useCapabilities();
-	const enabled = $derived($caps.data?.github.enabled === true);
 
 	interface GhAccount {
 		id: string;
@@ -51,12 +48,12 @@
 		return { Review: mod.default, token, base };
 	}
 
-	// url is a constant deploy value, so kick off the boot once the connector gate
-	// resolves. An $effect (not a $derived) so the account/accounts writes above
-	// aren't side-effects of a derivation.
+	// url is a constant deploy value; kick off the boot once. An $effect (not a
+	// $derived) so the account/accounts writes above aren't side-effects of a
+	// derivation. The empty-accounts case is handled after boot resolves.
 	let booted = $state<ReturnType<typeof boot> | null>(null);
 	$effect(() => {
-		if (url && enabled && !booted) booted = boot(url);
+		if (url && !booted) booted = boot(url);
 	});
 
 </script>
@@ -70,15 +67,7 @@
 			</Text>
 		</Stack>
 	</Card>
-{:else if $caps.isSuccess && !enabled}
-	<Card>
-		<Stack gap="var(--sp-2)">
-			<Heading level={2}>{m.github_unlock_heading()}</Heading>
-			<Text tone="faint">{m.github_unlock_body()}</Text>
-			<Link href="/accounts">{m.github_unlock_cta()}</Link>
-		</Stack>
-	</Card>
-{:else if enabled}
+{:else}
 	{#if !booted}
 		<Text tone="faint">{m.review_center_loading()}</Text>
 	{:else}

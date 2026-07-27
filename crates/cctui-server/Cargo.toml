@@ -6,16 +6,10 @@ edition.workspace = true
 [lints]
 workspace = true
 
-[features]
-# Optional GitHub integration (CCT-373 / GH-PKG-1). A build without this feature
-# contains zero GitHub code, routes, or schema.
-github = ["dep:cctui-github"]
-
 [dependencies]
 cctui-proto.workspace = true
 cctui-crypto.workspace = true
 cctui-query.workspace = true
-cctui-github = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true

@@ -3,7 +3,6 @@
 		useAccounts,
 		useAccountActions,
 		useAccountUsage,
-		useCapabilities,
 		useMe,
 		useUsers,
 		type OAuthAccount,
@@ -15,6 +14,7 @@
 		type UpdateProvider,
 	} from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
+	import { ghreviewUrl } from '$lib/config';
 	import { providerFamily, providerLabel, PROVIDER_KINDS, type ProviderKind } from '$lib/providers';
 	import ProviderPanel from '$lib/components/molecules/ProviderPanel.svelte';
 	import SoftLimit from '$lib/components/molecules/SoftLimit.svelte';
@@ -43,14 +43,14 @@
 	} from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 
-	const caps = useCapabilities();
 	// Accounts is the single home for everything external: AI provider
 	// accounts, GitHub connectors, and dispatchers. The Connectors tab only
-	// appears when the integration is compiled in (`available`).
+	// appears when the ghreview review backend is deployed (`ghreviewUrl`).
+	const reviewConfigured = $derived(ghreviewUrl() !== null);
 	let tab = $state('ai');
 	const tabs = $derived<TabItem[]>([
 		{ id: 'ai', label: m.accounts_tab_ai() },
-		...($caps.data?.github.available ? [{ id: 'connectors', label: m.accounts_tab_connectors() }] : []),
+		...(reviewConfigured ? [{ id: 'connectors', label: m.accounts_tab_connectors() }] : []),
 		{ id: 'dispatchers', label: m.accounts_tab_dispatchers() }
 	]);
 

@@ -68,13 +68,8 @@ pub struct AppState {
     /// serve a cached value and only re-fetch upstream past a TTL — the accounts
     /// view polls lazily and many clients share one cache entry per account.
     pub account_usage_cache: AccountUsageCache,
-    /// Best-effort PR status cache the session classifier reads (    /// docs/github-integration.md §6.1). Core-owned and always present; the
-    /// optional GitHub connector (feature `github`) pushes enriched check/review
-    /// state into it. Empty when GitHub is absent — sessions still render and no
-    /// `Review` bucket arises, so feature-off behaviour is unchanged. Only the
-    /// `github`-feature route reads it today, so it is dead in a feature-off
-    /// build (the field still exists so `AppState` has one shape either way).
-    #[cfg_attr(not(feature = "github"), allow(dead_code))]
+    /// PR status cache the classifier reads for the `Review` bucket. Has no
+    /// feeder currently, so it stays empty (no `Review` bucket surfaces).
     pub pr_status_cache: cctui_proto::classifier::PrStatusCache,
     /// Sessions currently refused by the per-account soft limit, keyed
     /// by `session_id`. The gateway sets the entry when a passthrough is blocked

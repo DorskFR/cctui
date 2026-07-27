@@ -28,9 +28,6 @@ import type { MeResponse } from "@bindings/MeResponse";
 import type { CapabilitiesResponse } from "@bindings/CapabilitiesResponse";
 import type { LangfuseSessionUsage } from "@bindings/LangfuseSessionUsage";
 import type { CodexModelCatalog } from "@bindings/CodexModelCatalog";
-import type { ConnectorInfo } from "@bindings/ConnectorInfo";
-import type { CreateConnector } from "@bindings/CreateConnector";
-import type { UpdateConnector } from "@bindings/UpdateConnector";
 import type { Label } from "@bindings/Label";
 import type { LabelListResponse } from "@bindings/LabelListResponse";
 import type { SettingsCatalogResponse } from "@bindings/SettingsCatalogResponse";
@@ -559,20 +556,6 @@ export const endpoints = {
     }),
   oauthFinish: (body: OAuthFinish) =>
     api.post<OAuthAccount>("/accounts/oauth/finish", body),
-  /** GitHub connectors (GH-CONN-1). The credential is encrypted at rest and
-   *  never returned — list/create only ever surface a masked preview. */
-  githubConnectors: () => api.get<ConnectorInfo[]>("/github/connectors"),
-  createGithubConnector: (body: CreateConnector) =>
-    api.post<ConnectorInfo>("/github/connectors", body),
-  updateGithubConnector: (id: string, body: UpdateConnector) =>
-    api.patch<ConnectorInfo>(`/github/connectors/${id}`, body),
-  deleteGithubConnector: (id: string) =>
-    api.del<void>(`/github/connectors/${id}`),
-  /** Run the reconcile poll for one connector immediately, instead of
-   *  waiting for the scheduled tick. Returns the updated connector view, whose
-   *  `last_polled_at`/`last_error` reflect this attempt. */
-  syncGithubConnector: (id: string) =>
-    api.post<ConnectorInfo>(`/github/connectors/${id}/sync`, {}),
   /** Every spawnable machine across all active users — for the spawn picker.
    * Excludes server-managed machines (`ephemeral` worker pods and the per-user
    * `dispatch` machine): those aren't somewhere you'd start an interactive
@@ -880,49 +863,6 @@ export function useResourceShareActions() {
     revoke: async (resourceType: string, id: string, userId: string) => {
       await endpoints.revokeResourceShare(resourceType, id, userId);
       qc.invalidateQueries({ queryKey: qk.resourceShares(resourceType, id) });
-    },
-  };
-}
-
-export type { ConnectorInfo, CreateConnector, UpdateConnector };
-
-/** GitHub connectors (GH-CONN-1). Only fetched while the GitHub view is mounted
- *  (caller gates `enabled` on the capability). Credentials are never returned. */
-export const useGithubConnectors = (enabled: () => boolean = () => true) =>
-  createQuery(
-    toStore(() => ({
-      queryKey: ["github-connectors"],
-      queryFn: endpoints.githubConnectors,
-      enabled: enabled(),
-    })),
-  );
-
-export function useGithubConnectorActions() {
-  const qc = useQueryClient();
-  // Connector changes flip the capability (repos/enabled), so refresh both.
-  const inval = () => {
-    qc.invalidateQueries({ queryKey: ["github-connectors"] });
-    qc.invalidateQueries({ queryKey: qk.capabilities });
-  };
-  return {
-    create: async (body: CreateConnector) => {
-      const r = await endpoints.createGithubConnector(body);
-      inval();
-      return r;
-    },
-    update: async (id: string, body: UpdateConnector) => {
-      const r = await endpoints.updateGithubConnector(id, body);
-      inval();
-      return r;
-    },
-    remove: async (id: string) => {
-      await endpoints.deleteGithubConnector(id);
-      inval();
-    },
-    sync: async (id: string) => {
-      const r = await endpoints.syncGithubConnector(id);
-      inval();
-      return r;
     },
   };
 }

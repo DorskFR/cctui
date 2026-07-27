@@ -46,7 +46,6 @@ export type * from './ForkMode';
 export type * from './ForkRequest';
 export type * from './ForkResponse';
 export type * from './GatewayStatus';
-export type * from './GithubCapability';
 export type * from './GithubCredentialKind';
 export type * from './GithubEventKind';
 export type * from './GithubEventPayload';

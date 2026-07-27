@@ -704,15 +704,6 @@ impl Bus {
         self.inner.server_tx.subscribe()
     }
 
-    /// A clone of the raw server-event sender, for external crates that
-    /// publish through their own handle (the optional GitHub integration takes
-    /// an `EventTx` and cannot depend on the bus type). In-process code should
-    /// call [`Self::publish`] instead.
-    #[cfg_attr(not(feature = "github"), allow(dead_code))]
-    pub fn server_sender(&self) -> broadcast::Sender<ServerEvent> {
-        self.inner.server_tx.clone()
-    }
-
     /// Create (or reuse) the stream channel for a registering session and
     /// return its sender. Reuse-on-reregister keeps current WS subscribers
     /// from seeing the broadcast channel close and losing their stream until

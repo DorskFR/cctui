@@ -7,7 +7,6 @@ members = [
     "crates/cctui-dispatcher-apple",
     "crates/cctui-dispatcher-docker",
     "crates/cctui-dispatcher-kube",
-    "crates/cctui-github",
     "crates/cctui-guard",
     "crates/cctui-guard-proxy",
     "crates/cctui-orchestrator",
@@ -42,7 +41,6 @@ missing_panics_doc = "allow"
 cctui-proto = { path = "crates/cctui-proto" }
 cctui-crypto = { path = "crates/cctui-crypto" }
 cctui-query = { path = "crates/cctui-query" }
-cctui-github = { path = "crates/cctui-github" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4", "serde"] }

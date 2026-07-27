@@ -1,11 +1,9 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import NavLink from '$lib/components/atoms/NavLink.svelte';
-	import { useCapabilities, useSessions } from '$lib/queries';
+	import { useSessions } from '$lib/queries';
 	import { ghreviewUrl } from '$lib/config';
 	import { m } from '$lib/paraglide/messages';
-
-	const caps = useCapabilities();
 
 	// Aggregate unread count across the live list, surfaced as a red
 	// pill on the Sessions item. The list is already fetched app-wide (Header),
@@ -15,10 +13,9 @@
 		($sessions.data?.sessions ?? []).reduce((n, s) => n + (s.unread_count ?? 0), 0)
 	);
 
-	// The unified GitHub review center is gated on BOTH a client-side
-	// deploy value (`ghreviewUrl`, the ghreview backend origin) AND a configured
-	// connector (`caps.github.enabled`). With ghreviewUrl set but no connector,
-	// /github still routes but shows an unlock screen pointing to Accounts.
+	// The GitHub review center is gated on the ghreview backend origin
+	// (`ghreviewUrl`) being deployed. Without an account it still routes and
+	// shows an unlock screen pointing to Accounts → Connectors.
 	const reviewEnabled = ghreviewUrl() !== null;
 
 	const items = $derived([
@@ -26,7 +23,7 @@
 		{ href: '/sessions', label: m.nav_sessions(), icon: '◰' },
 		{ href: '/users', label: m.nav_users(), icon: '◍' },
 		{ href: '/accounts', label: m.nav_accounts(), icon: '◉' },
-		...(reviewEnabled && $caps.data?.github.enabled
+		...(reviewEnabled
 			? [{ href: '/github', label: m.nav_github(), icon: '◐' }]
 			: []),
 		{ href: '/settings', label: m.nav_settings(), icon: '⚙' }
