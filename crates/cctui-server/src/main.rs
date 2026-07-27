@@ -170,8 +170,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/auth/login", post(routes::auth::login))
         .route("/api/v1/auth/logout", post(routes::auth::logout))
         // Daemon-facing endpoints. `auth` and `ws` carry their own auth
-        // (machine-key Bearer / `?token=` query) so they live outside the
-        // user-token-only `api_router` group.
+        // (machine-key Bearer) so they live outside the user-token-only
+        // `api_router` group.
         .route("/api/v1/daemon/auth", post(routes::daemon::auth))
         .route("/api/v1/daemon/ws", get(routes::daemon::ws))
         // Launch-time gateway-env pull: the daemon resolves a
