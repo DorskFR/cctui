@@ -25,6 +25,18 @@ pub enum Version {
     V1,
 }
 
+/// Document-level egress default for guarded steps that omit `[network]`.
+///
+/// Authored as a `[network-default]: allow|deny` header above the first step.
+/// Absent ⇒ `deny`: a step-guarded prompt locks egress closed unless a step
+/// grants hosts (or `[network]: *`). `allow` restores the legacy open behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum NetworkDefault {
+    Allow,
+    Deny,
+}
+
 /// A capability rule (`[allowed]` / `[disallowed]`).
 ///
 /// A wildcard, an explicit keyword/tool-set list, or unrestricted. Matches the
@@ -189,6 +201,10 @@ pub struct Workflow {
     /// The IR schema version.
     #[serde(default)]
     pub version: Version,
+    /// Document-level egress default for guarded steps without `[network]`.
+    /// Absent ⇒ deny.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_default: Option<NetworkDefault>,
     /// The workflow steps, ordered by step number.
     pub steps: Vec<WorkflowStep>,
 }
@@ -202,8 +218,9 @@ impl Workflow {
     pub fn compile(markdown: &str) -> Result<Self, ParseError> {
         let steps = parse_steps(markdown)?;
         let version = parse_version_header(markdown)?;
+        let network_default = parse_network_default_header(markdown)?;
         let steps = steps.iter().map(|(id, step)| WorkflowStep::from_step(*id, step)).collect();
-        Ok(Self { version, steps })
+        Ok(Self { version, network_default, steps })
     }
 
     /// Load the IR from a machine-authored `workflow.json` document.
@@ -247,6 +264,33 @@ fn parse_version_header(markdown: &str) -> Result<Version, ParseError> {
         }
     }
     Ok(Version::V1)
+}
+
+/// Read the optional `[network-default]: allow|deny` header above the first step
+/// heading. Missing ⇒ `None` (engine treats it as deny). An unknown value is a
+/// parse error.
+fn parse_network_default_header(markdown: &str) -> Result<Option<NetworkDefault>, ParseError> {
+    for line in markdown.lines() {
+        let stripped = line.trim();
+        let lower = stripped.to_ascii_lowercase();
+        if lower.starts_with("[network-default]") {
+            let value = stripped.split_once(':').map_or("", |(_, v)| v.trim()).to_ascii_lowercase();
+            return match value.as_str() {
+                "allow" => Ok(Some(NetworkDefault::Allow)),
+                "deny" => Ok(Some(NetworkDefault::Deny)),
+                other => Err(ParseError {
+                    step: 0,
+                    message: format!(
+                        "[network-default] header must be 'allow' or 'deny', got '{other}'"
+                    ),
+                }),
+            };
+        }
+        if stripped.starts_with('#') {
+            break;
+        }
+    }
+    Ok(None)
 }
 
 /// The published JSON Schema for the versioned [`Workflow`] IR.

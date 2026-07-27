@@ -62,6 +62,7 @@ async fn spawn() -> (String, tempfile::TempDir) {
         vec!["callback.example.com:443".to_string()],
         dir.path().to_path_buf(),
         None,
+        false,
     ));
 
     let app = router(engine);
@@ -221,6 +222,7 @@ async fn gated_transition_requires_proof_and_reinjects() {
         vec![],
         dir.path().to_path_buf(),
         None,
+        false,
     ));
 
     // Gate not yet satisfied → transition refused, still on Step 1.
@@ -253,6 +255,7 @@ async fn gated_transition_requires_proof_and_reinjects() {
         vec![],
         dir.path().join("empty"), // gate would fail here, but Exit skips it
         None,
+        false,
     ));
     let exit = engine2.transition(&json!("exit"));
     assert_eq!(exit["ok"], true, "Exit always allowed regardless of gate");
@@ -289,6 +292,7 @@ async fn compact_directive_is_opt_in_per_step() {
             vec![],
             dir.path().to_path_buf(),
             None,
+            false,
         ))
     };
 
@@ -340,6 +344,7 @@ async fn llmjudge_full_score_required_to_transition() {
             vec![],
             dir.path().to_path_buf(),
             judge_cmd.map(str::to_string),
+            false,
         ))
     };
 
@@ -433,6 +438,7 @@ async fn llmjudge_runs_after_gate_with_clean_context() {
         vec![],
         dir.path().to_path_buf(),
         Some(judge_cmd),
+        false,
     ));
 
     // Gate fails ⇒ refused with the gate error; the judge never ran.

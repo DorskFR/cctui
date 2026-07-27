@@ -416,8 +416,16 @@ fn make_engine(rules_text: &str, prompt_text: &str) -> TestEngine {
     let steps = parse_steps(prompt_text).unwrap();
     let tool_sets = parse_guard_rules_str(rules_text);
     let gate_cwd = dir.path().to_path_buf();
-    let engine =
-        WorkflowEngine::new(steps, tool_sets, state_file, policy_file, vec![], gate_cwd, None);
+    let engine = WorkflowEngine::new(
+        steps,
+        tool_sets,
+        state_file,
+        policy_file,
+        vec![],
+        gate_cwd,
+        None,
+        false,
+    );
     TestEngine { engine, _dir: dir }
 }
 
@@ -571,6 +579,7 @@ fn test_proxy_policy_expansion() {
         vec![],
         dir.path().to_path_buf(),
         None,
+        false,
     );
 
     // Engine initialized on step 1, which has [network]: net-anthropic, net-github.
@@ -588,6 +597,56 @@ fn test_proxy_policy_expansion() {
     assert_eq!(hosts.len(), 3, "exactly 3 hosts");
     assert_eq!(written["default"], "deny");
     drop(engine);
+}
+
+fn initial_policy(md: &str, rules: &str, guarded_default_allow: bool) -> serde_json::Value {
+    let dir = tempfile::tempdir().unwrap();
+    let proxy_dir = dir.path().join("guard-proxy");
+    std::fs::create_dir_all(&proxy_dir).unwrap();
+    let policy_file = proxy_dir.join("policy.json");
+    let engine = WorkflowEngine::new(
+        parse_steps(md).unwrap(),
+        parse_guard_rules_str(rules),
+        dir.path().join("state"),
+        policy_file.clone(),
+        vec!["callback.example.com:443".to_string()],
+        dir.path().to_path_buf(),
+        None,
+        guarded_default_allow,
+    );
+    let v = serde_json::from_str(&std::fs::read_to_string(&policy_file).unwrap()).unwrap();
+    drop(engine);
+    v
+}
+
+#[test]
+fn network_omitted_on_guarded_step_defaults_deny() {
+    let md = "# Step 1: Work\n[allowed]: *\n[transition]: Exit\n";
+    let p = initial_policy(md, "", false);
+    assert_eq!(p["default"], "deny");
+    let hosts: Vec<&str> =
+        p["allowed_hosts"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+    assert_eq!(hosts, vec!["callback.example.com:443"], "only the always-allowed callback");
+}
+
+#[test]
+fn network_wildcard_opens_egress() {
+    let md = "# Step 1: Work\n[allowed]: *\n[network]: *\n[transition]: Exit\n";
+    let p = initial_policy(md, "", false);
+    assert_eq!(p["default"], "allow");
+}
+
+#[test]
+fn network_default_override_restores_allow() {
+    let md = "# Step 1: Work\n[allowed]: *\n[transition]: Exit\n";
+    let p = initial_policy(md, "", true);
+    assert_eq!(p["default"], "allow");
+}
+
+#[test]
+fn unguarded_prompt_defaults_allow() {
+    let p = initial_policy("No steps here, just prose.\n", "", false);
+    assert_eq!(p["default"], "allow");
 }
 
 // --- [llmjudge] parsing (CCT-516) ---
