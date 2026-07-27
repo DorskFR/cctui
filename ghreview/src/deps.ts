@@ -18,6 +18,7 @@ export interface AppDeps {
   forceSync?: (account: string) => Promise<"ok" | "busy" | "unknown">;
   accountFor?: (account: string) => Account | undefined;
   auth?: AuthResolver;
+  authDisabled?: boolean;
   sealer?: { seal: (plaintext: string) => string };
   validatePat?: PatValidator;
   octokitForPat?: (token: string) => OctokitRequest;

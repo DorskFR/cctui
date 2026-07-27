@@ -246,7 +246,7 @@ guarded("viewed state store", () => {
   });
 
   test("PUT route marks a folder's files and records digests", async () => {
-    const app = createApp({ db });
+    const app = createApp({ db, authDisabled: true });
     const res = await app.request(`/v1/repos/${REF.owner}/${REF.repo}/pulls/${REF.number}/viewed`, {
       method: "PUT",
       headers: { "content-type": "application/json" },

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createApp } from "../src/app.ts";
 import { createStaticResolver, parseStaticTokens } from "../src/auth/resolver.ts";
+import { loadConfig } from "../src/config.ts";
 
 const resolver = createStaticResolver(parseStaticTokens("tok-a:user-a,tok-b:user-b"));
 
@@ -50,5 +51,50 @@ describe("auth middleware", () => {
     expect(map.get("good")).toBe("u1");
     expect(map.get("tok")).toBe("u2");
     expect(map.size).toBe(2);
+  });
+});
+
+describe("fail-closed default", () => {
+  test("denies non-exempt routes when no resolver is configured", async () => {
+    const app = createApp();
+    const res = await app.request("/v1/repos");
+    expect(res.status).toBe(401);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("unauthorized");
+  });
+
+  test("keeps the exempt set servable without a resolver", async () => {
+    const app = createApp();
+    expect((await app.request("/v1/health")).status).toBe(200);
+    expect((await app.request("/v1/status")).status).toBe(200);
+    expect((await app.request("/v1/openapi.json")).status).toBe(200);
+  });
+
+  test("authDisabled opt-out serves non-exempt routes unauthenticated", async () => {
+    const app = createApp({ authDisabled: true });
+    const res = await app.request("/v1/repos");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ items: [], next_cursor: null });
+  });
+});
+
+describe("auth mode config", () => {
+  test("static mode is available without a DATABASE_URL", () => {
+    const cfg = loadConfig({ GHREVIEW_AUTH_MODE: "static", GHREVIEW_AUTH_TOKENS: "t:u" });
+    expect(cfg.databaseUrl).toBeUndefined();
+    expect(cfg.authMode).toBe("static");
+  });
+
+  test("static tokens authenticate without a store", async () => {
+    const cfg = loadConfig({ GHREVIEW_AUTH_MODE: "static", GHREVIEW_AUTH_TOKENS: "t:u" });
+    const app = createApp({ auth: createStaticResolver(parseStaticTokens(cfg.authTokens)) });
+    const res = await app.request("/v1/repos", { headers: { authorization: "Bearer t" } });
+    expect(res.status).toBe(200);
+    expect((await app.request("/v1/repos")).status).toBe(401);
+  });
+
+  test("defaults to cctui and explicit none opt-out is honored", () => {
+    expect(loadConfig({}).authMode).toBe("cctui");
+    expect(loadConfig({ GHREVIEW_AUTH_MODE: "none" }).authMode).toBe("none");
   });
 });

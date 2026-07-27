@@ -1,10 +1,5 @@
 import { createApp } from "./app.ts";
-import {
-  type AuthResolver,
-  createCctuiResolver,
-  createStaticResolver,
-  parseStaticTokens,
-} from "./auth/resolver.ts";
+import { createCctuiResolver, createStaticResolver, parseStaticTokens } from "./auth/resolver.ts";
 import { loadConfig } from "./config.ts";
 import { createSealer } from "./crypto/seal.ts";
 import { createGhAccount } from "./db/accounts.ts";
@@ -29,14 +24,6 @@ if (config.databaseUrl) {
   await bus.startListening(db);
   deps.db = db;
   deps.bus = bus;
-
-  let resolver: AuthResolver;
-  if (config.authMode === "static") {
-    resolver = createStaticResolver(parseStaticTokens(config.authTokens));
-  } else {
-    resolver = createCctuiResolver(db, config.cctuiSchema);
-  }
-  deps.auth = resolver;
 
   if (config.githubAccount && config.githubToken && sealer) {
     await createGhAccount(db, {
@@ -66,8 +53,25 @@ if (config.databaseUrl) {
     console.log("ghreview: GHREVIEW_SEAL_KEY unset — accounts/poller disabled (store + auth only)");
   }
 } else {
-  console.log("ghreview: DATABASE_URL unset — running contract-only (no sync, empty store)");
+  console.log("ghreview: DATABASE_URL unset — running store-less (no sync, empty store)");
 }
+
+let authLabel: string;
+if (config.authMode === "none") {
+  deps.authDisabled = true;
+  authLabel = "none — ALL /v1 ROUTES SERVED UNAUTHENTICATED";
+  console.warn(`ghreview: GHREVIEW_AUTH_MODE=none — authentication disabled for every /v1 route`);
+} else if (config.authMode === "static") {
+  deps.auth = createStaticResolver(parseStaticTokens(config.authTokens));
+  authLabel = "static";
+} else if (deps.db) {
+  deps.auth = createCctuiResolver(deps.db, config.cctuiSchema);
+  authLabel = "cctui";
+} else {
+  authLabel =
+    "deny-all (cctui mode needs DATABASE_URL; set GHREVIEW_AUTH_MODE=static to serve authenticated)";
+}
+console.log(`ghreview: auth mode ${authLabel}`);
 
 const app = createApp(deps);
 

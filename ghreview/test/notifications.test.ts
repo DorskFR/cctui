@@ -226,7 +226,11 @@ guarded("notification inbox + state", () => {
 
   test("bulk state route pushes reads via accountFor", async () => {
     const account = createAccount({ login: "nb", token: undefined, octokit: readingOctokit(205) });
-    const app = createApp({ db, accountFor: (a) => (a === "nb" ? account : undefined) });
+    const app = createApp({
+      db,
+      authDisabled: true,
+      accountFor: (a) => (a === "nb" ? account : undefined),
+    });
     const res = await app.request("/v1/notifications/state", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -241,7 +245,7 @@ guarded("notification inbox + state", () => {
   });
 
   test("single state route rejects an empty patch", async () => {
-    const app = createApp({ db });
+    const app = createApp({ db, authDisabled: true });
     const res = await app.request("/v1/notifications/t1/state", {
       method: "POST",
       headers: { "content-type": "application/json" },

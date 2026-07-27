@@ -48,6 +48,14 @@ export function createApp(deps: AppDeps = {}) {
       if (AUTH_EXEMPT.has(c.req.path)) return next();
       return guard(c, next);
     });
+  } else if (!deps.authDisabled) {
+    app.use("/v1/*", async (c, next) => {
+      if (AUTH_EXEMPT.has(c.req.path)) return next();
+      return c.json(
+        { error: { code: "unauthorized", message: "Authentication is not configured" } },
+        401,
+      );
+    });
   }
 
   registerHealth(app, deps);

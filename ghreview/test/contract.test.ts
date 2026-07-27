@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createApp } from "../src/app.ts";
 
-const app = createApp();
+const app = createApp({ authDisabled: true });
 
 async function spec() {
   const res = await app.request("/v1/openapi.json");

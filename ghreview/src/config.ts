@@ -1,4 +1,4 @@
-export type AuthMode = "cctui" | "static";
+export type AuthMode = "cctui" | "static" | "none";
 
 export interface Config {
   databaseUrl: string | undefined;
@@ -15,6 +15,12 @@ export interface Config {
   authTokens: string | undefined;
   cctuiSchema: string;
   syncViewedFromGithub: boolean;
+}
+
+function parseAuthMode(value: string | undefined): AuthMode {
+  if (value === "static") return "static";
+  if (value === "none") return "none";
+  return "cctui";
 }
 
 function num(value: string | undefined, fallback: number): number {
@@ -35,7 +41,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     webhookSecret: env.GHREVIEW_WEBHOOK_SECRET,
     port: num(env.PORT, 8790),
     sealKey: env.GHREVIEW_SEAL_KEY,
-    authMode: env.GHREVIEW_AUTH_MODE === "static" ? "static" : "cctui",
+    authMode: parseAuthMode(env.GHREVIEW_AUTH_MODE),
     authTokens: env.GHREVIEW_AUTH_TOKENS,
     cctuiSchema: env.GHREVIEW_CCTUI_SCHEMA ?? "public",
     syncViewedFromGithub: env.GHREVIEW_SYNC_VIEWED_GITHUB === "true",
