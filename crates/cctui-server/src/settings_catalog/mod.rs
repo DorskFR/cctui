@@ -25,12 +25,7 @@
 //!
 //! The public API is intentionally small and read-only: [`catalog`] returns the parsed
 //! singleton, and [`Catalog`] exposes lookups plus [`Catalog::validate_settings`] /
-//! [`Catalog::validate_env`] for the server-side allowlist check.
-
-// The public API here is consumed by CCT-538 (server allowlist validation) and
-// CCT-541 (webui editor), which land in later waves. Until then it is exercised only
-// by this module's tests, so silence dead-code warnings for the additive surface.
-#![allow(dead_code)]
+//! [`Catalog::validate_free_env`] for the server-side allowlist check.
 
 use std::collections::BTreeMap;
 use std::sync::LazyLock;
@@ -210,7 +205,7 @@ pub fn valid_env_name(name: &str) -> bool {
 }
 
 /// A single allowlist violation from [`Catalog::validate_settings`] /
-/// [`Catalog::validate_env`].
+/// [`Catalog::validate_free_env`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Violation {
     /// Offending key / env-var name.
@@ -242,17 +237,9 @@ pub struct Catalog {
     env: Vec<EnvVar>,
     env_by_name: BTreeMap<String, usize>,
     presets: Vec<Preset>,
-    /// URL the schema was vendored from (for the drift CI job / provenance).
-    pub schema_url: String,
 }
 
 impl Catalog {
-    /// All `settings.json` keys, schema + docs delta, in catalog order.
-    #[must_use]
-    pub fn keys(&self) -> &[SettingKey] {
-        &self.keys
-    }
-
     /// Look up a single key by exact name.
     #[must_use]
     pub fn key(&self, name: &str) -> Option<&SettingKey> {
@@ -269,12 +256,6 @@ impl Catalog {
     #[must_use]
     pub fn env(&self, name: &str) -> Option<&EnvVar> {
         self.env_by_name.get(name).map(|&i| &self.env[i])
-    }
-
-    /// All named presets.
-    #[must_use]
-    pub fn presets(&self) -> &[Preset] {
-        &self.presets
     }
 
     /// Look up a preset by id.
@@ -407,28 +388,6 @@ impl Catalog {
         }
         ValidationReport { violations }
     }
-
-    /// Validate an env map against the curated allowlist. Every name must be in the
-    /// allowlist and tagged `safe`/`care` (the allowlist only contains such vars, but
-    /// the tag is checked defensively).
-    #[must_use]
-    pub fn validate_env(&self, env: &BTreeMap<String, String>) -> ValidationReport {
-        let mut violations = Vec::new();
-        for name in env.keys() {
-            match self.env(name) {
-                None => violations.push(Violation {
-                    key: name.clone(),
-                    reason: "env var not in the curated per-account allowlist".to_string(),
-                }),
-                Some(v) if !v.tag.account_exposable() => violations.push(Violation {
-                    key: name.clone(),
-                    reason: format!("env var is tagged `{}`", v.tag.as_str()),
-                }),
-                Some(_) => {}
-            }
-        }
-        ValidationReport { violations }
-    }
 }
 
 // ---- loading / parsing ----------------------------------------------------
@@ -436,7 +395,6 @@ impl Catalog {
 /// Raw TOML shape of `catalog.toml`.
 #[derive(Debug, Deserialize)]
 struct RawCatalog {
-    schema_url: String,
     #[serde(default)]
     keys: Vec<RawKey>,
     #[serde(default)]
@@ -580,7 +538,7 @@ fn build() -> Catalog {
         "catalog.toml must define the `{QUIET_DEFAULTS_ID}` preset"
     );
 
-    Catalog { keys, keys_by_name, env, env_by_name, presets, schema_url: raw.schema_url }
+    Catalog { keys, keys_by_name, env, env_by_name, presets }
 }
 
 static CATALOG: LazyLock<Catalog> = LazyLock::new(build);
@@ -598,10 +556,10 @@ mod tests {
     #[test]
     fn catalog_loads_and_indexes() {
         let c = catalog();
-        assert!(c.keys().len() >= 100, "expected the full key catalog");
+        assert!(c.keys.len() >= 100, "expected the full key catalog");
         assert!(!c.env_allowlist().is_empty());
         // Index round-trips.
-        for k in c.keys() {
+        for k in &c.keys {
             assert!(c.key(&k.name).is_some(), "{} not indexed", k.name);
         }
         for e in c.env_allowlist() {
@@ -652,7 +610,7 @@ mod tests {
     #[test]
     fn grouped_keys_are_exposable_booleans() {
         let c = catalog();
-        let grouped: Vec<&SettingKey> = c.keys().iter().filter(|k| k.group.is_some()).collect();
+        let grouped: Vec<&SettingKey> = c.keys.iter().filter(|k| k.group.is_some()).collect();
         assert!(grouped.len() >= 25, "expected the curated toggle set, got {}", grouped.len());
         for k in grouped {
             assert!(k.account_exposable(), "{} is grouped but not exposable", k.name);
@@ -766,18 +724,6 @@ mod tests {
         // Non-string values and a non-object env are rejected.
         assert!(!c.validate_settings(&serde_json::json!({ "env": { "X": 1 } })).ok());
         assert!(!c.validate_settings(&serde_json::json!({ "env": [1, 2] })).ok());
-    }
-
-    #[test]
-    fn validate_env_enforces_allowlist() {
-        let c = catalog();
-        let mut ok = BTreeMap::new();
-        ok.insert("ANTHROPIC_MODEL".to_string(), "claude-x".to_string());
-        assert!(c.validate_env(&ok).ok());
-
-        let mut bad = BTreeMap::new();
-        bad.insert("ANTHROPIC_API_KEY".to_string(), "sk-secret".to_string());
-        assert!(!c.validate_env(&bad).ok());
     }
 
     #[test]
