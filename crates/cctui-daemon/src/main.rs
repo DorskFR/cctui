@@ -174,10 +174,12 @@ async fn run_daemon(path: &std::path::Path, no_auto_update: bool) -> anyhow::Res
     let update_machine_key = cfg.machine_key.clone();
     let supervisor = Supervisor::new(client, cfg.machine_key, adapters::registry());
     let shutdown = CancellationToken::new();
-    // Translate Ctrl-C / SIGTERM into shutdown.
+    // SIGTERM must reach the graceful path, not just Ctrl-C: a dispatched worker
+    // is torn down with `kill`, and the default SIGTERM disposition would kill the
+    // process before the transcript tail flushes.
     let signal_token = shutdown.clone();
     tokio::spawn(async move {
-        let _ = tokio::signal::ctrl_c().await;
+        wait_for_termination().await;
         signal_token.cancel();
     });
     if auto_update_enabled(no_auto_update) {
@@ -195,6 +197,29 @@ async fn run_daemon(path: &std::path::Path, no_auto_update: bool) -> anyhow::Res
     }
     supervisor.run(shutdown).await;
     Ok(())
+}
+
+/// Resolve the first of SIGINT (Ctrl-C) or SIGTERM (`kill`, pod teardown).
+#[cfg(unix)]
+async fn wait_for_termination() {
+    use tokio::signal::unix::{SignalKind, signal};
+    let mut term = match signal(SignalKind::terminate()) {
+        Ok(s) => s,
+        Err(err) => {
+            tracing::warn!(%err, "cannot install SIGTERM handler; Ctrl-C only");
+            let _ = tokio::signal::ctrl_c().await;
+            return;
+        }
+    };
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        _ = term.recv() => {}
+    }
+}
+
+#[cfg(not(unix))]
+async fn wait_for_termination() {
+    let _ = tokio::signal::ctrl_c().await;
 }
 
 #[tokio::main]
