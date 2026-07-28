@@ -155,7 +155,7 @@ install_guard_ca() {
     elif [ -n "$_sys" ]; then
         # Store not writable: build a combined bundle (public roots + guard CA)
         # so the 'replace' env vars below don't drop the public roots.
-        _bundle=/var/run/guard-proxy-ca/bundle.pem
+        _bundle=/tmp/cctui-guard-ca-bundle.pem
         cat "$_sys" "$GUARD_CA_FILE" > "$_bundle" 2>/dev/null || _bundle="$GUARD_CA_FILE"
     fi
 
@@ -1222,7 +1222,7 @@ phase_hardening
 run_supervised_daemon() {
     cctui-supervisor \
         --ro /usr --ro /lib --ro /lib64 --ro /bin --ro /sbin --ro /etc --ro /proc \
-        --ro /prompts \
+        --ro /prompts --ro /var/run/guard-proxy-ca \
         --ro "$CONTEXT_DIR" \
         $(extra_ro_flags) \
         --rw /dev --rw /tmp --rw /workspace --rw "/home/${WORKER_USER}" \
@@ -1528,7 +1528,7 @@ fi
 log "thin worker -> exec cctui-supervisor -> cctui-daemon (run forever)"
 exec cctui-supervisor \
     --ro /usr --ro /lib --ro /lib64 --ro /bin --ro /sbin --ro /etc --ro /proc \
-    --ro /prompts \
+    --ro /prompts --ro /var/run/guard-proxy-ca \
     --ro "$CONTEXT_DIR" \
     $(extra_ro_flags) \
     --rw /dev --rw /tmp --rw /workspace --rw "/home/${WORKER_USER}" \

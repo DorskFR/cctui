@@ -65,9 +65,7 @@
 		</div>
 	{/if}
 
-	{#if native}
-		<UsageBars id={p.id} provider={p.provider} enabled={usageEnabled} softLimits={p.soft_limits} />
-	{/if}
+	<UsageBars id={p.id} provider={p.provider} enabled={usageEnabled} softLimits={p.soft_limits} />
 
 	<dl class="stats">
 		<div><dt>{m.providers_stat_requests()}</dt><dd>{compact(p.request_count)}</dd></div>

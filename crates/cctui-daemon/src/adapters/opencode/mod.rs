@@ -250,15 +250,16 @@ async fn command_pump(cfg: OpenCodeConfig, ctx: AdapterCtx) {
 }
 
 /// Which opencode agent profile the spawn runs under: named by the dispatch
-/// payload (`CCTUI_OPENCODE_AGENT`), else the adapter default. Both resolve
-/// against the agent definitions the daemon writes into the session config, so
-/// `cctui-reviewer` is selectable without anything being baked into the image.
+/// payload (`CCTUI_OPENCODE_AGENT`), else the adapter default, else the
+/// locked-down reviewer — opencode's own default agent has edit rights,
+/// arbitrary bash and no step bound, which no cctui spawn may fall back to.
 fn agent_of(spec: &cctui_proto::adapter::SessionSpec, cfg: &OpenCodeConfig) -> Option<String> {
     spec.env
         .get(AGENT_ENV)
         .map(|s| s.trim().to_owned())
         .filter(|s| !s.is_empty())
         .or_else(|| cfg.default_agent.clone())
+        .or_else(|| Some(config::REVIEWER_AGENT.to_owned()))
 }
 
 async fn route(live: &LiveRegistry, local_id: &str, cmd: SessionCommand) -> bool {
@@ -408,7 +409,18 @@ mod tests {
             agent_of(&spec_with_env(&[(AGENT_ENV, config::REVIEWER_AGENT)]), &cfg).as_deref(),
             Some(config::REVIEWER_AGENT)
         );
-        assert!(agent_of(&spec_with_env(&[]), &cfg).is_none());
+    }
+
+    #[test]
+    fn an_unconfigured_spawn_still_gets_the_locked_down_reviewer() {
+        assert_eq!(
+            agent_of(&spec_with_env(&[]), &OpenCodeConfig::default()).as_deref(),
+            Some(config::REVIEWER_AGENT)
+        );
+        assert_eq!(
+            agent_of(&spec_with_env(&[(AGENT_ENV, "  ")]), &OpenCodeConfig::default()).as_deref(),
+            Some(config::REVIEWER_AGENT)
+        );
     }
 
     #[test]

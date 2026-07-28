@@ -17,8 +17,20 @@ use clap::Parser;
 /// need to fork the entrypoint: `deploy/worker-entrypoint.sh` reads the
 /// colon-separated `CCTUI_WORKER_EXTRA_RO` env var and appends a `--ro <path>`
 /// for each entry to the supervisor invocation, extending the RO set at boot.
-pub const DEFAULT_RO: &[&str] =
-    &["/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc", "/proc", "/prompts", "/opt/context"];
+/// Landlock matches inode hierarchies, so `/var/run/guard-proxy-ca` needs its
+/// own entry — the sibling `/var/run/guard-proxy` does not cover it.
+pub const DEFAULT_RO: &[&str] = &[
+    "/usr",
+    "/lib",
+    "/lib64",
+    "/bin",
+    "/sbin",
+    "/etc",
+    "/proc",
+    "/prompts",
+    "/opt/context",
+    "/var/run/guard-proxy-ca",
+];
 
 /// Default read-write paths (neutral worker-contract paths). Applied when no
 /// `--rw` flag is given.

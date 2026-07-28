@@ -1,12 +1,12 @@
 <script lang="ts">
 	import type { TokenUsage } from '@bindings/TokenUsage';
-	import { compact } from '$lib/format';
+	import { compact, usd } from '$lib/format';
 	import { Cluster, Text, Tooltip } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 
 	// Canonical token-usage readout — the SINGLE token block, shared by the session
 	// list/card, the chat header, and each assistant/result line in the conversation.
-	// Renders:  Σtotal · ↑in ↓out ⚡cache (❄️)
+	// Renders:  Σtotal · ↑in ↓out ⚡cache · $cost (❄️)
 	//   • Σ leads with the total (the headline number).
 	//   • `sum` overrides Σ: the card passes the parent+subagents aggregate so Σ
 	//     reflects the true cost-including-subagents; everywhere else Σ defaults to
@@ -44,7 +44,10 @@
 	);
 	const total = $derived(sum ?? Number(usage.tokens_in) + Number(usage.tokens_out) + cacheTotal);
 
+	const cost = $derived(Number(usage.cost_usd) || 0);
+
 	const sumHint = m.sessions_token_sum_hint();
+	const costHint = m.sessions_token_cost_hint();
 	const inHint = m.sessions_token_in_hint();
 	const outHint = m.sessions_token_out_hint();
 	const cacheHint = m.sessions_token_cache_hint();
@@ -77,6 +80,15 @@
 	{#if cacheTotal > 0}<Tooltip text={cacheHint}>
 			{#snippet trigger()}<Text variant="code" {size} tone="faint" style="cursor:help"
 					>⚡{compact(cacheTotal)}</Text
+				>{/snippet}
+		</Tooltip>{/if}
+	{#if cost > 0}<Tooltip text={costHint}>
+			{#snippet trigger()}<Text
+					variant="code"
+					{size}
+					tone="success"
+					weight="semibold"
+					style="cursor:help">{usd(cost)}</Text
 				>{/snippet}
 		</Tooltip>{/if}
 	{#if cold}<Tooltip text={coldHint}>

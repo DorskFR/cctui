@@ -483,6 +483,30 @@ fn cap_unread(n: i64) -> u32 {
     n.clamp(0, 99) as u32
 }
 
+/// The model catalog each session's usage is priced against, from the provider
+/// row its newest session token binds to. Ungatewayed sessions are absent.
+async fn session_catalogs(
+    state: &AppState,
+    session_ids: &[String],
+) -> std::collections::HashMap<String, serde_json::Value> {
+    sqlx::query_as::<_, (String, Option<serde_json::Value>)>(
+        "SELECT DISTINCT ON (st.session_id) st.session_id, ap.models \
+         FROM session_tokens st JOIN account_providers ap ON ap.id = st.account_id \
+         WHERE st.session_id = ANY($1) \
+         ORDER BY st.session_id, st.created_at DESC",
+    )
+    .bind(session_ids)
+    .fetch_all(&state.pool)
+    .await
+    .unwrap_or_else(|e| {
+        tracing::warn!("db error (session catalogs): {e}");
+        Vec::new()
+    })
+    .into_iter()
+    .filter_map(|(sid, models)| Some((sid, models?)))
+    .collect()
+}
+
 /// Shared enrichment for both the sessions list and search: resolve machine
 /// names, aggregate token usage, attach last-message text, apply classifier
 /// signals + display metadata + the in-memory auto-approve flag, then sort
@@ -541,14 +565,15 @@ async fn enrich_and_sort(
     // since the daemon persists every assistant turn.
     let session_ids: Vec<String> = with_ts.iter().map(|(_, s)| s.id.clone()).collect();
     if !session_ids.is_empty() {
-        type TokenRow = (String, Option<i64>, Option<i64>, Option<i64>, Option<i64>);
+        type TokenRow =
+            (String, Option<String>, Option<i64>, Option<i64>, Option<i64>, Option<i64>);
         let rows: Vec<TokenRow> = sqlx::query_as(
-            "SELECT session_id, \
+            "SELECT session_id, model, \
                         SUM(input_tokens)::bigint, SUM(output_tokens)::bigint, \
                         SUM(cache_read_tokens)::bigint, SUM(cache_creation_tokens)::bigint \
                  FROM session_token_usage \
                  WHERE session_id = ANY($1) \
-                 GROUP BY session_id",
+                 GROUP BY session_id, model",
         )
         .bind(&session_ids)
         .fetch_all(&state.pool)
@@ -557,20 +582,23 @@ async fn enrich_and_sort(
             tracing::error!("db error (token usage aggregate): {e}");
             (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
         })?;
+        let catalogs = session_catalogs(state, &session_ids).await;
         let mut by_session: std::collections::HashMap<String, cctui_proto::models::TokenUsage> =
             std::collections::HashMap::new();
-        for (sid, ti, to, cr, cc) in rows {
-            let cast = |v: Option<i64>| u64::try_from(v.unwrap_or(0)).unwrap_or(0);
-            by_session.insert(
-                sid,
-                cctui_proto::models::TokenUsage {
-                    tokens_in: cast(ti),
-                    tokens_out: cast(to),
-                    cost_usd: 0.0,
-                    cache_read_tokens: cast(cr),
-                    cache_creation_tokens: cast(cc),
-                },
+        for (sid, model, ti, to, cr, cc) in rows {
+            let (input, cached_input, output, cache_creation) =
+                (ti.unwrap_or(0), cr.unwrap_or(0), to.unwrap_or(0), cc.unwrap_or(0));
+            let cost = crate::cost::tallies_cost_usd(
+                catalogs.get(&sid),
+                &[(model, crate::cost::TokenUsage { input, cached_input, output })],
             );
+            let to_u64 = |v: i64| u64::try_from(v).unwrap_or(0);
+            let e = by_session.entry(sid).or_default();
+            e.tokens_in += to_u64(input);
+            e.tokens_out += to_u64(output);
+            e.cache_read_tokens += to_u64(cached_input);
+            e.cache_creation_tokens += to_u64(cache_creation);
+            e.cost_usd += cost;
         }
         for (_, s) in &mut with_ts {
             if let Some(usage) = by_session.remove(&s.id) {
@@ -1540,8 +1568,9 @@ pub async fn get_conversation(
         (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
     })?;
 
-    let usage_rows: Vec<(String, i64, i64, i64, i64)> = sqlx::query_as(
-        "SELECT message_id, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens \
+    let usage_rows: Vec<(String, Option<String>, i64, i64, i64, i64)> = sqlx::query_as(
+        "SELECT message_id, model, \
+                input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens \
          FROM session_token_usage WHERE session_id = $1",
     )
     .bind(&session_id)
@@ -1551,18 +1580,25 @@ pub async fn get_conversation(
         tracing::error!("db error (message usage): {e}");
         (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
     })?;
+    let catalog = session_catalogs(&state, std::slice::from_ref(&session_id))
+        .await
+        .remove(session_id.as_str());
     let usage_by_message: HashMap<String, cctui_proto::models::TokenUsage> = usage_rows
         .into_iter()
-        .map(|(message_id, input, output, cache_read, cache_creation)| {
-            let cast = |v: i64| u64::try_from(v).unwrap_or(0);
+        .map(|(message_id, model, input, output, cache_read, cache_creation)| {
+            let to_u64 = |v: i64| u64::try_from(v).unwrap_or(0);
+            let cost = crate::cost::tallies_cost_usd(
+                catalog.as_ref(),
+                &[(model, crate::cost::TokenUsage { input, cached_input: cache_read, output })],
+            );
             (
                 message_id,
                 cctui_proto::models::TokenUsage {
-                    tokens_in: cast(input),
-                    tokens_out: cast(output),
-                    cost_usd: 0.0,
-                    cache_read_tokens: cast(cache_read),
-                    cache_creation_tokens: cast(cache_creation),
+                    tokens_in: to_u64(input),
+                    tokens_out: to_u64(output),
+                    cost_usd: cost,
+                    cache_read_tokens: to_u64(cache_read),
+                    cache_creation_tokens: to_u64(cache_creation),
                 },
             )
         })

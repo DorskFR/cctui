@@ -2663,12 +2663,11 @@ mod tests {
             .expect("seed account");
         sqlx::query(
             "INSERT INTO account_providers \
-                 (id, user_id, name, provider, encrypted_refresh_token, account_id) \
-             VALUES ($1, $2, $3, 'anthropic', 'x', $4)",
+                 (id, user_id, provider, encrypted_refresh_token, account_id) \
+             VALUES ($1, $2, 'anthropic', 'x', $3)",
         )
         .bind(prov)
         .bind(uid)
-        .bind("ttl-test-acct")
         .bind(acct)
         .execute(&pool)
         .await
@@ -2754,8 +2753,8 @@ mod tests {
             .expect("seed account");
         sqlx::query(
             "INSERT INTO account_providers \
-                 (id, user_id, name, provider, encrypted_refresh_token, account_id) \
-             VALUES ($1, $2, 'obs-acct', 'anthropic', 'x', $3)",
+                 (id, user_id, provider, encrypted_refresh_token, account_id) \
+             VALUES ($1, $2, 'anthropic', 'x', $3)",
         )
         .bind(prov)
         .bind(uid)
