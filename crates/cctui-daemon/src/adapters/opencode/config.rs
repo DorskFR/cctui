@@ -26,6 +26,10 @@ are available. Never ask a question — state your findings and stop.";
 
 /// A `provider/model` pair as the spawn spec carries it (e.g.
 /// `fireworks-ai/accounts/fireworks/models/kimi-k3`).
+///
+/// Fireworks model ids contain slashes of their own, so the provider is
+/// recognised by a known prefix — splitting on the first `/` reads
+/// `accounts/fireworks/models/kimi-k3` as provider `accounts`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelRef {
     pub provider_id: String,
@@ -39,12 +43,11 @@ impl ModelRef {
         if spec.is_empty() {
             return None;
         }
-        Some(match spec.split_once('/') {
-            Some((provider, model)) if !provider.is_empty() && !model.is_empty() => {
-                Self { provider_id: provider.to_owned(), model_id: model.to_owned() }
-            }
-            _ => Self { provider_id: PROVIDER_ID.to_owned(), model_id: spec.to_owned() },
-        })
+        let model_id = spec.strip_prefix(&format!("{PROVIDER_ID}/")).unwrap_or(spec).trim();
+        if model_id.is_empty() {
+            return None;
+        }
+        Some(Self { provider_id: PROVIDER_ID.to_owned(), model_id: model_id.to_owned() })
     }
 
     #[must_use]
@@ -81,17 +84,45 @@ pub fn session_config(model: Option<&ModelRef>, env: &BTreeMap<String, String>) 
 
     if let Some(model) = model {
         cfg["model"] = json!(model.qualified());
-        if model.provider_id == PROVIDER_ID {
-            cfg["provider"][PROVIDER_ID]["models"] = json!({
-                model.model_id.clone(): { "options": { "thinking": { "type": "disabled" } } }
-            });
-        }
+        cfg["provider"][&model.provider_id]["models"] = json!({
+            model.model_id.clone(): { "options": { "thinking": { "type": "disabled" } } }
+        });
     }
     cfg
 }
 
+/// opencode matches these per pipeline segment, so the pure filters are needed
+/// for `git show … | sed -n` to survive its right-hand side.
+fn reviewer_bash() -> Value {
+    let mut rules = serde_json::Map::new();
+    rules.insert("*".to_owned(), json!("deny"));
+    for cmd in [
+        "git diff",
+        "git log",
+        "git show",
+        "git status",
+        "git blame",
+        "git ls-files",
+        "sed",
+        "head",
+        "tail",
+        "grep",
+        "rg",
+        "wc",
+        "sort",
+        "uniq",
+        "cut",
+        "tr",
+        "echo",
+        "true",
+    ] {
+        rules.insert(format!("{cmd}*"), json!("allow"));
+    }
+    Value::Object(rules)
+}
+
 /// The locked-down reviewer profile: no edits, no network, and bash reduced to
-/// read-only git inspection. `doom_loop: deny` hard-stops the repeat-tool-call
+/// read-only inspection. `doom_loop: deny` hard-stops the repeat-tool-call
 /// loops Kimi is prone to; `steps` bounds the turn.
 #[must_use]
 pub fn reviewer_agent() -> Value {
@@ -100,6 +131,7 @@ pub fn reviewer_agent() -> Value {
         "mode": "primary",
         "prompt": REVIEWER_PROMPT,
         "steps": 120,
+        "retryCount": 1,
         "permission": {
             "edit": "deny",
             "webfetch": "deny",
@@ -111,13 +143,7 @@ pub fn reviewer_agent() -> Value {
             "read": "allow",
             "glob": "allow",
             "grep": "allow",
-            "bash": {
-                "*": "deny",
-                "git diff*": "allow",
-                "git log*": "allow",
-                "git show*": "allow",
-                "git status*": "allow",
-            },
+            "bash": reviewer_bash(),
         },
     })
 }
@@ -201,6 +227,28 @@ mod tests {
         assert_eq!(m.provider_id, PROVIDER_ID);
         assert_eq!(m.model_id, "kimi-k3");
         assert!(ModelRef::parse("  ").is_none());
+        assert!(ModelRef::parse("fireworks-ai/").is_none());
+    }
+
+    #[test]
+    fn the_catalog_model_id_keeps_its_slashes() {
+        for spec in
+            ["accounts/fireworks/models/kimi-k3", "fireworks-ai/accounts/fireworks/models/kimi-k3"]
+        {
+            let m = ModelRef::parse(spec).unwrap();
+            assert_eq!(m.provider_id, PROVIDER_ID, "{spec}");
+            assert_eq!(m.model_id, "accounts/fireworks/models/kimi-k3", "{spec}");
+            assert_eq!(m.qualified(), "fireworks-ai/accounts/fireworks/models/kimi-k3");
+
+            let cfg = session_config(Some(&m), &BTreeMap::new());
+            assert_eq!(cfg["model"], "fireworks-ai/accounts/fireworks/models/kimi-k3");
+            assert_eq!(
+                cfg["provider"][PROVIDER_ID]["models"]["accounts/fireworks/models/kimi-k3"]["options"]
+                    ["thinking"]["type"],
+                "disabled",
+                "{spec}"
+            );
+        }
     }
 
     #[test]
@@ -251,7 +299,13 @@ mod tests {
         assert_eq!(a["permission"]["bash"]["git diff*"], "allow");
         assert_eq!(a["permission"]["bash"]["git log*"], "allow");
         assert_eq!(a["permission"]["bash"]["git show*"], "allow");
+        assert_eq!(a["permission"]["bash"]["sed*"], "allow");
+        assert_eq!(a["permission"]["bash"]["grep*"], "allow");
+        assert_eq!(a["permission"]["bash"]["head*"], "allow");
+        assert_eq!(a["permission"]["bash"]["echo*"], "allow");
+        assert!(a["permission"]["bash"].get("git push*").is_none());
         assert!(a["steps"].as_u64().unwrap() > 0);
+        assert_eq!(a["retryCount"], 1);
     }
 
     #[test]

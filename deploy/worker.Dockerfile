@@ -49,7 +49,10 @@ RUN cargo build --release \
         -p cctui-guard
 
 # ── Runtime: claude code + codex + cctui binaries ───────────────────────────
-FROM node:22-bookworm-slim
+# Every bundled CLI is a native binary; node is here only so context packs can
+# run npx-based MCP servers. Heavier JS tooling (pnpm stores, a managed
+# toolchain) still belongs in derived org images, e.g. under /opt/mise.
+FROM debian:bookworm-slim
 
 # Base tooling kept deliberately lean:
 #   ca-certificates, libssl3 — TLS for the daemon's rustls/native deps.
@@ -64,6 +67,7 @@ FROM node:22-bookworm-slim
 #   iptables                — transparent-mode egress REDIRECT to the proxy.
 #   openssh-client          — git over SSH for credentialed clones.
 #   gh                      — GitHub CLI for token auth + PR work.
+#   xz-utils                — unpacks the node tarball below.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -76,6 +80,7 @@ RUN apt-get update \
         openssh-client \
         ripgrep \
         rsync \
+        xz-utils \
     && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
         -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
     && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
@@ -85,11 +90,60 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
 
-# Claude Code — installed via npm, which pulls the per-platform *native* binary;
-# the `claude` bin does not invoke node at runtime. Version-pinnable at build.
+# Node — the runtime only, from the official nodejs.org tarball, checksum-verified
+# against the release's SHASUMS256.txt. Present so context packs can configure
+# npx-based MCP servers (docs/context-packs.md) and so derived images inherit a
+# node on PATH; none of the bundled CLIs depend on it. Pinning the tarball rather
+# than tracking a `node:` base image tag keeps the major explicit.
+ARG NODE_VERSION=24.18.0
+RUN arch="$(dpkg --print-architecture)" \
+    && case "$arch" in \
+         amd64) target=linux-x64 ;; \
+         arm64) target=linux-arm64 ;; \
+         *) echo "node: unsupported arch '$arch'" >&2; exit 1 ;; \
+       esac \
+    && base="https://nodejs.org/dist/v${NODE_VERSION}" \
+    && tarball="node-v${NODE_VERSION}-${target}.tar.xz" \
+    && curl -fsSL "${base}/${tarball}" -o /tmp/node.tar.xz \
+    && curl -fsSL "${base}/SHASUMS256.txt" -o /tmp/node.sums \
+    && sha="$(awk -v f="$tarball" '$2==f{print $1}' /tmp/node.sums)" \
+    && [ -n "$sha" ] || { echo "node: no checksum for ${tarball}" >&2; exit 1; } \
+    && echo "${sha}  /tmp/node.tar.xz" | sha256sum -c - \
+    && mkdir -p /usr/local/node \
+    && tar -xJf /tmp/node.tar.xz -C /usr/local/node --strip-components=1 \
+    && rm /tmp/node.tar.xz /tmp/node.sums \
+    # include/ is node-gyp's C++ headers for building native addons, which needs a
+    # compiler this image does not ship; share/ is man pages and docs.
+    && rm -rf /usr/local/node/include /usr/local/node/share \
+    && ln -s /usr/local/node/bin/node /usr/local/bin/node \
+    && ln -s /usr/local/node/bin/npm  /usr/local/bin/npm \
+    && ln -s /usr/local/node/bin/npx  /usr/local/bin/npx \
+    && node --version && npx --version
+
+# Claude Code — the per-platform *native* binary pulled straight from Anthropic's
+# release CDN (what claude.ai/install.sh fetches), NOT the npm package: the
+# native binary never invokes node, so it stays independent of whatever node a
+# derived image puts on PATH. Checksum-verified against the release manifest,
+# mirroring codex below.
+# CLAUDE_CODE_VERSION takes `latest`, `stable`, or an exact x.y.z.
 ARG CLAUDE_CODE_VERSION=latest
-RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
-    && npm cache clean --force
+RUN base="https://downloads.claude.ai/claude-code-releases" \
+    && case "$(dpkg --print-architecture)" in \
+         amd64) platform=linux-x64 ;; \
+         arm64) platform=linux-arm64 ;; \
+         *) echo "claude: unsupported arch" >&2; exit 1 ;; \
+       esac \
+    && case "${CLAUDE_CODE_VERSION}" in \
+         latest|stable) version="$(curl -fsSL "${base}/${CLAUDE_CODE_VERSION}")" ;; \
+         *) version="${CLAUDE_CODE_VERSION}" ;; \
+       esac \
+    && echo "${version}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+' \
+    && sha="$(curl -fsSL "${base}/${version}/manifest.json" \
+        | jq -er --arg p "$platform" '.platforms[$p].checksum')" \
+    && curl -fsSL "${base}/${version}/${platform}/claude" -o /usr/local/bin/claude \
+    && echo "${sha}  /usr/local/bin/claude" | sha256sum -c - \
+    && chmod 0755 /usr/local/bin/claude \
+    && claude --version
 
 # Codex — native static-musl binary from the GitHub release, NOT the npm package.
 # The npm codex is a node entrypoint, so in derived images that put a node shim
@@ -97,7 +151,7 @@ RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
 # through the shim and can fail before codex starts (the
 # "mise ERROR Permission denied (os error 13)" seen in the acme fat image).
 # The standalone binary has no node dependency and sidesteps that entirely.
-# Pinned + checksum-verified, mirroring the yt install above.
+# Pinned + checksum-verified.
 #
 # Model provider: codex IGNORES OPENAI_API_KEY / OPENAI_BASE_URL env and reads
 # its provider only from ~/.codex/config.toml. Do NOT bake a static config here —
@@ -148,61 +202,12 @@ RUN arch="$(dpkg --print-architecture)" \
     && rm /tmp/opencode.tar.gz \
     && opencode --version
 
-# yt — token-frugal YouTrack CLI (https://github.com/DorskFR/yt). Lets dispatched
-# tasks triage / transition YouTrack issues without an MCP server. Tracks the
-# rolling `latest` release (a moving tag the yt CI republishes on every release),
-# so the worker always bakes the newest yt. Integrity is still checked against the
-# release's own SHA256SUMS rather than a hard-pinned digest (which can't survive a
-# moving tag). Reads creds from ~/.config/yt/config.json (materialized by
-# a derived image's credential helper, from the YOUTRACK_URL/token env) or env.
-ARG YT_VERSION=latest
-RUN arch="$(dpkg --print-architecture)" \
-    && case "$arch" in \
-         amd64|arm64) : ;; \
-         *) echo "yt: unsupported arch '$arch'" >&2; exit 1 ;; \
-       esac \
-    && base="https://github.com/DorskFR/yt/releases/download/${YT_VERSION}" \
-    && curl -fsSL "${base}/yt-linux-${arch}" -o /usr/local/bin/yt \
-    && curl -fsSL "${base}/SHA256SUMS" -o /tmp/yt.sums \
-    && sha="$(awk -v f="yt-linux-${arch}" '$2==f{print $1}' /tmp/yt.sums)" \
-    && [ -n "$sha" ] || { echo "yt: no checksum for yt-linux-${arch}" >&2; exit 1; } \
-    && echo "${sha}  /usr/local/bin/yt" | sha256sum -c - \
-    && rm /tmp/yt.sums \
-    && chmod 0755 /usr/local/bin/yt \
-    && yt --version
-
-# scli — token-frugal Slack CLI (https://github.com/dorskFR/scli). Lets dispatched
-# tasks read/post Slack without an MCP server. Tracks the rolling `latest` release
-# (a moving tag the scli CI republishes on every release), so the worker always
-# bakes the newest scli. Integrity is still checked against the release's own
-# SHA256SUMS rather than a hard-pinned digest (which can't survive a moving tag).
-# Reads creds from the SLACK_TOKEN env var (derived images may also materialize
-# ~/.config/scli/config.json via their own credential helper). Release assets use
-# linux-amd64/linux-arm64 naming (matching yt), so dpkg's arch maps directly.
-ARG SCLI_VERSION=latest
-RUN arch="$(dpkg --print-architecture)" \
-    && case "$arch" in \
-         amd64|arm64) : ;; \
-         *) echo "scli: unsupported arch '$arch'" >&2; exit 1 ;; \
-       esac \
-    && base="https://github.com/dorskFR/scli/releases/download/${SCLI_VERSION}" \
-    && curl -fsSL "${base}/scli-linux-${arch}" -o /usr/local/bin/scli \
-    && curl -fsSL "${base}/SHA256SUMS" -o /tmp/scli.sums \
-    && sha="$(awk -v f="scli-linux-${arch}" '$2==f{print $1}' /tmp/scli.sums)" \
-    && [ -n "$sha" ] || { echo "scli: no checksum for scli-linux-${arch}" >&2; exit 1; } \
-    && echo "${sha}  /usr/local/bin/scli" | sha256sum -c - \
-    && rm /tmp/scli.sums \
-    && chmod 0755 /usr/local/bin/scli \
-    && scli --version
-
 # Worker user (uid 1000). The container starts as root only to bootstrap the
 # sandbox (iptables, overlayfs, context pack), then cctui-supervisor setuids to
 # this user before exec'ing the daemon. A real home keeps per-session agent
 # state (~/.claude, ~/.codex, ~/.mcp.json, ~/.npmrc, ~/.gnupg) writable.
-# The node base image already occupies uid/gid 1000 with a `node` user, so
-# rename it to `worker` and relocate its home rather than create a duplicate.
-RUN groupmod --new-name worker node \
-    && usermod --login worker --home /home/worker --move-home node \
+RUN groupadd --gid 1000 worker \
+    && useradd --uid 1000 --gid 1000 --home-dir /home/worker --create-home --shell /bin/bash worker \
     && chmod 0755 /home/worker
 
 COPY --from=builder /app/target/release/cctui-daemon       /usr/local/bin/cctui-daemon

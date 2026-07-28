@@ -51,9 +51,12 @@ export function statusBadgeClass(status: string): string {
 
 /** Short model label for the detailed footer: drop the vendor prefix
  *  ("claude-opus-4-8" → "opus-4-8", "gpt-5-codex" stays) so a long id stops
- *  shoving the provider logo out of the row. */
+ *  shoving the provider logo out of the row. Pay-per-token providers qualify
+ *  their ids with a path ("fireworks-ai/accounts/fireworks/models/kimi-k3");
+ *  only the last segment names the model. */
 export function modelShort(model: string): string {
-	return model.replace(/^(claude|anthropic)-/i, '');
+	const leaf = model.split('/').filter(Boolean).pop() ?? model;
+	return leaf.replace(/^(claude|anthropic)-/i, '');
 }
 
 /** Model FAMILY only — the one word that survives in the compact list row
@@ -65,6 +68,13 @@ export function modelFamily(model: string): string {
 		if (m.includes(fam)) return fam;
 	}
 	return modelShort(model).split(/[-\s]/)[0] || model;
+}
+
+export function usd(n: number): string {
+	if (!Number.isFinite(n) || n <= 0) return '$0.00';
+	if (n < 0.01) return `$${n.toFixed(4)}`;
+	if (n < 100) return `$${n.toFixed(2)}`;
+	return `$${Math.round(n)}`;
 }
 
 /** Deterministic accent color for a machine label (badge tinting). */

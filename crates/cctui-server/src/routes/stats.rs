@@ -342,7 +342,8 @@ const USAGE_BUCKETS_SQL: &str = "SELECT \
      GROUP BY bucket ORDER BY bucket";
 
 /// Per-model breakdown. `$1` window start, `$2` owner filter (NULL = all).
-const USAGE_MODELS_SQL: &str = "SELECT COALESCE(NULLIF(s.model, ''), 'unknown') AS model, \
+const USAGE_MODELS_SQL: &str = "SELECT \
+        COALESCE(NULLIF(stu.model, ''), NULLIF(s.model, ''), 'unknown') AS model, \
         COALESCE(SUM(stu.input_tokens), 0)::bigint, \
         COALESCE(SUM(stu.output_tokens), 0)::bigint, \
         COALESCE(SUM(stu.cache_read_tokens), 0)::bigint, \
@@ -351,7 +352,7 @@ const USAGE_MODELS_SQL: &str = "SELECT COALESCE(NULLIF(s.model, ''), 'unknown') 
      LEFT JOIN sessions s ON s.id = stu.session_id \
      LEFT JOIN machines m ON m.id = s.machine_uuid \
      WHERE stu.created_at >= $1 AND ($2::uuid IS NULL OR m.user_id = $2) \
-     GROUP BY model ORDER BY SUM(stu.output_tokens) DESC NULLS LAST";
+     GROUP BY 1 ORDER BY SUM(stu.output_tokens) DESC NULLS LAST";
 
 /// Hour-of-week heatmap. `$1` tz-offset minutes, `$2` window start, `$3` owner
 /// filter (NULL = all).
@@ -376,9 +377,10 @@ const USAGE_HEATMAP_SQL: &str = "SELECT \
 /// before `date_trunc`/`EXTRACT`, then day buckets are mapped back to a UTC
 /// instant (same convention as `today` in [`session_token_stats`]).
 ///
-/// Model attribution is session-level (`sessions.model`; migration 025) via the
-/// PK join `sessions.id = stu.session_id`; NULL/empty models bucket under
-/// `unknown`. Missing time buckets are zero-filled client-side, not in SQL.
+/// Model attribution prefers the per-request `session_token_usage.model` and
+/// falls back to the session's own, via the PK join `sessions.id =
+/// stu.session_id`; NULL/empty models bucket under `unknown`. Missing time
+/// buckets are zero-filled client-side, not in SQL.
 pub async fn session_usage_analytics(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,

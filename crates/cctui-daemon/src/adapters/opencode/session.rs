@@ -224,6 +224,11 @@ impl OpenCodeSession {
         }
         cmd.env("OPENCODE_SERVER_PASSWORD", &password);
         crate::childenv::ScrubChildEnv::scrub_child_env(&mut cmd);
+        // Own process group: `opencode serve` runs the model turn in children of
+        // its own, and killing only the direct child leaves them generating (and
+        // spending) — the whole group has to go.
+        #[cfg(unix)]
+        cmd.process_group(0);
         let mut child = cmd
             .current_dir(&cwd)
             .env("PATH", crate::childenv::child_path())
@@ -298,8 +303,20 @@ impl OpenCodeSession {
         }
 
         stream.abort();
-        let _ = child.start_kill();
+        self.abort_owned(&client).await;
+        shutdown_serve(&mut child).await;
         Ok(())
+    }
+
+    /// Abort every in-flight turn before the server goes away: a killed session
+    /// that only loses its supervisor keeps generating, and on a metered account
+    /// keeps spending.
+    async fn abort_owned(&self, client: &OpenCodeClient) {
+        for id in &self.owned {
+            if let Err(err) = client.abort(id).await {
+                tracing::warn!(%err, session = %id, "opencode abort failed");
+            }
+        }
     }
 
     fn agent(&self) -> Option<String> {
@@ -381,6 +398,7 @@ impl OpenCodeSession {
     }
 
     /// Returns `false` when the driver should stop.
+    #[allow(clippy::cognitive_complexity)]
     async fn on_command(
         &mut self,
         client: &OpenCodeClient,
@@ -392,7 +410,9 @@ impl OpenCodeSession {
                 self.prompt(client, &session_id, &text, model).await;
             }
             SessionCommand::Kill { session_id } => {
-                let _ = client.abort(&session_id).await;
+                if let Err(err) = client.abort(&session_id).await {
+                    tracing::warn!(%err, %session_id, "opencode abort failed");
+                }
                 if self.owned.len() <= 1 {
                     return false;
                 }
@@ -650,6 +670,31 @@ async fn pump_sse(
     }
 }
 
+/// How long `opencode serve` gets to exit on SIGTERM before the group is
+/// `SIGKILL`ed.
+const SERVE_TERM_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Terminate the serve process *tree*: signal the group (see `process_group`
+/// at spawn), then escalate. Returns once the direct child is reaped.
+async fn shutdown_serve(child: &mut tokio::process::Child) {
+    signal_group(child, rustix::process::Signal::Term);
+    if tokio::time::timeout(SERVE_TERM_GRACE, child.wait()).await.is_ok() {
+        return;
+    }
+    signal_group(child, rustix::process::Signal::Kill);
+    let _ = child.start_kill();
+    let _ = child.wait().await;
+}
+
+fn signal_group(child: &tokio::process::Child, signal: rustix::process::Signal) {
+    let Some(pid) = child.id().and_then(|p| i32::try_from(p).ok()) else { return };
+    // The child leads its own group, so its pid is the pgid. A reaped
+    // process just yields ESRCH.
+    if let Some(pid) = rustix::process::Pid::from_raw(pid) {
+        let _ = rustix::process::kill_process_group(pid, signal);
+    }
+}
+
 fn drain_child_logs(child: &mut tokio::process::Child) {
     if let Some(stdout) = child.stdout.take() {
         tokio::spawn(async move {
@@ -773,6 +818,37 @@ mod tests {
         let local_id = started.expect("no SessionStarted");
         assert!(local_id.starts_with("ses"), "unexpected session id {local_id}");
         assert!(acked, "spawn was never acked");
+    }
+
+    #[cfg(unix)]
+    fn is_alive(pid: i32) -> bool {
+        rustix::process::Pid::from_raw(pid)
+            .is_some_and(|p| rustix::process::test_kill_process(p).is_ok())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shutdown_serve_takes_down_the_whole_process_tree() {
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c")
+            .arg("sleep 300 & echo $!; wait")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .process_group(0);
+        let mut child = cmd.spawn().unwrap();
+
+        let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+        let grandchild: i32 = lines.next_line().await.unwrap().unwrap().trim().parse().unwrap();
+        assert!(is_alive(grandchild));
+
+        shutdown_serve(&mut child).await;
+        for _ in 0..50 {
+            if !is_alive(grandchild) {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("grandchild {grandchild} survived shutdown_serve");
     }
 
     #[test]

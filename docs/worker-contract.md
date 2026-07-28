@@ -104,11 +104,9 @@ secret source (CCT-716/717/718); the worker's job is only to make each tool
 | github | `GH_TOKEN=cctui-placeholder` + git credential helper `!gh auth git-credential` (always) | `GITHUB_NAME` / `GITHUB_EMAIL` (non-secret identity) |
 | npm | `~/.npmrc` `_authToken=cctui-placeholder` (always) | — |
 | mcp | `~/.mcp.json` http entry, `Authorization: Bearer cctui-placeholder` | `MCP_<NAME>_URL` server URL |
-| yt | `~/.config/yt/config.json` placeholder token | `YOUTRACK_URL` host |
-| scli | `~/.config/scli/config.json` placeholder token | `SLACK_WORKSPACE` |
 
 github/npm placeholders are written **unconditionally** (those tools always need
-a token); the host-targeted blocks (mcp/yt/scli) are skipped when their
+a token); the host-targeted blocks (mcp) are skipped when their
 non-secret host/workspace config is absent (nothing to target). Every block is
 idempotent. `GPG_PRIVATE_KEY` is **sidecar-only** (CCT-721) — never imported into
 the worker; a key seen in the worker env is a misconfiguration. `ANTHROPIC_*` /
@@ -149,7 +147,7 @@ So by the time the entrypoint runs, every var holds a **real value** — the
 dispatcher never reads the secret, and a `vault:`/`k8s:` value never lands in the
 Job spec or etcd. The boundary is the worker's Vault role scope (tenant prefix)
 and the namespace's k8s secrets, not the reference string (which is untrusted).
-The entrypoint stays product-aware (wires `gh`/`scli`/`yt`); the dispatcher stays
+The entrypoint stays product-aware (wires `gh`); the dispatcher stays
 secret-agnostic. In `transparent-external`, `GPG_PRIVATE_KEY` is delivered to the
 **guard-proxy sidecar** (not the worker) — see [Remote GPG signing](#remote-gpg-signing-transparent-external-cct-721).
 `env` is stripped from
@@ -165,6 +163,7 @@ the resolved pod env.
 | `/opt/context` | RO after fetch | Context pack (prompts, docs, skills, guard rules). |
 | `/home/worker` | RW | Per-session agent state (`.claude`, `.codex`, `.mcp.json`, `.npmrc`, `.gnupg`). |
 | `/var/run/guard-proxy`, `/var/run/workflow-guard` | RW | Proxy policy + guard state. |
+| `/var/run/guard-proxy-ca` | RO | Per-pod guard-proxy CA (`ca.pem`); in the supervisor's Landlock RO set so `NODE_EXTRA_CA_CERTS` is readable after privdrop. |
 | `/var/run/gpg-agent` | RW | Shared `gpg-agent` emptyDir carrying the forwarded restricted signing socket (`transparent-external` only, CCT-721). |
 | `/tmp` | RW | Scratch, `RESULT_FILE`, hardening report. |
 

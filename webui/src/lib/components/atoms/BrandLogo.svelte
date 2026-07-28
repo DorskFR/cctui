@@ -1,8 +1,8 @@
 <script lang="ts">
-	// Tiny brand marks for the two adapters/providers. `currentColor` so callers
-	// control the hue via CSS. Anthropic mark for claude-code / anthropic, OpenAI
-	// blossom for codex / openai. Pass `provider` (account-side: anthropic|openai)
-	// or `adapter` (session-side: claude-code|codex…) — either resolves the mark.
+	// Tiny brand marks per adapter/provider. `currentColor` so callers control the
+	// hue via CSS. Anthropic mark for claude-code / anthropic, OpenAI blossom for
+	// codex / openai, Fireworks chevrons for opencode / fireworks. Pass `provider`
+	// (account-side) or `adapter` (session-side) — either resolves the mark.
 	let {
 		adapter,
 		provider,
@@ -26,16 +26,25 @@
 </script>
 
 {#if isFireworks}
-	<!-- Spark: a neutral mark; Fireworks has no mark we ship. -->
+	<!-- Fireworks AI mark -->
 	<svg
-		width={size}
+		width={size * 2}
 		height={size}
-		viewBox="0 0 24 24"
+		viewBox="0 0 638 315"
+		preserveAspectRatio="xMidYMid meet"
 		fill="currentColor"
 		aria-label="Fireworks"
 		role="img"
 	>
-		<path d="M12 2 13.9 8.6 20.5 10.5 13.9 12.4 12 19 10.1 12.4 3.5 10.5 10.1 8.6 12 2zM18.5 15l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9.9-2.6zM5 14l.7 2 2 .7-2 .7L5 19.4l-.7-2-2-.7 2-.7L5 14z" />
+		<path
+			d="M318.563 221.755C300.863 221.755 284.979 211.247 278.206 194.978L196.549 0H244.342L318.842 178.361L393.273 0H441.066L358.92 195.048C352.112 211.247 336.263 221.755 318.563 221.755Z"
+		/>
+		<path
+			d="M425.111 314.933C407.481 314.933 391.667 304.494 384.824 288.366C377.947 272.097 381.507 253.524 393.936 240.921L542.657 90.2803L561.229 134.094L425.076 271.748L619.147 270.666L637.72 314.479L425.146 315.003L425.076 314.933H425.111Z"
+		/>
+		<path
+			d="M0 314.408L18.5727 270.595L212.643 271.677L76.525 133.988L95.0977 90.1748L243.819 240.816C256.247 253.384 259.843 272.026 252.93 288.26C246.088 304.424 230.203 314.827 212.643 314.827L0.0698221 314.339L0 314.408Z"
+		/>
 	</svg>
 {:else if isCodex}
 	<!-- OpenAI blossom -->
