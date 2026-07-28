@@ -1542,8 +1542,20 @@ async fn passthrough(
     // rate-limited endpoint), and only then evaluate. Fetch errors fail open.
     if !acct.soft_limits.is_unset() {
         let cached = usage_for_soft_limit(&state, acct.id).await;
-        let windows =
+        let mut windows =
             cached.as_ref().map(crate::soft_limit::normalize_usage_windows).unwrap_or_default();
+        // The per-session budget is session-scoped, so it can't come from the
+        // per-account usage cache — resolve it here, and only when one is set.
+        if acct.soft_limits.limits.contains_key(crate::soft_limit::KEY_SESSION_USD)
+            && let Some(session_id) = session_id_for_token(&state, &session_token).await
+            && let Some(spent) = session_spend_usd(&state, acct.id, &session_id).await
+        {
+            windows.push(crate::soft_limit::usd_window(
+                crate::soft_limit::KEY_SESSION_USD,
+                spent,
+                None,
+            ));
+        }
         if let crate::soft_limit::Decision::Block { retry_after_secs, reason, .. } =
             crate::soft_limit::evaluate_soft_limit(&windows, &acct.soft_limits, Utc::now())
         {
@@ -1658,11 +1670,17 @@ async fn passthrough(
 
     // Stream the request body through without buffering (default), OR buffer it
     // once for the trace input when Langfuse is sampling this call.
+    let mut request_model: Option<String> = None;
     let (upstream_body, traced_request) = if langfuse.is_some() || fireworks.is_some() {
         let bytes = axum::body::to_bytes(req.into_body(), usize::MAX)
             .await
             .map_err(|_| StatusCode::BAD_REQUEST)?;
         let mut parsed = serde_json::from_slice::<serde_json::Value>(&bytes).ok();
+        request_model = parsed
+            .as_ref()
+            .and_then(|r| r.get("model"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
         let body = match (fireworks.as_ref(), parsed.as_mut()) {
             (Some(fw), Some(json)) => {
                 fw.apply_body(json, affinity_session.as_deref());
@@ -1751,50 +1769,75 @@ async fn passthrough(
             builder = builder.header(hn, hv);
         }
     }
-    // Fast path (Langfuse off / unsampled): stream the response straight through.
-    let Some(langfuse) = langfuse else {
+    // Fireworks meters per token, so its usage must be recorded from the
+    // response itself: the `usage` object (JSON body or terminal SSE frame) plus
+    // the two headers, which are what the provider bills against. Read the
+    // headers now, before the body is consumed.
+    let usage_session = match (&fireworks, status.is_success()) {
+        (Some(_), true) => match affinity_session.clone().or_else(|| trace_session_id.clone()) {
+            Some(sid) => Some(sid),
+            None => session_id_for_token(&state, &session_token).await,
+        },
+        _ => None,
+    };
+    let usage_headers = usage_session.as_ref().map(|_| {
+        let header = |name: &str| {
+            upstream.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_owned)
+        };
+        (header("fireworks-prompt-tokens"), header("fireworks-cached-prompt-tokens"))
+    });
+
+    // Fast path (nothing to observe): stream the response straight through.
+    if langfuse.is_none() && usage_session.is_none() {
         let resp_stream = upstream.bytes_stream();
         return builder.body(Body::from_stream(resp_stream)).map_err(|e| {
             tracing::error!("gateway response build error: {e}");
             StatusCode::INTERNAL_SERVER_ERROR
         });
-    };
+    }
 
-    // Tracing path: tee the response body. Each chunk is forwarded to the client
+    // Observed path: tee the response body. Each chunk is forwarded to the client
     // verbatim AND copied into an accumulator task over a bounded channel. The
-    // copy is best-effort — if the trace task lags, `try_send` drops the chunk
-    // (we lose the trace, never the proxied bytes). When the upstream stream ends
-    // the channel closes and the task reconstructs + fires the fire-and-forget
-    // trace. Nothing here blocks or delays the client stream.
-    let model = traced_request
-        .as_ref()
-        .and_then(|r| r.get("model"))
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_owned);
+    // copy is best-effort — if the task lags, `try_send` drops the chunk
+    // (we lose the trace/usage, never the proxied bytes). When the upstream stream
+    // ends the channel closes and the task reconstructs the trace and the metered
+    // usage. Nothing here blocks or delays the client stream.
     let ctx = crate::langfuse::TraceContext {
         session_id: trace_session_id,
         account_id: Some(acct.id.to_string()),
-        model,
+        model: request_model.clone(),
     };
     // Fireworks speaks the OpenAI wire protocol, so it reconstructs as openai.
     let is_openai = Family::from_provider(&acct.provider) != Family::Anthropic;
+    let pool = state.pool.clone();
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
     tokio::spawn(async move {
         let mut buf = Vec::new();
         while let Some(chunk) = rx.recv().await {
             buf.extend_from_slice(&chunk);
         }
-        let (output, usage) = if is_openai {
-            crate::langfuse::reconstruct_openai(&buf)
-        } else {
-            crate::langfuse::reconstruct_anthropic(&buf)
-        };
-        langfuse.trace(crate::langfuse::TracePayload {
-            ctx,
-            request: traced_request,
-            output,
-            usage,
-        });
+        if let (Some(session_id), Some((prompt_hdr, cached_hdr))) = (usage_session, usage_headers)
+            && let Some(captured) = crate::cost::parse_fireworks_usage(
+                &buf,
+                prompt_hdr.as_deref(),
+                cached_hdr.as_deref(),
+            )
+        {
+            record_fireworks_usage(pool, session_id, request_model, captured).await;
+        }
+        if let Some(langfuse) = langfuse {
+            let (output, usage) = if is_openai {
+                crate::langfuse::reconstruct_openai(&buf)
+            } else {
+                crate::langfuse::reconstruct_anthropic(&buf)
+            };
+            langfuse.trace(crate::langfuse::TracePayload {
+                ctx,
+                request: traced_request,
+                output,
+                usage,
+            });
+        }
     });
 
     let resp_stream = upstream.bytes_stream().map(move |chunk| {
@@ -1946,6 +1989,11 @@ pub async fn fetch_account_usage(
     account_id: Uuid,
 ) -> Result<Option<serde_json::Value>, StatusCode> {
     let Some(acct) = reload_account(state, account_id).await else { return Ok(None) };
+    // Pay-per-token: dollars, not percent of a subscription window. Never asks
+    // the provider's billing API — cctui budgets its own metered spend.
+    if Family::from_provider(&acct.provider) == Family::Fireworks {
+        return fireworks_usd_windows(state, account_id).await;
+    }
     if acct.provider != "anthropic" {
         // OpenAI/codex accounts: read the ChatGPT backend's REAL 5h/7d rate-limit
         // windows — the same numbers `codex /status` shows, keyed on the
@@ -2061,6 +2109,137 @@ async fn local_window(
         "utilization": utilization,
         "resets_at": resets_at,
     }))
+}
+
+/// The provider row's model catalog — the only source of prices.
+async fn account_catalog(state: &AppState, account_id: Uuid) -> Option<serde_json::Value> {
+    sqlx::query_scalar::<_, Option<serde_json::Value>>(
+        "SELECT models FROM account_providers WHERE id = $1",
+    )
+    .bind(account_id)
+    .fetch_optional(&state.pool)
+    .await
+    .ok()
+    .flatten()
+    .flatten()
+}
+
+/// One raw usage-tally row: model, non-cached input, cached input, output,
+/// oldest contributing timestamp.
+type TallyRow = (Option<String>, i64, i64, i64, Option<chrono::DateTime<Utc>>);
+
+/// One model's tallied usage in a window, with the oldest contributing row.
+type ModelTally = (Option<String>, crate::cost::TokenUsage, Option<chrono::DateTime<Utc>>);
+
+/// Per-model token tallies for one account, restricted by an SQL predicate on
+/// `stu`/`st` bound to `$2`.
+async fn model_tallies(
+    state: &AppState,
+    account_id: Uuid,
+    filter: &str,
+    bind: &str,
+) -> Vec<ModelTally> {
+    let sql = format!(
+        "SELECT stu.model, \
+                COALESCE(SUM(stu.input_tokens + stu.cache_creation_tokens), 0)::bigint, \
+                COALESCE(SUM(stu.cache_read_tokens), 0)::bigint, \
+                COALESCE(SUM(stu.output_tokens), 0)::bigint, \
+                MIN(stu.created_at) \
+         FROM session_tokens st \
+         JOIN session_token_usage stu ON stu.session_id = st.session_id \
+         WHERE st.account_id = $1 AND {filter} \
+         GROUP BY stu.model"
+    );
+    let rows: Vec<TallyRow> = sqlx::query_as(&sql)
+        .bind(account_id)
+        .bind(bind)
+        .fetch_all(&state.pool)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(account = %account_id, "usd usage query error: {e}");
+            Vec::new()
+        });
+    rows.into_iter()
+        .map(|(model, input, cached, output, oldest)| {
+            (model, crate::cost::TokenUsage { input, cached_input: cached, output }, oldest)
+        })
+        .collect()
+}
+
+fn priced(catalog: Option<&serde_json::Value>, rows: &[ModelTally]) -> f64 {
+    let tallies: Vec<_> = rows.iter().map(|(m, u, _)| (m.clone(), *u)).collect();
+    crate::cost::tallies_cost_usd(catalog, &tallies)
+}
+
+/// USD spent by one session under this account, priced from the catalog.
+async fn session_spend_usd(state: &AppState, account_id: Uuid, session_id: &str) -> Option<f64> {
+    let catalog = account_catalog(state, account_id).await;
+    let rows = model_tallies(state, account_id, "st.session_id = $2", session_id).await;
+    Some(priced(catalog.as_ref(), &rows))
+}
+
+/// Rolling dollar-spend windows for a pay-per-token account, computed purely
+/// from cctui's own recorded usage priced against the account's catalog. Emitted
+/// in the same fixed-field shape the rest of the usage pipeline consumes.
+async fn fireworks_usd_windows(
+    state: &AppState,
+    account_id: Uuid,
+) -> Result<Option<serde_json::Value>, StatusCode> {
+    let catalog = account_catalog(state, account_id).await;
+    let mut out = serde_json::Map::new();
+    for (key, interval, secs) in [
+        (crate::soft_limit::KEY_USD_5H, "5 hours", 5 * 3600_i64),
+        (crate::soft_limit::KEY_USD_7D, "7 days", 7 * 86400),
+    ] {
+        let rows =
+            model_tallies(state, account_id, "stu.created_at >= now() - $2::interval", interval)
+                .await;
+        let resets_at = rows
+            .iter()
+            .filter_map(|(_, _, oldest)| *oldest)
+            .min()
+            .map(|t| (t + chrono::Duration::seconds(secs)).to_rfc3339());
+        out.insert(
+            key.to_owned(),
+            serde_json::json!({
+                "amount_usd": priced(catalog.as_ref(), &rows),
+                "resets_at": resets_at,
+            }),
+        );
+    }
+    Ok(Some(serde_json::Value::Object(out)))
+}
+
+/// Persist one Fireworks response's usage. Idempotent on
+/// `(session_id, message_id)`; a response without an upstream id gets a
+/// synthetic one, so a retry of the same call is counted once per response, not
+/// per attempt.
+async fn record_fireworks_usage(
+    pool: sqlx::PgPool,
+    session_id: String,
+    model: Option<String>,
+    captured: crate::cost::CapturedUsage,
+) {
+    let message_id =
+        captured.message_id.unwrap_or_else(|| format!("fw-{}", uuid::Uuid::new_v4().simple()));
+    let u = captured.usage;
+    if let Err(e) = sqlx::query(
+        "INSERT INTO session_token_usage \
+             (session_id, message_id, input_tokens, output_tokens, cache_read_tokens, model) \
+         VALUES ($1, $2, $3, $4, $5, $6) \
+         ON CONFLICT (session_id, message_id) DO NOTHING",
+    )
+    .bind(&session_id)
+    .bind(&message_id)
+    .bind(u.input)
+    .bind(u.output)
+    .bind(u.cached_input)
+    .bind(model)
+    .execute(&pool)
+    .await
+    {
+        tracing::warn!(session = %session_id, "fireworks usage record failed: {e}");
+    }
 }
 
 #[cfg(test)]

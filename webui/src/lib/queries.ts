@@ -178,6 +178,8 @@ export interface SessionBinding {
  *  window: no `cap_pct` ⇒ no cap; no `bypass_minutes` ⇒ no bypass. */
 export interface SoftLimitConfig {
   cap_pct?: number | null;
+  /** Dollar cap; applies to the `session_usd` / `usd_5h` / `usd_7d` windows. */
+  cap_usd?: number | null;
   bypass_minutes?: number | null;
 }
 
@@ -189,6 +191,8 @@ export interface UsageWindow {
   kind: string;
   label: string;
   utilization: number;
+  /** USD spent in the window; set only for the dollar windows. */
+  amount_usd?: number | null;
   resets_at?: string | null;
   model_id?: string | null;
   model_display_name?: string | null;

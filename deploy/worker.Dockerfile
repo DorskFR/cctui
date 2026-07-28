@@ -123,6 +123,31 @@ RUN arch="$(dpkg --print-architecture)" \
     && rm /tmp/codex.tar.gz \
     && codex --version
 
+# opencode — third harness (https://github.com/anomalyco/opencode), driven by the
+# daemon's opencode adapter over `opencode serve`. Pinned + checksum-verified:
+# the release carries no SHA256SUMS asset, so the digests are recorded per arch
+# alongside the version and must be refreshed together with it.
+#
+# NO model id and NO opencode config belong in this image: the adapter writes a
+# per-session opencode.json into the session's ephemeral HOME from the dispatch
+# payload + gateway-minted FIREWORKS_* env.
+# Keep OPENCODE_VERSION in lockstep with client::OPENCODE_PINNED_VERSION
+# (crates/cctui-daemon/src/adapters/opencode/client.rs).
+ARG OPENCODE_VERSION=1.18.7
+RUN arch="$(dpkg --print-architecture)" \
+    && case "$arch" in \
+         amd64) target=x64;   sha=cb5d9d6d2f8fbef0a9c975ed4494f73b2a62f4e4ffd508bcc3212da4fa76c3da ;; \
+         arm64) target=arm64; sha=6c791e453c2ca03ee3dea09ebd16bfdfac4837e45d344a1487cd196b80090fc7 ;; \
+         *) echo "opencode: unsupported arch '$arch'" >&2; exit 1 ;; \
+       esac \
+    && curl -fsSL "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-${target}.tar.gz" \
+        -o /tmp/opencode.tar.gz \
+    && echo "${sha}  /tmp/opencode.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/opencode.tar.gz -C /usr/local/bin opencode \
+    && chmod 0755 /usr/local/bin/opencode \
+    && rm /tmp/opencode.tar.gz \
+    && opencode --version
+
 # yt — token-frugal YouTrack CLI (https://github.com/DorskFR/yt). Lets dispatched
 # tasks triage / transition YouTrack issues without an MCP server. Tracks the
 # rolling `latest` release (a moving tag the yt CI republishes on every release),
