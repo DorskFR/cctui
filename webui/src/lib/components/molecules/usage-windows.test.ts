@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { UsageWindow } from '$lib/queries';
-import { editorWindowKeys, mergeUsageWindows, windowLabelFromKey } from './usage-windows';
+import { editorWindowKeys, isUsdKey, mergeUsageWindows, windowLabelFromKey } from './usage-windows';
 
 const win = (key: string, label: string, utilization: number, extra: Partial<UsageWindow> = {}): UsageWindow => ({
 	key,
@@ -73,5 +73,51 @@ describe('editorWindowKeys', () => {
 			'weekly_model:extra'
 		]);
 		expect(keys[2].label).toBe('Weekly Opus');
+	});
+});
+
+describe('dollar windows', () => {
+	const usdWin = (key: string, amount: number): UsageWindow => ({
+		key,
+		kind: 'usd',
+		label: windowLabelFromKey(key),
+		utilization: 0,
+		amount_usd: amount
+	});
+
+	it('labels and flags the dollar keys', () => {
+		expect(windowLabelFromKey('session_usd')).toBe('Session spend');
+		expect(windowLabelFromKey('usd_5h')).toBe('5h spend');
+		expect(windowLabelFromKey('usd_7d')).toBe('7d spend');
+		expect(isUsdKey('usd_7d')).toBe(true);
+		expect(isUsdKey('weekly_all')).toBe(false);
+	});
+
+	it('merges spend with its dollar cap', () => {
+		const { observed } = mergeUsageWindows([usdWin('usd_5h', 1.25), usdWin('usd_7d', 12)], {
+			usd_5h: { cap_usd: 2, bypass_minutes: 15 }
+		});
+		expect(observed.map((r) => r.key)).toEqual(['usd_5h', 'usd_7d']);
+		expect(observed[0].usd).toBe(true);
+		expect(observed[0].amountUsd).toBe(1.25);
+		expect(observed[0].capUsd).toBe(2);
+		expect(observed[0].bypass).toBe(15);
+		expect(observed[1].capUsd).toBeNull();
+	});
+
+	it('keeps a configured-but-unobserved dollar cap editable', () => {
+		const { unobserved } = mergeUsageWindows([], { session_usd: { cap_usd: 5 } });
+		expect(unobserved.map((r) => r.key)).toEqual(['session_usd']);
+		expect(unobserved[0].usd).toBe(true);
+		expect(unobserved[0].capUsd).toBe(5);
+	});
+
+	it('offers the dollar windows to a fireworks editor instead of the percent ones', () => {
+		const keys = editorWindowKeys([], null, 'fireworks').map((k) => k.key);
+		expect(keys).toEqual(['session_usd', 'usd_5h', 'usd_7d']);
+		expect(editorWindowKeys([], null, 'anthropic').map((k) => k.key)).toEqual([
+			'session',
+			'weekly_all'
+		]);
 	});
 });

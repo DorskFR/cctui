@@ -25,7 +25,7 @@
 	} from '$lib/providers';
 	import ProviderPanel from '$lib/components/molecules/ProviderPanel.svelte';
 	import SoftLimit from '$lib/components/molecules/SoftLimit.svelte';
-	import { editorWindowKeys } from '$lib/components/molecules/usage-windows';
+	import { editorWindowKeys, isUsdKey } from '$lib/components/molecules/usage-windows';
 	import ResourceShares from '$lib/components/molecules/ResourceShares.svelte';
 	import GithubConnectors from '$lib/components/organisms/GithubConnectors.svelte';
 	import DispatchersPanel from '$lib/components/organisms/DispatchersPanel.svelte';
@@ -114,7 +114,9 @@
 	// Per-provider soft limits: cap cctui's own share of each usage
 	// window, keyed by canonical window id. Edited per window via the reusable
 	// SoftLimit component; empty inputs = no cap/bypass on that window.
-	let softEdits = $state<Record<string, { cap: number | null; bypass: number | null }>>({});
+	let softEdits = $state<
+		Record<string, { cap: number | null; capUsd: number | null; bypass: number | null }>
+	>({});
 	// Fireworks shares the static-credential shape (no OAuth) but keeps its own
 	// editor: gateway settings + a priced model catalog instead of a bare model
 	// list, and its base URL is an optional override of a built-in upstream.
@@ -131,19 +133,25 @@
 		() => editingProvider?.id ?? '',
 		() =>
 			!!editingProvider &&
-			(editingProvider.provider === 'anthropic' || editingProvider.provider === 'openai')
+			(editingProvider.provider === 'anthropic' ||
+				editingProvider.provider === 'openai' ||
+				editingProvider.provider === 'fireworks')
 	);
 	const editorWindows = $derived($editorUsage.data?.windows ?? []);
 	// Window keys to offer: baseline + observed + already-configured.
 	const editorRows = $derived(
 		editor?.mode === 'create' || editor?.mode === 'add-provider' || editor?.mode === 'edit-provider'
-			? editorWindowKeys(editorWindows, editingProvider?.soft_limits ?? null)
+			? editorWindowKeys(
+					editorWindows,
+					editingProvider?.soft_limits ?? null,
+					isFireworks ? 'fireworks' : (editingProvider?.family ?? null)
+				)
 			: []
 	);
 	// Ensure every offered key has an edit slot (seeded null; open* seeds configured).
 	$effect(() => {
 		for (const { key } of editorRows) {
-			if (!(key in softEdits)) softEdits[key] = { cap: null, bypass: null };
+			if (!(key in softEdits)) softEdits[key] = { cap: null, capUsd: null, bypass: null };
 		}
 	});
 
@@ -166,14 +174,27 @@
 		return Number.isFinite(n) ? Math.max(0, n) : null;
 	}
 
+	/** Same, for a dollar cap: money keeps its cents. */
+	function softUsd(v: number | string | null | undefined): number | null {
+		if (v === null || v === undefined || v === '') return null;
+		const n = Number(v);
+		return Number.isFinite(n) ? Math.max(0, n) : null;
+	}
+
 	/** The soft-limit map to send on save. Always sent as the whole
 	 *  replacement map so clearing a window's cap/bypass sticks; windows with
 	 *  neither cap nor bypass are dropped from the map. */
 	function softLimits(): Record<string, SoftLimitConfig> {
 		const out: Record<string, SoftLimitConfig> = {};
 		for (const [key, v] of Object.entries(softEdits)) {
-			const cap = softNum(v.cap);
 			const bypass = softNum(v.bypass);
+			if (isUsdKey(key)) {
+				const capUsd = softUsd(v.capUsd);
+				if (capUsd !== null || bypass !== null)
+					out[key] = { cap_usd: capUsd, bypass_minutes: bypass };
+				continue;
+			}
+			const cap = softNum(v.cap);
 			if (cap !== null || bypass !== null) out[key] = { cap_pct: cap, bypass_minutes: bypass };
 		}
 		return out;
@@ -369,7 +390,11 @@
 		// Soft limits are editable per window for every provider.
 		softEdits = {};
 		for (const [key, v] of Object.entries(p.soft_limits ?? {})) {
-			softEdits[key] = { cap: v.cap_pct ?? null, bypass: v.bypass_minutes ?? null };
+			softEdits[key] = {
+				cap: v.cap_pct ?? null,
+				capUsd: v.cap_usd ?? null,
+				bypass: v.bypass_minutes ?? null
+			};
 		}
 		// Settings are editable per provider.
 		acctSettings = { ...(p.settings_json ?? {}) };
@@ -869,7 +894,7 @@
 					     (baseline + observed + configured), so model-scoped windows appear
 					     automatically. Works for anthropic (upstream usage API) and openai
 					     (locally metered). -->
-					{#if provider === 'anthropic' || provider === 'anthropic-compatible' || provider === 'openai'}
+					{#if provider === 'anthropic' || provider === 'anthropic-compatible' || provider === 'openai' || isFireworks}
 						<div class="models">
 							<Text as="div" tone="muted" size="sm">{m.accounts_soft_limits_label()}</Text>
 							<Text as="div" tone="faint" size="xs">
@@ -881,7 +906,9 @@
 										label={row.label}
 										editable
 										observed={false}
+										usd={isUsdKey(row.key)}
 										bind:cap={softEdits[row.key].cap}
+										bind:capUsd={softEdits[row.key].capUsd}
 										bind:bypass={softEdits[row.key].bypass}
 									/>
 								{/if}

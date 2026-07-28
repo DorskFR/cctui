@@ -26,14 +26,34 @@ pub const KEY_SESSION: &str = "session";
 pub const KEY_WEEKLY_ALL: &str = "weekly_all";
 /// Prefix for a per-model weekly window: `weekly_model:<stable-id-or-slug>`.
 pub const WEEKLY_MODEL_PREFIX: &str = "weekly_model:";
+/// Per-session dollar budget (pay-per-token providers). Never resets.
+pub const KEY_SESSION_USD: &str = "session_usd";
+/// Rolling 5h dollar spend.
+pub const KEY_USD_5H: &str = "usd_5h";
+/// Rolling 7d dollar spend.
+pub const KEY_USD_7D: &str = "usd_7d";
 
-/// One window's independently editable soft-limit config. Both fields optional:
-/// `cap_pct` `None` ⇒ no cap on that window; `bypass_minutes` `None` ⇒ no bypass.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// `Retry-After` for a blocking window with no known reset (a session budget
+/// never resets): a bounded hint, not `i64::MAX`.
+const NO_RESET_RETRY_SECS: i64 = 3600;
+
+/// Whether a canonical key denotes a dollar-denominated window.
+pub fn is_usd_key(key: &str) -> bool {
+    matches!(key, KEY_SESSION_USD | KEY_USD_5H | KEY_USD_7D)
+}
+
+/// One window's independently editable soft-limit config. All fields optional:
+/// no `cap_pct`/`cap_usd` ⇒ no cap on that window; `bypass_minutes` `None` ⇒ no
+/// bypass. `cap_usd` applies to the dollar windows, `cap_pct` to the percent
+/// ones; a window is evaluated against whichever its usage reports.
+#[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SoftLimit {
     /// Max % of the window cctui will consume before refusing more inference.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cap_pct: Option<i32>,
+    /// Max USD cctui will spend in the window before refusing more inference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cap_usd: Option<f64>,
     /// If the window's `resets_at` is within this many minutes, ignore its cap.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bypass_minutes: Option<i32>,
@@ -41,14 +61,14 @@ pub struct SoftLimit {
 
 impl SoftLimit {
     const fn is_empty(&self) -> bool {
-        self.cap_pct.is_none() && self.bypass_minutes.is_none()
+        self.cap_pct.is_none() && self.cap_usd.is_none() && self.bypass_minutes.is_none()
     }
 }
 
 /// Per-account soft-limit configuration: a map from canonical window key to that
 /// window's cap + bypass. Persisted as a validated JSONB map on the provider
 /// credential, so newly discovered model-scoped windows need NO migration.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
 pub struct SoftLimits {
     pub limits: BTreeMap<String, SoftLimit>,
@@ -58,7 +78,7 @@ impl SoftLimits {
     /// No window has a cap configured ⇒ nothing to evaluate (fast path). A bypass
     /// without a cap is inert, so it does not count as "set".
     pub fn is_unset(&self) -> bool {
-        !self.limits.values().any(|l| l.cap_pct.is_some())
+        !self.limits.values().any(|l| l.cap_pct.is_some() || l.cap_usd.is_some())
     }
 
     /// Parse a stored JSONB soft-limit map. Unknown/malformed keys or entries are
@@ -72,6 +92,10 @@ impl SoftLimits {
             let Some(canon) = canonicalize_key(key) else { continue };
             let limit = SoftLimit {
                 cap_pct: v.get("cap_pct").and_then(serde_json::Value::as_i64).map(|n| n as i32),
+                cap_usd: v
+                    .get("cap_usd")
+                    .and_then(serde_json::Value::as_f64)
+                    .filter(|n| n.is_finite() && *n >= 0.0),
                 bypass_minutes: v
                     .get("bypass_minutes")
                     .and_then(serde_json::Value::as_i64)
@@ -91,7 +115,7 @@ impl SoftLimits {
 /// account's config. Returns the normalized key (model slug re-slugged).
 pub fn canonicalize_key(key: &str) -> Option<String> {
     let key = key.trim();
-    if key == KEY_SESSION || key == KEY_WEEKLY_ALL {
+    if key == KEY_SESSION || key == KEY_WEEKLY_ALL || is_usd_key(key) {
         return Some(key.to_owned());
     }
     let suffix = key.strip_prefix(WEEKLY_MODEL_PREFIX)?;
@@ -134,8 +158,12 @@ pub struct UsageWindow {
     pub kind: String,
     /// Human display label (`5h`, `Weekly (all models)`, `Weekly Fable`, …).
     pub label: String,
-    /// Utilization percent (0–100, may exceed on overage).
+    /// Utilization percent (0–100, may exceed on overage). `0` for a dollar
+    /// window with no cap to measure against.
     pub utilization: f64,
+    /// USD spent in the window; set only for the dollar windows.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub amount_usd: Option<f64>,
     /// When the window resets (rfc3339 upstream), if known.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resets_at: Option<DateTime<Utc>>,
@@ -200,6 +228,7 @@ fn normalize_structured_limit(entry: &serde_json::Value) -> Option<UsageWindow> 
             kind: "session".to_owned(),
             label: "5h".to_owned(),
             utilization,
+            amount_usd: None,
             resets_at,
             model_id: None,
             model_display_name: None,
@@ -209,6 +238,7 @@ fn normalize_structured_limit(entry: &serde_json::Value) -> Option<UsageWindow> 
             kind: "weekly_all".to_owned(),
             label: "Weekly (all models)".to_owned(),
             utilization,
+            amount_usd: None,
             resets_at,
             model_id: None,
             model_display_name: None,
@@ -230,6 +260,7 @@ fn normalize_structured_limit(entry: &serde_json::Value) -> Option<UsageWindow> 
                 kind: if kind.is_empty() { "weekly_scoped".to_owned() } else { kind.to_owned() },
                 label: sanitize_label(&label),
                 utilization,
+                amount_usd: None,
                 resets_at,
                 model_id,
                 model_display_name,
@@ -250,6 +281,7 @@ fn normalize_fixed_fields(usage: &serde_json::Value) -> Vec<UsageWindow> {
                 kind: kind.to_owned(),
                 label: label.to_owned(),
                 utilization,
+                amount_usd: None,
                 resets_at: parse_resets_at(w),
                 model_id: model.map(str::to_owned),
                 model_display_name: None,
@@ -272,7 +304,38 @@ fn normalize_fixed_fields(usage: &serde_json::Value) -> Vec<UsageWindow> {
         "Weekly Sonnet",
         Some("sonnet"),
     );
+    for key in [KEY_SESSION_USD, KEY_USD_5H, KEY_USD_7D] {
+        if let Some(w) = usage.get(key)
+            && let Some(amount_usd) = w.get("amount_usd").and_then(serde_json::Value::as_f64)
+        {
+            out.push(usd_window(key, amount_usd, parse_resets_at(w)));
+        }
+    }
     out
+}
+
+/// Display label for a dollar window key.
+pub fn usd_label(key: &str) -> &'static str {
+    match key {
+        KEY_USD_5H => "5h spend",
+        KEY_USD_7D => "7d spend",
+        _ => "Session spend",
+    }
+}
+
+/// Build a dollar window. `utilization` stays 0 — a spend has no percentage
+/// until a cap is set, and the cap lives in the config, not the usage.
+pub fn usd_window(key: &str, amount_usd: f64, resets_at: Option<DateTime<Utc>>) -> UsageWindow {
+    UsageWindow {
+        key: key.to_owned(),
+        kind: "usd".to_owned(),
+        label: usd_label(key).to_owned(),
+        utilization: 0.0,
+        amount_usd: Some(amount_usd),
+        resets_at,
+        model_id: None,
+        model_display_name: None,
+    }
 }
 
 /// Outcome of evaluating an account's usage against its soft limits.
@@ -311,15 +374,28 @@ pub fn evaluate_soft_limit(
 
     let mut blocking: Vec<(i64, String, String)> = Vec::new();
     for (key, limit) in &caps.limits {
-        let Some(cap) = limit.cap_pct else { continue };
         // Missing window for a configured key ⇒ fail open for that key only.
         let Some(win) = windows.iter().find(|w| &w.key == key) else { continue };
-        if win.utilization < f64::from(cap) {
+        let over = match (limit.cap_usd, win.amount_usd, limit.cap_pct) {
+            (Some(cap_usd), Some(spent), _) => (spent >= cap_usd)
+                .then(|| format!("{} at ${spent:.2} (cap ${cap_usd:.2})", win.label)),
+            (_, _, Some(cap)) => (win.utilization >= f64::from(cap)).then(|| {
+                format!("{} window at {}% (cap {cap}%)", win.label, win.utilization.round() as i64)
+            }),
+            _ => None,
+        };
+        let Some(detail) = over else { continue };
+        // A window that never resets can never be "about to reset": no bypass.
+        let Some(resets_at) = win.resets_at else {
+            blocking.push((
+                NO_RESET_RETRY_SECS,
+                format!("cctui soft limit: {detail}"),
+                key.clone(),
+            ));
             continue;
-        }
+        };
         let bypass = i64::from(limit.bypass_minutes.unwrap_or(0).max(0));
-        // Seconds until reset; unknown reset ⇒ treat as far away (can't bypass).
-        let secs_to_reset = win.resets_at.map_or(i64::MAX, |r| (r - now).num_seconds());
+        let secs_to_reset = (resets_at - now).num_seconds();
         if secs_to_reset > 0 && secs_to_reset <= bypass * 60 {
             continue;
         }
@@ -327,11 +403,7 @@ pub fn evaluate_soft_limit(
         let mins = (retry + 59) / 60;
         blocking.push((
             retry,
-            format!(
-                "cctui soft limit: {} window at {}% (cap {cap}%), resets in {mins}m",
-                win.label,
-                win.utilization.round() as i64
-            ),
+            format!("cctui soft limit: {detail}, resets in {mins}m"),
             key.clone(),
         ));
     }
@@ -354,7 +426,21 @@ mod tests {
     fn caps(pairs: &[(&str, Option<i32>, Option<i32>)]) -> SoftLimits {
         let mut limits = BTreeMap::new();
         for (k, cap, bypass) in pairs {
-            limits.insert((*k).to_owned(), SoftLimit { cap_pct: *cap, bypass_minutes: *bypass });
+            limits.insert(
+                (*k).to_owned(),
+                SoftLimit { cap_pct: *cap, cap_usd: None, bypass_minutes: *bypass },
+            );
+        }
+        SoftLimits { limits }
+    }
+
+    fn usd_caps(pairs: &[(&str, f64, Option<i32>)]) -> SoftLimits {
+        let mut limits = BTreeMap::new();
+        for (k, cap, bypass) in pairs {
+            limits.insert(
+                (*k).to_owned(),
+                SoftLimit { cap_pct: None, cap_usd: Some(*cap), bypass_minutes: *bypass },
+            );
         }
         SoftLimits { limits }
     }
@@ -561,6 +647,84 @@ mod tests {
         let c = caps(&[(KEY_SESSION, Some(80), None)]);
         let u = legacy(10.0, "2026-06-19T16:00:00Z", 99.0, "2026-06-26T00:00:00Z");
         assert_eq!(eval(&u, &c), Decision::Allow);
+    }
+
+    // ---- dollar windows ----------------------------------------------------
+
+    fn usd_usage(five: f64, five_reset: &str, seven: f64) -> serde_json::Value {
+        json!({
+            "usd_5h": {"amount_usd": five, "resets_at": five_reset},
+            "usd_7d": {"amount_usd": seven, "resets_at": "2026-06-26T00:00:00Z"},
+        })
+    }
+
+    #[test]
+    fn usd_windows_normalize_from_amounts() {
+        let w = normalize_usage_windows(&usd_usage(1.5, "2026-06-19T16:00:00Z", 12.0));
+        let keys: Vec<_> = w.iter().map(|x| x.key.as_str()).collect();
+        assert_eq!(keys, ["usd_5h", "usd_7d"]);
+        assert_eq!(w[0].kind, "usd");
+        assert_eq!(w[0].label, "5h spend");
+        assert!((w[0].amount_usd.unwrap() - 1.5).abs() < 1e-9);
+        assert!((w[0].utilization - 0.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn usd_cap_blocks_and_names_dollars() {
+        let c = usd_caps(&[(KEY_USD_5H, 1.0, None)]);
+        match eval(&usd_usage(1.25, "2026-06-19T12:41:00Z", 0.0), &c) {
+            Decision::Block { retry_after_secs, reason, key } => {
+                assert_eq!(retry_after_secs, 41 * 60);
+                assert_eq!(key, KEY_USD_5H);
+                assert_eq!(
+                    reason,
+                    "cctui soft limit: 5h spend at $1.25 (cap $1.00), resets in 41m"
+                );
+            }
+            d @ Decision::Allow => panic!("expected block, got {d:?}"),
+        }
+    }
+
+    #[test]
+    fn usd_under_cap_and_bypass_allow() {
+        let c = usd_caps(&[(KEY_USD_5H, 5.0, None)]);
+        assert_eq!(eval(&usd_usage(4.99, "2026-06-19T16:00:00Z", 0.0), &c), Decision::Allow);
+        let bypassing = usd_caps(&[(KEY_USD_5H, 1.0, Some(10))]);
+        assert_eq!(eval(&usd_usage(9.0, "2026-06-19T12:05:00Z", 0.0), &bypassing), Decision::Allow);
+    }
+
+    #[test]
+    fn session_usd_budget_blocks_without_a_reset() {
+        let c = usd_caps(&[(KEY_SESSION_USD, 2.0, Some(60))]);
+        let windows = vec![usd_window(KEY_SESSION_USD, 2.0, None)];
+        match evaluate_soft_limit(&windows, &c, now()) {
+            Decision::Block { retry_after_secs, reason, key } => {
+                assert_eq!(key, KEY_SESSION_USD);
+                assert_eq!(retry_after_secs, NO_RESET_RETRY_SECS);
+                assert_eq!(reason, "cctui soft limit: Session spend at $2.00 (cap $2.00)");
+            }
+            d @ Decision::Allow => panic!("expected block, got {d:?}"),
+        }
+    }
+
+    #[test]
+    fn usd_cap_without_spend_data_fails_open() {
+        let c = usd_caps(&[(KEY_USD_7D, 0.5, None)]);
+        assert_eq!(evaluate_soft_limit(&[], &c, now()), Decision::Allow);
+    }
+
+    #[test]
+    fn usd_keys_round_trip_through_json() {
+        let blob = json!({
+            "session_usd": {"cap_usd": 2.5},
+            "usd_5h": {"cap_usd": 1.0, "bypass_minutes": 15},
+            "usd_7d": {"cap_usd": -3},
+        });
+        let sl = SoftLimits::from_json(Some(&blob));
+        assert!(!sl.is_unset());
+        assert_eq!(sl.limits["session_usd"].cap_usd, Some(2.5));
+        assert!(!sl.limits.contains_key("usd_7d"));
+        assert_eq!(sl, SoftLimits::from_json(Some(&serde_json::to_value(&sl).unwrap())));
     }
 
     // ---- persistence round-trip -------------------------------------------

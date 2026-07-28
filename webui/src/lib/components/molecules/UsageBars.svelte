@@ -23,7 +23,9 @@
 		softLimits?: Record<string, SoftLimitConfig> | null;
 	} = $props();
 
-	const active = $derived(enabled && (provider === 'anthropic' || provider === 'openai'));
+	const active = $derived(
+		enabled && (provider === 'anthropic' || provider === 'openai' || provider === 'fireworks')
+	);
 	const q = useAccountUsage(
 		() => id,
 		() => active
@@ -42,12 +44,29 @@
 {:else if hasRows}
 	<div class="bars">
 		{#each rows.observed as r (r.key)}
-			<SoftLimit label={r.label} utilization={r.utilization} resets={r.resets} cap={r.cap} bypass={r.bypass} />
+			<SoftLimit
+				label={r.label}
+				utilization={r.utilization}
+				amountUsd={r.amountUsd}
+				resets={r.resets}
+				cap={r.cap}
+				capUsd={r.capUsd}
+				bypass={r.bypass}
+				usd={r.usd}
+			/>
 		{/each}
 		{#if rows.unobserved.length}
 			<Text size="xs" tone="faint">{m.sessions_usage_configured_unreported()}</Text>
 			{#each rows.unobserved as r (r.key)}
-				<SoftLimit label={r.label} utilization={null} cap={r.cap} bypass={r.bypass} observed={false} />
+				<SoftLimit
+				label={r.label}
+				utilization={null}
+				cap={r.cap}
+				capUsd={r.capUsd}
+				bypass={r.bypass}
+				observed={false}
+				usd={r.usd}
+			/>
 			{/each}
 		{/if}
 	</div>

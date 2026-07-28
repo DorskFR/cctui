@@ -25,7 +25,7 @@ futures-util.workspace = true
 anyhow.workspace = true
 async-trait = "0.1"
 tokio-util = { version = "0.7", features = ["io"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 clap = { version = "4", features = ["derive", "env"] }
 toml = "0.8"
 dirs = "5"

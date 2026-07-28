@@ -1019,5 +1019,6 @@
 	"sessions_usage_configured_unreported": "Configured but not currently reported",
 	"softlimit_not_reported": "Not currently reported",
 	"softlimit_cap_label": "Cap %",
+	"softlimit_cap_usd_label": "Cap ($)",
 	"softlimit_bypass_label": "Bypass (min)"
 }

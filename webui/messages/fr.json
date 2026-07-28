@@ -1018,5 +1018,6 @@
 	"sessions_usage_configured_unreported": "Configuré mais non rapporté actuellement",
 	"softlimit_not_reported": "Non rapporté actuellement",
 	"softlimit_cap_label": "Plafond %",
+	"softlimit_cap_usd_label": "Plafond ($)",
 	"softlimit_bypass_label": "Dérogation (min)"
 }

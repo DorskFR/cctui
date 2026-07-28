@@ -257,9 +257,10 @@ pub struct ProviderInfo {
     /// all its sessions. Joined from `session_tokens` →
     /// `session_token_usage` at read time.
     pub total_tokens: i64,
-    /// Rough USD cost estimate derived from `total_tokens` using a per-provider
-    /// blended rate. An estimate only — OAuth/subscription accounts
-    /// aren't metered per token; this is a usage-weight signal, not a bill.
+    /// USD cost of this provider's recorded usage. For a pay-per-token
+    /// (`fireworks`) row this is priced per model from the account's own
+    /// catalog and is the real spend; for subscription rows it is a blended-rate
+    /// estimate — a usage-weight signal, not a bill.
     pub est_cost_usd: f64,
     /// Per-provider soft limits: a validated JSONB map keyed by
     /// canonical window identity (`session` | `weekly_all` | `weekly_model:<id>`),
@@ -349,8 +350,9 @@ const PROVIDER_SELECT: &str = "SELECT p.id, p.account_id, p.provider, p.family, 
             (COALESCE(t.input_tokens,0) + COALESCE(t.output_tokens,0) \
              + COALESCE(t.cache_read_tokens,0) + COALESCE(t.cache_creation_tokens,0))::bigint \
               AS total_tokens, \
-            (CASE p.provider \
-               WHEN 'openai' THEN \
+            (CASE \
+               WHEN p.family = 'fireworks' THEN COALESCE(fw.usd, 0) * 1000000.0 \
+               WHEN p.provider = 'openai' THEN \
                  COALESCE(t.input_tokens,0)*1.25 + COALESCE(t.output_tokens,0)*10 \
                  + COALESCE(t.cache_read_tokens,0)*0.125 + COALESCE(t.cache_creation_tokens,0)*1.25 \
                ELSE \
@@ -367,7 +369,23 @@ const PROVIDER_SELECT: &str = "SELECT p.id, p.account_id, p.provider, p.family, 
          FROM session_tokens st \
          JOIN session_token_usage stu ON stu.session_id = st.session_id \
          GROUP BY st.account_id \
-     ) t ON t.account_id = p.id";
+     ) t ON t.account_id = p.id \
+     LEFT JOIN LATERAL ( \
+         SELECT SUM(( \
+                  (stu.input_tokens + stu.cache_creation_tokens) \
+                    * COALESCE((m.value->>'price_input_per_mtok')::double precision, 0) \
+                  + stu.cache_read_tokens \
+                    * COALESCE((m.value->>'price_cached_input_per_mtok')::double precision, 0) \
+                  + stu.output_tokens \
+                    * COALESCE((m.value->>'price_output_per_mtok')::double precision, 0) \
+                ) / 1000000.0) AS usd \
+         FROM session_tokens st \
+         JOIN session_token_usage stu ON stu.session_id = st.session_id \
+         JOIN jsonb_array_elements( \
+                CASE WHEN jsonb_typeof(p.models) = 'array' THEN p.models ELSE '[]'::jsonb END \
+              ) m ON m.value->>'model' = stu.model \
+         WHERE st.account_id = p.id \
+     ) fw ON p.family = 'fireworks'";
 
 /// Identity SELECT for [`AccountRow`]. Append a `WHERE`/`ORDER BY` before use.
 const ACCOUNT_SELECT: &str = "SELECT a.id, a.name, a.user_id, u.name AS user_name, a.created_at, a.updated_at, \
@@ -594,29 +612,43 @@ fn build_soft_limits_json(
     use std::collections::BTreeMap;
     let mut out: BTreeMap<String, serde_json::Value> = BTreeMap::new();
 
-    let mut insert = |key: &str, cap: Option<i32>, bypass: Option<i32>| {
+    let mut insert = |key: &str, cap: Option<i32>, cap_usd: Option<f64>, bypass: Option<i32>| {
         if let Some(c) = cap
             && !(0..=100).contains(&c)
         {
             return Err(err(StatusCode::BAD_REQUEST, "soft-limit cap must be 0-100"));
+        }
+        if let Some(c) = cap_usd
+            && (!c.is_finite() || c < 0.0)
+        {
+            return Err(err(StatusCode::BAD_REQUEST, "soft-limit cap_usd must be >= 0"));
         }
         if let Some(b) = bypass
             && b < 0
         {
             return Err(err(StatusCode::BAD_REQUEST, "soft-limit bypass must be >= 0"));
         }
-        if cap.is_none() && bypass.is_none() {
+        if cap.is_none() && cap_usd.is_none() && bypass.is_none() {
             return Ok(());
         }
         let Some(canon) = crate::soft_limit::canonicalize_key(key) else {
             return Err(err(StatusCode::BAD_REQUEST, "unknown soft-limit window key"));
         };
+        // A dollar cap belongs only to a dollar window, and vice versa: storing
+        // the wrong one would read as an unenforceable cap in the UI.
+        let usd_window = crate::soft_limit::is_usd_key(&canon);
         let mut entry = serde_json::Map::new();
-        if let Some(c) = cap {
+        if let Some(c) = cap.filter(|_| !usd_window) {
             entry.insert("cap_pct".into(), serde_json::json!(c));
+        }
+        if let Some(c) = cap_usd.filter(|_| usd_window) {
+            entry.insert("cap_usd".into(), serde_json::json!(c));
         }
         if let Some(b) = bypass {
             entry.insert("bypass_minutes".into(), serde_json::json!(b));
+        }
+        if entry.is_empty() {
+            return Ok(());
         }
         out.insert(canon, serde_json::Value::Object(entry));
         Ok(())
@@ -625,16 +657,17 @@ fn build_soft_limits_json(
     if let Some(obj) = map.and_then(serde_json::Value::as_object) {
         for (key, v) in obj {
             let cap = v.get("cap_pct").and_then(serde_json::Value::as_i64).map(|n| n as i32);
+            let cap_usd = v.get("cap_usd").and_then(serde_json::Value::as_f64);
             let bypass =
                 v.get("bypass_minutes").and_then(serde_json::Value::as_i64).map(|n| n as i32);
-            insert(key, cap, bypass)?;
+            insert(key, cap, cap_usd, bypass)?;
         }
     } else if map.is_some_and(|v| !v.is_null()) {
         return Err(err(StatusCode::BAD_REQUEST, "soft_limits must be an object"));
     } else {
         // No map supplied — fold the legacy scalar fields.
-        insert(crate::soft_limit::KEY_SESSION, legacy_session_cap, legacy_session_bypass)?;
-        insert(crate::soft_limit::KEY_WEEKLY_ALL, legacy_weekly_cap, legacy_weekly_bypass)?;
+        insert(crate::soft_limit::KEY_SESSION, legacy_session_cap, None, legacy_session_bypass)?;
+        insert(crate::soft_limit::KEY_WEEKLY_ALL, legacy_weekly_cap, None, legacy_weekly_bypass)?;
     }
 
     Ok((!out.is_empty()).then(|| serde_json::to_value(out).unwrap_or(serde_json::Value::Null)))

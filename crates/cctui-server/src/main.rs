@@ -3,6 +3,7 @@ mod authz;
 mod bandwidth_watch;
 mod bus;
 mod config;
+mod cost;
 mod crypto;
 mod db;
 mod dispatchers;

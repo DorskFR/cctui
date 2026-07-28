@@ -10,20 +10,28 @@
 	let {
 		label,
 		utilization = null,
+		amountUsd = null,
 		resets = null,
 		cap = $bindable(null),
+		capUsd = $bindable(null),
 		bypass = $bindable(null),
 		editable = false,
-		observed = true
+		observed = true,
+		usd = false
 	}: {
 		label: string;
 		/** 0–100 (may exceed); null ⇒ not currently reported. */
 		utilization?: number | null;
+		/** USD spent, for a dollar window. */
+		amountUsd?: number | null;
 		resets?: string | null;
 		cap?: number | null;
+		capUsd?: number | null;
 		bypass?: number | null;
 		editable?: boolean;
 		observed?: boolean;
+		/** Dollar window: spend against a $ cap instead of % of a quota. */
+		usd?: boolean;
 	} = $props();
 
 	// Severity breakpoints on window utilization (%): below WARN → success,
@@ -31,9 +39,21 @@
 	const WARN_PCT = 70;
 	const HOT_PCT = 90;
 
-	const pct = $derived(
-		utilization === null ? null : Math.max(0, Math.min(100, Math.round(utilization)))
+	// A dollar window has no quota to be a percentage of, so its bar is spend
+	// against its own cap; with no cap there is nothing to fill.
+	const usdPct = $derived(
+		amountUsd === null || capUsd == null || capUsd <= 0
+			? null
+			: Math.max(0, Math.min(100, Math.round((amountUsd / capUsd) * 100)))
 	);
+	const pct = $derived(
+		usd
+			? usdPct
+			: utilization === null
+				? null
+				: Math.max(0, Math.min(100, Math.round(utilization)))
+	);
+	const money = (n: number) => `$${n.toFixed(2)}`;
 	const tone = $derived(
 		pct === null ? 'success' : pct >= HOT_PCT ? 'danger' : pct >= WARN_PCT ? 'warn' : 'success'
 	);
@@ -43,7 +63,11 @@
 <div class="soft-limit">
 	<div class="head">
 		<Text size="xs" tone="muted" numeric class="sl-label">{label}</Text>
-		{#if pct !== null}
+		{#if usd && amountUsd !== null}
+			<Text size="xs" numeric tone={tone === 'danger' ? 'danger' : tone === 'warn' ? 'warn' : 'success'} class="sl-pct">
+				{money(amountUsd)}{#if capUsd != null}<Text tone="faint"> / {money(capUsd)}</Text>{/if}{#if resets}<Text tone="faint" class="sl-reset"> · resets <Timestamp value={resets} mode="relative" tone="faint" /></Text>{/if}
+			</Text>
+		{:else if pct !== null}
 			<Text size="xs" numeric tone={tone === 'danger' ? 'danger' : tone === 'warn' ? 'warn' : 'success'} class="sl-pct">
 				{pct}%{#if resets}<Text tone="faint" class="sl-reset"> · resets <Timestamp value={resets} mode="relative" tone="faint" /></Text>{/if}
 			</Text>
@@ -55,7 +79,7 @@
 	{#if pct !== null}
 		<div class="track-wrap">
 			<Progress value={pct} label={m.sessions_usage_bar_aria({ label })} tone={tone} class="sl-track" />
-			{#if capPct != null}
+			{#if !usd && capPct != null}
 				<span class="cap-marker" style={`left: ${capPct}%`} title={m.sessions_usage_soft_limit({ pct: capPct })}></span>
 			{/if}
 		</div>
@@ -64,8 +88,13 @@
 	{#if editable}
 		<div class="controls">
 			<label class="ctrl">
-				<Text as="div" tone="faint" size="xs">{m.softlimit_cap_label()}</Text>
-				<Input type="number" bind:value={cap} placeholder="e.g. 80" />
+				{#if usd}
+					<Text as="div" tone="faint" size="xs">{m.softlimit_cap_usd_label()}</Text>
+					<Input type="number" step="0.01" bind:value={capUsd} placeholder="e.g. 5.00" />
+				{:else}
+					<Text as="div" tone="faint" size="xs">{m.softlimit_cap_label()}</Text>
+					<Input type="number" bind:value={cap} placeholder="e.g. 80" />
+				{/if}
 			</label>
 			<label class="ctrl">
 				<Text as="div" tone="faint" size="xs">{m.softlimit_bypass_label()}</Text>
