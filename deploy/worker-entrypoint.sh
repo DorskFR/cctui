@@ -397,8 +397,27 @@ phase_network() {
     log "guard-proxy started (mode=$NET_MODE, pid $GUARD_PROXY_PID)"
 }
 
+# $1 = repo dir, $2 = fetch URL (may embed a token; falls back to origin)
+ensure_base_branch() {
+    _bd="$1"
+    _burl="${2:-origin}"
+    if [ "$(git -C "$_bd" rev-parse --is-shallow-repository 2>/dev/null)" = "true" ]; then
+        git -C "$_bd" fetch -q "$_burl" --unshallow 2>/dev/null \
+            || git -C "$_bd" fetch -q "$_burl" 2>/dev/null || true
+    fi
+    _def=$(git -C "$_bd" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's,^origin/,,')
+    [ -n "$_def" ] || _def=$(git -C "$_bd" ls-remote --symref "$_burl" HEAD 2>/dev/null \
+        | awk '$1 == "ref:" { sub("refs/heads/", "", $2); print $2; exit }')
+    [ -n "$_def" ] || return 0
+    git -C "$_bd" fetch -q "$_burl" "+refs/heads/${_def}:refs/remotes/origin/${_def}" 2>/dev/null || true
+    git -C "$_bd" symbolic-ref refs/remotes/origin/HEAD "refs/remotes/origin/${_def}" 2>/dev/null || true
+    git -C "$_bd" branch -f "$_def" "refs/remotes/origin/${_def}" 2>/dev/null \
+        && log "workspace: base branch ${_def} @ $(git -C "$_bd" rev-parse --short "refs/remotes/origin/${_def}" 2>/dev/null)" \
+        || true
+}
+
 # ── Phase 2: Workspace ──────────────────────────────────────────────────────
-# WARM_REPO_DIR -> overlayfs (rsync fallback); else TASK_REPO_URL -> shallow
+# WARM_REPO_DIR -> overlayfs (rsync fallback); else TASK_REPO_URL -> blobless
 # clone; else an empty /workspace. chown to the worker either way. Skipped (just
 # an empty, worker-owned /workspace) when neither var is set.
 phase_workspace() {
@@ -426,6 +445,7 @@ phase_workspace() {
             else
                 log "WARNING: could not check out TASK_REPO_REF=$TASK_REPO_REF (baked HEAD left as-is)"
             fi
+            ensure_base_branch "/workspace/${TASK_REPO}" "${_wurl:-origin}"
         fi
         return 0
     fi
@@ -458,12 +478,13 @@ phase_workspace() {
         fi
         _curl="$TASK_REPO_URL"
         [ -n "$_wtok" ] && _curl=$(printf '%s' "$TASK_REPO_URL" | sed "s,^https://,https://${_wtok}@,")
-        if git clone --depth 1 "$_curl" "$_dest" 2>/dev/null; then
+        if git clone --filter=blob:none "$_curl" "$_dest" 2>/dev/null; then
             if [ -n "${TASK_REPO_REF:-}" ]; then
-                git -C "$_dest" fetch --depth 1 -q origin "$TASK_REPO_REF" 2>/dev/null \
+                git -C "$_dest" fetch -q "$_curl" "$TASK_REPO_REF" 2>/dev/null \
                     && git -C "$_dest" checkout -q FETCH_HEAD 2>/dev/null \
                     || log "WARNING: could not check out TASK_REPO_REF=$TASK_REPO_REF"
             fi
+            ensure_base_branch "$_dest" "$_curl"
             git -C "$_dest" remote set-url origin "$TASK_REPO_URL" 2>/dev/null || true
             log "workspace: cloned ${TASK_REPO} into $_dest${TASK_REPO_REF:+ @ ${TASK_REPO_REF}}"
         else
