@@ -16,6 +16,7 @@ export interface SpawnMemoryEntry {
 	account_provider: string;
 	permission_mode: string;
 	name: string;
+	labels?: string[];
 	/** Last-write timestamp; drives LRU eviction and "latest dir on machine". */
 	at: number;
 }
@@ -65,6 +66,18 @@ export function latestDirFor(map: SpawnMemoryMap, machineId: string): string | n
 		if (!best || e.at > best.at) best = { at: e.at, dir: k.slice(prefix.length) };
 	}
 	return best?.dir ?? null;
+}
+
+/** The machine's most recently written entry, whatever its dir: the recall
+ *  fallback for a cwd with no memory of its own. */
+export function latestEntryFor(map: SpawnMemoryMap, machineId: string): SpawnMemoryEntry | null {
+	const prefix = `m${SEP}${machineId}${SEP}`;
+	let best: SpawnMemoryEntry | null = null;
+	for (const [k, e] of Object.entries(map)) {
+		if (!k.startsWith(prefix)) continue;
+		if (!best || e.at > best.at) best = e;
+	}
+	return best;
 }
 
 /** Whether the cwd field should be filled with `last` (the machine's
@@ -140,7 +153,7 @@ export function memoryFieldsOf(form: MemoryFieldValues): Record<MemoryField, str
 /** Build the entry to remember from the submitted form (timestamp added by the
  *  settings store at write time). */
 export function entryFromForm(
-	form: MemoryFieldValues & { account_provider: string }
+	form: MemoryFieldValues & { account_provider: string; labels?: string[] }
 ): Omit<SpawnMemoryEntry, 'at'> {
 	return {
 		adapter_id: form.adapter_id,
@@ -152,6 +165,27 @@ export function entryFromForm(
 		account: form.account,
 		account_provider: form.account_provider,
 		permission_mode: form.permission_mode,
-		name: form.name.trim()
+		name: form.name.trim(),
+		labels: [...(form.labels ?? [])]
 	};
+}
+
+/** The label set to prefill, or null to leave the picker alone: the remembered
+ *  set wins only while the picker still holds what the modal seeded or what a
+ *  previous recall wrote. */
+export function labelPrefill(
+	current: readonly string[],
+	seeded: readonly string[],
+	lastApplied: readonly string[] | null,
+	entry: SpawnMemoryEntry
+): string[] | null {
+	if (!entry.labels) return null;
+	const reference = lastApplied ?? seeded;
+	if (!sameIds(current, reference)) return null;
+	if (sameIds(current, entry.labels)) return null;
+	return [...entry.labels];
+}
+
+function sameIds(a: readonly string[], b: readonly string[]): boolean {
+	return a.length === b.length && a.every((x, i) => x === b[i]);
 }
