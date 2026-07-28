@@ -1116,3 +1116,88 @@ unattended merge.
 > outside this contract; the repo-resident half — the clean-context driver and the
 > verdict contract — is what the `acceptance-agent` skill specifies and is reusable
 > the moment a preview URL is provided.
+
+## `CctuiAgent` — native subagent spawning (CCT-758)
+
+A session can spawn **real cctui child sessions** instead of shelling out to a
+runner script. The child is a first-class session: nested under its caller in
+the UI (`sessions.parent_id`), metered through the gateway like any other
+session, budgeted, and killable. This replaces the pattern where a session
+launched a harness itself and the resulting agent was invisible to cctui.
+
+### The tool
+
+`cctui-daemon` serves a local **stdio MCP server** exposing exactly one tool:
+
+```
+CctuiAgent(
+  adapter:       string   # required — "opencode" | "codex" | "claude_code"
+  prompt:        string   # required — the task for the child
+  model:         string?  # account-catalog model id; omit for the account default
+  agent_profile: string?  # e.g. "cctui-reviewer" (opencode agent profile)
+  budget_usd:    number?  # child's own dollar ceiling; omit to inherit the max
+  cwd:           string?  # defaults to the caller's working directory
+  timeout_secs:  int?     # default 1800, max 7200
+) -> the child's final message
+```
+
+The call **blocks until the child finishes** and returns its last assistant
+message. A child that fails, crashes, or is refused returns error text — the
+call never hangs silently. On timeout the tool returns and the child is left for
+inspection in the UI rather than being silently reaped.
+
+`adapter` accepts the spellings a model is likely to produce: `claude_code` /
+`claude` → `claude-code`, `codex-cli` → `codex`.
+
+### Registration
+
+Only **claude sessions** get the tool today. At launch the daemon writes a
+per-session MCP config (`mcp-agent-<short>.json`) beside the managed
+`--settings` file and passes it as `--mcp-config`. Argv bakes in the session id
+and the daemon's tool socket:
+
+```
+cctui-daemon mcp-agent --session <session-id> --sock <daemon-agent-socket>
+```
+
+Because the session id is fixed in argv by the daemon, a session can never make
+a call on another session's behalf. The config is written **only when the server
+returns a spawn capability** for that session, so an unprivileged session does
+not even see the tool.
+
+### Capability (fail-closed)
+
+What a session may spawn is declared by whoever launches it and is never
+writable by the session:
+
+- interactive spawns: `spawn_capability` on the `SpawnRequest`;
+- dispatched workers: `payload.spawn_capability`, which the server **strips from
+  the forwarded payload** so the worker cannot read or restate it.
+
+```jsonc
+"spawn_capability": {
+  "adapters": ["opencode"],   // exact ids; empty or absent = spawning denied
+  "max_budget_usd": 0.50,     // ceiling AND the default when a call omits one
+  "max_children": 3           // total children over the session's life
+}
+```
+
+Enforcement lives server-side in
+`POST /api/v1/daemon/sessions/{id}/spawn-child` (machine-key auth), which the
+daemon relays to. It denies when: no capability is recorded, the adapter is not
+listed, `budget_usd` exceeds `max_budget_usd` (or one is requested with no
+ceiling set), or the session already has `max_children`. The daemon grants
+nothing on its own. Capabilities live in server memory, so a server restart
+denies spawning until the session is relaunched — the fail-closed direction.
+
+Children are **not** granted a capability, so a child cannot spawn further
+children.
+
+### Budgets
+
+`budget_usd` becomes a `session_usd` soft limit on the child (CCT-757 dollar
+windows), overlaid at the gateway on top of the account's own limits and
+enforced with the existing 429 path. A child's budget always wins over a looser
+account-level `session_usd`. The child mints its own gateway credential under
+the **parent's account identity** for its own harness family, so a claude parent
+can spawn an opencode/Fireworks child on the same account.

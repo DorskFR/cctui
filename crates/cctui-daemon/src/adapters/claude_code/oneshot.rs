@@ -471,6 +471,7 @@ impl OneshotDriver {
                 env: super::control::launch_env_decision(local_id, &resp, hint)?,
                 settings: resp.settings,
                 whip_phrases: resp.whip_phrases,
+                spawn_capability: resp.spawn_capability,
             }),
             Err(e) => {
                 tracing::warn!(%local_id, "oneshot gateway-env pull failed; using pushed env: {e}");

@@ -115,6 +115,8 @@ async fn main() -> anyhow::Result<()> {
         eviction_tracker: Arc::new(bandwidth_watch::EvictionTracker::default()),
         divergence_tracker: Arc::new(bandwidth_watch::DivergenceTracker::default()),
         machine_event_inserts: Arc::new(dashmap::DashMap::new()),
+        spawn_capabilities: Arc::new(dashmap::DashMap::new()),
+        session_usd_budgets: Arc::new(dashmap::DashMap::new()),
     };
 
     // Warm the reauth gate from the persisted flag so a restart doesn't
@@ -184,6 +186,7 @@ async fn main() -> anyhow::Result<()> {
         // resolves (by sha256 hash — no token material on the wire). Same
         // machine-key self-auth as gateway-env.
         .route("/api/v1/daemon/sessions/{id}/token-valid", get(routes::daemon::session_token_valid))
+        .route("/api/v1/daemon/sessions/{id}/spawn-child", post(routes::spawn_child::spawn_child))
         // Agent-posted image upload: the daemon POSTs raw image bytes
         // it detected as a marker in an assistant message. Self-auths via the
         // machine-key Bearer like the sibling daemon endpoints, so it sits here

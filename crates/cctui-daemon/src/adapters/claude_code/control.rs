@@ -429,6 +429,9 @@ pub(super) struct LaunchEnv {
     pub env: std::collections::BTreeMap<String, String>,
     pub settings: Option<serde_json::Value>,
     pub whip_phrases: Option<serde_json::Value>,
+    /// Present only when the server says this session may spawn subagents; it
+    /// gates whether the `CctuiAgent` MCP server is registered at all.
+    pub spawn_capability: Option<cctui_proto::api::SpawnCapability>,
 }
 
 /// Decide the launch env from a server `GatewayEnvResponse`, split out
@@ -1366,9 +1369,12 @@ impl Driver {
             // The env decision can fail closed (account-bound but unmintable);
             // the per-account settings ride the same response.
             Ok(resp) => match launch_env_decision(local_id, &resp, hint) {
-                Ok(env) => {
-                    Ok(LaunchEnv { env, settings: resp.settings, whip_phrases: resp.whip_phrases })
-                }
+                Ok(env) => Ok(LaunchEnv {
+                    env,
+                    settings: resp.settings,
+                    whip_phrases: resp.whip_phrases,
+                    spawn_capability: resp.spawn_capability,
+                }),
                 // Fail-closed refusal: an account-bound session with no mintable
                 // gateway credential must NOT run on ambient creds. Surface it as
                 // a visible failure state before aborting, so the UI shows the
@@ -1706,6 +1712,7 @@ impl Driver {
             model: payload.get("model").and_then(serde_json::Value::as_str).map(ToOwned::to_owned),
             env,
             bootstrap: serde_json::Value::Null,
+            parent_local_id: None,
         })
     }
 
@@ -1809,6 +1816,14 @@ impl Driver {
         {
             map.insert(short.to_owned(), super::diagnose::permission_label(mode).to_owned());
         }
+        // A `CctuiAgent` child links to its caller through the same stash the
+        // fork path uses: roster discovery emits the `SessionStarted` and has no
+        // other way to know the spawn had a parent.
+        if let Some(parent) = spec.parent_local_id.as_deref()
+            && let Ok(mut map) = self.fork_parent_by_short.lock()
+        {
+            map.insert(short.to_owned(), parent.to_owned());
+        }
         let whip = spec.permission_mode.is_some_and(cctui_proto::adapter::PermissionMode::is_whip);
         // Resolve the gateway env + per-account settings from the server's
         // durable binding BEFORE writing the managed hook-settings file, so the
@@ -1831,6 +1846,15 @@ impl Driver {
             args.push(settings.clone());
             respawn_flags.push("--settings".to_owned());
             respawn_flags.push(settings);
+        }
+        if let Some(mcp) =
+            ensure_agent_mcp_config(short, &session_id, launch.spawn_capability.as_ref())
+        {
+            let mcp = mcp.to_string_lossy().into_owned();
+            args.push("--mcp-config".to_owned());
+            args.push(mcp.clone());
+            respawn_flags.push("--mcp-config".to_owned());
+            respawn_flags.push(mcp);
         }
         // Stage any uploaded files under /tmp/cctui-uploads/<session-id>/ and
         // prepend their absolute paths to the prompt so the worker reads them.
@@ -3452,6 +3476,40 @@ pub(super) fn ensure_hook_settings(
     Some(path)
 }
 
+/// Write the per-session MCP config registering the `CctuiAgent` tool, and
+/// return the path to inject as `--mcp-config`.
+///
+/// `None` — no tool — whenever the session has no spawn capability, so a session
+/// the server never granted spawn rights cannot even see the tool. The config is
+/// keyed by `short` like the hook settings so sessions never clobber each other.
+pub(super) fn ensure_agent_mcp_config(
+    short: &str,
+    session_id: &str,
+    capability: Option<&cctui_proto::api::SpawnCapability>,
+) -> Option<PathBuf> {
+    if capability.is_none_or(cctui_proto::api::SpawnCapability::is_empty) {
+        return None;
+    }
+    let path = hook_settings_path(&format!("mcp-agent-{short}.json"))?;
+    let exe = std::env::current_exe()
+        .map_err(|err| tracing::warn!(%err, "CctuiAgent: cannot resolve current_exe"))
+        .ok()?;
+    let config = crate::mcp::mcp_config(
+        &exe.to_string_lossy(),
+        session_id,
+        crate::agenttool::socket_for_launch(),
+    );
+    if let Some(Err(err)) = path.parent().map(std::fs::create_dir_all) {
+        tracing::warn!(%err, "CctuiAgent: cannot create mcp config dir");
+        return None;
+    }
+    if let Err(err) = std::fs::write(&path, serde_json::to_vec_pretty(&config).ok()?) {
+        tracing::warn!(%err, path = %path.display(), "CctuiAgent: cannot write mcp config");
+        return None;
+    }
+    Some(path)
+}
+
 /// Build the managed `--settings` document: the ask/permission/Stop
 /// `hooks`, the gateway routing `env`, and the session `model`/`effortLevel`,
 /// all in one file. The claude daemon applies a session's `--settings` to a
@@ -3591,6 +3649,36 @@ mod tests {
     fn dispatch_prompt_errors_when_neither_present() {
         let payload = serde_json::json!({ "model": "opus" });
         assert!(Driver::resolve_dispatch_prompt(&payload).is_err());
+    }
+
+    #[test]
+    fn no_capability_means_no_mcp_config_and_so_no_tool() {
+        assert!(ensure_agent_mcp_config("aaaaaaa1", "sess-1", None).is_none());
+        let empty = cctui_proto::api::SpawnCapability::default();
+        assert!(
+            ensure_agent_mcp_config("aaaaaaa1", "sess-1", Some(&empty)).is_none(),
+            "an empty adapter list grants nothing, so the tool must not be registered"
+        );
+    }
+
+    #[test]
+    fn a_capability_writes_a_session_scoped_mcp_config() {
+        let cap = cctui_proto::api::SpawnCapability {
+            adapters: vec!["opencode".to_owned()],
+            max_budget_usd: Some(1.0),
+            max_children: Some(2),
+        };
+        let short = format!("{:08x}", std::process::id());
+        let Some(path) = ensure_agent_mcp_config(&short, "sess-42", Some(&cap)) else {
+            return; // no writable config dir in this environment
+        };
+        let written: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let args = written["mcpServers"]["cctui"]["args"].as_array().unwrap().clone();
+        assert!(args.contains(&json!("mcp-agent")));
+        assert!(args.contains(&json!("sess-42")), "the session id is fixed in argv");
+        assert!(path.to_string_lossy().contains(&short), "config must be per-session");
+        std::fs::remove_file(path).ok();
     }
 
     #[test]
@@ -3939,6 +4027,7 @@ mod tests {
             model: Some("opus".to_owned()),
             env,
             bootstrap: serde_json::Value::Null,
+            parent_local_id: None,
         };
         let block = build_session_context(&spec, "/work/cctui", &["a.rs".to_owned()]);
         assert!(block.starts_with("<session-context>\n"));

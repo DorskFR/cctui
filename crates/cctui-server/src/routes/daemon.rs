@@ -123,6 +123,7 @@ pub async fn session_gateway_env(
             env: std::collections::BTreeMap::default(),
             settings: None,
             whip_phrases: None,
+            spawn_capability: None,
         }));
     }
 
@@ -142,6 +143,7 @@ pub async fn session_gateway_env(
             env: std::collections::BTreeMap::default(),
             settings: None,
             whip_phrases,
+            spawn_capability: spawn_capability_for(&state, &session_id),
         }));
     }
     let mut env = std::collections::BTreeMap::new();
@@ -181,7 +183,18 @@ pub async fn session_gateway_env(
         env,
         settings,
         whip_phrases,
+        spawn_capability: spawn_capability_for(&state, &session_id),
     }))
+}
+
+/// The session's `CctuiAgent` capability, as recorded by the spawn/dispatch that
+/// launched it. `None` (including after a server restart) means the daemon
+/// exposes no spawn tool to that session.
+fn spawn_capability_for(
+    state: &AppState,
+    session_id: &str,
+) -> Option<cctui_proto::api::SpawnCapability> {
+    state.spawn_capabilities.get(session_id).map(|c| c.clone())
 }
 
 /// The machine user's clamped `whipStopPhrases` block from

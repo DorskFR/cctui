@@ -2147,6 +2147,7 @@ pub async fn fork_session(
         model: norm(req.model),
         env: std::collections::BTreeMap::new(),
         bootstrap: serde_json::Value::Null,
+        parent_local_id: None,
     };
     let frame = cctui_proto::ws::DaemonFrameDown::Command {
         adapter_id: adapter_id.clone(),

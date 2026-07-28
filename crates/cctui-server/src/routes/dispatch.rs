@@ -734,6 +734,17 @@ pub async fn dispatch(
         .await;
     }
 
+    // `payload.spawn_capability` declares what the dispatched worker may spawn
+    // through `CctuiAgent`. It is read here, server-side, and never forwarded —
+    // the worker must not be able to read or restate its own capability.
+    if let Some(obj) = forwarded_payload.as_object_mut()
+        && let Some(raw) = obj.remove("spawn_capability")
+        && let Ok(cap) = serde_json::from_value::<cctui_proto::api::SpawnCapability>(raw)
+        && !cap.is_empty()
+    {
+        state.spawn_capabilities.insert(session_id.clone(), cap);
+    }
+
     let spec = DispatchSpec {
         session_id: &session_id,
         timeout_minutes: req.timeout,

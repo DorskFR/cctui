@@ -116,6 +116,9 @@ pub struct SpawnParams {
     pub agent: Option<String>,
     pub attachments: Vec<String>,
     pub command_id: Option<Uuid>,
+    /// Set for a `CctuiAgent` child so the session registers nested under the
+    /// caller instead of as a top-level session.
+    pub parent_local_id: Option<String>,
 }
 
 pub struct OpenCodeSession {
@@ -249,7 +252,8 @@ impl OpenCodeSession {
             })
             .await?;
 
-        self.register(&session.id, None, Some(self.params.cwd.clone())).await;
+        let parent = self.params.parent_local_id.clone();
+        self.register(&session.id, parent, Some(self.params.cwd.clone())).await;
         if let Some(command_id) = command_id {
             let _ = self
                 .events
@@ -743,6 +747,7 @@ mod tests {
             agent: Some(super::super::config::REVIEWER_AGENT.to_owned()),
             attachments: Vec::new(),
             command_id: Some(command_id),
+            parent_local_id: None,
         };
         let live = LiveRegistry::default();
         let handle =

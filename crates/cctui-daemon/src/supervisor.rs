@@ -101,6 +101,21 @@ impl Supervisor {
 
     /// Run the connect/reconnect loop until `shutdown` fires.
     pub async fn run(self, shutdown: CancellationToken) {
+        // The `CctuiAgent` tool socket outlives individual WS connections: a
+        // session's tool call must not fail just because the daemon is between
+        // reconnects.
+        if crate::agenttool::is_available(&self.machine_key) {
+            let path = crate::agenttool::socket_path();
+            let client = self.client.clone();
+            let machine_key = self.machine_key.clone();
+            let shutdown = shutdown.clone();
+            tokio::spawn(async move {
+                if let Err(err) = crate::agenttool::serve(path, client, machine_key, shutdown).await
+                {
+                    tracing::warn!(%err, "CctuiAgent tool listener exited");
+                }
+            });
+        }
         let mut attempt = 0usize;
         loop {
             if shutdown.is_cancelled() {
@@ -234,6 +249,10 @@ impl Supervisor {
                             local_id = event_local_id(&event),
                             "queued event",
                         );
+                        // A `CctuiAgent` caller is parked on its child's
+                        // completion; this is the one point every adapter's
+                        // events pass through.
+                        crate::childwatch::global().observe(&event);
                         // Redact secrets before the event reaches the wire / DB.
                         let event = scrub_event(event, &scrub);
                         let up = DaemonFrameUp::Event { adapter_id, event };

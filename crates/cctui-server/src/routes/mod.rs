@@ -26,6 +26,7 @@ pub mod settings;
 pub mod shares;
 pub mod skills;
 pub mod spawn;
+pub mod spawn_child;
 pub mod stats;
 pub mod triggers;
 pub mod web;

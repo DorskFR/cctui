@@ -283,6 +283,7 @@ mod tests {
             model: None,
             env: std::collections::BTreeMap::new(),
             bootstrap: serde_json::Value::Null,
+            parent_local_id: None,
         }
     }
 

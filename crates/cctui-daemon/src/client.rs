@@ -144,6 +144,33 @@ impl ServerClient {
         Ok(resp.json().await?)
     }
 
+    /// Ask the server to spawn a `CctuiAgent` child of `session_id`. The server
+    /// decides whether the calling session is permitted to spawn it; a refusal
+    /// comes back as a non-2xx whose body is the reason to show the model.
+    pub async fn spawn_child(
+        &self,
+        machine_key: &str,
+        session_id: &str,
+        req: &cctui_proto::api::SpawnChildRequest,
+    ) -> anyhow::Result<cctui_proto::api::SpawnChildResponse> {
+        let url = format!(
+            "{}/api/v1/daemon/sessions/{}/spawn-child",
+            self.base_url.trim_end_matches('/'),
+            session_id,
+        );
+        let resp = self.http.post(&url).bearer_auth(machine_key).json(req).send().await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            let reason = serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_owned))
+                .unwrap_or(text);
+            anyhow::bail!("CctuiAgent refused: {reason}");
+        }
+        Ok(resp.json().await?)
+    }
+
     /// Ask whether the session token a trusted worker was launched with still
     /// resolves at the gateway. `token_hash` is the sha256 hex of the
     /// token — the token itself never travels on this call. `Err` covers both
