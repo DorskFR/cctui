@@ -3,8 +3,9 @@
 //! An **account** is an identity (e.g. `personal`, `enterprise`): a name, an
 //! owner, optional extra environment, and sharing grants. Each account holds
 //! zero or more **providers** (`account_providers`, née `oauth_accounts`):
-//! one credential per provider family (anthropic | openai) — a native
-//! OAuth subscription or a compatible endpoint. OAuth refresh tokens
+//! one credential per provider family (anthropic | openai | fireworks) — a
+//! native OAuth subscription, a compatible endpoint, or a static provider key.
+//! OAuth refresh tokens
 //! are encrypted at rest with the vault key (`crate::crypto`, same as
 //! `api_keys`/`dispatchers`) and are **never** returned over the API —
 //! list/get only ever surface provider/expiry/last-used + lightweight stats.
@@ -103,7 +104,11 @@ pub async fn sync_litellm_shim(pool: &sqlx::PgPool, config: &crate::config::Conf
     let models_json = serde_json::to_value(
         models
             .iter()
-            .map(|m| AccountModel { model: m.model.clone(), label: m.label.clone() })
+            .map(|m| AccountModel {
+                model: m.model.clone(),
+                label: m.label.clone(),
+                ..AccountModel::default()
+            })
             .collect::<Vec<_>>(),
     )
     .unwrap_or(serde_json::Value::Null);
@@ -181,13 +186,39 @@ pub async fn sync_litellm_shim(pool: &sqlx::PgPool, config: &crate::config::Conf
     tracing::info!("CCTUI_CLAUDE_LITELLM_* shim: synced managed compatible providers (CCT-399)");
 }
 
-/// One selectable model on a compatible-endpoint provider: `model` is
-/// the `--model` code, `label` the display name. Safe to return over the API —
-/// model names are not secret (unlike the credential).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+/// One selectable model on a compatible-endpoint or `fireworks` provider:
+/// `model` is the `--model` code, `label` the display name. Safe to return over
+/// the API — model names are not secret (unlike the credential).
+///
+/// Pricing is per *million* tokens in USD and is account-owned data: it is what
+/// a pay-per-token provider is metered against, so it lives on the row rather
+/// than in a table someone has to redeploy to correct.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct AccountModel {
     pub model: String,
     pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_input_per_mtok: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_cached_input_per_mtok: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_output_per_mtok: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_length: Option<i64>,
+}
+
+/// Seed catalog for a new `fireworks` provider. DATA, not policy: it is written
+/// to the row at create and fully editable afterwards — no spawn, dispatch,
+/// entrypoint, or worker path may hardcode a model id.
+fn fireworks_default_models() -> serde_json::Value {
+    serde_json::json!([{
+        "model": "accounts/fireworks/models/kimi-k3",
+        "label": "Kimi K3",
+        "price_input_per_mtok": 3.0,
+        "price_cached_input_per_mtok": 0.3,
+        "price_output_per_mtok": 15.0,
+        "context_length": 1_048_576,
+    }])
 }
 
 /// API view of one provider credential under an account. Secrets (the
@@ -243,6 +274,10 @@ pub struct ProviderInfo {
     /// Validated, allowlisted subset of harness settings applied to sessions run
     /// under this provider. Config, not secret → returned normally.
     pub settings_json: Option<serde_json::Value>,
+    /// Gateway request-shaping settings for this credential (fireworks:
+    /// `context_length_exceeded_behavior`, session affinity, extra body keys).
+    /// Distinct from `settings_json`, which is harness settings.
+    pub provider_settings: Option<serde_json::Value>,
 }
 
 /// API view of an account identity: name, owner, timestamps, and its
@@ -310,6 +345,7 @@ const PROVIDER_SELECT: &str = "SELECT p.id, p.account_id, p.provider, p.family, 
             p.request_count, p.bytes_transferred, \
             p.soft_limits_json AS soft_limits, \
             p.needs_reauth, p.last_auth_error, p.last_auth_error_at, p.settings_json, \
+            p.provider_settings, \
             (COALESCE(t.input_tokens,0) + COALESCE(t.output_tokens,0) \
              + COALESCE(t.cache_read_tokens,0) + COALESCE(t.cache_creation_tokens,0))::bigint \
               AS total_tokens, \
@@ -433,6 +469,10 @@ pub struct ProviderSpec {
     /// Server rejects MANAGED/SYSTEM keys before persist. Returned normally.
     #[serde(default)]
     pub settings_json: Option<serde_json::Value>,
+    /// Gateway request-shaping settings. Absent on a `fireworks` create seeds
+    /// the defaults so every knob is visible and editable from the start.
+    #[serde(default)]
+    pub provider_settings: Option<serde_json::Value>,
 }
 
 /// `POST /api/v1/accounts` payload: the identity fields, plus an
@@ -526,6 +566,10 @@ pub struct UpdateProvider {
     /// Validated against the allowlist before persist.
     #[serde(default)]
     pub settings_json: Option<serde_json::Value>,
+    /// Replacement gateway settings object. Provided → replaces wholesale (an
+    /// empty object drops back to the family defaults); absent → unchanged.
+    #[serde(default)]
+    pub provider_settings: Option<serde_json::Value>,
 }
 
 /// `POST /api/v1/accounts/{id}/providers/{provider_id}/move` payload:
@@ -718,6 +762,7 @@ struct ProviderWrite {
     model_aliases: Option<serde_json::Value>,
     soft_limits_json: Option<serde_json::Value>,
     settings_json: Option<serde_json::Value>,
+    provider_settings: Option<serde_json::Value>,
 }
 
 /// Validate a [`ProviderSpec`] into a [`ProviderWrite`] (shared by the one-shot
@@ -725,19 +770,28 @@ struct ProviderWrite {
 /// providers require an OAuth refresh token (`auth_scheme` = oauth); compatible
 /// endpoints a base URL + a static credential stored in
 /// `encrypted_access_token`, no refresh token, `auth_scheme` = `bearer|api_key`.
+// Linear validator: one branch per optional field, no nesting.
+#[allow(clippy::too_many_lines)]
 fn prepare_provider_write(
     spec: &ProviderSpec,
 ) -> Result<ProviderWrite, (StatusCode, Json<serde_json::Value>)> {
     let Some(provider) = spec.provider.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
         return Err(err(StatusCode::BAD_REQUEST, "provider required"));
     };
-    if !matches!(provider, "anthropic" | "openai" | "anthropic-compatible" | "openai-compatible") {
+    if !matches!(
+        provider,
+        "anthropic" | "openai" | "anthropic-compatible" | "openai-compatible" | "fireworks"
+    ) {
         return Err(err(
             StatusCode::BAD_REQUEST,
-            "provider must be anthropic|openai|anthropic-compatible|openai-compatible",
+            "provider must be anthropic|openai|anthropic-compatible|openai-compatible|fireworks",
         ));
     }
-    let compatible = matches!(provider, "anthropic-compatible" | "openai-compatible");
+    let fireworks = provider == "fireworks";
+    // `fireworks` carries a static `fw_...` bearer like a compatible endpoint,
+    // but its upstream is built in — a base URL is an override, not a
+    // requirement.
+    let compatible = fireworks || matches!(provider, "anthropic-compatible" | "openai-compatible");
 
     let (enc_refresh, enc_access, base_url, auth_scheme): (
         Option<String>,
@@ -747,15 +801,21 @@ fn prepare_provider_write(
     );
     if compatible {
         let base = spec.base_url.as_deref().map(str::trim).filter(|s| !s.is_empty());
-        let Some(base) = base else {
-            return Err(err(
-                StatusCode::BAD_REQUEST,
-                "base_url required for a compatible endpoint",
-            ));
+        let base = match base {
+            Some(b) => Some(b),
+            None if fireworks => None,
+            None => {
+                return Err(err(
+                    StatusCode::BAD_REQUEST,
+                    "base_url required for a compatible endpoint",
+                ));
+            }
         };
         // SSRF is explicitly out of scope for this single-operator, self-hosted
         // deployment; a light scheme check only. Prefer https.
-        if !(base.starts_with("http://") || base.starts_with("https://")) {
+        if let Some(b) = base
+            && !(b.starts_with("http://") || b.starts_with("https://"))
+        {
             return Err(err(StatusCode::BAD_REQUEST, "base_url must be an http(s) URL"));
         }
         let scheme = spec.auth_scheme.as_deref().map(str::trim).filter(|s| !s.is_empty());
@@ -774,7 +834,7 @@ fn prepare_provider_write(
         let key = crate::crypto::vault_key();
         enc_refresh = None;
         enc_access = Some(crate::crypto::encrypt(cred, &key));
-        base_url = Some(base.to_owned());
+        base_url = base.map(str::to_owned);
         auth_scheme = scheme.to_owned();
     } else {
         let refresh = spec.refresh_token.as_deref().map(str::trim).filter(|s| !s.is_empty());
@@ -792,7 +852,8 @@ fn prepare_provider_write(
         .models
         .as_ref()
         .filter(|m| !m.is_empty())
-        .map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null));
+        .map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null))
+        .or_else(|| fireworks.then(fireworks_default_models));
     // Alias map: an empty map stores NULL (no remapping).
     let model_aliases = spec
         .model_aliases
@@ -803,6 +864,10 @@ fn prepare_provider_write(
         validate_settings_json(s)?;
     }
     let settings_json = spec.settings_json.as_ref().filter(|v| !v.is_null()).cloned();
+    let provider_settings = match spec.provider_settings.as_ref().filter(|v| !v.is_null()) {
+        Some(v) => Some(validate_provider_settings(v)?),
+        None => fireworks.then(crate::routes::gateway::fireworks_default_settings),
+    };
 
     Ok(ProviderWrite {
         provider: provider.to_owned(),
@@ -821,7 +886,21 @@ fn prepare_provider_write(
             spec.soft_limit_bypass_7d_minutes.or(spec.soft_limit_bypass_minutes),
         )?,
         settings_json,
+        provider_settings,
     })
+}
+
+/// Gateway settings must be a JSON object — the gateway deep-merges them over
+/// the family defaults, and a scalar/array would silently replace the whole
+/// blob instead of overriding one knob.
+fn validate_provider_settings(
+    v: &serde_json::Value,
+) -> Result<serde_json::Value, (StatusCode, Json<serde_json::Value>)> {
+    if v.is_object() {
+        Ok(v.clone())
+    } else {
+        Err(err(StatusCode::BAD_REQUEST, "provider_settings must be a JSON object"))
+    }
 }
 
 /// INSERT one provider row under an account. Bubbles the raw `sqlx::Error` so
@@ -836,8 +915,8 @@ async fn insert_provider(
         "INSERT INTO account_providers \
             (user_id, account_id, provider, encrypted_refresh_token, encrypted_access_token, \
              expires_at, base_url, models, auth_scheme, model_aliases, \
-             soft_limits_json, settings_json) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
+             soft_limits_json, settings_json, provider_settings) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) \
          RETURNING id",
     )
     .bind(user_id)
@@ -852,6 +931,7 @@ async fn insert_provider(
     .bind(&w.model_aliases)
     .bind(&w.soft_limits_json)
     .bind(&w.settings_json)
+    .bind(&w.provider_settings)
     .fetch_one(conn)
     .await
 }
@@ -1151,7 +1231,8 @@ pub async fn update_provider(
     let Some((provider,)) = provider else {
         return Err(err(StatusCode::NOT_FOUND, "no such provider"));
     };
-    let compatible = matches!(provider.as_str(), "anthropic-compatible" | "openai-compatible");
+    let compatible =
+        matches!(provider.as_str(), "anthropic-compatible" | "openai-compatible" | "fireworks");
 
     // Compatible-only fields are rejected for native providers so the edit form
     // can't silently no-op against a subscription credential.
@@ -1219,6 +1300,11 @@ pub async fn update_provider(
         validate_settings_json(s)?;
     }
     let settings_json = req.settings_json.as_ref().filter(|v| !v.is_null()).cloned();
+    let gateway_settings_provided = req.provider_settings.is_some();
+    let provider_settings = match req.provider_settings.as_ref().filter(|v| !v.is_null()) {
+        Some(v) => Some(validate_provider_settings(v)?),
+        None => None,
+    };
 
     // COALESCE keeps each column when its bind is NULL, so an absent field is a
     // no-op. Admin (`ctx.user_id` = NULL) may edit any provider; a user only its
@@ -1231,7 +1317,8 @@ pub async fn update_provider(
             encrypted_access_token = COALESCE($7, encrypted_access_token), \
             model_aliases = CASE WHEN $8 THEN $9 ELSE model_aliases END, \
             soft_limits_json = CASE WHEN $10 THEN $11 ELSE soft_limits_json END, \
-            settings_json = CASE WHEN $12 THEN $13 ELSE settings_json END \
+            settings_json = CASE WHEN $12 THEN $13 ELSE settings_json END, \
+            provider_settings = CASE WHEN $14 THEN $15 ELSE provider_settings END \
          WHERE id = $1 AND account_id = $2 \
            AND ($3::uuid IS NULL OR user_id = $3) AND NOT managed \
          RETURNING id",
@@ -1249,6 +1336,8 @@ pub async fn update_provider(
     .bind(&soft_limits_json)
     .bind(settings_provided)
     .bind(&settings_json)
+    .bind(gateway_settings_provided)
+    .bind(&provider_settings)
     .fetch_optional(&state.pool)
     .await
     .map_err(|e| db_err(&e))?;

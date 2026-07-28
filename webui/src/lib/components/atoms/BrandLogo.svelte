@@ -18,9 +18,26 @@
 			? provider === 'openai'
 			: (adapter ?? 'claude-code').toString().startsWith('codex')
 	);
+	const isFireworks = $derived(
+		provider != null
+			? provider === 'fireworks'
+			: (adapter ?? '').toString().startsWith('opencode')
+	);
 </script>
 
-{#if isCodex}
+{#if isFireworks}
+	<!-- Spark: a neutral mark; Fireworks has no mark we ship. -->
+	<svg
+		width={size}
+		height={size}
+		viewBox="0 0 24 24"
+		fill="currentColor"
+		aria-label="Fireworks"
+		role="img"
+	>
+		<path d="M12 2 13.9 8.6 20.5 10.5 13.9 12.4 12 19 10.1 12.4 3.5 10.5 10.1 8.6 12 2zM18.5 15l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9.9-2.6zM5 14l.7 2 2 .7-2 .7L5 19.4l-.7-2-2-.7 2-.7L5 14z" />
+	</svg>
+{:else if isCodex}
 	<!-- OpenAI blossom -->
 	<svg
 		width={size}

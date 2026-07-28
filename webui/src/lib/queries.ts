@@ -73,6 +73,12 @@ export interface EnrollDispatcherResponse {
 export interface AccountModel {
   model: string;
   label: string;
+  /** USD per million tokens. Account-owned data — the pricing a pay-per-token
+   *  provider is metered against, editable per account. */
+  price_input_per_mtok?: number | null;
+  price_cached_input_per_mtok?: number | null;
+  price_output_per_mtok?: number | null;
+  context_length?: number | null;
 }
 
 /** One provider credential under an account identity. Tokens are
@@ -85,8 +91,8 @@ export interface AccountProvider {
   /** `anthropic` | `openai` (native) | `anthropic-compatible` |
    *  `openai-compatible` (a base-url-overridden endpoint). */
   provider: string;
-  /** Provider family: `anthropic` | `openai`. At most one provider per family
-   *  per account (guarded by construction). */
+  /** Provider family: `anthropic` | `openai` | `fireworks`. At most one
+   *  provider per family per account (guarded by construction). */
   family: string;
   /** Selectable models for a compatible endpoint; null/empty for
    *  native subscription accounts (which use the harness's native families).
@@ -125,6 +131,10 @@ export interface AccountProvider {
   needs_reauth: boolean;
   last_auth_error: string | null;
   last_auth_error_at: string | null;
+  /** Gateway request-shaping settings for this credential (fireworks:
+   *  `context_length_exceeded_behavior`, `session_affinity`, `extra_body`).
+   *  Distinct from `settings_json`, which is harness settings. */
+  provider_settings: Record<string, unknown> | null;
   /** Validated, allowlisted harness settings applied to sessions run under this
    *  provider. Config, not secret → returned. Only SAFE/CARE
    *  settings.json keys; the server rejects MANAGED/SYSTEM keys on write. */
@@ -158,7 +168,7 @@ export const primaryProvider = (a: OAuthAccount): AccountProvider | undefined =>
 
 /** One of a session's active per-family gateway credential bindings. */
 export interface SessionBinding {
-  family: "anthropic" | "openai";
+  family: "anthropic" | "openai" | "fireworks";
   credential_id: string;
   account_id: string;
   account_name: string;
@@ -224,6 +234,8 @@ export interface CreateAccount {
   user_id?: string;
   /** Per-account soft limits keyed by canonical window id. */
   soft_limits?: Record<string, SoftLimitConfig>;
+  /** Gateway settings; absent on a fireworks create seeds the defaults. */
+  provider_settings?: Record<string, unknown>;
 }
 
 /** Provider create/attach payload: `POST /accounts/{id}/providers`.
@@ -246,6 +258,8 @@ export interface CreateProvider {
   auth_scheme?: string;
   soft_limits?: Record<string, SoftLimitConfig>;
   settings_json?: Record<string, unknown>;
+  /** Gateway settings; absent on a fireworks create seeds the defaults. */
+  provider_settings?: Record<string, unknown>;
 }
 
 /** Identity-level edit payload: rename and/or replace the write-only
@@ -282,6 +296,9 @@ export interface UpdateProvider {
    *  the stored settings wholesale (an empty object clears it); absent →
    *  unchanged. Validated against the SAFE/CARE allowlist before persist. */
   settings_json?: Record<string, unknown>;
+  /** Replacement gateway settings object; provided replaces wholesale
+   *  (an empty object drops back to the family defaults). */
+  provider_settings?: Record<string, unknown>;
 }
 
 /** "Sign in with Claude" OAuth start payload/response. */

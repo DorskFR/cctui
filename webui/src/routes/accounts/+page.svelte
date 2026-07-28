@@ -6,6 +6,7 @@
 		useMe,
 		useUsers,
 		type OAuthAccount,
+		type AccountModel,
 		type AccountProvider,
 		type CreateAccount,
 		type CreateProvider,
@@ -15,7 +16,13 @@
 	} from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
 	import { ghreviewUrl } from '$lib/config';
-	import { providerFamily, providerLabel, PROVIDER_KINDS, type ProviderKind } from '$lib/providers';
+	import {
+		isStaticCredential,
+		providerFamily,
+		providerLabel,
+		PROVIDER_KINDS,
+		type ProviderKind
+	} from '$lib/providers';
 	import ProviderPanel from '$lib/components/molecules/ProviderPanel.svelte';
 	import SoftLimit from '$lib/components/molecules/SoftLimit.svelte';
 	import { editorWindowKeys } from '$lib/components/molecules/usage-windows';
@@ -23,6 +30,7 @@
 	import GithubConnectors from '$lib/components/organisms/GithubConnectors.svelte';
 	import DispatchersPanel from '$lib/components/organisms/DispatchersPanel.svelte';
 	import ProviderSettingsList from '$lib/components/organisms/ProviderSettingsList.svelte';
+	import FireworksProviderEditor from '$lib/components/organisms/FireworksProviderEditor.svelte';
 	import FreeFormEnvEditor from '$lib/components/organisms/FreeFormEnvEditor.svelte';
 	import {
 		AutoGrid,
@@ -107,7 +115,15 @@
 	// window, keyed by canonical window id. Edited per window via the reusable
 	// SoftLimit component; empty inputs = no cap/bypass on that window.
 	let softEdits = $state<Record<string, { cap: number | null; bypass: number | null }>>({});
-	const isCompatible = $derived(provider.endsWith('-compatible'));
+	// Fireworks shares the static-credential shape (no OAuth) but keeps its own
+	// editor: gateway settings + a priced model catalog instead of a bare model
+	// list, and its base URL is an optional override of a built-in upstream.
+	const isFireworks = $derived(provider === 'fireworks');
+	const isCompatible = $derived(isStaticCredential(provider));
+	// Left empty on create: the server seeds the default settings + catalog, so
+	// the seed lives in exactly one place.
+	let fwSettings = $state<Record<string, unknown>>({});
+	let fwModels = $state<AccountModel[]>([]);
 
 	// Live windows for the provider under edit, so newly discovered (e.g.
 	// model-scoped) windows appear in the editor automatically.
@@ -186,6 +202,14 @@
 		return out;
 	}
 
+	/** Trimmed catalog rows for the fireworks payloads; an entry without a model
+	 *  id is dropped, and its label defaults to the id. */
+	function fwModelList(): AccountModel[] {
+		return fwModels
+			.map((r) => ({ ...r, model: r.model.trim(), label: r.label.trim() || r.model.trim() }))
+			.filter((r) => r.model);
+	}
+
 	/** Trimmed model rows for the compatible-endpoint payloads. */
 	function modelList() {
 		return modelRows
@@ -226,6 +250,8 @@
 		acctReplaceEnv = false;
 		acctEnvRemove = [];
 		moveTarget = '';
+		fwSettings = {};
+		fwModels = [];
 	}
 
 	// Start the authorize leg: ask the server for an authorize URL, open it in a
@@ -327,7 +353,11 @@
 		// Compatible endpoints can edit their model list in place. The
 		// base URL, credential, and scheme are never read back, so they start
 		// blank/"keep" — supplying one overwrites, leaving it keeps the stored value.
-		if (p.provider.endsWith('-compatible')) {
+		if (p.provider === 'fireworks') {
+			fwSettings = { ...(p.provider_settings ?? {}) };
+			fwModels = (p.models ?? []).map((mo) => ({ ...mo }));
+			authScheme = 'keep';
+		} else if (p.provider.endsWith('-compatible')) {
 			const ms = p.models ?? [];
 			modelRows = ms.length
 				? ms.map((m) => ({ model: m.model, label: m.label }))
@@ -386,7 +416,12 @@
 					soft_limits: softLimits(),
 					...(editingProvider?.family === 'anthropic' ? { settings_json: acctSettings } : {})
 				};
-				if (isCompatible) {
+				if (isFireworks) {
+					body.models = fwModelList();
+					body.provider_settings = fwSettings;
+					if (baseUrl.trim()) body.base_url = baseUrl.trim();
+					if (credential.trim()) body.access_token = credential.trim();
+				} else if (isCompatible) {
 					body.models = modelList();
 					if (baseUrl.trim()) body.base_url = baseUrl.trim();
 					if (credential.trim()) body.access_token = credential.trim();
@@ -402,7 +437,14 @@
 					...(Object.keys(model_aliases).length ? { model_aliases } : {}),
 					soft_limits: softLimits()
 				};
-				if (isCompatible) {
+				if (isFireworks) {
+					spec.auth_scheme = authScheme === 'keep' ? 'bearer' : authScheme;
+					if (baseUrl.trim()) spec.base_url = baseUrl.trim();
+					if (credential.trim()) spec.access_token = credential.trim();
+					const models = fwModelList();
+					if (models.length) spec.models = models;
+					if (Object.keys(fwSettings).length) spec.provider_settings = fwSettings;
+				} else if (isCompatible) {
 					if (!baseUrl.trim()) {
 						toasts.err(m.accounts_err_base_url_required());
 						return;
@@ -432,7 +474,21 @@
 					return;
 				}
 				let body: CreateAccount;
-				if (isCompatible) {
+				if (isFireworks) {
+					const models = fwModelList();
+					body = {
+						name: name.trim(),
+						provider,
+						auth_scheme: authScheme === 'keep' ? 'bearer' : authScheme,
+						...(baseUrl.trim() ? { base_url: baseUrl.trim() } : {}),
+						...(credential.trim() ? { access_token: credential.trim() } : {}),
+						...(models.length ? { models } : {}),
+						...(Object.keys(fwSettings).length ? { provider_settings: fwSettings } : {}),
+						...(Object.keys(model_aliases).length ? { model_aliases } : {}),
+						soft_limits: softLimits(),
+						...(isAdmin ? { user_id: ownerId } : {})
+					};
+				} else if (isCompatible) {
 					if (!baseUrl.trim()) {
 						toasts.err(m.accounts_err_base_url_required());
 						return;
@@ -661,7 +717,31 @@
 						storedNames={editingAccount?.env_names ?? []}
 					/>
 				{:else}
-					{#if isCompatible}
+					{#if isFireworks}
+						<!-- Fireworks: a static `fw_...` bearer. The base URL is an
+						     optional override of the built-in upstream, so it is not
+						     required; the gateway settings + priced model catalog live in
+						     their own editor. -->
+						{@const isEdit = editor?.mode === 'edit-provider'}
+						<Field label={m.accounts_field_credential()}>
+							<Input
+								type="password"
+								bind:value={credential}
+								placeholder={isEdit
+									? m.accounts_placeholder_keep_current()
+									: 'fw_...'}
+							/>
+						</Field>
+						<Field label={m.accounts_field_base_url()}>
+							<Input
+								bind:value={baseUrl}
+								placeholder={isEdit
+									? m.accounts_placeholder_keep_current()
+									: 'https://api.fireworks.ai/inference/v1'}
+							/>
+						</Field>
+						<FireworksProviderEditor bind:settings={fwSettings} bind:models={fwModels} />
+					{:else if isCompatible}
 						<!-- Compatible endpoint: base URL + a static credential +
 						     a model list. No OAuth; the gateway forwards the credential and
 						     skips refresh. On edit the model list is editable in
@@ -815,7 +895,7 @@
 					{#if editor?.mode === 'edit-provider' && editingProvider}
 						{#if editingProvider.family === 'anthropic'}
 							<ProviderSettingsList bind:settings={acctSettings} />
-						{:else}
+						{:else if editingProvider.family === 'openai'}
 							<Text tone="faint" size="sm">
 								{m.accounts_no_codex_settings()}
 							</Text>
