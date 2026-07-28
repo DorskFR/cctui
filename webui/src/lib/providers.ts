@@ -12,12 +12,21 @@ export const providerLabel = (p: string) =>
         ? "Anthropic-compatible"
         : p === "openai-compatible"
           ? "OpenAI-compatible"
-          : p;
+          : p === "fireworks"
+            ? "Fireworks"
+            : p;
 
 /** Provider family (mirrors the server's generated `family` column): an
  *  account may hold at most one provider per family. */
-export const providerFamily = (p: string): "anthropic" | "openai" =>
-  p.startsWith("openai") ? "openai" : "anthropic";
+export const providerFamily = (p: string): ProviderFamily =>
+  p === "fireworks" ? "fireworks" : p.startsWith("openai") ? "openai" : "anthropic";
+
+export type ProviderFamily = "anthropic" | "openai" | "fireworks";
+
+/** Providers whose credential is a static key the gateway forwards (no OAuth):
+ *  the `*-compatible` endpoints and Fireworks. */
+export const isStaticCredential = (p: string) =>
+  p.endsWith("-compatible") || p === "fireworks";
 
 /** The selectable provider kinds, in the order the pickers list them. */
 export const PROVIDER_KINDS = [
@@ -25,6 +34,7 @@ export const PROVIDER_KINDS = [
   { value: "openai", label: "Codex (openai)" },
   { value: "anthropic-compatible", label: "Anthropic-compatible endpoint" },
   { value: "openai-compatible", label: "OpenAI-compatible endpoint" },
+  { value: "fireworks", label: "Fireworks" },
 ] as const;
 
 export type ProviderKind = (typeof PROVIDER_KINDS)[number]["value"];

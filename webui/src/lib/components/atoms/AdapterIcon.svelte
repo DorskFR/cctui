@@ -20,9 +20,19 @@
 			? provider === 'openai'
 			: (adapter ?? 'claude-code').toString().startsWith('codex')
 	);
+	const isFireworks = $derived(
+		provider != null
+			? provider === 'fireworks'
+			: (adapter ?? '').toString().startsWith('opencode')
+	);
 </script>
 
-<span class="adapter" class:codex={isCodex} title={provider ?? String(adapter ?? 'claude-code')}>
+<span
+	class="adapter"
+	class:codex={isCodex}
+	class:fireworks={isFireworks}
+	title={provider ?? String(adapter ?? 'claude-code')}
+>
 	<BrandLogo {adapter} {provider} {size} />
 </span>
 
@@ -36,5 +46,8 @@
 	}
 	.adapter.codex {
 		color: var(--c-blue);
+	}
+	.adapter.fireworks {
+		color: var(--c-violet, var(--c-blue));
 	}
 </style>

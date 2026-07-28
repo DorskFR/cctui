@@ -215,6 +215,7 @@ async fn main() -> anyhow::Result<()> {
         // method + sub-path under each provider prefix.
         .route("/gateway/anthropic/{*path}", any(routes::gateway::anthropic))
         .route("/gateway/openai/{*path}", any(routes::gateway::openai))
+        .route("/gateway/fireworks/{*path}", any(routes::gateway::fireworks))
         // Pod-to-pod bus endpoints. Self-authenticating via the
         // cluster-internal shared secret (constant-time compare; user/machine
         // tokens never accepted), so they live outside the `api_router` auth

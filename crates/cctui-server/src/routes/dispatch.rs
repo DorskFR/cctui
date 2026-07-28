@@ -250,18 +250,12 @@ fn resolve_dispatch_account(
 fn colliding_family(
     families: impl IntoIterator<Item = crate::routes::gateway::Family>,
 ) -> Option<crate::routes::gateway::Family> {
-    let (mut anthropic, mut openai) = (0u32, 0u32);
+    let mut seen: Vec<crate::routes::gateway::Family> = Vec::new();
     for f in families {
-        match f {
-            crate::routes::gateway::Family::Anthropic => anthropic += 1,
-            crate::routes::gateway::Family::Openai => openai += 1,
+        if seen.contains(&f) {
+            return Some(f);
         }
-        if anthropic > 1 {
-            return Some(crate::routes::gateway::Family::Anthropic);
-        }
-        if openai > 1 {
-            return Some(crate::routes::gateway::Family::Openai);
-        }
+        seen.push(f);
     }
     None
 }
@@ -597,6 +591,7 @@ pub async fn dispatch(
                 for family in [
                     crate::routes::gateway::Family::Anthropic,
                     crate::routes::gateway::Family::Openai,
+                    crate::routes::gateway::Family::Fireworks,
                 ] {
                     let mapped = crate::routes::gateway::resolve_account_model(
                         &state,

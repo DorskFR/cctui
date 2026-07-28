@@ -178,11 +178,20 @@ async fn dispatch_spawn(
         // Resolve the model through this account's alias map
         // before it reaches the worker — a no-op when the account has no
         // matching alias.
-        if let Some(m) = model.as_deref() {
-            model = Some(
-                crate::routes::gateway::resolve_account_model(state, uid, account_name, family, m)
-                    .await,
-            );
+        // The fireworks family resolves even an ABSENT model: its catalog is the
+        // only source of model ids, and its harness has no default to fall back
+        // on.
+        if model.is_some() || family == crate::routes::gateway::Family::Fireworks {
+            let requested = model.as_deref().unwrap_or_default();
+            let resolved = crate::routes::gateway::resolve_account_model(
+                state,
+                uid,
+                account_name,
+                family,
+                requested,
+            )
+            .await;
+            model = (!resolved.is_empty()).then_some(resolved);
         }
         match crate::routes::gateway::mint_session_env(
             state,
@@ -301,14 +310,11 @@ async fn default_account_name(
     user_id: Uuid,
     adapter_id: &str,
 ) -> Result<Option<String>, (StatusCode, Json<ApiError>)> {
-    let want_openai = matches!(
-        crate::routes::gateway::Family::from_adapter(adapter_id),
-        crate::routes::gateway::Family::Openai
-    );
+    let family = crate::routes::gateway::Family::from_adapter(adapter_id);
     let names: Vec<String> = sqlx::query_scalar(
         "SELECT DISTINCT a.name \
          FROM account_providers ap JOIN accounts a ON a.id = ap.account_id \
-         WHERE (ap.provider ILIKE '%openai%') = $2 \
+         WHERE ap.family = $2 \
            AND (a.user_id = $1 OR EXISTS ( \
                SELECT 1 FROM resource_shares s \
                 WHERE s.resource_type = 'account' AND s.resource_id = a.id \
@@ -316,7 +322,7 @@ async fn default_account_name(
          ORDER BY a.name",
     )
     .bind(user_id)
-    .bind(want_openai)
+    .bind(family.label())
     .fetch_all(&state.pool)
     .await
     .map_err(|e| {

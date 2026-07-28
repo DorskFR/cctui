@@ -1762,7 +1762,8 @@ pub async fn interrupt_session(
 /// Body of `POST /sessions/{id}/switch-account`. `account` is an
 /// `accounts.name`, an identity UUID, or a credential UUID — a credential UUID
 /// also names which per-family binding is rebound; the other forms use
-/// `family` (`anthropic` | `openai`), defaulting to the harness's family.
+/// `family` (`anthropic` | `openai` | `fireworks`), defaulting to the harness's
+/// family.
 #[derive(Deserialize)]
 pub struct SwitchAccountRequest {
     pub account: String,
@@ -1814,11 +1815,15 @@ pub async fn switch_account(
     };
     let default_family = match req.family.as_deref().map(str::trim) {
         None | Some("") => Family::from_adapter(adapter_id.as_deref().unwrap_or("claude-code")),
-        Some("anthropic") => Family::Anthropic,
-        Some("openai") => Family::Openai,
-        Some(_) => {
-            return Err(err(StatusCode::BAD_REQUEST, "family must be `anthropic` or `openai`"));
-        }
+        Some(label) => match Family::from_label(label) {
+            Some(f) => f,
+            None => {
+                return Err(err(
+                    StatusCode::BAD_REQUEST,
+                    "family must be `anthropic`, `openai` or `fireworks`",
+                ));
+            }
+        },
     };
 
     // A UUID may be either level: a credential id — which names its

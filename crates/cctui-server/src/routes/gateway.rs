@@ -103,34 +103,137 @@ fn openai_upstream() -> String {
         .unwrap_or_else(|_| "https://chatgpt.com/backend-api/codex".into())
 }
 
-/// The provider *family* of an account: which harness/env vars it drives.
-/// Both native subscription accounts (`anthropic`/`openai`) and compatible
-/// endpoints (`anthropic-compatible`/`openai-compatible`) collapse to one of
-/// these two families.
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// Fireworks' OpenAI-compatible inference base. A provider row's `base_url`
+/// still wins when set; this is the default upstream for the family.
+fn fireworks_upstream() -> String {
+    std::env::var("CCTUI_FIREWORKS_UPSTREAM")
+        .unwrap_or_else(|_| "https://api.fireworks.ai/inference/v1".into())
+}
+
+/// Per-provider request-shaping settings for the `fireworks` family, resolved
+/// over [`fireworks_default_settings`]. Applied by the gateway on the way
+/// upstream so no worker needs to know them (and none can bypass them).
+pub struct FireworksSettings {
+    /// Injected as the request body's `context_length_exceeded_behavior`
+    /// (Fireworks defaults to `truncate`, which silently loses prompt).
+    /// `None` (settings key `null`) injects nothing.
+    pub context_length_exceeded_behavior: Option<String>,
+    /// Pin a conversation's requests to one replica so its prompt prefix stays
+    /// cache-warm: the session id goes out as `user` + `x-session-affinity`.
+    pub session_affinity: bool,
+    /// Extra body keys merged in, none overriding what the client sent.
+    pub extra_body: serde_json::Map<String, serde_json::Value>,
+}
+
+/// Defaults for a new `fireworks` provider row. Stored as data on the row at
+/// create so the accounts UI can edit every knob.
+pub fn fireworks_default_settings() -> serde_json::Value {
+    serde_json::json!({
+        "context_length_exceeded_behavior": "error",
+        "session_affinity": true,
+        "extra_body": {},
+    })
+}
+
+impl FireworksSettings {
+    /// Resolve a stored `provider_settings` blob over the defaults; an absent or
+    /// malformed blob yields the defaults.
+    pub fn resolve(stored: Option<&serde_json::Value>) -> Self {
+        let mut merged = fireworks_default_settings();
+        if let Some(overlay) = stored.filter(|v| v.is_object()) {
+            deep_merge_json(&mut merged, overlay.clone());
+        }
+        Self {
+            context_length_exceeded_behavior: merged
+                .get("context_length_exceeded_behavior")
+                .and_then(serde_json::Value::as_str)
+                .filter(|s| !s.trim().is_empty())
+                .map(str::to_owned),
+            session_affinity: merged
+                .get("session_affinity")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(true),
+            extra_body: merged
+                .get("extra_body")
+                .and_then(serde_json::Value::as_object)
+                .cloned()
+                .unwrap_or_default(),
+        }
+    }
+
+    /// Apply the settings to a JSON request body. Every injection is
+    /// "only if absent" — an explicit client value always wins.
+    pub fn apply_body(&self, body: &mut serde_json::Value, session_id: Option<&str>) {
+        let Some(obj) = body.as_object_mut() else { return };
+        if let Some(behavior) = self.context_length_exceeded_behavior.as_ref() {
+            obj.entry("context_length_exceeded_behavior")
+                .or_insert_with(|| serde_json::Value::String(behavior.clone()));
+        }
+        for (k, v) in &self.extra_body {
+            obj.entry(k.clone()).or_insert_with(|| v.clone());
+        }
+        if self.session_affinity
+            && let Some(sid) = session_id
+        {
+            obj.entry("user").or_insert_with(|| serde_json::Value::String(sid.to_owned()));
+        }
+    }
+}
+
+/// The provider *family* of an account: which env vars it drives, and the key
+/// `UNIQUE (account_id, family)` enforces one credential per. `fireworks` is its
+/// own family — despite the `OpenAI` wire protocol — so a Fireworks key can sit
+/// next to a codex credential on one account.
+///
+/// [`label`](Self::label) is the stored value of the generated `family` column;
+/// per-family SQL predicates compare against it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Family {
     Anthropic,
     Openai,
+    Fireworks,
 }
 
 impl Family {
-    /// Derive the family from a stored `provider` value. Anything containing
-    /// `openai` is the OpenAI/Codex family; everything else is Anthropic.
+    /// Derive the family from a stored `provider` value. Must agree with the
+    /// generated `family` column (migration 078).
     pub fn from_provider(provider: &str) -> Self {
-        if provider.contains("openai") { Self::Openai } else { Self::Anthropic }
+        if provider == "fireworks" {
+            Self::Fireworks
+        } else if provider.contains("openai") {
+            Self::Openai
+        } else {
+            Self::Anthropic
+        }
     }
-    /// Derive the family from a spawn adapter id (`codex*` → openai, else
-    /// anthropic). This IS the spawn resolution key: the adapter names the
-    /// harness family, and the account identity carries at most one provider
-    /// row per family.
+    /// Parse a family label back (the `family` column / API `family` field).
+    pub fn from_label(label: &str) -> Option<Self> {
+        match label {
+            "anthropic" => Some(Self::Anthropic),
+            "openai" => Some(Self::Openai),
+            "fireworks" => Some(Self::Fireworks),
+            _ => None,
+        }
+    }
+    /// Derive the family from a spawn adapter id (`codex*` → openai,
+    /// `opencode*` → fireworks, else anthropic). This IS the spawn resolution
+    /// key: the adapter names the harness family, and the account identity
+    /// carries at most one provider row per family.
     pub fn from_adapter(adapter_id: &str) -> Self {
-        if adapter_id.starts_with("codex") { Self::Openai } else { Self::Anthropic }
+        if adapter_id.starts_with("opencode") {
+            Self::Fireworks
+        } else if adapter_id.starts_with("codex") {
+            Self::Openai
+        } else {
+            Self::Anthropic
+        }
     }
-    /// Human label for error messages.
+    /// Human label for error messages, and the stored `family` column value.
     pub const fn label(self) -> &'static str {
         match self {
             Self::Anthropic => "anthropic",
             Self::Openai => "openai",
+            Self::Fireworks => "fireworks",
         }
     }
 }
@@ -158,6 +261,10 @@ pub struct ProviderRow {
     pub provider: String,
     /// Per-provider logical→concrete model alias map.
     pub model_aliases: Option<serde_json::Value>,
+    /// Account-owned model catalog (`[{model, label, pricing…}]`). The only
+    /// source of concrete model ids for a `fireworks` provider — nothing in a
+    /// worker image, entrypoint, or dispatch payload hardcodes one.
+    pub models: Option<serde_json::Value>,
 }
 
 impl ProviderRow {
@@ -190,16 +297,22 @@ pub async fn account_provider_rows(
     .fetch_optional(&state.pool)
     .await?;
     let Some(account_id) = account_id else { return Ok(None) };
-    let rows: Vec<(Uuid, String, Option<serde_json::Value>)> = sqlx::query_as(
-        "SELECT id, provider, model_aliases FROM account_providers \
-         WHERE account_id = $1 ORDER BY provider",
-    )
-    .bind(account_id)
-    .fetch_all(&state.pool)
-    .await?;
+    let rows: Vec<(Uuid, String, Option<serde_json::Value>, Option<serde_json::Value>)> =
+        sqlx::query_as(
+            "SELECT id, provider, model_aliases, models FROM account_providers \
+             WHERE account_id = $1 ORDER BY provider",
+        )
+        .bind(account_id)
+        .fetch_all(&state.pool)
+        .await?;
     Ok(Some(
         rows.into_iter()
-            .map(|(id, provider, model_aliases)| ProviderRow { id, provider, model_aliases })
+            .map(|(id, provider, model_aliases, models)| ProviderRow {
+                id,
+                provider,
+                model_aliases,
+                models,
+            })
             .collect(),
     ))
 }
@@ -308,9 +421,8 @@ pub async fn resume_env_for_session(
 /// `sessions.account_id` column for sessions bound before per-family tokens
 /// existed. Empty when the session has no account binding at all.
 pub async fn resolve_session_accounts(state: &AppState, session_id: &str) -> Vec<Uuid> {
-    // `(oa.provider ILIKE '%openai%')` is the family key (true → OpenAI/Codex,
-    // false → Anthropic); DISTINCT ON it keeps the newest token per family,
-    // preferring live over revoked. Revoked rows COUNT as a binding:
+    // DISTINCT ON the family keeps the newest token per family, preferring live
+    // over revoked. Revoked rows COUNT as a binding:
     // session end revokes every token (`revoke_session_tokens`), so a resume
     // after a real — or spurious — end would otherwise find no binding and
     // relaunch the worker with EMPTY gateway env (silently off-gateway on a
@@ -318,11 +430,10 @@ pub async fn resolve_session_accounts(state: &AppState, session_id: &str) -> Vec
     // `mint_env_for_account` then mints a FRESH live token — the dead token
     // itself is never resurrected.
     let mut ids: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT DISTINCT ON ((oa.provider ILIKE '%openai%')) st.account_id \
+        "SELECT DISTINCT ON (oa.family) st.account_id \
          FROM session_tokens st JOIN account_providers oa ON oa.id = st.account_id \
          WHERE st.session_id = $1 \
-         ORDER BY (oa.provider ILIKE '%openai%'), (st.revoked_at IS NULL) DESC, \
-                  st.created_at DESC",
+         ORDER BY oa.family, (st.revoked_at IS NULL) DESC, st.created_at DESC",
     )
     .bind(session_id)
     .fetch_all(&state.pool)
@@ -354,7 +465,6 @@ async fn mint_env_for_account(
     session_id: &str,
 ) -> Result<std::collections::BTreeMap<String, String>, sqlx::Error> {
     let family = Family::from_provider(provider);
-    let is_openai = family == Family::Openai;
 
     // A session gets ONE stable gateway token **per provider family** for its
     // whole life. Reuse the existing live token for THIS
@@ -367,7 +477,7 @@ async fn mint_env_for_account(
     // must NOT repoint the Anthropic token to it.
     let key = crate::crypto::vault_key();
     let token = if let Some(existing) =
-        existing_session_token(state, session_id, is_openai, &key).await
+        existing_session_token(state, session_id, family, &key).await
     {
         // Repoint only THIS family's live token to the requested account (and
         // un-revoke, defensively) so an account switch reuses the same string
@@ -380,11 +490,11 @@ async fn mint_env_for_account(
                  FROM account_providers AS oa \
                  WHERE st.session_id = $1 AND st.revoked_at IS NULL \
                    AND st.account_id = oa.id \
-                   AND (oa.provider ILIKE '%openai%') = $3",
+                   AND oa.family = $3",
         )
         .bind(session_id)
         .bind(account_id)
-        .bind(is_openai)
+        .bind(family.label())
         .bind(Utc::now() + session_token_ttl())
         .execute(&state.pool)
         .await;
@@ -439,18 +549,35 @@ async fn mint_env_for_account(
     if let Some(account_env) = account_env_json(state, account_id, &key).await {
         env.extend(account_env);
     }
+    apply_gateway_env(&mut env, family, base, token);
+    Ok(env)
+}
+
+/// Insert the family's gateway routing keys over whatever the account env
+/// already carries. The three families emit DISJOINT key pairs, which is what
+/// lets one worker hold a claude + a codex + a Fireworks credential at once —
+/// `resume_env_for_session` merges every bound family's env blindly.
+fn apply_gateway_env(
+    env: &mut std::collections::BTreeMap<String, String>,
+    family: Family,
+    base: &str,
+    token: String,
+) {
     match family {
         Family::Anthropic => {
             env.insert("ANTHROPIC_BASE_URL".into(), format!("{base}/gateway/anthropic"));
             env.insert("ANTHROPIC_AUTH_TOKEN".into(), token);
-            apply_anthropic_cache_defaults(&mut env);
+            apply_anthropic_cache_defaults(env);
         }
         Family::Openai => {
             env.insert("OPENAI_BASE_URL".into(), format!("{base}/gateway/openai"));
             env.insert("OPENAI_API_KEY".into(), token);
         }
+        Family::Fireworks => {
+            env.insert("FIREWORKS_BASE_URL".into(), format!("{base}/gateway/fireworks"));
+            env.insert("FIREWORKS_API_KEY".into(), token);
+        }
     }
-    Ok(env)
 }
 
 /// Default-on Anthropic 1-hour prompt-cache flag: `or_insert_with`
@@ -463,16 +590,15 @@ fn apply_anthropic_cache_defaults(env: &mut std::collections::BTreeMap<String, S
 
 /// The session's existing stable gateway token for a given provider family
 /// (decrypted), if one was minted and persisted with its plaintext.
-/// `is_openai` selects the family (true → OpenAI/Codex, false →
-/// Anthropic) so the two families' tokens stay independent. `None` for a family
-/// with no live token, or pre-migration rows that only stored the one-way hash
-/// (those fall through to a one-time fresh mint). Picks the newest live token on
-/// the off chance a session accrued several from the old re-mint-on-resume
-/// behaviour.
+/// `family` selects the row so the families' tokens stay independent. `None` for
+/// a family with no live token, or pre-migration rows that only stored the
+/// one-way hash (those fall through to a one-time fresh mint). Picks the newest
+/// live token on the off chance a session accrued several from the old
+/// re-mint-on-resume behaviour.
 async fn existing_session_token(
     state: &AppState,
     session_id: &str,
-    is_openai: bool,
+    family: Family,
     key: &[u8],
 ) -> Option<String> {
     let enc: String = sqlx::query_scalar(
@@ -480,11 +606,11 @@ async fn existing_session_token(
          JOIN account_providers oa ON oa.id = st.account_id \
          WHERE st.session_id = $1 AND st.revoked_at IS NULL \
            AND st.encrypted_token IS NOT NULL \
-           AND (oa.provider ILIKE '%openai%') = $2 \
+           AND oa.family = $2 \
          ORDER BY st.created_at DESC LIMIT 1",
     )
     .bind(session_id)
-    .bind(is_openai)
+    .bind(family.label())
     .fetch_optional(&state.pool)
     .await
     .ok()
@@ -501,6 +627,10 @@ async fn existing_session_token(
 /// the input unchanged when there's no account, no family match, no alias map,
 /// or no matching key. A DB error degrades gracefully to the unmapped model
 /// rather than failing spawn.
+///
+/// The `fireworks` family additionally resolves through the account's model
+/// catalog ([`resolve_catalog_model`]), which is the sole source of its model
+/// ids — its harness has no built-in model list to fall back on.
 pub async fn resolve_account_model(
     state: &AppState,
     user_id: Uuid,
@@ -511,13 +641,41 @@ pub async fn resolve_account_model(
     let Ok(Some(rows)) = account_provider_rows(state, user_id, account_name).await else {
         return model.to_owned();
     };
-    rows.iter()
-        .find(|r| r.family() == family)
-        .and_then(|r| r.model_aliases.as_ref())
+    let Some(row) = rows.iter().find(|r| r.family() == family) else {
+        return model.to_owned();
+    };
+    let aliased = row
+        .model_aliases
+        .as_ref()
         .and_then(|v| v.get(model))
         .and_then(serde_json::Value::as_str)
         .filter(|s| !s.trim().is_empty())
-        .map_or_else(|| model.to_owned(), str::to_owned)
+        .map_or_else(|| model.to_owned(), str::to_owned);
+    if family != Family::Fireworks {
+        return aliased;
+    }
+    resolve_catalog_model(row.models.as_ref(), &aliased).unwrap_or(aliased)
+}
+
+/// Resolve a model against an account's catalog: an exact `model` id passes
+/// through, a catalog `label` maps to its id, and anything else (including an
+/// empty request) falls back to the first catalog entry. `None` when the catalog
+/// is empty — the caller then keeps the requested model verbatim.
+pub fn resolve_catalog_model(models: Option<&serde_json::Value>, model: &str) -> Option<String> {
+    let entries = models?.as_array().filter(|a| !a.is_empty())?;
+    let id_of = |e: &serde_json::Value| {
+        e.get("model").and_then(serde_json::Value::as_str).map(str::to_owned)
+    };
+    let wanted = model.trim();
+    if !wanted.is_empty()
+        && let Some(hit) = entries.iter().find(|e| {
+            id_of(e).as_deref() == Some(wanted)
+                || e.get("label").and_then(serde_json::Value::as_str) == Some(wanted)
+        })
+    {
+        return id_of(hit);
+    }
+    entries.iter().find_map(id_of)
 }
 
 /// Decrypt a named account's per-account custom env (`env_json`).
@@ -819,6 +977,7 @@ type AccountRow = (
     Option<String>,
     String,
     Option<serde_json::Value>,
+    Option<serde_json::Value>,
 );
 /// Raw account row by id (no id column, before decrypt).
 type ReloadRow = (
@@ -851,6 +1010,8 @@ struct Account {
     /// Enforced in `passthrough` against the cached usage. All NULL ⇒
     /// no soft limit (prior behaviour).
     soft_limits: crate::soft_limit::SoftLimits,
+    /// Per-provider gateway request-shaping settings; see [`FireworksSettings`].
+    provider_settings: Option<serde_json::Value>,
 }
 
 impl Account {
@@ -1017,7 +1178,7 @@ async fn resolve_account(
     let row: Option<AccountRow> = sqlx::query_as(
         "SELECT a.id, a.provider, a.encrypted_access_token, a.encrypted_refresh_token, \
                     a.expires_at, a.provider_account_id, a.base_url, a.auth_scheme, \
-                    a.soft_limits_json \
+                    a.soft_limits_json, a.provider_settings \
              FROM session_tokens t JOIN account_providers a ON a.id = t.account_id \
              WHERE t.token_hash = $1 AND t.revoked_at IS NULL \
                AND (t.expires_at IS NULL OR t.expires_at > now())",
@@ -1035,6 +1196,7 @@ async fn resolve_account(
         base_url,
         auth_scheme,
         soft_limits_json,
+        provider_settings,
     )) = row
     else {
         return Ok(None);
@@ -1052,6 +1214,7 @@ async fn resolve_account(
         base_url,
         auth_scheme,
         soft_limits: crate::soft_limit::SoftLimits::from_json(soft_limits_json.as_ref()),
+        provider_settings,
     }))
 }
 
@@ -1218,8 +1381,10 @@ async fn reload_account(state: &AppState, id: Uuid) -> Option<Account> {
         auth_scheme,
         // `reload_account` only services the token-refresh / usage-fetch paths,
         // never the soft-limit gate (which runs off `resolve_account`), so the
-        // caps are irrelevant here — default them.
+        // caps are irrelevant here — default them, as are the gateway settings
+        // (request shaping runs off `resolve_account` too).
         soft_limits: crate::soft_limit::SoftLimits::default(),
+        provider_settings: None,
     })
 }
 
@@ -1289,6 +1454,19 @@ pub async fn anthropic(
 /// `/gateway/openai/*path` — passthrough to api.openai.com.
 pub async fn openai(State(state): State<AppState>, req: Request) -> Result<Response, StatusCode> {
     passthrough(state, req, "/gateway/openai", &openai_upstream()).await
+}
+
+/// `/gateway/fireworks/*path` — passthrough to Fireworks' OpenAI-compatible API.
+///
+/// A sibling route rather than a branch inside [`openai`]: the two differ in
+/// upstream, in the worker env pair they are reached by, and in that this one
+/// mutates the request (per-account [`FireworksSettings`]). Sharing the openai
+/// route would put a per-account conditional on codex's hot path for nothing.
+pub async fn fireworks(
+    State(state): State<AppState>,
+    req: Request,
+) -> Result<Response, StatusCode> {
+    passthrough(state, req, "/gateway/fireworks", &fireworks_upstream()).await
 }
 
 // Linear proxy pipeline (auth, account-resolve, refresh, forward, stream);
@@ -1446,6 +1624,20 @@ async fn passthrough(
         headers.insert("chatgpt-account-id", hv);
     }
 
+    // Fireworks: the account's settings shape the request here, where the real
+    // key lives — a worker can neither supply nor defeat them.
+    let fireworks = (Family::from_provider(&acct.provider) == Family::Fireworks)
+        .then(|| FireworksSettings::resolve(acct.provider_settings.as_ref()));
+    let affinity_session = match fireworks.as_ref() {
+        Some(fw) if fw.session_affinity => session_id_for_token(&state, &session_token).await,
+        _ => None,
+    };
+    if let Some(sid) = affinity_session.as_deref()
+        && let Ok(hv) = reqwest::header::HeaderValue::from_str(sid)
+    {
+        headers.insert("x-session-affinity", hv);
+    }
+
     // Langfuse tracing sink: only when configured AND this call is
     // sampled do we reconstruct the bodies — otherwise the gateway stays a pure
     // zero-copy passthrough (request streamed, response streamed). When tracing,
@@ -1466,12 +1658,19 @@ async fn passthrough(
 
     // Stream the request body through without buffering (default), OR buffer it
     // once for the trace input when Langfuse is sampling this call.
-    let (upstream_body, traced_request) = if langfuse.is_some() {
+    let (upstream_body, traced_request) = if langfuse.is_some() || fireworks.is_some() {
         let bytes = axum::body::to_bytes(req.into_body(), usize::MAX)
             .await
             .map_err(|_| StatusCode::BAD_REQUEST)?;
-        let parsed = serde_json::from_slice::<serde_json::Value>(&bytes).ok();
-        (reqwest::Body::from(bytes), parsed)
+        let mut parsed = serde_json::from_slice::<serde_json::Value>(&bytes).ok();
+        let body = match (fireworks.as_ref(), parsed.as_mut()) {
+            (Some(fw), Some(json)) => {
+                fw.apply_body(json, affinity_session.as_deref());
+                reqwest::Body::from(json.to_string())
+            }
+            _ => reqwest::Body::from(bytes),
+        };
+        (body, parsed.filter(|_| langfuse.is_some()))
     } else {
         let body_stream = req.into_body().into_data_stream();
         (reqwest::Body::wrap_stream(body_stream), None)
@@ -1577,7 +1776,8 @@ async fn passthrough(
         account_id: Some(acct.id.to_string()),
         model,
     };
-    let is_openai = Family::from_provider(&acct.provider) == Family::Openai;
+    // Fireworks speaks the OpenAI wire protocol, so it reconstructs as openai.
+    let is_openai = Family::from_provider(&acct.provider) != Family::Anthropic;
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
     tokio::spawn(async move {
         let mut buf = Vec::new();
@@ -1866,9 +2066,9 @@ async fn local_window(
 #[cfg(test)]
 mod tests {
     use super::{
-        AuthStage, Family, OrphanSpamMap, apply_anthropic_cache_defaults, auth_error,
-        bump_orphan_401, clear_orphan_fingerprint, map_wham_usage, orphan_is_blocked_at,
-        ttl_hours_from, usage_cache_stale,
+        AuthStage, Family, FireworksSettings, OrphanSpamMap, apply_anthropic_cache_defaults,
+        apply_gateway_env, auth_error, bump_orphan_401, clear_orphan_fingerprint, map_wham_usage,
+        orphan_is_blocked_at, resolve_catalog_model, ttl_hours_from, usage_cache_stale,
     };
     use std::collections::BTreeMap;
     use std::time::{Duration, Instant};
@@ -2060,16 +2260,142 @@ mod tests {
             id: uuid::Uuid::new_v4(),
             provider: "anthropic-compatible".into(),
             model_aliases: None,
+            models: None,
         };
         let openai = super::ProviderRow {
             id: uuid::Uuid::new_v4(),
             provider: "openai".into(),
             model_aliases: None,
+            models: None,
+        };
+        let fireworks = super::ProviderRow {
+            id: uuid::Uuid::new_v4(),
+            provider: "fireworks".into(),
+            model_aliases: None,
+            models: None,
         };
         assert!(matches!(anthropic.family(), Family::Anthropic));
         assert!(matches!(openai.family(), Family::Openai));
+        assert!(matches!(fireworks.family(), Family::Fireworks));
         assert_eq!(Family::Anthropic.label(), "anthropic");
         assert_eq!(Family::Openai.label(), "openai");
+        assert_eq!(Family::Fireworks.label(), "fireworks");
+    }
+
+    #[test]
+    fn fireworks_is_its_own_family_not_openai() {
+        // The whole point of the third family: `fireworks` speaks the OpenAI
+        // wire protocol but must never collapse onto the openai credential slot,
+        // or the unique (account_id, family) index would forbid holding both.
+        assert_eq!(Family::from_provider("fireworks"), Family::Fireworks);
+        assert_ne!(Family::from_provider("fireworks"), Family::Openai);
+        assert_eq!(Family::from_adapter("opencode"), Family::Fireworks);
+        assert_eq!(Family::from_adapter("opencode-cli"), Family::Fireworks);
+        assert_eq!(Family::from_label("fireworks"), Some(Family::Fireworks));
+        assert_eq!(Family::from_label("nope"), None);
+    }
+
+    #[test]
+    fn gateway_env_keys_are_disjoint_across_families() {
+        // A worker may carry all three at once; overlapping keys would make the
+        // last mint silently win and 401 the others.
+        let env_for = |family| {
+            let mut env = std::collections::BTreeMap::new();
+            apply_gateway_env(&mut env, family, "https://cctui.example", "cctui_s_tok".into());
+            env
+        };
+        let anthropic = env_for(Family::Anthropic);
+        let openai = env_for(Family::Openai);
+        let fireworks = env_for(Family::Fireworks);
+        assert_eq!(
+            fireworks.get("FIREWORKS_BASE_URL").map(String::as_str),
+            Some("https://cctui.example/gateway/fireworks")
+        );
+        assert_eq!(fireworks.get("FIREWORKS_API_KEY").map(String::as_str), Some("cctui_s_tok"));
+        for other in [&anthropic, &openai] {
+            assert!(other.keys().all(|k| !fireworks.contains_key(k)));
+        }
+    }
+
+    #[test]
+    fn fireworks_settings_default_and_override() {
+        let defaults = FireworksSettings::resolve(None);
+        assert_eq!(defaults.context_length_exceeded_behavior.as_deref(), Some("error"));
+        assert!(defaults.session_affinity);
+        assert!(defaults.extra_body.is_empty());
+
+        // A partial stored blob overrides only the keys it names.
+        let stored = serde_json::json!({
+            "session_affinity": false,
+            "extra_body": { "temperature": 0.2 },
+        });
+        let merged = FireworksSettings::resolve(Some(&stored));
+        assert_eq!(merged.context_length_exceeded_behavior.as_deref(), Some("error"));
+        assert!(!merged.session_affinity);
+        assert_eq!(merged.extra_body.get("temperature"), Some(&serde_json::json!(0.2)));
+
+        // An explicit null opts the injection out entirely.
+        let off = serde_json::json!({ "context_length_exceeded_behavior": null });
+        assert!(FireworksSettings::resolve(Some(&off)).context_length_exceeded_behavior.is_none());
+    }
+
+    #[test]
+    fn fireworks_body_injection_never_overrides_the_client() {
+        let settings = FireworksSettings::resolve(Some(&serde_json::json!({
+            "extra_body": { "temperature": 0.2 },
+        })));
+        let mut body = serde_json::json!({ "model": "kimi", "messages": [] });
+        settings.apply_body(&mut body, Some("sess-1"));
+        assert_eq!(body["context_length_exceeded_behavior"], serde_json::json!("error"));
+        assert_eq!(body["temperature"], serde_json::json!(0.2));
+        assert_eq!(body["user"], serde_json::json!("sess-1"));
+
+        let mut explicit = serde_json::json!({
+            "context_length_exceeded_behavior": "truncate",
+            "temperature": 1.0,
+            "user": "mine",
+        });
+        settings.apply_body(&mut explicit, Some("sess-1"));
+        assert_eq!(explicit["context_length_exceeded_behavior"], serde_json::json!("truncate"));
+        assert_eq!(explicit["temperature"], serde_json::json!(1.0));
+        assert_eq!(explicit["user"], serde_json::json!("mine"));
+    }
+
+    #[test]
+    fn fireworks_affinity_off_leaves_user_alone() {
+        let settings =
+            FireworksSettings::resolve(Some(&serde_json::json!({ "session_affinity": false })));
+        let mut body = serde_json::json!({ "model": "kimi" });
+        settings.apply_body(&mut body, Some("sess-1"));
+        assert!(body.get("user").is_none());
+    }
+
+    #[test]
+    fn catalog_resolves_id_label_and_falls_back() {
+        let catalog = serde_json::json!([
+            { "model": "accounts/fireworks/models/kimi-k3", "label": "Kimi K3" },
+            { "model": "accounts/fireworks/models/kimi-k2p6", "label": "Kimi K2.6" },
+        ]);
+        assert_eq!(
+            resolve_catalog_model(Some(&catalog), "accounts/fireworks/models/kimi-k2p6").as_deref(),
+            Some("accounts/fireworks/models/kimi-k2p6")
+        );
+        assert_eq!(
+            resolve_catalog_model(Some(&catalog), "Kimi K3").as_deref(),
+            Some("accounts/fireworks/models/kimi-k3")
+        );
+        // Unknown / empty falls back to the first entry rather than sending a
+        // model id Fireworks would reject.
+        assert_eq!(
+            resolve_catalog_model(Some(&catalog), "gpt-5").as_deref(),
+            Some("accounts/fireworks/models/kimi-k3")
+        );
+        assert_eq!(
+            resolve_catalog_model(Some(&catalog), "").as_deref(),
+            Some("accounts/fireworks/models/kimi-k3")
+        );
+        assert_eq!(resolve_catalog_model(None, "x"), None);
+        assert_eq!(resolve_catalog_model(Some(&serde_json::json!([])), "x"), None);
     }
 
     #[test]
