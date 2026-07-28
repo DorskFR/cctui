@@ -1365,11 +1365,30 @@ impl Driver {
         match server.gateway_env(mk, local_id).await {
             // The env decision can fail closed (account-bound but unmintable);
             // the per-account settings ride the same response.
-            Ok(resp) => Ok(LaunchEnv {
-                env: launch_env_decision(local_id, &resp, hint)?,
-                settings: resp.settings,
-                whip_phrases: resp.whip_phrases,
-            }),
+            Ok(resp) => match launch_env_decision(local_id, &resp, hint) {
+                Ok(env) => {
+                    Ok(LaunchEnv { env, settings: resp.settings, whip_phrases: resp.whip_phrases })
+                }
+                // Fail-closed refusal: an account-bound session with no mintable
+                // gateway credential must NOT run on ambient creds. Surface it as
+                // a visible failure state before aborting, so the UI shows the
+                // account problem instead of the launch silently dying.
+                Err(e) => {
+                    self.emit(AdapterEvent::SessionEnded {
+                        local_id: local_id.to_owned(),
+                        reason: EndReason::Crashed {
+                            detail: format!(
+                                "account-bound session refused: the server returned no gateway \
+                                 credential (account missing/unmintable). The worker was NOT \
+                                 launched on ambient credentials — reconnect the account in cctui. \
+                                 ({e})"
+                            ),
+                        },
+                    })
+                    .await;
+                    Err(e)
+                }
+            },
             Err(e) => {
                 // Pull unavailable (older server / transient). Degrade to the
                 // pushed hint rather than blocking the launch.

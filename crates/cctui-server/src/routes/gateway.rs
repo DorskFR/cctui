@@ -738,6 +738,26 @@ pub async fn clear_soft_limit_block(state: &AppState, session_id: &str) {
     }
 }
 
+/// Record that a session token was just presented at the gateway, so the UI
+/// can distinguish an account-bound session whose worker actually routes here
+/// from one silently riding ambient creds. Fire-and-forget + self-throttling
+/// (skips a write when stamped within the last minute) to stay off the
+/// passthrough hot path. `token_fp` is the sha256 hex == `session_tokens.token_hash`.
+fn note_token_used(state: &AppState, token_fp: &str) {
+    let pool = state.pool.clone();
+    let hash = token_fp.to_owned();
+    tokio::spawn(async move {
+        let _ = sqlx::query(
+            "UPDATE session_tokens SET last_used_at = now() \
+             WHERE token_hash = $1 \
+               AND (last_used_at IS NULL OR last_used_at < now() - interval '60 seconds')",
+        )
+        .bind(&hash)
+        .execute(&pool)
+        .await;
+    });
+}
+
 /// Flag an account as needing reauthentication: the upstream provider
 /// rejected its OAuth credentials. Persists `needs_reauth` + the error so the
 /// accounts UI can show a "credential rejected — reauthenticate" badge. Gated on
@@ -1306,7 +1326,10 @@ async fn passthrough(
     }
 
     let acct = match resolve_account(&state, &session_token).await {
-        Ok(Some(acct)) => acct,
+        Ok(Some(acct)) => {
+            note_token_used(&state, &token_fp);
+            acct
+        }
         // Genuinely unknown/revoked/unbound token — a real orphan. Count it
         // toward the spam guard and reject as a cctui auth failure.
         Ok(None) => {
@@ -2148,6 +2171,93 @@ mod tests {
         assert!(resolves("ttl-live").await, "unexpired token must resolve");
         assert!(!resolves("ttl-dead").await, "expired token must NOT resolve");
         assert!(resolves("ttl-null").await, "legacy NULL-expiry token must still resolve");
+
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+    }
+
+    /// DB-gated: the observed-identity signal — a token stamped `last_used_at`
+    /// (as the gateway does on a successful passthrough) flips the session into
+    /// the "traffic observed" set the session list derives; an unstamped bound
+    /// token stays out of it (the warning state). Skips without a database.
+    #[tokio::test]
+    async fn last_used_stamp_drives_observed_traffic() {
+        let Some(url) =
+            std::env::var("DATABASE_URL").ok().or_else(|| std::env::var("TEST_DATABASE_URL").ok())
+        else {
+            eprintln!("skipping last_used_stamp_drives_observed_traffic: no DATABASE_URL");
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+
+        let uid = uuid::Uuid::new_v4();
+        let acct = uuid::Uuid::new_v4();
+        let prov = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("obs-test-{uid}"))
+            .bind(format!("kh-obs-{uid}"))
+            .execute(&pool)
+            .await
+            .expect("seed user");
+        sqlx::query("INSERT INTO accounts (id, user_id, name) VALUES ($1, $2, 'obs-acct')")
+            .bind(acct)
+            .bind(uid)
+            .execute(&pool)
+            .await
+            .expect("seed account");
+        sqlx::query(
+            "INSERT INTO account_providers \
+                 (id, user_id, name, provider, encrypted_refresh_token, account_id) \
+             VALUES ($1, $2, 'obs-acct', 'anthropic', 'x', $3)",
+        )
+        .bind(prov)
+        .bind(uid)
+        .bind(acct)
+        .execute(&pool)
+        .await
+        .expect("seed provider");
+
+        let sid = format!("obs-sess-{uid}");
+        sqlx::query(
+            "INSERT INTO session_tokens (token_hash, session_id, account_id) VALUES ($1, $2, $3)",
+        )
+        .bind(format!("obs-hash-{uid}"))
+        .bind(&sid)
+        .bind(prov)
+        .execute(&pool)
+        .await
+        .expect("seed token");
+
+        let observed = |sid: String| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query_scalar::<_, bool>(
+                    "SELECT EXISTS ( \
+                        SELECT 1 FROM session_tokens \
+                         WHERE session_id = $1 AND revoked_at IS NULL AND last_used_at IS NOT NULL)",
+                )
+                .bind(&sid)
+                .fetch_one(&pool)
+                .await
+                .expect("observed query")
+            }
+        };
+        assert!(!observed(sid.clone()).await, "unstamped bound token → no traffic observed (warn)");
+
+        sqlx::query(
+            "UPDATE session_tokens SET last_used_at = now() \
+             WHERE token_hash = $1 \
+               AND (last_used_at IS NULL OR last_used_at < now() - interval '60 seconds')",
+        )
+        .bind(format!("obs-hash-{uid}"))
+        .execute(&pool)
+        .await
+        .expect("stamp last_used");
+        assert!(observed(sid.clone()).await, "stamped token → traffic observed (no warn)");
 
         sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
     }

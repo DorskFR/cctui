@@ -326,6 +326,15 @@ export function sessionDebugRows(s: SessionListItem, now: number): DebugRow[] {
 	];
 }
 
+// A session bound to an account (`account_name`) whose gateway token the server
+// has never observed being used (`account_traffic_observed === false`): bound in
+// the DB but its worker's traffic never reached the gateway, so it may be
+// silently running on ambient credentials. Explicit `=== false` so a payload
+// that omits the field (older server) never raises a false warning.
+export function accountTrafficWarning(s: SessionListItem): boolean {
+	return !!s.account_name && s.account_traffic_observed === false;
+}
+
 export const groupOf = (s: SessionListItem): GroupKey => {
 	if (s.pinned) return 'pinned';
 	const bucket = s.bucket ?? 'working';

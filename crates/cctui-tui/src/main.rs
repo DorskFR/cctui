@@ -672,6 +672,7 @@ fn handle_server_event(app: &mut App, event: ServerEvent) {
                     last_tool_name: None,
                     tool_use_count: 0,
                     has_token_credentials: false,
+                    account_traffic_observed: false,
                     last_message_text: None,
                     last_message_at: None,
                     registered_at: Some(session.registered_at),

@@ -291,6 +291,14 @@ pub struct SessionListItem {
     /// deleted even though the binding still exists.
     #[serde(default)]
     pub has_token_credentials: bool,
+    /// Whether the session's gateway token has actually been presented at the
+    /// gateway (`session_tokens.last_used_at`). An account-bound session
+    /// (`account_name` set) with this `false` is bound in the DB but its worker's
+    /// traffic never reached the gateway — the "account-bound but no gateway
+    /// traffic observed" warning state, i.e. it may be silently riding ambient
+    /// creds. `true` for any session whose token the gateway has seen.
+    #[serde(default)]
+    pub account_traffic_observed: bool,
     /// What the session was launched to do: the adapter's `Status`
     /// intent (`sessions.intent`), surfaced as a secondary line / tooltip on the
     /// card. `None` when the session carries no intent.

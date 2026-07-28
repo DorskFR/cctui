@@ -649,6 +649,7 @@
 	"sessions_account_switch_aria": "Switch account (currently {name})",
 	"sessions_account_switch_tip": "account: {name} — click to switch",
 	"sessions_account_tip": "account: {name}",
+	"sessions_account_unobserved_tip": "account: {name} — bound but no gateway traffic observed; the worker may be running on ambient credentials",
 	"sessions_activity_asleep_title": "No tool activity for minutes — may be wedged",
 	"sessions_activity_live_title": "Live tool activity",
 	"sessions_archive": "Archive",

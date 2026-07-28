@@ -22,7 +22,7 @@ attention: Attention | null,
 /**
  * Classifier bucket this session falls in (Working / Needs input /
  * Ready for review / Completed). Drives the grouped session list in
- * both clients (CCT-90). Defaults to `Working` for back-compat.
+ * both clients. Defaults to `Working` for back-compat.
  */
 bucket: Bucket, uptime_secs: number, token_usage: TokenUsage, metadata: JsonValue, 
 /**
@@ -36,12 +36,12 @@ adapter_id: AdapterId | null,
  */
 machine_name: string | null, 
 /**
- * Operator-set badge hue for the machine (0-359, CCT-222). `None` =
+ * Operator-set badge hue for the machine (0-359). `None` =
  * client derives the hue from the machine name hash.
  */
 machine_hue: number | null, 
 /**
- * Machine kind (resolved from `machine_id`, CCT-231): `"persistent"`
+ * Machine kind (resolved from `machine_id`): `"persistent"`
  * for enrolled daemons, `"dispatch"`/`"ephemeral"` for server-managed
  * dispatch workers. Lets clients group dispatched sessions separately.
  * `None` when the machine row is gone.
@@ -56,7 +56,7 @@ last_message_text: string | null,
  */
 last_message_at: string | null, 
 /**
- * Timestamp the conversation was first registered (CCT-270). Surfaced so
+ * Timestamp the conversation was first registered. Surfaced so
  * clients can show the ISO start datetime in the relative-time tooltip.
  */
 registered_at: string | null, 
@@ -73,17 +73,17 @@ model: string | null,
  */
 effort: string | null, 
 /**
- * Whether cctui-side auto-approve is on for this session (CCT-151).
+ * Whether cctui-side auto-approve is on for this session.
  * In-memory server state, reflected so clients can show the toggle.
  */
 auto_approve: boolean, 
 /**
- * Transcript snippet around a keyword match (CCT-184). Only populated by
+ * Transcript snippet around a keyword match. Only populated by
  * the search endpoint to show *why* a session matched; `None` otherwise.
  */
 match_snippet: string | null, 
 /**
- * Cold-cache surfacing (CCT-189). Timestamp of the most recent
+ * Cold-cache surfacing. Timestamp of the most recent
  * assistant turn (the last `session_token_usage` row). Lets the client
  * predict prompt-cache expiry — Anthropic's cache is a ~5-minute sliding
  * window — before the next send, independent of `cache_cold` (which is
@@ -91,7 +91,7 @@ match_snippet: string | null,
  */
 last_activity_at: string | null, 
 /**
- * *Confirmed* cold cache (CCT-189): the most recent assistant turn
+ * *Confirmed* cold cache: the most recent assistant turn
  * re-billed the full context (`cache_creation_tokens > 0` and
  * `cache_read_tokens == 0`), i.e. the prompt cache had gone cold and that
  * turn paid to rewrite it. Drives the ❄️ glyph on the session list.
@@ -99,33 +99,33 @@ last_activity_at: string | null,
 cache_cold: boolean, 
 /**
  * Approximate number of tokens that get re-written to cache on the next
- * send when the cache is cold (CCT-189) — the cached-context size from
+ * send when the cache is cold — the cached-context size from
  * the last turn (`cache_read_tokens + cache_creation_tokens`). A rough
  * estimate, shown on the composer's burst-cost indicator. `None` when no
  * usage has been recorded.
  */
 estimated_burst_tokens: number | null, 
 /**
- * Hibernated (CCT-228): the worker process has exited but its job state
+ * Hibernated: the worker process has exited but its job state
  * survives on disk, so a reply revives it (daemon resume-on-reply).
  * Derived from the adapter's final `tempo:"hibernated"` Status. Drives
  * the claude-style red "exited, will resume on reply" dot.
  */
 hibernated: boolean, 
 /**
- * Pinned/starred (CCT-267): the operator pinned this session so it sorts
+ * Pinned/starred: the operator pinned this session so it sorts
  * above everything in the live list and is exempt from the auto-archive
  * reaper regardless of heartbeat age. DB-backed (`sessions.pinned`).
  */
 pinned: boolean, 
 /**
- * User-defined colored labels attached to this session (CCT-360).
+ * User-defined colored labels attached to this session.
  * Many-to-many (`labels` / `session_labels` tables); empty when unlabeled.
  */
 labels: Array<Label>, 
 /**
- * Last activity timestamp from `sessions.last_heartbeat` (CCT-365). Bumped
- * per real work event, and — since CCT-366 — also by subagent activity up
+ * Last activity timestamp from `sessions.last_heartbeat`. Bumped
+ * per real work event, and — since — also by subagent activity up
  * the `parent_id` chain. Surfaced so clients can derive a long-horizon
  * "stale" display signal (Working session with no activity for >30min)
  * purely from the clock, the same way liveness tiers are time-derived.
@@ -135,7 +135,7 @@ labels: Array<Label>,
  */
 last_heartbeat: string | null, 
 /**
- * OAuth account this session runs under (CCT-430), resolved from the most
+ * OAuth account this session runs under, resolved from the most
  * recent non-revoked `session_tokens` row joined to `account_providers` (name from its `accounts` parent).
  * Surfaced so clients can show which account is driving the session (key
  * icon + name tooltip). `None` for sessions with no minted gateway token
@@ -143,14 +143,14 @@ last_heartbeat: string | null,
  */
 account_name: string | null, 
 /**
- * Unread assistant `message` events for the calling user (CCT-580):
+ * Unread assistant `message` events for the calling user:
  * messages newer than that user's `session_reads.last_seen_at` (all when
  * never seen), capped at 99. Only the live list populates it; search and
  * get-one default it to `0`.
  */
 unread_count: number, 
 /**
- * Live activity headline (CCT-594): the daemon's spinner text from the
+ * Live activity headline: the daemon's spinner text from the
  * claude-daemon control-socket `list` snapshot (`sessions.activity`), e.g.
  * "Central verify + cascade cleanup…". Already persisted per Status event;
  * now surfaced on the list so a working row shows *what* it's doing without
@@ -159,38 +159,47 @@ unread_count: number,
 activity_detail: string | null, 
 /**
  * When the session (or any subagent, rolled up the `parent_id` chain like
- * the heartbeat) last emitted a `ToolUse` (CCT-594). Lets clients tell a
+ * the heartbeat) last emitted a `ToolUse`. Lets clients tell a
  * *grinding* session (fresh tool calls) from one that's *asleep* — a bare
  * heartbeat with no tool activity for minutes — far tighter than the 30-min
  * `last_heartbeat` staleness. `None` when no tool call has been observed.
  */
 last_tool_at: string | null, 
 /**
- * Name of the most recent tool call feeding `last_tool_at` (CCT-594), e.g.
+ * Name of the most recent tool call feeding `last_tool_at`, e.g.
  * `"Read"`, `"Edit"`. `None` when no tool call has been observed.
  */
 last_tool_name: string | null, 
 /**
- * Running count of this session's `ToolUse` events for the current turn
- * (CCT-594), reset on a new user prompt. This session's own count only —
+ * Running count of this session's `ToolUse` events for the current turn,
+ * reset on a new user prompt. This session's own count only —
  * a parent's rolled-up child activity shows via `last_tool_at`, not this.
  */
 tool_use_count: number, 
 /**
- * Live token↔account credential binding (CCT-555): a non-revoked
+ * Live token↔account credential binding: a non-revoked
  * `session_tokens` row with a present `encrypted_token`. Distinct from
  * `account_name`, which is `None` when the token's `accounts` row was
  * deleted even though the binding still exists.
  */
 has_token_credentials: boolean, 
 /**
- * What the session was launched to do (CCT-596): the adapter's `Status`
+ * Whether the session's gateway token has actually been presented at the
+ * gateway (`session_tokens.last_used_at`). An account-bound session
+ * (`account_name` set) with this `false` is bound in the DB but its worker's
+ * traffic never reached the gateway — the "account-bound but no gateway
+ * traffic observed" warning state, i.e. it may be silently riding ambient
+ * creds. `true` for any session whose token the gateway has seen.
+ */
+account_traffic_observed: boolean, 
+/**
+ * What the session was launched to do: the adapter's `Status`
  * intent (`sessions.intent`), surfaced as a secondary line / tooltip on the
  * card. `None` when the session carries no intent.
  */
 intent: string | null, 
 /**
- * Linked-PR hrefs from `sessions.children` (CCT-595). Drives the PR link
+ * Linked-PR hrefs from `sessions.children`. Drives the PR link
  * shown on the session card / TUI line and the `Ready for review` bucket.
  */
 pr_links: Array<string>, };

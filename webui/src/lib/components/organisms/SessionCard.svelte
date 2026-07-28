@@ -14,7 +14,12 @@
 	import { m } from '$lib/paraglide/messages';
 	import { escapeHtml } from '$lib/markdown';
 	import { highlightTerms } from '$lib/search';
-	import { isStaleWorking, toolActivity, formatAgo } from '../../../routes/sessions/sessions.logic';
+	import {
+		isStaleWorking,
+		toolActivity,
+		formatAgo,
+		accountTrafficWarning,
+	} from '../../../routes/sessions/sessions.logic';
 	import { onMount } from 'svelte';
 
 	let {
@@ -550,7 +555,7 @@
 		<Badge tone="info" style="padding:0.05rem var(--sp-2)">{m.sessions_subagent_badge()}</Badge>
 	{:else}
 		<MachineBadge name={s.machine_name} id={s.machine_id} hue={s.machine_hue} mono />
-		<AccountBadge name={s.account_name} />
+		<AccountBadge name={s.account_name} warn={accountTrafficWarning(s)} />
 	{/if}
 {/snippet}
 

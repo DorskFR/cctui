@@ -367,6 +367,7 @@ pub async fn list_sessions(
                         last_tool_name: None,
                         tool_use_count: 0,
                         has_token_credentials: false,
+                        account_traffic_observed: false,
                         intent: None,
                         pr_links: Vec::new(),
                     },
@@ -465,6 +466,7 @@ pub async fn list_sessions(
                 last_tool_name: None,
                 tool_use_count: 0,
                 has_token_credentials: false,
+                account_traffic_observed: false,
                 intent: None,
                 pr_links: Vec::new(),
             },
@@ -810,6 +812,29 @@ async fn enrich_and_sort(
             rows.into_iter().map(|(id,)| id).collect();
         for (_, s) in &mut with_ts {
             s.has_token_credentials = with_creds.contains(&s.id);
+        }
+    }
+
+    // Observed gateway traffic per session: a live token that has actually been
+    // presented at the gateway (`last_used_at` stamped). An account-bound
+    // session missing from this set is bound in the DB but never routed through
+    // the gateway — the webui's "no gateway traffic observed" warning.
+    if !session_ids.is_empty() {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT DISTINCT session_id FROM session_tokens \
+             WHERE session_id = ANY($1) AND revoked_at IS NULL AND last_used_at IS NOT NULL",
+        )
+        .bind(&session_ids)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("db error (traffic lookup): {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+        })?;
+        let observed: std::collections::HashSet<String> =
+            rows.into_iter().map(|(id,)| id).collect();
+        for (_, s) in &mut with_ts {
+            s.account_traffic_observed = observed.contains(&s.id);
         }
     }
 
@@ -1195,6 +1220,7 @@ pub async fn search_sessions(
                     last_tool_name: None,
                     tool_use_count: 0,
                     has_token_credentials: false,
+                    account_traffic_observed: false,
                     intent: None,
                     pr_links: Vec::new(),
                 },
@@ -1401,6 +1427,7 @@ pub async fn get_session(
                 last_tool_name: None,
                 tool_use_count: 0,
                 has_token_credentials: false,
+                account_traffic_observed: false,
                 intent: None,
                 pr_links: Vec::new(),
             };
@@ -1473,6 +1500,7 @@ pub async fn get_session(
         last_tool_name: None,
         tool_use_count: 0,
         has_token_credentials: false,
+        account_traffic_observed: false,
         intent: None,
         pr_links: Vec::new(),
     };
