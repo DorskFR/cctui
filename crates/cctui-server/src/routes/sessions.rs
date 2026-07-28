@@ -1256,7 +1256,7 @@ pub async fn search_sessions(
         })
         .collect();
 
-    let mut sessions = enrich_and_sort(&state, None, with_ts).await?;
+    let mut sessions = enrich_and_sort(&state, Some(ctx.user_id), with_ts).await?;
 
     // Attach a transcript snippet per session: the most recent matching event's
     // searchable text, windowed around the keyword. Sessions matched only by
