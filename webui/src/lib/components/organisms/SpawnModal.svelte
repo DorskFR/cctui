@@ -27,6 +27,7 @@
 		dispatchMemoryKey,
 		applyMemory,
 		dirPrefill,
+		labelPrefill,
 		memoryFieldsOf,
 		entryFromForm,
 		MACHINE_MEMORY_FIELDS,
@@ -129,6 +130,9 @@
 	const initialFields = memoryFieldsOf(form);
 	// svelte-ignore state_referenced_locally
 	const initialDir = form.working_dir;
+	// svelte-ignore state_referenced_locally
+	const initialLabels = [...form.labels];
+	let labelsApplied: string[] | null = null;
 	function load(): Form {
 		try {
 			const raw = drafts.get(SPAWN_DRAFT);
@@ -185,7 +189,9 @@
 	$effect(() => {
 		const id = form.machine_id;
 		if (!id) return;
-		const last = settings.lastDirFor(id);
+		// Spawn memory first; on a machine this browser has never spawned on, the
+		// server's recent dirs still know where sessions run.
+		const last = settings.lastDirFor(id) ?? recentDirs[0] ?? null;
 		const combo = machineMemoryKey(id, last ?? '');
 		if (combo === dirComboApplied) return;
 		const first = dirComboApplied === null;
@@ -204,7 +210,9 @@
 		const first = memKeyApplied === null;
 		memKeyApplied = key;
 		if (first && (prefill || loadedDraft)) return;
-		const entry = settings.recallSpawn(key);
+		// An unknown cwd on a known machine still inherits that machine's last
+		// config rather than dropping back to the blank form.
+		const entry = settings.recallSpawn(key) ?? settings.lastEntryFor(form.machine_id);
 		if (!entry) return;
 		const patch = applyMemory(
 			MACHINE_MEMORY_FIELDS,
@@ -216,6 +224,11 @@
 		);
 		memApplied = { ...memApplied, ...patch };
 		Object.assign(form, patch as Partial<Form>);
+		const labels = labelPrefill(form.labels, initialLabels, labelsApplied, entry);
+		if (labels) {
+			labelsApplied = labels;
+			form.labels = labels;
+		}
 	});
 
 	// Dispatch flavor keyed by (dispatcher, repo): same memory, claude-family

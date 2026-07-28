@@ -5,7 +5,9 @@ import {
 	dispatchMemoryKey,
 	DISPATCH_MEMORY_FIELDS,
 	entryFromForm,
+	labelPrefill,
 	latestDirFor,
+	latestEntryFor,
 	MACHINE_MEMORY_FIELDS,
 	machineMemoryKey,
 	memoryFieldsOf,
@@ -210,7 +212,8 @@ describe('entryFromForm', () => {
 			account: 'work',
 			account_provider: 'openai',
 			permission_mode: 'yolo',
-			name: '  run-1  '
+			name: '  run-1  ',
+			labels: ['l1']
 		});
 		expect(e).toEqual({
 			adapter_id: 'codex',
@@ -222,7 +225,8 @@ describe('entryFromForm', () => {
 			account: 'work',
 			account_provider: 'openai',
 			permission_mode: 'yolo',
-			name: 'run-1'
+			name: 'run-1',
+			labels: ['l1']
 		});
 		expect(e).not.toHaveProperty('at');
 	});
@@ -248,5 +252,42 @@ describe('dirPrefill', () => {
 
 	it('is idempotent once the field holds the remembered dir', () => {
 		expect(dirPrefill('/repo/a', '/repo/a', '')).toBeNull();
+	});
+});
+
+describe('latestEntryFor', () => {
+	it('returns the machine\'s most recent entry across dirs', () => {
+		let map: SpawnMemoryMap = {};
+		map = putSpawnMemory(map, machineMemoryKey('m1', '/a'), entry({ name: 'old', at: 1 }));
+		map = putSpawnMemory(map, machineMemoryKey('m1', '/b'), entry({ name: 'new', at: 9 }));
+		map = putSpawnMemory(map, machineMemoryKey('m2', '/c'), entry({ name: 'other', at: 99 }));
+		expect(latestEntryFor(map, 'm1')?.name).toBe('new');
+		expect(latestEntryFor(map, 'nope')).toBeNull();
+	});
+
+	it('ignores dispatch entries', () => {
+		const map = putSpawnMemory({}, dispatchMemoryKey('m1', 'repo'), entry({ name: 'disp' }));
+		expect(latestEntryFor(map, 'm1')).toBeNull();
+	});
+});
+
+describe('labelPrefill', () => {
+	const withLabels = (labels?: string[]) => entry({ labels });
+
+	it('fills an untouched picker from the remembered set', () => {
+		expect(labelPrefill([], [], null, withLabels(['a', 'b']))).toEqual(['a', 'b']);
+	});
+
+	it('keeps a user edit', () => {
+		expect(labelPrefill(['x'], [], null, withLabels(['a']))).toBeNull();
+	});
+
+	it('overwrites what a previous recall wrote', () => {
+		expect(labelPrefill(['a'], [], ['a'], withLabels(['b']))).toEqual(['b']);
+	});
+
+	it('no-ops on an entry with no remembered labels, or when already equal', () => {
+		expect(labelPrefill([], [], null, withLabels(undefined))).toBeNull();
+		expect(labelPrefill(['a'], ['a'], null, withLabels(['a']))).toBeNull();
 	});
 });

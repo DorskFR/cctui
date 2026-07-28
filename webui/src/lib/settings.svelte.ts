@@ -5,6 +5,7 @@ import { clampLocale, locale as localeStore, type Locale } from './locale.svelte
 import type { SettingsPayload } from '@bindings/SettingsPayload';
 import {
 	latestDirFor,
+	latestEntryFor,
 	putSpawnMemory,
 	type SpawnMemoryEntry,
 	type SpawnMemoryMap
@@ -348,6 +349,12 @@ class Settings {
 	 *  (which then keys the full recall). */
 	lastDirFor(machineId: string): string | null {
 		return latestDirFor(this.state.spawnMemory, machineId);
+	}
+
+	/** The machine's most recent entry regardless of dir, used when the picked
+	 *  cwd has no memory of its own. */
+	lastEntryFor(machineId: string): SpawnMemoryEntry | null {
+		return latestEntryFor(this.state.spawnMemory, machineId);
 	}
 
 	// UI language. Drives the Paraglide runtime immediately and persists
