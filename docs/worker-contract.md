@@ -478,7 +478,7 @@ Synthesized failure (no valid `RESULT_FILE`):
 { "task_id": "<TASK_ID>", "status": "failed", "error": "worker exited (code N) without a valid result" }
 ```
 
-Flows add their own fields on top (e.g. `review-pr` adds `review_id`, `verdict`,
+Flows add their own fields on top (e.g. `review-pr` adds `review_id`, `verdicts`,
 `review_body`). Do not invent fields a flow does not consume. `REPLY_URL` is a
 bearer capability — whoever holds it can forge the verdict — so it is never
 logged.
