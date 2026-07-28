@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { SessionListItem } from '@bindings/SessionListItem';
 import {
+	accountTrafficWarning,
 	colorHueOf,
 	dimGroupsOf,
 	DIM_NONE_KEY,
@@ -25,6 +26,25 @@ function session(over: Partial<SessionListItem>): SessionListItem {
 }
 
 const label = (id: string, name: string, color = ''): Label => ({ id, name, color });
+
+describe('accountTrafficWarning', () => {
+	it('warns only for an account-bound session with no observed gateway traffic', () => {
+		// Bound + never observed → warn (may be riding ambient creds).
+		expect(accountTrafficWarning(session({ account_name: 'work', account_traffic_observed: false }))).toBe(
+			true
+		);
+		// Bound + observed → no warning.
+		expect(accountTrafficWarning(session({ account_name: 'work', account_traffic_observed: true }))).toBe(
+			false
+		);
+		// Unbound (no account) → nothing to warn about, whatever the flag.
+		expect(accountTrafficWarning(session({ account_name: null, account_traffic_observed: false }))).toBe(
+			false
+		);
+		// Field absent (older server) → never a false warning.
+		expect(accountTrafficWarning(session({ account_name: 'work' }))).toBe(false);
+	});
+});
 
 describe('unread section', () => {
 	it('recognises "unread" as a section', () => {

@@ -960,6 +960,7 @@ function optimisticDispatchCard(
     last_tool_name: null,
     tool_use_count: 0,
     has_token_credentials: false,
+    account_traffic_observed: false,
   };
 }
 

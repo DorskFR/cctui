@@ -11,11 +11,26 @@
 	// When `onclick` is supplied the glyph becomes a button that opens the
 	// at-will account switcher; otherwise it stays a plain
 	// read-only indicator.
-	let { name, onclick }: { name?: string | null; onclick?: () => void } = $props();
+	// `warn` marks an account-bound session whose gateway token has never been
+	// observed at the gateway — it may be silently running on ambient credentials.
+	// The glyph turns to a warning hue and the tooltip explains the mismatch.
+	let {
+		name,
+		onclick,
+		warn = false,
+	}: { name?: string | null; onclick?: () => void; warn?: boolean } = $props();
+
+	const tip = $derived(
+		warn && name
+			? m.sessions_account_unobserved_tip({ name })
+			: onclick
+				? m.sessions_account_switch_tip({ name: name ?? '' })
+				: m.sessions_account_tip({ name: name ?? '' }),
+	);
 </script>
 
 {#if name}
-	<Tooltip text={onclick ? m.sessions_account_switch_tip({ name }) : m.sessions_account_tip({ name })}>
+	<Tooltip text={tip}>
 		{#snippet trigger()}
 			<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 			<!-- role + tabindex are applied together only when `onclick` is set, so the
@@ -23,9 +38,10 @@
 			<span
 				class="acct"
 				class:clickable={!!onclick}
+				class:warn
 				role={onclick ? 'button' : undefined}
 				tabindex={onclick ? 0 : undefined}
-				aria-label={onclick ? m.sessions_account_switch_aria({ name }) : m.sessions_account_tip({ name })}
+				aria-label={warn ? tip : onclick ? m.sessions_account_switch_aria({ name }) : m.sessions_account_tip({ name })}
 				{onclick}
 				onkeydown={onclick
 					? (e: KeyboardEvent) => {
@@ -71,6 +87,9 @@
 	.acct.clickable:focus-visible {
 		color: var(--text, currentColor);
 		outline: none;
+	}
+	.acct.warn {
+		color: var(--c-warn, #d89614);
 	}
 	.acct svg {
 		/* em-relative so the glyph scales with the font-scale picker. */
