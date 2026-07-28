@@ -800,6 +800,39 @@ async fn session_id_for_token(state: &AppState, session_token: &str) -> Option<S
     .flatten()
 }
 
+/// Merge a `CctuiAgent` child's per-session dollar budget into `cap` as a
+/// `session_usd` limit. A budget on the child always wins over an account-level
+/// `session_usd`: it is the tighter, purpose-set ceiling.
+pub fn merge_session_budget(
+    cap: &crate::soft_limit::SoftLimits,
+    budget_usd: Option<f64>,
+) -> crate::soft_limit::SoftLimits {
+    let Some(budget) = budget_usd.filter(|b| b.is_finite() && *b > 0.0) else {
+        return cap.clone();
+    };
+    let mut merged = cap.clone();
+    let entry = merged.limits.entry(crate::soft_limit::KEY_SESSION_USD.to_owned()).or_default();
+    entry.cap_usd = Some(budget);
+    merged
+}
+
+/// The account's soft limits with any per-session `CctuiAgent` budget applied.
+/// Skips the token→session lookup entirely while no child budget is live.
+async fn session_budget_limits(
+    state: &AppState,
+    acct: &Account,
+    session_token: &str,
+) -> crate::soft_limit::SoftLimits {
+    if state.session_usd_budgets.is_empty() {
+        return acct.soft_limits.clone();
+    }
+    let Some(session_id) = session_id_for_token(state, session_token).await else {
+        return acct.soft_limits.clone();
+    };
+    let budget = state.session_usd_budgets.get(&session_id).map(|b| *b);
+    merge_session_budget(&acct.soft_limits, budget)
+}
+
 /// Resolve a session token to its `(session_id, account_name)` — used by the
 /// soft-limit signalling path to tag the per-session WS event with the
 /// human account name (the `Account` struct carries no name). `None` for
@@ -1540,13 +1573,17 @@ async fn passthrough(
     // we hit). So on the dispatch path we refresh the cache from upstream when it
     // is cold/stale (throttled by the same TTL so we never spam Anthropic's
     // rate-limited endpoint), and only then evaluate. Fetch errors fail open.
-    if !acct.soft_limits.is_unset() {
+    // A `CctuiAgent` child carries its own `session_usd` cap, which the account's
+    // stored limits know nothing about. Overlay it here; the map is empty on the
+    // ordinary path, so this costs a lock-free length check per request.
+    let effective_limits = session_budget_limits(&state, &acct, &session_token).await;
+    if !effective_limits.is_unset() {
         let cached = usage_for_soft_limit(&state, acct.id).await;
         let mut windows =
             cached.as_ref().map(crate::soft_limit::normalize_usage_windows).unwrap_or_default();
         // The per-session budget is session-scoped, so it can't come from the
         // per-account usage cache — resolve it here, and only when one is set.
-        if acct.soft_limits.limits.contains_key(crate::soft_limit::KEY_SESSION_USD)
+        if effective_limits.limits.contains_key(crate::soft_limit::KEY_SESSION_USD)
             && let Some(session_id) = session_id_for_token(&state, &session_token).await
             && let Some(spent) = session_spend_usd(&state, acct.id, &session_id).await
         {
@@ -1557,7 +1594,7 @@ async fn passthrough(
             ));
         }
         if let crate::soft_limit::Decision::Block { retry_after_secs, reason, .. } =
-            crate::soft_limit::evaluate_soft_limit(&windows, &acct.soft_limits, Utc::now())
+            crate::soft_limit::evaluate_soft_limit(&windows, &effective_limits, Utc::now())
         {
             tracing::info!(account = %acct.id, retry_after_secs, "soft limit hit: {reason}");
             // Surface the block as a per-session signal so the webui can offer
@@ -2247,7 +2284,8 @@ mod tests {
     use super::{
         AuthStage, Family, FireworksSettings, OrphanSpamMap, apply_anthropic_cache_defaults,
         apply_gateway_env, auth_error, bump_orphan_401, clear_orphan_fingerprint, map_wham_usage,
-        orphan_is_blocked_at, resolve_catalog_model, ttl_hours_from, usage_cache_stale,
+        merge_session_budget, orphan_is_blocked_at, resolve_catalog_model, ttl_hours_from,
+        usage_cache_stale,
     };
     use std::collections::BTreeMap;
     use std::time::{Duration, Instant};
@@ -2765,5 +2803,37 @@ mod tests {
         assert!(observed(sid.clone()).await, "stamped token → traffic observed (no warn)");
 
         sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+    }
+
+    #[test]
+    fn child_budget_becomes_a_session_usd_cap() {
+        let merged = merge_session_budget(&crate::soft_limit::SoftLimits::default(), Some(0.75));
+        assert_eq!(
+            merged.limits[crate::soft_limit::KEY_SESSION_USD].cap_usd,
+            Some(0.75),
+            "the child's budget must enforce as a session_usd cap"
+        );
+    }
+
+    #[test]
+    fn child_budget_overrides_a_looser_account_cap_and_keeps_other_windows() {
+        let account = crate::soft_limit::SoftLimits::from_json(Some(&serde_json::json!({
+            "session_usd": { "cap_usd": 10.0 },
+            "usd_7d": { "cap_usd": 50.0 },
+        })));
+        let merged = merge_session_budget(&account, Some(2.0));
+        assert_eq!(merged.limits[crate::soft_limit::KEY_SESSION_USD].cap_usd, Some(2.0));
+        assert_eq!(merged.limits[crate::soft_limit::KEY_USD_7D].cap_usd, Some(50.0));
+    }
+
+    #[test]
+    fn no_or_invalid_budget_leaves_the_account_limits_untouched() {
+        let account = crate::soft_limit::SoftLimits::from_json(Some(&serde_json::json!({
+            "usd_5h": { "cap_usd": 3.0 },
+        })));
+        for budget in [None, Some(0.0), Some(-1.0), Some(f64::NAN)] {
+            let merged = merge_session_budget(&account, budget);
+            assert_eq!(merged, account, "budget {budget:?} must not alter the account limits");
+        }
     }
 }

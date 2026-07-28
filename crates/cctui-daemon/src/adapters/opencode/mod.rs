@@ -143,6 +143,7 @@ async fn command_pump(cfg: OpenCodeConfig, ctx: AdapterCtx) {
                             agent: agent_of(&spec, &cfg),
                             attachments,
                             command_id,
+                            parent_local_id: spec.parent_local_id.clone(),
                         };
                         let session = OpenCodeSession::new(
                             params,
@@ -396,6 +397,7 @@ mod tests {
             model: None,
             env: env_of(env),
             bootstrap: serde_json::Value::Null,
+            parent_local_id: None,
         }
     }
 

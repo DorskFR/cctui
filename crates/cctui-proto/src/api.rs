@@ -24,6 +24,66 @@ pub struct DaemonAuthResponse {
     pub user_id: Uuid,
 }
 
+/// What a session is allowed to spawn through the daemon's `CctuiAgent` tool.
+///
+/// Set on the spawn/dispatch request by whoever launches the session; the
+/// session itself can never write it. Absent capability = spawning denied, so
+/// every check fails closed.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SpawnCapability {
+    /// Adapter ids the session may spawn children under. Empty = deny all.
+    #[serde(default)]
+    pub adapters: Vec<String>,
+    /// Ceiling for a child's `budget_usd`, and the budget applied when a call
+    /// names none. `None` = no dollar budget may be requested.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_budget_usd: Option<f64>,
+    /// Total children this session may spawn over its life. `None` = unlimited.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_children: Option<u32>,
+}
+
+impl SpawnCapability {
+    /// Whether this capability permits `adapter`. Matching is exact against the
+    /// declared list.
+    #[must_use]
+    pub fn allows_adapter(&self, adapter: &str) -> bool {
+        self.adapters.iter().any(|a| a == adapter)
+    }
+
+    /// A capability that permits nothing is equivalent to having none.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.adapters.is_empty()
+    }
+}
+
+/// Body for `POST /api/v1/daemon/sessions/{id}/spawn-child` — the server side of
+/// the `CctuiAgent` tool. `{id}` is the calling (parent) session.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SpawnChildRequest {
+    pub adapter: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    pub prompt: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+}
+
+/// Reply to [`SpawnChildRequest`]: the child's pre-minted session id, which is
+/// also the `local_id` the daemon waits on for the child's completion.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpawnChildResponse {
+    pub session_id: String,
+    /// Budget actually applied to the child after clamping to the capability.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_usd: Option<f64>,
+}
+
 /// Response for `GET /api/v1/daemon/sessions/{id}/gateway-env`.
 ///
 /// The daemon pulls this at every worker (re)launch — spawn, resume,
@@ -55,6 +115,11 @@ pub struct GatewayEnvResponse {
     /// uses its compiled defaults.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub whip_phrases: Option<serde_json::Value>,
+    /// The session's `CctuiAgent` spawn capability, re-served on every launch
+    /// pull so it survives a daemon restart. `None` → the session gets no
+    /// `CctuiAgent` tool at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawn_capability: Option<SpawnCapability>,
 }
 
 /// Response for `GET /api/v1/daemon/sessions/{id}/token-valid?hash=<sha256hex>`.
@@ -623,6 +688,11 @@ pub struct SpawnRequest {
     /// secrets at rest — re-entered at launch time).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub save_draft: bool,
+    /// What this session may spawn through the `CctuiAgent` tool. Omitted →
+    /// the session cannot spawn children.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(skip)]
+    pub spawn_capability: Option<SpawnCapability>,
 }
 
 impl std::fmt::Debug for SpawnRequest {
@@ -642,6 +712,7 @@ impl std::fmt::Debug for SpawnRequest {
             .field("no_account", &self.no_account)
             .field("env", &format_args!("<{} secret(s) redacted>", self.env.len()))
             .field("save_draft", &self.save_draft)
+            .field("spawn_capability", &self.spawn_capability)
             .finish()
     }
 }

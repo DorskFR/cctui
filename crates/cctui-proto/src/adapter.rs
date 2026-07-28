@@ -694,6 +694,10 @@ pub struct SessionSpec {
     /// the prompt so the worker can read them.
     #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
     pub bootstrap: serde_json::Value,
+    /// Parent session, echoed by the adapter into the child's
+    /// [`SessionMeta::parent_local_id`]. `None` for a top-level spawn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_local_id: Option<String>,
 }
 
 impl std::fmt::Debug for SessionSpec {
@@ -709,6 +713,7 @@ impl std::fmt::Debug for SessionSpec {
             // Redacted: secret values / file bytes must never reach a log.
             .field("env", &format_args!("<{} secret(s) redacted>", self.env.len()))
             .field("bootstrap", &format_args!("<redacted>"))
+            .field("parent_local_id", &self.parent_local_id)
             .finish()
     }
 }
@@ -1013,6 +1018,7 @@ mod tests {
             model: None,
             env: std::collections::BTreeMap::new(),
             bootstrap: serde_json::Value::Null,
+            parent_local_id: None,
         };
         let json = serde_json::to_string(&spec).unwrap();
         let _back: SessionSpec = serde_json::from_str(&json).unwrap();

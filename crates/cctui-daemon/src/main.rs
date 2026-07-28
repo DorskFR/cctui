@@ -76,6 +76,19 @@ enum Cmd {
         #[arg(long)]
         deny: bool,
     },
+    /// Internal: the stdio MCP server exposing the `CctuiAgent` tool to a
+    /// claude session. Registered by the per-session MCP config the daemon
+    /// writes at launch; relays each tool call to the running daemon over
+    /// `--sock`, which owns the spawn path.
+    McpAgent {
+        /// Session the tool call is made on behalf of. Fixed at launch so a
+        /// session can never spawn as another.
+        #[arg(long)]
+        session: String,
+        /// Daemon socket serving the agent tool.
+        #[arg(long)]
+        sock: PathBuf,
+    },
     /// Internal: the Claude Code `Stop` hook for whip mode (🐎). Reads
     /// the hook JSON on stdin; exits 2 with guidance on stderr when the final
     /// message reads as a graceful early exit / hand-back, else exits 0.
@@ -302,6 +315,7 @@ async fn main() -> anyhow::Result<()> {
         },
         Cmd::Status => print_status(&path),
         Cmd::AskHook { event, sock, deny } => cctui_daemon::askhook::run(&event, &sock, deny),
+        Cmd::McpAgent { session, sock } => cctui_daemon::mcp::run(&session, &sock),
         Cmd::WhipStopHook { phrases } => {
             std::process::exit(cctui_daemon::whipstop::run(phrases.as_deref()))
         }

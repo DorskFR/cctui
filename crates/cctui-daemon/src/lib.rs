@@ -8,10 +8,12 @@
 
 pub mod adapter_runtime;
 pub mod adapters;
+pub mod agenttool;
 pub mod askhook;
 pub mod blobs;
 pub mod bus;
 pub mod childenv;
+pub mod childwatch;
 pub mod client;
 pub mod config;
 pub mod counters;
@@ -19,6 +21,7 @@ pub mod dispatch_codex;
 pub mod enroll;
 pub mod imagepost;
 pub mod listdirs;
+pub mod mcp;
 pub mod offsets;
 pub mod runlock;
 pub mod runtime;

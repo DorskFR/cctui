@@ -256,7 +256,13 @@ async fn dispatch_spawn(
         model,
         env,
         bootstrap,
+        parent_local_id: None,
     };
+    // Keyed by the id the worker will register as, and stored before dispatch so
+    // the capability resolves the moment the worker asks.
+    if let Some(cap) = req.spawn_capability.clone().filter(|c| !c.is_empty()) {
+        state.spawn_capabilities.insert(token_session_id.clone(), cap);
+    }
     // `command_id` (minted above) travels with the command and comes back in an
     // `AdapterEvent::CommandResult` → `ServerEvent::CommandResult`, letting the
     // client surface success/failure instead of silently polling.
