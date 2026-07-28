@@ -368,6 +368,7 @@ pub struct Driver {
     /// coalesced PTY bytes as `PtyChunk` events. Interior-mutable so the `&self`
     /// command path can start/stop viewers.
     pty_view: super::pty_view::PtyViewManager,
+    last_reseed: Option<Instant>,
 }
 
 #[derive(Debug, Clone)]
@@ -489,6 +490,21 @@ pub(super) fn launch_env_decision(
     }
 }
 
+/// Parse `CCTUI_GATEWAY_RESEED_SECS` (positive integer seconds) or fall back to
+/// one hour — comfortably under the server's default 12h token TTL.
+fn reseed_interval_from(var: Option<String>) -> Duration {
+    var.and_then(|v| v.parse::<u64>().ok())
+        .filter(|s| *s > 0)
+        .map_or(Duration::from_secs(3600), Duration::from_secs)
+}
+
+/// Whether the gateway-env re-seed pass should run this poll: always on a
+/// (re)attach, otherwise once `interval` has elapsed since the last pass (and
+/// unconditionally on the very first pass).
+fn reseed_due(last: Option<Instant>, interval: Duration, reattached: bool) -> bool {
+    reattached || last.is_none_or(|t| t.elapsed() >= interval)
+}
+
 impl Driver {
     pub fn new(
         cfg: DriverConfig,
@@ -549,6 +565,7 @@ impl Driver {
             last_parsed: HashMap::new(),
             spawn_permission_mode: std::sync::Mutex::new(HashMap::new()),
             pty_view,
+            last_reseed: None,
         }
     }
 
@@ -571,6 +588,12 @@ impl Driver {
     /// quickly, infrequent enough that the re-emitted (then deduped) volume is
     /// negligible next to the regular poll tail.
     const RECONCILE_INTERVAL: Duration = Duration::from_secs(45);
+
+    /// Must stay well under the server's session-token TTL (default 12h) so a
+    /// live worker's token is re-minted before it can expire.
+    fn reseed_interval() -> Duration {
+        reseed_interval_from(std::env::var("CCTUI_GATEWAY_RESEED_SECS").ok())
+    }
 
     /// Clone handle to the shared `session_id → local_id` map, for the
     /// ask-hook listener to translate live `session_id`s.
@@ -2209,11 +2232,46 @@ impl Driver {
 
         let resp: ListResponse = socket::call(&sock, &json!({"proto": 1, "op": "list"})).await?;
         self.apply_snapshot(resp.jobs).await;
+        let reattached = self.churned;
         if self.churned {
             self.churned = false;
             self.reconcile_tail(true).await;
         }
+        if reseed_due(self.last_reseed, Self::reseed_interval(), reattached) {
+            self.reseed_gateway_env().await;
+            self.last_reseed = Some(Instant::now());
+        }
         Ok(())
+    }
+
+    /// Renew each live account-bound worker's gateway token by re-pulling its
+    /// env. The token STRING is stable, so the running worker (and its persisted
+    /// `--settings` delivery) needs no rewrite — the pull only re-mints to bump
+    /// the short-TTL expiry. A genuinely env-less worker is deliberately NOT
+    /// force-respawned here; that fails loud at the launch chokepoint instead.
+    async fn reseed_gateway_env(&self) {
+        let (Some(server), Some(mk)) = (self.server.as_ref(), self.machine_key.as_ref()) else {
+            return;
+        };
+        let targets: Vec<String> = self
+            .short_by_session
+            .iter()
+            .filter(|(_, short)| self.roster.contains(*short))
+            .map(|(local_id, _)| local_id.clone())
+            .collect();
+        let mut renewed = 0usize;
+        for local_id in &targets {
+            match server.gateway_env(mk, local_id).await {
+                Ok(resp) if resp.account_bound => renewed += 1,
+                Ok(_) => {}
+                Err(err) => {
+                    tracing::debug!(%local_id, %err, "gateway-env re-seed pull failed (will retry)");
+                }
+            }
+        }
+        if renewed > 0 {
+            tracing::info!(renewed, "re-seeded gateway env for live account-bound workers");
+        }
     }
 
     #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
@@ -3701,6 +3759,29 @@ mod tests {
         };
         let hint = env_of(&[("FOO", "bar")]);
         assert_eq!(launch_env_decision("s1", &resp, &hint).unwrap(), hint);
+    }
+
+    #[test]
+    fn reseed_interval_defaults_and_honors_override() {
+        assert_eq!(reseed_interval_from(None), Duration::from_secs(3600));
+        assert_eq!(reseed_interval_from(Some("120".into())), Duration::from_secs(120));
+        // Zero / garbage fall back to the hourly default rather than a hot loop.
+        assert_eq!(reseed_interval_from(Some("0".into())), Duration::from_secs(3600));
+        assert_eq!(reseed_interval_from(Some("nope".into())), Duration::from_secs(3600));
+    }
+
+    #[test]
+    fn reseed_runs_on_first_pass_reattach_and_after_interval() {
+        let interval = Duration::from_secs(3600);
+        // First pass (never re-seeded) always runs.
+        assert!(reseed_due(None, interval, false));
+        // A fresh pass is not due again until the interval elapses...
+        assert!(!reseed_due(Some(Instant::now()), interval, false));
+        // ...unless the daemon just (re)attached to the claude socket.
+        assert!(reseed_due(Some(Instant::now()), interval, true));
+        // Past the interval, the periodic renewal fires.
+        let stale = Instant::now().checked_sub(Duration::from_secs(3601)).unwrap();
+        assert!(reseed_due(Some(stale), interval, false));
     }
 
     #[test]

@@ -237,4 +237,41 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         assert!(StateJson::read(tmp.path(), "nonexistent").is_none());
     }
+
+    /// The typed view exposes no field that could capture a gateway token, so a
+    /// state.json carrying an `env`/`reattachEnv` block never lets cctui carry
+    /// the token off disk, and `write_name` introduces none of its own.
+    #[test]
+    fn state_json_never_surfaces_or_writes_a_gateway_token() {
+        let tmp = tempfile::tempdir().unwrap();
+        let short = "deadbeef";
+        let job_dir = tmp.path().join(short);
+        std::fs::create_dir(&job_dir).unwrap();
+        let token = "cctui_s_SECRET_TOKEN_VALUE";
+        std::fs::write(
+            job_dir.join("state.json"),
+            format!(
+                r#"{{
+                    "sessionId": "abc",
+                    "cwd": "/repo",
+                    "reattachEnv": {{ "ANTHROPIC_AUTH_TOKEN": "{token}" }},
+                    "env": {{ "ANTHROPIC_AUTH_TOKEN": "{token}" }},
+                    "respawnFlags": ["--model", "opus", "--settings", "/some/path.json"]
+                }}"#
+            ),
+        )
+        .unwrap();
+        let s = StateJson::read(tmp.path(), short).unwrap();
+        let seen = format!("{s:?}");
+        assert!(!seen.contains(token), "typed StateJson must not carry the token: {seen}");
+        assert_eq!(s.model.as_deref(), Some("opus"));
+
+        StateJson::write_name(tmp.path(), short, "renamed").unwrap();
+        let raw = String::from_utf8(std::fs::read(job_dir.join("state.json")).unwrap()).unwrap();
+        assert!(raw.contains("renamed"), "write_name applied");
+        // write_name preserves the daemon's own file verbatim but adds nothing
+        // token-shaped of its own — the only token here is the one the fixture
+        // planted, never one cctui introduced.
+        assert_eq!(raw.matches(token).count(), 2, "write_name must not add token copies");
+    }
 }
