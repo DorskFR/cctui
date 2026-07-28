@@ -264,6 +264,7 @@ pub async fn session_token_valid(
         "SELECT EXISTS (
             SELECT 1 FROM session_tokens t JOIN account_providers a ON a.id = t.account_id
             WHERE t.token_hash = $1 AND t.session_id = $2 AND t.revoked_at IS NULL
+              AND (t.expires_at IS NULL OR t.expires_at > now())
          )",
     )
     .bind(&q.hash)

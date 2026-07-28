@@ -32,6 +32,18 @@ use crate::state::AppState;
 /// Refresh proactively once the access token is within this window of expiry.
 const REFRESH_SKEW_SECS: i64 = 60;
 
+const SESSION_TOKEN_TTL_HOURS_DEFAULT: i64 = 12;
+
+fn ttl_hours_from(var: Option<String>) -> i64 {
+    var.and_then(|v| v.parse::<i64>().ok())
+        .filter(|h| *h > 0)
+        .unwrap_or(SESSION_TOKEN_TTL_HOURS_DEFAULT)
+}
+
+fn session_token_ttl() -> chrono::Duration {
+    chrono::Duration::hours(ttl_hours_from(std::env::var("CCTUI_SESSION_TOKEN_TTL_HOURS").ok()))
+}
+
 /// Anthropic Claude-Code OAuth token endpoint + client id. These are not stable
 /// public APIs (caveat accepted in the ticket); overridable via env so we can
 /// track upstream changes without a redeploy of code.
@@ -364,7 +376,7 @@ async fn mint_env_for_account(
         // `account_providers` join + family predicate confine the repoint to the
         // same-family token, leaving the other family's token untouched.
         let _ = sqlx::query(
-            "UPDATE session_tokens AS st SET account_id = $2, revoked_at = NULL \
+            "UPDATE session_tokens AS st SET account_id = $2, revoked_at = NULL, expires_at = $4 \
                  FROM account_providers AS oa \
                  WHERE st.session_id = $1 AND st.revoked_at IS NULL \
                    AND st.account_id = oa.id \
@@ -373,6 +385,7 @@ async fn mint_env_for_account(
         .bind(session_id)
         .bind(account_id)
         .bind(is_openai)
+        .bind(Utc::now() + session_token_ttl())
         .execute(&state.pool)
         .await;
         // The reused token's fingerprint may have been flagged as a
@@ -390,13 +403,15 @@ async fn mint_env_for_account(
         let token_hash = crate::auth::sha256_hex(&token);
         let enc = crate::crypto::encrypt(&token, &key);
         sqlx::query(
-            "INSERT INTO session_tokens (token_hash, session_id, account_id, encrypted_token) \
-                 VALUES ($1, $2, $3, $4)",
+            "INSERT INTO session_tokens \
+                 (token_hash, session_id, account_id, encrypted_token, expires_at) \
+                 VALUES ($1, $2, $3, $4, $5)",
         )
         .bind(&token_hash)
         .bind(session_id)
         .bind(account_id)
         .bind(&enc)
+        .bind(Utc::now() + session_token_ttl())
         .execute(&state.pool)
         .await?;
         token
@@ -984,7 +999,8 @@ async fn resolve_account(
                     a.expires_at, a.provider_account_id, a.base_url, a.auth_scheme, \
                     a.soft_limits_json \
              FROM session_tokens t JOIN account_providers a ON a.id = t.account_id \
-             WHERE t.token_hash = $1 AND t.revoked_at IS NULL",
+             WHERE t.token_hash = $1 AND t.revoked_at IS NULL \
+               AND (t.expires_at IS NULL OR t.expires_at > now())",
     )
     .bind(&hash)
     .fetch_optional(&state.pool)
@@ -1829,7 +1845,7 @@ mod tests {
     use super::{
         AuthStage, Family, OrphanSpamMap, apply_anthropic_cache_defaults, auth_error,
         bump_orphan_401, clear_orphan_fingerprint, map_wham_usage, orphan_is_blocked_at,
-        usage_cache_stale,
+        ttl_hours_from, usage_cache_stale,
     };
     use std::collections::BTreeMap;
     use std::time::{Duration, Instant};
@@ -2031,5 +2047,108 @@ mod tests {
         assert!(matches!(openai.family(), Family::Openai));
         assert_eq!(Family::Anthropic.label(), "anthropic");
         assert_eq!(Family::Openai.label(), "openai");
+    }
+
+    #[test]
+    fn session_token_ttl_defaults_and_honors_positive_override() {
+        assert_eq!(ttl_hours_from(None), 12);
+        assert_eq!(ttl_hours_from(Some("6".into())), 6);
+        // Zero / negative / garbage all fall back to the default rather than
+        // minting an already-dead (or never-expiring) token.
+        assert_eq!(ttl_hours_from(Some("0".into())), 12);
+        assert_eq!(ttl_hours_from(Some("-3".into())), 12);
+        assert_eq!(ttl_hours_from(Some("nope".into())), 12);
+    }
+
+    /// DB-gated: the gateway auth lookup must refuse an expired session token
+    /// (past `expires_at`) while resolving a live one, and a NULL `expires_at`
+    /// (legacy row) must still resolve. Runs the exact enforcement predicate the
+    /// passthrough / `token-valid` queries share. Skips without a database.
+    #[tokio::test]
+    async fn expired_session_token_is_not_resolved() {
+        let Some(url) =
+            std::env::var("DATABASE_URL").ok().or_else(|| std::env::var("TEST_DATABASE_URL").ok())
+        else {
+            eprintln!("skipping expired_session_token_is_not_resolved: no DATABASE_URL");
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+
+        let uid = uuid::Uuid::new_v4();
+        let acct = uuid::Uuid::new_v4();
+        let prov = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("ttl-test-{uid}"))
+            .bind(format!("kh-{uid}"))
+            .execute(&pool)
+            .await
+            .expect("seed user");
+        sqlx::query("INSERT INTO accounts (id, user_id, name) VALUES ($1, $2, $3)")
+            .bind(acct)
+            .bind(uid)
+            .bind("ttl-test-acct")
+            .execute(&pool)
+            .await
+            .expect("seed account");
+        sqlx::query(
+            "INSERT INTO account_providers \
+                 (id, user_id, name, provider, encrypted_refresh_token, account_id) \
+             VALUES ($1, $2, $3, 'anthropic', 'x', $4)",
+        )
+        .bind(prov)
+        .bind(uid)
+        .bind("ttl-test-acct")
+        .bind(acct)
+        .execute(&pool)
+        .await
+        .expect("seed provider");
+
+        let resolves = |hash: &'static str| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query_scalar::<_, bool>(
+                    "SELECT EXISTS ( \
+                        SELECT 1 FROM session_tokens t \
+                          JOIN account_providers a ON a.id = t.account_id \
+                         WHERE t.token_hash = $1 AND t.revoked_at IS NULL \
+                           AND (t.expires_at IS NULL OR t.expires_at > now()))",
+                )
+                .bind(hash)
+                .fetch_one(&pool)
+                .await
+                .expect("resolve query")
+            }
+        };
+        let seed_tok = |hash: &'static str, expires: Option<chrono::DateTime<chrono::Utc>>| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query(
+                    "INSERT INTO session_tokens (token_hash, session_id, account_id, expires_at) \
+                     VALUES ($1, $2, $3, $4)",
+                )
+                .bind(hash)
+                .bind(format!("sess-{hash}"))
+                .bind(prov)
+                .bind(expires)
+                .execute(&pool)
+                .await
+                .expect("seed token");
+            }
+        };
+
+        seed_tok("ttl-live", Some(chrono::Utc::now() + chrono::Duration::hours(1))).await;
+        seed_tok("ttl-dead", Some(chrono::Utc::now() - chrono::Duration::hours(1))).await;
+        seed_tok("ttl-null", None).await;
+
+        assert!(resolves("ttl-live").await, "unexpired token must resolve");
+        assert!(!resolves("ttl-dead").await, "expired token must NOT resolve");
+        assert!(resolves("ttl-null").await, "legacy NULL-expiry token must still resolve");
+
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
     }
 }
