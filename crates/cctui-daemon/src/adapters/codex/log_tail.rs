@@ -40,7 +40,7 @@ impl Default for LogTailConfig {
         Self {
             sessions_root: default_sessions_root(),
             poll_interval: Duration::from_secs(2),
-            quiesce: Duration::from_secs(60),
+            quiesce: Duration::from_mins(1),
             offsets_path: dirs::config_dir().map(|d| d.join("cctui").join("codex-offsets.json")),
         }
     }
@@ -512,7 +512,7 @@ mod tests {
             LogTailConfig {
                 sessions_root: sessions.clone(),
                 poll_interval: Duration::from_millis(10),
-                quiesce: Duration::from_secs(3600),
+                quiesce: Duration::from_hours(1),
                 offsets_path: None,
             },
             tx,
@@ -565,7 +565,7 @@ mod tests {
             LogTailConfig {
                 sessions_root: sessions.clone(),
                 poll_interval: Duration::from_millis(10),
-                quiesce: Duration::from_secs(3600),
+                quiesce: Duration::from_hours(1),
                 offsets_path: None,
             },
             tx,
@@ -593,7 +593,7 @@ mod tests {
             LogTailConfig {
                 sessions_root: sessions.clone(),
                 poll_interval: Duration::from_millis(10),
-                quiesce: Duration::from_secs(3600),
+                quiesce: Duration::from_hours(1),
                 offsets_path: None,
             },
             tx,
@@ -620,7 +620,7 @@ mod tests {
             LogTailConfig {
                 sessions_root: sessions.clone(),
                 poll_interval: Duration::from_millis(10),
-                quiesce: Duration::from_secs(3600),
+                quiesce: Duration::from_hours(1),
                 offsets_path: None,
             },
             tx,
@@ -653,7 +653,7 @@ mod tests {
             LogTailConfig {
                 sessions_root: sessions.clone(),
                 poll_interval: Duration::from_millis(10),
-                quiesce: Duration::from_secs(3600),
+                quiesce: Duration::from_hours(1),
                 offsets_path: None,
             },
             tx,
@@ -688,7 +688,7 @@ mod tests {
             LogTailConfig {
                 sessions_root: sessions.clone(),
                 poll_interval: Duration::from_millis(10),
-                quiesce: Duration::from_secs(3600),
+                quiesce: Duration::from_hours(1),
                 offsets_path: None,
             },
             tx,
@@ -715,7 +715,7 @@ mod tests {
             LogTailConfig {
                 sessions_root: sessions.clone(),
                 poll_interval: Duration::from_millis(10),
-                quiesce: Duration::from_secs(3600),
+                quiesce: Duration::from_hours(1),
                 offsets_path: None,
             },
             tx,
@@ -812,7 +812,7 @@ mod tests {
         let cfg = LogTailConfig {
             sessions_root: sessions.clone(),
             poll_interval: Duration::from_millis(10),
-            quiesce: Duration::from_secs(3600),
+            quiesce: Duration::from_hours(1),
             offsets_path,
         };
         let path = sessions.join("s1.jsonl");
@@ -911,7 +911,7 @@ mod tests {
             LogTailConfig {
                 sessions_root: sessions,
                 poll_interval: Duration::from_millis(10),
-                quiesce: Duration::from_secs(3600),
+                quiesce: Duration::from_hours(1),
                 offsets_path: None,
             },
             tx,

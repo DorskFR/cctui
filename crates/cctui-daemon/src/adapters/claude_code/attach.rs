@@ -69,7 +69,7 @@ const READ_STALL_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// Window over which the drain loop's bytes/min rate is computed; older byte
 /// counts are dropped so the rate reflects recent output.
-const BYTES_RATE_WINDOW: Duration = Duration::from_secs(60);
+const BYTES_RATE_WINDOW: Duration = Duration::from_mins(1);
 
 /// Minimum PTY quiet before a probe tick counts as an idle confirmation — a
 /// worker that just emitted bytes is not idle.

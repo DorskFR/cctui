@@ -333,7 +333,7 @@ mod tests {
             slice_transcript(&chain(), &extract(ForkMode::UpTo, Some("m2"), &[]), "child").unwrap();
         // header + u1 + m1 + u2 + m2
         assert_eq!(out.len(), 5);
-        assert!(message_id(out.last().unwrap()) == Some("m2"));
+        assert_eq!(message_id(out.last().unwrap()), Some("m2"));
         // header + conversation session ids rewritten
         for l in &out {
             assert_eq!(l.get("sessionId").and_then(Value::as_str), Some("child"));

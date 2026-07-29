@@ -107,7 +107,7 @@ struct CachedSessionUsage {
     usage: LangfuseSessionUsage,
 }
 
-const USAGE_TTL: Duration = Duration::from_secs(60);
+const USAGE_TTL: Duration = Duration::from_mins(1);
 
 /// Cost + `trace_count` are exact off the traces list; token classes are
 /// best-effort — only populated when the deployment carries per-trace

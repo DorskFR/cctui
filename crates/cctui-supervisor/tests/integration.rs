@@ -19,8 +19,7 @@ const fn bin() -> &'static str {
 /// Best-effort runtime detection of Landlock support via the kernel LSM list.
 fn landlock_available() -> bool {
     fs::read_to_string("/sys/kernel/security/lsm")
-        .map(|s| s.split(',').any(|l| l.trim() == "landlock"))
-        .unwrap_or(false)
+        .is_ok_and(|s| s.split(',').any(|l| l.trim() == "landlock"))
 }
 
 #[test]

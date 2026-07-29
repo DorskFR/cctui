@@ -57,7 +57,7 @@ const RPC_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// `thread/resume` of a long transcript can legitimately exceed the normal
 /// RPC deadline, so handshake requests get a longer one.
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(120);
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_mins(2);
 
 // ---------------------------------------------------------------------------
 // Pure protocol layer
@@ -3131,13 +3131,13 @@ mod tests {
         let mut table = PendingRpcs::default();
         let now = Instant::now();
         table.insert(1, "turn/start", None, now + Duration::from_secs(5));
-        table.insert(2, "turn/interrupt", Some(Uuid::new_v4()), now + Duration::from_secs(60));
+        table.insert(2, "turn/interrupt", Some(Uuid::new_v4()), now + Duration::from_mins(1));
         let expired = table.expire(now + Duration::from_secs(30));
         assert_eq!(expired.len(), 1);
         assert_eq!(expired[0].0, 1);
         assert_eq!(expired[0].1.method, "turn/start");
         assert!(!table.is_empty());
-        assert!(table.expire(now + Duration::from_secs(120)).len() == 1);
+        assert_eq!(table.expire(now + Duration::from_mins(2)).len(), 1);
         assert!(table.is_empty());
     }
 

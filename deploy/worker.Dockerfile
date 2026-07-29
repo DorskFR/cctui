@@ -31,7 +31,7 @@
 # ── Builder: compile the worker binaries ────────────────────────────────────
 # Match the runtime's glibc (bookworm-slim ships glibc 2.36) by building on the
 # bookworm-based rust image, same as deploy/Dockerfile.
-FROM rust:1.90-slim-bookworm AS builder
+FROM rust:1.97.1-slim-bookworm AS builder
 
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./

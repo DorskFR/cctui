@@ -289,8 +289,7 @@ fn render_scrollbar(frame: &mut Frame, area: Rect, offset: usize, total: usize, 
     let track_height = area.height as usize;
     let thumb_size = ((visible * track_height) / total).max(1).min(track_height);
     let max_offset = total.saturating_sub(visible);
-    let thumb_top =
-        if max_offset == 0 { 0 } else { (offset * (track_height - thumb_size)) / max_offset };
+    let thumb_top = (offset * (track_height - thumb_size)).checked_div(max_offset).unwrap_or(0);
 
     let rail_x = area.right().saturating_sub(1);
     let buf = frame.buffer_mut();

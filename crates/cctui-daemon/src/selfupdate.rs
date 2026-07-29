@@ -36,7 +36,7 @@ use crate::counters::{BandwidthCounters, Subsystem};
 
 /// Default auto-update poll cadence. Kept short so a pushed release reaches
 /// daemons within minutes; override with `CCTUI_DAEMON_AUTOUPDATE_INTERVAL_SECS`.
-pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(5 * 60);
+pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_mins(5);
 
 /// Minimum honoured interval — guards against a typo'd env hammering the server.
 const MIN_POLL_INTERVAL_SECS: u64 = 30;

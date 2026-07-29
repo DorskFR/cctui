@@ -214,7 +214,7 @@ mod tests {
         .to_string();
         let call = parse_call(&line).unwrap();
         assert_eq!(call.session_id, "parent-1");
-        assert_eq!(call.timeout, Duration::from_secs(120));
+        assert_eq!(call.timeout, Duration::from_mins(2));
         assert_eq!(call.request.adapter, "opencode");
         assert_eq!(call.request.agent_profile.as_deref(), Some("cctui-reviewer"));
         assert_eq!(call.request.budget_usd, Some(0.5));

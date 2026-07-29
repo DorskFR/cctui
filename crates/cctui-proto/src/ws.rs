@@ -84,7 +84,7 @@ pub enum DaemonFrameUp {
     /// so cross-event redundancy compresses far better than one frame
     /// at a time. The server processes `frames` in order, preserving per-event
     /// semantics. Rides inside a `Compressed`/`Chunk` envelope when large.
-    Batch { frames: Vec<DaemonFrameUp> },
+    Batch { frames: Vec<Self> },
 }
 
 /// Frames sent by the server to a daemon over `/api/v1/daemon/ws`.
@@ -677,7 +677,7 @@ mod tests {
         };
         // Deliberately shuffled so a stable ts-only sort would leave the answer
         // ahead of its own question.
-        let mut events = vec![answer, preamble, card];
+        let mut events = [answer, preamble, card];
         events.sort_by_key(super::AgentEvent::seq);
         let seqs: Vec<Option<i64>> = events.iter().map(AgentEvent::seq).collect();
         assert_eq!(seqs, vec![Some(1), Some(2), Some(3)]);

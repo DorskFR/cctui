@@ -272,7 +272,7 @@ async fn run_hook_listener(
 /// must always resolve (with a `defer` decision) before that fires. A
 /// generous-but-finite human window; on expiry the hook returns `defer` and the
 /// existing `tempo:"blocked"`/`needs` keystroke path takes over.
-const PERM_HOOK_WAIT: std::time::Duration = std::time::Duration::from_secs(300);
+const PERM_HOOK_WAIT: std::time::Duration = std::time::Duration::from_mins(5);
 
 async fn handle_hook_connection(
     stream: tokio::net::UnixStream,

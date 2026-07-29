@@ -19,7 +19,7 @@ use crate::spawn::Spawner;
 /// Backoff schedule, capped at the last entry (daemon parity).
 const BACKOFF_SECS: &[u64] = &[5, 10, 20, 60];
 const PING_INTERVAL: Duration = Duration::from_secs(20);
-const LIVENESS_TIMEOUT: Duration = Duration::from_secs(60);
+const LIVENESS_TIMEOUT: Duration = Duration::from_mins(1);
 
 pub struct Runner {
     client: ServerClient,
