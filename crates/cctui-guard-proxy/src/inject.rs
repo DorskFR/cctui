@@ -422,7 +422,6 @@ pub struct Injector {
 }
 
 impl Injector {
-    #[allow(clippy::unnecessary_wraps)]
     pub fn new(
         ca: Arc<PerPodCa>,
         secrets: Arc<SecretSource>,
@@ -435,21 +434,25 @@ impl Injector {
             .with_cert_resolver(Arc::new(SniResolver(ca)));
         server_config.alpn_protocols = vec![b"http/1.1".to_vec()];
         let acceptor = TlsAcceptor::from(Arc::new(server_config));
-        let connector = Self::build_connector(Vec::new());
+        let connector = Self::build_connector(Vec::new())?;
         Ok(Self { acceptor, connector, secrets, policy, ghapp })
     }
 
-    fn build_connector(extra_roots: Vec<CertificateDer<'static>>) -> TlsConnector {
+    fn build_connector(extra_roots: Vec<CertificateDer<'static>>) -> anyhow::Result<TlsConnector> {
         install_crypto();
         let mut roots = RootCertStore::empty();
         roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
         for cert in extra_roots {
-            let _ = roots.add(cert);
+            roots.add(cert).map_err(|e| {
+                anyhow::anyhow!(
+                    "rejecting extra trust root; refusing an incomplete trust store: {e}"
+                )
+            })?;
         }
         let mut config =
             ClientConfig::builder().with_root_certificates(roots).with_no_client_auth();
         config.alpn_protocols = vec![b"http/1.1".to_vec()];
-        TlsConnector::from(Arc::new(config))
+        Ok(TlsConnector::from(Arc::new(config)))
     }
 
     /// True if `host` (no port) is on the injection allow-list.
@@ -536,12 +539,23 @@ impl Injector {
     /// Builds the outbound request head. On a successful fetch: strip the
     /// agent's auth and substitute the real credential. On NotFound/Backend:
     /// forward the ORIGINAL head unchanged (fail-closed — never a blank secret).
+    #[allow(clippy::cognitive_complexity)]
     async fn inject_head(&self, host: &str, rule: &InjectionRule, head: &[u8]) -> Vec<u8> {
         match self.resolve_credential(rule).await {
             Ok(cred) => {
                 let cookie = match (&rule.shape, &rule.cookie_secret) {
                     (AuthShape::BearerCookie { .. }, Some(r)) => {
-                        self.secrets.fetch(r).await.ok().map(|c| c.expose().to_owned())
+                        match self.secrets.fetch(r).await {
+                            Ok(c) => Some(c.expose().to_owned()),
+                            Err(e) => {
+                                tracing::warn!(
+                                    "companion cookie fetch for {}/{host} failed; forwarding agent \
+                                 header unchanged (fail closed): {e}",
+                                    rule.service
+                                );
+                                return head.to_vec();
+                            }
+                        }
                     }
                     _ => None,
                 };
@@ -1617,7 +1631,7 @@ mod tests {
         }]);
         let mut inj = Injector::new(client_ca.clone(), secrets, policy, None).unwrap();
         // Trust the upstream's self-signed CA so the injector validates it.
-        inj.connector = Injector::build_connector(vec![up.ca.ca_der().clone()]);
+        inj.connector = Injector::build_connector(vec![up.ca.ca_der().clone()]).unwrap();
         (inj, client_ca)
     }
 
@@ -1784,7 +1798,7 @@ mod tests {
         let policy =
             InjectionPolicy::new(vec![mk(Some("/pack"), "PACK_TOKEN"), mk(None, "GENERIC_TOKEN")]);
         let mut inj = Injector::new(client_ca.clone(), secrets, policy, None).unwrap();
-        inj.connector = Injector::build_connector(vec![up.ca.ca_der().clone()]);
+        inj.connector = Injector::build_connector(vec![up.ca.ca_der().clone()]).unwrap();
         let inj = Arc::new(inj);
 
         let got =

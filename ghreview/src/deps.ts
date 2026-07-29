@@ -22,4 +22,10 @@ export interface AppDeps {
   sealer?: { seal: (plaintext: string) => string };
   validatePat?: PatValidator;
   octokitForPat?: (token: string) => OctokitRequest;
+  limits?: AccountLimits;
+}
+
+export interface AccountLimits {
+  rateLimitPerHour: number;
+  pollIntervalMs: number;
 }

@@ -502,6 +502,17 @@ pub async fn dispatch(
         (s, Json(ApiError { error: "dispatch is not permitted for this token".into() }))
     })?;
 
+    // Gated on `owner_filter()` to match registration below: an admin-token
+    // dispatch has no owning user and never registers a webhook.
+    if let (Some(_), Some(notify_url)) =
+        (ctx.owner_filter(), req.notify_url.as_deref().filter(|u| !u.trim().is_empty()))
+    {
+        crate::webhook::validate_notify_url(notify_url).await.map_err(|e| {
+            tracing::warn!(uid = %ctx.user_id, "dispatch rejected: unsafe notify_url ({e})");
+            (StatusCode::BAD_REQUEST, Json(ApiError { error: format!("invalid notify_url: {e}") }))
+        })?;
+    }
+
     let mut forwarded_payload = req.payload.clone();
     // Carry the caller's logical id as the session display name (the session id
     // itself is now a derived UUID) so the UI still shows e.g.

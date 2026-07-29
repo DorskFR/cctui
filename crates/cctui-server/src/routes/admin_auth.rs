@@ -896,6 +896,7 @@ pub async fn set_key_acls(
 /// drop its `key_acls` on hard-delete, but revoke preserves the audit row). Self
 /// or admin. Also revokes the legacy mirror rows by hash so the dual-read path
 /// stops accepting it. Cache purged so it stops working immediately.
+#[allow(clippy::cognitive_complexity)]
 pub async fn revoke_user_key(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -915,14 +916,30 @@ pub async fn revoke_user_key(
         return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "key not found".into() })));
     };
     // Revoke the legacy mirrors sharing this hash (transparency cutover).
-    let _ = sqlx::query("UPDATE user_tokens SET revoked_at = now() WHERE token_hash = $1")
+    if let Err(e) = sqlx::query("UPDATE user_tokens SET revoked_at = now() WHERE token_hash = $1")
         .bind(&hash)
         .execute(&state.pool)
-        .await;
-    let _ = sqlx::query("UPDATE machines SET revoked_at = now() WHERE key_hash = $1")
+        .await
+    {
+        tracing::error!(
+            %user_id,
+            %key_id,
+            error = %e,
+            "failed to revoke legacy user_tokens mirror — the key may still authenticate via the dual-read path"
+        );
+    }
+    if let Err(e) = sqlx::query("UPDATE machines SET revoked_at = now() WHERE key_hash = $1")
         .bind(&hash)
         .execute(&state.pool)
-        .await;
+        .await
+    {
+        tracing::error!(
+            %user_id,
+            %key_id,
+            error = %e,
+            "failed to revoke legacy machines mirror — the key may still authenticate via the dual-read path"
+        );
+    }
     state.auth_config.purge(&hash);
     tracing::info!(%user_id, %key_id, "key revoked");
     Ok(StatusCode::NO_CONTENT)

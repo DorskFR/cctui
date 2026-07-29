@@ -14,6 +14,7 @@
 	import { m } from '$lib/paraglide/messages';
 	import { escapeHtml } from '$lib/markdown';
 	import { highlightTerms } from '$lib/search';
+	import { safeHref } from '$lib/safeHref';
 	import {
 		isStaleWorking,
 		toolActivity,
@@ -475,7 +476,7 @@
 					{#each prLinks as pr (pr.href)}
 						<a
 							class="pr-link"
-							href={pr.href}
+							href={safeHref(pr.href)}
 							target="_blank"
 							rel="noopener noreferrer"
 							title={pr.href}

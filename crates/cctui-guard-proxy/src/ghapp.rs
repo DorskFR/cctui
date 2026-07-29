@@ -266,10 +266,14 @@ mod tests {
         }
     }
 
+    /// Generated at test time so no key material is committed; rcgen's aws-lc-rs
+    /// backend keeps the `rsa` crate out of the build graph (a CI guard asserts
+    /// this). Returns (PKCS#8 private PEM, SPKI public PEM).
     fn test_rsa_keypair() -> (String, String) {
-        let private_pem = include_str!("../tests/fixtures/ghapp_key.pem").to_owned();
-        let public_pem = include_str!("../tests/fixtures/ghapp_key.pub.pem").to_owned();
-        (private_pem, public_pem)
+        let key =
+            rcgen::KeyPair::generate_rsa_for(&rcgen::PKCS_RSA_SHA256, rcgen::RsaKeySize::_2048)
+                .expect("generate RSA test keypair");
+        (key.serialize_pem(), key.public_key_pem())
     }
 
     fn minter(secrets: Arc<SecretSource>, api_base: String) -> GhAppMinter {

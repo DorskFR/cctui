@@ -53,6 +53,19 @@ describe("POST /v1/webhook", () => {
     const res = await bare.request("/v1/webhook", { method: "POST", body: "{}" });
     expect(res.status).toBe(503);
   });
+
+  test("400s a malformed JSON body after a valid signature", async () => {
+    const body = "{ not json";
+    const res = await app.request("/v1/webhook", {
+      method: "POST",
+      headers: {
+        "x-hub-signature-256": signPayload(SECRET, body),
+        "x-github-event": "pull_request",
+      },
+      body,
+    });
+    expect(res.status).toBe(400);
+  });
 });
 
 describe("mergePullWebhookPayload", () => {

@@ -50,63 +50,23 @@ use cctui_proto::diagnose::{
     CodexDiagnose, DiagnoseFact, EffectiveState, GatewayStatus, SessionDiagnose,
 };
 
-/// Decide the codex launch env from a server `GatewayEnvResponse`,
-/// mirroring the claude chokepoint's `launch_env_decision`
-/// (`adapters/claude_code/control.rs`). Split out as a pure function so the
-/// fail-closed contract is unit-testable without a live server.
-///
-/// FAIL-CLOSED INVARIANT: when the session IS account-bound
-/// but the resolved gateway env is empty, refuse the launch — a codex
-/// app-server started without the gateway credential silently routes to the
-/// default upstream and 401s, the exact bug this ticket fixes.
-fn launch_env_decision(
-    local_id: &str,
-    resp: &cctui_proto::api::GatewayEnvResponse,
-    hint: &std::collections::BTreeMap<String, String>,
-) -> anyhow::Result<std::collections::BTreeMap<String, String>> {
-    match resp {
-        r if r.account_bound && r.env.is_empty() => anyhow::bail!(
-            "refusing to launch codex {local_id}: session is account-bound but the \
-             server returned no gateway env (account missing/unmintable) — launching \
-             would route to the default upstream and 401 (CCT-461/CCT-460)"
-        ),
-        // Account-bound: gateway env must win for routing; merge it OVER the
-        // pushed hint so user-supplied non-gateway env survives.
-        r if r.account_bound => {
-            let mut merged = hint.clone();
-            merged.extend(r.env.iter().map(|(k, v)| (k.clone(), v.clone())));
-            Ok(merged)
-        }
-        // Not account-bound: no gateway routing required; keep the hint.
-        _ => Ok(hint.clone()),
-    }
-}
-
-/// Pull the launch-time gateway env for `local_id` from the server's durable
-/// `sessions.account_id` binding and merge it over the carried `hint`
-/// (`spec.env`), mirroring the claude `Driver::resolve_launch_env` chokepoint.
-///
-/// Degrades to the pushed `hint` when no server is configured (tests / legacy)
-/// or the pull is unavailable (older server / transient network) — a rollout or
-/// blip falls back to the prior behavior rather than blocking the launch. The
-/// fail-closed refusal (account-bound but empty env) only fires when the
-/// authoritative pull SUCCEEDS and reports the binding.
+/// Pull + decide the codex launch env: fail-closed on a missing/partial gateway
+/// env for an account-bound session (see [`crate::adapters::gateway_env`]).
 async fn resolve_launch_env(
     server: Option<&ServerClient>,
     machine_key: Option<&String>,
     local_id: &str,
     hint: &std::collections::BTreeMap<String, String>,
 ) -> anyhow::Result<std::collections::BTreeMap<String, String>> {
-    let (Some(server), Some(mk)) = (server, machine_key) else {
-        return Ok(hint.clone());
-    };
-    match server.gateway_env(mk, local_id).await {
-        Ok(resp) => launch_env_decision(local_id, &resp, hint),
-        Err(e) => {
-            tracing::warn!(%local_id, "codex gateway-env pull failed; falling back to pushed env: {e}");
-            Ok(hint.clone())
-        }
-    }
+    crate::adapters::gateway_env::resolve_env(
+        "codex",
+        server,
+        machine_key,
+        local_id,
+        hint,
+        crate::adapters::gateway_env::OPENAI_GATEWAY_KEYS,
+    )
+    .await
 }
 
 fn uses_uds_mode(config: &serde_json::Value) -> bool {
@@ -899,85 +859,5 @@ impl AdapterFactory for CodexFactory {
     }
     fn build(&self, _config: serde_json::Value) -> Box<dyn Adapter> {
         Box::new(CodexAdapter)
-    }
-}
-
-#[cfg(test)]
-mod gateway_env_tests {
-    use cctui_proto::api::GatewayEnvResponse;
-
-    use super::launch_env_decision;
-
-    fn env_of(pairs: &[(&str, &str)]) -> std::collections::BTreeMap<String, String> {
-        pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
-    }
-
-    #[test]
-    fn merges_server_env_over_hint_when_account_bound() {
-        let hint = env_of(&[("KEEP", "1"), ("OPENAI_BASE_URL", "old")]);
-        let resp = GatewayEnvResponse {
-            account_bound: true,
-            env: env_of(&[("OPENAI_BASE_URL", "gw"), ("OPENAI_API_KEY", "tok")]),
-            ..Default::default()
-        };
-        let got = launch_env_decision("s1", &resp, &hint).unwrap();
-        assert_eq!(got.get("KEEP").map(String::as_str), Some("1"));
-        assert_eq!(got.get("OPENAI_BASE_URL").map(String::as_str), Some("gw"));
-        assert_eq!(got.get("OPENAI_API_KEY").map(String::as_str), Some("tok"));
-    }
-
-    #[test]
-    fn fails_closed_when_account_bound_but_env_empty() {
-        let resp = GatewayEnvResponse {
-            account_bound: true,
-            env: std::collections::BTreeMap::default(),
-            ..Default::default()
-        };
-        let err = launch_env_decision("s1", &resp, &env_of(&[("HINT", "1")])).unwrap_err();
-        assert!(err.to_string().contains("account-bound"));
-    }
-
-    #[test]
-    fn keeps_hint_when_not_account_bound() {
-        let resp = GatewayEnvResponse {
-            account_bound: false,
-            env: std::collections::BTreeMap::default(),
-            ..Default::default()
-        };
-        let hint = env_of(&[("HINT", "1")]);
-        assert_eq!(launch_env_decision("s1", &resp, &hint).unwrap(), hint);
-    }
-
-    // a thread rediscovered from `thread/list` after a daemon restart
-    // has an EMPTY stored env, so the resume path re-pulls with that empty env as
-    // the hint. The decision must then seed the gateway env from the server
-    // (account-bound) so the relaunch routes through the gateway instead of
-    // launching env-less and 401ing.
-    #[test]
-    fn resume_repull_seeds_gateway_env_for_rediscovered_thread() {
-        let stored_env = std::collections::BTreeMap::default();
-        let resp = GatewayEnvResponse {
-            account_bound: true,
-            env: env_of(&[("OPENAI_BASE_URL", "gw"), ("OPENAI_API_KEY", "tok")]),
-            ..Default::default()
-        };
-        let got = launch_env_decision("rediscovered", &resp, &stored_env).unwrap();
-        assert_eq!(got.get("OPENAI_BASE_URL").map(String::as_str), Some("gw"));
-        assert_eq!(got.get("OPENAI_API_KEY").map(String::as_str), Some("tok"));
-    }
-
-    // the resume re-pull is fail-closed too — a rediscovered
-    // account-bound thread whose binding yields no env must refuse to relaunch
-    // rather than cold-launch env-less.
-    #[test]
-    fn resume_repull_fails_closed_when_account_bound_but_env_empty() {
-        let stored_env = std::collections::BTreeMap::default();
-        let resp = GatewayEnvResponse {
-            account_bound: true,
-            env: std::collections::BTreeMap::default(),
-            ..Default::default()
-        };
-        let err = launch_env_decision("rediscovered", &resp, &stored_env).unwrap_err();
-        assert!(err.to_string().contains("account-bound"));
     }
 }

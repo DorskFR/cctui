@@ -23,6 +23,20 @@ const IdParam = z.object({
   id: z.string().openapi({ param: { name: "id", in: "path" }, example: "1" }),
 });
 
+const DEFAULT_LIMITS = { rateLimitPerHour: 5000, pollIntervalMs: 30_000 };
+
+function clampRateLimit<T extends number | null | undefined>(deps: AppDeps, value: T): T {
+  if (value == null) return value;
+  const max = deps.limits?.rateLimitPerHour ?? DEFAULT_LIMITS.rateLimitPerHour;
+  return Math.min(value, max) as T;
+}
+
+function clampPollInterval<T extends number | null | undefined>(deps: AppDeps, value: T): T {
+  if (value == null) return value;
+  const min = deps.limits?.pollIntervalMs ?? DEFAULT_LIMITS.pollIntervalMs;
+  return Math.max(value, min) as T;
+}
+
 const listAccounts = createRoute({
   method: "get",
   path: "/v1/accounts",
@@ -149,9 +163,9 @@ export function registerAccounts(app: OpenAPIHono, deps: AppDeps = {}) {
         userId: uid,
         login: result.login,
         encryptedPat: deps.sealer.seal(body.token),
-        pollIntervalMs: body.poll_interval_ms ?? null,
+        pollIntervalMs: clampPollInterval(deps, body.poll_interval_ms) ?? null,
         budgetCeiling: body.budget_ceiling ?? null,
-        rateLimit: body.rate_limit ?? null,
+        rateLimit: clampRateLimit(deps, body.rate_limit) ?? null,
       });
       await upsertSubscription(deps.db, result.login, "notification", null, "notification").catch(
         () => {},
@@ -207,9 +221,9 @@ export function registerAccounts(app: OpenAPIHono, deps: AppDeps = {}) {
       encryptedPat = deps.sealer.seal(body.token);
     }
     const updated = await updateGhAccount(deps.db, uid, id, {
-      pollIntervalMs: body.poll_interval_ms,
+      pollIntervalMs: clampPollInterval(deps, body.poll_interval_ms),
       budgetCeiling: body.budget_ceiling,
-      rateLimit: body.rate_limit,
+      rateLimit: clampRateLimit(deps, body.rate_limit),
       encryptedPat,
     });
     if (!updated) {

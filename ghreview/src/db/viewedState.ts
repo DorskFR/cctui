@@ -47,7 +47,7 @@ export async function listViewedState(
   userId?: string,
 ): Promise<ViewedStateItem[]> {
   const { sql } = db;
-  if (userId !== undefined && !(await accountOwnedBy(db, account, userId))) return [];
+  if (!userId || !(await accountOwnedBy(db, account, userId))) return [];
   return sql<StateRow[]>`
     SELECT ${sql.unsafe(SELECT_COLUMNS)}
     FROM viewed_state
@@ -67,7 +67,7 @@ export async function applyViewedState(
   userId?: string,
 ): Promise<ViewedStateItem[]> {
   const { sql } = db;
-  if (userId !== undefined && !(await accountOwnedBy(db, account, userId))) return [];
+  if (!userId || !(await accountOwnedBy(db, account, userId))) return [];
   const items: ViewedStateItem[] = [];
   for (const path of paths) {
     const digest = digestByPath.get(path) ?? null;

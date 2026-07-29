@@ -73,5 +73,15 @@ export function subscribeSse(client: QueryClient, onEvent?: SseListener): SseHan
     source.addEventListener(name, (e) => handle(e as MessageEvent, name));
   }
 
+  // EventSource auto-reconnects while CONNECTING; CLOSED is terminal (a rejected
+  // token or non-200), so stop rather than spin in a permanent error state. A
+  // real auth failure re-gates via the 401 path on the next request.
+  source.onerror = () => {
+    if (source.readyState === EventSource.CLOSED) {
+      source.close();
+      console.warn("gh-review: event stream closed");
+    }
+  };
+
   return { close: () => source.close() };
 }

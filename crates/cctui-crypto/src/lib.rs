@@ -110,24 +110,62 @@ fn xor_deobfuscate(ciphertext: &str, key: &[u8]) -> Option<String> {
     String::from_utf8(result).ok()
 }
 
-/// The hex-decoded vault key from `CCTUI_VAULT_KEY`. Unset or invalid hex
-/// yields an empty key (pass-through) so non-prod builds and tests don't
-/// panic; production always sets it.
+#[derive(Debug)]
+pub enum KeyError {
+    Unset,
+    InvalidHex(hex::FromHexError),
+}
+
+impl std::fmt::Display for KeyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unset => f.write_str("CCTUI_VAULT_KEY is not set (hex-encoded 32-byte key)"),
+            Self::InvalidHex(e) => write!(f, "CCTUI_VAULT_KEY is not valid hex: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for KeyError {}
+
+fn key_from_env(var: Result<String, std::env::VarError>) -> Result<Vec<u8>, KeyError> {
+    let raw = var.map_err(|_| KeyError::Unset)?;
+    hex::decode(raw).map_err(KeyError::InvalidHex)
+}
+
+/// Like [`vault_key`] but distinguishes unset from invalid hex, so a caller can
+/// fail closed instead of silently degrading to pass-through.
+pub fn vault_key_checked() -> Result<Vec<u8>, KeyError> {
+    key_from_env(std::env::var("CCTUI_VAULT_KEY"))
+}
+
+/// The hex-decoded vault key from `CCTUI_VAULT_KEY`.
+///
+/// Unset yields an empty key (pass-through) so non-prod builds and tests don't
+/// panic. Invalid hex also degrades to pass-through but is logged at `error` —
+/// prefer [`vault_key_checked`] where storing values UNENCRYPTED is unacceptable.
 #[must_use]
 pub fn vault_key() -> Vec<u8> {
-    let Ok(k) = std::env::var("CCTUI_VAULT_KEY") else {
-        return Vec::new();
-    };
-    hex::decode(&k).unwrap_or_default()
+    match vault_key_checked() {
+        Ok(key) => key,
+        Err(KeyError::Unset) => Vec::new(),
+        Err(KeyError::InvalidHex(e)) => {
+            tracing::error!(
+                "CCTUI_VAULT_KEY is set but not valid hex ({e}); falling back to pass-through — \
+                 vault values will be stored UNENCRYPTED"
+            );
+            Vec::new()
+        }
+    }
 }
 
 /// Like [`vault_key`] but panics when `CCTUI_VAULT_KEY` is unset or not valid
 /// hex — for binaries that must never fall back to pass-through.
 #[must_use]
 pub fn vault_key_required() -> Vec<u8> {
-    let k = std::env::var("CCTUI_VAULT_KEY")
-        .expect("CCTUI_VAULT_KEY must be set (hex-encoded 32-byte key)");
-    hex::decode(&k).expect("CCTUI_VAULT_KEY must be valid hex")
+    match vault_key_checked() {
+        Ok(key) => key,
+        Err(e) => panic!("{e}"),
+    }
 }
 
 #[cfg(test)]
@@ -197,5 +235,20 @@ mod tests {
         assert_eq!(decrypt("zz", KEY), None);
         assert_eq!(decrypt("v1:zz", KEY), None);
         assert_eq!(decrypt("v1:00ff", KEY), None);
+    }
+
+    #[test]
+    fn key_from_env_unset_is_error() {
+        assert!(matches!(key_from_env(Err(std::env::VarError::NotPresent)), Err(KeyError::Unset)));
+    }
+
+    #[test]
+    fn key_from_env_invalid_hex_is_error() {
+        assert!(matches!(key_from_env(Ok("nothex-zz".to_owned())), Err(KeyError::InvalidHex(_))));
+    }
+
+    #[test]
+    fn key_from_env_valid_hex_decodes() {
+        assert_eq!(key_from_env(Ok("00ff".to_owned())).unwrap(), vec![0x00, 0xff]);
     }
 }

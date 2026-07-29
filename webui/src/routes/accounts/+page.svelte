@@ -16,6 +16,7 @@
 	} from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
 	import { ghreviewUrl } from '$lib/config';
+	import { safeHref } from '$lib/safeHref';
 	import {
 		isStaticCredential,
 		providerFamily,
@@ -291,7 +292,9 @@
 				oauthAttachAccountId ?? undefined,
 			);
 			oauthNonce = r.nonce;
-			window.open(r.authorize_url, '_blank', 'noopener');
+			const authorizeUrl = safeHref(r.authorize_url);
+			if (!authorizeUrl) throw new Error(m.common_error());
+			window.open(authorizeUrl, '_blank', 'noopener');
 			if (provider === 'openai') {
 				toasts.ok(m.accounts_oauth_opened_chatgpt());
 			} else {

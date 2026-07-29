@@ -1,5 +1,7 @@
 import { browser } from '$app/environment';
 import { apiBase } from './config';
+import { clearCctuiStorage } from './drafts';
+import { clearGhreviewToken } from './ghreview';
 
 /**
  * Auth state backed by an `HttpOnly` cookie. The token is set
@@ -49,11 +51,15 @@ class Auth {
 			/* clear locally regardless of network outcome */
 		}
 		this.isAuthed = false;
+		clearGhreviewToken();
+		clearCctuiStorage();
 	}
 
 	/** Called by the API/WS layer on a 401 so the UI returns to login. */
 	markLoggedOut(): void {
 		this.isAuthed = false;
+		clearGhreviewToken();
+		clearCctuiStorage();
 	}
 }
 

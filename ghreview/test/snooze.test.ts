@@ -62,7 +62,7 @@ guarded("pr snooze store", () => {
   test("snooze hides the PR from the default list and lists it as snoozed", async () => {
     expect((await listDefault()).items.length).toBe(1);
 
-    const ok = await snoozePull(db, ACCOUNT, REF);
+    const ok = await snoozePull(db, ACCOUNT, REF, "u1");
     expect(ok).toBe(true);
     expect(await isPullSnoozed(db, ACCOUNT, REF)).toBe(true);
 
@@ -76,17 +76,17 @@ guarded("pr snooze store", () => {
   });
 
   test("un-snooze returns the PR to the default list", async () => {
-    await snoozePull(db, ACCOUNT, REF);
+    await snoozePull(db, ACCOUNT, REF, "u1");
     expect((await listDefault()).items.length).toBe(0);
 
-    const removed = await unsnoozePull(db, ACCOUNT, REF);
+    const removed = await unsnoozePull(db, ACCOUNT, REF, "u1");
     expect(removed).toBe(true);
     expect((await listDefault()).items.length).toBe(1);
     expect((await listSnoozedPulls(db, ACCOUNT)).length).toBe(0);
   });
 
   test("new activity newer than snooze auto-un-snoozes; stale activity does not", async () => {
-    await snoozePull(db, ACCOUNT, REF);
+    await snoozePull(db, ACCOUNT, REF, "u1");
 
     const stale = new Date(Date.now() - 60_000);
     expect(await clearSnoozeOnActivity(db, ACCOUNT, REF, stale)).toBe(false);

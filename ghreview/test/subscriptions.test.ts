@@ -103,6 +103,18 @@ guarded("subscription management", () => {
     expect(res.status).toBe(400);
   });
 
+  test("CCT-776: rejects owner/repo path segments like ..", async () => {
+    const app = createApp(deps());
+    for (const target of ["../..#1", "https://github.com/../../x/pull/1"]) {
+      const res = await app.request("/v1/subscriptions", {
+        method: "POST",
+        headers: A,
+        body: JSON.stringify({ target }),
+      });
+      expect(res.status).toBe(400);
+    }
+  });
+
   test("cannot subscribe under an account the caller does not own", async () => {
     const app = createApp(deps());
     const res = await app.request("/v1/subscriptions", {
@@ -136,6 +148,19 @@ guarded("subscription management", () => {
 
     const after = await app.request("/v1/subscriptions", { headers: A });
     expect(((await after.json()) as { items: unknown[] }).items.length).toBe(0);
+  });
+
+  test("CCT-775: /v1/status requires auth and scopes accounts to the caller", async () => {
+    const app = createApp({
+      db,
+      auth,
+      syncSnapshot: () => ({ last_run: null, accounts: ["alpha", "beta"] }),
+    });
+    expect((await app.request("/v1/status")).status).toBe(401);
+    const res = await app.request("/v1/status", { headers: A });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { sync: { accounts: string[] } };
+    expect(body.sync.accounts).toEqual(["alpha"]);
   });
 
   test("CCT-687: the permanent notification subscription cannot be deleted (400)", async () => {

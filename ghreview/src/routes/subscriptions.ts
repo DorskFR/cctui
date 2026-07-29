@@ -22,21 +22,30 @@ const PULL_SHORT = /^([^/\s]+)\/([^/#\s]+)#(\d+)$/;
 const REPO_URL = /^https?:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/i;
 const REPO_SHORT = /^([^/\s]+)\/([^/\s]+)$/;
 
+const OWNER_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+const REPO_RE = /^[A-Za-z0-9._-]{1,100}$/;
+
+function validSlug(owner: string, repo: string): boolean {
+  return OWNER_RE.test(owner) && REPO_RE.test(repo) && repo !== "." && repo !== "..";
+}
+
 function normalizeTarget(kind: SubscriptionKind, raw: string): string | null {
   const target = raw.trim();
   if (kind === "notification") return null;
   if (kind === "pull_request") {
-    const url = PULL_URL.exec(target);
-    if (url) return `${url[1]}/${url[2]}#${url[3]}`;
-    const short = PULL_SHORT.exec(target);
-    if (short) return `${short[1]}/${short[2]}#${short[3]}`;
-    return null;
+    const m = PULL_URL.exec(target) ?? PULL_SHORT.exec(target);
+    if (!m) return null;
+    const owner = m[1] ?? "";
+    const repo = m[2] ?? "";
+    if (!validSlug(owner, repo)) return null;
+    return `${owner}/${repo}#${m[3]}`;
   }
-  const url = REPO_URL.exec(target);
-  if (url) return `${url[1]}/${url[2]}`;
-  const short = REPO_SHORT.exec(target);
-  if (short) return `${short[1]}/${short[2]}`;
-  return null;
+  const m = REPO_URL.exec(target) ?? REPO_SHORT.exec(target);
+  if (!m) return null;
+  const owner = m[1] ?? "";
+  const repo = m[2] ?? "";
+  if (!validSlug(owner, repo)) return null;
+  return `${owner}/${repo}`;
 }
 
 const IdParam = z.object({

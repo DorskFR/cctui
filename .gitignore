@@ -1,12 +1,19 @@
 /target
-.env
+.env*
+!.env.example
 *.swp
+*.pem
+*.key
 .superpowers/
 docs/superpowers/
 .sqlx/
 /.cargo/*
 !/.cargo/audit.toml
 /.cargo-home/
+
+# Machine-local guidance and private notes (see CLAUDE.md) — never committed.
+.claude/
+.notes/
 
 # ts-rs test export artifacts (real bindings live in webui/src/lib/bindings)
 /crates/*/bindings/

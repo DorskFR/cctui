@@ -100,6 +100,9 @@ guarded("notification inbox + state", () => {
     db = createDb(DATABASE_URL as string, "ghreview");
     await db.sql.unsafe("DROP SCHEMA IF EXISTS ghreview CASCADE");
     await runMigrations(db);
+    await db.sql.unsafe(
+      "INSERT INTO gh_accounts (user_id, login, encrypted_pat) VALUES ('__local__', 'nb', 'x') ON CONFLICT (login) DO NOTHING",
+    );
   });
 
   afterAll(async () => {
@@ -158,10 +161,13 @@ guarded("notification inbox + state", () => {
     const before = await listNotificationInbox(db, { account: "nb", limit: 30 });
     expect(before.items.length).toBe(3);
 
-    const items = await applyNotificationState(db, "nb", ["t1", "t3"], {
-      done: true,
-      archived: true,
-    });
+    const items = await applyNotificationState(
+      db,
+      "nb",
+      ["t1", "t3"],
+      { done: true, archived: true },
+      "__local__",
+    );
     expect(items.length).toBe(2);
     expect(items.every((i) => i.state.done && i.state.archived)).toBe(true);
 
@@ -176,7 +182,7 @@ guarded("notification inbox + state", () => {
   });
 
   test("local state survives a payload re-sync", async () => {
-    await applyNotificationState(db, "nb", ["t2"], { done: true, read: false });
+    await applyNotificationState(db, "nb", ["t2"], { done: true, read: false }, "__local__");
     await notif("nb", "t2", "mention", "DorskFR/other", "2026-07-13T00:00:00Z", false);
     const state = await getNotificationState(db, "nb", "t2");
     expect(state?.done).toBe(true);
@@ -185,7 +191,7 @@ guarded("notification inbox + state", () => {
   test("emits a notification_state NOTIFY on mutation", async () => {
     const notices: string[] = [];
     const sub = await db.sql.listen(EVENT_CHANNEL, (p) => notices.push(p));
-    await applyNotificationState(db, "nb", ["t1"], { done: true });
+    await applyNotificationState(db, "nb", ["t1"], { done: true }, "__local__");
     await Bun.sleep(200);
     await sub.unlisten();
     const parsed = notices.map((n) => JSON.parse(n) as { kind: string; key: string });
@@ -193,7 +199,7 @@ guarded("notification inbox + state", () => {
   });
 
   test("mark-as-read pushes to GitHub and clears push_pending", async () => {
-    await applyNotificationState(db, "nb", ["t1"], { read: true });
+    await applyNotificationState(db, "nb", ["t1"], { read: true }, "__local__");
     let state = await getNotificationState(db, "nb", "t1");
     expect(state?.read).toBe(true);
     expect(state?.push_pending).toBe(true);
@@ -206,7 +212,7 @@ guarded("notification inbox + state", () => {
   });
 
   test("push failure keeps state and retries on the next drain", async () => {
-    await applyNotificationState(db, "nb", ["t3"], { read: true });
+    await applyNotificationState(db, "nb", ["t3"], { read: true }, "__local__");
     const failing = createAccount({ login: "nb", token: undefined, octokit: failingOctokit() });
     await drainPendingReads(db, failing);
     let state = await getNotificationState(db, "nb", "t3");

@@ -1,9 +1,7 @@
 import { createRoute, type OpenAPIHono, z } from "@hono/zod-openapi";
-import { getUserId } from "../auth/middleware.ts";
+import { requireOwnedAccount } from "../auth/ownership.ts";
 import { getDocument, upsertDocument } from "../db/documents.ts";
-import { accountOwnedBy } from "../db/notificationState.ts";
 import type { AppDeps } from "../deps.ts";
-import type { Account } from "../github/account.ts";
 import { addPullLabel, type Label, listRepoLabels, removePullLabel } from "../github/labels.ts";
 import {
   AccountSchema,
@@ -116,41 +114,12 @@ async function patchPullLabels(
   });
 }
 
-type AuthResult =
-  | { ok: true; acct: Account }
-  | { ok: false; code: "forbidden" | "not_found"; message: string; status: 403 | 404 };
-
-async function authAccount(
-  deps: AppDeps,
-  uid: string | undefined,
-  account: string,
-): Promise<AuthResult> {
-  if (deps.db && uid !== undefined && !(await accountOwnedBy(deps.db, account, uid))) {
-    return {
-      ok: false,
-      code: "forbidden",
-      message: `Account ${account} is not accessible`,
-      status: 403,
-    };
-  }
-  const acct = deps.accountFor?.(account);
-  if (!acct) {
-    return {
-      ok: false,
-      code: "not_found",
-      message: `Account ${account} is not managed`,
-      status: 404,
-    };
-  }
-  return { ok: true, acct };
-}
-
 export function registerLabels(app: OpenAPIHono, deps: AppDeps = {}) {
   app.openapi(listRepoLabelsRoute, async (c) => {
     const p = c.req.valid("param");
     const { account } = c.req.valid("query");
-    const auth = await authAccount(deps, getUserId(c), account);
-    if (!auth.ok) return c.json({ error: { code: auth.code, message: auth.message } }, auth.status);
+    const auth = await requireOwnedAccount(deps, c, account);
+    if (!auth.ok) return c.json(auth.body, auth.status);
     const items = await listRepoLabels(auth.acct.octokit, p.owner, p.repo);
     return c.json({ items }, 200);
   });
@@ -158,8 +127,8 @@ export function registerLabels(app: OpenAPIHono, deps: AppDeps = {}) {
   app.openapi(addLabelRoute, async (c) => {
     const p = c.req.valid("param");
     const { account, name } = c.req.valid("json");
-    const auth = await authAccount(deps, getUserId(c), account);
-    if (!auth.ok) return c.json({ error: { code: auth.code, message: auth.message } }, auth.status);
+    const auth = await requireOwnedAccount(deps, c, account);
+    if (!auth.ok) return c.json(auth.body, auth.status);
     const labels = await addPullLabel(auth.acct.octokit, p.owner, p.repo, p.number, name);
     await patchPullLabels(deps, account, p.owner, p.repo, p.number, labels);
     return c.json({ labels }, 200);
@@ -168,8 +137,8 @@ export function registerLabels(app: OpenAPIHono, deps: AppDeps = {}) {
   app.openapi(removeLabelRoute, async (c) => {
     const p = c.req.valid("param");
     const { account } = c.req.valid("query");
-    const auth = await authAccount(deps, getUserId(c), account);
-    if (!auth.ok) return c.json({ error: { code: auth.code, message: auth.message } }, auth.status);
+    const auth = await requireOwnedAccount(deps, c, account);
+    if (!auth.ok) return c.json(auth.body, auth.status);
     const labels = await removePullLabel(auth.acct.octokit, p.owner, p.repo, p.number, p.name);
     await patchPullLabels(deps, account, p.owner, p.repo, p.number, labels);
     return c.json({ labels }, 200);

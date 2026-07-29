@@ -19,44 +19,23 @@ pub const ADAPTER_ID: &str = "opencode";
 /// Dispatch-payload env key naming the opencode agent profile to run under.
 pub const AGENT_ENV: &str = "CCTUI_OPENCODE_AGENT";
 
-/// FAIL-CLOSED: an account-bound session whose gateway env came back empty must
-/// not launch — opencode would fall back to whatever `FIREWORKS_API_KEY` the pod
-/// happens to carry (or none) instead of the account's minted token.
-fn launch_env_decision(
-    local_id: &str,
-    resp: &cctui_proto::api::GatewayEnvResponse,
-    hint: &std::collections::BTreeMap<String, String>,
-) -> anyhow::Result<std::collections::BTreeMap<String, String>> {
-    match resp {
-        r if r.account_bound && r.env.is_empty() => anyhow::bail!(
-            "refusing to launch opencode {local_id}: session is account-bound but the server \
-             returned no gateway env (account missing/unmintable)"
-        ),
-        r if r.account_bound => {
-            let mut merged = hint.clone();
-            merged.extend(r.env.iter().map(|(k, v)| (k.clone(), v.clone())));
-            Ok(merged)
-        }
-        _ => Ok(hint.clone()),
-    }
-}
-
+/// Pull + decide the opencode launch env: fail-closed on a missing/partial
+/// gateway env for an account-bound session (see [`crate::adapters::gateway_env`]).
 async fn resolve_launch_env(
     server: Option<&ServerClient>,
     machine_key: Option<&String>,
     local_id: &str,
     hint: &std::collections::BTreeMap<String, String>,
 ) -> anyhow::Result<std::collections::BTreeMap<String, String>> {
-    let (Some(server), Some(mk)) = (server, machine_key) else {
-        return Ok(hint.clone());
-    };
-    match server.gateway_env(mk, local_id).await {
-        Ok(resp) => launch_env_decision(local_id, &resp, hint),
-        Err(err) => {
-            tracing::warn!(%local_id, "opencode gateway-env pull failed; using pushed env: {err}");
-            Ok(hint.clone())
-        }
-    }
+    crate::adapters::gateway_env::resolve_env(
+        "opencode",
+        server,
+        machine_key,
+        local_id,
+        hint,
+        crate::adapters::gateway_env::FIREWORKS_GATEWAY_KEYS,
+    )
+    .await
 }
 
 pub struct OpenCodeAdapter;
@@ -351,40 +330,10 @@ impl AdapterFactory for OpenCodeFactory {
 
 #[cfg(test)]
 mod tests {
-    use cctui_proto::api::GatewayEnvResponse;
-
     use super::*;
 
     fn env_of(pairs: &[(&str, &str)]) -> std::collections::BTreeMap<String, String> {
         pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
-    }
-
-    #[test]
-    fn gateway_env_wins_over_the_pushed_hint() {
-        let hint = env_of(&[("KEEP", "1"), ("FIREWORKS_BASE_URL", "old")]);
-        let resp = GatewayEnvResponse {
-            account_bound: true,
-            env: env_of(&[("FIREWORKS_BASE_URL", "gw"), ("FIREWORKS_API_KEY", "tok")]),
-            ..Default::default()
-        };
-        let got = launch_env_decision("ses_1", &resp, &hint).unwrap();
-        assert_eq!(got.get("KEEP").map(String::as_str), Some("1"));
-        assert_eq!(got.get("FIREWORKS_BASE_URL").map(String::as_str), Some("gw"));
-        assert_eq!(got.get("FIREWORKS_API_KEY").map(String::as_str), Some("tok"));
-    }
-
-    #[test]
-    fn account_bound_without_env_fails_closed() {
-        let resp = GatewayEnvResponse { account_bound: true, ..Default::default() };
-        let err = launch_env_decision("ses_1", &resp, &env_of(&[("HINT", "1")])).unwrap_err();
-        assert!(err.to_string().contains("account-bound"));
-    }
-
-    #[test]
-    fn unbound_sessions_keep_the_hint() {
-        let resp = GatewayEnvResponse { account_bound: false, ..Default::default() };
-        let hint = env_of(&[("HINT", "1")]);
-        assert_eq!(launch_env_decision("ses_1", &resp, &hint).unwrap(), hint);
     }
 
     fn spec_with_env(env: &[(&str, &str)]) -> cctui_proto::adapter::SessionSpec {

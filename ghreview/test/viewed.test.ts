@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { createApp } from "../src/app.ts";
+import { createStaticResolver, parseStaticTokens } from "../src/auth/resolver.ts";
 import { createDb, type DbHandle } from "../src/db/client.ts";
 import { upsertDocument } from "../src/db/documents.ts";
 import { runMigrations } from "../src/db/migrate.ts";
@@ -135,8 +136,8 @@ guarded("viewed state store", () => {
 
   test("set + read back viewed state", async () => {
     const digest = new Map([["src/a.ts", "sha-a"]]);
-    await applyViewedState(db, "vb", REF, ["src/a.ts"], true, digest);
-    const items = await listViewedState(db, "vb", REF);
+    await applyViewedState(db, "vb", REF, ["src/a.ts"], true, digest, "u1");
+    const items = await listViewedState(db, "vb", REF, "u1");
     expect(items.length).toBe(1);
     const item = items[0] as (typeof items)[number];
     expect(item).toMatchObject({ path: "src/a.ts", viewed: true, push_pending: true });
@@ -144,7 +145,7 @@ guarded("viewed state store", () => {
   });
 
   test("ownership: a foreign user sees nothing and cannot mutate", async () => {
-    await applyViewedState(db, "vb", REF, ["src/a.ts"], true);
+    await applyViewedState(db, "vb", REF, ["src/a.ts"], true, new Map(), "u1");
     expect((await listViewedState(db, "vb", REF, "intruder")).length).toBe(0);
     const wrote = await applyViewedState(db, "vb", REF, ["src/b.ts"], true, new Map(), "intruder");
     expect(wrote.length).toBe(0);
@@ -164,6 +165,7 @@ guarded("viewed state store", () => {
           { filename: "src/b.ts", sha: "sha-b" },
         ],
       }),
+      "u1",
     );
     const cleared = await invalidateChangedViewed(
       db,
@@ -175,7 +177,7 @@ guarded("viewed state store", () => {
       ]),
     );
     expect(cleared).toEqual(["src/b.ts"]);
-    const items = await listViewedState(db, "vb", REF);
+    const items = await listViewedState(db, "vb", REF, "u1");
     const byPath = Object.fromEntries(items.map((i) => [i.path, i.viewed]));
     expect(byPath["src/a.ts"]).toBe(true);
     expect(byPath["src/b.ts"]).toBe(false);
@@ -184,7 +186,7 @@ guarded("viewed state store", () => {
   test("github pull-in sets viewed without owing a push", async () => {
     const changed = await applyGithubViewedState(db, "vb", REF, new Map([["src/a.ts", true]]));
     expect(changed).toEqual(["src/a.ts"]);
-    const row = (await listViewedState(db, "vb", REF))[0];
+    const row = (await listViewedState(db, "vb", REF, "u1"))[0];
     expect(row).toMatchObject({ viewed: true, push_pending: false });
   });
 
@@ -199,19 +201,19 @@ guarded("viewed state store", () => {
       ]),
     );
     expect(changed).toEqual([]);
-    expect((await listViewedState(db, "vb", REF)).length).toBe(0);
+    expect((await listViewedState(db, "vb", REF, "u1")).length).toBe(0);
   });
 
   test("github pull-in does not clobber a local change still owed a push", async () => {
-    await applyViewedState(db, "vb", REF, ["src/a.ts"], true);
+    await applyViewedState(db, "vb", REF, ["src/a.ts"], true, new Map(), "u1");
     const changed = await applyGithubViewedState(db, "vb", REF, new Map([["src/a.ts", false]]));
     expect(changed).toEqual([]);
-    const row = (await listViewedState(db, "vb", REF))[0];
+    const row = (await listViewedState(db, "vb", REF, "u1"))[0];
     expect(row?.viewed).toBe(true);
   });
 
   test("drain pushes pending viewed changes, retries on failure", async () => {
-    await applyViewedState(db, "vb", REF, ["src/a.ts"], true);
+    await applyViewedState(db, "vb", REF, ["src/a.ts"], true, new Map(), "u1");
 
     const failing = createAccount({
       login: "vb",
@@ -223,7 +225,7 @@ guarded("viewed state store", () => {
       }),
     });
     await drainPendingViewed(db, failing);
-    let row = (await listViewedState(db, "vb", REF))[0];
+    let row = (await listViewedState(db, "vb", REF, "u1"))[0];
     expect(row?.push_pending).toBe(true);
     expect(row?.last_error).toContain("nope");
 
@@ -239,17 +241,18 @@ guarded("viewed state store", () => {
       }),
     });
     await drainPendingViewed(db, succeeding);
-    row = (await listViewedState(db, "vb", REF))[0];
+    row = (await listViewedState(db, "vb", REF, "u1"))[0];
     expect(row?.push_pending).toBe(false);
     expect(row?.last_error).toBeNull();
     expect(seen).toEqual([{ id: "PR_NODE_1", path: "src/a.ts" }]);
   });
 
   test("PUT route marks a folder's files and records digests", async () => {
-    const app = createApp({ db, authDisabled: true });
+    const auth = createStaticResolver(parseStaticTokens("tokU1:u1"));
+    const app = createApp({ db, auth });
     const res = await app.request(`/v1/repos/${REF.owner}/${REF.repo}/pulls/${REF.number}/viewed`, {
       method: "PUT",
-      headers: { "content-type": "application/json" },
+      headers: { authorization: "Bearer tokU1", "content-type": "application/json" },
       body: JSON.stringify({ account: "vb", paths: ["src/a.ts", "src/b.ts"], viewed: true }),
     });
     expect(res.status).toBe(200);

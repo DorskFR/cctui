@@ -112,6 +112,7 @@ export function registerViewed(app: OpenAPIHono, deps: AppDeps = {}) {
       body.account,
       "pull_request",
       `${owner}/${repo}#${number}`,
+      { userId },
     );
     const digestByPath = digestPullFiles(doc?.payload);
     const items = await applyViewedState(

@@ -1,6 +1,5 @@
 import { createRoute, type OpenAPIHono, z } from "@hono/zod-openapi";
-import { getUserId } from "../auth/middleware.ts";
-import { accountOwnedBy } from "../db/notificationState.ts";
+import { requireOwnedAccount } from "../auth/ownership.ts";
 import type { AppDeps } from "../deps.ts";
 import type { Account } from "../github/account.ts";
 import { ActivityListSchema, ErrorSchema } from "../schemas.ts";
@@ -201,21 +200,9 @@ export function registerActivity(app: OpenAPIHono, deps: AppDeps = {}) {
   app.openapi(getActivityRoute, async (c) => {
     const p = c.req.valid("param");
     const { account } = c.req.valid("query");
-    const uid = getUserId(c);
-    if (deps.db && uid !== undefined && !(await accountOwnedBy(deps.db, account, uid))) {
-      return c.json(
-        { error: { code: "forbidden", message: `Account ${account} is not accessible` } },
-        403,
-      );
-    }
-    const acct = deps.accountFor?.(account);
-    if (!acct) {
-      return c.json(
-        { error: { code: "not_found", message: `Account ${account} is not managed` } },
-        404,
-      );
-    }
-    const items = await fetchTimeline(acct.octokit, p);
+    const auth = await requireOwnedAccount(deps, c, account);
+    if (!auth.ok) return c.json(auth.body, auth.status);
+    const items = await fetchTimeline(auth.acct.octokit, p);
     return c.json({ items }, 200);
   });
 }

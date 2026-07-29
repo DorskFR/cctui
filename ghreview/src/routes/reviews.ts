@@ -1,7 +1,7 @@
 import { createRoute, type OpenAPIHono, z } from "@hono/zod-openapi";
 import { getUserId } from "../auth/middleware.ts";
+import { requireOwnedAccount } from "../auth/ownership.ts";
 import { getDocument } from "../db/documents.ts";
-import { accountOwnedBy } from "../db/notificationState.ts";
 import {
   addDraftComment,
   clearDraft,
@@ -61,9 +61,14 @@ function pullKey(ref: PullRef): string {
   return `${ref.owner}/${ref.repo}#${ref.number}`;
 }
 
-async function storedHeadSha(deps: AppDeps, account: string, ref: PullRef): Promise<string | null> {
+async function storedHeadSha(
+  deps: AppDeps,
+  userId: string,
+  account: string,
+  ref: PullRef,
+): Promise<string | null> {
   if (!deps.db) return null;
-  const doc = await getDocument(deps.db, account, "pull_request", pullKey(ref));
+  const doc = await getDocument(deps.db, account, "pull_request", pullKey(ref), { userId });
   const payload = doc?.payload as { head?: { sha?: string } } | undefined;
   return payload?.head?.sha ?? null;
 }
@@ -287,7 +292,7 @@ export function registerReviews(app: OpenAPIHono, deps: AppDeps = {}) {
       uid,
       body.account,
       refOf(p),
-      await storedHeadSha(deps, body.account, refOf(p)),
+      await storedHeadSha(deps, uid, body.account, refOf(p)),
     );
     const draft = await updateDraftMeta(deps.db, uid, body.account, refOf(p), {
       verdict: body.verdict,
@@ -303,7 +308,7 @@ export function registerReviews(app: OpenAPIHono, deps: AppDeps = {}) {
     const p = c.req.valid("param");
     const body = c.req.valid("json");
     const ref = refOf(p);
-    const headSha = body.head_sha ?? (await storedHeadSha(deps, body.account, ref));
+    const headSha = body.head_sha ?? (await storedHeadSha(deps, uid, body.account, ref));
     const draft = await addDraftComment(deps.db, uid, body.account, ref, headSha, {
       path: body.path,
       side: body.side,
@@ -435,19 +440,9 @@ export function registerReviews(app: OpenAPIHono, deps: AppDeps = {}) {
   app.openapi(listThreadsRoute, async (c) => {
     const p = c.req.valid("param");
     const { account } = c.req.valid("query");
-    const uid = getUserId(c);
-    if (deps.db && uid !== undefined && !(await accountOwnedBy(deps.db, account, uid))) {
-      return c.json(
-        { error: { code: "forbidden", message: `Account ${account} is not accessible` } },
-        403,
-      );
-    }
-    const acct = deps.accountFor?.(account);
-    if (!acct)
-      return c.json(
-        { error: { code: "not_found", message: `Account ${account} is not managed` } },
-        404,
-      );
+    const auth = await requireOwnedAccount(deps, c, account);
+    if (!auth.ok) return c.json(auth.body, auth.status);
+    const acct = auth.acct;
     const ref = refOf(p);
     const items: {
       id: number;

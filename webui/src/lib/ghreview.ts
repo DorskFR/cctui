@@ -4,13 +4,12 @@ import type { MintKeyResponse } from '@bindings/MintKeyResponse';
 import { api } from './api';
 import { ghreviewUrl } from './config';
 
-// The cctui session rides an HttpOnly cookie that JS cannot read, and
-// gh-review is a separate origin, so the cookie can't authenticate it. Instead
-// we mint a scoped bearer for the current user and cache it — one key per
-// browser, renewed near expiry, so a Review open is not a fresh mint every time.
 const CACHE_KEY = 'cctui:ghreview-token';
-const TTL_MS = 30 * 24 * 60 * 60 * 1000;
-const RENEW_MS = 24 * 60 * 60 * 1000;
+// gh-review consults no cctui scope (only maps the bearer to a user), so grant
+// the floor `read`: a leaked token can then do nothing else on the cctui API.
+const GHREVIEW_SCOPES = ['read'];
+const TTL_MS = 60 * 60 * 1000;
+const RENEW_MS = 15 * 60 * 1000;
 
 interface Cached {
 	token: string;
@@ -20,7 +19,7 @@ interface Cached {
 
 function readCache(): Cached | null {
 	try {
-		const raw = localStorage.getItem(CACHE_KEY);
+		const raw = sessionStorage.getItem(CACHE_KEY);
 		if (!raw) return null;
 		const c = JSON.parse(raw) as Cached;
 		if (typeof c.token !== 'string' || typeof c.expiresAt !== 'number') return null;
@@ -42,13 +41,16 @@ export async function ensureGhreviewToken(): Promise<string> {
 	const expiresAt = Date.now() + TTL_MS;
 	const body: MintKeyRequest = {
 		label: 'gh-review (embedded review center)',
-		scopes: me.scopes,
+		scopes: GHREVIEW_SCOPES,
 		expires_at: new Date(expiresAt).toISOString()
 	};
 	const res = await api.post<MintKeyResponse>(`/users/${me.user_id}/keys`, body);
 
 	try {
-		localStorage.setItem(CACHE_KEY, JSON.stringify({ token: res.key, expiresAt, userId: me.user_id }));
+		sessionStorage.setItem(
+			CACHE_KEY,
+			JSON.stringify({ token: res.key, expiresAt, userId: me.user_id })
+		);
 	} catch {
 		void 0;
 	}
@@ -57,6 +59,7 @@ export async function ensureGhreviewToken(): Promise<string> {
 
 export function clearGhreviewToken(): void {
 	try {
+		sessionStorage.removeItem(CACHE_KEY);
 		localStorage.removeItem(CACHE_KEY);
 	} catch {
 		void 0;

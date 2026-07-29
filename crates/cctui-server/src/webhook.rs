@@ -29,6 +29,9 @@
 //! per-target `secret` is registered, the body is signed HMAC-SHA256 and the
 //! hex digest is sent in `X-CCTUI-Signature: sha256=<hex>`.
 
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::sync::OnceLock;
+
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
@@ -50,6 +53,100 @@ const MAX_ATTEMPTS: i32 = 8;
 /// last entry for any attempt beyond the table.
 const BACKOFF_SECS: &[i64] = &[10, 30, 120, 300, 900, 1800, 3600];
 
+#[derive(Debug)]
+pub enum NotifyUrlError {
+    Malformed,
+    NotHttps,
+    NoHost,
+    Unresolvable,
+    Internal,
+}
+
+impl std::fmt::Display for NotifyUrlError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Malformed => "must be a valid absolute URL",
+            Self::NotHttps => "must use the https scheme",
+            Self::NoHost => "must include a host",
+            Self::Unresolvable => "host does not resolve",
+            Self::Internal => "resolves to a private or loopback address",
+        })
+    }
+}
+
+fn ipv4_is_internal(ip: Ipv4Addr) -> bool {
+    let [a, b, ..] = ip.octets();
+    ip.is_loopback()
+        || ip.is_private()
+        || ip.is_link_local()
+        || ip.is_unspecified()
+        || ip.is_broadcast()
+        // CGNAT 100.64.0.0/10; `Ipv4Addr::is_shared` is still unstable.
+        || (a == 100 && (64..=127).contains(&b))
+}
+
+fn ipv6_is_internal(ip: Ipv6Addr) -> bool {
+    if ip.is_loopback() || ip.is_unspecified() {
+        return true;
+    }
+    // `to_ipv4` also maps `::`/`::1`, but those return above, so any remaining
+    // embedded IPv4 (v4-mapped or deprecated v4-compatible) is a real target.
+    if let Some(v4) = ip.to_ipv4() {
+        return ipv4_is_internal(v4);
+    }
+    let seg0 = ip.segments()[0];
+    (seg0 & 0xfe00) == 0xfc00 || (seg0 & 0xffc0) == 0xfe80
+}
+
+fn ip_is_internal(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => ipv4_is_internal(v4),
+        IpAddr::V6(v6) => ipv6_is_internal(v6),
+    }
+}
+
+/// Fail-closed SSRF guard: requires `https` and refuses a host that resolves to
+/// an internal address or does not resolve. DNS rebinding at delivery is out of
+/// scope — pinning the resolved IP is left for a follow-up.
+pub async fn validate_notify_url(raw: &str) -> Result<(), NotifyUrlError> {
+    let url = reqwest::Url::parse(raw).map_err(|_| NotifyUrlError::Malformed)?;
+    if url.scheme() != "https" {
+        return Err(NotifyUrlError::NotHttps);
+    }
+    let host = url.host_str().ok_or(NotifyUrlError::NoHost)?;
+    let bare = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(host);
+    if let Ok(ip) = bare.parse::<IpAddr>() {
+        return if ip_is_internal(ip) { Err(NotifyUrlError::Internal) } else { Ok(()) };
+    }
+    let port = url.port_or_known_default().unwrap_or(443);
+    let mut addrs = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|_| NotifyUrlError::Unresolvable)?
+        .peekable();
+    if addrs.peek().is_none() {
+        return Err(NotifyUrlError::Unresolvable);
+    }
+    for addr in addrs {
+        if ip_is_internal(addr.ip()) {
+            return Err(NotifyUrlError::Internal);
+        }
+    }
+    Ok(())
+}
+
+/// Redirects are disabled so a target can't 3xx-bounce the POST onto an internal
+/// address the registration check vetted; the shared gateway client follows
+/// redirects, so it is not reused here.
+fn delivery_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("build webhook delivery client")
+    })
+}
+
 /// Register a pending completion webhook for a dispatched session.
 /// No-op when `notify_url` is absent. Idempotent on the `session_id` unique
 /// constraint, so a re-dispatch with the same id refreshes the target rather
@@ -59,6 +156,7 @@ const BACKOFF_SECS: &[i64] = &[10, 30, 120, 300, 900, 1800, 3600];
 /// Best-effort: a failure here is logged and swallowed — it must never block an
 /// otherwise-valid dispatch (the `REPLY_URL` trap still covers completion during
 /// migration).
+#[allow(clippy::cognitive_complexity)]
 pub async fn register(
     state: &AppState,
     session_id: &str,
@@ -67,6 +165,10 @@ pub async fn register(
     notify_secret: Option<&str>,
     task_id: &str,
 ) {
+    if let Err(reason) = validate_notify_url(notify_url).await {
+        tracing::warn!(%session_id, "refusing completion webhook with unsafe notify_url: {reason}");
+        return;
+    }
     let res = sqlx::query(
         "INSERT INTO session_webhooks (session_id, user_id, notify_url, secret, task_id) \
          VALUES ($1, $2, $3, $4, $5) \
@@ -291,7 +393,7 @@ async fn deliver(
 ) {
     let body = serde_json::to_vec(payload).unwrap_or_default();
     let mut req =
-        state.http_client.post(url).header("content-type", "application/json").body(body.clone());
+        delivery_client().post(url).header("content-type", "application/json").body(body.clone());
     if let Some(secret) = secret {
         req = req.header("X-CCTUI-Signature", format!("sha256={}", sign(secret, &body)));
     }
@@ -361,7 +463,67 @@ async fn schedule_retry(state: &AppState, id: uuid::Uuid, attempts: i32, err: &s
 
 #[cfg(test)]
 mod tests {
-    use super::{build_payload, sign};
+    use super::{NotifyUrlError, build_payload, ip_is_internal, sign, validate_notify_url};
+
+    #[test]
+    fn ip_classifier_flags_internal_and_passes_public() {
+        for ip in [
+            "127.0.0.1",
+            "10.1.2.3",
+            "172.31.0.1",
+            "192.168.0.1",
+            "169.254.169.254",
+            "100.64.0.1",
+            "0.0.0.0",
+            "255.255.255.255",
+            "::1",
+            "fe80::1",
+            "fc00::1",
+            "::ffff:169.254.169.254",
+        ] {
+            assert!(ip_is_internal(ip.parse().unwrap()), "{ip} must be internal");
+        }
+        for ip in ["1.1.1.1", "8.8.8.8", "93.184.216.34", "2606:4700:4700::1111"] {
+            assert!(!ip_is_internal(ip.parse().unwrap()), "{ip} must be public");
+        }
+    }
+
+    #[tokio::test]
+    async fn notify_url_accepts_public_https() {
+        validate_notify_url("https://1.1.1.1/hook").await.unwrap();
+        validate_notify_url("https://93.184.216.34:8443/cb").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn notify_url_rejects_non_https() {
+        assert!(matches!(
+            validate_notify_url("http://1.1.1.1/hook").await,
+            Err(NotifyUrlError::NotHttps)
+        ));
+        assert!(matches!(
+            validate_notify_url("file:///etc/passwd").await,
+            Err(NotifyUrlError::NotHttps)
+        ));
+        assert!(matches!(validate_notify_url("not a url").await, Err(NotifyUrlError::Malformed)));
+    }
+
+    #[tokio::test]
+    async fn notify_url_rejects_internal_targets() {
+        for u in [
+            "https://127.0.0.1/x",
+            "https://127.0.0.1:8080/x",
+            "https://10.0.0.5/x",
+            "https://172.16.9.9/x",
+            "https://192.168.1.1/x",
+            "https://100.64.0.1/x",
+            "https://169.254.169.254/latest/meta-data/",
+            "https://0.0.0.0/x",
+            "https://[::1]/x",
+            "https://[::ffff:169.254.169.254]/",
+        ] {
+            assert!(matches!(validate_notify_url(u).await, Err(NotifyUrlError::Internal)), "{u}");
+        }
+    }
 
     #[test]
     fn death_payload_is_always_failed_with_reason() {
