@@ -1,0 +1,4 @@
+[advisories]
+# rsa: lockfile-only, an optional dep of sqlx-mysql behind a feature we never
+# enable. CI re-checks it stays out of the build graph.
+ignore = ["RUSTSEC-2023-0071"]

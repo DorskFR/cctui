@@ -267,13 +267,8 @@ mod tests {
     }
 
     fn test_rsa_keypair() -> (String, String) {
-        use rsa::RsaPrivateKey;
-        use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey, LineEnding};
-
-        let mut rng = rand::thread_rng();
-        let key = RsaPrivateKey::new(&mut rng, 2048).unwrap();
-        let private_pem = key.to_pkcs8_pem(LineEnding::LF).unwrap().to_string();
-        let public_pem = key.to_public_key().to_public_key_pem(LineEnding::LF).unwrap();
+        let private_pem = include_str!("../tests/fixtures/ghapp_key.pem").to_owned();
+        let public_pem = include_str!("../tests/fixtures/ghapp_key.pub.pem").to_owned();
         (private_pem, public_pem)
     }
 
