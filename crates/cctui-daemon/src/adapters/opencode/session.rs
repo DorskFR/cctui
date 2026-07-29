@@ -367,7 +367,10 @@ impl OpenCodeSession {
                 meta: SessionMeta {
                     working_dir,
                     parent_local_id,
-                    extra: serde_json::json!({ "harness": "opencode" }),
+                    extra: serde_json::json!({
+                        "harness": "opencode",
+                        "spawn_key": self.params.key,
+                    }),
                 },
             })
             .await;

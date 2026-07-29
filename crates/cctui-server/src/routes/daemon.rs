@@ -830,6 +830,10 @@ async fn handle_event(
             let working_dir = meta.working_dir.clone();
             let observed_at = meta.extra.get("observed_at").and_then(serde_json::Value::as_i64);
             let extra = (!meta.extra.is_null()).then(|| meta.extra.clone());
+            if let Some(spawn_key) = meta.extra.get("spawn_key").and_then(serde_json::Value::as_str)
+            {
+                crate::routes::gateway::rebind_spawn_key(state, spawn_key, &local_id).await;
+            }
             upsert_session(
                 state,
                 machine_id,
