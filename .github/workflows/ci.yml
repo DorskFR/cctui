@@ -115,9 +115,8 @@ jobs:
         run: bun run build
 
   audit:
-    name: audit (non-blocking)
+    name: audit
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -130,6 +129,13 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-audit
+
+      - name: Ignored advisories are still unreachable
+        run: |
+          if cargo tree --workspace --all-features --target all -i rsa 2>/dev/null | grep -q '^rsa v'; then
+            echo "rsa is in the build graph; drop the RUSTSEC-2023-0071 ignore in .cargo/audit.toml" >&2
+            exit 1
+          fi
 
       - name: cargo audit
         run: cargo audit

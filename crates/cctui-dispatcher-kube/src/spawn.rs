@@ -650,7 +650,7 @@ impl Spawner {
             if status.phase.as_deref() == Some("Pending")
                 && let Some(created) = pod.metadata.creation_timestamp.as_ref()
             {
-                let age = chrono::Utc::now().signed_duration_since(created.0).num_seconds();
+                let age = k8s_openapi::jiff::Timestamp::now().duration_since(created.0).as_secs();
                 if age >= PENDING_FAILURE_SECS {
                     return Some(format!("pod pending for {age}s (unschedulable?)"));
                 }

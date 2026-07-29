@@ -30,7 +30,6 @@ clap = { version = "4", features = ["derive", "env"] }
 toml = "0.8"
 dirs = "5"
 rustix = { version = "0.38", features = ["process", "fs"] }
-notify = "6"
 sha2 = "0.10"
 hex.workspace = true
 base64.workspace = true

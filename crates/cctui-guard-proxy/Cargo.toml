@@ -31,7 +31,6 @@ aws-sigv4.workspace = true
 aws-credential-types.workspace = true
 clap = { version = "4", features = ["derive", "env"] }
 nix = { version = "0.31", default-features = false, features = ["net"] }
-libc = "0.2"
 rcgen = { version = "0.14.8", default-features = false, features = ["pem", "aws_lc_rs"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs", "tls12"] }
 webpki-roots = "1"
@@ -42,5 +41,3 @@ rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", 
 tempfile = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
-rsa = { version = "0.9", features = ["pem"] }
-rand = "0.8"

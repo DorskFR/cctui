@@ -4,7 +4,8 @@
 .superpowers/
 docs/superpowers/
 .sqlx/
-/.cargo/
+/.cargo/*
+!/.cargo/audit.toml
 /.cargo-home/
 
 # ts-rs test export artifacts (real bindings live in webui/src/lib/bindings)
