@@ -110,6 +110,14 @@ fn fireworks_upstream() -> String {
         .unwrap_or_else(|_| "https://api.fireworks.ai/inference/v1".into())
 }
 
+/// Whether the response body must be teed, which forces the upstream call to be
+/// made without `accept-encoding`. reqwest is built without decompression
+/// features, so a gzip/zstd body reaches the tee as opaque bytes: Langfuse gets a
+/// trace with no usage, and Fireworks gets no metered usage at all.
+const fn tees_response(langfuse: bool, fireworks: bool) -> bool {
+    langfuse || fireworks
+}
+
 /// Per-provider request-shaping settings for the `fireworks` family, resolved
 /// over [`fireworks_default_settings`]. Applied by the gateway on the way
 /// upstream so no worker needs to know them (and none can bypass them).
@@ -123,6 +131,11 @@ pub struct FireworksSettings {
     pub session_affinity: bool,
     /// Extra body keys merged in, none overriding what the client sent.
     pub extra_body: serde_json::Map<String, serde_json::Value>,
+    /// Name of cctui's own API key as it appears in Fireworks' billing console.
+    /// A Fireworks account is shared across keys and tenants, so without this
+    /// there is no way to tell cctui's spend from anyone else's — unset disables
+    /// billing reconciliation rather than importing the whole account's usage.
+    pub billing_api_key_name: Option<String>,
 }
 
 /// Defaults for a new `fireworks` provider row. Stored as data on the row at
@@ -132,6 +145,7 @@ pub fn fireworks_default_settings() -> serde_json::Value {
         "context_length_exceeded_behavior": "error",
         "session_affinity": true,
         "extra_body": {},
+        "billing_api_key_name": null,
     })
 }
 
@@ -158,6 +172,12 @@ impl FireworksSettings {
                 .and_then(serde_json::Value::as_object)
                 .cloned()
                 .unwrap_or_default(),
+            billing_api_key_name: merged
+                .get("billing_api_key_name")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned),
         }
     }
 
@@ -784,6 +804,31 @@ pub async fn revoke_session_tokens(state: &AppState, session_id: &str) {
     .bind(session_id)
     .execute(&state.pool)
     .await;
+}
+
+fn needs_rebind(spawn_key: &str, session_id: &str) -> bool {
+    !spawn_key.is_empty() && !session_id.is_empty() && spawn_key != session_id
+}
+
+/// Re-key a session's gateway token, and anything already metered under it, from
+/// the spawn key onto the id the harness registered under. An adapter whose
+/// harness names its own session (opencode returns `ses_…`) pulls gateway env
+/// under the spawn key, binding the token to an id no later lookup uses. Adapters
+/// whose local id IS the spawn key pass equal ids and no-op.
+pub async fn rebind_spawn_key(state: &AppState, spawn_key: &str, session_id: &str) {
+    if !needs_rebind(spawn_key, session_id) {
+        return;
+    }
+    for sql in [
+        "UPDATE session_tokens SET session_id = $2 WHERE session_id = $1",
+        "UPDATE session_token_usage SET session_id = $2 WHERE session_id = $1",
+    ] {
+        if let Err(e) = sqlx::query(sql).bind(spawn_key).bind(session_id).execute(&state.pool).await
+        {
+            tracing::warn!(%spawn_key, %session_id, "spawn-key rebind failed: {e}");
+            return;
+        }
+    }
 }
 
 /// Look up the `session_id` bound to a (live) gateway session token — used only
@@ -1666,8 +1711,11 @@ async fn passthrough(
         reqwest::header::HeaderValue::from_str(&format!("Bearer {access_token}"))
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
     );
-    // ChatGPT-backed Codex requests must carry the account id upstream.
-    if let Some(account_id) = acct.provider_account_id.as_deref()
+    // ChatGPT-backed Codex requests must carry the account id upstream. Other
+    // families store an unrelated id in this column (Fireworks: the billing
+    // account slug), so the header is scoped rather than sent on every request.
+    if Family::from_provider(&acct.provider) == Family::Openai
+        && let Some(account_id) = acct.provider_account_id.as_deref()
         && let Ok(hv) = reqwest::header::HeaderValue::from_str(account_id)
     {
         headers.insert("chatgpt-account-id", hv);
@@ -1696,12 +1744,7 @@ async fn passthrough(
     let trace_session_id =
         if langfuse.is_some() { session_id_for_token(&state, &session_token).await } else { None };
 
-    // Traced calls must come back identity-encoded: the response tee buffers the
-    // raw bytes for SSE reconstruction, and a gzip/zstd body defeats it — every
-    // trace then lands in Langfuse without usage and gets mis-costed by the
-    // tokenizer fallback. reqwest is built without decompression
-    // features, so dropping the client's `accept-encoding` yields a plain body.
-    if langfuse.is_some() {
+    if tees_response(langfuse.is_some(), fireworks.is_some()) {
         headers.remove(reqwest::header::ACCEPT_ENCODING);
     }
 
@@ -2026,10 +2069,10 @@ pub async fn fetch_account_usage(
     account_id: Uuid,
 ) -> Result<Option<serde_json::Value>, StatusCode> {
     let Some(acct) = reload_account(state, account_id).await else { return Ok(None) };
-    // Pay-per-token: dollars, not percent of a subscription window. Never asks
-    // the provider's billing API — cctui budgets its own metered spend.
+    // Pay-per-token: dollars, not percent of a subscription window. Metered
+    // locally, then reconciled upward against the provider's billing API.
     if Family::from_provider(&acct.provider) == Family::Fireworks {
-        return fireworks_usd_windows(state, account_id).await;
+        return fireworks_usd_windows(state, &acct).await;
     }
     if acct.provider != "anthropic" {
         // OpenAI/codex accounts: read the ChatGPT backend's REAL 5h/7d rate-limit
@@ -2215,14 +2258,98 @@ async fn session_spend_usd(state: &AppState, account_id: Uuid, session_id: &str)
     Some(priced(catalog.as_ref(), &rows))
 }
 
-/// Rolling dollar-spend windows for a pay-per-token account, computed purely
-/// from cctui's own recorded usage priced against the account's catalog. Emitted
-/// in the same fixed-field shape the rest of the usage pipeline consumes.
+/// cctui's own 7d spend as Fireworks billed it, priced through the account
+/// catalog because every upstream row reports `costNanoUsd: 0`.
+///
+/// `None` whenever the figure cannot be trusted — no billing key name configured,
+/// no resolvable account slug, or any upstream failure — leaving the caller on its
+/// locally metered number. A reconciliation that cannot be attributed must never
+/// fall back to the whole account: the spend would be someone else's.
+async fn fireworks_upstream_7d_usd(
+    state: &AppState,
+    acct: &Account,
+    catalog: Option<&serde_json::Value>,
+) -> Option<f64> {
+    let key_name = FireworksSettings::resolve(acct.provider_settings.as_ref())
+        .billing_api_key_name
+        .or_else(|| {
+            tracing::debug!(account = %acct.id, "fireworks billing reconciliation off: no api key name");
+            None
+        })?;
+    let api_key = current_access_token(state, acct).await.ok()?;
+    let slug = fireworks_account_slug(state, acct, &api_key).await?;
+    let end = Utc::now();
+    let start = end - chrono::Duration::days(7);
+    let resp = state
+        .http_client
+        .get(format!("{}/accounts/{slug}/billingUsage", crate::fireworks_billing::billing_base()))
+        .header(reqwest::header::AUTHORIZATION, format!("Bearer {api_key}"))
+        .query(&[
+            ("startTime", start.to_rfc3339()),
+            ("endTime", end.to_rfc3339()),
+            ("usageType", "SERVERLESS".into()),
+            ("groupBy", "api_key_name".into()),
+            ("groupBy", "model_name".into()),
+        ])
+        .send()
+        .await
+        .map_err(|e| tracing::warn!(account = %acct.id, "fireworks billing transport error: {e}"))
+        .ok()?;
+    if !resp.status().is_success() {
+        tracing::warn!(account = %acct.id, status = %resp.status(), "fireworks billing rejected");
+        return None;
+    }
+    let body = resp.bytes().await.ok()?;
+    let rows = crate::fireworks_billing::parse_billing_usage(&body, &key_name);
+    if rows.is_empty() {
+        return None;
+    }
+    let tallies: Vec<_> = rows.into_iter().map(|(m, u)| (Some(m), u)).collect();
+    Some(crate::cost::tallies_cost_usd(catalog, &tallies))
+}
+
+/// The account slug the billing API is addressed by, cached on the provider row.
+/// A Fireworks API key does not name its account, so the first call resolves it
+/// from `/accounts` and persists it; an ambiguous listing resolves to nothing
+/// rather than guessing which account to bill against.
+async fn fireworks_account_slug(state: &AppState, acct: &Account, api_key: &str) -> Option<String> {
+    if let Some(slug) = acct.provider_account_id.as_deref().filter(|s| !s.trim().is_empty()) {
+        return Some(slug.to_owned());
+    }
+    let resp = state
+        .http_client
+        .get(format!("{}/accounts", crate::fireworks_billing::billing_base()))
+        .header(reqwest::header::AUTHORIZATION, format!("Bearer {api_key}"))
+        .send()
+        .await
+        .ok()?;
+    let json: serde_json::Value = resp.json().await.ok()?;
+    let accounts = json.get("accounts")?.as_array()?;
+    let [only] = accounts.as_slice() else {
+        tracing::warn!(account = %acct.id, n = accounts.len(), "fireworks account slug ambiguous");
+        return None;
+    };
+    let slug = only.get("name")?.as_str()?.strip_prefix("accounts/")?.to_owned();
+    let _ = sqlx::query("UPDATE account_providers SET provider_account_id = $2 WHERE id = $1")
+        .bind(acct.id)
+        .bind(&slug)
+        .execute(&state.pool)
+        .await;
+    Some(slug)
+}
+
+/// Rolling dollar-spend windows for a pay-per-token account: cctui's own recorded
+/// usage priced against the account's catalog, then reconciled upward against the
+/// provider's billing API so a window never reads lower than what was actually
+/// billed. Emitted in the same fixed-field shape the rest of the pipeline consumes.
 async fn fireworks_usd_windows(
     state: &AppState,
-    account_id: Uuid,
+    acct: &Account,
 ) -> Result<Option<serde_json::Value>, StatusCode> {
+    let account_id = acct.id;
     let catalog = account_catalog(state, account_id).await;
+    let upstream_7d = fireworks_upstream_7d_usd(state, acct, catalog.as_ref()).await;
+    let mut local = std::collections::BTreeMap::new();
     let mut out = serde_json::Map::new();
     for (key, interval, secs) in [
         (crate::soft_limit::KEY_USD_5H, "5 hours", 5 * 3600_i64),
@@ -2236,13 +2363,21 @@ async fn fireworks_usd_windows(
             .filter_map(|(_, _, oldest)| *oldest)
             .min()
             .map(|t| (t + chrono::Duration::seconds(secs)).to_rfc3339());
-        out.insert(
-            key.to_owned(),
-            serde_json::json!({
-                "amount_usd": priced(catalog.as_ref(), &rows),
-                "resets_at": resets_at,
-            }),
-        );
+        local.insert(key, priced(catalog.as_ref(), &rows));
+        out.insert(key.to_owned(), serde_json::json!({ "resets_at": resets_at }));
+    }
+    let recent = local.get(crate::soft_limit::KEY_USD_5H).copied().unwrap_or_default();
+    let week = local.get(crate::soft_limit::KEY_USD_7D).copied().unwrap_or_default();
+    for (key, amount) in [
+        (
+            crate::soft_limit::KEY_USD_5H,
+            crate::fireworks_billing::reconcile_5h(recent, week, upstream_7d),
+        ),
+        (crate::soft_limit::KEY_USD_7D, crate::fireworks_billing::reconcile_7d(week, upstream_7d)),
+    ] {
+        if let Some(w) = out.get_mut(key).and_then(serde_json::Value::as_object_mut) {
+            w.insert("amount_usd".into(), serde_json::json!(amount));
+        }
     }
     Ok(Some(serde_json::Value::Object(out)))
 }
@@ -2284,8 +2419,8 @@ mod tests {
     use super::{
         AuthStage, Family, FireworksSettings, OrphanSpamMap, apply_anthropic_cache_defaults,
         apply_gateway_env, auth_error, bump_orphan_401, clear_orphan_fingerprint, map_wham_usage,
-        merge_session_budget, orphan_is_blocked_at, resolve_catalog_model, ttl_hours_from,
-        usage_cache_stale,
+        merge_session_budget, needs_rebind, orphan_is_blocked_at, resolve_catalog_model,
+        tees_response, ttl_hours_from, usage_cache_stale,
     };
     use std::collections::BTreeMap;
     use std::time::{Duration, Instant};
@@ -2834,5 +2969,21 @@ mod tests {
             let merged = merge_session_budget(&account, budget);
             assert_eq!(merged, account, "budget {budget:?} must not alter the account limits");
         }
+    }
+
+    #[test]
+    fn fireworks_alone_still_forces_an_identity_encoded_response() {
+        assert!(tees_response(false, true), "an unsampled Fireworks call is teed for its usage");
+        assert!(tees_response(true, false));
+        assert!(tees_response(true, true));
+        assert!(!tees_response(false, false), "an unobserved call stays a zero-copy passthrough");
+    }
+
+    #[test]
+    fn rebind_only_fires_when_the_harness_renamed_the_session() {
+        assert!(needs_rebind("6e0e-4d7d", "ses_058283e9"));
+        assert!(!needs_rebind("6e0e-4d7d", "6e0e-4d7d"), "claude/codex local id IS the spawn key");
+        assert!(!needs_rebind("", "ses_058283e9"), "no spawn key ⇒ nothing to re-key");
+        assert!(!needs_rebind("6e0e-4d7d", ""));
     }
 }

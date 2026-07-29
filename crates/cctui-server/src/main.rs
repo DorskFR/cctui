@@ -7,6 +7,7 @@ mod cost;
 mod crypto;
 mod db;
 mod dispatchers;
+mod fireworks_billing;
 mod langfuse;
 mod machine_liveness;
 mod normalize;
