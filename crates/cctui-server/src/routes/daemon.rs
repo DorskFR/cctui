@@ -36,14 +36,14 @@ use crate::state::AppState;
 /// within this window. Measured by frame arrival, not data-message completion,
 /// so a slow peer still answering pings mid-transfer is not evicted; a
 /// truly half-open one leaves no dead entry in the bus registry.
-const DAEMON_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+const DAEMON_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(1);
 const DAEMON_LIVENESS_CHECK: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Bound the memory a single in-flight chunked transfer may buffer.
 const MAX_TRANSFER_BYTES: usize = 64 * 1024 * 1024;
 
 /// Drop partial chunked transfers idle past this age.
-const STALE_TRANSFER: std::time::Duration = std::time::Duration::from_secs(600);
+const STALE_TRANSFER: std::time::Duration = std::time::Duration::from_mins(10);
 
 // ---- /api/v1/daemon/auth ----
 

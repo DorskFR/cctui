@@ -896,7 +896,7 @@ mod tests {
         let cfg = ThreadListConfig::from_value(&json!({
             "inventory_poll_ms": 5000, "inventory_page_size": 25,
         }));
-        assert_eq!(cfg.poll_interval, Duration::from_millis(5000));
+        assert_eq!(cfg.poll_interval, Duration::from_secs(5));
         assert_eq!(cfg.page_size, 25);
         assert!(!ThreadListConfig::enabled(&json!({"inventory": false})));
     }

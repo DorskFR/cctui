@@ -24,7 +24,7 @@ pub const UPDATED_ENV: &str = "CCTUI_UPDATED";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const DEFAULT_REPO: &str = "DorskFR/cctui";
 const VERSION_TIMEOUT: Duration = Duration::from_secs(2);
-const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(60);
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_mins(1);
 
 #[derive(serde::Deserialize)]
 struct ServerVersion {

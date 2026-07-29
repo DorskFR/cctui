@@ -15,7 +15,7 @@ use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 /// Each check shells `claude` twice; upgrades land a few times a day at most.
-const CHECK_MIN_INTERVAL: Duration = Duration::from_secs(300);
+const CHECK_MIN_INTERVAL: Duration = Duration::from_mins(5);
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 

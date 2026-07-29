@@ -157,8 +157,7 @@ mod linux {
         Command::new("systemctl")
             .args(["--user", "is-active", "--quiet", UNIT_NAME])
             .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
+            .is_ok_and(|s| s.success())
     }
 
     fn systemctl(args: &[&str]) -> Result<()> {

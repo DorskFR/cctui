@@ -226,11 +226,11 @@ mod tests {
         let base = w.start;
         w.add(base, 100);
         assert_eq!(w.total(base), 100);
-        let t45 = base + std::time::Duration::from_secs(45 * 60);
+        let t45 = base + std::time::Duration::from_mins(45);
         w.add(t45, 50);
         assert_eq!(w.total(t45), 150);
         // 90 minutes on: the minute-0 bucket has rolled off, minute-45 survives.
-        let t90 = base + std::time::Duration::from_secs(90 * 60);
+        let t90 = base + std::time::Duration::from_mins(90);
         assert_eq!(w.total(t90), 50);
     }
 

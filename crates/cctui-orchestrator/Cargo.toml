@@ -22,7 +22,7 @@ k8s-openapi.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-serde_yaml = "0.9"
+serde_norway = "0.9"
 json-patch.workspace = true
 axum.workspace = true
 axum-server.workspace = true
@@ -34,6 +34,5 @@ anyhow.workspace = true
 async-trait.workspace = true
 
 [dev-dependencies]
-serde_yaml = "0.9"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"

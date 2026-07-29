@@ -38,7 +38,7 @@ pub const DEFAULT_API_BASE: &str = "https://api.github.com";
 /// Injection service key this provider mints for.
 const DEFAULT_SERVICE: &str = "github";
 /// Re-mint this long before the token's `expires_at`.
-const EXPIRY_SKEW: Duration = Duration::from_secs(300);
+const EXPIRY_SKEW: Duration = Duration::from_mins(5);
 /// JWT lifetime — GitHub caps App JWTs at 10 min; stay under it.
 const JWT_TTL_SECS: i64 = 540;
 /// Backdate `iat` to tolerate minor clock skew against GitHub.
@@ -283,7 +283,7 @@ mod tests {
     }
 
     fn source(backend: KeyBackend) -> Arc<SecretSource> {
-        Arc::new(SecretSource::new(Box::new(backend), Duration::from_secs(120)))
+        Arc::new(SecretSource::new(Box::new(backend), Duration::from_mins(2)))
     }
 
     #[test]
@@ -432,7 +432,7 @@ mod tests {
     fn cache_duration_subtracts_skew_and_clamps() {
         let soon = (chrono::Utc::now() + chrono::Duration::seconds(3600)).to_rfc3339();
         let d = cache_duration(&soon);
-        assert!(d <= Duration::from_secs(3600 - 300));
+        assert!(d <= Duration::from_mins(55));
         assert!(d >= Duration::from_secs(3600 - 300 - 30), "≈ lifetime minus skew");
 
         let past = (chrono::Utc::now() - chrono::Duration::seconds(10)).to_rfc3339();

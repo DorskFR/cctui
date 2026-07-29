@@ -228,7 +228,7 @@ mod tests {
         ] {
             let payload = pattern(len);
             let frames = split(&payload).expect("must split");
-            assert_eq!(frames.len() as usize, len.div_ceil(CHUNK_SIZE));
+            assert_eq!(frames.len(), len.div_ceil(CHUNK_SIZE));
             assert_eq!(reassemble(&frames), payload, "roundtrip failed at len={len}");
         }
     }

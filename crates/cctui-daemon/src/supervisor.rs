@@ -38,7 +38,7 @@ const PING_INTERVAL: Duration = Duration::from_secs(20);
 /// daemon can sit forever on a dead TCP socket (`sink.send` buffers into the
 /// kernel without erroring, `stream.next` blocks) and the web UI reports
 /// "daemon offline" until a manual restart.
-const LIVENESS_TIMEOUT: Duration = Duration::from_secs(60);
+const LIVENESS_TIMEOUT: Duration = Duration::from_mins(1);
 
 /// Micro-batch window: adapter events queued within this window are
 /// coalesced into one frame before compress+chunk, so cross-event redundancy
@@ -752,7 +752,7 @@ fn coalesce(frames: Vec<DaemonFrameUp>) -> DaemonFrameUp {
 /// Serialized byte size of a queued frame, for the pre-compression batch cap.
 /// Falls back to 0 on the structurally-impossible serialization failure.
 fn frame_size(frame: &DaemonFrameUp) -> usize {
-    serde_json::to_vec(frame).map(|v| v.len()).unwrap_or(0)
+    serde_json::to_vec(frame).map_or(0, |v| v.len())
 }
 
 /// Collect every event still owed to the wire at shutdown: the in-flight

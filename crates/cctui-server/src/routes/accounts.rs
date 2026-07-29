@@ -1661,6 +1661,10 @@ fn urldecode(s: &str) -> String {
 }
 
 /// PKCE S256 challenge for a verifier: base64url(sha256(verifier)), no padding.
+fn account_name_missing(name: Option<&str>) -> bool {
+    name.is_none_or(|s| s.trim().is_empty())
+}
+
 fn pkce_challenge(verifier: &str) -> String {
     let digest = Sha256::digest(verifier.as_bytes());
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest)
@@ -1806,7 +1810,7 @@ pub async fn oauth_finish(
         }
         Some(account_id)
     } else {
-        if req.name.as_deref().map(str::trim).filter(|s| !s.is_empty()).is_none() {
+        if account_name_missing(req.name.as_deref()) {
             return Err(err(StatusCode::BAD_REQUEST, "name required"));
         }
         None
@@ -2283,6 +2287,14 @@ mod tests {
             soft_now(),
         );
         assert!(cleared.is_empty());
+    }
+
+    #[test]
+    fn missing_or_blank_account_name_is_rejected() {
+        assert!(account_name_missing(None));
+        assert!(account_name_missing(Some("")));
+        assert!(account_name_missing(Some("   \t")));
+        assert!(!account_name_missing(Some(" work ")));
     }
 
     #[test]

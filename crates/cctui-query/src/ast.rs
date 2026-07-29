@@ -26,9 +26,9 @@ pub enum Node {
     Empty,
     Text { value: String },
     Filter { filter: Filter },
-    Not { child: Box<Node> },
-    And { children: Vec<Node> },
-    Or { children: Vec<Node> },
+    Not { child: Box<Self> },
+    And { children: Vec<Self> },
+    Or { children: Vec<Self> },
 }
 
 impl Node {

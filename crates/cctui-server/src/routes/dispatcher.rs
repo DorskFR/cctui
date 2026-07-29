@@ -32,7 +32,7 @@ use crate::state::AppState;
 /// — within this window. Measured by frame arrival, not data-message completion,
 /// so a slow peer still answering pings mid-transfer is not evicted;
 /// mirrors the daemon path and its half-open guarantee.
-const DISPATCHER_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+const DISPATCHER_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(1);
 const DISPATCHER_LIVENESS_CHECK: std::time::Duration = std::time::Duration::from_secs(10);
 
 // ---- /api/v1/dispatcher/enroll ----
@@ -420,6 +420,8 @@ async fn handle(socket: WebSocket, state: AppState, dispatcher_id: Uuid) {
 }
 
 async fn process_frame(state: &AppState, dispatcher_id: Uuid, frame: DispatcherFrameUp) {
+    // collapsible_match's suggested guard would move `frame` out of the scrutinee.
+    #[allow(clippy::collapsible_match)]
     match frame {
         DispatcherFrameUp::Hello { kind, version } => {
             tracing::info!(%dispatcher_id, %kind, %version, "dispatcher hello");

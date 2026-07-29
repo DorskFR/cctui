@@ -398,8 +398,7 @@ fn tempfile_path(name: &str) -> std::path::PathBuf {
     let pid = std::process::id();
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_nanos());
     std::env::temp_dir().join(format!("cctui-skill-{name}-{pid}-{nanos}.tar.zst"))
 }
 

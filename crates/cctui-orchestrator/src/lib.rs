@@ -202,7 +202,7 @@ mod tests {
         assert_eq!(crd.spec.scope, "Namespaced", "profiles are namespaced, GitOps-managed");
         assert_eq!(crd.spec.versions.len(), 1);
         assert_eq!(crd.spec.versions[0].name, "v1alpha1");
-        let yaml = serde_yaml::to_string(&crd).expect("CRD serializes to YAML");
+        let yaml = serde_norway::to_string(&crd).expect("CRD serializes to YAML");
         assert!(yaml.contains("kind: CustomResourceDefinition"));
         assert!(yaml.contains("cctui.dev"));
     }
@@ -213,7 +213,7 @@ mod tests {
 image: registry.example.com/worker:latest
 serviceAccountName: worker-lean
 ";
-        let spec: WorkerProfileSpec = serde_yaml::from_str(yaml).expect("lean profile parses");
+        let spec: WorkerProfileSpec = serde_norway::from_str(yaml).expect("lean profile parses");
         assert_eq!(spec.image, "registry.example.com/worker:latest");
         assert_eq!(spec.service_account_name.as_deref(), Some("worker-lean"));
         assert_eq!(spec.worker_container_name(), DEFAULT_WORKER_CONTAINER);
@@ -274,7 +274,7 @@ containers:
     image: registry.example.com/auth-idp:latest
 "#;
         let spec: WorkerProfileSpec =
-            serde_yaml::from_str(yaml).expect("full-stack profile parses");
+            serde_norway::from_str(yaml).expect("full-stack profile parses");
         assert!(spec.gpg_signing);
         assert_eq!(spec.worker_container_name(), "worker");
         assert_eq!(spec.runtime_class_name.as_deref(), Some("gvisor"));
@@ -297,7 +297,7 @@ containers:
 
     #[test]
     fn worker_container_override_honored() {
-        let spec: WorkerProfileSpec = serde_yaml::from_str(
+        let spec: WorkerProfileSpec = serde_norway::from_str(
             "image: registry.example.com/worker:latest\nworkerContainer: agent\n",
         )
         .unwrap();

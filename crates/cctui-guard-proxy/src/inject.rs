@@ -1618,7 +1618,7 @@ mod tests {
         shape: AuthShape,
     ) -> (Injector, Arc<PerPodCa>) {
         let client_ca = Arc::new(PerPodCa::generate().unwrap());
-        let secrets = Arc::new(SecretSource::new(Box::new(backend), Duration::from_secs(120)));
+        let secrets = Arc::new(SecretSource::new(Box::new(backend), Duration::from_mins(2)));
         let policy = InjectionPolicy::new(vec![InjectionRule {
             host: "localhost".to_owned(),
             path_prefix: None,
@@ -1784,8 +1784,7 @@ mod tests {
     async fn path_scoped_rule_injects_its_own_secret_over_tls() {
         let up = spawn_upstream().await;
         let client_ca = Arc::new(PerPodCa::generate().unwrap());
-        let secrets =
-            Arc::new(SecretSource::new(Box::new(EchoRefBackend), Duration::from_secs(120)));
+        let secrets = Arc::new(SecretSource::new(Box::new(EchoRefBackend), Duration::from_mins(2)));
         let mk = |path_prefix: Option<&str>, var: &str| InjectionRule {
             host: "localhost".to_owned(),
             path_prefix: path_prefix.map(str::to_owned),

@@ -624,7 +624,7 @@ mod tests {
     }
 
     fn test_secrets() -> Arc<SecretSource> {
-        Arc::new(SecretSource::new(Box::new(Engines::new(None, None)), Duration::from_secs(120)))
+        Arc::new(SecretSource::new(Box::new(Engines::new(None, None)), Duration::from_mins(2)))
     }
 
     #[test]

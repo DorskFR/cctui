@@ -472,7 +472,7 @@ pub(super) async fn resolve_launch_env_for(
 fn reseed_interval_from(var: Option<String>) -> Duration {
     var.and_then(|v| v.parse::<u64>().ok())
         .filter(|s| *s > 0)
-        .map_or(Duration::from_secs(3600), Duration::from_secs)
+        .map_or(Duration::from_hours(1), Duration::from_secs)
 }
 
 /// Whether the gateway-env re-seed pass should run this poll: always on a
@@ -1442,8 +1442,7 @@ impl Driver {
         let created_at = u64::try_from(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis())
-                .unwrap_or(0),
+                .map_or(0, |d| d.as_millis()),
         )
         .unwrap_or(0);
         // Launch argv + respawn flags, appending the managed `--settings` file so
@@ -1725,8 +1724,7 @@ impl Driver {
         let created_at = u64::try_from(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis())
-                .unwrap_or(0),
+                .map_or(0, |d| d.as_millis()),
         )
         .unwrap_or(0);
 
@@ -2001,8 +1999,7 @@ impl Driver {
         let created_at = u64::try_from(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis())
-                .unwrap_or(0),
+                .map_or(0, |d| d.as_millis()),
         )
         .unwrap_or(0);
 
@@ -3106,7 +3103,7 @@ impl Driver {
 /// beyond live bytes. A missing/unreadable file yields 0 so the tail restarts
 /// from the top rather than trusting the mark.
 fn clamp_to_file_len(path: &Path, mark: u64) -> u64 {
-    std::fs::metadata(path).map(|m| mark.min(m.len())).unwrap_or(0)
+    std::fs::metadata(path).map_or(0, |m| mark.min(m.len()))
 }
 
 /// Parse a permission `needs` string (`"approve <Tool>: <detail>"`) into a
@@ -3785,16 +3782,16 @@ mod tests {
 
     #[test]
     fn reseed_interval_defaults_and_honors_override() {
-        assert_eq!(reseed_interval_from(None), Duration::from_secs(3600));
-        assert_eq!(reseed_interval_from(Some("120".into())), Duration::from_secs(120));
+        assert_eq!(reseed_interval_from(None), Duration::from_hours(1));
+        assert_eq!(reseed_interval_from(Some("120".into())), Duration::from_mins(2));
         // Zero / garbage fall back to the hourly default rather than a hot loop.
-        assert_eq!(reseed_interval_from(Some("0".into())), Duration::from_secs(3600));
-        assert_eq!(reseed_interval_from(Some("nope".into())), Duration::from_secs(3600));
+        assert_eq!(reseed_interval_from(Some("0".into())), Duration::from_hours(1));
+        assert_eq!(reseed_interval_from(Some("nope".into())), Duration::from_hours(1));
     }
 
     #[test]
     fn reseed_runs_on_first_pass_reattach_and_after_interval() {
-        let interval = Duration::from_secs(3600);
+        let interval = Duration::from_hours(1);
         // First pass (never re-seeded) always runs.
         assert!(reseed_due(None, interval, false));
         // A fresh pass is not due again until the interval elapses...

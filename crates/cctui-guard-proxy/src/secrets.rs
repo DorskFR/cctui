@@ -579,8 +579,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn cache_serves_fresh_hit_without_engine_call() {
         let mock = std::sync::Arc::new(MockResolver::ok("s3cret"));
-        let source =
-            SecretSource::new(Box::new(ArcResolver(mock.clone())), Duration::from_secs(120));
+        let source = SecretSource::new(Box::new(ArcResolver(mock.clone())), Duration::from_mins(2));
         let r = env_ref("CRED_X");
         assert_eq!(source.fetch(&r).await.unwrap().expose(), "s3cret");
         tokio::time::advance(Duration::from_secs(119)).await;
@@ -591,8 +590,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn cache_expiry_refetches_and_picks_up_rotation() {
         let mock = std::sync::Arc::new(MockResolver::ok("v1"));
-        let source =
-            SecretSource::new(Box::new(ArcResolver(mock.clone())), Duration::from_secs(120));
+        let source = SecretSource::new(Box::new(ArcResolver(mock.clone())), Duration::from_mins(2));
         let r = env_ref("CRED_X");
         assert_eq!(source.fetch(&r).await.unwrap().expose(), "v1");
 
@@ -617,8 +615,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn engine_error_fails_closed_and_is_not_cached() {
         let mock = std::sync::Arc::new(MockResolver::failing("boom"));
-        let source =
-            SecretSource::new(Box::new(ArcResolver(mock.clone())), Duration::from_secs(120));
+        let source = SecretSource::new(Box::new(ArcResolver(mock.clone())), Duration::from_mins(2));
         let r = env_ref("CRED_X");
         assert!(matches!(source.fetch(&r).await, Err(SecretError::Backend(_))));
         *mock.response.lock().unwrap() = Ok("recovered".to_owned());
@@ -629,8 +626,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn engine_error_past_ttl_drops_stale_entry() {
         let mock = std::sync::Arc::new(MockResolver::ok("v1"));
-        let source =
-            SecretSource::new(Box::new(ArcResolver(mock.clone())), Duration::from_secs(120));
+        let source = SecretSource::new(Box::new(ArcResolver(mock.clone())), Duration::from_mins(2));
         let r = env_ref("CRED_X");
         assert_eq!(source.fetch(&r).await.unwrap().expose(), "v1");
         *mock.response.lock().unwrap() = Err("engine down");

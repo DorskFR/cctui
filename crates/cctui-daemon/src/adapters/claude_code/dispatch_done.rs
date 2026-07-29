@@ -142,7 +142,7 @@ mod tests {
         let mut t = tracker(60);
         let start = Instant::now();
         assert!(!t.observe(false, start));
-        assert!(!t.observe(false, start + Duration::from_secs(3600)));
+        assert!(!t.observe(false, start + Duration::from_hours(1)));
         assert!(!t.seen_busy());
     }
 
@@ -221,9 +221,9 @@ mod tests {
 
     #[test]
     fn settle_env_parsing() {
-        assert_eq!(settle_from_env(None), Duration::from_secs(60));
+        assert_eq!(settle_from_env(None), Duration::from_mins(1));
         assert_eq!(settle_from_env(Some("15")), Duration::from_secs(15));
         assert_eq!(settle_from_env(Some(" 90 ")), Duration::from_secs(90));
-        assert_eq!(settle_from_env(Some("nope")), Duration::from_secs(60));
+        assert_eq!(settle_from_env(Some("nope")), Duration::from_mins(1));
     }
 }

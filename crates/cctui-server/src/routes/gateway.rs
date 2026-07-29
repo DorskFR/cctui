@@ -2484,8 +2484,8 @@ mod tests {
     fn orphan_spam_blocks_after_threshold_and_skips_db() {
         let map = OrphanSpamMap::new();
         let now = Instant::now();
-        let window = Duration::from_secs(60);
-        let block = Duration::from_secs(300);
+        let window = Duration::from_mins(1);
+        let block = Duration::from_mins(5);
         let fp = "deadbeef";
 
         // Below threshold: counts climb, never blocked.
@@ -2502,7 +2502,7 @@ mod tests {
         assert!(orphan_is_blocked_at(&map, fp, now));
 
         // Still blocked mid-block-window, and re-flagging does not re-fire.
-        let mid = now + Duration::from_secs(120);
+        let mid = now + Duration::from_mins(2);
         assert!(orphan_is_blocked_at(&map, fp, mid));
         let (_, newly_again) = bump_orphan_401(&map, fp, mid, 3, window, block);
         assert!(!newly_again);
@@ -2526,8 +2526,8 @@ mod tests {
         // remainder of the (up to 300s) block window.
         let map = OrphanSpamMap::new();
         let now = Instant::now();
-        let window = Duration::from_secs(60);
-        let block = Duration::from_secs(300);
+        let window = Duration::from_mins(1);
+        let block = Duration::from_mins(5);
         let fp = "deadbeef";
         for _ in 0..3 {
             bump_orphan_401(&map, fp, now, 3, window, block);
@@ -2578,19 +2578,19 @@ mod tests {
         // No cached usage must force a refresh, not be
         // treated as "no data → allow". This is what let a capped account hit 100%
         // on the headless dispatch path where the accounts page never warms it.
-        assert!(usage_cache_stale(None, Duration::from_secs(180)));
+        assert!(usage_cache_stale(None, Duration::from_mins(3)));
     }
 
     #[test]
     fn fresh_usage_cache_is_not_stale() {
-        assert!(!usage_cache_stale(Some(Duration::from_secs(10)), Duration::from_secs(180)));
+        assert!(!usage_cache_stale(Some(Duration::from_secs(10)), Duration::from_mins(3)));
     }
 
     #[test]
     fn expired_usage_cache_is_stale() {
         // At/over the TTL → refresh (so a capped account re-checks within one TTL).
-        assert!(usage_cache_stale(Some(Duration::from_secs(180)), Duration::from_secs(180)));
-        assert!(usage_cache_stale(Some(Duration::from_secs(600)), Duration::from_secs(180)));
+        assert!(usage_cache_stale(Some(Duration::from_mins(3)), Duration::from_mins(3)));
+        assert!(usage_cache_stale(Some(Duration::from_mins(10)), Duration::from_mins(3)));
     }
 
     #[test]

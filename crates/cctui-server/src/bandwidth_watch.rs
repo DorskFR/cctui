@@ -14,7 +14,7 @@ use uuid::Uuid;
 /// Escalate to ERROR once a machine hits this many evictions within
 /// [`EVICTION_WINDOW`].
 pub const EVICTION_THRESHOLD: usize = 5;
-pub const EVICTION_WINDOW: Duration = Duration::from_secs(15 * 60);
+pub const EVICTION_WINDOW: Duration = Duration::from_mins(15);
 
 /// A single chunked transfer inserts nothing until it completes, and the
 /// daemon's `SendGuard` caps any transfer at 32 MiB — so more unexplained
@@ -128,7 +128,7 @@ mod tests {
             t.record_at(m, base + Duration::from_secs(i));
         }
         // Well past the window: the old four have aged out, this is a lone event.
-        let n = t.record_at(m, base + EVICTION_WINDOW + Duration::from_secs(60));
+        let n = t.record_at(m, base + EVICTION_WINDOW + Duration::from_mins(1));
         assert_eq!(n, 1);
     }
 

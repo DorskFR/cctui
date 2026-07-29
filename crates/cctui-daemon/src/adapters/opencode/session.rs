@@ -803,9 +803,9 @@ mod tests {
 
         let mut started = None;
         let mut acked = false;
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_mins(2);
         while tokio::time::Instant::now() < deadline && !(acked && started.is_some()) {
-            match tokio::time::timeout(std::time::Duration::from_secs(120), rx.recv()).await {
+            match tokio::time::timeout(std::time::Duration::from_mins(2), rx.recv()).await {
                 Ok(Some(AdapterEvent::SessionStarted { local_id, .. })) => started = Some(local_id),
                 Ok(Some(AdapterEvent::CommandResult { ok, error, .. })) => {
                     assert!(ok, "spawn failed: {error:?}");
